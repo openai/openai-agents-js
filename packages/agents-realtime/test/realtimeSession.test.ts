@@ -10,6 +10,8 @@ import {
   ModelBehaviorError,
   RunToolApprovalItem,
   ToolTimeoutError,
+  UserError,
+  handoff,
   tool,
   defineToolInputGuardrail,
   defineToolOutputGuardrail,
@@ -79,6 +81,247 @@ describe('RealtimeSession', () => {
     const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
     session = new RealtimeSession(agent, { transport });
     await session.connect({ apiKey: 'test' });
+  });
+
+  it('rejects duplicate function tool and handoff names before connecting', async () => {
+    const targetAgent = new RealtimeAgent({ name: 'Billing' });
+    const duplicateTool = tool({
+      name: 'transfer_to_Billing',
+      description: 'Conflicts with the billing handoff.',
+      parameters: z.object({}),
+      execute: async () => 'function tool',
+    });
+    const sourceAgent = new RealtimeAgent({
+      name: 'Triage',
+      tools: [duplicateTool],
+      handoffs: [targetAgent],
+    });
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(sourceAgent, {
+      transport: localTransport,
+    });
+
+    await expect(localSession.connect({ apiKey: 'test' })).rejects.toThrow(
+      new UserError(
+        "Duplicate Realtime tool name found: 'transfer_to_Billing' (function tool and handoff). Realtime function tool and handoff names must be unique. Rename one of them before starting the session.",
+      ),
+    );
+    expect(localTransport.connectCalls).toHaveLength(0);
+  });
+
+  it('reports duplicate same-kind Realtime tool names deterministically', async () => {
+    const duplicateOne = tool({
+      name: 'lookup',
+      description: 'First lookup tool.',
+      parameters: z.object({}),
+      execute: async () => 'first',
+    });
+    const duplicateTwo = tool({
+      name: 'lookup',
+      description: 'Second lookup tool.',
+      parameters: z.object({}),
+      execute: async () => 'second',
+    });
+    const firstTarget = new RealtimeAgent({ name: 'First' });
+    const secondTarget = new RealtimeAgent({ name: 'Second' });
+    const sourceAgent = new RealtimeAgent({
+      name: 'Triage',
+      tools: [duplicateOne, duplicateTwo],
+      handoffs: [
+        handoff(firstTarget, { toolNameOverride: 'delegate' }),
+        handoff(secondTarget, { toolNameOverride: 'delegate' }),
+      ],
+    });
+    const localSession = new RealtimeSession(sourceAgent, {
+      transport: new FakeTransport(),
+    });
+
+    await expect(localSession.connect({ apiKey: 'test' })).rejects.toThrow(
+      "Duplicate Realtime tool names found: 'delegate' (2 handoffs), 'lookup' (2 function tools)",
+    );
+  });
+
+  it('ignores disabled tools when validating Realtime tool names', async () => {
+    const targetAgent = new RealtimeAgent({ name: 'Billing' });
+    const disabledTool = tool({
+      name: 'transfer_to_Billing',
+      description: 'Disabled conflicting tool.',
+      parameters: z.object({}),
+      isEnabled: false,
+      execute: async () => 'disabled',
+    });
+    const sourceAgent = new RealtimeAgent({
+      name: 'Triage',
+      tools: [disabledTool],
+      handoffs: [targetAgent],
+    });
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(sourceAgent, {
+      transport: localTransport,
+    });
+
+    await localSession.connect({ apiKey: 'test' });
+
+    expect(localTransport.connectCalls).toHaveLength(1);
+    expect(
+      localTransport.connectCalls[0]?.initialSessionConfig?.tools,
+    ).toHaveLength(1);
+  });
+
+  it('dispatches delayed sibling calls against the source response snapshot', async () => {
+    const sourceExecute = vi.fn(async () => 'source tool output');
+    const targetExecute = vi.fn(async () => 'target tool output');
+    const originalTool = tool({
+      name: 'finish_original_work',
+      description: 'Finish work owned by the original agent.',
+      parameters: z.object({}),
+      execute: sourceExecute,
+    });
+    const targetTool = tool({
+      name: 'finish_original_work',
+      description: 'A same-named tool owned by the target agent.',
+      parameters: z.object({}),
+      execute: targetExecute,
+    });
+    const targetAgent = new RealtimeAgent({
+      name: 'Billing',
+      tools: [targetTool],
+    });
+    const sourceAgent = new RealtimeAgent({
+      name: 'Triage',
+      tools: [originalTool],
+      handoffs: [targetAgent],
+    });
+    const sourceToolStart = vi.fn();
+    const targetToolStart = vi.fn();
+    sourceAgent.on('agent_tool_start', sourceToolStart);
+    targetAgent.on('agent_tool_start', targetToolStart);
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(sourceAgent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    localTransport.emit('turn_started', {
+      type: 'response_started',
+      providerData: { response: { id: 'source-response' } },
+    });
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'transfer_to_Billing',
+      callId: 'handoff-call',
+      arguments: '{}',
+      responseId: 'source-response',
+    } as any);
+
+    await vi.waitFor(() => {
+      expect(localSession.currentAgent).toBe(targetAgent);
+    });
+
+    localTransport.emit('turn_started', {
+      type: 'response_started',
+      providerData: { response: { id: 'target-response' } },
+    });
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'finish_original_work',
+      callId: 'tool-call',
+      arguments: '{}',
+      responseId: 'source-response',
+    } as any);
+
+    await vi.waitFor(() => {
+      expect(localTransport.sendFunctionCallOutputCalls).toHaveLength(2);
+    });
+
+    expect(localSession.currentAgent).toBe(targetAgent);
+    expect(sourceExecute).toHaveBeenCalledTimes(1);
+    expect(targetExecute).not.toHaveBeenCalled();
+    expect(sourceToolStart).toHaveBeenCalledTimes(1);
+    expect(targetToolStart).not.toHaveBeenCalled();
+    expect(
+      localTransport.sendFunctionCallOutputCalls.map(
+        ([toolCall]) => toolCall.callId,
+      ),
+    ).toEqual(expect.arrayContaining(['handoff-call', 'tool-call']));
+
+    const errors: unknown[] = [];
+    localSession.on('error', (event) => errors.push(event.error));
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'finish_original_work',
+      callId: 'missing-response-id-call',
+      arguments: '{}',
+    } as any);
+
+    await vi.waitFor(() => {
+      expect(errors).toHaveLength(1);
+    });
+    expect(errors[0]).toEqual(
+      new ModelBehaviorError(
+        'Realtime function call is missing a responseId and cannot be dispatched safely.',
+      ),
+    );
+    expect(sourceExecute).toHaveBeenCalledTimes(1);
+    expect(targetExecute).not.toHaveBeenCalled();
+    expect(localTransport.sendFunctionCallOutputCalls).toHaveLength(2);
+    errorSpy.mockRestore();
+  });
+
+  it('resumes an approved tool call with its original agent snapshot', async () => {
+    const execute = vi.fn(async () => 'approved original output');
+    const approvalTool = tool({
+      name: 'approve_original_work',
+      description: 'Run work after approval.',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute,
+    });
+    const targetAgent = new RealtimeAgent({ name: 'Billing' });
+    const sourceAgent = new RealtimeAgent({
+      name: 'Triage',
+      tools: [approvalTool],
+      handoffs: [targetAgent],
+    });
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(sourceAgent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const approvalRequest = waitForEvent<any[]>(
+      localSession,
+      'tool_approval_requested',
+    );
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'approve_original_work',
+      callId: 'approval-call',
+      arguments: '{}',
+      responseId: 'approval-response',
+    } as any);
+    const [, approvalAgent, approvalPayload] = await approvalRequest;
+
+    const handoffOutput = localTransport.waitForNextFunctionCallOutput();
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'transfer_to_Billing',
+      callId: 'approval-handoff-call',
+      arguments: '{}',
+      responseId: 'approval-response',
+    } as any);
+    await handoffOutput;
+    expect(localSession.currentAgent).toBe(targetAgent);
+
+    const toolOutput = localTransport.waitForNextFunctionCallOutput();
+    await localSession.approve(approvalPayload.approvalItem);
+    const [toolCall, output] = await toolOutput;
+
+    expect(approvalAgent).toBe(sourceAgent);
+    expect(toolCall.callId).toBe('approval-call');
+    expect(output).toBe('approved original output');
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 
   it('calls transport.resetHistory with correct arguments', () => {
@@ -403,6 +646,7 @@ describe('RealtimeSession', () => {
       name: 'echo',
       callId: 'call-1',
       arguments: JSON.stringify({ message: 'hi' }),
+      responseId: 'tool-response',
     });
 
     const [toolCall, output, startResponse] = await outputPromise;
@@ -572,6 +816,7 @@ describe('RealtimeSession', () => {
       name: 'missing',
       callId: '1',
       arguments: '{}',
+      responseId: 'unknown-tool-response',
     });
     const [toolCall, output, startResponse] = await outputEvent;
     const [error] = await errorEvent;
@@ -612,6 +857,7 @@ describe('RealtimeSession', () => {
         callId: 'c-timeout',
         status: 'completed',
         arguments: '{}',
+        responseId: 'timeout-response',
       } as any);
 
       await vi.advanceTimersByTimeAsync(5);
@@ -653,6 +899,7 @@ describe('RealtimeSession', () => {
         callId: 'c-timeout-raise',
         status: 'completed',
         arguments: '{}',
+        responseId: 'timeout-raise-response',
       } as any);
 
       await vi.advanceTimersByTimeAsync(5);
@@ -698,6 +945,7 @@ describe('RealtimeSession', () => {
       callId: 'c1',
       status: 'completed',
       arguments: '{}',
+      responseId: 'input-guardrail-response',
     } as any);
 
     const [, output] = await outputPromise;
@@ -738,6 +986,7 @@ describe('RealtimeSession', () => {
       callId: 'c2',
       status: 'completed',
       arguments: '{}',
+      responseId: 'input-guardrail-error-response',
     } as any);
 
     const [error] = await errorEvent;
@@ -784,6 +1033,7 @@ describe('RealtimeSession', () => {
       callId: 'c3',
       status: 'completed',
       arguments: '{}',
+      responseId: 'output-guardrail-response',
     } as any);
 
     const [, output] = await outputPromise;
@@ -824,6 +1074,7 @@ describe('RealtimeSession', () => {
       callId: 'c4',
       status: 'completed',
       arguments: '{}',
+      responseId: 'output-guardrail-error-response',
     } as any);
 
     const [error] = await errorEvent;
@@ -851,6 +1102,7 @@ describe('RealtimeSession', () => {
       name: 'test',
       callId: '1',
       arguments: '{"test":"x"}',
+      responseId: 'direct-approval-response',
     };
     const approval = new RunToolApprovalItem(toolCall as any, agent);
     await s.approve(approval);
@@ -903,6 +1155,7 @@ describe('RealtimeSession', () => {
       callId: 'call-1',
       arguments: '{}',
       status: 'completed',
+      responseId: 'approval-request-response',
     } as any);
 
     const [, , payload] = await approvalRequest;
@@ -910,6 +1163,71 @@ describe('RealtimeSession', () => {
     expect(payload.tool.name).toBe('needs_approval');
     expect(t.sendFunctionCallOutputCalls.length).toBe(0);
     expect(invokeSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps pending approvals distinct when call IDs are missing', async () => {
+    const execute = vi.fn(async ({ request }: { request: string }) => request);
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: z.object({ request: z.string() }),
+      needsApproval: true,
+      execute,
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const t = new FakeTransport();
+    const s = new RealtimeSession(agent, { transport: t });
+    await s.connect({ apiKey: 'test' });
+
+    const approvalRequests: any[] = [];
+    s.on('tool_approval_requested', (_context, _agent, request) => {
+      approvalRequests.push(request);
+    });
+    t.emit('function_call', {
+      id: 'item-1',
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: '',
+      arguments: '{"request":"first"}',
+      responseId: 'missing-call-id-response',
+    });
+    t.emit('function_call', {
+      id: 'item-2',
+      type: 'function_call',
+      name: 'needs_approval',
+      callId: '',
+      arguments: '{"request":"second"}',
+      responseId: 'missing-call-id-response',
+    });
+
+    await vi.waitFor(() => {
+      expect(approvalRequests).toHaveLength(2);
+    });
+    await s.approve(approvalRequests[0].approvalItem);
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0]?.[0]).toEqual({ request: 'first' });
+    expect(t.sendFunctionCallOutputCalls).toHaveLength(1);
+    expect(t.sendFunctionCallOutputCalls[0][0]).toMatchObject({
+      id: 'item-1',
+      callId: 'item-1',
+    });
+
+    await s.reject(approvalRequests[1].approvalItem, {
+      message: 'Second request denied',
+    });
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(t.sendFunctionCallOutputCalls).toHaveLength(2);
+    expect(t.sendFunctionCallOutputCalls[1][0]).toMatchObject({
+      id: 'item-2',
+      callId: 'item-2',
+    });
+    expect(t.sendFunctionCallOutputCalls[1][1]).toBe('Second request denied');
   });
 
   it('does not run realtime input guardrails before pending approval by default', async () => {
@@ -950,6 +1268,7 @@ describe('RealtimeSession', () => {
       callId: 'call-default-guardrail',
       arguments: '{}',
       status: 'completed',
+      responseId: 'default-guardrail-response',
     } as any);
 
     await approvalRequest;
@@ -1002,6 +1321,7 @@ describe('RealtimeSession', () => {
       callId: 'call-pre-approval-blocked',
       arguments: '{}',
       status: 'completed',
+      responseId: 'pre-approval-blocked-response',
     } as any);
 
     const [, output, startResponse] = await outputPromise;
@@ -1053,6 +1373,7 @@ describe('RealtimeSession', () => {
       callId: 'call-pre-approval-allow',
       arguments: '{}',
       status: 'completed',
+      responseId: 'pre-approval-allow-response',
     } as any);
 
     const [, , payload] = await approvalRequest;
@@ -1095,6 +1416,7 @@ describe('RealtimeSession', () => {
       name: 'needs_approval',
       callId: 'call-2',
       arguments: '{}',
+      responseId: 'approval-denied-response',
     };
     const approvalItem = new RunToolApprovalItem(toolCall as any, agent);
     s.context.rejectTool(approvalItem);
@@ -1140,6 +1462,7 @@ describe('RealtimeSession', () => {
       name: 'needs_approval',
       callId: 'call-2b',
       arguments: '{}',
+      responseId: 'approval-custom-message-response',
     };
     const approvalItem = new RunToolApprovalItem(toolCall as any, agent);
     s.context.rejectTool(approvalItem);
@@ -1187,6 +1510,7 @@ describe('RealtimeSession', () => {
       name: 'needs_approval',
       callId: 'call-2c',
       arguments: '{}',
+      responseId: 'approval-formatter-error-response',
     };
     const approvalItem = new RunToolApprovalItem(toolCall as any, agent);
     s.context.rejectTool(approvalItem);
@@ -1232,6 +1556,7 @@ describe('RealtimeSession', () => {
       name: 'needs_approval',
       callId: 'call-msg-1',
       arguments: '{}',
+      responseId: 'approval-reject-message-response',
     };
 
     const approvalRequest = waitForEvent<any[]>(s, 'tool_approval_requested');
@@ -1275,6 +1600,7 @@ describe('RealtimeSession', () => {
       name: 'needs_approval',
       callId: 'call-sticky-1',
       arguments: '{}',
+      responseId: 'approval-sticky-response',
     };
     const firstApprovalRequest = waitForEvent<any[]>(
       s,
@@ -1333,6 +1659,7 @@ describe('RealtimeSession', () => {
       name: 'needs_approval',
       callId: 'call-msg-2',
       arguments: '{}',
+      responseId: 'approval-message-precedence-response',
     };
     const approvalItem = new RunToolApprovalItem(toolCall as any, agent);
     s.context.rejectTool(approvalItem, { message: 'per-call message' });
@@ -1374,6 +1701,7 @@ describe('RealtimeSession', () => {
       name: 'needs_approval',
       callId: 'call-msg-3',
       arguments: '{}',
+      responseId: 'approval-empty-message-response',
     };
     const approvalItem = new RunToolApprovalItem(toolCall as any, agent);
     s.context.rejectTool(approvalItem, { message: '' });
@@ -1413,6 +1741,7 @@ describe('RealtimeSession', () => {
       callId: 'call-3',
       arguments: '{}',
       status: 'completed',
+      responseId: 'background-response',
     } as any);
 
     const [, output, startResponse] = await outputPromise;

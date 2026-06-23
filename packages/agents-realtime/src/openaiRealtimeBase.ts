@@ -456,6 +456,7 @@ export abstract class OpenAIRealtimeBase
           callId: item.call_id ?? '',
           arguments: item.arguments ?? '',
           name: item.name ?? '',
+          responseId: parsed.response_id,
         });
         return;
       }

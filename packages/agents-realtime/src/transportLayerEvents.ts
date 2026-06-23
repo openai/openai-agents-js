@@ -25,6 +25,8 @@ export type TransportToolCallEvent = {
   callId: string;
   arguments: string;
   previousItemId?: string;
+  /** The response that produced this tool call. */
+  responseId: string;
 };
 
 /**
