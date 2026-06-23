@@ -199,11 +199,11 @@ async function runInputGuardrailsForTurn<
   }
   if (guardrails.parallel.length > 0) {
     handlers.onParallelStart?.();
-    const promise = runInputGuardrails(state, guardrails.parallel);
-    const parallelGuardrailPromise = promise.catch((err) => {
-      handlers.onParallelError?.(err);
-      return [];
-    });
+    const parallelGuardrailPromise = runInputGuardrails(
+      state,
+      guardrails.parallel,
+      { onErrorObserved: handlers.onParallelError },
+    ).catch(() => []);
     return { parallelGuardrailPromise };
   }
 

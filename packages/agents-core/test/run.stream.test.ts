@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   Agent,
   AgentInputItem,
+  GuardrailExecutionError,
   MaxTurnsExceededError,
   ModelRefusalError,
   run,
@@ -2750,6 +2751,95 @@ describe('Runner.run (streaming)', () => {
     expect(saveInputSpy).not.toHaveBeenCalled();
     expect(saveResultSpy).not.toHaveBeenCalled();
     expect(guardrail.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start streaming while sibling parallel guardrails drain after a failure', async () => {
+    let releaseSlowGuardrail!: () => void;
+    let markSlowStarted!: () => void;
+    let markErrorThrown!: () => void;
+    const slowGuardrailCanFinish = new Promise<void>((resolve) => {
+      releaseSlowGuardrail = resolve;
+    });
+    const slowGuardrailStarted = new Promise<void>((resolve) => {
+      markSlowStarted = resolve;
+    });
+    const errorThrown = new Promise<void>((resolve) => {
+      markErrorThrown = resolve;
+    });
+    const slowGuardrail = {
+      name: 'slow-parallel-guardrail',
+      execute: async () => {
+        markSlowStarted();
+        await slowGuardrailCanFinish;
+        return { tripwireTriggered: false, outputInfo: {} };
+      },
+    };
+    const errorGuardrail = {
+      name: 'failing-parallel-guardrail',
+      execute: async () => {
+        await slowGuardrailStarted;
+        markErrorThrown();
+        throw new Error('boom');
+      },
+    };
+
+    class TrackingStreamingModel implements Model {
+      calls = 0;
+
+      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        throw new Error('not implemented');
+      }
+
+      async *getStreamedResponse(
+        _request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        this.calls++;
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'stream-response',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [protocol.OutputModelItem.parse(fakeModelMessage('done'))],
+          },
+        } satisfies StreamEvent;
+      }
+    }
+
+    const model = new TrackingStreamingModel();
+    const agent = new Agent({
+      name: 'StreamingParallelGuardrailFailure',
+      model,
+      inputGuardrails: [slowGuardrail, errorGuardrail],
+    });
+    const runner = new Runner();
+
+    const result = await runner.run(agent, 'hello', { stream: true });
+    let completionSettled = false;
+    void result.completed.then(
+      () => {
+        completionSettled = true;
+      },
+      () => {
+        completionSettled = true;
+      },
+    );
+    await errorThrown;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const callsBeforeSiblingFinished = model.calls;
+    const settledBeforeSiblingFinished = completionSettled;
+    releaseSlowGuardrail();
+
+    await expect(result.completed).rejects.toBeInstanceOf(
+      GuardrailExecutionError,
+    );
+    expect(callsBeforeSiblingFinished).toBe(0);
+    expect(settledBeforeSiblingFinished).toBe(false);
+    expect(model.calls).toBe(0);
   });
 
   it('persists streaming input but drops the result when an output guardrail trips', async () => {
