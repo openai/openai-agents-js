@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maintainer Review"
+  short_description: "Assess SDK issues and pull requests"
+  default_prompt: "Use $maintainer-review to assess this GitHub issue or pull request and recommend the best maintainer action."

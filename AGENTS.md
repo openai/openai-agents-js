@@ -71,6 +71,7 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 - `scripts/dev.mts`: Runs concurrent build-watchers and the docs dev server (`pnpm dev`).
 - `scripts/embedMeta.ts`: Generates `src/metadata.ts` for each package before build.
 - `helpers/tests/`: Shared test utilities.
+- `.agents/references/`: Durable SDK maintainer architecture references. Start with [the reference map](.agents/references/README.md) and open only the files relevant to the affected boundary.
 - `README.md`: High-level overview and installation instructions.
 - `CONTRIBUTING.md`: Official contribution guidelines (this guide is complementary).
 - `pnpm-workspace.yaml`: Defines workspace packages.
@@ -81,15 +82,27 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 
 ### Agents Core Runtime Guidelines
 
+- For public exports, convenience-package re-exports, ESM/CJS/types, optional dependencies, import side effects, or Node/browser/workerd shims, read [Public API, package, and runtime boundaries](.agents/references/public-api-package-and-runtime-boundaries.md).
+- For Agent configuration, cloning, dynamic instructions, enabled tools/handoffs, nested agent tools, run context, usage, or public-versus-prepared identity, read [Agent definition and run context](.agents/references/agent-definition-and-run-context.md).
 - `packages/agents-core/src/run.ts` is the runtime entrypoint; keep it small and focused on orchestration.
 - Add new runtime logic under `packages/agents-core/src/runner/`, organized by responsibility, then import into `run.ts`.
 - When `run.ts` grows, refactor helpers into `runner/` modules and leave only wiring and composition in `run.ts`.
 - Keep `packages/agents-core/src/agent.ts` focused on the Agent class and its type definitions; move helper logic into dedicated modules (for example, `agentToolInput.ts`).
-- Keep streaming and non-streaming loops behaviorally aligned; changes to one loop should be mirrored in the other.
-- Input guardrails run only on the first turn; interruption resumes should not increment the turn counter.
-- When `conversationId`/`previousResponseId` is provided, only deltas are sent; `callModelInputFilter` must return an input array and keep session persistence in sync.
-- Adding new tool/output/approval item types requires coordinated updates across model output processing, tool execution, turn resolution, streaming events, run item extraction, and RunState serialization.
-- If serialized RunState shape changes in a released or otherwise supported snapshot format, bump the schema version and update serialization/deserialization. Unreleased post-tag RunState changes on `main` may fold into the same next schema version when no supported snapshot consumer exists yet.
+- For turn accounting, guardrail order, handoffs, interruption, cancellation, hooks, final output, or streaming behavior, read [Runner lifecycle](.agents/references/runner-lifecycle.md). Keep streaming and non-streaming paths behaviorally aligned.
+- For new model output, tool call, approval, or run-item variants, read [Run item and stream lifecycle](.agents/references/run-item-and-stream-lifecycle.md) and update every applicable processing, event, replay, persistence, tracing, serialization, and adapter surface.
+- For function-tool parameters, structured output, strict JSON Schema conversion, Zod v3/v4, or provider schema conversion, read [Schema and Zod boundaries](.agents/references/schema-and-zod-boundaries.md).
+- For `conversationId`, `previousResponseId`, explicit replay, filtering, continuation, compaction strategy, retry, or resume, read [Conversation state ownership](.agents/references/conversation-state-ownership.md).
+- For session callbacks, stored input, history mutation, per-turn writes, rollback, or compaction replacement, read [Session persistence](.agents/references/session-persistence.md).
+- For serialized RunState, approvals, agent/tool reconstruction, traces, conversation IDs, or sandbox state, read [RunState schema and resume](.agents/references/runstate-schema-and-resume.md). Bump a released schema when its durable meaning changes; unreleased post-tag versions may be folded into the same next schema when no supported snapshot consumer exists.
+- For tool names, namespaces, lookup, call IDs, approvals, collisions, deferred tools, MCP names, or trace labels, read [Tool identity and routing](.agents/references/tool-identity-and-routing.md) and use the canonical helpers in `toolIdentity.ts` and `tooling.ts`.
+- For tool planning, approvals, guardrails, concurrency, aborts, timeouts, hooks, failure conversion, nested agent tools, or tool-choice reset, read [Tool execution and approval lifecycle](.agents/references/tool-execution-and-approval-lifecycle.md).
+- For local MCP connections, stdio/SSE/streamable HTTP, requests, cache/filtering, retries, cancellation, or cleanup, read [MCP transport, cache, and shims](.agents/references/mcp-transport-cache-and-shims.md).
+- For model resolution, settings merge, Responses/Chat Completions conversion, provider data, raw events, retries, transport reuse, or Responses WebSocket sessions, read [Model, provider, and conversion boundaries](.agents/references/model-provider-and-conversion-boundaries.md).
+- For trace/span context, processors, export, flush, shutdown, resume, runtime storage, usage, or sensitive data, read [Tracing and runtime context](.agents/references/tracing-and-runtime-context.md).
+- For Realtime agent/session state, response sequencing, tools, guardrails, history, handoffs, listeners, or cleanup, read [Realtime session lifecycle](.agents/references/realtime-session-lifecycle.md).
+- For WebRTC, WebSocket, SIP, Twilio, Cloudflare, connection state, audio formats, transcripts, or Realtime event payloads, read [Realtime transport, audio, and events](.agents/references/realtime-transport-audio-and-events.md).
+- For sandbox preparation, sessions, manifests, mounts, path grants, snapshots, credentials, timeout, resume, process execution, or cleanup, read [Sandbox runtime and provider boundaries](.agents/references/sandbox-runtime-and-provider-boundaries.md).
+- For AI SDK model/UI adapters, provider metadata, usage, reasoning, tool-call translation, aborts, or stream completion, read [Extension adapter boundaries](.agents/references/extension-adapter-boundaries.md).
 
 ### Runtime and Platform Review Checklist
 
