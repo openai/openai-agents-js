@@ -14,7 +14,7 @@ import {
   renderInstructionSection,
   renderRemoteMountPolicyInstructions,
 } from './prompts';
-import { manifestWithRunAsUser } from './runAsManifest';
+import { manifestWithRunAsUser, sandboxRunAsName } from './runAsManifest';
 
 export { getDefaultSandboxInstructions } from './prompts';
 
@@ -64,6 +64,9 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
   const boundCapabilityTypes = new Set(
     boundCapabilities.map((capability) => capability.type),
   );
+  const canEditorAccessPath = boundCapabilityTypes.has('filesystem')
+    ? resolveEditorPathAccess(session, sandboxRunAsName(agent.runAs))
+    : undefined;
   const runtimeManifest = processManifest
     ? boundCapabilities.reduce(
         (manifest, capability) => capability.processManifest(manifest),
@@ -151,8 +154,10 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
         );
       }
 
-      const remoteMountPolicy =
-        renderRemoteMountPolicyInstructions(runtimeManifest);
+      const remoteMountPolicy = renderRemoteMountPolicyInstructions(
+        runtimeManifest,
+        canEditorAccessPath,
+      );
       if (remoteMountPolicy) {
         segments.push(
           renderInstructionSection(
@@ -180,6 +185,21 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
 
   prepared.runtimeManifest = runtimeManifest;
   return prepared;
+}
+
+function resolveEditorPathAccess(
+  session: SandboxSessionLike<SandboxSessionState>,
+  runAs?: string,
+): ((path: string) => boolean) | undefined {
+  const editor = session.createEditor?.(runAs) as
+    | {
+        canAccessPathForEdit?: (path: string) => boolean;
+      }
+    | undefined;
+  if (typeof editor?.canAccessPathForEdit !== 'function') {
+    return undefined;
+  }
+  return editor.canAccessPathForEdit.bind(editor);
 }
 
 function resolveManifest<TContext, TOutput extends AgentOutputType>(

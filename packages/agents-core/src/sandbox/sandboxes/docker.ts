@@ -650,6 +650,15 @@ class DockerSandboxEditor implements Editor {
     private readonly runAs: string,
   ) {}
 
+  canAccessPathForEdit(path: string): boolean {
+    try {
+      this.session.resolveContainerFilesystemPath(path, { forWrite: true });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async createFile(
     operation: Extract<ApplyPatchOperation, { type: 'create_file' }>,
   ): Promise<ApplyPatchResult> {
