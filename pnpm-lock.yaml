@@ -246,8 +246,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/agents
       openai:
-        specifier: ^6.35.0
-        version: 6.35.0(ws@8.21.0)(zod@4.3.5)
+        specifier: ^6.42.0
+        version: 6.44.0(ws@8.21.0)(zod@4.3.5)
       zod:
         specifier: ^4.0.0
         version: 4.3.5
@@ -291,8 +291,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/agents-realtime
       openai:
-        specifier: ^6.35.0
-        version: 6.35.0(ws@8.21.0)(zod@4.3.5)
+        specifier: ^6.42.0
+        version: 6.44.0(ws@8.21.0)(zod@4.3.5)
       server-only:
         specifier: ^0.0.1
         version: 0.0.1
@@ -359,8 +359,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/agents
       openai:
-        specifier: ^6.35.0
-        version: 6.35.0(ws@8.21.0)(zod@4.3.5)
+        specifier: ^6.42.0
+        version: 6.44.0(ws@8.21.0)(zod@4.3.5)
       zod:
         specifier: ^4.0.0
         version: 4.3.5
@@ -438,8 +438,8 @@ importers:
         specifier: ^4.1.7
         version: 4.1.10(vite@6.4.3(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0))
       openai:
-        specifier: ^6.35.0
-        version: 6.35.0(ws@8.21.0)(zod@4.3.5)
+        specifier: ^6.42.0
+        version: 6.44.0(ws@8.21.0)(zod@4.3.5)
       tailwindcss:
         specifier: ^4.1.7
         version: 4.1.10
@@ -554,8 +554,8 @@ importers:
         specifier: ^5.0.0
         version: 5.0.0
       openai:
-        specifier: ^6.35.0
-        version: 6.35.0(ws@8.21.0)(zod@4.3.5)
+        specifier: ^6.42.0
+        version: 6.44.0(ws@8.21.0)(zod@4.3.5)
       zod:
         specifier: ^4.0.0
         version: 4.3.5
@@ -599,8 +599,8 @@ importers:
         specifier: ^5.6.2
         version: 5.6.2
       openai:
-        specifier: ^6.35.0
-        version: 6.35.0(ws@8.21.0)(zod@4.3.5)
+        specifier: ^6.42.0
+        version: 6.44.0(ws@8.21.0)(zod@4.3.5)
       playwright:
         specifier: ^1.55.1
         version: 1.57.0
@@ -623,8 +623,8 @@ importers:
         specifier: ^4.4.0
         version: 4.4.1
       openai:
-        specifier: ^6.35.0
-        version: 6.35.0(ws@8.21.0)(zod@4.3.5)
+        specifier: ^6.42.0
+        version: 6.44.0(ws@8.21.0)(zod@4.3.5)
     devDependencies:
       '@types/debug':
         specifier: ^4.1.12
@@ -639,8 +639,8 @@ importers:
         specifier: ^4.4.0
         version: 4.4.1
       openai:
-        specifier: ^6.35.0
-        version: 6.35.0(ws@8.21.0)(zod@4.3.5)
+        specifier: ^6.42.0
+        version: 6.44.0(ws@8.21.0)(zod@4.3.5)
     devDependencies:
       '@types/debug':
         specifier: ^4.1.12
@@ -720,8 +720,8 @@ importers:
         specifier: ^4.4.0
         version: 4.4.1
       openai:
-        specifier: ^6.35.0
-        version: 6.35.0(ws@8.21.0)(zod@4.3.5)
+        specifier: ^6.42.0
+        version: 6.44.0(ws@8.21.0)(zod@4.3.5)
     devDependencies:
       '@ai-sdk/provider':
         specifier: ^1.1.3
@@ -6041,21 +6041,8 @@ packages:
     resolution: {integrity: sha512-smsWv2LzFjP03xmvFoJ331ss6h+jixfA4UUV/Bsiyuu4YJPfN+FIQGOIiv4w9/+MoHkfkJ22UIaQWRVFRfH6Vw==}
     engines: {node: '>=20'}
 
-  openai@6.26.0:
-    resolution: {integrity: sha512-zd23dbWTjiJ6sSAX6s0HrCZi41JwTA1bQVs0wLQPZ2/5o2gxOJA5wh7yOAUgwYybfhDXyhwlpeQf7Mlgx8EOCA==}
-    hasBin: true
-    peerDependencies:
-      ws: ^8.18.0
-      zod: ^3.25 || ^4.0
-    peerDependenciesMeta:
-      ws:
-        optional: true
-      zod:
-        optional: true
-
-  openai@6.35.0:
-    resolution: {integrity: sha512-L/skwIGnt5xQZHb0UfTu9uAUKbis3ehKypOuJKi20QvG7UStV6C8IC3myGYHcdiF4kms/bAvOJ9UqqNWqi8x/Q==}
-    hasBin: true
+  openai@6.44.0:
+    resolution: {integrity: sha512-09/gH+8jH0RgUwsgWHAaxsKGRT5zVZ95IaJUnqAWj6XejIBmnFRwq2WUIF37VtDEsmGrtPmvCs5+yBSeZGWvkA==}
     peerDependencies:
       ws: ^8.18.0
       zod: ^3.25 || ^4.0
@@ -9523,7 +9510,7 @@ snapshots:
   '@openai/agents-core@0.3.9(ws@8.21.0)(zod@3.25.76)':
     dependencies:
       debug: 4.4.3
-      openai: 6.35.0(ws@8.21.0)(zod@3.25.76)
+      openai: 6.44.0(ws@8.21.0)(zod@3.25.76)
     optionalDependencies:
       '@modelcontextprotocol/sdk': 1.26.0(zod@3.25.76)
       zod: 3.25.76
@@ -9551,7 +9538,7 @@ snapshots:
     dependencies:
       '@openai/agents-core': 0.3.9(ws@8.21.0)(zod@3.25.76)
       debug: 4.4.3
-      openai: 6.35.0(ws@8.21.0)(zod@3.25.76)
+      openai: 6.44.0(ws@8.21.0)(zod@3.25.76)
       zod: 3.25.76
     transitivePeerDependencies:
       - '@cfworker/json-schema'
@@ -9577,7 +9564,7 @@ snapshots:
       '@openai/agents-openai': 0.3.9(ws@8.21.0)(zod@3.25.76)
       '@openai/agents-realtime': 0.3.9(zod@3.25.76)
       debug: 4.4.3
-      openai: 6.26.0(ws@8.21.0)(zod@3.25.76)
+      openai: 6.44.0(ws@8.21.0)(zod@3.25.76)
       zod: 3.25.76
     transitivePeerDependencies:
       - '@cfworker/json-schema'
@@ -14293,17 +14280,12 @@ snapshots:
       powershell-utils: 0.1.0
       wsl-utils: 0.3.1
 
-  openai@6.26.0(ws@8.21.0)(zod@3.25.76):
+  openai@6.44.0(ws@8.21.0)(zod@3.25.76):
     optionalDependencies:
       ws: 8.21.0
       zod: 3.25.76
 
-  openai@6.35.0(ws@8.21.0)(zod@3.25.76):
-    optionalDependencies:
-      ws: 8.21.0
-      zod: 3.25.76
-
-  openai@6.35.0(ws@8.21.0)(zod@4.3.5):
+  openai@6.44.0(ws@8.21.0)(zod@4.3.5):
     optionalDependencies:
       ws: 8.21.0
       zod: 4.3.5
