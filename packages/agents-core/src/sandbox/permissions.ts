@@ -88,9 +88,9 @@ export class Permissions {
 
     return new Permissions({
       directory: permissions[0] === 'd',
-      owner: parsePermissionTriplet(permissions.slice(1, 4)),
-      group: parsePermissionTriplet(permissions.slice(4, 7)),
-      other: parsePermissionTriplet(permissions.slice(7, 10)),
+      owner: parsePermissionTriplet(permissions.slice(1, 4), ['s', 'S']),
+      group: parsePermissionTriplet(permissions.slice(4, 7), ['s', 'S']),
+      other: parsePermissionTriplet(permissions.slice(7, 10), ['t', 'T']),
     });
   }
 
@@ -134,7 +134,10 @@ function normalizePermissionBits(value: number, label: string): number {
   return value;
 }
 
-function parsePermissionTriplet(value: string): number {
+function parsePermissionTriplet(
+  value: string,
+  specialExecChars: readonly [withExec: string, withoutExec: string],
+): number {
   if (value.length !== 3) {
     throw new Error(`Invalid permissions triplet: ${value}`);
   }
@@ -150,9 +153,10 @@ function parsePermissionTriplet(value: string): number {
   } else if (value[1] !== '-') {
     throw new Error(`Invalid write flag: ${value}`);
   }
-  if (value[2] === 'x') {
+  const [withExec, withoutExec] = specialExecChars;
+  if (value[2] === 'x' || value[2] === withExec) {
     mode |= FileMode.EXEC;
-  } else if (value[2] !== '-') {
+  } else if (value[2] !== '-' && value[2] !== withoutExec) {
     throw new Error(`Invalid exec flag: ${value}`);
   }
   return mode;
