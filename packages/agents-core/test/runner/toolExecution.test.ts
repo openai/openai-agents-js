@@ -320,6 +320,15 @@ describe('getToolCallOutputItem', () => {
       text: JSON.stringify({ type: 'unknown', value: 'x' }),
     });
   });
+
+  it('returns an empty array as plain text output', () => {
+    const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, []);
+
+    expect(result.output).toEqual({
+      type: 'text',
+      text: '[]',
+    });
+  });
 });
 
 describe('checkForFinalOutputFromTools', () => {
