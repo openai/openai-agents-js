@@ -1660,6 +1660,9 @@ function normalizeStructuredToolOutputs(
   output: unknown,
 ): StructuredToolOutput[] | null {
   if (Array.isArray(output)) {
+    if (output.length === 0) {
+      return null;
+    }
     const structured: StructuredToolOutput[] = [];
     for (const item of output) {
       const normalized = normalizeStructuredToolOutput(item);
