@@ -15,6 +15,7 @@ import {
   type SandboxSessionLike,
 } from '../src/sandbox';
 import { applyManifestToProvidedSession } from '../src/sandbox/runtime/providedSessionManifest';
+import { renderRemoteMountPolicyInstructions } from '../src/sandbox/runtime/prompts';
 
 class TestCapability extends Capability {
   public readonly type: string;
@@ -419,12 +420,67 @@ describe('prepareSandboxAgent', () => {
     expect(instructions).toContain(
       'copy the target to a normal workspace path',
     );
+    expect(instructions).toContain(
+      'Do not edit read-only mounted remote paths in place',
+    );
     const remotePolicyIndex =
       instructions?.indexOf('# Sandbox remote mount policy') ?? -1;
     const filesystemIndex = instructions?.indexOf('# Filesystem') ?? -1;
     expect(remotePolicyIndex).toBeGreaterThanOrEqual(0);
     expect(filesystemIndex).toBeGreaterThanOrEqual(0);
     expect(remotePolicyIndex).toBeLessThan(filesystemIndex);
+  });
+
+  it('does not suggest writing edits back to read-only remote mounts', () => {
+    const instructions = renderRemoteMountPolicyInstructions(
+      new Manifest({
+        entries: {
+          data: {
+            type: 'mount',
+            source: 's3://bucket/data',
+            mountStrategy: { type: 'in_container' },
+          },
+        },
+      }),
+    );
+
+    expect(instructions).toContain('- /workspace/data (read-only)');
+    expect(instructions).toContain(
+      'Do not edit read-only mounted remote paths in place',
+    );
+    expect(instructions).toContain('including with `apply_patch`');
+    expect(instructions).toContain('do not write edited files back');
+    expect(instructions).not.toContain('copy the result back');
+    expect(instructions).not.toContain(
+      'Use `apply_patch` directly for text edits',
+    );
+  });
+
+  it('keeps edit guidance for read-write remote mounts', () => {
+    const instructions = renderRemoteMountPolicyInstructions(
+      new Manifest({
+        entries: {
+          data: {
+            type: 'mount',
+            source: 's3://bucket/data',
+            readOnly: false,
+            mountStrategy: { type: 'in_container' },
+          },
+        },
+      }),
+    );
+
+    expect(instructions).toContain('- /workspace/data (read-write)');
+    expect(instructions).toContain(
+      'Use `apply_patch` directly for text edits under read-write mounted remote paths.',
+    );
+    expect(instructions).toContain(
+      'For shell-based edits under a read-write mounted remote path',
+    );
+    expect(instructions).toContain('copy the result back');
+    expect(instructions).not.toContain(
+      'Do not edit read-only mounted remote paths',
+    );
   });
 
   it('rejects mount additions on live provided sessions', async () => {
