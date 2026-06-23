@@ -1,5 +1,6 @@
 import { renderManifestDescription } from '../manifest';
 import type { Manifest } from '../manifest';
+import { WorkspacePathPolicy } from '../workspacePaths';
 
 const DEFAULT_SANDBOX_INSTRUCTIONS = prompt`
 You are operating inside an isolated sandbox workspace.
@@ -76,17 +77,36 @@ Do not run package managers, test runners, build scripts, or other project code 
 
 function renderRemoteMountEditInstructions(manifest: Manifest): string {
   const mountTargets = manifest.mountTargets();
-  const hasReadWriteMount = mountTargets.some(
+  const readWriteMounts = mountTargets.filter(
     ({ entry }) => entry.readOnly === false,
   );
   const hasReadOnlyMount = mountTargets.some(
     ({ entry }) => entry.readOnly ?? true,
   );
+  const pathPolicy = new WorkspacePathPolicy({
+    root: manifest.root,
+    extraPathGrants: manifest.extraPathGrants,
+  });
+  const applyPatchMountPaths = readWriteMounts
+    .filter(({ mountPath }) => {
+      try {
+        pathPolicy.resolve(mountPath, { forWrite: true });
+        return true;
+      } catch {
+        return false;
+      }
+    })
+    .map(({ mountPath }) => mountPath);
   const instructions: string[] = [];
 
-  if (hasReadWriteMount) {
+  if (applyPatchMountPaths.length > 0) {
     instructions.push(
-      'Use `apply_patch` directly for text edits under read-write mounted remote paths. For shell-based edits under a read-write mounted remote path, copy the target to a normal workspace path, edit and validate it there, then copy the result back to the mounted path.',
+      `Use \`apply_patch\` directly for text edits only under these read-write mounted remote paths: ${applyPatchMountPaths.map((path) => `\`${path}\``).join(', ')}.`,
+    );
+  }
+  if (readWriteMounts.length > 0) {
+    instructions.push(
+      'For shell-based edits under a read-write mounted remote path, copy the target to a normal workspace path, edit and validate it there, then copy the result back to the mounted path.',
     );
   }
   if (hasReadOnlyMount) {

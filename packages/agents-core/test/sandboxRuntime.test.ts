@@ -472,7 +472,7 @@ describe('prepareSandboxAgent', () => {
 
     expect(instructions).toContain('- /workspace/data (read-write)');
     expect(instructions).toContain(
-      'Use `apply_patch` directly for text edits under read-write mounted remote paths.',
+      'Use `apply_patch` directly for text edits only under these read-write mounted remote paths: `/workspace/data`.',
     );
     expect(instructions).toContain(
       'For shell-based edits under a read-write mounted remote path',
@@ -480,6 +480,80 @@ describe('prepareSandboxAgent', () => {
     expect(instructions).toContain('copy the result back');
     expect(instructions).not.toContain(
       'Do not edit read-only mounted remote paths',
+    );
+  });
+
+  it('does not suggest apply_patch for ungranted external read-write mounts', () => {
+    const instructions = renderRemoteMountPolicyInstructions(
+      new Manifest({
+        entries: {
+          data: {
+            type: 'mount',
+            source: 's3://bucket/data',
+            readOnly: false,
+            mountStrategy: { type: 'in_container' },
+            mountPath: '/mnt/external',
+          },
+        },
+      }),
+    );
+
+    expect(instructions).toContain('- /mnt/external (read-write)');
+    expect(instructions).not.toContain(
+      'Use `apply_patch` directly for text edits',
+    );
+    expect(instructions).toContain(
+      'For shell-based edits under a read-write mounted remote path',
+    );
+    expect(instructions).toContain('copy the result back');
+  });
+
+  it('limits apply_patch guidance to addressable read-write mounts', () => {
+    const instructions = renderRemoteMountPolicyInstructions(
+      new Manifest({
+        entries: {
+          internal: {
+            type: 'mount',
+            source: 's3://bucket/internal',
+            readOnly: false,
+            mountStrategy: { type: 'in_container' },
+          },
+          external: {
+            type: 'mount',
+            source: 's3://bucket/external',
+            readOnly: false,
+            mountStrategy: { type: 'in_container' },
+            mountPath: '/mnt/external',
+          },
+        },
+      }),
+    );
+    const applyPatchInstruction = instructions
+      ?.split('\n')
+      .find((line) => line.includes('Use `apply_patch` directly'));
+
+    expect(applyPatchInstruction).toContain('`/workspace/internal`');
+    expect(applyPatchInstruction).not.toContain('`/mnt/external`');
+  });
+
+  it('allows apply_patch guidance for granted external read-write mounts', () => {
+    const instructions = renderRemoteMountPolicyInstructions(
+      new Manifest({
+        extraPathGrants: [{ path: '/mnt/external', readOnly: false }],
+        entries: {
+          data: {
+            type: 'mount',
+            source: 's3://bucket/data',
+            readOnly: false,
+            mountStrategy: { type: 'in_container' },
+            mountPath: '/mnt/external/data',
+          },
+        },
+      }),
+    );
+
+    expect(instructions).toContain(
+      'Use `apply_patch` directly for text edits only under these read-write mounted remote paths: `/mnt/external/data`.',
     );
   });
 
