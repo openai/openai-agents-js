@@ -1128,6 +1128,15 @@ class UnixLocalSandboxEditor implements Editor {
     this.runAs = runAs;
   }
 
+  canAccessPathForEdit(path: string): boolean {
+    try {
+      this.session.resolveSandboxPath(path, { forWrite: true });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async createFile(
     operation: Extract<ApplyPatchOperation, { type: 'create_file' }>,
   ): Promise<ApplyPatchResult> {

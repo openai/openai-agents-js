@@ -16,6 +16,7 @@ import {
 } from '../src/sandbox';
 import { applyManifestToProvidedSession } from '../src/sandbox/runtime/providedSessionManifest';
 import { renderRemoteMountPolicyInstructions } from '../src/sandbox/runtime/prompts';
+import { DockerSandboxSession } from '../src/sandbox/sandboxes/docker';
 
 class TestCapability extends Capability {
   public readonly type: string;
@@ -112,6 +113,19 @@ function sessionWithManifest(manifest: Manifest): SandboxSessionLike {
       },
     }),
   };
+}
+
+function dockerSessionWithManifest(manifest: Manifest): DockerSandboxSession {
+  return new DockerSandboxSession({
+    state: {
+      manifest,
+      workspaceRootPath: '/tmp/docker-sandbox-workspace',
+      workspaceRootOwned: false,
+      environment: {},
+      image: 'test-image',
+      containerId: 'test-container',
+    },
+  });
 }
 
 describe('prepareSandboxAgent', () => {
@@ -468,6 +482,7 @@ describe('prepareSandboxAgent', () => {
           },
         },
       }),
+      () => true,
     );
 
     expect(instructions).toContain('- /workspace/data (read-write)');
@@ -496,6 +511,7 @@ describe('prepareSandboxAgent', () => {
           },
         },
       }),
+      () => true,
     );
 
     expect(instructions).toContain('- /mnt/external (read-write)');
@@ -527,6 +543,7 @@ describe('prepareSandboxAgent', () => {
           },
         },
       }),
+      () => true,
     );
     const applyPatchInstruction = instructions
       ?.split('\n')
@@ -550,10 +567,77 @@ describe('prepareSandboxAgent', () => {
           },
         },
       }),
+      () => true,
     );
 
     expect(instructions).toContain(
       'Use `apply_patch` directly for text edits only under these read-write mounted remote paths: `/mnt/external/data`.',
+    );
+  });
+
+  it('does not suggest apply_patch for mounts unreachable by the active Docker editor', async () => {
+    const manifest = new Manifest({
+      entries: {
+        container: {
+          type: 'mount',
+          source: 's3://bucket/container',
+          readOnly: false,
+          mountStrategy: { type: 'in_container' },
+        },
+        volume: {
+          type: 'mount',
+          source: 's3://bucket/volume',
+          readOnly: false,
+          mountStrategy: { type: 'docker_volume' },
+        },
+      },
+    });
+    const prepared = prepareSandboxAgent({
+      agent: new SandboxAgent({
+        name: 'sandbox',
+        baseInstructions: 'base instructions',
+      }),
+      session: dockerSessionWithManifest(manifest),
+      capabilities: [filesystem()],
+    });
+
+    const instructions = await prepared.getSystemPrompt(new RunContext());
+
+    expect(instructions).toContain('- /workspace/container (read-write)');
+    expect(instructions).toContain('- /workspace/volume (read-write)');
+    expect(instructions).not.toContain(
+      'Use `apply_patch` directly for text edits',
+    );
+    expect(instructions).toContain(
+      'For shell-based edits under a read-write mounted remote path',
+    );
+  });
+
+  it('keeps apply_patch guidance for mounts reachable by the active Docker editor', async () => {
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 'mount',
+          source: 's3://bucket/data',
+          readOnly: false,
+          mountStrategy: { type: 'in_container' },
+        },
+      },
+    });
+    const prepared = prepareSandboxAgent({
+      agent: new SandboxAgent({
+        name: 'sandbox',
+        baseInstructions: 'base instructions',
+        runAs: 'sandbox-user',
+      }),
+      session: dockerSessionWithManifest(manifest),
+      capabilities: [filesystem()],
+    });
+
+    const instructions = await prepared.getSystemPrompt(new RunContext());
+
+    expect(instructions).toContain(
+      'Use `apply_patch` directly for text edits only under these read-write mounted remote paths: `/workspace/data`.',
     );
   });
 
