@@ -594,6 +594,7 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
 
     expect(funcs[0]?.name).toBe('calc');
+    expect(funcs[0]?.responseId).toBe('r3');
     expect(updates.find((u) => (u as any).itemId === 'mcp1')).toBeTruthy();
   });
 

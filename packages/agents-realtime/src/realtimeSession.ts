@@ -43,7 +43,10 @@ import { OpenAIRealtimeWebSocket } from './openaiRealtimeWebsocket';
 import { RealtimeAgent } from './realtimeAgent';
 import { RealtimeSessionEventTypes } from './realtimeSessionEvents';
 import type { ApiKey, RealtimeTransportLayer } from './transportLayer';
-import type { TransportToolCallEvent } from './transportLayerEvents';
+import type {
+  TransportLayerResponseStarted,
+  TransportToolCallEvent,
+} from './transportLayerEvents';
 import type { InputAudioTranscriptionCompletedEvent } from './transportLayerEvents';
 import {
   approvalItemToRealtimeApprovalItem,
@@ -236,6 +239,17 @@ type PendingRealtimeFunctionCall<TBaseContext> = {
   approvalItem: RunToolApprovalItem;
 };
 
+function getStartedResponseId(
+  event: TransportLayerResponseStarted,
+): string | undefined {
+  const response = event.providerData?.response;
+  if (typeof response !== 'object' || response === null) {
+    return undefined;
+  }
+  const responseId = (response as { id?: unknown }).id;
+  return typeof responseId === 'string' ? responseId : undefined;
+}
+
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -280,6 +294,12 @@ export class RealtimeSession<
   #currentAgent: SessionRealtimeAgent<TBaseContext>;
   #currentTools?: RealtimeToolDefinition[];
   #currentDispatchSnapshot?: RealtimeDispatchSnapshot<TBaseContext>;
+  #activeResponseDispatchSnapshot?: RealtimeDispatchSnapshot<TBaseContext>;
+  #activeResponseId?: string;
+  #responseDispatchSnapshots = new Map<
+    string,
+    RealtimeDispatchSnapshot<TBaseContext>
+  >();
   #pendingFunctionCalls = new Map<
     string,
     PendingRealtimeFunctionCall<TBaseContext>
@@ -950,8 +970,17 @@ export class RealtimeSession<
       }
       this.emit('audio', event);
     });
-    this.#transport.on('turn_started', () => {
+    this.#transport.on('turn_started', (event) => {
       this.#audioStarted = false;
+      const responseId = getStartedResponseId(event);
+      this.#activeResponseDispatchSnapshot = this.#currentDispatchSnapshot;
+      this.#activeResponseId = responseId;
+      if (responseId && this.#currentDispatchSnapshot) {
+        this.#responseDispatchSnapshots.set(
+          responseId,
+          this.#currentDispatchSnapshot,
+        );
+      }
       this.emit('agent_start', this.#context, this.#currentAgent);
       this.#currentAgent.emit('agent_start', this.#context, this.#currentAgent);
     });
@@ -981,6 +1010,14 @@ export class RealtimeSession<
       this.#currentAgent.emit('agent_end', this.#context, textOutput);
 
       this.#runOutputGuardrails(textOutput, event.response.id, itemId);
+      this.#responseDispatchSnapshots.delete(event.response.id);
+      if (
+        typeof this.#activeResponseId === 'undefined' ||
+        this.#activeResponseId === event.response.id
+      ) {
+        this.#activeResponseId = undefined;
+        this.#activeResponseDispatchSnapshot = undefined;
+      }
     });
 
     this.#transport.on('audio_done', () => {
@@ -1071,7 +1108,12 @@ export class RealtimeSession<
     });
 
     this.#transport.on('function_call', async (event) => {
-      const dispatchSnapshot = this.#currentDispatchSnapshot;
+      const dispatchSnapshot =
+        (event.responseId
+          ? this.#responseDispatchSnapshots.get(event.responseId)
+          : undefined) ??
+        this.#activeResponseDispatchSnapshot ??
+        this.#currentDispatchSnapshot;
       try {
         if (!dispatchSnapshot) {
           throw new ModelBehaviorError(
@@ -1186,6 +1228,9 @@ export class RealtimeSession<
    * @param options - The options for the connection.
    */
   async connect(options: RealtimeSessionConnectOptions) {
+    this.#responseDispatchSnapshots.clear();
+    this.#activeResponseDispatchSnapshot = undefined;
+    this.#activeResponseId = undefined;
     // makes sure the current agent is correctly set and loads the tools
     await this.#setCurrentAgent(this.initialAgent);
 
@@ -1261,6 +1306,9 @@ export class RealtimeSession<
   close() {
     this.#interruptedByGuardrail = {};
     this.#pendingFunctionCalls.clear();
+    this.#responseDispatchSnapshots.clear();
+    this.#activeResponseDispatchSnapshot = undefined;
+    this.#activeResponseId = undefined;
     this.#transport.close();
   }
 

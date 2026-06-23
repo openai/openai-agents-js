@@ -168,15 +168,25 @@ describe('RealtimeSession', () => {
     ).toHaveLength(1);
   });
 
-  it('dispatches sibling calls against the agent snapshot from event arrival', async () => {
-    const execute = vi.fn(async () => 'original tool output');
+  it('dispatches delayed sibling calls against the source response snapshot', async () => {
+    const sourceExecute = vi.fn(async () => 'source tool output');
+    const targetExecute = vi.fn(async () => 'target tool output');
     const originalTool = tool({
       name: 'finish_original_work',
       description: 'Finish work owned by the original agent.',
       parameters: z.object({}),
-      execute,
+      execute: sourceExecute,
     });
-    const targetAgent = new RealtimeAgent({ name: 'Billing' });
+    const targetTool = tool({
+      name: 'finish_original_work',
+      description: 'A same-named tool owned by the target agent.',
+      parameters: z.object({}),
+      execute: targetExecute,
+    });
+    const targetAgent = new RealtimeAgent({
+      name: 'Billing',
+      tools: [targetTool],
+    });
     const sourceAgent = new RealtimeAgent({
       name: 'Triage',
       tools: [originalTool],
@@ -192,17 +202,32 @@ describe('RealtimeSession', () => {
     });
     await localSession.connect({ apiKey: 'test' });
 
+    localTransport.emit('turn_started', {
+      type: 'response_started',
+      providerData: { response: { id: 'source-response' } },
+    });
     localTransport.emit('function_call', {
       type: 'function_call',
       name: 'transfer_to_Billing',
       callId: 'handoff-call',
       arguments: '{}',
+      responseId: 'source-response',
     } as any);
+
+    await vi.waitFor(() => {
+      expect(localSession.currentAgent).toBe(targetAgent);
+    });
+
+    localTransport.emit('turn_started', {
+      type: 'response_started',
+      providerData: { response: { id: 'target-response' } },
+    });
     localTransport.emit('function_call', {
       type: 'function_call',
       name: 'finish_original_work',
       callId: 'tool-call',
       arguments: '{}',
+      responseId: 'source-response',
     } as any);
 
     await vi.waitFor(() => {
@@ -210,7 +235,8 @@ describe('RealtimeSession', () => {
     });
 
     expect(localSession.currentAgent).toBe(targetAgent);
-    expect(execute).toHaveBeenCalledTimes(1);
+    expect(sourceExecute).toHaveBeenCalledTimes(1);
+    expect(targetExecute).not.toHaveBeenCalled();
     expect(sourceToolStart).toHaveBeenCalledTimes(1);
     expect(targetToolStart).not.toHaveBeenCalled();
     expect(
