@@ -34,6 +34,7 @@ function createToolCall() {
     callId: 'c1',
     name: 'tool',
     arguments: '{}',
+    responseId: 'response-1',
   };
 }
 

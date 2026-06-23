@@ -301,8 +301,6 @@ export class RealtimeSession<
   #currentAgent: SessionRealtimeAgent<TBaseContext>;
   #currentTools?: RealtimeToolDefinition[];
   #currentDispatchSnapshot?: RealtimeDispatchSnapshot<TBaseContext>;
-  #activeResponseDispatchSnapshot?: RealtimeDispatchSnapshot<TBaseContext>;
-  #activeResponseId?: string;
   #responseDispatchSnapshots = new Map<
     string,
     RealtimeDispatchSnapshot<TBaseContext>
@@ -475,6 +473,21 @@ export class RealtimeSession<
   async #setCurrentAgent(agent: SessionRealtimeAgent<TBaseContext>) {
     const prepared = await this.#prepareAgent(agent);
     this.#applyPreparedAgent(prepared);
+  }
+
+  #captureResponseDispatchSnapshot(
+    responseId: string,
+  ): RealtimeDispatchSnapshot<TBaseContext> | undefined {
+    const existingSnapshot = this.#responseDispatchSnapshots.get(responseId);
+    if (existingSnapshot) {
+      return existingSnapshot;
+    }
+
+    const snapshot = this.#currentDispatchSnapshot;
+    if (snapshot) {
+      this.#responseDispatchSnapshots.set(responseId, snapshot);
+    }
+    return snapshot;
   }
 
   async #getSessionConfig(
@@ -981,13 +994,8 @@ export class RealtimeSession<
     this.#transport.on('turn_started', (event) => {
       this.#audioStarted = false;
       const responseId = getStartedResponseId(event);
-      this.#activeResponseDispatchSnapshot = this.#currentDispatchSnapshot;
-      this.#activeResponseId = responseId;
-      if (responseId && this.#currentDispatchSnapshot) {
-        this.#responseDispatchSnapshots.set(
-          responseId,
-          this.#currentDispatchSnapshot,
-        );
+      if (responseId) {
+        this.#captureResponseDispatchSnapshot(responseId);
       }
       this.emit('agent_start', this.#context, this.#currentAgent);
       this.#currentAgent.emit('agent_start', this.#context, this.#currentAgent);
@@ -1019,13 +1027,6 @@ export class RealtimeSession<
 
       this.#runOutputGuardrails(textOutput, event.response.id, itemId);
       this.#responseDispatchSnapshots.delete(event.response.id);
-      if (
-        typeof this.#activeResponseId === 'undefined' ||
-        this.#activeResponseId === event.response.id
-      ) {
-        this.#activeResponseId = undefined;
-        this.#activeResponseDispatchSnapshot = undefined;
-      }
     });
 
     this.#transport.on('audio_done', () => {
@@ -1116,13 +1117,15 @@ export class RealtimeSession<
     });
 
     this.#transport.on('function_call', async (event) => {
-      const dispatchSnapshot =
-        (event.responseId
-          ? this.#responseDispatchSnapshots.get(event.responseId)
-          : undefined) ??
-        this.#activeResponseDispatchSnapshot ??
-        this.#currentDispatchSnapshot;
       try {
+        if (!event.responseId) {
+          throw new ModelBehaviorError(
+            'Realtime function call is missing a responseId and cannot be dispatched safely.',
+          );
+        }
+        const dispatchSnapshot = this.#captureResponseDispatchSnapshot(
+          event.responseId,
+        );
         if (!dispatchSnapshot) {
           throw new ModelBehaviorError(
             'Realtime tool dispatch is unavailable before the session tool configuration is resolved.',
@@ -1237,8 +1240,6 @@ export class RealtimeSession<
    */
   async connect(options: RealtimeSessionConnectOptions) {
     this.#responseDispatchSnapshots.clear();
-    this.#activeResponseDispatchSnapshot = undefined;
-    this.#activeResponseId = undefined;
     // makes sure the current agent is correctly set and loads the tools
     await this.#setCurrentAgent(this.initialAgent);
 
@@ -1315,8 +1316,6 @@ export class RealtimeSession<
     this.#interruptedByGuardrail = {};
     this.#pendingFunctionCalls.clear();
     this.#responseDispatchSnapshots.clear();
-    this.#activeResponseDispatchSnapshot = undefined;
-    this.#activeResponseId = undefined;
     this.#transport.close();
   }
 
@@ -1345,7 +1344,15 @@ export class RealtimeSession<
       return undefined;
     }
 
-    const toolCall = normalizeRealtimeFunctionCallId(approvalItem.rawItem);
+    const rawToolCall = approvalItem.rawItem as typeof approvalItem.rawItem & {
+      responseId?: unknown;
+    };
+    if (typeof rawToolCall.responseId !== 'string') {
+      return undefined;
+    }
+    const toolCall = normalizeRealtimeFunctionCallId(
+      rawToolCall as TransportToolCallEvent,
+    );
     const pending = this.#pendingFunctionCalls.get(toolCall.callId);
     if (pending) {
       return pending;
