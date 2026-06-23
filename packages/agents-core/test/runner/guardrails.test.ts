@@ -151,6 +151,66 @@ describe('runInputGuardrails', () => {
     expect(state._inputGuardrailResults).toHaveLength(0);
     expect(state._currentTurn).toBe(1);
   });
+
+  it('awaits sibling input guardrails before surfacing execution failures', async () => {
+    const agent = makeAgent({ name: 'InputErrorAwait' });
+    const state = makeState(agent);
+    let releaseSlowGuardrail!: () => void;
+    let markSlowStarted!: () => void;
+    let markErrorThrown!: () => void;
+    let slowGuardrailFinished = false;
+    const slowGuardrailCanFinish = new Promise<void>((resolve) => {
+      releaseSlowGuardrail = resolve;
+    });
+    const slowGuardrailStarted = new Promise<void>((resolve) => {
+      markSlowStarted = resolve;
+    });
+    const errorThrown = new Promise<void>((resolve) => {
+      markErrorThrown = resolve;
+    });
+    const slowGuardrail = defineInputGuardrail({
+      name: 'slow',
+      execute: async () => {
+        markSlowStarted();
+        await slowGuardrailCanFinish;
+        slowGuardrailFinished = true;
+        return {
+          tripwireTriggered: false,
+          outputInfo: { slow: true },
+        };
+      },
+    });
+    const errorGuardrail = defineInputGuardrail({
+      name: 'error',
+      execute: async () => {
+        await slowGuardrailStarted;
+        markErrorThrown();
+        throw new Error('boom');
+      },
+    });
+
+    const runPromise = withTrace('guardrails-input-error-await-sibling', () =>
+      runInputGuardrails(state, [slowGuardrail, errorGuardrail]),
+    );
+    let settled = false;
+    void runPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    await errorThrown;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const settledBeforeSiblingFinished = settled;
+    releaseSlowGuardrail();
+
+    await expect(runPromise).rejects.toBeInstanceOf(GuardrailExecutionError);
+    expect(settledBeforeSiblingFinished).toBe(false);
+    expect(slowGuardrailFinished).toBe(true);
+  });
 });
 
 describe('runOutputGuardrails', () => {
@@ -284,5 +344,69 @@ describe('runOutputGuardrails', () => {
       ),
     ).rejects.toBeInstanceOf(GuardrailExecutionError);
     expect(state._outputGuardrailResults).toHaveLength(0);
+  });
+
+  it('awaits sibling output guardrails before surfacing execution failures', async () => {
+    const agent = makeAgent({ name: 'OutputErrorAwait' });
+    const state = makeState(agent);
+    let releaseSlowGuardrail!: () => void;
+    let markSlowStarted!: () => void;
+    let markErrorThrown!: () => void;
+    let slowGuardrailFinished = false;
+    const slowGuardrailCanFinish = new Promise<void>((resolve) => {
+      releaseSlowGuardrail = resolve;
+    });
+    const slowGuardrailStarted = new Promise<void>((resolve) => {
+      markSlowStarted = resolve;
+    });
+    const errorThrown = new Promise<void>((resolve) => {
+      markErrorThrown = resolve;
+    });
+    const slowGuardrail = defineOutputGuardrail({
+      name: 'slow',
+      execute: async () => {
+        markSlowStarted();
+        await slowGuardrailCanFinish;
+        slowGuardrailFinished = true;
+        return {
+          tripwireTriggered: false,
+          outputInfo: { slow: true },
+        };
+      },
+    });
+    const errorGuardrail = defineOutputGuardrail({
+      name: 'error',
+      execute: async () => {
+        await slowGuardrailStarted;
+        markErrorThrown();
+        throw new Error('boom');
+      },
+    });
+
+    const runPromise = withTrace('guardrails-output-error-await-sibling', () =>
+      runOutputGuardrails(
+        state,
+        [slowGuardrail as any, errorGuardrail as any],
+        'ok',
+      ),
+    );
+    let settled = false;
+    void runPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    await errorThrown;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const settledBeforeSiblingFinished = settled;
+    releaseSlowGuardrail();
+
+    await expect(runPromise).rejects.toBeInstanceOf(GuardrailExecutionError);
+    expect(settledBeforeSiblingFinished).toBe(false);
+    expect(slowGuardrailFinished).toBe(true);
   });
 });

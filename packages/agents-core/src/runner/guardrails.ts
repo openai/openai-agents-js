@@ -122,22 +122,20 @@ async function runGuardrailsWithTripwire<
     onError,
   } = options;
 
-  try {
-    // Keep tripwire handling behind this await-all barrier so sibling guardrails
-    // can finish cleanup before the tripwire error is surfaced.
-    const results = await Promise.all(
-      guardrails.map(async (guardrail) => {
-        return withGuardrailSpan(
-          async (span) => {
-            const result = await guardrail.run(guardrailArgs);
-            span.spanData.triggered = result.output.tripwireTriggered;
-            return result;
-          },
-          { data: { name: guardrail.name } },
-          state._currentAgentSpan,
-        );
-      }),
+  const guardrailPromises = guardrails.map(async (guardrail) => {
+    return withGuardrailSpan(
+      async (span) => {
+        const result = await guardrail.run(guardrailArgs);
+        span.spanData.triggered = result.output.tripwireTriggered;
+        return result;
+      },
+      { data: { name: guardrail.name } },
+      state._currentAgentSpan,
     );
+  });
+
+  try {
+    const results = await Promise.all(guardrailPromises);
     resultsTarget.push(...results);
     for (const result of results) {
       if (result.output.tripwireTriggered) {
@@ -152,6 +150,9 @@ async function runGuardrailsWithTripwire<
     }
     return results;
   } catch (error) {
+    // Promise.all rejects immediately, so drain the full batch before the
+    // failure is surfaced to prevent sibling guardrails from outliving the run.
+    await Promise.allSettled(guardrailPromises);
     if (isTripwireError(error)) {
       throw error;
     }
