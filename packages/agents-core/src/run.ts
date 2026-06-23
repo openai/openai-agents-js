@@ -1003,7 +1003,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               sessionInputUpdate,
             );
 
-            guardrailTracker.throwIfError();
+            await guardrailTracker.throwIfError();
 
             state._lastTurnResponse = await getResponseWithRetry(
               preparedCall.model,
@@ -1385,7 +1385,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             sessionInputUpdate,
           );
 
-          guardrailTracker.throwIfError();
+          await guardrailTracker.throwIfError();
 
           let finalResponse: ModelResponse | undefined = undefined;
           const abortReconciliationState =
@@ -1499,7 +1499,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 signal: options.signal,
               },
             )) {
-              guardrailTracker.throwIfError();
+              await guardrailTracker.throwIfError();
               markInputOnce();
               recordStreamEventForAbortReconciliation(
                 abortReconciliationState,

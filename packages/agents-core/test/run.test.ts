@@ -1816,14 +1816,24 @@ describe('Runner.run', () => {
       });
 
       const runPromise = run(agent, 'hello');
-      void runPromise.catch(() => {});
+      let runSettled = false;
+      void runPromise.then(
+        () => {
+          runSettled = true;
+        },
+        () => {
+          runSettled = true;
+        },
+      );
       await errorThrown;
       await new Promise((resolve) => setTimeout(resolve, 0));
       const callsBeforeSiblingFinished = model.calls;
+      const settledBeforeSiblingFinished = runSettled;
       releaseSlowGuardrail();
 
       await expect(runPromise).rejects.toBeInstanceOf(GuardrailExecutionError);
       expect(callsBeforeSiblingFinished).toBe(0);
+      expect(settledBeforeSiblingFinished).toBe(false);
       expect(model.calls).toBe(0);
     });
 

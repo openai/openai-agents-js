@@ -2819,16 +2819,26 @@ describe('Runner.run (streaming)', () => {
     const runner = new Runner();
 
     const result = await runner.run(agent, 'hello', { stream: true });
-    void result.completed.catch(() => {});
+    let completionSettled = false;
+    void result.completed.then(
+      () => {
+        completionSettled = true;
+      },
+      () => {
+        completionSettled = true;
+      },
+    );
     await errorThrown;
     await new Promise((resolve) => setTimeout(resolve, 0));
     const callsBeforeSiblingFinished = model.calls;
+    const settledBeforeSiblingFinished = completionSettled;
     releaseSlowGuardrail();
 
     await expect(result.completed).rejects.toBeInstanceOf(
       GuardrailExecutionError,
     );
     expect(callsBeforeSiblingFinished).toBe(0);
+    expect(settledBeforeSiblingFinished).toBe(false);
     expect(model.calls).toBe(0);
   });
 

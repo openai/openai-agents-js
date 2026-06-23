@@ -25,7 +25,7 @@ export type GuardrailTracker = {
   markPending: () => void;
   setPromise: (promise?: Promise<InputGuardrailResult[]>) => void;
   setError: (err: unknown) => void;
-  throwIfError: () => void;
+  throwIfError: () => Promise<void>;
   awaitCompletion: (options?: { suppressErrors?: boolean }) => Promise<void>;
 };
 
@@ -38,7 +38,6 @@ export const createGuardrailTracker = (): GuardrailTracker => {
   const setError = (err: unknown) => {
     failed = true;
     error = err;
-    pending = false;
   };
 
   const setPromise = (incoming?: Promise<InputGuardrailResult[]>) => {
@@ -58,8 +57,11 @@ export const createGuardrailTracker = (): GuardrailTracker => {
       });
   };
 
-  const throwIfError = () => {
+  const throwIfError = async () => {
     if (error) {
+      if (promise) {
+        await promise;
+      }
       throw error;
     }
   };
