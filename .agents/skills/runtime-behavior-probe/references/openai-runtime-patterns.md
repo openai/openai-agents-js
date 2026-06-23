@@ -27,6 +27,18 @@ Do not read these variables automatically. Before a live probe uses any of them,
 
 If the task targets another standard integration, use that integration's expected default variable names under the same rule.
 
+## Environment False Signals
+
+Before attributing a failure to the patch under review, exclude source-selection and environment problems with a controlled base/head comparison.
+
+- Confirm the commit, worktree, working directory, Node executable/version, and imported module path. A probe of stale `dist`, another checkout, `/tmp/node_modules`, or an installed package does not prove current `src` behavior.
+- Rebuild when emitted declarations, package exports, generated metadata, or `dist` is the subject. Otherwise prefer current source imports so stale build output cannot create a false result.
+- Run base and head controls with the same Node/pnpm versions, dependency graph, runtime condition, environment-variable names, and command shape. Record intentional differences.
+- Treat proxy initialization, sandbox denials, unavailable Docker/provider infrastructure, expired remote sessions, authentication, quota, rate limits, service outages, and stale caches as environment conditions until a controlled rerun ties them to the patch.
+- Never print proxy URLs, tokens, credentials, or secret values. Change only the minimum in-scope environment or disposable state needed for the control and record variable names rather than values.
+
+In the final report, distinguish code failures, unsupported configurations, environment blockers, and inconclusive probes. Do not collapse them into one failed-test count.
+
 ## Responses API Probe Patterns
 
 For Responses API work, start from the uncertainty instead of from the full feature surface.
