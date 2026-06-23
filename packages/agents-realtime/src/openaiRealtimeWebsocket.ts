@@ -17,6 +17,7 @@ import { ResponseCreateSequencer } from './responseCreateSequencer';
 import { base64ToArrayBuffer, HEADERS, WEBSOCKET_META } from './utils';
 import { UserError } from '@openai/agents-core';
 import { TransportLayerAudio } from './transportLayerEvents';
+import { parseRealtimeEvent } from './openaiRealtimeEvents';
 
 /**
  * The connection state of the WebSocket connection.
@@ -257,7 +258,8 @@ export class OpenAIRealtimeWebSocket
     });
 
     ws.addEventListener('message', (message) => {
-      const { data: parsed, isGeneric } = this._onMessage(message);
+      this._onMessage(message);
+      const { data: parsed, isGeneric } = parseRealtimeEvent(message);
       if (!parsed || isGeneric) {
         return;
       }

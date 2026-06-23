@@ -216,19 +216,15 @@ export abstract class OpenAIRealtimeBase
     return apiKey;
   }
 
-  protected _onMessage(event: MessageEvent | WebSocketMessageEvent) {
-    return this._onParsedMessage(parseRealtimeEvent(event));
-  }
-
-  protected _onParsedMessage(result: ReturnType<typeof parseRealtimeEvent>) {
-    const { data: parsed, isGeneric } = result;
+  protected _onMessage(event: MessageEvent | WebSocketMessageEvent): void {
+    const { data: parsed, isGeneric } = parseRealtimeEvent(event);
     if (parsed === null) {
-      return result;
+      return;
     }
 
     this.emit('*', parsed);
     if (isGeneric) {
-      return result;
+      return;
     }
 
     if (parsed.type === 'error') {
@@ -244,7 +240,7 @@ export abstract class OpenAIRealtimeBase
           ...parsed,
         },
       });
-      return result;
+      return;
     }
 
     if (parsed.type === 'session.updated') {
@@ -255,7 +251,7 @@ export abstract class OpenAIRealtimeBase
       const response = responseDoneEventSchema.safeParse(parsed);
       if (!response.success) {
         logger.error('Error parsing response done event', response.error);
-        return result;
+        return;
       }
       const inputTokens = response.data.response.usage?.input_tokens ?? 0;
       const outputTokens = response.data.response.usage?.output_tokens ?? 0;
@@ -286,20 +282,20 @@ export abstract class OpenAIRealtimeBase
           },
         },
       });
-      return result;
+      return;
     }
 
     if (parsed.type === 'response.output_audio.done') {
       this.emit('audio_done');
       this._afterAudioDoneEvent();
-      return result;
+      return;
     }
 
     if (parsed.type === 'conversation.item.deleted') {
       this.emit('item_deleted', {
         itemId: parsed.item_id,
       });
-      return result;
+      return;
     }
 
     if (
@@ -312,7 +308,7 @@ export abstract class OpenAIRealtimeBase
         type: 'conversation.item.retrieve',
         item_id: parsed.item_id,
       });
-      return result;
+      return;
     }
 
     if (
@@ -330,7 +326,7 @@ export abstract class OpenAIRealtimeBase
         });
       }
       // no support for partial transcripts yet.
-      return result;
+      return;
     }
 
     if (
@@ -354,7 +350,7 @@ export abstract class OpenAIRealtimeBase
           logger.error('Error emitting mcp_tools_listed', err, parsed.item);
         }
         // We do not add this item to history; it's a transport-level side-channel.
-        return result;
+        return;
       }
       if (parsed.item.type === 'message') {
         const previousItemId =
@@ -374,7 +370,7 @@ export abstract class OpenAIRealtimeBase
           status: parsed.item.status,
         });
         this.emit('item_update', item);
-        return result;
+        return;
       }
 
       if (
@@ -392,7 +388,7 @@ export abstract class OpenAIRealtimeBase
         });
         this.emit('item_update', mcpApprovalRequest);
         this.emit('mcp_approval_request', mcpApprovalRequest);
-        return result;
+        return;
       }
 
       if (
@@ -416,7 +412,7 @@ export abstract class OpenAIRealtimeBase
         if (parsed.type === 'conversation.item.done') {
           this.emit('mcp_tool_call_completed', mcpCall);
         }
-        return result;
+        return;
       }
     }
 
@@ -426,7 +422,7 @@ export abstract class OpenAIRealtimeBase
         type: 'conversation.item.retrieve',
         item_id: item.item_id,
       });
-      return result;
+      return;
     }
     if (parsed.type === 'mcp_list_tools.in_progress') {
       const item = parsed;
@@ -436,7 +432,7 @@ export abstract class OpenAIRealtimeBase
           item_id: item.item_id,
         });
       }
-      return result;
+      return;
     }
 
     if (
@@ -462,7 +458,7 @@ export abstract class OpenAIRealtimeBase
           name: item.name ?? '',
           responseId: parsed.response_id,
         });
-        return result;
+        return;
       }
 
       if (item.type === 'mcp_tool_call' || item.type === 'mcp_call') {
@@ -478,7 +474,7 @@ export abstract class OpenAIRealtimeBase
           output: item.output,
         });
         this.emit('item_update', mcpCall);
-        return result;
+        return;
       }
 
       if (item.type === 'message') {
@@ -496,11 +492,9 @@ export abstract class OpenAIRealtimeBase
               : (item.status ?? 'in_progress'),
         });
         this.emit('item_update', realtimeItem);
-        return result;
+        return;
       }
     }
-
-    return result;
   }
 
   protected _onError(error: any) {
