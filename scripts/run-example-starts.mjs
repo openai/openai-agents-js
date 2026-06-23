@@ -97,6 +97,8 @@ export const DEFAULT_AUTO_SKIP = [
   // Approval-prompt examples that still need manual input.
   'mcp:start:hosted-mcp-on-approval',
   'mcp:start:hosted-mcp-human-in-the-loop',
+  // Temporarily disabled due to the credential issues.
+  'sandbox:start:vercel',
   // Depends on a local Codex binary that macOS may quarantine or remove.
   'tools:start:codex',
   'tools:start:codex-same-thread',
