@@ -12,6 +12,7 @@ import {
 import { z } from 'zod';
 import {
   Agent,
+  GuardrailExecutionError,
   InputGuardrailTripwireTriggered,
   MaxTurnsExceededError,
   ModelRefusalError,
@@ -1757,6 +1758,73 @@ describe('Runner.run', () => {
       expect(result.finalOutput).toBe('done');
       expect(result.inputGuardrailResults).toHaveLength(1);
       expect(blockingGuardrail.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not call the model while sibling parallel guardrails drain after a failure', async () => {
+      let releaseSlowGuardrail!: () => void;
+      let markSlowStarted!: () => void;
+      let markErrorThrown!: () => void;
+      const slowGuardrailCanFinish = new Promise<void>((resolve) => {
+        releaseSlowGuardrail = resolve;
+      });
+      const slowGuardrailStarted = new Promise<void>((resolve) => {
+        markSlowStarted = resolve;
+      });
+      const errorThrown = new Promise<void>((resolve) => {
+        markErrorThrown = resolve;
+      });
+      const slowGuardrail = {
+        name: 'slow-parallel-guardrail',
+        execute: async () => {
+          markSlowStarted();
+          await slowGuardrailCanFinish;
+          return { tripwireTriggered: false, outputInfo: {} };
+        },
+      };
+      const errorGuardrail = {
+        name: 'failing-parallel-guardrail',
+        execute: async () => {
+          await slowGuardrailStarted;
+          markErrorThrown();
+          throw new Error('boom');
+        },
+      };
+
+      class TrackingModel implements Model {
+        calls = 0;
+
+        async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+          this.calls++;
+          return {
+            output: [fakeModelMessage('should not run')],
+            usage: new Usage(),
+          };
+        }
+
+        /* eslint-disable require-yield */
+        async *getStreamedResponse(_request: ModelRequest) {
+          throw new Error('not implemented');
+        }
+        /* eslint-enable require-yield */
+      }
+
+      const model = new TrackingModel();
+      const agent = new Agent({
+        name: 'ParallelGuardrailFailure',
+        model,
+        inputGuardrails: [slowGuardrail, errorGuardrail],
+      });
+
+      const runPromise = run(agent, 'hello');
+      void runPromise.catch(() => {});
+      await errorThrown;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const callsBeforeSiblingFinished = model.calls;
+      releaseSlowGuardrail();
+
+      await expect(runPromise).rejects.toBeInstanceOf(GuardrailExecutionError);
+      expect(callsBeforeSiblingFinished).toBe(0);
+      expect(model.calls).toBe(0);
     });
 
     it('throws InputGuardrailTripwireTriggered when parallel guardrail trips with structured output and model returns non-JSON', async () => {
