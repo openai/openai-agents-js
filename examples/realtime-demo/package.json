@@ -16,7 +16,7 @@
   "dependencies": {
     "@openai/agents-realtime": "workspace:*",
     "@tailwindcss/vite": "^4.1.7",
-    "openai": "^6.35.0",
+    "openai": "^6.44.0",
     "tailwindcss": "^4.1.7",
     "zod": "^4.0.0"
   }
