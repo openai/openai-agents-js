@@ -875,6 +875,32 @@ describe('Manifest', () => {
     expect(directory.toString()).toBe('drwxr-x---');
   });
 
+  it('parses position-specific special permission bits', () => {
+    const stickyDirectory = Permissions.fromString('drwxrwxrwt');
+    const specialWithExec = Permissions.fromString('-rwsr-sr-t');
+    const specialWithoutExec = Permissions.fromString('-rwSr-Sr-T');
+
+    expect(stickyDirectory.directory).toBe(true);
+    expect(stickyDirectory.other & FileMode.EXEC).toBe(FileMode.EXEC);
+    expect(specialWithExec.owner & FileMode.EXEC).toBe(FileMode.EXEC);
+    expect(specialWithExec.group & FileMode.EXEC).toBe(FileMode.EXEC);
+    expect(specialWithExec.other & FileMode.EXEC).toBe(FileMode.EXEC);
+    expect(specialWithoutExec.owner & FileMode.EXEC).toBe(FileMode.NONE);
+    expect(specialWithoutExec.group & FileMode.EXEC).toBe(FileMode.NONE);
+    expect(specialWithoutExec.other & FileMode.EXEC).toBe(FileMode.NONE);
+  });
+
+  it.each([
+    '-rwTr--r--',
+    '-rwxrwTr--',
+    '-rwxrwxr-S',
+    '-rwtr--r--',
+    '-rwxrwtr--',
+    '-rwxrwxr-s',
+  ])('rejects special permission bits in the wrong position: %s', (value) => {
+    expect(() => Permissions.fromString(value)).toThrow('Invalid exec flag');
+  });
+
   it('rejects invalid manifest identity and permission metadata', () => {
     expect(() => new Manifest({ users: [{ name: ' ' }] })).toThrow(
       /user name must be non-empty/i,
