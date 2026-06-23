@@ -1,4 +1,13 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  vi,
+  beforeEach,
+  afterEach,
+  expectTypeOf,
+} from 'vitest';
+import type { MessageEvent as WebSocketMessageEvent } from 'ws';
 import type { RealtimeClientMessage } from '../src/clientMessages';
 import {
   DEFAULT_OPENAI_REALTIME_SESSION_CONFIG,
@@ -24,6 +33,14 @@ class TestBase extends OpenAIRealtimeBase {
 
   protected _afterAudioDoneEvent(): void {
     this.afterAudioDoneCalled += 1;
+  }
+}
+
+class VoidMessageOverrideTransport extends TestBase {
+  protected override _onMessage(
+    event: MessageEvent | WebSocketMessageEvent,
+  ): void {
+    super._onMessage(event);
   }
 }
 
@@ -56,6 +73,13 @@ describe('OpenAIRealtimeBase helpers', () => {
 
     expect(key1).toBe('fromCtor');
     expect(key2).toBe('override');
+  });
+
+  it('allows void-returning _onMessage overrides for subclasses', () => {
+    const transport = new VoidMessageOverrideTransport();
+
+    expect(transport).toBeInstanceOf(OpenAIRealtimeBase);
+    expectTypeOf(transport).toMatchTypeOf<OpenAIRealtimeBase>();
   });
 
   it('merges session config defaults', () => {

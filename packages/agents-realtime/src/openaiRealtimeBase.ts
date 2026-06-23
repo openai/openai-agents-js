@@ -216,7 +216,7 @@ export abstract class OpenAIRealtimeBase
     return apiKey;
   }
 
-  protected _onMessage(event: MessageEvent | WebSocketMessageEvent) {
+  protected _onMessage(event: MessageEvent | WebSocketMessageEvent): void {
     const { data: parsed, isGeneric } = parseRealtimeEvent(event);
     if (parsed === null) {
       return;

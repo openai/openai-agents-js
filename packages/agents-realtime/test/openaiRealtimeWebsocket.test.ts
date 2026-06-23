@@ -75,6 +75,39 @@ describe('OpenAIRealtimeWebSocket', () => {
     expect(lastFakeSocket!.url).toBe('ws://test');
   });
 
+  it('ignores malformed JSON and binary non-JSON messages', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const events: any[] = [];
+    ws.on('*', (event) => events.push(event));
+    const p = ws.connect({ apiKey: 'ek_test', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    expect(() => lastFakeSocket!.emit('message', { data: '{' })).not.toThrow();
+    expect(() =>
+      lastFakeSocket!.emit('message', { data: new Uint8Array([0, 1, 2]) }),
+    ).not.toThrow();
+    expect(events).toEqual([]);
+  });
+
+  it('emits unknown valid events as generic messages', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const events: any[] = [];
+    ws.on('*', (event) => events.push(event));
+    const p = ws.connect({ apiKey: 'ek_test', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    const payload = {
+      type: 'unknown.event',
+      event_id: 'evt_x',
+      foo: 'bar',
+    };
+    lastFakeSocket!.emit('message', { data: JSON.stringify(payload) });
+
+    expect(events).toEqual([payload]);
+  });
+
   it('handles audio delta, speech started and created/done events', async () => {
     const ws = new OpenAIRealtimeWebSocket();
     const audioSpy = vi.fn();

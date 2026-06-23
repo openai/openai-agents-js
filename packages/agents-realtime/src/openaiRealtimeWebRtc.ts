@@ -265,8 +265,8 @@ export class OpenAIRealtimeWebRTC
             resolve();
           };
           const onConfigAck = (ackEvent: MessageEvent) => {
-            const parsed = JSON.parse(ackEvent.data);
-            if (parsed.type === 'session.updated') {
+            const { data: parsed } = parseRealtimeEvent(ackEvent);
+            if (parsed?.type === 'session.updated') {
               finish();
             }
           };

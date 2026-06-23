@@ -619,7 +619,12 @@ type ParseResult =
 export function parseRealtimeEvent(
   event: MessageEvent | WebSocketMessageEvent,
 ): ParseResult {
-  const raw = JSON.parse(event.data.toString());
+  let raw: unknown;
+  try {
+    raw = JSON.parse(event.data.toString());
+  } catch {
+    return { data: null, isGeneric: true };
+  }
   const parsed = realtimeServerEventSchema.safeParse(raw);
   if (!parsed.success) {
     const genericParsed = genericEventSchema.safeParse(raw);
