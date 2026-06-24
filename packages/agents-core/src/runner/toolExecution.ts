@@ -1453,6 +1453,17 @@ export async function executeHandoffCalls<
   return withHandoffSpan(
     async (handoffSpan) => {
       const handoff = actualHandoff.handoff;
+      const inputFilter =
+        handoff.inputFilter ?? runner.config.handoffInputFilter;
+      if (inputFilter && typeof inputFilter !== 'function') {
+        handoffSpan.setError({
+          message: 'Invalid input filter',
+          data: {
+            details: 'not callable',
+          },
+        });
+        throw new UserError('Invalid handoff input filter: not callable');
+      }
 
       const newAgent = await handoff.onInvokeHandoff(
         runContext,
@@ -1485,19 +1496,8 @@ export async function executeHandoffCalls<
       runner.emit('agent_handoff', runContext, agent, newAgent);
       agent.emit('agent_handoff', runContext, newAgent);
 
-      const inputFilter =
-        handoff.inputFilter ?? runner.config.handoffInputFilter;
       if (inputFilter) {
         logger.debug('Filtering inputs for handoff');
-
-        if (typeof inputFilter !== 'function') {
-          handoffSpan.setError({
-            message: 'Invalid input filter',
-            data: {
-              details: 'not callable',
-            },
-          });
-        }
 
         const handoffInputData: HandoffInputData = {
           inputHistory: Array.isArray(originalInput)
