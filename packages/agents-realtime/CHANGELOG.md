@@ -1,5 +1,23 @@
 # @openai/agents-realtime
 
+## 0.12.0
+
+### Minor Changes
+
+- 1a5e2c0: fix: prevent ambiguous Realtime tool dispatch across agent handoffs
+
+### Patch Changes
+
+- 90d46ee: fix: ignore malformed realtime messages without throwing an error
+- 8f6a84b: fix: update the ws dependency to 8.21.0
+- Updated dependencies [e044d14]
+- Updated dependencies [a8f81cd]
+- Updated dependencies [c450c2b]
+- Updated dependencies [5350aad]
+- Updated dependencies [395699e]
+- Updated dependencies [f990172]
+  - @openai/agents-core@0.12.0
+
 ## 0.11.8
 
 ### Patch Changes

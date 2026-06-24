@@ -1,5 +1,16 @@
 # @openai/agents-core
 
+## 0.12.0
+
+### Patch Changes
+
+- e044d14: fix: tailor remote mount edit guidance to writable editor paths
+- a8f81cd: fix: avoid reevaluating resolved tool approvals
+- c450c2b: fix: parse special filesystem permission bits by position
+- 5350aad: fix: await sibling guardrails after execution failures
+- 395699e: chore: upgrade openai package to the latest version
+- f990172: fix: preserve empty array tool outputs as text
+
 ## 0.11.8
 
 ### Patch Changes
