@@ -1,5 +1,23 @@
 # @openai/agents
 
+## 0.12.0
+
+### Patch Changes
+
+- 395699e: chore: upgrade openai package to the latest version
+- Updated dependencies [e044d14]
+- Updated dependencies [1a5e2c0]
+- Updated dependencies [a8f81cd]
+- Updated dependencies [90d46ee]
+- Updated dependencies [c450c2b]
+- Updated dependencies [5350aad]
+- Updated dependencies [395699e]
+- Updated dependencies [8f6a84b]
+- Updated dependencies [f990172]
+  - @openai/agents-core@0.12.0
+  - @openai/agents-realtime@0.12.0
+  - @openai/agents-openai@0.12.0
+
 ## 0.11.8
 
 ### Patch Changes
