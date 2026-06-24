@@ -1455,7 +1455,7 @@ export async function executeHandoffCalls<
       const handoff = actualHandoff.handoff;
       const inputFilter =
         handoff.inputFilter ?? runner.config.handoffInputFilter;
-      if (inputFilter && typeof inputFilter !== 'function') {
+      if (inputFilter != null && typeof inputFilter !== 'function') {
         handoffSpan.setError({
           message: 'Invalid input filter',
           data: {
@@ -1496,7 +1496,7 @@ export async function executeHandoffCalls<
       runner.emit('agent_handoff', runContext, agent, newAgent);
       agent.emit('agent_handoff', runContext, newAgent);
 
-      if (inputFilter) {
+      if (inputFilter != null) {
         logger.debug('Filtering inputs for handoff');
 
         const handoffInputData: HandoffInputData = {

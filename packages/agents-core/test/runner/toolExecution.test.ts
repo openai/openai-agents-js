@@ -1480,40 +1480,48 @@ describe('executeHandoffCalls', () => {
     expect(res.originalInput).toBe('filtered');
   });
 
-  it('throws before invoking handoff if inputFilter is not callable', async () => {
-    const target = new Agent({ name: 'Target' });
-    const onHandoff = vi.fn();
-    const h = handoff(target, { onHandoff });
-    h.inputFilter = 'not callable' as any;
-    const handoffListener = vi.fn();
-    TEST_AGENT.on('agent_handoff', handoffListener);
-    const call: any = {
-      toolCall: { ...TEST_MODEL_FUNCTION_CALL, name: h.toolName },
-      handoff: h,
-    };
+  it.each([
+    ['string', 'not callable'],
+    ['false', false],
+    ['empty string', ''],
+    ['zero', 0],
+  ])(
+    'throws before invoking handoff if inputFilter is %s',
+    async (_label, inputFilter) => {
+      const target = new Agent({ name: 'Target' });
+      const onHandoff = vi.fn();
+      const h = handoff(target, { onHandoff });
+      h.inputFilter = inputFilter as any;
+      const handoffListener = vi.fn();
+      TEST_AGENT.on('agent_handoff', handoffListener);
+      const call: any = {
+        toolCall: { ...TEST_MODEL_FUNCTION_CALL, name: h.toolName },
+        handoff: h,
+      };
 
-    try {
-      await expect(
-        withTrace('test', () =>
-          executeHandoffCalls(
-            TEST_AGENT,
-            'orig',
-            [],
-            [],
-            TEST_MODEL_RESPONSE_WITH_FUNCTION,
-            [call],
-            new Runner({ tracingDisabled: true }),
-            new RunContext(),
+      try {
+        await expect(
+          withTrace('test', () =>
+            executeHandoffCalls(
+              TEST_AGENT,
+              'orig',
+              [],
+              [],
+              TEST_MODEL_RESPONSE_WITH_FUNCTION,
+              [call],
+              new Runner({ tracingDisabled: true }),
+              new RunContext(),
+            ),
           ),
-        ),
-      ).rejects.toThrow(UserError);
+        ).rejects.toThrow(UserError);
 
-      expect(onHandoff).not.toHaveBeenCalled();
-      expect(handoffListener).not.toHaveBeenCalled();
-    } finally {
-      TEST_AGENT.off('agent_handoff', handoffListener);
-    }
-  });
+        expect(onHandoff).not.toHaveBeenCalled();
+        expect(handoffListener).not.toHaveBeenCalled();
+      } finally {
+        TEST_AGENT.off('agent_handoff', handoffListener);
+      }
+    },
+  );
 });
 
 describe('checkForFinalOutputFromTools interruptions and errors', () => {
