@@ -1,6 +1,6 @@
 ---
 name: maintainer-review
-description: Review a GitHub issue or pull request URL as an openai-agents-js maintainer, with a verdict on whether the claim is real, practically important, correctly scoped, and worth maintainer and contributor effort. Use when assessing issue validity or severity, deciding whether an issue should be prioritized or closed, judging whether a PR meets a real need and is worth bringing to mergeable quality, comparing open PRs that address the same issue, separating code quality from repository readiness, comparing a proposed fix with simpler alternatives, or drafting a concise maintainer assessment. When closure, additional evidence, or code changes should be requested, also produce a polite, concise, complete, copy-paste-ready maintainer comment in English.
+description: Review a GitHub issue or pull request URL as an openai-agents-js maintainer, with a staged assessment of whether the claim is real, practically important, correctly scoped, and worth maintainer and contributor effort. Use when assessing issue validity or severity, deciding whether an issue should be prioritized or closed, judging whether a PR meets a real need and is worth bringing to mergeable quality, comparing open PRs that address the same issue, separating code quality from repository readiness, comparing a proposed fix with simpler alternatives, or drafting a concise maintainer assessment. When closure, additional evidence, or code changes should be requested, also produce a polite, concise, complete, copy-paste-ready maintainer comment.
 ---
 
 # Maintainer Review
@@ -17,7 +17,7 @@ Make a maintainer decision, not a generic diff summary. Separate these questions
 6. If competing PRs exist, which single implementation path should maintainers pursue?
 7. What concise maintainer message should communicate closure, an evidence request, or required changes?
 
-Lead with the verdict. Use the diff, issue narrative, and contributor effort as evidence, not as proxies for impact.
+Lead with the current review state. Use `Preliminary assessment` while runtime approval or evidence is pending, and `Maintainer decision` only when the review can be concluded. Use the diff, issue narrative, and contributor effort as evidence, not as proxies for impact.
 
 ## Workflow
 
@@ -44,22 +44,37 @@ Do this before deeply evaluating a specified PR. A PR URL selects the starting p
 
 Compare candidates on need coverage, runtime correctness, placement, tests, compatibility, complexity, readiness, remaining maintainer work, and reusable pieces. Prefer the best maintainable solution, not the first or smallest diff by default.
 
-### 3. Find the shortest decisive evidence path
+### 3. Use a two-stage evidence flow
 
-Inspect the real runtime path before judging a change as trivial or meaningful. Check callers, public exports, equivalent streaming/non-streaming or provider/runtime paths, persistence, cleanup, and focused tests.
+Always begin with a desk review. Inspect the real runtime path before judging a change as trivial or meaningful. Check callers, public exports, equivalent streaming/non-streaming or provider/runtime paths, persistence, cleanup, and focused tests. Inspecting test code is part of the desk review; executing tests, imports, examples, reproductions, benchmarks, or service calls is a runtime probe.
 
 Start with `.agents/references/README.md` and open only the references for the affected boundary. Treat `.agents/references/` as read-only background during review. Verify every current claim against the remote change, current source, tests, docs, release boundary, and runtime evidence. Do not infer issue status or PR correctness from a reference. Recommend a separate reference-maintenance change when review reveals a durable invariant unless the user explicitly includes that update.
 
-Use this evidence order:
+Use this evidence order across the two stages:
 
-1. Existing tests and a complete code-path trace.
-2. A focused local reproduction of the exact claim.
+1. Inspect existing tests and complete the code-path trace without executing code.
+2. With explicit user approval, run a focused local reproduction of the exact claim when the desk-review rules below require it.
 3. A comparison with the latest release, base branch, or another known-good control.
-4. A broader runtime matrix only when the decision remains uncertain.
+4. A broader runtime matrix only when the maintainer decision remains uncertain and the user approves it.
 
-Use a focused local reproduction by default when runtime behavior materially affects the verdict. Include a base/release control for regression claims. For latency, timeout, buffering, backpressure, or cleanup, measure an observable elapsed-time or state transition where feasible.
+#### Stage 1: desk review
 
-Use `$runtime-behavior-probe` only when the user explicitly invokes it or approves a proposed broader matrix. Preserve its environment-variable, live-service, cost, cleanup, and reporting gates. Ordinary maintainer review must not depend on that skill.
+Produce an initial result from static evidence before running code:
+
+- If the claim or PR is decisively negative from a complete reachable code-path trace, conclude the review without a runtime probe. Examples include an impossible or unsupported path, duplicated existing handling, a demonstrated no-op, a direct compatibility break, or a clearly wrong abstraction. Do not call an ambiguous result negative merely to avoid a probe.
+- If the initial result is positive and there is no unresolved runtime concern, the desk review may be sufficient for a final maintainer decision. Do not run a probe only to restate evidence that cannot plausibly change the decision.
+- If the initial result is positive but there is any unresolved runtime concern that could plausibly change claim validity, severity, merge-worthiness, required changes, or the preferred competing PR, stop before executing code. Report a `Preliminary assessment`, name the concern, propose the smallest decisive probe and control, and ask the user for approval to run it.
+- A purely stylistic, documentation, CI-status, or repository-readiness concern does not trigger a runtime probe unless it masks a runtime question.
+
+Do not issue a definitive positive maintainer decision while a decision-relevant runtime concern remains unresolved. If the user declines the probe, keep the result preliminary and state the exact confidence limitation.
+
+#### Stage 2: approved runtime probe
+
+After explicit approval, run only the smallest probe needed to resolve the stated concern. Exercise the real public or internal path and include a base, release, or known-good control when relevant. Do not stop at a happy-path smoke check when failure behavior determines the decision. Return to the user for separate approval before expanding materially beyond the approved probe.
+
+For latency, timeout, buffering, backpressure, or cleanup, measure an observable elapsed-time or state transition where feasible. Do not assume that a mocked unit test exercises real scheduling or provider behavior. Prefer a local probe first; use an approval-gated live-service probe only when local evidence cannot settle the decision.
+
+Use `$runtime-behavior-probe` only when the user explicitly invokes it or approves using it for the proposed runtime work. Preserve its environment-variable, live-service, cost, cleanup, and reporting gates. Ordinary maintainer review must not depend on that skill.
 
 For validation, cleanup, retries, interruption, background work, or concurrency:
 
@@ -83,21 +98,21 @@ Do not speculate about AI authorship or contributor intent. Identify weak report
 
 ### 5. Apply the maintainer-effort test
 
-Use one code verdict:
+Use one code recommendation:
 
 - **Merge-worthy as-is**: real need, sound placement, proportionate scope, and adequate tests.
 - **Merge-worthy after focused changes**: real need and viable direction with bounded corrections.
 - **Supersede with a simpler alternative**: real need, but a smaller or more coherent fix is preferable.
 - **Not worth completing**: negligible/unsupported impact, no-op behavior, wrong abstraction, or excessive completion cost.
 
-For merge-worthy verdicts, use one repository-readiness status when useful:
+For merge-worthy recommendations, use one repository-readiness status when useful:
 
 - **Ready**
 - **CI or review pending**
 - **Rebase or conflict resolution required**
 - **Blocked**
 
-Omit readiness for supersede/not-worth-completing verdicts; CI does not change those code decisions. Do not downgrade sound code only because CI is pending, and do not call a PR ready when semantic changes remain.
+Omit readiness for supersede/not-worth-completing recommendations; CI does not change those code decisions. Do not downgrade sound code only because CI is pending, and do not call a PR ready when semantic changes remain.
 
 For competing PRs, make one portfolio recommendation: choose one, choose one after focused changes, combine exact pieces into one destination, replace all with a simpler approach, or merge none. State what should happen to every active candidate.
 
@@ -107,7 +122,7 @@ Always consider at least one alternative: no code change, validation/error impro
 
 Choose the assessment language from the current user request and governing repository instructions. Maintainer comment drafts remain English.
 
-Use the matching compact report in the evaluation framework. Keep the report decision-oriented, put unexpected/negative evidence first, and use no more than five evidence bullets by default.
+Use the matching compact report in the evaluation framework. While runtime approval is pending, use its preliminary-assessment variant and end with the approval request instead of presenting a final recommendation. Keep the report decision-oriented, put unexpected/negative evidence first, and use no more than five evidence bullets by default.
 
 When recommending closure, more evidence, focused changes, or superseding a PR, append a polite, complete, copy-paste-ready English maintainer comment. Include only merge-blocking work in its required-action paragraph. Do not produce a line-by-line review unless requested, equate passing tests with merge-worthiness, or equate a logically correct patch with practical value.
 

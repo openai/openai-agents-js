@@ -18,7 +18,7 @@ Use this reference when a claim is ambiguous, severity is disputed, or a technic
 
 ## Decision Model
 
-Treat validity, severity, and merge-worthiness as separate outputs.
+Treat validity, severity, and merge-worthiness as separate outputs. Also distinguish a `Preliminary assessment`, which may still require approved runtime evidence, from a final `Maintainer decision`. Do not label a provisional positive result as a verdict or final decision.
 
 | Dimension | Question | Strong evidence |
 | --- | --- | --- |
@@ -93,7 +93,7 @@ Make docs merge-blocking only when:
 - Repository policy, accepted scope, or an explicit maintainer decision requires docs in the same PR.
 - The feature is practically unusable or undiscoverable without a user-facing entrypoint and generated/API discovery is insufficient.
 
-Keep optional discoverability/completeness non-blocking. Do not downgrade a code verdict solely for optional docs or include optional docs in a required-action paragraph.
+Keep optional discoverability/completeness non-blocking. Do not downgrade a code recommendation solely for optional docs or include optional docs in a required-action paragraph.
 
 ## Lifecycle and Failure Paths
 
@@ -175,10 +175,36 @@ Adapt these templates to evidence. Do not use them as filler.
 
 ## Compact Report Variants
 
+Use `Maintainer decision` for a concluded review. Use `Preliminary assessment` when a desk review is tentatively positive but a decision-relevant runtime concern remains. `Verdict` is intentionally avoided in the report headings because it does not communicate whether the result is provisional or final.
+
+### Runtime Approval Gate
+
+```markdown
+## Preliminary assessment
+
+<Tentative issue or PR assessment based on desk review only.>
+
+## Static evidence
+
+- <decisive code-path or test-inspection evidence>
+- <what remains uncertain at runtime>
+
+## Proposed runtime probe
+
+- Concern: <the uncertainty that could change the decision>
+- Probe: <smallest exact execution path>
+- Control: <base, release, or known-good comparison when relevant>
+- Scope: <local-only or any live-service, cost, mutation, or cleanup implications>
+
+## Approval request
+
+<Ask whether to run this exact probe. Do not present a final positive recommendation yet.>
+```
+
 ### Issue
 
 ```markdown
-## Verdict
+## Maintainer decision
 
 <Real/partial/unproven/contradicted, severity, and disposition.>
 
@@ -199,12 +225,12 @@ Adapt these templates to evidence. Do not use them as filler.
 ### Pull Request
 
 ```markdown
-## Verdict
+## Maintainer decision
 
 <Need, practical impact, and merge-worthiness.>
 
-- Code verdict: <code disposition>
-- Repository readiness: <one allowed status; only when useful for a merge-worthy verdict>
+- Code recommendation: <code disposition>
+- Repository readiness: <one allowed status; only when useful for a merge-worthy recommendation>
 
 ## Evidence
 
@@ -239,7 +265,7 @@ Adapt these templates to evidence. Do not use them as filler.
 ### Competing Pull Requests
 
 ```markdown
-## Verdict
+## Maintainer decision
 
 <Issue validity, severity, and preferred implementation path.>
 
