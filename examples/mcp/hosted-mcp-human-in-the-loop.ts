@@ -1,4 +1,9 @@
-import { Agent, run, hostedMcpTool, RunToolApprovalItem } from '@openai/agents';
+import {
+  Agent,
+  Runner,
+  hostedMcpTool,
+  RunToolApprovalItem,
+} from '@openai/agents';
 import * as readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 
@@ -27,10 +32,19 @@ async function main(verbose: boolean, stream: boolean): Promise<void> {
       hostedMcpTool({
         serverLabel: 'deepwiki',
         serverUrl: 'https://mcp.deepwiki.com/mcp',
+        allowedTools: ['ask_question'],
         requireApproval,
         // when you don't pass onApproval, the agent loop will handle the approval process
       }),
     ],
+  });
+  // Use the concise question tool first, then allow the model to answer after
+  // approval instead of forcing the same tool again.
+  const initialRunner = new Runner({
+    modelSettings: { toolChoice: 'required' },
+  });
+  const resumeRunner = new Runner({
+    modelSettings: { toolChoice: 'auto' },
   });
 
   const input =
@@ -38,7 +52,10 @@ async function main(verbose: boolean, stream: boolean): Promise<void> {
 
   if (stream) {
     // Streaming
-    const result = await run(agent, input, { stream: true, maxTurns: 100 });
+    let result = await initialRunner.run(agent, input, {
+      stream: true,
+      maxTurns: 100,
+    });
     for await (const event of result) {
       if (verbose) {
         console.log(JSON.stringify(event, null, 2));
@@ -51,10 +68,6 @@ async function main(verbose: boolean, stream: boolean): Promise<void> {
         }
       }
     }
-    console.log(`Done streaming; final result: ${result.finalOutput}`);
-  } else {
-    // Non-streaming
-    let result = await run(agent, input);
     while (result.interruptions && result.interruptions.length) {
       for (const interruption of result.interruptions) {
         // Human in the loop here
@@ -65,7 +78,36 @@ async function main(verbose: boolean, stream: boolean): Promise<void> {
           result.state.reject(interruption);
         }
       }
-      result = await run(agent, result.state);
+      result = await resumeRunner.run(agent, result.state, {
+        stream: true,
+        maxTurns: 100,
+      });
+      for await (const event of result) {
+        if (verbose) {
+          console.log(JSON.stringify(event, null, 2));
+        } else if (
+          event.type === 'raw_model_stream_event' &&
+          event.data.type === 'model'
+        ) {
+          console.log(event.data.event.type);
+        }
+      }
+    }
+    console.log(`Done streaming; final result: ${result.finalOutput}`);
+  } else {
+    // Non-streaming
+    let result = await initialRunner.run(agent, input, { maxTurns: 100 });
+    while (result.interruptions && result.interruptions.length) {
+      for (const interruption of result.interruptions) {
+        // Human in the loop here
+        const approval = await confirm(interruption);
+        if (approval) {
+          result.state.approve(interruption);
+        } else {
+          result.state.reject(interruption);
+        }
+      }
+      result = await resumeRunner.run(agent, result.state, { maxTurns: 100 });
     }
     console.log(result.finalOutput);
 

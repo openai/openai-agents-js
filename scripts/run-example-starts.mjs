@@ -65,6 +65,7 @@ export const DEFAULT_INTERACTIVE_INPUTS = new Map([
   ['memory:start:memory', 'n\n'],
   ['memory:start:oai', 'n\n'],
   ['memory:start:prisma', 'n\n'],
+  ['mcp:start:hosted-mcp-human-in-the-loop', 'y\n'],
   ['mcp:start:tool-filter', 'n\n'],
 ]);
 
@@ -94,9 +95,8 @@ export const DEFAULT_AUTO_SKIP = [
   'agent-patterns:start:llm-as-a-judge',
   // Requires external connector auth not available in auto runs.
   'connectors:start',
-  // Approval-prompt examples that still need manual input.
+  // Approval-prompt example that still needs manual input.
   'mcp:start:hosted-mcp-on-approval',
-  'mcp:start:hosted-mcp-human-in-the-loop',
   // Temporarily disabled due to the credential issues.
   'sandbox:start:vercel',
   // Depends on a local Codex binary that macOS may quarantine or remove.
