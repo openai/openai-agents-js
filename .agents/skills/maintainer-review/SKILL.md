@@ -1,6 +1,6 @@
 ---
 name: maintainer-review
-description: Review a GitHub issue or pull request URL as an openai-agents-js maintainer, with a staged assessment of whether the claim is real, practically important, correctly scoped, and worth maintainer and contributor effort. Use when assessing issue validity or severity, deciding whether an issue should be prioritized or closed, judging whether a PR meets a real need and is worth bringing to mergeable quality, comparing open PRs that address the same issue, separating code quality from repository readiness, comparing a proposed fix with simpler alternatives, or drafting a concise maintainer assessment. When closure, additional evidence, or code changes should be requested, also produce a polite, concise, complete, copy-paste-ready maintainer comment.
+description: Review a GitHub issue or pull request URL as an openai-agents-js maintainer, with a staged assessment of whether the claim is real, practically important, already solvable with supported functionality, correctly scoped, better served by another design, and worth maintainer and contributor effort. Use when assessing issue validity or severity, deciding whether an issue should be prioritized or closed, determining whether a requested feature represents an unmet need rather than a discoverability or usage gap, judging whether a PR is worth bringing to mergeable quality, comparing open PRs or alternative designs, separating code quality from repository readiness, or drafting a concise maintainer assessment. When closure, additional evidence, or code changes should be requested, also produce a polite, concise, complete, copy-paste-ready maintainer comment.
 ---
 
 # Maintainer Review
@@ -10,13 +10,17 @@ description: Review a GitHub issue or pull request URL as an openai-agents-js ma
 Make a maintainer decision, not a generic diff summary. Separate these questions:
 
 1. Is the claimed behavior real?
-2. Can supported users plausibly reach it?
-3. What happens when they do?
-4. Is it important enough to act on now?
-5. For a PR, is this solution worth merging and maintaining?
-6. Can overlapping or stale operations corrupt shared state or clean up resources owned by surviving work?
-7. If competing PRs exist, which single implementation path should maintainers pursue?
-8. What concise maintainer message should communicate closure, an evidence request, or required changes?
+2. What user outcome or constraint exists independently of the reporter's proposed API or fix?
+3. Can supported functionality already achieve that outcome with reasonable composition or configuration?
+4. If a gap remains, is the proposed solution the best design and implementation layer?
+5. Can supported users plausibly reach the gap, and what happens when they do?
+6. Is it important enough to act on now?
+7. For a PR, is this solution worth merging and maintaining?
+8. Can overlapping or stale operations corrupt shared state or clean up resources owned by surviving work?
+9. If competing PRs exist, which single implementation path should maintainers pursue?
+10. What concise maintainer message should communicate closure, an evidence request, or required changes?
+
+Treat an issue's requested field, callback, flag, class, or implementation strategy as a proposed mechanism, not as the accepted requirement. Do not begin by asking how to implement it. First establish either a concrete unmet user outcome or a violated supported contract, then prove that the proposed mechanism is better than the available alternatives.
 
 Lead with the current review state. Use `Preliminary assessment` while runtime approval or evidence is pending, and `Maintainer decision` only when the review can be concluded. Use the diff, issue narrative, and contributor effort as evidence, not as proxies for impact.
 
@@ -32,7 +36,21 @@ Lead with the current review state. Use `Preliminary assessment` while runtime a
 
 Use read-only GitHub access. On this laptop, do not run `gh` unless the user explicitly asks in the same turn. A review never authorizes comments, labels, branch changes, pushes, merges, or other remote writes.
 
-### 2. Discover competing open PRs proportionally
+### 2. Establish the unmet need and challenge the proposed solution
+
+Complete this pass before deeply evaluating a proposed implementation and before any positive issue or PR assessment.
+
+1. Restate the desired user outcome without naming the requested API, class, file, option, or implementation. Separate the actual constraint from the reporter's preferred mechanism.
+2. Trace the closest supported ways to achieve that outcome in the current release and current target. Inspect the owning code path, public API, tests, and relevant docs rather than assuming that an unfamiliar capability is missing. Consider configuration, composition, cloning, callbacks, extension points, provider adapters, and caller-owned code.
+3. Determine whether the report shows a capability gap, an ergonomics or discoverability gap, an unsupported use case, or no demonstrated gap. A more convenient spelling is not automatically a missing capability.
+4. Compare the proposed solution against the strongest existing approach and at least one better-design candidate: no code change, clearer documentation or validation, a narrower fix, reuse of an existing abstraction, or enforcement at a more coherent shared boundary.
+5. For each viable approach, compare whether it satisfies the concrete scenario, what new public or internal contract it creates, cross-path consistency, compatibility, and permanent maintenance cost.
+
+Do not treat a test proving that new code can work as evidence that the feature is needed. If the report provides no concrete scenario, the existing functionality appears sufficient, or the requested mechanism solves only a hypothetical convenience problem, prefer `Needs evidence`, `Close`, `Supersede with a simpler alternative`, or `Not worth completing` over designing the requested feature on the reporter's behalf.
+
+An existing workaround may change priority or solution shape, but it does not by itself erase a demonstrated correctness, security, compatibility, or lifecycle defect in supported behavior. Evaluate both the unmet outcome and the violated contract.
+
+### 3. Discover competing open PRs proportionally
 
 Do this before deeply evaluating a specified PR. A PR URL selects the starting point, not necessarily the entire comparison set.
 
@@ -45,7 +63,7 @@ Do this before deeply evaluating a specified PR. A PR URL selects the starting p
 
 Compare candidates on need coverage, runtime correctness, placement, tests, compatibility, complexity, readiness, remaining maintainer work, and reusable pieces. Prefer the best maintainable solution, not the first or smallest diff by default.
 
-### 3. Use a two-stage evidence flow
+### 4. Use a two-stage evidence flow
 
 Always begin with a desk review. Inspect the real runtime path before judging a change as trivial or meaningful. Check callers, public exports, equivalent streaming/non-streaming or provider/runtime paths, persistence, cleanup, and focused tests. Inspecting test code is part of the desk review; executing tests, imports, examples, reproductions, benchmarks, or service calls is a runtime probe.
 
@@ -53,14 +71,27 @@ Start with `.agents/references/README.md` and open only the references for the a
 
 Use this evidence order across the two stages:
 
-1. Inspect existing tests and complete the code-path trace, including the mandatory interleaving and ownership pass when triggered, without executing code.
-2. With explicit user approval, run a focused local reproduction of the exact claim when the desk-review rules below require it.
-3. A comparison with the latest release, base branch, or another known-good control.
-4. A broader runtime matrix only when the maintainer decision remains uncertain and the user approves it.
+1. Trace the closest existing supported capabilities and determine whether they already satisfy the underlying user outcome.
+2. Inspect existing tests and complete the code-path trace, including the mandatory interleaving and ownership pass when triggered, without executing code.
+3. With explicit user approval, run a focused local reproduction of the exact claim when the desk-review rules below require it.
+4. A comparison with the latest release, base branch, or another known-good control.
+5. A broader runtime matrix only when the maintainer decision remains uncertain and the user approves it.
 
 #### Stage 1: desk review
 
 Produce an initial result from static evidence before running code:
+
+##### Mandatory unmet-need and design pass
+
+Before a positive assessment, complete the pass in step 2 and be able to state all of the following from concrete evidence:
+
+1. The user outcome that current supported behavior cannot achieve, or the supported contract that the reported defect violates.
+2. The closest existing API or composition path and the exact reason it is insufficient.
+3. Why the proposed behavior belongs at the chosen abstraction layer instead of a caller, provider, adapter, validation, documentation, or existing extension point.
+4. Why the proposed permanent contract is better than no code change and the strongest narrower alternative.
+5. What real scenario, compatibility requirement, violated invariant, or repeated demand justifies the maintenance surface.
+
+If any answer is missing and could change whether code should exist at all, do not call the issue actionable or the PR merge-worthy. Request only the evidence needed to distinguish a genuine capability gap or contract violation from a usage, discoverability, or solution-design problem. This is a product and architecture evidence gap, not a runtime-probe trigger by itself.
 
 ##### Mandatory interleaving and ownership pass
 
@@ -99,17 +130,19 @@ For validation, cleanup, retries, interruption, background work, or concurrency:
 
 Stop when additional evidence is unlikely to change validity, severity, or maintainer action.
 
-### 4. Calibrate validity and impact
+### 5. Calibrate validity and impact
 
 Read [the evaluation framework](references/evaluation-framework.md) when validity, severity, or merge value is not immediately clear.
 
 Assess claim validity, realistic reach, consequence, breadth, frequency, recoverability, compatibility, and severity. Keep observed facts separate from inference and name missing evidence that could change the result.
 
+Classify the need explicitly as a capability gap, ergonomics or discoverability gap, unsupported use case, no demonstrated gap, or a defect in supported behavior. Do not assign practical impact to the absence of the requested mechanism when an existing supported workflow already produces the requested outcome.
+
 For a PR, make `Severity` describe the underlying issue or user need. Report patch-induced regression, compatibility, lifecycle, or maintenance risk separately as `Patch risk`.
 
 Do not speculate about AI authorship or contributor intent. Identify weak reports through objective evidence: no reproduction, unsupported input, impossible path, duplicated handling, a test that does not exercise the claim, or a fix that is a runtime no-op.
 
-### 5. Apply the maintainer-effort test
+### 6. Apply the maintainer-effort test
 
 Use one code recommendation:
 
@@ -129,13 +162,15 @@ Omit readiness for supersede/not-worth-completing recommendations; CI does not c
 
 For competing PRs, make one portfolio recommendation: choose one, choose one after focused changes, combine exact pieces into one destination, replace all with a simpler approach, or merge none. State what should happen to every active candidate.
 
-Always consider at least one alternative: no code change, validation/error improvement, documentation, reuse of an existing helper, a narrower supported path, or enforcement at a different shared layer.
+Always compare the proposed patch with the strongest existing supported approach and at least one alternative: no code change, validation or documentation, a narrower fix, reuse of an existing helper, or a different layer that enforces the invariant consistently. A review is incomplete if it establishes only that the patch works without establishing why the current product cannot meet the underlying need or violates a supported contract, and why this design is preferable.
 
-### 6. Report the decision and action
+### 7. Report the decision and action
 
 Choose the assessment language from the current user request and governing repository instructions. Maintainer comment drafts remain English.
 
 Use the matching compact report in the evaluation framework. While runtime approval is pending, use its preliminary-assessment variant and end with the approval request instead of presenting a final recommendation. Keep the report decision-oriented, put unexpected/negative evidence first, and use no more than five evidence bullets by default.
+
+When existing functionality or a better alternative materially affects the decision, state it explicitly in the evidence and recommendation. Name the exact supported path, what it does and does not cover, and why it is preferable. Do not bury a `Not worth completing` or `Supersede with a simpler alternative` conclusion beneath praise for implementation quality.
 
 When recommending closure, more evidence, focused changes, or superseding a PR, append a polite, complete, copy-paste-ready English maintainer comment. Include only merge-blocking work in its required-action paragraph. Do not produce a line-by-line review unless requested, equate passing tests with merge-worthiness, or equate a logically correct patch with practical value.
 

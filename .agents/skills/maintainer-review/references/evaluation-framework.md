@@ -7,12 +7,13 @@ Use this reference when a claim is ambiguous, severity is disputed, or a technic
 - [Decision model](#decision-model)
 - [Severity](#severity)
 - [Evidence strength](#evidence-strength)
+- [Unmet need and alternative design gate](#unmet-need-and-alternative-design-gate)
 - [Issue disposition](#issue-disposition)
 - [PR quality and value](#pr-quality-and-value)
 - [Documentation threshold](#documentation-threshold)
 - [Lifecycle and failure paths](#lifecycle-and-failure-paths)
 - [Concurrency and cleanup ownership](#concurrency-and-cleanup-ownership)
-- [Alternatives](#alternatives)
+- [Better-alternative prompts](#better-alternative-prompts)
 - [Competing pull requests](#competing-pull-requests)
 - [Maintainer comments](#maintainer-comments)
 - [Compact report variants](#compact-report-variants)
@@ -28,8 +29,10 @@ Treat validity, severity, and merge-worthiness as separate outputs. Also disting
 | Consequence | What fails, and is it silent or recoverable? | Observed output/error/state and downstream effect |
 | Breadth | Which packages, runtimes, providers, and versions are affected? | Explicit path and compatibility matrix |
 | Frequency | Is it normal, intermittent, or pathological? | Repeats, deterministic preconditions, reports, or telemetry |
+| Unmet need | What user outcome cannot be achieved through supported behavior today, or what supported contract is violated? | Concrete scenario plus a trace showing why the closest existing path is insufficient or defective |
+| Existing capability | Can configuration, composition, cloning, callbacks, extension points, or a caller-owned layer already satisfy the outcome? | Current release code, tests, docs, and an exact supported workflow |
 | Compatibility | Is released API, package resolution, protocol, or durable state changed? | Latest release comparison and contract inspection |
-| Solution fit | Does the fix enforce the invariant at the owning layer? | Equivalent paths remain aligned and alternatives were tested |
+| Solution fit | Is the requested mechanism the best design and implementation layer? | Proposed solution compared with the strongest existing path and at least one narrower or more coherent alternative |
 | Resource ownership | Can stale, failed, cancelled, or overlapping work mutate or clean up resources owned by surviving work? | Interleaving trace, attempt or generation ownership, and survivor assertions |
 | Maintenance cost | What permanent complexity and review burden is added? | New branches/configuration, changed surface, tests, and remaining work |
 
@@ -58,15 +61,39 @@ Before calling a claim confirmed, answer:
 
 Use `partially confirmed` when the symptom is real but cause/reach/scope is wrong. Use `unproven` when decisive evidence is missing. Use `contradicted` only when evidence directly disproves the claim.
 
+## Unmet Need and Alternative Design Gate
+
+Issue reports often combine a desired outcome with a proposed API or implementation. Treat the proposed mechanism as a hypothesis. Confirm the unmet outcome or violated supported contract before evaluating how well the patch implements that mechanism.
+
+Before accepting an issue or recommending a PR, record:
+
+| Question | Required evidence |
+| --- | --- |
+| What outcome is needed? | A concrete supported scenario stated without the proposed API or fix |
+| What exists today? | The closest current-release API, configuration, composition, extension point, or caller-owned solution |
+| Why is it insufficient? | An exact behavioral, compatibility, lifecycle, or operational constraint, not preference alone |
+| What are the alternatives? | The proposed patch, the strongest existing path, and at least one no-code, narrower, or better-layer design |
+| Why add a contract? | Practical benefit sufficient to justify public surface, runtime branches, cross-path tests, documentation, and long-term maintenance |
+
+Classify the result:
+
+- **Capability gap**: a supported, realistic outcome cannot be achieved with current functionality. Code may be warranted.
+- **Ergonomics or discoverability gap**: the outcome is already possible, but the supported route is confusing or unnecessarily difficult. Prefer documentation, validation, or a narrowly justified convenience improvement.
+- **Unsupported use case**: the desired outcome lies outside the SDK contract or belongs at a provider, adapter, application, or other caller-owned layer. Do not expand the core API merely to make it possible.
+- **No demonstrated gap**: no concrete scenario proves that existing functionality is insufficient. Request evidence or close rather than designing from the proposed mechanism.
+- **Defect in supported behavior**: the existing path violates a documented or established correctness, security, compatibility, or lifecycle contract. A workaround may affect priority or solution shape, but does not erase the defect.
+
+Passing tests for a new implementation establish feasibility and correctness, not need. A technically coherent patch can still be `Not worth completing` when the motivating scenario is hypothetical, already supported, or better solved elsewhere.
+
 ## Issue Disposition
 
 Choose one:
 
 - **Prioritize**: confirmed moderate-or-higher impact or important invariant with no safe workaround.
-- **Accept, low priority**: confirmed low impact and a proportionate fix is plausible.
+- **Accept, low priority**: confirmed low impact, existing supported functionality is insufficient or defective for the demonstrated scenario, and a proportionate fix is plausible.
 - **Narrow scope**: valid core, overstated paths or expected behavior.
-- **Needs evidence**: plausible but missing a supported reproduction or contract basis.
-- **Close**: duplicate, unsupported, unreachable, contradicted, no-op, or not worth permanent complexity.
+- **Needs evidence**: plausible but missing a supported reproduction, contract basis, or concrete scenario showing why existing functionality is insufficient.
+- **Close**: duplicate, unsupported, unreachable, contradicted, no-op, already addressed by a reasonable supported path, or not worth permanent complexity.
 
 Ask only for evidence that could change the disposition.
 
@@ -74,16 +101,16 @@ Ask only for evidence that could change the disposition.
 
 Assess independently:
 
-1. **Need**: a real problem or user need is demonstrated.
+1. **Need**: a concrete unmet user outcome or defect in supported behavior is demonstrated, and the closest supported capability cannot reasonably satisfy the scenario as-is.
 2. **Correctness**: the fix covers the claim and meaningful boundaries.
-3. **Placement**: the invariant is enforced once at the owning layer.
+3. **Placement**: the invariant is enforced once at the owning layer instead of duplicating existing functionality, patching locally, or moving caller- or provider-owned policy into the core SDK.
 4. **Consistency**: equivalent streaming/non-streaming, provider, runtime, serialization, resume, package, and adapter paths stay aligned.
 5. **Tests**: a regression test fails on base, passes on head, and asserts the non-happy-path value/state. When shared state crosses an asynchronous boundary, tests control relevant completion orders and assert the surviving operation's behavior and final resource state.
 6. **Compatibility**: released exports, package conditions, types, protocols, schemas, and error behavior are preserved or intentionally migrated.
 7. **Proportionality**: public surface and complexity match impact.
 8. **Completion cost**: remaining code, tests, docs, design, and conflict work is bounded enough to justify attention.
 
-A PR can be correct but not merge-worthy because the need is negligible, the real path is unchanged, equivalent paths remain inconsistent, the abstraction costs more than the benefit, or a simpler mechanism exists.
+A PR can be correct but not merge-worthy because the need is negligible, the outcome is already supported through a reasonable existing mechanism, the real path is unchanged, equivalent paths remain inconsistent, the abstraction costs more than the benefit, or a simpler design exists at another layer.
 
 Keep issue severity separate from `Patch risk`. A patch-induced regression, compatibility break, listener/resource leak, or maintenance hazard does not make the underlying issue more severe.
 
@@ -132,10 +159,12 @@ For each ordering:
 
 An unscoped `finally`, `catch`, close handler, cancellation callback, or rollback that mutates shared state after a suspension point is merge-blocking when another operation can still own or use that state.
 
-## Alternatives
+## Better-Alternative Prompts
 
-Test at least one:
+Start with the strongest existing supported path, then test at least one additional alternative against the proposed patch. Do not complete a positive review without this comparison.
 
+- Can the requested outcome already be achieved through configuration, composition, cloning, callbacks, extension points, a custom provider or adapter, or caller-owned code?
+- If the existing route is awkward, is the problem discoverability or ergonomics rather than missing capability?
 - What happens with no code change?
 - Can input validation or an existing helper enforce the invariant earlier?
 - Can the fix be limited to the supported failing path?
@@ -143,6 +172,7 @@ Test at least one:
 - Can a failing test reveal a smaller correct change?
 - Is a new public option compensating for an internal ownership problem?
 - Can the same result be achieved in the converter, adapter, or state owner instead of every caller?
+- Is the proposed core behavior actually provider- or application-specific policy that belongs at another layer?
 
 ## Competing Pull Requests
 
@@ -150,6 +180,8 @@ Require an explicit issue link, same reproduction, same violated invariant, or m
 
 | Criterion | Question |
 | --- | --- |
+| Need | Does a concrete user outcome remain unmet, or supported behavior remain defective, after tracing existing functionality? |
+| Existing capability | Could every candidate be avoided by configuration, composition, an extension point, or a better caller- or provider-owned solution? |
 | Coverage | Whole confirmed issue, useful subset, or adjacent problem? |
 | Correctness | Real path and meaningful boundaries? |
 | Placement | Owning shared layer? |
@@ -199,6 +231,14 @@ These changes are needed because <contract, lifecycle, compatibility, or test re
 
 Adapt these templates to evidence. Do not use them as filler.
 
+### Existing Capability or Better Alternative
+
+```text
+Thanks for the contribution. I traced the underlying use case through <existing API or workflow>, which already supports <desired outcome and relevant limits>. The proposed change adds <new contract or complexity>, but the issue does not demonstrate a concrete supported case that the existing approach cannot handle.
+
+I am going to close this <issue/PR> for now. If you can provide <specific scenario showing the existing approach is insufficient>, we can revisit the unmet need and choose the narrowest appropriate design from that evidence.
+```
+
 ## Compact Report Variants
 
 Use `Maintainer decision` for a concluded review. Use `Preliminary assessment` when a desk review is tentatively positive but a decision-relevant runtime concern remains. `Verdict` is intentionally avoided in the report headings because it does not communicate whether the result is provisional or final.
@@ -239,6 +279,10 @@ Use `Maintainer decision` for a concluded review. Use `Preliminary assessment` w
 - <decisive evidence>
 - <scope or uncertainty>
 
+## Existing capability and alternatives
+
+<Closest supported path, why it is or is not sufficient, and the preferred design alternative.>
+
 ## Recommendation
 
 <Prioritize, accept low priority, narrow, request evidence, or close.>
@@ -262,6 +306,10 @@ Use `Maintainer decision` for a concluded review. Use `Preliminary assessment` w
 
 - <runtime/code-path result>
 - <test/compatibility result>
+
+## Existing capability and alternatives
+
+<Closest supported path, why the demonstrated scenario cannot use it or remains defective, and why this patch is preferable to no code change or a narrower design.>
 
 ## Issue impact
 
