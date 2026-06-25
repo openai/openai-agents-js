@@ -11,6 +11,7 @@ Use this reference when a claim is ambiguous, severity is disputed, or a technic
 - [PR quality and value](#pr-quality-and-value)
 - [Documentation threshold](#documentation-threshold)
 - [Lifecycle and failure paths](#lifecycle-and-failure-paths)
+- [Concurrency and cleanup ownership](#concurrency-and-cleanup-ownership)
 - [Alternatives](#alternatives)
 - [Competing pull requests](#competing-pull-requests)
 - [Maintainer comments](#maintainer-comments)
@@ -29,6 +30,7 @@ Treat validity, severity, and merge-worthiness as separate outputs. Also disting
 | Frequency | Is it normal, intermittent, or pathological? | Repeats, deterministic preconditions, reports, or telemetry |
 | Compatibility | Is released API, package resolution, protocol, or durable state changed? | Latest release comparison and contract inspection |
 | Solution fit | Does the fix enforce the invariant at the owning layer? | Equivalent paths remain aligned and alternatives were tested |
+| Resource ownership | Can stale, failed, cancelled, or overlapping work mutate or clean up resources owned by surviving work? | Interleaving trace, attempt or generation ownership, and survivor assertions |
 | Maintenance cost | What permanent complexity and review burden is added? | New branches/configuration, changed surface, tests, and remaining work |
 
 ## Severity
@@ -52,6 +54,7 @@ Before calling a claim confirmed, answer:
 - Does an equivalent streaming/non-streaming, provider, runtime, resume, or package-export path differ?
 - Is behavior prohibited by a real contract or merely surprising?
 - For latency, timeout, buffering, backpressure, or cleanup, was observable time or state measured rather than inferred only from mocks?
+- For shared asynchronous state, do tests control completion order and prove that a stale failure or cleanup cannot affect the surviving operation?
 
 Use `partially confirmed` when the symptom is real but cause/reach/scope is wrong. Use `unproven` when decisive evidence is missing. Use `contradicted` only when evidence directly disproves the claim.
 
@@ -75,7 +78,7 @@ Assess independently:
 2. **Correctness**: the fix covers the claim and meaningful boundaries.
 3. **Placement**: the invariant is enforced once at the owning layer.
 4. **Consistency**: equivalent streaming/non-streaming, provider, runtime, serialization, resume, package, and adapter paths stay aligned.
-5. **Tests**: a regression test fails on base, passes on head, and asserts the non-happy-path value/state.
+5. **Tests**: a regression test fails on base, passes on head, and asserts the non-happy-path value/state. When shared state crosses an asynchronous boundary, tests control relevant completion orders and assert the surviving operation's behavior and final resource state.
 6. **Compatibility**: released exports, package conditions, types, protocols, schemas, and error behavior are preserved or intentionally migrated.
 7. **Proportionality**: public surface and complexity match impact.
 8. **Completion cost**: remaining code, tests, docs, design, and conflict work is bounded enough to justify attention.
@@ -105,6 +108,29 @@ Apply this section when a change adds validation, fail-fast behavior, cleanup, r
 - Confirm normal teardown is actually entered. If construction/connect fails, verify explicit cleanup.
 - Prefer validation after dynamic configuration is resolved but before avoidable side effects begin.
 - Require a regression test for any listener, promise, stream lock, connection, process, file, or state that can remain after failure.
+
+## Concurrency and Cleanup Ownership
+
+Apply this section before a positive assessment whenever lifecycle work crosses an `await`, callback, event, deferred completion, retry, reconnect, cancellation, or shared resource boundary. Sequential correctness is insufficient because the patch can improve isolated cleanup while introducing cross-attempt teardown.
+
+Use a two-operation interleaving matrix during desk review:
+
+| Ordering | Required question |
+| --- | --- |
+| `A pending -> B starts -> A fails -> B succeeds` | Can A's cleanup remove or revert anything B needs? |
+| `A pending -> B starts -> B fails -> A succeeds` | Can B's cleanup leave A successful but non-functional? |
+| `A succeeds -> B starts -> stale A completion` | Can stale A overwrite B's newer state or generation? |
+| setup -> close/cancel -> late completion | Can late work resurrect listeners, state, tasks, or connections after teardown? |
+
+For each ordering:
+
+- Identify the resource owner before and after every suspension point.
+- Distinguish per-attempt resources from shared transport, session, cache, or listener state.
+- Require cleanup to carry an ownership token, generation, identity check, serialization guarantee, or another invariant that prevents cross-attempt disposal.
+- Compare base and head on the survivor invariant. Fewer duplicates do not justify losing the only active handler, connection, task, or state update.
+- Require a controlled interleaving test when the ordering is reachable. The test must assert both the failing operation and the surviving operation's observable behavior after all completions settle.
+
+An unscoped `finally`, `catch`, close handler, cancellation callback, or rollback that mutates shared state after a suspension point is merge-blocking when another operation can still own or use that state.
 
 ## Alternatives
 

@@ -1,4 +1,4 @@
 interface:
   display_name: "Maintainer Review"
   short_description: "Assess SDK issues and pull requests"
-  default_prompt: "Use $maintainer-review to assess this GitHub issue or pull request, complete the desk review first, request approval before any decision-relevant runtime probe, and recommend the best maintainer action."
+  default_prompt: "Use $maintainer-review to assess this GitHub issue or pull request, complete the desk review including required lifecycle interleaving and cleanup-ownership checks, request approval before any decision-relevant runtime probe, and recommend the best maintainer action."
