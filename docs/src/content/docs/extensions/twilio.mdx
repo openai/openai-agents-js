@@ -80,7 +80,14 @@ for more information on how to use the `RealtimeSession` with voice agents.
    `transport_event` event on your `RealtimeSession` instance. Every event from Twilio will have a
    type of `twilio_message` and a `message` property that contains the raw event data.
 
-3. **Watch debug logs.**
+3. **Use history events for transcripts.**
+
+   `RealtimeSession` does not emit a generic `message` event. To render the conversation, listen for
+   `history_updated` or `history_added`. User speech only appears as text in that history when input
+   audio transcription is enabled in the session config. If you need raw Realtime API events instead
+   of the normalized history view, listen on `session.transport`.
+
+4. **Watch debug logs.**
 
    Sometimes you may run into issues where you want more information on what's going on. Using
    a `DEBUG=openai-agents*` environment variable will show all the debug logs from the Agents SDK.

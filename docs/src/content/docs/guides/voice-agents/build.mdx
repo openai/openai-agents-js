@@ -14,6 +14,7 @@ import guardrailSettingsExample from '../../../../../../examples/docs/voice-agen
 import audioInterruptedExample from '../../../../../../examples/docs/voice-agents/audioInterrupted.ts?raw';
 import sessionInterruptExample from '../../../../../../examples/docs/voice-agents/sessionInterrupt.ts?raw';
 import updateHistoryExample from '../../../../../../examples/docs/voice-agents/updateHistory.ts?raw';
+import historyEventsExample from '../../../../../../examples/docs/voice-agents/historyEvents.ts?raw';
 import transportEventsExample from '../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
 import toolHistoryExample from '../../../../../../examples/docs/voice-agents/toolHistory.ts?raw';
 import sendMessageExample from '../../../../../../examples/docs/voice-agents/sendMessage.ts?raw';
@@ -259,7 +260,13 @@ Set `debounceTextLength: -1` when you only want to evaluate the fully generated 
 
 `RealtimeSession` automatically maintains a local `history` snapshot that tracks user messages, assistant output, tool calls, and truncation state. You can render it in the UI, inspect it inside tools, or update it when you need to correct or remove items.
 
-As the conversation changes the session emits `history_updated`. If you need to request history changes, use `updateHistory()`. It asks the transport to diff the current history and send the necessary delete/create events; the local `session.history` view updates as the corresponding conversation events come back.
+As the conversation changes, the session emits `history_updated`; when a new item is added, it also emits `history_added`. `RealtimeSession` does not emit a generic `message` event. Listen to the history events for the SDK's normalized conversation view, or listen to `session.transport` if you need raw Realtime API events.
+
+User audio only appears in history as text when input audio transcription is enabled. If you need to keep the raw audio data in `session.history`, set `historyStoreAudio: true`; it is disabled by default because audio payloads can be large.
+
+<Code lang="typescript" code={historyEventsExample} />
+
+If you need to request history changes, use `updateHistory()`. It asks the transport to diff the current history and send the necessary delete/create events; the local `session.history` view updates as the corresponding conversation events come back.
 
 <Code lang="typescript" code={updateHistoryExample} />
 
