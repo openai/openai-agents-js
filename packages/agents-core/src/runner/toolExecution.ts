@@ -1456,13 +1456,14 @@ export async function executeHandoffCalls<
       const inputFilter =
         handoff.inputFilter ?? runner.config.handoffInputFilter;
       if (inputFilter != null && typeof inputFilter !== 'function') {
-        handoffSpan.setError({
-          message: 'Invalid input filter',
-          data: {
-            details: 'not callable',
+        throw Object.assign(
+          new UserError('Invalid handoff input filter: not callable'),
+          {
+            data: {
+              details: 'not callable',
+            },
           },
-        });
-        throw new UserError('Invalid handoff input filter: not callable');
+        );
       }
 
       const newAgent = await handoff.onInvokeHandoff(
