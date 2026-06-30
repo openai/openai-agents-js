@@ -194,6 +194,90 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(session?.audio?.output?.voice).toBe('echo');
   });
 
+  it('clears the input audio buffer when turn detection is re-enabled', () => {
+    const base = new TestBase();
+
+    // Disable turn detection (VAD off).
+    base.updateSessionConfig({
+      audio: { input: { turnDetection: null } },
+    });
+    // Re-enable turn detection (VAD on). The server keeps a stale idle timer
+    // while VAD is off, so re-enabling has to reset it to avoid an immediate
+    // idle trigger.
+    base.updateSessionConfig({
+      audio: {
+        input: {
+          turnDetection: { type: 'server_vad', idleTimeoutMs: 5000 },
+        },
+      },
+    });
+
+    const sentTypes = base.events.map((event) => event.type);
+    expect(sentTypes).toEqual([
+      'session.update',
+      'session.update',
+      'input_audio_buffer.clear',
+    ]);
+  });
+
+  it('does not clear the input audio buffer when turn detection stays enabled', () => {
+    const base = new TestBase();
+
+    base.updateSessionConfig({
+      audio: {
+        input: {
+          turnDetection: { type: 'server_vad', idleTimeoutMs: 5000 },
+        },
+      },
+    });
+    base.updateSessionConfig({
+      audio: {
+        input: {
+          turnDetection: { type: 'server_vad', idleTimeoutMs: 8000 },
+        },
+      },
+    });
+
+    const sentTypes = base.events.map((event) => event.type);
+    expect(sentTypes).not.toContain('input_audio_buffer.clear');
+  });
+
+  it('does not clear the input audio buffer when turn detection is disabled', () => {
+    const base = new TestBase();
+
+    base.updateSessionConfig({
+      audio: {
+        input: {
+          turnDetection: { type: 'server_vad', idleTimeoutMs: 5000 },
+        },
+      },
+    });
+    base.updateSessionConfig({
+      audio: { input: { turnDetection: null } },
+    });
+
+    const sentTypes = base.events.map((event) => event.type);
+    expect(sentTypes).not.toContain('input_audio_buffer.clear');
+  });
+
+  it('does not clear the input audio buffer when an update omits turn detection', () => {
+    const base = new TestBase();
+
+    base.updateSessionConfig({
+      audio: {
+        input: {
+          turnDetection: { type: 'server_vad', idleTimeoutMs: 5000 },
+        },
+      },
+    });
+    // An unrelated update that does not touch turn detection must not clear the
+    // buffer or accidentally drop the user's in-flight audio.
+    base.updateSessionConfig({ voice: 'echo' });
+
+    const sentTypes = base.events.map((event) => event.type);
+    expect(sentTypes).not.toContain('input_audio_buffer.clear');
+  });
+
   it('whitelists function tools in session payload', () => {
     const base = new TestBase();
     const payload = (base as any)._getMergedSessionConfig({
