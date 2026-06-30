@@ -59,6 +59,7 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
   #audioChunkCount: number = 0;
   #lastPlayedChunkCount: number = 0;
   #previousItemId: string | null = null;
+  #shouldClearOnInterrupt: boolean = true;
   #logger = getLogger('openai-agents:extensions:twilio');
 
   constructor(options: TwilioRealtimeTransportLayerOptions) {
@@ -203,17 +204,44 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     super.updateSessionConfig(newConfig);
   }
 
-  _interrupt(_elapsedTime: number, cancelOngoingResponse: boolean = true) {
-    const elapsedTime = this.#lastPlayedChunkCount + 50; /* 50ms buffer */
-    this.#logger.debug(
-      `Interruption detected, clearing Twilio audio and truncating OpenAI audio after ${elapsedTime}ms`,
-    );
+  #clearTwilioAudio() {
+    if (this.#streamSid == null) {
+      this.#logger.debug('Skipping Twilio clear before streamSid is set');
+      return;
+    }
+    this.#logger.debug('Clearing Twilio audio');
     this.#twilioWebSocket.send(
       JSON.stringify({
         event: 'clear',
         streamSid: this.#streamSid,
       }),
     );
+  }
+
+  interrupt(cancelOngoingResponse: boolean = true) {
+    // Twilio may still be playing buffered audio after the OpenAI response has
+    // finished streaming and the base transport has reset its audio state.
+    // Always clear Twilio playback first, then let the base transport truncate
+    // the OpenAI conversation item if it still has one to truncate.
+    this.#clearTwilioAudio();
+    // Avoid sending a duplicate Twilio `clear` when super.interrupt() calls
+    // this transport's overridden _interrupt().
+    this.#shouldClearOnInterrupt = false;
+    try {
+      super.interrupt(cancelOngoingResponse);
+    } finally {
+      this.#shouldClearOnInterrupt = true;
+    }
+  }
+
+  _interrupt(_elapsedTime: number, cancelOngoingResponse: boolean = true) {
+    const elapsedTime = this.#lastPlayedChunkCount + 50; /* 50ms buffer */
+    this.#logger.debug(
+      `Interruption detected, truncating OpenAI audio after ${elapsedTime}ms`,
+    );
+    if (this.#shouldClearOnInterrupt) {
+      this.#clearTwilioAudio();
+    }
     super._interrupt(elapsedTime, cancelOngoingResponse);
   }
 
