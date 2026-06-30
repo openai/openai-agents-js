@@ -6,6 +6,10 @@ import { defineConfig } from 'vitest/config';
 const rootDir = dirname(fileURLToPath(import.meta.url));
 const packagesDir = resolve(rootDir, 'packages');
 const testAliases = {
+  '@openai/agents-core/_shims': resolve(
+    rootDir,
+    'packages/agents-core/src/shims/shims-node.ts',
+  ),
   '@openai/agents-core/sandbox/local': resolve(
     rootDir,
     'packages/agents-core/src/sandbox/local.ts',
@@ -18,6 +22,7 @@ const testAliases = {
     rootDir,
     'packages/agents-core/src/sandbox/index.ts',
   ),
+  '@openai/agents-core': resolve(rootDir, 'packages/agents-core/src/index.ts'),
 };
 
 const baseTestConfig = {
