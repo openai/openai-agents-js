@@ -6,6 +6,7 @@ import {
 import type { InputAudioTranscriptionCompletedEvent } from './transportLayerEvents';
 import METADATA from './metadata';
 import { RunToolApprovalItem } from '@openai/agents-core';
+import { encodeUint8ArrayToBase64 } from '@openai/agents-core/utils';
 import { RealtimeAgent } from './realtimeAgent';
 
 /**
@@ -29,8 +30,7 @@ export function base64ToArrayBuffer(base64: string) {
  * @returns {string}
  */
 export function arrayBufferToBase64(arrayBuffer: ArrayBuffer) {
-  const binaryString = String.fromCharCode(...new Uint8Array(arrayBuffer));
-  return btoa(binaryString);
+  return encodeUint8ArrayToBase64(new Uint8Array(arrayBuffer));
 }
 
 /**
