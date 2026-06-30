@@ -391,6 +391,75 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
   });
 
+  it('resetHistory replays assistant audio history as text transcripts', () => {
+    const base = new TestBase();
+    const newHist = [
+      {
+        itemId: 'a1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          {
+            type: 'output_audio',
+            transcript: 'Thanks for calling. How can I help?',
+            audio: null,
+          },
+        ],
+      },
+    ];
+
+    base.resetHistory([], newHist as any);
+
+    expect(base.events[0]).toEqual({
+      type: 'conversation.item.create',
+      item: {
+        id: 'a1',
+        role: 'assistant',
+        type: 'message',
+        status: 'completed',
+        content: [
+          {
+            type: 'output_text',
+            text: 'Thanks for calling. How can I help?',
+          },
+        ],
+      },
+    });
+  });
+
+  it('resetHistory fails fast for assistant audio history without transcripts', () => {
+    const base = new TestBase();
+    const oldHist = [
+      {
+        itemId: 'u1',
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [{ type: 'input_text', text: 'hello' }],
+      },
+    ];
+    const newHist = [
+      {
+        itemId: 'a2',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          {
+            type: 'output_audio',
+            audio: 'base64-audio',
+          },
+        ],
+      },
+    ];
+
+    expect(() => base.resetHistory(oldHist as any, newHist as any)).toThrow(
+      'Cannot replay assistant output_audio item a2 through updateHistory because it has no transcript.',
+    );
+    expect(base.events).toHaveLength(0);
+  });
+
   it('resetHistory warns on function call additions', () => {
     const base = new TestBase();
     const newHist = [
