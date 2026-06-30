@@ -59,6 +59,18 @@ export class OpenAIConversationsSession
     const conversationId = await this.getSessionId();
     // Convert each API item into the Agent SDK's input shape. Some API payloads expand into multiple items.
     const toAgentItems = (item: APIConversationItem): AgentInputItem[] => {
+      if (item.type === 'message' && item.role === 'system') {
+        const message = item as APIConversationMessage;
+        return [
+          {
+            id: item.id,
+            type: 'message',
+            role: 'system',
+            content: normalizeSystemMessageContent(message.content),
+          },
+        ];
+      }
+
       if (item.type === 'message' && item.role === 'user') {
         const message = item as APIConversationMessage;
         return [
@@ -254,6 +266,25 @@ function stripProviderModelForConversationPersistence(
     }
     return rest as AgentInputItem;
   });
+}
+
+function normalizeSystemMessageContent(
+  content: APIConversationMessage['content'],
+): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  if (!Array.isArray(content)) {
+    return '';
+  }
+
+  return content
+    .map((item) =>
+      item.type === 'input_text' || item.type === 'text' ? item.text : null,
+    )
+    .filter((item): item is string => item !== null)
+    .join('\n');
 }
 
 function stripConversationPersistenceMetadata(
