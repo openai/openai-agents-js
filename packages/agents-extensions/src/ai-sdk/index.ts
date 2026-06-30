@@ -148,24 +148,27 @@ function ensureSupportedModel(model: LanguageModelCompatible): void {
   }
 }
 
-type ParsedInlineImageData = {
+const OPENAI_FILE_ID_INPUT_ERROR =
+  'OpenAI file IDs are not supported for AI SDK file inputs. Pass a public URL or base64 data URL instead.';
+const FILE_INPUT_URL_ERROR =
+  'Only public URLs and base64 data URLs are supported for AI SDK file inputs.';
+
+type ParsedInlineData = {
   data: string;
   mediaType: string;
 };
 
-function parseBase64ImageDataUrl(
-  imageSource: string,
-): ParsedInlineImageData | undefined {
-  if (!imageSource.startsWith('data:')) {
+function parseBase64DataUrl(source: string): ParsedInlineData | undefined {
+  if (!source.startsWith('data:')) {
     return undefined;
   }
 
-  const commaIndex = imageSource.indexOf(',');
+  const commaIndex = source.indexOf(',');
   if (commaIndex === -1) {
     return undefined;
   }
 
-  const metadata = imageSource.slice('data:'.length, commaIndex);
+  const metadata = source.slice('data:'.length, commaIndex);
   if (!metadata.includes('base64')) {
     return undefined;
   }
@@ -177,9 +180,35 @@ function parseBase64ImageDataUrl(
   }
 
   return {
-    data: imageSource.slice(commaIndex + 1),
+    data: source.slice(commaIndex + 1),
     mediaType,
   };
+}
+
+function parseBase64ImageDataUrl(
+  imageSource: string,
+): ParsedInlineData | undefined {
+  return parseBase64DataUrl(imageSource);
+}
+
+function getStringProviderField(
+  providerData: Record<string, any> | undefined,
+  field: string,
+): string | undefined {
+  const value = providerData?.[field];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function isLikelyOpenAIFileId(value: string): boolean {
+  return /^file[_-]/.test(value);
+}
+
+function parsePublicUrlFileInput(value: string): URL {
+  try {
+    return new URL(value);
+  } catch {
+    throw new UserError(FILE_INPUT_URL_ERROR);
+  }
 }
 
 /**
@@ -346,7 +375,74 @@ export function itemsToLanguageV2Messages(
                     };
                   }
                   if (c.type === 'input_file') {
-                    throw new UserError('File inputs are not supported.');
+                    const fileValue = c.file;
+                    const mediaType =
+                      getStringProviderField(
+                        contentProviderData,
+                        'mediaType',
+                      ) ?? 'application/octet-stream';
+                    const filename =
+                      c.filename ??
+                      getStringProviderField(contentProviderData, 'filename');
+
+                    if (typeof fileValue === 'string') {
+                      const inlineFile = parseBase64DataUrl(fileValue);
+                      if (inlineFile) {
+                        return {
+                          type: 'file',
+                          data: inlineFile.data,
+                          mediaType: inlineFile.mediaType,
+                          ...(filename ? { filename } : {}),
+                          providerOptions: toProviderOptions(
+                            contentProviderData,
+                            model,
+                          ),
+                        };
+                      }
+
+                      if (isLikelyOpenAIFileId(fileValue)) {
+                        throw new UserError(OPENAI_FILE_ID_INPUT_ERROR);
+                      }
+
+                      const url = parsePublicUrlFileInput(fileValue);
+                      return {
+                        type: 'file',
+                        data: url,
+                        mediaType,
+                        ...(filename ? { filename } : {}),
+                        providerOptions: toProviderOptions(
+                          contentProviderData,
+                          model,
+                        ),
+                      };
+                    }
+
+                    if (isRecord(fileValue)) {
+                      const fileObject = fileValue as Record<string, any>;
+                      const fileUrl = getStringProviderField(fileObject, 'url');
+                      if (fileUrl) {
+                        const url = parsePublicUrlFileInput(fileUrl);
+                        const fileFilename =
+                          getStringProviderField(fileObject, 'filename') ??
+                          filename;
+                        return {
+                          type: 'file',
+                          data: url,
+                          mediaType,
+                          ...(fileFilename ? { filename: fileFilename } : {}),
+                          providerOptions: toProviderOptions(
+                            contentProviderData,
+                            model,
+                          ),
+                        };
+                      }
+
+                      if (getStringProviderField(fileObject, 'id')) {
+                        throw new UserError(OPENAI_FILE_ID_INPUT_ERROR);
+                      }
+                    }
+
+                    throw new UserError(FILE_INPUT_URL_ERROR);
                   }
                   throw new UserError(`Unknown content type: ${c.type}`);
                 }),
@@ -990,7 +1086,65 @@ function convertStructuredOutputsToAiSdkOutput(
     }
 
     if (item.type === 'input_file') {
-      textParts.push('[file output skipped]');
+      const mediaType =
+        getStringProviderField(item.providerData, 'mediaType') ??
+        'application/octet-stream';
+      const fileValue = item.file;
+
+      if (typeof fileValue === 'string') {
+        const inlineFile = parseBase64DataUrl(fileValue);
+        if (inlineFile) {
+          mediaParts.push({
+            type: 'media',
+            data: inlineFile.data,
+            mediaType: inlineFile.mediaType,
+          });
+          continue;
+        }
+
+        if (isLikelyOpenAIFileId(fileValue)) {
+          textParts.push(`[file id=${fileValue}]`);
+          continue;
+        }
+
+        try {
+          const url = new URL(fileValue);
+          mediaParts.push({
+            type: 'media',
+            data: url.toString(),
+            mediaType,
+          });
+        } catch {
+          textParts.push(fileValue);
+        }
+        continue;
+      }
+
+      if (isRecord(fileValue)) {
+        const fileObject = fileValue as Record<string, any>;
+        const fileUrl = getStringProviderField(fileObject, 'url');
+        if (fileUrl) {
+          try {
+            const url = new URL(fileUrl);
+            mediaParts.push({
+              type: 'media',
+              data: url.toString(),
+              mediaType,
+            });
+          } catch {
+            textParts.push(fileUrl);
+          }
+          continue;
+        }
+
+        const fileId = getStringProviderField(fileObject, 'id');
+        if (fileId) {
+          textParts.push(`[file id=${fileId}]`);
+          continue;
+        }
+      }
+
+      textParts.push('[file]');
       continue;
     }
   }
