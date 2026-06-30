@@ -80,7 +80,7 @@ describe('OpenAIConversationsSession', () => {
     expect(result).toEqual(convertedItems);
   });
 
-  it('round-trips system messages without routing them through output conversion', async () => {
+  it('round-trips system message text parts without routing them through output conversion', async () => {
     const list = vi.fn(() => ({
       async *[Symbol.asyncIterator]() {
         yield {
@@ -91,6 +91,10 @@ describe('OpenAIConversationsSession', () => {
             {
               type: 'input_text',
               text: 'User info (session context): premium account',
+            },
+            {
+              type: 'text',
+              text: 'Always respond concisely.',
             },
           ],
         } as any;
@@ -120,7 +124,8 @@ describe('OpenAIConversationsSession', () => {
         id: 'sys-1',
         type: 'message',
         role: 'system',
-        content: 'User info (session context): premium account',
+        content:
+          'User info (session context): premium account\nAlways respond concisely.',
       },
     ]);
   });

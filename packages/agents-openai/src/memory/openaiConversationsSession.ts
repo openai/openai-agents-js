@@ -280,7 +280,9 @@ function normalizeSystemMessageContent(
   }
 
   return content
-    .map((item) => (item.type === 'input_text' ? item.text : null))
+    .map((item) =>
+      item.type === 'input_text' || item.type === 'text' ? item.text : null,
+    )
     .filter((item): item is string => item !== null)
     .join('\n');
 }
