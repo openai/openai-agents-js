@@ -434,7 +434,7 @@ export function handoff<
     handoff.toolDescription = config.toolDescriptionOverride;
   }
 
-  if (config.inputFilter) {
+  if (config.inputFilter != null) {
     handoff.inputFilter = config.inputFilter;
   }
 

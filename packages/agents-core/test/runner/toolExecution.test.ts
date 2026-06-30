@@ -1498,8 +1498,10 @@ describe('executeHandoffCalls', () => {
     async (_label, inputFilter) => {
       const target = new Agent({ name: 'Target' });
       const onHandoff = vi.fn();
-      const h = handoff(target, { onHandoff });
-      h.inputFilter = inputFilter as any;
+      const h = handoff(target, {
+        onHandoff,
+        inputFilter: inputFilter as any,
+      });
       const runner = new Runner({ tracingDisabled: true });
       const runnerHandoffListener = vi.fn();
       const agentHandoffListener = vi.fn();
