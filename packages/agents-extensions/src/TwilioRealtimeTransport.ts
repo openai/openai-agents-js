@@ -60,6 +60,82 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
   #lastPlayedChunkCount: number = 0;
   #previousItemId: string | null = null;
   #logger = getLogger('openai-agents:extensions:twilio');
+  #twilioListenersAttached = false;
+
+  #handleTwilioMessage = (message: MessageEvent | NodeMessageEvent) => {
+    try {
+      const data = JSON.parse(message.data.toString());
+      if (this.#logger.dontLogModelData) {
+        this.#logger.debug('Twilio message:', data.event);
+      } else {
+        this.#logger.debug('Twilio message:', data);
+      }
+      this.emit('*', {
+        type: 'twilio_message',
+        message: data,
+      });
+      switch (data.event) {
+        case 'media':
+          if (this.status === 'connected') {
+            this.sendAudio(utils.base64ToArrayBuffer(data.media.payload));
+          }
+          break;
+        case 'mark':
+          if (
+            !data.mark.name.startsWith('done:') &&
+            data.mark.name.includes(':')
+          ) {
+            // keeping track of what the last chunk was that the user heard fully
+            const count = Number(data.mark.name.split(':')[1]);
+            if (Number.isFinite(count)) {
+              this.#lastPlayedChunkCount = count;
+            } else {
+              this.#logger.warn('Invalid mark name received:', data.mark.name);
+            }
+          } else if (data.mark.name.startsWith('done:')) {
+            this.#lastPlayedChunkCount = 0;
+          }
+          break;
+        case 'start':
+          this.#streamSid = data.start.streamSid;
+          break;
+        default:
+          break;
+      }
+    } catch (error) {
+      this.#logger.error('Error parsing message:', error, 'Message:', message);
+      this.emit('error', {
+        type: 'error',
+        error,
+      });
+    }
+  };
+
+  #handleTwilioClose = () => {
+    if (this.status !== 'disconnected') {
+      this.close();
+    }
+  };
+
+  #handleTwilioError = (error: ErrorEvent | NodeErrorEvent) => {
+    this.emit('error', {
+      type: 'error',
+      error,
+    });
+    this.close();
+  };
+
+  #handleAudioDone = () => {
+    this.#twilioWebSocket.send(
+      JSON.stringify({
+        event: 'mark',
+        mark: {
+          name: `done:${this.currentItemId}`,
+        },
+        streamSid: this.#streamSid,
+      }),
+    );
+  };
 
   constructor(options: TwilioRealtimeTransportLayerOptions) {
     super(options);
@@ -105,97 +181,50 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     };
   }
 
+  #addTwilioListeners() {
+    this.#removeTwilioListeners();
+    this.#twilioWebSocket.addEventListener(
+      'message',
+      this.#handleTwilioMessage,
+    );
+    this.#twilioWebSocket.addEventListener('close', this.#handleTwilioClose);
+    this.#twilioWebSocket.addEventListener('error', this.#handleTwilioError);
+    this.on('audio_done', this.#handleAudioDone);
+    this.#twilioListenersAttached = true;
+  }
+
+  #removeTwilioListeners() {
+    if (!this.#twilioListenersAttached) {
+      return;
+    }
+
+    this.#twilioWebSocket.removeEventListener(
+      'message',
+      this.#handleTwilioMessage,
+    );
+    this.#twilioWebSocket.removeEventListener('close', this.#handleTwilioClose);
+    this.#twilioWebSocket.removeEventListener('error', this.#handleTwilioError);
+    this.off('audio_done', this.#handleAudioDone);
+    this.#twilioListenersAttached = false;
+  }
+
   async connect(options: RealtimeTransportLayerConnectOptions) {
     options.initialSessionConfig = this._setInputAndOutputAudioFormat(
       options.initialSessionConfig,
     );
     // listen to Twilio messages as quickly as possible
-    this.#twilioWebSocket.addEventListener(
-      'message',
-      (message: MessageEvent | NodeMessageEvent) => {
-        try {
-          const data = JSON.parse(message.data.toString());
-          if (this.#logger.dontLogModelData) {
-            this.#logger.debug('Twilio message:', data.event);
-          } else {
-            this.#logger.debug('Twilio message:', data);
-          }
-          this.emit('*', {
-            type: 'twilio_message',
-            message: data,
-          });
-          switch (data.event) {
-            case 'media':
-              if (this.status === 'connected') {
-                this.sendAudio(utils.base64ToArrayBuffer(data.media.payload));
-              }
-              break;
-            case 'mark':
-              if (
-                !data.mark.name.startsWith('done:') &&
-                data.mark.name.includes(':')
-              ) {
-                // keeping track of what the last chunk was that the user heard fully
-                const count = Number(data.mark.name.split(':')[1]);
-                if (Number.isFinite(count)) {
-                  this.#lastPlayedChunkCount = count;
-                } else {
-                  this.#logger.warn(
-                    'Invalid mark name received:',
-                    data.mark.name,
-                  );
-                }
-              } else if (data.mark.name.startsWith('done:')) {
-                this.#lastPlayedChunkCount = 0;
-              }
-              break;
-            case 'start':
-              this.#streamSid = data.start.streamSid;
-              break;
-            default:
-              break;
-          }
-        } catch (error) {
-          this.#logger.error(
-            'Error parsing message:',
-            error,
-            'Message:',
-            message,
-          );
-          this.emit('error', {
-            type: 'error',
-            error,
-          });
-        }
-      },
-    );
-    this.#twilioWebSocket.addEventListener('close', () => {
-      if (this.status !== 'disconnected') {
-        this.close();
-      }
-    });
-    this.#twilioWebSocket.addEventListener(
-      'error',
-      (error: ErrorEvent | NodeErrorEvent) => {
-        this.emit('error', {
-          type: 'error',
-          error,
-        });
-        this.close();
-      },
-    );
-    this.on('audio_done', () => {
-      this.#twilioWebSocket.send(
-        JSON.stringify({
-          event: 'mark',
-          mark: {
-            name: `done:${this.currentItemId}`,
-          },
-          streamSid: this.#streamSid,
-        }),
-      );
-    });
-    await super.connect(options);
+    this.#addTwilioListeners();
+    try {
+      await super.connect(options);
+    } catch (error) {
+      this.#removeTwilioListeners();
+      throw error;
+    }
+  }
+
+  close() {
+    this.#removeTwilioListeners();
+    super.close();
   }
 
   updateSessionConfig(config: Partial<RealtimeSessionConfig>): void {

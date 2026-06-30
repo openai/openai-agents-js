@@ -3,9 +3,6 @@ import { EventEmitter } from 'events';
 import { TwilioRealtimeTransportLayer } from '../src/TwilioRealtimeTransport';
 import { allowConsole } from '../../../helpers/tests/console-guard';
 
-import type { MessageEvent as NodeMessageEvent } from 'ws';
-import type { MessageEvent } from 'undici-types';
-
 vi.mock('@openai/agents/realtime', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { EventEmitter } = require('events');
@@ -34,15 +31,38 @@ vi.mock('@openai/agents/realtime', () => {
 class FakeTwilioWebSocket extends EventEmitter {
   send = vi.fn();
   close = vi.fn();
-}
+  listenerWrappers = new Map<
+    string,
+    Map<(evt: any) => void, (evt: any) => void>
+  >();
 
-// @ts-expect-error - we're making the node event emitter compatible with the browser event emitter
-FakeTwilioWebSocket.prototype.addEventListener = function (
-  type: string,
-  listener: (evt: MessageEvent | NodeMessageEvent) => void,
-) {
-  this.on(type, (evt) => listener(type === 'message' ? { data: evt } : evt));
-};
+  addEventListener(type: string, listener: (evt: any) => void) {
+    const wrapped = (evt: any) =>
+      listener(type === 'message' ? { data: evt } : evt);
+    const wrappers = this.listenerWrappers.get(type) ?? new Map();
+    wrappers.set(listener, wrapped);
+    this.listenerWrappers.set(type, wrappers);
+    this.on(type, wrapped);
+  }
+
+  removeEventListener(type: string, listener: (evt: any) => void) {
+    const wrappers = this.listenerWrappers.get(type);
+    if (!wrappers) {
+      return;
+    }
+
+    const wrapped = wrappers.get(listener);
+    if (!wrapped) {
+      return;
+    }
+
+    this.off(type, wrapped);
+    wrappers.delete(listener);
+    if (wrappers.size === 0) {
+      this.listenerWrappers.delete(type);
+    }
+  }
+}
 
 const base64 = (data: string) => Buffer.from(data).toString('base64');
 
@@ -151,8 +171,80 @@ describe('TwilioRealtimeTransportLayer', () => {
 
     twilio.emit('close');
     expect(closeSpy).toHaveBeenCalled();
-    twilio.emit('error', new Error('boom'));
+
+    const twilioError = new FakeTwilioWebSocket();
+    const transportError = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilioError as any,
+    });
+    transportError.on('error', vi.fn());
+    await transportError.connect({ apiKey: 'ek_test' } as any);
+    twilioError.emit('error', new Error('boom'));
     expect(closeSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test('connect does not duplicate Twilio listeners on reconnect', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    await transport.connect({ apiKey: 'ek_test' } as any);
+
+    expect(twilio.listenerCount('message')).toBe(1);
+    expect(twilio.listenerCount('close')).toBe(1);
+    expect(twilio.listenerCount('error')).toBe(1);
+
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const sendAudioSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.sendAudio);
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({ event: 'media', media: { payload: base64('a') } }),
+    });
+
+    expect(sendAudioSpy).toHaveBeenCalledTimes(1);
+
+    transport.emit('audio_done' as any);
+    expect(twilio.send).toHaveBeenCalledTimes(1);
+  });
+
+  test('connect removes Twilio listeners when OpenAI connect fails', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    vi.mocked(OpenAIRealtimeWebSocket.prototype.connect).mockRejectedValueOnce(
+      new Error('connect failed'),
+    );
+
+    await expect(
+      transport.connect({ apiKey: 'ek_test' } as any),
+    ).rejects.toThrow('connect failed');
+
+    expect(twilio.listenerCount('message')).toBe(0);
+    expect(twilio.listenerCount('close')).toBe(0);
+    expect(twilio.listenerCount('error')).toBe(0);
+
+    transport.emit('audio_done' as any);
+    expect(twilio.send).not.toHaveBeenCalled();
+  });
+
+  test('close removes Twilio listeners', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+
+    transport.close();
+
+    expect(twilio.listenerCount('message')).toBe(0);
+    expect(twilio.listenerCount('close')).toBe(0);
+    expect(twilio.listenerCount('error')).toBe(0);
+
+    transport.emit('audio_done' as any);
+    expect(twilio.send).not.toHaveBeenCalled();
   });
 
   test('_onAudio resets chunk count and emits', async () => {
