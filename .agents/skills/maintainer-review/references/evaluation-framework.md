@@ -29,6 +29,7 @@ Treat validity, severity, and merge-worthiness as separate outputs. Also disting
 | Consequence | What fails, and is it silent or recoverable? | Observed output/error/state and downstream effect |
 | Breadth | Which packages, runtimes, providers, and versions are affected? | Explicit path and compatibility matrix |
 | Frequency | Is it normal, intermittent, or pathological? | Repeats, deterministic preconditions, reports, or telemetry |
+| Need evidence | Is the exact scope demonstrated, merely plausible, already covered, or unsupported? | Same-scope user scenario, real-path reproduction, released compatibility requirement, violated supported contract, repeated demand, or broad consequential invariant |
 | Unmet need | What user outcome cannot be achieved through supported behavior today, or what supported contract is violated? | Concrete scenario plus a trace showing why the closest existing path is insufficient or defective |
 | Existing capability | Can configuration, composition, cloning, callbacks, extension points, or a caller-owned layer already satisfy the outcome? | Current release code, tests, docs, and an exact supported workflow |
 | Compatibility | Is released API, package resolution, protocol, or durable state changed? | Latest release comparison and contract inspection |
@@ -65,6 +66,21 @@ Use `partially confirmed` when the symptom is real but cause/reach/scope is wron
 
 Issue reports often combine a desired outcome with a proposed API or implementation. Treat the proposed mechanism as a hypothesis. Confirm the unmet outcome or violated supported contract before evaluating how well the patch implements that mechanism.
 
+### Linked-evidence scope
+
+Evidence from a linked issue applies only when the issue and PR share the same runtime variant, provider or tool type, trigger, supported configuration, and user outcome. A broad title, ordinary reference, `Related to` statement, or conceptual similarity is not enough. If an earlier change already resolved the concrete reported scenario, an adjacent extension starts with no inherited evidence of need.
+
+### Need evidence status
+
+Assign one status before deep implementation review:
+
+- **Demonstrated**: The exact scope has a concrete supported scenario, real-path reproduction, released compatibility requirement, violated supported contract, repeated demand, or broad invariant with meaningful consequence.
+- **Plausible but unproven**: The code path is possible, but realistic reach, frequency, consequence, provider behavior, or demand is missing.
+- **Already covered**: A reasonable supported workflow already satisfies the outcome.
+- **Unsupported**: The outcome is outside the SDK contract or belongs at a provider, adapter, or caller-owned layer.
+
+Only `Demonstrated` need can support a merge-worthy code recommendation. `Plausible but unproven` maps to `Needs evidence` or `Not worth completing`, even when the patch is technically correct and its remaining fixes are bounded. `Already covered` and `Unsupported` normally map to closure or a simpler non-core alternative.
+
 Before accepting an issue or recommending a PR, record:
 
 | Question | Required evidence |
@@ -83,7 +99,11 @@ Classify the result:
 - **No demonstrated gap**: no concrete scenario proves that existing functionality is insufficient. Request evidence or close rather than designing from the proposed mechanism.
 - **Defect in supported behavior**: the existing path violates a documented or established correctness, security, compatibility, or lifecycle contract. A workaround may affect priority or solution shape, but does not erase the defect.
 
-Passing tests for a new implementation establish feasibility and correctness, not need. A technically coherent patch can still be `Not worth completing` when the motivating scenario is hypothetical, already supported, or better solved elsewhere.
+Passing tests for a new implementation establish feasibility and correctness, not need. A `FakeModel` response, manually constructed provider item, mock, or synthetic fixture does not establish realistic provider behavior, user reach, frequency, consequence, or demand. API symmetry and parity with an adjacent runtime are design arguments, not need evidence. A technically coherent patch can still be `Not worth completing` when the motivating scenario is hypothetical, already supported, or better solved elsewhere.
+
+Use the counterfactual maintainer test: if the PR did not already exist, would maintainers choose to file and implement the same work from the available evidence? Contributor effort lowers implementation cost but does not create product need or remove permanent maintenance cost.
+
+When the need is not `Demonstrated`, inspect implementation only far enough to estimate contract, risk, and maintenance cost. Do not convert patch defects, missing tests, or documentation gaps into a request-changes disposition; those become merge blockers only after the need gate passes.
 
 ## Issue Disposition
 
@@ -101,7 +121,7 @@ Ask only for evidence that could change the disposition.
 
 Assess independently:
 
-1. **Need**: a concrete unmet user outcome or defect in supported behavior is demonstrated, and the closest supported capability cannot reasonably satisfy the scenario as-is.
+1. **Need**: same-scope evidence demonstrates a concrete unmet user outcome or defect in supported behavior, and the closest supported capability cannot reasonably satisfy the scenario as-is. Do not inherit evidence from an adjacent variant or already-fixed scenario.
 2. **Correctness**: the fix covers the claim and meaningful boundaries.
 3. **Placement**: the invariant is enforced once at the owning layer instead of duplicating existing functionality, patching locally, or moving caller- or provider-owned policy into the core SDK.
 4. **Consistency**: equivalent streaming/non-streaming, provider, runtime, serialization, resume, package, and adapter paths stay aligned.
@@ -111,6 +131,8 @@ Assess independently:
 8. **Completion cost**: remaining code, tests, docs, design, and conflict work is bounded enough to justify attention.
 
 A PR can be correct but not merge-worthy because the need is negligible, the outcome is already supported through a reasonable existing mechanism, the real path is unchanged, equivalent paths remain inconsistent, the abstraction costs more than the benefit, or a simpler design exists at another layer.
+
+Do not use implementation correctness, bounded remaining work, CI status, or contributor effort to upgrade a need that is only `Plausible but unproven`. Merge-worthiness is gated by demonstrated need, not by how close the patch is to completion.
 
 Keep issue severity separate from `Patch risk`. A patch-induced regression, compatibility break, listener/resource leak, or maintenance hazard does not make the underlying issue more severe.
 
@@ -299,6 +321,7 @@ Use `Maintainer decision` for a concluded review. Use `Preliminary assessment` w
 
 <Need, practical impact, and merge-worthiness.>
 
+- Need evidence: <Demonstrated / Plausible but unproven / Already covered / Unsupported>
 - Code recommendation: <code disposition>
 - Repository readiness: <one allowed status; only when useful for a merge-worthy recommendation>
 

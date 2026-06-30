@@ -15,10 +15,11 @@ Make a maintainer decision, not a generic diff summary. Separate these questions
 4. If a gap remains, is the proposed solution the best design and implementation layer?
 5. Can supported users plausibly reach the gap, and what happens when they do?
 6. Is it important enough to act on now?
-7. For a PR, is this solution worth merging and maintaining?
-8. Can overlapping or stale operations corrupt shared state or clean up resources owned by surviving work?
-9. If competing PRs exist, which single implementation path should maintainers pursue?
-10. What concise maintainer message should communicate closure, an evidence request, or required changes?
+7. If this PR did not already exist, would maintainers choose to open and implement the same work?
+8. For a PR, is this solution worth merging and maintaining?
+9. Can overlapping or stale operations corrupt shared state or clean up resources owned by surviving work?
+10. If competing PRs exist, which single implementation path should maintainers pursue?
+11. What concise maintainer message should communicate closure, an evidence request, or required changes?
 
 Treat an issue's requested field, callback, flag, class, or implementation strategy as a proposed mechanism, not as the accepted requirement. Do not begin by asking how to implement it. First establish either a concrete unmet user outcome or a violated supported contract, then prove that the proposed mechanism is better than the available alternatives.
 
@@ -33,6 +34,7 @@ Lead with the current review state. Use `Preliminary assessment` while runtime a
 - For a PR, inspect the current remote base and head, full patch, commit history when relevant, tests, linked issue, and review discussion. Do not substitute the current local checkout for the remote change.
 - State the claim in one falsifiable sentence. Separate the observed symptom from the proposed cause or fix.
 - Identify the latest released boundary when compatibility or regression claims matter.
+- Verify whether linked evidence matches the PR's exact runtime variant, provider or tool type, triggering condition, and user outcome. A generic issue title, conceptual similarity, or wording such as `Related to` does not transfer evidence of need to an adjacent extension. If the reported scenario has already been fixed, treat additional variants as new needs requiring their own evidence.
 
 Use read-only GitHub access. On this laptop, do not run `gh` unless the user explicitly asks in the same turn. A review never authorizes comments, labels, branch changes, pushes, merges, or other remote writes.
 
@@ -40,13 +42,26 @@ Use read-only GitHub access. On this laptop, do not run `gh` unless the user exp
 
 Complete this pass before deeply evaluating a proposed implementation and before any positive issue or PR assessment.
 
+First assign one `Need evidence` status:
+
+- **Demonstrated**: The exact scope has a concrete supported scenario, a real-path reproduction, a released compatibility requirement, a violated supported contract, repeated demand, or a broad invariant with a meaningful consequence.
+- **Plausible but unproven**: The path can exist, but realistic provider behavior, user reach, frequency, consequence, or demand is not established.
+- **Already covered**: A reasonable supported workflow already satisfies the outcome.
+- **Unsupported**: The outcome belongs outside the SDK contract or at a provider, adapter, or caller-owned layer.
+
+Only `Demonstrated` need may receive `Merge-worthy as-is` or `Merge-worthy after focused changes`. For `Plausible but unproven`, prefer `Needs evidence` or `Not worth completing`; for `Already covered` or `Unsupported`, prefer closure or the relevant simpler alternative.
+
 1. Restate the desired user outcome without naming the requested API, class, file, option, or implementation. Separate the actual constraint from the reporter's preferred mechanism.
 2. Trace the closest supported ways to achieve that outcome in the current release and current target. Inspect the owning code path, public API, tests, and relevant docs rather than assuming that an unfamiliar capability is missing. Consider configuration, composition, cloning, callbacks, extension points, provider adapters, and caller-owned code.
 3. Determine whether the report shows a capability gap, an ergonomics or discoverability gap, an unsupported use case, or no demonstrated gap. A more convenient spelling is not automatically a missing capability.
 4. Compare the proposed solution against the strongest existing approach and at least one better-design candidate: no code change, clearer documentation or validation, a narrower fix, reuse of an existing abstraction, or enforcement at a more coherent shared boundary.
 5. For each viable approach, compare whether it satisfies the concrete scenario, what new public or internal contract it creates, cross-path consistency, compatibility, and permanent maintenance cost.
 
-Do not treat a test proving that new code can work as evidence that the feature is needed. If the report provides no concrete scenario, the existing functionality appears sufficient, or the requested mechanism solves only a hypothetical convenience problem, prefer `Needs evidence`, `Close`, `Supersede with a simpler alternative`, or `Not worth completing` over designing the requested feature on the reporter's behalf.
+Do not treat a test proving that new code can work as evidence that the feature is needed. A `FakeModel` response, manually constructed provider item, mock, or new regression test can establish code-path reachability and implementation correctness; it does not by itself establish realistic provider behavior, user reach, frequency, practical consequence, or demand.
+
+API symmetry, naming consistency, and parity with an adjacent tool, provider, or output type are design arguments, not evidence of need. Parity may justify work when it removes existing complexity or enforces a broad demonstrated invariant, but adding branches, tests, documentation, or public behavior requires independent practical justification.
+
+If the need is not `Demonstrated`, inspect the patch only far enough to understand its contract, risk, and maintenance cost. Do not turn implementation defects, missing tests, or documentation gaps into a request-changes recommendation, because those questions become merge-blocking only after the need gate passes. If the report provides no concrete scenario, the existing functionality appears sufficient, or the requested mechanism solves only a hypothetical convenience problem, prefer `Needs evidence`, `Close`, `Supersede with a simpler alternative`, or `Not worth completing` over designing the requested feature on the reporter's behalf.
 
 An existing workaround may change priority or solution shape, but it does not by itself erase a demonstrated correctness, security, compatibility, or lifecycle defect in supported behavior. Evaluate both the unmet outcome and the violated contract.
 
@@ -90,6 +105,7 @@ Before a positive assessment, complete the pass in step 2 and be able to state a
 3. Why the proposed behavior belongs at the chosen abstraction layer instead of a caller, provider, adapter, validation, documentation, or existing extension point.
 4. Why the proposed permanent contract is better than no code change and the strongest narrower alternative.
 5. What real scenario, compatibility requirement, violated invariant, or repeated demand justifies the maintenance surface.
+6. Whether maintainers would choose to pursue the same work if no contributor had already supplied a patch.
 
 If any answer is missing and could change whether code should exist at all, do not call the issue actionable or the PR merge-worthy. Request only the evidence needed to distinguish a genuine capability gap or contract violation from a usage, discoverability, or solution-design problem. This is a product and architecture evidence gap, not a runtime-probe trigger by itself.
 
@@ -136,7 +152,7 @@ Read [the evaluation framework](references/evaluation-framework.md) when validit
 
 Assess claim validity, realistic reach, consequence, breadth, frequency, recoverability, compatibility, and severity. Keep observed facts separate from inference and name missing evidence that could change the result.
 
-Classify the need explicitly as a capability gap, ergonomics or discoverability gap, unsupported use case, no demonstrated gap, or a defect in supported behavior. Do not assign practical impact to the absence of the requested mechanism when an existing supported workflow already produces the requested outcome.
+Report the `Need evidence` status before classifying the need as a capability gap, ergonomics or discoverability gap, unsupported use case, no demonstrated gap, or a defect in supported behavior. Do not assign practical impact to the absence of the requested mechanism when an existing supported workflow already produces the requested outcome. Do not infer practical importance merely from reachability, API asymmetry, or a technically successful patch.
 
 For a PR, make `Severity` describe the underlying issue or user need. Report patch-induced regression, compatibility, lifecycle, or maintenance risk separately as `Patch risk`.
 
@@ -150,6 +166,8 @@ Use one code recommendation:
 - **Merge-worthy after focused changes**: real need and viable direction with bounded corrections.
 - **Supersede with a simpler alternative**: real need, but a smaller or more coherent fix is preferable.
 - **Not worth completing**: negligible/unsupported impact, no-op behavior, wrong abstraction, or excessive completion cost.
+
+`Merge-worthy as-is` and `Merge-worthy after focused changes` are invalid unless `Need evidence` is `Demonstrated`. A bounded set of implementation fixes cannot promote a `Plausible but unproven` need into a merge-worthy recommendation.
 
 For merge-worthy recommendations, use one repository-readiness status when useful:
 
@@ -169,6 +187,8 @@ Always compare the proposed patch with the strongest existing supported approach
 Choose the assessment language from the current user request and governing repository instructions. Maintainer comment drafts remain English.
 
 Use the matching compact report in the evaluation framework. While runtime approval is pending, use its preliminary-assessment variant and end with the approval request instead of presenting a final recommendation. Keep the report decision-oriented, put unexpected/negative evidence first, and use no more than five evidence bullets by default.
+
+For PRs, put `Need evidence` before the code recommendation. When the need is not `Demonstrated`, lead with that result, omit repository readiness, and avoid presenting patch fixes as the primary maintainer action.
 
 When existing functionality or a better alternative materially affects the decision, state it explicitly in the evidence and recommendation. Name the exact supported path, what it does and does not cover, and why it is preferable. Do not bury a `Not worth completing` or `Supersede with a simpler alternative` conclusion beneath praise for implementation quality.
 
