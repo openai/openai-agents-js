@@ -125,6 +125,47 @@ describe('OpenAIConversationsSession', () => {
     ]);
   });
 
+  it('round-trips limited system messages with string content', async () => {
+    const list = vi.fn(() => ({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          id: 'sys-1',
+          type: 'message',
+          role: 'system',
+          content: 'User info (session context): premium account',
+        } as any;
+      },
+    }));
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list,
+            create: vi.fn(),
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    const result = await session.getItems(1);
+
+    expect(list).toHaveBeenCalledWith('conv-123', { limit: 1, order: 'desc' });
+    expect(convertToOutputItemMock).not.toHaveBeenCalled();
+    expect(result).toEqual([
+      {
+        id: 'sys-1',
+        type: 'message',
+        role: 'system',
+        content: 'User info (session context): premium account',
+      },
+    ]);
+  });
+
   it('wraps string function_call_output payloads before converting', async () => {
     const convertedItems = [
       {
