@@ -24,6 +24,15 @@ vi.mock('@openai/agents/realtime', () => {
   ) {
     this.status = 'connected';
   });
+  FakeOpenAIRealtimeWebSocket.prototype.interrupt = vi.fn(function (
+    this: any,
+    cancelOngoingResponse = true,
+  ) {
+    if (!this.currentItemId) {
+      return;
+    }
+    this._interrupt(123, cancelOngoingResponse);
+  });
   FakeOpenAIRealtimeWebSocket.prototype.sendAudio = vi.fn();
   FakeOpenAIRealtimeWebSocket.prototype.close = vi.fn();
   FakeOpenAIRealtimeWebSocket.prototype._interrupt = vi.fn();
@@ -32,8 +41,11 @@ vi.mock('@openai/agents/realtime', () => {
 });
 
 class FakeTwilioWebSocket extends EventEmitter {
+  readyState = 1;
   send = vi.fn();
-  close = vi.fn();
+  close = vi.fn(() => {
+    this.readyState = 3;
+  });
 }
 
 // @ts-expect-error - we're making the node event emitter compatible with the browser event emitter
@@ -194,6 +206,81 @@ describe('TwilioRealtimeTransportLayer', () => {
     expect(marks[1].mark.name).toBe('a:3');
     expect(marks[2].mark.name).toBe('b:1');
     expect(audioListener).toHaveBeenCalledTimes(3);
+  });
+
+  test('interrupt sends Twilio clear when base interrupt has no audio state', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const interruptSpy = vi.mocked(
+      OpenAIRealtimeWebSocket.prototype._interrupt,
+    );
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({ event: 'start', start: { streamSid: 'sid-1' } }),
+    });
+
+    transport.interrupt();
+
+    expect(interruptSpy).not.toHaveBeenCalled();
+    expect(twilio.send).toHaveBeenCalledTimes(1);
+    expect(twilio.send).toHaveBeenCalledWith(
+      JSON.stringify({ event: 'clear', streamSid: 'sid-1' }),
+    );
+  });
+
+  test('interrupt sends one Twilio clear when base interrupt continues', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const interruptSpy = vi.mocked(
+      OpenAIRealtimeWebSocket.prototype._interrupt,
+    );
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({ event: 'start', start: { streamSid: 'sid-1' } }),
+    });
+    twilio.emit('message', {
+      toString: () => JSON.stringify({ event: 'mark', mark: { name: 'u:5' } }),
+    });
+    // @ts-expect-error - we're testing base interrupt interaction.
+    transport.currentItemId = 'u';
+
+    transport.interrupt(false);
+
+    const clearMessages = twilio.send.mock.calls.filter(
+      ([payload]) => JSON.parse(payload as string).event === 'clear',
+    );
+    expect(clearMessages).toHaveLength(1);
+    expect(interruptSpy).toHaveBeenCalledWith(55, false);
+  });
+
+  test('interrupt skips Twilio clear before start or after socket close', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+
+    transport.interrupt();
+    expect(twilio.send).not.toHaveBeenCalled();
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({ event: 'start', start: { streamSid: 'sid-1' } }),
+    });
+    twilio.close();
+    transport.interrupt();
+
+    expect(twilio.send).not.toHaveBeenCalled();
   });
 
   test('connect preserves nested audio config while defaulting Twilio formats', async () => {
