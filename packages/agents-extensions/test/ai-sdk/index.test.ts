@@ -1773,7 +1773,10 @@ describe('itemsToLanguageV2Messages', () => {
             output: {
               type: 'content',
               value: [
-                { type: 'text', text: 'A scenic view.' },
+                {
+                  type: 'text',
+                  text: 'A scenic view.[file url=https://example.com/report.pdf]',
+                },
                 {
                   type: 'media',
                   data: 'https://example.com/image.png',
@@ -1787,11 +1790,6 @@ describe('itemsToLanguageV2Messages', () => {
                 {
                   type: 'media',
                   data: 'JVBERi0=',
-                  mediaType: 'application/pdf',
-                },
-                {
-                  type: 'media',
-                  data: 'https://example.com/report.pdf',
                   mediaType: 'application/pdf',
                 },
               ],
