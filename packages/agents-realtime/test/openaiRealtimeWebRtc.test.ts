@@ -31,19 +31,30 @@ function waitForAsyncResponseCreate() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 class FakeRTCPeerConnection {
   ontrack: ((ev: any) => void) | null = null;
   onconnectionstatechange: (() => void) | null = null;
   connectionState = 'new';
 
   createDataChannel(_name: string) {
-    lastChannel = new FakeRTCDataChannel();
+    const dataChannel = new FakeRTCDataChannel();
+    lastChannel = dataChannel;
     // simulate async open event
     setTimeout(() => {
       this._simulateStateChange('connected');
-      lastChannel?.dispatchEvent(new Event('open'));
+      dataChannel.dispatchEvent(new Event('open'));
     }, 0);
-    return lastChannel as unknown as RTCDataChannel;
+    return dataChannel as unknown as RTCDataChannel;
   }
   addTrack() {}
   async createOffer() {
@@ -383,6 +394,69 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     const rtc = new OpenAIRealtimeWebRTC();
     await rtc.connect({ apiKey: 'ek_test', model: 'rtc-model' });
     expect(rtc.currentModel).toBe('rtc-model');
+  });
+
+  it('coalesces overlapping connect calls before API key resolution', async () => {
+    const apiKey = createDeferred<string>();
+    const firstApiKey = vi.fn(() => apiKey.promise);
+    const secondApiKey = vi.fn(async () => 'ek_second');
+    let peerConnectionCount = 0;
+
+    class CountingPeerConnection extends FakeRTCPeerConnection {
+      constructor() {
+        super();
+        peerConnectionCount += 1;
+      }
+    }
+
+    (global as any).RTCPeerConnection = CountingPeerConnection as any;
+    const rtc = new OpenAIRealtimeWebRTC();
+    const firstConnect = rtc.connect({
+      apiKey: firstApiKey,
+      model: 'first-model',
+    });
+    const overlappingConnect = rtc.connect({
+      apiKey: secondApiKey,
+      model: 'second-model',
+    });
+
+    expect(firstApiKey).toHaveBeenCalledOnce();
+    expect(secondApiKey).not.toHaveBeenCalled();
+
+    apiKey.resolve('ek_first');
+    await Promise.all([firstConnect, overlappingConnect]);
+
+    expect(peerConnectionCount).toBe(1);
+    expect(rtc.currentModel).toBe('first-model');
+    expect(rtc.status).toBe('connected');
+  });
+
+  it('ignores stale data channel errors after a failed connect is retried', async () => {
+    let shouldFailConnection = true;
+    const rtc = new OpenAIRealtimeWebRTC({
+      changePeerConnection: async (peerConnection) => {
+        if (shouldFailConnection) {
+          shouldFailConnection = false;
+          throw new Error('first connection failed');
+        }
+        return peerConnection;
+      },
+    });
+    rtc.on('error', () => {});
+
+    await expect(rtc.connect({ apiKey: 'ek_test' })).rejects.toThrow(
+      'first connection failed',
+    );
+    const failedChannel = lastChannel as FakeRTCDataChannel;
+
+    await rtc.connect({ apiKey: 'ek_test' });
+    const survivingChannel = lastChannel as FakeRTCDataChannel;
+    expect(rtc.status).toBe('connected');
+
+    failedChannel.dispatchEvent(new Event('error'));
+
+    expect(rtc.status).toBe('connected');
+    expect(rtc.connectionState.dataChannel).toBe(survivingChannel);
   });
 
   it('resets state on connection failure', async () => {
