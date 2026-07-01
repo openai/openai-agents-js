@@ -6,9 +6,17 @@ import { defineConfig } from 'vitest/config';
 const rootDir = dirname(fileURLToPath(import.meta.url));
 const packagesDir = resolve(rootDir, 'packages');
 const testAliases = {
+  '@openai/agents-core/utils/internal': resolve(
+    rootDir,
+    'packages/agents-core/src/utils/internal.ts',
+  ),
   '@openai/agents-core/sandbox/local': resolve(
     rootDir,
     'packages/agents-core/src/sandbox/local.ts',
+  ),
+  '@openai/agents-core/sandbox/internal/process': resolve(
+    rootDir,
+    'packages/agents-core/src/sandbox/internal/process.ts',
   ),
   '@openai/agents-core/sandbox/internal': resolve(
     rootDir,

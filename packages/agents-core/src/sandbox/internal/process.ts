@@ -3,4 +3,4 @@ export {
   runSandboxProcess,
   type RunSandboxProcessOptions,
   type SandboxProcessResult,
-} from '@openai/agents-core/sandbox/internal/process';
+} from '../sandboxes/shared/runProcess';

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { Buffer } from 'node:buffer';
 import {
   getToolChoice,
-  converTool,
+  convertTool,
   getInputItems,
   convertToOutputItem,
 } from '../src/openaiResponsesModel';
@@ -81,9 +81,9 @@ describe('getToolChoice', () => {
   });
 });
 
-describe('converTool', () => {
+describe('convertTool', () => {
   it('converts function tools', () => {
-    const t = converTool({
+    const t = convertTool({
       type: 'function',
       name: 'f',
       description: 'd',
@@ -99,7 +99,7 @@ describe('converTool', () => {
   });
 
   it('converts deferred function tools', () => {
-    const t = converTool({
+    const t = convertTool({
       type: 'function',
       name: 'f',
       description: 'd',
@@ -117,7 +117,7 @@ describe('converTool', () => {
   });
 
   it('converts computer tools', () => {
-    const t = converTool({
+    const t = convertTool({
       type: 'computer',
     } as any);
     expect(t.tool).toEqual({
@@ -126,7 +126,7 @@ describe('converTool', () => {
   });
 
   it('converts preview computer tools when requested', () => {
-    const t = converTool(
+    const t = convertTool(
       {
         type: 'computer',
         environment: 'mac',
@@ -146,7 +146,7 @@ describe('converTool', () => {
 
   it('rejects preview computer tools without display metadata', () => {
     expect(() =>
-      converTool(
+      convertTool(
         {
           type: 'computer',
         } as any,
@@ -158,7 +158,7 @@ describe('converTool', () => {
   });
 
   it('converts shell tools', () => {
-    const t = converTool({ type: 'shell', name: 'shell' } as any);
+    const t = convertTool({ type: 'shell', name: 'shell' } as any);
     expect(t.tool).toEqual({
       type: 'shell',
       environment: { type: 'local' },
@@ -166,7 +166,7 @@ describe('converTool', () => {
   });
 
   it('converts shell tools with custom environment', () => {
-    const t = converTool({
+    const t = convertTool({
       type: 'shell',
       name: 'shell',
       environment: { type: 'container_reference', containerId: 'cont_123' },
@@ -178,7 +178,7 @@ describe('converTool', () => {
   });
 
   it('converts shell container auto environment with camelCase fields', () => {
-    const t = converTool({
+    const t = convertTool({
       type: 'shell',
       name: 'shell',
       environment: {
@@ -226,7 +226,7 @@ describe('converTool', () => {
   });
 
   it('converts shell container auto environment with inline skill payloads', () => {
-    const t = converTool({
+    const t = convertTool({
       type: 'shell',
       name: 'shell',
       environment: {
@@ -274,7 +274,7 @@ describe('converTool', () => {
 
   it('rejects shell environments with snake_case fields', () => {
     expect(() =>
-      converTool({
+      convertTool({
         type: 'shell',
         name: 'shell',
         environment: {
@@ -287,7 +287,7 @@ describe('converTool', () => {
 
   it('throws for invalid local shell skill definitions', () => {
     expect(() =>
-      converTool({
+      convertTool({
         type: 'shell',
         name: 'shell',
         environment: {
@@ -302,7 +302,7 @@ describe('converTool', () => {
 
   it('throws for container_reference without container id', () => {
     expect(() =>
-      converTool({
+      convertTool({
         type: 'shell',
         name: 'shell',
         environment: { type: 'container_reference' },
@@ -312,7 +312,7 @@ describe('converTool', () => {
 
   it('throws for invalid inline shell skill payloads', () => {
     expect(() =>
-      converTool({
+      convertTool({
         type: 'shell',
         name: 'shell',
         environment: {
@@ -336,7 +336,7 @@ describe('converTool', () => {
 
   it('throws for skill_reference payloads that omit skillId', () => {
     expect(() =>
-      converTool({
+      convertTool({
         type: 'shell',
         name: 'shell',
         environment: {
@@ -348,12 +348,12 @@ describe('converTool', () => {
   });
 
   it('converts apply_patch tools', () => {
-    const t = converTool({ type: 'apply_patch', name: 'apply_patch' } as any);
+    const t = convertTool({ type: 'apply_patch', name: 'apply_patch' } as any);
     expect(t.tool).toEqual({ type: 'apply_patch' });
   });
 
   it('converts builtin tools', () => {
-    const web = converTool({
+    const web = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'web_search',
@@ -367,7 +367,7 @@ describe('converTool', () => {
       search_context_size: 'low',
     });
 
-    const file = converTool({
+    const file = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'file_search',
@@ -385,7 +385,7 @@ describe('converTool', () => {
     });
     expect(file.include).toEqual(['file_search_call.results']);
 
-    const code = converTool({
+    const code = convertTool({
       type: 'hosted_tool',
       providerData: { type: 'code_interpreter', container: 'python' },
     } as any);
@@ -394,7 +394,7 @@ describe('converTool', () => {
       container: 'python',
     });
 
-    const codeWithOutputs = converTool({
+    const codeWithOutputs = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'code_interpreter',
@@ -408,7 +408,7 @@ describe('converTool', () => {
     });
     expect(codeWithOutputs.include).toEqual(['code_interpreter_call.outputs']);
 
-    const toolSearch = converTool({
+    const toolSearch = convertTool({
       type: 'hosted_tool',
       providerData: { type: 'tool_search' },
     } as any);
@@ -416,7 +416,7 @@ describe('converTool', () => {
       type: 'tool_search',
     });
 
-    const clientToolSearch = converTool({
+    const clientToolSearch = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'tool_search',
@@ -448,7 +448,7 @@ describe('converTool', () => {
       },
     });
 
-    const img = converTool({
+    const img = convertTool({
       type: 'hosted_tool',
       providerData: { type: 'image_generation', background: 'auto' },
     } as any);
@@ -465,7 +465,7 @@ describe('converTool', () => {
       size: undefined,
     });
 
-    const custom = converTool({
+    const custom = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'mcp',
@@ -486,7 +486,7 @@ describe('converTool', () => {
       require_approval: 'never',
     });
 
-    const always = converTool({
+    const always = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'mcp',
@@ -502,7 +502,7 @@ describe('converTool', () => {
       require_approval: 'always',
     });
 
-    const scoped = converTool({
+    const scoped = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'mcp',
@@ -526,7 +526,7 @@ describe('converTool', () => {
   });
 
   it('preserves MCP approval read-only filters when converting tools', () => {
-    const scoped = converTool({
+    const scoped = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'mcp',
@@ -551,7 +551,7 @@ describe('converTool', () => {
 
   it('rejects invalid MCP approval policies before converting tools', () => {
     expect(() =>
-      converTool({
+      convertTool({
         type: 'hosted_tool',
         providerData: {
           type: 'mcp',
@@ -567,7 +567,7 @@ describe('converTool', () => {
   });
 
   it('preserves explicit false external web access on web search tools', () => {
-    const web = converTool({
+    const web = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'web_search',
@@ -585,7 +585,7 @@ describe('converTool', () => {
   });
 
   it('throws on unsupported tool', () => {
-    expect(() => converTool({ type: 'other' } as any)).toThrow();
+    expect(() => convertTool({ type: 'other' } as any)).toThrow();
   });
 });
 

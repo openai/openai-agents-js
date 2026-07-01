@@ -182,8 +182,14 @@ export class OpenAIRealtimeWebRTC
     }
 
     const attemptId = ++this.#connectAttemptId;
-    // eslint-disable-next-line no-async-promise-executor
-    this.#connectPromise = new Promise<void>(async (resolve, reject) => {
+    let resolveConnection: () => void;
+    let rejectConnection: (reason?: unknown) => void;
+    const connectionReady = new Promise<void>((resolve, reject) => {
+      resolveConnection = resolve;
+      rejectConnection = reject;
+    });
+
+    const prepareConnection = async () => {
       try {
         const userSessionConfig: Partial<RealtimeSessionConfig> = {
           ...(options.initialSessionConfig || {}),
@@ -247,7 +253,7 @@ export class OpenAIRealtimeWebRTC
               if (this.#state.dataChannel === dataChannel) {
                 this.close();
               }
-              reject(
+              rejectConnection(
                 new Error(
                   'Connection closed before session config was acknowledged',
                 ),
@@ -262,7 +268,7 @@ export class OpenAIRealtimeWebRTC
             };
             this.emit('connection_change', this.#state.status);
             this._onOpen();
-            resolve();
+            resolveConnection();
           };
           const onConfigAck = (ackEvent: MessageEvent) => {
             const { data: parsed } = parseRealtimeEvent(ackEvent);
@@ -323,7 +329,7 @@ export class OpenAIRealtimeWebRTC
         dataChannel.addEventListener('error', (event) => {
           this.close();
           this._onError(event);
-          reject(event);
+          rejectConnection(event);
         });
 
         // set up audio playback
@@ -382,15 +388,18 @@ export class OpenAIRealtimeWebRTC
       } catch (error) {
         this.close();
         this._onError(error);
-        reject(error);
+        rejectConnection(error);
       }
-    }).finally(() => {
+    };
+
+    this.#connectPromise = connectionReady.finally(() => {
       // Only clear if this is still the active connection attempt.
       // A newer connect() may have already replaced #connectPromise.
       if (this.#connectAttemptId === attemptId) {
         this.#connectPromise = undefined;
       }
     });
+    void prepareConnection();
     return this.#connectPromise;
   }
 
