@@ -150,6 +150,14 @@ function getEndedFunctionSpan(
   return functionSpan as Span<any>;
 }
 
+function getEndedHandoffSpan(processor: RecordingProcessor): Span<any> {
+  const handoffSpan = processor.spansEnded.find(
+    (span) => span.spanData.type === 'handoff',
+  );
+  expect(handoffSpan).toBeDefined();
+  return handoffSpan as Span<any>;
+}
+
 beforeAll(() => {
   setTracingDisabled(true);
   setDefaultModelProvider(new FakeModelProvider());
@@ -1478,6 +1486,102 @@ describe('executeHandoffCalls', () => {
     );
 
     expect(res.originalInput).toBe('filtered');
+  });
+
+  it.each([
+    ['string', 'not callable'],
+    ['false', false],
+    ['empty string', ''],
+    ['zero', 0],
+  ])(
+    'throws before invoking handoff if inputFilter is %s',
+    async (_label, inputFilter) => {
+      const target = new Agent({ name: 'Target' });
+      const onHandoff = vi.fn();
+      const h = handoff(target, {
+        onHandoff,
+        inputFilter: inputFilter as any,
+      });
+      const runner = new Runner({ tracingDisabled: true });
+      const runnerHandoffListener = vi.fn();
+      const agentHandoffListener = vi.fn();
+      runner.on('agent_handoff', runnerHandoffListener);
+      TEST_AGENT.on('agent_handoff', agentHandoffListener);
+      const call: any = {
+        toolCall: { ...TEST_MODEL_FUNCTION_CALL, name: h.toolName },
+        handoff: h,
+      };
+
+      try {
+        await expect(
+          withTrace('test', () =>
+            executeHandoffCalls(
+              TEST_AGENT,
+              'orig',
+              [],
+              [],
+              TEST_MODEL_RESPONSE_WITH_FUNCTION,
+              [call],
+              runner,
+              new RunContext(),
+            ),
+          ),
+        ).rejects.toThrow(UserError);
+
+        expect(onHandoff).not.toHaveBeenCalled();
+        expect(runnerHandoffListener).not.toHaveBeenCalled();
+        expect(agentHandoffListener).not.toHaveBeenCalled();
+      } finally {
+        runner.off('agent_handoff', runnerHandoffListener);
+        TEST_AGENT.off('agent_handoff', agentHandoffListener);
+      }
+    },
+  );
+
+  it('preserves structured handoff span errors for invalid inputFilter', async () => {
+    const target = new Agent({ name: 'Target' });
+    const h = handoff(target);
+    h.inputFilter = false as any;
+    const call: any = {
+      toolCall: { ...TEST_MODEL_FUNCTION_CALL, name: h.toolName },
+      handoff: h,
+    };
+
+    await withRecordingTrace(async (processor) => {
+      let caught: unknown;
+
+      try {
+        await withTrace('test', () =>
+          executeHandoffCalls(
+            TEST_AGENT,
+            'orig',
+            [],
+            [],
+            TEST_MODEL_RESPONSE_WITH_FUNCTION,
+            [call],
+            new Runner(),
+            new RunContext(),
+          ),
+        );
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(UserError);
+      expect(
+        (caught as UserError & { data?: Record<string, unknown> }).data,
+      ).toEqual({
+        details: 'not callable',
+      });
+
+      const handoffSpan = getEndedHandoffSpan(processor);
+      expect(handoffSpan.error).toEqual({
+        message: 'Invalid handoff input filter: not callable',
+        data: {
+          details: 'not callable',
+        },
+      });
+    });
   });
 });
 
