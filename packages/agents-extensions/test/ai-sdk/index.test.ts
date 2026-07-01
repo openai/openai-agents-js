@@ -1193,6 +1193,48 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('converts user input_file URL and data URL content', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: 'data:application/pdf;base64,JVBERi0=',
+            filename: 'inline.pdf',
+          },
+          {
+            type: 'input_file',
+            file: { url: 'https://example.com/report.pdf' },
+            providerData: { mediaType: 'application/pdf' },
+          },
+        ],
+      } as any,
+    ];
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+    expect(msgs).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: 'JVBERi0=',
+            mediaType: 'application/pdf',
+            filename: 'inline.pdf',
+            providerOptions: {},
+          },
+          {
+            type: 'file',
+            data: new URL('https://example.com/report.pdf'),
+            mediaType: 'application/pdf',
+            providerOptions: { mediaType: 'application/pdf' },
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
   test('converts structured tool output lists', () => {
     const items: protocol.ModelItem[] = [
       {
@@ -1214,6 +1256,15 @@ describe('itemsToLanguageV2Messages', () => {
           {
             type: 'input_image',
             image: 'data:image/png;base64,aGVsbG8=',
+          },
+          {
+            type: 'input_file',
+            file: 'data:application/pdf;base64,JVBERi0=',
+          },
+          {
+            type: 'input_file',
+            file: { url: 'https://example.com/report.pdf' },
+            providerData: { mediaType: 'application/pdf' },
           },
         ],
       } as any,
@@ -1244,7 +1295,10 @@ describe('itemsToLanguageV2Messages', () => {
             output: {
               type: 'content',
               value: [
-                { type: 'text', text: 'A scenic view.' },
+                {
+                  type: 'text',
+                  text: 'A scenic view.[file url=https://example.com/report.pdf]',
+                },
                 {
                   type: 'media',
                   data: 'https://example.com/image.png',
@@ -1254,6 +1308,11 @@ describe('itemsToLanguageV2Messages', () => {
                   type: 'media',
                   data: 'aGVsbG8=',
                   mediaType: 'image/png',
+                },
+                {
+                  type: 'media',
+                  data: 'JVBERi0=',
+                  mediaType: 'application/pdf',
                 },
               ],
             },
@@ -1298,21 +1357,39 @@ describe('itemsToLanguageV2Messages', () => {
     );
   });
 
-  test('rejects input_file content', () => {
+  test('rejects OpenAI file ID input_file content', () => {
     const items: protocol.ModelItem[] = [
       {
         role: 'user',
         content: [
           {
             type: 'input_file',
-            file: 'file_123',
+            file: { id: 'file_123' },
           },
         ],
       } as any,
     ];
 
     expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow(
-      /File inputs are not supported/,
+      /OpenAI file IDs are not supported/,
+    );
+  });
+
+  test('rejects unsupported input_file content', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: 'not-a-url',
+          },
+        ],
+      } as any,
+    ];
+
+    expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow(
+      /Only public URLs and base64 data URLs are supported/,
     );
   });
 
