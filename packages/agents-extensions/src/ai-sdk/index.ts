@@ -1090,9 +1090,6 @@ function convertStructuredOutputsToAiSdkOutput(
     }
 
     if (item.type === 'input_file') {
-      const mediaType =
-        getStringProviderField(item.providerData, 'mediaType') ??
-        'application/octet-stream';
       const fileValue = item.file;
 
       if (typeof fileValue === 'string') {
@@ -1113,11 +1110,7 @@ function convertStructuredOutputsToAiSdkOutput(
 
         try {
           const url = new URL(fileValue);
-          mediaParts.push({
-            type: 'media',
-            data: url.toString(),
-            mediaType,
-          });
+          textParts.push(`[file url=${url.toString()}]`);
         } catch {
           textParts.push(fileValue);
         }
@@ -1130,11 +1123,7 @@ function convertStructuredOutputsToAiSdkOutput(
         if (fileUrl) {
           try {
             const url = new URL(fileUrl);
-            mediaParts.push({
-              type: 'media',
-              data: url.toString(),
-              mediaType,
-            });
+            textParts.push(`[file url=${url.toString()}]`);
           } catch {
             textParts.push(fileUrl);
           }
