@@ -2493,6 +2493,196 @@ describe('Runner.run (streaming)', () => {
         callId: 'call-1',
       });
     });
+
+    it('only sends the newest approval result across consecutive interruptions with previousResponseId', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'approval tool',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingStreamingModel([
+        buildTurn([buildToolCall('call-1', 'foo')], 'resp-1'),
+        buildTurn([buildToolCall('call-2', 'bar')], 'resp-2'),
+        buildTurn([fakeModelMessage('done')], 'resp-3'),
+      ]);
+
+      const agent = new Agent({
+        name: 'StreamConsecutiveApproval',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+
+      let result = await runner.run(agent, 'user_message', {
+        stream: true,
+        previousResponseId: 'seed-response',
+      });
+      await drain(result);
+
+      expect(result.interruptions).toHaveLength(1);
+      result.state.approve(result.interruptions[0]);
+
+      result = await runner.run(agent, result.state, { stream: true });
+      await drain(result);
+
+      expect(result.interruptions).toHaveLength(1);
+      result.state.approve(result.interruptions[0]);
+
+      result = await runner.run(agent, result.state, { stream: true });
+      await drain(result);
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(3);
+      expect(model.requests[0].previousResponseId).toBe('seed-response');
+
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(model.requests[1].previousResponseId).toBe('resp-1');
+      expect(secondInput).toHaveLength(1);
+      expect(secondInput[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-1',
+      });
+
+      // The third request resumes after the second approval. previousResponseId
+      // now points at resp-2, so only call-2's result is still pending; resending
+      // call-1's result triggers "400 No tool call found for function call output".
+      const thirdInput = model.requests[2].input as AgentInputItem[];
+      expect(model.requests[2].previousResponseId).toBe('resp-2');
+      expect(
+        thirdInput.some(
+          (item) =>
+            item.type === 'function_call_result' && item.callId === 'call-1',
+        ),
+      ).toBe(false);
+      expect(thirdInput).toHaveLength(1);
+      expect(thirdInput[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-2',
+      });
+    });
+
+    it('only sends the newest result across consecutive interruptions with conversationId', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'approval tool',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingStreamingModel([
+        buildTurn([buildToolCall('call-1', 'foo')], 'resp-1'),
+        buildTurn([buildToolCall('call-2', 'bar')], 'resp-2'),
+        buildTurn([fakeModelMessage('done')], 'resp-3'),
+      ]);
+
+      const agent = new Agent({
+        name: 'StreamConsecutiveApprovalConv',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+
+      let result = await runner.run(agent, 'user_message', {
+        stream: true,
+        conversationId: 'conv-consecutive',
+      });
+      await drain(result);
+      expect(result.interruptions).toHaveLength(1);
+      result.state.approve(result.interruptions[0]);
+
+      result = await runner.run(agent, result.state, {
+        stream: true,
+        conversationId: 'conv-consecutive',
+      });
+      await drain(result);
+      expect(result.interruptions).toHaveLength(1);
+      result.state.approve(result.interruptions[0]);
+
+      result = await runner.run(agent, result.state, {
+        stream: true,
+        conversationId: 'conv-consecutive',
+      });
+      await drain(result);
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(3);
+
+      const thirdInput = model.requests[2].input as AgentInputItem[];
+      expect(
+        thirdInput.some(
+          (item) =>
+            item.type === 'function_call_result' && item.callId === 'call-1',
+        ),
+      ).toBe(false);
+      expect(thirdInput).toHaveLength(1);
+      expect(thirdInput[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-2',
+      });
+    });
+
+    it('does not resend a resolved rejection across consecutive interruptions with previousResponseId', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'approval tool',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+
+      const model = new TrackingStreamingModel([
+        buildTurn([buildToolCall('call-1', 'foo')], 'resp-1'),
+        buildTurn([buildToolCall('call-2', 'bar')], 'resp-2'),
+        buildTurn([fakeModelMessage('done')], 'resp-3'),
+      ]);
+
+      const agent = new Agent({
+        name: 'StreamConsecutiveReject',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+
+      let result = await runner.run(agent, 'user_message', {
+        stream: true,
+        previousResponseId: 'seed-response',
+      });
+      await drain(result);
+      expect(result.interruptions).toHaveLength(1);
+      result.state.reject(result.interruptions[0]);
+
+      result = await runner.run(agent, result.state, { stream: true });
+      await drain(result);
+      expect(result.interruptions).toHaveLength(1);
+      result.state.reject(result.interruptions[0]);
+
+      result = await runner.run(agent, result.state, { stream: true });
+      await drain(result);
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(3);
+
+      const thirdInput = model.requests[2].input as AgentInputItem[];
+      expect(model.requests[2].previousResponseId).toBe('resp-2');
+      expect(
+        thirdInput.some(
+          (item) =>
+            item.type === 'function_call_result' && item.callId === 'call-1',
+        ),
+      ).toBe(false);
+      expect(thirdInput).toHaveLength(1);
+      expect(thirdInput[0]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call-2',
+      });
+    });
   });
 
   it('persists streaming input only after the run completes successfully', async () => {

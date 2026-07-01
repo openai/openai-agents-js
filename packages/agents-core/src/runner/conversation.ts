@@ -231,16 +231,33 @@ export class ServerConversationTracker {
     const hasResponses = modelResponses.length > 0;
 
     const serverItemKeys = new Set<string>();
+    // Every function call the server has emitted so far, and the subset that
+    // belongs to the most recent (still-pending) response. Results for calls
+    // from earlier responses were already delivered on a prior resume and must
+    // not be resent. We derive the pending set from the last response rather
+    // than gating on `responseId`, so a `conversationId`-managed turn whose
+    // response omits an id still keeps its own calls marked pending.
+    const serverFunctionCallIds = new Set<string>();
+    let pendingFunctionCallIds = new Set<string>();
     let latestResponseId: string | undefined;
     for (const response of modelResponses) {
-      if (response.responseId) {
-        latestResponseId = response.responseId;
-      }
+      const responseFunctionCallIds = new Set<string>();
       for (const item of response.output) {
         if (item && typeof item === 'object') {
           this.serverItems.add(item);
           serverItemKeys.add(getAgentInputItemKey(item as AgentInputItem));
+          if (
+            item.type === 'function_call' &&
+            typeof item.callId === 'string'
+          ) {
+            serverFunctionCallIds.add(item.callId);
+            responseFunctionCallIds.add(item.callId);
+          }
         }
+      }
+      pendingFunctionCallIds = responseFunctionCallIds;
+      if (response.responseId) {
+        latestResponseId = response.responseId;
       }
     }
 
@@ -268,6 +285,20 @@ export class ServerConversationTracker {
         }
         const rawItemKey = getAgentInputItemKey(rawItem as AgentInputItem);
         if (this.serverItems.has(rawItem) || serverItemKeys.has(rawItemKey)) {
+          this.sentItems.add(rawItem);
+          continue;
+        }
+        // A tool result whose function call came from an earlier (already
+        // resolved) response was submitted on a previous resume; the current
+        // `previousResponseId` no longer points at that call, so resending it
+        // fails with "No tool call found for function call output". Only the
+        // latest response's calls are still pending, so leave those unmarked.
+        if (
+          rawItem.type === 'function_call_result' &&
+          typeof rawItem.callId === 'string' &&
+          serverFunctionCallIds.has(rawItem.callId) &&
+          !pendingFunctionCallIds.has(rawItem.callId)
+        ) {
           this.sentItems.add(rawItem);
         }
       }
