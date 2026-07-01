@@ -19,6 +19,7 @@ import {
   realtimeMcpCallItem,
   realtimeMessageItemSchema,
   realtimeToolCallItem,
+  RealtimeToolCallItem,
 } from './items';
 import logger from './logger';
 import {
@@ -149,6 +150,8 @@ export abstract class OpenAIRealtimeBase
   #apiKey: ApiKey | undefined;
   #tracingConfig: RealtimeTracingConfig | null = null;
   #rawSessionConfig: Record<string, any> | null = null;
+  #functionCallsByCallId = new Map<string, RealtimeToolCallItem>();
+  #functionCallsByItemId = new Map<string, RealtimeToolCallItem>();
 
   protected eventEmitter: RuntimeEventEmitter<OpenAIRealtimeEventTypes> =
     new RuntimeEventEmitter<OpenAIRealtimeEventTypes>();
@@ -373,6 +376,68 @@ export abstract class OpenAIRealtimeBase
         return;
       }
 
+      if (parsed.item.type === 'function_call') {
+        const existing =
+          (parsed.item.call_id
+            ? this.#functionCallsByCallId.get(parsed.item.call_id)
+            : undefined) ??
+          (parsed.item.id
+            ? this.#functionCallsByItemId.get(parsed.item.id)
+            : undefined);
+        const output = parsed.item.output ?? null;
+        const shouldPreserveCompletedOutput =
+          output === null &&
+          existing?.status === 'completed' &&
+          existing.output !== null;
+        const item = realtimeToolCallItem.parse({
+          itemId: parsed.item.id,
+          previousItemId:
+            parsed.type === 'conversation.item.added' ||
+            parsed.type === 'conversation.item.done'
+              ? (parsed.previous_item_id ?? existing?.previousItemId)
+              : existing?.previousItemId,
+          type: parsed.item.type,
+          status:
+            shouldPreserveCompletedOutput ||
+            (parsed.item.status === 'completed' && output !== null)
+              ? 'completed'
+              : 'in_progress',
+          callId: parsed.item.call_id ?? existing?.callId,
+          arguments: parsed.item.arguments ?? existing?.arguments ?? '',
+          name: parsed.item.name ?? existing?.name ?? '',
+          output: shouldPreserveCompletedOutput ? existing.output : output,
+        });
+        if (item.callId) {
+          this.#functionCallsByCallId.set(item.callId, item);
+        }
+        this.#functionCallsByItemId.set(item.itemId, item);
+        this.emit('item_update', item);
+        return;
+      }
+
+      if (parsed.item.type === 'function_call_output') {
+        const existing =
+          (parsed.item.call_id
+            ? this.#functionCallsByCallId.get(parsed.item.call_id)
+            : undefined) ??
+          (parsed.previous_item_id
+            ? this.#functionCallsByItemId.get(parsed.previous_item_id)
+            : undefined);
+        if (existing) {
+          const item = realtimeToolCallItem.parse({
+            ...existing,
+            status: 'completed',
+            output: parsed.item.output ?? null,
+          });
+          if (item.callId) {
+            this.#functionCallsByCallId.set(item.callId, item);
+          }
+          this.#functionCallsByItemId.set(item.itemId, item);
+          this.emit('item_update', item);
+        }
+        return;
+      }
+
       if (
         parsed.item.type === 'mcp_approval_request' &&
         parsed.type === 'conversation.item.done'
@@ -445,10 +510,15 @@ export abstract class OpenAIRealtimeBase
           itemId: item.id,
           type: item.type,
           status: 'in_progress', // we set it to in_progress for the UI as it will only be completed with the output
+          callId: item.call_id,
           arguments: item.arguments,
           name: item.name,
           output: null,
         });
+        if (toolCall.callId) {
+          this.#functionCallsByCallId.set(toolCall.callId, toolCall);
+        }
+        this.#functionCallsByItemId.set(toolCall.itemId, toolCall);
         this.emit('item_update', toolCall);
         this.emit('function_call', {
           id: item.id,
@@ -890,10 +960,15 @@ export abstract class OpenAIRealtimeBase
         previousItemId: toolCall.previousItemId,
         type: 'function_call',
         status: 'completed',
+        callId: toolCall.callId,
         arguments: toolCall.arguments,
         name: toolCall.name,
         output,
       });
+      if (item.callId) {
+        this.#functionCallsByCallId.set(item.callId, item);
+      }
+      this.#functionCallsByItemId.set(item.itemId, item);
       this.emit('item_update', item);
     } catch (error) {
       logger.error('Error parsing tool call item', error, toolCall);
@@ -974,8 +1049,38 @@ export abstract class OpenAIRealtimeBase
           item: itemEntry,
         });
       } else if (addition.type === 'function_call') {
+        if (
+          addition.status === 'completed' &&
+          addition.output !== null &&
+          addition.callId
+        ) {
+          this.sendEvent({
+            type: 'conversation.item.create',
+            ...(addition.previousItemId !== undefined
+              ? { previous_item_id: addition.previousItemId }
+              : {}),
+            item: {
+              id: addition.itemId,
+              type: 'function_call',
+              status: addition.status,
+              call_id: addition.callId,
+              name: addition.name,
+              arguments: addition.arguments,
+            },
+          });
+          this.sendEvent({
+            type: 'conversation.item.create',
+            previous_item_id: addition.itemId,
+            item: {
+              type: 'function_call_output',
+              call_id: addition.callId,
+              output: addition.output,
+            },
+          });
+          continue;
+        }
         logger.warn(
-          'Function calls cannot be manually added or updated at the moment. Ignoring.',
+          'Only completed function calls with a callId and output can be restored through updateHistory. Ignoring.',
         );
       }
     }
