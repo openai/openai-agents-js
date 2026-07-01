@@ -26,6 +26,7 @@ export type {
   OpenAIChatCompletionsRawModelStreamEvent,
 } from './rawModelEvents';
 export {
+  getDefaultOpenAIClient,
   setDefaultOpenAIClient,
   setOpenAIAPI,
   setOpenAIResponsesTransport,

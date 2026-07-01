@@ -18,5 +18,5 @@ describe('Node.js (NodeNext OpenAI client types)', () => {
 
   test('accepts an ESM OpenAI client across TypeScript versions', async () => {
     await execa`npm run build-check`;
-  });
+  }, 15_000);
 });

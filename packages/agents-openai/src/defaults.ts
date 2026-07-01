@@ -1,4 +1,3 @@
-import { OpenAI } from 'openai';
 import { loadEnv } from '@openai/agents-core/_shims';
 import METADATA from './metadata';
 import type { OpenAIClient } from './openaiClient';
@@ -9,7 +8,7 @@ export const DEFAULT_OPENAI_RESPONSES_TRANSPORT = 'http';
 
 let _defaultOpenAIAPI = DEFAULT_OPENAI_API;
 let _defaultOpenAIResponsesTransport = DEFAULT_OPENAI_RESPONSES_TRANSPORT;
-let _defaultOpenAIClient: OpenAI | undefined;
+let _defaultOpenAIClient: OpenAIClient | undefined;
 let _defaultOpenAIKey: string | undefined = undefined;
 let _defaultTracingApiKey: string | undefined = undefined;
 
@@ -38,11 +37,13 @@ export function setOpenAIResponsesTransport(value: 'http' | 'websocket') {
 }
 
 export function setDefaultOpenAIClient(client: OpenAIClient) {
-  _defaultOpenAIClient = client as OpenAI;
+  _defaultOpenAIClient = client;
 }
 
-export function getDefaultOpenAIClient(): OpenAI | undefined {
-  return _defaultOpenAIClient;
+export function getDefaultOpenAIClient<
+  TClient extends OpenAIClient = OpenAIClient,
+>(): TClient | undefined {
+  return _defaultOpenAIClient as TClient | undefined;
 }
 
 export function setDefaultOpenAIKey(key: string) {

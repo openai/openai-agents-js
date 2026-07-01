@@ -81,7 +81,7 @@ export class OpenAIProvider implements ModelProvider {
     if (!this.#client) {
       this.#client =
         // this provider checks if there is the default client first,
-        getDefaultOpenAIClient() ??
+        (getDefaultOpenAIClient() as OpenAI | undefined) ??
         // and then manually creates a new one.
         new OpenAI({
           apiKey: this.#options.apiKey ?? getDefaultOpenAIKey(),

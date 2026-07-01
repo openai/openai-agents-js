@@ -381,7 +381,7 @@ function resolveClient(options: OpenAIConversationsSessionOptions): OpenAI {
   }
 
   return (
-    getDefaultOpenAIClient() ??
+    (getDefaultOpenAIClient() as OpenAI | undefined) ??
     new OpenAI({
       apiKey: options.apiKey ?? getDefaultOpenAIKey(),
       baseURL: options.baseURL,

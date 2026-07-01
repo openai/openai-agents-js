@@ -437,7 +437,7 @@ function resolveClient(
 
   const defaultClient = getDefaultOpenAIClient();
   if (defaultClient) {
-    return defaultClient;
+    return defaultClient as OpenAI;
   }
 
   return new OpenAI();
