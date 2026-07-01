@@ -1,6 +1,7 @@
 import { OpenAI } from 'openai';
 import { loadEnv } from '@openai/agents-core/_shims';
 import METADATA from './metadata';
+import type { OpenAIClient } from './openaiClient';
 
 export const DEFAULT_OPENAI_API = 'responses';
 export const DEFAULT_OPENAI_MODEL = 'gpt-5.4-mini';
@@ -36,8 +37,8 @@ export function setOpenAIResponsesTransport(value: 'http' | 'websocket') {
   _defaultOpenAIResponsesTransport = value;
 }
 
-export function setDefaultOpenAIClient(client: OpenAI) {
-  _defaultOpenAIClient = client;
+export function setDefaultOpenAIClient(client: OpenAIClient) {
+  _defaultOpenAIClient = client as OpenAI;
 }
 
 export function getDefaultOpenAIClient(): OpenAI | undefined {

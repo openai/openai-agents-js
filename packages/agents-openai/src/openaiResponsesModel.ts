@@ -53,6 +53,7 @@ import {
   mergeQueryParamsIntoURL,
   splitResponsesTransportOverrides,
 } from './responsesTransportUtils';
+import type { OpenAIClient } from './openaiClient';
 import {
   CodeInterpreterStatus,
   FileSearchStatus,
@@ -2863,8 +2864,8 @@ export class OpenAIResponsesModel implements Model {
   protected readonly _client: OpenAI;
   protected readonly _model: string;
 
-  constructor(client: OpenAI, model: string) {
-    this._client = client;
+  constructor(client: OpenAIClient, model: string) {
+    this._client = client as OpenAI;
     this._model = model;
   }
 
@@ -3277,7 +3278,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
   #wsRequestLock: Promise<void> = Promise.resolve();
 
   constructor(
-    client: OpenAI,
+    client: OpenAIClient,
     model: string,
     options: OpenAIResponsesWSModelOptions = {},
   ) {
