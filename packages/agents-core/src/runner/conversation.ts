@@ -16,8 +16,8 @@ import {
 } from './items';
 import {
   getToolResultCorrelationForResult,
-  getToolResultCorrelationsForResponse,
   getToolResultCorrelationKey,
+  getUnresolvedToolResultCorrelationsForResponse,
   type ToolResultCorrelation,
 } from './toolResultCorrelation';
 
@@ -291,16 +291,14 @@ export class ServerConversationTracker {
       getResumeResponseBoundary(modelResponses, this.conversationId);
 
     for (const [responseIndex, response] of modelResponses.entries()) {
-      const correlations = getToolResultCorrelationsForResponse(
-        response.output as AgentInputItem[],
-      );
       if (responseIndex < acknowledgingResponseIndex) {
-        for (const correlation of correlations.calls) {
+        const unresolvedCorrelations =
+          getUnresolvedToolResultCorrelationsForResponse(
+            response.output as AgentInputItem[],
+          );
+        for (const correlation of unresolvedCorrelations) {
           incrementCorrelationCount(acknowledgedToolCallCounts, correlation);
         }
-      }
-      for (const correlation of correlations.results) {
-        consumeCorrelationCount(acknowledgedToolCallCounts, correlation);
       }
 
       for (const item of response.output) {

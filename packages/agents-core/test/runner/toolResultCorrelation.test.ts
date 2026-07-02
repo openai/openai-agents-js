@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   getToolResultCorrelationForCall,
   getToolResultCorrelationForResult,
-  getToolResultCorrelationsForResponse,
   getToolResultCorrelationKey,
+  getUnresolvedToolResultCorrelationsForResponse,
 } from '../../src/runner/toolResultCorrelation';
 import type { AgentInputItem } from '../../src/types';
 
@@ -170,9 +170,60 @@ describe('tool result correlation', () => {
     };
 
     expect(getToolResultCorrelationForResult(output)).toBeUndefined();
-    const correlations = getToolResultCorrelationsForResponse([call, output]);
-    expect(correlations.calls).toHaveLength(1);
-    expect(correlations.results).toEqual(correlations.calls);
+    expect(
+      getUnresolvedToolResultCorrelationsForResponse([call, output]),
+    ).toEqual([]);
+  });
+
+  it('keeps client tool search calls unresolved when a server output reuses the ID', () => {
+    const call: AgentInputItem = {
+      type: 'tool_search_call',
+      id: 'client-tool-search-call',
+      execution: 'client',
+      arguments: { paths: ['crm'] },
+      providerData: {
+        call_id: 'shared-tool-search',
+        execution: 'client',
+      },
+    };
+    const serverOutput: AgentInputItem = {
+      type: 'tool_search_output',
+      id: 'server-tool-search-output',
+      execution: 'server',
+      tools: [],
+      providerData: {
+        call_id: 'shared-tool-search',
+        execution: 'server',
+      },
+    };
+
+    expect(
+      getUnresolvedToolResultCorrelationsForResponse([call, serverOutput]),
+    ).toEqual([getToolResultCorrelationForCall(call)]);
+  });
+
+  it('resolves provider-executed tool calls within their response', () => {
+    const call: AgentInputItem = {
+      type: 'shell_call',
+      callId: 'provider-shell',
+      status: 'completed',
+      action: { commands: ['echo provider'] },
+    };
+    const output: AgentInputItem = {
+      type: 'shell_call_output',
+      callId: 'provider-shell',
+      output: [
+        {
+          stdout: 'provider',
+          stderr: '',
+          outcome: { type: 'exit', exitCode: 0 },
+        },
+      ],
+    };
+
+    expect(
+      getUnresolvedToolResultCorrelationsForResponse([call, output]),
+    ).toEqual([]);
   });
 
   it('does not correlate unrelated hosted tool calls', () => {

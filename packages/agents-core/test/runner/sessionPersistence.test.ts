@@ -779,6 +779,43 @@ describe('ServerConversationTracker', () => {
     ]);
   });
 
+  it('does not replay acknowledged client tool search outputs when a later server output reuses the ID', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_later_server_tool_search_output',
+    });
+    const sharedCallId = 'shared-later-server-tool-search';
+    const clientCall = toolSearchCall({
+      itemId: 'client-tool-search-call',
+      callId: sharedCallId,
+      execution: 'client',
+    });
+    const clientOutput = new ToolSearchOutputItem(
+      toolSearchOutput({ callId: sharedCallId, execution: 'client' }),
+      TEST_AGENT,
+    );
+    const serverOutput = toolSearchOutput({
+      itemId: 'server-tool-search-output',
+      callId: sharedCallId,
+      execution: 'server',
+    });
+    const generatedItems = [
+      new ToolSearchCallItem(clientCall, TEST_AGENT),
+      clientOutput,
+      new ToolSearchOutputItem(serverOutput, TEST_AGENT),
+    ];
+
+    tracker.primeFromState({
+      originalInput: 'hello',
+      generatedItems,
+      modelResponses: [
+        modelResponse([clientCall], 'resp_client_tool_search'),
+        modelResponse([serverOutput], 'resp_server_tool_search_output'),
+      ],
+    });
+
+    expect(tracker.prepareInput('hello', generatedItems)).toEqual([]);
+  });
+
   it('matches call-id-less client tool search outputs by response order', () => {
     const tracker = new ServerConversationTracker({
       conversationId: 'conv_ordered_tool_search',
@@ -856,6 +893,38 @@ describe('ServerConversationTracker', () => {
     expect(tracker.prepareInput('hello', generatedItems)).toEqual([
       localOutput.rawItem,
     ]);
+  });
+
+  it('does not replay acknowledged local shell outputs when a later provider result reuses the ID', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_later_provider_shell_result',
+    });
+    const sharedCallId = 'shared-later-provider-shell';
+    const localCall = shellCall(sharedCallId, 'echo local');
+    const localOutput = new ToolCallOutputItem(
+      shellOutput(sharedCallId, 'local'),
+      TEST_AGENT,
+      'local',
+    );
+    const providerCall = shellCall(sharedCallId, 'echo provider');
+    const providerOutput = shellOutput(sharedCallId, 'provider');
+    const generatedItems = [
+      new ToolCallItem(localCall, TEST_AGENT),
+      localOutput,
+      new ToolCallItem(providerCall, TEST_AGENT),
+      new ToolCallOutputItem(providerOutput, TEST_AGENT, providerOutput.output),
+    ];
+
+    tracker.primeFromState({
+      originalInput: 'hello',
+      generatedItems,
+      modelResponses: [
+        modelResponse([localCall], 'resp_local_shell'),
+        modelResponse([providerCall, providerOutput], 'resp_provider_shell'),
+      ],
+    });
+
+    expect(tracker.prepareInput('hello', generatedItems)).toEqual([]);
   });
 
   it('drops acknowledged hosted MCP approval responses while preserving the latest response', () => {

@@ -33,11 +33,6 @@ export type ToolResultCorrelation = Readonly<{
   id: string;
 }>;
 
-export type ToolResultCorrelationsForResponse = Readonly<{
-  calls: ToolResultCorrelation[];
-  results: ToolResultCorrelation[];
-}>;
-
 function createCorrelation(
   resultType: ToolResultType,
   id: unknown,
@@ -170,9 +165,9 @@ function removePendingCorrelation(
   }
 }
 
-export function getToolResultCorrelationsForResponse(
+export function getUnresolvedToolResultCorrelationsForResponse(
   items: readonly AgentInputItem[],
-): ToolResultCorrelationsForResponse {
+): ToolResultCorrelation[] {
   const calls: ToolResultCorrelation[] = [];
   const results: ToolResultCorrelation[] = [];
   const pendingToolSearchCalls: ToolResultCorrelation[] = [];
@@ -187,12 +182,13 @@ export function getToolResultCorrelationsForResponse(
     }
 
     if ((item as { type?: unknown }).type === TOOL_SEARCH_OUTPUT) {
+      if (getToolSearchExecution(item) === 'server') {
+        continue;
+      }
       const providerCallId = getToolSearchProviderCallId(item);
       const result = providerCallId
         ? createCorrelation(TOOL_SEARCH_OUTPUT, providerCallId)
-        : getToolSearchExecution(item) === 'server'
-          ? undefined
-          : pendingToolSearchCalls.shift();
+        : pendingToolSearchCalls.shift();
       if (result) {
         results.push(result);
         if (providerCallId) {
@@ -208,5 +204,9 @@ export function getToolResultCorrelationsForResponse(
     }
   }
 
-  return { calls, results };
+  for (const result of results) {
+    removePendingCorrelation(calls, result);
+  }
+
+  return calls;
 }
