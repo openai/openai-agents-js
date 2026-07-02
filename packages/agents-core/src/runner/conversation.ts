@@ -15,8 +15,8 @@ import {
   type ReasoningItemIdPolicy,
 } from './items';
 import {
-  getToolResultCorrelationForCall,
   getToolResultCorrelationForResult,
+  getToolResultCorrelationsForResponse,
   getToolResultCorrelationKey,
   type ToolResultCorrelation,
 } from './toolResultCorrelation';
@@ -291,22 +291,22 @@ export class ServerConversationTracker {
       getResumeResponseBoundary(modelResponses, this.conversationId);
 
     for (const [responseIndex, response] of modelResponses.entries()) {
+      const correlations = getToolResultCorrelationsForResponse(
+        response.output as AgentInputItem[],
+      );
+      if (responseIndex < acknowledgingResponseIndex) {
+        for (const correlation of correlations.calls) {
+          incrementCorrelationCount(acknowledgedToolCallCounts, correlation);
+        }
+      }
+      for (const correlation of correlations.results) {
+        consumeCorrelationCount(acknowledgedToolCallCounts, correlation);
+      }
+
       for (const item of response.output) {
         if (item && typeof item === 'object') {
           this.serverItems.add(item);
           serverItemKeys.add(getAgentInputItemKey(item as AgentInputItem));
-
-          if (responseIndex < acknowledgingResponseIndex) {
-            const correlation = getToolResultCorrelationForCall(
-              item as AgentInputItem,
-            );
-            if (correlation) {
-              incrementCorrelationCount(
-                acknowledgedToolCallCounts,
-                correlation,
-              );
-            }
-          }
         }
       }
     }
@@ -336,12 +336,6 @@ export class ServerConversationTracker {
         const rawItemKey = getAgentInputItemKey(rawItem as AgentInputItem);
         if (this.serverItems.has(rawItem) || serverItemKeys.has(rawItemKey)) {
           this.sentItems.add(rawItem);
-          const correlation = getToolResultCorrelationForResult(
-            rawItem as AgentInputItem,
-          );
-          if (correlation) {
-            consumeCorrelationCount(acknowledgedToolCallCounts, correlation);
-          }
           continue;
         }
 

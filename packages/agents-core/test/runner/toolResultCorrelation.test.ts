@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   getToolResultCorrelationForCall,
   getToolResultCorrelationForResult,
+  getToolResultCorrelationsForResponse,
   getToolResultCorrelationKey,
 } from '../../src/runner/toolResultCorrelation';
 import type { AgentInputItem } from '../../src/types';
@@ -152,6 +153,26 @@ describe('tool result correlation', () => {
 
     expect(getToolResultCorrelationForCall(call)).toBeUndefined();
     expect(getToolResultCorrelationForResult(result)).toBeUndefined();
+  });
+
+  it('matches call-id-less client tool search outputs by response order', () => {
+    const call: AgentInputItem = {
+      type: 'tool_search_call',
+      id: 'tool-search-call',
+      execution: 'client',
+      arguments: { paths: ['crm'] },
+    };
+    const output: AgentInputItem = {
+      type: 'tool_search_output',
+      id: 'tool-search-output',
+      execution: 'client',
+      tools: [],
+    };
+
+    expect(getToolResultCorrelationForResult(output)).toBeUndefined();
+    const correlations = getToolResultCorrelationsForResponse([call, output]);
+    expect(correlations.calls).toHaveLength(1);
+    expect(correlations.results).toEqual(correlations.calls);
   });
 
   it('does not correlate unrelated hosted tool calls', () => {

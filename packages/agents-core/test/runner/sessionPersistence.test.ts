@@ -123,7 +123,7 @@ function toolSearchCall({
   execution,
 }: {
   itemId: string;
-  callId: string;
+  callId?: string;
   execution: 'client' | 'server';
 }): protocol.ToolSearchCallItem {
   return {
@@ -131,7 +131,7 @@ function toolSearchCall({
     id: itemId,
     arguments: execution === 'client' ? { paths: ['crm'] } : { query: 'crm' },
     execution,
-    providerData: { call_id: callId, execution },
+    providerData: { ...(callId ? { call_id: callId } : {}), execution },
   };
 }
 
@@ -141,7 +141,7 @@ function toolSearchOutput({
   execution,
 }: {
   itemId?: string;
-  callId: string;
+  callId?: string;
   execution: 'client' | 'server';
 }): protocol.ToolSearchOutputItem {
   return {
@@ -150,7 +150,7 @@ function toolSearchOutput({
     execution,
     status: 'completed',
     tools: [],
-    providerData: { call_id: callId, execution },
+    providerData: { ...(callId ? { call_id: callId } : {}), execution },
   };
 }
 
@@ -776,6 +776,51 @@ describe('ServerConversationTracker', () => {
 
     expect(tracker.prepareInput('hello', generatedItems)).toEqual([
       clientOutput.rawItem,
+    ]);
+  });
+
+  it('matches call-id-less client tool search outputs by response order', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_ordered_tool_search',
+    });
+    const sharedCallId = 'shared-ordered-tool-search';
+    const previousCall = toolSearchCall({
+      itemId: sharedCallId,
+      execution: 'client',
+    });
+    const previousOutput = toolSearchOutput({
+      itemId: 'previous-tool-search-output',
+      execution: 'client',
+    });
+    const latestCall = toolSearchCall({
+      itemId: sharedCallId,
+      execution: 'client',
+    });
+    const latestOutput = new ToolSearchOutputItem(
+      toolSearchOutput({ callId: sharedCallId, execution: 'client' }),
+      TEST_AGENT,
+    );
+    const generatedItems = [
+      new ToolSearchCallItem(previousCall, TEST_AGENT),
+      new ToolSearchOutputItem(previousOutput, TEST_AGENT),
+      new ToolSearchCallItem(latestCall, TEST_AGENT),
+      latestOutput,
+    ];
+
+    tracker.primeFromState({
+      originalInput: 'hello',
+      generatedItems,
+      modelResponses: [
+        modelResponse(
+          [previousCall, previousOutput],
+          'resp_previous_tool_search',
+        ),
+        modelResponse([latestCall], 'resp_latest_tool_search'),
+      ],
+    });
+
+    expect(tracker.prepareInput('hello', generatedItems)).toEqual([
+      latestOutput.rawItem,
     ]);
   });
 

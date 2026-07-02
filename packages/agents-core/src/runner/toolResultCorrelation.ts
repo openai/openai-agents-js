@@ -1,4 +1,8 @@
-import { getToolSearchExecution, getToolSearchMatchKey } from '../tooling';
+import {
+  getToolSearchExecution,
+  getToolSearchMatchKey,
+  getToolSearchProviderCallId,
+} from '../tooling';
 import type { AgentInputItem } from '../types';
 
 const SIMPLE_TOOL_RESULT_TYPE_BY_CALL_TYPE = {
@@ -27,6 +31,11 @@ type ToolResultType =
 export type ToolResultCorrelation = Readonly<{
   resultType: ToolResultType;
   id: string;
+}>;
+
+export type ToolResultCorrelationsForResponse = Readonly<{
+  calls: ToolResultCorrelation[];
+  results: ToolResultCorrelation[];
 }>;
 
 function createCorrelation(
@@ -112,7 +121,10 @@ export function getToolResultCorrelationForResult(
     if (getToolSearchExecution(item) === 'server') {
       return undefined;
     }
-    return createCorrelation(TOOL_SEARCH_OUTPUT, getToolSearchMatchKey(item));
+    return createCorrelation(
+      TOOL_SEARCH_OUTPUT,
+      getToolSearchProviderCallId(item),
+    );
   }
 
   const callId = (item as { callId?: unknown }).callId;
@@ -143,4 +155,58 @@ export function getToolResultCorrelationKey(
   correlation: ToolResultCorrelation,
 ): string {
   return JSON.stringify([correlation.resultType, correlation.id]);
+}
+
+function removePendingCorrelation(
+  pending: ToolResultCorrelation[],
+  correlation: ToolResultCorrelation,
+): void {
+  const key = getToolResultCorrelationKey(correlation);
+  const index = pending.findIndex(
+    (candidate) => getToolResultCorrelationKey(candidate) === key,
+  );
+  if (index >= 0) {
+    pending.splice(index, 1);
+  }
+}
+
+export function getToolResultCorrelationsForResponse(
+  items: readonly AgentInputItem[],
+): ToolResultCorrelationsForResponse {
+  const calls: ToolResultCorrelation[] = [];
+  const results: ToolResultCorrelation[] = [];
+  const pendingToolSearchCalls: ToolResultCorrelation[] = [];
+
+  for (const item of items) {
+    const call = getToolResultCorrelationForCall(item);
+    if (call) {
+      calls.push(call);
+      if ((item as { type?: unknown }).type === 'tool_search_call') {
+        pendingToolSearchCalls.push(call);
+      }
+    }
+
+    if ((item as { type?: unknown }).type === TOOL_SEARCH_OUTPUT) {
+      const providerCallId = getToolSearchProviderCallId(item);
+      const result = providerCallId
+        ? createCorrelation(TOOL_SEARCH_OUTPUT, providerCallId)
+        : getToolSearchExecution(item) === 'server'
+          ? undefined
+          : pendingToolSearchCalls.shift();
+      if (result) {
+        results.push(result);
+        if (providerCallId) {
+          removePendingCorrelation(pendingToolSearchCalls, result);
+        }
+      }
+      continue;
+    }
+
+    const result = getToolResultCorrelationForResult(item);
+    if (result) {
+      results.push(result);
+    }
+  }
+
+  return { calls, results };
 }
