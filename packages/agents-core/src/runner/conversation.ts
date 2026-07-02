@@ -9,13 +9,17 @@ import {
   buildAgentInputPool,
   extractOutputItemsFromRunItems,
   getAgentInputItemKey,
-  getToolResultCorrelationKeyForCall,
-  getToolResultCorrelationKeyForResult,
   removeAgentInputFromPool,
   takeAgentInputFromPool,
   toAgentInputList,
   type ReasoningItemIdPolicy,
 } from './items';
+import {
+  getToolResultCorrelationForCall,
+  getToolResultCorrelationForResult,
+  getToolResultCorrelationKey,
+  type ToolResultCorrelation,
+} from './toolResultCorrelation';
 
 export { getTurnInput } from './items';
 
@@ -179,6 +183,55 @@ export async function applyCallModelInputFilter<TContext>(
   }
 }
 
+type ResumeResponseBoundary = {
+  latestResponseId: string | undefined;
+  acknowledgingResponseIndex: number;
+};
+
+function getResumeResponseBoundary(
+  modelResponses: ModelResponse[],
+  conversationId: string | undefined,
+): ResumeResponseBoundary {
+  let latestResponseId: string | undefined;
+  let latestResponseIdIndex = -1;
+  for (const [responseIndex, response] of modelResponses.entries()) {
+    if (response.responseId) {
+      latestResponseId = response.responseId;
+      latestResponseIdIndex = responseIndex;
+    }
+  }
+
+  // A conversation advances with every response. A previous-response chain only advances when the
+  // response has an ID that the next request can reference.
+  return {
+    latestResponseId,
+    acknowledgingResponseIndex: conversationId
+      ? modelResponses.length - 1
+      : latestResponseIdIndex,
+  };
+}
+
+function incrementCorrelationCount(
+  counts: Map<string, number>,
+  correlation: ToolResultCorrelation,
+): void {
+  const key = getToolResultCorrelationKey(correlation);
+  counts.set(key, (counts.get(key) ?? 0) + 1);
+}
+
+function consumeCorrelationCount(
+  counts: Map<string, number>,
+  correlation: ToolResultCorrelation,
+): boolean {
+  const key = getToolResultCorrelationKey(correlation);
+  const remaining = counts.get(key) ?? 0;
+  if (remaining === 0) {
+    return false;
+  }
+  counts.set(key, remaining - 1);
+  return true;
+}
+
 /**
  * Tracks which items have already been sent to or received from the Responses API when the caller
  * supplies `conversationId`/`previousResponseId`. This ensures we only send the delta each turn.
@@ -234,17 +287,8 @@ export class ServerConversationTracker {
 
     const serverItemKeys = new Set<string>();
     const acknowledgedToolCallCounts = new Map<string, number>();
-    let latestResponseId: string | undefined;
-    let latestResponseIdIndex = -1;
-    for (const [responseIndex, response] of modelResponses.entries()) {
-      if (response.responseId) {
-        latestResponseId = response.responseId;
-        latestResponseIdIndex = responseIndex;
-      }
-    }
-    const acknowledgedResponseIndex = this.conversationId
-      ? modelResponses.length - 1
-      : latestResponseIdIndex;
+    const { latestResponseId, acknowledgingResponseIndex } =
+      getResumeResponseBoundary(modelResponses, this.conversationId);
 
     for (const [responseIndex, response] of modelResponses.entries()) {
       for (const item of response.output) {
@@ -252,14 +296,14 @@ export class ServerConversationTracker {
           this.serverItems.add(item);
           serverItemKeys.add(getAgentInputItemKey(item as AgentInputItem));
 
-          if (responseIndex < acknowledgedResponseIndex) {
-            const correlationKey = getToolResultCorrelationKeyForCall(
+          if (responseIndex < acknowledgingResponseIndex) {
+            const correlation = getToolResultCorrelationForCall(
               item as AgentInputItem,
             );
-            if (correlationKey) {
-              acknowledgedToolCallCounts.set(
-                correlationKey,
-                (acknowledgedToolCallCounts.get(correlationKey) ?? 0) + 1,
+            if (correlation) {
+              incrementCorrelationCount(
+                acknowledgedToolCallCounts,
+                correlation,
               );
             }
           }
@@ -292,23 +336,23 @@ export class ServerConversationTracker {
         const rawItemKey = getAgentInputItemKey(rawItem as AgentInputItem);
         if (this.serverItems.has(rawItem) || serverItemKeys.has(rawItemKey)) {
           this.sentItems.add(rawItem);
+          const correlation = getToolResultCorrelationForResult(
+            rawItem as AgentInputItem,
+          );
+          if (correlation) {
+            consumeCorrelationCount(acknowledgedToolCallCounts, correlation);
+          }
           continue;
         }
 
-        const correlationKey = getToolResultCorrelationKeyForResult(
+        const correlation = getToolResultCorrelationForResult(
           rawItem as AgentInputItem,
         );
-        if (!correlationKey) {
-          continue;
-        }
-        const remainingAcknowledgedCalls =
-          acknowledgedToolCallCounts.get(correlationKey) ?? 0;
-        if (remainingAcknowledgedCalls > 0) {
+        if (
+          correlation &&
+          consumeCorrelationCount(acknowledgedToolCallCounts, correlation)
+        ) {
           this.sentItems.add(rawItem);
-          acknowledgedToolCallCounts.set(
-            correlationKey,
-            remainingAcknowledgedCalls - 1,
-          );
         }
       }
     }

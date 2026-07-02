@@ -51,6 +51,135 @@ beforeAll(() => {
   setDefaultModelProvider(new FakeModelProvider());
 });
 
+function modelResponse(
+  output: ModelResponse['output'],
+  responseId?: string,
+): ModelResponse {
+  return {
+    output: structuredClone(output),
+    usage: new Usage(),
+    responseId,
+  };
+}
+
+function functionCall(
+  callId: string,
+  argumentsJson = '{}',
+): protocol.FunctionCallItem {
+  return {
+    type: 'function_call',
+    callId,
+    name: 'test',
+    arguments: argumentsJson,
+  };
+}
+
+function functionResult(
+  call: protocol.FunctionCallItem,
+  output: string,
+): ToolCallOutputItem {
+  return new ToolCallOutputItem(
+    {
+      type: 'function_call_result',
+      callId: call.callId,
+      name: call.name,
+      status: 'completed',
+      output,
+    },
+    TEST_AGENT,
+    output,
+  );
+}
+
+function shellCall(callId: string, command: string): protocol.ShellCallItem {
+  return {
+    type: 'shell_call',
+    callId,
+    status: 'completed',
+    action: { commands: [command] },
+  };
+}
+
+function shellOutput(
+  callId: string,
+  stdout: string,
+): protocol.ShellCallResultItem {
+  return {
+    type: 'shell_call_output',
+    callId,
+    output: [
+      {
+        stdout,
+        stderr: '',
+        outcome: { type: 'exit', exitCode: 0 },
+      },
+    ],
+  };
+}
+
+function toolSearchCall({
+  itemId,
+  callId,
+  execution,
+}: {
+  itemId: string;
+  callId: string;
+  execution: 'client' | 'server';
+}): protocol.ToolSearchCallItem {
+  return {
+    type: 'tool_search_call',
+    id: itemId,
+    arguments: execution === 'client' ? { paths: ['crm'] } : { query: 'crm' },
+    execution,
+    providerData: { call_id: callId, execution },
+  };
+}
+
+function toolSearchOutput({
+  itemId,
+  callId,
+  execution,
+}: {
+  itemId?: string;
+  callId: string;
+  execution: 'client' | 'server';
+}): protocol.ToolSearchOutputItem {
+  return {
+    type: 'tool_search_output',
+    id: itemId,
+    execution,
+    status: 'completed',
+    tools: [],
+    providerData: { call_id: callId, execution },
+  };
+}
+
+function mcpApprovalRequest(
+  itemId: string,
+  approvalRequestId: string,
+): protocol.HostedToolCallItem {
+  return {
+    type: 'hosted_tool_call',
+    id: itemId,
+    name: 'mcp_approval_request',
+    providerData: {
+      type: 'mcp_approval_request',
+      id: approvalRequestId,
+    },
+  };
+}
+
+function mcpApprovalResponse(id: string): protocol.HostedToolCallItem {
+  return {
+    type: 'hosted_tool_call',
+    name: 'mcp_approval_response',
+    providerData: {
+      approve: true,
+      approval_request_id: id,
+    },
+  };
+}
+
 describe('ServerConversationTracker', () => {
   it('does not update previousResponseId when conversationId is set', () => {
     const tracker = new ServerConversationTracker({
@@ -496,38 +625,10 @@ describe('ServerConversationTracker', () => {
     const tracker = new ServerConversationTracker({
       conversationId: 'conv_reused_call_id',
     });
-    const previousCall: protocol.FunctionCallItem = {
-      type: 'function_call',
-      callId: 'reused-call',
-      name: 'test',
-      arguments: '{"value":"previous"}',
-    };
-    const latestCall: protocol.FunctionCallItem = {
-      ...previousCall,
-      arguments: '{"value":"latest"}',
-    };
-    const previousResult = new ToolCallOutputItem(
-      {
-        type: 'function_call_result',
-        callId: 'reused-call',
-        name: 'test',
-        status: 'completed',
-        output: 'previous result',
-      },
-      TEST_AGENT,
-      'previous result',
-    );
-    const latestResult = new ToolCallOutputItem(
-      {
-        type: 'function_call_result',
-        callId: 'reused-call',
-        name: 'test',
-        status: 'completed',
-        output: 'latest result',
-      },
-      TEST_AGENT,
-      'latest result',
-    );
+    const previousCall = functionCall('reused-call', '{"value":"previous"}');
+    const latestCall = functionCall('reused-call', '{"value":"latest"}');
+    const previousResult = functionResult(previousCall, 'previous result');
+    const latestResult = functionResult(latestCall, 'latest result');
     const generatedItems = [
       new ToolCallItem(previousCall, TEST_AGENT),
       previousResult,
@@ -539,16 +640,8 @@ describe('ServerConversationTracker', () => {
       originalInput: 'hello',
       generatedItems,
       modelResponses: [
-        {
-          output: [structuredClone(previousCall)],
-          usage: new Usage(),
-          responseId: 'resp_previous',
-        },
-        {
-          output: [structuredClone(latestCall)],
-          usage: new Usage(),
-          responseId: 'resp_latest',
-        },
+        modelResponse([previousCall], 'resp_previous'),
+        modelResponse([latestCall], 'resp_latest'),
       ],
     });
 
@@ -561,27 +654,9 @@ describe('ServerConversationTracker', () => {
     const tracker = new ServerConversationTracker({
       conversationId: 'conv_multiple_pending_results',
     });
-    const calls: protocol.FunctionCallItem[] = ['call-1', 'call-2'].map(
-      (callId) => ({
-        type: 'function_call',
-        callId,
-        name: 'test',
-        arguments: '{}',
-      }),
-    );
-    const results = calls.map(
-      (call) =>
-        new ToolCallOutputItem(
-          {
-            type: 'function_call_result',
-            callId: call.callId,
-            name: call.name,
-            status: 'completed',
-            output: `${call.callId} result`,
-          },
-          TEST_AGENT,
-          `${call.callId} result`,
-        ),
+    const calls = ['call-1', 'call-2'].map((callId) => functionCall(callId));
+    const results = calls.map((call) =>
+      functionResult(call, `${call.callId} result`),
     );
     const generatedItems = calls.flatMap((call, index) => [
       new ToolCallItem(call, TEST_AGENT),
@@ -591,13 +666,7 @@ describe('ServerConversationTracker', () => {
     tracker.primeFromState({
       originalInput: 'hello',
       generatedItems,
-      modelResponses: [
-        {
-          output: structuredClone(calls),
-          usage: new Usage(),
-          responseId: 'resp_latest',
-        },
-      ],
+      modelResponses: [modelResponse(calls, 'resp_latest')],
     });
 
     expect(tracker.prepareInput('hello', generatedItems)).toEqual(
@@ -609,23 +678,8 @@ describe('ServerConversationTracker', () => {
     const tracker = new ServerConversationTracker({
       previousResponseId: 'resp_initial',
     });
-    const toolCall: protocol.FunctionCallItem = {
-      type: 'function_call',
-      callId: 'call_unlinked_response',
-      name: 'test',
-      arguments: '{}',
-    };
-    const toolResult = new ToolCallOutputItem(
-      {
-        type: 'function_call_result',
-        callId: toolCall.callId,
-        name: toolCall.name,
-        status: 'completed',
-        output: 'done',
-      },
-      TEST_AGENT,
-      'done',
-    );
+    const toolCall = functionCall('call_unlinked_response');
+    const toolResult = functionResult(toolCall, 'done');
     const finalMessage = fakeModelMessage('done');
     const generatedItems = [
       new ToolCallItem(toolCall, TEST_AGENT),
@@ -637,15 +691,8 @@ describe('ServerConversationTracker', () => {
       originalInput: 'hello',
       generatedItems,
       modelResponses: [
-        {
-          output: [structuredClone(toolCall)],
-          usage: new Usage(),
-          responseId: 'resp_tool_call',
-        },
-        {
-          output: [structuredClone(finalMessage)],
-          usage: new Usage(),
-        },
+        modelResponse([toolCall], 'resp_tool_call'),
+        modelResponse([finalMessage]),
       ],
     });
 
@@ -659,29 +706,19 @@ describe('ServerConversationTracker', () => {
     const tracker = new ServerConversationTracker({
       conversationId: 'conv_client_tool_search',
     });
-    const toolSearchCall: protocol.ToolSearchCallItem = {
-      type: 'tool_search_call',
-      id: 'tool-search-item',
-      arguments: { paths: ['crm'] },
-      status: 'completed',
-      providerData: {
-        call_id: 'tool-search-call',
-        execution: 'client',
-      },
-    };
-    const toolSearchOutput: protocol.ToolSearchOutputItem = {
-      type: 'tool_search_output',
-      status: 'completed',
-      tools: [],
-      providerData: {
-        call_id: 'tool-search-call',
-        execution: 'client',
-      },
-    };
+    const searchCall = toolSearchCall({
+      itemId: 'tool-search-item',
+      callId: 'tool-search-call',
+      execution: 'client',
+    });
+    const searchOutput = toolSearchOutput({
+      callId: 'tool-search-call',
+      execution: 'client',
+    });
     const finalMessage = fakeModelMessage('done');
     const generatedItems = [
-      new ToolSearchCallItem(toolSearchCall, TEST_AGENT),
-      new ToolSearchOutputItem(toolSearchOutput, TEST_AGENT),
+      new ToolSearchCallItem(searchCall, TEST_AGENT),
+      new ToolSearchOutputItem(searchOutput, TEST_AGENT),
       new MessageOutputItem(finalMessage, TEST_AGENT),
     ];
 
@@ -689,16 +726,8 @@ describe('ServerConversationTracker', () => {
       originalInput: 'hello',
       generatedItems,
       modelResponses: [
-        {
-          output: [structuredClone(toolSearchCall)],
-          usage: new Usage(),
-          responseId: 'resp_tool_search',
-        },
-        {
-          output: [structuredClone(finalMessage)],
-          usage: new Usage(),
-          responseId: 'resp_final',
-        },
+        modelResponse([searchCall], 'resp_tool_search'),
+        modelResponse([finalMessage], 'resp_final'),
       ],
     });
 
@@ -710,47 +739,23 @@ describe('ServerConversationTracker', () => {
       conversationId: 'conv_mixed_tool_search_execution',
     });
     const sharedCallId = 'shared-tool-search-call';
-    const serverCall: protocol.ToolSearchCallItem = {
-      type: 'tool_search_call',
-      id: 'server-tool-search-call',
-      arguments: { query: 'crm' },
+    const serverCall = toolSearchCall({
+      itemId: 'server-tool-search-call',
+      callId: sharedCallId,
       execution: 'server',
-      providerData: {
-        call_id: sharedCallId,
-        execution: 'server',
-      },
-    };
-    const serverOutput: protocol.ToolSearchOutputItem = {
-      type: 'tool_search_output',
-      id: 'server-tool-search-output',
+    });
+    const serverOutput = toolSearchOutput({
+      itemId: 'server-tool-search-output',
+      callId: sharedCallId,
       execution: 'server',
-      tools: [],
-      providerData: {
-        call_id: sharedCallId,
-        execution: 'server',
-      },
-    };
-    const clientCall: protocol.ToolSearchCallItem = {
-      type: 'tool_search_call',
-      id: 'client-tool-search-call',
-      arguments: { paths: ['crm'] },
+    });
+    const clientCall = toolSearchCall({
+      itemId: 'client-tool-search-call',
+      callId: sharedCallId,
       execution: 'client',
-      providerData: {
-        call_id: sharedCallId,
-        execution: 'client',
-      },
-    };
+    });
     const clientOutput = new ToolSearchOutputItem(
-      {
-        type: 'tool_search_output',
-        execution: 'client',
-        status: 'completed',
-        tools: [],
-        providerData: {
-          call_id: sharedCallId,
-          execution: 'client',
-        },
-      },
+      toolSearchOutput({ callId: sharedCallId, execution: 'client' }),
       TEST_AGENT,
     );
     const generatedItems = [
@@ -764,16 +769,8 @@ describe('ServerConversationTracker', () => {
       originalInput: 'hello',
       generatedItems,
       modelResponses: [
-        {
-          output: [structuredClone(serverCall), structuredClone(serverOutput)],
-          usage: new Usage(),
-          responseId: 'resp_server_tool_search',
-        },
-        {
-          output: [structuredClone(clientCall)],
-          usage: new Usage(),
-          responseId: 'resp_client_tool_search',
-        },
+        modelResponse([serverCall, serverOutput], 'resp_server_tool_search'),
+        modelResponse([clientCall], 'resp_client_tool_search'),
       ],
     });
 
@@ -782,46 +779,58 @@ describe('ServerConversationTracker', () => {
     ]);
   });
 
+  it('preserves local shell outputs when a provider result reuses the ID', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_mixed_shell_execution',
+    });
+    const sharedCallId = 'shared-shell-call';
+    const providerCall = shellCall(sharedCallId, 'echo provider');
+    const providerOutput = shellOutput(sharedCallId, 'provider');
+    const localCall = shellCall(sharedCallId, 'echo local');
+    const localOutput = new ToolCallOutputItem(
+      shellOutput(sharedCallId, 'local'),
+      TEST_AGENT,
+      'local',
+    );
+    const generatedItems = [
+      new ToolCallItem(providerCall, TEST_AGENT),
+      new ToolCallOutputItem(providerOutput, TEST_AGENT, providerOutput.output),
+      new ToolCallItem(localCall, TEST_AGENT),
+      localOutput,
+    ];
+
+    tracker.primeFromState({
+      originalInput: 'hello',
+      generatedItems,
+      modelResponses: [
+        modelResponse([providerCall, providerOutput], 'resp_provider_shell'),
+        modelResponse([localCall], 'resp_local_shell'),
+      ],
+    });
+
+    expect(tracker.prepareInput('hello', generatedItems)).toEqual([
+      localOutput.rawItem,
+    ]);
+  });
+
   it('drops acknowledged hosted MCP approval responses while preserving the latest response', () => {
     const tracker = new ServerConversationTracker({
       conversationId: 'conv_mcp_approvals',
     });
-    const buildApprovalRequest = (
-      itemId: string,
-      approvalRequestId: string,
-    ): protocol.HostedToolCallItem => ({
-      type: 'hosted_tool_call',
-      id: itemId,
-      name: 'mcp_approval_request',
-      providerData: {
-        type: 'mcp_approval_request',
-        id: approvalRequestId,
-      },
-    });
-    const buildApprovalResponse = (
-      id: string,
-    ): protocol.HostedToolCallItem => ({
-      type: 'hosted_tool_call',
-      name: 'mcp_approval_response',
-      providerData: {
-        approve: true,
-        approval_request_id: id,
-      },
-    });
-    const previousRequest = buildApprovalRequest(
+    const previousRequest = mcpApprovalRequest(
       'approval_item_previous',
       'approval_previous',
     );
-    const latestRequest = buildApprovalRequest(
+    const latestRequest = mcpApprovalRequest(
       'approval_item_latest',
       'approval_latest',
     );
     const previousResponse = new ToolCallItem(
-      buildApprovalResponse('approval_previous'),
+      mcpApprovalResponse('approval_previous'),
       TEST_AGENT,
     );
     const latestResponse = new ToolCallItem(
-      buildApprovalResponse('approval_latest'),
+      mcpApprovalResponse('approval_latest'),
       TEST_AGENT,
     );
     const generatedItems = [
@@ -835,16 +844,8 @@ describe('ServerConversationTracker', () => {
       originalInput: 'hello',
       generatedItems,
       modelResponses: [
-        {
-          output: [structuredClone(previousRequest)],
-          usage: new Usage(),
-          responseId: 'resp_previous',
-        },
-        {
-          output: [structuredClone(latestRequest)],
-          usage: new Usage(),
-          responseId: 'resp_latest',
-        },
+        modelResponse([previousRequest], 'resp_previous'),
+        modelResponse([latestRequest], 'resp_latest'),
       ],
     });
 

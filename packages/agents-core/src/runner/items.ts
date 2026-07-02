@@ -1,138 +1,12 @@
 import { RunItem } from '../items';
-import { getToolSearchExecution, getToolSearchMatchKey } from '../tooling';
 import { AgentInputItem } from '../types';
 import { serializeBinary } from '../utils/binary';
+import {
+  getSimpleToolResultTypeForCall,
+  isSimpleToolResultType,
+} from './toolResultCorrelation';
 
 export type AgentInputItemPool = Map<string, AgentInputItem[]>;
-
-const TOOL_CALL_RESULT_TYPE_BY_CALL_TYPE = {
-  function_call: 'function_call_result',
-  computer_call: 'computer_call_result',
-  shell_call: 'shell_call_output',
-  apply_patch_call: 'apply_patch_call_output',
-} as const;
-
-const TOOL_CALL_RESULT_TYPES = new Set<string>(
-  Object.values(TOOL_CALL_RESULT_TYPE_BY_CALL_TYPE),
-);
-
-const HOSTED_MCP_APPROVAL_REQUEST = 'mcp_approval_request';
-const HOSTED_MCP_APPROVAL_RESPONSE = 'mcp_approval_response';
-
-function buildToolResultCorrelationKey(
-  resultType: string,
-  callId: string,
-): string {
-  return JSON.stringify([resultType, callId]);
-}
-
-export function getToolResultCorrelationKeyForCall(
-  item: AgentInputItem,
-): string | undefined {
-  if (!item || typeof item !== 'object') {
-    return undefined;
-  }
-
-  const type = (item as { type?: unknown }).type;
-  if (type === 'tool_search_call') {
-    if (getToolSearchExecution(item) === 'server') {
-      return undefined;
-    }
-    const matchKey = getToolSearchMatchKey(item);
-    return matchKey
-      ? buildToolResultCorrelationKey('tool_search_output', matchKey)
-      : undefined;
-  }
-
-  const callId = (item as { callId?: unknown }).callId;
-  if (typeof type === 'string' && typeof callId === 'string') {
-    const resultType =
-      TOOL_CALL_RESULT_TYPE_BY_CALL_TYPE[
-        type as keyof typeof TOOL_CALL_RESULT_TYPE_BY_CALL_TYPE
-      ];
-    if (resultType) {
-      return buildToolResultCorrelationKey(resultType, callId);
-    }
-  }
-
-  if (type !== 'hosted_tool_call') {
-    return undefined;
-  }
-
-  const hostedItem = item as {
-    id?: unknown;
-    name?: unknown;
-    providerData?: unknown;
-  };
-  const providerData = hostedItem.providerData;
-  if (!providerData || typeof providerData !== 'object') {
-    return undefined;
-  }
-  const approvalRequest = providerData as { id?: unknown; type?: unknown };
-  if (
-    hostedItem.name !== HOSTED_MCP_APPROVAL_REQUEST &&
-    approvalRequest.type !== HOSTED_MCP_APPROVAL_REQUEST
-  ) {
-    return undefined;
-  }
-
-  const approvalRequestId = approvalRequest.id ?? hostedItem.id;
-  return typeof approvalRequestId === 'string'
-    ? buildToolResultCorrelationKey(
-        HOSTED_MCP_APPROVAL_RESPONSE,
-        approvalRequestId,
-      )
-    : undefined;
-}
-
-export function getToolResultCorrelationKeyForResult(
-  item: AgentInputItem,
-): string | undefined {
-  if (!item || typeof item !== 'object') {
-    return undefined;
-  }
-
-  const type = (item as { type?: unknown }).type;
-  if (type === 'tool_search_output') {
-    if (getToolSearchExecution(item) === 'server') {
-      return undefined;
-    }
-    const matchKey = getToolSearchMatchKey(item);
-    return matchKey
-      ? buildToolResultCorrelationKey('tool_search_output', matchKey)
-      : undefined;
-  }
-
-  const callId = (item as { callId?: unknown }).callId;
-  if (
-    typeof type === 'string' &&
-    typeof callId === 'string' &&
-    TOOL_CALL_RESULT_TYPES.has(type)
-  ) {
-    return buildToolResultCorrelationKey(type, callId);
-  }
-
-  if (type !== 'hosted_tool_call') {
-    return undefined;
-  }
-
-  const hostedItem = item as { name?: unknown; providerData?: unknown };
-  if (hostedItem.name !== HOSTED_MCP_APPROVAL_RESPONSE) {
-    return undefined;
-  }
-  const providerData = hostedItem.providerData;
-  if (!providerData || typeof providerData !== 'object') {
-    return undefined;
-  }
-  const approvalRequestId = (providerData as { approval_request_id?: unknown })
-    .approval_request_id;
-  return typeof approvalRequestId === 'string'
-    ? buildToolResultCorrelationKey(
-        HOSTED_MCP_APPROVAL_RESPONSE,
-        approvalRequestId,
-      )
-    : undefined;
-}
 
 // Normalizes user-provided input into the structure the model expects. Strings become user messages,
 // arrays are kept as-is so downstream loops can treat both scenarios uniformly.
@@ -284,7 +158,7 @@ function collectCompletedCallIdsByResultType(
     if (typeof type !== 'string' || typeof callId !== 'string') {
       continue;
     }
-    if (!TOOL_CALL_RESULT_TYPES.has(type)) {
+    if (!isSimpleToolResultType(type)) {
       continue;
     }
     const existing = completed.get(type);
@@ -327,10 +201,7 @@ export function dropOrphanToolCalls(
     if (typeof type !== 'string' || typeof callId !== 'string') {
       return true;
     }
-    const resultType =
-      TOOL_CALL_RESULT_TYPE_BY_CALL_TYPE[
-        type as keyof typeof TOOL_CALL_RESULT_TYPE_BY_CALL_TYPE
-      ];
+    const resultType = getSimpleToolResultTypeForCall(type);
     if (!resultType) {
       return true;
     }
