@@ -102,6 +102,7 @@ import {
   readString,
   readStringArray,
 } from '../shared/typeGuards';
+import { validateCredentialPair as validateSandboxCredentialPair } from '../shared/credentials';
 
 const DEFAULT_DOCKER_IMAGE = 'python:3.14-slim';
 const DEFAULT_CONTAINER_COMMAND =
@@ -2654,13 +2655,13 @@ function validateCredentialPair(
   accessKeyId?: string,
   secretAccessKey?: string,
 ): void {
-  if (Boolean(accessKeyId) !== Boolean(secretAccessKey)) {
-    throw new SandboxMountError(
-      `${provider} mounts require both accessKeyId and secretAccessKey when either is provided.`,
-      { mountType },
-      'mount_config_invalid',
-    );
-  }
+  validateSandboxCredentialPair({
+    accessKeyId,
+    secretAccessKey,
+    message: `${provider} mounts require both accessKeyId and secretAccessKey when either is provided.`,
+    details: { mountType },
+    code: 'mount_config_invalid',
+  });
 }
 
 function dockerMountpointAwsEnv(

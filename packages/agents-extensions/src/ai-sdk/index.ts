@@ -39,8 +39,12 @@ import {
   takePendingToolSearchCallId,
   toolQualifiedName,
 } from '@openai/agents-core/utils';
-import type { GenerationUsageData } from '@openai/agents';
-import { isZodObject, encodeUint8ArrayToBase64 } from '@openai/agents/utils';
+import {
+  formatInlineData,
+  getInlineMediaType,
+} from '@openai/agents-core/utils/internal';
+import { isZodObject } from '@openai/agents/utils';
+import { extractUsage, toTracingUsage } from './usage';
 
 // Minimal compatibility type to allow V3 (or future) models that follow the same shape as V2.
 type LanguageModelV3Compatible = {
@@ -686,7 +690,7 @@ function convertLegacyToolOutputContent(
       structured.image = output.image;
     } else if (isRecord(output.image)) {
       const imageObj = output.image as Record<string, any>;
-      const inlineMediaType = getImageInlineMediaType(imageObj);
+      const inlineMediaType = getInlineMediaType(imageObj);
       if (typeof imageObj.url === 'string' && imageObj.url.length > 0) {
         structured.image = imageObj.url;
       } else if (
@@ -1192,24 +1196,6 @@ function mergeProviderData(
     }
   }
   return Object.keys(merged).length > 0 ? merged : undefined;
-}
-
-function getImageInlineMediaType(
-  source: Record<string, any>,
-): string | undefined {
-  if (typeof source.mediaType === 'string' && source.mediaType.length > 0) {
-    return source.mediaType;
-  }
-  return undefined;
-}
-
-function formatInlineData(
-  data: string | Uint8Array,
-  mediaType?: string,
-): string {
-  const base64 =
-    typeof data === 'string' ? data : encodeUint8ArrayToBase64(data);
-  return mediaType ? `data:${mediaType};base64,${base64}` : base64;
 }
 
 function getHostedToolArgs(providerData: unknown): Record<string, any> {
@@ -2043,135 +2029,6 @@ export function aisdk(
   options: AiSdkModelOptions = {},
 ) {
   return new AiSdkModel(model, options);
-}
-
-function extractTokenCount(usage: any, key: string): number {
-  const val = usage?.[key];
-  if (typeof val === 'number') {
-    return Number.isNaN(val) ? 0 : val;
-  }
-  // Handle Google AI SDK object format ({ total: number, ... })
-  if (
-    typeof val === 'object' &&
-    val !== null &&
-    typeof val.total === 'number'
-  ) {
-    return val.total;
-  }
-  return 0;
-}
-
-function toUsageDetailTokenCount(value: unknown): number | undefined {
-  if (typeof value !== 'number') {
-    return undefined;
-  }
-  return Number.isNaN(value) ? 0 : value;
-}
-
-function extractInputTokenDetails(
-  usage: any,
-): Record<string, number> | undefined {
-  const inputTokens = usage?.inputTokens;
-  if (typeof inputTokens !== 'object' || inputTokens === null) {
-    return undefined;
-  }
-
-  const cachedTokens = toUsageDetailTokenCount((inputTokens as any).cacheRead);
-  const cacheWriteTokens = toUsageDetailTokenCount(
-    (inputTokens as any).cacheWrite,
-  );
-
-  if (
-    typeof cachedTokens !== 'number' &&
-    typeof cacheWriteTokens !== 'number'
-  ) {
-    return undefined;
-  }
-
-  return {
-    ...(typeof cachedTokens === 'number'
-      ? { cached_tokens: cachedTokens }
-      : {}),
-    ...(typeof cacheWriteTokens === 'number'
-      ? { cache_write_tokens: cacheWriteTokens }
-      : {}),
-  };
-}
-
-function extractOutputTokenDetails(
-  usage: any,
-): Record<string, number> | undefined {
-  const outputTokens = usage?.outputTokens;
-  if (typeof outputTokens !== 'object' || outputTokens === null) {
-    return undefined;
-  }
-
-  const reasoningTokens = toUsageDetailTokenCount(
-    (outputTokens as any).reasoning,
-  );
-  const textTokens = toUsageDetailTokenCount((outputTokens as any).text);
-
-  if (typeof reasoningTokens !== 'number' && typeof textTokens !== 'number') {
-    return undefined;
-  }
-
-  return {
-    ...(typeof reasoningTokens === 'number'
-      ? { reasoning_tokens: reasoningTokens }
-      : {}),
-    ...(typeof textTokens === 'number' ? { text_tokens: textTokens } : {}),
-  };
-}
-
-function extractUsage(usage: any): {
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  inputTokensDetails?: Record<string, number>;
-  outputTokensDetails?: Record<string, number>;
-} {
-  const inputTokens = extractTokenCount(usage, 'inputTokens');
-  const outputTokens = extractTokenCount(usage, 'outputTokens');
-  const inputTokensDetails = extractInputTokenDetails(usage);
-  const outputTokensDetails = extractOutputTokenDetails(usage);
-
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens: inputTokens + outputTokens,
-    ...(inputTokensDetails
-      ? {
-          inputTokensDetails,
-        }
-      : {}),
-    ...(outputTokensDetails
-      ? {
-          outputTokensDetails,
-        }
-      : {}),
-  };
-}
-
-function toTracingUsage(usage: {
-  inputTokens: number;
-  outputTokens: number;
-  inputTokensDetails?: Record<string, number>;
-  outputTokensDetails?: Record<string, number>;
-}): GenerationUsageData {
-  return {
-    input_tokens: usage.inputTokens,
-    output_tokens: usage.outputTokens,
-    ...(usage.inputTokensDetails
-      ? {
-          input_tokens_details: usage.inputTokensDetails,
-        }
-      : {}),
-    ...(usage.outputTokensDetails
-      ? {
-          output_tokens_details: usage.outputTokensDetails,
-        }
-      : {}),
-  };
 }
 
 export function parseArguments(args: string | undefined | null): any {

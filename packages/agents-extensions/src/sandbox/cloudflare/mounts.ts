@@ -8,6 +8,7 @@ import {
   type TypedMount,
 } from '@openai/agents-core/sandbox';
 import { readOptionalString } from '../shared/typeGuards';
+import { validateCredentialPair as validateSandboxCredentialPair } from '@openai/agents-core/sandbox/internal';
 
 export type CloudflareBucketProvider = 'r2' | 's3' | 'gcs';
 
@@ -214,13 +215,14 @@ function validateCredentialPair(args: {
   secretAccessKey?: string;
   mountType: string;
 }): void {
-  if (Boolean(args.accessKeyId) !== Boolean(args.secretAccessKey)) {
-    throw new SandboxMountError(
+  validateSandboxCredentialPair({
+    accessKeyId: args.accessKeyId,
+    secretAccessKey: args.secretAccessKey,
+    message:
       'Cloudflare bucket mounts require both accessKeyId and secretAccessKey when either is provided.',
-      {
-        provider: 'cloudflare',
-        mountType: args.mountType,
-      },
-    );
-  }
+    details: {
+      provider: 'cloudflare',
+      mountType: args.mountType,
+    },
+  });
 }

@@ -39,6 +39,23 @@ export {
 } from './shared/environment';
 export { shellQuote } from './shared/shell';
 export {
+  isRecord,
+  isStringRecord,
+  readOptionalBoolean,
+  readOptionalNumber,
+  readOptionalNumberArray,
+  readOptionalRecord,
+  readOptionalRecordArray,
+  readOptionalString,
+  readOptionalStringRecord,
+  readString,
+  readStringArray,
+} from './shared/typeGuards';
+export {
+  validateCredentialPair,
+  type CredentialPairValidation,
+} from './shared/credentials';
+export {
   assertViewImageByteLength,
   imageOutputFromBytes,
   MAX_VIEW_IMAGE_BYTES,

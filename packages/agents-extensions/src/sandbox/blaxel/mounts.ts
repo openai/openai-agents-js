@@ -15,6 +15,7 @@ import {
   type RemoteMountCommandResult,
 } from '../shared/inContainerMounts';
 import { readOptionalString, shellQuote } from '../shared';
+import { validateCredentialPair as validateSandboxCredentialPair } from '@openai/agents-core/sandbox/internal';
 
 const GCSFUSE_VERSION = '3.4.4';
 const GCSFUSE_AMD64_DEB_SHA256 =
@@ -776,15 +777,16 @@ function validateCredentialPair(args: {
   secretAccessKey?: string;
   mountType: string;
 }): void {
-  if (Boolean(args.accessKeyId) !== Boolean(args.secretAccessKey)) {
-    throw new SandboxMountError(
+  validateSandboxCredentialPair({
+    accessKeyId: args.accessKeyId,
+    secretAccessKey: args.secretAccessKey,
+    message:
       'Blaxel cloud bucket mounts require both accessKeyId and secretAccessKey when either is provided.',
-      {
-        provider: 'blaxel',
-        mountType: args.mountType,
-      },
-    );
-  }
+    details: {
+      provider: 'blaxel',
+      mountType: args.mountType,
+    },
+  });
 }
 
 function mountStrategyType(entry: Entry): unknown {
