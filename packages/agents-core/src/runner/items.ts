@@ -1,15 +1,12 @@
 import { RunItem } from '../items';
 import { AgentInputItem } from '../types';
 import { serializeBinary } from '../utils/binary';
+import {
+  getSimpleToolResultTypeForCall,
+  isSimpleToolResultType,
+} from './toolResultCorrelation';
 
 export type AgentInputItemPool = Map<string, AgentInputItem[]>;
-
-const TOOL_CALL_RESULT_TYPE_BY_CALL_TYPE = {
-  function_call: 'function_call_result',
-  computer_call: 'computer_call_result',
-  shell_call: 'shell_call_output',
-  apply_patch_call: 'apply_patch_call_output',
-} as const;
 
 // Normalizes user-provided input into the structure the model expects. Strings become user messages,
 // arrays are kept as-is so downstream loops can treat both scenarios uniformly.
@@ -161,9 +158,7 @@ function collectCompletedCallIdsByResultType(
     if (typeof type !== 'string' || typeof callId !== 'string') {
       continue;
     }
-    if (
-      !Object.values(TOOL_CALL_RESULT_TYPE_BY_CALL_TYPE).includes(type as any)
-    ) {
+    if (!isSimpleToolResultType(type)) {
       continue;
     }
     const existing = completed.get(type);
@@ -206,10 +201,7 @@ export function dropOrphanToolCalls(
     if (typeof type !== 'string' || typeof callId !== 'string') {
       return true;
     }
-    const resultType =
-      TOOL_CALL_RESULT_TYPE_BY_CALL_TYPE[
-        type as keyof typeof TOOL_CALL_RESULT_TYPE_BY_CALL_TYPE
-      ];
+    const resultType = getSimpleToolResultTypeForCall(type);
     if (!resultType) {
       return true;
     }

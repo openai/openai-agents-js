@@ -2411,6 +2411,64 @@ describe('Runner.run (streaming)', () => {
       });
     });
 
+    it('does not replay an acknowledged function result across consecutive streamed approvals', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'approval tool',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+      const model = new TrackingStreamingModel([
+        buildTurn([buildToolCall('call-stream-1', 'first')], 'resp-stream-1'),
+        buildTurn([buildToolCall('call-stream-2', 'second')], 'resp-stream-2'),
+        buildTurn([fakeModelMessage('done')], 'resp-stream-3'),
+      ]);
+      const agent = new Agent({
+        name: 'ConsecutiveStreamApprovalAgent',
+        model,
+        tools: [approvalTool],
+      });
+      const runner = new Runner();
+
+      const firstResult = await runner.run(agent, 'user_message', {
+        stream: true,
+        previousResponseId: 'initial-response',
+      });
+      await drain(firstResult);
+      expect(firstResult.interruptions).toHaveLength(1);
+      firstResult.state.approve(firstResult.interruptions[0]);
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        stream: true,
+        previousResponseId: 'initial-response',
+      });
+      await drain(secondResult);
+      expect(secondResult.interruptions).toHaveLength(1);
+      secondResult.state.approve(secondResult.interruptions[0]);
+
+      const thirdResult = await runner.run(agent, secondResult.state, {
+        stream: true,
+        previousResponseId: 'initial-response',
+      });
+      await drain(thirdResult);
+
+      expect(thirdResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(3);
+      expect(model.requests[1].input).toEqual([
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: 'call-stream-1',
+        }),
+      ]);
+      expect(model.requests[2].input).toEqual([
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: 'call-stream-2',
+        }),
+      ]);
+    });
+
     it('uses runner-level toolErrorFormatter when resuming a rejected approval', async () => {
       const approvalTool = tool({
         name: 'test',
