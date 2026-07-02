@@ -605,6 +605,56 @@ describe('ServerConversationTracker', () => {
     );
   });
 
+  it('preserves results acknowledged only by a response without an ID', () => {
+    const tracker = new ServerConversationTracker({
+      previousResponseId: 'resp_initial',
+    });
+    const toolCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      callId: 'call_unlinked_response',
+      name: 'test',
+      arguments: '{}',
+    };
+    const toolResult = new ToolCallOutputItem(
+      {
+        type: 'function_call_result',
+        callId: toolCall.callId,
+        name: toolCall.name,
+        status: 'completed',
+        output: 'done',
+      },
+      TEST_AGENT,
+      'done',
+    );
+    const finalMessage = fakeModelMessage('done');
+    const generatedItems = [
+      new ToolCallItem(toolCall, TEST_AGENT),
+      toolResult,
+      new MessageOutputItem(finalMessage, TEST_AGENT),
+    ];
+
+    tracker.primeFromState({
+      originalInput: 'hello',
+      generatedItems,
+      modelResponses: [
+        {
+          output: [structuredClone(toolCall)],
+          usage: new Usage(),
+          responseId: 'resp_tool_call',
+        },
+        {
+          output: [structuredClone(finalMessage)],
+          usage: new Usage(),
+        },
+      ],
+    });
+
+    expect(tracker.previousResponseId).toBe('resp_tool_call');
+    expect(tracker.prepareInput('hello', generatedItems)).toEqual([
+      toolResult.rawItem,
+    ]);
+  });
+
   it('drops acknowledged client tool search outputs after a later response', () => {
     const tracker = new ServerConversationTracker({
       conversationId: 'conv_client_tool_search',

@@ -235,16 +235,24 @@ export class ServerConversationTracker {
     const serverItemKeys = new Set<string>();
     const acknowledgedToolCallCounts = new Map<string, number>();
     let latestResponseId: string | undefined;
+    let latestResponseIdIndex = -1;
     for (const [responseIndex, response] of modelResponses.entries()) {
       if (response.responseId) {
         latestResponseId = response.responseId;
+        latestResponseIdIndex = responseIndex;
       }
+    }
+    const acknowledgedResponseIndex = this.conversationId
+      ? modelResponses.length - 1
+      : latestResponseIdIndex;
+
+    for (const [responseIndex, response] of modelResponses.entries()) {
       for (const item of response.output) {
         if (item && typeof item === 'object') {
           this.serverItems.add(item);
           serverItemKeys.add(getAgentInputItemKey(item as AgentInputItem));
 
-          if (responseIndex < modelResponses.length - 1) {
+          if (responseIndex < acknowledgedResponseIndex) {
             const correlationKey = getToolResultCorrelationKeyForCall(
               item as AgentInputItem,
             );
