@@ -1,5 +1,15 @@
 # @openai/agents-openai
 
+## 0.12.1
+
+### Patch Changes
+
+- 75bf1df: fix(memory): restore persisted `input_text` system messages in conversation history
+- 28edf80: fix: accept ESM and CommonJS OpenAI clients in public APIs (#1432)
+- Updated dependencies [f064c56]
+- Updated dependencies [59a67c4]
+  - @openai/agents-core@0.12.1
+
 ## 0.12.0
 
 ### Patch Changes

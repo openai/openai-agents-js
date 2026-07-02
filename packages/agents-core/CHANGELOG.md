@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.12.1
+
+### Patch Changes
+
+- f064c56: fix: prevent acknowledged tool results from replaying on resume (#1435)
+- 59a67c4: fix: reject invalid handoff input filters before invoking handoffs
+
 ## 0.12.0
 
 ### Patch Changes
