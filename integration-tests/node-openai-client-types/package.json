@@ -1,0 +1,18 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build-check": "npm run build-check:typescript-5-2 && npm run build-check:typescript-6",
+    "build-check:typescript-5-2": "node ./node_modules/typescript-5-2/bin/tsc --noEmit",
+    "build-check:typescript-6": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@openai/agents": "latest",
+    "openai": "6.45.0",
+    "zod": "^4"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "typescript-5-2": "npm:typescript@5.2.2"
+  }
+}

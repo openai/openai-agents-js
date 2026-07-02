@@ -1,4 +1,5 @@
 export { OpenAIProvider, type OpenAIProviderOptions } from './openaiProvider';
+export type { OpenAIClient } from './openaiClient';
 export {
   withResponsesWebSocketSession,
   type ResponsesWebSocketSession,
@@ -25,6 +26,7 @@ export type {
   OpenAIChatCompletionsRawModelStreamEvent,
 } from './rawModelEvents';
 export {
+  getDefaultOpenAIClient,
   setDefaultOpenAIClient,
   setOpenAIAPI,
   setOpenAIResponsesTransport,

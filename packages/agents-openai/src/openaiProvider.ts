@@ -13,6 +13,7 @@ import {
   OpenAIResponsesWSModel,
 } from './openaiResponsesModel';
 import { OpenAIChatCompletionsModel } from './openaiChatCompletionsModel';
+import type { OpenAIClient } from './openaiClient';
 
 /**
  * Options for OpenAIProvider.
@@ -33,7 +34,7 @@ export type OpenAIProviderOptions = {
    */
   strictFeatureValidation?: boolean;
   responsesWebSocketOptions?: OpenAIResponsesWebSocketOptions;
-  openAIClient?: OpenAI;
+  openAIClient?: OpenAIClient;
 };
 
 /**
@@ -62,7 +63,7 @@ export class OpenAIProvider implements ModelProvider {
           'Cannot provide both websocketBaseURL and openAIClient',
         );
       }
-      this.#client = this.#options.openAIClient;
+      this.#client = this.#options.openAIClient as OpenAI;
     }
     this.#useResponses = this.#options.useResponses;
     this.#useResponsesWebSocket = this.#options.useResponsesWebSocket;
@@ -80,7 +81,7 @@ export class OpenAIProvider implements ModelProvider {
     if (!this.#client) {
       this.#client =
         // this provider checks if there is the default client first,
-        getDefaultOpenAIClient() ??
+        (getDefaultOpenAIClient() as OpenAI | undefined) ??
         // and then manually creates a new one.
         new OpenAI({
           apiKey: this.#options.apiKey ?? getDefaultOpenAIKey(),

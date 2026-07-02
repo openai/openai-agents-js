@@ -37,6 +37,7 @@ import {
 import { protocol } from '@openai/agents-core';
 import { getOpenAIRetryAdvice } from './retryAdvice';
 import { normalizePromptCacheRetention } from './utils/modelSettings';
+import type { OpenAIClient } from './openaiClient';
 
 export const FAKE_ID = 'FAKE_ID';
 
@@ -77,11 +78,11 @@ export class OpenAIChatCompletionsModel implements Model {
   #hasWarnedUnsupportedConversationState = false;
 
   constructor(
-    client: OpenAI,
+    client: OpenAIClient,
     model: string,
     options: OpenAIChatCompletionsModelOptions = {},
   ) {
-    this.#client = client;
+    this.#client = client as OpenAI;
     this.#model = model;
     this.#strictFeatureValidation = options.strictFeatureValidation ?? false;
   }

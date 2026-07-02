@@ -9,10 +9,11 @@ import {
   OPENAI_SESSION_API,
   type OpenAISessionApiTagged,
 } from './openaiSessionApi';
+import type { OpenAIClient } from '../openaiClient';
 
 export type OpenAIConversationsSessionOptions = {
   conversationId?: string;
-  client?: OpenAI;
+  client?: OpenAIClient;
   apiKey?: string;
   baseURL?: string;
   organization?: string;
@@ -20,9 +21,9 @@ export type OpenAIConversationsSessionOptions = {
 };
 
 export async function startOpenAIConversationsSession(
-  client?: OpenAI,
+  client?: OpenAIClient,
 ): Promise<string> {
-  const resolvedClient = client ?? resolveClient({});
+  const resolvedClient = client ? (client as OpenAI) : resolveClient({});
   const response = await resolvedClient.conversations.create({ items: [] });
   return response.id;
 }
@@ -376,11 +377,11 @@ function isResponseOutputItemArray(
 
 function resolveClient(options: OpenAIConversationsSessionOptions): OpenAI {
   if (options.client) {
-    return options.client;
+    return options.client as OpenAI;
   }
 
   return (
-    getDefaultOpenAIClient() ??
+    (getDefaultOpenAIClient() as OpenAI | undefined) ??
     new OpenAI({
       apiKey: options.apiKey ?? getDefaultOpenAIKey(),
       baseURL: options.baseURL,
