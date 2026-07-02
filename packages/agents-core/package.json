@@ -29,6 +29,11 @@
       "require": "./dist/utils/index.js",
       "import": "./dist/utils/index.mjs"
     },
+    "./utils/internal": {
+      "types": "./dist/utils/internal.d.ts",
+      "require": "./dist/utils/internal.js",
+      "import": "./dist/utils/internal.mjs"
+    },
     "./extensions": {
       "types": "./dist/extensions/index.d.ts",
       "require": "./dist/extensions/index.js",
@@ -48,6 +53,11 @@
       "types": "./dist/sandbox/internal.d.ts",
       "require": "./dist/sandbox/internal.js",
       "import": "./dist/sandbox/internal.mjs"
+    },
+    "./sandbox/internal/process": {
+      "types": "./dist/sandbox/internal/process.d.ts",
+      "require": "./dist/sandbox/internal/process.js",
+      "import": "./dist/sandbox/internal/process.mjs"
     },
     "./types": {
       "types": "./dist/types/index.d.ts",
@@ -105,6 +115,9 @@
       "utils": [
         "dist/utils/index.d.ts"
       ],
+      "utils/internal": [
+        "dist/utils/internal.d.ts"
+      ],
       "extensions": [
         "dist/extensions/index.d.ts"
       ],
@@ -116,6 +129,9 @@
       ],
       "sandbox/internal": [
         "dist/sandbox/internal.d.ts"
+      ],
+      "sandbox/internal/process": [
+        "dist/sandbox/internal/process.d.ts"
       ],
       "types": [
         "dist/types/index.d.ts"

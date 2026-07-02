@@ -159,10 +159,11 @@ export class OpenAIRealtimeWebRTC
       return;
     }
 
+    if (this.#connectPromise) {
+      return this.#connectPromise;
+    }
+
     if (this.#state.status === 'connecting') {
-      if (this.#connectPromise) {
-        return this.#connectPromise;
-      }
       logger.warn(
         'Realtime connection already in progress but no promise found',
       );
@@ -172,18 +173,34 @@ export class OpenAIRealtimeWebRTC
     const model = options.model ?? this.currentModel;
     this.currentModel = model;
     const baseUrl = options.url ?? this.#url;
-    const apiKey = await this._getApiKey(options);
-
-    const isClientKey = typeof apiKey === 'string' && apiKey.startsWith('ek_');
-    if (isBrowserEnvironment() && !this.#useInsecureApiKey && !isClientKey) {
-      throw new UserError(
-        'Using the WebRTC connection in a browser environment requires an ephemeral client key. If you need to use a regular API key, use the WebSocket transport or set the `useInsecureApiKey` option to true.',
-      );
-    }
-
     const attemptId = ++this.#connectAttemptId;
-    // eslint-disable-next-line no-async-promise-executor
-    this.#connectPromise = new Promise<void>(async (resolve, reject) => {
+    let resolveConnection: () => void;
+    let rejectConnection: (reason?: unknown) => void;
+    const connectionReady = new Promise<void>((resolve, reject) => {
+      resolveConnection = resolve;
+      rejectConnection = reject;
+    });
+
+    const prepareConnection = async () => {
+      let apiKey: string | undefined;
+      try {
+        apiKey = await this._getApiKey(options);
+      } catch (error) {
+        rejectConnection(error);
+        return;
+      }
+
+      const isClientKey =
+        typeof apiKey === 'string' && apiKey.startsWith('ek_');
+      if (isBrowserEnvironment() && !this.#useInsecureApiKey && !isClientKey) {
+        rejectConnection(
+          new UserError(
+            'Using the WebRTC connection in a browser environment requires an ephemeral client key. If you need to use a regular API key, use the WebSocket transport or set the `useInsecureApiKey` option to true.',
+          ),
+        );
+        return;
+      }
+
       try {
         const userSessionConfig: Partial<RealtimeSessionConfig> = {
           ...(options.initialSessionConfig || {}),
@@ -214,6 +231,13 @@ export class OpenAIRealtimeWebRTC
         this.emit('connection_change', this.#state.status);
 
         dataChannel.addEventListener('open', () => {
+          if (
+            this.#connectAttemptId !== attemptId ||
+            this.#state.dataChannel !== dataChannel
+          ) {
+            return;
+          }
+
           this.#state = {
             status: 'connecting',
             peerConnection,
@@ -247,7 +271,7 @@ export class OpenAIRealtimeWebRTC
               if (this.#state.dataChannel === dataChannel) {
                 this.close();
               }
-              reject(
+              rejectConnection(
                 new Error(
                   'Connection closed before session config was acknowledged',
                 ),
@@ -262,7 +286,7 @@ export class OpenAIRealtimeWebRTC
             };
             this.emit('connection_change', this.#state.status);
             this._onOpen();
-            resolve();
+            resolveConnection();
           };
           const onConfigAck = (ackEvent: MessageEvent) => {
             const { data: parsed } = parseRealtimeEvent(ackEvent);
@@ -321,9 +345,15 @@ export class OpenAIRealtimeWebRTC
         });
 
         dataChannel.addEventListener('error', (event) => {
+          if (
+            this.#connectAttemptId !== attemptId ||
+            this.#state.dataChannel !== dataChannel
+          ) {
+            return;
+          }
           this.close();
           this._onError(event);
-          reject(event);
+          rejectConnection(event);
         });
 
         // set up audio playback
@@ -382,15 +412,18 @@ export class OpenAIRealtimeWebRTC
       } catch (error) {
         this.close();
         this._onError(error);
-        reject(error);
+        rejectConnection(error);
       }
-    }).finally(() => {
+    };
+
+    this.#connectPromise = connectionReady.finally(() => {
       // Only clear if this is still the active connection attempt.
       // A newer connect() may have already replaced #connectPromise.
       if (this.#connectAttemptId === attemptId) {
         this.#connectPromise = undefined;
       }
     });
+    void prepareConnection();
     return this.#connectPromise;
   }
 

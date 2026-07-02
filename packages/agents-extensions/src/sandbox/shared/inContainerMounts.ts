@@ -12,6 +12,7 @@ import {
 } from '@openai/agents-core/sandbox';
 import { shellQuote } from './paths';
 import { readOptionalString } from './typeGuards';
+import { validateCredentialPair as validateSandboxCredentialPair } from '@openai/agents-core/sandbox/internal';
 
 export type RemoteMountCommandResult = {
   status: number;
@@ -913,14 +914,14 @@ function validateCredentialPair(args: {
   accessKeyId?: string;
   secretAccessKey?: string;
 }): void {
-  if (Boolean(args.accessKeyId) !== Boolean(args.secretAccessKey)) {
-    throw new SandboxMountError(
-      `${args.provider} cloud bucket mounts require both accessKeyId and secretAccessKey when either is provided.`,
-      {
-        mountType: args.mountType,
-      },
-    );
-  }
+  validateSandboxCredentialPair({
+    accessKeyId: args.accessKeyId,
+    secretAccessKey: args.secretAccessKey,
+    message: `${args.provider} cloud bucket mounts require both accessKeyId and secretAccessKey when either is provided.`,
+    details: {
+      mountType: args.mountType,
+    },
+  });
 }
 
 function mountStrategyType(entry: Entry): unknown {

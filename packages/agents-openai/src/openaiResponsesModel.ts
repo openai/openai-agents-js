@@ -1,6 +1,5 @@
 import {
   Model,
-  RequestUsage,
   Usage,
   withResponseSpan,
   createResponseSpan,
@@ -65,6 +64,11 @@ import {
   getSnakeCasedProviderDataWithoutReservedKeys,
 } from './utils/providerData';
 import { normalizePromptCacheRetention } from './utils/modelSettings';
+import {
+  normalizeInstructions,
+  searchParamsToAuthHeaderQuery,
+  toRequestUsageEntry,
+} from './responsesUtils';
 import { ProviderData } from '@openai/agents-core/types';
 import {
   encodeUint8ArrayToBase64,
@@ -72,6 +76,10 @@ import {
   getToolSearchProviderCallId,
   normalizeHostedMcpRequireApproval,
 } from '@openai/agents-core/utils';
+import {
+  formatInlineData,
+  getInlineMediaType,
+} from '@openai/agents-core/utils/internal';
 
 type ToolChoice =
   | ToolChoiceOptions
@@ -772,7 +780,7 @@ function convertLegacyToolOutputContent(
     const legacyImageUrl = (output as any).imageUrl;
     const legacyFileId = (output as any).fileId;
     const dataValue = (output as any).data;
-    const topLevelInlineMediaType = getImageInlineMediaType(
+    const topLevelInlineMediaType = getInlineMediaType(
       output as Record<string, any>,
     );
 
@@ -781,7 +789,7 @@ function convertLegacyToolOutputContent(
     } else if (isRecord(output.image)) {
       const imageObj = output.image as Record<string, any>;
       const inlineMediaType =
-        getImageInlineMediaType(imageObj) ?? topLevelInlineMediaType;
+        getInlineMediaType(imageObj) ?? topLevelInlineMediaType;
       if (typeof imageObj.url === 'string' && imageObj.url.length > 0) {
         structured.image = imageObj.url;
       } else if (
@@ -1139,33 +1147,6 @@ function getShellCallProviderDataForInput(
   };
 }
 
-function getImageInlineMediaType(
-  source: Record<string, any>,
-): string | undefined {
-  if (typeof source.mediaType === 'string' && source.mediaType.length > 0) {
-    return source.mediaType;
-  }
-  if (
-    typeof (source as any).mimeType === 'string' &&
-    (source as any).mimeType.length > 0
-  ) {
-    return (source as any).mimeType;
-  }
-  return undefined;
-}
-
-function formatInlineData(
-  data: string | Uint8Array,
-  mediaType?: string,
-): string {
-  if (typeof data === 'string' && data.startsWith('data:')) {
-    return data;
-  }
-  const base64 =
-    typeof data === 'string' ? data : encodeUint8ArrayToBase64(data);
-  return mediaType ? `data:${mediaType};base64,${base64}` : base64;
-}
-
 function toOpenAIShellSkill(
   skill: SerializedShellContainerSkill,
 ): OpenAI.Responses.SkillReference | OpenAI.Responses.InlineSkill {
@@ -1396,9 +1377,12 @@ function getTools<_TContext = unknown>(
           );
         }
 
-        const { tool: openaiTool, include: openaiIncludes } = converTool(tool, {
-          usePreviewComputerTool,
-        });
+        const { tool: openaiTool, include: openaiIncludes } = convertTool(
+          tool,
+          {
+            usePreviewComputerTool,
+          },
+        );
         if (namespaceState.functionNames.has(tool.name)) {
           throw new UserError(
             `Namespace "${namespaceName}" cannot contain duplicate function tool name "${tool.name}".`,
@@ -1430,7 +1414,7 @@ function getTools<_TContext = unknown>(
       hasDeferredSearchableTool = true;
     }
 
-    const { tool: openaiTool, include: openaiIncludes } = converTool(tool, {
+    const { tool: openaiTool, include: openaiIncludes } = convertTool(tool, {
       usePreviewComputerTool,
     });
     openaiTools.push(openaiTool);
@@ -1465,7 +1449,7 @@ function getTools<_TContext = unknown>(
   };
 }
 
-function converTool<_TContext = unknown>(
+function convertTool<_TContext = unknown>(
   tool: SerializedTool,
   options?: {
     usePreviewComputerTool?: boolean;
@@ -2778,7 +2762,7 @@ function convertToOutputItem(
   });
 }
 
-export { getToolChoice, converTool, getInputItems, convertToOutputItem };
+export { getToolChoice, convertTool, getInputItems, convertToOutputItem };
 
 const TERMINAL_RESPONSES_STREAM_EVENT_TYPES = new Set([
   'response.completed',
@@ -3451,7 +3435,6 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
           }
           throw new ResponsesWebSocketInternalError(
             'connection_closed_before_terminal_response_event',
-            'Responses websocket connection closed before a terminal response event.',
           );
         }
 
@@ -3896,59 +3879,4 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
       frameReadTimeout.errorMessage,
     );
   }
-}
-
-/**
- * Sending an empty string for instructions can override the prompt parameter.
- * Thus, this method checks if the instructions is an empty string and returns undefined if it is.
- * @param instructions - The instructions to normalize.
- * @returns The normalized instructions.
- */
-function normalizeInstructions(
-  instructions: string | undefined,
-): string | undefined {
-  if (typeof instructions === 'string') {
-    if (instructions.trim() === '') {
-      return undefined;
-    }
-    return instructions;
-  }
-  return undefined;
-}
-
-function searchParamsToAuthHeaderQuery(
-  searchParams: URLSearchParams,
-): Record<string, string | string[]> | undefined {
-  const query: Record<string, string | string[]> = {};
-  let hasEntries = false;
-
-  for (const [key, value] of searchParams.entries()) {
-    hasEntries = true;
-    const existingValue = query[key];
-    if (typeof existingValue === 'undefined') {
-      query[key] = value;
-      continue;
-    }
-    if (Array.isArray(existingValue)) {
-      existingValue.push(value);
-      continue;
-    }
-    query[key] = [existingValue, value];
-  }
-
-  return hasEntries ? query : undefined;
-}
-
-function toRequestUsageEntry(
-  usage: OpenAI.Responses.ResponseUsage | undefined,
-  endpoint: string,
-): RequestUsage {
-  return new RequestUsage({
-    inputTokens: usage?.input_tokens ?? 0,
-    outputTokens: usage?.output_tokens ?? 0,
-    totalTokens: usage?.total_tokens ?? 0,
-    inputTokensDetails: { ...usage?.input_tokens_details },
-    outputTokensDetails: { ...usage?.output_tokens_details },
-    endpoint,
-  });
 }

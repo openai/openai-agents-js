@@ -23,6 +23,11 @@ type ItemsToMessagesOptions = {
   strictFeatureValidation?: boolean;
 };
 
+type ChatCompletionAssistantMessageWithReasoning =
+  ChatCompletionAssistantMessageParam & {
+    reasoning?: string;
+  };
+
 export function convertToolChoice(
   toolChoice: 'auto' | 'required' | 'none' | (string & {}) | undefined | null,
 ): ChatCompletionToolChoiceOption | undefined {
@@ -264,7 +269,8 @@ export function itemsToMessages(
     return [{ role: 'user', content: items }];
   }
   const result: ChatCompletionMessageParam[] = [];
-  let currentAssistantMsg: ChatCompletionAssistantMessageParam | null = null;
+  let currentAssistantMsg: ChatCompletionAssistantMessageWithReasoning | null =
+    null;
   const flushAssistantMessage = () => {
     if (currentAssistantMsg) {
       if (
@@ -335,8 +341,8 @@ export function itemsToMessages(
       }
     } else if (item.type === 'reasoning') {
       const asst = ensureAssistantMessage();
-      // @ts-expect-error - reasoning is not supported in the official Chat Completion API spec
-      // this is handling third party providers that support reasoning
+      // Some third-party providers support reasoning on assistant messages even
+      // though it is not part of the official Chat Completions API type.
       asst.reasoning = item.rawContent?.[0]?.text;
       continue;
     } else if (item.type === 'hosted_tool_call') {

@@ -1,6 +1,6 @@
 import { Agent, AgentOutputType } from './agent';
 import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
-import { ModelBehaviorError, UserError } from './errors';
+import { ModelBehaviorError } from './errors';
 import {
   defineInputGuardrail,
   defineOutputGuardrail,
@@ -54,7 +54,6 @@ import {
   maybeResetToolChoice,
   selectModel,
 } from './runner/modelSettings';
-import { getDefaultModelSettings } from './defaultModel';
 import {
   getResponseWithRetry,
   getStreamedResponseWithRetry,
@@ -103,6 +102,12 @@ import {
   recordStreamEventForAbortReconciliation,
   shouldReconcileStreamAbort,
 } from './runner/streamReconciliation';
+import {
+  getImplicitModelSettingsForResolvedModel,
+  validateToolExecutionConfig,
+  type ToolExecutionConfig,
+} from './runner/runConfig';
+export type { ToolExecutionConfig } from './runner/runConfig';
 
 export type {
   CallModelInputFilter,
@@ -123,19 +128,6 @@ export { getTurnInput } from './runner/items';
 export type { ReasoningItemIdPolicy } from './runner/items';
 
 // Maintenance: keep helper utilities (e.g., GuardrailTracker) in runner/* modules so run.ts stays orchestration-only.
-
-function getImplicitModelSettingsForResolvedModel(
-  explictlyModelSet: boolean,
-  resolvedModelName?: string,
-): ModelSettings {
-  if (resolvedModelName && resolvedModelName.trim().length > 0) {
-    return getDefaultModelSettings(resolvedModelName);
-  }
-  if (explictlyModelSet) {
-    return {};
-  }
-  return getDefaultModelSettings();
-}
 
 // --------------------------------------------------------------
 //  Configuration
@@ -180,46 +172,7 @@ export type ToolErrorFormatter<TContext = unknown> = (
 /**
  * SDK-side execution settings for local tool calls.
  */
-export type ToolExecutionConfig = {
-  /**
-   * Maximum number of local function tool calls to execute concurrently.
-   * Set to `null` or leave unset to start all function tool calls emitted in a turn.
-   * This does not change provider-side `parallelToolCalls` behavior.
-   */
-  maxFunctionToolConcurrency?: number | null;
-
-  /**
-   * Runs function tool input guardrails before emitting a pending human approval interruption.
-   * The same guardrails still run again immediately before tool execution after approval.
-   */
-  preApprovalInputGuardrails?: boolean;
-};
-
 export type ToolNotFoundBehavior = 'raise_error' | 'return_error_to_model';
-
-function validateToolExecutionConfig(
-  config: ToolExecutionConfig | undefined,
-): ToolExecutionConfig | undefined {
-  const maxConcurrency = config?.maxFunctionToolConcurrency;
-  const preApprovalInputGuardrails = config?.preApprovalInputGuardrails;
-  if (
-    typeof preApprovalInputGuardrails !== 'undefined' &&
-    typeof preApprovalInputGuardrails !== 'boolean'
-  ) {
-    throw new UserError(
-      'toolExecution.preApprovalInputGuardrails must be a boolean when provided.',
-    );
-  }
-  if (maxConcurrency == null) {
-    return config;
-  }
-  if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
-    throw new UserError(
-      'toolExecution.maxFunctionToolConcurrency must be an integer greater than or equal to 1.',
-    );
-  }
-  return config;
-}
 
 /**
  * Configures settings for the entire agent run.
