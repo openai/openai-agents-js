@@ -1,5 +1,5 @@
 import { RunItem } from '../items';
-import { getToolSearchMatchKey } from '../tooling';
+import { getToolSearchExecution, getToolSearchMatchKey } from '../tooling';
 import { AgentInputItem } from '../types';
 import { serializeBinary } from '../utils/binary';
 
@@ -35,6 +35,9 @@ export function getToolResultCorrelationKeyForCall(
 
   const type = (item as { type?: unknown }).type;
   if (type === 'tool_search_call') {
+    if (getToolSearchExecution(item) === 'server') {
+      return undefined;
+    }
     const matchKey = getToolSearchMatchKey(item);
     return matchKey
       ? buildToolResultCorrelationKey('tool_search_output', matchKey)
@@ -91,6 +94,9 @@ export function getToolResultCorrelationKeyForResult(
 
   const type = (item as { type?: unknown }).type;
   if (type === 'tool_search_output') {
+    if (getToolSearchExecution(item) === 'server') {
+      return undefined;
+    }
     const matchKey = getToolSearchMatchKey(item);
     return matchKey
       ? buildToolResultCorrelationKey('tool_search_output', matchKey)

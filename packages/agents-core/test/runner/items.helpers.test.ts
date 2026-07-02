@@ -133,6 +133,28 @@ describe('tool result correlation keys', () => {
     );
   });
 
+  it('does not correlate server-executed tool searches', () => {
+    const call: AgentInputItem = {
+      type: 'tool_search_call',
+      arguments: { query: 'crm' },
+      providerData: {
+        call_id: 'server-tool-search',
+        execution: 'server',
+      },
+    };
+    const result: AgentInputItem = {
+      type: 'tool_search_output',
+      tools: [],
+      providerData: {
+        call_id: 'server-tool-search',
+        execution: 'server',
+      },
+    };
+
+    expect(getToolResultCorrelationKeyForCall(call)).toBeUndefined();
+    expect(getToolResultCorrelationKeyForResult(result)).toBeUndefined();
+  });
+
   it('does not correlate unrelated hosted tool calls', () => {
     const hostedCall: AgentInputItem = {
       type: 'hosted_tool_call',

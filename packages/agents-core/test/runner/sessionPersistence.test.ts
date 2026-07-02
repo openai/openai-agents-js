@@ -705,6 +705,83 @@ describe('ServerConversationTracker', () => {
     expect(tracker.prepareInput('hello', generatedItems)).toEqual([]);
   });
 
+  it('preserves client tool search outputs when a server call reuses the ID', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_mixed_tool_search_execution',
+    });
+    const sharedCallId = 'shared-tool-search-call';
+    const serverCall: protocol.ToolSearchCallItem = {
+      type: 'tool_search_call',
+      id: 'server-tool-search-call',
+      arguments: { query: 'crm' },
+      execution: 'server',
+      providerData: {
+        call_id: sharedCallId,
+        execution: 'server',
+      },
+    };
+    const serverOutput: protocol.ToolSearchOutputItem = {
+      type: 'tool_search_output',
+      id: 'server-tool-search-output',
+      execution: 'server',
+      tools: [],
+      providerData: {
+        call_id: sharedCallId,
+        execution: 'server',
+      },
+    };
+    const clientCall: protocol.ToolSearchCallItem = {
+      type: 'tool_search_call',
+      id: 'client-tool-search-call',
+      arguments: { paths: ['crm'] },
+      execution: 'client',
+      providerData: {
+        call_id: sharedCallId,
+        execution: 'client',
+      },
+    };
+    const clientOutput = new ToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        execution: 'client',
+        status: 'completed',
+        tools: [],
+        providerData: {
+          call_id: sharedCallId,
+          execution: 'client',
+        },
+      },
+      TEST_AGENT,
+    );
+    const generatedItems = [
+      new ToolSearchCallItem(serverCall, TEST_AGENT),
+      new ToolSearchOutputItem(serverOutput, TEST_AGENT),
+      new ToolSearchCallItem(clientCall, TEST_AGENT),
+      clientOutput,
+    ];
+
+    tracker.primeFromState({
+      originalInput: 'hello',
+      generatedItems,
+      modelResponses: [
+        {
+          output: [structuredClone(serverCall), structuredClone(serverOutput)],
+          usage: new Usage(),
+          responseId: 'resp_server_tool_search',
+        },
+        {
+          output: [structuredClone(clientCall)],
+          usage: new Usage(),
+          responseId: 'resp_client_tool_search',
+        },
+      ],
+    });
+
+    expect(tracker.prepareInput('hello', generatedItems)).toEqual([
+      clientOutput.rawItem,
+    ]);
+  });
+
   it('drops acknowledged hosted MCP approval responses while preserving the latest response', () => {
     const tracker = new ServerConversationTracker({
       conversationId: 'conv_mcp_approvals',
