@@ -6372,7 +6372,7 @@ describe('Runner.run', () => {
       });
       const buildMcpApproval = (id: string): protocol.HostedToolCallItem => ({
         type: 'hosted_tool_call',
-        id,
+        id: `item-${id}`,
         name: 'mcp_approval_request',
         status: 'completed',
         providerData: {

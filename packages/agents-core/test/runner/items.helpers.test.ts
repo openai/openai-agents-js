@@ -112,7 +112,7 @@ describe('tool result correlation keys', () => {
   it('matches hosted MCP approval requests with approval responses', () => {
     const request: AgentInputItem = {
       type: 'hosted_tool_call',
-      id: 'approval:1',
+      id: 'approval-item:1',
       name: 'mcp_approval_request',
       providerData: {
         type: 'mcp_approval_request',
@@ -124,7 +124,7 @@ describe('tool result correlation keys', () => {
       name: 'mcp_approval_response',
       providerData: {
         approve: true,
-        approval_request_id: 'approval:1',
+        approval_request_id: 'provider-approval-id',
       },
     };
 

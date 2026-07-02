@@ -76,7 +76,7 @@ export function getToolResultCorrelationKeyForCall(
     return undefined;
   }
 
-  const approvalRequestId = hostedItem.id ?? approvalRequest.id;
+  const approvalRequestId = approvalRequest.id ?? hostedItem.id;
   return typeof approvalRequestId === 'string'
     ? buildToolResultCorrelationKey(
         HOSTED_MCP_APPROVAL_RESPONSE,

@@ -786,13 +786,16 @@ describe('ServerConversationTracker', () => {
     const tracker = new ServerConversationTracker({
       conversationId: 'conv_mcp_approvals',
     });
-    const buildApprovalRequest = (id: string): protocol.HostedToolCallItem => ({
+    const buildApprovalRequest = (
+      itemId: string,
+      approvalRequestId: string,
+    ): protocol.HostedToolCallItem => ({
       type: 'hosted_tool_call',
-      id,
+      id: itemId,
       name: 'mcp_approval_request',
       providerData: {
         type: 'mcp_approval_request',
-        id,
+        id: approvalRequestId,
       },
     });
     const buildApprovalResponse = (
@@ -805,8 +808,14 @@ describe('ServerConversationTracker', () => {
         approval_request_id: id,
       },
     });
-    const previousRequest = buildApprovalRequest('approval_previous');
-    const latestRequest = buildApprovalRequest('approval_latest');
+    const previousRequest = buildApprovalRequest(
+      'approval_item_previous',
+      'approval_previous',
+    );
+    const latestRequest = buildApprovalRequest(
+      'approval_item_latest',
+      'approval_latest',
+    );
     const previousResponse = new ToolCallItem(
       buildApprovalResponse('approval_previous'),
       TEST_AGENT,
