@@ -492,6 +492,231 @@ describe('ServerConversationTracker', () => {
     expect(nextTurnInput).toHaveLength(0);
   });
 
+  it('drops acknowledged results while preserving latest results when call IDs are reused', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_reused_call_id',
+    });
+    const previousCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      callId: 'reused-call',
+      name: 'test',
+      arguments: '{"value":"previous"}',
+    };
+    const latestCall: protocol.FunctionCallItem = {
+      ...previousCall,
+      arguments: '{"value":"latest"}',
+    };
+    const previousResult = new ToolCallOutputItem(
+      {
+        type: 'function_call_result',
+        callId: 'reused-call',
+        name: 'test',
+        status: 'completed',
+        output: 'previous result',
+      },
+      TEST_AGENT,
+      'previous result',
+    );
+    const latestResult = new ToolCallOutputItem(
+      {
+        type: 'function_call_result',
+        callId: 'reused-call',
+        name: 'test',
+        status: 'completed',
+        output: 'latest result',
+      },
+      TEST_AGENT,
+      'latest result',
+    );
+    const generatedItems = [
+      new ToolCallItem(previousCall, TEST_AGENT),
+      previousResult,
+      new ToolCallItem(latestCall, TEST_AGENT),
+      latestResult,
+    ];
+
+    tracker.primeFromState({
+      originalInput: 'hello',
+      generatedItems,
+      modelResponses: [
+        {
+          output: [structuredClone(previousCall)],
+          usage: new Usage(),
+          responseId: 'resp_previous',
+        },
+        {
+          output: [structuredClone(latestCall)],
+          usage: new Usage(),
+          responseId: 'resp_latest',
+        },
+      ],
+    });
+
+    expect(tracker.prepareInput('hello', generatedItems)).toEqual([
+      latestResult.rawItem,
+    ]);
+  });
+
+  it('preserves every result generated for calls in the latest response', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_multiple_pending_results',
+    });
+    const calls: protocol.FunctionCallItem[] = ['call-1', 'call-2'].map(
+      (callId) => ({
+        type: 'function_call',
+        callId,
+        name: 'test',
+        arguments: '{}',
+      }),
+    );
+    const results = calls.map(
+      (call) =>
+        new ToolCallOutputItem(
+          {
+            type: 'function_call_result',
+            callId: call.callId,
+            name: call.name,
+            status: 'completed',
+            output: `${call.callId} result`,
+          },
+          TEST_AGENT,
+          `${call.callId} result`,
+        ),
+    );
+    const generatedItems = calls.flatMap((call, index) => [
+      new ToolCallItem(call, TEST_AGENT),
+      results[index]!,
+    ]);
+
+    tracker.primeFromState({
+      originalInput: 'hello',
+      generatedItems,
+      modelResponses: [
+        {
+          output: structuredClone(calls),
+          usage: new Usage(),
+          responseId: 'resp_latest',
+        },
+      ],
+    });
+
+    expect(tracker.prepareInput('hello', generatedItems)).toEqual(
+      results.map((result) => result.rawItem),
+    );
+  });
+
+  it('drops acknowledged client tool search outputs after a later response', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_client_tool_search',
+    });
+    const toolSearchCall: protocol.ToolSearchCallItem = {
+      type: 'tool_search_call',
+      id: 'tool-search-item',
+      arguments: { paths: ['crm'] },
+      status: 'completed',
+      providerData: {
+        call_id: 'tool-search-call',
+        execution: 'client',
+      },
+    };
+    const toolSearchOutput: protocol.ToolSearchOutputItem = {
+      type: 'tool_search_output',
+      status: 'completed',
+      tools: [],
+      providerData: {
+        call_id: 'tool-search-call',
+        execution: 'client',
+      },
+    };
+    const finalMessage = fakeModelMessage('done');
+    const generatedItems = [
+      new ToolSearchCallItem(toolSearchCall, TEST_AGENT),
+      new ToolSearchOutputItem(toolSearchOutput, TEST_AGENT),
+      new MessageOutputItem(finalMessage, TEST_AGENT),
+    ];
+
+    tracker.primeFromState({
+      originalInput: 'hello',
+      generatedItems,
+      modelResponses: [
+        {
+          output: [structuredClone(toolSearchCall)],
+          usage: new Usage(),
+          responseId: 'resp_tool_search',
+        },
+        {
+          output: [structuredClone(finalMessage)],
+          usage: new Usage(),
+          responseId: 'resp_final',
+        },
+      ],
+    });
+
+    expect(tracker.prepareInput('hello', generatedItems)).toEqual([]);
+  });
+
+  it('drops acknowledged hosted MCP approval responses while preserving the latest response', () => {
+    const tracker = new ServerConversationTracker({
+      conversationId: 'conv_mcp_approvals',
+    });
+    const buildApprovalRequest = (id: string): protocol.HostedToolCallItem => ({
+      type: 'hosted_tool_call',
+      id,
+      name: 'mcp_approval_request',
+      providerData: {
+        type: 'mcp_approval_request',
+        id,
+      },
+    });
+    const buildApprovalResponse = (
+      id: string,
+    ): protocol.HostedToolCallItem => ({
+      type: 'hosted_tool_call',
+      name: 'mcp_approval_response',
+      providerData: {
+        approve: true,
+        approval_request_id: id,
+      },
+    });
+    const previousRequest = buildApprovalRequest('approval_previous');
+    const latestRequest = buildApprovalRequest('approval_latest');
+    const previousResponse = new ToolCallItem(
+      buildApprovalResponse('approval_previous'),
+      TEST_AGENT,
+    );
+    const latestResponse = new ToolCallItem(
+      buildApprovalResponse('approval_latest'),
+      TEST_AGENT,
+    );
+    const generatedItems = [
+      new ToolCallItem(previousRequest, TEST_AGENT),
+      previousResponse,
+      new ToolCallItem(latestRequest, TEST_AGENT),
+      latestResponse,
+    ];
+
+    tracker.primeFromState({
+      originalInput: 'hello',
+      generatedItems,
+      modelResponses: [
+        {
+          output: [structuredClone(previousRequest)],
+          usage: new Usage(),
+          responseId: 'resp_previous',
+        },
+        {
+          output: [structuredClone(latestRequest)],
+          usage: new Usage(),
+          responseId: 'resp_latest',
+        },
+      ],
+    });
+
+    expect(tracker.prepareInput('hello', generatedItems)).toEqual([
+      latestResponse.rawItem,
+    ]);
+  });
+
   it('does not resend supplemental generated items after they were marked sent', () => {
     const tracker = new ServerConversationTracker({
       conversationId: 'conv_supplemental_sent',

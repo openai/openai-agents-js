@@ -9,6 +9,8 @@ import {
   buildAgentInputPool,
   extractOutputItemsFromRunItems,
   getAgentInputItemKey,
+  getToolResultCorrelationKeyForCall,
+  getToolResultCorrelationKeyForResult,
   removeAgentInputFromPool,
   takeAgentInputFromPool,
   toAgentInputList,
@@ -231,8 +233,9 @@ export class ServerConversationTracker {
     const hasResponses = modelResponses.length > 0;
 
     const serverItemKeys = new Set<string>();
+    const acknowledgedToolCallCounts = new Map<string, number>();
     let latestResponseId: string | undefined;
-    for (const response of modelResponses) {
+    for (const [responseIndex, response] of modelResponses.entries()) {
       if (response.responseId) {
         latestResponseId = response.responseId;
       }
@@ -240,6 +243,18 @@ export class ServerConversationTracker {
         if (item && typeof item === 'object') {
           this.serverItems.add(item);
           serverItemKeys.add(getAgentInputItemKey(item as AgentInputItem));
+
+          if (responseIndex < modelResponses.length - 1) {
+            const correlationKey = getToolResultCorrelationKeyForCall(
+              item as AgentInputItem,
+            );
+            if (correlationKey) {
+              acknowledgedToolCallCounts.set(
+                correlationKey,
+                (acknowledgedToolCallCounts.get(correlationKey) ?? 0) + 1,
+              );
+            }
+          }
         }
       }
     }
@@ -269,6 +284,23 @@ export class ServerConversationTracker {
         const rawItemKey = getAgentInputItemKey(rawItem as AgentInputItem);
         if (this.serverItems.has(rawItem) || serverItemKeys.has(rawItemKey)) {
           this.sentItems.add(rawItem);
+          continue;
+        }
+
+        const correlationKey = getToolResultCorrelationKeyForResult(
+          rawItem as AgentInputItem,
+        );
+        if (!correlationKey) {
+          continue;
+        }
+        const remainingAcknowledgedCalls =
+          acknowledgedToolCallCounts.get(correlationKey) ?? 0;
+        if (remainingAcknowledgedCalls > 0) {
+          this.sentItems.add(rawItem);
+          acknowledgedToolCallCounts.set(
+            correlationKey,
+            remainingAcknowledgedCalls - 1,
+          );
         }
       }
     }

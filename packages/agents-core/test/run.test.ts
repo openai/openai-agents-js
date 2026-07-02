@@ -6310,6 +6310,120 @@ describe('Runner.run', () => {
       });
     });
 
+    it('does not replay an acknowledged result after serializing consecutive approvals', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+      const model = new TrackingModel([
+        buildResponse([buildToolCall('call-serialized-1', 'first')], 'resp-1'),
+        buildResponse([buildToolCall('call-serialized-2', 'second')], 'resp-2'),
+        buildResponse([fakeModelMessage('done')], 'resp-3'),
+      ]);
+      const agent = new Agent({
+        name: 'SerializedConsecutiveApprovalAgent',
+        model,
+        tools: [approvalTool],
+      });
+      const runner = new Runner();
+
+      const firstResult = await runner.run(agent, 'user_message', {
+        previousResponseId: 'initial-response',
+      });
+      expect(firstResult.interruptions).toHaveLength(1);
+      firstResult.state.approve(firstResult.interruptions[0]);
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        previousResponseId: 'initial-response',
+      });
+      expect(secondResult.interruptions).toHaveLength(1);
+
+      const restoredState = await RunState.fromString(
+        agent,
+        secondResult.state.toString(),
+      );
+      const [restoredApproval] = restoredState.getInterruptions();
+      restoredState.approve(restoredApproval);
+
+      const thirdResult = await runner.run(agent, restoredState, {
+        previousResponseId: 'initial-response',
+      });
+
+      expect(thirdResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(3);
+      expect(model.requests[2].input).toEqual([
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: 'call-serialized-2',
+        }),
+      ]);
+    });
+
+    it('does not replay acknowledged hosted MCP approval responses', async () => {
+      const mcpTool = hostedMcpTool({
+        serverLabel: 'demo_server',
+        serverUrl: 'https://example.com',
+        requireApproval: {
+          always: { toolNames: ['demo_tool'] },
+        },
+      });
+      const buildMcpApproval = (id: string): protocol.HostedToolCallItem => ({
+        type: 'hosted_tool_call',
+        id,
+        name: 'mcp_approval_request',
+        status: 'completed',
+        providerData: {
+          type: 'mcp_approval_request',
+          server_label: 'demo_server',
+          name: 'demo_tool',
+          id,
+          arguments: '{}',
+        },
+      });
+      const model = new TrackingModel([
+        buildResponse([buildMcpApproval('approval-1')], 'resp-mcp-1'),
+        buildResponse([buildMcpApproval('approval-2')], 'resp-mcp-2'),
+        buildResponse([fakeModelMessage('done')], 'resp-mcp-3'),
+      ]);
+      const agent = new Agent({
+        name: 'ConsecutiveHostedMcpApprovalAgent',
+        model,
+        tools: [mcpTool],
+      });
+      const runner = new Runner();
+
+      const firstResult = await runner.run(agent, 'user_message', {
+        conversationId: 'conv-mcp-consecutive',
+      });
+      expect(firstResult.interruptions).toHaveLength(1);
+      firstResult.state.approve(firstResult.interruptions[0]);
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        conversationId: 'conv-mcp-consecutive',
+      });
+      expect(secondResult.interruptions).toHaveLength(1);
+      secondResult.state.approve(secondResult.interruptions[0]);
+
+      const thirdResult = await runner.run(agent, secondResult.state, {
+        conversationId: 'conv-mcp-consecutive',
+      });
+
+      expect(thirdResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(3);
+      expect(model.requests[2].input).toEqual([
+        expect.objectContaining({
+          type: 'hosted_tool_call',
+          name: 'mcp_approval_response',
+          providerData: expect.objectContaining({
+            approval_request_id: 'approval-2',
+          }),
+        }),
+      ]);
+    });
+
     it('does not resend items when resuming multiple times without new approvals', async () => {
       const approvalTool = tool({
         name: 'test',
