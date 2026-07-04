@@ -1,6 +1,6 @@
 export type TarFixtureEntry = {
   name: string;
-  type?: '0' | '1' | '2' | '5';
+  type?: '0' | '1' | '2' | '3' | '5' | 'g' | 'L' | 'x';
   content?: string | Uint8Array;
   linkName?: string;
 };
@@ -20,6 +20,17 @@ export function makeTarArchive(entries: TarFixtureEntry[]): Uint8Array {
   chunks.push(new Uint8Array(BLOCK_SIZE));
   chunks.push(new Uint8Array(BLOCK_SIZE));
   return concatBytes(chunks);
+}
+
+export function makePaxRecord(key: string, value: string): string {
+  let length = `${key}=${value}\n`.length + 2;
+  while (true) {
+    const record = `${length} ${key}=${value}\n`;
+    if (record.length === length) {
+      return record;
+    }
+    length = record.length;
+  }
 }
 
 function makeTarHeader(entry: TarFixtureEntry, size: number): Uint8Array {
