@@ -5,6 +5,7 @@ This example shows how to run the Agents SDK with a model provided by the [AI SD
 This example contains:
 
 - [`index.ts`](./index.ts), the runnable example entrypoint.
+- [`stream.ts`](./stream.ts), a streaming variant that writes text chunks as they arrive.
 - [`ai-sdk-v1.ts`](./ai-sdk-v1.ts), the local AI SDK v1 adapter implementation that you can copy into your own project if you still need the older provider interface.
 
 The example:
@@ -23,3 +24,9 @@ pnpm -F ai-sdk-v1 start
 ```
 
 The script prints the final output produced by the runner.
+
+To run the streaming variant:
+
+```bash
+pnpm -F ai-sdk-v1 start:stream
+```
