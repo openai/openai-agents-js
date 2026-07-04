@@ -694,10 +694,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     agent: Agent<TContext, AgentOutputType>,
   ): Promise<{
     model: Model;
-    explictlyModelSet: boolean;
+    explicitlyModelSet: boolean;
     resolvedModelName?: string;
   }> {
-    const explictlyModelSet =
+    const explicitlyModelSet =
       (agent.model !== undefined &&
         agent.model !== Agent.DEFAULT_MODEL_PLACEHOLDER) ||
       (this.config.model !== undefined &&
@@ -709,7 +709,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       typeof selectedModel === 'string'
         ? await this.config.modelProvider.getModel(selectedModel)
         : selectedModel;
-    return { model: resolvedModel, explictlyModelSet, resolvedModelName };
+    return { model: resolvedModel, explicitlyModelSet, resolvedModelName };
   }
 
   async #resolveSandboxRuntimeModelForAgent<TContext>(
@@ -964,7 +964,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 systemInstructions: preparedCall.modelInput.instructions,
                 prompt: preparedCall.prompt,
                 // Explicit agent/run config models should take precedence over prompt defaults.
-                ...(preparedCall.explictlyModelSet
+                ...(preparedCall.explicitlyModelSet
                   ? { overridePromptModel: true }
                   : {}),
                 input: preparedCall.modelInput.input,
@@ -1379,7 +1379,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 {
                   systemInstructions: preparedCall.modelInput.instructions,
                   prompt: preparedCall.prompt,
-                  ...(preparedCall.explictlyModelSet
+                  ...(preparedCall.explicitlyModelSet
                     ? { overridePromptModel: true }
                     : {}),
                   input: reconciliationInput,
@@ -1432,7 +1432,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 systemInstructions: preparedCall.modelInput.instructions,
                 prompt: preparedCall.prompt,
                 // Streaming requests should also honor explicitly chosen models.
-                ...(preparedCall.explictlyModelSet
+                ...(preparedCall.explicitlyModelSet
                   ? { overridePromptModel: true }
                   : {}),
                 input: preparedCall.modelInput.input,
@@ -1815,7 +1815,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       filteredItems?: AgentInputItem[],
     ) => void,
   ): Promise<PreparedModelCall<TContext>> {
-    const { model, explictlyModelSet, resolvedModelName } =
+    const { model, explicitlyModelSet, resolvedModelName } =
       await this.#resolveModelForAgent(executionAgent);
 
     const hasExplicitAgentModelSettings =
@@ -1826,7 +1826,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const implicitModelSettings = hasExplicitAgentModelSettings
       ? undefined
       : getImplicitModelSettingsForResolvedModel(
-          explictlyModelSet,
+          explicitlyModelSet,
           resolvedModelName,
         );
 
@@ -1836,7 +1836,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     );
     modelSettings = mergeModelSettings(modelSettings, agentModelSettings);
     modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
-      explictlyModelSet,
+      explicitlyModelSet,
       agentModelSettings ?? implicitModelSettings ?? {},
       model,
       modelSettings,
@@ -1880,7 +1880,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     return {
       ...artifacts,
       model,
-      explictlyModelSet,
+      explicitlyModelSet,
       modelSettings,
       modelInput,
       prompt,

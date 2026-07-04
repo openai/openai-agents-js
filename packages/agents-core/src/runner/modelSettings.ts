@@ -64,7 +64,7 @@ export function maybeResetToolChoice(
  * are incompatible and should be stripped to avoid runtime errors.
  */
 export function adjustModelSettingsForNonGPT5RunnerModel(
-  explictlyModelSet: boolean,
+  explicitlyModelSet: boolean,
   agentModelSettings: ModelSettings,
   runnerModel: string | Model,
   modelSettings: ModelSettings,
@@ -86,7 +86,7 @@ export function adjustModelSettingsForNonGPT5RunnerModel(
 
   if (
     isGpt5Default() &&
-    explictlyModelSet &&
+    explicitlyModelSet &&
     isNonGpt5RunnerModel &&
     hasGpt5Defaults
   ) {
