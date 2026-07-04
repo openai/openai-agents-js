@@ -8,7 +8,7 @@ const agent = new RealtimeAgent({
 // Create a new transport mechanism that will bridge the connection between Twilio and
 // the OpenAI Realtime API.
 const twilioTransport = new TwilioRealtimeTransportLayer({
-  // @ts-expect-error - websocketConnection comes from your Twilio server
+  // @ts-expect-error - this is not defined
   twilioWebSocket: websocketConnection,
 });
 

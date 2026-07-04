@@ -38,7 +38,10 @@ To improve the setup experience, we've created a dedicated transport layer that 
 
    <Code
      lang="typescript"
-     code={twilioBasicExample.replace(/\n\s+\/\/ @ts-expect-error.*$/m, '')}
+     code={twilioBasicExample.replace(
+       /\n\s+\/\/ @ts-expect-error - this is not defined/g,
+       '',
+     )}
    />
 
 5. **Connect your `RealtimeSession` to Twilio:**
