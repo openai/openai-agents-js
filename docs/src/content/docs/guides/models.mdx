@@ -90,6 +90,23 @@ The default `ModelProvider` resolves names using the OpenAI APIs. It supports tw
 
 You can also plug your own `OpenAI` client via `setDefaultOpenAIClient(client)` if you need custom networking settings.
 
+#### Provider options reference
+
+When you instantiate `OpenAIProvider` directly, these options control client construction, endpoint selection, and feature validation:
+
+| Option | Purpose |
+| --- | --- |
+| `apiKey` | API key used when the provider creates its own OpenAI client. Defaults to the SDK-wide OpenAI key. |
+| `baseURL` | HTTP base URL for OpenAI-compatible endpoints. Cannot be combined with `openAIClient`. |
+| `websocketBaseURL` | WebSocket base URL for Responses WebSocket transport. Cannot be combined with `openAIClient`. |
+| `openAIClient` | Preconfigured OpenAI client instance. Cannot be combined with `apiKey`, `baseURL`, or `websocketBaseURL`. |
+| `organization` / `project` | Organization and project values passed when the provider creates its own OpenAI client. |
+| `useResponses` | Select the Responses API (`true`) or Chat Completions API (`false`) for string model names resolved by this provider. Defaults to the process-wide `setOpenAIAPI(...)` setting. |
+| `useResponsesWebSocket` | Use the WebSocket transport for Responses models resolved by this provider. Defaults to the process-wide `setOpenAIResponsesTransport(...)` setting. |
+| `cacheResponsesWebSocketModels` | Reuse websocket-backed Responses model wrappers for connection reuse. Defaults to `true`; call `provider.close()` during shutdown to close cached wrappers. |
+| `responsesWebSocketOptions` | Advanced options forwarded to websocket-backed Responses model wrappers. |
+| `strictFeatureValidation` | For Chat Completions models, raise `UserError` for Responses-only features such as `previousResponseId`, `conversationId`, and `prompt`. By default those features are warned and ignored. |
+
 #### Responses WebSocket transport
 
 When you use the OpenAI provider with the Responses API, you can send requests over a WebSocket transport instead of the default HTTP transport.

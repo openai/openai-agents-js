@@ -15,12 +15,12 @@ import setDefaultModelProviderExample from '../../../../../../examples/docs/mode
 import setTracingExportApiKeyExample from '../../../../../../examples/docs/config/setTracingExportApiKey.ts?raw';
 import retryExample from '../../../../../../examples/docs/models/retry.ts?raw';
 
-每个智能体最终都会调用 LLM。SDK 通过两个轻量接口对模型进行抽象：
+每个智能体最终都会调用一个 LLM。SDK 通过两个轻量级接口对模型进行抽象：
 
 - [`Model`](/openai-agents-js/openai/agents/interfaces/model) – 知道如何针对特定 API 发起*一次*请求。
 - [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – 将人类可读的模型**名称**（例如 `'gpt‑5.4'`）解析为 `Model` 实例。
 
-在日常使用中，你通常只会和模型**名称**打交道，偶尔使用 `ModelSettings`。
+在日常工作中，你通常只需要与模型**名称**交互，并且偶尔使用 `ModelSettings`。
 
 <Code
   lang="typescript"
@@ -32,18 +32,18 @@ import retryExample from '../../../../../../examples/docs/models/retry.ts?raw';
 
 ### 默认模型
 
-如果在初始化 `Agent` 时没有指定模型，将使用默认模型。当前默认模型是 [`gpt-5.4-mini`](https://developers.openai.com/api/docs/models/gpt-5.4-mini)，并使用 `reasoning.effort: "none"` 和 `text.verbosity: "low"`，以平衡质量和延迟。
+初始化 `Agent` 时如果未指定模型，将使用默认模型。当前默认模型是 [`gpt-5.4-mini`](https://developers.openai.com/api/docs/models/gpt-5.4-mini)，并使用 `reasoning.effort: "none"` 和 `text.verbosity: "low"`，以在质量和延迟之间取得平衡。
 
-如果你想切换到其他模型（如 [`gpt-5.5`](https://developers.openai.com/api/docs/models/gpt-5.5)），有两种方式配置你的智能体。
+如果想切换到 [`gpt-5.5`](https://developers.openai.com/api/docs/models/gpt-5.5) 这样的其他模型，可以通过两种方式配置智能体。
 
-首先，如果你希望所有未设置自定义模型的智能体都始终使用某个特定模型，请在运行智能体之前设置 `OPENAI_DEFAULT_MODEL` 环境变量。
+首先，如果希望所有未设置自定义模型的智能体始终使用某个特定模型，请在运行智能体之前设置 `OPENAI_DEFAULT_MODEL` 环境变量。
 
 ```bash
 export OPENAI_DEFAULT_MODEL=gpt-5.5
 node my-awesome-agent.js
 ```
 
-其次，你可以为 `Runner` 实例设置默认模型。如果没有为智能体设置模型，将使用此 `Runner` 的默认模型。
+其次，可以为 `Runner` 实例设置默认模型。如果没有为某个智能体设置模型，则会使用此 `Runner` 的默认模型。
 
 <Code
   lang="typescript"
@@ -53,7 +53,7 @@ node my-awesome-agent.js
 
 #### GPT-5.x 模型
 
-当你以这种方式使用任何 GPT-5.x 模型（如 [`gpt-5.4`](https://developers.openai.com/api/docs/models/gpt-5.4)）时，SDK 会应用默认的 `modelSettings`。它会设置对大多数用例最合适的选项。如需调整默认模型的推理强度，请传入你自己的 `modelSettings`：
+以这种方式使用任何 GPT-5.x 模型（例如 [`gpt-5.4`](https://developers.openai.com/api/docs/models/gpt-5.4)）时，SDK 会应用默认的 `modelSettings`。这些默认值适用于大多数使用场景。要调整默认模型的推理强度，请传入自己的 `modelSettings`：
 
 <Code
   lang="typescript"
@@ -61,11 +61,11 @@ node my-awesome-agent.js
   title="自定义 GPT-5 默认设置"
 />
 
-如果延迟很重要，请从默认的 `gpt-5.4-mini` 配置开始，或在其他 GPT-5.x 模型上使用 `reasoning.effort: "none"`；只有在任务需要更审慎的推理时，再提高推理强度。
+如果延迟很重要，请从默认的 `gpt-5.4-mini` 配置开始，或在其他 GPT-5.x 模型上使用 `reasoning.effort: "none"`；仅在任务需要更审慎的推理时，再提高推理强度。
 
 #### 非 GPT-5 模型
 
-如果你传入非 GPT-5 模型名称且没有自定义 `modelSettings`，SDK 会回退到与任何模型兼容的通用 `modelSettings`。
+如果传入非 GPT-5 模型名称且未自定义 `modelSettings`，SDK 会回退到与任意模型兼容的通用 `modelSettings`。
 
 ---
 
@@ -73,12 +73,12 @@ node my-awesome-agent.js
 
 ### OpenAI 提供方
 
-默认的 `ModelProvider` 使用 OpenAI API 解析名称。它支持两个不同的端点：
+默认 `ModelProvider` 使用 OpenAI API 解析名称。它支持两个不同的端点：
 
 | API | 用法 | 调用 `setOpenAIAPI()` |
 | --- | --- | --- |
 | Chat Completions | 标准聊天与函数调用 | `setOpenAIAPI('chat_completions')` |
-| Responses | 新的流式传输优先生成式 API（工具调用、灵活输出） | `setOpenAIAPI('responses')` _（默认）_ |
+| Responses | 新的流式优先生成式 API（工具调用、灵活输出） | `setOpenAIAPI('responses')` _（默认）_ |
 
 #### 身份验证
 
@@ -88,43 +88,60 @@ node my-awesome-agent.js
   title="设置默认 OpenAI 密钥"
 />
 
-如果需要自定义网络设置，也可以通过 `setDefaultOpenAIClient(client)` 接入你自己的 `OpenAI` 客户端。
+如果需要自定义网络设置，也可以通过 `setDefaultOpenAIClient(client)` 接入自己的 `OpenAI` 客户端。
+
+#### 提供方选项参考
+
+直接实例化 `OpenAIProvider` 时，这些选项会控制客户端构造、端点选择和功能验证：
+
+| 选项 | 用途 |
+| --- | --- |
+| `apiKey` | 提供方创建自己的 OpenAI 客户端时使用的 API 密钥。默认使用 SDK 范围的 OpenAI 密钥。 |
+| `baseURL` | OpenAI 兼容端点的 HTTP 基础 URL。不能与 `openAIClient` 组合使用。 |
+| `websocketBaseURL` | Responses WebSocket 传输的 WebSocket 基础 URL。不能与 `openAIClient` 组合使用。 |
+| `openAIClient` | 预先配置的 OpenAI 客户端实例。不能与 `apiKey`、`baseURL` 或 `websocketBaseURL` 组合使用。 |
+| `organization` / `project` | 提供方创建自己的 OpenAI 客户端时传入的组织和项目值。 |
+| `useResponses` | 为此提供方解析的字符串模型名称选择 Responses API（`true`）或 Chat Completions API（`false`）。默认使用进程范围的 `setOpenAIAPI(...)` 设置。 |
+| `useResponsesWebSocket` | 对此提供方解析的 Responses 模型使用 WebSocket 传输。默认使用进程范围的 `setOpenAIResponsesTransport(...)` 设置。 |
+| `cacheResponsesWebSocketModels` | 复用基于 WebSocket 的 Responses 模型包装器以重用连接。默认为 `true`；在关闭期间调用 `provider.close()` 以关闭缓存的包装器。 |
+| `responsesWebSocketOptions` | 转发给基于 WebSocket 的 Responses 模型包装器的高级选项。 |
+| `strictFeatureValidation` | 对于 Chat Completions 模型，如果使用 `previousResponseId`、`conversationId` 和 `prompt` 等仅限 Responses 的功能，则抛出 `UserError`。默认情况下，将对这些功能发出警告并忽略它们。 |
 
 #### Responses WebSocket 传输
 
-使用 OpenAI 提供方和 Responses API 时，你可以通过 WebSocket 传输发送请求，而不是使用默认的 HTTP 传输。
+使用 OpenAI 提供方配合 Responses API 时，可以通过 WebSocket 传输发送请求，而不是使用默认的 HTTP 传输。
 
-可以使用 `setOpenAIResponsesTransport('websocket')` 全局启用，也可以使用 `new OpenAIProvider({ useResponses: true, useResponsesWebSocket: true })` 为每个提供方单独启用。
+可以通过 `setOpenAIResponsesTransport('websocket')` 全局启用它，也可以通过 `new OpenAIProvider({ useResponses: true, useResponsesWebSocket: true })` 为每个提供方启用它。
 
-仅为了使用 WebSocket 传输，你不需要 `withResponsesWebSocketSession(...)` 或自定义 `OpenAIProvider`。如果每次运行/请求都重新连接可以接受，那么启用 `setOpenAIResponsesTransport('websocket')` 后，你现有的 `run()` / `Runner.run()` 用法仍会继续工作。
+仅为了使用 WebSocket 传输，你不需要 `withResponsesWebSocketSession(...)` 或自定义 `OpenAIProvider`。如果每次运行/请求重新连接可以接受，那么启用 `setOpenAIResponsesTransport('websocket')` 后，现有的 `run()` / `Runner.run()` 用法会继续工作。
 
 传输选择遵循模型解析：
 
-- `setOpenAIResponsesTransport('websocket')` 只会影响之后在使用 Responses API 时通过 OpenAI 提供方解析的字符串模型名称。
-- 如果你向 `Agent` 或 `Runner` 传入具体的 `Model` 实例，该实例会按原样使用。`OpenAIResponsesWSModel` 保持使用 WebSocket，`OpenAIResponsesModel` 保持使用 HTTP，`OpenAIChatCompletionsModel` 保持使用 Chat Completions。
-- 如果你提供自己的 `modelProvider`，该提供方会控制模型解析。请在那里启用 WebSocket，而不是依赖全局 setter。
-- 如果你通过代理、网关或其他 OpenAI 兼容端点进行路由，目标必须支持 WebSocket `/responses` 端点。你可能还需要显式设置 `websocketBaseURL`。
+- `setOpenAIResponsesTransport('websocket')` 仅影响之后在使用 Responses API 时通过 OpenAI 提供方解析的字符串模型名称。
+- 如果将具体的 `Model` 实例传给 `Agent` 或 `Runner`，则会原样使用该实例。`OpenAIResponsesWSModel` 保持使用 WebSocket，`OpenAIResponsesModel` 保持使用 HTTP，`OpenAIChatCompletionsModel` 保持使用 Chat Completions。
+- 如果提供自己的 `modelProvider`，则由该提供方控制模型解析。请在该提供方中启用 WebSocket，而不是依赖全局 setter。
+- 如果通过代理、网关或其他 OpenAI 兼容端点进行路由，目标必须支持 WebSocket `/responses` 端点。你可能还需要显式设置 `websocketBaseURL`。
 
-仅当你希望优化连接复用并更显式地管理 WebSocket 提供方生命周期时，才使用 `withResponsesWebSocketSession(...)` 或自定义 `OpenAIProvider` / `Runner`：
+只有在想要优化连接复用并更明确地管理 WebSocket 提供方生命周期时，才需要使用 `withResponsesWebSocketSession(...)` 或自定义 `OpenAIProvider` / `Runner`：
 
-- `withResponsesWebSocketSession(...)`：便捷的作用域生命周期，会在回调结束后自动清理。
-- 自定义 `OpenAIProvider` / `Runner`：在你自己的应用架构中进行显式生命周期控制（包括关闭时清理）。
+- `withResponsesWebSocketSession(...)`：便捷的作用域生命周期，在回调结束后自动清理。
+- 自定义 `OpenAIProvider` / `Runner`：在你自己的应用架构中进行显式生命周期控制（包括关闭清理）。
 
-尽管名字如此，`withResponsesWebSocketSession(...)` 是一个传输生命周期辅助函数，与[会话](/openai-agents-js/zh/guides/sessions)中描述的记忆 `Session` 接口无关。
+尽管名称如此，`withResponsesWebSocketSession(...)` 是传输生命周期辅助工具，与[会话](/openai-agents-js/zh/guides/sessions)中描述的记忆 `Session` 接口无关。
 
-如果你使用 WebSocket 代理或网关，请在 `OpenAIProvider` 上配置 `websocketBaseURL`，或设置 `OPENAI_WEBSOCKET_BASE_URL`。
+如果使用 WebSocket 代理或网关，请在 `OpenAIProvider` 上配置 `websocketBaseURL`，或设置 `OPENAI_WEBSOCKET_BASE_URL`。
 
-如果你自行实例化 `OpenAIProvider`，请记住：基于 WebSocket 的 Responses 模型包装器默认会被缓存，以便复用连接。请在关闭期间调用 `await provider.close()` 以释放这些缓存连接。`withResponsesWebSocketSession(...)` 的存在很大程度上就是为了替你管理该生命周期：它会创建一个启用 WebSocket 的提供方和 runner，将它们传给你的回调，并且总是在之后关闭提供方。对临时提供方使用 `providerOptions`，对回调作用域内的 runner 默认值使用 `runnerConfig`。
+如果自己实例化 `OpenAIProvider`，请记住，默认会缓存基于 WebSocket 的 Responses 模型包装器以复用连接。在关闭期间调用 `await provider.close()` 以释放这些缓存连接。`withResponsesWebSocketSession(...)` 的存在很大程度上就是为了替你管理该生命周期：它会创建一个启用 WebSocket 的提供方和 runner，将它们传给你的回调，并始终在之后关闭提供方。使用 `providerOptions` 配置临时提供方，使用 `runnerConfig` 配置回调作用域内的 runner 默认值。
 
-参见 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts)，其中包含一个使用 Responses WebSocket 传输的完整流式传输 + HITL 示例。
+请参阅 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts)，了解使用 Responses WebSocket 传输的完整流式传输 + 人工干预（HITL）示例。
 
-#### 仅 Responses 支持的延迟工具加载
+#### 仅限 Responses 的延迟工具加载
 
 `toolSearchTool()`、`toolNamespace()`，以及设置了 `deferLoading: true` 的函数工具或托管 MCP 工具，都需要 OpenAI Responses API。Chat Completions 提供方会拒绝带命名空间或延迟加载的函数工具，AI SDK 适配器也不支持延迟的 Responses 工具加载流程。需要工具搜索时，请直接使用 Responses 模型。
 
-工具搜索仅在 GPT-5.4 及支持 Responses API 中工具搜索的更新模型版本上受支持。
+工具搜索仅支持 GPT-5.4 及更新的、在 Responses API 中支持它的模型版本。
 
-当一次运行包含延迟工具时，请将 `toolSearchTool()` 添加到同一个智能体，并让 `modelSettings.toolChoice` 保持为 `'auto'`。SDK 不允许你按名称强制使用内置 `tool_search` 工具或延迟函数工具，因为模型需要自行决定何时加载这些定义。请参阅[工具](/openai-agents-js/zh/guides/tools#deferred-tool-loading-with-tool-search)和官方 [OpenAI 工具搜索指南](https://developers.openai.com/api/docs/guides/tools-tool-search)，了解完整设置。
+当一次运行包含延迟工具时，请将 `toolSearchTool()` 添加到同一个智能体，并保持 `modelSettings.toolChoice` 为 `'auto'`。SDK 不允许你按名称强制使用内置 `tool_search` 工具或某个延迟函数工具，因为模型需要决定何时加载这些定义。完整设置请参见[工具](/openai-agents-js/zh/guides/tools#deferred-tool-loading-with-tool-search)和官方 [OpenAI 工具搜索指南](https://developers.openai.com/api/docs/guides/tools-tool-search)。
 
 ---
 
@@ -132,113 +149,113 @@ node my-awesome-agent.js
 
 ### ModelSettings
 
-`ModelSettings` 与 OpenAI 参数对应，但不绑定特定提供方。
+`ModelSettings` 与 OpenAI 参数相对应，但不依赖特定提供方。
 
-| Field | Type | Notes |
+| 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `temperature` | `number` | 创造性与确定性。 |
+| `temperature` | `number` | 创造性与确定性之间的权衡。 |
 | `topP` | `number` | 核采样。 |
 | `frequencyPenalty` | `number` | 惩罚重复 token。 |
-| `presencePenalty` | `number` | 鼓励生成新 token。 |
-| `toolChoice` | `'auto' \| 'required' \| 'none' \| string` | 参见[强制使用工具](/openai-agents-js/zh/guides/agents#forcing-tool-use)。在 OpenAI Responses 上，`toolChoice: 'computer'` 会在可用时强制使用 GA 内置计算机工具。 |
-| `parallelToolCalls` | `boolean` | 在支持时允许并行函数调用。 |
+| `presencePenalty` | `number` | 鼓励产生新 token。 |
+| `toolChoice` | `'auto' \| 'required' \| 'none' \| string` | 参见[强制使用工具](/openai-agents-js/zh/guides/agents#forcing-tool-use)。在 OpenAI Responses 中，`toolChoice: 'computer'` 会在可用时强制使用 GA 内置计算机工具。 |
+| `parallelToolCalls` | `boolean` | 在支持的情况下允许并行函数调用。 |
 | `truncation` | `'auto' \| 'disabled'` | token 截断策略。 |
 | `maxTokens` | `number` | 响应中的最大 token 数。 |
-| `store` | `boolean` | 持久化响应，以用于检索 / RAG 工作流。 |
-| `promptCacheRetention` | `'in-memory' \| '24h' \| null` | 在支持时控制提供方的提示缓存保留时间。 |
+| `store` | `boolean` | 持久化响应，用于检索/RAG 工作流。 |
+| `promptCacheRetention` | `'in-memory' \| '24h' \| null` | 在支持时控制提供方提示缓存的保留时长。 |
 | `contextManagement` | `ModelSettingsContextManagement` | 控制提供方的上下文管理，例如服务器端压缩。 |
 | `reasoning.effort` | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh'` | gpt-5.x 模型的推理强度。 |
-| `reasoning.summary` | `'auto' \| 'concise' \| 'detailed'` | 控制模型返回多少推理摘要。 |
+| `reasoning.summary` | `'auto' \| 'concise' \| 'detailed'` | 控制模型返回的推理摘要详细程度。 |
 | `text.verbosity` | `'low' \| 'medium' \| 'high'` | gpt-5.x 等模型的文本详略程度。 |
 | `providerData` | `Record<string, any>` | 转发给底层模型的提供方特定透传选项。 |
-| `retry` | `ModelRetrySettings` | 仅运行时可选择启用的重试配置。参见[模型重试](#model-retries)。 |
+| `retry` | `ModelRetrySettings` | 仅运行时的可选重试配置。参见[模型重试](#model-retries)。 |
 
-可以在任一层级附加设置：
+可在任一层级附加设置：
 
 <Code lang="typescript" code={modelSettingsExample} title="模型设置" />
 
-`Runner` 级别设置会覆盖任何冲突的单智能体设置。`retry` 是一个重要例外：除非你用 `undefined` 显式清除继承值，否则其嵌套字段会在 runner 和智能体设置之间合并。
+`Runner` 级设置会覆盖任何冲突的单智能体级设置。`retry` 是一个值得注意的例外：其嵌套字段会在 runner 和智能体设置之间合并，除非你使用 `undefined` 显式清除继承的值。
 
 ### 模型重试
 
-重试仅在运行时生效，且需显式启用。除非你配置了 `modelSettings.retry`，并且你的策略返回重试决定，否则 SDK 不会重试模型请求。
+重试仅在运行时生效，且需要显式启用。除非配置 `modelSettings.retry` 且你的策略返回重试决定，否则 SDK 不会重试模型请求。
 
 <Code lang="typescript" code={retryExample} title="启用模型重试" />
 
-`ModelRetrySettings` 有三个字段：
+`ModelRetrySettings` 包含三个字段：
 
-| Field | Type | Notes |
+| 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `maxRetries` | `number` | 初始请求之后允许的重试尝试次数。 |
-| `backoff` | `{ initialDelayMs?, maxDelayMs?, multiplier?, jitter? }` | 当策略重试但未返回 `delayMs` 时使用的默认延迟策略。`backoff.maxDelayMs` 仅限制计算得到的退避延迟；它不会限制策略返回的显式 `delayMs` 值，也不会限制 retry-after 提示。 |
-| `policy` | `RetryPolicy` | 决定是否重试的回调。此函数仅在运行时生效，不会序列化到持久化的运行状态中。 |
+| `backoff` | `{ initialDelayMs?, maxDelayMs?, multiplier?, jitter? }` | 当策略在未返回 `delayMs` 的情况下重试时使用的默认延迟策略。`backoff.maxDelayMs` 只限制计算得到的退避延迟；它不会限制策略返回的显式 `delayMs` 值或 retry-after 提示。 |
+| `policy` | `RetryPolicy` | 决定是否重试的回调。此函数仅运行时使用，不会序列化到持久化的运行状态中。 |
 
-重试策略会收到一个 `RetryPolicyContext`，其中包含：
+重试策略会接收包含以下内容的 `RetryPolicyContext`：
 
-- `attempt` 和 `maxRetries`，因此你可以做出感知尝试次数的决策。
-- `stream`，因此你可以在流式和非流式行为之间分支。
+- `attempt` 和 `maxRetries`，用于根据尝试次数做决定。
+- `stream`，用于区分流式和非流式行为。
 - `error`，用于原始检查。
 - `normalized` 信息，例如 `statusCode`、`retryAfterMs`、`errorCode`、`isNetworkError` 和 `isAbort`。
-- 当底层模型/提供方能够提供重试指导时，会包含 `providerAdvice`。
+- 当底层模型/提供方可以提供重试指导时的 `providerAdvice`。
 
-策略可以返回以下任一形式：
+策略可以返回：
 
 - `true` / `false`，表示简单的重试决定。
-- `{ retry, delayMs?, reason? }`，用于在你想覆盖延迟，或附加用于日志记录的诊断原因时使用。
+- `{ retry, delayMs?, reason? }`，在你想覆盖延迟或附加用于日志记录的诊断原因时使用。
 
-SDK 在 `retryPolicies` 上导出了现成的辅助函数：
+SDK 在 `retryPolicies` 上导出开箱即用的辅助函数：
 
-| Helper | Behavior |
+| 辅助函数 | 行为 |
 | --- | --- |
 | `retryPolicies.never()` | 始终不重试。 |
 | `retryPolicies.providerSuggested()` | 在可用时遵循提供方的重试建议。 |
-| `retryPolicies.networkError()` | 匹配临时性传输/连接故障。 |
-| `retryPolicies.httpStatus([..])` | 匹配指定的 HTTP 状态码。 |
-| `retryPolicies.retryAfter()` | 仅在存在 retry-after 提示时重试，并将该提示作为显式延迟使用，且不受 `backoff.maxDelayMs` 限制。 |
-| `retryPolicies.any(...)` | 当任一内层策略选择重试时重试。 |
-| `retryPolicies.all(...)` | 仅当每个内层策略都选择重试时才重试。 |
+| `retryPolicies.networkError()` | 匹配临时的传输/连接故障。 |
+| `retryPolicies.httpStatus([..])` | 匹配选定的 HTTP 状态码。 |
+| `retryPolicies.retryAfter()` | 仅在有 retry-after 提示时重试，并将该提示用作不受 `backoff.maxDelayMs` 限制的显式延迟。 |
+| `retryPolicies.any(...)` | 任一嵌套策略选择重试时重试。 |
+| `retryPolicies.all(...)` | 仅当每个嵌套策略都选择重试时才重试。 |
 
-组合策略时，`providerSuggested()` 是最安全的首选基础组件，因为当提供方能够区分这些情况时，它会保留提供方否决以及重放安全批准。
+组合策略时，`providerSuggested()` 是最安全的第一个构建块，因为当提供方能够区分时，它会保留提供方的否决以及对重放安全性的批准。
 
 #### 安全边界
 
-某些故障永远不会自动重试：
+某些失败永远不会自动重试：
 
 - 中止错误。
-- 在已发出任何可见事件或原始模型事件后的流式运行。
+- 在已发出任何可见事件或原始模型事件之后的流式运行。
 - 标记重放不安全的提供方建议。
 
-使用 `previousResponseId` 或 `conversationId` 的有状态后续请求也会以更保守的方式处理。对于这类请求，仅使用 `networkError()` 或 `httpStatus([500])` 等非提供方谓词还不够。重试策略必须包含来自提供方的重放安全批准，通常通过 `retryPolicies.providerSuggested()` 实现。
+使用 `previousResponseId` 或 `conversationId` 的有状态后续请求也会更保守地处理。对于这些请求，仅依靠 `networkError()` 或 `httpStatus([500])` 等非提供方谓词本身是不够的。重试策略必须包含来自提供方的重放安全批准，通常通过 `retryPolicies.providerSuggested()` 实现。
 
-#### Runner 与智能体的合并行为
+#### Runner 与智能体合并行为
 
-`retry` 会在 runner 级别和智能体级别的 `modelSettings` 之间进行深度合并：
+`retry` 会在 runner 级和智能体级 `modelSettings` 之间进行深度合并：
 
-- 智能体可以只覆盖 `retry.maxRetries`，并继续继承 runner 的 `policy`。
-- 智能体可以只覆盖 `retry.backoff` 的一部分，并保留 runner 中同级的 backoff 字段。
+- 智能体可以只覆盖 `retry.maxRetries`，并仍继承 runner 的 `policy`。
+- 智能体可以只覆盖 `retry.backoff` 的一部分，并保留 runner 中同级的退避字段。
 - 如果需要移除继承的 `policy` 或 `backoff`，请将该字段显式设置为 `undefined`。
 
-参见 [`examples/basic/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/retry.ts) 和 [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts)，了解包含日志记录的更完整示例。
+请参阅 [`examples/basic/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/retry.ts) 和 [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts)，了解更完整的带日志示例。
 
 ---
 
 ### 提示
 
-可以使用 `prompt` 参数配置智能体，表示应使用一个存储在服务器上的提示配置来控制智能体的行为。目前，此选项仅在使用 OpenAI [Responses API](https://platform.openai.com/docs/api-reference/responses) 时受支持。
+可通过 `prompt` 参数配置智能体，表示应使用一项存储在服务器上的提示配置来控制智能体的行为。目前，只有使用 OpenAI [Responses API](https://platform.openai.com/docs/api-reference/responses) 时才支持此选项。
 
-`prompt` 可以是静态对象，也可以是运行时返回该对象的函数。有关回调形态，请参见[动态提示](/openai-agents-js/zh/guides/agents#dynamic-prompts)。
+`prompt` 可以是静态对象，也可以是运行时返回该对象的函数。关于回调形态，请参见[动态提示](/openai-agents-js/zh/guides/agents#dynamic-prompts)。
 
-| Field | Type | Notes |
+| 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `promptId` | `string` | 提示的唯一标识符。 |
 | `version` | `string` | 你希望使用的提示版本。 |
-| `variables` | `object` | 用于替换到提示中的变量键/值对。值可以是字符串，也可以是文本、图像或文件等内容输入类型。 |
+| `variables` | `object` | 用于替换到提示中的变量键/值对。值可以是字符串，也可以是文本、图片或文件等内容输入类型。 |
 
-<Code lang="typescript" code={promptIdExample} title="带提示的智能体" />
+<Code lang="typescript" code={promptIdExample} title="带有提示的智能体" />
 
-任何额外的智能体配置（如 tools 或 instructions）都会覆盖你在已存储提示中可能配置的值。
+任何额外的智能体配置，例如 tools 或 instructions，都会覆盖你可能已在存储提示中配置的值。
 
-当已存储提示已经定义了模型时，除非显式覆盖，否则 SDK 不会发送智能体的默认模型。这对 `computerTool()` 很重要：出于兼容性，由提示管理的运行默认会保留旧版预览的线协议格式。如需在由提示管理的运行中启用 GA Responses 计算机工具，请显式设置 `modelSettings.toolChoice: 'computer'`，或发送显式模型（如 [`gpt-5.4`](https://developers.openai.com/api/docs/models/gpt-5.4)）。参见[工具](/openai-agents-js/zh/guides/tools#computer-tool-specifics)，了解相关计算机操作细节。
+当存储的提示已定义模型时，除非你显式覆盖，否则 SDK 不会发送智能体的默认模型。这对于 `computerTool()` 很重要：为了兼容性，由提示管理的运行默认保留旧版预览版协议形态（wire shape）。要在由提示管理的运行中启用 GA Responses 计算机工具，请显式设置 `modelSettings.toolChoice: 'computer'`，或发送显式模型，例如 [`gpt-5.4`](https://developers.openai.com/api/docs/models/gpt-5.4)。相关的计算机操作细节请参见[工具](/openai-agents-js/zh/guides/tools#computer-tool-specifics)。
 
 ---
 
@@ -246,7 +263,7 @@ SDK 在 `retryPolicies` 上导出了现成的辅助函数：
 
 ### 自定义模型提供方
 
-实现你自己的提供方很简单：实现 `ModelProvider` 和 `Model`，并将提供方传给 `Runner` 构造函数：
+实现自己的提供方很直接：实现 `ModelProvider` 和 `Model`，并将提供方传给 `Runner` 构造函数：
 
 <Code
   lang="typescript"
@@ -254,7 +271,7 @@ SDK 在 `retryPolicies` 上导出了现成的辅助函数：
   title="最小自定义提供方"
 />
 
-如果你希望每次 `run()` 调用以及每个新构造的 `Runner` 默认都使用同一个提供方，请在应用启动时设置一次：
+如果希望每次 `run()` 调用和每个新构造的 `Runner` 默认都使用同一个提供方，请在应用启动时设置一次：
 
 <Code
   lang="typescript"
@@ -262,17 +279,17 @@ SDK 在 `retryPolicies` 上导出了现成的辅助函数：
   title="设置默认模型提供方"
 />
 
-当你的应用统一使用非 OpenAI 提供方，并且不想在各处传递自定义 `Runner` 时，这很有用。
+当你的应用统一使用非 OpenAI 提供方，并且你不想在各处传递自定义 `Runner` 时，这很有用。
 
 #### AI SDK 集成
 
-如果你想在不自行实现 `ModelProvider` 的情况下使用非 OpenAI 模型，请参阅 [AI SDK 集成](/openai-agents-js/zh/extensions/ai-sdk)。该适配器允许你将 AI SDK 模型直接接入 Agents 运行时；当你的应用已经统一使用 AI SDK 提供方，或你想访问更广泛的提供方生态时，这会很有用。它还说明了 Agents SDK 的 `providerData` 如何映射到 AI SDK 的 `providerMetadata`，以及可用于 AI SDK UI 路由的流辅助函数。
+如果想在不自己实现 `ModelProvider` 的情况下使用非 OpenAI 模型，请参见 [AI SDK 集成](/openai-agents-js/zh/extensions/ai-sdk)。该适配器允许你将 AI SDK 模型直接接入 Agents 运行时；当你的应用已统一使用 AI SDK 提供方，或你希望访问更广泛的提供方生态时，这很有用。它还说明了 Agents SDK 的 `providerData` 如何映射到 AI SDK 的 `providerMetadata`，以及可用于 AI SDK UI 路由的流辅助工具。
 
 ---
 
-### 追踪凭据
+### 追踪凭证
 
-在受支持的服务器运行时中，追踪默认已启用。仅当追踪导出需要使用不同于默认 OpenAI API 密钥的凭据时，才使用 `setTracingExportApiKey()`：
+在受支持的服务器运行时中，追踪默认已启用。仅当追踪导出需要使用不同于默认 OpenAI API 密钥的凭证时，才使用 `setTracingExportApiKey()`：
 
 <Code
   lang="typescript"
@@ -280,12 +297,12 @@ SDK 在 `retryPolicies` 上导出了现成的辅助函数：
   title="设置追踪导出 API 密钥"
 />
 
-这会使用该凭据将追踪发送到 [OpenAI 控制台](https://platform.openai.com/traces)。有关导出器自定义（例如自定义采集端点或重试调优），请参见[追踪](/openai-agents-js/zh/guides/tracing#openai-tracing-exporter)。
+这会使用该凭证将追踪发送到 [OpenAI 控制台](https://platform.openai.com/traces)。有关导出器自定义（例如自定义采集端点或重试调优），请参见[追踪](/openai-agents-js/zh/guides/tracing#openai-tracing-exporter)。
 
 ---
 
 ## 后续步骤
 
-- 探索[运行智能体](/openai-agents-js/zh/guides/running-agents)。
-- 使用[工具](/openai-agents-js/zh/guides/tools)为你的模型赋予超能力。
-- 根据需要添加[护栏](/openai-agents-js/zh/guides/guardrails)或[追踪](/openai-agents-js/zh/guides/tracing)。
+- 了解[运行智能体](/openai-agents-js/zh/guides/running-agents)。
+- 使用[工具](/openai-agents-js/zh/guides/tools)让你的模型更强大。
+- 按需添加[护栏](/openai-agents-js/zh/guides/guardrails)或[追踪](/openai-agents-js/zh/guides/tracing)。
