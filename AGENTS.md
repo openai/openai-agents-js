@@ -170,7 +170,7 @@ When `$code-change-verification` applies (see Mandatory Skill Usage), invoke it 
 - To run locally only if needed:
   ```bash
   pnpm local-npm:start   # starts Verdaccio on :4873
-  pnpm local-npm:publish # public pacakges to the local repo
+  pnpm local-npm:publish # public packages to the local repo
   pnpm test:integration  # runs integration tests
   ```
 
