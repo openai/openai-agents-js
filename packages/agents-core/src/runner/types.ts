@@ -78,7 +78,7 @@ export type AgentArtifacts<TContext = UnknownContext> = {
 export type PreparedModelCall<TContext = UnknownContext> =
   AgentArtifacts<TContext> & {
     model: Model;
-    explictlyModelSet: boolean;
+    explicitlyModelSet: boolean;
     modelSettings: ModelSettings;
     modelInput: ModelInputData;
     prompt?: Prompt;
