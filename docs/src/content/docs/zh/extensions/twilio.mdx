@@ -37,10 +37,7 @@ Twilio 提供了一个 [Media Streams API](https://www.twilio.com/docs/voice/med
 
    <Code
      lang="typescript"
-     code={twilioBasicExample.replace(
-       /\n\s+\/\/ @ts-expect-error - this is not defined/g,
-       '',
-     )}
+     code={twilioBasicExample.replace(/\n\s+\/\/ @ts-expect-error.*$/m, '')}
    />
 
 5. **将您的 `RealtimeSession` 连接到 Twilio：**

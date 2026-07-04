@@ -1,7 +1,7 @@
 import { getGlobalTraceProvider } from '@openai/agents';
 
 export default {
-  // @ts-expect-error - Cloudflare Workers types are not typed
+  // @ts-expect-error - Cloudflare Workers types are not available in this snippet
   async fetch(request, env, ctx): Promise<Response> {
     try {
       // your agent code here

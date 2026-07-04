@@ -38,10 +38,7 @@ Twilio는 전화 통화의 원문 오디오를 WebSocket 서버로 전송하는 
 
    <Code
      lang="typescript"
-     code={twilioBasicExample.replace(
-       /\n\s+\/\/ @ts-expect-error - this is not defined/g,
-       '',
-     )}
+     code={twilioBasicExample.replace(/\n\s+\/\/ @ts-expect-error.*$/m, '')}
    />
 
 5. **`RealtimeSession`을 Twilio에 연결합니다.**

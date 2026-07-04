@@ -412,7 +412,7 @@ Once the single-agent pattern is clear, the next design question is where the sa
 Sandbox agents still compose with the rest of the SDK:
 
 - [Handoffs](/openai-agents-js/guides/handoffs): hand document-heavy work from a non-sandbox intake agent into a sandbox reviewer.
-- [Agents as tools](/openai-agents-js/guides/tools#agents-as-tools): expose multiple sandbox agents as tools, usually by passing a sandbox run config on each `asTool(...)` call so each tool gets its own sandbox boundary.
+- [Agents as tools](/openai-agents-js/guides/tools#4-agents-as-tools): expose multiple sandbox agents as tools, usually by passing a sandbox run config on each `asTool(...)` call so each tool gets its own sandbox boundary.
 - [MCP](/openai-agents-js/guides/mcp) and normal function tools: sandbox capabilities can coexist with `mcpServers` and ordinary tools.
 - [Running agents](/openai-agents-js/guides/running-agents): sandbox runs still use the normal `run()` and `Runner` APIs.
 

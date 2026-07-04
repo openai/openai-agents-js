@@ -1,14 +1,13 @@
 import { RealtimeAgent, RealtimeSession } from '@openai/agents/realtime';
 
-export async function setupCounter(element: HTMLButtonElement) {
-  // ....
-  // for quickly start, you can append the following code to the auto-generated TS code
-
+async function main() {
   const agent = new RealtimeAgent({
     name: 'Assistant',
     instructions: 'You are a helpful assistant.',
   });
-  const session = new RealtimeSession(agent);
+  const session = new RealtimeSession(agent, {
+    model: 'gpt-realtime-2',
+  });
   // Automatically connects your microphone and audio output in the browser via WebRTC.
   try {
     await session.connect({
@@ -21,3 +20,5 @@ export async function setupCounter(element: HTMLButtonElement) {
     console.error(e);
   }
 }
+
+main().catch(console.error);

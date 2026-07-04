@@ -1,8 +1,8 @@
 import { session } from './agent';
 
 session.on('tool_approval_requested', (_context, _agent, request) => {
-  // show a UI to the user to approve or reject the tool call
-  // you can use the `session.approve(...)` or `session.reject(...)` methods to approve or reject the tool call
+  // Show a UI to let the user approve or reject the tool call
+  // Then resolve the request with `session.approve(...)` or `session.reject(...)`
 
-  session.approve(request.approvalItem); // or session.reject(request.approvalItem);
+  session.approve(request.approvalItem);
 });
