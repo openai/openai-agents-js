@@ -15,9 +15,12 @@ import {
   assertSandboxEntryMetadataSupported,
   assertSandboxManifestMetadataSupported,
   assertRunAsUnsupported,
+  addPtyWebSocketListener,
   applyInlineManifestEntryToState,
+  appendPtyOutput,
   cloneManifestWithRoot,
   cloneManifestWithoutMountEntries,
+  createRunAsRemoteEditor,
   createPtyProcessEntry,
   deserializePersistedEnvironmentForRuntime,
   deserializeManifest,
@@ -34,25 +37,41 @@ import {
   mergeManifestDelta,
   mergeMaterializedEnvironment,
   normalizeGitRepository,
+  openPtyWebSocket,
+  parseExposedPortEndpoint,
   persistRemoteWorkspaceTar,
   PtyProcessRegistry,
   RemoteSandboxEditor,
+  assertConfiguredExposedPort,
+  decodeNativeSnapshotRef,
+  encodeNativeSnapshotRef,
   deserializeRemoteSandboxSessionStateValues,
+  getCachedExposedPortEndpoint,
+  requireNativeSnapshotRef,
+  recordResolvedExposedPortEndpoint,
+  readRunAsRemoteFile,
   resolveSandboxAbsolutePath,
+  resolveSandboxRelativePath,
   resolveSandboxWorkdir,
+  runAsRemotePathExists,
+  sandboxUserShellCommand,
   serializeRemoteSandboxSessionState,
   serializeRuntimeEnvironmentForPersistence,
   serializeManifestRecord,
+  shellCommandForPty,
   sniffImageMediaType,
   toUint8Array,
   truncateOutput,
   validateRemoteSandboxPath,
   validateRemoteSandboxPathForManifest,
   validateWorkspaceTarArchive,
+  watchPtyProcess,
   withSandboxSpan,
+  writePtyStdin,
   writeRunAsRemoteText,
   workspaceTarExcludeArgs,
 } from '../../src/sandbox/shared';
+import { collectPtyOutput } from '../../src/sandbox/shared/pty';
 import {
   applyLocalSourceManifestEntryToState,
   applyLocalSourceManifestToState,
@@ -64,11 +83,14 @@ import {
   mountRcloneCloudBucket,
   unmountRcloneMount,
 } from '../../src/sandbox/shared/inContainerMounts';
-import { makeTarArchive } from './tarFixture';
+import { makePaxRecord, makeTarArchive } from './tarFixture';
 import {
   Manifest,
   SandboxArchiveError,
+  SandboxConfigurationError,
   SandboxPathResolutionError,
+  SandboxProviderError,
+  SandboxSnapshotError,
   SandboxUnsupportedFeatureError,
   boxMount,
   file,
@@ -76,6 +98,7 @@ import {
   localDir,
   localFile,
   mount,
+  type SandboxSessionState,
   type AzureBlobMount,
   type GCSMount,
   type R2Mount,
@@ -93,6 +116,7 @@ const execFileAsync = promisify(execFile);
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   await Promise.all(
     tempDirs
       .splice(0)
@@ -113,6 +137,155 @@ function onlyMountWrite(writes: Map<string, string>): string {
   expect(writes.size).toBe(1);
   return [...writes.values()][0]!;
 }
+
+describe('exposed port helpers', () => {
+  test('requires configured ports unless on-demand resolution is allowed', () => {
+    expect(
+      assertConfiguredExposedPort({
+        providerName: 'TestProvider',
+        port: 3000,
+        configuredPorts: [3000],
+      }),
+    ).toBe(3000);
+    expect(
+      assertConfiguredExposedPort({
+        providerName: 'TestProvider',
+        port: 8080,
+        allowOnDemand: true,
+      }),
+    ).toBe(8080);
+
+    expect(() =>
+      assertConfiguredExposedPort({
+        providerName: 'TestProvider',
+        port: 4000,
+        configuredPorts: [3000],
+      }),
+    ).toThrow(SandboxConfigurationError);
+
+    try {
+      assertConfiguredExposedPort({
+        providerName: 'TestProvider',
+        port: 4000,
+        configuredPorts: [3000],
+      });
+      throw new Error('Expected assertConfiguredExposedPort to throw.');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SandboxConfigurationError);
+      expect((error as SandboxConfigurationError).details).toEqual({
+        provider: 'TestProvider',
+        port: 4000,
+        configuredPorts: [3000],
+      });
+    }
+  });
+
+  test('parses exposed port endpoints with schemes, inferred TLS, and merged queries', () => {
+    expect(
+      parseExposedPortEndpoint(
+        ' https://preview.example.test:8443/app?token=a ',
+        {
+          providerName: 'TestProvider',
+          source: 'preview URL',
+          query: 'workspace=abc',
+        },
+      ),
+    ).toEqual({
+      host: 'preview.example.test',
+      port: 8443,
+      tls: true,
+      query: 'token=a&workspace=abc',
+      url: 'https://preview.example.test:8443/app?token=a',
+    });
+
+    expect(
+      parseExposedPortEndpoint('preview.example.test', {
+        providerName: 'TestProvider',
+        source: 'preview host',
+      }),
+    ).toEqual({
+      host: 'preview.example.test',
+      port: 443,
+      tls: true,
+      query: '',
+      url: undefined,
+    });
+
+    expect(
+      parseExposedPortEndpoint('preview.example.test:8080/path?token=a', {
+        providerName: 'TestProvider',
+        source: 'preview host',
+        query: 'workspace=abc',
+      }),
+    ).toEqual({
+      host: 'preview.example.test',
+      port: 8080,
+      tls: false,
+      query: 'token=a&workspace=abc',
+      url: undefined,
+    });
+  });
+
+  test('reports provider errors for invalid exposed port endpoint values', () => {
+    for (const [value, details] of [
+      [
+        '   ',
+        {
+          provider: 'TestProvider',
+          source: 'preview URL',
+        },
+      ],
+      [
+        'http://[::1',
+        {
+          provider: 'TestProvider',
+          source: 'preview URL',
+          value: 'http://[::1',
+          cause: expect.any(String),
+        },
+      ],
+      [
+        'file:///tmp/preview',
+        {
+          provider: 'TestProvider',
+          source: 'preview URL',
+          value: 'file:///tmp/preview',
+        },
+      ],
+    ] as const) {
+      try {
+        parseExposedPortEndpoint(value, {
+          providerName: 'TestProvider',
+          source: 'preview URL',
+        });
+        throw new Error('Expected parseExposedPortEndpoint to throw.');
+      } catch (error) {
+        expect(error).toBeInstanceOf(SandboxProviderError);
+        expect((error as SandboxProviderError).details).toMatchObject(details);
+      }
+    }
+  });
+
+  test('records and reads cached exposed port endpoints', () => {
+    const state = {} as SandboxSessionState;
+    const endpoint = {
+      host: 'preview.example.test',
+      port: 443,
+      tls: true,
+      query: 'token=a',
+      url: 'https://preview.example.test?token=a',
+    };
+
+    expect(getCachedExposedPortEndpoint(state, 3000)).toBeUndefined();
+    expect(recordResolvedExposedPortEndpoint(state, 3000, endpoint)).toEqual(
+      endpoint,
+    );
+    expect(getCachedExposedPortEndpoint(state, 3000)).toEqual(endpoint);
+    expect(state.exposedPorts).toEqual({
+      '3000': endpoint,
+    });
+  });
+});
 
 describe('remote sandbox path helpers', () => {
   test('mounts Box entries through the shared rclone helper', async () => {
@@ -200,6 +373,162 @@ describe('remote sandbox path helpers', () => {
     expect(mountCommand).toContain("'--uid' '1000' '--gid' '1000'");
     expect(mountCommand).toContain("'--vfs-cache-mode' 'writes'");
     expect(mountCommand).not.toContain("'--read-only'");
+  });
+
+  test('rejects unsupported rclone mount strategies and patterns', async () => {
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      mountStrategy: {
+        type: 'other_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'logs',
+        },
+      },
+    };
+
+    expect(isRcloneCloudBucketMountEntry(file({ content: 'x' }), 'test')).toBe(
+      false,
+    );
+    expect(isRcloneCloudBucketMountEntry(entry, 'test_cloud_bucket')).toBe(
+      false,
+    );
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        runCommand: async () => ({ status: 0, stdout: '' }),
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }),
+    ).rejects.toThrow(/only supports test_cloud_bucket mount entries/);
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'other_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        pattern: { type: 'bind' } as any,
+        runCommand: async () => ({ status: 0, stdout: '' }),
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }),
+    ).rejects.toThrow(/require a rclone mount pattern/);
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'other_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        pattern: { type: 'rclone', mode: 'sshfs' } as any,
+        runCommand: async () => ({ status: 0, stdout: '' }),
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }),
+    ).rejects.toThrow(/support rclone fuse and nfs modes only/);
+  });
+
+  test('rejects invalid rclone remote names and missing config file sections', async () => {
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'logs',
+        },
+      },
+    };
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        pattern: { type: 'rclone', remoteName: 'bad remote!' },
+        runCommand: async () => ({ status: 0, stdout: '' }),
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }),
+    ).rejects.toThrow(/remoteName to contain only/);
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'logs',
+          configFilePath: '/workspace/rclone.conf',
+        },
+        runCommand: async (command) => {
+          if (command === "cat -- '/workspace/rclone.conf'") {
+            return { status: 1, stderr: 'permission denied' };
+          }
+          return { status: 0, stdout: '' };
+        },
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }),
+    ).rejects.toThrow(/failed to read rclone config file/);
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'logs',
+          configFilePath: '/workspace/rclone.conf',
+        },
+        runCommand: async (command) => {
+          if (command === "cat -- '/workspace/rclone.conf'") {
+            return { status: 0, stdout: '[other]\ntype = s3\n' };
+          }
+          return { status: 0, stdout: '' };
+        },
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }),
+    ).rejects.toThrow(/missing the required remote section/);
+  });
+
+  test('rejects Azure Blob rclone mounts without an account name', async () => {
+    const entry: AzureBlobMount = {
+      type: 'azure_blob_mount',
+      container: 'container-name',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'azure',
+        },
+      },
+    } as any;
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/azure',
+        runCommand: async () => ({ status: 0, stdout: '' }),
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }),
+    ).rejects.toThrow(/Azure Blob mounts require account or accountName/);
   });
 
   test('validates rclone NFS pidfiles before cleanup kill commands', async () => {
@@ -470,6 +799,10 @@ describe('remote sandbox path helpers', () => {
     expect(resolveSandboxWorkdir('/workspace', '/workspace/src/..')).toBe(
       '/workspace',
     );
+    expect(
+      resolveSandboxRelativePath('/workspace', '/workspace/src/app.ts'),
+    ).toBe('src/app.ts');
+    expect(resolveSandboxRelativePath('/workspace', '/workspace')).toBe('');
   });
 
   test('reject workspace escapes', () => {
@@ -485,6 +818,9 @@ describe('remote sandbox path helpers', () => {
     expect(() =>
       resolveSandboxWorkdir('/workspace', '/workspace/../tmp'),
     ).toThrow(/escapes the workspace root/);
+    expect(() => resolveSandboxRelativePath('/workspace', '/tmp')).toThrow(
+      /escapes the workspace root/,
+    );
   });
 
   test('detects host relative paths that escape a root', () => {
@@ -564,12 +900,86 @@ describe('remote sandbox path helpers', () => {
     expect(normalizeGitRepository('openai/openai-agents-js')).toBe(
       'https://github.com/openai/openai-agents-js.git',
     );
+    expect(
+      normalizeGitRepository({
+        host: 'git.example.test',
+        repo: 'team/project',
+      }),
+    ).toBe('https://git.example.test/team/project.git');
     expect(normalizeGitRepository('https://example.test/repo.git')).toBe(
       'https://example.test/repo.git',
     );
     expect(normalizeGitRepository('git@example.test:owner/repo.git')).toBe(
       'git@example.test:owner/repo.git',
     );
+    expect(() => normalizeGitRepository({ repo: '' })).toThrow(
+      /git_repo entries require a repo/,
+    );
+  });
+
+  test('encodes, decodes, and requires native snapshot references', () => {
+    const encoded = encodeNativeSnapshotRef({
+      provider: 'modal_snapshot_filesystem',
+      snapshotId: 'snap_123',
+      workspacePersistence: 'snapshot_filesystem',
+    });
+
+    expect(decodeNativeSnapshotRef(encoded)).toEqual({
+      provider: 'modal_snapshot_filesystem',
+      snapshotId: 'snap_123',
+      workspacePersistence: 'snapshot_filesystem',
+    });
+    const encodedArrayBuffer = new ArrayBuffer(encoded.byteLength);
+    new Uint8Array(encodedArrayBuffer).set(encoded);
+    expect(decodeNativeSnapshotRef(encodedArrayBuffer)).toEqual({
+      provider: 'modal_snapshot_filesystem',
+      snapshotId: 'snap_123',
+      workspacePersistence: 'snapshot_filesystem',
+    });
+    expect(
+      new TextDecoder().decode(
+        encodeNativeSnapshotRef({
+          provider: 'e2b',
+          snapshotId: 'snap_no_workspace_persistence',
+        }),
+      ),
+    ).toBe(
+      'E2B_SANDBOX_SNAPSHOT_V1\n{"snapshot_id":"snap_no_workspace_persistence"}',
+    );
+
+    expect(
+      requireNativeSnapshotRef(encoded, 'modal_snapshot_filesystem'),
+    ).toEqual({
+      provider: 'modal_snapshot_filesystem',
+      snapshotId: 'snap_123',
+      workspacePersistence: 'snapshot_filesystem',
+    });
+  });
+
+  test('rejects invalid native snapshot references', () => {
+    expect(decodeNativeSnapshotRef('not-a-native-snapshot')).toBeUndefined();
+    expect(
+      decodeNativeSnapshotRef('E2B_SANDBOX_SNAPSHOT_V1\nnot-json'),
+    ).toBeUndefined();
+    expect(
+      decodeNativeSnapshotRef('E2B_SANDBOX_SNAPSHOT_V1\n{"snapshot_id":""}'),
+    ).toBeUndefined();
+    expect(
+      decodeNativeSnapshotRef(
+        'E2B_SANDBOX_SNAPSHOT_V1\n{"snapshot_id":"snap_123","workspace_persistence":123}',
+      ),
+    ).toEqual({
+      provider: 'e2b',
+      snapshotId: 'snap_123',
+      workspacePersistence: undefined,
+    });
+
+    expect(() =>
+      requireNativeSnapshotRef(
+        'E2B_SANDBOX_SNAPSHOT_V1\n{"snapshot_id":"snap_123"}',
+        'runloop',
+      ),
+    ).toThrow(SandboxSnapshotError);
   });
 
   test('strips ephemeral manifest data during persistence', () => {
@@ -1177,6 +1587,147 @@ describe('remote sandbox path helpers', () => {
     });
   });
 
+  test('wraps sandbox user shell commands for root and sudo handoff', () => {
+    expect(sandboxUserShellCommand('echo ok')).toBe('echo ok');
+
+    const command = sandboxUserShellCommand("printf '%s' ok", 'sandbox-user');
+
+    expect(command).toContain("target_user='sandbox-user'");
+    expect(command).toContain('current_uid="$(id -u)"');
+    expect(command).toContain(
+      'if [ "$current_uid" = "$target_user" ] || [ "$current_user" = "$target_user" ]; then',
+    );
+    expect(command).toContain('elif [ "$current_uid" -eq 0 ]; then');
+    expect(command).toContain('su -s /bin/sh "$target_user" -c');
+    expect(command).toContain('sudo -n -u "$target_user" -- sh -lc');
+    expect(command).toContain("'printf '\\''%s'\\'' ok'");
+  });
+
+  test('reads runAs files and checks remote path existence', async () => {
+    const commands: Array<{
+      command: string;
+      options?: { runAs?: string };
+    }> = [];
+    const runCommand = vi.fn(async (command, options) => {
+      commands.push({ command, options });
+      if (command.startsWith('base64')) {
+        return { status: 0, stdout: 'aGVsbG8gd29ybGQ=\n' };
+      }
+      return { status: command.includes('exists') ? 0 : 1, stdout: '' };
+    });
+
+    await expect(
+      readRunAsRemoteFile({
+        providerName: 'FakeSandboxClient',
+        providerId: 'fake',
+        path: '/workspace/notes.txt',
+        runAs: 'sandbox-user',
+        runCommand,
+      }),
+    ).resolves.toEqual(new TextEncoder().encode('hello world'));
+
+    await expect(
+      runAsRemotePathExists('/workspace/exists', 'sandbox-user', runCommand),
+    ).resolves.toBe(true);
+    await expect(
+      runAsRemotePathExists('/workspace/missing', 'sandbox-user', runCommand),
+    ).resolves.toBe(false);
+
+    expect(commands).toEqual([
+      {
+        command: "base64 -- '/workspace/notes.txt'",
+        options: { runAs: 'sandbox-user' },
+      },
+      {
+        command: "test -e '/workspace/exists'",
+        options: { runAs: 'sandbox-user' },
+      },
+      {
+        command: "test -e '/workspace/missing'",
+        options: { runAs: 'sandbox-user' },
+      },
+    ]);
+  });
+
+  test('reports runAs command failures with provider context', async () => {
+    await expect(
+      readRunAsRemoteFile({
+        providerName: 'FakeSandboxClient',
+        providerId: 'fake',
+        path: '/workspace/notes.txt',
+        runAs: 'sandbox-user',
+        runCommand: async () => ({
+          status: 1,
+          stdout: 'permission denied',
+          stderr: 'read failed',
+        }),
+      }),
+    ).rejects.toMatchObject({
+      message:
+        'FakeSandboxClient failed to read file /workspace/notes.txt: permission denied\nread failed',
+      details: { provider: 'fake' },
+    });
+  });
+
+  test('creates runAs remote editors with mutation hooks and resolved paths', async () => {
+    const commands: Array<{
+      command: string;
+      options?: { runAs?: string };
+    }> = [];
+    const writer = {
+      mkdir: vi.fn(),
+      writeFile: vi.fn(),
+    };
+    const beforeFilesystemMutation = vi.fn(async () => {});
+    const editor = createRunAsRemoteEditor({
+      providerName: 'FakeSandboxClient',
+      providerId: 'fake',
+      runAs: 'sandbox-user',
+      resolvePath: async (path) => `/workspace/${path}`,
+      runCommand: async (command, options) => {
+        commands.push({ command, options });
+        if (command.startsWith('test -e')) {
+          return { status: 1, stdout: '' };
+        }
+        return { status: 0, stdout: '' };
+      },
+      writer,
+      beforeFilesystemMutation,
+    });
+
+    await editor.createFile({
+      type: 'create_file',
+      path: 'src/notes.txt',
+      diff: '+hello',
+    });
+
+    expect(beforeFilesystemMutation).toHaveBeenCalledTimes(2);
+    expect(writer.writeFile).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/tmp\/openai-agents-/u),
+      'hello',
+    );
+    expect(commands[0]).toEqual({
+      command: "test -e '/workspace/src/notes.txt'",
+      options: { runAs: 'sandbox-user' },
+    });
+    expect(commands[1]).toEqual({
+      command: "mkdir -p -- '/workspace/src'",
+      options: { runAs: 'sandbox-user' },
+    });
+    expect(commands[2]).toMatchObject({
+      command: expect.stringContaining("chown 'sandbox-user':'sandbox-user'"),
+      options: { runAs: 'root' },
+    });
+    expect(commands[3]).toMatchObject({
+      command: expect.stringContaining("cat -- '/tmp/openai-agents-"),
+      options: { runAs: 'sandbox-user' },
+    });
+    expect(commands[4]).toMatchObject({
+      command: expect.stringContaining("rm -f -- '/tmp/openai-agents-"),
+      options: { runAs: 'root' },
+    });
+  });
+
   test('applies runAs manifest metadata with privileged ownership commands', async () => {
     const commands: Array<{
       command: string;
@@ -1279,6 +1830,16 @@ describe('remote sandbox path helpers', () => {
     ).resolves.toBe('/src/app.ts');
   }, 15_000);
 
+  test('rejects remote path validators that do not return absolute paths', async () => {
+    await expect(
+      validateRemoteSandboxPath({
+        root: '/workspace',
+        path: 'src/app.ts',
+        runCommand: async () => ({ status: 0, stdout: 'relative/app.ts\n' }),
+      }),
+    ).rejects.toThrow(/validator did not return an absolute resolved path/);
+  });
+
   test('validates workspace tar archives before hydrate', () => {
     expect(() =>
       validateWorkspaceTarArchive(
@@ -1348,6 +1909,107 @@ describe('remote sandbox path helpers', () => {
         { allowExternalSymlinkTargets: false },
       ),
     ).not.toThrow();
+  });
+
+  test('validates tar root members, PAX paths, and long names', () => {
+    expect(() =>
+      validateWorkspaceTarArchive(makeTarArchive([{ name: '.', type: '5' }])),
+    ).not.toThrow();
+    expect(() =>
+      validateWorkspaceTarArchive(makeTarArchive([{ name: '.', type: '2' }])),
+    ).toThrow(/archive root symlink/);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: '.', content: 'root-file' }]),
+      ),
+    ).toThrow(/archive root member must be directory/);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([
+          { name: 'dir', type: '5' },
+          { name: 'dir', type: '5' },
+        ]),
+      ),
+    ).not.toThrow();
+
+    const paxArchive = makeTarArchive([
+      {
+        name: 'pax-path',
+        type: 'x',
+        content: makePaxRecord('path', 'workspace/skipped/ignored.txt'),
+      },
+      { name: 'ignored', content: 'skip me' },
+      {
+        name: 'global-pax',
+        type: 'g',
+        content: makePaxRecord('path', 'workspace/not-used.txt'),
+      },
+      {
+        name: 'long-name',
+        type: 'L',
+        content: 'workspace/keep/deep/file.txt\n',
+      },
+      { name: 'fallback', content: 'long name content' },
+    ]);
+
+    expect(() =>
+      validateWorkspaceTarArchive(paxArchive, {
+        rootName: 'workspace',
+        skipRelPaths: ['skipped'],
+      }),
+    ).not.toThrow();
+
+    const paxLinkArchive = makeTarArchive([
+      {
+        name: 'pax-link',
+        type: 'x',
+        content: `${makePaxRecord('path', 'workspace/keep/link')}${makePaxRecord(
+          'linkpath',
+          '../target.txt',
+        )}`,
+      },
+      { name: 'fallback-link', type: '2', linkName: 'fallback-target' },
+    ]);
+
+    expect(() =>
+      validateWorkspaceTarArchive(paxLinkArchive, {
+        rootName: 'workspace',
+        rejectSymlinkRelPaths: ['workspace/keep/link'],
+      }),
+    ).toThrow(/symlink member not allowed: workspace\/keep\/link/);
+  });
+
+  test('rejects malformed tar headers and unsupported member types', () => {
+    expect(() => validateWorkspaceTarArchive(new Uint8Array(1))).toThrow(
+      /truncated header/,
+    );
+
+    const truncatedPayload = makeTarArchive([
+      { name: 'file.txt', content: 'payload' },
+    ]).subarray(0, 515);
+    expect(() => validateWorkspaceTarArchive(truncatedPayload)).toThrow(
+      /truncated member payload/,
+    );
+
+    const base256Size = makeTarArchive([{ name: 'file.txt', content: 'ok' }]);
+    base256Size[124] = 0x80;
+    expect(() => validateWorkspaceTarArchive(base256Size)).toThrow(
+      /base-256 tar sizes are not supported/,
+    );
+
+    const invalidOctalSize = makeTarArchive([
+      { name: 'file.txt', content: 'ok' },
+    ]);
+    invalidOctalSize[124] = '8'.charCodeAt(0);
+    expect(() => validateWorkspaceTarArchive(invalidOctalSize)).toThrow(
+      /invalid octal size/,
+    );
+
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'device', type: '3' }]),
+      ),
+    ).toThrow(/unsupported member type/);
   });
 
   test('rejects workspace tar archives over resource limits', () => {
@@ -2030,9 +2692,12 @@ describe('remote sandbox path helpers', () => {
     tempDirs.push(tempDir);
     const sourceFile = join(tempDir, 'source.txt');
     const sourceDir = join(tempDir, 'source-dir');
+    const nestedDir = join(sourceDir, 'nested-dir');
     await writeFile(sourceFile, 'local file');
     await mkdir(sourceDir);
     await writeFile(join(sourceDir, 'nested.txt'), 'nested');
+    await mkdir(nestedDir);
+    await writeFile(join(nestedDir, 'deep.txt'), 'deep');
 
     const directories: string[] = [];
     const files = new Map<string, string | Uint8Array>();
@@ -2076,6 +2741,7 @@ describe('remote sandbox path helpers', () => {
 
     expect(directories).toContain('/workspace/project');
     expect(directories).toContain('/workspace/project/data');
+    expect(directories).toContain('/workspace/project/data/nested-dir');
     expect(files.get('/workspace/project/README.md')).toBe('readme');
     expect(Buffer.from(files.get('/workspace/project/local.txt')!)).toEqual(
       Buffer.from('local file'),
@@ -2083,6 +2749,9 @@ describe('remote sandbox path helpers', () => {
     expect(
       Buffer.from(files.get('/workspace/project/data/nested.txt')!),
     ).toEqual(Buffer.from('nested'));
+    expect(
+      Buffer.from(files.get('/workspace/project/data/nested-dir/deep.txt')!),
+    ).toEqual(Buffer.from('deep'));
     await expect(
       materializeLocalSourceManifestEntry(
         writer,
@@ -2094,6 +2763,50 @@ describe('remote sandbox path helpers', () => {
         'test',
       ),
     ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
+  });
+
+  test('rejects local source entries with mismatched source types', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agents-shared-test-'));
+    tempDirs.push(tempDir);
+    const sourceFile = join(tempDir, 'source.txt');
+    const sourceDir = join(tempDir, 'source-dir');
+    await writeFile(sourceFile, 'local file');
+    await mkdir(sourceDir);
+
+    const writer = {
+      mkdir: async (_path: string) => {},
+      writeFile: async (_path: string, _content: string | Uint8Array) => {},
+    };
+
+    await expect(
+      materializeLocalSourceManifestEntry(
+        writer,
+        '/workspace/source-dir',
+        {
+          type: 'local_dir',
+          src: sourceFile,
+        },
+        'test',
+        {
+          localSourceGrants: [{ path: tempDir, readOnly: true }],
+        },
+      ),
+    ).rejects.toThrow(/local_dir source must be a directory/);
+
+    await expect(
+      materializeLocalSourceManifestEntry(
+        writer,
+        '/workspace/source.txt',
+        {
+          type: 'local_file',
+          src: sourceDir,
+        },
+        'test',
+        {
+          localSourceGrants: [{ path: tempDir, readOnly: true }],
+        },
+      ),
+    ).rejects.toThrow(/local_file entry path changed while materializing/);
   });
 
   test('rejects local source entries outside the local source base directory without a grant', async () => {
@@ -2326,6 +3039,249 @@ describe('remote sandbox path helpers', () => {
     });
 
     expect(output).toContain('Process exited with code 1');
+  });
+
+  test('opens browser-style PTY WebSockets and handles connection failures', async () => {
+    type FakeListener = (event: unknown) => void;
+    class FakeWebSocket {
+      static instances: FakeWebSocket[] = [];
+      readyState = 0;
+      binaryType = '';
+      readonly listeners = new Map<string, Set<FakeListener>>();
+      readonly url: string;
+
+      constructor(url: string) {
+        this.url = url;
+        FakeWebSocket.instances.push(this);
+      }
+
+      send() {}
+
+      close() {}
+
+      addEventListener(type: string, listener: FakeListener) {
+        const listeners = this.listeners.get(type) ?? new Set<FakeListener>();
+        listeners.add(listener);
+        this.listeners.set(type, listeners);
+      }
+
+      removeEventListener(type: string, listener: FakeListener) {
+        this.listeners.get(type)?.delete(listener);
+      }
+
+      emit(type: string, event: unknown = {}) {
+        for (const listener of this.listeners.get(type) ?? []) {
+          listener(event);
+        }
+      }
+    }
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+
+    const opened = openPtyWebSocket({
+      url: 'wss://pty.example.test/session',
+      providerName: 'FakeSandboxClient',
+      timeoutMs: 1_000,
+    });
+    await vi.waitFor(() => {
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    });
+    const socket = FakeWebSocket.instances[0]!;
+    expect(socket.binaryType).toBe('arraybuffer');
+    socket.readyState = 1;
+    socket.emit('open');
+    await expect(opened).resolves.toBe(socket);
+
+    const failed = openPtyWebSocket({
+      url: 'wss://pty.example.test/fail',
+      providerName: 'FakeSandboxClient',
+      timeoutMs: 1_000,
+    });
+    await vi.waitFor(() => {
+      expect(FakeWebSocket.instances).toHaveLength(2);
+      expect(FakeWebSocket.instances[1]!.listeners.has('error')).toBe(true);
+    });
+    FakeWebSocket.instances[1]!.emit('error', { message: 'denied' });
+    await expect(failed).rejects.toThrow(
+      'FakeSandboxClient PTY WebSocket failed to connect: denied',
+    );
+
+    const failedWithError = openPtyWebSocket({
+      url: 'wss://pty.example.test/error',
+      providerName: 'FakeSandboxClient',
+      timeoutMs: 1_000,
+    });
+    await vi.waitFor(() => {
+      expect(FakeWebSocket.instances).toHaveLength(3);
+      expect(FakeWebSocket.instances[2]!.listeners.has('error')).toBe(true);
+    });
+    FakeWebSocket.instances[2]!.emit('error', new Error('socket denied'));
+    await expect(failedWithError).rejects.toThrow(
+      'FakeSandboxClient PTY WebSocket failed to connect: socket denied',
+    );
+
+    const failedUnknown = openPtyWebSocket({
+      url: 'wss://pty.example.test/unknown-error',
+      providerName: 'FakeSandboxClient',
+      timeoutMs: 1_000,
+    });
+    await vi.waitFor(() => {
+      expect(FakeWebSocket.instances).toHaveLength(4);
+      expect(FakeWebSocket.instances[3]!.listeners.has('error')).toBe(true);
+    });
+    FakeWebSocket.instances[3]!.emit('error', {});
+    await expect(failedUnknown).rejects.toThrow(
+      'FakeSandboxClient PTY WebSocket failed to connect: unknown error',
+    );
+
+    const closed = openPtyWebSocket({
+      url: 'wss://pty.example.test/closed',
+      providerName: 'FakeSandboxClient',
+      timeoutMs: 1_000,
+    });
+    await vi.waitFor(() => {
+      expect(FakeWebSocket.instances).toHaveLength(5);
+      expect(FakeWebSocket.instances[4]!.listeners.has('close')).toBe(true);
+    });
+    FakeWebSocket.instances[4]!.emit('close');
+    await expect(closed).rejects.toThrow(
+      'FakeSandboxClient PTY WebSocket closed before opening.',
+    );
+  });
+
+  test('adapts Node-style PTY WebSocket listeners and cleanup fallbacks', () => {
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    const socket = {
+      send: vi.fn(),
+      close: vi.fn(),
+      on: vi.fn((type: string, listener: (...args: unknown[]) => void) => {
+        listeners.set(type, listener);
+      }),
+      removeListener: vi.fn(),
+    };
+    const messageListener = vi.fn();
+
+    const remove = addPtyWebSocketListener(socket, 'message', messageListener);
+    listeners.get('message')?.('payload');
+    remove();
+
+    expect(messageListener).toHaveBeenCalledWith({ data: 'payload' });
+    expect(socket.removeListener).toHaveBeenCalledWith(
+      'message',
+      expect.any(Function),
+    );
+  });
+
+  test('formats PTY shell commands with default and explicit shells', () => {
+    expect(shellCommandForPty({ cmd: 'echo hi' })).toBe("/bin/sh -c 'echo hi'");
+    expect(shellCommandForPty({ cmd: 'echo hi', shell: '/bin/zsh' })).toBe(
+      "/bin/zsh -lc 'echo hi'",
+    );
+    expect(
+      shellCommandForPty({ cmd: 'echo hi', shell: '/bin/zsh', login: false }),
+    ).toBe("/bin/zsh -c 'echo hi'");
+  });
+
+  test('collects PTY output from string and binary chunks', async () => {
+    const entry = createPtyProcessEntry({});
+    const pendingOutput = collectPtyOutput({
+      entry,
+      yieldTimeMs: 1_000,
+    });
+
+    appendPtyOutput(entry, 'hello ');
+    appendPtyOutput(entry, new TextEncoder().encode('from bytes'));
+    markPtyDone(entry, 0);
+
+    await expect(pendingOutput).resolves.toEqual({
+      text: 'hello from bytes',
+    });
+  });
+
+  test('writes PTY stdin, finalizes completed sessions, and reports missing sessions', async () => {
+    const sendInput = vi.fn(async (chars: string) => {
+      expect(chars).toBe('continue\n');
+    });
+    const registry = new PtyProcessRegistry();
+    const entry = createPtyProcessEntry({ sendInput });
+    const { sessionId } = registry.register(entry);
+
+    appendPtyOutput(entry, 'ready\n');
+    markPtyDone(entry, 0);
+
+    const output = await writePtyStdin({
+      providerName: 'FakeSandboxClient',
+      registry,
+      sessionId,
+      chars: 'continue\n',
+      yieldTimeMs: 1,
+    });
+
+    expect(sendInput).toHaveBeenCalledWith('continue\n');
+    expect(output).toContain('Process exited with code 0');
+    expect(output).toContain('ready');
+
+    await expect(
+      writePtyStdin({
+        providerName: 'FakeSandboxClient',
+        registry,
+        sessionId: 999_999,
+      }),
+    ).resolves.toContain('write_stdin failed: session not found: 999999');
+  });
+
+  test('rejects PTY stdin for non-interactive process entries', async () => {
+    const registry = new PtyProcessRegistry();
+    const entry = createPtyProcessEntry({ tty: false });
+    const { sessionId } = registry.register(entry);
+
+    await expect(
+      writePtyStdin({
+        providerName: 'FakeSandboxClient',
+        registry,
+        sessionId,
+        chars: 'input',
+      }),
+    ).rejects.toThrow(
+      'FakeSandboxClient stdin is not available for this process.',
+    );
+  });
+
+  test('watches PTY process completion and terminates registry entries best effort', async () => {
+    const registry = new PtyProcessRegistry();
+    const terminate = vi.fn(async () => {
+      throw new Error('already gone');
+    });
+    const successEntry = createPtyProcessEntry({ terminate });
+    const failureEntry = createPtyProcessEntry({});
+    const success = registry.register(successEntry);
+    const failure = registry.register(failureEntry);
+
+    watchPtyProcess(
+      successEntry,
+      async () => ({ exitCode: 2.9 }),
+      (result) => (result as { exitCode: number }).exitCode,
+    );
+    watchPtyProcess(
+      failureEntry,
+      async () => {
+        throw new Error('boom');
+      },
+      (_result, error) => (error ? undefined : 0),
+    );
+
+    await vi.waitFor(() => {
+      expect(successEntry.done).toBe(true);
+      expect(failureEntry.done).toBe(true);
+    });
+
+    expect(successEntry.exitCode).toBe(2);
+    expect(failureEntry.exitCode).toBe(1);
+
+    await registry.terminateAll();
+
+    expect(terminate).toHaveBeenCalledOnce();
+    expect(registry.get(success.sessionId)).toBeUndefined();
+    expect(registry.get(failure.sessionId)).toBeUndefined();
   });
 
   test('detects image media types', () => {

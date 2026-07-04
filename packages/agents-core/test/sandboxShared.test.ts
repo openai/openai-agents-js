@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Manifest, dir, file, mount } from '../src/sandbox';
 import {
   deserializeManifest,
@@ -30,6 +30,39 @@ import {
   posixDirname,
   relativePosixPathWithinRoot,
 } from '../src/sandbox/shared/posixPath';
+
+const processPlatformDescriptor = Object.getOwnPropertyDescriptor(
+  process,
+  'platform',
+);
+
+afterEach(() => {
+  vi.doUnmock('node:os');
+  vi.unstubAllEnvs();
+  vi.resetModules();
+  if (processPlatformDescriptor) {
+    Object.defineProperty(process, 'platform', processPlatformDescriptor);
+  }
+});
+
+async function loadDefaultLocalSnapshotBaseDir(args: {
+  platform: NodeJS.Platform;
+  home: string;
+  temp: string;
+}): Promise<() => string> {
+  vi.resetModules();
+  vi.doMock('node:os', () => ({
+    homedir: () => args.home,
+    tmpdir: () => args.temp,
+  }));
+  Object.defineProperty(process, 'platform', {
+    value: args.platform,
+    configurable: true,
+  });
+
+  return (await import('../src/sandbox/sandboxes/shared/localSnapshotPaths'))
+    .defaultLocalSnapshotBaseDir;
+}
 
 describe('sandbox shared helpers', () => {
   it('truncates output with a byte budget and keeps head and tail context', () => {
@@ -102,6 +135,47 @@ describe('sandbox shared helpers', () => {
       }),
     ).toBe('{\n  "a":1,\n  "b":2\n}');
     expect(jsonEqual({ b: 2, a: 1 }, { a: 1, b: 2 })).toBe(true);
+  });
+
+  it('resolves default local snapshot directories by platform and environment', async () => {
+    vi.stubEnv('OPENAI_AGENTS_SANDBOX_SNAPSHOT_DIR', '  /custom/snapshots  ');
+    let defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'linux',
+      home: '/home/tester',
+      temp: '/tmp',
+    });
+    expect(defaultLocalSnapshotBaseDir()).toBe('/custom/snapshots');
+
+    vi.stubEnv('OPENAI_AGENTS_SANDBOX_SNAPSHOT_DIR', '');
+    defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'darwin',
+      home: '/Users/tester',
+      temp: '/tmp',
+    });
+    expect(defaultLocalSnapshotBaseDir()).toBe(
+      '/Users/tester/Library/Application Support/openai-agents-js/sandbox-snapshots',
+    );
+
+    vi.stubEnv('LOCALAPPDATA', '  /Users/tester/AppData/Local  ');
+    defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'win32',
+      home: '/Users/tester',
+      temp: '/tmp',
+    });
+    expect(defaultLocalSnapshotBaseDir()).toBe(
+      '/Users/tester/AppData/Local/openai-agents-js/sandbox-snapshots',
+    );
+
+    vi.stubEnv('LOCALAPPDATA', '');
+    vi.stubEnv('XDG_STATE_HOME', '  /state  ');
+    defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'linux',
+      home: '',
+      temp: '/tmp',
+    });
+    expect(defaultLocalSnapshotBaseDir()).toBe(
+      '/state/openai-agents-js/sandbox-snapshots',
+    );
   });
 
   it('normalizes POSIX sandbox paths and compares roots', () => {
