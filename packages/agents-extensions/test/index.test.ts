@@ -1,7 +1,10 @@
 import { describe, test, expect, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { TwilioRealtimeTransportLayer } from '../src';
-import type { MessageEvent as NodeMessageEvent } from 'ws';
+import type {
+  MessageEvent as NodeMessageEvent,
+  WebSocket as NodeWebSocket,
+} from 'ws';
 
 vi.mock('ws', () => {
   class FakeWebSocket {
@@ -29,20 +32,34 @@ vi.mock('ws', () => {
 class FakeTwilioWebSocket extends EventEmitter {
   send = vi.fn();
   close = vi.fn();
+
+  addEventListener(
+    type: string,
+    listener: (evt: MessageEvent | NodeMessageEvent) => void,
+  ) {
+    this.on(type, (evt) => listener(type === 'message' ? { data: evt } : evt));
+  }
 }
 
-// @ts-expect-error - we're making the node event emitter compatible with the browser event emitter
-FakeTwilioWebSocket.prototype.addEventListener = function (
-  type: string,
-  listener: (evt: MessageEvent | NodeMessageEvent) => void,
-) {
-  this.on(type, (evt) => listener(type === 'message' ? { data: evt } : evt));
+const asTwilioWebSocket = (
+  socket: FakeTwilioWebSocket,
+): WebSocket | NodeWebSocket => socket as unknown as WebSocket | NodeWebSocket;
+
+const setAudioLengthMs = (
+  transport: TwilioRealtimeTransportLayer,
+  audioLengthMs: number,
+): void => {
+  (
+    transport as unknown as {
+      _audioLengthMs: number;
+    }
+  )._audioLengthMs = audioLengthMs;
 };
 
 describe('TwilioRealtimeTransportLayer', () => {
   test('should be available', () => {
     const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: {} as any,
+      twilioWebSocket: asTwilioWebSocket(new FakeTwilioWebSocket()),
     });
     expect(transport).toBeDefined();
   });
@@ -50,7 +67,7 @@ describe('TwilioRealtimeTransportLayer', () => {
   test('malformed mark name does not produce NaN', async () => {
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: twilio as any,
+      twilioWebSocket: asTwilioWebSocket(twilio),
     });
 
     const sendEventSpy = vi.spyOn(
@@ -65,8 +82,7 @@ describe('TwilioRealtimeTransportLayer', () => {
     twilio.emit('message', { toString: () => JSON.stringify(payload) });
 
     transport._interrupt(0, false);
-    // @ts-expect-error - we're testing protected fields
-    transport._audioLengthMs = 500;
+    setAudioLengthMs(transport, 500);
     transport._interrupt(0, true);
 
     const call = sendEventSpy.mock.calls
@@ -78,7 +94,7 @@ describe('TwilioRealtimeTransportLayer', () => {
   test('interrupt clamps overshoot and emits integer audio_end_ms', async () => {
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: twilio as any,
+      twilioWebSocket: asTwilioWebSocket(twilio),
     });
 
     const sendEventSpy = vi.spyOn(
@@ -92,8 +108,7 @@ describe('TwilioRealtimeTransportLayer', () => {
     });
     sendEventSpy.mockClear();
 
-    // @ts-expect-error - we're testing protected fields.
-    transport._audioLengthMs = 20;
+    setAudioLengthMs(transport, 20);
     transport._interrupt(0, true);
 
     const call = sendEventSpy.mock.calls
