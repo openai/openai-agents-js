@@ -10,10 +10,10 @@ const session = new RealtimeSession(agent, {
 });
 
 session.transport.on('*', (event) => {
-  // JSON parsed version of the event received on the connection
+  // Event received from the underlying Realtime transport
 });
 
-// Send any valid event as JSON. For example triggering a new response
+// Send any valid client event, for example, to trigger a new response
 session.transport.sendEvent({
   type: 'response.create',
   // ...

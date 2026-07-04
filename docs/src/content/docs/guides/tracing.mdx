@@ -7,10 +7,7 @@ import { Aside, Code } from '@astrojs/starlight/components';
 import customTraceExample from '../../../../../examples/docs/custom-trace.ts?raw';
 import cloudflareWorkers from '../../../../../examples/docs/tracing/cloudflareWorkers.ts?raw';
 
-The Agents SDK includes built-in tracing, collecting a comprehensive record of events during an agent
-run: LLM generations, tool calls, handoffs, guardrails, and even custom events that occur. Using the
-[Traces dashboard](https://platform.openai.com/traces), you can debug, visualize, and monitor your
-workflows during development and in production.
+The Agents SDK includes built-in tracing, collecting a comprehensive record of events during an agent run: LLM generations, tool calls, handoffs, guardrails, and even custom events that occur. Using the [Traces dashboard](https://platform.openai.com/traces), you can debug, visualize, and monitor your workflows during development and in production.
 
 <Aside type="note">
 
@@ -27,10 +24,7 @@ There are two ways to disable tracing in server environments:
 
 ## Export loop lifecycle
 
-In supported server runtimes, traces are exported on a regular interval. In some runtimes,
-including Cloudflare Workers, the automatic export loop is unavailable even though tracing itself is
-still enabled. In those environments you should call `getGlobalTraceProvider().forceFlush()` as part
-of your request lifecycle to export queued traces before the runtime is torn down.
+In supported server runtimes, traces are exported on a regular interval. In some runtimes, including Cloudflare Workers, the automatic export loop is unavailable even though tracing itself is still enabled. In those environments you should call `getGlobalTraceProvider().forceFlush()` as part of your request lifecycle to export queued traces before the runtime is torn down.
 
 This guidance does not apply to browsers because tracing is disabled there by default.
 
@@ -67,7 +61,7 @@ By default, the SDK traces the following:
 - Guardrails are wrapped in `GuardrailSpan`
 - Handoffs are wrapped in `HandoffSpan`
 
-By default, the trace is named "Agent workflow". You can set this name if you use `withTrace`, or you can can configure the name and other properties with the [`RunConfig.workflowName`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#workflowname).
+By default, the trace is named "Agent workflow". You can set this name if you use `withTrace`, or you can configure the name and other properties with the [`RunConfig.workflowName`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#workflowname).
 
 In addition, you can set up [custom trace processors](#custom-tracing-processors) to push traces to other destinations (as a replacement, or secondary destination).
 
@@ -101,26 +95,15 @@ Spans are automatically part of the current trace, and are nested under the near
 
 Certain spans may capture potentially sensitive data.
 
-The `createGenerationSpan()` stores the inputs/outputs of the LLM generation, and
-`createFunctionSpan()` stores the inputs/outputs of function calls. These may contain sensitive
-data, so you can disable capturing that data via
-[`RunConfig.traceIncludeSensitiveData`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#traceincludesensitivedata).
+The `createGenerationSpan()` stores the inputs/outputs of the LLM generation, and `createFunctionSpan()` stores the inputs/outputs of function calls. These may contain sensitive data, so you can disable capturing that data via [`RunConfig.traceIncludeSensitiveData`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#traceincludesensitivedata).
 
 ## OpenAI tracing exporter
 
-In supported server runtimes, the default tracing setup already exports to OpenAI. Use
-`setTracingExportApiKey()` when trace export should use a different credential than
-`OPENAI_API_KEY`.
+In supported server runtimes, the default tracing setup already exports to OpenAI. Use `setTracingExportApiKey()` when trace export should use a different credential than `OPENAI_API_KEY`.
 
-If you need custom ingest behavior, instantiate
-[`OpenAITracingExporter`](/openai-agents-js/openai/agents-openai/classes/openaitracingexporter)
-yourself and install it with `setTraceProcessors(...)` or `addTraceProcessor(...)`. The exporter
-supports `apiKey`, `endpoint`, `organization`, `project`, `maxRetries`, `baseDelay`, and
-`maxDelay`.
+If you need custom ingest behavior, instantiate [`OpenAITracingExporter`](/openai-agents-js/openai/agents-openai/classes/openaitracingexporter) yourself and install it with `setTraceProcessors(...)` or `addTraceProcessor(...)`. The exporter supports `apiKey`, `endpoint`, `organization`, `project`, `maxRetries`, `baseDelay`, and `maxDelay`.
 
-If you replace the default processors and later want to restore the default OpenAI exporter with a
-batch processor, call
-[`setDefaultOpenAITracingExporter()`](/openai-agents-js/openai/agents-openai/functions/setdefaultopenaitracingexporter/).
+If you replace the default processors and later want to restore the default OpenAI exporter with a batch processor, call [`setDefaultOpenAITracingExporter()`](/openai-agents-js/openai/agents-openai/functions/setdefaultopenaitracingexporter/).
 
 ## Custom tracing processors
 

@@ -16,6 +16,6 @@ const refundTool = tool<typeof parameters, RealtimeContextData>({
   execute: async ({ request }, details) => {
     // The history might not be available
     const history: RealtimeItem[] = details?.context?.history ?? [];
-    // making your call to process the refund request
+    // Call your backend to process the refund request
   },
 });

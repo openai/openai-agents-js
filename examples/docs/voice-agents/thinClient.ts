@@ -21,7 +21,7 @@ await client.connect({
   },
 });
 
-// optionally for WebSockets
+// Listen for audio when you manage playback yourself
 client.on('audio', (newAudio) => {});
 
 client.sendAudio(audioBuffer);
