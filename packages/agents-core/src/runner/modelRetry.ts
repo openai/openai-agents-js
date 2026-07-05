@@ -685,8 +685,12 @@ export async function getResponseWithRetryAndProcessed<TProcessed>(
   const retryBackoff = request.modelSettings.retry?.backoff;
 
   let attempt = 1;
+  let failedRequestAttempts = 0;
+  let failedResponseAttempts = 0;
+  const failedResponseUsage = new Usage();
   const replayUnsafeRequest = isStatefulConversationRequest(request);
   while (true) {
+    let response: ModelResponse | undefined;
     const requestForAttempt = shouldDisableProviderManagedRetry(
       request,
       attempt,
@@ -694,14 +698,18 @@ export async function getResponseWithRetryAndProcessed<TProcessed>(
       ? withRunnerManagedRetry(request)
       : request;
     try {
-      const response = await model.getResponse(requestForAttempt);
-      const responseWithUsage =
-        attempt === 1
-          ? response
-          : {
-              ...response,
-              usage: addFailedRetryAttemptsToUsage(response.usage, attempt - 1),
-            };
+      response = await model.getResponse(requestForAttempt);
+      let responseUsage = addFailedRetryAttemptsToUsage(
+        response.usage,
+        failedRequestAttempts,
+      );
+      if (failedResponseAttempts > 0) {
+        const accumulatedUsage = new Usage();
+        accumulatedUsage.add(failedResponseUsage);
+        accumulatedUsage.add(responseUsage);
+        responseUsage = accumulatedUsage;
+      }
+      const responseWithUsage = { ...response, usage: responseUsage };
       const processed = await processResponse(responseWithUsage);
       return {
         response: responseWithUsage,
@@ -732,6 +740,12 @@ export async function getResponseWithRetryAndProcessed<TProcessed>(
         throw error;
       }
 
+      if (response) {
+        failedResponseAttempts += 1;
+        failedResponseUsage.add(response.usage);
+      } else {
+        failedRequestAttempts += 1;
+      }
       await waitForRetryDelay(request.signal, decision.delayMs ?? 0);
       attempt += 1;
     }

@@ -84,7 +84,11 @@ describe('retry policies', () => {
         attempts += 1;
 
         return {
-          usage: new Usage({ requests: 1 }),
+          usage: new Usage({
+            requests: 1,
+            inputTokens: attempts === 1 ? 10 : 8,
+            outputTokens: attempts === 1 ? 2 : 4,
+          }),
           output: [
             fakeModelMessage(
               attempts === 1
@@ -118,8 +122,26 @@ describe('retry policies', () => {
     expect(attempts).toBe(2);
     expect(policy).toHaveBeenCalledTimes(1);
     expect(result.state.usage.requests).toBe(2);
+    expect(result.state.usage.inputTokens).toBe(18);
+    expect(result.state.usage.outputTokens).toBe(6);
+    expect(result.state.usage.totalTokens).toBe(24);
     expect(result.rawResponses).toHaveLength(1);
     expect(result.rawResponses[0]?.usage.requests).toBe(2);
+    expect(result.rawResponses[0]?.usage.inputTokens).toBe(18);
+    expect(result.rawResponses[0]?.usage.outputTokens).toBe(6);
+    expect(result.rawResponses[0]?.usage.totalTokens).toBe(24);
+    expect(result.rawResponses[0]?.usage.requestUsageEntries).toEqual([
+      expect.objectContaining({
+        inputTokens: 10,
+        outputTokens: 2,
+        totalTokens: 12,
+      }),
+      expect.objectContaining({
+        inputTokens: 8,
+        outputTokens: 4,
+        totalTokens: 12,
+      }),
+    ]);
   });
 
   it('preserves provider-managed retries on the first runner attempt and disables them on replay', async () => {
