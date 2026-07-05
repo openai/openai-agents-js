@@ -2,13 +2,18 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
+  BatchTraceProcessor,
   InputGuardrailTripwireTriggered,
   retryPolicies,
   run,
   Runner,
   RunStreamEvent,
   setDefaultModelProvider,
+  setTraceProcessors,
   setTracingDisabled,
+  type Span,
+  type Trace,
+  type TracingExporter,
 } from '../src';
 import { mergeAgentToolRunConfig } from '../src/agentToolRunConfig';
 import type { Model, ModelRequest } from '../src/model';
@@ -119,7 +124,24 @@ describe('retry policies', () => {
       },
     });
 
-    const result = await run(agent, 'hello');
+    const exportedItems: Array<Trace | Span<any>> = [];
+    const exporter: TracingExporter = {
+      async export(items) {
+        exportedItems.push(...items);
+      },
+    };
+    const traceProcessor = new BatchTraceProcessor(exporter);
+    setTracingDisabled(false);
+    setTraceProcessors([traceProcessor]);
+    const result = await (async () => {
+      try {
+        const runResult = await run(agent, 'hello');
+        await traceProcessor.forceFlush();
+        return runResult;
+      } finally {
+        setTracingDisabled(true);
+      }
+    })();
 
     expect(result.finalOutput).toEqual({ summary: 'Recovered' });
     expect(attempts).toBe(2);
@@ -145,6 +167,11 @@ describe('retry policies', () => {
         totalTokens: 12,
       }),
     ]);
+    const exportedSpans = exportedItems.filter(
+      (item): item is Span<any> => 'spanData' in item,
+    );
+    expect(exportedSpans.length).toBeGreaterThan(0);
+    expect(exportedSpans.every((span) => span.error === null)).toBe(true);
   });
 
   it('does not retry model requests when client tool search processing fails', async () => {

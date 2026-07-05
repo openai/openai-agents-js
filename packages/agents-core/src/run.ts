@@ -73,6 +73,7 @@ import {
   saveToSession,
 } from './runner/sessionPersistence';
 import {
+  addFinalOutputValidationErrorToCurrentSpan,
   resolveTurnAfterModelResponse,
   validateProcessedResponseFinalOutput,
 } from './runner/turnResolution';
@@ -1007,7 +1008,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   processedResponse,
                 );
               },
-            );
+            ).catch((error) => {
+              addFinalOutputValidationErrorToCurrentSpan(error);
+              throw error;
+            });
             state._lastTurnResponse = retryResult.response;
             if (serverConversationTracker) {
               serverConversationTracker.markInputAsSent(

@@ -1258,9 +1258,30 @@ export async function resolveTurnAfterModelResponse<
   );
 }
 
+const finalOutputValidationErrors = new WeakMap<ModelBehaviorError, unknown>();
+
+export function addFinalOutputValidationErrorToCurrentSpan(
+  error: unknown,
+): void {
+  if (
+    !(error instanceof ModelBehaviorError) ||
+    !finalOutputValidationErrors.has(error)
+  ) {
+    return;
+  }
+
+  addErrorToCurrentSpan({
+    message: error.message,
+    data: {
+      error: String(finalOutputValidationErrors.get(error)),
+    },
+  });
+}
+
 async function validateStructuredFinalOutput(
   agent: Agent<any, any>,
   potentialFinalOutput: string,
+  deferSpanError = false,
 ): Promise<void> {
   const { parser } = getSchemaAndParserFromInputType(
     agent.outputType,
@@ -1272,13 +1293,12 @@ async function validateStructuredFinalOutput(
   }
 
   const outputErrorMessage = formatFinalOutputTypeError(error);
-  addErrorToCurrentSpan({
-    message: outputErrorMessage,
-    data: {
-      error: String(error),
-    },
-  });
-  throw new ModelBehaviorError(outputErrorMessage);
+  const validationError = new ModelBehaviorError(outputErrorMessage);
+  finalOutputValidationErrors.set(validationError, error);
+  if (!deferSpanError) {
+    addFinalOutputValidationErrorToCurrentSpan(validationError);
+  }
+  throw validationError;
 }
 
 export async function validateProcessedResponseFinalOutput(
@@ -1304,7 +1324,7 @@ export async function validateProcessedResponseFinalOutput(
     return;
   }
 
-  await validateStructuredFinalOutput(agent, potentialFinalOutput);
+  await validateStructuredFinalOutput(agent, potentialFinalOutput, true);
 }
 
 type TurnFinalizationParams<TContext> = {
