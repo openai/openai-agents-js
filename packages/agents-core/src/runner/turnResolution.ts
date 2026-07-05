@@ -1211,23 +1211,14 @@ export async function resolveTurnAfterModelResponse<
     }
 
     if (agent.outputType !== 'text' && potentialFinalOutput) {
-      // Structured output schema => always leads to a final output if we have text.
-      const { parser } = getSchemaAndParserFromInputType(
-        agent.outputType,
-        'final_output',
-      );
-      const [error] = await safeExecute(() => parser(potentialFinalOutput));
-      if (error) {
-        const outputErrorMessage = formatFinalOutputTypeError(error);
-        addErrorToCurrentSpan({
-          message: outputErrorMessage,
-          data: {
-            error: String(error),
-          },
-        });
-        const outputError = new ModelBehaviorError(outputErrorMessage);
+      try {
+        await validateStructuredFinalOutput(agent, potentialFinalOutput);
+      } catch (error) {
+        if (!(error instanceof ModelBehaviorError)) {
+          throw error;
+        }
         const handledOutput = await resolveInvalidFinalOutput({
-          error: outputError,
+          error,
           errorHandlers,
           agent,
           originalInput,
@@ -1236,7 +1227,7 @@ export async function resolveTurnAfterModelResponse<
           state,
         });
         if (typeof handledOutput === 'undefined') {
-          throw outputError;
+          throw error;
         }
         return new SingleStepResult(
           originalInput,
@@ -1265,6 +1256,55 @@ export async function resolveTurnAfterModelResponse<
     newItems,
     { type: 'next_step_run_again' },
   );
+}
+
+async function validateStructuredFinalOutput(
+  agent: Agent<any, any>,
+  potentialFinalOutput: string,
+): Promise<void> {
+  const { parser } = getSchemaAndParserFromInputType(
+    agent.outputType,
+    'final_output',
+  );
+  const [error] = await safeExecute(() => parser(potentialFinalOutput));
+  if (!error) {
+    return;
+  }
+
+  const outputErrorMessage = formatFinalOutputTypeError(error);
+  addErrorToCurrentSpan({
+    message: outputErrorMessage,
+    data: {
+      error: String(error),
+    },
+  });
+  throw new ModelBehaviorError(outputErrorMessage);
+}
+
+export async function validateProcessedResponseFinalOutput(
+  agent: Agent<any, any>,
+  processedResponse: ProcessedResponse<any>,
+): Promise<void> {
+  if (
+    agent.outputType === 'text' ||
+    processedResponse.hasToolsOrApprovalsToRun()
+  ) {
+    return;
+  }
+
+  const messageItems = processedResponse.newItems.filter(
+    (item) => item instanceof RunMessageOutputItem,
+  );
+  const potentialFinalOutput =
+    messageItems.length > 0
+      ? getTextFromOutputMessage(messageItems[messageItems.length - 1].rawItem)
+      : undefined;
+
+  if (!potentialFinalOutput) {
+    return;
+  }
+
+  await validateStructuredFinalOutput(agent, potentialFinalOutput);
 }
 
 type TurnFinalizationParams<TContext> = {

@@ -654,10 +654,32 @@ export const retryPolicies = {
   },
 } as const;
 
+export type ModelResponseProcessor<TProcessed> = (
+  response: ModelResponse,
+) => Promise<TProcessed>;
+
+export type ModelResponseWithProcessed<TProcessed> = {
+  response: ModelResponse;
+  processed: TProcessed;
+};
+
 export async function getResponseWithRetry(
   model: Model,
   request: ModelRequest,
 ): Promise<ModelResponse> {
+  const result = await getResponseWithRetryAndProcessed(
+    model,
+    request,
+    async (response) => response,
+  );
+  return result.response;
+}
+
+export async function getResponseWithRetryAndProcessed<TProcessed>(
+  model: Model,
+  request: ModelRequest,
+  processResponse: ModelResponseProcessor<TProcessed>,
+): Promise<ModelResponseWithProcessed<TProcessed>> {
   const maxRetries = request.modelSettings.retry?.maxRetries ?? 0;
   const retryPolicy = request.modelSettings.retry?.policy;
   const retryBackoff = request.modelSettings.retry?.backoff;
@@ -673,12 +695,17 @@ export async function getResponseWithRetry(
       : request;
     try {
       const response = await model.getResponse(requestForAttempt);
-      if (attempt === 1) {
-        return response;
-      }
+      const responseWithUsage =
+        attempt === 1
+          ? response
+          : {
+              ...response,
+              usage: addFailedRetryAttemptsToUsage(response.usage, attempt - 1),
+            };
+      const processed = await processResponse(responseWithUsage);
       return {
-        ...response,
-        usage: addFailedRetryAttemptsToUsage(response.usage, attempt - 1),
+        response: responseWithUsage,
+        processed,
       };
     } catch (error) {
       const providerAdvice = await getRetryAdvice(model, {

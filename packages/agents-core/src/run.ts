@@ -56,6 +56,7 @@ import {
 } from './runner/modelSettings';
 import {
   getResponseWithRetry,
+  getResponseWithRetryAndProcessed,
   getStreamedResponseWithRetry,
 } from './runner/modelRetry';
 import { processModelResponseAsync } from './runner/modelOutputs';
@@ -71,7 +72,10 @@ import {
   saveStreamResultToSession,
   saveToSession,
 } from './runner/sessionPersistence';
-import { resolveTurnAfterModelResponse } from './runner/turnResolution';
+import {
+  resolveTurnAfterModelResponse,
+  validateProcessedResponseFinalOutput,
+} from './runner/turnResolution';
 import { prepareTurn } from './runner/turnPreparation';
 import { prepareAgentArtifacts } from './runner/modelPreparation';
 import {
@@ -958,32 +962,50 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
             await guardrailTracker.throwIfError();
 
-            state._lastTurnResponse = await getResponseWithRetry(
+            const modelRequest = {
+              systemInstructions: preparedCall.modelInput.instructions,
+              prompt: preparedCall.prompt,
+              // Explicit agent/run config models should take precedence over prompt defaults.
+              ...(preparedCall.explicitlyModelSet
+                ? { overridePromptModel: true }
+                : {}),
+              input: preparedCall.modelInput.input,
+              previousResponseId: preparedCall.previousResponseId,
+              conversationId: preparedCall.conversationId,
+              modelSettings: preparedCall.modelSettings,
+              tools: preparedCall.serializedTools,
+              toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
+              outputType: convertAgentOutputTypeToSerializable(
+                state._currentAgent.outputType,
+              ),
+              handoffs: preparedCall.serializedHandoffs,
+              tracing: getTracing(
+                this.config.tracingDisabled,
+                this.config.traceIncludeSensitiveData,
+              ),
+              signal: options.signal,
+            };
+            const retryResult = await getResponseWithRetryAndProcessed(
               preparedCall.model,
-              {
-                systemInstructions: preparedCall.modelInput.instructions,
-                prompt: preparedCall.prompt,
-                // Explicit agent/run config models should take precedence over prompt defaults.
-                ...(preparedCall.explicitlyModelSet
-                  ? { overridePromptModel: true }
-                  : {}),
-                input: preparedCall.modelInput.input,
-                previousResponseId: preparedCall.previousResponseId,
-                conversationId: preparedCall.conversationId,
-                modelSettings: preparedCall.modelSettings,
-                tools: preparedCall.serializedTools,
-                toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
-                outputType: convertAgentOutputTypeToSerializable(
-                  state._currentAgent.outputType,
-                ),
-                handoffs: preparedCall.serializedHandoffs,
-                tracing: getTracing(
-                  this.config.tracingDisabled,
-                  this.config.traceIncludeSensitiveData,
-                ),
-                signal: options.signal,
+              modelRequest,
+              async (response) => {
+                const processedResponse = await processModelResponseAsync(
+                  response,
+                  state._currentAgent,
+                  preparedCall.tools,
+                  preparedCall.handoffs,
+                  state,
+                  [...preparedCall.turnInput, ...state._generatedItems],
+                  options.toolNotFoundBehavior,
+                );
+                await validateProcessedResponseFinalOutput(
+                  state._currentAgent,
+                  processedResponse,
+                );
+                return processedResponse;
               },
             );
+            state._lastTurnResponse = retryResult.response;
             if (serverConversationTracker) {
               serverConversationTracker.markInputAsSent(
                 preparedCall.sourceItems,
@@ -1009,17 +1031,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               );
             }
 
-            const processedResponse = await processModelResponseAsync(
-              state._lastTurnResponse,
-              state._currentAgent,
-              preparedCall.tools,
-              preparedCall.handoffs,
-              state,
-              [...preparedCall.turnInput, ...state._generatedItems],
-              options.toolNotFoundBehavior,
-            );
-
-            state._lastProcessedResponse = processedResponse;
+            state._lastProcessedResponse = retryResult.processed;
 
             await guardrailTracker.awaitCompletion();
 

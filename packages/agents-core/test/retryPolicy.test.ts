@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import {
   Agent,
   retryPolicies,
@@ -72,6 +73,52 @@ describe('retry policies', () => {
     expect(result.finalOutput).toBe('Recovered');
     expect(attempts).toBe(2);
     expect(result.state.usage.requests).toBe(2);
+    expect(result.rawResponses[0]?.usage.requests).toBe(2);
+  });
+
+  it('retries non-streaming runs when structured output parsing fails and the user policy opts in', async () => {
+    let attempts = 0;
+    const policy = vi.fn().mockReturnValue(true);
+    const model: Model = {
+      async getResponse() {
+        attempts += 1;
+
+        return {
+          usage: new Usage({ requests: 1 }),
+          output: [
+            fakeModelMessage(
+              attempts === 1
+                ? 'not valid structured output'
+                : '{"summary":"Recovered"}',
+            ),
+          ],
+        };
+      },
+      async *getStreamedResponse() {
+        yield* [];
+      },
+    };
+
+    const agent = new Agent({
+      name: 'RetryStructuredOutputAgent',
+      model,
+      outputType: z.object({ summary: z.string() }),
+      modelSettings: {
+        retry: {
+          maxRetries: 1,
+          backoff: { initialDelayMs: 0, jitter: false },
+          policy,
+        },
+      },
+    });
+
+    const result = await run(agent, 'hello');
+
+    expect(result.finalOutput).toEqual({ summary: 'Recovered' });
+    expect(attempts).toBe(2);
+    expect(policy).toHaveBeenCalledTimes(1);
+    expect(result.state.usage.requests).toBe(2);
+    expect(result.rawResponses).toHaveLength(1);
     expect(result.rawResponses[0]?.usage.requests).toBe(2);
   });
 
