@@ -998,11 +998,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   [...preparedCall.turnInput, ...state._generatedItems],
                   options.toolNotFoundBehavior,
                 );
+                await guardrailTracker.awaitCompletion();
+                return processedResponse;
+              },
+              async (processedResponse) => {
                 await validateProcessedResponseFinalOutput(
                   state._currentAgent,
                   processedResponse,
                 );
-                return processedResponse;
               },
             );
             state._lastTurnResponse = retryResult.response;
@@ -1032,8 +1035,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
 
             state._lastProcessedResponse = retryResult.processed;
-
-            await guardrailTracker.awaitCompletion();
 
             const turnResult = await resolveTurnAfterModelResponse(
               state._currentAgent,

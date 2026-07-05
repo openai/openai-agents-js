@@ -658,6 +658,10 @@ export type ModelResponseProcessor<TProcessed> = (
   response: ModelResponse,
 ) => Promise<TProcessed>;
 
+export type ModelResponseValidator<TProcessed> = (
+  processedResponse: TProcessed,
+) => Promise<void>;
+
 export type ModelResponseWithProcessed<TProcessed> = {
   response: ModelResponse;
   processed: TProcessed;
@@ -679,6 +683,7 @@ export async function getResponseWithRetryAndProcessed<TProcessed>(
   model: Model,
   request: ModelRequest,
   processResponse: ModelResponseProcessor<TProcessed>,
+  validateProcessedResponse?: ModelResponseValidator<TProcessed>,
 ): Promise<ModelResponseWithProcessed<TProcessed>> {
   const maxRetries = request.modelSettings.retry?.maxRetries ?? 0;
   const retryPolicy = request.modelSettings.retry?.policy;
@@ -691,6 +696,7 @@ export async function getResponseWithRetryAndProcessed<TProcessed>(
   const replayUnsafeRequest = isStatefulConversationRequest(request);
   while (true) {
     let response: ModelResponse | undefined;
+    let responseProcessingCompleted = false;
     const requestForAttempt = shouldDisableProviderManagedRetry(
       request,
       attempt,
@@ -711,11 +717,16 @@ export async function getResponseWithRetryAndProcessed<TProcessed>(
       }
       const responseWithUsage = { ...response, usage: responseUsage };
       const processed = await processResponse(responseWithUsage);
+      responseProcessingCompleted = true;
+      await validateProcessedResponse?.(processed);
       return {
         response: responseWithUsage,
         processed,
       };
     } catch (error) {
+      if (response && !responseProcessingCompleted) {
+        throw error;
+      }
       const providerAdvice = await getRetryAdvice(model, {
         request,
         error,

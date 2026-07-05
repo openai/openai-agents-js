@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
+  InputGuardrailTripwireTriggered,
   retryPolicies,
   run,
   Runner,
@@ -11,7 +12,9 @@ import {
 } from '../src';
 import { mergeAgentToolRunConfig } from '../src/agentToolRunConfig';
 import type { Model, ModelRequest } from '../src/model';
+import * as protocol from '../src/types/protocol';
 import type { StreamEvent } from '../src/types/protocol';
+import { attachClientToolSearchExecutor } from '../src/tool';
 import { RequestUsage, Usage } from '../src/usage';
 import { fakeModelMessage, FakeModelProvider } from './stubs';
 
@@ -142,6 +145,119 @@ describe('retry policies', () => {
         totalTokens: 12,
       }),
     ]);
+  });
+
+  it('does not retry model requests when client tool search processing fails', async () => {
+    let attempts = 0;
+    const processingError = Object.assign(new Error('tool search failed'), {
+      code: 'ECONNRESET',
+    });
+    const execute = vi.fn().mockRejectedValue(processingError);
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+          parameters: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+      },
+      execute,
+    );
+    const toolSearchCall: protocol.ToolSearchCallItem = {
+      type: 'tool_search_call',
+      id: 'tool_search_retry_boundary',
+      status: 'completed',
+      arguments: {},
+      providerData: {
+        call_id: 'call_tool_search_retry_boundary',
+        execution: 'client',
+      },
+    };
+    const model: Model = {
+      async getResponse() {
+        attempts += 1;
+        return {
+          usage: new Usage({ requests: 1 }),
+          output: [toolSearchCall],
+        };
+      },
+      async *getStreamedResponse() {
+        yield* [];
+      },
+    };
+    const agent = new Agent({
+      name: 'ToolSearchRetryBoundaryAgent',
+      model,
+      tools: [clientToolSearch],
+      modelSettings: {
+        retry: {
+          maxRetries: 1,
+          backoff: { initialDelayMs: 0, jitter: false },
+          policy: retryPolicies.networkError(),
+        },
+      },
+    });
+
+    await expect(run(agent, 'hello')).rejects.toBe(processingError);
+    expect(attempts).toBe(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks parallel input guardrails before retrying structured output parsing failures', async () => {
+    let attempts = 0;
+    let markModelCalled!: () => void;
+    const modelCalled = new Promise<void>((resolve) => {
+      markModelCalled = resolve;
+    });
+    const model: Model = {
+      async getResponse() {
+        attempts += 1;
+        markModelCalled();
+        return {
+          usage: new Usage({ requests: 1 }),
+          output: [fakeModelMessage('not valid structured output')],
+        };
+      },
+      async *getStreamedResponse() {
+        yield* [];
+      },
+    };
+    const agent = new Agent({
+      name: 'GuardrailBeforeStructuredOutputRetryAgent',
+      model,
+      outputType: z.object({ summary: z.string() }),
+      inputGuardrails: [
+        {
+          name: 'parallel-tripwire',
+          runInParallel: true,
+          execute: async () => {
+            await modelCalled;
+            return {
+              tripwireTriggered: true,
+              outputInfo: { reason: 'blocked' },
+            };
+          },
+        },
+      ],
+      modelSettings: {
+        retry: {
+          maxRetries: 1,
+          backoff: { initialDelayMs: 0, jitter: false },
+          policy: () => true,
+        },
+      },
+    });
+
+    await expect(run(agent, 'hello')).rejects.toBeInstanceOf(
+      InputGuardrailTripwireTriggered,
+    );
+    expect(attempts).toBe(1);
   });
 
   it('preserves provider-managed retries on the first runner attempt and disables them on replay', async () => {
