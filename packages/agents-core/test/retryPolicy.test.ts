@@ -4,6 +4,7 @@ import {
   Agent,
   BatchTraceProcessor,
   InputGuardrailTripwireTriggered,
+  ModelBehaviorError,
   retryPolicies,
   run,
   Runner,
@@ -234,6 +235,39 @@ describe('retry policies', () => {
     await expect(run(agent, 'hello')).rejects.toBe(processingError);
     expect(attempts).toBe(1);
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not classify structured output validation failures as network errors', async () => {
+    let attempts = 0;
+    const model: Model = {
+      async getResponse() {
+        attempts += 1;
+        return {
+          usage: new Usage({ requests: 1 }),
+          output: [fakeModelMessage('network error')],
+        };
+      },
+      async *getStreamedResponse() {
+        yield* [];
+      },
+    };
+    const agent = new Agent({
+      name: 'StructuredOutputNetworkClassificationAgent',
+      model,
+      outputType: z.object({ summary: z.string() }),
+      modelSettings: {
+        retry: {
+          maxRetries: 1,
+          backoff: { initialDelayMs: 0, jitter: false },
+          policy: retryPolicies.networkError(),
+        },
+      },
+    });
+
+    await expect(run(agent, 'hello')).rejects.toBeInstanceOf(
+      ModelBehaviorError,
+    );
+    expect(attempts).toBe(1);
   });
 
   it('checks parallel input guardrails before retrying structured output parsing failures', async () => {

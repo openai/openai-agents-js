@@ -10,6 +10,7 @@ import type {
   RetryPolicy,
   RetryPolicyContext,
 } from '../model';
+import { ModelBehaviorError } from '../errors';
 import type { StreamEvent } from '../types/protocol';
 import { RequestUsage, Usage } from '../usage';
 
@@ -335,10 +336,14 @@ function normalizeRetryError(
     normalized.retryAfterMs = providerAdvice.retryAfterMs;
   }
 
-  return {
+  const normalizedWithProviderAdvice = {
     ...normalized,
     ...(providerAdvice?.normalized ?? {}),
   };
+  if (error instanceof ModelBehaviorError) {
+    normalizedWithProviderAdvice.isNetworkError = false;
+  }
+  return normalizedWithProviderAdvice;
 }
 
 function resolveRetryDecision(decision: RetryDecision): ResolvedRetryDecision {
