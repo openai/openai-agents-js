@@ -1150,6 +1150,7 @@ export async function resolveTurnAfterModelResponse<
         preStepItems,
         newItems,
         { type: 'next_step_final_output', output: outputText },
+        'error_handler',
       );
     }
   }
@@ -1176,6 +1177,7 @@ export async function resolveTurnAfterModelResponse<
           preStepItems,
           newItems,
           { type: 'next_step_final_output', output: handledOutput },
+          'error_handler',
         );
       }
     }
@@ -1236,6 +1238,7 @@ export async function resolveTurnAfterModelResponse<
           preStepItems,
           newItems,
           { type: 'next_step_final_output', output: handledOutput },
+          'error_handler',
         );
       }
 

@@ -2805,6 +2805,72 @@ describe('Runner.run', () => {
       expect(sideEffects).toEqual(['once']);
     });
 
+    it('nested agent tools return invalid final output fallbacks', async () => {
+      const nestedAgent = new Agent({
+        name: 'NestedRecoverer',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+      const nestedTool = nestedAgent.asTool({
+        toolName: 'recover_nested',
+        toolDescription: 'Recovers a structured nested output.',
+        runOptions: {
+          errorHandlers: {
+            invalidFinalOutput: () => ({
+              finalOutput: { summary: 'safe fallback' },
+            }),
+          },
+        },
+      });
+      const parentAgent = new Agent({
+        name: 'ParentAgent',
+        tools: [nestedTool],
+        model: new FakeModel([
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_nested',
+                callId: 'call_nested',
+                name: 'recover_nested',
+                status: 'completed',
+                arguments: '{"input":"recover"}',
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('parent done')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      const result = await run(parentAgent, 'x');
+      const nestedToolOutput = result.newItems.find(
+        (item): item is ToolCallOutputItem =>
+          item instanceof ToolCallOutputItem &&
+          item.rawItem.type === 'function_call_result' &&
+          item.rawItem.callId === 'call_nested',
+      );
+
+      const nestedOutput = nestedToolOutput?.rawItem.output;
+      const nestedOutputText =
+        typeof nestedOutput === 'string'
+          ? nestedOutput
+          : !Array.isArray(nestedOutput) && nestedOutput?.type === 'text'
+            ? nestedOutput.text
+            : undefined;
+      expect(nestedOutputText).toBe('{"summary":"safe fallback"}');
+      expect(result.finalOutput).toBe('parent done');
+    });
+
     it('enforces maxTurns across multiple model calls', async () => {
       // Bug: After first model call, _lastTurnResponse is set, so turn counter never advances.
       // With maxTurns=1, we should only allow 1 model call, but currently allows 2.
