@@ -1,5 +1,10 @@
 import { Agent, AgentOutputType } from '../agent';
-import { MaxTurnsExceededError, ModelRefusalError } from '../errors';
+import {
+  MaxTurnsExceededError,
+  ModelBehaviorError,
+  ModelRefusalError,
+  UserError,
+} from '../errors';
 import { assistant } from '../helpers/message';
 import { RunItem, RunMessageOutputItem } from '../items';
 import { ModelResponse } from '../model';
@@ -22,7 +27,7 @@ import { streamStepItemsToRunResult } from './streaming';
 /**
  * Error kinds supported by run error handlers.
  */
-export type RunErrorKind = 'maxTurns' | 'modelRefusal';
+export type RunErrorKind = 'maxTurns' | 'modelRefusal' | 'invalidFinalOutput';
 
 /**
  * Snapshot of run data passed to error handlers.
@@ -38,7 +43,7 @@ export type RunErrorData<TContext, TAgent extends Agent<any, any>> = {
 };
 
 export type RunErrorHandlerInput<TContext, TAgent extends Agent<any, any>> = {
-  error: MaxTurnsExceededError | ModelRefusalError;
+  error: MaxTurnsExceededError | ModelRefusalError | ModelBehaviorError;
   context: RunContext<TContext>;
   runData: RunErrorData<TContext, TAgent>;
 };
@@ -89,6 +94,7 @@ type TryHandleRunErrorArgs<TContext, TAgent extends Agent<any, any>> = {
 
 type ResolveRunErrorHandlerArgs<TContext, TAgent extends Agent<any, any>> = {
   error: unknown;
+  errorKind?: RunErrorKind;
   errorHandlers?: RunErrorHandlers<TContext, TAgent>;
   context: RunContext<TContext>;
   runData: RunErrorData<TContext, TAgent>;
@@ -126,35 +132,66 @@ const createFinalOutputItem = <TAgent extends Agent<any, any>>(
 ): RunMessageOutputItem =>
   new RunMessageOutputItem(assistant(outputText), agent);
 
+function validateRunErrorFinalOutput<TAgent extends Agent<any, any>>(
+  agent: TAgent,
+  outputText: string,
+): void {
+  try {
+    agent.processFinalOutput(outputText);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new UserError(`Invalid run error handler finalOutput: ${message}`);
+  }
+}
+
 export const formatRunErrorFinalOutput = formatFinalOutput;
 export const createRunErrorFinalOutputItem = createFinalOutputItem;
+export const validateRunErrorHandlerFinalOutput = validateRunErrorFinalOutput;
 
 export const resolveRunErrorHandler = async <
   TContext,
   TAgent extends Agent<any, any>,
 >({
   error,
+  errorKind,
   errorHandlers,
   context,
   runData,
 }: ResolveRunErrorHandlerArgs<TContext, TAgent>): Promise<
   RunErrorHandlerResult<TAgent> | undefined
 > => {
-  let handler: RunErrorHandler<TContext, TAgent> | undefined;
-  if (error instanceof MaxTurnsExceededError) {
-    handler = errorHandlers?.maxTurns ?? errorHandlers?.default;
-  } else if (error instanceof ModelRefusalError) {
-    handler = errorHandlers?.modelRefusal ?? errorHandlers?.default;
-  } else {
+  const kind =
+    errorKind ??
+    (error instanceof MaxTurnsExceededError
+      ? 'maxTurns'
+      : error instanceof ModelRefusalError
+        ? 'modelRefusal'
+        : undefined);
+
+  if (!kind) {
     return undefined;
   }
 
+  const typedError =
+    kind === 'maxTurns' && error instanceof MaxTurnsExceededError
+      ? error
+      : kind === 'modelRefusal' && error instanceof ModelRefusalError
+        ? error
+        : kind === 'invalidFinalOutput' && error instanceof ModelBehaviorError
+          ? error
+          : undefined;
+
+  if (!typedError) {
+    return undefined;
+  }
+
+  const handler = errorHandlers?.[kind] ?? errorHandlers?.default;
   if (!handler) {
     return undefined;
   }
 
   const handlerResult = await handler({
-    error,
+    error: typedError,
     context,
     runData,
   });
@@ -188,6 +225,7 @@ export const tryHandleRunError = async <
     state._currentAgent,
     handlerResult.finalOutput,
   );
+  validateRunErrorFinalOutput(state._currentAgent, outputText);
   state._lastTurnResponse = undefined;
   state._lastProcessedResponse = undefined;
   const item = createFinalOutputItem(state._currentAgent, outputText);
