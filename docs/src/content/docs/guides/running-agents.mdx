@@ -242,12 +242,13 @@ Keep `'preserve'` if you want the SDK to carry reasoning-item IDs through replay
 
 ### Error handlers
 
-Use `errorHandlers` to convert supported runtime errors into a final output instead of throwing. The supported keys are `maxTurns` and `modelRefusal`.
+Use `errorHandlers` to convert supported runtime errors into a final output instead of throwing. The supported keys are `maxTurns`, `modelRefusal`, and `invalidFinalOutput`.
 
 - `errorHandlers.maxTurns` handles only max-turn errors.
 - `errorHandlers.modelRefusal` handles model refusals surfaced as [`ModelRefusalError`](/openai-agents-js/openai/agents-core/classes/modelrefusalerror).
+- `errorHandlers.invalidFinalOutput` handles [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) instances raised when a structured final output is missing or fails output schema validation.
 - `errorHandlers.default` is used as a fallback for supported kinds.
-- Handlers receive `{ error, context, runData }` and can return `{ finalOutput, includeInHistory? }`.
+- Handlers receive `{ error, context, runData }` and can return `{ finalOutput, includeInHistory? }`. The returned `finalOutput` must match the current agent's `outputType`. For structured outputs, the SDK validates the fallback before completing the run. Returning `undefined` keeps the default behavior for that error.
 
 ### Exceptions
 
