@@ -15,6 +15,7 @@ import {
   GuardrailExecutionError,
   InputGuardrailTripwireTriggered,
   MaxTurnsExceededError,
+  ModelBehaviorError,
   ModelRefusalError,
   ModelResponse,
   OutputGuardrailTripwireTriggered,
@@ -2547,6 +2548,333 @@ describe('Runner.run', () => {
         },
       });
       expect(result.finalOutput).toBe('safe fallback');
+    });
+
+    it('throws invalid structured final output without a handler', async () => {
+      const agent = new Agent({
+        name: 'InvalidStructuredOutput',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      await expect(run(agent, 'x')).rejects.toBeInstanceOf(ModelBehaviorError);
+    });
+
+    it('invalid final output handler returns structured final output', async () => {
+      const agent = new Agent({
+        name: 'InvalidStructuredOutputHandler',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      const result = await run(agent, 'x', {
+        errorHandlers: {
+          invalidFinalOutput: ({ error, runData }) => {
+            expect(error).toBeInstanceOf(ModelBehaviorError);
+            expect(runData.rawResponses).toHaveLength(1);
+            expect(extractAllTextOutput(runData.newItems)).toBe(
+              'not valid json',
+            );
+            return { finalOutput: { summary: 'safe fallback' } };
+          },
+        },
+      });
+
+      expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
+      expect(extractAllTextOutput(result.newItems)).toBe(
+        'not valid json{"summary":"safe fallback"}',
+      );
+    });
+
+    it('invalid final output handler can skip history updates', async () => {
+      const agent = new Agent({
+        name: 'InvalidStructuredOutputNoHistory',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      const result = await run(agent, 'x', {
+        errorHandlers: {
+          invalidFinalOutput: () => ({
+            finalOutput: { summary: 'safe fallback' },
+            includeInHistory: false,
+          }),
+        },
+      });
+
+      expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
+      expect(extractAllTextOutput(result.newItems)).toBe('not valid json');
+    });
+
+    it('invalid final output handler can decline recovery', async () => {
+      const agent = new Agent({
+        name: 'InvalidStructuredOutputDeclined',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      await expect(
+        run(agent, 'x', {
+          errorHandlers: {
+            invalidFinalOutput: () => undefined,
+          },
+        }),
+      ).rejects.toBeInstanceOf(ModelBehaviorError);
+    });
+
+    it('invalid final output handler validates fallback output', async () => {
+      const agent = new Agent({
+        name: 'InvalidStructuredOutputBadFallback',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      await expect(
+        run(agent, 'x', {
+          errorHandlers: {
+            invalidFinalOutput: () => ({
+              finalOutput: { unexpected: 'value' } as any,
+            }),
+          },
+        }),
+      ).rejects.toThrow(UserError);
+    });
+
+    it('default error handler can handle invalid final output', async () => {
+      const agent = new Agent({
+        name: 'DefaultInvalidStructuredOutput',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      const result = await run(agent, 'x', {
+        errorHandlers: {
+          default: ({ error }) => {
+            expect(error).toBeInstanceOf(ModelBehaviorError);
+            return { finalOutput: { summary: 'safe fallback' } };
+          },
+        },
+      });
+
+      expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
+    });
+
+    it.each([
+      { name: 'missing message', output: [] },
+      { name: 'empty text message', output: [fakeModelMessage('')] },
+    ])(
+      'empty structured output handler avoids another model turn for $name',
+      async ({ output }) => {
+        class CountingModel implements Model {
+          public requests: ModelRequest[] = [];
+
+          constructor(private responses: ModelResponse[]) {}
+
+          async getResponse(request: ModelRequest): Promise<ModelResponse> {
+            this.requests.push(request);
+            const response = this.responses.shift();
+            if (!response) {
+              throw new Error('No response found');
+            }
+            return response;
+          }
+
+          getStreamedResponse(_request: ModelRequest): AsyncIterable<any> {
+            throw new Error('Not implemented');
+          }
+        }
+
+        const model = new CountingModel([
+          { output, usage: new Usage() },
+          {
+            output: [fakeModelMessage('{"summary":"unused"}')],
+            usage: new Usage(),
+          },
+        ]);
+        const agent = new Agent({
+          name: 'EmptyStructuredOutputHandler',
+          outputType: z.object({ summary: z.string() }),
+          model,
+        });
+
+        const result = await run(agent, 'x', {
+          errorHandlers: {
+            invalidFinalOutput: ({ error }) => {
+              expect(error).toBeInstanceOf(ModelBehaviorError);
+              expect((error as ModelBehaviorError).message).toBe(
+                'Model returned no final output for the structured output type.',
+              );
+              return { finalOutput: { summary: 'safe fallback' } };
+            },
+          },
+        });
+
+        expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
+        expect(model.requests).toHaveLength(1);
+      },
+    );
+
+    it('invalid final output fallback does not retry or replay tools', async () => {
+      const sideEffects: string[] = [];
+      const recordSideEffect = tool({
+        name: 'record_side_effect',
+        description: 'Records a side effect.',
+        parameters: z.object({ value: z.string() }),
+        execute: async ({ value }) => {
+          sideEffects.push(value);
+          return `recorded:${value}`;
+        },
+      });
+      const agent = new Agent({
+        name: 'InvalidStructuredOutputAfterTool',
+        outputType: z.object({ summary: z.string() }),
+        tools: [recordSideEffect],
+        model: new FakeModel([
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_1',
+                callId: 'call_1',
+                name: 'record_side_effect',
+                status: 'completed',
+                arguments: '{"value":"once"}',
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_2',
+                callId: 'call_2',
+                name: 'record_side_effect',
+                status: 'completed',
+                arguments: '{"value":"replayed"}',
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('{"summary":"unexpected retry"}')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      const result = await run(agent, 'x', {
+        errorHandlers: {
+          invalidFinalOutput: () => ({
+            finalOutput: { summary: 'safe fallback' },
+          }),
+        },
+      });
+
+      expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
+      expect(sideEffects).toEqual(['once']);
+    });
+
+    it('nested agent tools return invalid final output fallbacks', async () => {
+      const nestedAgent = new Agent({
+        name: 'NestedRecoverer',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+      const nestedTool = nestedAgent.asTool({
+        toolName: 'recover_nested',
+        toolDescription: 'Recovers a structured nested output.',
+        runOptions: {
+          errorHandlers: {
+            invalidFinalOutput: () => ({
+              finalOutput: { summary: 'safe fallback' },
+            }),
+          },
+        },
+      });
+      const parentAgent = new Agent({
+        name: 'ParentAgent',
+        tools: [nestedTool],
+        model: new FakeModel([
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_nested',
+                callId: 'call_nested',
+                name: 'recover_nested',
+                status: 'completed',
+                arguments: '{"input":"recover"}',
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('parent done')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      const result = await run(parentAgent, 'x');
+      const nestedToolOutput = result.newItems.find(
+        (item): item is ToolCallOutputItem =>
+          item instanceof ToolCallOutputItem &&
+          item.rawItem.type === 'function_call_result' &&
+          item.rawItem.callId === 'call_nested',
+      );
+
+      const nestedOutput = nestedToolOutput?.rawItem.output;
+      const nestedOutputText =
+        typeof nestedOutput === 'string'
+          ? nestedOutput
+          : !Array.isArray(nestedOutput) && nestedOutput?.type === 'text'
+            ? nestedOutput.text
+            : undefined;
+      expect(nestedOutputText).toBe('{"summary":"safe fallback"}');
+      expect(result.finalOutput).toBe('parent done');
     });
 
     it('enforces maxTurns across multiple model calls', async () => {
