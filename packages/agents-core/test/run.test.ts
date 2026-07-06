@@ -2689,54 +2689,60 @@ describe('Runner.run', () => {
       expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
     });
 
-    it('empty structured output handler avoids another model turn', async () => {
-      class CountingModel implements Model {
-        public requests: ModelRequest[] = [];
+    it.each([
+      { name: 'missing message', output: [] },
+      { name: 'empty text message', output: [fakeModelMessage('')] },
+    ])(
+      'empty structured output handler avoids another model turn for $name',
+      async ({ output }) => {
+        class CountingModel implements Model {
+          public requests: ModelRequest[] = [];
 
-        constructor(private responses: ModelResponse[]) {}
+          constructor(private responses: ModelResponse[]) {}
 
-        async getResponse(request: ModelRequest): Promise<ModelResponse> {
-          this.requests.push(request);
-          const response = this.responses.shift();
-          if (!response) {
-            throw new Error('No response found');
+          async getResponse(request: ModelRequest): Promise<ModelResponse> {
+            this.requests.push(request);
+            const response = this.responses.shift();
+            if (!response) {
+              throw new Error('No response found');
+            }
+            return response;
           }
-          return response;
+
+          getStreamedResponse(_request: ModelRequest): AsyncIterable<any> {
+            throw new Error('Not implemented');
+          }
         }
 
-        getStreamedResponse(_request: ModelRequest): AsyncIterable<any> {
-          throw new Error('Not implemented');
-        }
-      }
-
-      const model = new CountingModel([
-        { output: [], usage: new Usage() },
-        {
-          output: [fakeModelMessage('{"summary":"unused"}')],
-          usage: new Usage(),
-        },
-      ]);
-      const agent = new Agent({
-        name: 'EmptyStructuredOutputHandler',
-        outputType: z.object({ summary: z.string() }),
-        model,
-      });
-
-      const result = await run(agent, 'x', {
-        errorHandlers: {
-          invalidFinalOutput: ({ error }) => {
-            expect(error).toBeInstanceOf(ModelBehaviorError);
-            expect((error as ModelBehaviorError).message).toBe(
-              'Model returned no final output for the structured output type.',
-            );
-            return { finalOutput: { summary: 'safe fallback' } };
+        const model = new CountingModel([
+          { output, usage: new Usage() },
+          {
+            output: [fakeModelMessage('{"summary":"unused"}')],
+            usage: new Usage(),
           },
-        },
-      });
+        ]);
+        const agent = new Agent({
+          name: 'EmptyStructuredOutputHandler',
+          outputType: z.object({ summary: z.string() }),
+          model,
+        });
 
-      expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
-      expect(model.requests).toHaveLength(1);
-    });
+        const result = await run(agent, 'x', {
+          errorHandlers: {
+            invalidFinalOutput: ({ error }) => {
+              expect(error).toBeInstanceOf(ModelBehaviorError);
+              expect((error as ModelBehaviorError).message).toBe(
+                'Model returned no final output for the structured output type.',
+              );
+              return { finalOutput: { summary: 'safe fallback' } };
+            },
+          },
+        });
+
+        expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
+        expect(model.requests).toHaveLength(1);
+      },
+    );
 
     it('invalid final output fallback does not retry or replay tools', async () => {
       const sideEffects: string[] = [];

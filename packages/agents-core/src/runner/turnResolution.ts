@@ -1155,9 +1155,15 @@ export async function resolveTurnAfterModelResponse<
     }
   }
 
-  // if there is no output we just run again
-  if (typeof potentialFinalOutput === 'undefined') {
-    if (!hasPendingToolsOrApprovals && agent.outputType !== 'text') {
+  const isMissingStructuredFinalOutput =
+    agent.outputType !== 'text' && !potentialFinalOutput;
+
+  // Recover missing structured output when configured; otherwise run again.
+  if (
+    typeof potentialFinalOutput === 'undefined' ||
+    isMissingStructuredFinalOutput
+  ) {
+    if (!hasPendingToolsOrApprovals && isMissingStructuredFinalOutput) {
       const outputError = new ModelBehaviorError(
         'Model returned no final output for the structured output type.',
       );
