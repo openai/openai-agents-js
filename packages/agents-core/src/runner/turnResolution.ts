@@ -47,6 +47,7 @@ import {
   createRunErrorFinalOutputItem,
   formatRunErrorFinalOutput,
   resolveRunErrorHandler,
+  validateRunErrorHandlerFinalOutput,
 } from './errorHandlers';
 import { getTurnInput } from './items';
 
@@ -547,6 +548,69 @@ function formatFinalOutputTypeError(error: unknown): string {
   }
 
   return 'Invalid output type: final assistant output did not match the expected schema.';
+}
+
+function buildTurnRunErrorData<TContext, TAgent extends Agent<TContext, any>>(
+  state: RunState<TContext, TAgent>,
+  agent: TAgent,
+  originalInput: string | AgentInputItem[],
+  preStepItems: RunItem[],
+  newItems: RunItem[],
+): RunErrorData<TContext, TAgent> {
+  const generatedItems = preStepItems.concat(newItems);
+  return {
+    input: originalInput,
+    newItems: generatedItems,
+    history: getTurnInput(
+      originalInput,
+      generatedItems,
+      state._reasoningItemIdPolicy,
+    ),
+    output: getTurnInput([], generatedItems, state._reasoningItemIdPolicy),
+    rawResponses: state._modelResponses,
+    lastAgent: agent,
+    state,
+  };
+}
+
+async function resolveInvalidFinalOutput<
+  TContext,
+  TAgent extends Agent<TContext, any>,
+>(args: {
+  error: ModelBehaviorError;
+  errorHandlers?: RunErrorHandlers<TContext, TAgent>;
+  agent: TAgent;
+  originalInput: string | AgentInputItem[];
+  preStepItems: RunItem[];
+  newItems: RunItem[];
+  state: RunState<TContext, TAgent>;
+}): Promise<string | undefined> {
+  const handlerResult = await resolveRunErrorHandler({
+    error: args.error,
+    errorKind: 'invalidFinalOutput',
+    errorHandlers: args.errorHandlers,
+    context: args.state._context,
+    runData: buildTurnRunErrorData(
+      args.state,
+      args.agent,
+      args.originalInput,
+      args.preStepItems,
+      args.newItems,
+    ),
+  });
+  if (!handlerResult) {
+    return undefined;
+  }
+
+  const outputText = formatRunErrorFinalOutput(
+    args.agent,
+    handlerResult.finalOutput,
+  );
+  validateRunErrorHandlerFinalOutput(args.agent, outputText);
+  if (handlerResult.includeInHistory !== false) {
+    args.newItems.push(createRunErrorFinalOutputItem(args.agent, outputText));
+  }
+  return outputText;
 }
 
 /**
@@ -1056,25 +1120,17 @@ export async function resolveTurnAfterModelResponse<
     );
     if (refusal && typeof potentialFinalOutput === 'undefined') {
       const refusalError = new ModelRefusalError(refusal, state);
-      const generatedItems = preStepItems.concat(newItems);
-      const runData: RunErrorData<TContext, TAgent> = {
-        input: originalInput,
-        newItems: generatedItems,
-        history: getTurnInput(
-          originalInput,
-          generatedItems,
-          state._reasoningItemIdPolicy,
-        ),
-        output: getTurnInput([], generatedItems, state._reasoningItemIdPolicy),
-        rawResponses: state._modelResponses,
-        lastAgent: agent,
-        state,
-      };
       const handlerResult = await resolveRunErrorHandler({
         error: refusalError,
         errorHandlers,
         context: state._context,
-        runData,
+        runData: buildTurnRunErrorData(
+          state,
+          agent,
+          originalInput,
+          preStepItems,
+          newItems,
+        ),
       });
       if (!handlerResult) {
         throw refusalError;
@@ -1084,6 +1140,7 @@ export async function resolveTurnAfterModelResponse<
         agent,
         handlerResult.finalOutput,
       );
+      validateRunErrorHandlerFinalOutput(agent, outputText);
       if (handlerResult.includeInHistory !== false) {
         newItems.push(createRunErrorFinalOutputItem(agent, outputText));
       }
@@ -1093,12 +1150,43 @@ export async function resolveTurnAfterModelResponse<
         preStepItems,
         newItems,
         { type: 'next_step_final_output', output: outputText },
+        'error_handler',
       );
     }
   }
 
-  // if there is no output we just run again
-  if (typeof potentialFinalOutput === 'undefined') {
+  const isMissingStructuredFinalOutput =
+    agent.outputType !== 'text' && !potentialFinalOutput;
+
+  // Recover missing structured output when configured; otherwise run again.
+  if (
+    typeof potentialFinalOutput === 'undefined' ||
+    isMissingStructuredFinalOutput
+  ) {
+    if (!hasPendingToolsOrApprovals && isMissingStructuredFinalOutput) {
+      const outputError = new ModelBehaviorError(
+        'Model returned no final output for the structured output type.',
+      );
+      const handledOutput = await resolveInvalidFinalOutput({
+        error: outputError,
+        errorHandlers,
+        agent,
+        originalInput,
+        preStepItems,
+        newItems,
+        state,
+      });
+      if (typeof handledOutput !== 'undefined') {
+        return new SingleStepResult(
+          originalInput,
+          newResponse,
+          preStepItems,
+          newItems,
+          { type: 'next_step_final_output', output: handledOutput },
+          'error_handler',
+        );
+      }
+    }
     return new SingleStepResult(
       originalInput,
       newResponse,
@@ -1137,7 +1225,27 @@ export async function resolveTurnAfterModelResponse<
             error: String(error),
           },
         });
-        throw new ModelBehaviorError(outputErrorMessage);
+        const outputError = new ModelBehaviorError(outputErrorMessage);
+        const handledOutput = await resolveInvalidFinalOutput({
+          error: outputError,
+          errorHandlers,
+          agent,
+          originalInput,
+          preStepItems,
+          newItems,
+          state,
+        });
+        if (typeof handledOutput === 'undefined') {
+          throw outputError;
+        }
+        return new SingleStepResult(
+          originalInput,
+          newResponse,
+          preStepItems,
+          newItems,
+          { type: 'next_step_final_output', output: handledOutput },
+          'error_handler',
+        );
       }
 
       return new SingleStepResult(
