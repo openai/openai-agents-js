@@ -1,14 +1,17 @@
 import { Agent, run, MCPServerStdio, withTrace } from '@openai/agents';
+import { createRequire } from 'node:module';
 import * as path from 'node:path';
 
 async function main() {
+  const require = createRequire(import.meta.url);
   const samplesDir = path.join(__dirname, 'sample_files');
   const mcpServer = new MCPServerStdio({
     name: 'Filesystem Server, via local package',
-    fullCommand: `pnpm exec mcp-server-filesystem ${samplesDir}`,
-    // Or passing command and args.
-    // command: 'pnpm',
-    // args: ['exec', 'mcp-server-filesystem', samplesDir],
+    command: process.execPath,
+    args: [
+      require.resolve('@modelcontextprotocol/server-filesystem/dist/index.js'),
+      samplesDir,
+    ],
   });
 
   await mcpServer.connect();

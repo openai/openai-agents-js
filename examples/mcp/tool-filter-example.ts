@@ -5,6 +5,7 @@ import {
   createMCPToolStaticFilter,
   withTrace,
 } from '@openai/agents';
+import { createRequire } from 'node:module';
 import * as path from 'node:path';
 
 const autoMode = process.env.EXAMPLES_INTERACTIVE_MODE === 'auto';
@@ -21,10 +22,15 @@ async function runWithOptionalTrace(
 }
 
 async function main() {
+  const require = createRequire(import.meta.url);
   const samplesDir = path.join(__dirname, 'sample_files');
   const mcpServer = new MCPServerStdio({
     name: 'Filesystem Server with filter',
-    fullCommand: `pnpm exec mcp-server-filesystem ${samplesDir}`,
+    command: process.execPath,
+    args: [
+      require.resolve('@modelcontextprotocol/server-filesystem/dist/index.js'),
+      samplesDir,
+    ],
     toolFilter: createMCPToolStaticFilter({
       allowed: ['read_file', 'list_directory'],
       blocked: ['write_file'],

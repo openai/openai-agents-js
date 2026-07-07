@@ -4,8 +4,9 @@ async function main(verbose: boolean, stream: boolean): Promise<void> {
   withTrace('Hosted MCP Example', async () => {
     const agent = new Agent({
       name: 'MCP Assistant',
+      model: 'gpt-5.4',
       instructions:
-        'You must always use the MCP tools to answer repository questions.',
+        'You must always use the MCP tools to answer repository questions. Keep the final answer to one short sentence.',
       tools: [
         hostedMcpTool({
           serverLabel: 'deepwiki',
@@ -15,7 +16,7 @@ async function main(verbose: boolean, stream: boolean): Promise<void> {
     });
 
     const input =
-      'For the repository openai/codex, tell me the primary programming language.';
+      'For the repository openai/codex, tell me the primary programming language. Answer with only the language name.';
     if (stream) {
       const result = await run(agent, input, { stream: true });
       for await (const event of result) {

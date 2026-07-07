@@ -9,7 +9,7 @@ import {
 } from './support';
 
 const DEFAULT_QUESTION =
-  'Review the attached onboarding packet and draft a short internal note for the account executive about what to confirm before kickoff.';
+  'Review the attached onboarding packet by reading the files in the sandbox, then draft a short internal note for the account executive about what to confirm before kickoff.';
 
 function getToolNames(items: RunItem[]): string[] {
   return items.flatMap((item) => {
@@ -72,7 +72,7 @@ async function main() {
     name: 'Onboarding Packet Reviewer',
     model,
     instructions:
-      'Inspect onboarding documents in the sandbox, verify the facts, then hand off to the account executive assistant to draft the final note. Do not answer directly after reviewing the packet. The shell already starts in the workspace root, so use relative paths instead of changing to /workspace.',
+      'Inspect onboarding documents in the sandbox before handing off. You must call exec_command to read customer_background.md, kickoff_checklist.md, and implementation_scope.md, verify the facts from those files, then hand off to the account executive assistant to draft the final note. Do not answer directly after reviewing the packet. The shell already starts in the workspace root, so use relative paths instead of changing to /workspace.',
     defaultManifest: manifest,
     handoffs: [accountManager],
     capabilities: [shell()],
@@ -82,7 +82,7 @@ async function main() {
     name: 'Deal Desk Intake',
     model,
     instructions:
-      'You triage internal requests. If a request depends on attached documents, hand off to the onboarding packet reviewer immediately.',
+      'You triage internal requests. If a request depends on attached documents, hand off to the onboarding packet reviewer immediately instead of answering yourself.',
     handoffs: [sandboxReviewer],
   });
 

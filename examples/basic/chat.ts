@@ -17,22 +17,25 @@ const getWeatherTool = tool({
   name: 'get_weather',
   description: 'Get the weather for a given city',
   parameters: z.object({
-    demo: z.string(),
+    city: z.string(),
   }),
   execute: async (input) => {
-    return `The weather in ${input.demo} is sunny`;
+    return `The weather in ${input.city} is sunny`;
   },
 });
 
 const weatherAgent = new Agent({
   name: 'Weather Agent',
+  instructions:
+    'You answer weather questions. Always call get_weather before answering.',
   handoffDescription: 'Knows everything about the weather but nothing else.',
   tools: [getWeatherTool],
 });
 
 const agent = new Agent({
   name: 'Basic test agent',
-  instructions: 'You are a basic agent',
+  instructions:
+    'You are a basic agent. Hand off weather questions to the Weather Agent instead of answering them yourself.',
   handoffDescription: 'An expert on everything but the weather.',
   handoffs: [weatherAgent],
 });
@@ -52,8 +55,9 @@ async function main() {
       }
       history.push(user(message));
       const result = await run(latestAgent, history);
+      const outputAgent = result.lastAgent ?? latestAgent;
 
-      console.log(`[${latestAgent.name}] ${result.finalOutput}`);
+      console.log(`[${outputAgent.name}] ${result.finalOutput}`);
 
       if (result.lastAgent) {
         latestAgent = result.lastAgent;
