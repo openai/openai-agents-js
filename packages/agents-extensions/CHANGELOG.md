@@ -1,5 +1,20 @@
 # @openai/agents-extensions
 
+## 0.12.1
+
+### Patch Changes
+
+- 5f57fe1: test: improve agents-core and agents-extensions coverage
+- dc7864a: refactor: consolidate internal runtime helpers and adapter normalization
+- f105eff: test: tighten Twilio transport test fakes
+- Updated dependencies [f064c56]
+- Updated dependencies [b65face]
+- Updated dependencies [59a67c4]
+- Updated dependencies [81d654f]
+- Updated dependencies [5f57fe1]
+- Updated dependencies [dc7864a]
+  - @openai/agents-core@0.12.1
+
 ## 0.12.0
 
 ### Patch Changes
