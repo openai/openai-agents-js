@@ -1,5 +1,16 @@
 # @openai/agents-core
 
+## 0.12.1
+
+### Patch Changes
+
+- f064c56: fix: prevent acknowledged tool results from replaying on resume (#1435)
+- b65face: chore: correct explicit model flag spelling
+- 59a67c4: fix: reject invalid handoff input filters before invoking handoffs
+- 81d654f: feat: add invalid final output recovery handler
+- 5f57fe1: test: improve agents-core and agents-extensions coverage
+- dc7864a: refactor: consolidate internal runtime helpers and adapter normalization
+
 ## 0.12.0
 
 ### Patch Changes
