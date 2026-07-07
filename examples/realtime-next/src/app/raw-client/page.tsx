@@ -29,7 +29,7 @@ export default function Home() {
       const token = await getToken();
       await connection.current?.connect({
         apiKey: token,
-        model: 'gpt-realtime-2',
+        model: 'gpt-realtime-2.1',
         initialSessionConfig: {
           instructions: 'Speak like a pirate',
           voice: 'marin',

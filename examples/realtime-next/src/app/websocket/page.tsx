@@ -111,7 +111,7 @@ export default function Home() {
   useEffect(() => {
     session.current = new RealtimeSession(agent, {
       transport: 'websocket',
-      model: 'gpt-realtime-2',
+      model: 'gpt-realtime-2.1',
       outputGuardrails: guardrails,
       config: {
         audio: {
