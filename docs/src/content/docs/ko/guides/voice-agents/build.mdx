@@ -53,7 +53,7 @@ import turnDetectionExample from '../../../../../../../examples/docs/voice-agent
 
 `outputModalities`, `audio.input`, `audio.output`을 사용하는 더 새로운 SDK 구성 형태를 권장합니다. `modalities`, `inputAudioFormat`, `outputAudioFormat`, `inputAudioTranscription`, `turnDetection` 같은 이전 SDK 별칭도 하위 호환성을 위해 여전히 정규화되지만, 새 코드는 여기에 표시된 중첩 `audio` 구조를 사용해야 합니다.
 
-`gpt-realtime-2` 같은 추론 기능이 있는 Realtime 모델에서는 세션 구성에 `reasoning.effort`를 설정합니다. 더 높은 추론 노력은 지연 시간과 토큰 사용량을 증가시킬 수 있습니다. 모델이 여러 도구를 병렬로 호출할 수 있는지 제어하려는 경우 `parallelToolCalls`도 설정할 수 있습니다.
+`gpt-realtime-2.1` 같은 추론 기능이 있는 Realtime 모델에서는 세션 구성에 `reasoning.effort`를 설정합니다. 더 높은 추론 노력은 지연 시간과 토큰 사용량을 증가시킬 수 있습니다. 모델이 여러 도구를 병렬로 호출할 수 있는지 제어하려는 경우 `parallelToolCalls`도 설정할 수 있습니다.
 
 음성-대-음성 세션의 일반적인 선택은 `outputModalities: ['audio']`이며, 오디오 출력과 트랜스크립트를 제공합니다. 텍스트 전용 응답을 원할 때만 `['text']`로 전환하세요.
 

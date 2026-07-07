@@ -6,7 +6,7 @@ const agent = new RealtimeAgent({
 });
 
 const session = new RealtimeSession(agent, {
-  model: 'gpt-realtime-2',
+  model: 'gpt-realtime-2.1',
   config: {
     outputModalities: ['audio'],
     reasoning: {

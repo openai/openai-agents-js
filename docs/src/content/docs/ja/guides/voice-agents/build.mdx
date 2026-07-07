@@ -53,7 +53,7 @@ import turnDetectionExample from '../../../../../../../examples/docs/voice-agent
 
 新しい SDK 設定形式である `outputModalities`、`audio.input`、`audio.output` を優先してください。`modalities`、`inputAudioFormat`、`outputAudioFormat`、`inputAudioTranscription`、`turnDetection` などの古い SDK エイリアスも後方互換性のために正規化されますが、新しいコードではここに示すネストされた `audio` 構造を使用してください。
 
-`gpt-realtime-2` などの推論対応 Realtime モデルでは、セッション設定で `reasoning.effort` を設定します。推論 effort を高くすると、レイテンシとトークン使用量が増える可能性があります。モデルが複数のツールを並列に呼び出せるかどうかを制御したい場合は、`parallelToolCalls` も設定できます。
+`gpt-realtime-2.1` などの推論対応 Realtime モデルでは、セッション設定で `reasoning.effort` を設定します。推論 effort を高くすると、レイテンシとトークン使用量が増える可能性があります。モデルが複数のツールを並列に呼び出せるかどうかを制御したい場合は、`parallelToolCalls` も設定できます。
 
 音声対音声セッションでは、通常の選択肢は `outputModalities: ['audio']` で、音声出力に加えてトランスクリプトが得られます。テキストのみの応答が必要な場合にのみ `['text']` に切り替えてください。
 
