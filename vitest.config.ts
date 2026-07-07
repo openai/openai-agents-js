@@ -5,7 +5,7 @@ import { defineConfig } from 'vitest/config';
 
 const rootDir = dirname(fileURLToPath(import.meta.url));
 const packagesDir = resolve(rootDir, 'packages');
-const testAliases = {
+export const testAliases = {
   '@openai/agents-core/_shims': resolve(
     rootDir,
     'packages/agents-core/src/shims/shims-node.ts',
@@ -74,6 +74,46 @@ const testAliases = {
   '@openai/agents-realtime': resolve(
     rootDir,
     'packages/agents-realtime/src/index.ts',
+  ),
+  '@openai/agents-extensions/ai-sdk': resolve(
+    rootDir,
+    'packages/agents-extensions/src/ai-sdk/index.ts',
+  ),
+  '@openai/agents-extensions/ai-sdk-ui': resolve(
+    rootDir,
+    'packages/agents-extensions/src/ai-sdk-ui/index.ts',
+  ),
+  '@openai/agents-extensions/sandbox/blaxel': resolve(
+    rootDir,
+    'packages/agents-extensions/src/sandbox/blaxel/index.ts',
+  ),
+  '@openai/agents-extensions/sandbox/cloudflare': resolve(
+    rootDir,
+    'packages/agents-extensions/src/sandbox/cloudflare/index.ts',
+  ),
+  '@openai/agents-extensions/sandbox/daytona': resolve(
+    rootDir,
+    'packages/agents-extensions/src/sandbox/daytona/index.ts',
+  ),
+  '@openai/agents-extensions/sandbox/e2b': resolve(
+    rootDir,
+    'packages/agents-extensions/src/sandbox/e2b/index.ts',
+  ),
+  '@openai/agents-extensions/sandbox/modal': resolve(
+    rootDir,
+    'packages/agents-extensions/src/sandbox/modal/index.ts',
+  ),
+  '@openai/agents-extensions/sandbox/runloop': resolve(
+    rootDir,
+    'packages/agents-extensions/src/sandbox/runloop/index.ts',
+  ),
+  '@openai/agents-extensions/sandbox/vercel': resolve(
+    rootDir,
+    'packages/agents-extensions/src/sandbox/vercel/index.ts',
+  ),
+  '@openai/agents-extensions/experimental/codex': resolve(
+    rootDir,
+    'packages/agents-extensions/src/experimental/codex/index.ts',
   ),
   '@openai/agents-extensions': resolve(
     rootDir,
