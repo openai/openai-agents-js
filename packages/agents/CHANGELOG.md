@@ -1,5 +1,18 @@
 # @openai/agents
 
+## 0.13.0
+
+### Minor Changes
+
+- 00b418e: feat: update realtime model support and default to gpt-realtime-2.1
+
+### Patch Changes
+
+- Updated dependencies [00b418e]
+  - @openai/agents-realtime@0.13.0
+  - @openai/agents-core@0.13.0
+  - @openai/agents-openai@0.13.0
+
 ## 0.12.1
 
 ### Patch Changes
