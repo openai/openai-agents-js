@@ -53,7 +53,7 @@ import turnDetectionExample from '../../../../../../../examples/docs/voice-agent
 
 优先使用较新的 SDK 配置形状，包括 `outputModalities`、`audio.input` 和 `audio.output`。较旧的 SDK 别名（例如 `modalities`、`inputAudioFormat`、`outputAudioFormat`、`inputAudioTranscription` 和 `turnDetection`）仍会为了向后兼容而被规范化，但新代码应使用此处展示的嵌套 `audio` 结构。
 
-对于具备推理能力的 Realtime 模型（例如 `gpt-realtime-2`），请在会话配置中设置 `reasoning.effort`。更高的推理强度可能会增加延迟和 token 使用量。您也可以在需要控制模型是否可以并行调用多个工具时设置 `parallelToolCalls`。
+对于具备推理能力的 Realtime 模型（例如 `gpt-realtime-2.1`），请在会话配置中设置 `reasoning.effort`。更高的推理强度可能会增加延迟和 token 使用量。您也可以在需要控制模型是否可以并行调用多个工具时设置 `parallelToolCalls`。
 
 对于语音到语音会话，通常选择 `outputModalities: ['audio']`，它会为您提供音频输出和转写。仅当您需要纯文本响应时，才切换到 `['text']`。
 
