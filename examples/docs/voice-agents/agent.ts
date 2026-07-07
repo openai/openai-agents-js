@@ -5,5 +5,5 @@ export const agent = new RealtimeAgent({
 });
 
 export const session = new RealtimeSession(agent, {
-  model: 'gpt-realtime-2',
+  model: 'gpt-realtime-2.1',
 });
