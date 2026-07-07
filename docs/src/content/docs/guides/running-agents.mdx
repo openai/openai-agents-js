@@ -72,7 +72,7 @@ The additional options are:
 | `sandbox` | – | Sandbox client, live session, session state, snapshot, manifest override, or concurrency limits for `SandboxAgent` runs. See [Sandbox agents](/openai-agents-js/guides/sandbox-agents/concepts). |
 | `toolExecution` | – | SDK-side execution settings for local tool calls. Use `toolExecution.maxFunctionToolConcurrency` to limit how many function tools run at once, and `toolExecution.preApprovalInputGuardrails` to run function-tool input guardrails before pending approval requests. |
 | `toolNotFoundBehavior` | `'raise_error'` | Controls unresolved function tool calls emitted by the model. Use `'return_error_to_model'` to return a model-visible tool error and continue the run. |
-| `errorHandlers` | – | Handlers for supported runtime errors (currently `maxTurns`). See [Error handlers](#error-handlers). |
+| `errorHandlers` | – | Handlers for supported runtime errors. See [Error handlers](#error-handlers). |
 | `conversationId` | – | Reuse a server-side conversation (OpenAI Responses API + Conversations API only). |
 | `previousResponseId` | – | Continue from the previous Responses API call without creating a conversation (OpenAI Responses API only). |
 
@@ -242,12 +242,13 @@ Keep `'preserve'` if you want the SDK to carry reasoning-item IDs through replay
 
 ### Error handlers
 
-Use `errorHandlers` to convert supported runtime errors into a final output instead of throwing. The supported keys are `maxTurns` and `modelRefusal`.
+Use `errorHandlers` to convert supported runtime errors into a final output instead of throwing. The supported keys are `maxTurns`, `modelRefusal`, and `invalidFinalOutput`.
 
 - `errorHandlers.maxTurns` handles only max-turn errors.
 - `errorHandlers.modelRefusal` handles model refusals surfaced as [`ModelRefusalError`](/openai-agents-js/openai/agents-core/classes/modelrefusalerror).
+- `errorHandlers.invalidFinalOutput` handles [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) instances raised when a structured final output is missing or fails output schema validation. The handler returns a validated fallback without retrying the model or replaying tool side effects.
 - `errorHandlers.default` is used as a fallback for supported kinds.
-- Handlers receive `{ error, context, runData }` and can return `{ finalOutput, includeInHistory? }`.
+- Handlers receive `{ error, context, runData }` and can return `{ finalOutput, includeInHistory? }`. The returned `finalOutput` must match the current agent's `outputType`. For structured outputs, the SDK validates the fallback before completing the run. Returning `undefined` keeps the default behavior for that error.
 
 ### Exceptions
 
