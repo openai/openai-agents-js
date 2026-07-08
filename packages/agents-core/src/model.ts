@@ -514,6 +514,7 @@ export type ModelRequest = {
    */
   _internal?: {
     runnerManagedRetry?: boolean;
+    reasoningEffortImplicit?: boolean;
   };
 };
 

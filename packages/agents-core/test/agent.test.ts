@@ -97,6 +97,18 @@ describe('Agent', () => {
       { reasoning: { effort: 'medium' }, text: { verbosity: 'low' } },
     ],
     ['gpt-5.5', { reasoning: { effort: 'none' }, text: { verbosity: 'low' } }],
+    [
+      'gpt-5.6-sol',
+      { reasoning: { effort: 'none' }, text: { verbosity: 'low' } },
+    ],
+    [
+      'gpt-5.6-terra',
+      { reasoning: { effort: 'none' }, text: { verbosity: 'low' } },
+    ],
+    [
+      'gpt-5.6-luna',
+      { reasoning: { effort: 'none' }, text: { verbosity: 'low' } },
+    ],
     ['gpt-5-mini', { text: { verbosity: 'low' } }],
     ['gpt-5-chat-latest', {}],
   ])(

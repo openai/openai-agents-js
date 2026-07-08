@@ -5479,6 +5479,9 @@ describe('Runner.run', () => {
         reasoning: { effort: 'low' },
         text: { verbosity: 'low' },
       });
+      expect(
+        inspectableModel.lastRequest?._internal?.reasoningEffortImplicit,
+      ).toBe(true);
     });
 
     it('lets RunConfig modelSettings override implicit model defaults', async () => {
@@ -5505,6 +5508,9 @@ describe('Runner.run', () => {
         text: { verbosity: 'low' },
         temperature: 0.7,
       });
+      expect(
+        inspectableModel.lastRequest?._internal?.reasoningEffortImplicit,
+      ).toBe(false);
     });
   });
 

@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { withTrace, setTracingDisabled } from '@openai/agents-core';
+import {
+  Agent,
+  Runner,
+  withTrace,
+  setTracingDisabled,
+} from '@openai/agents-core';
 import { OpenAIChatCompletionsModel } from '../src/openaiChatCompletionsModel';
 import { HEADERS } from '../src/defaults';
 import logger from '../src/logger';
@@ -677,6 +682,193 @@ describe('OpenAIChatCompletionsModel', () => {
       headers: HEADERS,
       signal: undefined,
     });
+  });
+
+  it.each(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
+    'omits implicit reasoning effort for %s function tools',
+    async (modelName) => {
+      const client = new FakeClient();
+      const response = {
+        id: 'gpt-5.6-tool-response',
+        choices: [{ message: { content: 'done' } }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      } as any;
+      client.chat.completions.create.mockResolvedValue(response);
+
+      const model = new OpenAIChatCompletionsModel(client as any, modelName);
+      const req: any = {
+        input: 'prompt',
+        modelSettings: {
+          reasoning: { effort: 'none' },
+          text: { verbosity: 'low' },
+        },
+        _internal: {
+          reasoningEffortImplicit: true,
+        },
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup',
+            description: 'Look up a value.',
+            parameters: { type: 'object', properties: {}, required: [] },
+            strict: true,
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      };
+
+      await withTrace(`${modelName} implicit reasoning`, () =>
+        model.getResponse(req),
+      );
+
+      const [args] = client.chat.completions.create.mock.calls[0];
+      expect(args.reasoning_effort).toBeUndefined();
+      expect(args.verbosity).toBe('low');
+      expect(args.tools).toHaveLength(1);
+    },
+  );
+
+  it('preserves explicit GPT-5.6 reasoning effort with function tools', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'gpt-5.6-explicit-tool-response',
+      choices: [{ message: { content: 'done' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-5.6-sol');
+    const req: any = {
+      input: 'prompt',
+      modelSettings: {
+        reasoning: { effort: 'low' },
+      },
+      _internal: {
+        reasoningEffortImplicit: false,
+      },
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup',
+          description: 'Look up a value.',
+          parameters: { type: 'object', properties: {}, required: [] },
+          strict: true,
+        },
+      ],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await withTrace('gpt-5.6 explicit reasoning', () => model.getResponse(req));
+
+    const [args] = client.chat.completions.create.mock.calls[0];
+    expect(args.reasoning_effort).toBe('low');
+  });
+
+  it('preserves explicit provider reasoning effort over implicit defaults', async () => {
+    const client = new FakeClient();
+    client.chat.completions.create.mockResolvedValue({
+      id: 'gpt-5.6-provider-reasoning-response',
+      choices: [{ message: { content: 'done' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    });
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-5.6-sol');
+    const providerData = { reasoning_effort: 'low' };
+    const runner = new Runner({
+      model: 'gpt-5.6-sol',
+      modelProvider: { getModel: () => model },
+      modelSettings: { providerData },
+      tracingDisabled: true,
+    });
+
+    await runner.run(
+      new Agent({
+        name: 'Handoff agent',
+        handoffs: [new Agent({ name: 'Specialist' })],
+      }),
+      'delegate this',
+    );
+
+    const [request] = client.chat.completions.create.mock.calls[0];
+    expect(request.reasoning_effort).toBe('low');
+    expect(providerData).toEqual({ reasoning_effort: 'low' });
+  });
+
+  it('preserves implicit GPT-5.6 reasoning effort without tools', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'gpt-5.6-text-response',
+      choices: [{ message: { content: 'done' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-5.6-sol');
+    const req: any = {
+      input: 'prompt',
+      modelSettings: {
+        reasoning: { effort: 'none' },
+      },
+      _internal: {
+        reasoningEffortImplicit: true,
+      },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await withTrace('gpt-5.6 implicit text reasoning', () =>
+      model.getResponse(req),
+    );
+
+    const [args] = client.chat.completions.create.mock.calls[0];
+    expect(args.reasoning_effort).toBe('none');
+  });
+
+  it('does not persist implicit reasoning effort across runner calls', async () => {
+    const client = new FakeClient();
+    client.chat.completions.create
+      .mockResolvedValueOnce({
+        id: 'gpt-5.6-text-response',
+        choices: [{ message: { content: 'first' } }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      })
+      .mockResolvedValueOnce({
+        id: 'gpt-5.6-tool-response',
+        choices: [{ message: { content: 'second' } }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      });
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-5.6-sol');
+    const providerData = { customOption: 'keep' };
+    const runner = new Runner({
+      model: 'gpt-5.6-sol',
+      modelProvider: { getModel: () => model },
+      modelSettings: { providerData },
+      tracingDisabled: true,
+    });
+
+    await runner.run(new Agent({ name: 'Text agent' }), 'hello');
+    await runner.run(
+      new Agent({
+        name: 'Handoff agent',
+        handoffs: [new Agent({ name: 'Specialist' })],
+      }),
+      'delegate this',
+    );
+
+    const [textRequest] = client.chat.completions.create.mock.calls[0];
+    const [toolRequest] = client.chat.completions.create.mock.calls[1];
+    expect(textRequest.reasoning_effort).toBe('none');
+    expect(toolRequest.reasoning_effort).toBeUndefined();
+    expect(textRequest.customOption).toBe('keep');
+    expect(toolRequest.customOption).toBe('keep');
+    expect(providerData).toEqual({ customOption: 'keep' });
   });
 
   it('handles function tool calls', async () => {

@@ -38,6 +38,9 @@ const DEFAULT_REASONING_EFFORT_PATTERNS: Array<
   [/^gpt-5\.4-mini(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
   [/^gpt-5\.4-nano(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
   [/^gpt-5\.5(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
+  [/^gpt-5\.6-sol(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
+  [/^gpt-5\.6-terra(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
+  [/^gpt-5\.6-luna(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
 ];
 
 function getDefaultReasoningEffort(

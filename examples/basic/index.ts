@@ -14,6 +14,9 @@ const dataAgentTwo = new Agent({
   name: 'Data agent',
   instructions: 'You are a data agent',
   handoffDescription: 'You know everything about the weather',
+  modelSettings: {
+    toolChoice: 'required',
+  },
   tools: [getWeatherTool],
 });
 

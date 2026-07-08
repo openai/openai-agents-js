@@ -41,6 +41,8 @@ import { normalizePromptCacheRetention } from './utils/modelSettings';
 import type { OpenAIClient } from './openaiClient';
 
 export const FAKE_ID = 'FAKE_ID';
+const GPT_56_MODEL_PATTERN =
+  /^gpt-5\.6-(?:sol|terra|luna)(?:-\d{4}-\d{2}-\d{2})?$/;
 
 // Some Chat Completions API compatible providers return a reasoning property on the message
 // If that's the case we handle them separately
@@ -444,10 +446,20 @@ export class OpenAIChatCompletionsModel implements Model {
       span.spanData.input = messages;
     }
 
-    const providerData = request.modelSettings.providerData ?? {};
+    const providerData = { ...(request.modelSettings.providerData ?? {}) };
+    const requestInternal = (
+      request as ModelRequest & {
+        _internal?: { reasoningEffortImplicit?: boolean };
+      }
+    )._internal;
+    const omitImplicitReasoningEffort =
+      requestInternal?.reasoningEffortImplicit === true &&
+      (providerData.reasoning_effort !== undefined ||
+        (tools.length > 0 && GPT_56_MODEL_PATTERN.test(this.#model)));
     if (
       request.modelSettings.reasoning &&
-      request.modelSettings.reasoning.effort
+      request.modelSettings.reasoning.effort &&
+      !omitImplicitReasoningEffort
     ) {
       // merge the top-level reasoning.effort into provider data
       providerData.reasoning_effort = request.modelSettings.reasoning.effort;
