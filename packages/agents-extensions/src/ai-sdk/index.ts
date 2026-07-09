@@ -153,9 +153,9 @@ function ensureSupportedModel(model: LanguageModelCompatible): void {
 }
 
 const OPENAI_FILE_ID_INPUT_ERROR =
-  'OpenAI file IDs are not supported for AI SDK file inputs. Pass a public URL or base64 data URL instead.';
+  'OpenAI file IDs are not supported for AI SDK file inputs. Pass a public URL, base64 data URL, or raw base64 file data instead.';
 const FILE_INPUT_URL_ERROR =
-  'Only public URLs and base64 data URLs are supported for AI SDK file inputs.';
+  'Only public URLs, base64 data URLs, and raw base64 file data are supported for AI SDK file inputs.';
 
 type ParsedInlineData = {
   data: string;
@@ -187,6 +187,24 @@ function parseBase64DataUrl(source: string): ParsedInlineData | undefined {
     data: source.slice(commaIndex + 1),
     mediaType,
   };
+}
+
+function isRawBase64FileData(source: string): boolean {
+  const trimmed = source.trim();
+  if (trimmed !== source || trimmed.length === 0) {
+    return false;
+  }
+
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(source)) {
+    return false;
+  }
+
+  const paddingIndex = source.indexOf('=');
+  if (paddingIndex !== -1 && !/^=+$/.test(source.slice(paddingIndex))) {
+    return false;
+  }
+
+  return source.length % 4 !== 1;
 }
 
 function parseBase64ImageDataUrl(
@@ -406,6 +424,19 @@ export function itemsToLanguageV2Messages(
 
                       if (isLikelyOpenAIFileId(fileValue)) {
                         throw new UserError(OPENAI_FILE_ID_INPUT_ERROR);
+                      }
+
+                      if (isRawBase64FileData(fileValue)) {
+                        return {
+                          type: 'file',
+                          data: fileValue,
+                          mediaType,
+                          ...(filename ? { filename } : {}),
+                          providerOptions: toProviderOptions(
+                            contentProviderData,
+                            model,
+                          ),
+                        };
                       }
 
                       const url = parsePublicUrlFileInput(fileValue);
@@ -1091,6 +1122,9 @@ function convertStructuredOutputsToAiSdkOutput(
 
     if (item.type === 'input_file') {
       const fileValue = item.file;
+      const mediaType =
+        getStringProviderField(item.providerData, 'mediaType') ??
+        'application/octet-stream';
 
       if (typeof fileValue === 'string') {
         const inlineFile = parseBase64DataUrl(fileValue);
@@ -1105,6 +1139,15 @@ function convertStructuredOutputsToAiSdkOutput(
 
         if (isLikelyOpenAIFileId(fileValue)) {
           textParts.push(`[file id=${fileValue}]`);
+          continue;
+        }
+
+        if (isRawBase64FileData(fileValue)) {
+          mediaParts.push({
+            type: 'media',
+            data: fileValue,
+            mediaType,
+          });
           continue;
         }
 

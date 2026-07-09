@@ -1193,7 +1193,8 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
-  test('converts user input_file URL and data URL content', () => {
+  test('converts user input_file URL, data URL, and raw base64 content', () => {
+    const rawBase64 = Buffer.from('inline file').toString('base64');
     const items: protocol.ModelItem[] = [
       {
         role: 'user',
@@ -1207,6 +1208,12 @@ describe('itemsToLanguageV2Messages', () => {
             type: 'input_file',
             file: { url: 'https://example.com/report.pdf' },
             providerData: { mediaType: 'application/pdf' },
+          },
+          {
+            type: 'input_file',
+            file: rawBase64,
+            filename: 'raw.txt',
+            providerData: { mediaType: 'text/plain' },
           },
         ],
       } as any,
@@ -1229,6 +1236,13 @@ describe('itemsToLanguageV2Messages', () => {
             mediaType: 'application/pdf',
             providerOptions: { mediaType: 'application/pdf' },
           },
+          {
+            type: 'file',
+            data: rawBase64,
+            mediaType: 'text/plain',
+            filename: 'raw.txt',
+            providerOptions: { mediaType: 'text/plain' },
+          },
         ],
         providerOptions: {},
       },
@@ -1236,6 +1250,7 @@ describe('itemsToLanguageV2Messages', () => {
   });
 
   test('converts structured tool output lists', () => {
+    const rawBase64 = Buffer.from('tool file').toString('base64');
     const items: protocol.ModelItem[] = [
       {
         type: 'function_call',
@@ -1265,6 +1280,11 @@ describe('itemsToLanguageV2Messages', () => {
             type: 'input_file',
             file: { url: 'https://example.com/report.pdf' },
             providerData: { mediaType: 'application/pdf' },
+          },
+          {
+            type: 'input_file',
+            file: rawBase64,
+            providerData: { mediaType: 'text/plain' },
           },
         ],
       } as any,
@@ -1313,6 +1333,11 @@ describe('itemsToLanguageV2Messages', () => {
                   type: 'media',
                   data: 'JVBERi0=',
                   mediaType: 'application/pdf',
+                },
+                {
+                  type: 'media',
+                  data: rawBase64,
+                  mediaType: 'text/plain',
                 },
               ],
             },
@@ -1389,7 +1414,7 @@ describe('itemsToLanguageV2Messages', () => {
     ];
 
     expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow(
-      /Only public URLs and base64 data URLs are supported/,
+      /Only public URLs, base64 data URLs, and raw base64 file data are supported/,
     );
   });
 
