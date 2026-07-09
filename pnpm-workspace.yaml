@@ -3,6 +3,8 @@ packages:
   - examples/*
   - docs
 
+nodeLinker: hoisted
+
 allowBuilds:
   '@tailwindcss/oxide': true
   cbor-extract: true
