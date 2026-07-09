@@ -97,7 +97,7 @@
   },
   "dependencies": {
     "debug": "^4.4.0",
-    "openai": "^6.42.0"
+    "openai": "^6.46.0"
   },
   "peerDependencies": {
     "zod": "^4.0.0"
