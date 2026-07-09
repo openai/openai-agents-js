@@ -1171,8 +1171,7 @@ function containsToolSearchProtocolItems(
 
 function containsToolSearchInProcessedResponse(
   processedResponse:
-    | z.infer<typeof serializedProcessedResponseSchema>
-    | undefined,
+    z.infer<typeof serializedProcessedResponseSchema> | undefined,
 ): boolean {
   return containsToolSearchRunItems(processedResponse?.newItems);
 }
@@ -1519,6 +1518,19 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
     typeof context.toolInput === 'undefined'
   ) {
     context.toolInput = stateJson.context.toolInput;
+  }
+
+  // Restore the aggregated run usage. toJSON serializes context.usage, but a
+  // freshly constructed RunContext starts with an empty Usage, so without this
+  // a resumed run reports zero token usage.
+  //
+  // Only restore on the no-override path. A caller-supplied RunContext is
+  // authoritative and owns its usage accounting: its counters do not reveal
+  // whether its Usage is newly owned or shared with another run (for example a
+  // nested agent-tool resume passes a context whose usage aggregate is shared
+  // with the outer run), so it is left untouched.
+  if (!contextOverride) {
+    context.usage = new Usage(stateJson.context.usage);
   }
 
   //

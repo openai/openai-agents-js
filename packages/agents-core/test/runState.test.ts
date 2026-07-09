@@ -195,6 +195,129 @@ describe('RunState', () => {
     });
   });
 
+  it('restores aggregated run usage after serialization', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'UsageState' });
+    const state = new RunState(context, 'input', agent, 1);
+    state._context.usage.add(
+      new Usage({
+        requests: 1,
+        inputTokens: 100,
+        outputTokens: 50,
+        totalTokens: 150,
+      }),
+    );
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(restored.usage.requests).toBe(1);
+    expect(restored.usage.inputTokens).toBe(100);
+    expect(restored.usage.outputTokens).toBe(50);
+    expect(restored.usage.totalTokens).toBe(150);
+    expect(restored.usage.requestUsageEntries).toHaveLength(1);
+  });
+
+  it('does not double-count usage when resuming with an override context', async () => {
+    const agent = new Agent({ name: 'UsageOverrideState' });
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+    state._context.usage.add(
+      new Usage({
+        requests: 1,
+        inputTokens: 100,
+        outputTokens: 50,
+        totalTokens: 150,
+      }),
+    );
+
+    // The override context is authoritative (e.g. a nested agent-tool resume
+    // passes the live outer context that already shares this usage), so its
+    // usage must be left untouched rather than added to.
+    const overrideContext = new RunContext();
+    overrideContext.usage.add(
+      new Usage({
+        requests: 1,
+        inputTokens: 100,
+        outputTokens: 50,
+        totalTokens: 150,
+      }),
+    );
+
+    const restored = await RunState.fromStringWithContext(
+      agent,
+      state.toString(),
+      overrideContext,
+    );
+
+    expect(restored.usage.requests).toBe(1);
+    expect(restored.usage.inputTokens).toBe(100);
+    expect(restored.usage.outputTokens).toBe(50);
+    expect(restored.usage.totalTokens).toBe(150);
+  });
+
+  it('leaves a fresh override context usage untouched', async () => {
+    const agent = new Agent({ name: 'UsageFreshOverrideState' });
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+    state._context.usage.add(
+      new Usage({
+        requests: 1,
+        inputTokens: 100,
+        outputTokens: 50,
+        totalTokens: 150,
+      }),
+    );
+
+    // A caller-supplied RunContext is authoritative: even a fresh one with zero
+    // usage is left untouched. Its counters do not reveal whether its Usage is
+    // newly owned or shared with another run, so it does not inherit the
+    // serialized usage.
+    const restored = await RunState.fromStringWithContext(
+      agent,
+      state.toString(),
+      new RunContext(),
+    );
+
+    expect(restored.usage.requests).toBe(0);
+    expect(restored.usage.inputTokens).toBe(0);
+    expect(restored.usage.outputTokens).toBe(0);
+    expect(restored.usage.totalTokens).toBe(0);
+  });
+
+  it('keeps a shared usage reference when resuming a forked context', async () => {
+    const agent = new Agent({ name: 'UsageSharedRefState' });
+    // A nested run that made no model call before interruption serializes zero
+    // usage.
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+
+    // A nested agent-tool resume passes a forked context that shares its usage
+    // object with the outer run.
+    const outer = new RunContext();
+    const forked = new RunContext();
+    forked.usage = outer.usage;
+
+    const restored = await RunState.fromStringWithContext(
+      agent,
+      state.toString(),
+      forked,
+    );
+
+    // The forked context's Usage must remain the very object shared with the
+    // outer run (a replace would have severed the reference).
+    expect(restored.usage).toBe(outer.usage);
+
+    // Usage recorded after resume must still reach the outer run through the
+    // shared reference (a replace would have severed it).
+    forked.usage.add(
+      new Usage({
+        requests: 1,
+        inputTokens: 20,
+        outputTokens: 10,
+        totalTokens: 30,
+      }),
+    );
+    expect(outer.usage.requests).toBe(1);
+    expect(outer.usage.totalTokens).toBe(30);
+  });
+
   it('preserves requestId on serialized model responses', async () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'RequestIdState' });
