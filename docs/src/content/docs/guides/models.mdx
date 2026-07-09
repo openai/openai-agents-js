@@ -164,7 +164,7 @@ When a run includes deferred tools, add `toolSearchTool()` to the same agent and
 | `store` | `boolean` | Persist the response for retrieval / RAG workflows. |
 | `promptCacheRetention` | `'in-memory' \| '24h' \| null` | Controls provider prompt-cache retention when supported. |
 | `contextManagement` | `ModelSettingsContextManagement` | Controls provider context management, such as server-side compaction. |
-| `reasoning.effort` | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh'` | Reasoning effort for gpt-5.x models. |
+| `reasoning.effort` | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh' \| 'max'` | Reasoning effort for supported gpt-5.x models. `max` is supported by GPT-5.6. |
 | `reasoning.summary` | `'auto' \| 'concise' \| 'detailed'` | Controls how much reasoning summary the model returns. |
 | `text.verbosity` | `'low' \| 'medium' \| 'high'` | Text verbosity for gpt-5.x etc. |
 | `providerData` | `Record<string, any>` | Provider-specific passthrough options forwarded to the underlying model. |

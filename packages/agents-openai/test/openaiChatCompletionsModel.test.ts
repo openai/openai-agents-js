@@ -684,7 +684,7 @@ describe('OpenAIChatCompletionsModel', () => {
     });
   });
 
-  it.each(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
+  it.each(['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
     'omits implicit reasoning effort for %s function tools',
     async (modelName) => {
       const client = new FakeClient();
@@ -844,10 +844,10 @@ describe('OpenAIChatCompletionsModel', () => {
         usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       });
 
-    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-5.6-sol');
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-5.6');
     const providerData = { customOption: 'keep' };
     const runner = new Runner({
-      model: 'gpt-5.6-sol',
+      model: 'gpt-5.6',
       modelProvider: { getModel: () => model },
       modelSettings: { providerData },
       tracingDisabled: true,

@@ -24,7 +24,7 @@ export function gpt5ReasoningSettingsRequired(modelName: string): boolean {
 const DEFAULT_REASONING_EFFORT_PATTERNS: Array<
   readonly [
     RegExp,
-    Exclude<ModelSettingsReasoningEffort, 'minimal' | 'xhigh' | null>,
+    Exclude<ModelSettingsReasoningEffort, 'minimal' | 'xhigh' | 'max' | null>,
   ]
 > = [
   [/^gpt-5(?:-\d{4}-\d{2}-\d{2})?$/, 'low'],
@@ -47,7 +47,7 @@ const DEFAULT_REASONING_EFFORT_PATTERNS: Array<
 function getDefaultReasoningEffort(
   modelName: string,
 ):
-  | Exclude<ModelSettingsReasoningEffort, 'minimal' | 'xhigh' | null>
+  | Exclude<ModelSettingsReasoningEffort, 'minimal' | 'xhigh' | 'max' | null>
   | undefined {
   for (const [pattern, effort] of DEFAULT_REASONING_EFFORT_PATTERNS) {
     if (pattern.test(modelName)) {

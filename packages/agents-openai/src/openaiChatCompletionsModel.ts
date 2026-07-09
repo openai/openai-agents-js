@@ -42,7 +42,7 @@ import type { OpenAIClient } from './openaiClient';
 
 export const FAKE_ID = 'FAKE_ID';
 const GPT_56_MODEL_PATTERN =
-  /^gpt-5\.6-(?:sol|terra|luna)(?:-\d{4}-\d{2}-\d{2})?$/;
+  /^gpt-5\.6(?:-(?:sol|terra|luna)(?:-\d{4}-\d{2}-\d{2})?)?$/;
 
 // Some Chat Completions API compatible providers return a reasoning property on the message
 // If that's the case we handle them separately
