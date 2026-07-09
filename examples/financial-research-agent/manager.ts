@@ -10,6 +10,12 @@ import { searchAgent } from './agents';
 import { verifierAgent, VerificationResult } from './agents';
 import { writerAgent, FinancialReportData } from './agents';
 
+function formatSearchResults(searchResults: string[]): string {
+  return searchResults
+    .map((result, index) => `Source summary ${index + 1}:\n${result}`)
+    .join('\n\n');
+}
+
 // Custom output extractor for sub-agents that return an AnalysisSummary
 async function summaryExtractor(
   runResult: RunResult<unknown, Agent<unknown, any>>,
@@ -23,7 +29,7 @@ export class FinancialResearchManager {
     const searchPlan = await this.planSearches(query);
     const searchResults = await this.performSearches(searchPlan);
     const report = await this.writeReport(query, searchResults);
-    const verification = await this.verifyReport(report);
+    const verification = await this.verifyReport(report, searchResults);
     const finalReport = `Report summary\n\n${report.short_summary}`;
     console.log(finalReport);
     console.log('\n\n=====REPORT=====\n\n');
@@ -92,15 +98,19 @@ export class FinancialResearchManager {
       tools: [fundamentalsTool, riskTool],
     });
     console.log(`[writing] Thinking about report...`);
-    const inputData = `Original query: ${query}\nSummarized search results: ${searchResults}`;
+    const inputData = `Original query: ${query}\n\n${formatSearchResults(searchResults)}`;
     const result = await run(writerWithTools, inputData);
     console.log(`[writing] Done writing report.`);
     return result.finalOutput!;
   }
 
-  async verifyReport(report: FinancialReportData): Promise<VerificationResult> {
+  async verifyReport(
+    report: FinancialReportData,
+    searchResults: string[],
+  ): Promise<VerificationResult> {
     console.log(`[verifying] Verifying report...`);
-    const result = await run(verifierAgent, report.markdown_report);
+    const inputData = `Report:\n${report.markdown_report}\n\nSource summaries:\n${formatSearchResults(searchResults)}`;
+    const result = await run(verifierAgent, inputData);
     console.log(`[verifying] Done verifying report.`);
     return result.finalOutput!;
   }
