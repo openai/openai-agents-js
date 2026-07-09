@@ -20,14 +20,11 @@ import {
 } from './types';
 
 export type ModelSettingsToolChoice =
-  | 'auto'
-  | 'required'
-  | 'none'
-  | (string & {});
+  'auto' | 'required' | 'none' | (string & {});
 
 /**
  * Constrains effort on reasoning for [reasoning models](https://platform.openai.com/docs/guides/reasoning).
- * Currently supported values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
+ * Currently supported values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
  * Reducing reasoning effort can result in faster responses and fewer tokens used on reasoning in a response.
  */
 export type ModelSettingsReasoningEffort =
@@ -37,6 +34,7 @@ export type ModelSettingsReasoningEffort =
   | 'medium'
   | 'high'
   | 'xhigh'
+  | 'max'
   | null;
 
 /**
@@ -45,7 +43,7 @@ export type ModelSettingsReasoningEffort =
 export type ModelSettingsReasoning = {
   /**
    * Constrains effort on reasoning for [reasoning models](https://platform.openai.com/docs/guides/reasoning).
-   * Currently supported values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
+   * Currently supported values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
    * Reducing reasoning effort can result in faster responses and fewer tokens used on reasoning in a response.
    */
   effort?: ModelSettingsReasoningEffort | null;
@@ -514,6 +512,7 @@ export type ModelRequest = {
    */
   _internal?: {
     runnerManagedRetry?: boolean;
+    reasoningEffortImplicit?: boolean;
   };
 };
 

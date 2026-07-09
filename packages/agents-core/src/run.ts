@@ -971,6 +971,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 previousResponseId: preparedCall.previousResponseId,
                 conversationId: preparedCall.conversationId,
                 modelSettings: preparedCall.modelSettings,
+                _internal: preparedCall.modelRequestInternal,
                 tools: preparedCall.serializedTools,
                 toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
                 outputType: convertAgentOutputTypeToSerializable(
@@ -1389,6 +1390,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   ),
                   conversationId: preparedCall.conversationId,
                   modelSettings: preparedCall.modelSettings,
+                  _internal: preparedCall.modelRequestInternal,
                   tools: preparedCall.serializedTools,
                   toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
                   handoffs: preparedCall.serializedHandoffs,
@@ -1439,6 +1441,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 previousResponseId: preparedCall.previousResponseId,
                 conversationId: preparedCall.conversationId,
                 modelSettings: preparedCall.modelSettings,
+                _internal: preparedCall.modelRequestInternal,
                 tools: preparedCall.serializedTools,
                 toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
                 handoffs: preparedCall.serializedHandoffs,
@@ -1829,6 +1832,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           explicitlyModelSet,
           resolvedModelName,
         );
+    const modelRequestInternal = {
+      reasoningEffortImplicit:
+        implicitModelSettings?.reasoning?.effort !== undefined &&
+        !hasExplicitTopLevelReasoningEffort(this.config.modelSettings) &&
+        !hasExplicitTopLevelReasoningEffort(agentModelSettings),
+    };
 
     let modelSettings = mergeModelSettings(
       implicitModelSettings,
@@ -1881,6 +1890,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       ...artifacts,
       model,
       explicitlyModelSet,
+      modelRequestInternal,
       modelSettings,
       modelInput,
       prompt,
@@ -1896,6 +1906,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 // internal helpers and constants
 
 let defaultRunner: Runner | undefined;
+
+function hasExplicitTopLevelReasoningEffort(settings?: ModelSettings): boolean {
+  return settings?.reasoning?.effort !== undefined;
+}
 
 const getDefaultRunner = (): Runner => {
   if (!defaultRunner) {

@@ -79,6 +79,7 @@ export type PreparedModelCall<TContext = UnknownContext> =
   AgentArtifacts<TContext> & {
     model: Model;
     explicitlyModelSet: boolean;
+    modelRequestInternal: { reasoningEffortImplicit: boolean };
     modelSettings: ModelSettings;
     modelInput: ModelInputData;
     prompt?: Prompt;
