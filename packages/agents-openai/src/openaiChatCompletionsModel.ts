@@ -14,6 +14,7 @@ import type {
   ModelResponse,
   ResponseStreamEvent,
   SerializedOutputType,
+  UsageInput,
 } from '@openai/agents-core';
 import OpenAI from 'openai';
 import type { Stream } from 'openai/streaming';
@@ -559,7 +560,7 @@ function getResponseFormat(
 
 function toResponseUsage(
   usage: CompletionUsage,
-): OpenAI.Responses.ResponseUsage & { requests: number } {
+): UsageInput & { requests: number } {
   return {
     requests: 1,
     input_tokens: usage.prompt_tokens,
