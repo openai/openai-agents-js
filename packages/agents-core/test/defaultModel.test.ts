@@ -47,7 +47,7 @@ describe('getDefaultModel', () => {
     expect(getDefaultModel()).toBe('gpt-5-mini');
   });
 
-  test.each(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
+  test.each(['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
     'lowercases the %s model family from the environment',
     (model) => {
       mockedLoadEnv.mockReturnValue({
@@ -195,7 +195,7 @@ describe('getDefaultModelSettings', () => {
     });
   });
 
-  test.each(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
+  test.each(['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
     'returns none reasoning defaults for %s',
     (model) => {
       expect(getDefaultModelSettings(model)).toEqual({

@@ -5460,29 +5460,35 @@ describe('Runner.run', () => {
       expect(requestSettings.text?.verbosity).toBe('medium');
     });
 
-    it('uses model-specific defaults when the RunConfig model is explicit', async () => {
-      const modelResponse: ModelResponse = {
-        output: [fakeModelMessage('Hello explicit runner GPT-5')],
-        usage: new Usage(),
-      };
-      const inspectableModel = new InspectableModel(modelResponse);
-      const runner = new Runner({
-        model: 'gpt-5',
-        modelProvider: new InspectableModelProvider(inspectableModel),
-      });
-      const agent = new Agent({ name: 'RunnerModelAgent' });
+    it.each([
+      ['gpt-5', 'low'],
+      ['gpt-5.6', 'none'],
+    ] as const)(
+      'uses model-specific defaults when the RunConfig model is %s',
+      async (modelName, reasoningEffort) => {
+        const modelResponse: ModelResponse = {
+          output: [fakeModelMessage('Hello explicit runner GPT-5')],
+          usage: new Usage(),
+        };
+        const inspectableModel = new InspectableModel(modelResponse);
+        const runner = new Runner({
+          model: modelName,
+          modelProvider: new InspectableModelProvider(inspectableModel),
+        });
+        const agent = new Agent({ name: 'RunnerModelAgent' });
 
-      const result = await runner.run(agent, 'hello');
+        const result = await runner.run(agent, 'hello');
 
-      expect(result.finalOutput).toBe('Hello explicit runner GPT-5');
-      expect(inspectableModel.lastRequest?.modelSettings).toMatchObject({
-        reasoning: { effort: 'low' },
-        text: { verbosity: 'low' },
-      });
-      expect(
-        inspectableModel.lastRequest?._internal?.reasoningEffortImplicit,
-      ).toBe(true);
-    });
+        expect(result.finalOutput).toBe('Hello explicit runner GPT-5');
+        expect(inspectableModel.lastRequest?.modelSettings).toMatchObject({
+          reasoning: { effort: reasoningEffort },
+          text: { verbosity: 'low' },
+        });
+        expect(
+          inspectableModel.lastRequest?._internal?.reasoningEffortImplicit,
+        ).toBe(true);
+      },
+    );
 
     it('lets RunConfig modelSettings override implicit model defaults', async () => {
       const modelResponse: ModelResponse = {

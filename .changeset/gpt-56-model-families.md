@@ -4,4 +4,4 @@
 '@openai/agents-openai': patch
 ---
 
-feat: add compatible defaults for gpt-5.6 sol, terra, and luna
+feat: add compatible defaults for the gpt-5.6 alias, sol, terra, and luna
