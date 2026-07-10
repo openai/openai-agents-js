@@ -55,12 +55,26 @@ export const OutputText = SharedBase.extend({
 
 export type OutputText = z.infer<typeof OutputText>;
 
+export const PromptCacheBreakpoint = z.object({
+  /**
+   * The breakpoint mode. Always `explicit`.
+   */
+  mode: z.literal('explicit'),
+});
+
+export type PromptCacheBreakpoint = z.infer<typeof PromptCacheBreakpoint>;
+
 export const InputText = SharedBase.extend({
   type: z.literal('input_text'),
   /**
    * A text input for example a message from a user
    */
   text: z.string(),
+
+  /**
+   * Marks the exact end of a reusable prompt prefix.
+   */
+  promptCacheBreakpoint: PromptCacheBreakpoint.optional(),
 });
 
 export type InputText = z.infer<typeof InputText>;
@@ -97,6 +111,11 @@ export const InputImage = SharedBase.extend({
    * Future models may add new values, therefore this accepts any string.
    */
   detail: z.string().optional(),
+
+  /**
+   * Marks the exact end of a reusable prompt prefix.
+   */
+  promptCacheBreakpoint: PromptCacheBreakpoint.optional(),
 });
 
 export type InputImage = z.infer<typeof InputImage>;
@@ -125,6 +144,11 @@ export const InputFile = SharedBase.extend({
    * Optional filename metadata when uploading file data inline.
    */
   filename: z.string().optional(),
+
+  /**
+   * Marks the exact end of a reusable prompt prefix.
+   */
+  promptCacheBreakpoint: PromptCacheBreakpoint.optional(),
 });
 
 export type InputFile = z.infer<typeof InputFile>;
@@ -153,6 +177,11 @@ export const AudioContent = SharedBase.extend({
    * The transcript of the audio.
    */
   transcript: z.string().nullable().optional(),
+
+  /**
+   * Marks the exact end of a reusable prompt prefix.
+   */
+  promptCacheBreakpoint: PromptCacheBreakpoint.optional(),
 });
 
 export type AudioContent = z.infer<typeof AudioContent>;

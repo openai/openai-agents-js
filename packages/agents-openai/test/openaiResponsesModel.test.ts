@@ -1056,7 +1056,7 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
-  it('sends prompt cache retention setting to the Responses API', async () => {
+  it('sends GPT-5.6 reasoning and prompt-cache controls to the Responses API', async () => {
     await withTrace('test', async () => {
       const fakeResponse = { id: 'res-cache', usage: {}, output: [] };
       const createMock = vi.fn().mockResolvedValue(fakeResponse);
@@ -1068,7 +1068,11 @@ describe('OpenAIResponsesModel', () => {
       const request = {
         systemInstructions: undefined,
         input: 'hello',
-        modelSettings: { promptCacheRetention: 'in-memory' },
+        modelSettings: {
+          promptCacheRetention: 'in-memory',
+          promptCacheOptions: { mode: 'explicit', ttl: '30m' },
+          reasoning: { mode: 'pro', effort: 'max', context: 'all_turns' },
+        },
         tools: [],
         outputType: 'text',
         handoffs: [],
@@ -1080,6 +1084,81 @@ describe('OpenAIResponsesModel', () => {
 
       const [args] = createMock.mock.calls[0];
       expect(args.prompt_cache_retention).toBe('in_memory');
+      expect(args.prompt_cache_options).toEqual({
+        mode: 'explicit',
+        ttl: '30m',
+      });
+      expect(args.reasoning).toEqual({
+        mode: 'pro',
+        effort: 'max',
+        context: 'all_turns',
+      });
+    });
+  });
+
+  it('preserves prompt-cache breakpoints in Responses input content', async () => {
+    await withTrace('test', async () => {
+      const createMock = vi
+        .fn()
+        .mockResolvedValue({ id: 'res-breakpoints', usage: {}, output: [] });
+      const fakeClient = {
+        responses: { create: createMock },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(fakeClient, 'gpt-5.6');
+      const promptCacheBreakpoint = { mode: 'explicit' } as const;
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: 'one',
+                promptCacheBreakpoint,
+              },
+              {
+                type: 'input_image',
+                image: 'https://example.com/image.png',
+                promptCacheBreakpoint,
+              },
+              {
+                type: 'input_file',
+                file: 'data:text/plain;base64,SGVsbG8=',
+                filename: 'hello.txt',
+                promptCacheBreakpoint,
+              },
+            ],
+          },
+        ],
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(createMock.mock.calls[0]?.[0].input[0].content).toEqual([
+        {
+          type: 'input_text',
+          text: 'one',
+          prompt_cache_breakpoint: promptCacheBreakpoint,
+        },
+        {
+          type: 'input_image',
+          detail: 'auto',
+          image_url: 'https://example.com/image.png',
+          prompt_cache_breakpoint: promptCacheBreakpoint,
+        },
+        {
+          type: 'input_file',
+          file_data: 'data:text/plain;base64,SGVsbG8=',
+          filename: 'hello.txt',
+          prompt_cache_breakpoint: promptCacheBreakpoint,
+        },
+      ]);
     });
   });
 

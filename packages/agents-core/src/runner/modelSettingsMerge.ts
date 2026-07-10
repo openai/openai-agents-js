@@ -1,6 +1,10 @@
 import { ModelSettings } from '../model';
 
-const NESTED_MODEL_SETTINGS_MERGE_KEYS = ['reasoning', 'text'] as const;
+const NESTED_MODEL_SETTINGS_MERGE_KEYS = [
+  'reasoning',
+  'text',
+  'promptCacheOptions',
+] as const;
 
 function isPlainObjectLike(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

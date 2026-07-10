@@ -128,6 +128,9 @@ export function extractAllUserContent(
       out.push({
         type: 'text',
         text: c.text,
+        ...(c.promptCacheBreakpoint
+          ? { prompt_cache_breakpoint: c.promptCacheBreakpoint }
+          : {}),
         ...getProviderDataWithoutReservedKeys(c.providerData, ['type', 'text']),
       });
     } else if (c.type === 'input_image') {
@@ -165,6 +168,9 @@ export function extractAllUserContent(
             : {}),
           ...imageUrl,
         },
+        ...(c.promptCacheBreakpoint
+          ? { prompt_cache_breakpoint: c.promptCacheBreakpoint }
+          : {}),
         ...rest,
       });
     } else if (c.type === 'input_file') {
@@ -204,6 +210,9 @@ export function extractAllUserContent(
       out.push({
         type: 'file',
         file,
+        ...(c.promptCacheBreakpoint
+          ? { prompt_cache_breakpoint: c.promptCacheBreakpoint }
+          : {}),
         ...rest,
       });
     } else if (c.type === 'audio') {
@@ -239,6 +248,9 @@ export function extractAllUserContent(
           format: inputAudioFormat,
           ...inputAudio,
         } as ChatCompletionContentPartInputAudio['input_audio'],
+        ...(c.promptCacheBreakpoint
+          ? { prompt_cache_breakpoint: c.promptCacheBreakpoint }
+          : {}),
         ...rest,
       });
     } else {

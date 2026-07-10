@@ -1662,6 +1662,9 @@ function getInputMessageContent(
     return {
       type: 'input_text',
       text: entry.text,
+      ...(entry.promptCacheBreakpoint
+        ? { prompt_cache_breakpoint: entry.promptCacheBreakpoint }
+        : {}),
       ...getSnakeCasedProviderDataWithoutReservedKeys(entry.providerData, [
         'type',
         'text',
@@ -1683,6 +1686,9 @@ function getInputMessageContent(
     }
     return {
       ...imageEntry,
+      ...(entry.promptCacheBreakpoint
+        ? { prompt_cache_breakpoint: entry.promptCacheBreakpoint }
+        : {}),
       ...getSnakeCasedProviderDataWithoutReservedKeys(entry.providerData, [
         'type',
         'detail',
@@ -1738,6 +1744,9 @@ function getInputMessageContent(
     }
     return {
       ...fileEntry,
+      ...(entry.promptCacheBreakpoint
+        ? { prompt_cache_breakpoint: entry.promptCacheBreakpoint }
+        : {}),
       ...getSnakeCasedProviderDataWithoutReservedKeys(entry.providerData, [
         'type',
         'file_data',
@@ -3106,6 +3115,7 @@ export class OpenAIResponsesModel implements Model {
       prompt_cache_retention: normalizePromptCacheRetention(
         request.modelSettings.promptCacheRetention,
       ),
+      prompt_cache_options: request.modelSettings.promptCacheOptions,
       context_management: getContextManagement(
         request.modelSettings.contextManagement,
       ),
