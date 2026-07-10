@@ -5,6 +5,7 @@
     "@openai/agents": "workspace:*",
     "@openai/agents-openai": "workspace:*",
     "chalk": "^5.4.1",
+    "openai": "^6.46.0",
     "zod": "^4.0.0"
   },
   "scripts": {
