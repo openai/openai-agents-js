@@ -472,7 +472,7 @@ describe('OpenAIChatCompletionsModel', () => {
     ]);
   });
 
-  it('sends prompt cache retention when provided', async () => {
+  it('sends prompt cache controls when provided', async () => {
     const client = new FakeClient();
     const response = {
       id: 'r',
@@ -486,6 +486,7 @@ describe('OpenAIChatCompletionsModel', () => {
       input: 'u',
       modelSettings: {
         promptCacheRetention: 'in-memory',
+        promptCacheOptions: { mode: 'explicit', ttl: '30m' },
       },
       tools: [],
       outputType: 'text',
@@ -498,9 +499,66 @@ describe('OpenAIChatCompletionsModel', () => {
     expect(client.chat.completions.create).toHaveBeenCalledWith(
       expect.objectContaining({
         prompt_cache_retention: 'in_memory',
+        prompt_cache_options: { mode: 'explicit', ttl: '30m' },
       }),
       { headers: HEADERS, signal: undefined },
     );
+  });
+
+  it('warns once for Responses-only reasoning settings', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [{ message: { content: 'hi' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-5.6');
+    const req: any = {
+      input: 'u',
+      modelSettings: {
+        reasoning: { mode: 'pro', effort: 'max', context: 'all_turns' },
+      },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await withTrace('t', () => model.getResponse(req));
+    await withTrace('t', () => model.getResponse(req));
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]?.[0]).toContain('reasoning.mode');
+    expect(warnSpy.mock.calls[0]?.[0]).toContain('reasoning.context');
+    expect(client.chat.completions.create.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ reasoning_effort: 'max' }),
+    );
+    expect(
+      client.chat.completions.create.mock.calls[0]?.[0],
+    ).not.toHaveProperty('reasoning');
+    warnSpy.mockRestore();
+  });
+
+  it('rejects Responses-only reasoning settings in strict mode', async () => {
+    const client = new FakeClient();
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-5.6', {
+      strictFeatureValidation: true,
+    });
+    const req: any = {
+      input: 'u',
+      modelSettings: { reasoning: { mode: 'pro', context: 'all_turns' } },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await expect(withTrace('t', () => model.getResponse(req))).rejects.toThrow(
+      /reasoning\.mode.*reasoning\.context/,
+    );
+    expect(client.chat.completions.create).not.toHaveBeenCalled();
   });
 
   it('handles refusal message', async () => {
