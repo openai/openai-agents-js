@@ -17,7 +17,9 @@ import {
   type TracingExporter,
 } from '../src';
 import { mergeAgentToolRunConfig } from '../src/agentToolRunConfig';
-import type { Model, ModelRequest } from '../src/model';
+import type { Model, ModelRequest, ModelResponse } from '../src/model';
+import { RunContext } from '../src/runContext';
+import { RunState } from '../src/runState';
 import * as protocol from '../src/types/protocol';
 import type { StreamEvent } from '../src/types/protocol';
 import { attachClientToolSearchExecutor, shellTool } from '../src/tool';
@@ -362,6 +364,47 @@ describe('retry policies', () => {
       ModelBehaviorError,
     );
     expect(attempts).toBe(1);
+  });
+
+  it('preserves response usage when response processing fails', async () => {
+    const response: ModelResponse = {
+      usage: new Usage({
+        requests: 1,
+        inputTokens: 2,
+        outputTokens: 3,
+        totalTokens: 5,
+      }),
+      output: [
+        {
+          type: 'function_call',
+          callId: 'missing_tool_call',
+          name: 'missing_tool',
+          status: 'completed',
+          arguments: '{}',
+        },
+      ],
+    };
+    const model: Model = {
+      async getResponse() {
+        return response;
+      },
+      async *getStreamedResponse() {
+        yield* [];
+      },
+    };
+    const agent = new Agent({
+      name: 'ResponseProcessingFailureStateAgent',
+      model,
+    });
+    const state = new RunState(new RunContext(), 'hello', agent, 10);
+
+    await expect(run(agent, state)).rejects.toBeInstanceOf(ModelBehaviorError);
+    expect(state._lastTurnResponse).toBe(response);
+    expect(state._modelResponses).toEqual([response]);
+    expect(state._context.usage.inputTokens).toBe(2);
+    expect(state._context.usage.outputTokens).toBe(3);
+    expect(state._context.usage.totalTokens).toBe(5);
+    expect(state._lastProcessedResponse).toBeUndefined();
   });
 
   it('checks parallel input guardrails before retrying structured output parsing failures', async () => {

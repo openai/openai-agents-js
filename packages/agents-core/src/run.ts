@@ -996,7 +996,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             };
             const commitResponse = (
               response: ModelResponse,
-              processedResponse: ProcessedResponse<TContext>,
+              processedResponse?: ProcessedResponse<TContext>,
             ) => {
               state._lastTurnResponse = response;
               if (serverConversationTracker) {
@@ -1029,15 +1029,22 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 modelRequest,
                 async (response) => {
                   lastResponse = response;
-                  const processedResponse = await processModelResponseAsync(
-                    response,
-                    state._currentAgent,
-                    preparedCall.tools,
-                    preparedCall.handoffs,
-                    state,
-                    [...preparedCall.turnInput, ...state._generatedItems],
-                    options.toolNotFoundBehavior,
-                  );
+                  let processedResponse: ProcessedResponse<TContext>;
+                  try {
+                    processedResponse = await processModelResponseAsync(
+                      response,
+                      state._currentAgent,
+                      preparedCall.tools,
+                      preparedCall.handoffs,
+                      state,
+                      [...preparedCall.turnInput, ...state._generatedItems],
+                      options.toolNotFoundBehavior,
+                    );
+                  } catch (error) {
+                    // Preserve the completed response before surfacing a non-retryable processing error.
+                    commitResponse(response);
+                    throw error;
+                  }
                   lastProcessedResponse = processedResponse;
                   try {
                     await guardrailTracker.awaitCompletion();
