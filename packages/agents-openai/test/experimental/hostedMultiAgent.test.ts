@@ -66,6 +66,10 @@ class FakeResponsesWebSocket {
     });
   }
 
+  queueTransportEvent(event: Record<string, any>) {
+    this.#events.push(event);
+  }
+
   [Symbol.asyncIterator](): AsyncIterator<Record<string, any>> {
     return {
       next: async () => {
@@ -1201,6 +1205,45 @@ describe('OpenAIHostedMultiAgentModel', () => {
     ).toMatchObject({ suggested: false, replaySafety: 'unsafe' });
     expect(fakeWebSocket.close).toHaveBeenCalledOnce();
   });
+
+  it.each([false, true])(
+    'keeps a pre-open close with an unsent request safe to retry (stream: %s)',
+    async (stream) => {
+      const fakeWebSocket = new FakeResponsesWebSocket([]);
+      fakeWebSocket.socket.readyState = 0;
+      fakeWebSocket.queueTransportEvent({ type: 'connecting' });
+      fakeWebSocket.queueTransportEvent({
+        type: 'close',
+        code: 1006,
+        reason: 'Connection failed.',
+        unsent: [
+          {
+            type: 'message',
+            message: { type: 'response.create' },
+          },
+        ],
+      });
+      const model = new TestHostedMultiAgentModel(fakeWebSocket);
+
+      let error: (Error & { unsafeToReplay?: boolean }) | undefined;
+      try {
+        await getTestResponse(model, request(), stream);
+      } catch (caught) {
+        error = caught as Error & { unsafeToReplay?: boolean };
+      }
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error?.unsafeToReplay).toBeUndefined();
+      const retryAdvice = model.getRetryAdvice({
+        error,
+        request: request(),
+        stream,
+        attempt: 1,
+      });
+      expect(retryAdvice?.replaySafety).not.toBe('unsafe');
+      expect(fakeWebSocket.close).toHaveBeenCalledOnce();
+    },
+  );
 
   it('keeps stable Responses requests free of hosted beta fields', async () => {
     const stableCreate = vi.fn().mockResolvedValue(emptyResponse());

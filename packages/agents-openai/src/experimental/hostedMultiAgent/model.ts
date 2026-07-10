@@ -389,11 +389,22 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     this.#requestInProgress = true;
     const hadActiveResponse = Boolean(this.#activeResponse);
     let sentWebSocketFrame = false;
-    let receivedWebSocketEvent = false;
+    let receivedServerMessage = false;
+    let requestMayHaveReachedServer = false;
     let reachedResponseBoundary = false;
     let threwError = false;
     const requestTimeoutDeadline =
       this.#createWebSocketRequestTimeoutDeadline();
+    const sendWebSocketFrame = (
+      webSocket: ResponsesWebSocketLike,
+      frame: Record<string, any>,
+    ): void => {
+      sentWebSocketFrame = true;
+      if (webSocket.socket.readyState === WEBSOCKET_OPEN_READY_STATE) {
+        requestMayHaveReachedServer = true;
+      }
+      webSocket.send(frame as any);
+    };
 
     try {
       const builtRequest = this._buildResponsesCreateRequest(request, true);
@@ -432,8 +443,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
             requestData,
             outputs,
           );
-          sentWebSocketFrame = true;
-          webSocket.send(continuationFrame as any);
+          sendWebSocketFrame(webSocket, continuationFrame);
         } else {
           if (outputs.length === 0 || !activeResponse.responseId) {
             throw new UserError(
@@ -444,12 +454,11 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
           for (const output of outputs) {
             injectingCallIds.add(output.call_id);
           }
-          sentWebSocketFrame = true;
-          webSocket.send({
+          sendWebSocketFrame(webSocket, {
             type: 'response.inject',
             response_id: activeResponse.responseId,
             input: outputs,
-          } as any);
+          });
         }
       } else {
         this.#activeResponse = {
@@ -459,8 +468,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
           fallbackInput: [],
           requestUsages: [],
         };
-        sentWebSocketFrame = true;
-        webSocket.send(toResponseCreateFrame(requestData) as any);
+        sendWebSocketFrame(webSocket, toResponseCreateFrame(requestData));
       }
 
       while (true) {
@@ -473,11 +481,20 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
             'Hosted Multi-agent WebSocket closed before a response boundary.',
           );
         }
-        receivedWebSocketEvent = true;
+        if (message.type === 'open' || message.type === 'reconnected') {
+          requestMayHaveReachedServer = true;
+        }
         if (message.type === 'error') {
           throw message.error;
         }
         if (message.type === 'close') {
+          if (
+            !receivedServerMessage &&
+            Array.isArray(message.unsent) &&
+            message.unsent.length > 0
+          ) {
+            requestMayHaveReachedServer = false;
+          }
           throw new Error(
             `Hosted Multi-agent WebSocket closed (${String(message.code)}): ${String(message.reason ?? '')}`,
           );
@@ -485,6 +502,8 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
         if (message.type !== 'message') {
           continue;
         }
+        receivedServerMessage = true;
+        requestMayHaveReachedServer = true;
 
         const event = message.message as Record<string, any>;
         const eventType = event.type;
@@ -563,8 +582,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
               requestData,
               [],
             );
-            sentWebSocketFrame = true;
-            webSocket.send(continuationFrame as any);
+            sendWebSocketFrame(webSocket, continuationFrame);
             injectingCallIds.clear();
             continue;
           }
@@ -593,14 +611,14 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
       }
     } catch (error) {
       threwError = true;
-      if (receivedWebSocketEvent && error instanceof Error) {
+      if (requestMayHaveReachedServer && error instanceof Error) {
         (
           error as Error & {
             unsafeToReplay?: boolean;
           }
         ).unsafeToReplay = true;
       }
-      if (!hadActiveResponse || sentWebSocketFrame || receivedWebSocketEvent) {
+      if (!hadActiveResponse || sentWebSocketFrame || receivedServerMessage) {
         await this.close();
       }
       throw error;
