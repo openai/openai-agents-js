@@ -18,7 +18,10 @@ import {
   headerAccumulatorToRecord,
   mergeQueryParamsIntoURL,
 } from '../../responsesTransportUtils';
-import { withAbortSignal } from '../../responsesWebSocketConnection';
+import {
+  withAbortSignal,
+  withTimeout,
+} from '../../responsesWebSocketConnection';
 import {
   searchParamsToAuthHeaderQuery,
   toRequestUsageEntry,
@@ -63,6 +66,11 @@ type ActiveHostedResponse = {
   requestUsages: Array<OpenAI.Responses.ResponseUsage | undefined>;
 };
 
+type WebSocketRequestTimeoutDeadline = {
+  configuredTimeoutMs: number;
+  deadlineAtMs: number;
+};
+
 function isHostedTerminalResponseEventType(eventType: unknown): boolean {
   return (
     typeof eventType === 'string' &&
@@ -83,6 +91,7 @@ type HostedWebSocketCreationOptions = {
 type OpenAIClientInternals = OpenAI & {
   _options?: {
     defaultHeaders?: unknown;
+    timeout?: unknown;
   };
   authHeaders?: (options: Record<string, unknown>) => Promise<unknown>;
   _callApiKey?: () => Promise<boolean>;
@@ -377,6 +386,8 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     const hadActiveResponse = Boolean(this.#activeResponse);
     let sentWebSocketFrame = false;
     let receivedWebSocketEvent = false;
+    const requestTimeoutDeadline =
+      this.#createWebSocketRequestTimeoutDeadline();
 
     try {
       const builtRequest = this._buildResponsesCreateRequest(request, true);
@@ -446,7 +457,10 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
       }
 
       while (true) {
-        const message = await this.#nextWebSocketMessage(builtRequest.signal);
+        const message = await this.#nextWebSocketMessage(
+          builtRequest.signal,
+          requestTimeoutDeadline,
+        );
         if (!message) {
           throw new Error(
             'Hosted Multi-agent WebSocket closed before a response boundary.',
@@ -781,6 +795,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
 
   async #nextWebSocketMessage(
     signal: AbortSignal | undefined,
+    requestTimeoutDeadline: WebSocketRequestTimeoutDeadline | undefined,
   ): Promise<Record<string, any> | undefined> {
     if (signal?.aborted) {
       throw new OpenAI.APIUserAbortError();
@@ -789,29 +804,73 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     if (!iterator) {
       throw new Error('Hosted Multi-agent WebSocket iterator is unavailable.');
     }
-    if (!signal) {
-      const result = await iterator.next();
-      return result.done ? undefined : result.value;
+    const frameReadTimeout = this.#resolveWebSocketRequestTimeout(
+      requestTimeoutDeadline,
+    );
+    const result = await withAbortSignal(
+      withTimeout(
+        iterator.next(),
+        frameReadTimeout.timeoutMs,
+        frameReadTimeout.errorMessage,
+      ),
+      signal,
+    );
+    return result.done ? undefined : result.value;
+  }
+
+  #getWebSocketFrameReadTimeoutMs(): number | undefined {
+    const client = this._client as OpenAIClientInternals;
+    const timeoutCandidate =
+      typeof client.timeout === 'number'
+        ? client.timeout
+        : client._options?.timeout;
+
+    if (typeof timeoutCandidate === 'number') {
+      return timeoutCandidate;
     }
 
-    return await new Promise<Record<string, any> | undefined>(
-      (resolve, reject) => {
-        const onAbort = () => {
-          signal.removeEventListener('abort', onAbort);
-          reject(new OpenAI.APIUserAbortError());
-        };
-        signal.addEventListener('abort', onAbort, { once: true });
-        void iterator.next().then(
-          (result) => {
-            signal.removeEventListener('abort', onAbort);
-            resolve(result.done ? undefined : result.value);
-          },
-          (error) => {
-            signal.removeEventListener('abort', onAbort);
-            reject(error);
-          },
-        );
-      },
+    return OpenAI.DEFAULT_TIMEOUT;
+  }
+
+  #createWebSocketRequestTimeoutDeadline():
+    WebSocketRequestTimeoutDeadline | undefined {
+    const timeoutMs = this.#getWebSocketFrameReadTimeoutMs();
+    if (
+      typeof timeoutMs !== 'number' ||
+      !Number.isFinite(timeoutMs) ||
+      timeoutMs <= 0
+    ) {
+      return undefined;
+    }
+
+    return {
+      configuredTimeoutMs: timeoutMs,
+      deadlineAtMs: Date.now() + timeoutMs,
+    };
+  }
+
+  #resolveWebSocketRequestTimeout(
+    requestTimeoutDeadline: WebSocketRequestTimeoutDeadline | undefined,
+  ): { timeoutMs: number | undefined; errorMessage: string } {
+    const configuredTimeoutMs =
+      requestTimeoutDeadline?.configuredTimeoutMs ??
+      this.#getWebSocketFrameReadTimeoutMs();
+    const safeConfiguredTimeoutMs =
+      typeof configuredTimeoutMs === 'number'
+        ? configuredTimeoutMs
+        : OpenAI.DEFAULT_TIMEOUT;
+    const errorMessage = `Hosted Multi-agent WebSocket frame read timed out after ${safeConfiguredTimeoutMs}ms.`;
+    if (!requestTimeoutDeadline) {
+      return { timeoutMs: configuredTimeoutMs, errorMessage };
+    }
+
+    const remainingTimeoutMs = Math.ceil(
+      requestTimeoutDeadline.deadlineAtMs - Date.now(),
     );
+    if (remainingTimeoutMs <= 0) {
+      throw new Error(errorMessage);
+    }
+
+    return { timeoutMs: remainingTimeoutMs, errorMessage };
   }
 }

@@ -33,17 +33,23 @@ function message(message: Record<string, any>) {
   return { type: 'message', message };
 }
 
+const STALLED_WEBSOCKET_EVENT = Symbol('stalled-websocket-event');
+type FakeWebSocketEvent =
+  Record<string, any> | Error | typeof STALLED_WEBSOCKET_EVENT;
+
 class FakeResponsesWebSocket {
   readonly sent: Array<Record<string, any>> = [];
   readonly socket = { readyState: 1 };
   readonly close = vi.fn(() => {
     this.socket.readyState = 3;
   });
-  #events: Array<Record<string, any> | Error>;
+  #events: Array<FakeWebSocketEvent>;
 
-  constructor(events: Array<Record<string, any> | Error>) {
+  constructor(events: Array<FakeWebSocketEvent>) {
     this.#events = events.map((event) =>
-      event instanceof Error ? event : message(event),
+      event instanceof Error || event === STALLED_WEBSOCKET_EVENT
+        ? event
+        : message(event),
     );
   }
 
@@ -66,6 +72,11 @@ class FakeResponsesWebSocket {
         const value = this.#events.shift();
         if (value instanceof Error) {
           throw value;
+        }
+        if (value === STALLED_WEBSOCKET_EVENT) {
+          return await new Promise<IteratorResult<Record<string, any>>>(
+            () => {},
+          );
         }
         return value
           ? { value, done: false as const }
@@ -202,6 +213,25 @@ describe('OpenAIHostedMultiAgentModel', () => {
     expect(secondWebSocket.sent).toHaveLength(1);
     expect(secondResponse.responseId).toBe('resp_second');
   });
+
+  it.each([false, true])(
+    'applies the client timeout while waiting for hosted WebSocket events (stream: %s)',
+    async (stream) => {
+      const fakeWebSocket = new FakeResponsesWebSocket([
+        STALLED_WEBSOCKET_EVENT,
+      ]);
+      const model = new TestHostedMultiAgentModel(
+        fakeWebSocket,
+        undefined,
+        new OpenAI({ apiKey: 'test-key', timeout: 25 }),
+      );
+
+      await expect(getTestResponse(model, request(), stream)).rejects.toThrow(
+        'Hosted Multi-agent WebSocket frame read timed out after 25ms.',
+      );
+      expect(fakeWebSocket.close).toHaveBeenCalledOnce();
+    },
+  );
 
   it('preserves client and request WebSocket transport configuration', async () => {
     const fakeWebSocket = new FakeResponsesWebSocket([
