@@ -65,6 +65,7 @@ type ActiveHostedResponse = {
   emittedCallIds: Set<string>;
   queuedFunctionCalls: Array<Record<string, any>>;
   terminalEvent?: Record<string, any>;
+  pendingContinuationFrame?: Record<string, any>;
   fallbackInput: Array<Record<string, any>>;
   requestUsages: Array<OpenAI.Responses.ResponseUsage | undefined>;
 };
@@ -410,6 +411,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     this.#requestInProgress = true;
     const hadActiveResponse = Boolean(this.#activeResponse);
     let sentWebSocketFrame = false;
+    let sentWebSocketFrameType: string | undefined;
     let receivedServerMessage = false;
     let requestMayHaveReachedServer = false;
     let sentFrameWasReturnedUnsent = false;
@@ -426,6 +428,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
         throw new OpenAI.APIUserAbortError();
       }
       sentWebSocketFrame = true;
+      sentWebSocketFrameType = frame.type;
       if (webSocket.socket.readyState === WEBSOCKET_OPEN_READY_STATE) {
         requestMayHaveReachedServer = true;
       }
@@ -449,46 +452,60 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
 
       if (this.#activeResponse) {
         const activeResponse = this.#activeResponse;
-        const outputs = getFunctionCallOutputs(
-          requestData,
-          activeResponse.pendingCallIds,
-        );
-        const outputCallIds = new Set(outputs.map((output) => output.call_id));
-        const missingCallIds = Array.from(activeResponse.pendingCallIds).filter(
-          (callId) => !outputCallIds.has(callId),
-        );
-        if (missingCallIds.length > 0) {
-          throw new UserError(
-            `The hosted response is waiting for local function outputs for: ${missingCallIds.join(', ')}. Resume it with the same model instance and RunState.`,
-          );
-        }
-
-        if (activeResponse.terminalEvent) {
-          const continuationFrame = this.#prepareTerminalContinuation(
-            activeResponse,
-            requestData,
-            outputs,
-          );
-          sendWebSocketFrame(webSocket, continuationFrame, builtRequest.signal);
-        } else {
-          if (outputs.length === 0 || !activeResponse.responseId) {
-            throw new UserError(
-              'The hosted response is waiting for local function outputs. Resume it with the same model instance and RunState.',
-            );
-          }
-          pendingInjections = 1;
-          for (const output of outputs) {
-            injectingCallIds.add(output.call_id);
-          }
+        if (activeResponse.pendingContinuationFrame) {
           sendWebSocketFrame(
             webSocket,
-            {
-              type: 'response.inject',
-              response_id: activeResponse.responseId,
-              input: outputs,
-            },
+            activeResponse.pendingContinuationFrame,
             builtRequest.signal,
           );
+        } else {
+          const outputs = getFunctionCallOutputs(
+            requestData,
+            activeResponse.pendingCallIds,
+          );
+          const outputCallIds = new Set(
+            outputs.map((output) => output.call_id),
+          );
+          const missingCallIds = Array.from(
+            activeResponse.pendingCallIds,
+          ).filter((callId) => !outputCallIds.has(callId));
+          if (missingCallIds.length > 0) {
+            throw new UserError(
+              `The hosted response is waiting for local function outputs for: ${missingCallIds.join(', ')}. Resume it with the same model instance and RunState.`,
+            );
+          }
+
+          if (activeResponse.terminalEvent) {
+            const continuationFrame = this.#prepareTerminalContinuation(
+              activeResponse,
+              requestData,
+              outputs,
+            );
+            sendWebSocketFrame(
+              webSocket,
+              continuationFrame,
+              builtRequest.signal,
+            );
+          } else {
+            if (outputs.length === 0 || !activeResponse.responseId) {
+              throw new UserError(
+                'The hosted response is waiting for local function outputs. Resume it with the same model instance and RunState.',
+              );
+            }
+            pendingInjections = 1;
+            for (const output of outputs) {
+              injectingCallIds.add(output.call_id);
+            }
+            sendWebSocketFrame(
+              webSocket,
+              {
+                type: 'response.inject',
+                response_id: activeResponse.responseId,
+                input: outputs,
+              },
+              builtRequest.signal,
+            );
+          }
         }
       } else {
         this.#activeResponse = {
@@ -530,13 +547,18 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
           throw message.error;
         }
         if (message.type === 'close') {
-          if (
-            !receivedServerMessage &&
+          const currentFrameWasReturnedUnsent =
+            sentWebSocketFrame &&
+            typeof sentWebSocketFrameType === 'string' &&
             Array.isArray(message.unsent) &&
-            message.unsent.length > 0
-          ) {
+            message.unsent.some((item: Record<string, any>) => {
+              const unsentFrame =
+                item?.type === 'message' ? item.message : item;
+              return unsentFrame?.type === sentWebSocketFrameType;
+            });
+          if (currentFrameWasReturnedUnsent) {
             requestMayHaveReachedServer = false;
-            sentFrameWasReturnedUnsent = sentWebSocketFrame;
+            sentFrameWasReturnedUnsent = true;
           }
           throw new Error(
             `Hosted Multi-agent WebSocket closed (${String(message.code)}): ${String(message.reason ?? '')}`,
@@ -559,6 +581,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
         if (eventType === 'response.created') {
           activeResponse.responseId = event.response?.id;
           activeResponse.responseTemplate = event.response;
+          activeResponse.pendingContinuationFrame = undefined;
         } else if (eventType === 'response.output_item.done') {
           const item = event.item as Record<string, any> | undefined;
           if (item) {
@@ -675,11 +698,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
           }
         ).unsafeToReplay = true;
       }
-      if (
-        hadActiveResponse &&
-        sentFrameWasReturnedUnsent &&
-        !receivedServerMessage
-      ) {
+      if (hadActiveResponse && sentFrameWasReturnedUnsent) {
         const transportOverridesKey = this.#webSocketTransportOverridesKey;
         this.#dropWebSocketConnection();
         this.#webSocketTransportOverridesKey = transportOverridesKey;
@@ -794,6 +813,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     activeResponse.queuedFunctionCalls = [];
     activeResponse.terminalEvent = undefined;
     activeResponse.fallbackInput = [];
+    activeResponse.pendingContinuationFrame = fallbackFrame;
     return fallbackFrame;
   }
 

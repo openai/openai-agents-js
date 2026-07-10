@@ -1275,6 +1275,103 @@ describe('OpenAIHostedMultiAgentModel', () => {
     },
   );
 
+  it.each([false, true])(
+    'retries an unsent fallback continuation after consuming server events (stream: %s)',
+    async (stream) => {
+      const functionCall = {
+        type: 'function_call',
+        id: 'fc_unsent_fallback',
+        call_id: 'call_unsent_fallback',
+        name: 'lookup',
+        arguments: '{}',
+        status: 'completed',
+        agent: { agent_name: '/root/researcher' },
+      };
+      const failedInput = {
+        type: 'function_call_output',
+        call_id: 'call_unsent_fallback',
+        output: 'result',
+      };
+      const firstWebSocket = new FakeResponsesWebSocket([
+        {
+          type: 'response.created',
+          response: emptyResponse('resp_unsent_fallback'),
+        },
+        { type: 'response.output_item.done', item: functionCall },
+        {
+          type: 'response.completed',
+          response: emptyResponse('resp_unsent_fallback'),
+        },
+        {
+          type: 'response.inject.failed',
+          response_id: 'resp_unsent_fallback',
+          input: [failedInput],
+          error: {
+            code: 'response_already_completed',
+            message: 'Already completed.',
+          },
+        },
+      ]);
+      firstWebSocket.queueTransportEvent({
+        type: 'close',
+        code: 1006,
+        reason: 'Connection failed.',
+        unsent: [
+          {
+            type: 'message',
+            message: { type: 'response.create' },
+          },
+        ],
+      });
+      const retryWebSocket = new FakeResponsesWebSocket([
+        {
+          type: 'response.created',
+          response: emptyResponse('resp_retried_fallback'),
+        },
+        {
+          type: 'response.completed',
+          response: emptyResponse('resp_retried_fallback'),
+        },
+      ]);
+      const model = new TestHostedMultiAgentModel([
+        firstWebSocket,
+        retryWebSocket,
+      ]);
+      const first = await getTestResponse(model, request(), stream);
+      const resumeRequest = request({
+        input: [
+          ...first.output,
+          {
+            type: 'function_call_result',
+            callId: 'call_unsent_fallback',
+            output: 'result',
+            status: 'completed',
+          },
+        ],
+      });
+
+      let error: (Error & { unsafeToReplay?: boolean }) | undefined;
+      try {
+        await getTestResponse(model, resumeRequest, stream);
+      } catch (caught) {
+        error = caught as Error & { unsafeToReplay?: boolean };
+      }
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error?.unsafeToReplay).toBeUndefined();
+      const response = await getTestResponse(model, resumeRequest, stream);
+
+      expect(retryWebSocket.sent[0]).toEqual(firstWebSocket.sent[2]);
+      expect(retryWebSocket.sent[0]).toMatchObject({
+        type: 'response.create',
+        previous_response_id: 'resp_unsent_fallback',
+        input: [failedInput],
+      });
+      expect(response.responseId ?? response.id).toBe('resp_retried_fallback');
+      expect(response.usage.requests).toBe(2);
+    },
+  );
+
   it.each([
     { stream: false, storedBaseResponseId: undefined },
     { stream: true, storedBaseResponseId: undefined },
