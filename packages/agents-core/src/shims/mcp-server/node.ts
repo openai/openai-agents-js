@@ -7,6 +7,11 @@ import {
   BaseMCPServerStdio,
   BaseMCPServerStreamableHttp,
   BaseMCPServerSSE,
+  MCPTool,
+  attachCallToolResultMetadata,
+} from '../../mcpShared';
+import { invalidateServerToolsCache } from '../../mcpToolCache';
+import type {
   CallToolResult,
   CallToolResultContent,
   DefaultMCPServerStdioOptions,
@@ -18,9 +23,6 @@ import {
   MCPServerStdioOptions,
   MCPServerStreamableHttpOptions,
   MCPServerSSEOptions,
-  MCPTool,
-  attachCallToolResultMetadata,
-  invalidateServerToolsCache,
 } from '../../mcp';
 import logger from '../../logger';
 

@@ -83,6 +83,26 @@
       "types": "./dist/shims/shims.d.ts",
       "require": "./dist/shims/shims.js",
       "import": "./dist/shims/shims.mjs"
+    },
+    "./_shims/config": {
+      "workerd": {
+        "types": "./dist/shims/config-workerd.d.ts",
+        "require": "./dist/shims/config-workerd.js",
+        "import": "./dist/shims/config-workerd.mjs"
+      },
+      "browser": {
+        "types": "./dist/shims/config-browser.d.ts",
+        "require": "./dist/shims/config-browser.js",
+        "import": "./dist/shims/config-browser.mjs"
+      },
+      "node": {
+        "types": "./dist/shims/config-node.d.ts",
+        "require": "./dist/shims/config-node.js",
+        "import": "./dist/shims/config-node.mjs"
+      },
+      "types": "./dist/shims/config-node.d.ts",
+      "require": "./dist/shims/config-node.js",
+      "import": "./dist/shims/config-node.mjs"
     }
   },
   "keywords": [
@@ -138,6 +158,9 @@
       ],
       "_shims": [
         "dist/shims/shims-node.d.ts"
+      ],
+      "_shims/config": [
+        "dist/shims/config-node.d.ts"
       ]
     }
   },
