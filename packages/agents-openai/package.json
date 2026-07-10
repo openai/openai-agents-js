@@ -12,6 +12,11 @@
       "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
       "import": "./dist/index.mjs"
+    },
+    "./experimental/hosted-multi-agent": {
+      "types": "./dist/experimental/hostedMultiAgent/index.d.ts",
+      "require": "./dist/experimental/hostedMultiAgent/index.js",
+      "import": "./dist/experimental/hostedMultiAgent/index.mjs"
     }
   },
   "dependencies": {
@@ -42,5 +47,12 @@
   },
   "files": [
     "dist"
-  ]
+  ],
+  "typesVersions": {
+    "*": {
+      "experimental/hosted-multi-agent": [
+        "dist/experimental/hostedMultiAgent/index.d.ts"
+      ]
+    }
+  }
 }
