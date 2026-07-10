@@ -43,6 +43,18 @@ Before sending the final response for a task, inspect the actual task diff. If i
 
 Skip `$pr-draft-summary` only when no eligible files changed, every change is limited to repo metadata or docs without behavior impact, the task is conversation-only, or the user explicitly says not to include the PR draft block.
 
+### Shared Checkout and pnpm Safety
+
+Treat the primary Git worktree as the user's interactive checkout. A Codex session must not run `pnpm`, or a command that can invoke `pnpm`, from that checkout unless the user explicitly approves sharing its dependency tree in the same turn. This includes read-looking commands such as `pnpm exec`, because pnpm can run a dependency status check and reinstall `node_modules` before executing the requested binary.
+
+Before the first pnpm command, compare `git rev-parse --path-format=absolute --git-dir` with `git rev-parse --path-format=absolute --git-common-dir`:
+
+- If the paths are equal, Codex is in the primary worktree. Move the task to a linked worktree before running pnpm.
+- If the paths differ, Codex is in a linked worktree and may use its independent `node_modules`.
+- If work has already started in the primary worktree, do not purge or reinstall its dependencies. Transfer the task changes to a linked worktree, or ask the user before using the explicit `CODEX_ALLOW_SHARED_PNPM=1` escape hatch.
+
+In a Codex linked worktree, remove Codex-specific `PNPM_CONFIG_MINIMUM_RELEASE_AGE` and `pnpm_config_minimum_release_age` overrides so `pnpm-workspace.yaml` remains authoritative, and set `CI=1` for non-interactive verification. Do not set `confirmModulesPurge=false` repo-wide and do not add `CI=1` to Husky as a workaround; either change would allow a Git hook to remove the user's shared `node_modules` without confirmation.
+
 ### ExecPlans
 
 When writing complex features or significant refactors, use an ExecPlan (as described in PLANS.md) from design to implementation. Store each ExecPlan file under `plans/` with a descriptive name, and create the directory if it does not exist. Call out compatibility risk only when the plan changes behavior shipped in the latest release tag or a released/otherwise supported durable format. Do not treat branch-local interface churn or unreleased post-tag changes on `main` as breaking by default; prefer direct replacement over compatibility layers in those cases. Confirm the approach when changes could impact package consumers or durable external data that is already supported outside the current branch.
@@ -200,7 +212,7 @@ See [this README](integration-tests/README.md) for details.
 
 #### Mandatory Local Run Order
 
-When `$code-change-verification` applies (see Mandatory Skill Usage), run the full validation sequence locally via the `$code-change-verification` skill; do not skip any step, and preserve the skill-defined barriers (`pnpm i`, `pnpm build`, then the remaining validation steps).
+When `$code-change-verification` applies (see Mandatory Skill Usage), run the full validation sequence locally via the `$code-change-verification` skill; do not skip any step, and preserve the skill-defined barriers (`pnpm i --frozen-lockfile`, `pnpm build`, then the remaining validation steps).
 
 Before opening a pull request, always run `$changeset-validation` to ensure all changed packages are covered by a changeset and the validation passes; if no packages were touched and a changeset is unnecessary, you can skip creating one.
 

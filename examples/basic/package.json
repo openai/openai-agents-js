@@ -3,7 +3,7 @@
   "name": "basic",
   "dependencies": {
     "@openai/agents": "workspace:*",
-    "openai": "^6.42.0",
+    "openai": "^6.46.0",
     "zod": "^4.0.0"
   },
   "scripts": {

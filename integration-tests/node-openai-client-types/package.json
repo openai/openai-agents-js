@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@openai/agents": "latest",
-    "openai": "6.45.0",
+    "openai": "6.46.0",
     "zod": "^4"
   },
   "devDependencies": {

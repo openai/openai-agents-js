@@ -73,7 +73,6 @@ import {
   saveToSession,
 } from './runner/sessionPersistence';
 import {
-  addFinalOutputValidationErrorToCurrentSpan,
   resolveTurnAfterModelResponse,
   validateProcessedResponseFinalOutput,
 } from './runner/turnResolution';
@@ -90,6 +89,7 @@ import type {
   AgentArtifacts,
   CallModelInputFilter,
   PreparedModelCall,
+  ProcessedResponse,
 } from './runner/types';
 import { tryHandleRunError } from './runner/errorHandlers';
 import type { RunErrorHandlers } from './runner/errorHandlers';
@@ -974,6 +974,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               previousResponseId: preparedCall.previousResponseId,
               conversationId: preparedCall.conversationId,
               modelSettings: preparedCall.modelSettings,
+              _internal: preparedCall.modelRequestInternal,
               tools: preparedCall.serializedTools,
               toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
               outputType: convertAgentOutputTypeToSerializable(
@@ -986,32 +987,58 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ),
               signal: options.signal,
             };
-            const retryResult = await getResponseWithRetryAndProcessed(
-              preparedCall.model,
-              modelRequest,
-              async (response) => {
-                const processedResponse = await processModelResponseAsync(
-                  response,
-                  state._currentAgent,
-                  preparedCall.tools,
-                  preparedCall.handoffs,
-                  state,
-                  [...preparedCall.turnInput, ...state._generatedItems],
-                  options.toolNotFoundBehavior,
-                );
-                await guardrailTracker.awaitCompletion();
-                return processedResponse;
-              },
-              async (processedResponse) => {
-                await validateProcessedResponseFinalOutput(
-                  state._currentAgent,
-                  processedResponse,
-                );
-              },
-            ).catch((error) => {
-              addFinalOutputValidationErrorToCurrentSpan(error);
-              throw error;
-            });
+            let lastResponse: ModelResponse | undefined;
+            let lastProcessedResponse: ProcessedResponse<TContext> | undefined;
+            let finalOutputValidationError: unknown;
+            let retryResult: {
+              response: ModelResponse;
+              processed: ProcessedResponse<TContext>;
+            };
+            try {
+              retryResult = await getResponseWithRetryAndProcessed(
+                preparedCall.model,
+                modelRequest,
+                async (response) => {
+                  lastResponse = response;
+                  const processedResponse = await processModelResponseAsync(
+                    response,
+                    state._currentAgent,
+                    preparedCall.tools,
+                    preparedCall.handoffs,
+                    state,
+                    [...preparedCall.turnInput, ...state._generatedItems],
+                    options.toolNotFoundBehavior,
+                  );
+                  lastProcessedResponse = processedResponse;
+                  await guardrailTracker.awaitCompletion();
+                  return processedResponse;
+                },
+                async (processedResponse) => {
+                  try {
+                    await validateProcessedResponseFinalOutput(
+                      state._currentAgent,
+                      processedResponse,
+                    );
+                  } catch (error) {
+                    finalOutputValidationError = error;
+                    throw error;
+                  }
+                },
+              );
+            } catch (error) {
+              // Let turn resolution invoke invalidFinalOutput handlers after retries are exhausted.
+              if (
+                error !== finalOutputValidationError ||
+                !lastResponse ||
+                !lastProcessedResponse
+              ) {
+                throw error;
+              }
+              retryResult = {
+                response: lastResponse,
+                processed: lastProcessedResponse,
+              };
+            }
             state._lastTurnResponse = retryResult.response;
             if (serverConversationTracker) {
               serverConversationTracker.markInputAsSent(
@@ -1406,6 +1433,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   ),
                   conversationId: preparedCall.conversationId,
                   modelSettings: preparedCall.modelSettings,
+                  _internal: preparedCall.modelRequestInternal,
                   tools: preparedCall.serializedTools,
                   toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
                   handoffs: preparedCall.serializedHandoffs,
@@ -1456,6 +1484,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 previousResponseId: preparedCall.previousResponseId,
                 conversationId: preparedCall.conversationId,
                 modelSettings: preparedCall.modelSettings,
+                _internal: preparedCall.modelRequestInternal,
                 tools: preparedCall.serializedTools,
                 toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
                 handoffs: preparedCall.serializedHandoffs,
@@ -1846,6 +1875,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           explicitlyModelSet,
           resolvedModelName,
         );
+    const modelRequestInternal = {
+      reasoningEffortImplicit:
+        implicitModelSettings?.reasoning?.effort !== undefined &&
+        !hasExplicitTopLevelReasoningEffort(this.config.modelSettings) &&
+        !hasExplicitTopLevelReasoningEffort(agentModelSettings),
+    };
 
     let modelSettings = mergeModelSettings(
       implicitModelSettings,
@@ -1898,6 +1933,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       ...artifacts,
       model,
       explicitlyModelSet,
+      modelRequestInternal,
       modelSettings,
       modelInput,
       prompt,
@@ -1913,6 +1949,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 // internal helpers and constants
 
 let defaultRunner: Runner | undefined;
+
+function hasExplicitTopLevelReasoningEffort(settings?: ModelSettings): boolean {
+  return settings?.reasoning?.effort !== undefined;
+}
 
 const getDefaultRunner = (): Runner => {
   if (!defaultRunner) {

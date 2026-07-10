@@ -1,5 +1,18 @@
 # @openai/agents
 
+## 0.13.1
+
+### Patch Changes
+
+- 532ab2b: fix: support openai-node v6.46.0 usage types
+- ec48462: feat: add GPT-5.6 model defaults, reasoning, and sandbox compaction support
+- 1f9af9f: docs: cover sandbox, text, and realtime agents in the package README
+- Updated dependencies [532ab2b]
+- Updated dependencies [ec48462]
+  - @openai/agents-core@0.13.1
+  - @openai/agents-openai@0.13.1
+  - @openai/agents-realtime@0.13.1
+
 ## 0.13.0
 
 ### Minor Changes

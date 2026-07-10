@@ -3,6 +3,8 @@ packages:
   - examples/*
   - docs
 
+nodeLinker: hoisted
+
 allowBuilds:
   '@tailwindcss/oxide': true
   cbor-extract: true
@@ -19,5 +21,7 @@ overrides:
 
 publishBranch: main
 minimumReleaseAge: 10080
+minimumReleaseAgeExclude:
+  - openai@6.46.0
 blockExoticSubdeps: true
 strictDepBuilds: true

@@ -24,7 +24,7 @@ export function gpt5ReasoningSettingsRequired(modelName: string): boolean {
 const DEFAULT_REASONING_EFFORT_PATTERNS: Array<
   readonly [
     RegExp,
-    Exclude<ModelSettingsReasoningEffort, 'minimal' | 'xhigh' | null>,
+    Exclude<ModelSettingsReasoningEffort, 'minimal' | 'xhigh' | 'max' | null>,
   ]
 > = [
   [/^gpt-5(?:-\d{4}-\d{2}-\d{2})?$/, 'low'],
@@ -38,12 +38,16 @@ const DEFAULT_REASONING_EFFORT_PATTERNS: Array<
   [/^gpt-5\.4-mini(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
   [/^gpt-5\.4-nano(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
   [/^gpt-5\.5(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
+  [/^gpt-5\.6$/, 'none'],
+  [/^gpt-5\.6-sol(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
+  [/^gpt-5\.6-terra(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
+  [/^gpt-5\.6-luna(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
 ];
 
 function getDefaultReasoningEffort(
   modelName: string,
 ):
-  | Exclude<ModelSettingsReasoningEffort, 'minimal' | 'xhigh' | null>
+  | Exclude<ModelSettingsReasoningEffort, 'minimal' | 'xhigh' | 'max' | null>
   | undefined {
   for (const [pattern, effort] of DEFAULT_REASONING_EFFORT_PATTERNS) {
     if (pattern.test(modelName)) {

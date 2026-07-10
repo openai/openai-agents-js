@@ -6,20 +6,17 @@ The OpenAI Agents SDK is a lightweight yet powerful framework for building multi
 
 <img src="https://cdn.openai.com/API/docs/images/orchestration.png" alt="Image of the Agents Tracing UI" style="max-height: 803px;">
 
-> [!NOTE] 
-> Looking for the Python version? Check out [OpenAI Agents SDK Python](https://github.com/openai/openai-agents-python).
-
 ## Core concepts
 
 1. [**Agents**](https://openai.github.io/openai-agents-js/guides/agents): LLMs configured with instructions, tools, guardrails, and handoffs
 1. [**Sandbox Agents**](https://openai.github.io/openai-agents-js/guides/sandbox-agents): Agents paired with a filesystem workspace and sandbox environment for longer-running work
+1. [**Realtime Agents**](https://openai.github.io/openai-agents-js/guides/voice-agents/quickstart/): Low-latency voice agents with tools, guardrails, handoffs, and conversation history
 1. **[Agents as tools](https://openai.github.io/openai-agents-js/guides/tools/#4-agents-as-tools) / [Handoffs](https://openai.github.io/openai-agents-js/guides/handoffs/)**: Delegating to other agents for specific tasks
 1. [**Tools**](https://openai.github.io/openai-agents-js/guides/tools/): Various Tools let agents take actions (functions, MCP, hosted tools)
 1. [**Guardrails**](https://openai.github.io/openai-agents-js/guides/guardrails/): Configurable safety checks for input and output validation
 1. [**Human in the loop**](https://openai.github.io/openai-agents-js/guides/human-in-the-loop/): Built-in mechanisms for involving humans across agent runs
 1. [**Sessions**](https://openai.github.io/openai-agents-js/guides/sessions/): Automatic conversation history management across agent runs
 1. [**Tracing**](https://openai.github.io/openai-agents-js/guides/tracing/): Built-in tracking of agent runs, allowing you to view, debug and optimize your workflows
-1. [**Realtime Agents**](https://openai.github.io/openai-agents-js/guides/voice-agents/quickstart/): Build powerful voice agents with full features
 
 Explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory to see the SDK in action.
 
@@ -43,9 +40,9 @@ Explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/e
 npm install @openai/agents zod
 ```
 
-### Run your first Sandbox Agent
+### Build a sandbox agent
 
-[Sandbox Agents](https://openai.github.io/openai-agents-js/guides/sandbox-agents) are in beta. A sandbox agent can inspect files, run commands, apply patches, and carry workspace state across longer tasks.
+Use a [Sandbox Agent](https://openai.github.io/openai-agents-js/guides/sandbox-agents) when the agent should work in a filesystem, run commands, or carry workspace state across longer tasks. Sandbox Agents are in beta.
 
 ```js
 import { run } from '@openai/agents';
@@ -54,54 +51,57 @@ import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
 
 const agent = new SandboxAgent({
   name: 'Workspace Assistant',
-  instructions: 'Inspect the sandbox workspace before answering.',
+  model: 'gpt-5.5',
+  instructions: 'Inspect the repo before changing files.',
   defaultManifest: {
-    entries: {
-      repo: gitRepo({
-        repo: 'openai/openai-agents-js',
-        ref: 'main',
-      }),
-    },
+    entries: { repo: gitRepo({ repo: 'openai/openai-agents-js' }) },
   },
 });
 
 const result = await run(
   agent,
-  'Inspect repo/README.md and summarize what this project does.',
-  {
-    sandbox: {
-      client: new UnixLocalSandboxClient(),
-    },
-  },
+  'Inspect the repo README and summarize what this project does.',
+  { sandbox: { client: new UnixLocalSandboxClient() } },
 );
 
 console.log(result.finalOutput);
-// This project provides a JavaScript/TypeScript SDK for building agent workflows.
 ```
 
-(_If running this, ensure you set the `OPENAI_API_KEY` environment variable_)
+### Build a text agent
 
-### Run an agent without a sandbox
-
-You can still use a regular `Agent` when your workflow does not need a filesystem workspace or sandbox lifecycle.
+Use a regular [Agent](https://openai.github.io/openai-agents-js/guides/agents) for text-based workflows that do not need a sandbox workspace or Realtime session.
 
 ```js
 import { Agent, run } from '@openai/agents';
 
 const agent = new Agent({
   name: 'Assistant',
-  instructions: 'You are a helpful assistant',
+  instructions: 'You are a helpful assistant.',
 });
-
 const result = await run(
   agent,
   'Write a haiku about recursion in programming.',
 );
 console.log(result.finalOutput);
-// Code within the code,
-// Functions calling themselves,
-// Infinite loop's dance.
 ```
+
+### Build a realtime voice agent
+
+Use a [Realtime Agent](https://openai.github.io/openai-agents-js/guides/voice-agents/quickstart/) for low-latency, spoken interactions in the browser.
+
+```js
+import { RealtimeAgent, RealtimeSession } from '@openai/agents/realtime';
+
+const agent = new RealtimeAgent({
+  name: 'Assistant',
+  instructions: 'You are a helpful assistant.',
+});
+// Automatically connects your microphone and audio output in the browser via WebRTC.
+const session = new RealtimeSession(agent);
+await session.connect({ apiKey: '<client-api-key>' });
+```
+
+Set `OPENAI_API_KEY` in your server environment for sandbox and text agents. For browser-based voice agents, use your server to create a short-lived ephemeral client token and pass it to `session.connect(...)`.
 
 Explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory to see the SDK in action.
 

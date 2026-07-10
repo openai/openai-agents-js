@@ -16,31 +16,31 @@ import agentWithLifecycleHooks from '../../../../../../examples/docs/agents/agen
 import agentCloning from '../../../../../../examples/docs/agents/agentCloning.ts?raw';
 import agentForcingToolUse from '../../../../../../examples/docs/agents/agentForcingToolUse.ts?raw';
 
-智能体是 OpenAI Agents SDK 的主要构建块。一个**智能体**是经过如下配置的大型语言模型（LLM）：
+智能体是 OpenAI Agents SDK 的主要构建模块。**智能体**是经过以下配置的大语言模型（LLM）：
 
-- **Instructions** —— 告诉模型*它是谁*以及*应如何响应*的系统提示。
-- **模型** —— 要调用的 OpenAI 模型，以及任何可选的模型调优参数。
-- **工具** —— LLM 可调用以完成任务的函数或 API 列表。
+- **指令**——用于告知模型*自身角色*以及*应如何响应*的系统提示。
+- **模型**——要调用的 OpenAI 模型，以及任何可选的模型调优参数。
+- **工具**——LLM 可调用以完成任务的函数或 API 列表。
 
-<Code lang="typescript" code={simpleAgent} title="基础智能体定义" />
+<Code lang="typescript" code={simpleAgent} title="智能体基础定义" />
 
-> 当你想定义或自定义单个 `Agent` 时，请使用本页。如果你正在决定多个智能体应如何协作，请阅读[智能体编排](/openai-agents-js/zh/guides/multi-agent)。
+> 如果要定义或自定义单个 `Agent`，请使用本页面。如果要决定多个智能体应如何协作，请阅读[智能体编排](/openai-agents-js/zh/guides/multi-agent)。
 
-### 下一篇指南
+### 后续指南选择
 
-将本页作为智能体定义的中心。根据你接下来需要做出的决策，跳转到相邻指南。
+将本页面作为定义智能体的中心入口。根据接下来要做的决策，转到相应的指南。
 
-| 如果你想... | 接下来阅读 |
+| 如果您想要...... | 接下来阅读 |
 | --- | --- |
 | 选择模型或配置已存储的提示 | [模型](/openai-agents-js/zh/guides/models) |
 | 为智能体添加能力 | [工具](/openai-agents-js/zh/guides/tools) |
 | 为智能体提供隔离的文件系统工作区 | [概念](/openai-agents-js/zh/guides/sandbox-agents/concepts) |
-| 在管理器和交接之间做选择 | [智能体编排](/openai-agents-js/zh/guides/multi-agent) |
+| 在管理器与交接之间进行选择 | [智能体编排](/openai-agents-js/zh/guides/multi-agent) |
 | 配置交接行为 | [交接](/openai-agents-js/zh/guides/handoffs) |
 | 运行轮次、流式传输事件或管理状态 | [运行智能体](/openai-agents-js/zh/guides/running-agents) |
-| 检查最终输出、运行项或恢复 | [执行结果](/openai-agents-js/zh/guides/results) |
+| 检查最终输出、运行项或恢复执行 | [执行结果](/openai-agents-js/zh/guides/results) |
 
-本页其余部分将更详细地介绍每个 Agent 功能。
+本页面的其余部分将更详细地介绍智能体的各项功能。
 
 ---
 
@@ -48,26 +48,26 @@ import agentForcingToolUse from '../../../../../../examples/docs/agents/agentFor
 
 ### 基础配置
 
-`Agent` 构造函数接收单个配置对象。下面列出了最常用的属性。
+`Agent` 构造函数接受一个配置对象。下面列出了最常用的属性。
 
-| 属性 | 必填 | 描述 |
+| 属性 | 必需 | 说明 |
 | --- | --- | --- |
-| `name` | 是 | 简短的人类可读标识符。 |
-| `instructions` | 是 | 系统提示（字符串**或**函数 —— 参见[动态 instructions](#dynamic-instructions)）。 |
-| `prompt` | 否 | OpenAI Responses API 的 prompt 配置。接受静态 prompt 对象或函数。参见 [Prompt](/openai-agents-js/zh/guides/models#prompt)。 |
-| `handoffDescription` | 否 | 当此智能体作为交接工具提供时使用的简短描述。 |
-| `handoffs` | 否 | 将对话委派给专门的智能体。参见[组合模式](#composition-patterns)和[交接指南](/openai-agents-js/zh/guides/handoffs)。 |
+| `name` | 是 | 简短且易于理解的标识符。 |
+| `instructions` | 是 | 系统提示（字符串**或**函数——参见[动态指令](#dynamic-instructions)）。 |
+| `prompt` | 否 | OpenAI Responses API 提示配置。接受静态提示对象或函数。参见[提示](/openai-agents-js/zh/guides/models#prompt)。 |
+| `handoffDescription` | 否 | 此智能体作为交接工具提供时使用的简短说明。 |
+| `handoffs` | 否 | 将对话委派给专家智能体。参见[组合模式](#composition-patterns)和[交接](/openai-agents-js/zh/guides/handoffs)指南。 |
 | `model` | 否 | 模型名称**或**自定义 [`Model`](/openai-agents-js/openai/agents/interfaces/model/) 实现。 |
-| `modelSettings` | 否 | 调优参数（temperature、top_p 等）。参见[模型](/openai-agents-js/zh/guides/models#modelsettings)。如果你需要的属性不在顶层，可以将它们放在 `providerData` 下。 |
+| `modelSettings` | 否 | 调优参数（temperature、top_p 等）。参见[模型](/openai-agents-js/zh/guides/models#modelsettings)。如果所需属性不在顶层，可以将其包含在 `providerData` 下。 |
 | `tools` | 否 | 模型可以调用的 [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) 实例数组。参见[工具](/openai-agents-js/zh/guides/tools)。 |
-| `mcpServers` | 否 | 智能体的由 MCP 支持的工具。参见 [MCP 集成](/openai-agents-js/zh/guides/mcp)。 |
-| `mcpConfig` | 否 | 本地 MCP 工具的选项，例如严格 schema、错误处理，以及带服务器前缀的工具名称。参见[智能体级 MCP 配置](/openai-agents-js/zh/guides/mcp#agent-level-mcp-configuration)。 |
-| `inputGuardrails` | 否 | 应用于此智能体链中第一个用户输入的护栏。参见[护栏](/openai-agents-js/zh/guides/guardrails)。 |
+| `mcpServers` | 否 | 智能体使用的 MCP 支持工具。参见 [MCP 集成](/openai-agents-js/zh/guides/mcp)。 |
+| `mcpConfig` | 否 | 本地 MCP 工具的选项，例如严格模式 schema、错误处理和带服务器前缀的工具名称。参见[智能体级 MCP 配置](/openai-agents-js/zh/guides/mcp#agent-level-mcp-configuration)。 |
+| `inputGuardrails` | 否 | 应用于此智能体链中首个用户输入的护栏。参见[护栏](/openai-agents-js/zh/guides/guardrails)。 |
 | `outputGuardrails` | 否 | 应用于此智能体最终输出的护栏。参见[护栏](/openai-agents-js/zh/guides/guardrails)。 |
-| `outputType` | 否 | 返回结构化输出而不是纯文本。参见[输出类型](#output-types)和[执行结果](/openai-agents-js/zh/guides/results#final-output)。 |
-| `toolUseBehavior` | 否 | 控制函数工具结果是回传给模型，还是结束运行。参见[强制工具使用](#forcing-tool-use)。 |
-| `resetToolChoice` | 否 | 工具调用后将 `toolChoice` 重置为默认值（默认：`true`），以防止工具使用循环。参见[强制工具使用](#forcing-tool-use)。 |
-| `handoffOutputTypeWarningEnabled` | 否 | 当交接输出类型不一致时发出警告（默认：`true`）。参见[执行结果](/openai-agents-js/zh/guides/results#final-output)。 |
+| `outputType` | 否 | 返回结构化输出，而非纯文本。参见[输出类型](#output-types)和[执行结果](/openai-agents-js/zh/guides/results#final-output)。 |
+| `toolUseBehavior` | 否 | 控制函数工具结果是返回模型继续处理，还是结束运行。参见[强制使用工具](#forcing-tool-use)。 |
+| `resetToolChoice` | 否 | 在工具调用后将 `toolChoice` 重置为默认值（默认值：`true`），以防止工具使用循环。参见[强制使用工具](#forcing-tool-use)。 |
+| `handoffOutputTypeWarningEnabled` | 否 | 当交接输出类型不同时发出警告（默认值：`true`）。参见[执行结果](/openai-agents-js/zh/guides/results#final-output)。 |
 
 <Code lang="typescript" code={agentWithTools} title="带工具的智能体" />
 
@@ -75,7 +75,7 @@ import agentForcingToolUse from '../../../../../../examples/docs/agents/agentFor
 
 ### 上下文
 
-智能体的**上下文类型是泛型**，即 `Agent<TContext, TOutput>`。*上下文*是你创建并传给 `Runner.run()` 的依赖注入对象。它会转发给每个工具、护栏、交接等，并且适合用于存储状态或提供共享服务（数据库连接、用户元数据、功能标志等）。
+智能体**在上下文类型上使用泛型**，即 `Agent<TContext, TOutput>`。*上下文*是您创建并传递给 `Runner.run()` 的依赖注入对象。它会传递给每个工具、护栏、交接等组件，可用于存储状态或提供共享服务（数据库连接、用户元数据、功能标志等）。
 
 <Code lang="typescript" code={agentWithContext} title="带上下文的智能体" />
 
@@ -83,7 +83,7 @@ import agentForcingToolUse from '../../../../../../examples/docs/agents/agentFor
 
 ### 输出类型
 
-默认情况下，智能体返回**纯文本**（`string`）。如果你希望模型返回结构化对象，可以指定 `outputType` 属性。SDK 接受：
+默认情况下，智能体返回**纯文本**（`string`）。如果希望模型返回结构化对象，可以指定 `outputType` 属性。SDK 接受：
 
 1. [Zod](https://github.com/colinhacks/zod) schema（`z.object({...})`）。
 2. 任何兼容 JSON Schema 的对象。
@@ -94,88 +94,88 @@ import agentForcingToolUse from '../../../../../../examples/docs/agents/agentFor
   title="使用 Zod 的结构化输出"
 />
 
-提供 `outputType` 后，SDK 会自动使用 [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs)，而不是纯文本。
+提供 `outputType` 后，SDK 会自动使用 [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs)，而非纯文本。
 
 ---
 
 ### OpenAI 平台映射
 
-一些智能体概念会直接映射到 OpenAI 平台概念，另一些则在运行智能体时配置，而不是在定义智能体时配置。
+一些智能体概念可直接映射到 OpenAI 平台概念，另一些则需要在运行智能体时配置，而不是在定义智能体时配置。
 
 | SDK 概念 | OpenAI 指南 | 适用场景 |
 | --- | --- | --- |
-| `outputType` | [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) | 智能体应返回类型化 JSON 或经 Zod 验证的对象，而不是文本。 |
-| `tools` / 托管工具 | [工具指南](https://developers.openai.com/api/docs/guides/tools) | 模型应搜索、检索、执行代码，或调用你的函数/工具。 |
-| `conversationId` / `previousResponseId` | [对话状态](https://developers.openai.com/api/docs/guides/conversation-state) | 你希望 OpenAI 在多个轮次之间持久化或串联对话状态。 |
+| `outputType` | [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) | 智能体应返回带类型的 JSON 或经 Zod 验证的对象，而非文本。 |
+| `tools` / 托管工具 | [工具指南](https://developers.openai.com/api/docs/guides/tools) | 模型需要执行搜索、检索、运行代码，或调用您的函数或工具。 |
+| `conversationId` / `previousResponseId` | [对话状态](https://developers.openai.com/api/docs/guides/conversation-state) | 您希望 OpenAI 在不同轮次之间持久化或串联对话状态。 |
 
-`conversationId` 和 `previousResponseId` 是运行时控制项，不是 `Agent` 构造函数字段。当你需要这些 SDK 入口点时，请使用[运行智能体](/openai-agents-js/zh/guides/running-agents)。
+`conversationId` 和 `previousResponseId` 是运行时控制项，而不是 `Agent` 构造函数字段。需要使用这些 SDK 入口点时，请参阅[运行智能体](/openai-agents-js/zh/guides/running-agents)。
 
 ---
 
 ## 组合模式
 
-当智能体参与更大的工作流时，最常出现两个 SDK 入口点：
+当智能体参与更大的工作流时，最常用的 SDK 入口点有两种：
 
-1. **管理器（agents as tools）** —— 中央智能体拥有对话控制权，并调用以工具形式暴露的专门智能体。
-2. **交接** —— 初始智能体在识别用户请求后，将整个对话委派给专门智能体。
+1. **管理器（agents as tools）**——由一个中心智能体负责对话，并调用以工具形式提供的专家智能体。
+2. **交接**——初始智能体识别用户请求后，将整个对话委派给专家智能体。
 
-这些方法相互补充。管理器让你可以在一个地方强制执行护栏或速率限制，而交接让每个智能体专注于单一任务，无需保留对话控制权。关于设计取舍以及何时选择哪种模式，请参见[智能体编排](/openai-agents-js/zh/guides/multi-agent)。
+这两种方法可以互补。管理器提供了一个统一位置来实施护栏或速率限制，而交接则让每个智能体专注于单项任务，无需继续掌控对话。有关设计权衡以及何时选择各模式，请参阅[智能体编排](/openai-agents-js/zh/guides/multi-agent)。
 
 #### 管理器（agents as tools）
 
-在此模式中，管理器绝不移交控制权 —— LLM 使用工具，管理器汇总最终答案。在[工具指南](/openai-agents-js/zh/guides/tools#agents-as-tools)中了解更多。
+在此模式下，管理器始终保留控制权——LLM 使用工具，由管理器总结最终答案。更多信息请参阅[工具指南](/openai-agents-js/zh/guides/tools#4-agents-as-tools)。
 
 <Code lang="typescript" code={agentsAsTools} title="Agents as tools" />
 
 #### 交接
 
-使用交接时，分流智能体负责路由请求；但一旦发生交接，专门智能体就会接管对话，直到产生最终输出。这能保持提示简短，并让你可以独立推理每个智能体。在[交接指南](/openai-agents-js/zh/guides/handoffs)中了解更多。
+使用交接时，分流智能体负责路由请求；但交接发生后，专家智能体将接管对话，直至生成最终输出。这样可以保持提示简短，并让您能够单独分析每个智能体。更多信息请参阅[交接](/openai-agents-js/zh/guides/handoffs)指南。
 
 <Code lang="typescript" code={agentWithHandoffs} title="带交接的智能体" />
 
-如果你的交接目标可能返回不同输出类型，优先使用 `Agent.create(...)` 而不是 `new Agent(...)`。这样 TypeScript 可以在整个交接图中推断可能的 `finalOutput` 形状的联合类型，并避免由 `handoffOutputTypeWarningEnabled` 控制的运行时警告。参见[执行结果指南](/openai-agents-js/zh/guides/results#final-output)获取端到端示例。
+如果交接目标可能返回不同的输出类型，应优先使用 `Agent.create(...)`，而非 `new Agent(...)`。这样，TypeScript 就能推断整个交接图中所有可能的 `finalOutput` 结构的联合类型，并避免由 `handoffOutputTypeWarningEnabled` 控制的运行时警告。有关端到端代码示例，请参阅[执行结果](/openai-agents-js/zh/guides/results#final-output)指南。
 
 ---
 
-## 高级配置和运行时控制
+## 高级配置与运行时控制
 
-### 动态 instructions
+### 动态指令
 
-`instructions` 可以是**函数**而不是字符串。该函数接收当前 `RunContext` 和 Agent 实例，并可以返回字符串*或* `Promise<string>`。
+`instructions` 可以是**函数**，而非字符串。该函数接收当前 `RunContext` 和 Agent 实例，并可返回字符串*或* `Promise<string>`。
 
 <Code
   lang="typescript"
   code={agentWithDynamicInstructions}
-  title="带动态 instructions 的智能体"
+  title="使用动态指令的智能体"
 />
 
 同步函数和 `async` 函数均受支持。
 
 ---
 
-### 动态 prompt
+### 动态提示
 
-`prompt` 支持与 `instructions` 相同的回调形状，但返回的是 prompt 配置对象，而不是字符串。当 prompt ID、版本或变量取决于当前运行上下文时，这很有用。
+`prompt` 支持与 `instructions` 相同形式的回调，但返回提示配置对象，而不是字符串。当提示 ID、版本或变量取决于当前运行上下文时，此功能很有用。
 
 <Code
   lang="typescript"
   code={agentWithDynamicPrompt}
-  title="带动态 prompt 的智能体"
+  title="使用动态提示的智能体"
 />
 
-仅在使用 OpenAI Responses API 时支持此功能。同步函数和 `async` 函数均受支持。
+此功能仅在使用 OpenAI Responses API 时受支持。同步函数和 `async` 函数均受支持。
 
 ---
 
 ### 生命周期钩子
 
-对于高级用例，你可以通过监听事件来观察智能体生命周期。
+对于高级用例，您可以通过监听事件来观察智能体的生命周期。
 
-`Agent` 实例会为该特定智能体实例发出生命周期事件，而 `Runner` 则会在整个运行范围内以单个流发出相同名称的事件。这对于多智能体工作流很有用，因为你可能希望在一个地方观察交接和工具调用。
+`Agent` 实例会针对该特定智能体实例发出生命周期事件，而 `Runner` 会将整个运行过程中同名的事件作为单个事件流发出。这对于多智能体工作流很有用，因为您可以在一个位置观察交接和工具调用。
 
-共享事件名称如下：
+共享的事件名称如下：
 
-| 事件 | Agent 钩子参数 | Runner 钩子参数 |
+| 事件 | 智能体钩子参数 | Runner 钩子参数 |
 | --- | --- | --- |
 | `agent_start` | `(context, agent, turnInput?)` | `(context, agent, turnInput?)` |
 | `agent_end` | `(context, output)` | `(context, agent, output)` |
@@ -193,41 +193,41 @@ import agentForcingToolUse from '../../../../../../examples/docs/agents/agentFor
 
 ### 护栏
 
-护栏允许你验证或转换用户输入和智能体输出。它们通过 `inputGuardrails` 和 `outputGuardrails` 数组配置。详情请参见[护栏](/openai-agents-js/zh/guides/guardrails)。
+护栏允许您验证或转换用户输入和智能体输出。护栏通过 `inputGuardrails` 和 `outputGuardrails` 数组进行配置。详情请参阅[护栏](/openai-agents-js/zh/guides/guardrails)指南。
 
 ---
 
-### 智能体克隆 / 复制
+### 智能体的克隆与复制
 
-需要现有智能体的稍微修改版本？使用 `clone()` 方法，它会返回一个全新的 `Agent` 实例。
+需要现有智能体的略微修改版本？请使用 `clone()` 方法，该方法会返回一个全新的 `Agent` 实例。
 
-<Code lang="typescript" code={agentCloning} title="克隆智能体" />
+<Code lang="typescript" code={agentCloning} title="智能体克隆" />
 
 ---
 
-### 强制工具使用
+### 强制使用工具
 
-提供工具并不能保证 LLM 会调用其中某个工具。你可以使用 `modelSettings.toolChoice` **强制**使用工具：
+提供工具并不能保证 LLM 会调用其中之一。您可以使用 `modelSettings.toolChoice` **强制**使用工具：
 
-1. `'auto'`（默认）—— LLM 自行决定是否使用工具。
-2. `'required'` —— LLM *必须*调用工具（它可以选择调用哪一个）。
-3. `'none'` —— LLM **不得**调用工具。
-4. 特定工具名称，例如 `'calculator'` —— LLM 必须调用该特定工具。
+1. `'auto'`（默认值）——由 LLM 决定是否使用工具。
+2. `'required'`——LLM *必须*调用工具，但可以选择调用哪个工具。
+3. `'none'`——LLM **不得**调用工具。
+4. 指定工具名称，例如 `'calculator'`——LLM 必须调用该特定工具。
 
-当可用工具是 OpenAI Responses 上的 `computerTool()` 时，`toolChoice: 'computer'` 是特殊值：它会强制使用 GA 内置计算机工具，而不是将 `'computer'` 当作普通函数名称。SDK 也接受兼容预览版的 computer 选择器以支持较旧集成，但新代码应优先使用 `'computer'`。如果没有可用的计算机工具，该字符串的行为与任何其他函数工具名称相同。
+当 OpenAI Responses 上的可用工具为 `computerTool()` 时，`toolChoice: 'computer'` 具有特殊含义：它会强制使用正式版内置计算机工具，而不是将 `'computer'` 视为普通函数名称。SDK 也接受与预览版兼容的计算机工具选择器，以支持较旧的集成，但新代码应优先使用 `'computer'`。如果没有可用的计算机工具，该字符串的行为与其他函数工具名称相同。
 
-<Code lang="typescript" code={agentForcingToolUse} title="强制工具使用" />
+<Code lang="typescript" code={agentForcingToolUse} title="强制使用工具" />
 
-当你使用延迟加载的 Responses 工具（例如 `toolNamespace()`）、带有 `deferLoading: true` 的函数工具，或带有 `deferLoading: true` 的托管 MCP 工具时，请将 `modelSettings.toolChoice` 保持为 `'auto'`。SDK 会拒绝按名称强制使用延迟工具或内置 `tool_search` 辅助工具，因为模型需要决定何时加载这些定义。完整的工具搜索设置请参见[工具](/openai-agents-js/zh/guides/tools#deferred-tool-loading-with-tool-search)。
+使用延迟加载的 Responses 工具时，例如 `toolNamespace()`、设置了 `deferLoading: true` 的函数工具，或设置了 `deferLoading: true` 的托管 MCP 工具，请将 `modelSettings.toolChoice` 保持为 `'auto'`。SDK 不允许按名称强制调用延迟加载的工具或内置 `tool_search` 辅助工具，因为需要由模型决定何时加载这些定义。有关完整的工具搜索设置，请参阅[工具](/openai-agents-js/zh/guides/tools#deferred-tool-loading-with-tool-search)指南。
 
-#### 无限循环预防
+#### 无限循环防范
 
-工具调用后，SDK 会自动将 `toolChoice` 重置回 `'auto'`。这可以防止模型进入无限循环，即反复尝试调用该工具。你可以通过 `resetToolChoice` 标志或配置 `toolUseBehavior` 覆盖此行为：
+工具调用后，SDK 会自动将 `toolChoice` 重置为 `'auto'`。这可以防止模型进入反复尝试调用工具的无限循环。您可以通过 `resetToolChoice` 标志或配置 `toolUseBehavior` 来覆盖此行为：
 
-- `'run_llm_again'`（默认）—— 使用工具结果再次运行 LLM。
-- `'stop_on_first_tool'` —— 将第一个工具结果视为最终答案。
-- `{ stopAtToolNames: ['my_tool'] }` —— 当列出的任一工具被调用时停止。
-- `(context, toolResults) => ...` —— 自定义函数，返回运行是否应结束。
+- `'run_llm_again'`（默认值）——使用工具结果再次运行 LLM。
+- `'stop_on_first_tool'`——将第一个工具结果视为最终答案。
+- `{ stopAtToolNames: ['my_tool'] }`——调用列表中的任一工具时停止。
+- `(context, toolResults) => ...`——返回运行是否应结束的自定义函数。
 
 ```typescript
 const agent = new Agent({
@@ -236,16 +236,16 @@ const agent = new Agent({
 });
 ```
 
-注意：`toolUseBehavior` 仅适用于**函数工具**。托管工具始终返回给模型处理。
+注意：`toolUseBehavior` 仅适用于**函数工具**。托管工具始终会将结果返回给模型处理。
 
 ---
 
 ## 相关指南
 
-- [模型](/openai-agents-js/zh/guides/models)用于模型选择、已存储提示和提供商配置。
-- [工具](/openai-agents-js/zh/guides/tools)用于函数工具、托管工具、MCP 和 `agent.asTool()`。
-- [智能体编排](/openai-agents-js/zh/guides/multi-agent)用于在管理器、交接和代码驱动的编排之间做选择。
-- [交接](/openai-agents-js/zh/guides/handoffs)用于配置专门智能体委派。
-- [运行智能体](/openai-agents-js/zh/guides/running-agents)用于执行轮次、流式传输和对话状态。
-- [执行结果](/openai-agents-js/zh/guides/results)用于 `finalOutput`、运行项和恢复状态。
-- 在侧边栏中浏览 **@openai/agents** 下的完整 TypeDoc 参考。
+- [模型](/openai-agents-js/zh/guides/models)：模型选择、已存储的提示和提供商配置。
+- [工具](/openai-agents-js/zh/guides/tools)：函数工具、托管工具、MCP 和 `agent.asTool()`。
+- [智能体编排](/openai-agents-js/zh/guides/multi-agent)：在管理器、交接和代码驱动的编排之间进行选择。
+- [交接](/openai-agents-js/zh/guides/handoffs)：配置专家委派。
+- [运行智能体](/openai-agents-js/zh/guides/running-agents)：执行轮次、流式传输和对话状态。
+- [执行结果](/openai-agents-js/zh/guides/results)：`finalOutput`、运行项和恢复状态。
+- 在侧边栏的 **@openai/agents** 下浏览完整的 TypeDoc 参考文档。

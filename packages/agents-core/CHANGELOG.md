@@ -1,5 +1,12 @@
 # @openai/agents-core
 
+## 0.13.1
+
+### Patch Changes
+
+- 532ab2b: fix: support openai-node v6.46.0 usage types
+- ec48462: feat: add GPT-5.6 model defaults, reasoning, and sandbox compaction support
+
 ## 0.13.0
 
 ## 0.12.1

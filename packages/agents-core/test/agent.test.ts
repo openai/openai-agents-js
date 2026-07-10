@@ -97,6 +97,18 @@ describe('Agent', () => {
       { reasoning: { effort: 'medium' }, text: { verbosity: 'low' } },
     ],
     ['gpt-5.5', { reasoning: { effort: 'none' }, text: { verbosity: 'low' } }],
+    [
+      'gpt-5.6-sol',
+      { reasoning: { effort: 'none' }, text: { verbosity: 'low' } },
+    ],
+    [
+      'gpt-5.6-terra',
+      { reasoning: { effort: 'none' }, text: { verbosity: 'low' } },
+    ],
+    [
+      'gpt-5.6-luna',
+      { reasoning: { effort: 'none' }, text: { verbosity: 'low' } },
+    ],
     ['gpt-5-mini', { text: { verbosity: 'low' } }],
     ['gpt-5-chat-latest', {}],
   ])(
@@ -110,6 +122,18 @@ describe('Agent', () => {
       expect(agent.modelSettings).toEqual(expected);
     },
   );
+
+  it('accepts max reasoning effort for GPT-5.6 models', () => {
+    const agent = new Agent({
+      name: 'MaxReasoningAgent',
+      model: 'gpt-5.6',
+      modelSettings: { reasoning: { effort: 'max' } },
+    });
+
+    expect(agent.modelSettings).toMatchObject({
+      reasoning: { effort: 'max' },
+    });
+  });
 
   it('uses generic defaults when an explicit model is not a GPT-5 model name', () => {
     const agent = new Agent({

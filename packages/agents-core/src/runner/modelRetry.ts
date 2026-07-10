@@ -720,7 +720,10 @@ export async function getResponseWithRetryAndProcessed<TProcessed>(
         accumulatedUsage.add(responseUsage);
         responseUsage = accumulatedUsage;
       }
-      const responseWithUsage = { ...response, usage: responseUsage };
+      const responseWithUsage =
+        failedRequestAttempts === 0 && failedResponseAttempts === 0
+          ? response
+          : { ...response, usage: responseUsage };
       const processed = await processResponse(responseWithUsage);
       responseProcessingCompleted = true;
       await validateProcessedResponse?.(processed);
