@@ -994,6 +994,35 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               response: ModelResponse;
               processed: ProcessedResponse<TContext>;
             };
+            const commitResponse = (
+              response: ModelResponse,
+              processedResponse: ProcessedResponse<TContext>,
+            ) => {
+              state._lastTurnResponse = response;
+              if (serverConversationTracker) {
+                serverConversationTracker.markInputAsSent(
+                  preparedCall.sourceItems,
+                  {
+                    filterApplied: preparedCall.filterApplied,
+                    allTurnItems: preparedCall.turnInput,
+                  },
+                );
+              }
+              state._modelResponses.push(response);
+              state._context.usage.add(response.usage);
+              state._noActiveAgentRun = false;
+
+              // After each turn record the items echoed by the server so future requests only
+              // include the incremental inputs that have not yet been acknowledged.
+              serverConversationTracker?.trackServerItems(response);
+              if (serverConversationTracker) {
+                state.setConversationContext(
+                  serverConversationTracker.conversationId,
+                  serverConversationTracker.previousResponseId,
+                );
+              }
+              state._lastProcessedResponse = processedResponse;
+            };
             try {
               retryResult = await getResponseWithRetryAndProcessed(
                 preparedCall.model,
@@ -1010,7 +1039,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                     options.toolNotFoundBehavior,
                   );
                   lastProcessedResponse = processedResponse;
-                  await guardrailTracker.awaitCompletion();
+                  try {
+                    await guardrailTracker.awaitCompletion();
+                  } catch (error) {
+                    // Preserve a completed model response before surfacing a guardrail failure.
+                    commitResponse(response, processedResponse);
+                    throw error;
+                  }
                   return processedResponse;
                 },
                 async (processedResponse) => {
@@ -1039,40 +1074,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 processed: lastProcessedResponse,
               };
             }
-            state._lastTurnResponse = retryResult.response;
-            if (serverConversationTracker) {
-              serverConversationTracker.markInputAsSent(
-                preparedCall.sourceItems,
-                {
-                  filterApplied: preparedCall.filterApplied,
-                  allTurnItems: preparedCall.turnInput,
-                },
-              );
-            }
-            state._modelResponses.push(state._lastTurnResponse);
-            state._context.usage.add(state._lastTurnResponse.usage);
-            state._noActiveAgentRun = false;
-
-            // After each turn record the items echoed by the server so future requests only
-            // include the incremental inputs that have not yet been acknowledged.
-            serverConversationTracker?.trackServerItems(
-              state._lastTurnResponse,
-            );
-            if (serverConversationTracker) {
-              state.setConversationContext(
-                serverConversationTracker.conversationId,
-                serverConversationTracker.previousResponseId,
-              );
-            }
-
-            state._lastProcessedResponse = retryResult.processed;
+            commitResponse(retryResult.response, retryResult.processed);
 
             const turnResult = await resolveTurnAfterModelResponse(
               state._currentAgent,
               state._originalInput,
               state._generatedItems,
-              state._lastTurnResponse,
-              state._lastProcessedResponse!,
+              retryResult.response,
+              retryResult.processed,
               this,
               state,
               toolErrorFormatter,

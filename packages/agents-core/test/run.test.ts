@@ -1839,12 +1839,11 @@ describe('Runner.run', () => {
     });
 
     it('throws InputGuardrailTripwireTriggered when parallel guardrail trips with structured output and model returns non-JSON', async () => {
-      const fakeModel = new FakeModel([
-        {
-          output: [fakeModelMessage('I am sorry, this is plain text not JSON')],
-          usage: new Usage(),
-        },
-      ]);
+      const response: ModelResponse = {
+        output: [fakeModelMessage('I am sorry, this is plain text not JSON')],
+        usage: new Usage({ inputTokens: 2, outputTokens: 3, totalTokens: 5 }),
+      };
+      const fakeModel = new FakeModel([response]);
 
       const agent = new Agent({
         name: 'GuardrailPriority',
@@ -1865,9 +1864,18 @@ describe('Runner.run', () => {
         ],
       });
 
-      await expect(run(agent, 'test')).rejects.toBeInstanceOf(
-        InputGuardrailTripwireTriggered,
-      );
+      try {
+        await run(agent, 'test');
+        throw new Error('Expected the input guardrail to trip.');
+      } catch (error) {
+        expect(error).toBeInstanceOf(InputGuardrailTripwireTriggered);
+        const tripwireError = error as InputGuardrailTripwireTriggered;
+        expect(tripwireError.state?._lastTurnResponse).toBe(response);
+        expect(tripwireError.state?._modelResponses).toEqual([response]);
+        expect(tripwireError.state?._context.usage.inputTokens).toBe(2);
+        expect(tripwireError.state?._context.usage.outputTokens).toBe(3);
+        expect(tripwireError.state?._context.usage.totalTokens).toBe(5);
+      }
     });
 
     it('keeps the current agent span attached when an input guardrail trips', async () => {
