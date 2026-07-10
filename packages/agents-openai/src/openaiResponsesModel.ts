@@ -2860,6 +2860,69 @@ export class OpenAIResponsesModel implements Model {
   /**
    * @internal
    */
+  protected _convertResponseOutputItems(
+    items: Array<Record<string, any>>,
+  ): protocol.OutputModelItem[] {
+    return convertToOutputItem(items as ResponseOutputItemWithFunctionResult[]);
+  }
+
+  /**
+   * @internal
+   */
+  protected _shouldEmitOutputTextDelta(
+    _event: Record<string, any>,
+    _outputItem: Record<string, any> | undefined,
+  ): boolean {
+    return true;
+  }
+
+  /**
+   * @internal
+   */
+  protected _getResponsesCreateRequestOverrides(
+    _request: ModelRequest,
+    _requestData: Record<string, any>,
+  ): Record<string, any> {
+    return {};
+  }
+
+  /**
+   * @internal
+   */
+  protected _getResponseUsage(response: OpenAI.Responses.Response): Usage {
+    return new Usage({
+      inputTokens: response.usage?.input_tokens ?? 0,
+      outputTokens: response.usage?.output_tokens ?? 0,
+      totalTokens: response.usage?.total_tokens ?? 0,
+      inputTokensDetails: { ...response.usage?.input_tokens_details },
+      outputTokensDetails: { ...response.usage?.output_tokens_details },
+      requestUsageEntries: [
+        toRequestUsageEntry(response.usage, 'responses.create'),
+      ],
+    });
+  }
+
+  /**
+   * @internal
+   */
+  protected _getStreamedResponseUsage(
+    response: OpenAI.Responses.Response,
+  ): protocol.UsageData {
+    return {
+      inputTokens: response.usage?.input_tokens ?? 0,
+      outputTokens: response.usage?.output_tokens ?? 0,
+      totalTokens: response.usage?.total_tokens ?? 0,
+      inputTokensDetails: { ...response.usage?.input_tokens_details },
+      outputTokensDetails: { ...response.usage?.output_tokens_details },
+      requestUsageEntries: [
+        toRequestUsageEntry(response.usage, 'responses.create'),
+      ],
+    };
+  }
+
+  /**
+   * @internal
+   */
   protected async _fetchResponse(
     request: ModelRequest,
     stream: true,
@@ -3040,6 +3103,11 @@ export class OpenAIResponsesModel implements Model {
       };
     }
 
+    requestData = {
+      ...requestData,
+      ...this._getResponsesCreateRequestOverrides(request, requestData),
+    };
+
     // Keep the transport mode aligned with the calling path even if extra_body includes stream.
     requestData.stream = stream;
 
@@ -3097,17 +3165,10 @@ export class OpenAIResponsesModel implements Model {
     });
 
     const output: ModelResponse = {
-      usage: new Usage({
-        inputTokens: response.usage?.input_tokens ?? 0,
-        outputTokens: response.usage?.output_tokens ?? 0,
-        totalTokens: response.usage?.total_tokens ?? 0,
-        inputTokensDetails: { ...response.usage?.input_tokens_details },
-        outputTokensDetails: { ...response.usage?.output_tokens_details },
-        requestUsageEntries: [
-          toRequestUsageEntry(response.usage, 'responses.create'),
-        ],
-      }),
-      output: convertToOutputItem(response.output),
+      usage: this._getResponseUsage(response),
+      output: this._convertResponseOutputItems(
+        response.output as Array<Record<string, any>>,
+      ),
       responseId: response.id,
       requestId: getOpenAIResponseRequestId(response),
       providerData: response,
@@ -3136,8 +3197,24 @@ export class OpenAIResponsesModel implements Model {
       const response = await this._fetchResponse(request, true);
 
       let finalResponse: OpenAI.Responses.Response | undefined;
+      const outputItemsByIndex = new Map<number, Record<string, any>>();
       for await (const event of response) {
         const eventType = (event as { type?: string }).type;
+        if (eventType === 'response.output_item.added') {
+          const outputItemAdded = event as unknown as {
+            output_index?: number;
+            item?: Record<string, any>;
+          };
+          if (
+            typeof outputItemAdded.output_index === 'number' &&
+            outputItemAdded.item
+          ) {
+            outputItemsByIndex.set(
+              outputItemAdded.output_index,
+              outputItemAdded.item,
+            );
+          }
+        }
         if (eventType === 'response.created') {
           yield {
             type: 'response_started',
@@ -3152,27 +3229,16 @@ export class OpenAIResponsesModel implements Model {
             };
           finalResponse = terminalEvent.response;
           const { response, ...remainingEvent } = terminalEvent;
-          const { output, usage, id, ...remainingResponse } = response;
+          const { output, usage: _usage, id, ...remainingResponse } = response;
           yield {
             type: 'response_done',
             response: {
               id: id,
               requestId: getOpenAIResponseRequestId(response),
-              output: convertToOutputItem(output),
-              usage: {
-                inputTokens: usage?.input_tokens ?? 0,
-                outputTokens: usage?.output_tokens ?? 0,
-                totalTokens: usage?.total_tokens ?? 0,
-                inputTokensDetails: {
-                  ...usage?.input_tokens_details,
-                },
-                outputTokensDetails: {
-                  ...usage?.output_tokens_details,
-                },
-                requestUsageEntries: [
-                  toRequestUsageEntry(usage, 'responses.create'),
-                ],
-              },
+              output: this._convertResponseOutputItems(
+                output as Array<Record<string, any>>,
+              ),
+              usage: this._getStreamedResponseUsage(response),
               providerData: remainingResponse,
             },
             providerData: remainingEvent,
@@ -3187,14 +3253,26 @@ export class OpenAIResponsesModel implements Model {
             };
           }
         } else if (eventType === 'response.output_text.delta') {
-          const { delta, ...remainingEvent } = event as {
+          const { delta, ...remainingEvent } = event as unknown as {
             delta: string;
+            output_index?: number;
           } & Record<string, any>;
-          yield {
-            type: 'output_text_delta',
-            delta: delta,
-            providerData: remainingEvent,
-          };
+          const outputItem =
+            typeof remainingEvent.output_index === 'number'
+              ? outputItemsByIndex.get(remainingEvent.output_index)
+              : undefined;
+          if (
+            this._shouldEmitOutputTextDelta(
+              event as unknown as Record<string, any>,
+              outputItem,
+            )
+          ) {
+            yield {
+              type: 'output_text_delta',
+              delta: delta,
+              providerData: remainingEvent,
+            };
+          }
         }
 
         yield {
@@ -3614,8 +3692,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
     mergeQueryParamsIntoURL(
       baseURL,
       clientWithInternals._options?.defaultQuery as
-        | Record<string, unknown>
-        | undefined,
+        Record<string, unknown> | undefined,
     );
     if (explicitBaseQuery && Array.from(explicitBaseQuery.keys()).length > 0) {
       const explicitTopLevelKeys = new Set<string>();
@@ -3802,8 +3879,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
   }
 
   #createWebSocketRequestTimeoutDeadline():
-    | WebSocketRequestTimeoutDeadline
-    | undefined {
+    WebSocketRequestTimeoutDeadline | undefined {
     const timeoutMs = this.#getWebSocketFrameReadTimeoutMs();
     if (
       typeof timeoutMs !== 'number' ||

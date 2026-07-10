@@ -129,6 +129,9 @@ importers:
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
+      '@openai/agents-openai':
+        specifier: workspace:*
+        version: link:../../packages/agents-openai
       chalk:
         specifier: ^5.4.1
         version: 5.4.1
