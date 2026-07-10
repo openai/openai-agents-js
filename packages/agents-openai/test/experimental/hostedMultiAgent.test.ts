@@ -841,6 +841,87 @@ describe('OpenAIHostedMultiAgentModel', () => {
     ]);
   });
 
+  it.each([
+    ['response.incomplete', 'incomplete', false],
+    ['response.incomplete', 'incomplete', true],
+    ['response.failed', 'failed', false],
+    ['response.failed', 'failed', true],
+    ['response.error', 'failed', false],
+    ['response.error', 'failed', true],
+  ] as const)(
+    'preserves terminal hosted response %s (status: %s, stream: %s)',
+    async (terminalEventType, expectedStatus, stream) => {
+      const rootFinal = {
+        type: 'message',
+        id: 'msg_terminal',
+        role: 'assistant',
+        status: 'completed',
+        phase: 'final_answer',
+        agent: { agent_name: '/root' },
+        content: [{ type: 'output_text', text: 'Partial answer.' }],
+      };
+      const fakeWebSocket = new FakeResponsesWebSocket([
+        {
+          type: 'response.created',
+          response: emptyResponse('resp_terminal'),
+        },
+        {
+          type: terminalEventType,
+          response: {
+            ...emptyResponse('resp_terminal'),
+            status: expectedStatus,
+            output: [rootFinal],
+            usage: {
+              input_tokens: 3,
+              output_tokens: 4,
+              total_tokens: 7,
+            },
+            ...(terminalEventType === 'response.incomplete'
+              ? { incomplete_details: { reason: 'max_output_tokens' } }
+              : {}),
+          },
+        },
+      ]);
+      const model = new TestHostedMultiAgentModel(fakeWebSocket);
+
+      const response = await getTestResponse(model, request(), stream);
+
+      expect(response.responseId ?? response.id).toBe('resp_terminal');
+      expect(response.providerData.status).toBe(expectedStatus);
+      expect(response.output).toHaveLength(1);
+      expect(response.usage).toMatchObject({
+        requests: 1,
+        inputTokens: 3,
+        outputTokens: 4,
+        totalTokens: 7,
+      });
+      if (terminalEventType === 'response.incomplete') {
+        expect(response.providerData.incomplete_details).toEqual({
+          reason: 'max_output_tokens',
+        });
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'throws standalone hosted WebSocket error events (stream: %s)',
+    async (stream) => {
+      const fakeWebSocket = new FakeResponsesWebSocket([
+        {
+          type: 'error',
+          code: 'server_error',
+          message: 'Something went wrong.',
+          param: null,
+        },
+      ]);
+      const model = new TestHostedMultiAgentModel(fakeWebSocket);
+
+      await expect(getTestResponse(model, request(), stream)).rejects.toThrow(
+        /Hosted Multi-agent WebSocket response failed/,
+      );
+    },
+  );
+
   it('keeps stable Responses requests free of hosted beta fields', async () => {
     const stableCreate = vi.fn().mockResolvedValue(emptyResponse());
     const client = {

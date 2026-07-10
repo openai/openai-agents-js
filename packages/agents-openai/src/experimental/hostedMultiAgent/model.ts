@@ -32,6 +32,12 @@ const HOSTED_COLLABORATION_ITEM_TYPES = new Set([
   'multi_agent_call',
   'multi_agent_call_output',
 ]);
+const HOSTED_TERMINAL_RESPONSE_EVENT_TYPES = new Set([
+  'response.completed',
+  'response.failed',
+  'response.incomplete',
+  'response.error',
+]);
 
 type ResponsesWebSocketLike = Pick<ResponsesWS, 'send' | 'close'> &
   AsyncIterable<Record<string, any>>;
@@ -42,10 +48,17 @@ type ActiveHostedResponse = {
   pendingCallIds: Set<string>;
   emittedCallIds: Set<string>;
   queuedFunctionCalls: Array<Record<string, any>>;
-  completedEvent?: Record<string, any>;
+  terminalEvent?: Record<string, any>;
   fallbackInput: Array<Record<string, any>>;
   requestUsages: Array<OpenAI.Responses.ResponseUsage | undefined>;
 };
+
+function isHostedTerminalResponseEventType(eventType: unknown): boolean {
+  return (
+    typeof eventType === 'string' &&
+    HOSTED_TERMINAL_RESPONSE_EVENT_TYPES.has(eventType)
+  );
+}
 
 type HostedWebSocketTransportOptions = {
   extraHeaders?: Record<string, unknown>;
@@ -330,7 +343,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
 
     let response: OpenAI.Responses.Response | undefined;
     for await (const event of events) {
-      if (event.type === 'response.completed') {
+      if (isHostedTerminalResponseEventType(event.type)) {
         response = event.response as OpenAI.Responses.Response;
       }
     }
@@ -382,8 +395,8 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
           );
         }
 
-        if (activeResponse.completedEvent) {
-          this.#continueCompletedResponse(
+        if (activeResponse.terminalEvent) {
+          this.#continueTerminalResponse(
             activeResponse,
             requestData,
             outputs,
@@ -482,19 +495,15 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
           for (const callId of injectingCallIds) {
             activeResponse.pendingCallIds.delete(callId);
           }
-        } else if (eventType === 'response.completed') {
-          activeResponse.completedEvent = event;
-        } else if (
-          eventType === 'error' ||
-          eventType === 'response.failed' ||
-          eventType === 'response.incomplete'
-        ) {
+        } else if (isHostedTerminalResponseEventType(eventType)) {
+          activeResponse.terminalEvent = event;
+        } else if (eventType === 'error') {
           throw new Error(
             `Hosted Multi-agent WebSocket response failed: ${JSON.stringify(event)}`,
           );
         }
 
-        if (eventType !== 'response.completed') {
+        if (!isHostedTerminalResponseEventType(eventType)) {
           yield event;
         }
 
@@ -508,9 +517,9 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
           return;
         }
 
-        if (activeResponse.completedEvent && pendingInjections === 0) {
+        if (activeResponse.terminalEvent && pendingInjections === 0) {
           if (activeResponse.fallbackInput.length > 0) {
-            this.#continueCompletedResponse(
+            this.#continueTerminalResponse(
               activeResponse,
               requestData,
               [],
@@ -520,8 +529,8 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
             continue;
           }
 
-          const completedEvent = activeResponse.completedEvent;
-          const response = completedEvent.response as Record<string, any>;
+          const terminalEvent = activeResponse.terminalEvent;
+          const response = terminalEvent.response as Record<string, any>;
           response.output = (
             Array.isArray(response.output) ? response.output : []
           ).filter(
@@ -537,7 +546,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
             ]),
           );
           this.#activeResponse = undefined;
-          yield { ...completedEvent, response };
+          yield { ...terminalEvent, response };
           return;
         }
       }
@@ -574,17 +583,17 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     return boundaryResponse;
   }
 
-  #continueCompletedResponse(
+  #continueTerminalResponse(
     activeResponse: ActiveHostedResponse,
     requestData: Record<string, any>,
     functionOutputs: Array<Record<string, any>>,
     webSocket: ResponsesWebSocketLike,
   ): void {
-    const completedResponse = activeResponse.completedEvent?.response as
+    const terminalResponse = activeResponse.terminalEvent?.response as
       Record<string, any> | undefined;
-    if (!completedResponse?.id) {
+    if (!terminalResponse?.id) {
       throw new Error(
-        'Hosted Multi-agent could not continue after a completed response.',
+        'Hosted Multi-agent could not continue after a terminal response.',
       );
     }
 
@@ -594,17 +603,17 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     ];
     if (continuationInput.length === 0) {
       throw new Error(
-        'Hosted Multi-agent completed response continuation requires function outputs.',
+        'Hosted Multi-agent terminal response continuation requires function outputs.',
       );
     }
 
     activeResponse.requestUsages.push(
-      completedResponse.usage as OpenAI.Responses.ResponseUsage | undefined,
+      terminalResponse.usage as OpenAI.Responses.ResponseUsage | undefined,
     );
     const fallbackFrame = toResponseCreateFrame(requestData);
     fallbackFrame.input = continuationInput;
     if (fallbackFrame.conversation == null) {
-      fallbackFrame.previous_response_id = completedResponse.id;
+      fallbackFrame.previous_response_id = terminalResponse.id;
     } else {
       delete fallbackFrame.previous_response_id;
     }
@@ -613,7 +622,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     activeResponse.responseTemplate = undefined;
     activeResponse.pendingCallIds.clear();
     activeResponse.queuedFunctionCalls = [];
-    activeResponse.completedEvent = undefined;
+    activeResponse.terminalEvent = undefined;
     activeResponse.fallbackInput = [];
     webSocket.send(fallbackFrame as any);
   }
