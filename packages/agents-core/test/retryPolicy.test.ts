@@ -270,6 +270,49 @@ describe('retry policies', () => {
     expect(attempts).toBe(1);
   });
 
+  it('does not retry structured output after provider-hosted tools run', async () => {
+    let attempts = 0;
+    const hostedToolCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      id: 'hosted_search_1',
+      name: 'web_search_call',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const model: Model = {
+      async getResponse() {
+        attempts += 1;
+        return {
+          usage: new Usage({ requests: 1 }),
+          output: [
+            hostedToolCall,
+            fakeModelMessage('not valid structured output'),
+          ],
+        };
+      },
+      async *getStreamedResponse() {
+        yield* [];
+      },
+    };
+    const agent = new Agent({
+      name: 'HostedToolStructuredOutputRetryBoundaryAgent',
+      model,
+      outputType: z.object({ summary: z.string() }),
+      modelSettings: {
+        retry: {
+          maxRetries: 1,
+          backoff: { initialDelayMs: 0, jitter: false },
+          policy: () => true,
+        },
+      },
+    });
+
+    await expect(run(agent, 'hello')).rejects.toBeInstanceOf(
+      ModelBehaviorError,
+    );
+    expect(attempts).toBe(1);
+  });
+
   it('checks parallel input guardrails before retrying structured output parsing failures', async () => {
     let attempts = 0;
     let markModelCalled!: () => void;

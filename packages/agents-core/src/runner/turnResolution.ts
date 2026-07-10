@@ -5,7 +5,10 @@ import {
   RunItem,
   RunMessageOutputItem,
   RunToolApprovalItem,
+  RunToolCallItem,
   RunToolCallOutputItem,
+  RunToolSearchCallItem,
+  RunToolSearchOutputItem,
 } from '../items';
 import logger from '../logger';
 import { ModelResponse } from '../model';
@@ -1307,7 +1310,14 @@ export async function validateProcessedResponseFinalOutput(
 ): Promise<void> {
   if (
     agent.outputType === 'text' ||
-    processedResponse.hasToolsOrApprovalsToRun()
+    processedResponse.hasToolsOrApprovalsToRun() ||
+    processedResponse.newItems.some(
+      (item) =>
+        (item instanceof RunToolCallItem &&
+          item.rawItem.type === 'hosted_tool_call') ||
+        item instanceof RunToolSearchCallItem ||
+        item instanceof RunToolSearchOutputItem,
+    )
   ) {
     return;
   }
