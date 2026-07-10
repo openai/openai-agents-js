@@ -405,6 +405,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
         },
         Boolean(this.#activeResponse),
         builtRequest.signal,
+        requestTimeoutDeadline,
       );
       let pendingInjections = 0;
       const injectingCallIds = new Set<string>();
@@ -686,30 +687,31 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     transportOptions: HostedWebSocketTransportOptions,
     activeResponse: boolean,
     signal: AbortSignal | undefined,
+    requestTimeoutDeadline: WebSocketRequestTimeoutDeadline | undefined,
   ): Promise<ResponsesWebSocketLike> {
     const transportOverridesKey = getTransportOverridesKey(
       this._client,
       transportOptions,
     );
     if (activeResponse) {
-      if (
-        transportOverridesKey !== this.#webSocketTransportOverridesKey ||
-        !this.#webSocket
-      ) {
+      if (transportOverridesKey !== this.#webSocketTransportOverridesKey) {
         throw new UserError(
           'An active hosted response must be resumed with the same WebSocket transport headers and query.',
         );
       }
-      if (isReusableWebSocket(this.#webSocket)) {
-        return this.#webSocket;
+      if (this.#webSocket) {
+        if (isReusableWebSocket(this.#webSocket)) {
+          return this.#webSocket;
+        }
+        this.#dropWebSocketConnection();
+        this.#webSocketTransportOverridesKey = transportOverridesKey;
       }
-      this.#dropWebSocketConnection();
-      this.#webSocketTransportOverridesKey = transportOverridesKey;
     }
 
     const creationOptions = await this.#prepareWebSocketCreationOptions(
       transportOptions,
       signal,
+      requestTimeoutDeadline,
     );
     const connectionURL = creationOptions.client.buildURL(
       '/responses',
@@ -745,10 +747,17 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
   async #prepareWebSocketCreationOptions(
     transportOptions: HostedWebSocketTransportOptions,
     signal: AbortSignal | undefined,
+    requestTimeoutDeadline: WebSocketRequestTimeoutDeadline | undefined,
   ): Promise<HostedWebSocketCreationOptions> {
     const client = this._client as OpenAIClientInternals;
     if (typeof client._callApiKey === 'function') {
-      await withAbortSignal(client._callApiKey(), signal);
+      await this.#awaitWebSocketRequestTimedOperation(
+        client._callApiKey(),
+        signal,
+        requestTimeoutDeadline,
+        (configuredTimeoutMs) =>
+          `Hosted Multi-agent WebSocket auth header preparation timed out after ${configuredTimeoutMs}ms.`,
+      );
     }
     const websocketClient = createWebSocketClient(
       client,
@@ -762,13 +771,16 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     );
     const authHeaders =
       typeof client.authHeaders === 'function'
-        ? await withAbortSignal(
+        ? await this.#awaitWebSocketRequestTimedOperation(
             client.authHeaders({
               method: 'get',
               path: websocketURL.pathname,
               ...(authHeaderQuery ? { query: authHeaderQuery } : {}),
             }),
             signal,
+            requestTimeoutDeadline,
+            (configuredTimeoutMs) =>
+              `Hosted Multi-agent WebSocket auth header preparation timed out after ${configuredTimeoutMs}ms.`,
           )
         : undefined;
 
@@ -829,6 +841,8 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     }
     const frameReadTimeout = this.#resolveWebSocketRequestTimeout(
       requestTimeoutDeadline,
+      (configuredTimeoutMs) =>
+        `Hosted Multi-agent WebSocket frame read timed out after ${configuredTimeoutMs}ms.`,
     );
     const result = await withAbortSignal(
       withTimeout(
@@ -874,6 +888,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
 
   #resolveWebSocketRequestTimeout(
     requestTimeoutDeadline: WebSocketRequestTimeoutDeadline | undefined,
+    errorMessageForConfiguredTimeout: (configuredTimeoutMs: number) => string,
   ): { timeoutMs: number | undefined; errorMessage: string } {
     const configuredTimeoutMs =
       requestTimeoutDeadline?.configuredTimeoutMs ??
@@ -882,7 +897,9 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
       typeof configuredTimeoutMs === 'number'
         ? configuredTimeoutMs
         : OpenAI.DEFAULT_TIMEOUT;
-    const errorMessage = `Hosted Multi-agent WebSocket frame read timed out after ${safeConfiguredTimeoutMs}ms.`;
+    const errorMessage = errorMessageForConfiguredTimeout(
+      safeConfiguredTimeoutMs,
+    );
     if (!requestTimeoutDeadline) {
       return { timeoutMs: configuredTimeoutMs, errorMessage };
     }
@@ -895,5 +912,21 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     }
 
     return { timeoutMs: remainingTimeoutMs, errorMessage };
+  }
+
+  async #awaitWebSocketRequestTimedOperation<T>(
+    promise: Promise<T>,
+    signal: AbortSignal | undefined,
+    requestTimeoutDeadline: WebSocketRequestTimeoutDeadline | undefined,
+    errorMessageForConfiguredTimeout: (configuredTimeoutMs: number) => string,
+  ): Promise<T> {
+    const timeout = this.#resolveWebSocketRequestTimeout(
+      requestTimeoutDeadline,
+      errorMessageForConfiguredTimeout,
+    );
+    return await withAbortSignal(
+      withTimeout(promise, timeout.timeoutMs, timeout.errorMessage),
+      signal,
+    );
   }
 }

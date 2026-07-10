@@ -279,27 +279,39 @@ describe('OpenAIHostedMultiAgentModel', () => {
         },
       },
     ]);
-    const model = new TestHostedMultiAgentModel([
-      firstWebSocket,
-      secondWebSocket,
-    ]);
+    const model = new TestHostedMultiAgentModel(
+      [firstWebSocket, secondWebSocket],
+      undefined,
+      new OpenAI({
+        apiKey: vi
+          .fn()
+          .mockResolvedValueOnce('initial-key')
+          .mockRejectedValueOnce(new Error('Reconnect auth failed.'))
+          .mockResolvedValue('retry-key'),
+      }),
+    );
 
     const boundary = await withTestTrace(() => model.getResponse(request()));
     firstWebSocket.closeFromServer();
+    const resumeRequest = request({
+      input: [
+        ...boundary.output,
+        {
+          type: 'function_call_result',
+          callId: 'call_reconnect',
+          output: 'lookup result',
+          status: 'completed',
+        },
+      ],
+    });
+
+    await expect(
+      withTestTrace(() => model.getResponse(resumeRequest)),
+    ).rejects.toThrow('Reconnect auth failed.');
+    expect(model.webSocketCreationOptions).toHaveLength(1);
+
     const response = await withTestTrace(() =>
-      model.getResponse(
-        request({
-          input: [
-            ...boundary.output,
-            {
-              type: 'function_call_result',
-              callId: 'call_reconnect',
-              output: 'lookup result',
-              status: 'completed',
-            },
-          ],
-        }),
-      ),
+      model.getResponse(resumeRequest),
     );
 
     expect(model.webSocketCreationOptions).toHaveLength(2);
@@ -437,6 +449,27 @@ describe('OpenAIHostedMultiAgentModel', () => {
     await expect(response).rejects.toBeInstanceOf(OpenAI.APIUserAbortError);
     expect(fakeWebSocket.sent).toHaveLength(0);
   });
+
+  it.each([false, true])(
+    'applies the client timeout while preparing hosted WebSocket auth (stream: %s)',
+    async (stream) => {
+      const fakeWebSocket = new FakeResponsesWebSocket([]);
+      const apiKey = vi.fn(async () => {
+        return await new Promise<string>(() => {});
+      });
+      const model = new TestHostedMultiAgentModel(
+        fakeWebSocket,
+        undefined,
+        new OpenAI({ apiKey, timeout: 25 }),
+      );
+
+      await expect(getTestResponse(model, request(), stream)).rejects.toThrow(
+        'Hosted Multi-agent WebSocket auth header preparation timed out after 25ms.',
+      );
+      expect(fakeWebSocket.sent).toHaveLength(0);
+      expect(model.webSocketCreationOptions).toHaveLength(0);
+    },
+  );
 
   it('preserves an explicit Authorization header unset', async () => {
     const fakeWebSocket = new FakeResponsesWebSocket([
