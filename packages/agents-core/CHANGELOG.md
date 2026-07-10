@@ -1,5 +1,13 @@
 # @openai/agents-core
 
+## 0.13.2
+
+### Patch Changes
+
+- 4c14038: fix: remove the MCP shim initialization cycle
+- e5b75e1: feat: support GPT-5.6 reasoning and prompt-cache request controls
+- 240b6eb: fix: restore run usage when deserializing RunState
+
 ## 0.13.1
 
 ### Patch Changes

@@ -1,5 +1,16 @@
 # @openai/agents-openai
 
+## 0.13.2
+
+### Patch Changes
+
+- e5b75e1: feat: support GPT-5.6 reasoning and prompt-cache request controls
+- 48cdb52: feat: add experimental hosted Multi-agent Responses support
+- Updated dependencies [4c14038]
+- Updated dependencies [e5b75e1]
+- Updated dependencies [240b6eb]
+  - @openai/agents-core@0.13.2
+
 ## 0.13.1
 
 ### Patch Changes
