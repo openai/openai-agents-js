@@ -20,7 +20,7 @@ import { mergeAgentToolRunConfig } from '../src/agentToolRunConfig';
 import type { Model, ModelRequest } from '../src/model';
 import * as protocol from '../src/types/protocol';
 import type { StreamEvent } from '../src/types/protocol';
-import { attachClientToolSearchExecutor } from '../src/tool';
+import { attachClientToolSearchExecutor, shellTool } from '../src/tool';
 import { RequestUsage, Usage } from '../src/usage';
 import { fakeModelMessage, FakeModelProvider } from './stubs';
 
@@ -297,6 +297,57 @@ describe('retry policies', () => {
     const agent = new Agent({
       name: 'HostedToolStructuredOutputRetryBoundaryAgent',
       model,
+      outputType: z.object({ summary: z.string() }),
+      modelSettings: {
+        retry: {
+          maxRetries: 1,
+          backoff: { initialDelayMs: 0, jitter: false },
+          policy: () => true,
+        },
+      },
+    });
+
+    await expect(run(agent, 'hello')).rejects.toBeInstanceOf(
+      ModelBehaviorError,
+    );
+    expect(attempts).toBe(1);
+  });
+
+  it('does not retry structured output after hosted shell work completes', async () => {
+    let attempts = 0;
+    const shellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'shell_retry_boundary',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+    const shellOutput: protocol.ShellCallResultItem = {
+      type: 'shell_call_output',
+      callId: 'shell_retry_boundary',
+      output: [
+        {
+          stdout: 'hi',
+          stderr: '',
+          outcome: { type: 'exit', exitCode: 0 },
+        },
+      ],
+    };
+    const model: Model = {
+      async getResponse() {
+        attempts += 1;
+        return {
+          usage: new Usage({ requests: 1 }),
+          output: [shellCall, shellOutput, fakeModelMessage('not valid JSON')],
+        };
+      },
+      async *getStreamedResponse() {
+        yield* [];
+      },
+    };
+    const agent = new Agent({
+      name: 'HostedShellStructuredOutputRetryBoundaryAgent',
+      model,
+      tools: [shellTool({ environment: { type: 'container_auto' } })],
       outputType: z.object({ summary: z.string() }),
       modelSettings: {
         retry: {

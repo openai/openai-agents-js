@@ -1314,7 +1314,10 @@ export async function validateProcessedResponseFinalOutput(
     processedResponse.newItems.some(
       (item) =>
         (item instanceof RunToolCallItem &&
-          item.rawItem.type === 'hosted_tool_call') ||
+          (item.rawItem.type === 'hosted_tool_call' ||
+            item.rawItem.type === 'shell_call')) ||
+        (item instanceof RunToolCallOutputItem &&
+          item.rawItem.type === 'shell_call_output') ||
         item instanceof RunToolSearchCallItem ||
         item instanceof RunToolSearchOutputItem,
     )
