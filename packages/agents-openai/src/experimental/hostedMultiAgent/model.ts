@@ -242,6 +242,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     OpenAI.Responses.Response
   >();
   #responseUsages = new WeakMap<OpenAI.Responses.Response, Usage>();
+  #syntheticBoundaryEvents = new WeakSet<Record<string, any>>();
   #requestInProgress = false;
 
   constructor(
@@ -358,6 +359,12 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     );
   }
 
+  protected override _shouldEmitRawModelEvent(
+    event: Record<string, any>,
+  ): boolean {
+    return !this.#syntheticBoundaryEvents.has(event);
+  }
+
   protected override async _fetchResponse(
     request: ModelRequest,
     stream: true,
@@ -405,6 +412,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     let sentWebSocketFrame = false;
     let receivedServerMessage = false;
     let requestMayHaveReachedServer = false;
+    let sentFrameWasReturnedUnsent = false;
     let reachedResponseBoundary = false;
     let threwError = false;
     const requestTimeoutDeadline =
@@ -528,6 +536,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
             message.unsent.length > 0
           ) {
             requestMayHaveReachedServer = false;
+            sentFrameWasReturnedUnsent = sentWebSocketFrame;
           }
           throw new Error(
             `Hosted Multi-agent WebSocket closed (${String(message.code)}): ${String(message.reason ?? '')}`,
@@ -604,8 +613,13 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
         ) {
           const functionCalls = activeResponse.queuedFunctionCalls.splice(0);
           const partialResponse = this.#buildBoundaryResponse(functionCalls);
+          const boundaryEvent = {
+            type: 'response.completed',
+            response: partialResponse,
+          };
+          this.#syntheticBoundaryEvents.add(boundaryEvent);
           reachedResponseBoundary = true;
-          yield { type: 'response.completed', response: partialResponse };
+          yield boundaryEvent;
           return;
         }
 
@@ -661,7 +675,19 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
           }
         ).unsafeToReplay = true;
       }
-      if (!hadActiveResponse || sentWebSocketFrame || receivedServerMessage) {
+      if (
+        hadActiveResponse &&
+        sentFrameWasReturnedUnsent &&
+        !receivedServerMessage
+      ) {
+        const transportOverridesKey = this.#webSocketTransportOverridesKey;
+        this.#dropWebSocketConnection();
+        this.#webSocketTransportOverridesKey = transportOverridesKey;
+      } else if (
+        !hadActiveResponse ||
+        sentWebSocketFrame ||
+        receivedServerMessage
+      ) {
         await this.close();
       }
       throw error;

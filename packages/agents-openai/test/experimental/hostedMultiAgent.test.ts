@@ -876,6 +876,42 @@ describe('OpenAIHostedMultiAgentModel', () => {
     expect(terminalResponse.output).toEqual([functionCall, rootFinal]);
   });
 
+  it('does not expose a synthetic local tool boundary as a raw model event', async () => {
+    const functionCall = {
+      type: 'function_call',
+      id: 'fc_internal_boundary',
+      call_id: 'call_internal_boundary',
+      name: 'lookup',
+      arguments: '{}',
+      status: 'completed',
+      agent: { agent_name: '/root/researcher' },
+    };
+    const fakeWebSocket = new FakeResponsesWebSocket([
+      {
+        type: 'response.created',
+        response: emptyResponse('resp_internal_boundary'),
+      },
+      { type: 'response.output_item.done', item: functionCall },
+    ]);
+    const model = new TestHostedMultiAgentModel(fakeWebSocket);
+
+    const streamEvents: ResponseStreamEvent[] = [];
+    for await (const event of model.getStreamedResponse(request())) {
+      streamEvents.push(event);
+    }
+
+    const done = streamEvents.find((event) => event.type === 'response_done');
+    expect(done?.response.output.map((item) => item.type)).toEqual([
+      'function_call',
+    ]);
+    expect(
+      streamEvents.some(
+        (event) =>
+          event.type === 'model' && event.event.type === 'response.completed',
+      ),
+    ).toBe(false);
+  });
+
   it.each([false, true])(
     'does not count a synthetic local tool boundary as an API request (stream: %s)',
     async (stream) => {
@@ -1618,6 +1654,89 @@ describe('OpenAIHostedMultiAgentModel', () => {
       });
       expect(retryAdvice?.replaySafety).not.toBe('unsafe');
       expect(fakeWebSocket.close).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([false, true])(
+    'retries an active response when response.inject is returned unsent (stream: %s)',
+    async (stream) => {
+      const functionCall = {
+        type: 'function_call',
+        id: 'fc_unsent_inject',
+        call_id: 'call_unsent_inject',
+        name: 'lookup',
+        arguments: '{}',
+        status: 'completed',
+        agent: { agent_name: '/root/researcher' },
+      };
+      const firstWebSocket = new FakeResponsesWebSocket([
+        {
+          type: 'response.created',
+          response: emptyResponse('resp_unsent_inject'),
+        },
+        { type: 'response.output_item.done', item: functionCall },
+      ]);
+      const failedResumeWebSocket = new FakeResponsesWebSocket([]);
+      failedResumeWebSocket.socket.readyState = 0;
+      failedResumeWebSocket.queueTransportEvent({ type: 'connecting' });
+      failedResumeWebSocket.queueTransportEvent({
+        type: 'close',
+        code: 1006,
+        reason: 'Connection failed.',
+        unsent: [
+          {
+            type: 'message',
+            message: { type: 'response.inject' },
+          },
+        ],
+      });
+      const retryWebSocket = new FakeResponsesWebSocket([
+        {
+          type: 'response.inject.created',
+          response_id: 'resp_unsent_inject',
+        },
+        {
+          type: 'response.completed',
+          response: emptyResponse('resp_unsent_inject'),
+        },
+      ]);
+      const model = new TestHostedMultiAgentModel([
+        firstWebSocket,
+        failedResumeWebSocket,
+        retryWebSocket,
+      ]);
+
+      const first = await getTestResponse(model, request(), stream);
+      firstWebSocket.socket.readyState = 3;
+      const resumeRequest = request({
+        input: [
+          ...first.output,
+          {
+            type: 'function_call_result',
+            callId: 'call_unsent_inject',
+            output: 'result',
+            status: 'completed',
+          },
+        ],
+      });
+
+      let error: (Error & { unsafeToReplay?: boolean }) | undefined;
+      try {
+        await getTestResponse(model, resumeRequest, stream);
+      } catch (caught) {
+        error = caught as Error & { unsafeToReplay?: boolean };
+      }
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error?.unsafeToReplay).toBeUndefined();
+      const response = await getTestResponse(model, resumeRequest, stream);
+
+      expect(failedResumeWebSocket.close).toHaveBeenCalledOnce();
+      expect(retryWebSocket.sent[0]).toMatchObject({
+        type: 'response.inject',
+        response_id: 'resp_unsent_inject',
+      });
+      expect(response.responseId ?? response.id).toBe('resp_unsent_inject');
     },
   );
 

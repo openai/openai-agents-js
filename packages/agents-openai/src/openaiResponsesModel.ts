@@ -2888,6 +2888,13 @@ export class OpenAIResponsesModel implements Model {
   /**
    * @internal
    */
+  protected _shouldEmitRawModelEvent(_event: Record<string, any>): boolean {
+    return true;
+  }
+
+  /**
+   * @internal
+   */
   protected _getResponsesCreateRequestOverrides(
     _request: ModelRequest,
     _requestData: Record<string, any>,
@@ -3210,6 +3217,9 @@ export class OpenAIResponsesModel implements Model {
       const outputItemsByIndex = new Map<number, Record<string, any>>();
       for await (const event of response) {
         const eventType = (event as { type?: string }).type;
+        const shouldEmitRawModelEvent = this._shouldEmitRawModelEvent(
+          event as unknown as Record<string, any>,
+        );
         if (eventType === 'response.output_item.added') {
           const outputItemAdded = event as unknown as {
             output_index?: number;
@@ -3259,7 +3269,7 @@ export class OpenAIResponsesModel implements Model {
             },
             providerData: remainingEvent,
           };
-          if (eventType === 'response.completed') {
+          if (eventType === 'response.completed' && shouldEmitRawModelEvent) {
             yield {
               type: 'model',
               event: event,
@@ -3291,13 +3301,15 @@ export class OpenAIResponsesModel implements Model {
           }
         }
 
-        yield {
-          type: 'model',
-          event: event,
-          providerData: {
-            rawModelEventSource: OPENAI_RESPONSES_RAW_MODEL_EVENT_SOURCE,
-          },
-        };
+        if (shouldEmitRawModelEvent) {
+          yield {
+            type: 'model',
+            event: event,
+            providerData: {
+              rawModelEventSource: OPENAI_RESPONSES_RAW_MODEL_EVENT_SOURCE,
+            },
+          };
+        }
       }
 
       if (request.tracing && span && finalResponse) {
