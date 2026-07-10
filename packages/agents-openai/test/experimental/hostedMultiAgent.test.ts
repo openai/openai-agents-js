@@ -377,6 +377,36 @@ describe('OpenAIHostedMultiAgentModel', () => {
     });
   });
 
+  it.each([false, true])(
+    'does not count a synthetic local tool boundary as an API request (stream: %s)',
+    async (stream) => {
+      const functionCall = {
+        type: 'function_call',
+        id: 'fc_usage',
+        call_id: 'call_usage',
+        name: 'lookup',
+        arguments: '{}',
+        status: 'completed',
+        agent: { agent_name: '/root/researcher' },
+      };
+      const fakeWebSocket = new FakeResponsesWebSocket([
+        { type: 'response.created', response: emptyResponse('resp_usage') },
+        { type: 'response.output_item.done', item: functionCall },
+      ]);
+      const model = new TestHostedMultiAgentModel(fakeWebSocket);
+
+      const boundary = await getTestResponse(model, request(), stream);
+
+      expect(boundary.usage).toMatchObject({
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+      });
+      expect(boundary.usage.requestUsageEntries).toBeUndefined();
+    },
+  );
+
   it('returns every function call received before an injection acknowledgement', async () => {
     const alphaCall = {
       type: 'function_call',
@@ -773,13 +803,6 @@ describe('OpenAIHostedMultiAgentModel', () => {
       message: /does not support reasoning\.summary/,
     },
     {
-      name: 'explicit compaction',
-      override: {
-        modelSettings: { contextManagement: [{ type: 'compaction' }] },
-      },
-      message: /does not support explicit Responses compaction/,
-    },
-    {
       name: 'max tool calls',
       override: { modelSettings: { providerData: { max_tool_calls: 2 } } },
       message: /does not support max_tool_calls/,
@@ -792,6 +815,30 @@ describe('OpenAIHostedMultiAgentModel', () => {
       withTestTrace(() => model.getResponse(request(override))),
     ).rejects.toThrow(message);
     expect(fakeWebSocket.sent).toHaveLength(0);
+  });
+
+  it('allows a server-side compaction threshold over WebSocket', async () => {
+    const fakeWebSocket = new FakeResponsesWebSocket([
+      { type: 'response.created', response: emptyResponse() },
+      { type: 'response.completed', response: emptyResponse() },
+    ]);
+    const model = new TestHostedMultiAgentModel(fakeWebSocket);
+
+    await withTestTrace(() =>
+      model.getResponse(
+        request({
+          modelSettings: {
+            contextManagement: [
+              { type: 'compaction', compactThreshold: 200_000 },
+            ],
+          },
+        }),
+      ),
+    );
+
+    expect(fakeWebSocket.sent[0]?.context_management).toEqual([
+      { type: 'compaction', compact_threshold: 200_000 },
+    ]);
   });
 
   it('keeps stable Responses requests free of hosted beta fields', async () => {

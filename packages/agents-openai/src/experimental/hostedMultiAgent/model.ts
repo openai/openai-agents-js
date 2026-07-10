@@ -249,15 +249,6 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
       );
     }
 
-    if (
-      Array.isArray(requestData.context_management) &&
-      requestData.context_management.length > 0
-    ) {
-      throw new UserError(
-        'OpenAIHostedMultiAgentModel does not support explicit Responses compaction. Remove modelSettings.contextManagement.',
-      );
-    }
-
     if (requestData.max_tool_calls != null) {
       throw new UserError(
         'OpenAIHostedMultiAgentModel does not support max_tool_calls. Remove that provider setting.',
@@ -572,13 +563,15 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
       activeResponse.emittedCallIds.add(functionCall.call_id);
     }
 
-    return {
+    const boundaryResponse = {
       ...activeResponse.responseTemplate,
       id: activeResponse.responseId,
       status: 'completed',
       output: functionCalls,
       usage: undefined,
     } as unknown as OpenAI.Responses.Response;
+    this.#responseUsages.set(boundaryResponse, new Usage());
+    return boundaryResponse;
   }
 
   #continueCompletedResponse(
