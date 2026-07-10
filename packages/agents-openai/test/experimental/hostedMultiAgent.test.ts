@@ -1684,7 +1684,6 @@ describe('OpenAIHostedMultiAgentModel', () => {
         type: 'response.output_text.delta',
         output_index: 1,
         delta: 'Root final.',
-        agent: { agent_name: '/root' },
       },
       {
         type: 'response.completed',

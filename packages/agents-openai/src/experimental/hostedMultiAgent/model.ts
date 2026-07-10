@@ -353,8 +353,8 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
   ): boolean {
     const agentName = event.agent?.agent_name;
     return (
-      agentName === ROOT_AGENT_NAME &&
-      Boolean(outputItem && isRootFinalMessage(outputItem))
+      Boolean(outputItem && isRootFinalMessage(outputItem)) &&
+      (typeof agentName === 'undefined' || agentName === ROOT_AGENT_NAME)
     );
   }
 
