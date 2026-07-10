@@ -2,6 +2,8 @@ import {
   Usage,
   UserError,
   protocol,
+  type ModelRetryAdvice,
+  type ModelRetryAdviceRequest,
   type ModelRequest,
 } from '@openai/agents-core';
 import OpenAI from 'openai';
@@ -91,6 +93,16 @@ type HostedWebSocketCreationOptions = {
   client: OpenAI;
   headers: Record<string, string>;
 };
+
+class HostedMultiAgentWebSocketClosedError extends Error {
+  constructor(
+    message: string,
+    readonly frameWasUnsent: boolean,
+  ) {
+    super(message);
+    this.name = 'HostedMultiAgentWebSocketClosedError';
+  }
+}
 
 type OpenAIClientInternals = OpenAI & {
   _options?: {
@@ -253,6 +265,23 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
   ) {
     super(client, model);
     this.config = validateConfig(config);
+  }
+
+  override getRetryAdvice(
+    args: ModelRetryAdviceRequest,
+  ): ModelRetryAdvice | undefined {
+    if (
+      args.error instanceof HostedMultiAgentWebSocketClosedError &&
+      args.error.frameWasUnsent
+    ) {
+      return {
+        suggested: true,
+        replaySafety: 'safe',
+        reason: args.error.message,
+      };
+    }
+
+    return super.getRetryAdvice(args);
   }
 
   /** Close the persistent Responses WebSocket owned by this model. */
@@ -560,8 +589,9 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
             requestMayHaveReachedServer = false;
             sentFrameWasReturnedUnsent = true;
           }
-          throw new Error(
+          throw new HostedMultiAgentWebSocketClosedError(
             `Hosted Multi-agent WebSocket closed (${String(message.code)}): ${String(message.reason ?? '')}`,
+            currentFrameWasReturnedUnsent,
           );
         }
         if (message.type !== 'message') {

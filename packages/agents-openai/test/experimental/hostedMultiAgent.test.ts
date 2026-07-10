@@ -1361,6 +1361,14 @@ describe('OpenAIHostedMultiAgentModel', () => {
 
       expect(error).toBeInstanceOf(Error);
       expect(error?.unsafeToReplay).toBeUndefined();
+      expect(
+        model.getRetryAdvice({
+          error,
+          request: resumeRequest,
+          stream,
+          attempt: 1,
+        }),
+      ).toMatchObject({ suggested: true, replaySafety: 'safe' });
       const response = await getTestResponse(model, resumeRequest, stream);
 
       expect(retryWebSocket.sent[0]).toEqual(firstWebSocket.sent[2]);
@@ -1751,7 +1759,10 @@ describe('OpenAIHostedMultiAgentModel', () => {
         stream,
         attempt: 1,
       });
-      expect(retryAdvice?.replaySafety).not.toBe('unsafe');
+      expect(retryAdvice).toMatchObject({
+        suggested: true,
+        replaySafety: 'safe',
+      });
       expect(fakeWebSocket.close).toHaveBeenCalledOnce();
     },
   );
@@ -1828,6 +1839,14 @@ describe('OpenAIHostedMultiAgentModel', () => {
 
       expect(error).toBeInstanceOf(Error);
       expect(error?.unsafeToReplay).toBeUndefined();
+      expect(
+        model.getRetryAdvice({
+          error,
+          request: resumeRequest,
+          stream,
+          attempt: 1,
+        }),
+      ).toMatchObject({ suggested: true, replaySafety: 'safe' });
       const response = await getTestResponse(model, resumeRequest, stream);
 
       expect(failedResumeWebSocket.close).toHaveBeenCalledOnce();
