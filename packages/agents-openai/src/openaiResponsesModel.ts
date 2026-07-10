@@ -2869,6 +2869,15 @@ export class OpenAIResponsesModel implements Model {
   /**
    * @internal
    */
+  protected _getResponseForSDKOutput(
+    response: OpenAI.Responses.Response,
+  ): OpenAI.Responses.Response {
+    return response;
+  }
+
+  /**
+   * @internal
+   */
   protected _shouldEmitOutputTextDelta(
     _event: Record<string, any>,
     _outputItem: Record<string, any> | undefined,
@@ -3164,10 +3173,11 @@ export class OpenAIResponsesModel implements Model {
       return response;
     });
 
+    const responseForSDKOutput = this._getResponseForSDKOutput(response);
     const output: ModelResponse = {
       usage: this._getResponseUsage(response),
       output: this._convertResponseOutputItems(
-        response.output as Array<Record<string, any>>,
+        responseForSDKOutput.output as Array<Record<string, any>>,
       ),
       responseId: response.id,
       requestId: getOpenAIResponseRequestId(response),
@@ -3229,14 +3239,20 @@ export class OpenAIResponsesModel implements Model {
             };
           finalResponse = terminalEvent.response;
           const { response, ...remainingEvent } = terminalEvent;
-          const { output, usage: _usage, id, ...remainingResponse } = response;
+          const {
+            output: _output,
+            usage: _usage,
+            id,
+            ...remainingResponse
+          } = response;
+          const responseForSDKOutput = this._getResponseForSDKOutput(response);
           yield {
             type: 'response_done',
             response: {
               id: id,
               requestId: getOpenAIResponseRequestId(response),
               output: this._convertResponseOutputItems(
-                output as Array<Record<string, any>>,
+                responseForSDKOutput.output as Array<Record<string, any>>,
               ),
               usage: this._getStreamedResponseUsage(response),
               providerData: remainingResponse,

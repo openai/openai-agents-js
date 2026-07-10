@@ -236,6 +236,10 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
   #webSocketConnectionKey?: string;
   #webSocketTransportOverridesKey?: string;
   #activeResponse?: ActiveHostedResponse;
+  #normalizedResponses = new WeakMap<
+    OpenAI.Responses.Response,
+    OpenAI.Responses.Response
+  >();
   #responseUsages = new WeakMap<OpenAI.Responses.Response, Usage>();
   #requestInProgress = false;
 
@@ -317,6 +321,12 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     return convertToOutputItem(
       stableItems as Parameters<typeof convertToOutputItem>[0],
     );
+  }
+
+  protected override _getResponseForSDKOutput(
+    response: OpenAI.Responses.Response,
+  ): OpenAI.Responses.Response {
+    return this.#normalizedResponses.get(response) ?? response;
   }
 
   protected override _getResponseUsage(
@@ -599,16 +609,21 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
           }
 
           const terminalEvent = activeResponse.terminalEvent;
-          const response = terminalEvent.response as Record<string, any>;
-          response.output = (
-            Array.isArray(response.output) ? response.output : []
-          ).filter(
-            (item: Record<string, any>) =>
-              item.type !== 'function_call' ||
-              !activeResponse.emittedCallIds.has(item.call_id),
-          );
+          const response = terminalEvent.response as OpenAI.Responses.Response;
+          const normalizedResponse = {
+            ...response,
+            output: (Array.isArray(response.output)
+              ? response.output
+              : []
+            ).filter(
+              (item: Record<string, any>) =>
+                item.type !== 'function_call' ||
+                !activeResponse.emittedCallIds.has(item.call_id),
+            ),
+          } as OpenAI.Responses.Response;
+          this.#normalizedResponses.set(response, normalizedResponse);
           this.#responseUsages.set(
-            response as OpenAI.Responses.Response,
+            response,
             mergeResponseUsages([
               ...activeResponse.requestUsages,
               response.usage as OpenAI.Responses.ResponseUsage | undefined,
@@ -616,7 +631,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
           );
           this.#activeResponse = undefined;
           reachedResponseBoundary = true;
-          yield { ...terminalEvent, response };
+          yield terminalEvent;
           return;
         }
       }

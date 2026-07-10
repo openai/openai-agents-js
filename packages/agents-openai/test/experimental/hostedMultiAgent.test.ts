@@ -1,6 +1,11 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import OpenAI from 'openai';
-import { setTracingDisabled, UserError, withTrace } from '@openai/agents-core';
+import {
+  setTracingDisabled,
+  UserError,
+  withTrace,
+  type ResponseStreamEvent,
+} from '@openai/agents-core';
 import { OpenAIResponsesModel } from '../../src/openaiResponsesModel';
 import {
   OpenAIHostedMultiAgentModel,
@@ -609,6 +614,93 @@ describe('OpenAIHostedMultiAgentModel', () => {
       phase: 'final_answer',
       agent: { agent_name: '/root' },
     });
+    expect(second.providerData?.output).toEqual([
+      hostedCall,
+      functionCall,
+      rootFinal,
+    ]);
+  });
+
+  it('preserves local function calls in raw streamed terminal events', async () => {
+    const functionCall = {
+      type: 'function_call',
+      id: 'fc_raw_terminal',
+      call_id: 'call_raw_terminal',
+      name: 'lookup',
+      arguments: '{"key":"alpha"}',
+      status: 'completed',
+      agent: { agent_name: '/root/researcher' },
+    };
+    const rootFinal = {
+      type: 'message',
+      id: 'msg_raw_terminal',
+      role: 'assistant',
+      status: 'completed',
+      phase: 'final_answer',
+      agent: { agent_name: '/root' },
+      content: [{ type: 'output_text', text: 'Final answer.' }],
+    };
+    const terminalResponse = {
+      ...emptyResponse('resp_raw_terminal'),
+      output: [functionCall, rootFinal],
+    };
+    const fakeWebSocket = new FakeResponsesWebSocket([
+      {
+        type: 'response.created',
+        response: emptyResponse('resp_raw_terminal'),
+      },
+      { type: 'response.output_item.done', item: functionCall },
+      {
+        type: 'response.inject.created',
+        response_id: 'resp_raw_terminal',
+      },
+      { type: 'response.completed', response: terminalResponse },
+    ]);
+    const model = new TestHostedMultiAgentModel(fakeWebSocket);
+
+    const boundary = await getTestResponse(model, request(), true);
+    expect(boundary.output.map((item: any) => item.type)).toEqual([
+      'function_call',
+    ]);
+
+    const streamEvents: ResponseStreamEvent[] = [];
+    await withTestTrace(async () => {
+      for await (const event of model.getStreamedResponse(
+        request({
+          input: [
+            ...boundary.output,
+            {
+              type: 'function_call_result',
+              callId: 'call_raw_terminal',
+              output: 'lookup result',
+              status: 'completed',
+            },
+          ],
+        }),
+      )) {
+        streamEvents.push(event);
+      }
+    });
+
+    const done = streamEvents.find((event) => event.type === 'response_done');
+    if (done?.type !== 'response_done') {
+      throw new Error('Stream ended without a response_done event.');
+    }
+    expect(done.response.output.map((item) => item.type)).toEqual(['message']);
+    const rawTerminalEvent = streamEvents.find(
+      (event) =>
+        event.type === 'model' &&
+        (event.event as any).type === 'response.completed' &&
+        (event.event as any).response?.id === 'resp_raw_terminal',
+    );
+    if (rawTerminalEvent?.type !== 'model') {
+      throw new Error('Stream ended without a raw terminal model event.');
+    }
+    expect((rawTerminalEvent.event as any).response.output).toEqual([
+      functionCall,
+      rootFinal,
+    ]);
+    expect(terminalResponse.output).toEqual([functionCall, rootFinal]);
   });
 
   it.each([false, true])(
