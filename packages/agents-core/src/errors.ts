@@ -213,3 +213,68 @@ export class ToolOutputGuardrailTripwireTriggered extends AgentsError {
     this.result = result;
   }
 }
+
+/**
+ * Formats an error with context for better debugging and logging.
+ *
+ * @param error - The error to format
+ * @param context - Optional context information (e.g., state, run details)
+ * @returns A formatted error message with relevant context
+ */
+export function formatErrorWithContext(
+  error: unknown,
+  context?: Record<string, unknown>,
+): string {
+  let message = '';
+
+  if (error instanceof AgentsError) {
+    message = error.message;
+    if (error.state) {
+      message += ` [state: ${JSON.stringify(error.state.runIdentity)}]`;
+    }
+  } else if (error instanceof Error) {
+    message = error.message;
+  } else {
+    message = String(error);
+  }
+
+  if (context && Object.keys(context).length > 0) {
+    message += ` [context: ${JSON.stringify(context)}]`;
+  }
+
+  return message;
+}
+
+/**
+ * Gets a user-friendly error message from an AgentsError.
+ *
+ * @param error - The error to get a message from
+ * @returns A user-friendly error message
+ */
+export function getUserFriendlyErrorMessage(error: unknown): string {
+  if (error instanceof ModelRefusalError) {
+    return `The AI model declined to complete this request: ${error.refusal}`;
+  }
+  if (error instanceof MaxTurnsExceededError) {
+    return 'The request exceeded the maximum number of turns. Please try a simpler request.';
+  }
+  if (error instanceof ToolTimeoutError) {
+    return `The tool '${error.toolName}' took too long to execute (>${error.timeoutMs}ms).`;
+  }
+  if (error instanceof InvalidToolInputError) {
+    return 'The AI produced invalid input for a tool. This may indicate a model issue.';
+  }
+  if (error instanceof InputGuardrailTripwireTriggered) {
+    return 'The input was rejected by security guardrails.';
+  }
+  if (error instanceof OutputGuardrailTripwireTriggered) {
+    return 'The output was rejected by security guardrails.';
+  }
+  if (error instanceof AgentsError) {
+    return error.message;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
