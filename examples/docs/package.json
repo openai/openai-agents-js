@@ -7,6 +7,7 @@
     "@openai/agents": "workspace:*",
     "@openai/agents-core": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
+    "@openai/agents-openai": "workspace:*",
     "@openai/agents-realtime": "workspace:*",
     "openai": "^6.46.0",
     "server-only": "^0.0.1",
