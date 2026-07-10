@@ -166,6 +166,7 @@ function getTransportOverridesKey(
   return JSON.stringify([
     url,
     sortedEntries(headerAccumulatorToRecord(headerAccumulator)),
+    [...headerAccumulator.blockedLowercaseNames].sort(),
   ]);
 }
 

@@ -339,6 +339,78 @@ describe('OpenAIHostedMultiAgentModel', () => {
     expect(response.output[0]?.type).toBe('message');
   });
 
+  it('rejects a header unset when reconnecting an active response', async () => {
+    const functionCall = {
+      type: 'function_call',
+      id: 'fc_transport_unset',
+      call_id: 'call_transport_unset',
+      name: 'lookup',
+      arguments: '{}',
+      status: 'completed',
+      agent: { agent_name: '/root/researcher' },
+    };
+    const firstWebSocket = new FakeResponsesWebSocket([
+      {
+        type: 'response.created',
+        response: emptyResponse('resp_transport_unset'),
+      },
+      { type: 'response.output_item.done', item: functionCall },
+    ]);
+    const secondWebSocket = new FakeResponsesWebSocket([
+      {
+        type: 'response.inject.created',
+        response_id: 'resp_transport_unset',
+      },
+      {
+        type: 'response.completed',
+        response: emptyResponse('resp_transport_unset'),
+      },
+    ]);
+    const model = new TestHostedMultiAgentModel([
+      firstWebSocket,
+      secondWebSocket,
+    ]);
+    const boundary = await withTestTrace(() => model.getResponse(request()));
+    firstWebSocket.closeFromServer();
+    const resumeInput = [
+      ...boundary.output,
+      {
+        type: 'function_call_result',
+        callId: 'call_transport_unset',
+        output: 'lookup result',
+        status: 'completed',
+      },
+    ];
+
+    await expect(
+      withTestTrace(() =>
+        model.getResponse(
+          request({
+            input: resumeInput,
+            modelSettings: {
+              providerData: {
+                extraHeaders: { Authorization: null },
+              },
+            },
+          }),
+        ),
+      ),
+    ).rejects.toThrow(
+      'An active hosted response must be resumed with the same WebSocket transport headers and query.',
+    );
+    expect(model.webSocketCreationOptions).toHaveLength(1);
+    expect(secondWebSocket.sent).toHaveLength(0);
+
+    await withTestTrace(() =>
+      model.getResponse(request({ input: resumeInput })),
+    );
+    expect(model.webSocketCreationOptions).toHaveLength(2);
+    expect(secondWebSocket.sent[0]).toMatchObject({
+      type: 'response.inject',
+      response_id: 'resp_transport_unset',
+    });
+  });
+
   it.each([false, true])(
     'applies the client timeout while waiting for hosted WebSocket events (stream: %s)',
     async (stream) => {
