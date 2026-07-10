@@ -400,6 +400,16 @@ export class OpenAIRealtimeWebRTC
           },
         });
 
+        if (!sdpResponse.ok) {
+          // Without this the error body is passed to setRemoteDescription and
+          // surfaces as an opaque "Failed to parse SessionDescription", hiding
+          // the real cause (e.g. insufficient_quota, invalid ephemeral key).
+          const detail = await readSdpErrorDetail(sdpResponse);
+          throw new Error(
+            `Realtime call request failed with status ${sdpResponse.status}${detail}`,
+          );
+        }
+
         callId = sdpResponse.headers?.get('Location')?.split('/').pop();
         this.#state = { ...this.#state, callId };
 
@@ -592,4 +602,25 @@ export class OpenAIRealtimeWebRTC
       type: 'output_audio_buffer.clear',
     });
   }
+}
+
+async function readSdpErrorDetail(response: Response): Promise<string> {
+  try {
+    const text = await response.text();
+    if (text) {
+      try {
+        const message = JSON.parse(text)?.error?.message;
+        if (typeof message === 'string' && message) {
+          return `: ${message}`;
+        }
+      } catch {
+        // Non-JSON body — fall through to the raw text below.
+      }
+      return `: ${text}`;
+    }
+  } catch {
+    // Ignore response body read failures and use the status text below.
+  }
+
+  return response.statusText ? `: ${response.statusText}` : '';
 }

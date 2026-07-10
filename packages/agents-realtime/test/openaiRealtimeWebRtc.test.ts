@@ -117,6 +117,8 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     });
     Object.defineProperty(globalThis, 'fetch', {
       value: async () => ({
+        ok: true,
+        status: 200,
         text: async () => 'answer',
         headers: {
           get: (headerKey: string) => {
@@ -175,6 +177,33 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     expect(JSON.parse(channel.sent[2])).toEqual({
       type: 'output_audio_buffer.clear',
     });
+  });
+
+  it('rejects with the provider error message when /realtime/calls fails', async () => {
+    Object.defineProperty(globalThis, 'fetch', {
+      value: async () => ({
+        ok: false,
+        status: 429,
+        statusText: 'Too Many Requests',
+        text: async () =>
+          JSON.stringify({
+            error: {
+              message: 'You exceeded your current quota.',
+              type: 'insufficient_quota',
+              code: 'insufficient_quota',
+            },
+          }),
+        headers: { get: () => null },
+      }),
+      configurable: true,
+      writable: true,
+    });
+
+    const rtc = new OpenAIRealtimeWebRTC();
+    rtc.on('error', () => {});
+    await expect(rtc.connect({ apiKey: 'ek_test' })).rejects.toThrow(
+      'Realtime call request failed with status 429: You exceeded your current quota.',
+    );
   });
 
   it('stops sending response.cancel once audio playback is done', async () => {
@@ -578,6 +607,8 @@ describe('OpenAIRealtimeWebRTC.connectionState', () => {
     });
     Object.defineProperty(globalThis, 'fetch', {
       value: async () => ({
+        ok: true,
+        status: 200,
         text: async () => 'answer',
         headers: {
           get: (headerKey: string) => {
@@ -738,6 +769,8 @@ describe('OpenAIRealtimeWebRTC.callId', () => {
     });
     Object.defineProperty(globalThis, 'fetch', {
       value: async () => ({
+        ok: true,
+        status: 200,
         text: async () => 'answer',
         headers: {
           get: (headerName: string) => {
@@ -908,6 +941,8 @@ describe('OpenAIRealtimeWebRTC session.updated ack', () => {
     });
     Object.defineProperty(globalThis, 'fetch', {
       value: async () => ({
+        ok: true,
+        status: 200,
         text: async () => 'answer',
         headers: {
           get: (headerKey: string) => {
