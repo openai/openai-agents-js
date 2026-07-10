@@ -460,6 +460,107 @@ describe('OpenAIHostedMultiAgentModel', () => {
   });
 
   it.each([false, true])(
+    'does not create or send on an already-aborted request (stream: %s)',
+    async (stream) => {
+      const fakeWebSocket = new FakeResponsesWebSocket([]);
+      const model = new TestHostedMultiAgentModel(fakeWebSocket);
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(
+        getTestResponse(model, request({ signal: controller.signal }), stream),
+      ).rejects.toBeInstanceOf(OpenAI.APIUserAbortError);
+
+      expect(model.webSocketCreationOptions).toHaveLength(0);
+      expect(fakeWebSocket.sent).toHaveLength(0);
+    },
+  );
+
+  it('does not send after a cached socket aborts during reuse', async () => {
+    const fakeWebSocket = new FakeResponsesWebSocket([
+      { type: 'response.created', response: emptyResponse('resp_first') },
+      { type: 'response.completed', response: emptyResponse('resp_first') },
+    ]);
+    const model = new TestHostedMultiAgentModel(fakeWebSocket);
+    await withTestTrace(() => model.getResponse(request()));
+
+    const controller = new AbortController();
+    let readyState = fakeWebSocket.socket.readyState;
+    Object.defineProperty(fakeWebSocket.socket, 'readyState', {
+      configurable: true,
+      get() {
+        controller.abort();
+        return readyState;
+      },
+      set(value: number) {
+        readyState = value;
+      },
+    });
+
+    await expect(
+      withTestTrace(() =>
+        model.getResponse(request({ signal: controller.signal })),
+      ),
+    ).rejects.toBeInstanceOf(OpenAI.APIUserAbortError);
+    expect(fakeWebSocket.sent).toHaveLength(1);
+  });
+
+  it('preserves an active response when an aborted resume sends no injection', async () => {
+    const functionCall = {
+      type: 'function_call',
+      id: 'fc_abort_resume',
+      call_id: 'call_abort_resume',
+      name: 'lookup',
+      arguments: '{}',
+      status: 'completed',
+      agent: { agent_name: '/root/researcher' },
+    };
+    const fakeWebSocket = new FakeResponsesWebSocket([
+      {
+        type: 'response.created',
+        response: emptyResponse('resp_abort_resume'),
+      },
+      { type: 'response.output_item.done', item: functionCall },
+      {
+        type: 'response.inject.created',
+        response_id: 'resp_abort_resume',
+      },
+      {
+        type: 'response.completed',
+        response: emptyResponse('resp_abort_resume'),
+      },
+    ]);
+    const model = new TestHostedMultiAgentModel(fakeWebSocket);
+    const first = await withTestTrace(() => model.getResponse(request()));
+    const resumeRequest = request({
+      input: [
+        ...first.output,
+        {
+          type: 'function_call_result',
+          callId: 'call_abort_resume',
+          output: 'result',
+          status: 'completed',
+        },
+      ],
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      withTestTrace(() =>
+        model.getResponse({ ...resumeRequest, signal: controller.signal }),
+      ),
+    ).rejects.toBeInstanceOf(OpenAI.APIUserAbortError);
+    expect(fakeWebSocket.sent).toHaveLength(1);
+
+    await withTestTrace(() => model.getResponse(resumeRequest));
+    expect(fakeWebSocket.sent[1]).toMatchObject({
+      type: 'response.inject',
+      response_id: 'resp_abort_resume',
+    });
+  });
+
+  it.each([false, true])(
     'applies the client timeout while preparing hosted WebSocket auth (stream: %s)',
     async (stream) => {
       const fakeWebSocket = new FakeResponsesWebSocket([]);

@@ -411,7 +411,11 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     const sendWebSocketFrame = (
       webSocket: ResponsesWebSocketLike,
       frame: Record<string, any>,
+      signal: AbortSignal | undefined,
     ): void => {
+      if (signal?.aborted) {
+        throw new OpenAI.APIUserAbortError();
+      }
       sentWebSocketFrame = true;
       if (webSocket.socket.readyState === WEBSOCKET_OPEN_READY_STATE) {
         requestMayHaveReachedServer = true;
@@ -456,7 +460,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
             requestData,
             outputs,
           );
-          sendWebSocketFrame(webSocket, continuationFrame);
+          sendWebSocketFrame(webSocket, continuationFrame, builtRequest.signal);
         } else {
           if (outputs.length === 0 || !activeResponse.responseId) {
             throw new UserError(
@@ -467,11 +471,15 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
           for (const output of outputs) {
             injectingCallIds.add(output.call_id);
           }
-          sendWebSocketFrame(webSocket, {
-            type: 'response.inject',
-            response_id: activeResponse.responseId,
-            input: outputs,
-          });
+          sendWebSocketFrame(
+            webSocket,
+            {
+              type: 'response.inject',
+              response_id: activeResponse.responseId,
+              input: outputs,
+            },
+            builtRequest.signal,
+          );
         }
       } else {
         this.#activeResponse = {
@@ -489,7 +497,11 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
           fallbackInput: [],
           requestUsages: [],
         };
-        sendWebSocketFrame(webSocket, toResponseCreateFrame(requestData));
+        sendWebSocketFrame(
+          webSocket,
+          toResponseCreateFrame(requestData),
+          builtRequest.signal,
+        );
       }
 
       while (true) {
@@ -603,7 +615,11 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
               requestData,
               [],
             );
-            sendWebSocketFrame(webSocket, continuationFrame);
+            sendWebSocketFrame(
+              webSocket,
+              continuationFrame,
+              builtRequest.signal,
+            );
             injectingCallIds.clear();
             continue;
           }
@@ -760,6 +776,9 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     signal: AbortSignal | undefined,
     requestTimeoutDeadline: WebSocketRequestTimeoutDeadline | undefined,
   ): Promise<ResponsesWebSocketLike> {
+    if (signal?.aborted) {
+      throw new OpenAI.APIUserAbortError();
+    }
     const transportOverridesKey = getTransportOverridesKey(
       this._client,
       transportOptions,
