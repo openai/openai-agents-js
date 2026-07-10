@@ -247,8 +247,12 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
 
   /** Close the persistent Responses WebSocket owned by this model. */
   async close(): Promise<void> {
-    this.#webSocketIterator = undefined;
     this.#activeResponse = undefined;
+    this.#dropWebSocketConnection();
+  }
+
+  #dropWebSocketConnection(): void {
+    this.#webSocketIterator = undefined;
     const webSocket = this.#webSocket;
     this.#webSocket = undefined;
     this.#webSocketConnectionKey = undefined;
@@ -386,6 +390,8 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     const hadActiveResponse = Boolean(this.#activeResponse);
     let sentWebSocketFrame = false;
     let receivedWebSocketEvent = false;
+    let reachedResponseBoundary = false;
+    let threwError = false;
     const requestTimeoutDeadline =
       this.#createWebSocketRequestTimeoutDeadline();
 
@@ -544,6 +550,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
         ) {
           const functionCalls = activeResponse.queuedFunctionCalls.splice(0);
           const partialResponse = this.#buildBoundaryResponse(functionCalls);
+          reachedResponseBoundary = true;
           yield { type: 'response.completed', response: partialResponse };
           return;
         }
@@ -578,11 +585,13 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
             ]),
           );
           this.#activeResponse = undefined;
+          reachedResponseBoundary = true;
           yield { ...terminalEvent, response };
           return;
         }
       }
     } catch (error) {
+      threwError = true;
       if (receivedWebSocketEvent && error instanceof Error) {
         (
           error as Error & {
@@ -595,7 +604,13 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
       }
       throw error;
     } finally {
-      this.#requestInProgress = false;
+      try {
+        if (!threwError && !reachedResponseBoundary) {
+          await this.close();
+        }
+      } finally {
+        this.#requestInProgress = false;
+      }
     }
   }
 
@@ -685,7 +700,11 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
           'An active hosted response must be resumed with the same WebSocket transport headers and query.',
         );
       }
-      return this.#webSocket;
+      if (isReusableWebSocket(this.#webSocket)) {
+        return this.#webSocket;
+      }
+      this.#dropWebSocketConnection();
+      this.#webSocketTransportOverridesKey = transportOverridesKey;
     }
 
     const creationOptions = await this.#prepareWebSocketCreationOptions(
@@ -702,7 +721,11 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
       sortedEntries(creationOptions.headers),
     ]);
 
-    if (this.#webSocket && !isReusableWebSocket(this.#webSocket)) {
+    if (
+      !activeResponse &&
+      this.#webSocket &&
+      !isReusableWebSocket(this.#webSocket)
+    ) {
       await this.close();
     }
 

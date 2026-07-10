@@ -214,6 +214,110 @@ describe('OpenAIHostedMultiAgentModel', () => {
     expect(secondResponse.responseId).toBe('resp_second');
   });
 
+  it('closes a hosted turn when the streaming consumer stops early', async () => {
+    const firstWebSocket = new FakeResponsesWebSocket([
+      { type: 'response.created', response: emptyResponse('resp_abandoned') },
+      {
+        type: 'response.completed',
+        response: emptyResponse('resp_abandoned'),
+      },
+    ]);
+    const secondWebSocket = new FakeResponsesWebSocket([
+      { type: 'response.created', response: emptyResponse('resp_next') },
+      { type: 'response.completed', response: emptyResponse('resp_next') },
+    ]);
+    const model = new TestHostedMultiAgentModel([
+      firstWebSocket,
+      secondWebSocket,
+    ]);
+
+    await withTestTrace(async () => {
+      for await (const _event of model.getStreamedResponse(request())) {
+        break;
+      }
+    });
+    const nextResponse = await withTestTrace(() =>
+      model.getResponse(request({ input: 'Start a clean hosted turn.' })),
+    );
+
+    expect(firstWebSocket.close).toHaveBeenCalledOnce();
+    expect(model.webSocketCreationOptions).toHaveLength(2);
+    expect(secondWebSocket.sent[0]?.type).toBe('response.create');
+    expect(nextResponse.responseId).toBe('resp_next');
+  });
+
+  it('reconnects before injecting into a closed active hosted response', async () => {
+    const functionCall = {
+      type: 'function_call',
+      id: 'fc_reconnect',
+      call_id: 'call_reconnect',
+      name: 'lookup',
+      arguments: '{}',
+      status: 'completed',
+      agent: { agent_name: '/root/researcher' },
+    };
+    const rootFinal = {
+      type: 'message',
+      id: 'msg_reconnect_final',
+      role: 'assistant',
+      status: 'completed',
+      phase: 'final_answer',
+      agent: { agent_name: '/root' },
+      content: [{ type: 'output_text', text: 'Reconnected.' }],
+    };
+    const firstWebSocket = new FakeResponsesWebSocket([
+      { type: 'response.created', response: emptyResponse('resp_reconnect') },
+      { type: 'response.output_item.done', item: functionCall },
+    ]);
+    const secondWebSocket = new FakeResponsesWebSocket([
+      { type: 'response.inject.created', response_id: 'resp_reconnect' },
+      {
+        type: 'response.completed',
+        response: {
+          ...emptyResponse('resp_reconnect'),
+          output: [functionCall, rootFinal],
+        },
+      },
+    ]);
+    const model = new TestHostedMultiAgentModel([
+      firstWebSocket,
+      secondWebSocket,
+    ]);
+
+    const boundary = await withTestTrace(() => model.getResponse(request()));
+    firstWebSocket.closeFromServer();
+    const response = await withTestTrace(() =>
+      model.getResponse(
+        request({
+          input: [
+            ...boundary.output,
+            {
+              type: 'function_call_result',
+              callId: 'call_reconnect',
+              output: 'lookup result',
+              status: 'completed',
+            },
+          ],
+        }),
+      ),
+    );
+
+    expect(model.webSocketCreationOptions).toHaveLength(2);
+    expect(firstWebSocket.close).toHaveBeenCalledOnce();
+    expect(secondWebSocket.sent[0]).toMatchObject({
+      type: 'response.inject',
+      response_id: 'resp_reconnect',
+      input: [
+        expect.objectContaining({
+          type: 'function_call_output',
+          call_id: 'call_reconnect',
+          output: 'lookup result',
+        }),
+      ],
+    });
+    expect(response.output[0]?.type).toBe('message');
+  });
+
   it.each([false, true])(
     'applies the client timeout while waiting for hosted WebSocket events (stream: %s)',
     async (stream) => {
