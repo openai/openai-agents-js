@@ -35,7 +35,10 @@ function message(message: Record<string, any>) {
 
 class FakeResponsesWebSocket {
   readonly sent: Array<Record<string, any>> = [];
-  readonly close = vi.fn();
+  readonly socket = { readyState: 1 };
+  readonly close = vi.fn(() => {
+    this.socket.readyState = 3;
+  });
   #events: Array<Record<string, any> | Error>;
 
   constructor(events: Array<Record<string, any> | Error>) {
@@ -46,6 +49,15 @@ class FakeResponsesWebSocket {
 
   send(event: Record<string, any>) {
     this.sent.push(event);
+  }
+
+  closeFromServer() {
+    this.socket.readyState = 3;
+    this.#events.push({
+      type: 'close',
+      code: 1001,
+      reason: 'Idle timeout.',
+    });
   }
 
   [Symbol.asyncIterator](): AsyncIterator<Record<string, any>> {
@@ -70,7 +82,8 @@ class TestHostedMultiAgentModel extends OpenAIHostedMultiAgentModel {
   }> = [];
 
   constructor(
-    private readonly fakeWebSocket: FakeResponsesWebSocket,
+    private readonly fakeWebSocket:
+      FakeResponsesWebSocket | Array<FakeResponsesWebSocket>,
     config?: { maxConcurrentSubagents?: number },
     client: OpenAI = new OpenAI({ apiKey: 'test-key' }),
   ) {
@@ -82,7 +95,15 @@ class TestHostedMultiAgentModel extends OpenAIHostedMultiAgentModel {
     headers: Record<string, string>;
   }): any {
     this.webSocketCreationOptions.push(options);
-    return this.fakeWebSocket;
+    if (!Array.isArray(this.fakeWebSocket)) {
+      return this.fakeWebSocket;
+    }
+    const fakeWebSocket =
+      this.fakeWebSocket[this.webSocketCreationOptions.length - 1];
+    if (!fakeWebSocket) {
+      throw new Error('No fake WebSocket is available for this connection.');
+    }
+    return fakeWebSocket;
   }
 }
 
@@ -153,6 +174,33 @@ describe('OpenAIHostedMultiAgentModel', () => {
     );
 
     expect(fakeWebSocket.sent[0]?.multi_agent).toEqual({ enabled: true });
+  });
+
+  it('recreates an idle WebSocket after the server closes it', async () => {
+    const firstWebSocket = new FakeResponsesWebSocket([
+      { type: 'response.created', response: emptyResponse('resp_first') },
+      { type: 'response.completed', response: emptyResponse('resp_first') },
+    ]);
+    const secondWebSocket = new FakeResponsesWebSocket([
+      { type: 'response.created', response: emptyResponse('resp_second') },
+      { type: 'response.completed', response: emptyResponse('resp_second') },
+    ]);
+    const model = new TestHostedMultiAgentModel([
+      firstWebSocket,
+      secondWebSocket,
+    ]);
+
+    await withTestTrace(() => model.getResponse(request()));
+    firstWebSocket.closeFromServer();
+    const secondResponse = await withTestTrace(() =>
+      model.getResponse(request({ input: 'Run another hosted response.' })),
+    );
+
+    expect(model.webSocketCreationOptions).toHaveLength(2);
+    expect(firstWebSocket.close).toHaveBeenCalledOnce();
+    expect(firstWebSocket.sent).toHaveLength(1);
+    expect(secondWebSocket.sent).toHaveLength(1);
+    expect(secondResponse.responseId).toBe('resp_second');
   });
 
   it('preserves client and request WebSocket transport configuration', async () => {

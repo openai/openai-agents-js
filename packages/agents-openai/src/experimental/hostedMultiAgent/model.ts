@@ -39,8 +39,18 @@ const HOSTED_TERMINAL_RESPONSE_EVENT_TYPES = new Set([
   'response.error',
 ]);
 
-type ResponsesWebSocketLike = Pick<ResponsesWS, 'send' | 'close'> &
+type ResponsesWebSocketLike = Pick<ResponsesWS, 'send' | 'close' | 'socket'> &
   AsyncIterable<Record<string, any>>;
+
+const WEBSOCKET_CONNECTING_READY_STATE = 0;
+const WEBSOCKET_OPEN_READY_STATE = 1;
+
+function isReusableWebSocket(webSocket: ResponsesWebSocketLike): boolean {
+  return (
+    webSocket.socket.readyState === WEBSOCKET_CONNECTING_READY_STATE ||
+    webSocket.socket.readyState === WEBSOCKET_OPEN_READY_STATE
+  );
+}
 
 type ActiveHostedResponse = {
   responseId?: string;
@@ -677,6 +687,10 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
       connectionURL,
       sortedEntries(creationOptions.headers),
     ]);
+
+    if (this.#webSocket && !isReusableWebSocket(this.#webSocket)) {
+      await this.close();
+    }
 
     if (this.#webSocket && this.#webSocketConnectionKey !== connectionKey) {
       await this.close();
