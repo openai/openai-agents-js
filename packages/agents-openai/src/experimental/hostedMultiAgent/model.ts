@@ -58,6 +58,9 @@ function isReusableWebSocket(webSocket: ResponsesWebSocketLike): boolean {
 type ActiveHostedResponse = {
   responseId?: string;
   responseTemplate?: Record<string, any>;
+  responseCreateInput: Array<Record<string, any>>;
+  responseCreatePreviousResponseId?: string;
+  responseStored: boolean;
   pendingCallIds: Set<string>;
   emittedCallIds: Set<string>;
   queuedFunctionCalls: Array<Record<string, any>>;
@@ -462,6 +465,14 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
         }
       } else {
         this.#activeResponse = {
+          responseCreateInput: Array.isArray(requestData.input)
+            ? [...requestData.input]
+            : [],
+          responseCreatePreviousResponseId:
+            typeof requestData.previous_response_id === 'string'
+              ? requestData.previous_response_id
+              : undefined,
+          responseStored: requestData.store !== false,
           pendingCallIds: new Set(),
           emittedCallIds: new Set(),
           queuedFunctionCalls: [],
@@ -684,14 +695,41 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     activeResponse.requestUsages.push(
       terminalResponse.usage as OpenAI.Responses.ResponseUsage | undefined,
     );
+    const terminalResponseStored =
+      typeof terminalResponse.store === 'boolean'
+        ? terminalResponse.store
+        : activeResponse.responseStored;
     const fallbackFrame = toResponseCreateFrame(requestData);
-    fallbackFrame.input = continuationInput;
-    if (fallbackFrame.conversation == null) {
+    if (fallbackFrame.conversation != null) {
+      fallbackFrame.input = continuationInput;
+      delete fallbackFrame.previous_response_id;
+    } else if (terminalResponseStored) {
+      fallbackFrame.input = continuationInput;
       fallbackFrame.previous_response_id = terminalResponse.id;
     } else {
-      delete fallbackFrame.previous_response_id;
+      fallbackFrame.input = [
+        ...activeResponse.responseCreateInput,
+        ...(Array.isArray(terminalResponse.output)
+          ? terminalResponse.output
+          : []),
+        ...continuationInput,
+      ];
+      if (activeResponse.responseCreatePreviousResponseId) {
+        fallbackFrame.previous_response_id =
+          activeResponse.responseCreatePreviousResponseId;
+      } else {
+        delete fallbackFrame.previous_response_id;
+      }
     }
 
+    activeResponse.responseCreateInput = Array.isArray(fallbackFrame.input)
+      ? [...fallbackFrame.input]
+      : [];
+    activeResponse.responseCreatePreviousResponseId =
+      typeof fallbackFrame.previous_response_id === 'string'
+        ? fallbackFrame.previous_response_id
+        : undefined;
+    activeResponse.responseStored = fallbackFrame.store !== false;
     activeResponse.responseId = undefined;
     activeResponse.responseTemplate = undefined;
     activeResponse.pendingCallIds.clear();

@@ -974,6 +974,117 @@ describe('OpenAIHostedMultiAgentModel', () => {
     },
   );
 
+  it.each([
+    { stream: false, storedBaseResponseId: undefined },
+    { stream: true, storedBaseResponseId: undefined },
+    { stream: false, storedBaseResponseId: 'resp_stored_base' },
+  ])(
+    'replays stateless history after an injection race (stream: $stream, stored base: $storedBaseResponseId)',
+    async ({ stream, storedBaseResponseId }) => {
+      const functionCall = {
+        type: 'function_call',
+        id: 'fc_stateless_race',
+        call_id: 'call_stateless_race',
+        name: 'lookup',
+        arguments: '{}',
+        status: 'completed',
+        agent: { agent_name: '/root/researcher' },
+      };
+      const failedInput = {
+        type: 'function_call_output',
+        call_id: 'call_stateless_race',
+        output: 'result',
+      };
+      const fakeWebSocket = new FakeResponsesWebSocket([
+        {
+          type: 'response.created',
+          response: { ...emptyResponse('resp_stateless_race'), store: false },
+        },
+        { type: 'response.output_item.done', item: functionCall },
+        {
+          type: 'response.completed',
+          response: {
+            ...emptyResponse('resp_stateless_race'),
+            store: false,
+            output: [functionCall],
+          },
+        },
+        {
+          type: 'response.inject.failed',
+          response_id: 'resp_stateless_race',
+          input: [failedInput],
+          error: {
+            code: 'response_already_completed',
+            message: 'Already completed.',
+          },
+        },
+        {
+          type: 'response.created',
+          response: {
+            ...emptyResponse('resp_stateless_fallback'),
+            store: false,
+          },
+        },
+        {
+          type: 'response.completed',
+          response: {
+            ...emptyResponse('resp_stateless_fallback'),
+            store: false,
+          },
+        },
+      ]);
+      const model = new TestHostedMultiAgentModel(fakeWebSocket);
+      const first = await getTestResponse(
+        model,
+        request({
+          previousResponseId: storedBaseResponseId,
+          modelSettings: { store: false },
+        }),
+        stream,
+      );
+
+      await getTestResponse(
+        model,
+        request({
+          previousResponseId: storedBaseResponseId
+            ? 'resp_stateless_race'
+            : undefined,
+          modelSettings: { store: false },
+          input: [
+            ...first.output,
+            {
+              type: 'function_call_result',
+              callId: 'call_stateless_race',
+              output: 'result',
+              status: 'completed',
+            },
+          ],
+        }),
+        stream,
+      );
+
+      expect(fakeWebSocket.sent[2]).toMatchObject({
+        type: 'response.create',
+        store: false,
+        input: [
+          ...(fakeWebSocket.sent[0].input as Array<Record<string, any>>),
+          functionCall,
+          failedInput,
+        ],
+      });
+      if (storedBaseResponseId) {
+        expect(fakeWebSocket.sent[2]).toHaveProperty(
+          'previous_response_id',
+          storedBaseResponseId,
+        );
+      } else {
+        expect(fakeWebSocket.sent[2]).not.toHaveProperty(
+          'previous_response_id',
+        );
+      }
+    },
+  );
+
   it('keeps conversation continuation mutually exclusive with previous_response_id', async () => {
     const functionCall = {
       type: 'function_call',
