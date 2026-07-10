@@ -36,10 +36,12 @@ function message(message: Record<string, any>) {
 class FakeResponsesWebSocket {
   readonly sent: Array<Record<string, any>> = [];
   readonly close = vi.fn();
-  #events: Array<Record<string, any>>;
+  #events: Array<Record<string, any> | Error>;
 
-  constructor(events: Array<Record<string, any>>) {
-    this.#events = events.map(message);
+  constructor(events: Array<Record<string, any> | Error>) {
+    this.#events = events.map((event) =>
+      event instanceof Error ? event : message(event),
+    );
   }
 
   send(event: Record<string, any>) {
@@ -50,6 +52,9 @@ class FakeResponsesWebSocket {
     return {
       next: async () => {
         const value = this.#events.shift();
+        if (value instanceof Error) {
+          throw value;
+        }
         return value
           ? { value, done: false as const }
           : { value: undefined, done: true as const };
@@ -342,6 +347,16 @@ describe('OpenAIHostedMultiAgentModel', () => {
       agent_name: '/root/researcher',
     });
 
+    await expect(
+      withTestTrace(() =>
+        model.getResponse(request({ input: [...first.output] })),
+      ),
+    ).rejects.toThrow(
+      'The hosted response is waiting for local function outputs for: call_lookup.',
+    );
+    expect(fakeWebSocket.sent).toHaveLength(1);
+    expect(fakeWebSocket.close).not.toHaveBeenCalled();
+
     const second = await withTestTrace(() =>
       model.getResponse(
         request({
@@ -485,6 +500,28 @@ describe('OpenAIHostedMultiAgentModel', () => {
       'call_beta',
       'call_gamma',
     ]);
+
+    await expect(
+      withTestTrace(() =>
+        model.getResponse(
+          request({
+            input: [
+              ...second.output,
+              {
+                type: 'function_call_result',
+                callId: 'call_beta',
+                output: 'beta result',
+                status: 'completed',
+              },
+            ],
+          }),
+        ),
+      ),
+    ).rejects.toThrow(
+      'The hosted response is waiting for local function outputs for: call_gamma.',
+    );
+    expect(fakeWebSocket.sent).toHaveLength(2);
+    expect(fakeWebSocket.close).not.toHaveBeenCalled();
 
     const third = await withTestTrace(() =>
       model.getResponse(
@@ -921,6 +958,34 @@ describe('OpenAIHostedMultiAgentModel', () => {
       );
     },
   );
+
+  it('marks a non-streaming turn unsafe to replay after consuming a WebSocket event', async () => {
+    const socketError = new Error('WebSocket read failed.');
+    const fakeWebSocket = new FakeResponsesWebSocket([
+      { type: 'response.created', response: emptyResponse('resp_started') },
+      socketError,
+    ]);
+    const model = new TestHostedMultiAgentModel(fakeWebSocket);
+
+    let error: (Error & { unsafeToReplay?: boolean }) | undefined;
+    try {
+      await withTestTrace(() => model.getResponse(request()));
+    } catch (caught) {
+      error = caught as Error & { unsafeToReplay?: boolean };
+    }
+
+    expect(error).toBe(socketError);
+    expect(error?.unsafeToReplay).toBe(true);
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: request(),
+        stream: false,
+        attempt: 1,
+      }),
+    ).toMatchObject({ suggested: false, replaySafety: 'unsafe' });
+    expect(fakeWebSocket.close).toHaveBeenCalledOnce();
+  });
 
   it('keeps stable Responses requests free of hosted beta fields', async () => {
     const stableCreate = vi.fn().mockResolvedValue(emptyResponse());

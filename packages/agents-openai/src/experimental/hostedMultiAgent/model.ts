@@ -364,6 +364,9 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
       );
     }
     this.#requestInProgress = true;
+    const hadActiveResponse = Boolean(this.#activeResponse);
+    let sentWebSocketFrame = false;
+    let receivedWebSocketEvent = false;
 
     try {
       const builtRequest = this._buildResponsesCreateRequest(request, true);
@@ -396,12 +399,13 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
         }
 
         if (activeResponse.terminalEvent) {
-          this.#continueTerminalResponse(
+          const continuationFrame = this.#prepareTerminalContinuation(
             activeResponse,
             requestData,
             outputs,
-            webSocket,
           );
+          sentWebSocketFrame = true;
+          webSocket.send(continuationFrame as any);
         } else {
           if (outputs.length === 0 || !activeResponse.responseId) {
             throw new UserError(
@@ -412,6 +416,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
           for (const output of outputs) {
             injectingCallIds.add(output.call_id);
           }
+          sentWebSocketFrame = true;
           webSocket.send({
             type: 'response.inject',
             response_id: activeResponse.responseId,
@@ -426,6 +431,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
           fallbackInput: [],
           requestUsages: [],
         };
+        sentWebSocketFrame = true;
         webSocket.send(toResponseCreateFrame(requestData) as any);
       }
 
@@ -436,6 +442,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
             'Hosted Multi-agent WebSocket closed before a response boundary.',
           );
         }
+        receivedWebSocketEvent = true;
         if (message.type === 'error') {
           throw message.error;
         }
@@ -519,12 +526,13 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
 
         if (activeResponse.terminalEvent && pendingInjections === 0) {
           if (activeResponse.fallbackInput.length > 0) {
-            this.#continueTerminalResponse(
+            const continuationFrame = this.#prepareTerminalContinuation(
               activeResponse,
               requestData,
               [],
-              webSocket,
             );
+            sentWebSocketFrame = true;
+            webSocket.send(continuationFrame as any);
             injectingCallIds.clear();
             continue;
           }
@@ -551,7 +559,16 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
         }
       }
     } catch (error) {
-      await this.close();
+      if (receivedWebSocketEvent && error instanceof Error) {
+        (
+          error as Error & {
+            unsafeToReplay?: boolean;
+          }
+        ).unsafeToReplay = true;
+      }
+      if (!hadActiveResponse || sentWebSocketFrame || receivedWebSocketEvent) {
+        await this.close();
+      }
       throw error;
     } finally {
       this.#requestInProgress = false;
@@ -583,12 +600,11 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     return boundaryResponse;
   }
 
-  #continueTerminalResponse(
+  #prepareTerminalContinuation(
     activeResponse: ActiveHostedResponse,
     requestData: Record<string, any>,
     functionOutputs: Array<Record<string, any>>,
-    webSocket: ResponsesWebSocketLike,
-  ): void {
+  ): Record<string, any> {
     const terminalResponse = activeResponse.terminalEvent?.response as
       Record<string, any> | undefined;
     if (!terminalResponse?.id) {
@@ -624,7 +640,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     activeResponse.queuedFunctionCalls = [];
     activeResponse.terminalEvent = undefined;
     activeResponse.fallbackInput = [];
-    webSocket.send(fallbackFrame as any);
+    return fallbackFrame;
   }
 
   async #ensureWebSocket(
