@@ -860,12 +860,14 @@ describe('OpenAIHostedMultiAgentModel', () => {
       throw new Error('Stream ended without a response_done event.');
     }
     expect(done.response.output.map((item) => item.type)).toEqual(['message']);
-    const rawTerminalEvent = streamEvents.find(
+    const rawTerminalEvents = streamEvents.filter(
       (event) =>
         event.type === 'model' &&
         (event.event as any).type === 'response.completed' &&
         (event.event as any).response?.id === 'resp_raw_terminal',
     );
+    expect(rawTerminalEvents).toHaveLength(1);
+    const rawTerminalEvent = rawTerminalEvents[0];
     if (rawTerminalEvent?.type !== 'model') {
       throw new Error('Stream ended without a raw terminal model event.');
     }

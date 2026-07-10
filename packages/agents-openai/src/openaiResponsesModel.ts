@@ -3269,15 +3269,6 @@ export class OpenAIResponsesModel implements Model {
             },
             providerData: remainingEvent,
           };
-          if (eventType === 'response.completed' && shouldEmitRawModelEvent) {
-            yield {
-              type: 'model',
-              event: event,
-              providerData: {
-                rawModelEventSource: OPENAI_RESPONSES_RAW_MODEL_EVENT_SOURCE,
-              },
-            };
-          }
         } else if (eventType === 'response.output_text.delta') {
           const { delta, ...remainingEvent } = event as unknown as {
             delta: string;

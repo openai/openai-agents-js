@@ -3868,6 +3868,49 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('emits response.completed once as a raw model event', async () => {
+    const completedEvent: OpenAIResponseStreamEvent = {
+      type: 'response.completed',
+      response: {
+        id: 'res-completed-once',
+        output: [],
+        usage: {},
+      } as any,
+      sequence_number: 0,
+    };
+    async function* fakeStream() {
+      yield completedEvent;
+    }
+    const fakeClient = {
+      responses: { create: vi.fn().mockResolvedValue(fakeStream()) },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'model-stream');
+    const received: ResponseStreamEvent[] = [];
+
+    for await (const event of model.getStreamedResponse({
+      systemInstructions: undefined,
+      input: 'data',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    } as any)) {
+      received.push(event);
+    }
+
+    expect(
+      received.filter(
+        (event) =>
+          event.type === 'model' && event.event.type === 'response.completed',
+      ),
+    ).toHaveLength(1);
+    expect(
+      received.filter((event) => event.type === 'response_done'),
+    ).toHaveLength(1);
+  });
+
   it('prevents extra_body from overriding streamed request mode', async () => {
     await withTrace('test', async () => {
       const createdEvent: OpenAIResponseStreamEvent = {
