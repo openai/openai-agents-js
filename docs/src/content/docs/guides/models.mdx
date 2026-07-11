@@ -20,7 +20,7 @@ import gpt56RequestControlsExample from '../../../../../examples/docs/models/gpt
 Every Agent ultimately calls an LLM. The SDK abstracts models behind two lightweight interfaces:
 
 - [`Model`](/openai-agents-js/openai/agents/interfaces/model) – knows how to make _one_ request against a specific API.
-- [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – resolves human‑readable model **names** (e.g. `'gpt‑5.4'`) to `Model` instances.
+- [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – resolves human‑readable model **names** (e.g. `'gpt-5.6-sol'`) to `Model` instances.
 
 In day‑to‑day work you normally only interact with model **names** and occasionally `ModelSettings`.
 
@@ -55,7 +55,7 @@ Second, you can set a default model for a `Runner` instance. If you don't set a 
 
 #### GPT-5.x models
 
-When you use any GPT-5.x model such as [`gpt-5.4`](https://developers.openai.com/api/docs/models/gpt-5.4) in this way, the SDK applies default `modelSettings`. It sets the ones that work the best for most use cases. To adjust the reasoning effort for the default model, pass your own `modelSettings`:
+When you use any GPT-5.x model such as [`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol) in this way, the SDK applies default `modelSettings`. It sets the ones that work the best for most use cases. To adjust the reasoning effort for the default model, pass your own `modelSettings`:
 
 <Code
   lang="typescript"
@@ -141,7 +141,7 @@ See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/t
 
 `toolSearchTool()`, `toolNamespace()`, and function tools or hosted MCP tools that set `deferLoading: true` require the OpenAI Responses API. The Chat Completions provider rejects namespaced or deferred function tools, and the AI SDK adapter does not support deferred Responses tool-loading flows. Use a Responses model directly when you need tool search.
 
-Tool search is supported only on GPT-5.4 and newer model releases that support it in the Responses API.
+Tool search is supported only on GPT-5.6 Sol and newer model releases that support it in the Responses API.
 
 When a run includes deferred tools, add `toolSearchTool()` to the same agent and keep `modelSettings.toolChoice` on `'auto'`. The SDK does not let you force the built-in `tool_search` tool or a deferred function tool by name because the model needs to decide when to load those definitions. See the [Tools guide](/openai-agents-js/guides/tools#deferred-tool-loading-with-tool-search) and the official [OpenAI tool search guide](https://developers.openai.com/api/docs/guides/tools-tool-search) for the full setup.
 
@@ -333,7 +333,7 @@ Agents can be configured with a `prompt` parameter, indicating a server-stored p
 
 Any additional agent configuration, like tools or instructions, will override the values you may have configured in your stored prompt.
 
-When a stored prompt already defines the model, the SDK does not send the agent's default model unless you explicitly override it. That matters for `computerTool()`: prompt-managed runs keep the legacy preview wire shape by default for compatibility. To opt into the GA Responses computer tool on a prompt-managed run, explicitly set `modelSettings.toolChoice: 'computer'` or send an explicit model such as [`gpt-5.4`](https://developers.openai.com/api/docs/models/gpt-5.4). See [Tools](/openai-agents-js/guides/tools#computer-tool-specifics) for the surrounding computer-use details.
+When a stored prompt already defines the model, the SDK does not send the agent's default model unless you explicitly override it. That matters for `computerTool()`: prompt-managed runs keep the legacy preview wire shape by default for compatibility. To opt into the GA Responses computer tool on a prompt-managed run, explicitly set `modelSettings.toolChoice: 'computer'` or send an explicit model such as [`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol). See [Tools](/openai-agents-js/guides/tools#computer-tool-specifics) for the surrounding computer-use details.
 
 ---
 
