@@ -51,7 +51,7 @@ If isolation or a different checkout is needed, explain why and ask the user bef
 
 ### Shared Checkout and pnpm Safety
 
-Treat the primary Git worktree as the user's interactive checkout. When the Codex task is already running in that selected checkout, the selection authorizes using its dependency tree and no additional approval is required before running `pnpm` or a command that can invoke `pnpm`. Set `CODEX_ALLOW_SHARED_PNPM=1` for such commands when the repository tooling requires the explicit escape hatch. This includes read-looking commands such as `pnpm exec`, because pnpm can run a dependency status check and reinstall `node_modules` before executing the requested binary.
+Treat the primary Git worktree as the user's interactive checkout. When the Codex task is already running in that selected checkout, the selection authorizes using its dependency tree and no additional approval is required before running `pnpm` or a command that can invoke `pnpm`. Before every Codex-run pnpm command, remove `PNPM_CONFIG_MINIMUM_RELEASE_AGE` and `pnpm_config_minimum_release_age` from the child environment so `pnpm-workspace.yaml` remains authoritative. Set `CODEX_ALLOW_SHARED_PNPM=1` for such commands when the repository tooling requires the explicit escape hatch. This includes read-looking commands such as `pnpm exec`, because pnpm can run a dependency status check and reinstall `node_modules` before executing the requested binary.
 
 Before the first pnpm command, compare `git rev-parse --path-format=absolute --git-dir` with `git rev-parse --path-format=absolute --git-common-dir`:
 
@@ -59,7 +59,7 @@ Before the first pnpm command, compare `git rev-parse --path-format=absolute --g
 - If the paths differ, Codex is in a linked worktree and may use its independent `node_modules`.
 - If work has already started in the primary worktree, do not transfer the task to a linked worktree merely to run pnpm. Continue in the selected checkout with `CODEX_ALLOW_SHARED_PNPM=1`.
 
-In a Codex linked worktree, remove Codex-specific `PNPM_CONFIG_MINIMUM_RELEASE_AGE` and `pnpm_config_minimum_release_age` overrides so `pnpm-workspace.yaml` remains authoritative, and set `CI=1` for non-interactive verification. Do not set `confirmModulesPurge=false` repo-wide and do not add `CI=1` to Husky as a workaround; either change would allow a Git hook to remove the user's shared `node_modules` without confirmation.
+In a Codex linked worktree, set `CI=1` for non-interactive verification after applying the same pnpm environment normalization. Do not set `confirmModulesPurge=false` repo-wide and do not add `CI=1` to Husky as a workaround; either change would allow a Git hook to remove the user's shared `node_modules` without confirmation.
 
 ### ExecPlans
 

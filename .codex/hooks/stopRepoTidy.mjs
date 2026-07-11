@@ -8,6 +8,18 @@ import { loadState, saveState } from './lib/hookState.mjs';
 import { MAX_LINT_FIX_FILES, lintFixPaths } from './lib/stopTidyPolicy.mjs';
 
 const PNPM_COMMAND = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
+const PNPM_ENVIRONMENT_OVERRIDES = [
+  'PNPM_CONFIG_MINIMUM_RELEASE_AGE',
+  'pnpm_config_minimum_release_age',
+];
+
+function pnpmEnvironment(sourceEnv) {
+  const env = { ...sourceEnv };
+  for (const name of PNPM_ENVIRONMENT_OVERRIDES) {
+    delete env[name];
+  }
+  return env;
+}
 
 function writeStopBlock(reason, systemMessage) {
   stdout.write(
@@ -46,12 +58,14 @@ function main() {
   }
 
   const repoRoot = gitRoot(cwd);
+  const env = pnpmEnvironment(process.env);
   const lintResult = spawnSync(
     PNPM_COMMAND,
     ['lint:fix', '--', ...currentPaths],
     {
       cwd: repoRoot,
       encoding: 'utf8',
+      env,
     },
   );
 
@@ -60,6 +74,7 @@ function main() {
     formatResult = spawnSync(PNPM_COMMAND, ['format:changed'], {
       cwd: repoRoot,
       encoding: 'utf8',
+      env,
     });
   }
 
