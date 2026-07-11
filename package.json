@@ -21,6 +21,7 @@
     "dev": "tsx scripts/dev.mts",
     "format": "prettier --write \"packages/**/*.ts\" \"examples/**/*.ts\" \"integration-tests/**/*.ts\"",
     "format:changed": "node scripts/prettier-changed.mjs",
+    "format:check:changed": "node scripts/prettier-changed.mjs --check",
     "lint": "eslint",
     "lint:fix": "eslint --fix",
     "examples:basic": "pnpm -F basic start",
