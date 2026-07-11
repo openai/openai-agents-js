@@ -357,6 +357,64 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('getRetryAdvice reads case-insensitive response header objects', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+    expect(
+      model.getRetryAdvice({
+        error: {
+          responseHeaders: {
+            'X-Should-Retry': ' TRUE ',
+          },
+        },
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: true,
+      replaySafety: 'safe',
+      reason: undefined,
+    });
+  });
+
+  it('getRetryAdvice handles non-Error unsafe replay markers', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+
+    expect(
+      model.getRetryAdvice({
+        error: { unsafeToReplay: true },
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: false,
+      replaySafety: 'unsafe',
+      reason: undefined,
+    });
+  });
+
   it('getRetryAdvice treats x-should-retry=true as safe replay advice for stateful requests', () => {
     const fakeClient = {
       responses: { create: vi.fn() },
@@ -415,6 +473,35 @@ describe('OpenAIResponsesModel', () => {
     ).toEqual({
       suggested: true,
       reason: 'rate limited',
+    });
+  });
+
+  it('getRetryAdvice supports statusCode errors and server failures', () => {
+    const fakeClient = {
+      responses: { create: vi.fn() },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+    const error = Object.assign(new Error('service unavailable'), {
+      statusCode: 503,
+    });
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: {
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toEqual({
+      suggested: true,
+      reason: 'service unavailable',
     });
   });
 

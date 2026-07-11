@@ -205,21 +205,19 @@ describe('Tool', () => {
   });
 
   it('computerTool initializes computer per run context when an initializer is provided', async () => {
-    const initializer = vi.fn(
-      async (): Promise<Computer> => ({
-        environment: 'mac' as const,
-        dimensions: [1, 1],
-        screenshot: async () => 'img',
-        click: async () => {},
-        doubleClick: async () => {},
-        drag: async () => {},
-        keypress: async () => {},
-        move: async () => {},
-        scroll: async () => {},
-        type: async () => {},
-        wait: async () => {},
-      }),
-    );
+    const initializer = vi.fn(async (): Promise<Computer> => ({
+      environment: 'mac' as const,
+      dimensions: [1, 1],
+      screenshot: async () => 'img',
+      click: async () => {},
+      doubleClick: async () => {},
+      drag: async () => {},
+      keypress: async () => {},
+      move: async () => {},
+      scroll: async () => {},
+      type: async () => {},
+      wait: async () => {},
+    }));
     const t = computerTool({ name: 'comp', computer: initializer });
 
     const ctxA = new RunContext();
@@ -590,6 +588,15 @@ describe('create a tool using hostedMcpTool utility', () => {
     expect(t.providerData.server_label).toBe('gitmcp');
   });
 
+  it('defaults MCP approval to never', () => {
+    const t = hostedMcpTool({
+      serverLabel: 'gitmcp',
+      serverUrl: 'https://gitmcp.io/openai/codex',
+    });
+
+    expect(t.providerData.require_approval).toBe('never');
+  });
+
   it('propagates authorization when approval is never required', () => {
     const t = hostedMcpTool({
       serverLabel: 'gitmcp',
@@ -660,6 +667,37 @@ describe('create a tool using hostedMcpTool utility', () => {
     ).toThrowError(/cannot be listed in both always and never/);
   });
 
+  it.each([
+    [null, /value must be "always", "never", or an object/],
+    [[], /value must be "always", "never", or an object/],
+    [{}, /must include at least one of always or never/],
+    [{ always: null }, /always must be an object/],
+    [{ always: { unsupported: true } }, /unsupported key "unsupported"/],
+    [
+      { always: { toolNames: ['search'], tool_names: ['search'] } },
+      /must not specify both toolNames and tool_names/,
+    ],
+    [
+      { always: { readOnly: true, read_only: true } },
+      /must not specify both readOnly and read_only/,
+    ],
+    [{ always: { toolNames: 'search' } }, /toolNames must be an array/],
+    [
+      { always: { toolNames: [''] } },
+      /toolNames must contain only non-empty strings/,
+    ],
+    [{ always: { readOnly: 'yes' } }, /readOnly must be a boolean/],
+    [{ always: {} }, /must include toolNames or readOnly/],
+  ])('rejects invalid MCP approval policy %#', (requireApproval, message) => {
+    expect(() =>
+      hostedMcpTool({
+        serverLabel: 'gitmcp',
+        serverUrl: 'https://gitmcp.io/openai/codex',
+        requireApproval,
+      } as any),
+    ).toThrowError(message);
+  });
+
   it('normalizes MCP approval tool name filters', () => {
     const t = hostedMcpTool({
       serverLabel: 'gitmcp',
@@ -689,6 +727,22 @@ describe('create a tool using hostedMcpTool utility', () => {
     expect(t.providerData.require_approval).toEqual({
       always: { read_only: false },
       never: { tool_names: ['search'], read_only: true },
+    });
+  });
+
+  it('accepts canonical MCP approval filter keys', () => {
+    const t = hostedMcpTool({
+      serverLabel: 'gitmcp',
+      serverUrl: 'https://gitmcp.io/openai/codex',
+      requireApproval: {
+        always: { tool_names: ['delete'] },
+        never: { read_only: true },
+      },
+    } as any);
+
+    expect(t.providerData.require_approval).toEqual({
+      always: { tool_names: ['delete'] },
+      never: { read_only: true },
     });
   });
 });
