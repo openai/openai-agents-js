@@ -293,6 +293,9 @@ importers:
       '@openai/agents-extensions':
         specifier: workspace:*
         version: link:../../packages/agents-extensions
+      '@openai/agents-openai':
+        specifier: workspace:*
+        version: link:../../packages/agents-openai
       '@openai/agents-realtime':
         specifier: workspace:*
         version: link:../../packages/agents-realtime
