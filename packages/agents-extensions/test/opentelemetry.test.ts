@@ -136,6 +136,41 @@ describe('OpenTelemetryTracingProcessor', () => {
     expect(child.end).toHaveBeenCalled();
   });
 
+  test('refreshes open span attributes before trace cleanup', async () => {
+    const root = createOtelSpan();
+    const agent = createOtelSpan();
+    const tracer = {
+      startSpan: vi.fn().mockReturnValueOnce(root).mockReturnValueOnce(agent),
+    } as unknown as Tracer;
+    const processor = new OpenTelemetryTracingProcessor({ tracer });
+    const agentTrace = {
+      traceId: 'trace_123',
+      name: 'Successful workflow',
+      groupId: null,
+    } as Trace;
+    const agentSpan = createAgentSpan({
+      type: 'agent',
+      name: 'Reviewer',
+      tools: [],
+      handoffs: [],
+    });
+
+    await processor.onTraceStart(agentTrace);
+    await processor.onSpanStart(agentSpan);
+    agentSpan.spanData.tools = ['fetch_page'];
+    agentSpan.spanData.handoffs = ['Escalation'];
+    await processor.onTraceEnd(agentTrace);
+
+    expect(agent.setAttributes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        'openai.agents.agent.tools': ['fetch_page'],
+        'openai.agents.agent.handoffs': ['Escalation'],
+      }),
+    );
+    expect(agent.end).toHaveBeenCalled();
+    expect(root.end).toHaveBeenCalled();
+  });
+
   test('suppresses nested automatic instrumentation by default', async () => {
     const otelSpan = createOtelSpan();
     const tracer = {

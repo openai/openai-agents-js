@@ -252,6 +252,7 @@ export class OpenTelemetryTracingProcessor implements TracingProcessor {
   readonly #options: OpenTelemetryTracingProcessorOptions;
   readonly #traces = new Map<string, OtelSpan>();
   readonly #spans = new Map<string, OtelSpan>();
+  readonly #agentSpans = new Map<string, Span<any>>();
   readonly #spanTraceIds = new Map<string, string>();
 
   constructor(options: OpenTelemetryTracingProcessorOptions = {}) {
@@ -278,9 +279,13 @@ export class OpenTelemetryTracingProcessor implements TracingProcessor {
   async onTraceEnd(agentTrace: Trace): Promise<void> {
     for (const [spanId, traceId] of this.#spanTraceIds) {
       if (traceId !== agentTrace.traceId) continue;
-      this.#spans.get(spanId)?.end();
-      this.#spans.delete(spanId);
-      this.#spanTraceIds.delete(spanId);
+      const agentSpan = this.#agentSpans.get(spanId);
+      if (agentSpan) {
+        this.#finishSpan(agentSpan);
+      } else {
+        this.#spans.get(spanId)?.end();
+        this.#deleteSpan(spanId);
+      }
     }
     this.#traces.get(agentTrace.traceId)?.end();
     this.#traces.delete(agentTrace.traceId);
@@ -307,10 +312,15 @@ export class OpenTelemetryTracingProcessor implements TracingProcessor {
         parentContext,
       ),
     );
+    this.#agentSpans.set(agentSpan.spanId, agentSpan);
     this.#spanTraceIds.set(agentSpan.spanId, agentSpan.traceId);
   }
 
   async onSpanEnd(agentSpan: Span<any>): Promise<void> {
+    this.#finishSpan(agentSpan);
+  }
+
+  #finishSpan(agentSpan: Span<any>): void {
     const otelSpan = this.#spans.get(agentSpan.spanId);
     if (!otelSpan) return;
     const descriptor = describeSpan(agentSpan.spanData, this.#options);
@@ -324,8 +334,13 @@ export class OpenTelemetryTracingProcessor implements TracingProcessor {
       });
     }
     otelSpan.end(timestamp(agentSpan.endedAt));
-    this.#spans.delete(agentSpan.spanId);
-    this.#spanTraceIds.delete(agentSpan.spanId);
+    this.#deleteSpan(agentSpan.spanId);
+  }
+
+  #deleteSpan(spanId: string): void {
+    this.#spans.delete(spanId);
+    this.#agentSpans.delete(spanId);
+    this.#spanTraceIds.delete(spanId);
   }
 
   async withSpan<T>(agentSpan: Span<any>, fn: () => Promise<T>): Promise<T> {
