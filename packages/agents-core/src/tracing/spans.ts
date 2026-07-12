@@ -210,6 +210,32 @@ export class Span<TData extends SpanData> {
     return this.#processor.withSpan(this, fn);
   }
 
+  /** Runs async iterable creation and consumption inside this span's context. */
+  async *withContextForAsyncIterable<T>(
+    createIterable: () => AsyncIterable<T> | Promise<AsyncIterable<T>>,
+  ): AsyncIterable<T> {
+    const iterable = await this.withContext(async () => createIterable());
+    const iterator = await this.withContext(async () =>
+      iterable[Symbol.asyncIterator](),
+    );
+    let completed = false;
+
+    try {
+      while (true) {
+        const result = await this.withContext(async () => iterator.next());
+        if (result.done) {
+          completed = true;
+          return;
+        }
+        yield result.value;
+      }
+    } finally {
+      if (!completed && iterator.return) {
+        await this.withContext(async () => iterator.return!());
+      }
+    }
+  }
+
   start() {
     if (this.#startedAt) {
       logger.warn('Span already started');

@@ -2,8 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   Agent,
   Runner,
+  setTraceProcessors,
   withTrace,
   setTracingDisabled,
+  type Span,
+  type Trace,
+  type TracingProcessor,
 } from '@openai/agents-core';
 import { OpenAIChatCompletionsModel } from '../src/openaiChatCompletionsModel';
 import { HEADERS } from '../src/defaults';
@@ -1386,6 +1390,68 @@ describe('OpenAIChatCompletionsModel', () => {
       vi.mocked(convertChatCompletionsStreamToResponses).mock.calls[0]?.[2],
     ).toEqual({ strictFeatureValidation: false });
     expect(events).toEqual([{ type: 'first' }, { type: 'second' }]);
+  });
+
+  it('runs streamed requests and source iteration in model span context', async () => {
+    let modelContextActive = false;
+    const contextChecks: boolean[] = [];
+    const processor: TracingProcessor = {
+      async onTraceStart(_trace: Trace) {},
+      async onTraceEnd(_trace: Trace) {},
+      async onSpanStart(_span: Span<any>) {},
+      async onSpanEnd(_span: Span<any>) {},
+      async withSpan(span, fn) {
+        if (span.spanData.type !== 'generation') return fn();
+        modelContextActive = true;
+        try {
+          return await fn();
+        } finally {
+          modelContextActive = false;
+        }
+      },
+      async shutdown() {},
+      async forceFlush() {},
+    };
+    const client = new FakeClient();
+    async function* fakeStream() {
+      contextChecks.push(modelContextActive);
+      yield { id: 'c' } as any;
+    }
+    client.chat.completions.create.mockImplementation(async () => {
+      contextChecks.push(modelContextActive);
+      return fakeStream();
+    });
+    vi.mocked(convertChatCompletionsStreamToResponses).mockImplementationOnce(
+      async function* (_response, stream) {
+        for await (const _event of stream) {
+          yield { type: 'response_done', response: { usage: {} } } as any;
+        }
+      },
+    );
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const request: any = {
+      input: 'hi',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: true,
+    };
+
+    setTraceProcessors([processor]);
+    setTracingDisabled(false);
+    try {
+      await withTrace('t', async () => {
+        for await (const _event of model.getStreamedResponse(request)) {
+          // Consume the stream.
+        }
+      });
+    } finally {
+      setTracingDisabled(true);
+      setTraceProcessors([]);
+    }
+
+    expect(contextChecks).toEqual([true, true]);
   });
 
   it('passes strict feature validation to the stream converter', async () => {

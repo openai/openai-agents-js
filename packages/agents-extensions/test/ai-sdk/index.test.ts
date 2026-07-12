@@ -8,7 +8,18 @@ import {
   toolChoiceToLanguageV2Format,
   toolToLanguageV2Tool,
 } from '../../src/ai-sdk/index';
-import { Agent, protocol, run, withTrace, UserError } from '@openai/agents';
+import {
+  Agent,
+  protocol,
+  run,
+  setTraceProcessors,
+  setTracingDisabled,
+  withTrace,
+  UserError,
+  type Span,
+  type Trace,
+  type TracingProcessor,
+} from '@openai/agents';
 import { ReadableStream } from 'node:stream/web';
 import {
   APICallError,
@@ -2409,6 +2420,70 @@ describe('AiSdkModel.getStreamedResponse', () => {
         },
       },
     ]);
+  });
+
+  test('runs streamed requests and source iteration in model span context', async () => {
+    let modelContextActive = false;
+    const contextChecks: boolean[] = [];
+    const processor: TracingProcessor = {
+      async onTraceStart(_trace: Trace) {},
+      async onTraceEnd(_trace: Trace) {},
+      async onSpanStart(_span: Span<any>) {},
+      async onSpanEnd(_span: Span<any>) {},
+      async withSpan(span, fn) {
+        if (span.spanData.type !== 'generation') return fn();
+        modelContextActive = true;
+        try {
+          return await fn();
+        } finally {
+          modelContextActive = false;
+        }
+      },
+      async shutdown() {},
+      async forceFlush() {},
+    };
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          contextChecks.push(modelContextActive);
+          return {
+            stream: new ReadableStream({
+              pull(controller) {
+                contextChecks.push(modelContextActive);
+                controller.enqueue({
+                  type: 'finish',
+                  finishReason: 'stop',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                });
+                controller.close();
+              },
+            }),
+          } as any;
+        },
+      }),
+    );
+
+    setTraceProcessors([processor]);
+    setTracingDisabled(false);
+    try {
+      await withTrace('test', async () => {
+        for await (const _event of model.getStreamedResponse({
+          input: 'hi',
+          tools: [],
+          handoffs: [],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: true,
+        } as any)) {
+          // Consume the stream.
+        }
+      });
+    } finally {
+      setTracingDisabled(true);
+      setTraceProcessors([]);
+    }
+
+    expect(contextChecks).toEqual([true, true]);
   });
 
   test('applies transformOutputText to finalized streamed assistant text', async () => {

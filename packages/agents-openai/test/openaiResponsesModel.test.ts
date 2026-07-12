@@ -10,11 +10,14 @@ import {
   Agent,
   retryPolicies,
   Runner,
+  setTraceProcessors,
   setDefaultModelProvider,
   setTracingDisabled,
   withTrace,
   type ResponseStreamEvent,
   Span,
+  type Trace,
+  type TracingProcessor,
 } from '@openai/agents-core';
 import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/resources/responses/responses';
 
@@ -4032,6 +4035,68 @@ describe('OpenAIResponsesModel', () => {
         },
       ]);
     });
+  });
+
+  it('runs streamed requests and source iteration in model span context', async () => {
+    let modelContextActive = false;
+    const contextChecks: boolean[] = [];
+    const processor: TracingProcessor = {
+      async onTraceStart(_trace: Trace) {},
+      async onTraceEnd(_trace: Trace) {},
+      async onSpanStart(_span: Span<any>) {},
+      async onSpanEnd(_span: Span<any>) {},
+      async withSpan(span, fn) {
+        if (span.spanData.type !== 'response') return fn();
+        modelContextActive = true;
+        try {
+          return await fn();
+        } finally {
+          modelContextActive = false;
+        }
+      },
+      async shutdown() {},
+      async forceFlush() {},
+    };
+    async function* fakeStream() {
+      contextChecks.push(modelContextActive);
+      yield {
+        type: 'response.created',
+        response: { id: 'res-context', usage: {}, output: [] },
+      } as any;
+    }
+    const createMock = vi.fn(async () => {
+      contextChecks.push(modelContextActive);
+      return fakeStream();
+    });
+    const fakeClient = {
+      responses: { create: createMock },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+    const request = {
+      systemInstructions: undefined,
+      input: 'hi',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: true,
+      signal: undefined,
+    };
+
+    setTraceProcessors([processor]);
+    setTracingDisabled(false);
+    try {
+      await withTrace('test', async () => {
+        for await (const _event of model.getStreamedResponse(request as any)) {
+          // Consume the stream.
+        }
+      });
+    } finally {
+      setTracingDisabled(true);
+      setTraceProcessors([]);
+    }
+
+    expect(contextChecks).toEqual([true, true]);
   });
 
   it('emits response.completed once as a raw model event', async () => {

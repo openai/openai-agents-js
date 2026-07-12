@@ -1545,6 +1545,52 @@ describe('MultiTracingProcessor', () => {
     expect(calls).toEqual(['started', 'context', 'work']);
   });
 
+  it('keeps async iterable creation, consumption, and cleanup in span context', async () => {
+    const contextStates: boolean[] = [];
+    const processor = new TestProcessor();
+    let contextActive = false;
+    processor.withSpan = async (_span, fn) => {
+      contextActive = true;
+      try {
+        return await fn();
+      } finally {
+        contextActive = false;
+      }
+    };
+    const span = new Span(
+      {
+        traceId: 'trace_context',
+        spanId: 'span_context',
+        data: { type: 'generation' },
+      },
+      processor,
+    );
+    const iterable: AsyncIterable<number> = {
+      [Symbol.asyncIterator]() {
+        contextStates.push(contextActive);
+        return {
+          async next() {
+            contextStates.push(contextActive);
+            return { done: false, value: 1 };
+          },
+          async return() {
+            contextStates.push(contextActive);
+            return { done: true, value: undefined };
+          },
+        };
+      },
+    };
+
+    for await (const _value of span.withContextForAsyncIterable(async () => {
+      contextStates.push(contextActive);
+      return iterable;
+    })) {
+      break;
+    }
+
+    expect(contextStates).toEqual([true, true, true, true]);
+  });
+
   it('should call all processors shutdown when setting new processors', () => {
     const processor1 = new TestProcessor();
     processor1.shutdown = vi.fn();

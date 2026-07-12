@@ -32,6 +32,10 @@ export type OpenTelemetryTracingProcessorOptions = {
    * true to suppress every span, or a callback for a custom policy.
    */
   suppressInstrumentation?: boolean | ((spanData: SpanData) => boolean);
+  /** Flush the configured OTel provider when Agents tracing is flushed. */
+  forceFlush?: () => Promise<void>;
+  /** Shut down the configured OTel provider when Agents tracing shuts down. */
+  shutdown?: (timeout?: number) => Promise<void>;
 };
 
 function timestamp(value: string | null): number | undefined {
@@ -234,9 +238,9 @@ function shouldSuppressInstrumentation(
 /**
  * Mirrors Agents SDK traces to OpenTelemetry. Add it with `addTraceProcessor()`.
  *
- * The processor intentionally suppresses automatic HTTP/fetch instrumentation inside
- * Agents SDK spans by default. This keeps the trace focused on agent, model, handoff,
- * and tool operations; set `suppressInstrumentation: false` to retain those spans.
+ * The processor intentionally suppresses automatic instrumentation inside model spans
+ * by default. This avoids duplicate HTTP/fetch spans while retaining instrumentation
+ * inside tools; set `suppressInstrumentation: false` to retain every nested span.
  */
 export class OpenTelemetryTracingProcessor implements TracingProcessor {
   readonly #tracer: Tracer;
@@ -324,6 +328,11 @@ export class OpenTelemetryTracingProcessor implements TracingProcessor {
     return context.with(activeContext, fn);
   }
 
-  async shutdown(): Promise<void> {}
-  async forceFlush(): Promise<void> {}
+  async shutdown(timeout?: number): Promise<void> {
+    await this.#options.shutdown?.(timeout);
+  }
+
+  async forceFlush(): Promise<void> {
+    await this.#options.forceFlush?.();
+  }
 }

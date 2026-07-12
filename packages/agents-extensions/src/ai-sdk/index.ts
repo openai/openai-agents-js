@@ -1729,7 +1729,12 @@ export class AiSdkModel implements Model {
         );
       }
 
-      const { stream } = await this.#model.doStream(aiSdkRequest);
+      const stream = span
+        ? span.withContextForAsyncIterable(async () => {
+            const result = await this.#model.doStream(aiSdkRequest);
+            return result.stream;
+          })
+        : (await this.#model.doStream(aiSdkRequest)).stream;
       const baseProviderData = buildBaseProviderData(this.#model);
 
       let started = false;

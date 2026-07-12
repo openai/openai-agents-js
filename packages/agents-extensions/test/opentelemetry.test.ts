@@ -315,6 +315,21 @@ describe('OpenTelemetryTracingProcessor', () => {
     );
   });
 
+  test('delegates tracing lifecycle when callbacks are configured', async () => {
+    const forceFlush = vi.fn(async () => undefined);
+    const shutdown = vi.fn(async (_timeout?: number) => undefined);
+    const processor = new OpenTelemetryTracingProcessor({
+      forceFlush,
+      shutdown,
+    });
+
+    await processor.forceFlush();
+    await processor.shutdown(5000);
+
+    expect(forceFlush).toHaveBeenCalledOnce();
+    expect(shutdown).toHaveBeenCalledWith(5000);
+  });
+
   test('exports a real OTel hierarchy and preserves tool instrumentation', async () => {
     const exporter = new InMemorySpanExporter();
     const provider = new BasicTracerProvider({
