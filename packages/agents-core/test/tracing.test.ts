@@ -1519,6 +1519,32 @@ describe('MultiTracingProcessor', () => {
     ]);
   });
 
+  it('waits for span processors to start before entering their context', async () => {
+    const calls: string[] = [];
+    const processor = new TestProcessor();
+    processor.onSpanStart = async () => {
+      await Promise.resolve();
+      calls.push('started');
+    };
+    processor.withSpan = async (_span, fn) => {
+      calls.push('context');
+      return fn();
+    };
+    const span = new Span(
+      {
+        traceId: 'trace_context',
+        spanId: 'span_context',
+        data: { type: 'custom', name: 'context', data: {} },
+      },
+      processor,
+    );
+
+    span.start();
+    await span.withContext(async () => calls.push('work'));
+
+    expect(calls).toEqual(['started', 'context', 'work']);
+  });
+
   it('should call all processors shutdown when setting new processors', () => {
     const processor1 = new TestProcessor();
     processor1.shutdown = vi.fn();

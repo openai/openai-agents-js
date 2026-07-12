@@ -88,7 +88,7 @@
     "@openai/agents": "workspace:>=0.0.0",
     "@openai/codex-sdk": ">=0.86.0",
     "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/core": "^2.7.0",
+    "@opentelemetry/core": ">=2.0.0 <3.0.0",
     "@runloop/api-client": "^1.16.2",
     "@vercel/sandbox": "^1.9.3",
     "ai": "^6.0.0",
@@ -108,6 +108,12 @@
       "optional": true
     },
     "@openai/codex-sdk": {
+      "optional": true
+    },
+    "@opentelemetry/api": {
+      "optional": true
+    },
+    "@opentelemetry/core": {
       "optional": true
     },
     "@daytonaio/sdk": {
@@ -144,7 +150,9 @@
     "@openai/agents": "workspace:>=0.0.0",
     "@openai/codex-sdk": "^0.86.0",
     "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/context-async-hooks": "^2.2.0",
     "@opentelemetry/core": "^2.7.0",
+    "@opentelemetry/sdk-trace-base": "^2.7.0",
     "@runloop/api-client": "1.16.2",
     "@types/debug": "^4.1.12",
     "@vercel/sandbox": "1.9.3",

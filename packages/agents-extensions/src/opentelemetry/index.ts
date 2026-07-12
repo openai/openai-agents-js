@@ -26,133 +26,209 @@ export type OpenTelemetryTracingProcessorOptions = {
   recordOutputs?: boolean;
   /** Include data attached to custom spans. Disabled by default. */
   recordCustomData?: boolean;
-  /** Suppress automatic instrumentation beneath Agents SDK spans. Defaults to true. */
-  suppressInstrumentation?: boolean;
+  /**
+   * Choose which Agents SDK spans suppress nested automatic instrumentation.
+   * Defaults to response and generation spans. Pass false to disable suppression,
+   * true to suppress every span, or a callback for a custom policy.
+   */
+  suppressInstrumentation?: boolean | ((spanData: SpanData) => boolean);
 };
 
 function timestamp(value: string | null): number | undefined {
   return value ? new Date(value).getTime() : undefined;
 }
 
-function spanName(data: SpanData): string {
-  switch (data.type) {
-    case 'agent':
-      return `invoke_agent ${data.name}`;
-    case 'function':
-      return `execute_tool ${data.name}`;
-    case 'generation':
-      return `chat ${data.model ?? 'model'}`;
-    case 'response':
-      return 'chat';
-    case 'handoff':
-      return 'handoff';
-    case 'guardrail':
-      return `guardrail ${data.name}`;
-    case 'custom':
-      return `custom ${data.name}`;
-    case 'mcp_tools':
-      return 'list_tools';
-    case 'transcription':
-      return `transcribe ${data.model ?? 'model'}`;
-    case 'speech':
-      return `synthesize_speech ${data.model ?? 'model'}`;
-    case 'speech_group':
-      return 'speech_group';
-    default:
-      return `openai.agents.${data.type}`;
-  }
-}
+type SpanDescriptor = {
+  name: string;
+  operationName: string;
+  attributes: Attributes;
+};
 
-function attributesForSpan(
-  span: Span<any>,
+function describeSpan(
+  data: SpanData,
   {
     recordInputs,
     recordOutputs,
     recordCustomData,
   }: OpenTelemetryTracingProcessorOptions,
+): SpanDescriptor {
+  switch (data.type) {
+    case 'agent':
+      return {
+        name: `invoke_agent ${data.name}`,
+        operationName: 'invoke_agent',
+        attributes: {
+          'gen_ai.agent.name': data.name,
+          ...(data.handoffs && {
+            'openai.agents.agent.handoffs': data.handoffs,
+          }),
+          ...(data.tools && { 'openai.agents.agent.tools': data.tools }),
+          ...(data.output_type && {
+            'openai.agents.agent.output_type': data.output_type,
+          }),
+        },
+      };
+    case 'function':
+      return {
+        name: `execute_tool ${data.name}`,
+        operationName: 'execute_tool',
+        attributes: {
+          'gen_ai.tool.name': data.name,
+          ...(recordInputs && {
+            'gen_ai.tool.call.arguments': data.input,
+          }),
+          ...(recordOutputs && {
+            'gen_ai.tool.call.result': data.output,
+          }),
+        },
+      };
+    case 'generation':
+      return {
+        name: `chat ${data.model ?? 'model'}`,
+        operationName: 'chat',
+        attributes: {
+          ...(data.model && { 'gen_ai.request.model': data.model }),
+          ...(data.usage?.input_tokens !== undefined && {
+            'gen_ai.usage.input_tokens': data.usage.input_tokens,
+          }),
+          ...(data.usage?.output_tokens !== undefined && {
+            'gen_ai.usage.output_tokens': data.usage.output_tokens,
+          }),
+          ...(recordInputs &&
+            data.input && {
+              'gen_ai.input.messages': JSON.stringify(data.input),
+            }),
+          ...(recordOutputs &&
+            data.output && {
+              'gen_ai.output.messages': JSON.stringify(data.output),
+            }),
+        },
+      };
+    case 'response':
+      return {
+        name: 'chat',
+        operationName: 'chat',
+        attributes: {
+          ...(data.response_id && { 'gen_ai.response.id': data.response_id }),
+          ...(recordInputs &&
+            data._input !== undefined && {
+              'gen_ai.input.messages':
+                typeof data._input === 'string'
+                  ? data._input
+                  : JSON.stringify(data._input),
+            }),
+          ...(recordOutputs &&
+            data._response !== undefined && {
+              'gen_ai.output.messages': JSON.stringify(data._response),
+            }),
+        },
+      };
+    case 'handoff':
+      return {
+        name: 'handoff',
+        operationName: 'handoff',
+        attributes: {
+          ...(data.from_agent && { 'gen_ai.agent.name': data.from_agent }),
+          ...(data.to_agent && {
+            'openai.agents.handoff.to_agent': data.to_agent,
+          }),
+        },
+      };
+    case 'guardrail':
+      return {
+        name: `guardrail ${data.name}`,
+        operationName: 'guardrail',
+        attributes: {
+          'openai.agents.guardrail.name': data.name,
+          'openai.agents.guardrail.triggered': data.triggered,
+        },
+      };
+    case 'custom':
+      return {
+        name: `custom ${data.name}`,
+        operationName: 'custom',
+        attributes: {
+          'openai.agents.custom.name': data.name,
+          ...(recordCustomData && {
+            'openai.agents.custom.data': JSON.stringify(data.data),
+          }),
+        },
+      };
+    case 'mcp_tools':
+      return {
+        name: 'list_tools',
+        operationName: 'list_tools',
+        attributes: {
+          ...(data.server && { 'openai.agents.mcp.server': data.server }),
+          ...(data.result && { 'openai.agents.mcp.tools': data.result }),
+        },
+      };
+    case 'transcription':
+      return {
+        name: `transcribe ${data.model ?? 'model'}`,
+        operationName: 'transcribe',
+        attributes: {
+          ...(data.model && { 'gen_ai.request.model': data.model }),
+          'openai.agents.audio.input_format': data.input.format,
+          ...(recordInputs && {
+            'openai.agents.audio.input_data': data.input.data,
+          }),
+          ...(recordOutputs &&
+            data.output !== undefined && {
+              'openai.agents.transcription.output': data.output,
+            }),
+        },
+      };
+    case 'speech':
+      return {
+        name: `synthesize_speech ${data.model ?? 'model'}`,
+        operationName: 'synthesize_speech',
+        attributes: {
+          ...(data.model && { 'gen_ai.request.model': data.model }),
+          'openai.agents.audio.output_format': data.output.format,
+          ...(recordInputs &&
+            data.input !== undefined && {
+              'openai.agents.speech.input': data.input,
+            }),
+          ...(recordOutputs && {
+            'openai.agents.audio.output_data': data.output.data,
+          }),
+        },
+      };
+    case 'speech_group':
+      return {
+        name: 'speech_group',
+        operationName: 'speech_group',
+        attributes: {
+          ...(recordInputs &&
+            data.input !== undefined && {
+              'openai.agents.speech.input': data.input,
+            }),
+        },
+      };
+  }
+}
+
+function attributesForSpan(
+  span: Span<any>,
+  descriptor: SpanDescriptor,
 ): Attributes {
-  const data = span.spanData;
-  const attributes: Attributes = {
+  return {
     'openai.agents.trace.id': span.traceId,
     'openai.agents.span.id': span.spanId,
-    'openai.agents.span.type': data.type,
-    'gen_ai.operation.name': spanName(data).split(' ')[0],
+    'openai.agents.span.type': span.spanData.type,
+    'gen_ai.operation.name': descriptor.operationName,
+    ...descriptor.attributes,
   };
+}
 
-  if (data.type === 'agent') {
-    attributes['gen_ai.agent.name'] = data.name;
-    if (data.handoffs)
-      attributes['openai.agents.agent.handoffs'] = data.handoffs;
-    if (data.tools) attributes['openai.agents.agent.tools'] = data.tools;
-    if (data.output_type)
-      attributes['openai.agents.agent.output_type'] = data.output_type;
-  } else if (data.type === 'function') {
-    attributes['gen_ai.tool.name'] = data.name;
-    if (recordInputs) attributes['gen_ai.tool.call.arguments'] = data.input;
-    if (recordOutputs) attributes['gen_ai.tool.call.result'] = data.output;
-  } else if (data.type === 'generation') {
-    if (data.model) attributes['gen_ai.request.model'] = data.model;
-    if (data.usage?.input_tokens !== undefined) {
-      attributes['gen_ai.usage.input_tokens'] = data.usage.input_tokens;
-    }
-    if (data.usage?.output_tokens !== undefined) {
-      attributes['gen_ai.usage.output_tokens'] = data.usage.output_tokens;
-    }
-    if (recordInputs && data.input)
-      attributes['gen_ai.input.messages'] = JSON.stringify(data.input);
-    if (recordOutputs && data.output)
-      attributes['gen_ai.output.messages'] = JSON.stringify(data.output);
-  } else if (data.type === 'response') {
-    if (data.response_id) attributes['gen_ai.response.id'] = data.response_id;
-    if (recordInputs && data._input !== undefined) {
-      attributes['gen_ai.input.messages'] =
-        typeof data._input === 'string'
-          ? data._input
-          : JSON.stringify(data._input);
-    }
-    if (recordOutputs && data._response !== undefined) {
-      attributes['gen_ai.output.messages'] = JSON.stringify(data._response);
-    }
-  } else if (data.type === 'handoff') {
-    if (data.from_agent) attributes['gen_ai.agent.name'] = data.from_agent;
-    if (data.to_agent)
-      attributes['openai.agents.handoff.to_agent'] = data.to_agent;
-  } else if (data.type === 'guardrail') {
-    attributes['openai.agents.guardrail.name'] = data.name;
-    attributes['openai.agents.guardrail.triggered'] = data.triggered;
-  } else if (data.type === 'custom') {
-    attributes['openai.agents.custom.name'] = data.name;
-    if (recordCustomData) {
-      attributes['openai.agents.custom.data'] = JSON.stringify(data.data);
-    }
-  } else if (data.type === 'mcp_tools') {
-    if (data.server) attributes['openai.agents.mcp.server'] = data.server;
-    if (data.result) attributes['openai.agents.mcp.tools'] = data.result;
-  } else if (data.type === 'transcription') {
-    if (data.model) attributes['gen_ai.request.model'] = data.model;
-    attributes['openai.agents.audio.input_format'] = data.input.format;
-    if (recordInputs) {
-      attributes['openai.agents.audio.input_data'] = data.input.data;
-    }
-    if (recordOutputs && data.output !== undefined) {
-      attributes['openai.agents.transcription.output'] = data.output;
-    }
-  } else if (data.type === 'speech') {
-    if (data.model) attributes['gen_ai.request.model'] = data.model;
-    attributes['openai.agents.audio.output_format'] = data.output.format;
-    if (recordInputs && data.input !== undefined) {
-      attributes['openai.agents.speech.input'] = data.input;
-    }
-    if (recordOutputs) {
-      attributes['openai.agents.audio.output_data'] = data.output.data;
-    }
-  } else if (data.type === 'speech_group') {
-    if (recordInputs && data.input !== undefined) {
-      attributes['openai.agents.speech.input'] = data.input;
-    }
-  }
-
-  return attributes;
+function shouldSuppressInstrumentation(
+  spanData: SpanData,
+  policy: OpenTelemetryTracingProcessorOptions['suppressInstrumentation'],
+): boolean {
+  if (typeof policy === 'function') return policy(spanData);
+  if (typeof policy === 'boolean') return policy;
+  return spanData.type === 'response' || spanData.type === 'generation';
 }
 
 /**
@@ -195,6 +271,7 @@ export class OpenTelemetryTracingProcessor implements TracingProcessor {
   }
 
   async onSpanStart(agentSpan: Span<any>): Promise<void> {
+    const descriptor = describeSpan(agentSpan.spanData, this.#options);
     const parent = agentSpan.parentId
       ? this.#spans.get(agentSpan.parentId)
       : this.#traces.get(agentSpan.traceId);
@@ -204,10 +281,10 @@ export class OpenTelemetryTracingProcessor implements TracingProcessor {
     this.#spans.set(
       agentSpan.spanId,
       this.#tracer.startSpan(
-        spanName(agentSpan.spanData),
+        descriptor.name,
         {
           kind: SpanKind.INTERNAL,
-          attributes: attributesForSpan(agentSpan, this.#options),
+          attributes: attributesForSpan(agentSpan, descriptor),
           startTime: timestamp(agentSpan.startedAt),
         },
         parentContext,
@@ -218,7 +295,9 @@ export class OpenTelemetryTracingProcessor implements TracingProcessor {
   async onSpanEnd(agentSpan: Span<any>): Promise<void> {
     const otelSpan = this.#spans.get(agentSpan.spanId);
     if (!otelSpan) return;
-    otelSpan.setAttributes(attributesForSpan(agentSpan, this.#options));
+    const descriptor = describeSpan(agentSpan.spanData, this.#options);
+    otelSpan.updateName(descriptor.name);
+    otelSpan.setAttributes(attributesForSpan(agentSpan, descriptor));
     if (agentSpan.error) {
       otelSpan.recordException(agentSpan.error.message);
       otelSpan.setStatus({
@@ -234,7 +313,12 @@ export class OpenTelemetryTracingProcessor implements TracingProcessor {
     const otelSpan = this.#spans.get(agentSpan.spanId);
     if (!otelSpan) return fn();
     let activeContext: Context = trace.setSpan(context.active(), otelSpan);
-    if (this.#options.suppressInstrumentation !== false) {
+    if (
+      shouldSuppressInstrumentation(
+        agentSpan.spanData,
+        this.#options.suppressInstrumentation,
+      )
+    ) {
       activeContext = suppressTracing(activeContext);
     }
     return context.with(activeContext, fn);

@@ -19,7 +19,7 @@ import { OpenTelemetryTracingProcessor } from '@openai/agents-extensions/opentel
 addTraceProcessor(new OpenTelemetryTracingProcessor());
 ```
 
-The processor creates spans for agent, model, handoff, tool, and guardrail operations. It suppresses nested automatic HTTP/fetch instrumentation by default; pass `{ suppressInstrumentation: false }` to retain those spans. Input and output content is not recorded unless you explicitly opt in with `recordInputs` or `recordOutputs`. Data attached to custom spans requires the separate `recordCustomData` opt-in.
+The processor creates spans for agent, model, handoff, tool, and guardrail operations. It suppresses nested automatic HTTP/fetch instrumentation under model spans by default while retaining instrumentation inside tools. Pass `suppressInstrumentation: false` to disable suppression, `true` to suppress every Agents span, or a callback to choose spans individually. Input and output content is not recorded unless you explicitly opt in with `recordInputs` or `recordOutputs`. Data attached to custom spans requires the separate `recordCustomData` opt-in.
 
 ## License
 

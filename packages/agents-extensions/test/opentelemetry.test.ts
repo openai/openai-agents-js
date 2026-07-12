@@ -5,6 +5,12 @@ import {
   type Tracer,
 } from '@opentelemetry/api';
 import { isTracingSuppressed } from '@opentelemetry/core';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import {
+  BasicTracerProvider,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
 import { describe, expect, test, vi } from 'vitest';
 import type { Span, Trace } from '@openai/agents-core';
 import { OpenTelemetryTracingProcessor } from '../src/opentelemetry';
@@ -96,7 +102,7 @@ describe('OpenTelemetryTracingProcessor', () => {
       startedAt: null,
       endedAt: null,
       error: null,
-      spanData: { type: 'function', name: 'lookup', input: '{}', output: '{}' },
+      spanData: { type: 'response' },
     } as unknown as Span;
 
     await processor.onSpanStart(agentSpan);
@@ -105,6 +111,39 @@ describe('OpenTelemetryTracingProcessor', () => {
     const activeContext = withSpy.mock.calls[0]?.[0];
     expect(trace.getSpan(activeContext!)).toBe(otelSpan);
     expect(isTracingSuppressed(activeContext!)).toBe(true);
+    withSpy.mockRestore();
+  });
+
+  test('supports a custom instrumentation suppression policy', async () => {
+    const otelSpan = createOtelSpan();
+    const tracer = {
+      startSpan: vi.fn().mockReturnValue(otelSpan),
+    } as unknown as Tracer;
+    const suppressInstrumentation = vi.fn(
+      (spanData: Span['spanData']) => spanData.type === 'function',
+    );
+    const processor = new OpenTelemetryTracingProcessor({
+      tracer,
+      suppressInstrumentation,
+    });
+    const agentSpan = {
+      traceId: 'trace_123',
+      spanId: 'span_123',
+      parentId: null,
+      startedAt: null,
+      endedAt: null,
+      error: null,
+      spanData: { type: 'function', name: 'fetch_page' },
+    } as unknown as Span;
+
+    await processor.onSpanStart(agentSpan);
+    const withSpy = vi.spyOn(context, 'with');
+    await processor.withSpan(agentSpan, async () => undefined);
+    const activeContext = withSpy.mock.calls[0]?.[0];
+
+    expect(suppressInstrumentation).toHaveBeenCalledWith(agentSpan.spanData);
+    expect(isTracingSuppressed(activeContext!)).toBe(true);
+    withSpy.mockRestore();
   });
 
   test('does not record model input or output unless requested', async () => {
@@ -274,5 +313,91 @@ describe('OpenTelemetryTracingProcessor', () => {
         'openai.agents.audio.output_data': 'audio-data',
       }),
     );
+  });
+
+  test('exports a real OTel hierarchy and preserves tool instrumentation', async () => {
+    const exporter = new InMemorySpanExporter();
+    const provider = new BasicTracerProvider({
+      spanProcessors: [new SimpleSpanProcessor(exporter)],
+    });
+    const contextManager = new AsyncLocalStorageContextManager().enable();
+    context.setGlobalContextManager(contextManager);
+    const tracer = provider.getTracer('test');
+    const processor = new OpenTelemetryTracingProcessor({ tracer });
+    const agentTrace = {
+      traceId: 'trace_123',
+      name: 'Agent workflow',
+      groupId: null,
+    } as Trace;
+    const makeSpan = (
+      spanId: string,
+      parentId: string | null,
+      spanData: Record<string, unknown>,
+    ) =>
+      ({
+        traceId: 'trace_123',
+        spanId,
+        parentId,
+        startedAt: null,
+        endedAt: null,
+        error: null,
+        spanData,
+      }) as unknown as Span;
+    const agentSpan = makeSpan('agent', null, {
+      type: 'agent',
+      name: 'Reviewer',
+    });
+    const toolSpan = makeSpan('tool', 'agent', {
+      type: 'function',
+      name: 'fetch_page',
+      input: '{}',
+      output: 'Example Domain',
+    });
+    const responseSpan = makeSpan('response', 'agent', {
+      type: 'response',
+    });
+
+    try {
+      await processor.onTraceStart(agentTrace);
+      await processor.onSpanStart(agentSpan);
+      await processor.onSpanStart(toolSpan);
+      await processor.withSpan(toolSpan, async () => {
+        expect(isTracingSuppressed(context.active())).toBe(false);
+        const internalSpan = tracer.startSpan('tool-internal');
+        internalSpan.end();
+      });
+      await processor.onSpanEnd(toolSpan);
+
+      await processor.onSpanStart(responseSpan);
+      await processor.withSpan(responseSpan, async () => {
+        expect(isTracingSuppressed(context.active())).toBe(true);
+      });
+      await processor.onSpanEnd(responseSpan);
+      await processor.onSpanEnd(agentSpan);
+      await processor.onTraceEnd(agentTrace);
+      await provider.forceFlush();
+
+      const spans = exporter.getFinishedSpans();
+      const root = spans.find((span) => span.name === 'Agent workflow');
+      const agent = spans.find((span) => span.name === 'invoke_agent Reviewer');
+      const tool = spans.find(
+        (span) => span.name === 'execute_tool fetch_page',
+      );
+      const internal = spans.find((span) => span.name === 'tool-internal');
+      const response = spans.find((span) => span.name === 'chat');
+
+      expect(root).toBeDefined();
+      expect(agent?.parentSpanContext?.spanId).toBe(root?.spanContext().spanId);
+      expect(tool?.parentSpanContext?.spanId).toBe(agent?.spanContext().spanId);
+      expect(internal?.parentSpanContext?.spanId).toBe(
+        tool?.spanContext().spanId,
+      );
+      expect(response?.parentSpanContext?.spanId).toBe(
+        agent?.spanContext().spanId,
+      );
+    } finally {
+      context.disable();
+      await provider.shutdown();
+    }
   });
 });

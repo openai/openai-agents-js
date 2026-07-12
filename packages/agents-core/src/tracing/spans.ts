@@ -157,6 +157,7 @@ export class Span<TData extends SpanData> {
   #endedAt: string | null;
   #error: SpanError | null;
   #tracingApiKey: string | undefined;
+  #startPromise: Promise<void> | undefined;
 
   #previousSpan: Span<any> | undefined;
 
@@ -202,6 +203,7 @@ export class Span<TData extends SpanData> {
   }
 
   async withContext<T>(fn: () => Promise<T>): Promise<T> {
+    await this.#startPromise;
     if (!this.#processor.withSpan) {
       return fn();
     }
@@ -215,7 +217,7 @@ export class Span<TData extends SpanData> {
     }
 
     this.#startedAt = timeIso();
-    this.#processor.onSpanStart(this);
+    this.#startPromise = this.#processor.onSpanStart(this);
   }
 
   end() {

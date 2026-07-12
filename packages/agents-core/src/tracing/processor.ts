@@ -52,7 +52,8 @@ export interface TracingProcessor {
 
   /**
    * Runs work while this processor's representation of the span is active.
-   * Processors that do not manage an execution context can omit this hook.
+   * This hook runs after onSpanStart has completed. Processors that do not
+   * manage an execution context can omit it.
    */
   withSpan?<T>(span: Span, fn: () => Promise<T>): Promise<T>;
 
