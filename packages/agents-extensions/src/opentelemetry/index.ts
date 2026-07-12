@@ -20,9 +20,9 @@ import type {
 export type OpenTelemetryTracingProcessorOptions = {
   /** The tracer used to create spans. Defaults to `@openai/agents`. */
   tracer?: Tracer;
-  /** Include generation input in span attributes. Disabled by default. */
+  /** Include model and tool input in span attributes. Disabled by default. */
   recordInputs?: boolean;
-  /** Include function output and generation output in span attributes. Disabled by default. */
+  /** Include model and tool output in span attributes. Disabled by default. */
   recordOutputs?: boolean;
   /** Suppress automatic instrumentation beneath Agents SDK spans. Defaults to true. */
   suppressInstrumentation?: boolean;
@@ -40,6 +40,8 @@ function spanName(data: SpanData): string {
       return `execute_tool ${data.name}`;
     case 'generation':
       return `chat ${data.model ?? 'model'}`;
+    case 'response':
+      return 'chat';
     case 'handoff':
       return 'handoff';
     case 'guardrail':
@@ -79,6 +81,17 @@ function attributesForSpan(
       attributes['gen_ai.input.messages'] = JSON.stringify(data.input);
     if (recordOutputs && data.output)
       attributes['gen_ai.output.messages'] = JSON.stringify(data.output);
+  } else if (data.type === 'response') {
+    if (data.response_id) attributes['gen_ai.response.id'] = data.response_id;
+    if (recordInputs && data._input !== undefined) {
+      attributes['gen_ai.input.messages'] =
+        typeof data._input === 'string'
+          ? data._input
+          : JSON.stringify(data._input);
+    }
+    if (recordOutputs && data._response !== undefined) {
+      attributes['gen_ai.output.messages'] = JSON.stringify(data._response);
+    }
   } else if (data.type === 'handoff') {
     if (data.from_agent) attributes['gen_ai.agent.name'] = data.from_agent;
     if (data.to_agent)

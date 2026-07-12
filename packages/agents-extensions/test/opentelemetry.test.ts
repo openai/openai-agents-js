@@ -142,4 +142,46 @@ describe('OpenTelemetryTracingProcessor', () => {
       expect.anything(),
     );
   });
+
+  test('records Responses API payloads when content capture is enabled', async () => {
+    const otelSpan = createOtelSpan();
+    const tracer = {
+      startSpan: vi.fn().mockReturnValue(otelSpan),
+    } as unknown as Tracer;
+    const processor = new OpenTelemetryTracingProcessor({
+      tracer,
+      recordInputs: true,
+      recordOutputs: true,
+    });
+    const agentSpan = {
+      traceId: 'trace_123',
+      spanId: 'span_123',
+      parentId: null,
+      startedAt: null,
+      endedAt: null,
+      error: null,
+      spanData: {
+        type: 'response',
+        response_id: 'resp_123',
+        _input: [{ role: 'user', content: 'Review this commit.' }],
+        _response: { output: [{ type: 'message', content: 'No findings.' }] },
+      },
+    } as unknown as Span;
+
+    await processor.onSpanStart(agentSpan);
+
+    expect(tracer.startSpan).toHaveBeenCalledWith(
+      'chat',
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          'gen_ai.response.id': 'resp_123',
+          'gen_ai.input.messages': expect.stringContaining(
+            'Review this commit.',
+          ),
+          'gen_ai.output.messages': expect.stringContaining('No findings.'),
+        }),
+      }),
+      expect.anything(),
+    );
+  });
 });
