@@ -4,4 +4,4 @@
 '@openai/agents-openai': patch
 ---
 
-Add an optional OpenTelemetry tracing processor for agent, model, tool, handoff, and guardrail spans.
+feat: add an optional OpenTelemetry tracing processor for agent, model, tool, handoff, and guardrail spans
