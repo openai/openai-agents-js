@@ -330,6 +330,48 @@ describe('OpenTelemetryTracingProcessor', () => {
     expect(shutdown).toHaveBeenCalledWith(5000);
   });
 
+  test('custom data serialization cannot fail traced work', async () => {
+    const otelSpan = createOtelSpan();
+    const tracer = {
+      startSpan: vi.fn().mockReturnValue(otelSpan),
+    } as unknown as Tracer;
+    const processor = new OpenTelemetryTracingProcessor({
+      tracer,
+      recordCustomData: true,
+    });
+    const data: Record<string, unknown> = { kept: true, bigint: 1n };
+    data.circular = data;
+    const agentSpan = {
+      traceId: 'trace_123',
+      spanId: 'span_123',
+      parentId: null,
+      startedAt: null,
+      endedAt: null,
+      error: null,
+      spanData: { type: 'custom', name: 'arbitrary', data },
+    } as unknown as Span;
+
+    await expect(processor.onSpanStart(agentSpan)).resolves.toBeUndefined();
+    expect(tracer.startSpan).toHaveBeenCalledWith(
+      'custom arbitrary',
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          'openai.agents.custom.data': '{"kept":true}',
+        }),
+      }),
+      expect.anything(),
+    );
+
+    agentSpan.spanData.data = Object.defineProperty({}, 'unreadable', {
+      enumerable: true,
+      get() {
+        throw new Error('unreadable');
+      },
+    });
+    await expect(processor.onSpanEnd(agentSpan)).resolves.toBeUndefined();
+    expect(otelSpan.end).toHaveBeenCalled();
+  });
+
   test('exports a real OTel hierarchy and preserves tool instrumentation', async () => {
     const exporter = new InMemorySpanExporter();
     const provider = new BasicTracerProvider({

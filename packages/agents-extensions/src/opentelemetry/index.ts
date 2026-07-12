@@ -16,6 +16,7 @@ import type {
   Trace,
   TracingProcessor,
 } from '@openai/agents-core';
+import { sanitizeJsonCompatibleValue } from '@openai/agents-core/utils/internal';
 
 export type OpenTelemetryTracingProcessorOptions = {
   /** The tracer used to create spans. Defaults to `@openai/agents`. */
@@ -40,6 +41,15 @@ export type OpenTelemetryTracingProcessorOptions = {
 
 function timestamp(value: string | null): number | undefined {
   return value ? new Date(value).getTime() : undefined;
+}
+
+function serializedAttribute(key: string, value: unknown): Attributes {
+  try {
+    const sanitized = sanitizeJsonCompatibleValue(value);
+    return sanitized === undefined ? {} : { [key]: JSON.stringify(sanitized) };
+  } catch {
+    return {};
+  }
 }
 
 type SpanDescriptor = {
@@ -98,14 +108,12 @@ function describeSpan(
           ...(data.usage?.output_tokens !== undefined && {
             'gen_ai.usage.output_tokens': data.usage.output_tokens,
           }),
-          ...(recordInputs &&
-            data.input && {
-              'gen_ai.input.messages': JSON.stringify(data.input),
-            }),
-          ...(recordOutputs &&
-            data.output && {
-              'gen_ai.output.messages': JSON.stringify(data.output),
-            }),
+          ...(recordInputs && data.input
+            ? serializedAttribute('gen_ai.input.messages', data.input)
+            : {}),
+          ...(recordOutputs && data.output
+            ? serializedAttribute('gen_ai.output.messages', data.output)
+            : {}),
         },
       };
     case 'response':
@@ -114,17 +122,14 @@ function describeSpan(
         operationName: 'chat',
         attributes: {
           ...(data.response_id && { 'gen_ai.response.id': data.response_id }),
-          ...(recordInputs &&
-            data._input !== undefined && {
-              'gen_ai.input.messages':
-                typeof data._input === 'string'
-                  ? data._input
-                  : JSON.stringify(data._input),
-            }),
-          ...(recordOutputs &&
-            data._response !== undefined && {
-              'gen_ai.output.messages': JSON.stringify(data._response),
-            }),
+          ...(recordInputs && data._input !== undefined
+            ? typeof data._input === 'string'
+              ? { 'gen_ai.input.messages': data._input }
+              : serializedAttribute('gen_ai.input.messages', data._input)
+            : {}),
+          ...(recordOutputs && data._response !== undefined
+            ? serializedAttribute('gen_ai.output.messages', data._response)
+            : {}),
         },
       };
     case 'handoff':
@@ -153,9 +158,9 @@ function describeSpan(
         operationName: 'custom',
         attributes: {
           'openai.agents.custom.name': data.name,
-          ...(recordCustomData && {
-            'openai.agents.custom.data': JSON.stringify(data.data),
-          }),
+          ...(recordCustomData
+            ? serializedAttribute('openai.agents.custom.data', data.data)
+            : {}),
         },
       };
     case 'mcp_tools':
