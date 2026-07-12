@@ -8,18 +8,7 @@ import {
   toolChoiceToLanguageV2Format,
   toolToLanguageV2Tool,
 } from '../../src/ai-sdk/index';
-import {
-  Agent,
-  protocol,
-  run,
-  setTraceProcessors,
-  setTracingDisabled,
-  withTrace,
-  UserError,
-  type Span,
-  type Trace,
-  type TracingProcessor,
-} from '@openai/agents';
+import { Agent, protocol, run, withTrace, UserError } from '@openai/agents';
 import { ReadableStream } from 'node:stream/web';
 import {
   APICallError,
@@ -28,6 +17,10 @@ import {
 } from '@ai-sdk/provider';
 import type { SerializedOutputType } from '@openai/agents';
 import { allowConsole } from '../../../../helpers/tests/console-guard';
+import {
+  createTracingContextProbe,
+  withTestTracingProcessor,
+} from '../../../../helpers/tests/tracing';
 import { z } from 'zod';
 
 function stubModel(
@@ -2423,33 +2416,16 @@ describe('AiSdkModel.getStreamedResponse', () => {
   });
 
   test('runs streamed requests and source iteration in model span context', async () => {
-    let modelContextActive = false;
+    const contextProbe = createTracingContextProbe('generation');
     const contextChecks: boolean[] = [];
-    const processor: TracingProcessor = {
-      async onTraceStart(_trace: Trace) {},
-      async onTraceEnd(_trace: Trace) {},
-      async onSpanStart(_span: Span<any>) {},
-      async onSpanEnd(_span: Span<any>) {},
-      async withSpan(span, fn) {
-        if (span.spanData.type !== 'generation') return fn();
-        modelContextActive = true;
-        try {
-          return await fn();
-        } finally {
-          modelContextActive = false;
-        }
-      },
-      async shutdown() {},
-      async forceFlush() {},
-    };
     const model = new AiSdkModel(
       stubModel({
         async doStream() {
-          contextChecks.push(modelContextActive);
+          contextChecks.push(contextProbe.isActive());
           return {
             stream: new ReadableStream({
               pull(controller) {
-                contextChecks.push(modelContextActive);
+                contextChecks.push(contextProbe.isActive());
                 controller.enqueue({
                   type: 'finish',
                   finishReason: 'stop',
@@ -2463,9 +2439,7 @@ describe('AiSdkModel.getStreamedResponse', () => {
       }),
     );
 
-    setTraceProcessors([processor]);
-    setTracingDisabled(false);
-    try {
+    await withTestTracingProcessor(contextProbe.processor, async () => {
       await withTrace('test', async () => {
         for await (const _event of model.getStreamedResponse({
           input: 'hi',
@@ -2478,10 +2452,7 @@ describe('AiSdkModel.getStreamedResponse', () => {
           // Consume the stream.
         }
       });
-    } finally {
-      setTracingDisabled(true);
-      setTraceProcessors([]);
-    }
+    });
 
     expect(contextChecks).toEqual([true, true]);
   });

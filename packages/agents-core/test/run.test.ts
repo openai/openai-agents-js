@@ -67,6 +67,10 @@ import {
 import logger from '../src/logger';
 import { getGlobalTraceProvider } from '../src/tracing/provider';
 import {
+  createTracingContextProbe,
+  withTestTracingProcessor,
+} from '../../../helpers/tests/tracing';
+import {
   FakeModel,
   fakeModelRefusal,
   fakeModelMessageWithRefusal,
@@ -983,31 +987,14 @@ describe('Runner.run', () => {
     });
 
     it('activates agent span context for hooks and dynamic preparation', async () => {
-      let agentContextActive = false;
+      const contextProbe = createTracingContextProbe('agent');
       const observedContext: Record<string, boolean> = {};
-      const processor: TracingProcessor = {
-        async onTraceStart(_trace: Trace) {},
-        async onTraceEnd(_trace: Trace) {},
-        async onSpanStart(_span: Span<any>) {},
-        async onSpanEnd(_span: Span<any>) {},
-        async withSpan(span, fn) {
-          if (span.spanData.type !== 'agent') return fn();
-          agentContextActive = true;
-          try {
-            return await fn();
-          } finally {
-            agentContextActive = false;
-          }
-        },
-        async shutdown() {},
-        async forceFlush() {},
-      };
       const dynamicTool = tool({
         name: 'dynamic_tool',
         description: 'A dynamically enabled tool',
         parameters: z.object({}),
         isEnabled: async () => {
-          observedContext.toolDiscovery = agentContextActive;
+          observedContext.toolDiscovery = contextProbe.isActive();
           return false;
         },
         execute: async () => 'unused',
@@ -1021,23 +1008,18 @@ describe('Runner.run', () => {
           },
         ]),
         instructions: async () => {
-          observedContext.instructions = agentContextActive;
+          observedContext.instructions = contextProbe.isActive();
           return 'Dynamic instructions';
         },
         tools: [dynamicTool],
       });
       agent.on('agent_start', () => {
-        observedContext.agentStart = agentContextActive;
+        observedContext.agentStart = contextProbe.isActive();
       });
 
-      setTraceProcessors([processor]);
-      setTracingDisabled(false);
-      try {
+      await withTestTracingProcessor(contextProbe.processor, async () => {
         await new Runner({ tracingDisabled: false }).run(agent, 'hello');
-      } finally {
-        setTracingDisabled(true);
-        setTraceProcessors([]);
-      }
+      });
 
       expect(observedContext).toEqual({
         agentStart: true,

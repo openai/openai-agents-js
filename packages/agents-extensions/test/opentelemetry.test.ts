@@ -35,6 +35,28 @@ function createOtelSpan(): OtelSpan {
   } as unknown as OtelSpan;
 }
 
+function createAgentSpan(
+  spanData: Record<string, any>,
+  options: {
+    traceId?: string;
+    spanId?: string;
+    parentId?: string | null;
+    startedAt?: string | null;
+    endedAt?: string | null;
+    error?: Span['error'];
+  } = {},
+): Span {
+  return {
+    traceId: options.traceId ?? 'trace_123',
+    spanId: options.spanId ?? 'span_123',
+    parentId: options.parentId ?? null,
+    startedAt: options.startedAt ?? null,
+    endedAt: options.endedAt ?? null,
+    error: options.error ?? null,
+    spanData,
+  } as unknown as Span;
+}
+
 describe('OpenTelemetryTracingProcessor', () => {
   test('creates a trace root and nests agent spans beneath it', async () => {
     const root = createOtelSpan();
@@ -48,15 +70,13 @@ describe('OpenTelemetryTracingProcessor', () => {
       name: 'Support workflow',
       groupId: 'group_123',
     } as Trace;
-    const agentSpan = {
-      traceId: 'trace_123',
-      spanId: 'span_123',
-      parentId: null,
-      startedAt: '2026-01-01T00:00:00.000Z',
-      endedAt: '2026-01-01T00:00:01.000Z',
-      error: null,
-      spanData: { type: 'agent', name: 'Support agent' },
-    } as unknown as Span;
+    const agentSpan = createAgentSpan(
+      { type: 'agent', name: 'Support agent' },
+      {
+        startedAt: '2026-01-01T00:00:00.000Z',
+        endedAt: '2026-01-01T00:00:01.000Z',
+      },
+    );
 
     await processor.onTraceStart(agentTrace);
     await processor.onSpanStart(agentSpan);
@@ -101,15 +121,10 @@ describe('OpenTelemetryTracingProcessor', () => {
       name: 'Resumed workflow',
       groupId: null,
     } as Trace;
-    const childSpan = {
-      traceId: 'trace_123',
-      spanId: 'span_child',
-      parentId: 'span_missing',
-      startedAt: null,
-      endedAt: null,
-      error: null,
-      spanData: { type: 'function', name: 'approved_tool' },
-    } as unknown as Span;
+    const childSpan = createAgentSpan(
+      { type: 'function', name: 'approved_tool' },
+      { spanId: 'span_child', parentId: 'span_missing' },
+    );
 
     await processor.onTraceStart(agentTrace);
     await processor.onSpanStart(childSpan);
@@ -127,15 +142,7 @@ describe('OpenTelemetryTracingProcessor', () => {
       startSpan: vi.fn().mockReturnValue(otelSpan),
     } as unknown as Tracer;
     const processor = new OpenTelemetryTracingProcessor({ tracer });
-    const agentSpan = {
-      traceId: 'trace_123',
-      spanId: 'span_123',
-      parentId: null,
-      startedAt: null,
-      endedAt: null,
-      error: null,
-      spanData: { type: 'response' },
-    } as unknown as Span;
+    const agentSpan = createAgentSpan({ type: 'response' });
 
     await processor.onSpanStart(agentSpan);
     const withSpy = vi.spyOn(context, 'with');
@@ -158,15 +165,10 @@ describe('OpenTelemetryTracingProcessor', () => {
       tracer,
       suppressInstrumentation,
     });
-    const agentSpan = {
-      traceId: 'trace_123',
-      spanId: 'span_123',
-      parentId: null,
-      startedAt: null,
-      endedAt: null,
-      error: null,
-      spanData: { type: 'function', name: 'fetch_page' },
-    } as unknown as Span;
+    const agentSpan = createAgentSpan({
+      type: 'function',
+      name: 'fetch_page',
+    });
 
     await processor.onSpanStart(agentSpan);
     const withSpy = vi.spyOn(context, 'with');
@@ -184,21 +186,13 @@ describe('OpenTelemetryTracingProcessor', () => {
       startSpan: vi.fn().mockReturnValue(otelSpan),
     } as unknown as Tracer;
     const processor = new OpenTelemetryTracingProcessor({ tracer });
-    const agentSpan = {
-      traceId: 'trace_123',
-      spanId: 'span_123',
-      parentId: null,
-      startedAt: null,
-      endedAt: null,
-      error: null,
-      spanData: {
-        type: 'generation',
-        model: 'gpt-5',
-        input: [{ role: 'user' }],
-        output: [{ role: 'assistant' }],
-        usage: { input_tokens: 12, output_tokens: 4 },
-      },
-    } as unknown as Span;
+    const agentSpan = createAgentSpan({
+      type: 'generation',
+      model: 'gpt-5',
+      input: [{ role: 'user' }],
+      output: [{ role: 'assistant' }],
+      usage: { input_tokens: 12, output_tokens: 4 },
+    });
 
     await processor.onSpanStart(agentSpan);
 
@@ -224,20 +218,12 @@ describe('OpenTelemetryTracingProcessor', () => {
       recordInputs: true,
       recordOutputs: true,
     });
-    const agentSpan = {
-      traceId: 'trace_123',
-      spanId: 'span_123',
-      parentId: null,
-      startedAt: null,
-      endedAt: null,
-      error: null,
-      spanData: {
-        type: 'response',
-        response_id: 'resp_123',
-        _input: [{ role: 'user', content: 'Review this commit.' }],
-        _response: { output: [{ type: 'message', content: 'No findings.' }] },
-      },
-    } as unknown as Span;
+    const agentSpan = createAgentSpan({
+      type: 'response',
+      response_id: 'resp_123',
+      _input: [{ role: 'user', content: 'Review this commit.' }],
+      _response: { output: [{ type: 'message', content: 'No findings.' }] },
+    });
 
     await processor.onSpanStart(agentSpan);
 

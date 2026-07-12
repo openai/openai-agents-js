@@ -2,13 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   Agent,
   Runner,
-  setTraceProcessors,
   withTrace,
   setTracingDisabled,
-  type Span,
-  type Trace,
-  type TracingProcessor,
 } from '@openai/agents-core';
+import {
+  createTracingContextProbe,
+  withTestTracingProcessor,
+} from '../../../helpers/tests/tracing';
 import { OpenAIChatCompletionsModel } from '../src/openaiChatCompletionsModel';
 import { HEADERS } from '../src/defaults';
 import logger from '../src/logger';
@@ -1393,32 +1393,15 @@ describe('OpenAIChatCompletionsModel', () => {
   });
 
   it('runs streamed requests and source iteration in model span context', async () => {
-    let modelContextActive = false;
+    const contextProbe = createTracingContextProbe('generation');
     const contextChecks: boolean[] = [];
-    const processor: TracingProcessor = {
-      async onTraceStart(_trace: Trace) {},
-      async onTraceEnd(_trace: Trace) {},
-      async onSpanStart(_span: Span<any>) {},
-      async onSpanEnd(_span: Span<any>) {},
-      async withSpan(span, fn) {
-        if (span.spanData.type !== 'generation') return fn();
-        modelContextActive = true;
-        try {
-          return await fn();
-        } finally {
-          modelContextActive = false;
-        }
-      },
-      async shutdown() {},
-      async forceFlush() {},
-    };
     const client = new FakeClient();
     async function* fakeStream() {
-      contextChecks.push(modelContextActive);
+      contextChecks.push(contextProbe.isActive());
       yield { id: 'c' } as any;
     }
     client.chat.completions.create.mockImplementation(async () => {
-      contextChecks.push(modelContextActive);
+      contextChecks.push(contextProbe.isActive());
       return fakeStream();
     });
     vi.mocked(convertChatCompletionsStreamToResponses).mockImplementationOnce(
@@ -1438,18 +1421,13 @@ describe('OpenAIChatCompletionsModel', () => {
       tracing: true,
     };
 
-    setTraceProcessors([processor]);
-    setTracingDisabled(false);
-    try {
+    await withTestTracingProcessor(contextProbe.processor, async () => {
       await withTrace('t', async () => {
         for await (const _event of model.getStreamedResponse(request)) {
           // Consume the stream.
         }
       });
-    } finally {
-      setTracingDisabled(true);
-      setTraceProcessors([]);
-    }
+    });
 
     expect(contextChecks).toEqual([true, true]);
   });
