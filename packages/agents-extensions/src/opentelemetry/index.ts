@@ -1,0 +1,181 @@
+import {
+  context,
+  ROOT_CONTEXT,
+  SpanKind,
+  SpanStatusCode,
+  trace,
+  type Attributes,
+  type Context,
+  type Span as OtelSpan,
+  type Tracer,
+} from '@opentelemetry/api';
+import { suppressTracing } from '@opentelemetry/core';
+import type {
+  Span,
+  SpanData,
+  Trace,
+  TracingProcessor,
+} from '@openai/agents-core';
+
+export type OpenTelemetryTracingProcessorOptions = {
+  /** The tracer used to create spans. Defaults to `@openai/agents`. */
+  tracer?: Tracer;
+  /** Include generation input in span attributes. Disabled by default. */
+  recordInputs?: boolean;
+  /** Include function output and generation output in span attributes. Disabled by default. */
+  recordOutputs?: boolean;
+  /** Suppress automatic instrumentation beneath Agents SDK spans. Defaults to true. */
+  suppressInstrumentation?: boolean;
+};
+
+function timestamp(value: string | null): number | undefined {
+  return value ? new Date(value).getTime() : undefined;
+}
+
+function spanName(data: SpanData): string {
+  switch (data.type) {
+    case 'agent':
+      return `invoke_agent ${data.name}`;
+    case 'function':
+      return `execute_tool ${data.name}`;
+    case 'generation':
+      return `chat ${data.model ?? 'model'}`;
+    case 'handoff':
+      return 'handoff';
+    case 'guardrail':
+      return `guardrail ${data.name}`;
+    default:
+      return `openai.agents.${data.type}`;
+  }
+}
+
+function attributesForSpan(
+  span: Span<any>,
+  { recordInputs, recordOutputs }: OpenTelemetryTracingProcessorOptions,
+): Attributes {
+  const data = span.spanData;
+  const attributes: Attributes = {
+    'openai.agents.trace.id': span.traceId,
+    'openai.agents.span.id': span.spanId,
+    'openai.agents.span.type': data.type,
+    'gen_ai.operation.name': spanName(data).split(' ')[0],
+  };
+
+  if (data.type === 'agent') {
+    attributes['gen_ai.agent.name'] = data.name;
+  } else if (data.type === 'function') {
+    attributes['gen_ai.tool.name'] = data.name;
+    if (recordInputs) attributes['gen_ai.tool.call.arguments'] = data.input;
+    if (recordOutputs) attributes['gen_ai.tool.call.result'] = data.output;
+  } else if (data.type === 'generation') {
+    if (data.model) attributes['gen_ai.request.model'] = data.model;
+    if (data.usage?.input_tokens !== undefined) {
+      attributes['gen_ai.usage.input_tokens'] = data.usage.input_tokens;
+    }
+    if (data.usage?.output_tokens !== undefined) {
+      attributes['gen_ai.usage.output_tokens'] = data.usage.output_tokens;
+    }
+    if (recordInputs && data.input)
+      attributes['gen_ai.input.messages'] = JSON.stringify(data.input);
+    if (recordOutputs && data.output)
+      attributes['gen_ai.output.messages'] = JSON.stringify(data.output);
+  } else if (data.type === 'handoff') {
+    if (data.from_agent) attributes['gen_ai.agent.name'] = data.from_agent;
+    if (data.to_agent)
+      attributes['openai.agents.handoff.to_agent'] = data.to_agent;
+  } else if (data.type === 'guardrail') {
+    attributes['openai.agents.guardrail.name'] = data.name;
+    attributes['openai.agents.guardrail.triggered'] = data.triggered;
+  }
+
+  return attributes;
+}
+
+/**
+ * Mirrors Agents SDK traces to OpenTelemetry. Add it with `addTraceProcessor()`.
+ *
+ * The processor intentionally suppresses automatic HTTP/fetch instrumentation inside
+ * Agents SDK spans by default. This keeps the trace focused on agent, model, handoff,
+ * and tool operations; set `suppressInstrumentation: false` to retain those spans.
+ */
+export class OpenTelemetryTracingProcessor implements TracingProcessor {
+  readonly #tracer: Tracer;
+  readonly #options: OpenTelemetryTracingProcessorOptions;
+  readonly #traces = new Map<string, OtelSpan>();
+  readonly #spans = new Map<string, OtelSpan>();
+
+  constructor(options: OpenTelemetryTracingProcessorOptions = {}) {
+    this.#tracer = options.tracer ?? trace.getTracer('@openai/agents');
+    this.#options = options;
+  }
+
+  async onTraceStart(agentTrace: Trace): Promise<void> {
+    const attributes: Attributes = {
+      'openai.agents.trace.id': agentTrace.traceId,
+      'openai.agents.trace.name': agentTrace.name,
+    };
+    if (agentTrace.groupId)
+      attributes['openai.agents.group.id'] = agentTrace.groupId;
+    this.#traces.set(
+      agentTrace.traceId,
+      this.#tracer.startSpan(agentTrace.name, {
+        kind: SpanKind.INTERNAL,
+        attributes,
+      }),
+    );
+  }
+
+  async onTraceEnd(agentTrace: Trace): Promise<void> {
+    this.#traces.get(agentTrace.traceId)?.end();
+    this.#traces.delete(agentTrace.traceId);
+  }
+
+  async onSpanStart(agentSpan: Span<any>): Promise<void> {
+    const parent = agentSpan.parentId
+      ? this.#spans.get(agentSpan.parentId)
+      : this.#traces.get(agentSpan.traceId);
+    const parentContext = parent
+      ? trace.setSpan(ROOT_CONTEXT, parent)
+      : context.active();
+    this.#spans.set(
+      agentSpan.spanId,
+      this.#tracer.startSpan(
+        spanName(agentSpan.spanData),
+        {
+          kind: SpanKind.INTERNAL,
+          attributes: attributesForSpan(agentSpan, this.#options),
+          startTime: timestamp(agentSpan.startedAt),
+        },
+        parentContext,
+      ),
+    );
+  }
+
+  async onSpanEnd(agentSpan: Span<any>): Promise<void> {
+    const otelSpan = this.#spans.get(agentSpan.spanId);
+    if (!otelSpan) return;
+    otelSpan.setAttributes(attributesForSpan(agentSpan, this.#options));
+    if (agentSpan.error) {
+      otelSpan.recordException(agentSpan.error.message);
+      otelSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: agentSpan.error.message,
+      });
+    }
+    otelSpan.end(timestamp(agentSpan.endedAt));
+    this.#spans.delete(agentSpan.spanId);
+  }
+
+  async withSpan<T>(agentSpan: Span<any>, fn: () => Promise<T>): Promise<T> {
+    const otelSpan = this.#spans.get(agentSpan.spanId);
+    if (!otelSpan) return fn();
+    let activeContext: Context = trace.setSpan(context.active(), otelSpan);
+    if (this.#options.suppressInstrumentation !== false) {
+      activeContext = suppressTracing(activeContext);
+    }
+    return context.with(activeContext, fn);
+  }
+
+  async shutdown(): Promise<void> {}
+  async forceFlush(): Promise<void> {}
+}

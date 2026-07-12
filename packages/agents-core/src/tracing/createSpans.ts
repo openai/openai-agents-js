@@ -38,7 +38,7 @@ function _withSpanFactory<
       setCurrentSpan(span);
       try {
         span.start();
-        return await fn(span);
+        return await span.withContext(() => fn(span));
       } catch (error: any) {
         span.setError({
           message: error.message,

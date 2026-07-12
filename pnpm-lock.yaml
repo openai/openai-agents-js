@@ -692,6 +692,12 @@ importers:
       '@openai/codex-sdk':
         specifier: ^0.86.0
         version: 0.86.0
+      '@opentelemetry/api':
+        specifier: ^1.9.0
+        version: 1.9.0
+      '@opentelemetry/core':
+        specifier: ^2.7.0
+        version: 2.7.0(@opentelemetry/api@1.9.0)
       '@runloop/api-client':
         specifier: 1.16.2
         version: 1.16.2

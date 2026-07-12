@@ -88,6 +88,7 @@ class TestProcessor implements TracingProcessor {
   public tracesEnded: Trace[] = [];
   public spansStarted: Span<any>[] = [];
   public spansEnded: Span<any>[] = [];
+  withSpan?: <T>(span: Span<any>, fn: () => Promise<T>) => Promise<T>;
 
   async onTraceStart(trace: Trace): Promise<void> {
     this.tracesStarted.push(trace);
@@ -1475,6 +1476,49 @@ describe('withTrace & span helpers (integration)', () => {
 // -----------------------------------------------------------------------------------------
 
 describe('MultiTracingProcessor', () => {
+  it('composes processor span contexts in registration order', async () => {
+    const calls: string[] = [];
+    const processor1 = new TestProcessor();
+    const processor2 = new TestProcessor();
+    processor1.withSpan = async (_span, fn) => {
+      calls.push('first:start');
+      try {
+        return await fn();
+      } finally {
+        calls.push('first:end');
+      }
+    };
+    processor2.withSpan = async (_span, fn) => {
+      calls.push('second:start');
+      try {
+        return await fn();
+      } finally {
+        calls.push('second:end');
+      }
+    };
+    const multiProcessor = new MultiTracingProcessor();
+    multiProcessor.addTraceProcessor(processor1);
+    multiProcessor.addTraceProcessor(processor2);
+    const span = new Span(
+      {
+        traceId: 'trace_context',
+        spanId: 'span_context',
+        data: { type: 'custom', name: 'context', data: {} },
+      },
+      multiProcessor,
+    );
+
+    await span.withContext(async () => calls.push('work'));
+
+    expect(calls).toEqual([
+      'first:start',
+      'second:start',
+      'work',
+      'second:end',
+      'first:end',
+    ]);
+  });
+
   it('should call all processors shutdown when setting new processors', () => {
     const processor1 = new TestProcessor();
     processor1.shutdown = vi.fn();

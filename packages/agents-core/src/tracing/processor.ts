@@ -51,6 +51,12 @@ export interface TracingProcessor {
   onSpanEnd(span: Span): Promise<void>;
 
   /**
+   * Runs work while this processor's representation of the span is active.
+   * Processors that do not manage an execution context can omit this hook.
+   */
+  withSpan?<T>(span: Span, fn: () => Promise<T>): Promise<T>;
+
+  /**
    * Called when the trace processor is shutting down
    */
   shutdown(timeout?: number): Promise<void>;
@@ -373,6 +379,18 @@ export class MultiTracingProcessor implements TracingProcessor {
     for (const processor of this.#processors) {
       await processor.onSpanEnd(span);
     }
+  }
+
+  async withSpan<T>(span: Span, fn: () => Promise<T>): Promise<T> {
+    let wrapped = fn;
+    for (const processor of [...this.#processors].reverse()) {
+      if (!processor.withSpan) {
+        continue;
+      }
+      const next = wrapped;
+      wrapped = () => processor.withSpan!(span, next);
+    }
+    return wrapped();
   }
 
   /**

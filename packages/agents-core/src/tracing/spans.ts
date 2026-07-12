@@ -201,6 +201,13 @@ export class Span<TData extends SpanData> {
     this.#previousSpan = span;
   }
 
+  async withContext<T>(fn: () => Promise<T>): Promise<T> {
+    if (!this.#processor.withSpan) {
+      return fn();
+    }
+    return this.#processor.withSpan(this, fn);
+  }
+
   start() {
     if (this.#startedAt) {
       logger.warn('Span already started');
