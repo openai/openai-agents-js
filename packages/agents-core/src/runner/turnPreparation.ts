@@ -87,48 +87,49 @@ export async function prepareTurn<
   logger.debug(
     `Running agent ${state._currentAgent.name} (turn ${state._currentTurn})`,
   );
-  state.setCurrentAgentSpan(
-    ensureAgentSpan({
-      agent: state._currentAgent,
-      handoffs: [],
-      tools: [],
-      currentSpan: state._currentAgentSpan,
-    }),
-  );
+  const agentSpan = ensureAgentSpan({
+    agent: state._currentAgent,
+    handoffs: [],
+    tools: [],
+    currentSpan: state._currentAgentSpan,
+  });
+  state.setCurrentAgentSpan(agentSpan);
 
-  const { parallelGuardrailPromise } = await runInputGuardrailsForTurn(
-    state,
-    inputGuardrailDefs,
-    isResumingFromInterruption,
-    guardrailHandlers,
-  );
-
-  const turnInput = serverConversationTracker
-    ? serverConversationTracker.prepareInput(
-        input,
-        generatedItems,
-        getManagedConversationSupplementalItems(state),
-      )
-    : prepareModelInputItems(
-        input,
-        generatedItems,
-        state._reasoningItemIdPolicy,
-      );
-
-  if (state._noActiveAgentRun) {
-    state._currentAgent.emit(
-      'agent_start',
-      state._context,
-      state._currentAgent,
-      turnInput,
+  return agentSpan.withContext(async () => {
+    const { parallelGuardrailPromise } = await runInputGuardrailsForTurn(
+      state,
+      inputGuardrailDefs,
+      isResumingFromInterruption,
+      guardrailHandlers,
     );
-    emitAgentStart?.(state._context, state._currentAgent, turnInput);
-  }
 
-  return {
-    turnInput,
-    parallelGuardrailPromise,
-  };
+    const turnInput = serverConversationTracker
+      ? serverConversationTracker.prepareInput(
+          input,
+          generatedItems,
+          getManagedConversationSupplementalItems(state),
+        )
+      : prepareModelInputItems(
+          input,
+          generatedItems,
+          state._reasoningItemIdPolicy,
+        );
+
+    if (state._noActiveAgentRun) {
+      state._currentAgent.emit(
+        'agent_start',
+        state._context,
+        state._currentAgent,
+        turnInput,
+      );
+      emitAgentStart?.(state._context, state._currentAgent, turnInput);
+    }
+
+    return {
+      turnInput,
+      parallelGuardrailPromise,
+    };
+  });
 }
 
 const IGNORED_HANDOFF_OUTPUT_MESSAGE =

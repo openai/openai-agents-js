@@ -1817,7 +1817,23 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => void,
+    agentContextActive: boolean = false,
   ): Promise<PreparedModelCall<TContext>> {
+    if (!agentContextActive && state._currentAgentSpan) {
+      return state._currentAgentSpan.withContext(() =>
+        this.#prepareModelCall(
+          state,
+          executionAgent,
+          options,
+          artifacts,
+          turnInput,
+          serverConversationTracker,
+          sessionInputUpdate,
+          true,
+        ),
+      );
+    }
+
     const { model, explicitlyModelSet, resolvedModelName } =
       await this.#resolveModelForAgent(executionAgent);
 

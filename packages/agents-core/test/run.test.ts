@@ -36,6 +36,9 @@ import {
   assistant,
   type ToolExecutionConfig,
   type ToolNotFoundBehavior,
+  type Span,
+  type Trace,
+  type TracingProcessor,
 } from '../src';
 import { RunStreamEvent } from '../src/events';
 import { ServerConversationTracker } from '../src/runner/conversation';
@@ -977,6 +980,70 @@ describe('Runner.run', () => {
       expect(runnerInputs[0].map(getFirstTextContent)).toEqual([
         'capture this input for tracing',
       ]);
+    });
+
+    it('activates agent span context for hooks and dynamic preparation', async () => {
+      let agentContextActive = false;
+      const observedContext: Record<string, boolean> = {};
+      const processor: TracingProcessor = {
+        async onTraceStart(_trace: Trace) {},
+        async onTraceEnd(_trace: Trace) {},
+        async onSpanStart(_span: Span<any>) {},
+        async onSpanEnd(_span: Span<any>) {},
+        async withSpan(span, fn) {
+          if (span.spanData.type !== 'agent') return fn();
+          agentContextActive = true;
+          try {
+            return await fn();
+          } finally {
+            agentContextActive = false;
+          }
+        },
+        async shutdown() {},
+        async forceFlush() {},
+      };
+      const dynamicTool = tool({
+        name: 'dynamic_tool',
+        description: 'A dynamically enabled tool',
+        parameters: z.object({}),
+        isEnabled: async () => {
+          observedContext.toolDiscovery = agentContextActive;
+          return false;
+        },
+        execute: async () => 'unused',
+      });
+      const agent = new Agent({
+        name: 'ContextAgent',
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('done')],
+            usage: new Usage(),
+          },
+        ]),
+        instructions: async () => {
+          observedContext.instructions = agentContextActive;
+          return 'Dynamic instructions';
+        },
+        tools: [dynamicTool],
+      });
+      agent.on('agent_start', () => {
+        observedContext.agentStart = agentContextActive;
+      });
+
+      setTraceProcessors([processor]);
+      setTracingDisabled(false);
+      try {
+        await new Runner({ tracingDisabled: false }).run(agent, 'hello');
+      } finally {
+        setTracingDisabled(true);
+        setTraceProcessors([]);
+      }
+
+      expect(observedContext).toEqual({
+        agentStart: true,
+        toolDiscovery: true,
+        instructions: true,
+      });
     });
 
     it('applies toolChoice updates from agent_tool_end before the next model call', async () => {

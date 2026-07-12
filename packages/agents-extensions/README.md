@@ -10,7 +10,11 @@ npm install @openai/agents @openai/agents-extensions
 
 ## OpenTelemetry
 
-Install the OpenTelemetry API and register the optional processor to export the Agents SDK trace hierarchy through your configured OTel SDK.
+Install the required OpenTelemetry peers and register the optional processor to export the Agents SDK trace hierarchy through your configured OTel SDK.
+
+```bash
+npm install @opentelemetry/api @opentelemetry/core
+```
 
 ```ts
 import { addTraceProcessor } from '@openai/agents';

@@ -60,27 +60,33 @@ export async function prepareAgentArtifacts<
   state: RunState<TContext, TAgent>,
   executionAgent: Agent<TContext, AgentOutputType> = state._currentAgent,
 ): Promise<AgentArtifacts<TContext>> {
-  const capabilities = await collectAgentCapabilities(state, executionAgent);
-  validateClientToolSearchSupport(capabilities.tools);
-  await warmUpComputerTools(capabilities.tools, state._context);
-  await initializeComputerTools(capabilities.tools, state);
-  state.setCurrentAgentSpan(
-    ensureAgentSpan({
-      agent: executionAgent,
-      handoffs: capabilities.handoffs,
-      tools: capabilities.tools,
-      currentSpan: state._currentAgentSpan,
-    }),
-  );
+  const prepare = async () => {
+    const capabilities = await collectAgentCapabilities(state, executionAgent);
+    validateClientToolSearchSupport(capabilities.tools);
+    await warmUpComputerTools(capabilities.tools, state._context);
+    await initializeComputerTools(capabilities.tools, state);
+    state.setCurrentAgentSpan(
+      ensureAgentSpan({
+        agent: executionAgent,
+        handoffs: capabilities.handoffs,
+        tools: capabilities.tools,
+        currentSpan: state._currentAgentSpan,
+      }),
+    );
 
-  return {
-    ...capabilities,
-    serializedHandoffs: capabilities.handoffs.map((handoff) =>
-      serializeHandoff(handoff),
-    ),
-    serializedTools: capabilities.tools.map((tool) => serializeTool(tool)),
-    toolsExplicitlyProvided: executionAgent.hasExplicitToolConfig(),
+    return {
+      ...capabilities,
+      serializedHandoffs: capabilities.handoffs.map((handoff) =>
+        serializeHandoff(handoff),
+      ),
+      serializedTools: capabilities.tools.map((tool) => serializeTool(tool)),
+      toolsExplicitlyProvided: executionAgent.hasExplicitToolConfig(),
+    };
   };
+
+  return state._currentAgentSpan
+    ? state._currentAgentSpan.withContext(prepare)
+    : prepare();
 }
 
 async function collectAgentCapabilities<TContext>(
