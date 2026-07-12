@@ -1591,6 +1591,21 @@ describe('MultiTracingProcessor', () => {
     expect(contextStates).toEqual([true, true, true, true]);
   });
 
+  it('does not enter processor context for no-op spans', async () => {
+    const processor = new TestProcessor();
+    processor.withSpan = vi.fn(async (_span, fn) => fn());
+    const span = new NoopSpan(
+      { type: 'custom', name: 'disabled', data: {} },
+      processor,
+    );
+    const work = vi.fn(async () => 'result');
+
+    await expect(span.withContext(work)).resolves.toBe('result');
+
+    expect(work).toHaveBeenCalledOnce();
+    expect(processor.withSpan).not.toHaveBeenCalled();
+  });
+
   it('should call all processors shutdown when setting new processors', () => {
     const processor1 = new TestProcessor();
     processor1.shutdown = vi.fn();

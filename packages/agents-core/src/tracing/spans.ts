@@ -325,6 +325,10 @@ export class NoopSpan<TSpanData extends SpanData> extends Span<TSpanData> {
     return;
   }
 
+  async withContext<T>(fn: () => Promise<T>): Promise<T> {
+    return fn();
+  }
+
   end() {
     return;
   }
