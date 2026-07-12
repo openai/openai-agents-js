@@ -24,6 +24,8 @@ export type OpenTelemetryTracingProcessorOptions = {
   recordInputs?: boolean;
   /** Include model and tool output in span attributes. Disabled by default. */
   recordOutputs?: boolean;
+  /** Include data attached to custom spans. Disabled by default. */
+  recordCustomData?: boolean;
   /** Suppress automatic instrumentation beneath Agents SDK spans. Defaults to true. */
   suppressInstrumentation?: boolean;
 };
@@ -46,6 +48,16 @@ function spanName(data: SpanData): string {
       return 'handoff';
     case 'guardrail':
       return `guardrail ${data.name}`;
+    case 'custom':
+      return `custom ${data.name}`;
+    case 'mcp_tools':
+      return 'list_tools';
+    case 'transcription':
+      return `transcribe ${data.model ?? 'model'}`;
+    case 'speech':
+      return `synthesize_speech ${data.model ?? 'model'}`;
+    case 'speech_group':
+      return 'speech_group';
     default:
       return `openai.agents.${data.type}`;
   }
@@ -53,7 +65,11 @@ function spanName(data: SpanData): string {
 
 function attributesForSpan(
   span: Span<any>,
-  { recordInputs, recordOutputs }: OpenTelemetryTracingProcessorOptions,
+  {
+    recordInputs,
+    recordOutputs,
+    recordCustomData,
+  }: OpenTelemetryTracingProcessorOptions,
 ): Attributes {
   const data = span.spanData;
   const attributes: Attributes = {
@@ -65,6 +81,11 @@ function attributesForSpan(
 
   if (data.type === 'agent') {
     attributes['gen_ai.agent.name'] = data.name;
+    if (data.handoffs)
+      attributes['openai.agents.agent.handoffs'] = data.handoffs;
+    if (data.tools) attributes['openai.agents.agent.tools'] = data.tools;
+    if (data.output_type)
+      attributes['openai.agents.agent.output_type'] = data.output_type;
   } else if (data.type === 'function') {
     attributes['gen_ai.tool.name'] = data.name;
     if (recordInputs) attributes['gen_ai.tool.call.arguments'] = data.input;
@@ -99,6 +120,36 @@ function attributesForSpan(
   } else if (data.type === 'guardrail') {
     attributes['openai.agents.guardrail.name'] = data.name;
     attributes['openai.agents.guardrail.triggered'] = data.triggered;
+  } else if (data.type === 'custom') {
+    attributes['openai.agents.custom.name'] = data.name;
+    if (recordCustomData) {
+      attributes['openai.agents.custom.data'] = JSON.stringify(data.data);
+    }
+  } else if (data.type === 'mcp_tools') {
+    if (data.server) attributes['openai.agents.mcp.server'] = data.server;
+    if (data.result) attributes['openai.agents.mcp.tools'] = data.result;
+  } else if (data.type === 'transcription') {
+    if (data.model) attributes['gen_ai.request.model'] = data.model;
+    attributes['openai.agents.audio.input_format'] = data.input.format;
+    if (recordInputs) {
+      attributes['openai.agents.audio.input_data'] = data.input.data;
+    }
+    if (recordOutputs && data.output !== undefined) {
+      attributes['openai.agents.transcription.output'] = data.output;
+    }
+  } else if (data.type === 'speech') {
+    if (data.model) attributes['gen_ai.request.model'] = data.model;
+    attributes['openai.agents.audio.output_format'] = data.output.format;
+    if (recordInputs && data.input !== undefined) {
+      attributes['openai.agents.speech.input'] = data.input;
+    }
+    if (recordOutputs) {
+      attributes['openai.agents.audio.output_data'] = data.output.data;
+    }
+  } else if (data.type === 'speech_group') {
+    if (recordInputs && data.input !== undefined) {
+      attributes['openai.agents.speech.input'] = data.input;
+    }
   }
 
   return attributes;

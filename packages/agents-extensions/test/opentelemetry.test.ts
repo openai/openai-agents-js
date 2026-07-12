@@ -184,4 +184,95 @@ describe('OpenTelemetryTracingProcessor', () => {
       expect.anything(),
     );
   });
+
+  test('exports agent capabilities and non-text span metadata', async () => {
+    const otelSpan = createOtelSpan();
+    const startSpan = vi.fn().mockReturnValue(otelSpan);
+    const tracer = { startSpan } as unknown as Tracer;
+    const processor = new OpenTelemetryTracingProcessor({
+      tracer,
+      recordInputs: true,
+      recordOutputs: true,
+      recordCustomData: true,
+    });
+    const spans = [
+      {
+        spanId: 'agent',
+        spanData: {
+          type: 'agent',
+          name: 'Reviewer',
+          tools: ['fetch_page'],
+          handoffs: ['Escalation'],
+          output_type: 'Review',
+        },
+      },
+      {
+        spanId: 'custom',
+        spanData: {
+          type: 'custom',
+          name: 'sandbox.read',
+          data: { path: '/tmp' },
+        },
+      },
+      {
+        spanId: 'mcp',
+        spanData: {
+          type: 'mcp_tools',
+          server: 'github',
+          result: ['search', 'get_file'],
+        },
+      },
+      {
+        spanId: 'speech',
+        spanData: {
+          type: 'speech',
+          input: 'Hello',
+          output: { data: 'audio-data', format: 'pcm' },
+          model: 'gpt-4o-mini-tts',
+        },
+      },
+    ].map(
+      ({ spanId, spanData }) =>
+        ({
+          traceId: 'trace_123',
+          spanId,
+          parentId: null,
+          startedAt: null,
+          endedAt: null,
+          error: null,
+          spanData,
+        }) as unknown as Span,
+    );
+
+    for (const span of spans) await processor.onSpanStart(span);
+
+    const attributes = startSpan.mock.calls.map((call) => call[1]?.attributes);
+    expect(attributes).toContainEqual(
+      expect.objectContaining({
+        'openai.agents.agent.tools': ['fetch_page'],
+        'openai.agents.agent.handoffs': ['Escalation'],
+        'openai.agents.agent.output_type': 'Review',
+      }),
+    );
+    expect(attributes).toContainEqual(
+      expect.objectContaining({
+        'openai.agents.custom.name': 'sandbox.read',
+        'openai.agents.custom.data': '{"path":"/tmp"}',
+      }),
+    );
+    expect(attributes).toContainEqual(
+      expect.objectContaining({
+        'openai.agents.mcp.server': 'github',
+        'openai.agents.mcp.tools': ['search', 'get_file'],
+      }),
+    );
+    expect(attributes).toContainEqual(
+      expect.objectContaining({
+        'gen_ai.request.model': 'gpt-4o-mini-tts',
+        'openai.agents.audio.output_format': 'pcm',
+        'openai.agents.speech.input': 'Hello',
+        'openai.agents.audio.output_data': 'audio-data',
+      }),
+    );
+  });
 });
