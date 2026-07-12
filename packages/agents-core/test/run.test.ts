@@ -1635,6 +1635,59 @@ describe('Runner.run', () => {
       expect(resumed.finalOutput).toBe(first.finalOutput);
     });
 
+    it('replays a restored agent span before entering its context', async () => {
+      const representedSpans = new Set<string>();
+      let enteredRepresentedAgentSpan = false;
+      const processor: TracingProcessor = {
+        async onTraceStart(_trace: Trace) {},
+        async onTraceEnd(_trace: Trace) {},
+        async onSpanStart(span: Span<any>) {
+          representedSpans.add(span.spanId);
+        },
+        async onSpanEnd(span: Span<any>) {
+          representedSpans.delete(span.spanId);
+        },
+        async withSpan(span, fn) {
+          if (span.spanData.type === 'agent') {
+            enteredRepresentedAgentSpan = representedSpans.has(span.spanId);
+          }
+          return fn();
+        },
+        async shutdown() {},
+        async forceFlush() {},
+      };
+      const agent = new Agent({
+        name: 'ResumeTracing',
+        model: new FakeModel([
+          { output: [fakeModelMessage('resumed')], usage: new Usage() },
+        ]),
+      });
+
+      setTracingDisabled(false);
+      try {
+        const provider = getGlobalTraceProvider();
+        const state = new RunState(new RunContext(), 'hi', agent, 1);
+        const trace = provider.createTrace({ name: 'Restored trace' });
+        state._trace = trace;
+        state._currentAgentSpan = provider.createSpan(
+          { data: { type: 'agent', name: agent.name } },
+          trace,
+        );
+        const restored = await RunState.fromString(
+          agent,
+          JSON.stringify(state.toJSON()),
+        );
+        setTraceProcessors([processor]);
+
+        await new Runner({ tracingDisabled: false }).run(agent, restored);
+
+        expect(enteredRepresentedAgentSpan).toBe(true);
+      } finally {
+        setTraceProcessors([]);
+        setTracingDisabled(true);
+      }
+    });
+
     it('resumes from schema 1.0 RunState', async () => {
       const agent = new Agent({
         name: 'ResumeV1',

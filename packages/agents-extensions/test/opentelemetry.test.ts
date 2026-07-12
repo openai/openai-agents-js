@@ -89,6 +89,38 @@ describe('OpenTelemetryTracingProcessor', () => {
     expect(root.end).toHaveBeenCalled();
   });
 
+  test('falls back to the Agents trace root when a parent span is missing', async () => {
+    const root = createOtelSpan();
+    const child = createOtelSpan();
+    const tracer = {
+      startSpan: vi.fn().mockReturnValueOnce(root).mockReturnValueOnce(child),
+    } as unknown as Tracer;
+    const processor = new OpenTelemetryTracingProcessor({ tracer });
+    const agentTrace = {
+      traceId: 'trace_123',
+      name: 'Resumed workflow',
+      groupId: null,
+    } as Trace;
+    const childSpan = {
+      traceId: 'trace_123',
+      spanId: 'span_child',
+      parentId: 'span_missing',
+      startedAt: null,
+      endedAt: null,
+      error: null,
+      spanData: { type: 'function', name: 'approved_tool' },
+    } as unknown as Span;
+
+    await processor.onTraceStart(agentTrace);
+    await processor.onSpanStart(childSpan);
+
+    const parentContext = vi.mocked(tracer.startSpan).mock.calls[1]?.[2];
+    expect(trace.getSpan(parentContext!)).toBe(root);
+
+    await processor.onTraceEnd(agentTrace);
+    expect(child.end).toHaveBeenCalled();
+  });
+
   test('suppresses nested automatic instrumentation by default', async () => {
     const otelSpan = createOtelSpan();
     const tracer = {

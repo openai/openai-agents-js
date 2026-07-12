@@ -30,7 +30,7 @@ import {
   withNewSpanContext,
   withTrace,
 } from './tracing/context';
-import type { TracingConfig } from './tracing';
+import { dispatchSpanStart, type TracingConfig } from './tracing';
 import { Usage } from './usage';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
 import { DEFAULT_MAX_TURNS } from './runner/constants';
@@ -652,6 +652,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       preparedInput._currentAgentSpan = applied.currentSpan;
       return withTrace(preparedInput._trace, async () => {
         if (preparedInput._currentAgentSpan) {
+          await dispatchSpanStart(preparedInput._currentAgentSpan);
           setCurrentSpan(preparedInput._currentAgentSpan);
         }
         return executeRun();

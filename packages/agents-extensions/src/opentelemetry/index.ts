@@ -252,6 +252,7 @@ export class OpenTelemetryTracingProcessor implements TracingProcessor {
   readonly #options: OpenTelemetryTracingProcessorOptions;
   readonly #traces = new Map<string, OtelSpan>();
   readonly #spans = new Map<string, OtelSpan>();
+  readonly #spanTraceIds = new Map<string, string>();
 
   constructor(options: OpenTelemetryTracingProcessorOptions = {}) {
     this.#tracer = options.tracer ?? trace.getTracer('@openai/agents');
@@ -275,18 +276,25 @@ export class OpenTelemetryTracingProcessor implements TracingProcessor {
   }
 
   async onTraceEnd(agentTrace: Trace): Promise<void> {
+    for (const [spanId, traceId] of this.#spanTraceIds) {
+      if (traceId !== agentTrace.traceId) continue;
+      this.#spans.get(spanId)?.end();
+      this.#spans.delete(spanId);
+      this.#spanTraceIds.delete(spanId);
+    }
     this.#traces.get(agentTrace.traceId)?.end();
     this.#traces.delete(agentTrace.traceId);
   }
 
   async onSpanStart(agentSpan: Span<any>): Promise<void> {
     const descriptor = describeSpan(agentSpan.spanData, this.#options);
+    const traceRoot = this.#traces.get(agentSpan.traceId);
     const parent = agentSpan.parentId
-      ? this.#spans.get(agentSpan.parentId)
-      : this.#traces.get(agentSpan.traceId);
+      ? (this.#spans.get(agentSpan.parentId) ?? traceRoot)
+      : traceRoot;
     const parentContext = parent
       ? trace.setSpan(ROOT_CONTEXT, parent)
-      : context.active();
+      : ROOT_CONTEXT;
     this.#spans.set(
       agentSpan.spanId,
       this.#tracer.startSpan(
@@ -299,6 +307,7 @@ export class OpenTelemetryTracingProcessor implements TracingProcessor {
         parentContext,
       ),
     );
+    this.#spanTraceIds.set(agentSpan.spanId, agentSpan.traceId);
   }
 
   async onSpanEnd(agentSpan: Span<any>): Promise<void> {
@@ -316,6 +325,7 @@ export class OpenTelemetryTracingProcessor implements TracingProcessor {
     }
     otelSpan.end(timestamp(agentSpan.endedAt));
     this.#spans.delete(agentSpan.spanId);
+    this.#spanTraceIds.delete(agentSpan.spanId);
   }
 
   async withSpan<T>(agentSpan: Span<any>, fn: () => Promise<T>): Promise<T> {
