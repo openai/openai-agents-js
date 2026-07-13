@@ -161,7 +161,11 @@ export class OpenAIChatCompletionsModel implements Model {
           status: 'completed',
         });
       } else if (message.refusal) {
-        const { refusal, ...rest } = message;
+        const { refusal, content, ...rest } = message;
+        // An empty-string content is just a placeholder (some providers send '' instead
+        // of null); keep it out of providerData so itemsToMessages doesn't replay it as a
+        // stray content field on the refusal part.
+        const providerData = content ? { content, ...rest } : rest;
         output.push({
           id: response.id,
           type: 'message',
@@ -170,7 +174,7 @@ export class OpenAIChatCompletionsModel implements Model {
             {
               type: 'refusal',
               refusal: refusal || '',
-              providerData: rest,
+              providerData,
             },
           ],
           status: 'completed',

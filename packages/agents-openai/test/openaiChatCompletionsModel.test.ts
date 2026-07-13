@@ -654,9 +654,7 @@ describe('OpenAIChatCompletionsModel', () => {
         type: 'message',
         role: 'assistant',
         status: 'completed',
-        content: [
-          { type: 'refusal', refusal: 'no', providerData: { content: '' } },
-        ],
+        content: [{ type: 'refusal', refusal: 'no', providerData: {} }],
       },
     ]);
   });
