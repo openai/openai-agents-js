@@ -34,6 +34,7 @@ import { HEADERS } from './defaults';
 import {
   ResponsesWebSocketConnection,
   ResponsesWebSocketInternalError,
+  ResponsesWebSocketTimeoutError,
   isWebSocketNotOpenError,
   shouldWrapNoEventWebSocketError,
   throwIfAborted,
@@ -3953,7 +3954,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
       requestTimeoutDeadline.deadlineAtMs - Date.now(),
     );
     if (remainingTimeoutMs <= 0) {
-      throw new Error(errorMessage);
+      throw new ResponsesWebSocketTimeoutError(errorMessage);
     }
 
     return { timeoutMs: remainingTimeoutMs, errorMessage };

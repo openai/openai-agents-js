@@ -1271,6 +1271,80 @@ describe('OpenAIResponsesWSModel', () => {
     }
   });
 
+  it('retries when the websocket deadline expires between setup steps', async () => {
+    vi.useFakeTimers();
+    let apiKeyAttempts = 0;
+
+    try {
+      const fakeClient = createFakeClient() as any;
+      fakeClient.timeout = 25;
+      fakeClient._options = { ...(fakeClient._options ?? {}), timeout: 25 };
+      fakeClient._callApiKey = vi.fn(() => {
+        apiKeyAttempts += 1;
+        if (apiKeyAttempts === 1) {
+          return new Promise<boolean>((resolve) => {
+            // This timer is registered before the transport timeout timer, so
+            // setup advances exactly to the shared deadline before continuing.
+            setTimeout(() => resolve(false), 25);
+          });
+        }
+        return Promise.resolve(false);
+      });
+
+      TestWebSocket.onCreate = (socket) => {
+        socket.onSend(() => {
+          socket.queueJSON({
+            type: 'response.completed',
+            response: {
+              id: 'resp_expired_deadline_retry',
+              output: [
+                {
+                  id: 'msg_expired_deadline_retry',
+                  type: 'message',
+                  status: 'completed',
+                  role: 'assistant',
+                  content: [
+                    { type: 'output_text', text: 'deadline retry succeeded' },
+                  ],
+                },
+              ],
+              usage: {},
+            },
+            sequence_number: 0,
+          });
+        });
+      };
+
+      const resultPromise = run(
+        new Agent({
+          name: 'WebSocketExpiredProviderDeadlineAgent',
+          model: new OpenAIResponsesWSModel(fakeClient, 'gpt-ws'),
+          modelSettings: {
+            retry: {
+              maxRetries: 1,
+              backoff: { initialDelayMs: 0, jitter: false },
+              policy: retryPolicies.timeout(),
+            },
+          },
+        }),
+        'ping',
+      ).then(
+        (result) => ({ result, error: undefined }),
+        (error: unknown) => ({ result: undefined, error }),
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      const { result, error } = await resultPromise;
+
+      expect(error).toBeUndefined();
+      expect(result?.finalOutput).toBe('deadline retry succeeded');
+      expect(apiKeyAttempts).toBe(2);
+      expect(TestWebSocket.instances).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('preserves local websocket setup errors before first event', async () => {
     const fakeClient = createFakeClient();
     const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws', {
@@ -2210,6 +2284,7 @@ describe('OpenAIResponsesWSModel', () => {
   });
 
   it('times out silent websocket frame reads and unblocks queued requests', async () => {
+    vi.useFakeTimers();
     const fakeClient = createFakeClient() as any;
     fakeClient.timeout = 25;
     fakeClient._options = { ...(fakeClient._options ?? {}), timeout: 25 };
@@ -2277,6 +2352,7 @@ describe('OpenAIResponsesWSModel', () => {
         } as any,
         false,
       );
+      void firstResponsePromise.catch(() => undefined);
       await firstFrameWaitStarted;
 
       // Keep the first request on a short frame-read timeout while allowing the
@@ -2293,6 +2369,7 @@ describe('OpenAIResponsesWSModel', () => {
       );
       void secondResponsePromise.catch(() => undefined);
 
+      await vi.advanceTimersByTimeAsync(25);
       await expect(firstResponsePromise).rejects.toThrow(
         'Responses websocket frame read timed out after 25ms.',
       );
@@ -2304,10 +2381,12 @@ describe('OpenAIResponsesWSModel', () => {
       expect(TestWebSocket.instances[1]?.sent).toHaveLength(1);
     } finally {
       nextFrameSpy.mockRestore();
+      vi.useRealTimers();
     }
   });
 
   it('bounds websocket requests by the total client timeout even while frames keep arriving', async () => {
+    vi.useFakeTimers();
     const fakeClient = createFakeClient() as any;
     fakeClient.timeout = 25;
     fakeClient._options = { ...(fakeClient._options ?? {}), timeout: 25 };
@@ -2360,21 +2439,16 @@ describe('OpenAIResponsesWSModel', () => {
       signal: undefined,
     };
 
-    const responsePromise = (model as any)._fetchResponse(
-      request as any,
-      false,
-    );
-    const outcome = await Promise.race([
-      responsePromise.then(
-        (response: any) => ({ kind: 'resolved' as const, response }),
-        (error: unknown) => ({ kind: 'rejected' as const, error }),
-      ),
-      new Promise<{ kind: 'timeout' }>((resolve) => {
-        setTimeout(() => resolve({ kind: 'timeout' }), 150);
-      }),
-    ]);
-
     try {
+      const outcomePromise = (model as any)
+        ._fetchResponse(request as any, false)
+        .then(
+          (response: any) => ({ kind: 'resolved' as const, response }),
+          (error: unknown) => ({ kind: 'rejected' as const, error }),
+        );
+      await vi.advanceTimersByTimeAsync(25);
+      const outcome = await outcomePromise;
+
       expect(outcome.kind).toBe('rejected');
       if (outcome.kind === 'rejected') {
         expect(outcome.error).toBeInstanceOf(Error);
@@ -2387,6 +2461,7 @@ describe('OpenAIResponsesWSModel', () => {
         clearInterval(deltaInterval);
       }
       await model.close();
+      vi.useRealTimers();
     }
   });
 

@@ -657,6 +657,50 @@ describe('OpenAIHostedMultiAgentModel', () => {
     },
   );
 
+  it('marks a hosted deadline exhausted between setup steps as a timeout', async () => {
+    vi.useFakeTimers();
+
+    try {
+      const fakeWebSocket = new FakeResponsesWebSocket([]);
+      const client = new OpenAI({
+        apiKey: 'test-key',
+        timeout: 25,
+      }) as any;
+      client._callApiKey = vi.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            // This timer is registered before the transport timeout timer, so
+            // setup advances exactly to the shared deadline before continuing.
+            setTimeout(() => resolve(false), 25);
+          }),
+      );
+      client.authHeaders = vi.fn().mockResolvedValue({
+        values: new Headers({ Authorization: 'Bearer test-key' }),
+        nulls: new Set<string>(),
+      });
+      const model = new TestHostedMultiAgentModel(
+        fakeWebSocket,
+        undefined,
+        client,
+      );
+      const errorPromise = getTestResponse(model, request(), false).then(
+        () => undefined,
+        (error: unknown) => error as Error & { code?: string },
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      const error = await errorPromise;
+
+      expect(error).toMatchObject({ code: 'ETIMEDOUT' });
+      expect(error?.message).toBe(
+        'Hosted Multi-agent WebSocket auth header preparation timed out after 25ms.',
+      );
+      expect(fakeWebSocket.sent).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('preserves an explicit Authorization header unset', async () => {
     const fakeWebSocket = new FakeResponsesWebSocket([
       { type: 'response.created', response: emptyResponse() },

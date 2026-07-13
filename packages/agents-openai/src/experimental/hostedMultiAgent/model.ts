@@ -21,6 +21,7 @@ import {
   mergeQueryParamsIntoURL,
 } from '../../responsesTransportUtils';
 import {
+  ResponsesWebSocketTimeoutError,
   withAbortSignal,
   withTimeout,
 } from '../../responsesWebSocketConnection';
@@ -1078,7 +1079,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
       requestTimeoutDeadline.deadlineAtMs - Date.now(),
     );
     if (remainingTimeoutMs <= 0) {
-      throw new Error(errorMessage);
+      throw new ResponsesWebSocketTimeoutError(errorMessage);
     }
 
     return { timeoutMs: remainingTimeoutMs, errorMessage };
