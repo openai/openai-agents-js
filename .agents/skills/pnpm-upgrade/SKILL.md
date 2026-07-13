@@ -34,7 +34,7 @@ Use these steps to update pnpm and CI pins without blunt search/replace.
 4. Preflight the release and CI installation path
    - Run `node .agents/skills/pnpm-upgrade/scripts/preflight.mjs --version "${PNPM_VERSION}" --action-ref "${ACTION_SHA}"`.
    - The script first rejects published pnpm manifests with non-empty `dependencies` or `devDependencies`. pnpm bundles its runtime dependencies, so these fields indicate a broken publication such as `pnpm@11.12.0`.
-   - It then reproduces `pnpm/action-setup` in a temporary directory: install the action's pinned bootstrap pnpm with its committed npm lockfile, set an isolated `PNPM_HOME`, and self-update from the bootstrap to `PNPM_VERSION`.
+   - It then reproduces both `pnpm/action-setup` installation paths in separate temporary directories: install the regular `pnpm` bootstrap from `pnpm-lock.json` and the standalone `@pnpm/exe` bootstrap from `exe-lock.json`, set isolated `PNPM_HOME` directories, and self-update each bootstrap to `PNPM_VERSION`.
    - Abort the upgrade on any failure. Do not bypass this check with a direct local install; the preflight exists to exercise the CI-only bootstrap path.
 
 5. Update pnpm locally
