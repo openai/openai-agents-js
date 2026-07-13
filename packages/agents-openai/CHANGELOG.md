@@ -1,5 +1,14 @@
 # @openai/agents-openai
 
+## 0.13.3
+
+### Patch Changes
+
+- a1ea36f: test: improve retry, MCP approval, and Realtime sequencing coverage
+- Updated dependencies [a1ea36f]
+- Updated dependencies [4292ecc]
+  - @openai/agents-core@0.13.3
+
 ## 0.13.2
 
 ### Patch Changes
