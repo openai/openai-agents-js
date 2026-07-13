@@ -1016,13 +1016,23 @@ describe('Runner.run', () => {
       agent.on('agent_start', () => {
         observedContext.agentStart = contextProbe.isActive();
       });
+      agent.on('agent_end', () => {
+        observedContext.agentEnd = contextProbe.isActive();
+      });
+
+      const runner = new Runner({ tracingDisabled: false });
+      runner.on('agent_end', () => {
+        observedContext.runnerEnd = contextProbe.isActive();
+      });
 
       await withTestTracingProcessor(contextProbe.processor, async () => {
-        await new Runner({ tracingDisabled: false }).run(agent, 'hello');
+        await runner.run(agent, 'hello');
       });
 
       expect(observedContext).toEqual({
         agentStart: true,
+        agentEnd: true,
+        runnerEnd: true,
         toolDiscovery: true,
         instructions: true,
       });

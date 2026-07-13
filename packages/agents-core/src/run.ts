@@ -395,8 +395,7 @@ export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
   agent: TAgent,
   input: string | AgentInputItem[] | RunState<TContext, TAgent>,
   options?:
-    | StreamRunOptions<TContext, TAgent>
-    | NonStreamRunOptions<TContext, TAgent>,
+    StreamRunOptions<TContext, TAgent> | NonStreamRunOptions<TContext, TAgent>,
 ): Promise<RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>> {
   const runner = getDefaultRunner();
   if (options?.stream) {
@@ -419,6 +418,25 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     traceMetadata?: Record<string, string>;
     tracingApiKey?: string;
   };
+
+  async #emitAgentEnd<
+    TContext,
+    TAgent extends Agent<TContext, AgentOutputType>,
+  >(
+    state: RunState<TContext, TAgent>,
+    agent: TAgent,
+    outputText: string,
+  ): Promise<void> {
+    const emit = async () => {
+      this.emit('agent_end', state._context, agent, outputText);
+      agent.emit('agent_end', state._context, outputText);
+    };
+    if (state._currentAgentSpan) {
+      await state._currentAgentSpan.withContext(emit);
+    } else {
+      await emit();
+    }
+  }
 
   /**
    * Creates a runner with optional defaults that apply to every subsequent run invocation.
@@ -1061,15 +1079,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 currentStep.output,
               );
               state._currentTurnInProgress = false;
-              this.emit(
-                'agent_end',
-                state._context,
+              await this.#emitAgentEnd(
+                state,
                 state._currentAgent,
-                currentStep.output,
-              );
-              state._currentAgent.emit(
-                'agent_end',
-                state._context,
                 currentStep.output,
               );
               return new RunResult<TContext, TAgent>(state);
@@ -1104,10 +1116,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           state,
           errorHandlers: options.errorHandlers,
           outputGuardrailDefs: this.outputGuardrailDefs,
-          emitAgentEnd: (context, agent, outputText) => {
-            this.emit('agent_end', context, agent, outputText);
-            agent.emit('agent_end', context, outputText);
-          },
+          emitAgentEnd: (_context, agent, outputText) =>
+            this.#emitAgentEnd(state, agent, outputText),
         });
         if (handledResult) {
           return handledResult;
@@ -1587,15 +1597,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             if (!serverManagesConversation) {
               await saveStreamResultToSession(options.session, result);
             }
-            this.emit(
-              'agent_end',
-              result.state._context,
+            await this.#emitAgentEnd(
+              result.state,
               currentAgent,
-              currentStep.output,
-            );
-            currentAgent.emit(
-              'agent_end',
-              result.state._context,
               currentStep.output,
             );
             return;
@@ -1649,10 +1653,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         state: result.state,
         errorHandlers: options.errorHandlers,
         outputGuardrailDefs: this.outputGuardrailDefs,
-        emitAgentEnd: (context, agent, outputText) => {
-          this.emit('agent_end', context, agent, outputText);
-          agent.emit('agent_end', context, outputText);
-        },
+        emitAgentEnd: (_context, agent, outputText) =>
+          this.#emitAgentEnd(result.state, agent, outputText),
         streamResult: result,
       });
       if (handledResult) {

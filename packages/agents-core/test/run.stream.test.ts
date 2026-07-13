@@ -43,6 +43,10 @@ import type { GuardrailFunctionOutput } from '../src/guardrail';
 import { ServerConversationTracker } from '../src/runner/conversation';
 import logger from '../src/logger';
 import { getEventListeners } from 'node:events';
+import {
+  createTracingContextProbe,
+  withTestTracingProcessor,
+} from '../../../helpers/tests/tracing';
 
 function getFirstTextContent(item: AgentInputItem): string | undefined {
   if (item.type !== 'message') {
@@ -548,6 +552,7 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('emits agent_end lifecycle event for streaming agents', async () => {
+    const contextProbe = createTracingContextProbe('agent');
     class SimpleStreamingModel implements Model {
       constructor(private resp: ModelResponse) {}
       async getResponse(_req: ModelRequest): Promise<ModelResponse> {
@@ -582,25 +587,30 @@ describe('Runner.run (streaming)', () => {
     const agentEndEvents: Array<{ context: any; output: string }> = [];
     const runnerEndEvents: Array<{ context: any; agent: any; output: string }> =
       [];
+    const observedContext: Record<string, boolean> = {};
 
     agent.on('agent_end', (context, output) => {
       agentEndEvents.push({ context, output });
+      observedContext.agentEnd = contextProbe.isActive();
     });
 
     // Create a runner instance to listen for events
-    const runner = new Runner();
+    const runner = new Runner({ tracingDisabled: false });
     runner.on('agent_end', (context, agent, output) => {
       runnerEndEvents.push({ context, agent, output });
+      observedContext.runnerEnd = contextProbe.isActive();
     });
 
-    const result = await runner.run(agent, 'test input', { stream: true });
+    await withTestTracingProcessor(contextProbe.processor, async () => {
+      const result = await runner.run(agent, 'test input', { stream: true });
 
-    // Consume the stream
-    const events: RunStreamEvent[] = [];
-    for await (const e of result.toStream()) {
-      events.push(e);
-    }
-    await result.completed;
+      // Consume the stream
+      const events: RunStreamEvent[] = [];
+      for await (const e of result.toStream()) {
+        events.push(e);
+      }
+      await result.completed;
+    });
 
     // Verify agent_end was called on both agent and runner
     expect(agentEndEvents).toHaveLength(1);
@@ -609,6 +619,7 @@ describe('Runner.run (streaming)', () => {
     expect(runnerEndEvents).toHaveLength(1);
     expect(runnerEndEvents[0].agent).toBe(agent);
     expect(runnerEndEvents[0].output).toBe('Final output');
+    expect(observedContext).toEqual({ agentEnd: true, runnerEnd: true });
   });
 
   it('emits turn input on agent_start during streaming runs', async () => {
@@ -3047,8 +3058,7 @@ describe('Runner.run (streaming)', () => {
       .mockResolvedValue();
 
     let resolveGuardrail:
-      | ((value: GuardrailFunctionOutput) => void)
-      | undefined;
+      ((value: GuardrailFunctionOutput) => void) | undefined;
     const guardrail = {
       name: 'parallel-allow',
       execute: vi.fn(
