@@ -627,6 +627,76 @@ describe('OpenAIChatCompletionsModel', () => {
     ]);
   });
 
+  it('emits a refusal when content is an empty string', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [{ message: { content: '', refusal: 'no' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    const result = await withTrace('t', () => model.getResponse(req));
+
+    expect(result.output).toEqual([
+      {
+        id: 'r',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          { type: 'refusal', refusal: 'no', providerData: { content: '' } },
+        ],
+      },
+    ]);
+  });
+
+  it('emits audio when content is an empty string', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [
+        { message: { content: '', audio: { data: 'zzz', format: 'mp3' } } },
+      ],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    const result = await withTrace('t', () => model.getResponse(req));
+
+    expect(result.output).toEqual([
+      {
+        id: 'r',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          { type: 'audio', audio: 'zzz', providerData: { format: 'mp3' } },
+        ],
+      },
+    ]);
+  });
+
   it('handles reasoning messages from third-party providers', async () => {
     const client = new FakeClient();
     const response = {

@@ -138,8 +138,12 @@ export class OpenAIChatCompletionsModel implements Model {
       const hasContent =
         message.content !== undefined &&
         message.content !== null &&
-        // Azure OpenAI returns empty string instead of null for tool calls, causing parser rejection
-        !(message.tool_calls && message.content === '');
+        // Some providers (e.g. Azure) send an empty string instead of null, so an
+        // empty content must not preempt a tool call, refusal, or audio payload.
+        !(
+          (message.tool_calls || message.refusal || message.audio) &&
+          message.content === ''
+        );
 
       if (hasContent) {
         const { content, ...rest } = message;
