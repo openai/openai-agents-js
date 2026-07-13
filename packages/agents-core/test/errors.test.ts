@@ -3,6 +3,7 @@ import {
   InputGuardrailTripwireTriggered,
   MaxTurnsExceededError,
   ModelBehaviorError,
+  ModelRequestTimeoutError,
   ModelRefusalError,
   OutputGuardrailTripwireTriggered,
   UserError,
@@ -120,6 +121,14 @@ describe('errors', () => {
     expect(error.timeoutMs).toBe(1200);
     expect(error.message).toBe("Tool 'fetch' timed out after 1200ms.");
     expect(error.state).toEqual({ id: 'state' });
+  });
+
+  test('adds context to model request timeout errors', () => {
+    const error = new ModelRequestTimeoutError({ timeoutMs: 30_000 });
+
+    expect(error.timeoutMs).toBe(30_000);
+    expect(error.message).toBe('Model request timed out after 30000ms.');
+    expect(error.name).toBe('ModelRequestTimeoutError');
   });
 
   test('stores guardrail tripwire results', () => {

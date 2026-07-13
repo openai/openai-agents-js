@@ -150,6 +150,11 @@ export type ModelRetryNormalizedError = {
   isNetworkError: boolean;
 
   /**
+   * Whether the error was caused by a model request timeout.
+   */
+  isTimeout?: boolean;
+
+  /**
    * Whether the error was caused by an abort signal or abort exception.
    */
   isAbort: boolean;
@@ -310,6 +315,12 @@ export type ModelSettings = {
    * The maximum number of output tokens to generate.
    */
   maxTokens?: number;
+
+  /**
+   * Maximum duration in milliseconds for each model request attempt.
+   * Every runner-managed retry receives a fresh timeout.
+   */
+  requestTimeoutMs?: number;
 
   /**
    * Whether to store the generated model response for later retrieval.

@@ -12,6 +12,8 @@ import type {
 } from '../model';
 import type { StreamEvent } from '../types/protocol';
 import { RequestUsage, Usage } from '../usage';
+import { ModelRequestTimeoutError, UserError } from '../errors';
+import { combineAbortSignals } from '../utils/abortSignals';
 
 const DEFAULT_INITIAL_DELAY_MS = 250;
 const DEFAULT_MAX_DELAY_MS = 2_000;
@@ -19,6 +21,7 @@ const DEFAULT_BACKOFF_MULTIPLIER = 2;
 const DEFAULT_BACKOFF_JITTER = true;
 const RETRY_AFTER_MS_HEADER = 'retry-after-ms';
 const RETRY_AFTER_HEADER = 'retry-after';
+const MAX_REQUEST_TIMEOUT_MS = 2_147_483_647;
 
 type ResolvedRetryDecision = {
   retry: boolean;
@@ -47,6 +50,13 @@ type EvaluateRetryParams = {
   emittedVisibleEvent: boolean;
   emittedRawModelEvent: boolean;
   providerAdvice?: ModelRetryAdvice;
+};
+
+type ModelRequestAttempt = {
+  request: ModelRequest;
+  waitFor<T>(operation: () => PromiseLike<T>): Promise<T>;
+  normalizeError(error: unknown): unknown;
+  cleanup(): void;
 };
 
 function addFailedRetryAttemptsToUsage(
@@ -107,6 +117,97 @@ function shouldDisableProviderManagedRetry(
   }
 
   return attempt > 1;
+}
+
+function getRequestTimeoutMs(request: ModelRequest): number | undefined {
+  const timeoutMs = request.modelSettings.requestTimeoutMs;
+  if (timeoutMs === undefined) {
+    return undefined;
+  }
+
+  if (
+    typeof timeoutMs !== 'number' ||
+    !Number.isFinite(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > MAX_REQUEST_TIMEOUT_MS
+  ) {
+    throw new UserError(
+      `modelSettings.requestTimeoutMs must be a finite number greater than 0 and less than or equal to ${MAX_REQUEST_TIMEOUT_MS}.`,
+    );
+  }
+
+  return timeoutMs;
+}
+
+function createModelRequestAttempt(
+  request: ModelRequest,
+  timeoutMs: number | undefined,
+): ModelRequestAttempt {
+  if (timeoutMs === undefined) {
+    return {
+      request,
+      waitFor: async <T>(operation: () => PromiseLike<T>) => await operation(),
+      normalizeError: (error) => error,
+      cleanup: () => {},
+    };
+  }
+
+  const timeoutController = new AbortController();
+  const timeoutError = new ModelRequestTimeoutError({ timeoutMs });
+  const combined = combineAbortSignals(
+    request.signal,
+    timeoutController.signal,
+  );
+  const signal = combined.signal!;
+  let timedOut = false;
+
+  const timeout = setTimeout(() => {
+    if (signal.aborted) {
+      return;
+    }
+    timedOut = true;
+    timeoutController.abort(timeoutError);
+  }, timeoutMs);
+
+  return {
+    request: { ...request, signal },
+    waitFor: async <T>(operation: () => PromiseLike<T>) => {
+      let abortListener: (() => void) | undefined;
+      const abortPromise = new Promise<never>((_, reject) => {
+        const onAbort = () => {
+          try {
+            throwAbortError(signal);
+          } catch (error) {
+            reject(error);
+          }
+        };
+
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+
+        abortListener = onAbort;
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+
+      try {
+        return await Promise.race([
+          Promise.resolve().then(operation),
+          abortPromise,
+        ]);
+      } finally {
+        if (abortListener) {
+          signal.removeEventListener('abort', abortListener);
+        }
+      }
+    },
+    normalizeError: (error) => (timedOut ? timeoutError : error),
+    cleanup: () => {
+      clearTimeout(timeout);
+      combined.cleanup();
+    },
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -176,7 +277,34 @@ function isAbortLikeError(error: unknown): boolean {
   return cause ? isAbortLikeError(cause) : false;
 }
 
+function isTimeoutLikeError(error: unknown): boolean {
+  if (error instanceof ModelRequestTimeoutError) {
+    return true;
+  }
+
+  const name = getErrorName(error);
+  if (name === 'APIConnectionTimeoutError' || name === 'TimeoutError') {
+    return true;
+  }
+
+  const code = getErrorCode(error);
+  if (
+    code === 'ECONNABORTED' ||
+    code === 'ETIMEDOUT' ||
+    code === 'UND_ERR_CONNECT_TIMEOUT'
+  ) {
+    return true;
+  }
+
+  const cause = getNestedError(error);
+  return cause ? isTimeoutLikeError(cause) : false;
+}
+
 function isNetworkLikeError(error: unknown): boolean {
+  if (isTimeoutLikeError(error)) {
+    return true;
+  }
+
   const name = getErrorName(error);
   if (
     name === 'APIConnectionError' ||
@@ -328,6 +456,7 @@ function normalizeRetryError(
     retryAfterMs: getRetryAfterMs(headers),
     errorCode: getErrorCode(error),
     isNetworkError: isNetworkLikeError(error),
+    isTimeout: isTimeoutLikeError(error),
     isAbort: Boolean(signal?.aborted) || isAbortLikeError(error),
   };
 
@@ -574,6 +703,10 @@ export const retryPolicies = {
     return ({ normalized }) => normalized.isNetworkError;
   },
 
+  timeout(): RetryPolicy {
+    return ({ normalized }) => normalized.isTimeout === true;
+  },
+
   httpStatus(statuses: number[]): RetryPolicy {
     const allowed = new Set(statuses);
     return ({ normalized }) =>
@@ -661,6 +794,7 @@ export async function getResponseWithRetry(
   const maxRetries = request.modelSettings.retry?.maxRetries ?? 0;
   const retryPolicy = request.modelSettings.retry?.policy;
   const retryBackoff = request.modelSettings.retry?.backoff;
+  const requestTimeoutMs = getRequestTimeoutMs(request);
 
   let attempt = 1;
   const replayUnsafeRequest = isStatefulConversationRequest(request);
@@ -671,8 +805,15 @@ export async function getResponseWithRetry(
     )
       ? withRunnerManagedRetry(request)
       : request;
+    const modelRequestAttempt = createModelRequestAttempt(
+      requestForAttempt,
+      requestTimeoutMs,
+    );
+    let failure: unknown;
     try {
-      const response = await model.getResponse(requestForAttempt);
+      const response = await modelRequestAttempt.waitFor(() =>
+        model.getResponse(modelRequestAttempt.request),
+      );
       if (attempt === 1) {
         return response;
       }
@@ -681,33 +822,37 @@ export async function getResponseWithRetry(
         usage: addFailedRetryAttemptsToUsage(response.usage, attempt - 1),
       };
     } catch (error) {
-      const providerAdvice = await getRetryAdvice(model, {
-        request,
-        error,
-        stream: false,
-        attempt,
-      });
-      const decision = await evaluateRetry({
-        error,
-        attempt,
-        maxRetries,
-        retryPolicy,
-        retryBackoff,
-        signal: request.signal,
-        stream: false,
-        replayUnsafeRequest,
-        emittedVisibleEvent: false,
-        emittedRawModelEvent: false,
-        providerAdvice,
-      });
-
-      if (!decision.retry) {
-        throw error;
-      }
-
-      await waitForRetryDelay(request.signal, decision.delayMs ?? 0);
-      attempt += 1;
+      failure = modelRequestAttempt.normalizeError(error);
+    } finally {
+      modelRequestAttempt.cleanup();
     }
+
+    const providerAdvice = await getRetryAdvice(model, {
+      request,
+      error: failure,
+      stream: false,
+      attempt,
+    });
+    const decision = await evaluateRetry({
+      error: failure,
+      attempt,
+      maxRetries,
+      retryPolicy,
+      retryBackoff,
+      signal: request.signal,
+      stream: false,
+      replayUnsafeRequest,
+      emittedVisibleEvent: false,
+      emittedRawModelEvent: false,
+      providerAdvice,
+    });
+
+    if (!decision.retry) {
+      throw failure;
+    }
+
+    await waitForRetryDelay(request.signal, decision.delayMs ?? 0);
+    attempt += 1;
   }
 }
 
@@ -718,6 +863,7 @@ export async function* getStreamedResponseWithRetry(
   const maxRetries = request.modelSettings.retry?.maxRetries ?? 0;
   const retryPolicy = request.modelSettings.retry?.policy;
   const retryBackoff = request.modelSettings.retry?.backoff;
+  const requestTimeoutMs = getRequestTimeoutMs(request);
 
   let attempt = 1;
   const replayUnsafeRequest = isStatefulConversationRequest(request);
@@ -730,8 +876,28 @@ export async function* getStreamedResponseWithRetry(
     )
       ? withRunnerManagedRetry(request)
       : request;
+    const modelRequestAttempt = createModelRequestAttempt(
+      requestForAttempt,
+      requestTimeoutMs,
+    );
+    let failed = false;
+    let failure: unknown;
+    let iterator: AsyncIterator<StreamEvent> | undefined;
+    let iteratorCompleted = false;
     try {
-      for await (const event of model.getStreamedResponse(requestForAttempt)) {
+      const modelIterator = model
+        .getStreamedResponse(modelRequestAttempt.request)
+        [Symbol.asyncIterator]();
+      iterator = modelIterator;
+      while (true) {
+        const next = await modelRequestAttempt.waitFor(() =>
+          modelIterator.next(),
+        );
+        if (next.done) {
+          iteratorCompleted = true;
+          return;
+        }
+        const event = next.value;
         if (event.type === 'model') {
           emittedRawModelEvent = true;
         }
@@ -751,34 +917,41 @@ export async function* getStreamedResponseWithRetry(
         }
         yield event;
       }
-      return;
     } catch (error) {
-      const providerAdvice = await getRetryAdvice(model, {
-        request,
-        error,
-        stream: true,
-        attempt,
-      });
-      const decision = await evaluateRetry({
-        error,
-        attempt,
-        maxRetries,
-        retryPolicy,
-        retryBackoff,
-        signal: request.signal,
-        stream: true,
-        replayUnsafeRequest,
-        emittedVisibleEvent,
-        emittedRawModelEvent,
-        providerAdvice,
-      });
-
-      if (!decision.retry) {
-        throw error;
+      failed = true;
+      failure = modelRequestAttempt.normalizeError(error);
+    } finally {
+      modelRequestAttempt.cleanup();
+      if (!failed && !iteratorCompleted && iterator?.return) {
+        await iterator.return();
       }
-
-      await waitForRetryDelay(request.signal, decision.delayMs ?? 0);
-      attempt += 1;
     }
+
+    const providerAdvice = await getRetryAdvice(model, {
+      request,
+      error: failure,
+      stream: true,
+      attempt,
+    });
+    const decision = await evaluateRetry({
+      error: failure,
+      attempt,
+      maxRetries,
+      retryPolicy,
+      retryBackoff,
+      signal: request.signal,
+      stream: true,
+      replayUnsafeRequest,
+      emittedVisibleEvent,
+      emittedRawModelEvent,
+      providerAdvice,
+    });
+
+    if (!decision.retry) {
+      throw failure;
+    }
+
+    await waitForRetryDelay(request.signal, decision.delayMs ?? 0);
+    attempt += 1;
   }
 }
