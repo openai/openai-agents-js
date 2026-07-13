@@ -71,6 +71,7 @@ import { Usage } from '../src/usage';
 import * as protocol from '../src/types/protocol';
 import { setDefaultModelProvider } from '../src/providers';
 import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../src/shims/shims-browser';
+import { supportsProcessLifecycleEvents as workerdSupportsProcessLifecycleEvents } from '../src/shims/shims-workerd';
 
 const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
 
@@ -436,6 +437,45 @@ describe('Trace & Span lifecycle', () => {
 
     onceSpy.mockRestore();
     onSpy.mockRestore();
+  });
+
+  it('does not register process cleanup listeners in workerd', async () => {
+    const onceSpy = vi.spyOn(process, 'once');
+    const onSpy = vi.spyOn(process, 'on');
+
+    vi.resetModules();
+    vi.doMock('@openai/agents-core/_shims', async () => {
+      const actual = await vi.importActual('@openai/agents-core/_shims');
+      return {
+        ...(actual as Record<string, unknown>),
+        supportsProcessLifecycleEvents: workerdSupportsProcessLifecycleEvents,
+      };
+    });
+
+    try {
+      const { TraceProvider: WorkerdTraceProvider } =
+        await import('../src/tracing/provider');
+      new WorkerdTraceProvider();
+
+      expect(workerdSupportsProcessLifecycleEvents()).toBe(false);
+      expect(onceSpy).not.toHaveBeenCalledWith(
+        'beforeExit',
+        expect.any(Function),
+      );
+      expect(
+        onSpy.mock.calls.filter(
+          ([event]) =>
+            event === 'SIGINT' ||
+            event === 'SIGTERM' ||
+            event === 'unhandledRejection',
+        ),
+      ).toEqual([]);
+    } finally {
+      onceSpy.mockRestore();
+      onSpy.mockRestore();
+      vi.resetModules();
+      vi.unmock('@openai/agents-core/_shims');
+    }
   });
 
   it('does not force exit when beforeExit tracing cleanup times out', async () => {

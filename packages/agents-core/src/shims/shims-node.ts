@@ -17,6 +17,10 @@ export function isTracingLoopRunningByDefault(): boolean {
   return true;
 }
 
+export function supportsProcessLifecycleEvents(): boolean {
+  return true;
+}
+
 export {
   NodeMCPServerStdio as MCPServerStdio,
   NodeMCPServerStreamableHttp as MCPServerStreamableHttp,
