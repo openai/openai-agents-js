@@ -1243,6 +1243,81 @@ describe('retry policies', () => {
     }
   });
 
+  it('closes a timed-out streaming iterator before retrying', async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    let firstIteratorClosed = false;
+    let retryStartedAfterClose = false;
+    const firstIterator = {
+      next: vi.fn(
+        async () =>
+          await new Promise<IteratorResult<StreamEvent>>(() => {
+            // Intentionally ignores the aborted request signal. The runner
+            // must close this iterator explicitly before starting a retry.
+          }),
+      ),
+      return: vi.fn(async () => {
+        firstIteratorClosed = true;
+        return { done: true as const, value: undefined };
+      }),
+    };
+
+    try {
+      const model: Model = {
+        async getResponse() {
+          throw new Error('not used');
+        },
+        getStreamedResponse(): AsyncIterable<StreamEvent> {
+          attempts += 1;
+          if (attempts === 1) {
+            return {
+              [Symbol.asyncIterator]: () => firstIterator,
+            };
+          }
+
+          retryStartedAfterClose = firstIteratorClosed;
+          return {
+            async *[Symbol.asyncIterator]() {
+              yield { type: 'response_started' } as const;
+              yield createDoneEvent('Streaming timeout recovered');
+            },
+          };
+        },
+      };
+
+      const result = await run(
+        new Agent({
+          name: 'StreamingTimeoutIteratorCleanupAgent',
+          model,
+          modelSettings: {
+            requestTimeoutMs: 25,
+            retry: {
+              maxRetries: 1,
+              backoff: { initialDelayMs: 0, jitter: false },
+              policy: retryPolicies.timeout(),
+            },
+          },
+        }),
+        'hello',
+        { stream: true },
+      );
+      const consumePromise = (async () => {
+        for await (const _event of result) {
+          // Consume the stream to completion.
+        }
+      })();
+
+      await vi.advanceTimersByTimeAsync(25);
+      await consumePromise;
+
+      expect(firstIterator.return).toHaveBeenCalledOnce();
+      expect(retryStartedAfterClose).toBe(true);
+      expect(result.finalOutput).toBe('Streaming timeout recovered');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not retry a streaming timeout after an event is emitted', async () => {
     vi.useFakeTimers();
     let attempts = 0;

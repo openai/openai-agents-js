@@ -952,7 +952,11 @@ export async function* getStreamedResponseWithRetry(
       failure = modelRequestAttempt.normalizeError(error);
     } finally {
       modelRequestAttempt.cleanup();
-      if (!failed && !iteratorCompleted && iterator?.return) {
+      if (
+        (!failed || failure instanceof ModelRequestTimeoutError) &&
+        !iteratorCompleted &&
+        iterator?.return
+      ) {
         await iterator.return();
       }
     }
