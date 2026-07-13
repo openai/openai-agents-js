@@ -1038,6 +1038,33 @@ describe('Runner.run', () => {
       });
     });
 
+    it('activates agent span context for error handlers', async () => {
+      const contextProbe = createTracingContextProbe('agent');
+      let errorHandlerContextActive = false;
+      const agent = new Agent({
+        name: 'ErrorContextAgent',
+        model: new FakeModel([
+          {
+            output: [fakeModelRefusal('Cannot continue')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      await withTestTracingProcessor(contextProbe.processor, async () => {
+        await new Runner({ tracingDisabled: false }).run(agent, 'hello', {
+          errorHandlers: {
+            modelRefusal: () => {
+              errorHandlerContextActive = contextProbe.isActive();
+              return { finalOutput: 'fallback' };
+            },
+          },
+        });
+      });
+
+      expect(errorHandlerContextActive).toBe(true);
+    });
+
     it('applies toolChoice updates from agent_tool_end before the next model call', async () => {
       class ToolChoiceTrackingModel implements Model {
         requests: ModelRequest[] = [];

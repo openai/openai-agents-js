@@ -4,7 +4,7 @@ import { Handoff } from '../handoff';
 import { RunState } from '../runState';
 import { ComputerTool, Tool, resolveComputer } from '../tool';
 import { serializeHandoff, serializeTool } from '../utils/serialize';
-import { ensureAgentSpan } from './tracing';
+import { ensureAgentSpan, withAgentSpanContext } from './tracing';
 import { validateClientToolSearchSupport } from './toolSearch';
 import { AgentArtifacts } from './types';
 
@@ -84,9 +84,7 @@ export async function prepareAgentArtifacts<
     };
   };
 
-  return state._currentAgentSpan
-    ? state._currentAgentSpan.withContext(prepare)
-    : prepare();
+  return withAgentSpanContext(state, prepare);
 }
 
 async function collectAgentCapabilities<TContext>(

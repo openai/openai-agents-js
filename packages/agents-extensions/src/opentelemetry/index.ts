@@ -1,5 +1,6 @@
 import {
   context,
+  diag,
   ROOT_CONTEXT,
   SpanKind,
   SpanStatusCode,
@@ -235,10 +236,28 @@ function shouldSuppressInstrumentation(
   spanData: SpanData,
   policy: OpenTelemetryTracingProcessorOptions['suppressInstrumentation'],
 ): boolean {
-  if (typeof policy === 'function') return policy(spanData);
+  if (typeof policy === 'function') {
+    try {
+      return policy(spanData);
+    } catch (error) {
+      diag.error('OpenTelemetry suppression policy failed', error);
+      return false;
+    }
+  }
   if (typeof policy === 'boolean') return policy;
   return spanData.type === 'response' || spanData.type === 'generation';
 }
+
+type OpenTelemetrySpanState = {
+  agentSpan: Span<any>;
+  otelSpan: OtelSpan;
+  suppressInstrumentation: boolean;
+};
+
+type OpenTelemetryTraceState = {
+  root: OtelSpan;
+  spans: Map<string, OpenTelemetrySpanState>;
+};
 
 /**
  * Mirrors Agents SDK traces to OpenTelemetry. Add it with `addTraceProcessor()`.
@@ -250,10 +269,7 @@ function shouldSuppressInstrumentation(
 export class OpenTelemetryTracingProcessor implements TracingProcessor {
   readonly #tracer: Tracer;
   readonly #options: OpenTelemetryTracingProcessorOptions;
-  readonly #traces = new Map<string, OtelSpan>();
-  readonly #spans = new Map<string, OtelSpan>();
-  readonly #agentSpans = new Map<string, Span<any>>();
-  readonly #spanTraceIds = new Map<string, string>();
+  readonly #traces = new Map<string, OpenTelemetryTraceState>();
 
   constructor(options: OpenTelemetryTracingProcessorOptions = {}) {
     this.#tracer = options.tracer ?? trace.getTracer('@openai/agents');
@@ -267,93 +283,93 @@ export class OpenTelemetryTracingProcessor implements TracingProcessor {
     };
     if (agentTrace.groupId)
       attributes['openai.agents.group.id'] = agentTrace.groupId;
-    this.#traces.set(
-      agentTrace.traceId,
-      this.#tracer.startSpan(agentTrace.name, {
+    this.#traces.set(agentTrace.traceId, {
+      root: this.#tracer.startSpan(agentTrace.name, {
         kind: SpanKind.INTERNAL,
         attributes,
       }),
-    );
+      spans: new Map(),
+    });
   }
 
   async onTraceEnd(agentTrace: Trace): Promise<void> {
-    for (const [spanId, traceId] of this.#spanTraceIds) {
-      if (traceId !== agentTrace.traceId) continue;
-      const agentSpan = this.#agentSpans.get(spanId);
-      if (agentSpan) {
-        this.#finishSpan(agentSpan);
-      } else {
-        this.#spans.get(spanId)?.end();
-        this.#deleteSpan(spanId);
-      }
+    const traceState = this.#traces.get(agentTrace.traceId);
+    if (!traceState) return;
+    for (const spanState of [...traceState.spans.values()]) {
+      this.#finishSpan(traceState, spanState.agentSpan);
     }
-    this.#traces.get(agentTrace.traceId)?.end();
+    traceState.root.end();
     this.#traces.delete(agentTrace.traceId);
   }
 
   async onSpanStart(agentSpan: Span<any>): Promise<void> {
+    this.#ensureSpan(agentSpan);
+  }
+
+  #ensureSpan(agentSpan: Span<any>): OpenTelemetrySpanState | undefined {
+    const traceState = this.#traces.get(agentSpan.traceId);
+    if (!traceState) return undefined;
+    const existing = traceState.spans.get(agentSpan.spanId);
+    if (existing) return existing;
+
     const descriptor = describeSpan(agentSpan.spanData, this.#options);
-    const traceRoot = this.#traces.get(agentSpan.traceId);
     const parent = agentSpan.parentId
-      ? (this.#spans.get(agentSpan.parentId) ?? traceRoot)
-      : traceRoot;
-    const parentContext = parent
-      ? trace.setSpan(ROOT_CONTEXT, parent)
-      : ROOT_CONTEXT;
-    this.#spans.set(
-      agentSpan.spanId,
-      this.#tracer.startSpan(
+      ? (traceState.spans.get(agentSpan.parentId)?.otelSpan ?? traceState.root)
+      : traceState.root;
+    const spanState: OpenTelemetrySpanState = {
+      agentSpan,
+      otelSpan: this.#tracer.startSpan(
         descriptor.name,
         {
           kind: SpanKind.INTERNAL,
           attributes: attributesForSpan(agentSpan, descriptor),
           startTime: timestamp(agentSpan.startedAt),
         },
-        parentContext,
+        trace.setSpan(ROOT_CONTEXT, parent),
       ),
-    );
-    this.#agentSpans.set(agentSpan.spanId, agentSpan);
-    this.#spanTraceIds.set(agentSpan.spanId, agentSpan.traceId);
+      suppressInstrumentation: shouldSuppressInstrumentation(
+        agentSpan.spanData,
+        this.#options.suppressInstrumentation,
+      ),
+    };
+    traceState.spans.set(agentSpan.spanId, spanState);
+    return spanState;
   }
 
   async onSpanEnd(agentSpan: Span<any>): Promise<void> {
-    this.#finishSpan(agentSpan);
+    const traceState = this.#traces.get(agentSpan.traceId);
+    if (traceState) this.#finishSpan(traceState, agentSpan);
   }
 
-  #finishSpan(agentSpan: Span<any>): void {
-    const otelSpan = this.#spans.get(agentSpan.spanId);
-    if (!otelSpan) return;
+  #finishSpan(traceState: OpenTelemetryTraceState, agentSpan: Span<any>): void {
+    const spanState = traceState.spans.get(agentSpan.spanId);
+    if (!spanState) return;
     const descriptor = describeSpan(agentSpan.spanData, this.#options);
-    otelSpan.updateName(descriptor.name);
-    otelSpan.setAttributes(attributesForSpan(agentSpan, descriptor));
+    spanState.otelSpan.updateName(descriptor.name);
+    spanState.otelSpan.setAttributes(attributesForSpan(agentSpan, descriptor));
     if (agentSpan.error) {
-      otelSpan.recordException(agentSpan.error.message);
-      otelSpan.setStatus({
+      spanState.otelSpan.recordException(agentSpan.error.message);
+      spanState.otelSpan.setStatus({
         code: SpanStatusCode.ERROR,
         message: agentSpan.error.message,
       });
     }
-    otelSpan.end(timestamp(agentSpan.endedAt));
-    this.#deleteSpan(agentSpan.spanId);
-  }
-
-  #deleteSpan(spanId: string): void {
-    this.#spans.delete(spanId);
-    this.#agentSpans.delete(spanId);
-    this.#spanTraceIds.delete(spanId);
+    spanState.otelSpan.end(timestamp(agentSpan.endedAt));
+    traceState.spans.delete(agentSpan.spanId);
   }
 
   async withSpan<T>(agentSpan: Span<any>, fn: () => Promise<T>): Promise<T> {
-    const otelSpan = this.#spans.get(agentSpan.spanId);
-    if (!otelSpan) return fn();
-    let activeContext: Context = trace.setSpan(context.active(), otelSpan);
-    if (
-      shouldSuppressInstrumentation(
-        agentSpan.spanData,
-        this.#options.suppressInstrumentation,
-      )
-    ) {
-      activeContext = suppressTracing(activeContext);
+    let activeContext: Context;
+    try {
+      const spanState = this.#ensureSpan(agentSpan);
+      if (!spanState) return fn();
+      activeContext = trace.setSpan(context.active(), spanState.otelSpan);
+      if (spanState.suppressInstrumentation) {
+        activeContext = suppressTracing(activeContext);
+      }
+    } catch (error) {
+      diag.error('OpenTelemetry span context setup failed', error);
+      return fn();
     }
     return context.with(activeContext, fn);
   }

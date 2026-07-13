@@ -1,5 +1,6 @@
 import { Agent } from '../agent';
 import { Handoff } from '../handoff';
+import { RunState } from '../runState';
 import { ModelTracing } from '../model';
 import { Tool } from '../tool';
 import { setCurrentSpan } from '../tracing/context';
@@ -132,4 +133,18 @@ export function ensureAgentSpan<TContext>(
   span.start();
   setCurrentSpan(span);
   return span;
+}
+
+/** Runs work inside the current agent span when one exists. */
+export function withAgentSpanContext<
+  TContext,
+  TAgent extends Agent<TContext, any>,
+  TResult,
+>(
+  state: RunState<TContext, TAgent>,
+  fn: () => Promise<TResult>,
+): Promise<TResult> {
+  return state._currentAgentSpan
+    ? state._currentAgentSpan.withContext(fn)
+    : fn();
 }

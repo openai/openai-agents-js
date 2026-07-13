@@ -15,7 +15,7 @@ import {
   splitInputGuardrails,
 } from './guardrails';
 import { prepareModelInputItems } from './items';
-import { ensureAgentSpan } from './tracing';
+import { ensureAgentSpan, withAgentSpanContext } from './tracing';
 import { getToolCallOutputItem } from './toolExecution';
 import type { ProcessedResponse } from './types';
 
@@ -95,7 +95,7 @@ export async function prepareTurn<
   });
   state.setCurrentAgentSpan(agentSpan);
 
-  return agentSpan.withContext(async () => {
+  return withAgentSpanContext(state, async () => {
     const { parallelGuardrailPromise } = await runInputGuardrailsForTurn(
       state,
       inputGuardrailDefs,

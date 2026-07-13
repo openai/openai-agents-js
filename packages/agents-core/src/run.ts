@@ -79,7 +79,11 @@ import {
   handleInterruptedOutcome,
   resumeInterruptedTurn,
 } from './runner/runLoop';
-import { applyTraceOverrides, getTracing } from './runner/tracing';
+import {
+  applyTraceOverrides,
+  getTracing,
+  withAgentSpanContext,
+} from './runner/tracing';
 import type { ReasoningItemIdPolicy } from './runner/items';
 import type {
   AgentArtifacts,
@@ -431,11 +435,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       this.emit('agent_end', state._context, agent, outputText);
       agent.emit('agent_end', state._context, outputText);
     };
-    if (state._currentAgentSpan) {
-      await state._currentAgentSpan.withContext(emit);
-    } else {
-      await emit();
-    }
+    await withAgentSpanContext(state, emit);
   }
 
   /**
@@ -1820,105 +1820,91 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => void,
-    agentContextActive: boolean = false,
   ): Promise<PreparedModelCall<TContext>> {
-    if (!agentContextActive && state._currentAgentSpan) {
-      return state._currentAgentSpan.withContext(() =>
-        this.#prepareModelCall(
-          state,
-          executionAgent,
-          options,
-          artifacts,
-          turnInput,
-          serverConversationTracker,
-          sessionInputUpdate,
-          true,
-        ),
+    return withAgentSpanContext(state, async () => {
+      const { model, explicitlyModelSet, resolvedModelName } =
+        await this.#resolveModelForAgent(executionAgent);
+
+      const hasExplicitAgentModelSettings =
+        executionAgent.hasExplicitModelSettings();
+      const agentModelSettings = hasExplicitAgentModelSettings
+        ? executionAgent.modelSettings
+        : undefined;
+      const implicitModelSettings = hasExplicitAgentModelSettings
+        ? undefined
+        : getImplicitModelSettingsForResolvedModel(
+            explicitlyModelSet,
+            resolvedModelName,
+          );
+      const modelRequestInternal = {
+        reasoningEffortImplicit:
+          implicitModelSettings?.reasoning?.effort !== undefined &&
+          !hasExplicitTopLevelReasoningEffort(this.config.modelSettings) &&
+          !hasExplicitTopLevelReasoningEffort(agentModelSettings),
+      };
+
+      let modelSettings = mergeModelSettings(
+        implicitModelSettings,
+        this.config.modelSettings,
       );
-    }
-
-    const { model, explicitlyModelSet, resolvedModelName } =
-      await this.#resolveModelForAgent(executionAgent);
-
-    const hasExplicitAgentModelSettings =
-      executionAgent.hasExplicitModelSettings();
-    const agentModelSettings = hasExplicitAgentModelSettings
-      ? executionAgent.modelSettings
-      : undefined;
-    const implicitModelSettings = hasExplicitAgentModelSettings
-      ? undefined
-      : getImplicitModelSettingsForResolvedModel(
-          explicitlyModelSet,
-          resolvedModelName,
-        );
-    const modelRequestInternal = {
-      reasoningEffortImplicit:
-        implicitModelSettings?.reasoning?.effort !== undefined &&
-        !hasExplicitTopLevelReasoningEffort(this.config.modelSettings) &&
-        !hasExplicitTopLevelReasoningEffort(agentModelSettings),
-    };
-
-    let modelSettings = mergeModelSettings(
-      implicitModelSettings,
-      this.config.modelSettings,
-    );
-    modelSettings = mergeModelSettings(modelSettings, agentModelSettings);
-    modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
-      explicitlyModelSet,
-      agentModelSettings ?? implicitModelSettings ?? {},
-      model,
-      modelSettings,
-      resolvedModelName,
-    );
-    modelSettings = maybeResetToolChoice(
-      state._currentAgent,
-      state._toolUseTracker,
-      modelSettings,
-    );
-    state._lastModelSettings = modelSettings;
-
-    const systemInstructions = await executionAgent.getSystemPrompt(
-      state._context,
-    );
-    const prompt = await executionAgent.getPrompt(state._context);
-
-    const { modelInput, sourceItems, persistedItems, filterApplied } =
-      await applyCallModelInputFilter(
+      modelSettings = mergeModelSettings(modelSettings, agentModelSettings);
+      modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
+        explicitlyModelSet,
+        agentModelSettings ?? implicitModelSettings ?? {},
+        model,
+        modelSettings,
+        resolvedModelName,
+      );
+      modelSettings = maybeResetToolChoice(
         state._currentAgent,
-        options.callModelInputFilter,
+        state._toolUseTracker,
+        modelSettings,
+      );
+      state._lastModelSettings = modelSettings;
+
+      const systemInstructions = await executionAgent.getSystemPrompt(
         state._context,
-        turnInput,
-        systemInstructions,
+      );
+      const prompt = await executionAgent.getPrompt(state._context);
+
+      const { modelInput, sourceItems, persistedItems, filterApplied } =
+        await applyCallModelInputFilter(
+          state._currentAgent,
+          options.callModelInputFilter,
+          state._context,
+          turnInput,
+          systemInstructions,
+        );
+
+      // Provide filtered clones whenever filters run so session history mirrors the model payload.
+      // Returning an empty array is intentional: it tells the session layer to persist "nothing"
+      // instead of falling back to the unfiltered originals when the filter redacts everything.
+      sessionInputUpdate?.(
+        sourceItems,
+        filterApplied ? persistedItems : undefined,
       );
 
-    // Provide filtered clones whenever filters run so session history mirrors the model payload.
-    // Returning an empty array is intentional: it tells the session layer to persist "nothing"
-    // instead of falling back to the unfiltered originals when the filter redacts everything.
-    sessionInputUpdate?.(
-      sourceItems,
-      filterApplied ? persistedItems : undefined,
-    );
+      const previousResponseId =
+        serverConversationTracker?.previousResponseId ??
+        options.previousResponseId;
+      const conversationId =
+        serverConversationTracker?.conversationId ?? options.conversationId;
 
-    const previousResponseId =
-      serverConversationTracker?.previousResponseId ??
-      options.previousResponseId;
-    const conversationId =
-      serverConversationTracker?.conversationId ?? options.conversationId;
-
-    return {
-      ...artifacts,
-      model,
-      explicitlyModelSet,
-      modelRequestInternal,
-      modelSettings,
-      modelInput,
-      prompt,
-      previousResponseId,
-      conversationId,
-      sourceItems,
-      filterApplied,
-      turnInput,
-    };
+      return {
+        ...artifacts,
+        model,
+        explicitlyModelSet,
+        modelRequestInternal,
+        modelSettings,
+        modelInput,
+        prompt,
+        previousResponseId,
+        conversationId,
+        sourceItems,
+        filterApplied,
+        turnInput,
+      };
+    });
   }
 }
 

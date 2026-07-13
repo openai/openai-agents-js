@@ -1,5 +1,6 @@
 import {
   context,
+  diag,
   trace,
   type Span as OtelSpan,
   type Tracer,
@@ -55,6 +56,17 @@ function createAgentSpan(
     error: options.error ?? null,
     spanData,
   } as unknown as Span;
+}
+
+async function startTestTrace(
+  processor: OpenTelemetryTracingProcessor,
+  traceId: string = 'trace_123',
+): Promise<void> {
+  await processor.onTraceStart({
+    traceId,
+    name: `Trace ${traceId}`,
+    groupId: null,
+  } as Trace);
 }
 
 describe('OpenTelemetryTracingProcessor', () => {
@@ -179,6 +191,7 @@ describe('OpenTelemetryTracingProcessor', () => {
     const processor = new OpenTelemetryTracingProcessor({ tracer });
     const agentSpan = createAgentSpan({ type: 'response' });
 
+    await startTestTrace(processor);
     await processor.onSpanStart(agentSpan);
     const withSpy = vi.spyOn(context, 'with');
     await processor.withSpan(agentSpan, async () => undefined);
@@ -205,6 +218,7 @@ describe('OpenTelemetryTracingProcessor', () => {
       name: 'fetch_page',
     });
 
+    await startTestTrace(processor);
     await processor.onSpanStart(agentSpan);
     const withSpy = vi.spyOn(context, 'with');
     await processor.withSpan(agentSpan, async () => undefined);
@@ -229,6 +243,7 @@ describe('OpenTelemetryTracingProcessor', () => {
       usage: { input_tokens: 12, output_tokens: 4 },
     });
 
+    await startTestTrace(processor);
     await processor.onSpanStart(agentSpan);
 
     expect(tracer.startSpan).toHaveBeenCalledWith(
@@ -260,6 +275,7 @@ describe('OpenTelemetryTracingProcessor', () => {
       _response: { output: [{ type: 'message', content: 'No findings.' }] },
     });
 
+    await startTestTrace(processor);
     await processor.onSpanStart(agentSpan);
 
     expect(tracer.startSpan).toHaveBeenCalledWith(
@@ -336,6 +352,7 @@ describe('OpenTelemetryTracingProcessor', () => {
         }) as unknown as Span,
     );
 
+    await startTestTrace(processor);
     for (const span of spans) await processor.onSpanStart(span);
 
     const attributes = startSpan.mock.calls.map((call) => call[1]?.attributes);
@@ -404,6 +421,7 @@ describe('OpenTelemetryTracingProcessor', () => {
       spanData: { type: 'custom', name: 'arbitrary', data },
     } as unknown as Span;
 
+    await startTestTrace(processor);
     await expect(processor.onSpanStart(agentSpan)).resolves.toBeUndefined();
     expect(tracer.startSpan).toHaveBeenCalledWith(
       'custom arbitrary',
@@ -423,6 +441,133 @@ describe('OpenTelemetryTracingProcessor', () => {
     });
     await expect(processor.onSpanEnd(agentSpan)).resolves.toBeUndefined();
     expect(otelSpan.end).toHaveBeenCalled();
+  });
+
+  test('isolates equal span IDs in different traces', async () => {
+    const rootA = createOtelSpan();
+    const rootB = createOtelSpan();
+    const spanA = createOtelSpan();
+    const spanB = createOtelSpan();
+    const tracer = {
+      startSpan: vi
+        .fn()
+        .mockReturnValueOnce(rootA)
+        .mockReturnValueOnce(rootB)
+        .mockReturnValueOnce(spanA)
+        .mockReturnValueOnce(spanB),
+    } as unknown as Tracer;
+    const processor = new OpenTelemetryTracingProcessor({ tracer });
+    const agentSpanA = createAgentSpan(
+      { type: 'agent', name: 'Agent A' },
+      { traceId: 'trace_a', spanId: 'shared_span_id' },
+    );
+    const agentSpanB = createAgentSpan(
+      { type: 'agent', name: 'Agent B' },
+      { traceId: 'trace_b', spanId: 'shared_span_id' },
+    );
+
+    await startTestTrace(processor, 'trace_a');
+    await startTestTrace(processor, 'trace_b');
+    await processor.onSpanStart(agentSpanA);
+    await processor.onSpanStart(agentSpanB);
+    await processor.onSpanEnd(agentSpanA);
+    await processor.onSpanEnd(agentSpanB);
+    await processor.onTraceEnd({ traceId: 'trace_a' } as Trace);
+    await processor.onTraceEnd({ traceId: 'trace_b' } as Trace);
+
+    expect(spanA.end).toHaveBeenCalledOnce();
+    expect(spanB.end).toHaveBeenCalledOnce();
+    expect(rootA.end).toHaveBeenCalledOnce();
+    expect(rootB.end).toHaveBeenCalledOnce();
+  });
+
+  test('evaluates custom suppression policy once per span', async () => {
+    const root = createOtelSpan();
+    const otelSpan = createOtelSpan();
+    const tracer = {
+      startSpan: vi
+        .fn()
+        .mockReturnValueOnce(root)
+        .mockReturnValueOnce(otelSpan),
+    } as unknown as Tracer;
+    const suppressInstrumentation = vi.fn(() => true);
+    const processor = new OpenTelemetryTracingProcessor({
+      tracer,
+      suppressInstrumentation,
+    });
+    const agentSpan = createAgentSpan({ type: 'response' });
+
+    await startTestTrace(processor);
+    await processor.onSpanStart(agentSpan);
+    await processor.withSpan(agentSpan, async () => undefined);
+    await processor.withSpan(agentSpan, async () => undefined);
+    await processor.withSpan(agentSpan, async () => undefined);
+
+    expect(suppressInstrumentation).toHaveBeenCalledOnce();
+  });
+
+  test('does not let suppression policy failures affect traced work', async () => {
+    const root = createOtelSpan();
+    const otelSpan = createOtelSpan();
+    const tracer = {
+      startSpan: vi
+        .fn()
+        .mockReturnValueOnce(root)
+        .mockReturnValueOnce(otelSpan),
+    } as unknown as Tracer;
+    const policyError = new Error('policy failed');
+    const suppressInstrumentation = vi.fn(() => {
+      throw policyError;
+    });
+    const diagnostic = vi.spyOn(diag, 'error').mockImplementation(() => {
+      // Expected policy failure.
+    });
+    const processor = new OpenTelemetryTracingProcessor({
+      tracer,
+      suppressInstrumentation,
+    });
+    const agentSpan = createAgentSpan({ type: 'response' });
+    const work = vi.fn(async () => 'result');
+
+    await startTestTrace(processor);
+    await expect(processor.onSpanStart(agentSpan)).resolves.toBeUndefined();
+    await expect(processor.withSpan(agentSpan, work)).resolves.toBe('result');
+
+    expect(work).toHaveBeenCalledOnce();
+    expect(diagnostic).toHaveBeenCalledWith(
+      'OpenTelemetry suppression policy failed',
+      policyError,
+    );
+    diagnostic.mockRestore();
+  });
+
+  test('does not let span context setup failures affect traced work', async () => {
+    const root = createOtelSpan();
+    const setupError = new Error('span setup failed');
+    const tracer = {
+      startSpan: vi
+        .fn()
+        .mockReturnValueOnce(root)
+        .mockImplementation(() => {
+          throw setupError;
+        }),
+    } as unknown as Tracer;
+    const diagnostic = vi.spyOn(diag, 'error').mockImplementation(() => {
+      // Expected setup failure.
+    });
+    const processor = new OpenTelemetryTracingProcessor({ tracer });
+    const agentSpan = createAgentSpan({ type: 'response' });
+    const work = vi.fn(async () => 'result');
+
+    await startTestTrace(processor);
+    await expect(processor.withSpan(agentSpan, work)).resolves.toBe('result');
+
+    expect(work).toHaveBeenCalledOnce();
+    expect(diagnostic).toHaveBeenCalledWith(
+      'OpenTelemetry span context setup failed',
+      setupError,
+    );
+    diagnostic.mockRestore();
   });
 
   test('exports a real OTel hierarchy and preserves tool instrumentation', async () => {

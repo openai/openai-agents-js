@@ -52,8 +52,9 @@ export interface TracingProcessor {
 
   /**
    * Runs work while this processor's representation of the span is active.
-   * This hook runs after onSpanStart has completed. Processors that do not
-   * manage an execution context can omit it.
+   * Async onSpanStart work may still be pending, so context-managing processors
+   * must initialize any required span representation idempotently in this hook.
+   * Processors that do not manage an execution context can omit it.
    */
   withSpan?<T>(span: Span, fn: () => Promise<T>): Promise<T>;
 
@@ -338,6 +339,19 @@ export class BatchTraceProcessor implements TracingProcessor {
 export class MultiTracingProcessor implements TracingProcessor {
   #processors: TracingProcessor[] = [];
 
+  async #runLifecycle(
+    name: string,
+    operation: (processor: TracingProcessor) => Promise<void>,
+  ): Promise<void> {
+    for (const processor of this.#processors) {
+      try {
+        await operation(processor);
+      } catch (error) {
+        logger.error(`Tracing processor failed during ${name}`, error);
+      }
+    }
+  }
+
   start(): void {
     for (const processor of this.#processors) {
       if (processor.start) {
@@ -359,27 +373,27 @@ export class MultiTracingProcessor implements TracingProcessor {
   }
 
   async onTraceStart(trace: Trace): Promise<void> {
-    for (const processor of this.#processors) {
-      await processor.onTraceStart(trace);
-    }
+    await this.#runLifecycle('trace start', (processor) =>
+      processor.onTraceStart(trace),
+    );
   }
 
   async onTraceEnd(trace: Trace): Promise<void> {
-    for (const processor of this.#processors) {
-      await processor.onTraceEnd(trace);
-    }
+    await this.#runLifecycle('trace end', (processor) =>
+      processor.onTraceEnd(trace),
+    );
   }
 
   async onSpanStart(span: Span): Promise<void> {
-    for (const processor of this.#processors) {
-      await processor.onSpanStart(span);
-    }
+    await this.#runLifecycle('span start', (processor) =>
+      processor.onSpanStart(span),
+    );
   }
 
   async onSpanEnd(span: Span): Promise<void> {
-    for (const processor of this.#processors) {
-      await processor.onSpanEnd(span);
-    }
+    await this.#runLifecycle('span end', (processor) =>
+      processor.onSpanEnd(span),
+    );
   }
 
   async withSpan<T>(span: Span, fn: () => Promise<T>): Promise<T> {

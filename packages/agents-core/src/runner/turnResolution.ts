@@ -50,6 +50,7 @@ import {
   validateRunErrorHandlerFinalOutput,
 } from './errorHandlers';
 import { getTurnInput } from './items';
+import { withAgentSpanContext } from './tracing';
 
 const DEFAULT_TOOL_NOT_FOUND_MESSAGE = (toolName: string) =>
   `Tool '${toolName}' not found.`;
@@ -585,19 +586,21 @@ async function resolveInvalidFinalOutput<
   newItems: RunItem[];
   state: RunState<TContext, TAgent>;
 }): Promise<string | undefined> {
-  const handlerResult = await resolveRunErrorHandler({
-    error: args.error,
-    errorKind: 'invalidFinalOutput',
-    errorHandlers: args.errorHandlers,
-    context: args.state._context,
-    runData: buildTurnRunErrorData(
-      args.state,
-      args.agent,
-      args.originalInput,
-      args.preStepItems,
-      args.newItems,
-    ),
-  });
+  const handlerResult = await withAgentSpanContext(args.state, () =>
+    resolveRunErrorHandler({
+      error: args.error,
+      errorKind: 'invalidFinalOutput',
+      errorHandlers: args.errorHandlers,
+      context: args.state._context,
+      runData: buildTurnRunErrorData(
+        args.state,
+        args.agent,
+        args.originalInput,
+        args.preStepItems,
+        args.newItems,
+      ),
+    }),
+  );
   if (!handlerResult) {
     return undefined;
   }
@@ -874,8 +877,7 @@ export async function resolveInterruptedTurn<TContext>(
         item.rawItem.id ??
         (
           item.rawItem.providerData as
-            | ProviderData.HostedMCPApprovalRequest
-            | undefined
+            ProviderData.HostedMCPApprovalRequest | undefined
         )?.id;
       if (approvalRequestId) {
         return hostedMcpApprovals.pendingApprovalIds.has(approvalRequestId);
@@ -1120,18 +1122,20 @@ export async function resolveTurnAfterModelResponse<
     );
     if (refusal && typeof potentialFinalOutput === 'undefined') {
       const refusalError = new ModelRefusalError(refusal, state);
-      const handlerResult = await resolveRunErrorHandler({
-        error: refusalError,
-        errorHandlers,
-        context: state._context,
-        runData: buildTurnRunErrorData(
-          state,
-          agent,
-          originalInput,
-          preStepItems,
-          newItems,
-        ),
-      });
+      const handlerResult = await withAgentSpanContext(state, () =>
+        resolveRunErrorHandler({
+          error: refusalError,
+          errorHandlers,
+          context: state._context,
+          runData: buildTurnRunErrorData(
+            state,
+            agent,
+            originalInput,
+            preStepItems,
+            newItems,
+          ),
+        }),
+      );
       if (!handlerResult) {
         throw refusalError;
       }

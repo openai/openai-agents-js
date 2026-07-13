@@ -203,7 +203,6 @@ export class Span<TData extends SpanData> {
   }
 
   async withContext<T>(fn: () => Promise<T>): Promise<T> {
-    await this.#startPromise;
     if (!this.#processor.withSpan) {
       return fn();
     }
@@ -243,7 +242,9 @@ export class Span<TData extends SpanData> {
     }
 
     this.#startedAt = timeIso();
-    this.#startPromise = this.#processor.onSpanStart(this);
+    this.#startPromise = this.#processor.onSpanStart(this).catch((error) => {
+      logger.error('Tracing processor failed while starting span', error);
+    });
   }
 
   end() {
@@ -253,7 +254,12 @@ export class Span<TData extends SpanData> {
     }
 
     this.#endedAt = timeIso();
-    this.#processor.onSpanEnd(this);
+    void (async () => {
+      await this.#startPromise;
+      await this.#processor.onSpanEnd(this);
+    })().catch((error) => {
+      logger.error('Tracing processor failed while ending span', error);
+    });
   }
 
   setError(error: SpanError) {

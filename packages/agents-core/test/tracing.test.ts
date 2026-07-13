@@ -215,7 +215,7 @@ describe('Trace & Span lifecycle', () => {
     expect(processor.tracesEnded).toContain(trace);
   });
 
-  it('Span start/end/error/clone works as expected', () => {
+  it('Span start/end/error/clone works as expected', async () => {
     const data: CustomSpanData = {
       type: 'custom',
       name: 'span',
@@ -241,7 +241,7 @@ describe('Trace & Span lifecycle', () => {
 
     // end
     span.end();
-    expect(processor.spansEnded).toContain(span);
+    await vi.waitFor(() => expect(processor.spansEnded).toContain(span));
     expect(span.endedAt).not.toBeNull();
 
     // clone produces deep copy retaining ids but not referential equality
@@ -1519,7 +1519,7 @@ describe('MultiTracingProcessor', () => {
     ]);
   });
 
-  it('waits for span processors to start before entering their context', async () => {
+  it('does not wait for span processors before entering their context', async () => {
     const calls: string[] = [];
     const processor = new TestProcessor();
     processor.onSpanStart = async () => {
@@ -1542,7 +1542,105 @@ describe('MultiTracingProcessor', () => {
     span.start();
     await span.withContext(async () => calls.push('work'));
 
-    expect(calls).toEqual(['started', 'context', 'work']);
+    expect(calls.slice(0, 2)).toEqual(['context', 'work']);
+    await vi.waitFor(() => expect(calls).toContain('started'));
+  });
+
+  it('does not let a rejected span start prevent traced work', async () => {
+    const processor = new TestProcessor();
+    const processorError = new Error('processor failed');
+    processor.onSpanStart = vi.fn(async () => {
+      throw processorError;
+    });
+    processor.withSpan = vi.fn(async (_span, fn) => fn());
+    const loggerError = vi.spyOn(coreLogger, 'error').mockImplementation(() => {
+      // Expected processor failure.
+    });
+    const span = new Span(
+      {
+        traceId: 'trace_context',
+        spanId: 'span_context',
+        data: { type: 'custom', name: 'context', data: {} },
+      },
+      processor,
+    );
+    const work = vi.fn(async () => 'result');
+
+    span.start();
+    await expect(span.withContext(work)).resolves.toBe('result');
+    await vi.waitFor(() =>
+      expect(loggerError).toHaveBeenCalledWith(
+        'Tracing processor failed while starting span',
+        processorError,
+      ),
+    );
+
+    expect(work).toHaveBeenCalledOnce();
+    loggerError.mockRestore();
+  });
+
+  it('orders span end after asynchronous span start without blocking work', async () => {
+    let finishStart: (() => void) | undefined;
+    const calls: string[] = [];
+    const processor = new TestProcessor();
+    processor.onSpanStart = async () => {
+      await new Promise<void>((resolve) => {
+        finishStart = resolve;
+      });
+      calls.push('start');
+    };
+    processor.onSpanEnd = async () => {
+      calls.push('end');
+    };
+    processor.withSpan = async (_span, fn) => fn();
+    const span = new Span(
+      {
+        traceId: 'trace_context',
+        spanId: 'span_context',
+        data: { type: 'custom', name: 'context', data: {} },
+      },
+      processor,
+    );
+
+    span.start();
+    await span.withContext(async () => calls.push('work'));
+    span.end();
+
+    expect(calls).toEqual(['work']);
+    finishStart?.();
+    await vi.waitFor(() => expect(calls).toEqual(['work', 'start', 'end']));
+  });
+
+  it('continues span lifecycle delivery after a processor fails', async () => {
+    const failingProcessor = new TestProcessor();
+    const receivingProcessor = new TestProcessor();
+    const processorError = new Error('processor failed');
+    failingProcessor.onSpanStart = vi.fn(async () => {
+      throw processorError;
+    });
+    const loggerError = vi.spyOn(coreLogger, 'error').mockImplementation(() => {
+      // Expected processor failure.
+    });
+    const multiProcessor = new MultiTracingProcessor();
+    multiProcessor.addTraceProcessor(failingProcessor);
+    multiProcessor.addTraceProcessor(receivingProcessor);
+    const span = new Span(
+      {
+        traceId: 'trace_context',
+        spanId: 'span_context',
+        data: { type: 'custom', name: 'context', data: {} },
+      },
+      multiProcessor,
+    );
+
+    await expect(multiProcessor.onSpanStart(span)).resolves.toBeUndefined();
+
+    expect(receivingProcessor.spansStarted).toEqual([span]);
+    expect(loggerError).toHaveBeenCalledWith(
+      'Tracing processor failed during span start',
+      processorError,
+    );
+    loggerError.mockRestore();
   });
 
   it('keeps async iterable creation, consumption, and cleanup in span context', async () => {
