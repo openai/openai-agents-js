@@ -1114,6 +1114,77 @@ describe('OpenAIResponsesWSModel', () => {
     }
   });
 
+  it('does not retry a provider timeout after sending a websocket request', async () => {
+    vi.useFakeTimers();
+    let sends = 0;
+    let resolveFirstSend!: () => void;
+    const firstSend = new Promise<void>((resolve) => {
+      resolveFirstSend = resolve;
+    });
+
+    try {
+      const fakeClient = createFakeClient() as any;
+      fakeClient.timeout = 25;
+      fakeClient._options = { ...(fakeClient._options ?? {}), timeout: 25 };
+      TestWebSocket.onCreate = (socket) => {
+        socket.onSend(() => {
+          sends += 1;
+          if (sends === 1) {
+            resolveFirstSend();
+            return;
+          }
+          socket.queueJSON({
+            type: 'response.completed',
+            response: {
+              id: 'resp_provider_timeout_duplicate',
+              output: [
+                {
+                  id: 'msg_provider_timeout_duplicate',
+                  type: 'message',
+                  status: 'completed',
+                  role: 'assistant',
+                  content: [
+                    { type: 'output_text', text: 'duplicate request sent' },
+                  ],
+                },
+              ],
+              usage: {},
+            },
+            sequence_number: 0,
+          });
+        });
+      };
+
+      const resultPromise = run(
+        new Agent({
+          name: 'WebSocketProviderTimeoutReplaySafetyAgent',
+          model: new OpenAIResponsesWSModel(fakeClient, 'gpt-ws'),
+          modelSettings: {
+            retry: {
+              maxRetries: 1,
+              backoff: { initialDelayMs: 0, jitter: false },
+              policy: retryPolicies.timeout(),
+            },
+          },
+        }),
+        'ping',
+      );
+      const errorPromise = resultPromise.then(
+        () => undefined,
+        (error: unknown) => error as Error & { code?: string },
+      );
+
+      await firstSend;
+      await vi.advanceTimersByTimeAsync(25);
+      const error = await errorPromise;
+
+      expect(error).toMatchObject({ code: 'ETIMEDOUT' });
+      expect(sends).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('retries a runner timeout before sending a websocket request', async () => {
     vi.useFakeTimers();
     let authAttempts = 0;

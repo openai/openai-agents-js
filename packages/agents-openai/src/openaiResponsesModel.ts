@@ -3483,6 +3483,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
       requestTimeoutDeadline,
     );
 
+    let sentRequestFrame = false;
     let receivedAnyEvent = false;
     let sawTerminalResponseEvent = false;
     try {
@@ -3527,6 +3528,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
           );
           await activeConnection.send(serializedFrame);
         }
+        sentRequestFrame = true;
         builtRequest.markReplayUnsafe?.();
       };
       await sendSerializedFrame();
@@ -3583,6 +3585,13 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
         }
       }
     } catch (error) {
+      if (sentRequestFrame && error instanceof Error) {
+        (
+          error as Error & {
+            unsafeToReplay?: boolean;
+          }
+        ).unsafeToReplay = true;
+      }
       if (
         !receivedAnyEvent &&
         !(error instanceof OpenAI.APIUserAbortError) &&
