@@ -272,7 +272,7 @@ const agent = new Agent({
 });
 ```
 
-When the deadline expires, the SDK aborts that attempt's request signal and throws `ModelRequestTimeoutError`. Retries remain opt-in; `retryPolicies.timeout()` matches request timeouts, and every runner-managed retry receives a fresh deadline. Existing replay-safety rules still apply, so a streamed attempt is not retried after it emits an event, and stateful requests using `previousResponseId` or `conversationId` still require replay-safe provider approval.
+When the deadline expires, the SDK aborts that attempt's request signal and throws `ModelRequestTimeoutError`. Retries remain opt-in; `retryPolicies.timeout()` matches request timeouts, and every runner-managed retry receives a fresh deadline. Existing replay-safety rules still apply, so a streamed attempt is not retried after it emits an event, a Responses WebSocket attempt is not retried after its request frame is sent, and stateful requests using `previousResponseId` or `conversationId` still require replay-safe provider approval.
 
 This setting is different from passing an `AbortSignal` to `run()`: aborting that signal cancels the overall run and is never treated as a retryable request timeout. Provider clients can also enforce their own transport timeouts; when both are configured, whichever deadline or transport failure happens first ends the attempt.
 

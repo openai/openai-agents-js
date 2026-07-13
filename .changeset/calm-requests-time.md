@@ -1,5 +1,6 @@
 ---
 '@openai/agents-core': patch
+'@openai/agents-openai': patch
 ---
 
-feat(core): add per-model-request timeouts with retry policy support (#894)
+feat(core): add replay-safe per-model-request timeouts with retry policy support (#894)

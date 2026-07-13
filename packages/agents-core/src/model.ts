@@ -554,6 +554,8 @@ export type ModelRequest = {
   _internal?: {
     runnerManagedRetry?: boolean;
     reasoningEffortImplicit?: boolean;
+    /** Marks the current model attempt as potentially accepted by the provider. */
+    markReplayUnsafe?: () => void;
   };
 };
 

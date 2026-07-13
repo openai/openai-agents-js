@@ -98,6 +98,7 @@ type BuiltResponsesCreateRequest = {
   requestData: Record<string, any>;
   sdkRequestHeaders: ResponsesCreateRequestSDKHeaders;
   signal: AbortSignal | undefined;
+  markReplayUnsafe: (() => void) | undefined;
   transportExtraHeaders?: Record<string, unknown>;
   transportExtraQuery?: Record<string, unknown>;
 };
@@ -3154,6 +3155,11 @@ export class OpenAIResponsesModel implements Model {
       requestData,
       sdkRequestHeaders,
       signal: request.signal,
+      markReplayUnsafe: (
+        request as ModelRequest & {
+          _internal?: { markReplayUnsafe?: () => void };
+        }
+      )._internal?.markReplayUnsafe,
       transportExtraHeaders: transportOverrides.extraHeaders,
       transportExtraQuery: transportOverrides.extraQuery,
     };
@@ -3520,6 +3526,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
           );
           await activeConnection.send(serializedFrame);
         }
+        builtRequest.markReplayUnsafe?.();
       };
       await sendSerializedFrame();
 

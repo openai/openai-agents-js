@@ -10,6 +10,10 @@ import {
 import type OpenAI from 'openai';
 import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/resources/responses/responses';
 import {
+  Agent,
+  ModelRequestTimeoutError,
+  retryPolicies,
+  run,
   setTracingDisabled,
   type ResponseStreamEvent,
 } from '@openai/agents-core';
@@ -1037,6 +1041,153 @@ describe('OpenAIResponsesWSModel', () => {
       'Responses websocket connection closed before a terminal response event.',
     );
     expect(error.unsafeToReplay).toBe(true);
+  });
+
+  it('does not retry a runner timeout after sending a websocket request', async () => {
+    vi.useFakeTimers();
+    let sends = 0;
+    let resolveFirstSend!: () => void;
+    const firstSend = new Promise<void>((resolve) => {
+      resolveFirstSend = resolve;
+    });
+
+    try {
+      TestWebSocket.onCreate = (socket) => {
+        socket.onSend(() => {
+          sends += 1;
+          if (sends === 1) {
+            resolveFirstSend();
+          }
+          if (sends === 2) {
+            socket.queueJSON({
+              type: 'response.completed',
+              response: {
+                id: 'resp_duplicate',
+                output: [
+                  {
+                    id: 'msg_duplicate',
+                    type: 'message',
+                    status: 'completed',
+                    role: 'assistant',
+                    content: [
+                      { type: 'output_text', text: 'duplicate request sent' },
+                    ],
+                  },
+                ],
+                usage: {},
+              },
+              sequence_number: 0,
+            });
+          }
+        });
+      };
+
+      const model = new OpenAIResponsesWSModel(createFakeClient(), 'gpt-ws');
+      const resultPromise = run(
+        new Agent({
+          name: 'WebSocketTimeoutReplaySafetyAgent',
+          model,
+          modelSettings: {
+            requestTimeoutMs: 25,
+            retry: {
+              maxRetries: 1,
+              backoff: { initialDelayMs: 0, jitter: false },
+              policy: retryPolicies.timeout(),
+            },
+          },
+        }),
+        'ping',
+      );
+      const errorPromise = resultPromise.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+      await firstSend;
+      await vi.advanceTimersByTimeAsync(25);
+      const error = await errorPromise;
+
+      expect(error).toBeInstanceOf(ModelRequestTimeoutError);
+      expect(sends).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries a runner timeout before sending a websocket request', async () => {
+    vi.useFakeTimers();
+    let authAttempts = 0;
+    let sends = 0;
+    let resolveFirstAuthAttempt!: () => void;
+    const firstAuthAttempt = new Promise<void>((resolve) => {
+      resolveFirstAuthAttempt = resolve;
+    });
+
+    try {
+      const fakeClient = createFakeClient() as any;
+      fakeClient.authHeaders = vi.fn(async () => {
+        authAttempts += 1;
+        if (authAttempts === 1) {
+          resolveFirstAuthAttempt();
+          return await new Promise<never>(() => {
+            // The runner timeout should abort this pre-send operation.
+          });
+        }
+        return {
+          values: new Headers({ Authorization: 'Bearer sk-test' }),
+          nulls: new Set<string>(),
+        };
+      });
+
+      TestWebSocket.onCreate = (socket) => {
+        socket.onSend(() => {
+          sends += 1;
+          socket.queueJSON({
+            type: 'response.completed',
+            response: {
+              id: 'resp_retried',
+              output: [
+                {
+                  id: 'msg_retried',
+                  type: 'message',
+                  status: 'completed',
+                  role: 'assistant',
+                  content: [{ type: 'output_text', text: 'retried safely' }],
+                },
+              ],
+              usage: {},
+            },
+            sequence_number: 0,
+          });
+        });
+      };
+
+      const resultPromise = run(
+        new Agent({
+          name: 'WebSocketPreSendTimeoutAgent',
+          model: new OpenAIResponsesWSModel(fakeClient, 'gpt-ws'),
+          modelSettings: {
+            requestTimeoutMs: 25,
+            retry: {
+              maxRetries: 1,
+              backoff: { initialDelayMs: 0, jitter: false },
+              policy: retryPolicies.timeout(),
+            },
+          },
+        }),
+        'ping',
+      );
+
+      await firstAuthAttempt;
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+
+      expect(result.finalOutput).toBe('retried safely');
+      expect(authAttempts).toBe(2);
+      expect(sends).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('preserves local websocket setup errors before first event', async () => {

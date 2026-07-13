@@ -56,6 +56,7 @@ type ModelRequestAttempt = {
   request: ModelRequest;
   waitFor<T>(operation: () => PromiseLike<T>): Promise<T>;
   normalizeError(error: unknown): unknown;
+  isReplayUnsafeAfterTimeout(): boolean;
   cleanup(): void;
 };
 
@@ -148,6 +149,7 @@ function createModelRequestAttempt(
       request,
       waitFor: async <T>(operation: () => PromiseLike<T>) => await operation(),
       normalizeError: (error) => error,
+      isReplayUnsafeAfterTimeout: () => false,
       cleanup: () => {},
     };
   }
@@ -160,6 +162,7 @@ function createModelRequestAttempt(
   );
   const signal = combined.signal!;
   let timedOut = false;
+  let replayUnsafe = false;
 
   const timeout = setTimeout(() => {
     if (signal.aborted) {
@@ -170,7 +173,16 @@ function createModelRequestAttempt(
   }, timeoutMs);
 
   return {
-    request: { ...request, signal },
+    request: {
+      ...request,
+      signal,
+      _internal: {
+        ...request._internal,
+        markReplayUnsafe: () => {
+          replayUnsafe = true;
+        },
+      },
+    },
     waitFor: async <T>(operation: () => PromiseLike<T>) => {
       let abortListener: (() => void) | undefined;
       const abortPromise = new Promise<never>((_, reject) => {
@@ -203,6 +215,7 @@ function createModelRequestAttempt(
       }
     },
     normalizeError: (error) => (timedOut ? timeoutError : error),
+    isReplayUnsafeAfterTimeout: () => timedOut && replayUnsafe,
     cleanup: () => {
       clearTimeout(timeout);
       combined.cleanup();
@@ -605,6 +618,20 @@ async function getRetryAdvice(
   return await getModelRetryAdvice.call(model, args);
 }
 
+function applyAttemptReplaySafety(
+  providerAdvice: ModelRetryAdvice | undefined,
+  replayUnsafeAfterTimeout: boolean,
+): ModelRetryAdvice | undefined {
+  if (!replayUnsafeAfterTimeout || providerAdvice?.replaySafety === 'safe') {
+    return providerAdvice;
+  }
+
+  return {
+    ...providerAdvice,
+    replaySafety: 'unsafe',
+  };
+}
+
 function isStatefulConversationRequest(request: ModelRequest): boolean {
   return Boolean(request.conversationId || request.previousResponseId);
 }
@@ -827,12 +854,15 @@ export async function getResponseWithRetry(
       modelRequestAttempt.cleanup();
     }
 
-    const providerAdvice = await getRetryAdvice(model, {
-      request,
-      error: failure,
-      stream: false,
-      attempt,
-    });
+    const providerAdvice = applyAttemptReplaySafety(
+      await getRetryAdvice(model, {
+        request,
+        error: failure,
+        stream: false,
+        attempt,
+      }),
+      modelRequestAttempt.isReplayUnsafeAfterTimeout(),
+    );
     const decision = await evaluateRetry({
       error: failure,
       attempt,
@@ -927,12 +957,15 @@ export async function* getStreamedResponseWithRetry(
       }
     }
 
-    const providerAdvice = await getRetryAdvice(model, {
-      request,
-      error: failure,
-      stream: true,
-      attempt,
-    });
+    const providerAdvice = applyAttemptReplaySafety(
+      await getRetryAdvice(model, {
+        request,
+        error: failure,
+        stream: true,
+        attempt,
+      }),
+      modelRequestAttempt.isReplayUnsafeAfterTimeout(),
+    );
     const decision = await evaluateRetry({
       error: failure,
       attempt,
