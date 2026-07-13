@@ -1,6 +1,10 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import OpenAI from 'openai';
 import {
+  Agent,
+  ModelRequestTimeoutError,
+  retryPolicies,
+  run,
   setTracingDisabled,
   UserError,
   withTrace,
@@ -1723,6 +1727,77 @@ describe('OpenAIHostedMultiAgentModel', () => {
       }),
     ).toMatchObject({ suggested: false, replaySafety: 'unsafe' });
     expect(fakeWebSocket.close).toHaveBeenCalledOnce();
+  });
+
+  it('does not retry a runner timeout after sending a hosted WebSocket request', async () => {
+    vi.useFakeTimers();
+    let resolveFirstSend!: () => void;
+    const firstSend = new Promise<void>((resolve) => {
+      resolveFirstSend = resolve;
+    });
+    const firstWebSocket = new FakeResponsesWebSocket([
+      STALLED_WEBSOCKET_EVENT,
+    ]);
+    const firstSendImplementation = firstWebSocket.send.bind(firstWebSocket);
+    vi.spyOn(firstWebSocket, 'send').mockImplementation((frame) => {
+      firstSendImplementation(frame);
+      resolveFirstSend();
+    });
+    const retryWebSocket = new FakeResponsesWebSocket([
+      {
+        type: 'response.completed',
+        response: {
+          ...emptyResponse('resp_duplicate'),
+          output: [
+            {
+              id: 'msg_duplicate',
+              type: 'message',
+              status: 'completed',
+              role: 'assistant',
+              content: [
+                { type: 'output_text', text: 'duplicate request sent' },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+
+    try {
+      const model = new TestHostedMultiAgentModel([
+        firstWebSocket,
+        retryWebSocket,
+      ]);
+      const resultPromise = run(
+        new Agent({
+          name: 'HostedWebSocketTimeoutReplaySafetyAgent',
+          model,
+          modelSettings: {
+            requestTimeoutMs: 25,
+            retry: {
+              maxRetries: 1,
+              backoff: { initialDelayMs: 0, jitter: false },
+              policy: retryPolicies.timeout(),
+            },
+          },
+        }),
+        'ping',
+      );
+      const errorPromise = resultPromise.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+      await firstSend;
+      await vi.advanceTimersByTimeAsync(25);
+      const error = await errorPromise;
+
+      expect(error).toBeInstanceOf(ModelRequestTimeoutError);
+      expect(firstWebSocket.sent).toHaveLength(1);
+      expect(retryWebSocket.sent).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([false, true])(

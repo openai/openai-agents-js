@@ -446,6 +446,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     let sentFrameWasReturnedUnsent = false;
     let reachedResponseBoundary = false;
     let threwError = false;
+    let markReplayUnsafe: (() => void) | undefined;
     const requestTimeoutDeadline =
       this.#createWebSocketRequestTimeoutDeadline();
     const sendWebSocketFrame = (
@@ -462,10 +463,12 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
         requestMayHaveReachedServer = true;
       }
       webSocket.send(frame as any);
+      markReplayUnsafe?.();
     };
 
     try {
       const builtRequest = this._buildResponsesCreateRequest(request, true);
+      markReplayUnsafe = builtRequest.markReplayUnsafe;
       const requestData = builtRequest.requestData;
       const webSocket = await this.#ensureWebSocket(
         {

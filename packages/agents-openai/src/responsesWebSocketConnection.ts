@@ -2,10 +2,7 @@ import { UserError } from '@openai/agents-core';
 import OpenAI from 'openai';
 
 export type WebSocketMessageValue =
-  | string
-  | Blob
-  | ArrayBuffer
-  | ArrayBufferView;
+  string | Blob | ArrayBuffer | ArrayBufferView;
 
 export type ResponsesWebSocketKeepAliveOptions = {
   /**
@@ -44,6 +41,15 @@ export class ResponsesWebSocketInternalError extends Error {
     super(message);
     this.name = 'ResponsesWebSocketInternalError';
     this.code = code;
+  }
+}
+
+export class ResponsesWebSocketTimeoutError extends Error {
+  readonly code = 'ETIMEDOUT';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ResponsesWebSocketTimeoutError';
   }
 }
 
@@ -97,7 +103,7 @@ export async function withTimeout<T>(
 
   return await new Promise<T>((resolve, reject) => {
     const timeoutId = setTimeout(() => {
-      reject(new Error(errorMessage));
+      reject(new ResponsesWebSocketTimeoutError(errorMessage));
     }, timeoutMs);
 
     promise.then(
@@ -260,8 +266,7 @@ export class ResponsesWebSocketConnection {
     keepAliveOptions: ResponsesWebSocketKeepAliveOptions = {},
   ): Promise<ResponsesWebSocketConnection> {
     const WebSocketCtor = (globalThis as any).WebSocket as
-      | (new (url: string, init?: unknown) => WebSocket)
-      | undefined;
+      (new (url: string, init?: unknown) => WebSocket) | undefined;
 
     if (!WebSocketCtor) {
       throw new UserError(

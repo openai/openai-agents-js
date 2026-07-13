@@ -1190,6 +1190,87 @@ describe('OpenAIResponsesWSModel', () => {
     }
   });
 
+  it('retries a provider websocket transport timeout before sending', async () => {
+    vi.useFakeTimers();
+    let authAttempts = 0;
+    let resolveFirstAuthAttempt!: () => void;
+    const firstAuthAttempt = new Promise<void>((resolve) => {
+      resolveFirstAuthAttempt = resolve;
+    });
+
+    try {
+      const fakeClient = createFakeClient() as any;
+      fakeClient.timeout = 25;
+      fakeClient._options = { ...(fakeClient._options ?? {}), timeout: 25 };
+      fakeClient.authHeaders = vi.fn(async () => {
+        authAttempts += 1;
+        if (authAttempts === 1) {
+          resolveFirstAuthAttempt();
+          return await new Promise<never>(() => {
+            // The provider transport timeout should reject this handshake.
+          });
+        }
+        return {
+          values: new Headers({ Authorization: 'Bearer sk-test' }),
+          nulls: new Set<string>(),
+        };
+      });
+
+      TestWebSocket.onCreate = (socket) => {
+        socket.onSend(() => {
+          socket.queueJSON({
+            type: 'response.completed',
+            response: {
+              id: 'resp_transport_retry',
+              output: [
+                {
+                  id: 'msg_transport_retry',
+                  type: 'message',
+                  status: 'completed',
+                  role: 'assistant',
+                  content: [
+                    { type: 'output_text', text: 'transport retry succeeded' },
+                  ],
+                },
+              ],
+              usage: {},
+            },
+            sequence_number: 0,
+          });
+        });
+      };
+
+      const resultPromise = run(
+        new Agent({
+          name: 'WebSocketProviderTimeoutAgent',
+          model: new OpenAIResponsesWSModel(fakeClient, 'gpt-ws'),
+          modelSettings: {
+            retry: {
+              maxRetries: 1,
+              backoff: { initialDelayMs: 0, jitter: false },
+              policy: retryPolicies.timeout(),
+            },
+          },
+        }),
+        'ping',
+      ).then(
+        (result) => ({ result, error: undefined }),
+        (error: unknown) => ({ result: undefined, error }),
+      );
+
+      await firstAuthAttempt;
+      await vi.advanceTimersByTimeAsync(25);
+      const { result, error } = await resultPromise;
+
+      expect(error).toBeUndefined();
+      expect(result?.finalOutput).toBe('transport retry succeeded');
+      expect(authAttempts).toBe(2);
+      expect(TestWebSocket.instances).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('preserves local websocket setup errors before first event', async () => {
     const fakeClient = createFakeClient();
     const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws', {
