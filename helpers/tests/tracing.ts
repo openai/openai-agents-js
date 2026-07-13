@@ -1,19 +1,30 @@
 import {
   setTraceProcessors,
   setTracingDisabled,
+  type Span,
   type SpanData,
   type TracingProcessor,
 } from '@openai/agents-core';
 
-/** Tracks whether test work is executing inside a selected Agents span type. */
-export function createTracingContextProbe(spanType: SpanData['type']) {
-  let active = false;
-  const processor: TracingProcessor = {
+export function createTestTracingProcessor(
+  overrides: Partial<TracingProcessor> = {},
+): TracingProcessor {
+  return {
     async onTraceStart() {},
     async onTraceEnd() {},
     async onSpanStart() {},
     async onSpanEnd() {},
-    async withSpan(span, fn) {
+    async shutdown() {},
+    async forceFlush() {},
+    ...overrides,
+  };
+}
+
+/** Tracks whether test work is executing inside a selected Agents span type. */
+export function createTracingContextProbe(spanType: SpanData['type']) {
+  let active = false;
+  const processor = createTestTracingProcessor({
+    async withSpan<T>(span: Span<any>, fn: () => Promise<T>) {
       if (span.spanData.type !== spanType) return fn();
       active = true;
       try {
@@ -22,9 +33,7 @@ export function createTracingContextProbe(spanType: SpanData['type']) {
         active = false;
       }
     },
-    async shutdown() {},
-    async forceFlush() {},
-  };
+  });
 
   return {
     processor,

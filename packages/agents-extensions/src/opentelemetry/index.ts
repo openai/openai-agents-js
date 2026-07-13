@@ -44,13 +44,21 @@ function timestamp(value: string | null): number | undefined {
   return value ? new Date(value).getTime() : undefined;
 }
 
-function serializedAttribute(key: string, value: unknown): Attributes {
+function serializedValue(value: unknown): string | undefined {
   try {
     const sanitized = sanitizeJsonCompatibleValue(value);
-    return sanitized === undefined ? {} : { [key]: JSON.stringify(sanitized) };
+    return sanitized === undefined ? undefined : JSON.stringify(sanitized);
   } catch {
-    return {};
+    return undefined;
   }
+}
+
+function compactAttributes(
+  values: Record<string, Attributes[string] | undefined>,
+): Attributes {
+  return Object.fromEntries(
+    Object.entries(values).filter(([, value]) => value !== undefined),
+  ) as Attributes;
 }
 
 type SpanDescriptor = {
@@ -72,77 +80,67 @@ function describeSpan(
       return {
         name: `invoke_agent ${data.name}`,
         operationName: 'invoke_agent',
-        attributes: {
+        attributes: compactAttributes({
           'gen_ai.agent.name': data.name,
-          ...(data.handoffs && {
-            'openai.agents.agent.handoffs': data.handoffs,
-          }),
-          ...(data.tools && { 'openai.agents.agent.tools': data.tools }),
-          ...(data.output_type && {
-            'openai.agents.agent.output_type': data.output_type,
-          }),
-        },
+          'openai.agents.agent.handoffs': data.handoffs,
+          'openai.agents.agent.tools': data.tools,
+          'openai.agents.agent.output_type': data.output_type || undefined,
+        }),
       };
     case 'function':
       return {
         name: `execute_tool ${data.name}`,
         operationName: 'execute_tool',
-        attributes: {
+        attributes: compactAttributes({
           'gen_ai.tool.name': data.name,
-          ...(recordInputs && {
-            'gen_ai.tool.call.arguments': data.input,
-          }),
-          ...(recordOutputs && {
-            'gen_ai.tool.call.result': data.output,
-          }),
-        },
+          'gen_ai.tool.call.arguments': recordInputs ? data.input : undefined,
+          'gen_ai.tool.call.result': recordOutputs ? data.output : undefined,
+        }),
       };
     case 'generation':
       return {
         name: `chat ${data.model ?? 'model'}`,
         operationName: 'chat',
-        attributes: {
-          ...(data.model && { 'gen_ai.request.model': data.model }),
-          ...(data.usage?.input_tokens !== undefined && {
-            'gen_ai.usage.input_tokens': data.usage.input_tokens,
-          }),
-          ...(data.usage?.output_tokens !== undefined && {
-            'gen_ai.usage.output_tokens': data.usage.output_tokens,
-          }),
-          ...(recordInputs && data.input
-            ? serializedAttribute('gen_ai.input.messages', data.input)
-            : {}),
-          ...(recordOutputs && data.output
-            ? serializedAttribute('gen_ai.output.messages', data.output)
-            : {}),
-        },
+        attributes: compactAttributes({
+          'gen_ai.request.model': data.model || undefined,
+          'gen_ai.usage.input_tokens': data.usage?.input_tokens,
+          'gen_ai.usage.output_tokens': data.usage?.output_tokens,
+          'gen_ai.input.messages':
+            recordInputs && data.input
+              ? serializedValue(data.input)
+              : undefined,
+          'gen_ai.output.messages':
+            recordOutputs && data.output
+              ? serializedValue(data.output)
+              : undefined,
+        }),
       };
     case 'response':
       return {
         name: 'chat',
         operationName: 'chat',
-        attributes: {
-          ...(data.response_id && { 'gen_ai.response.id': data.response_id }),
-          ...(recordInputs && data._input !== undefined
-            ? typeof data._input === 'string'
-              ? { 'gen_ai.input.messages': data._input }
-              : serializedAttribute('gen_ai.input.messages', data._input)
-            : {}),
-          ...(recordOutputs && data._response !== undefined
-            ? serializedAttribute('gen_ai.output.messages', data._response)
-            : {}),
-        },
+        attributes: compactAttributes({
+          'gen_ai.response.id': data.response_id || undefined,
+          'gen_ai.input.messages':
+            recordInputs && data._input !== undefined
+              ? typeof data._input === 'string'
+                ? data._input
+                : serializedValue(data._input)
+              : undefined,
+          'gen_ai.output.messages':
+            recordOutputs && data._response !== undefined
+              ? serializedValue(data._response)
+              : undefined,
+        }),
       };
     case 'handoff':
       return {
         name: 'handoff',
         operationName: 'handoff',
-        attributes: {
-          ...(data.from_agent && { 'gen_ai.agent.name': data.from_agent }),
-          ...(data.to_agent && {
-            'openai.agents.handoff.to_agent': data.to_agent,
-          }),
-        },
+        attributes: compactAttributes({
+          'gen_ai.agent.name': data.from_agent || undefined,
+          'openai.agents.handoff.to_agent': data.to_agent || undefined,
+        }),
       };
     case 'guardrail':
       return {
@@ -157,64 +155,57 @@ function describeSpan(
       return {
         name: `custom ${data.name}`,
         operationName: 'custom',
-        attributes: {
+        attributes: compactAttributes({
           'openai.agents.custom.name': data.name,
-          ...(recordCustomData
-            ? serializedAttribute('openai.agents.custom.data', data.data)
-            : {}),
-        },
+          'openai.agents.custom.data': recordCustomData
+            ? serializedValue(data.data)
+            : undefined,
+        }),
       };
     case 'mcp_tools':
       return {
         name: 'list_tools',
         operationName: 'list_tools',
-        attributes: {
-          ...(data.server && { 'openai.agents.mcp.server': data.server }),
-          ...(data.result && { 'openai.agents.mcp.tools': data.result }),
-        },
+        attributes: compactAttributes({
+          'openai.agents.mcp.server': data.server || undefined,
+          'openai.agents.mcp.tools': data.result,
+        }),
       };
     case 'transcription':
       return {
         name: `transcribe ${data.model ?? 'model'}`,
         operationName: 'transcribe',
-        attributes: {
-          ...(data.model && { 'gen_ai.request.model': data.model }),
+        attributes: compactAttributes({
+          'gen_ai.request.model': data.model || undefined,
           'openai.agents.audio.input_format': data.input.format,
-          ...(recordInputs && {
-            'openai.agents.audio.input_data': data.input.data,
-          }),
-          ...(recordOutputs &&
-            data.output !== undefined && {
-              'openai.agents.transcription.output': data.output,
-            }),
-        },
+          'openai.agents.audio.input_data': recordInputs
+            ? data.input.data
+            : undefined,
+          'openai.agents.transcription.output': recordOutputs
+            ? data.output
+            : undefined,
+        }),
       };
     case 'speech':
       return {
         name: `synthesize_speech ${data.model ?? 'model'}`,
         operationName: 'synthesize_speech',
-        attributes: {
-          ...(data.model && { 'gen_ai.request.model': data.model }),
+        attributes: compactAttributes({
+          'gen_ai.request.model': data.model || undefined,
           'openai.agents.audio.output_format': data.output.format,
-          ...(recordInputs &&
-            data.input !== undefined && {
-              'openai.agents.speech.input': data.input,
-            }),
-          ...(recordOutputs && {
-            'openai.agents.audio.output_data': data.output.data,
-          }),
-        },
+          'openai.agents.speech.input': recordInputs ? data.input : undefined,
+          'openai.agents.audio.output_data': recordOutputs
+            ? data.output.data
+            : undefined,
+        }),
       };
     case 'speech_group':
       return {
         name: 'speech_group',
         operationName: 'speech_group',
-        attributes: {
-          ...(recordInputs &&
-            data.input !== undefined && {
-              'openai.agents.speech.input': data.input,
-            }),
-        },
+        attributes: compactAttributes({
+          'openai.agents.speech.input': recordInputs ? data.input : undefined,
+        }),
       };
   }
 }

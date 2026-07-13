@@ -877,7 +877,8 @@ export async function resolveInterruptedTurn<TContext>(
         item.rawItem.id ??
         (
           item.rawItem.providerData as
-            ProviderData.HostedMCPApprovalRequest | undefined
+            | ProviderData.HostedMCPApprovalRequest
+            | undefined
         )?.id;
       if (approvalRequestId) {
         return hostedMcpApprovals.pendingApprovalIds.has(approvalRequestId);

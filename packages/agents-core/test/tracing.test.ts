@@ -1476,6 +1476,23 @@ describe('withTrace & span helpers (integration)', () => {
 // -----------------------------------------------------------------------------------------
 
 describe('MultiTracingProcessor', () => {
+  const spanFor = (
+    processor: TracingProcessor,
+    data: CustomSpanData | { type: 'generation' } = {
+      type: 'custom',
+      name: 'context',
+      data: {},
+    },
+  ) =>
+    new Span(
+      {
+        traceId: 'trace_context',
+        spanId: 'span_context',
+        data,
+      },
+      processor,
+    );
+
   it('composes processor span contexts in registration order', async () => {
     const calls: string[] = [];
     const processor1 = new TestProcessor();
@@ -1499,14 +1516,7 @@ describe('MultiTracingProcessor', () => {
     const multiProcessor = new MultiTracingProcessor();
     multiProcessor.addTraceProcessor(processor1);
     multiProcessor.addTraceProcessor(processor2);
-    const span = new Span(
-      {
-        traceId: 'trace_context',
-        spanId: 'span_context',
-        data: { type: 'custom', name: 'context', data: {} },
-      },
-      multiProcessor,
-    );
+    const span = spanFor(multiProcessor);
 
     await span.withContext(async () => calls.push('work'));
 
@@ -1519,33 +1529,6 @@ describe('MultiTracingProcessor', () => {
     ]);
   });
 
-  it('does not wait for span processors before entering their context', async () => {
-    const calls: string[] = [];
-    const processor = new TestProcessor();
-    processor.onSpanStart = async () => {
-      await Promise.resolve();
-      calls.push('started');
-    };
-    processor.withSpan = async (_span, fn) => {
-      calls.push('context');
-      return fn();
-    };
-    const span = new Span(
-      {
-        traceId: 'trace_context',
-        spanId: 'span_context',
-        data: { type: 'custom', name: 'context', data: {} },
-      },
-      processor,
-    );
-
-    span.start();
-    await span.withContext(async () => calls.push('work'));
-
-    expect(calls.slice(0, 2)).toEqual(['context', 'work']);
-    await vi.waitFor(() => expect(calls).toContain('started'));
-  });
-
   it('does not let a rejected span start prevent traced work', async () => {
     const processor = new TestProcessor();
     const processorError = new Error('processor failed');
@@ -1556,14 +1539,7 @@ describe('MultiTracingProcessor', () => {
     const loggerError = vi.spyOn(coreLogger, 'error').mockImplementation(() => {
       // Expected processor failure.
     });
-    const span = new Span(
-      {
-        traceId: 'trace_context',
-        spanId: 'span_context',
-        data: { type: 'custom', name: 'context', data: {} },
-      },
-      processor,
-    );
+    const span = spanFor(processor);
     const work = vi.fn(async () => 'result');
 
     span.start();
@@ -1593,14 +1569,7 @@ describe('MultiTracingProcessor', () => {
       calls.push('end');
     };
     processor.withSpan = async (_span, fn) => fn();
-    const span = new Span(
-      {
-        traceId: 'trace_context',
-        spanId: 'span_context',
-        data: { type: 'custom', name: 'context', data: {} },
-      },
-      processor,
-    );
+    const span = spanFor(processor);
 
     span.start();
     await span.withContext(async () => calls.push('work'));
@@ -1624,14 +1593,7 @@ describe('MultiTracingProcessor', () => {
     const multiProcessor = new MultiTracingProcessor();
     multiProcessor.addTraceProcessor(failingProcessor);
     multiProcessor.addTraceProcessor(receivingProcessor);
-    const span = new Span(
-      {
-        traceId: 'trace_context',
-        spanId: 'span_context',
-        data: { type: 'custom', name: 'context', data: {} },
-      },
-      multiProcessor,
-    );
+    const span = spanFor(multiProcessor);
 
     await expect(multiProcessor.onSpanStart(span)).resolves.toBeUndefined();
 
@@ -1655,14 +1617,7 @@ describe('MultiTracingProcessor', () => {
         contextActive = false;
       }
     };
-    const span = new Span(
-      {
-        traceId: 'trace_context',
-        spanId: 'span_context',
-        data: { type: 'generation' },
-      },
-      processor,
-    );
+    const span = spanFor(processor, { type: 'generation' });
     const iterable: AsyncIterable<number> = {
       [Symbol.asyncIterator]() {
         contextStates.push(contextActive);

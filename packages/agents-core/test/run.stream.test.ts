@@ -3058,7 +3058,8 @@ describe('Runner.run (streaming)', () => {
       .mockResolvedValue();
 
     let resolveGuardrail:
-      ((value: GuardrailFunctionOutput) => void) | undefined;
+      | ((value: GuardrailFunctionOutput) => void)
+      | undefined;
     const guardrail = {
       name: 'parallel-allow',
       execute: vi.fn(

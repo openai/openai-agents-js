@@ -36,9 +36,6 @@ import {
   assistant,
   type ToolExecutionConfig,
   type ToolNotFoundBehavior,
-  type Span,
-  type Trace,
-  type TracingProcessor,
 } from '../src';
 import { RunStreamEvent } from '../src/events';
 import { ServerConversationTracker } from '../src/runner/conversation';
@@ -67,6 +64,7 @@ import {
 import logger from '../src/logger';
 import { getGlobalTraceProvider } from '../src/tracing/provider';
 import {
+  createTestTracingProcessor,
   createTracingContextProbe,
   withTestTracingProcessor,
 } from '../../../helpers/tests/tracing';
@@ -1657,13 +1655,11 @@ describe('Runner.run', () => {
     it('replays a restored agent span before entering its context', async () => {
       const representedSpans = new Set<string>();
       let enteredRepresentedAgentSpan = false;
-      const processor: TracingProcessor = {
-        async onTraceStart(_trace: Trace) {},
-        async onTraceEnd(_trace: Trace) {},
-        async onSpanStart(span: Span<any>) {
+      const processor = createTestTracingProcessor({
+        async onSpanStart(span) {
           representedSpans.add(span.spanId);
         },
-        async onSpanEnd(span: Span<any>) {
+        async onSpanEnd(span) {
           representedSpans.delete(span.spanId);
         },
         async withSpan(span, fn) {
@@ -1672,9 +1668,7 @@ describe('Runner.run', () => {
           }
           return fn();
         },
-        async shutdown() {},
-        async forceFlush() {},
-      };
+      });
       const agent = new Agent({
         name: 'ResumeTracing',
         model: new FakeModel([

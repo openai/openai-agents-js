@@ -399,7 +399,8 @@ export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
   agent: TAgent,
   input: string | AgentInputItem[] | RunState<TContext, TAgent>,
   options?:
-    StreamRunOptions<TContext, TAgent> | NonStreamRunOptions<TContext, TAgent>,
+    | StreamRunOptions<TContext, TAgent>
+    | NonStreamRunOptions<TContext, TAgent>,
 ): Promise<RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>> {
   const runner = getDefaultRunner();
   if (options?.stream) {
@@ -965,14 +966,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               state,
               preparedSandboxAgent.executionAgent,
             );
-            const preparedCall = await this.#prepareModelCall(
-              state,
-              preparedSandboxAgent.executionAgent,
-              options,
-              artifacts,
-              preparedSandboxAgent.turnInput,
-              serverConversationTracker,
-              sessionInputUpdate,
+            const preparedCall = await withAgentSpanContext(state, () =>
+              this.#prepareModelCall(
+                state,
+                preparedSandboxAgent.executionAgent,
+                options,
+                artifacts,
+                preparedSandboxAgent.turnInput,
+                serverConversationTracker,
+                sessionInputUpdate,
+              ),
             );
 
             await guardrailTracker.throwIfError();
@@ -1340,14 +1343,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             preparedSandboxAgent.executionAgent,
           );
 
-          const preparedCall = await this.#prepareModelCall(
-            result.state,
-            preparedSandboxAgent.executionAgent,
-            options,
-            artifacts,
-            preparedSandboxAgent.turnInput,
-            serverConversationTracker,
-            sessionInputUpdate,
+          const preparedCall = await withAgentSpanContext(result.state, () =>
+            this.#prepareModelCall(
+              result.state,
+              preparedSandboxAgent.executionAgent,
+              options,
+              artifacts,
+              preparedSandboxAgent.turnInput,
+              serverConversationTracker,
+              sessionInputUpdate,
+            ),
           );
 
           await guardrailTracker.throwIfError();
@@ -1821,90 +1826,88 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       filteredItems?: AgentInputItem[],
     ) => void,
   ): Promise<PreparedModelCall<TContext>> {
-    return withAgentSpanContext(state, async () => {
-      const { model, explicitlyModelSet, resolvedModelName } =
-        await this.#resolveModelForAgent(executionAgent);
+    const { model, explicitlyModelSet, resolvedModelName } =
+      await this.#resolveModelForAgent(executionAgent);
 
-      const hasExplicitAgentModelSettings =
-        executionAgent.hasExplicitModelSettings();
-      const agentModelSettings = hasExplicitAgentModelSettings
-        ? executionAgent.modelSettings
-        : undefined;
-      const implicitModelSettings = hasExplicitAgentModelSettings
-        ? undefined
-        : getImplicitModelSettingsForResolvedModel(
-            explicitlyModelSet,
-            resolvedModelName,
-          );
-      const modelRequestInternal = {
-        reasoningEffortImplicit:
-          implicitModelSettings?.reasoning?.effort !== undefined &&
-          !hasExplicitTopLevelReasoningEffort(this.config.modelSettings) &&
-          !hasExplicitTopLevelReasoningEffort(agentModelSettings),
-      };
-
-      let modelSettings = mergeModelSettings(
-        implicitModelSettings,
-        this.config.modelSettings,
-      );
-      modelSettings = mergeModelSettings(modelSettings, agentModelSettings);
-      modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
-        explicitlyModelSet,
-        agentModelSettings ?? implicitModelSettings ?? {},
-        model,
-        modelSettings,
-        resolvedModelName,
-      );
-      modelSettings = maybeResetToolChoice(
-        state._currentAgent,
-        state._toolUseTracker,
-        modelSettings,
-      );
-      state._lastModelSettings = modelSettings;
-
-      const systemInstructions = await executionAgent.getSystemPrompt(
-        state._context,
-      );
-      const prompt = await executionAgent.getPrompt(state._context);
-
-      const { modelInput, sourceItems, persistedItems, filterApplied } =
-        await applyCallModelInputFilter(
-          state._currentAgent,
-          options.callModelInputFilter,
-          state._context,
-          turnInput,
-          systemInstructions,
+    const hasExplicitAgentModelSettings =
+      executionAgent.hasExplicitModelSettings();
+    const agentModelSettings = hasExplicitAgentModelSettings
+      ? executionAgent.modelSettings
+      : undefined;
+    const implicitModelSettings = hasExplicitAgentModelSettings
+      ? undefined
+      : getImplicitModelSettingsForResolvedModel(
+          explicitlyModelSet,
+          resolvedModelName,
         );
+    const modelRequestInternal = {
+      reasoningEffortImplicit:
+        implicitModelSettings?.reasoning?.effort !== undefined &&
+        !hasExplicitTopLevelReasoningEffort(this.config.modelSettings) &&
+        !hasExplicitTopLevelReasoningEffort(agentModelSettings),
+    };
 
-      // Provide filtered clones whenever filters run so session history mirrors the model payload.
-      // Returning an empty array is intentional: it tells the session layer to persist "nothing"
-      // instead of falling back to the unfiltered originals when the filter redacts everything.
-      sessionInputUpdate?.(
-        sourceItems,
-        filterApplied ? persistedItems : undefined,
+    let modelSettings = mergeModelSettings(
+      implicitModelSettings,
+      this.config.modelSettings,
+    );
+    modelSettings = mergeModelSettings(modelSettings, agentModelSettings);
+    modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
+      explicitlyModelSet,
+      agentModelSettings ?? implicitModelSettings ?? {},
+      model,
+      modelSettings,
+      resolvedModelName,
+    );
+    modelSettings = maybeResetToolChoice(
+      state._currentAgent,
+      state._toolUseTracker,
+      modelSettings,
+    );
+    state._lastModelSettings = modelSettings;
+
+    const systemInstructions = await executionAgent.getSystemPrompt(
+      state._context,
+    );
+    const prompt = await executionAgent.getPrompt(state._context);
+
+    const { modelInput, sourceItems, persistedItems, filterApplied } =
+      await applyCallModelInputFilter(
+        state._currentAgent,
+        options.callModelInputFilter,
+        state._context,
+        turnInput,
+        systemInstructions,
       );
 
-      const previousResponseId =
-        serverConversationTracker?.previousResponseId ??
-        options.previousResponseId;
-      const conversationId =
-        serverConversationTracker?.conversationId ?? options.conversationId;
+    // Provide filtered clones whenever filters run so session history mirrors the model payload.
+    // Returning an empty array is intentional: it tells the session layer to persist "nothing"
+    // instead of falling back to the unfiltered originals when the filter redacts everything.
+    sessionInputUpdate?.(
+      sourceItems,
+      filterApplied ? persistedItems : undefined,
+    );
 
-      return {
-        ...artifacts,
-        model,
-        explicitlyModelSet,
-        modelRequestInternal,
-        modelSettings,
-        modelInput,
-        prompt,
-        previousResponseId,
-        conversationId,
-        sourceItems,
-        filterApplied,
-        turnInput,
-      };
-    });
+    const previousResponseId =
+      serverConversationTracker?.previousResponseId ??
+      options.previousResponseId;
+    const conversationId =
+      serverConversationTracker?.conversationId ?? options.conversationId;
+
+    return {
+      ...artifacts,
+      model,
+      explicitlyModelSet,
+      modelRequestInternal,
+      modelSettings,
+      modelInput,
+      prompt,
+      previousResponseId,
+      conversationId,
+      sourceItems,
+      filterApplied,
+      turnInput,
+    };
   }
 }
 
