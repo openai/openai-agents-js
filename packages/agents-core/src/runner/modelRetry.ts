@@ -957,7 +957,18 @@ export async function* getStreamedResponseWithRetry(
         !iteratorCompleted &&
         iterator?.return
       ) {
-        await iterator.return();
+        if (failure instanceof ModelRequestTimeoutError) {
+          try {
+            const cleanup = iterator.return();
+            // Timeout remains the primary failure. Cleanup is best-effort so
+            // a rejecting or stuck provider iterator cannot block retry.
+            void Promise.resolve(cleanup).catch(() => {});
+          } catch {
+            // Preserve the configured timeout when cleanup throws synchronously.
+          }
+        } else {
+          await iterator.return();
+        }
       }
     }
 
