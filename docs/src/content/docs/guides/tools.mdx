@@ -9,6 +9,7 @@ import toolsHostedToolsExample from '../../../../../examples/docs/tools/hostedTo
 import localBuiltInToolsExample from '../../../../../examples/docs/tools/localBuiltInTools.ts?raw';
 import nonStrictSchemaTools from '../../../../../examples/docs/tools/nonStrictSchemaTools.ts?raw';
 import toolSearchExample from '../../../../../examples/docs/tools/toolSearch.ts?raw';
+import programmaticToolCallingExample from '../../../../../examples/docs/tools/programmaticToolCalling.ts?raw';
 import agentsAsToolsExample from '../../../../../examples/docs/tools/agentsAsTools.ts?raw';
 import agentsAsToolsStreamingExample from '../../../../../examples/docs/tools/agentsAsToolsStreaming.ts?raw';
 import agentToolRunContextExample from '../../../../../examples/docs/tools/agentToolRunContext.ts?raw';
@@ -20,7 +21,7 @@ Tools let an Agent **take actions** – fetch data, call external APIs, execute 
 
 > Read this page after [Agents](/openai-agents-js/guides/agents) once you know which agent should own the task and you want to give it capabilities. If you are still deciding between delegation patterns, see [Agent orchestration](/openai-agents-js/guides/multi-agent).
 
-1. **Hosted OpenAI tools** – run alongside the model on OpenAI servers. _(web search, file search, code interpreter, image generation, tool search)_
+1. **Hosted OpenAI tools** – run alongside the model on OpenAI servers. _(web search, file search, code interpreter, image generation, tool search, Programmatic Tool Calling)_
 2. **Built-in execution tools** – SDK-provided tools that execute outside the model. _(computer use and apply_patch run locally; shell can run locally or in hosted containers)_
 3. **Function tools** – wrap any local function with a JSON schema so the LLM can call it.
 4. **Agents as tools** – expose an entire Agent as a callable tool.
@@ -45,6 +46,7 @@ When you use the `OpenAIResponsesModel` you can add the following built‑in too
 | Code Interpreter | `'code_interpreter'` | Run code in a sandboxed environment. |
 | Image generation | `'image_generation'` | Generate images based on text. |
 | Tool search | `'tool_search'` | Load deferred function tools, namespaces, or searchable MCP tools at runtime. |
+| Programmatic Tool Calling | `'programmatic_tool_calling'` | Let the model coordinate eligible tools from isolated JavaScript. |
 
 <Code lang="typescript" code={toolsHostedToolsExample} title="Hosted tools" />
 
@@ -57,8 +59,23 @@ The SDK provides helper functions that return hosted tool definitions:
 | `codeInterpreterTool(options?)` | Defaults to an auto-managed container when no `container` is provided. |
 | `imageGenerationTool(options?)` | Supports image generation configuration such as `model`, `size`, `quality`, `background`, `inputFidelity`, `inputImageMask`, `moderation`, `outputCompression`, `partialImages`, and output format. |
 | `toolSearchTool(options?)` | Adds the built-in `tool_search` helper. Pair it with deferred function tools or hosted MCP tools that set `deferLoading: true`. Supports hosted execution by default or client execution with `execution: 'client'` plus `execute`. |
+| `programmaticToolCallingTool()` | Enables generated JavaScript to coordinate tools that explicitly include `allowedCallers: ['programmatic']`. |
 
-These helpers map JavaScript/TypeScript-friendly option names to the underlying OpenAI Responses API tool payloads. Refer to the official [OpenAI tools guide](https://developers.openai.com/api/docs/guides/tools) for the full tool schemas and advanced options like ranking options or semantic filters, and the official [Tool search guide](https://developers.openai.com/api/docs/guides/tools-tool-search) for the current built-in tool-search flow and model availability.
+These helpers map JavaScript/TypeScript-friendly option names to the underlying OpenAI Responses API tool payloads. Refer to the official [OpenAI tools guide](https://developers.openai.com/api/docs/guides/tools) for the full tool schemas and advanced options like ranking options or semantic filters, the official [Tool search guide](https://developers.openai.com/api/docs/guides/tools-tool-search) for the current built-in tool-search flow, and the official [Programmatic Tool Calling guide](https://developers.openai.com/api/docs/guides/tools-programmatic-tool-calling) for runtime details and model availability.
+
+#### Programmatic Tool Calling
+
+Programmatic Tool Calling lets a supported Responses API model generate JavaScript that calls eligible tools, including parallel calls and predictable dependent workflows. Add `programmaticToolCallingTool()` and opt each eligible tool in with `allowedCallers`. Omitted `allowedCallers` keeps the existing direct-only default.
+
+<Code
+  lang="typescript"
+  code={programmaticToolCallingExample}
+  title="Programmatic Tool Calling"
+/>
+
+Use `outputSchema` on function tools that return predictable JSON values. It describes the JSON encoded in the function output so generated code can use the fields reliably. The SDK preserves `program`, nested tool calls, their caller linkage, and `program_output` in run history and stateless replay.
+
+Keep writes and approval-sensitive actions direct-only unless the application has an explicit authorization boundary. A function can support both routes with `allowedCallers: ['direct', 'programmatic']`. Eligible SDK surfaces are function tools, hosted MCP, shell, apply patch, and code interpreter. Tool search itself remains a top-level tool: deferred tools must be loaded before a later program can call them.
 
 ---
 
@@ -154,6 +171,8 @@ You can turn **any** function into a tool with the `tool()` helper.
 | `isEnabled` | No | Conditionally expose the tool per run; accepts a boolean or predicate. |
 | `inputGuardrails` | No | Guardrails that run before the tool executes; can reject or throw. See [Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails). |
 | `outputGuardrails` | No | Guardrails that run after the tool executes; can reject or throw. See [Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails). |
+| `allowedCallers` | No | Responses API only. Use `['programmatic']` or `['direct', 'programmatic']` to opt the function into Programmatic Tool Calling. Omitted means direct-only. |
+| `outputSchema` | No | Responses API only. JSON Schema for the JSON value encoded in the function output. |
 
 #### SDK-only custom data
 
