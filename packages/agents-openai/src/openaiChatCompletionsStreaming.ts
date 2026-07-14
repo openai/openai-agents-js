@@ -59,8 +59,13 @@ export async function* convertChatCompletionsStreamToResponses(
       },
     };
 
-    // This is always set by the OpenAI API, but not by others e.g. LiteLLM
-    usage = (chunk as any).usage || undefined;
+    // This is always set by the OpenAI API, but not by others e.g. LiteLLM.
+    // Usage is not always reported on the final chunk (some providers such as
+    // xAI/Grok via LiteLLM attach it to an earlier chunk), so only overwrite
+    // it when the current chunk actually carries usage data.
+    if ((chunk as any).usage) {
+      usage = (chunk as any).usage;
+    }
 
     if (!chunk.choices || chunk.choices.length === 0) continue;
 
