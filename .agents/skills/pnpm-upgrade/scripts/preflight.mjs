@@ -29,7 +29,6 @@ function run(command, args, options) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       ...options,
-      shell: process.platform === 'win32',
       stdio: 'inherit',
     });
     child.on('error', reject);
@@ -73,7 +72,11 @@ async function runBootstrapProbe(bootstrap, targetVersion) {
       path.join(workDir, 'package-lock.json'),
       `${JSON.stringify(bootstrap.lock, null, 2)}\n`,
     );
-    await run('npm', ['ci'], { cwd: workDir, env: process.env });
+    await run('npm', ['ci'], {
+      cwd: workDir,
+      env: process.env,
+      shell: process.platform === 'win32',
+    });
 
     const pnpmHome =
       bootstrap.label === 'standalone' && process.platform === 'win32'
