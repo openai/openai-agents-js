@@ -143,6 +143,76 @@ describe('OpenAIChatCompletionsModel streaming scenarios', () => {
     });
   });
 
+  it('preserves usage reported on a non-final chunk when the terminal chunk has no usage', async () => {
+    // Some OpenAI-compatible providers reachable through a custom baseURL
+    // (e.g. xAI/Grok, or a LiteLLM gateway in front of it) attach usage to a
+    // non-final chunk and then emit a terminal chunk that carries no usage.
+    const stream = {
+      async *[Symbol.asyncIterator]() {
+        yield makeChunk({ content: 'Hello' });
+        yield makeChunk(
+          { content: ' world' },
+          {
+            prompt_tokens: 17,
+            completion_tokens: 4,
+            total_tokens: 21,
+          },
+        );
+        // Terminal chunk: finish_reason is set but there is no usage field.
+        yield {
+          id: 'res-stream',
+          created: 0,
+          model: 'gpt-stream',
+          object: 'chat.completion.chunk',
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        } as any;
+      },
+    };
+
+    const create = vi.fn().mockResolvedValue(stream);
+    const client = {
+      chat: { completions: { create } },
+      baseURL: 'https://openai-compatible.example/v1',
+    };
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-stream');
+    const events: any[] = [];
+
+    const request: any = {
+      input: 'hi there',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    };
+
+    for await (const event of model.getStreamedResponse(request)) {
+      events.push(event);
+    }
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stream: true,
+        stream_options: { include_usage: true },
+      }),
+      { headers: HEADERS, signal: undefined },
+    );
+
+    const finalEvent = events.find((ev) => ev.type === 'response_done');
+    expect(finalEvent).toBeDefined();
+    // The usage reported mid-stream must survive the terminal usage-less
+    // chunk instead of being reset to zero.
+    expect(finalEvent.response.usage).toEqual({
+      inputTokens: 17,
+      outputTokens: 4,
+      totalTokens: 21,
+      inputTokensDetails: { cached_tokens: 0 },
+      outputTokensDetails: { reasoning_tokens: 0 },
+    });
+  });
+
   it('stores a chat-completion shaped choice in generation spans for streaming traces', async () => {
     setTracingDisabled(false);
     const createGenerationSpanSpy = vi.spyOn(
