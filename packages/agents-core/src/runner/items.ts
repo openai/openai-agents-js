@@ -2,8 +2,12 @@ import { RunItem } from '../items';
 import { AgentInputItem } from '../types';
 import { serializeBinary } from '../utils/binary';
 import {
+  getToolResultCorrelationForCall,
+  getToolResultCorrelationForResult,
+  getToolResultCorrelationKey,
   getSimpleToolResultTypeForCall,
   isSimpleToolResultType,
+  type ToolResultCorrelation,
 } from './toolResultCorrelation';
 
 export type AgentInputItemPool = Map<string, AgentInputItem[]>;
@@ -172,6 +176,21 @@ function collectCompletedCallIdsByResultType(
   return completed;
 }
 
+function collectProgramCallIds(items: AgentInputItem[]): Set<string> {
+  const callIds = new Set<string>();
+
+  for (const item of items) {
+    if (!item || typeof item !== 'object' || item.type !== 'program') {
+      continue;
+    }
+    if (typeof item.callId === 'string') {
+      callIds.add(item.callId);
+    }
+  }
+
+  return callIds;
+}
+
 function isPendingHostedShellCall(item: AgentInputItem): boolean {
   if (!item || typeof item !== 'object' || item.type !== 'shell_call') {
     return false;
@@ -181,19 +200,147 @@ function isPendingHostedShellCall(item: AgentInputItem): boolean {
   return status === undefined || status === 'in_progress';
 }
 
+function getProgramCallerId(item: AgentInputItem): string | undefined {
+  if (!item || typeof item !== 'object' || !('caller' in item)) {
+    return undefined;
+  }
+  const caller = (item as { caller?: unknown }).caller;
+  if (!caller || typeof caller !== 'object') {
+    return undefined;
+  }
+  const candidate = caller as { type?: unknown; callerId?: unknown };
+  return candidate.type === 'program' && typeof candidate.callerId === 'string'
+    ? candidate.callerId
+    : undefined;
+}
+
+function getProgramOwnedCorrelationKey(
+  programCallId: string,
+  correlation: ToolResultCorrelation | undefined,
+): string | undefined {
+  return correlation
+    ? JSON.stringify([programCallId, getToolResultCorrelationKey(correlation)])
+    : undefined;
+}
+
+function collectProgramOwnedCallKeys(items: AgentInputItem[]): Set<string> {
+  const callKeys = new Set<string>();
+
+  for (const item of items) {
+    const programCallId = getProgramCallerId(item);
+    if (!programCallId) {
+      continue;
+    }
+    const key = getProgramOwnedCorrelationKey(
+      programCallId,
+      getToolResultCorrelationForCall(item),
+    );
+    if (key) {
+      callKeys.add(key);
+    }
+  }
+
+  return callKeys;
+}
+
+function hasRetainedProgramOwnedItem(
+  items: AgentInputItem[],
+  programCallId: string,
+  pruningIndexes?: Set<number>,
+): boolean {
+  const retainedCallKeys = new Set<string>();
+  const retainedResultKeys = new Set<string>();
+
+  for (const [index, item] of items.entries()) {
+    if (getProgramCallerId(item) !== programCallId) {
+      continue;
+    }
+
+    const result = getToolResultCorrelationForResult(item);
+    if (
+      !(pruningIndexes?.has(index) ?? false) &&
+      (isPendingHostedShellCall(item) ||
+        (item &&
+          typeof item === 'object' &&
+          item.type === 'hosted_tool_call' &&
+          !result))
+    ) {
+      return true;
+    }
+
+    const call = getToolResultCorrelationForCall(item);
+    if (call) {
+      retainedCallKeys.add(getToolResultCorrelationKey(call));
+    }
+    if (result) {
+      retainedResultKeys.add(getToolResultCorrelationKey(result));
+    }
+  }
+
+  return [...retainedCallKeys].some((key) => retainedResultKeys.has(key));
+}
+
 export function dropOrphanToolCalls(
   items: AgentInputItem[],
   options?: { pruningIndexes?: Set<number> },
 ): AgentInputItem[] {
   const pruningIndexes = options?.pruningIndexes;
   const completedByResultType = collectCompletedCallIdsByResultType(items);
+  const programCallIds = collectProgramCallIds(items);
+  const programOwnedCallKeys = collectProgramOwnedCallKeys(items);
   const droppedIndexes = new Set<number>();
+  const activeProgramCallIds = new Set<string>();
+  const orphanProgramCallIds = new Set<string>();
+
+  for (const [index, item] of items.entries()) {
+    if (pruningIndexes && !pruningIndexes.has(index)) {
+      continue;
+    }
+    if (!item || typeof item !== 'object' || item.type !== 'program') {
+      continue;
+    }
+    if (
+      completedByResultType.get('program_output')?.has(item.callId) ??
+      false
+    ) {
+      continue;
+    }
+
+    const hasRetainedOwnedItem = hasRetainedProgramOwnedItem(
+      items,
+      item.callId,
+      pruningIndexes,
+    );
+    if (hasRetainedOwnedItem) {
+      activeProgramCallIds.add(item.callId);
+    } else {
+      orphanProgramCallIds.add(item.callId);
+    }
+  }
 
   const filtered = items.filter((item, index) => {
-    if (pruningIndexes && !pruningIndexes.has(index)) {
+    if (!item || typeof item !== 'object') {
       return true;
     }
-    if (!item || typeof item !== 'object') {
+    const programCallerId = getProgramCallerId(item);
+    if (programCallerId) {
+      if (
+        !programCallIds.has(programCallerId) ||
+        orphanProgramCallIds.has(programCallerId)
+      ) {
+        droppedIndexes.add(index);
+        return false;
+      }
+      const resultKey = getProgramOwnedCorrelationKey(
+        programCallerId,
+        getToolResultCorrelationForResult(item),
+      );
+      if (resultKey && !programOwnedCallKeys.has(resultKey)) {
+        droppedIndexes.add(index);
+        return false;
+      }
+    }
+    if (pruningIndexes && !pruningIndexes.has(index)) {
       return true;
     }
     const type = (item as { type?: unknown }).type;
@@ -201,11 +348,18 @@ export function dropOrphanToolCalls(
     if (typeof type !== 'string' || typeof callId !== 'string') {
       return true;
     }
+    if (type === 'program_output' && !programCallIds.has(callId)) {
+      droppedIndexes.add(index);
+      return false;
+    }
     const resultType = getSimpleToolResultTypeForCall(type);
     if (!resultType) {
       return true;
     }
     if (isPendingHostedShellCall(item)) {
+      return true;
+    }
+    if (type === 'program' && activeProgramCallIds.has(callId)) {
       return true;
     }
     if (completedByResultType.get(resultType)?.has(callId) ?? false) {

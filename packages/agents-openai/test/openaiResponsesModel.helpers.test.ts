@@ -29,6 +29,9 @@ describe('getToolChoice', () => {
     });
     expect(getToolChoice('shell')).toEqual({ type: 'shell' });
     expect(getToolChoice('apply_patch')).toEqual({ type: 'apply_patch' });
+    expect(getToolChoice('programmatic_tool_calling')).toEqual({
+      type: 'programmatic_tool_calling',
+    });
   });
 
   it('supports arbitrary function names', () => {
@@ -82,6 +85,41 @@ describe('getToolChoice', () => {
 });
 
 describe('convertTool', () => {
+  it('converts Programmatic Tool Calling tools and eligible metadata', () => {
+    const outputSchema = {
+      type: 'object',
+      properties: { value: { type: 'string' } },
+      required: ['value'],
+      additionalProperties: false,
+    };
+    expect(
+      convertTool({
+        type: 'function',
+        name: 'lookup',
+        description: 'Lookup a value.',
+        parameters: { type: 'object' },
+        strict: true,
+        allowedCallers: ['programmatic'],
+        outputSchema,
+      } as any).tool,
+    ).toEqual({
+      type: 'function',
+      name: 'lookup',
+      description: 'Lookup a value.',
+      parameters: { type: 'object' },
+      strict: true,
+      allowed_callers: ['programmatic'],
+      output_schema: outputSchema,
+    });
+    expect(
+      convertTool({
+        type: 'hosted_tool',
+        name: 'programmatic_tool_calling',
+        providerData: { type: 'programmatic_tool_calling' },
+      } as any).tool,
+    ).toEqual({ type: 'programmatic_tool_calling' });
+  });
+
   it('converts function tools', () => {
     const t = convertTool({
       type: 'function',
@@ -590,6 +628,107 @@ describe('convertTool', () => {
 });
 
 describe('getInputItems', () => {
+  it('replays caller linkage on MCP approval requests and responses', () => {
+    expect(
+      getInputItems([
+        {
+          type: 'hosted_tool_call',
+          id: 'mcpr_1',
+          name: 'mcp_approval_request',
+          caller: { type: 'program', callerId: 'call_prog_1' },
+          providerData: {
+            type: 'mcp_approval_request',
+            id: 'mcpr_1',
+            name: 'lookup',
+            arguments: '{}',
+            server_label: 'server',
+          },
+        },
+        {
+          type: 'hosted_tool_call',
+          name: 'mcp_approval_response',
+          caller: { type: 'program', callerId: 'call_prog_1' },
+          providerData: {
+            type: 'mcp_approval_response',
+            approve: true,
+            approval_request_id: 'mcpr_1',
+          },
+        },
+      ] as any),
+    ).toMatchObject([
+      {
+        type: 'mcp_approval_request',
+        id: 'mcpr_1',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+      {
+        type: 'mcp_approval_response',
+        approve: true,
+        approval_request_id: 'mcpr_1',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+    ]);
+  });
+
+  it('replays Programmatic Tool Calling items and caller linkage', () => {
+    expect(
+      getInputItems([
+        {
+          type: 'program',
+          id: 'prog_1',
+          callId: 'call_prog_1',
+          code: 'text("ok")',
+          fingerprint: 'fp_1',
+        },
+        {
+          type: 'function_call_result',
+          id: 'fc_out_1',
+          callId: 'call_1',
+          name: 'lookup',
+          status: 'completed',
+          output: 'ok',
+          caller: { type: 'program', callerId: 'call_prog_1' },
+        },
+        {
+          type: 'program_output',
+          id: 'prog_out_1',
+          callId: 'call_prog_1',
+          output: 'ok',
+          status: 'completed',
+          providerData: {
+            output: 'stale-output',
+            result: 'stale-result',
+            customField: 'kept',
+          },
+        },
+      ]),
+    ).toEqual([
+      {
+        type: 'program',
+        id: 'prog_1',
+        call_id: 'call_prog_1',
+        code: 'text("ok")',
+        fingerprint: 'fp_1',
+      },
+      {
+        type: 'function_call_output',
+        id: 'fc_out_1',
+        call_id: 'call_1',
+        output: 'ok',
+        status: 'completed',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+      {
+        type: 'program_output',
+        id: 'prog_out_1',
+        call_id: 'call_prog_1',
+        result: 'ok',
+        status: 'completed',
+        custom_field: 'kept',
+      },
+    ]);
+  });
+
   it('converts messages and tool calls/results', () => {
     const items = getInputItems([
       { role: 'user', content: 'hi', id: 'u1' },
@@ -641,6 +780,7 @@ describe('getInputItems', () => {
         type: 'shell_call_output',
         id: 'sh2',
         callId: 's1',
+        status: 'incomplete',
         output: [
           {
             stdout: 'hi',
@@ -692,6 +832,7 @@ describe('getInputItems', () => {
       type: 'shell_call_output',
       id: 'sh2',
       call_id: 's1',
+      status: 'incomplete',
       output: [
         {
           stdout: 'hi',
@@ -1166,9 +1307,15 @@ describe('getInputItems', () => {
   });
 
   it('handles string and fallback outputs for function_call_result', () => {
+    const schemaJson = JSON.stringify({ type: 'text', text: 'ok' });
     const items = getInputItems([
       { type: 'function_call_result', callId: 'str', output: 'ok' },
       { type: 'function_call_result', callId: 'num', output: 42 },
+      {
+        type: 'function_call_result',
+        callId: 'schema',
+        output: { type: 'text', text: schemaJson },
+      },
     ] as any);
 
     expect(items[0]).toMatchObject({
@@ -1180,6 +1327,11 @@ describe('getInputItems', () => {
       type: 'function_call_output',
       call_id: 'num',
       output: '42',
+    });
+    expect(items[2]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'schema',
+      output: schemaJson,
     });
   });
 
@@ -1697,12 +1849,35 @@ describe('getInputItems', () => {
         type: 'hosted_tool_call',
         id: 'c',
         status: 'completed',
+        caller: { type: 'program', callerId: 'call_prog_1' },
         providerData: { type: 'code_interpreter', code: 'print()' },
       },
     ] as any);
     expect(ci[0]).toMatchObject({
       type: 'code_interpreter_call',
       code: 'print()',
+      caller: { type: 'program', caller_id: 'call_prog_1' },
+    });
+
+    const mcp = getInputItems([
+      {
+        type: 'hosted_tool_call',
+        id: 'mcp_1',
+        name: 'mcp_call',
+        status: 'completed',
+        caller: { type: 'program', callerId: 'call_prog_1' },
+        providerData: {
+          type: 'mcp_call',
+          id: 'mcp_1',
+          name: 'lookup',
+          arguments: '{}',
+          server_label: 'server',
+        },
+      },
+    ] as any);
+    expect(mcp[0]).toMatchObject({
+      type: 'mcp_call',
+      caller: { type: 'program', caller_id: 'call_prog_1' },
     });
 
     const img = getInputItems([
@@ -2148,6 +2323,118 @@ describe('getInputItems', () => {
 });
 
 describe('convertToOutputItem', () => {
+  it('lifts hosted Programmatic Tool Calling caller linkage', () => {
+    expect(
+      convertToOutputItem([
+        {
+          type: 'code_interpreter_call',
+          id: 'ci_1',
+          code: 'print("ok")',
+          container_id: 'container_1',
+          outputs: [{ type: 'logs', logs: 'ok' }],
+          status: 'completed',
+          caller: { type: 'program', caller_id: 'call_prog_1' },
+        },
+      ] as any),
+    ).toEqual([
+      {
+        type: 'hosted_tool_call',
+        id: 'ci_1',
+        name: 'code_interpreter_call',
+        status: 'completed',
+        output: undefined,
+        caller: { type: 'program', callerId: 'call_prog_1' },
+        providerData: {
+          type: 'code_interpreter_call',
+          id: 'ci_1',
+          code: 'print("ok")',
+          container_id: 'container_1',
+          outputs: [{ type: 'logs', logs: 'ok' }],
+        },
+      },
+    ]);
+  });
+
+  it('lifts hosted MCP caller linkage', () => {
+    const [output] = convertToOutputItem([
+      {
+        type: 'mcp_call',
+        id: 'mcp_1',
+        name: 'lookup',
+        arguments: '{}',
+        server_label: 'server',
+        status: 'completed',
+        output: 'ok',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+    ] as any);
+
+    expect(output).toMatchObject({
+      type: 'hosted_tool_call',
+      id: 'mcp_1',
+      name: 'mcp_call',
+      caller: { type: 'program', callerId: 'call_prog_1' },
+    });
+    expect(output.providerData).not.toHaveProperty('caller');
+  });
+
+  it('converts Programmatic Tool Calling items and caller linkage', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'program',
+        id: 'prog_1',
+        call_id: 'call_prog_1',
+        code: 'text("ok")',
+        fingerprint: 'fp_1',
+      },
+      {
+        type: 'function_call',
+        id: 'fc_1',
+        call_id: 'call_1',
+        name: 'lookup',
+        arguments: '{}',
+        status: 'completed',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+      {
+        type: 'program_output',
+        id: 'prog_out_1',
+        call_id: 'call_prog_1',
+        result: 'ok',
+        status: 'completed',
+      },
+    ] as any);
+
+    expect(out).toEqual([
+      {
+        type: 'program',
+        id: 'prog_1',
+        callId: 'call_prog_1',
+        code: 'text("ok")',
+        fingerprint: 'fp_1',
+        providerData: {},
+      },
+      {
+        type: 'function_call',
+        id: 'fc_1',
+        callId: 'call_1',
+        name: 'lookup',
+        status: 'completed',
+        arguments: '{}',
+        caller: { type: 'program', callerId: 'call_prog_1' },
+        providerData: { id: 'fc_1', type: 'function_call' },
+      },
+      {
+        type: 'program_output',
+        id: 'prog_out_1',
+        callId: 'call_prog_1',
+        output: 'ok',
+        status: 'completed',
+        providerData: {},
+      },
+    ]);
+  });
+
   it('converts output items', () => {
     const out = convertToOutputItem([
       {
@@ -2632,6 +2919,7 @@ describe('convertToOutputItem', () => {
         type: 'shell_call_output',
         id: 'sh2',
         call_id: 's1',
+        status: 'incomplete',
         output: [
           {
             stdout: 'hi',
@@ -2664,6 +2952,7 @@ describe('convertToOutputItem', () => {
     expect(out[1]).toMatchObject({
       type: 'shell_call_output',
       callId: 's1',
+      status: 'incomplete',
       output: [
         {
           stdout: 'hi',

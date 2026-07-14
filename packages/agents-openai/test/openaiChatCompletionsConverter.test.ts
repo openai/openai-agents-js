@@ -1001,6 +1001,20 @@ describe('itemsToMessages', () => {
 });
 
 describe('tool helpers', () => {
+  test('itemsToMessages rejects Programmatic Tool Calling history', () => {
+    expect(() =>
+      itemsToMessages([
+        {
+          type: 'program',
+          id: 'prog_1',
+          callId: 'call_prog_1',
+          code: 'text("ok")',
+          fingerprint: 'fp_1',
+        },
+      ]),
+    ).toThrow(/Programmatic Tool Calling history is not supported/);
+  });
+
   test('toolToOpenAI rejects non-function tools', () => {
     const tool: SerializedTool = { type: 'builtin' } as any;
     expect(() => toolToOpenAI(tool)).toThrow();

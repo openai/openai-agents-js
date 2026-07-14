@@ -419,6 +419,11 @@ export function itemsToMessages(
         'Tool search items are not supported for chat completions. Please use the Responses API when replaying tool search history.',
       );
     } else if (item.type === 'function_call') {
+      if (item.caller?.type === 'program') {
+        throw new UserError(
+          'Programmatic Tool Calling history is not supported for chat completions. Please use the Responses API.',
+        );
+      }
       const hasQualifiedOrInvalidName =
         typeof item.name === 'string' &&
         !CHAT_COMPLETIONS_FUNCTION_NAME_PATTERN.test(item.name);
@@ -465,6 +470,11 @@ export function itemsToMessages(
         ]),
       );
     } else if (item.type === 'function_call_result') {
+      if (item.caller?.type === 'program') {
+        throw new UserError(
+          'Programmatic Tool Calling history is not supported for chat completions. Please use the Responses API.',
+        );
+      }
       flushAssistantMessage();
       const funcOutput = item;
       const toolContent = normalizeFunctionCallOutputForChat(
@@ -489,6 +499,10 @@ export function itemsToMessages(
     } else if (item.type === 'compaction') {
       throw new UserError(
         'Compaction items are not supported for chat completions. Please use the Responses API when working with compaction.',
+      );
+    } else if (item.type === 'program' || item.type === 'program_output') {
+      throw new UserError(
+        'Programmatic Tool Calling history is not supported for chat completions. Please use the Responses API.',
       );
     } else {
       const exhaustive = item satisfies never; // ensures that the type is exhaustive

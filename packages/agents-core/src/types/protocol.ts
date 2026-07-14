@@ -444,6 +444,34 @@ export type MessageItem = z.infer<typeof MessageItem>;
 // Tool call types
 // ----------------------------
 
+export const ToolCaller = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('direct') }),
+  z.object({
+    type: z.literal('program'),
+    callerId: z.string(),
+  }),
+]);
+
+export type ToolCaller = z.infer<typeof ToolCaller>;
+
+export const ProgramCallItem = ItemBase.extend({
+  type: z.literal('program'),
+  callId: z.string(),
+  code: z.string(),
+  fingerprint: z.string(),
+});
+
+export type ProgramCallItem = z.infer<typeof ProgramCallItem>;
+
+export const ProgramCallResultItem = ItemBase.extend({
+  type: z.literal('program_output'),
+  callId: z.string(),
+  output: z.string(),
+  status: z.enum(['completed', 'incomplete']),
+});
+
+export type ProgramCallResultItem = z.infer<typeof ProgramCallResultItem>;
+
 export const HostedToolCallItem = ItemBase.extend({
   type: z.literal('hosted_tool_call'),
   /**
@@ -468,6 +496,11 @@ export const HostedToolCallItem = ItemBase.extend({
    * The primary output of the tool call. Additional output might be in the `providerData` field.
    */
   output: z.string().optional(),
+
+  /**
+   * The execution context that invoked the hosted tool.
+   */
+  caller: ToolCaller.optional(),
 });
 
 export type HostedToolCallItem = z.infer<typeof HostedToolCallItem>;
@@ -498,6 +531,7 @@ export const FunctionCallItem = ItemBase.extend({
    * The arguments of the function call.
    */
   arguments: z.string(),
+  caller: ToolCaller.optional(),
 });
 
 export type FunctionCallItem = z.infer<typeof FunctionCallItem>;
@@ -585,6 +619,7 @@ export const FunctionCallResultItem = ItemBase.extend({
    * The status of the tool call.
    */
   status: z.enum(['in_progress', 'completed', 'incomplete']),
+  caller: ToolCaller.optional(),
 
   /**
    * The output of the tool call.
@@ -665,6 +700,7 @@ export const ShellCallItem = ItemBase.extend({
   callId: z.string(),
   status: z.enum(['in_progress', 'completed', 'incomplete']).optional(),
   action: ShellAction,
+  caller: ToolCaller.optional(),
 });
 
 export type ShellCallItem = z.infer<typeof ShellCallItem>;
@@ -692,8 +728,10 @@ export type ShellCallOutputContent = z.infer<typeof ShellCallOutputContent>;
 export const ShellCallResultItem = ItemBase.extend({
   type: z.literal('shell_call_output'),
   callId: z.string(),
+  status: z.enum(['in_progress', 'completed', 'incomplete']).optional(),
   maxOutputLength: z.number().optional(),
   output: z.array(ShellCallOutputContent),
+  caller: ToolCaller.optional(),
 });
 
 export type ShellCallResultItem = z.infer<typeof ShellCallResultItem>;
@@ -741,6 +779,7 @@ export const ApplyPatchCallItem = ItemBase.extend({
   callId: z.string(),
   status: z.enum(['in_progress', 'completed']),
   operation: ApplyPatchOperation,
+  caller: ToolCaller.optional(),
 });
 
 export type ApplyPatchCallItem = z.infer<typeof ApplyPatchCallItem>;
@@ -750,11 +789,13 @@ export const ApplyPatchCallResultItem = ItemBase.extend({
   callId: z.string(),
   status: z.enum(['completed', 'failed']),
   output: z.string().optional(),
+  caller: ToolCaller.optional(),
 });
 
 export type ApplyPatchCallResultItem = z.infer<typeof ApplyPatchCallResultItem>;
 
 export const ToolCallItem = z.discriminatedUnion('type', [
+  ProgramCallItem,
   ComputerUseCallItem,
   ShellCallItem,
   ApplyPatchCallItem,
@@ -827,6 +868,8 @@ export const OutputModelItem = z.discriminatedUnion('type', [
   ToolSearchCallItem,
   ToolSearchOutputItem,
   HostedToolCallItem,
+  ProgramCallItem,
+  ProgramCallResultItem,
   FunctionCallItem,
   ComputerUseCallItem,
   ShellCallItem,
@@ -848,6 +891,8 @@ export const ModelItem = z.union([
   ToolSearchCallItem,
   ToolSearchOutputItem,
   HostedToolCallItem,
+  ProgramCallItem,
+  ProgramCallResultItem,
   FunctionCallItem,
   ComputerUseCallItem,
   ShellCallItem,

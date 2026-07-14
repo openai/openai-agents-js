@@ -99,9 +99,24 @@ export function toRealtimeToolDefinition(
   tool: RealtimeTool,
 ): RealtimeToolDefinition {
   if (tool.type === 'function') {
+    if (tool.allowedCallers?.includes('programmatic')) {
+      throw new UserError(
+        `Realtime does not support function tool '${tool.name}' with allowedCallers including 'programmatic'. Programmatic Tool Calling is only supported with the Responses API.`,
+      );
+    }
+    if (typeof tool.outputSchema !== 'undefined') {
+      throw new UserError(
+        `Realtime does not support function tool '${tool.name}' with outputSchema. Function tool outputSchema is only supported with the Responses API.`,
+      );
+    }
     return tool;
   }
   if (tool.type === 'hosted_tool' && tool.name === 'hosted_mcp') {
+    if (tool.providerData.allowed_callers?.includes('programmatic')) {
+      throw new UserError(
+        `Realtime does not support hosted MCP tool '${tool.providerData.server_label}' with allowedCallers including 'programmatic'. Programmatic Tool Calling is only supported with the Responses API.`,
+      );
+    }
     const serverUrl =
       tool.providerData.server_url && tool.providerData.server_url.length > 0
         ? tool.providerData.server_url

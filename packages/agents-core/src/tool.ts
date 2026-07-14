@@ -16,7 +16,12 @@ import { combineAbortSignals } from './utils/abortSignals';
 import { RunContext } from './runContext';
 import type { RunConfig } from './run';
 import type { RunResult } from './result';
-import { InvalidToolInputError, ToolTimeoutError, UserError } from './errors';
+import {
+  InvalidToolInputError,
+  InvalidToolOutputError,
+  ToolTimeoutError,
+  UserError,
+} from './errors';
 import logger from './logger';
 import { getCurrentSpan } from './tracing';
 import { RunToolApprovalItem, RunToolCallOutputItem } from './items';
@@ -39,6 +44,15 @@ import {
   ToolOutputGuardrailFunction,
 } from './toolGuardrail';
 import type { ToolOutputCustomDataExtractor } from './utils/customData';
+import {
+  normalizeToolAllowedCallers,
+  type ToolAllowedCallers,
+} from './utils/toolCallers';
+
+export type {
+  ToolAllowedCaller,
+  ToolAllowedCallers,
+} from './utils/toolCallers';
 
 export type { ToolOutputCustomData } from './utils/customData';
 
@@ -66,6 +80,9 @@ export type ToolApprovalFunction<TParameters extends ToolInputParameters> = (
 
 export const FUNCTION_TOOL_PARSED_INPUT_CALLBACK = Symbol(
   'openai.agents.functionToolParsedInputCallback',
+);
+const FUNCTION_TOOL_OUTPUT_VALIDATOR = Symbol(
+  'openai.agents.functionToolOutputValidator',
 );
 
 export type ToolCallDetails = {
@@ -132,10 +149,14 @@ export type ApplyPatchToolCustomDataExtractor =
 
 export type FunctionToolTimeoutBehavior = 'error_as_result' | 'raise_exception';
 
-export type ToolTimeoutErrorFunction<Context = UnknownContext> = (
+export type ToolTimeoutErrorFunction<
+  Context = UnknownContext,
+  Result = string,
+> = (
   context: RunContext<Context>,
   error: ToolTimeoutError,
-) => Promise<string> | string;
+  details?: ToolCallDetails,
+) => Promise<Result> | Result;
 
 export type ShellApprovalFunction = (
   runContext: RunContext,
@@ -309,6 +330,18 @@ export type FunctionTool<
   providerData?: Record<string, any>;
 
   /**
+   * Responses API only. Controls which execution contexts can invoke the tool.
+   * When omitted, the Responses API defaults to direct calls only.
+   */
+  allowedCallers?: ToolAllowedCallers;
+
+  /**
+   * Responses API only. Describes the JSON value encoded in string outputs.
+   * Zod schemas also validate the tool result at runtime.
+   */
+  outputSchema?: JsonObjectSchema<any>;
+
+  /**
    * The function to invoke when the tool is called.
    */
   invoke: (
@@ -316,6 +349,12 @@ export type FunctionTool<
     input: string,
     details?: ToolCallDetails,
   ) => Promise<string | Result>;
+
+  /**
+   * Optional model-visible fallback for execution errors and pre-execution
+   * failures. Structured tools use this to preserve their output contract.
+   */
+  errorFunction?: ToolErrorFunction<Context, string | Result> | null;
 
   /**
    * Whether the tool needs human approval before it can be called. If this is true, the run will result in an `interruption` that the
@@ -333,13 +372,16 @@ export type FunctionTool<
    *
    * - `error_as_result`: return a model-visible timeout message.
    * - `raise_exception`: raise `ToolTimeoutError` and fail the run.
+   *
+   * Tools created with an output schema default to `raise_exception`; other
+   * function tools default to `error_as_result`.
    */
   timeoutBehavior?: FunctionToolTimeoutBehavior;
 
   /**
    * Optional formatter for timeout errors when timeoutBehavior is `error_as_result`.
    */
-  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
+  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context, Result>;
 
   /**
    * Determines whether the tool should be made available to the model for the current run.
@@ -362,6 +404,13 @@ export type FunctionTool<
     TParameters,
     Result
   >;
+
+  /** @internal */
+  [FUNCTION_TOOL_OUTPUT_VALIDATOR]?: (
+    output: unknown,
+    runContext: RunContext<Context>,
+    details?: ToolCallDetails,
+  ) => Result;
 };
 
 /**
@@ -726,6 +775,10 @@ type ShellToolBase = {
    * If provided, it will be invoked immediately when an approval is needed.
    */
   onApproval?: ShellOnApprovalFunction;
+  /**
+   * Responses API only. Controls which execution contexts can invoke the tool.
+   */
+  allowedCallers?: ToolAllowedCallers;
 };
 
 type LocalShellTool = ShellToolBase & {
@@ -760,6 +813,7 @@ type LocalShellToolOptions = {
   shell: Shell;
   needsApproval?: boolean | ShellApprovalFunction;
   onApproval?: ShellOnApprovalFunction;
+  allowedCallers?: ToolAllowedCallers;
 };
 
 type HostedShellToolOptions = {
@@ -768,6 +822,7 @@ type HostedShellToolOptions = {
   shell?: never;
   needsApproval?: never;
   onApproval?: never;
+  allowedCallers?: ToolAllowedCallers;
 };
 
 function normalizeShellToolSkillReference(
@@ -875,6 +930,10 @@ export function shellTool(
   options: LocalShellToolOptions | HostedShellToolOptions,
 ): NormalizedLocalShellTool | HostedShellTool {
   const environment = normalizeShellToolEnvironment(options.environment);
+  const allowedCallers = normalizeToolAllowedCallers(
+    options.allowedCallers,
+    options.name ?? 'shell',
+  );
   const needsApproval: ShellApprovalFunction =
     typeof options.needsApproval === 'function'
       ? options.needsApproval
@@ -898,6 +957,7 @@ export function shellTool(
       shell: localShell,
       needsApproval,
       onApproval: options.onApproval,
+      ...(allowedCallers ? { allowedCallers } : {}),
     };
   }
 
@@ -922,6 +982,7 @@ export function shellTool(
     name: options.name ?? 'shell',
     environment,
     needsApproval,
+    ...(allowedCallers ? { allowedCallers } : {}),
   };
 }
 
@@ -945,6 +1006,11 @@ export type ApplyPatchTool = {
   onApproval?: ApplyPatchOnApprovalFunction;
 
   /**
+   * Responses API only. Controls which execution contexts can invoke the tool.
+   */
+  allowedCallers?: ToolAllowedCallers;
+
+  /**
    * Optional callback that attaches SDK-only custom data to the emitted tool output item.
    */
   customDataExtractor?: ApplyPatchToolCustomDataExtractor;
@@ -960,6 +1026,11 @@ export function applyPatchTool(
     customDataExtractor?: ApplyPatchToolCustomDataExtractor;
   },
 ): ApplyPatchTool {
+  const name = options.name ?? 'apply_patch';
+  const allowedCallers = normalizeToolAllowedCallers(
+    options.allowedCallers,
+    name,
+  );
   const needsApproval: ApplyPatchApprovalFunction =
     typeof options.needsApproval === 'function'
       ? options.needsApproval
@@ -970,10 +1041,11 @@ export function applyPatchTool(
 
   return {
     type: 'apply_patch',
-    name: options.name ?? 'apply_patch',
+    name,
     editor: options.editor,
     needsApproval,
     onApproval: options.onApproval,
+    ...(allowedCallers ? { allowedCallers } : {}),
     customDataExtractor: options.customDataExtractor,
   };
 }
@@ -1001,6 +1073,7 @@ export type HostedMCPTool<Context = UnknownContext> = HostedTool & {
 export function hostedMcpTool<Context = UnknownContext>(
   options: {
     allowedTools?: string[] | { toolNames?: string[] };
+    allowedCallers?: ToolAllowedCallers;
     deferLoading?: boolean;
     serverDescription?: string;
   } &
@@ -1034,6 +1107,13 @@ export function hostedMcpTool<Context = UnknownContext>(
         }
     ),
 ): HostedMCPTool<Context> {
+  const allowedCallers = normalizeToolAllowedCallers(
+    options.allowedCallers,
+    options.serverLabel,
+  );
+  const providerAllowedCallers = allowedCallers
+    ? [...allowedCallers]
+    : undefined;
   if ('serverUrl' in options) {
     // the MCP servers compatible with the specification
     const providerData: ProviderData.HostedMCPTool<Context> =
@@ -1046,6 +1126,7 @@ export function hostedMcpTool<Context = UnknownContext>(
             authorization: options.authorization,
             require_approval: 'never',
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            allowed_callers: providerAllowedCallers,
             defer_loading: options.deferLoading,
             headers: options.headers,
             server_description: options.serverDescription,
@@ -1056,6 +1137,7 @@ export function hostedMcpTool<Context = UnknownContext>(
             server_url: options.serverUrl,
             authorization: options.authorization,
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            allowed_callers: providerAllowedCallers,
             defer_loading: options.deferLoading,
             headers: options.headers,
             require_approval: buildRequireApproval(options.requireApproval),
@@ -1079,6 +1161,7 @@ export function hostedMcpTool<Context = UnknownContext>(
             authorization: options.authorization,
             require_approval: 'never',
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            allowed_callers: providerAllowedCallers,
             defer_loading: options.deferLoading,
             headers: options.headers,
             server_description: options.serverDescription,
@@ -1089,6 +1172,7 @@ export function hostedMcpTool<Context = UnknownContext>(
             connector_id: options.connectorId,
             authorization: options.authorization,
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            allowed_callers: providerAllowedCallers,
             defer_loading: options.deferLoading,
             headers: options.headers,
             require_approval: buildRequireApproval(options.requireApproval),
@@ -1110,6 +1194,7 @@ export function hostedMcpTool<Context = UnknownContext>(
             server_label: options.serverLabel,
             require_approval: 'never',
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            allowed_callers: providerAllowedCallers,
             defer_loading: options.deferLoading,
             server_description: options.serverDescription,
           }
@@ -1117,6 +1202,7 @@ export function hostedMcpTool<Context = UnknownContext>(
             type: 'mcp',
             server_label: options.serverLabel,
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            allowed_callers: providerAllowedCallers,
             defer_loading: options.deferLoading,
             require_approval: buildRequireApproval(options.requireApproval),
             on_approval: options.onApproval,
@@ -1337,6 +1423,28 @@ export type ToolInputParametersNonStrict =
   undefined | JsonObjectSchemaNonStrict<any>;
 
 /**
+ * A schema describing the JSON object encoded in a function tool output.
+ *
+ * Zod schemas are converted to JSON Schema when the tool is created. Plain
+ * JSON Schema objects are passed through unchanged.
+ */
+export type ToolOutputSchema = ZodObjectLike | JsonObjectSchema<any>;
+
+type ToolExecuteResult<
+  TOutputSchema extends ToolOutputSchema | undefined,
+  Result,
+> = TOutputSchema extends ZodObjectLike
+  ? ZodInfer<TOutputSchema>
+  : TOutputSchema extends JsonObjectSchema<any>
+    ? unknown
+    : Result;
+
+type ToolFallbackResult<TOutputSchema extends ToolOutputSchema | undefined> =
+  TOutputSchema extends undefined
+    ? string
+    : ToolExecuteResult<TOutputSchema, unknown>;
+
+/**
  * The arguments to a tool.
  *
  * The type of the arguments are derived from the parameters passed to the tool definition.
@@ -1360,24 +1468,56 @@ export type ToolExecuteArgument<TParameters extends ToolInputParameters> =
 type ToolExecuteFunction<
   TParameters extends ToolInputParameters,
   Context = UnknownContext,
+  Result = unknown,
 > = (
   input: ToolExecuteArgument<TParameters>,
   context?: RunContext<Context>,
   details?: ToolCallDetails,
-) => Promise<unknown> | unknown;
+) => Promise<Result> | Result;
 
 /**
- * The function to invoke when an error occurs while running the tool. This can be used to define
- * what the model should receive as tool output in case of an error. It can be used to provide
- * for example additional context or a fallback value.
+ * The function to invoke when an error or model-visible pre-execution rejection
+ * occurs. This can provide additional context or a fallback value.
  *
  * @param context An instance of the current RunContext
  * @param error The error that occurred
  */
-type ToolErrorFunction = (
-  context: RunContext,
+type ToolErrorFunction<Context = UnknownContext, Result = string> = (
+  context: RunContext<Context>,
   error: Error | unknown,
-) => Promise<string> | string;
+  details?: ToolCallDetails,
+) => Promise<Result> | Result;
+
+type ToolTimeoutOptions<
+  Context,
+  TOutputSchema extends ToolOutputSchema | undefined,
+> = [TOutputSchema] extends [undefined]
+  ? {
+      /** Optional timeout in milliseconds for each tool call. */
+      timeoutMs?: number;
+      /** Determines whether a timeout becomes a result or an exception. */
+      timeoutBehavior?: FunctionToolTimeoutBehavior;
+      /** Optional formatter for model-visible timeout results. */
+      timeoutErrorFunction?: ToolTimeoutErrorFunction<Context, string>;
+    }
+  : | {
+        /** Optional timeout in milliseconds for each tool call. */
+        timeoutMs?: number;
+        /** Structured tools raise timeout exceptions by default. */
+        timeoutBehavior?: 'raise_exception';
+        timeoutErrorFunction?: never;
+      }
+    | {
+        /** Optional timeout in milliseconds for each tool call. */
+        timeoutMs?: number;
+        /** Return a schema-compatible timeout result. */
+        timeoutBehavior: 'error_as_result';
+        /** Required formatter for schema-compatible timeout results. */
+        timeoutErrorFunction: ToolTimeoutErrorFunction<
+          Context,
+          ToolFallbackResult<TOutputSchema>
+        >;
+      };
 
 const FUNCTION_TOOL_TIMEOUT_BEHAVIORS = [
   'error_as_result',
@@ -1436,10 +1576,11 @@ const MAX_FUNCTION_TOOL_TIMEOUT_MS = 2_147_483_647;
  * @param TParameters The parameters of the tool
  * @param Context The context of the tool
  */
-type StrictToolOptions<
+type StrictToolOptionsBase<
   TParameters extends ToolInputParametersStrict,
   Context = UnknownContext,
-> = ToolGuardrailOptions<Context> & {
+  TOutputSchema extends ToolOutputSchema | undefined = undefined,
+> = {
   /**
    * The name of the tool. Must be unique within the agent.
    */
@@ -1473,14 +1614,37 @@ type StrictToolOptions<
   providerData?: Record<string, any>;
 
   /**
-   * The function to invoke when the tool is called.
+   * Responses API only. Controls which execution contexts can invoke the tool.
    */
-  execute: ToolExecuteFunction<TParameters, Context>;
+  allowedCallers?: ToolAllowedCallers;
 
   /**
-   * The function to invoke when an error occurs while running the tool.
+   * Responses API only. Describes the JSON object encoded in string outputs.
+   * Zod object schemas are converted to JSON Schema and constrain the return
+   * type of `execute` to the inferred Zod output type. They also validate the
+   * result at runtime.
    */
-  errorFunction?: ToolErrorFunction | null;
+  outputSchema?: TOutputSchema;
+
+  /**
+   * The function to invoke when the tool is called.
+   */
+  execute: ToolExecuteFunction<
+    TParameters,
+    Context,
+    ToolExecuteResult<TOutputSchema, unknown>
+  >;
+
+  /**
+   * The function to invoke when an error or model-visible pre-execution
+   * rejection occurs. Tools with an output schema rethrow by default so they
+   * cannot emit an unstructured error string. Provide this callback to return
+   * a schema-compatible fallback.
+   */
+  errorFunction?: ToolErrorFunction<
+    Context,
+    ToolFallbackResult<TOutputSchema>
+  > | null;
 
   /**
    * Whether the tool needs human approval before it can be called. If this is true, the run will result in an `interruption` that the
@@ -1494,26 +1658,22 @@ type StrictToolOptions<
   isEnabled?: ToolEnabledOption<Context>;
 
   /**
-   * Optional timeout in milliseconds for each tool call.
-   */
-  timeoutMs?: number;
-
-  /**
-   * Timeout handling mode. `error_as_result` returns a model-visible message and
-   * `raise_exception` throws `ToolTimeoutError`.
-   */
-  timeoutBehavior?: FunctionToolTimeoutBehavior;
-
-  /**
-   * Optional formatter used for timeout messages when timeoutBehavior is `error_as_result`.
-   */
-  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
-
-  /**
    * Optional callback that attaches SDK-only custom data to the emitted tool output item.
    */
-  customDataExtractor?: FunctionToolCustomDataExtractor<Context>;
+  customDataExtractor?: FunctionToolCustomDataExtractor<
+    Context,
+    TParameters,
+    ToolExecuteResult<TOutputSchema, unknown>
+  >;
 };
+
+type StrictToolOptions<
+  TParameters extends ToolInputParametersStrict,
+  Context = UnknownContext,
+  TOutputSchema extends ToolOutputSchema | undefined = undefined,
+> = StrictToolOptionsBase<TParameters, Context, TOutputSchema> &
+  ToolGuardrailOptions<Context> &
+  ToolTimeoutOptions<Context, TOutputSchema>;
 
 /**
  * The options for a tool that has strict mode disabled.
@@ -1521,10 +1681,11 @@ type StrictToolOptions<
  * @param TParameters The parameters of the tool
  * @param Context The context of the tool
  */
-type NonStrictToolOptions<
+type NonStrictToolOptionsBase<
   TParameters extends ToolInputParametersNonStrict,
   Context = UnknownContext,
-> = ToolGuardrailOptions<Context> & {
+  TOutputSchema extends ToolOutputSchema | undefined = undefined,
+> = {
   /**
    * The name of the tool. Must be unique within the agent.
    */
@@ -1556,14 +1717,37 @@ type NonStrictToolOptions<
   providerData?: Record<string, any>;
 
   /**
-   * The function to invoke when the tool is called.
+   * Responses API only. Controls which execution contexts can invoke the tool.
    */
-  execute: ToolExecuteFunction<TParameters, Context>;
+  allowedCallers?: ToolAllowedCallers;
 
   /**
-   * The function to invoke when an error occurs while running the tool.
+   * Responses API only. Describes the JSON object encoded in string outputs.
+   * Zod object schemas are converted to JSON Schema and constrain the return
+   * type of `execute` to the inferred Zod output type. They also validate the
+   * result at runtime.
    */
-  errorFunction?: ToolErrorFunction | null;
+  outputSchema?: TOutputSchema;
+
+  /**
+   * The function to invoke when the tool is called.
+   */
+  execute: ToolExecuteFunction<
+    TParameters,
+    Context,
+    ToolExecuteResult<TOutputSchema, unknown>
+  >;
+
+  /**
+   * The function to invoke when an error or model-visible pre-execution
+   * rejection occurs. Tools with an output schema rethrow by default so they
+   * cannot emit an unstructured error string. Provide this callback to return
+   * a schema-compatible fallback.
+   */
+  errorFunction?: ToolErrorFunction<
+    Context,
+    ToolFallbackResult<TOutputSchema>
+  > | null;
 
   /**
    * Whether the tool needs human approval before it can be called. If this is true, the run will result in an `interruption` that the
@@ -1577,26 +1761,22 @@ type NonStrictToolOptions<
   isEnabled?: ToolEnabledOption<Context>;
 
   /**
-   * Optional timeout in milliseconds for each tool call.
-   */
-  timeoutMs?: number;
-
-  /**
-   * Timeout handling mode. `error_as_result` returns a model-visible message and
-   * `raise_exception` throws `ToolTimeoutError`.
-   */
-  timeoutBehavior?: FunctionToolTimeoutBehavior;
-
-  /**
-   * Optional formatter used for timeout messages when timeoutBehavior is `error_as_result`.
-   */
-  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
-
-  /**
    * Optional callback that attaches SDK-only custom data to the emitted tool output item.
    */
-  customDataExtractor?: FunctionToolCustomDataExtractor<Context>;
+  customDataExtractor?: FunctionToolCustomDataExtractor<
+    Context,
+    TParameters,
+    ToolExecuteResult<TOutputSchema, unknown>
+  >;
 };
+
+type NonStrictToolOptions<
+  TParameters extends ToolInputParametersNonStrict,
+  Context = UnknownContext,
+  TOutputSchema extends ToolOutputSchema | undefined = undefined,
+> = NonStrictToolOptionsBase<TParameters, Context, TOutputSchema> &
+  ToolGuardrailOptions<Context> &
+  ToolTimeoutOptions<Context, TOutputSchema>;
 
 /**
  * The options for a tool.
@@ -1607,17 +1787,24 @@ type NonStrictToolOptions<
 export type ToolOptions<
   TParameters extends ToolInputParameters,
   Context = UnknownContext,
+  TOutputSchema extends ToolOutputSchema | undefined = undefined,
 > =
-  | StrictToolOptions<Extract<TParameters, ToolInputParametersStrict>, Context>
+  | StrictToolOptions<
+      Extract<TParameters, ToolInputParametersStrict>,
+      Context,
+      TOutputSchema
+    >
   | NonStrictToolOptions<
       Extract<TParameters, ToolInputParametersNonStrict>,
-      Context
+      Context,
+      TOutputSchema
     >;
 
 export type ToolOptionsWithGuardrails<
   TParameters extends ToolInputParameters,
   Context = UnknownContext,
-> = ToolOptions<TParameters, Context>;
+  TOutputSchema extends ToolOutputSchema | undefined = undefined,
+> = ToolOptions<TParameters, Context, TOutputSchema>;
 
 type NamespacedFunctionTool<
   Context = UnknownContext,
@@ -1668,15 +1855,18 @@ function cloneObjectWithDescriptorsAndOverrides<
   return Object.assign(clone, overrides);
 }
 
-function normalizeFunctionToolTimeoutConfig<Context = UnknownContext>(args: {
+function normalizeFunctionToolTimeoutConfig<
+  Context = UnknownContext,
+  Result = string,
+>(args: {
   toolName: string;
   timeoutMs?: number;
   timeoutBehavior?: FunctionToolTimeoutBehavior;
-  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
+  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context, Result>;
 }): {
   timeoutMs?: number;
   timeoutBehavior: FunctionToolTimeoutBehavior;
-  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
+  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context, Result>;
 } {
   const { toolName, timeoutMs, timeoutBehavior, timeoutErrorFunction } = args;
 
@@ -1737,7 +1927,7 @@ async function invokeFunctionToolWithTimeout<
   details?: ToolCallDetails;
   timeoutMs?: number;
   timeoutBehavior?: FunctionToolTimeoutBehavior;
-  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
+  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context, Result>;
 }): Promise<string | Result> {
   const {
     toolName,
@@ -1802,7 +1992,7 @@ async function invokeFunctionToolWithTimeout<
     }
 
     if (timeoutErrorFunction) {
-      return timeoutErrorFunction(runContext, timeoutError);
+      return timeoutErrorFunction(runContext, timeoutError, details);
     }
 
     return defaultFunctionToolTimeoutErrorMessage({
@@ -1815,6 +2005,27 @@ async function invokeFunctionToolWithTimeout<
     }
     cleanupAbortSignals();
   }
+}
+
+/**
+ * Validate a function tool output when the tool was created with a runtime
+ * output schema.
+ */
+export function validateFunctionToolOutput<
+  Context = UnknownContext,
+  TParameters extends ToolInputParameters = ToolInputParameters,
+  Result = unknown,
+>(args: {
+  tool: FunctionTool<Context, TParameters, Result>;
+  output: unknown;
+  runContext: RunContext<Context>;
+  details?: ToolCallDetails;
+}): unknown {
+  const validator = args.tool[FUNCTION_TOOL_OUTPUT_VALIDATOR];
+  if (!validator) {
+    return args.output;
+  }
+  return validator(args.output, args.runContext, args.details);
 }
 
 /**
@@ -1865,16 +2076,17 @@ export function tool<
   TParameters extends ToolInputParameters = undefined,
   Context = UnknownContext,
   Result = string,
+  TOutputSchema extends ToolOutputSchema | undefined = undefined,
 >(
-  options: ToolOptions<TParameters, Context>,
-): FunctionTool<Context, TParameters, Result> {
+  options: ToolOptions<TParameters, Context, TOutputSchema>,
+): FunctionTool<
+  Context,
+  TParameters,
+  ToolExecuteResult<TOutputSchema, Result>
+> {
   const name = options.name
     ? toFunctionToolName(options.name)
     : toFunctionToolName(options.execute.name);
-  const toolErrorFunction: ToolErrorFunction | null =
-    typeof options.errorFunction === 'undefined'
-      ? defaultToolErrorFunction
-      : options.errorFunction;
 
   if (!name) {
     throw new Error(
@@ -1885,25 +2097,100 @@ export function tool<
   if (!strictMode && isZodObject(options.parameters)) {
     throw new UserError('Strict mode is required for Zod parameters');
   }
-  const { timeoutMs, timeoutBehavior, timeoutErrorFunction } =
-    normalizeFunctionToolTimeoutConfig({
-      toolName: name,
-      timeoutMs: options.timeoutMs,
-      timeoutBehavior: options.timeoutBehavior,
-      timeoutErrorFunction: options.timeoutErrorFunction,
-    });
+  const hasOutputSchema = typeof options.outputSchema !== 'undefined';
+  const toolErrorFunction =
+    typeof options.errorFunction === 'undefined'
+      ? hasOutputSchema
+        ? null
+        : defaultToolErrorFunction
+      : options.errorFunction;
+  const {
+    timeoutMs,
+    timeoutBehavior,
+    timeoutErrorFunction: configuredTimeoutErrorFunction,
+  } = normalizeFunctionToolTimeoutConfig<
+    Context,
+    ToolFallbackResult<TOutputSchema>
+  >({
+    toolName: name,
+    timeoutMs: options.timeoutMs,
+    timeoutBehavior:
+      options.timeoutBehavior ??
+      (hasOutputSchema ? 'raise_exception' : undefined),
+    timeoutErrorFunction: options.timeoutErrorFunction as
+      | ToolTimeoutErrorFunction<Context, ToolFallbackResult<TOutputSchema>>
+      | undefined,
+  });
+  if (
+    hasOutputSchema &&
+    timeoutBehavior === 'error_as_result' &&
+    !configuredTimeoutErrorFunction
+  ) {
+    throw new UserError(
+      `Function tool '${name}' with an output schema requires timeoutErrorFunction when timeoutBehavior is 'error_as_result'.`,
+    );
+  }
+  const allowedCallers = normalizeToolAllowedCallers(
+    options.allowedCallers,
+    name,
+  );
 
   const { parser, schema: parameters } = getSchemaAndParserFromInputType(
     options.parameters,
     name,
     { strict: strictMode },
   );
+  const zodOutputSchema = isZodObject(options.outputSchema)
+    ? options.outputSchema
+    : undefined;
+  const outputSchema: JsonObjectSchema<any> | undefined = zodOutputSchema
+    ? getSchemaAndParserFromInputType(zodOutputSchema, `${name}_output`, {
+        strict: true,
+      }).schema
+    : (options.outputSchema as JsonObjectSchema<any> | undefined);
+
+  function validateOutput(
+    output: unknown,
+    runContext: RunContext<Context>,
+    details?: ToolCallDetails,
+  ): ToolExecuteResult<TOutputSchema, Result> {
+    if (!zodOutputSchema) {
+      return output as ToolExecuteResult<TOutputSchema, Result>;
+    }
+
+    try {
+      return zodOutputSchema.parse(output) as ToolExecuteResult<
+        TOutputSchema,
+        Result
+      >;
+    } catch (error) {
+      throw new InvalidToolOutputError(
+        `Invalid output for function tool '${name}'.`,
+        undefined,
+        error,
+        { runContext, output, details },
+      );
+    }
+  }
+
+  const timeoutErrorFunction = configuredTimeoutErrorFunction
+    ? async (
+        runContext: RunContext<Context>,
+        error: ToolTimeoutError,
+        details?: ToolCallDetails,
+      ) =>
+        validateOutput(
+          await configuredTimeoutErrorFunction(runContext, error, details),
+          runContext,
+          details,
+        )
+    : undefined;
 
   async function _invoke(
     runContext: RunContext<Context>,
     input: string,
     details?: ToolCallDetails,
-  ): Promise<Result> {
+  ): Promise<ToolExecuteResult<TOutputSchema, Result>> {
     const [error, parsed] = await safeExecute(() => parser(input));
     if (error !== null) {
       if (logger.dontLogToolData) {
@@ -1929,7 +2216,11 @@ export function tool<
     }
 
     details?.[FUNCTION_TOOL_PARSED_INPUT_CALLBACK]?.(parsed);
-    const result = await options.execute(parsed, runContext, details);
+    const result = validateOutput(
+      await options.execute(parsed, runContext, details),
+      runContext,
+      details,
+    );
     const stringResult = toSmartString(result);
 
     if (logger.dontLogToolData) {
@@ -1938,15 +2229,15 @@ export function tool<
       logger.debug(`Tool ${name} returned: ${stringResult}`);
     }
 
-    return result as Result;
+    return result as ToolExecuteResult<TOutputSchema, Result>;
   }
 
   async function invokeWithoutTimeout(
     runContext: RunContext<Context>,
     input: string,
     details?: ToolCallDetails,
-  ): Promise<string | Result> {
-    return _invoke(runContext, input, details).catch<string>((error) => {
+  ): Promise<string | ToolExecuteResult<TOutputSchema, Result>> {
+    return _invoke(runContext, input, details).catch(async (error) => {
       if (
         details?.signal?.aborted &&
         details.signal.reason instanceof ToolTimeoutError
@@ -1963,7 +2254,11 @@ export function tool<
             error: error.toString(),
           },
         });
-        return toolErrorFunction(runContext, error);
+        return validateOutput(
+          await toolErrorFunction(runContext, error, details),
+          runContext,
+          details,
+        );
       }
 
       throw error;
@@ -1974,14 +2269,17 @@ export function tool<
     runContext: RunContext<Context>,
     input: string,
     details?: ToolCallDetails,
-  ): Promise<string | Result> {
+  ): Promise<string | ToolExecuteResult<TOutputSchema, Result>> {
     const detailsWithFlag = details as
       ToolCallDetailsWithTimeoutFlag | undefined;
     if (detailsWithFlag?.[FUNCTION_TOOL_TIMEOUT_ALREADY_ENFORCED]) {
       return invokeWithoutTimeout(runContext, input, details);
     }
 
-    return invokeFunctionToolWithTimeout<Context, Result>({
+    return invokeFunctionToolWithTimeout<
+      Context,
+      ToolExecuteResult<TOutputSchema, Result>
+    >({
       toolName: name,
       invoke: invokeWithoutTimeout,
       runContext,
@@ -2019,7 +2317,17 @@ export function tool<
     strict: strictMode,
     deferLoading: options.deferLoading ?? false,
     providerData: options.providerData,
+    ...(allowedCallers ? { allowedCallers } : {}),
+    ...(outputSchema ? { outputSchema } : {}),
     invoke,
+    ...(hasOutputSchema
+      ? {
+          errorFunction: toolErrorFunction as ToolErrorFunction<
+            Context,
+            string | ToolExecuteResult<TOutputSchema, Result>
+          > | null,
+        }
+      : {}),
     needsApproval,
     timeoutMs,
     timeoutBehavior,
@@ -2028,6 +2336,9 @@ export function tool<
     inputGuardrails: resolveToolInputGuardrails(options.inputGuardrails),
     outputGuardrails: resolveToolOutputGuardrails(options.outputGuardrails),
     customDataExtractor: options.customDataExtractor,
+    ...(zodOutputSchema
+      ? { [FUNCTION_TOOL_OUTPUT_VALIDATOR]: validateOutput }
+      : {}),
   };
 }
 

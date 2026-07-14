@@ -61,6 +61,7 @@ import {
   executeCustomClientToolSearch,
   getClientToolSearchHelper,
 } from './runner/toolSearch';
+import { ensureToolCallerAllowed } from './runner/toolCaller';
 import {
   getSerializedApplyPatchToolPlaceholder,
   getSerializedComputerToolPlaceholder,
@@ -93,8 +94,9 @@ import {
  * - 1.11: Allows null maxTurns to persist runs without a turn limit.
  * - 1.12: Adds optional missing function tool calls to processed responses.
  * - 1.13: Adds optional SDK-only customData on tool output run items.
+ * - 1.14: Adds Programmatic Tool Calling program items, outputs, and caller linkage.
  */
-export const CURRENT_SCHEMA_VERSION = '1.13' as const;
+export const CURRENT_SCHEMA_VERSION = '1.14' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -109,6 +111,7 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.10',
   '1.11',
   '1.12',
+  '1.13',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -205,7 +208,8 @@ const itemSchema = z.discriminatedUnion('type', [
     type: z.literal('tool_call_output_item'),
     rawItem: protocol.FunctionCallResultItem.or(protocol.ComputerCallResultItem)
       .or(protocol.ShellCallResultItem)
-      .or(protocol.ApplyPatchCallResultItem),
+      .or(protocol.ApplyPatchCallResultItem)
+      .or(protocol.ProgramCallResultItem),
     agent: serializedAgentSchema,
     output: z.string(),
     customData: z.record(z.string(), z.any()).optional(),
@@ -333,6 +337,7 @@ const serializedProcessedResponseSchema = z.object({
             arguments: z.string().optional(),
             status: z.string().optional(),
             output: z.string().optional(),
+            caller: protocol.ToolCaller.optional(),
             // this always exists but marked as optional for early version compatibility; when releasing 1.0, we can remove the nullable and optional
             providerData: z.record(z.string(), z.any()).nullable().optional(),
           }),
@@ -1067,6 +1072,10 @@ async function buildRunStateFromString<
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
   );
+  assertSchemaVersionSupportsProgrammaticToolCalling(
+    currentSchemaVersion as SupportedSchemaVersion,
+    stateJson,
+  );
   return buildRunStateFromJson(initialAgent, stateJson, options);
 }
 
@@ -1080,6 +1089,7 @@ function assertSchemaVersionSupportsToolSearch(
     schemaVersion === '1.10' ||
     schemaVersion === '1.11' ||
     schemaVersion === '1.12' ||
+    schemaVersion === '1.13' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   ) {
     return;
@@ -1098,7 +1108,7 @@ function assertSchemaVersionSupportsCustomData(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
-  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+  if (schemaVersion === '1.13' || schemaVersion === CURRENT_SCHEMA_VERSION) {
     return;
   }
 
@@ -1118,7 +1128,122 @@ function schemaVersionSupportsAgentIdentity(
     schemaVersion === '1.10' ||
     schemaVersion === '1.11' ||
     schemaVersion === '1.12' ||
+    schemaVersion === '1.13' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
+  );
+}
+
+function assertSchemaVersionSupportsProgrammaticToolCalling(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: z.infer<typeof SerializedRunState>,
+): void {
+  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+    return;
+  }
+
+  if (!containsProgrammaticToolCallingState(stateJson)) {
+    return;
+  }
+
+  throw new UserError(
+    `Run state schema version ${schemaVersion} does not support Programmatic Tool Calling items. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+  );
+}
+
+function containsProgrammaticToolCallingState(
+  stateJson: z.infer<typeof SerializedRunState>,
+): boolean {
+  return (
+    containsProgrammaticToolCallingProtocolItems(stateJson.originalInput) ||
+    stateJson.modelResponses.some(
+      containsProgrammaticToolCallingInModelResponse,
+    ) ||
+    containsProgrammaticToolCallingInModelResponse(
+      stateJson.lastModelResponse,
+    ) ||
+    containsProgrammaticToolCallingRunItems(stateJson.generatedItems) ||
+    containsProgrammaticToolCallingInProcessedResponse(
+      stateJson.lastProcessedResponse,
+    )
+  );
+}
+
+function containsProgrammaticToolCallingInModelResponse(
+  modelResponse: z.infer<typeof modelResponseSchema> | undefined,
+): boolean {
+  return Boolean(
+    modelResponse?.output.some(isProgrammaticToolCallingProtocolItem),
+  );
+}
+
+function containsProgrammaticToolCallingRunItems(
+  items: z.infer<typeof itemSchema>[] | undefined,
+): boolean {
+  return Boolean(
+    items?.some((item) => isProgrammaticToolCallingProtocolItem(item.rawItem)),
+  );
+}
+
+function containsProgrammaticToolCallingProtocolItems(
+  items: string | protocol.ModelItem[],
+): boolean {
+  return Array.isArray(items)
+    ? items.some(isProgrammaticToolCallingProtocolItem)
+    : false;
+}
+
+function containsProgrammaticToolCallingInProcessedResponse(
+  processedResponse:
+    z.infer<typeof serializedProcessedResponseSchema> | undefined,
+): boolean {
+  if (!processedResponse) {
+    return false;
+  }
+
+  return (
+    containsProgrammaticToolCallingRunItems(processedResponse.newItems) ||
+    processedResponse.functions.some(({ toolCall }) =>
+      isProgrammaticToolCallingProtocolItem(toolCall),
+    ) ||
+    (processedResponse.functionToolsNotFound ?? []).some(({ toolCall }) =>
+      isProgrammaticToolCallingProtocolItem(toolCall),
+    ) ||
+    (processedResponse.shellActions ?? []).some(({ toolCall }) =>
+      isProgrammaticToolCallingProtocolItem(toolCall),
+    ) ||
+    (processedResponse.applyPatchActions ?? []).some(({ toolCall }) =>
+      isProgrammaticToolCallingProtocolItem(toolCall),
+    )
+  );
+}
+
+function isProgrammaticToolCallingProtocolItem(value: unknown): boolean {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const item = value as {
+    type?: unknown;
+    caller?: { type?: unknown; callerId?: unknown };
+  };
+  if (item.type === 'program' || item.type === 'program_output') {
+    return true;
+  }
+
+  if (
+    item.type !== 'function_call' &&
+    item.type !== 'function_call_result' &&
+    item.type !== 'shell_call' &&
+    item.type !== 'shell_call_output' &&
+    item.type !== 'apply_patch_call' &&
+    item.type !== 'apply_patch_call_output' &&
+    item.type !== 'hosted_tool_call'
+  ) {
+    return false;
+  }
+
+  return (
+    item.caller?.type === 'program' && typeof item.caller.callerId === 'string'
   );
 }
 
@@ -2104,6 +2229,16 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
       .filter((tool): tool is ApplyPatchTool => tool.type === 'apply_patch')
       .map((tool) => [tool.name, tool]),
   );
+  const mcpTools = new Map(
+    allTools
+      .filter(
+        (tool): tool is HostedMCPTool =>
+          tool.type === 'hosted_tool' &&
+          tool.name === 'hosted_mcp' &&
+          tool.providerData?.type === 'mcp',
+      )
+      .map((tool) => [tool.providerData.server_label, tool]),
+  );
   const handoffs = new Map(
     currentAgent.handoffs.map((entry) => {
       if (entry instanceof Agent) {
@@ -2124,9 +2259,17 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
         throw new UserError(`Handoff ${handoff.handoff.toolName} not found`);
       }
 
+      const resolvedHandoff = handoffs.get(handoff.handoff.toolName)!;
+      ensureToolCallerAllowed(
+        handoff.toolCall as protocol.FunctionCallItem,
+        undefined,
+        resolvedHandoff.toolName,
+        currentAgent,
+      );
+
       return {
         toolCall: handoff.toolCall,
-        handoff: handoffs.get(handoff.handoff.toolName)!,
+        handoff: resolvedHandoff,
       };
     }),
     functions: await Promise.all(
@@ -2147,6 +2290,13 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
         if (!resolvedTool) {
           throw new UserError(`Tool ${toolIdentity} not found`);
         }
+
+        ensureToolCallerAllowed(
+          functionCall.toolCall as protocol.FunctionCallItem,
+          resolvedTool.allowedCallers,
+          getFunctionToolQualifiedName(resolvedTool) ?? resolvedTool.name,
+          currentAgent,
+        );
 
         return {
           toolCall: functionCall.toolCall,
@@ -2194,6 +2344,13 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
           throw new UserError(`Shell tool ${toolName} not found`);
         }
 
+        ensureToolCallerAllowed(
+          shellAction.toolCall as protocol.ShellCallItem,
+          shellTool.allowedCallers,
+          shellTool.name,
+          currentAgent,
+        );
+
         return {
           toolCall: shellAction.toolCall,
           shell: shellTool,
@@ -2217,6 +2374,13 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
         throw new UserError(`Apply patch tool ${toolName} not found`);
       }
 
+      ensureToolCallerAllowed(
+        applyPatchAction.toolCall as protocol.ApplyPatchCallItem,
+        applyPatchTool.allowedCallers,
+        applyPatchTool.name,
+        currentAgent,
+      );
+
       return {
         toolCall: applyPatchAction.toolCall,
         applyPatch: applyPatchTool,
@@ -2224,14 +2388,39 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
     }),
     mcpApprovalRequests: (
       serializedProcessedResponse.mcpApprovalRequests ?? []
-    ).map((approvalRequest) => ({
-      requestItem: new RunToolApprovalItem(
-        approvalRequest.requestItem
-          .rawItem as unknown as protocol.HostedToolCallItem,
+    ).map((approvalRequest) => {
+      const rawItem = approvalRequest.requestItem
+        .rawItem as unknown as protocol.HostedToolCallItem;
+      const rawServerLabel = rawItem.providerData?.server_label;
+      const serializedServerLabel =
+        approvalRequest.mcpTool.providerData.server_label;
+      const serverLabel =
+        typeof rawServerLabel === 'string'
+          ? rawServerLabel
+          : typeof serializedServerLabel === 'string'
+            ? serializedServerLabel
+            : undefined;
+      if (!serverLabel) {
+        throw new UserError('MCP approval request is missing a server label');
+      }
+
+      const mcpTool = mcpTools.get(serverLabel);
+      if (!mcpTool) {
+        throw new UserError(`MCP tool ${serverLabel} not found`);
+      }
+
+      ensureToolCallerAllowed(
+        rawItem,
+        mcpTool.providerData.allowed_callers,
+        serverLabel,
         currentAgent,
-      ),
-      mcpTool: approvalRequest.mcpTool as unknown as HostedMCPTool,
-    })),
+      );
+
+      return {
+        requestItem: new RunToolApprovalItem(rawItem, currentAgent),
+        mcpTool,
+      };
+    }),
   };
 
   return {

@@ -42,10 +42,11 @@ export {
   webSearchTool,
   fileSearchTool,
   codeInterpreterTool,
+  programmaticToolCallingTool,
   toolSearchTool,
   imageGenerationTool,
 } from './tools';
-export type { ToolSearchTool } from './tools';
+export type { ProgrammaticToolCallingTool, ToolSearchTool } from './tools';
 export {
   OpenAIConversationsSession,
   startOpenAIConversationsSession,

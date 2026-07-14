@@ -65,6 +65,9 @@ export class RunToolCallItem extends RunItemBase {
   }
 
   get toolName(): string | undefined {
+    if (this.rawItem.type === 'program') {
+      return 'programmatic_tool_calling';
+    }
     return getStringProperty(this.rawItem, 'name');
   }
 
@@ -120,7 +123,8 @@ export class RunToolCallOutputItem extends RunItemBase {
       | protocol.FunctionCallResultItem
       | protocol.ComputerCallResultItem
       | protocol.ShellCallResultItem
-      | protocol.ApplyPatchCallResultItem,
+      | protocol.ApplyPatchCallResultItem
+      | protocol.ProgramCallResultItem,
     public agent: Agent<any, any>,
     public output: string | unknown,
     public customData?: ToolOutputCustomData,

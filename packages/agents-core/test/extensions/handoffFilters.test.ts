@@ -77,6 +77,20 @@ const applyPatchCallResult: protocol.ApplyPatchCallResultItem = {
   output: 'done',
 };
 
+const programCall: protocol.ProgramCallItem = {
+  type: 'program',
+  callId: 'program-call',
+  code: 'text("done")',
+  fingerprint: 'program-fingerprint',
+};
+
+const programCallResult: protocol.ProgramCallResultItem = {
+  type: 'program_output',
+  callId: 'program-call',
+  output: 'done',
+  status: 'completed',
+};
+
 const toolSearchCall: protocol.ToolSearchCallItem = {
   type: 'tool_search_call',
   id: 'tool-search-call',
@@ -185,6 +199,8 @@ describe('removeAllTools', () => {
       shellCallResult,
       applyPatchCall,
       applyPatchCallResult,
+      programCall,
+      programCallResult,
       reasoningItem,
     ];
 
@@ -195,7 +211,7 @@ describe('removeAllTools', () => {
     });
 
     expect(result.inputHistory).toStrictEqual([userMessage]);
-    expect(history).toHaveLength(13);
+    expect(history).toHaveLength(15);
     expect((result.inputHistory as AgentInputItem[])[0]).toBe(userMessage);
   });
 });

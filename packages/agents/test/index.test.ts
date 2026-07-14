@@ -46,6 +46,16 @@ describe('Tool search exports', () => {
   });
 });
 
+describe('Programmatic Tool Calling exports', () => {
+  test('programmaticToolCallingTool should be available', () => {
+    expect(Agents.programmaticToolCallingTool()).toEqual({
+      type: 'hosted_tool',
+      name: 'programmatic_tool_calling',
+      providerData: { type: 'programmatic_tool_calling' },
+    });
+  });
+});
+
 describe('Sandbox exports', () => {
   test('are only available from the sandbox subpath', () => {
     expect('SandboxAgent' in Agents).toBe(false);
