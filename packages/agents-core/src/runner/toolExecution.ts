@@ -83,12 +83,10 @@ const TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
 
 type ParseToolArgumentsResult =
-  | { success: true; args: any }
-  | { success: false; error: Error };
+  { success: true; args: any } | { success: false; error: Error };
 
 type ToolInputGuardrailCheckResult =
-  | { type: 'allow' }
-  | { type: 'reject'; message: string };
+  { type: 'allow' } | { type: 'reject'; message: string };
 
 function getFunctionToolIdentity<TContext>(
   toolRun: ToolRunFunction<TContext>,
@@ -159,6 +157,7 @@ export function getToolCallOutputItem(
       callId: toolCall.callId,
       status: 'completed',
       output: structuredItems,
+      ...(toolCall.caller ? { caller: toolCall.caller } : {}),
     };
   }
 
@@ -174,6 +173,7 @@ export function getToolCallOutputItem(
       type: 'text',
       text: toSmartString(output),
     },
+    ...(toolCall.caller ? { caller: toolCall.caller } : {}),
   };
 }
 
@@ -598,8 +598,7 @@ async function runApprovedFunctionTool<TContext>(
       };
 
       const nestedRunResult = consumeAgentToolRunResult(toolRun.toolCall) as
-        | RunResult<TContext, Agent<TContext, any>>
-        | undefined;
+        RunResult<TContext, Agent<TContext, any>> | undefined;
       if (nestedRunResult) {
         functionResult.agentRunResult = nestedRunResult;
         const nestedInterruptions = nestedRunResult.interruptions;
@@ -814,8 +813,7 @@ async function resolveToolApproval(options: {
 }
 
 type ApprovalDecisionResult =
-  | { status: 'approved' }
-  | { status: 'pending' | 'rejected'; item: RunItem };
+  { status: 'approved' } | { status: 'pending' | 'rejected'; item: RunItem };
 
 async function handleToolApprovalDecision(options: {
   runContext: RunContext;
@@ -948,6 +946,7 @@ export async function executeShellActions(
             type: 'shell_call_output',
             callId: toolCallKey,
             output: [rejectionOutput],
+            ...(toolCall.caller ? { caller: toolCall.caller } : {}),
           },
           agent,
           response,
@@ -1020,6 +1019,7 @@ export async function executeShellActions(
           type: 'shell_call_output',
           callId: toolCallKey,
           output: shellOutputs ?? [],
+          ...(toolCall.caller ? { caller: toolCall.caller } : {}),
         };
 
         if (typeof maxOutputLength === 'number') {
@@ -1087,6 +1087,7 @@ export async function executeApplyPatchOperations(
             callId: toolCallKey,
             status: 'failed',
             output: response,
+            ...(toolCall.caller ? { caller: toolCall.caller } : {}),
           },
           agent,
           response,
@@ -1165,6 +1166,7 @@ export async function executeApplyPatchOperations(
           type: 'apply_patch_call_output',
           callId: toolCallKey,
           status,
+          ...(toolCall.caller ? { caller: toolCall.caller } : {}),
         };
 
         if (output) {

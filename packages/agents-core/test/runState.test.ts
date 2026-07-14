@@ -995,6 +995,46 @@ describe('RunState', () => {
     );
   });
 
+  it('round-trips Programmatic Tool Calling items in schema 1.14', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'ProgramAgent' });
+    const program: protocol.ProgramCallItem = {
+      type: 'program',
+      id: 'prog_1',
+      callId: 'call_prog_1',
+      code: 'text("ok")',
+      fingerprint: 'fp_1',
+    };
+    const programOutput: protocol.ProgramCallResultItem = {
+      type: 'program_output',
+      id: 'prog_out_1',
+      callId: 'call_prog_1',
+      output: 'ok',
+      status: 'completed',
+    };
+    const state = new RunState(context, 'input', agent, 1);
+    state._generatedItems.push(
+      new RunToolCallItem(program, agent),
+      new RunToolCallOutputItem(programOutput, agent, programOutput.output),
+    );
+
+    const serialized = state.toJSON();
+    expect(serialized.$schemaVersion).toBe('1.14');
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(serialized),
+    );
+    expect(restored._generatedItems.map((item) => item.rawItem)).toEqual([
+      program,
+      programOutput,
+    ]);
+
+    serialized.$schemaVersion = '1.13';
+    await expect(
+      RunState.fromString(agent, JSON.stringify(serialized)),
+    ).rejects.toThrow('does not support Programmatic Tool Calling items');
+  });
+
   it('throws error if schema version is missing or invalid', async () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'Agent1' });

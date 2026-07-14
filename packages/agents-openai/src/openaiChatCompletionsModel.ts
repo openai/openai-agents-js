@@ -434,6 +434,31 @@ export class OpenAIChatCompletionsModel implements Model {
     const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [];
     if (request.tools) {
       for (const tool of request.tools) {
+        if (
+          (tool.type === 'function' ||
+            tool.type === 'shell' ||
+            tool.type === 'apply_patch') &&
+          tool.allowedCallers?.includes('programmatic')
+        ) {
+          throw new UserError(
+            'Tools callable from Programmatic Tool Calling are only supported with the Responses API.',
+          );
+        }
+        if (tool.type === 'function' && tool.outputSchema) {
+          throw new UserError(
+            'Function tool outputSchema is only supported with the Responses API.',
+          );
+        }
+        if (
+          tool.type === 'hosted_tool' &&
+          (tool.providerData?.type === 'programmatic_tool_calling' ||
+            (Array.isArray(tool.providerData?.allowed_callers) &&
+              tool.providerData.allowed_callers.includes('programmatic')))
+        ) {
+          throw new UserError(
+            'Programmatic Tool Calling is only supported with the Responses API.',
+          );
+        }
         if (tool.type === 'function') {
           if (
             typeof tool.namespace === 'string' &&

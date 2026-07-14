@@ -77,8 +77,7 @@ type LanguageModelV2ProviderTool = {
 };
 
 type LanguageModelV2ProviderToolCompat =
-  | LanguageModelV2ProviderDefinedTool
-  | LanguageModelV2ProviderTool;
+  LanguageModelV2ProviderDefinedTool | LanguageModelV2ProviderTool;
 
 type LanguageModelV2CallOptionsCompat = Omit<
   LanguageModelV2CallOptions,
@@ -105,8 +104,7 @@ type LanguageModelV2Compat = Omit<
 };
 
 type LanguageModelCompatible =
-  | LanguageModelV2Compat
-  | LanguageModelV3Compatible;
+  LanguageModelV2Compat | LanguageModelV3Compatible;
 
 type SerializedComputerTool = Extract<SerializedTool, { type: 'computer' }>;
 
@@ -206,16 +204,13 @@ export function itemsToLanguageV2Messages(
   let generatedToolSearchCallId = 0;
   let currentAssistantMessage: LanguageModelV2Message | undefined;
   let pendingReasonerReasoning:
-    | { text: string; providerOptions: Record<string, any> }
-    | undefined;
+    { text: string; providerOptions: Record<string, any> } | undefined;
   const collapsedItems = collapseReplacedToolSearchOutputs(items);
   const consumePendingReasonerReasoning = () => {
-    if (
-      !(
-        shouldIncludeReasoningContent(model, modelSettings) &&
-        pendingReasonerReasoning
-      )
-    ) {
+    if (!(
+      shouldIncludeReasoningContent(model, modelSettings) &&
+      pendingReasonerReasoning
+    )) {
       return undefined;
     }
 
@@ -1222,10 +1217,25 @@ export function toolToLanguageV2Tool(
   model: LanguageModelCompatible,
   tool: SerializedTool,
 ): LanguageModelV2FunctionTool | LanguageModelV2ProviderToolCompat {
+  if (
+    (tool.type === 'function' ||
+      tool.type === 'shell' ||
+      tool.type === 'apply_patch') &&
+    tool.allowedCallers?.includes('programmatic')
+  ) {
+    throw new UserError(
+      'The AI SDK adapter does not support Programmatic Tool Calling. Use a Responses API model directly.',
+    );
+  }
   if (tool.type === 'function') {
     if (tool.deferLoading) {
       throw new UserError(
         'The AI SDK adapter does not support deferred Responses function tools (`toolNamespace()` or `deferLoading: true`). Use a Responses API model directly.',
+      );
+    }
+    if (tool.outputSchema) {
+      throw new UserError(
+        'The AI SDK adapter does not support Responses function outputSchema. Use a Responses API model directly.',
       );
     }
     return {
@@ -1241,6 +1251,15 @@ export function toolToLanguageV2Tool(
   const providerToolPrefix = getProviderToolPrefix(model);
 
   if (tool.type === 'hosted_tool') {
+    if (
+      tool.providerData?.type === 'programmatic_tool_calling' ||
+      (Array.isArray(tool.providerData?.allowed_callers) &&
+        tool.providerData.allowed_callers.includes('programmatic'))
+    ) {
+      throw new UserError(
+        'The AI SDK adapter does not support Programmatic Tool Calling. Use a Responses API model directly.',
+      );
+    }
     return {
       type: providerToolType,
       id: `${providerToolPrefix}.${tool.name}`,

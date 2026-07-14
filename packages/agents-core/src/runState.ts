@@ -93,8 +93,9 @@ import {
  * - 1.11: Allows null maxTurns to persist runs without a turn limit.
  * - 1.12: Adds optional missing function tool calls to processed responses.
  * - 1.13: Adds optional SDK-only customData on tool output run items.
+ * - 1.14: Adds Programmatic Tool Calling program items, outputs, and caller linkage.
  */
-export const CURRENT_SCHEMA_VERSION = '1.13' as const;
+export const CURRENT_SCHEMA_VERSION = '1.14' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -109,6 +110,7 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.10',
   '1.11',
   '1.12',
+  '1.13',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -205,7 +207,8 @@ const itemSchema = z.discriminatedUnion('type', [
     type: z.literal('tool_call_output_item'),
     rawItem: protocol.FunctionCallResultItem.or(protocol.ComputerCallResultItem)
       .or(protocol.ShellCallResultItem)
-      .or(protocol.ApplyPatchCallResultItem),
+      .or(protocol.ApplyPatchCallResultItem)
+      .or(protocol.ProgramCallResultItem),
     agent: serializedAgentSchema,
     output: z.string(),
     customData: z.record(z.string(), z.any()).optional(),
@@ -1067,6 +1070,10 @@ async function buildRunStateFromString<
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
   );
+  assertSchemaVersionSupportsProgrammaticToolCalling(
+    currentSchemaVersion as SupportedSchemaVersion,
+    stateJson,
+  );
   return buildRunStateFromJson(initialAgent, stateJson, options);
 }
 
@@ -1080,6 +1087,7 @@ function assertSchemaVersionSupportsToolSearch(
     schemaVersion === '1.10' ||
     schemaVersion === '1.11' ||
     schemaVersion === '1.12' ||
+    schemaVersion === '1.13' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   ) {
     return;
@@ -1098,7 +1106,7 @@ function assertSchemaVersionSupportsCustomData(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
-  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+  if (schemaVersion === '1.13' || schemaVersion === CURRENT_SCHEMA_VERSION) {
     return;
   }
 
@@ -1118,8 +1126,51 @@ function schemaVersionSupportsAgentIdentity(
     schemaVersion === '1.10' ||
     schemaVersion === '1.11' ||
     schemaVersion === '1.12' ||
+    schemaVersion === '1.13' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   );
+}
+
+function assertSchemaVersionSupportsProgrammaticToolCalling(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: z.infer<typeof SerializedRunState>,
+): void {
+  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+    return;
+  }
+
+  if (!containsProgrammaticToolCallingState(stateJson)) {
+    return;
+  }
+
+  throw new UserError(
+    `Run state schema version ${schemaVersion} does not support Programmatic Tool Calling items. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+  );
+}
+
+function containsProgrammaticToolCallingState(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some(containsProgrammaticToolCallingState);
+  }
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (record.type === 'program_output') {
+    return true;
+  }
+  if (
+    record.type === 'program' &&
+    (typeof record.callId === 'string' ||
+      typeof record.call_id === 'string' ||
+      typeof record.callerId === 'string' ||
+      typeof record.caller_id === 'string')
+  ) {
+    return true;
+  }
+
+  return Object.values(record).some(containsProgrammaticToolCallingState);
 }
 
 function containsSerializedToolSearchState(

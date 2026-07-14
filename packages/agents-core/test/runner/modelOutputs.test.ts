@@ -72,6 +72,38 @@ function createLegacyNamespacedTool<T extends Record<string, any>>(
 }
 
 describe('processModelResponse', () => {
+  it('classifies program calls and outputs as ordered run items', () => {
+    const result = processModelResponse(
+      {
+        output: [
+          {
+            type: 'program',
+            id: 'prog_1',
+            callId: 'call_prog_1',
+            code: 'text("ok")',
+            fingerprint: 'fp_1',
+          },
+          {
+            type: 'program_output',
+            id: 'prog_out_1',
+            callId: 'call_prog_1',
+            output: 'ok',
+            status: 'completed',
+          },
+        ],
+        usage: new Usage(),
+      },
+      TEST_AGENT,
+      [],
+      [],
+    );
+
+    expect(result.newItems).toHaveLength(2);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.newItems[1]).toBeInstanceOf(ToolCallOutputItem);
+    expect(result.toolsUsed).toEqual(['programmatic_tool_calling']);
+  });
+
   it('processes message outputs and tool calls', () => {
     const modelResponse: ModelResponse = TEST_MODEL_RESPONSE_WITH_FUNCTION;
 

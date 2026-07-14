@@ -167,11 +167,18 @@ function toOpenAIToolSearchOutputToolPayload(
   }
 
   if (tool.type === 'function') {
-    const { deferLoading, ...rest } = tool as Record<string, any>;
+    const { deferLoading, allowedCallers, outputSchema, ...rest } =
+      tool as Record<string, any>;
     return {
       ...rest,
       ...(typeof deferLoading === 'boolean'
         ? { defer_loading: deferLoading }
+        : {}),
+      ...(Array.isArray(allowedCallers)
+        ? { allowed_callers: allowedCallers }
+        : {}),
+      ...(outputSchema && typeof outputSchema === 'object'
+        ? { output_schema: outputSchema }
         : {}),
     };
   }
@@ -210,11 +217,17 @@ function fromOpenAIToolSearchOutputToolPayload(
   }
 
   if (tool.type === 'function') {
-    const { defer_loading, ...rest } = tool;
+    const { defer_loading, allowed_callers, output_schema, ...rest } = tool;
     return {
       ...rest,
       ...(typeof defer_loading === 'boolean'
         ? { deferLoading: defer_loading }
+        : {}),
+      ...(Array.isArray(allowed_callers)
+        ? { allowedCallers: allowed_callers }
+        : {}),
+      ...(output_schema && typeof output_schema === 'object'
+        ? { outputSchema: output_schema }
         : {}),
     };
   }
@@ -327,6 +340,7 @@ const HostedToolChoice = z.enum([
   'code_interpreter',
   'image_generation',
   'mcp',
+  'programmatic_tool_calling',
   // Specialized local tools
   'shell',
   'apply_patch',
@@ -1465,6 +1479,8 @@ function convertTool<_TContext = unknown>(
       description: tool.description,
       parameters: tool.parameters,
       strict: tool.strict,
+      ...(tool.allowedCallers ? { allowed_callers: tool.allowedCallers } : {}),
+      ...(tool.outputSchema ? { output_schema: tool.outputSchema } : {}),
     };
     if (tool.deferLoading) {
       openaiTool.defer_loading = true;
@@ -1503,6 +1519,9 @@ function convertTool<_TContext = unknown>(
       tool: {
         type: 'shell',
         environment: toOpenAIShellEnvironment(tool.environment),
+        ...(tool.allowedCallers
+          ? { allowed_callers: tool.allowedCallers }
+          : {}),
       } as OpenAI.Responses.FunctionShellTool,
       include: undefined,
     };
@@ -1510,6 +1529,9 @@ function convertTool<_TContext = unknown>(
     return {
       tool: {
         type: 'apply_patch',
+        ...(tool.allowedCallers
+          ? { allowed_callers: tool.allowedCallers }
+          : {}),
       } as OpenAI.Responses.ApplyPatchTool,
       include: undefined,
     };
@@ -1563,6 +1585,7 @@ function convertTool<_TContext = unknown>(
         tool: {
           type: 'code_interpreter',
           container: tool.providerData.container,
+          allowed_callers: tool.providerData.allowed_callers,
         },
         include: tool.providerData.include_outputs
           ? ['code_interpreter_call.outputs']
@@ -1575,6 +1598,13 @@ function convertTool<_TContext = unknown>(
           execution: tool.providerData.execution,
           description: tool.providerData.description,
           parameters: tool.providerData.parameters,
+        },
+        include: undefined,
+      };
+    } else if (tool.providerData?.type === 'programmatic_tool_calling') {
+      return {
+        tool: {
+          type: 'programmatic_tool_calling',
         },
         include: undefined,
       };
@@ -1607,6 +1637,7 @@ function convertTool<_TContext = unknown>(
         require_approval: convertMCPRequireApproval(
           tool.providerData.require_approval,
         ),
+        allowed_callers: tool.providerData.allowed_callers,
         server_description: tool.providerData.server_description,
       };
       if (tool.providerData.defer_loading === true) {
@@ -1899,6 +1930,36 @@ function isMessageItem(item: protocol.ModelItem): item is protocol.MessageItem {
   return false;
 }
 
+type OpenAIToolCaller =
+  { type: 'direct' } | { type: 'program'; caller_id: string };
+
+function toOpenAIToolCaller(
+  caller: protocol.ToolCaller | undefined,
+): OpenAIToolCaller | undefined {
+  if (!caller) {
+    return undefined;
+  }
+  if (caller.type === 'direct') {
+    return { type: 'direct' };
+  }
+  return { type: 'program', caller_id: caller.callerId };
+}
+
+function fromOpenAIToolCaller(
+  caller: unknown,
+): protocol.ToolCaller | undefined {
+  if (!isRecord(caller)) {
+    return undefined;
+  }
+  if (caller.type === 'direct') {
+    return { type: 'direct' };
+  }
+  if (caller.type === 'program' && typeof caller.caller_id === 'string') {
+    return { type: 'program', callerId: caller.caller_id };
+  }
+  return undefined;
+}
+
 function getPrompt(prompt: ModelRequest['prompt']):
   | {
       id: string;
@@ -1999,6 +2060,42 @@ function getInputItems(
       return toolSearchOutput;
     }
 
+    if (item.type === 'program') {
+      return {
+        type: 'program',
+        id: item.id!,
+        call_id: item.callId,
+        code: item.code,
+        fingerprint: item.fingerprint,
+        ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
+          'type',
+          'id',
+          'call_id',
+          'callId',
+          'code',
+          'fingerprint',
+        ]),
+      } satisfies OpenAI.Responses.ResponseInputItem.Program;
+    }
+
+    if (item.type === 'program_output') {
+      return {
+        type: 'program_output',
+        id: item.id!,
+        call_id: item.callId,
+        result: item.output,
+        status: item.status,
+        ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
+          'type',
+          'id',
+          'call_id',
+          'callId',
+          'output',
+          'status',
+        ]),
+      } satisfies OpenAI.Responses.ResponseInputItem.ProgramOutput;
+    }
+
     if (item.type === 'function_call') {
       const entry: ResponseFunctionToolCallWithNamespace = {
         id: item.id,
@@ -2007,6 +2104,7 @@ function getInputItems(
         call_id: item.callId,
         arguments: item.arguments,
         status: item.status,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
         ...(typeof item.namespace === 'string'
           ? { namespace: item.namespace }
           : {}),
@@ -2018,6 +2116,7 @@ function getInputItems(
           'arguments',
           'status',
           'namespace',
+          'caller',
         ]),
       };
 
@@ -2035,6 +2134,7 @@ function getInputItems(
         call_id: item.callId,
         output: normalizedOutput,
         status: item.status,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
         ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
           'type',
           'id',
@@ -2042,6 +2142,7 @@ function getInputItems(
           'output',
           'status',
           'namespace',
+          'caller',
         ]),
       };
       return entry as unknown as OpenAI.Responses.ResponseInputItem.FunctionCallOutput;
@@ -2164,12 +2265,15 @@ function getInputItems(
         item.providerData,
       );
 
-      const entry: OpenAI.Responses.ResponseInputItem.ShellCall = {
+      const entry: OpenAI.Responses.ResponseInputItem.ShellCall & {
+        caller?: ReturnType<typeof toOpenAIToolCaller>;
+      } = {
         type: 'shell_call',
         id: item.id,
         call_id: item.callId,
         status: item.status ?? 'in_progress',
         action,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
         ...shellProviderData,
       };
 
@@ -2194,11 +2298,13 @@ function getInputItems(
 
       const entry: OpenAI.Responses.ResponseInputItem.ShellCallOutput & {
         max_output_length?: number;
+        caller?: ReturnType<typeof toOpenAIToolCaller>;
       } = {
         type: 'shell_call_output',
         call_id: item.callId,
         output: sanitizedOutputs,
         id: item.id ?? undefined,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
       };
       if (typeof item.maxOutputLength === 'number') {
         entry.max_output_length = item.maxOutputLength;
@@ -2211,24 +2317,30 @@ function getInputItems(
       if (!item.operation) {
         throw new UserError('apply_patch_call missing operation');
       }
-      const entry: OpenAI.Responses.ResponseInputItem.ApplyPatchCall = {
+      const entry: OpenAI.Responses.ResponseInputItem.ApplyPatchCall & {
+        caller?: ReturnType<typeof toOpenAIToolCaller>;
+      } = {
         type: 'apply_patch_call',
         id: item.id ?? undefined,
         call_id: item.callId,
         status: item.status ?? 'in_progress',
         operation: item.operation,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
       };
 
       return entry;
     }
 
     if (item.type === 'apply_patch_call_output') {
-      const entry: OpenAI.Responses.ResponseInputItem.ApplyPatchCallOutput = {
+      const entry: OpenAI.Responses.ResponseInputItem.ApplyPatchCallOutput & {
+        caller?: ReturnType<typeof toOpenAIToolCaller>;
+      } = {
         type: 'apply_patch_call_output',
         id: item.id ?? undefined,
         call_id: item.callId,
         status: item.status ?? 'completed',
         output: item.output ?? undefined,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
       };
 
       return entry;
@@ -2491,6 +2603,44 @@ function convertToOutputItem(
         providerData,
       };
       return output;
+    } else if (item.type === 'program') {
+      const {
+        id,
+        call_id,
+        code,
+        fingerprint,
+        type: _type,
+        ...providerData
+      } = item as OpenAI.Responses.ResponseOutputItem.Program &
+        Record<string, unknown>;
+      const output: protocol.ProgramCallItem = {
+        type: 'program',
+        id,
+        callId: call_id,
+        code,
+        fingerprint,
+        providerData,
+      };
+      return output;
+    } else if (item.type === 'program_output') {
+      const {
+        id,
+        call_id,
+        result,
+        status,
+        type: _type,
+        ...providerData
+      } = item as OpenAI.Responses.ResponseOutputItem.ProgramOutput &
+        Record<string, unknown>;
+      const output: protocol.ProgramCallResultItem = {
+        type: 'program_output',
+        id,
+        callId: call_id,
+        output: result,
+        status,
+        providerData,
+      };
+      return output;
     } else if (
       item.type === 'file_search_call' ||
       item.type === 'web_search_call' ||
@@ -2519,6 +2669,7 @@ function convertToOutputItem(
         call_id,
         name,
         namespace,
+        caller,
         status,
         arguments: args,
         ...providerData
@@ -2531,6 +2682,7 @@ function convertToOutputItem(
         ...(typeof namespace === 'string' ? { namespace } : {}),
         status,
         arguments: args,
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       return output;
@@ -2542,6 +2694,7 @@ function convertToOutputItem(
         name: toolName,
         function_name: functionName,
         namespace,
+        caller,
         ...providerData
       } = item as OpenAI.Responses.ResponseFunctionToolCallOutputItem & {
         name?: string;
@@ -2556,6 +2709,7 @@ function convertToOutputItem(
         ...(typeof namespace === 'string' ? { namespace } : {}),
         status: status ?? 'completed',
         output: convertFunctionCallOutputToProtocol(rawOutput),
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       return output;
@@ -2579,7 +2733,7 @@ function convertToOutputItem(
       };
       return output;
     } else if (item.type === 'shell_call') {
-      const { call_id, status, action, ...providerData } = item;
+      const { call_id, status, action, caller, ...providerData } = item;
       const shellAction: protocol.ShellAction = {
         commands: Array.isArray(action?.commands) ? action.commands : [],
       };
@@ -2597,6 +2751,7 @@ function convertToOutputItem(
         callId: call_id,
         status: status ?? 'in_progress',
         action: shellAction,
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       return output;
@@ -2605,6 +2760,7 @@ function convertToOutputItem(
         call_id,
         output: responseOutput,
         max_output_length,
+        caller,
         ...providerData
       } = item as ResponseShellCallOutput;
       let normalizedOutput: protocol.ShellCallOutputContent[] = [];
@@ -2629,6 +2785,7 @@ function convertToOutputItem(
         id: item.id ?? undefined,
         callId: call_id,
         output: normalizedOutput,
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       if (typeof max_output_length === 'number') {
@@ -2636,7 +2793,7 @@ function convertToOutputItem(
       }
       return output;
     } else if (item.type === 'apply_patch_call') {
-      const { call_id, status, operation, ...providerData } = item;
+      const { call_id, status, operation, caller, ...providerData } = item;
       if (!operation) {
         throw new UserError('apply_patch_call missing operation');
       }
@@ -2673,6 +2830,7 @@ function convertToOutputItem(
         callId: call_id,
         status: status ?? 'in_progress',
         operation: normalizedOperation,
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       return output;
@@ -2681,6 +2839,7 @@ function convertToOutputItem(
         call_id,
         status,
         output: responseOutput,
+        caller,
         ...providerData
       } = item as unknown as ResponseApplyPatchCallOutput;
       const output: protocol.ApplyPatchCallResultItem = {
@@ -2689,6 +2848,7 @@ function convertToOutputItem(
         callId: call_id,
         status,
         output: typeof responseOutput === 'string' ? responseOutput : undefined,
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       return output;

@@ -155,8 +155,16 @@ export type CodeInterpreterTool = {
    */
   includeOutputs?: boolean;
   container?:
-    | string
-    | OpenAI.Responses.Tool.CodeInterpreter.CodeInterpreterToolAuto;
+    string | OpenAI.Responses.Tool.CodeInterpreter.CodeInterpreterToolAuto;
+  /**
+   * Execution contexts allowed to invoke code interpreter.
+   */
+  allowedCallers?: Array<'direct' | 'programmatic'>;
+};
+
+export type ProgrammaticToolCallingTool = {
+  type: 'programmatic_tool_calling';
+  name?: 'programmatic_tool_calling';
 };
 
 export type ToolSearchTool<Context = unknown> = {
@@ -181,11 +189,25 @@ export function codeInterpreterTool(
     name: options.name ?? 'code_interpreter',
     container: options.container ?? { type: 'auto' },
     include_outputs: options.includeOutputs,
+    allowed_callers: options.allowedCallers,
   };
   return {
     type: 'hosted_tool',
     name: options.name ?? 'code_interpreter',
     providerData,
+  };
+}
+
+/**
+ * Enables Programmatic Tool Calling for eligible Responses API tools.
+ */
+export function programmaticToolCallingTool(): HostedTool {
+  return {
+    type: 'hosted_tool',
+    name: 'programmatic_tool_calling',
+    providerData: {
+      type: 'programmatic_tool_calling',
+    } satisfies ProviderData.ProgrammaticToolCallingTool,
   };
 }
 

@@ -225,6 +225,7 @@ export {
   ToolExecuteArgument,
   ToolEnabledFunction,
   ToolOptionsWithGuardrails,
+  ToolAllowedCaller,
 } from './tool';
 export type {
   ClientToolSearchExecutor,
@@ -283,6 +284,9 @@ export type {
   ShellCallResultItem,
   ApplyPatchCallItem,
   ApplyPatchCallResultItem,
+  ProgramCallItem,
+  ProgramCallResultItem,
+  ToolCaller,
   FunctionCallItem,
   FunctionCallResultItem,
   JsonSchemaDefinition,

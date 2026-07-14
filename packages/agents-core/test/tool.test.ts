@@ -54,6 +54,30 @@ describe('Tool', () => {
     expect(t.deferLoading).toBe(true);
   });
 
+  it('records Programmatic Tool Calling metadata', () => {
+    const outputSchema = {
+      type: 'object',
+      properties: { value: { type: 'string' } },
+      required: ['value'],
+      additionalProperties: false,
+    } as any;
+    const t = tool({
+      name: 'structured_lookup',
+      description: 'Return structured data.',
+      parameters: z.object({ query: z.string() }),
+      allowedCallers: ['programmatic'],
+      outputSchema,
+      execute: async ({ query }) => ({ value: query }),
+    });
+
+    expect(t.allowedCallers).toEqual(['programmatic']);
+    expect(t.outputSchema).toBe(outputSchema);
+    expect(serializeTool(t)).toMatchObject({
+      allowedCallers: ['programmatic'],
+      outputSchema,
+    });
+  });
+
   it('toolNamespace returns shallow-cloned function tools', () => {
     const t = tool({
       name: 'lookup_account',

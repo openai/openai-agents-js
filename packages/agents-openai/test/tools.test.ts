@@ -4,11 +4,20 @@ import {
   codeInterpreterTool,
   fileSearchTool,
   imageGenerationTool,
+  programmaticToolCallingTool,
   toolSearchTool,
   webSearchTool,
 } from '../src/tools';
 
 describe('Tool', () => {
+  it('programmaticToolCallingTool', () => {
+    expect(programmaticToolCallingTool()).toEqual({
+      type: 'hosted_tool',
+      name: 'programmatic_tool_calling',
+      providerData: { type: 'programmatic_tool_calling' },
+    });
+  });
+
   it('webSearchTool', () => {
     const t = webSearchTool({
       userLocation: { type: 'approximate', city: 'Tokyo' },
@@ -57,6 +66,14 @@ describe('Tool', () => {
         container: { type: 'auto' },
         include_outputs: true,
       },
+    });
+  });
+
+  it('codeInterpreterTool preserves allowed callers', () => {
+    expect(
+      codeInterpreterTool({ allowedCallers: ['programmatic'] }),
+    ).toMatchObject({
+      providerData: { allowed_callers: ['programmatic'] },
     });
   });
 

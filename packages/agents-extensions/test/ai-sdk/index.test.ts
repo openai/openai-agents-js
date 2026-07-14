@@ -1388,6 +1388,26 @@ describe('toolToLanguageV2Tool', () => {
     );
   });
 
+  test('rejects Programmatic Tool Calling tools', () => {
+    expect(() =>
+      toolToLanguageV2Tool(model, {
+        type: 'function',
+        name: 'lookup',
+        description: 'd',
+        parameters: {} as any,
+        allowedCallers: ['programmatic'],
+      } as any),
+    ).toThrow(/does not support Programmatic Tool Calling/);
+
+    expect(() =>
+      toolToLanguageV2Tool(model, {
+        type: 'hosted_tool',
+        name: 'programmatic_tool_calling',
+        providerData: { type: 'programmatic_tool_calling' },
+      } as any),
+    ).toThrow(/does not support Programmatic Tool Calling/);
+  });
+
   test('maps builtin tools', () => {
     const tool = {
       type: 'hosted_tool',

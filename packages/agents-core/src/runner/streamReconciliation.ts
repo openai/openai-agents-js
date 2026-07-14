@@ -7,7 +7,7 @@ import type {
 
 type PendingStreamedFunctionCall = Pick<
   FunctionCallItem,
-  'callId' | 'name' | 'namespace'
+  'callId' | 'name' | 'namespace' | 'caller'
 >;
 
 export type StreamAbortReconciliationState = {
@@ -60,6 +60,18 @@ export function recordStreamEventForAbortReconciliation(
       ...(typeof item.namespace === 'string'
         ? { namespace: item.namespace }
         : {}),
+      ...(isRecord(item.caller) && item.caller.type === 'direct'
+        ? { caller: { type: 'direct' as const } }
+        : isRecord(item.caller) &&
+            item.caller.type === 'program' &&
+            typeof item.caller.caller_id === 'string'
+          ? {
+              caller: {
+                type: 'program' as const,
+                callerId: item.caller.caller_id,
+              },
+            }
+          : {}),
     });
     return;
   }
@@ -84,6 +96,7 @@ export function buildAbortReconciliationInput(
     callId: toolCall.callId,
     status: 'incomplete',
     output: { type: 'text', text: 'aborted' },
+    ...(toolCall.caller ? { caller: toolCall.caller } : {}),
   }));
 }
 

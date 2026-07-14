@@ -174,8 +174,7 @@ export type ShellToolInlineSkill = {
 };
 
 export type ShellToolContainerSkill =
-  | ShellToolSkillReference
-  | ShellToolInlineSkill;
+  ShellToolSkillReference | ShellToolInlineSkill;
 
 export type ShellToolContainerNetworkPolicyDomainSecret = {
   domain: string;
@@ -216,12 +215,10 @@ export type ShellToolContainerReferenceEnvironment = {
 };
 
 export type ShellToolHostedEnvironment =
-  | ShellToolContainerAutoEnvironment
-  | ShellToolContainerReferenceEnvironment;
+  ShellToolContainerAutoEnvironment | ShellToolContainerReferenceEnvironment;
 
 export type ShellToolEnvironment =
-  | ShellToolLocalEnvironment
-  | ShellToolHostedEnvironment;
+  ShellToolLocalEnvironment | ShellToolHostedEnvironment;
 
 export type ApplyPatchApprovalFunction = (
   runContext: RunContext,
@@ -270,8 +267,13 @@ type ToolEnabledPredicate<Context = UnknownContext> = (args: {
 }) => boolean | Promise<boolean>;
 
 type ToolEnabledOption<Context = UnknownContext> =
-  | boolean
-  | ToolEnabledPredicate<Context>;
+  boolean | ToolEnabledPredicate<Context>;
+
+/**
+ * Controls whether an eligible Responses API tool can be called directly by
+ * the model or from a Programmatic Tool Calling program.
+ */
+export type ToolAllowedCaller = 'direct' | 'programmatic';
 
 /**
  * Exposes a function to the agent as a tool to be called
@@ -306,6 +308,17 @@ export type FunctionTool<
    * Responses API only. Hides a top-level function tool definition until tool search loads it.
    */
   deferLoading?: boolean;
+
+  /**
+   * Responses API only. Controls which execution contexts can invoke the tool.
+   * When omitted, the Responses API defaults to direct calls only.
+   */
+  allowedCallers?: ToolAllowedCaller[];
+
+  /**
+   * Responses API only. Describes the JSON value encoded in string outputs.
+   */
+  outputSchema?: JsonObjectSchema<any>;
 
   /**
    * The function to invoke when the tool is called.
@@ -725,6 +738,10 @@ type ShellToolBase = {
    * If provided, it will be invoked immediately when an approval is needed.
    */
   onApproval?: ShellOnApprovalFunction;
+  /**
+   * Responses API only. Controls which execution contexts can invoke the tool.
+   */
+  allowedCallers?: ToolAllowedCaller[];
 };
 
 type LocalShellTool = ShellToolBase & {
@@ -759,6 +776,7 @@ type LocalShellToolOptions = {
   shell: Shell;
   needsApproval?: boolean | ShellApprovalFunction;
   onApproval?: ShellOnApprovalFunction;
+  allowedCallers?: ToolAllowedCaller[];
 };
 
 type HostedShellToolOptions = {
@@ -767,6 +785,7 @@ type HostedShellToolOptions = {
   shell?: never;
   needsApproval?: never;
   onApproval?: never;
+  allowedCallers?: ToolAllowedCaller[];
 };
 
 function normalizeShellToolSkillReference(
@@ -897,6 +916,9 @@ export function shellTool(
       shell: localShell,
       needsApproval,
       onApproval: options.onApproval,
+      ...(options.allowedCallers
+        ? { allowedCallers: options.allowedCallers }
+        : {}),
     };
   }
 
@@ -921,6 +943,9 @@ export function shellTool(
     name: options.name ?? 'shell',
     environment,
     needsApproval,
+    ...(options.allowedCallers
+      ? { allowedCallers: options.allowedCallers }
+      : {}),
   };
 }
 
@@ -942,6 +967,11 @@ export type ApplyPatchTool = {
    * Optional handler to auto-approve or reject when approval is required.
    */
   onApproval?: ApplyPatchOnApprovalFunction;
+
+  /**
+   * Responses API only. Controls which execution contexts can invoke the tool.
+   */
+  allowedCallers?: ToolAllowedCaller[];
 
   /**
    * Optional callback that attaches SDK-only custom data to the emitted tool output item.
@@ -973,6 +1003,9 @@ export function applyPatchTool(
     editor: options.editor,
     needsApproval,
     onApproval: options.onApproval,
+    ...(options.allowedCallers
+      ? { allowedCallers: options.allowedCallers }
+      : {}),
     customDataExtractor: options.customDataExtractor,
   };
 }
@@ -1000,11 +1033,13 @@ export type HostedMCPTool<Context = UnknownContext> = HostedTool & {
 export function hostedMcpTool<Context = UnknownContext>(
   options: {
     allowedTools?: string[] | { toolNames?: string[] };
+    allowedCallers?: ToolAllowedCaller[];
     deferLoading?: boolean;
     serverDescription?: string;
   } &
     // MCP server
-    (| {
+    (
+      | {
           serverLabel: string;
           serverUrl?: string;
           authorization?: string;
@@ -1044,6 +1079,7 @@ export function hostedMcpTool<Context = UnknownContext>(
             authorization: options.authorization,
             require_approval: 'never',
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            allowed_callers: options.allowedCallers,
             defer_loading: options.deferLoading,
             headers: options.headers,
             server_description: options.serverDescription,
@@ -1054,6 +1090,7 @@ export function hostedMcpTool<Context = UnknownContext>(
             server_url: options.serverUrl,
             authorization: options.authorization,
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            allowed_callers: options.allowedCallers,
             defer_loading: options.deferLoading,
             headers: options.headers,
             require_approval: buildRequireApproval(options.requireApproval),
@@ -1077,6 +1114,7 @@ export function hostedMcpTool<Context = UnknownContext>(
             authorization: options.authorization,
             require_approval: 'never',
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            allowed_callers: options.allowedCallers,
             defer_loading: options.deferLoading,
             headers: options.headers,
             server_description: options.serverDescription,
@@ -1087,6 +1125,7 @@ export function hostedMcpTool<Context = UnknownContext>(
             connector_id: options.connectorId,
             authorization: options.authorization,
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            allowed_callers: options.allowedCallers,
             defer_loading: options.deferLoading,
             headers: options.headers,
             require_approval: buildRequireApproval(options.requireApproval),
@@ -1108,6 +1147,7 @@ export function hostedMcpTool<Context = UnknownContext>(
             server_label: options.serverLabel,
             require_approval: 'never',
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            allowed_callers: options.allowedCallers,
             defer_loading: options.deferLoading,
             server_description: options.serverDescription,
           }
@@ -1115,6 +1155,7 @@ export function hostedMcpTool<Context = UnknownContext>(
             type: 'mcp',
             server_label: options.serverLabel,
             allowed_tools: toMcpAllowedToolsFilter(options.allowedTools),
+            allowed_callers: options.allowedCallers,
             defer_loading: options.deferLoading,
             require_approval: buildRequireApproval(options.requireApproval),
             on_approval: options.onApproval,
@@ -1160,10 +1201,7 @@ export type ClientToolSearchExecutorArgs<Context = UnknownContext> = {
 };
 
 export type ClientToolSearchExecutorResult<Context = UnknownContext> =
-  | Tool<Context>
-  | Tool<Context>[]
-  | null
-  | undefined;
+  Tool<Context> | Tool<Context>[] | null | undefined;
 
 export type ClientToolSearchExecutor<Context = UnknownContext> = (
   args: ClientToolSearchExecutorArgs<Context>,
@@ -1310,9 +1348,7 @@ export type FunctionToolResult<
  * If undefined is provided, the arguments to the tool will be passed as a string.
  */
 export type ToolInputParameters =
-  | undefined
-  | ZodObjectLike
-  | JsonObjectSchema<any>;
+  undefined | ZodObjectLike | JsonObjectSchema<any>;
 
 /**
  * The parameters of a tool that has strict mode enabled.
@@ -1327,9 +1363,7 @@ export type ToolInputParameters =
  * If undefined is provided, the arguments to the tool will be passed as a string.
  */
 export type ToolInputParametersStrict =
-  | undefined
-  | ZodObjectLike
-  | JsonObjectSchemaStrict<any>;
+  undefined | ZodObjectLike | JsonObjectSchemaStrict<any>;
 
 /**
  * The parameters of a tool that has strict mode disabled.
@@ -1339,8 +1373,7 @@ export type ToolInputParametersStrict =
  * Zod schemas are not supported without strict: true.
  */
 export type ToolInputParametersNonStrict =
-  | undefined
-  | JsonObjectSchemaNonStrict<any>;
+  undefined | JsonObjectSchemaNonStrict<any>;
 
 /**
  * The arguments to a tool.
@@ -1474,6 +1507,16 @@ type StrictToolOptions<
   deferLoading?: boolean;
 
   /**
+   * Responses API only. Controls which execution contexts can invoke the tool.
+   */
+  allowedCallers?: ToolAllowedCaller[];
+
+  /**
+   * Responses API only. Describes the JSON value encoded in string outputs.
+   */
+  outputSchema?: JsonObjectSchema<any>;
+
+  /**
    * The function to invoke when the tool is called.
    */
   execute: ToolExecuteFunction<TParameters, Context>;
@@ -1550,6 +1593,16 @@ type NonStrictToolOptions<
    * Responses API only. Hides a top-level function tool definition until tool search loads it.
    */
   deferLoading?: boolean;
+
+  /**
+   * Responses API only. Controls which execution contexts can invoke the tool.
+   */
+  allowedCallers?: ToolAllowedCaller[];
+
+  /**
+   * Responses API only. Describes the JSON value encoded in string outputs.
+   */
+  outputSchema?: JsonObjectSchema<any>;
 
   /**
    * The function to invoke when the tool is called.
@@ -1972,8 +2025,7 @@ export function tool<
     details?: ToolCallDetails,
   ): Promise<string | Result> {
     const detailsWithFlag = details as
-      | ToolCallDetailsWithTimeoutFlag
-      | undefined;
+      ToolCallDetailsWithTimeoutFlag | undefined;
     if (detailsWithFlag?.[FUNCTION_TOOL_TIMEOUT_ALREADY_ENFORCED]) {
       return invokeWithoutTimeout(runContext, input, details);
     }
@@ -2015,6 +2067,10 @@ export function tool<
     parameters,
     strict: strictMode,
     deferLoading: options.deferLoading ?? false,
+    ...(options.allowedCallers
+      ? { allowedCallers: options.allowedCallers }
+      : {}),
+    ...(options.outputSchema ? { outputSchema: options.outputSchema } : {}),
     invoke,
     needsApproval,
     timeoutMs,

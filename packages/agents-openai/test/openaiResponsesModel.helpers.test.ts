@@ -29,6 +29,9 @@ describe('getToolChoice', () => {
     });
     expect(getToolChoice('shell')).toEqual({ type: 'shell' });
     expect(getToolChoice('apply_patch')).toEqual({ type: 'apply_patch' });
+    expect(getToolChoice('programmatic_tool_calling')).toEqual({
+      type: 'programmatic_tool_calling',
+    });
   });
 
   it('supports arbitrary function names', () => {
@@ -82,6 +85,41 @@ describe('getToolChoice', () => {
 });
 
 describe('convertTool', () => {
+  it('converts Programmatic Tool Calling tools and eligible metadata', () => {
+    const outputSchema = {
+      type: 'object',
+      properties: { value: { type: 'string' } },
+      required: ['value'],
+      additionalProperties: false,
+    };
+    expect(
+      convertTool({
+        type: 'function',
+        name: 'lookup',
+        description: 'Lookup a value.',
+        parameters: { type: 'object' },
+        strict: true,
+        allowedCallers: ['programmatic'],
+        outputSchema,
+      } as any).tool,
+    ).toEqual({
+      type: 'function',
+      name: 'lookup',
+      description: 'Lookup a value.',
+      parameters: { type: 'object' },
+      strict: true,
+      allowed_callers: ['programmatic'],
+      output_schema: outputSchema,
+    });
+    expect(
+      convertTool({
+        type: 'hosted_tool',
+        name: 'programmatic_tool_calling',
+        providerData: { type: 'programmatic_tool_calling' },
+      } as any).tool,
+    ).toEqual({ type: 'programmatic_tool_calling' });
+  });
+
   it('converts function tools', () => {
     const t = convertTool({
       type: 'function',
@@ -590,6 +628,59 @@ describe('convertTool', () => {
 });
 
 describe('getInputItems', () => {
+  it('replays Programmatic Tool Calling items and caller linkage', () => {
+    expect(
+      getInputItems([
+        {
+          type: 'program',
+          id: 'prog_1',
+          callId: 'call_prog_1',
+          code: 'text("ok")',
+          fingerprint: 'fp_1',
+        },
+        {
+          type: 'function_call_result',
+          id: 'fc_out_1',
+          callId: 'call_1',
+          name: 'lookup',
+          status: 'completed',
+          output: 'ok',
+          caller: { type: 'program', callerId: 'call_prog_1' },
+        },
+        {
+          type: 'program_output',
+          id: 'prog_out_1',
+          callId: 'call_prog_1',
+          output: 'ok',
+          status: 'completed',
+        },
+      ]),
+    ).toEqual([
+      {
+        type: 'program',
+        id: 'prog_1',
+        call_id: 'call_prog_1',
+        code: 'text("ok")',
+        fingerprint: 'fp_1',
+      },
+      {
+        type: 'function_call_output',
+        id: 'fc_out_1',
+        call_id: 'call_1',
+        output: 'ok',
+        status: 'completed',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+      {
+        type: 'program_output',
+        id: 'prog_out_1',
+        call_id: 'call_prog_1',
+        result: 'ok',
+        status: 'completed',
+      },
+    ]);
+  });
+
   it('converts messages and tool calls/results', () => {
     const items = getInputItems([
       { role: 'user', content: 'hi', id: 'u1' },
@@ -2148,6 +2239,63 @@ describe('getInputItems', () => {
 });
 
 describe('convertToOutputItem', () => {
+  it('converts Programmatic Tool Calling items and caller linkage', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'program',
+        id: 'prog_1',
+        call_id: 'call_prog_1',
+        code: 'text("ok")',
+        fingerprint: 'fp_1',
+      },
+      {
+        type: 'function_call',
+        id: 'fc_1',
+        call_id: 'call_1',
+        name: 'lookup',
+        arguments: '{}',
+        status: 'completed',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+      {
+        type: 'program_output',
+        id: 'prog_out_1',
+        call_id: 'call_prog_1',
+        result: 'ok',
+        status: 'completed',
+      },
+    ] as any);
+
+    expect(out).toEqual([
+      {
+        type: 'program',
+        id: 'prog_1',
+        callId: 'call_prog_1',
+        code: 'text("ok")',
+        fingerprint: 'fp_1',
+        providerData: {},
+      },
+      {
+        type: 'function_call',
+        id: 'fc_1',
+        callId: 'call_1',
+        name: 'lookup',
+        status: 'completed',
+        arguments: '{}',
+        caller: { type: 'program', callerId: 'call_prog_1' },
+        providerData: { id: 'fc_1', type: 'function_call' },
+      },
+      {
+        type: 'program_output',
+        id: 'prog_out_1',
+        callId: 'call_prog_1',
+        output: 'ok',
+        status: 'completed',
+        providerData: {},
+      },
+    ]);
+  });
+
   it('converts output items', () => {
     const out = convertToOutputItem([
       {

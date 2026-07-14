@@ -1037,6 +1037,122 @@ describe('Runner.run', () => {
       expect(model.requests[1]?.modelSettings.toolChoice).toBe('none');
     });
 
+    it('continues Programmatic Tool Calling through nested calls and program output', async () => {
+      class ProgrammaticToolCallingModel implements Model {
+        requests: ModelRequest[] = [];
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.requests.push(request);
+          if (this.requests.length === 1) {
+            return {
+              output: [
+                {
+                  type: 'program',
+                  id: 'prog_1',
+                  callId: 'call_prog_1',
+                  code: 'const values = await Promise.all([tools.lookup({key:"a"}), tools.lookup({key:"b"})]); text(JSON.stringify(values));',
+                  fingerprint: 'fp_1',
+                },
+                {
+                  type: 'function_call',
+                  id: 'fc_1',
+                  callId: 'call_1',
+                  name: 'lookup',
+                  arguments: '{"key":"a"}',
+                  caller: { type: 'program', callerId: 'call_prog_1' },
+                },
+                {
+                  type: 'function_call',
+                  id: 'fc_2',
+                  callId: 'call_2',
+                  name: 'lookup',
+                  arguments: '{"key":"b"}',
+                  caller: { type: 'program', callerId: 'call_prog_1' },
+                },
+              ],
+              usage: new Usage(),
+            };
+          }
+          if (this.requests.length === 2) {
+            return {
+              output: [
+                {
+                  type: 'program_output',
+                  id: 'prog_out_1',
+                  callId: 'call_prog_1',
+                  output: '[{"key":"a"},{"key":"b"}]',
+                  status: 'completed',
+                },
+              ],
+              usage: new Usage(),
+            };
+          }
+          return {
+            output: [fakeModelMessage('Program completed.')],
+            usage: new Usage(),
+          };
+        }
+
+        async *getStreamedResponse(): AsyncIterable<protocol.StreamEvent> {
+          yield* [];
+          throw new Error('Not implemented');
+        }
+      }
+
+      const model = new ProgrammaticToolCallingModel();
+      const lookup = tool({
+        name: 'lookup',
+        description: 'Return the requested key.',
+        parameters: z.object({ key: z.string() }),
+        allowedCallers: ['programmatic'],
+        outputSchema: {
+          type: 'object',
+          properties: { key: { type: 'string' } },
+          required: ['key'],
+          additionalProperties: false,
+        },
+        execute: async ({ key }) => ({ key }),
+      });
+      const agent = new Agent({
+        name: 'ProgramAgent',
+        model,
+        tools: [lookup],
+        modelSettings: { toolChoice: 'programmatic_tool_calling' },
+      });
+
+      const result = await run(agent, 'Run the program.');
+
+      expect(result.finalOutput).toBe('Program completed.');
+      expect(model.requests).toHaveLength(3);
+      expect(model.requests[0]?.modelSettings.toolChoice).toBe(
+        'programmatic_tool_calling',
+      );
+      expect(model.requests[1]?.modelSettings.toolChoice).toBeUndefined();
+      const secondInput = model.requests[1]?.input as AgentInputItem[];
+      expect(secondInput.map((item) => item.type)).toEqual([
+        'message',
+        'program',
+        'function_call',
+        'function_call',
+        'function_call_result',
+        'function_call_result',
+      ]);
+      expect(
+        secondInput
+          .filter((item) => item.type === 'function_call_result')
+          .map((item) => item.caller),
+      ).toEqual([
+        { type: 'program', callerId: 'call_prog_1' },
+        { type: 'program', callerId: 'call_prog_1' },
+      ]);
+      const thirdInput = model.requests[2]?.input as AgentInputItem[];
+      expect(thirdInput.at(-1)).toMatchObject({
+        type: 'program_output',
+        callId: 'call_prog_1',
+        output: '[{"key":"a"},{"key":"b"}]',
+      });
+    });
+
     it('sholuld handle structured output', async () => {
       const fakeModel = new FakeModel([
         {

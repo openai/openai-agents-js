@@ -57,6 +57,8 @@ export function serializeTool(tool: Tool<any>): SerializedTool {
       parameters: tool.parameters as JsonObjectSchema<any>,
       strict: tool.strict,
       deferLoading: tool.deferLoading,
+      ...(tool.allowedCallers ? { allowedCallers: tool.allowedCallers } : {}),
+      ...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {}),
       ...(namespace ? { namespace } : {}),
       ...(namespace
         ? {
@@ -88,12 +90,14 @@ export function serializeTool(tool: Tool<any>): SerializedTool {
       type: 'shell',
       name: tool.name,
       environment: tool.environment,
+      ...(tool.allowedCallers ? { allowedCallers: tool.allowedCallers } : {}),
     };
   }
   if (tool.type === 'apply_patch') {
     return {
       type: 'apply_patch',
       name: tool.name,
+      ...(tool.allowedCallers ? { allowedCallers: tool.allowedCallers } : {}),
     };
   }
   return {

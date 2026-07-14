@@ -92,6 +92,27 @@ const createMockLogger = (): Logger => ({
   dontLogToolData: true,
 });
 
+describe('Programmatic Tool Calling outputs', () => {
+  it('copies caller linkage to function outputs', () => {
+    const output = getToolCallOutputItem(
+      {
+        type: 'function_call',
+        id: 'fc_1',
+        callId: 'call_1',
+        name: 'lookup',
+        arguments: '{}',
+        caller: { type: 'program', callerId: 'call_program_1' },
+      },
+      { value: 'ok' },
+    );
+
+    expect(output.caller).toEqual({
+      type: 'program',
+      callerId: 'call_program_1',
+    });
+  });
+});
+
 const CUSTOM_REJECTION_MESSAGE =
   'Tool execution was dismissed. You may retry this tool later.';
 const REDACTED_TOOL_ERROR_MESSAGE =

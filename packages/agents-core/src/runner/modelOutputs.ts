@@ -737,6 +737,11 @@ export function processModelResponse<TContext>(
       addHostedMcpToolsFromToolSearchOutput(output, mcpToolMap, {
         preserveExistingServerLabels: originalMcpServerLabels,
       });
+    } else if (output.type === 'program') {
+      items.push(new RunToolCallItem(output, agent));
+      toolsUsed.push('programmatic_tool_calling');
+    } else if (output.type === 'program_output') {
+      items.push(new RunToolCallOutputItem(output, agent, output.output));
     } else if (output.type === 'hosted_tool_call') {
       items.push(new RunToolCallItem(output, agent));
       const toolName = output.name;
@@ -1064,6 +1069,11 @@ export async function processModelResponseAsync<TContext>(
       addHostedMcpToolsFromToolSearchOutput(output, mcpToolMap, {
         preserveExistingServerLabels: originalMcpServerLabels,
       });
+    } else if (output.type === 'program') {
+      items.push(new RunToolCallItem(output, agent));
+      toolsUsed.push('programmatic_tool_calling');
+    } else if (output.type === 'program_output') {
+      items.push(new RunToolCallOutputItem(output, agent, output.output));
     } else if (output.type === 'hosted_tool_call') {
       items.push(new RunToolCallItem(output, agent));
       const toolName = output.name;
