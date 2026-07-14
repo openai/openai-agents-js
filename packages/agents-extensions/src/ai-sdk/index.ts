@@ -1568,12 +1568,16 @@ export class AiSdkModel implements Model {
         // so adding this item only when the tool calls are empty.
         // Note that the same support is not available for streaming mode.
         if (!hasToolCalls) {
-          const textItem = resultContent.find(
+          const textParts = resultContent.filter(
             (c: any) => c && c.type === 'text' && typeof c.text === 'string',
           );
-          if (textItem) {
+          if (textParts.length > 0) {
+            // A model response may contain multiple text parts. Concatenate them
+            // to mirror the streaming path (which accumulates every text-delta
+            // into a single output_text) instead of dropping all but the first.
+            const combinedText = textParts.map((c: any) => c.text).join('');
             const transformedText = await this.#transformOutputText(
-              textItem.text,
+              combinedText,
               request,
               false,
             );

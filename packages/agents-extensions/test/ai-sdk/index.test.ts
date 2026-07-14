@@ -1528,6 +1528,51 @@ describe('AiSdkModel.getResponse', () => {
     ]);
   });
 
+  test('concatenates multiple text output parts', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              { type: 'text', text: 'Hello ' },
+              { type: 'text', text: 'world' },
+            ],
+            usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+            providerMetadata: { p: 1 },
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const res = await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+
+    expect(res.output).toEqual([
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Hello world' }],
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id',
+          p: 1,
+        },
+      },
+    ]);
+  });
+
   test('applies transformOutputText to finalized assistant text', async () => {
     const transformOutputText = vi.fn((text: string, context: any) => {
       expect(context.stream).toBe(false);
