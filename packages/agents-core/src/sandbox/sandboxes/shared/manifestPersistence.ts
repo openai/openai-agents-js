@@ -9,7 +9,10 @@ import {
   serializeManifestEnvironment,
   type SerializedManifestEnvironment,
 } from '../../shared/environment';
-import { encodeUint8ArrayToBase64 } from '../../../utils/base64';
+import {
+  decodeBase64ToUint8Array,
+  encodeUint8ArrayToBase64,
+} from '../../../utils/base64';
 
 type ManifestPersistenceState = {
   manifest: Manifest;
@@ -276,22 +279,4 @@ function isSerializedFileContent(
     (value as { type?: unknown }).type === 'base64' &&
     typeof (value as { data?: unknown }).data === 'string'
   );
-}
-
-function decodeBase64ToUint8Array(value: string): Uint8Array {
-  const bufferCtor = (
-    globalThis as {
-      Buffer?: { from(input: string, encoding: string): Uint8Array };
-    }
-  ).Buffer;
-  if (bufferCtor) {
-    return Uint8Array.from(bufferCtor.from(value, 'base64'));
-  }
-
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
 }
