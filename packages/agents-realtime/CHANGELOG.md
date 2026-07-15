@@ -1,5 +1,12 @@
 # @openai/agents-realtime
 
+## 0.13.4
+
+### Patch Changes
+
+- Updated dependencies [a1670ce]
+  - @openai/agents-core@0.13.4
+
 ## 0.13.3
 
 ### Patch Changes
