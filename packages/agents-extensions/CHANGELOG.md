@@ -1,5 +1,13 @@
 # @openai/agents-extensions
 
+## 0.13.4
+
+### Patch Changes
+
+- 6c12d5c: fix: concatenate all text parts in AI SDK non-streaming responses instead of keeping only the first
+- Updated dependencies [a1670ce]
+  - @openai/agents-core@0.13.4
+
 ## 0.13.3
 
 ### Patch Changes
