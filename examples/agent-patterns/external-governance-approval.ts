@@ -28,8 +28,12 @@ type GovernanceDecision = {
 
 const EXTERNAL_GOVERNANCE_URL = process.env.EXTERNAL_GOVERNANCE_URL;
 const AUTO_APPROVE_EXTERNAL_GOVERNANCE =
-  process.env.AUTO_APPROVE_EXTERNAL_GOVERNANCE === '1';
+  process.env.AUTO_APPROVE_EXTERNAL_GOVERNANCE === '1' ||
+  process.env.AUTO_APPROVE_HITL === '1';
+const STATE_PATH = 'external-governance-result.json';
+const DECISION_CACHE_PATH = 'external-governance-decisions.json';
 const decisionsByCallId = new Map<string, GovernanceDecision>();
+const decisionsByActionHash = new Map<string, GovernanceDecision>();
 
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') {
@@ -91,7 +95,9 @@ async function reviewWithExternalGovernance(
       );
     }
 
-    return (await response.json()) as GovernanceDecision;
+    const decision = (await response.json()) as GovernanceDecision;
+    assertDecisionMatchesEnvelope(decision, envelope);
+    return decision;
   }
 
   const verdict =
@@ -110,6 +116,74 @@ async function reviewWithExternalGovernance(
   };
 }
 
+function assertDecisionMatchesEnvelope(
+  decision: GovernanceDecision,
+  envelope: GovernanceActionEnvelope,
+) {
+  if (decision.actionHash !== envelope.actionHash) {
+    throw new Error(
+      'External governance returned a decision for a different action.',
+    );
+  }
+}
+
+async function loadDecisionCache(): Promise<
+  Record<string, GovernanceDecision>
+> {
+  try {
+    return JSON.parse(
+      await fs.readFile(DECISION_CACHE_PATH, 'utf-8'),
+    ) as Record<string, GovernanceDecision>;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return {};
+    }
+    throw error;
+  }
+}
+
+async function persistDecision(
+  envelope: GovernanceActionEnvelope,
+  decision: GovernanceDecision,
+) {
+  assertDecisionMatchesEnvelope(decision, envelope);
+  decisionsByCallId.set(envelope.callId, decision);
+  decisionsByActionHash.set(envelope.actionHash, decision);
+
+  const cache = await loadDecisionCache();
+  cache[`call:${envelope.callId}`] = decision;
+  cache[`action:${envelope.actionHash}`] = decision;
+  await fs.writeFile(
+    DECISION_CACHE_PATH,
+    JSON.stringify(cache, null, 2),
+    'utf-8',
+  );
+}
+
+async function findDecision(
+  envelope: GovernanceActionEnvelope,
+): Promise<GovernanceDecision | undefined> {
+  const inMemory =
+    decisionsByCallId.get(envelope.callId) ??
+    decisionsByActionHash.get(envelope.actionHash);
+  if (inMemory) {
+    assertDecisionMatchesEnvelope(inMemory, envelope);
+    return inMemory;
+  }
+
+  const cache = await loadDecisionCache();
+  const persisted =
+    cache[`call:${envelope.callId}`] ?? cache[`action:${envelope.actionHash}`];
+  if (!persisted) {
+    return undefined;
+  }
+
+  assertDecisionMatchesEnvelope(persisted, envelope);
+  decisionsByCallId.set(envelope.callId, persisted);
+  decisionsByActionHash.set(envelope.actionHash, persisted);
+  return persisted;
+}
+
 const exportCustomerRecords = tool({
   name: 'export_customer_records',
   description:
@@ -123,7 +197,7 @@ const exportCustomerRecords = tool({
   needsApproval: async (_context, input, callId) => {
     const envelope = buildActionEnvelope(input, callId);
     const decision = await reviewWithExternalGovernance(envelope);
-    decisionsByCallId.set(envelope.callId, decision);
+    await persistDecision(envelope, decision);
 
     console.log('\nExternal governance decision');
     console.log(`- verdict: ${decision.verdict}`);
@@ -135,9 +209,16 @@ const exportCustomerRecords = tool({
   },
   execute: async (input, _context, details) => {
     const callId = details?.toolCall?.callId ?? 'unknown-call';
-    const decision = decisionsByCallId.get(callId);
+    const envelope = buildActionEnvelope(input, callId);
+    const decision = await findDecision(envelope);
 
-    if (decision?.verdict === 'deny') {
+    if (!decision) {
+      throw new Error(
+        'No governance decision was recorded for this action; failing closed.',
+      );
+    }
+
+    if (decision.verdict === 'deny') {
       throw new Error(`Blocked by external governance: ${decision.reason}`);
     }
 
@@ -145,9 +226,8 @@ const exportCustomerRecords = tool({
       exported: input.recordLimit,
       accountId: input.accountId,
       destination: input.destination,
-      governanceDecisionId: decision?.decisionId ?? 'not-reviewed',
-      actionHash:
-        decision?.actionHash ?? buildActionEnvelope(input, callId).actionHash,
+      governanceDecisionId: decision.decisionId,
+      actionHash: envelope.actionHash,
     };
   },
 });
@@ -183,15 +263,12 @@ async function main() {
 
   while (result.interruptions?.length > 0) {
     await fs.writeFile(
-      'external-governance-result.json',
+      STATE_PATH,
       JSON.stringify(result.state, null, 2),
       'utf-8',
     );
 
-    const storedState = await fs.readFile(
-      'external-governance-result.json',
-      'utf-8',
-    );
+    const storedState = await fs.readFile(STATE_PATH, 'utf-8');
     const state = await RunState.fromString(agent, storedState);
 
     for (const interruption of result.interruptions) {
