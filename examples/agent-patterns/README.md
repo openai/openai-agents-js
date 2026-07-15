@@ -23,6 +23,10 @@ Run them with `pnpm` using the commands shown below.
   ```bash
   pnpm -F agent-patterns start:forcing-tool-use
   ```
+- `external-governance-approval.ts` – Review a tool call with an external governance checkpoint before execution.
+  ```bash
+  pnpm -F agent-patterns start:external-governance-approval
+  ```
 - `human-in-the-loop.ts` – Manually approve certain tool calls.
   ```bash
   pnpm examples:human-in-the-loop

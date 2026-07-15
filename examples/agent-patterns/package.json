@@ -15,6 +15,7 @@
     "start:agents-as-tools-structured": "tsx agents-as-tools-structured.ts",
     "start:agents-as-tools-streaming": "tsx agents-as-tools-streaming.ts",
     "start:deterministic": "tsx deterministic.ts",
+    "start:external-governance-approval": "tsx external-governance-approval.ts",
     "start:forcing-tool-use": "tsx forcing-tool-use.ts -t default",
     "start:human-in-the-loop-stream": "tsx human-in-the-loop-stream.ts",
     "start:human-in-the-loop": "tsx human-in-the-loop.ts",
