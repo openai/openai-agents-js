@@ -54,6 +54,24 @@ describe('Tool', () => {
     expect(t.deferLoading).toBe(true);
   });
 
+  it('records provider data when requested', () => {
+    const t = tool({
+      name: 'provider_lookup',
+      description: 'Provider-specific lookup tool.',
+      parameters: z.object({
+        query: z.string(),
+      }),
+      providerData: {
+        anthropic: { deferLoading: true },
+      },
+      execute: async () => ({ bar: 'ok' }),
+    });
+
+    expect(t.providerData).toEqual({
+      anthropic: { deferLoading: true },
+    });
+  });
+
   it('toolNamespace returns shallow-cloned function tools', () => {
     const t = tool({
       name: 'lookup_account',

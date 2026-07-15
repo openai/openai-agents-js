@@ -57,6 +57,7 @@ export function serializeTool(tool: Tool<any>): SerializedTool {
       parameters: tool.parameters as JsonObjectSchema<any>,
       strict: tool.strict,
       deferLoading: tool.deferLoading,
+      providerData: tool.providerData,
       ...(namespace ? { namespace } : {}),
       ...(namespace
         ? {
