@@ -249,8 +249,9 @@ describe('convertChatCompletionsStreamToResponses', () => {
       void,
       unknown
     > {
-      // usage is delivered on an early chunk (as some providers such as
-      // xAI/Grok via LiteLLM do)...
+      // usage is delivered on an early chunk (some OpenAI-compatible
+      // providers or gateways may emit a later chunk without usage after
+      // reporting usage)...
       yield makeChunk(
         { content: 'Hello' },
         { prompt_tokens: 100, completion_tokens: 5, total_tokens: 105 },

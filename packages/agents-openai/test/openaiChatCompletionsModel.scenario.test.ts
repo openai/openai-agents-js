@@ -144,9 +144,9 @@ describe('OpenAIChatCompletionsModel streaming scenarios', () => {
   });
 
   it('preserves usage reported on a non-final chunk when the terminal chunk has no usage', async () => {
-    // Some OpenAI-compatible providers reachable through a custom baseURL
-    // (e.g. xAI/Grok, or a LiteLLM gateway in front of it) attach usage to a
-    // non-final chunk and then emit a terminal chunk that carries no usage.
+    // Some OpenAI-compatible providers or gateways may emit a later chunk
+    // without usage after reporting usage: usage arrives on a non-final
+    // chunk and the terminal chunk carries no usage of its own.
     const stream = {
       async *[Symbol.asyncIterator]() {
         yield makeChunk({ content: 'Hello' });
