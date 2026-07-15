@@ -159,6 +159,16 @@ describe('StreamedRunResult', () => {
     expect(sr.error).toBe(null);
   });
 
+  it('currentTurn reflects the run state turn counter', () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    expect(sr.currentTurn).toBe(0);
+    // The runner bumps RunState._currentTurn once per model request; the result
+    // should surface it live rather than stay pinned at its initial 0.
+    state._currentTurn = 3;
+    expect(sr.currentTurn).toBe(3);
+  });
+
   it('records errors and rejects completed promise', async () => {
     const state = createState();
     const sr = new StreamedRunResult({ state });

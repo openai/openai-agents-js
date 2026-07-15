@@ -102,8 +102,7 @@ export interface RunResultData<
    * The output of the last agent, or any handoff agent.
    */
   finalOutput?:
-    | ResolvedAgentOutput<TAgent['outputType']>
-    | HandoffsOutput<THandoffs>;
+    ResolvedAgentOutput<TAgent['outputType']> | HandoffsOutput<THandoffs>;
 
   /**
    * The interruptions that occurred during the agent run.
@@ -311,7 +310,9 @@ export class StreamedRunResult<
   /**
    * The current turn number
    */
-  public currentTurn: number = 0;
+  public get currentTurn(): number {
+    return this.state._currentTurn;
+  }
 
   /**
    * The maximum number of turns that can be run
