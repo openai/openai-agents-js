@@ -876,6 +876,96 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('orders provider-executed tool searches before pending client calls', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        callId: 'weather_1',
+        name: 'get_weather',
+        arguments: '{"city":"Tokyo"}',
+        status: 'completed',
+      },
+      {
+        type: 'tool_search_call',
+        id: 'search_1',
+        execution: 'server',
+        arguments: { query: 'weather tools' },
+        status: 'completed',
+      },
+      {
+        type: 'tool_search_output',
+        callId: 'search_1',
+        execution: 'server',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            toolName: 'get_forecast',
+          },
+        ],
+      },
+      {
+        type: 'function_call_result',
+        callId: 'weather_1',
+        name: 'get_weather',
+        status: 'completed',
+        output: 'sunny',
+      },
+    ];
+
+    expect(itemsToLanguageV2Messages(stubModel({}), items)).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'search_1',
+            toolName: 'tool_search',
+            input: { query: 'weather tools' },
+            providerExecuted: true,
+            providerOptions: {},
+          },
+          {
+            type: 'tool-result',
+            toolCallId: 'search_1',
+            toolName: 'tool_search',
+            output: {
+              type: 'json',
+              value: [
+                {
+                  type: 'tool_reference',
+                  toolName: 'get_forecast',
+                },
+              ],
+            },
+            providerOptions: {},
+          },
+          {
+            type: 'tool-call',
+            toolCallId: 'weather_1',
+            toolName: 'get_weather',
+            input: { city: 'Tokyo' },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'weather_1',
+            toolName: 'get_weather',
+            output: { type: 'text', value: 'sunny' },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
   test('replays provider-executed tool search errors as error results', () => {
     const errorResult = {
       type: 'tool_search_tool_result_error',

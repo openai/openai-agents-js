@@ -608,7 +608,39 @@ export function itemsToLanguageV2Messages(
           currentAssistantMessage.role === 'assistant'
         ) {
           appendPendingReasonerReasoningToCurrentAssistant();
-          currentAssistantMessage.content.push(toolResult);
+          const serverToolCallIndex = currentAssistantMessage.content.findIndex(
+            (part) =>
+              part.type === 'tool-call' && part.toolCallId === toolCallId,
+          );
+          const firstPendingClientToolCallIndex =
+            currentAssistantMessage.content.findIndex(
+              (part) => part.type === 'tool-call' && !part.providerExecuted,
+            );
+
+          if (
+            serverToolCallIndex >= 0 &&
+            firstPendingClientToolCallIndex >= 0 &&
+            firstPendingClientToolCallIndex < serverToolCallIndex
+          ) {
+            const [serverToolCall] = currentAssistantMessage.content.splice(
+              serverToolCallIndex,
+              1,
+            );
+            currentAssistantMessage.content.splice(
+              firstPendingClientToolCallIndex,
+              0,
+              serverToolCall,
+              toolResult,
+            );
+          } else if (serverToolCallIndex >= 0) {
+            currentAssistantMessage.content.splice(
+              serverToolCallIndex + 1,
+              0,
+              toolResult,
+            );
+          } else {
+            currentAssistantMessage.content.push(toolResult);
+          }
           currentAssistantMessage.providerOptions = {
             ...currentAssistantMessage.providerOptions,
             ...providerOptions,
