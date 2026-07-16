@@ -105,12 +105,13 @@ export async function* convertChatCompletionsStreamToResponses(
           type: 'output_text',
           providerData: { annotations: [] },
         };
-        state.messageItemId = response.id || FAKE_ID;
+        state.messageItemId =
+          response.id && response.id !== FAKE_ID ? response.id : undefined;
       }
       yield {
         type: 'output_text_delta',
         delta: delta.content,
-        itemId: state.messageItemId,
+        ...(state.messageItemId ? { itemId: state.messageItemId } : {}),
         providerData: {
           ...chunk,
         },
