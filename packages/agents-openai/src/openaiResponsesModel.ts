@@ -3280,8 +3280,13 @@ export class OpenAIResponsesModel implements Model {
             providerData: remainingEvent,
           };
         } else if (eventType === 'response.output_text.delta') {
-          const { delta, ...remainingEvent } = event as unknown as {
+          const {
+            delta,
+            item_id: itemId,
+            ...remainingEvent
+          } = event as unknown as {
             delta: string;
+            item_id?: string;
             output_index?: number;
           } & Record<string, any>;
           const outputItem =
@@ -3297,7 +3302,11 @@ export class OpenAIResponsesModel implements Model {
             yield {
               type: 'output_text_delta',
               delta: delta,
-              providerData: remainingEvent,
+              ...(itemId ? { itemId } : {}),
+              providerData: {
+                ...remainingEvent,
+                ...(itemId ? { item_id: itemId } : {}),
+              },
             };
           }
         }

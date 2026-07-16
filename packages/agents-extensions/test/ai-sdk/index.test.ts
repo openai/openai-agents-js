@@ -189,7 +189,7 @@ describe('AiSdkModel end-to-end scenarios', () => {
 
   test('streams interleaved text and multiple tool calls with usage', async () => {
     const parts = [
-      { type: 'text-delta', delta: 'Hello ' },
+      { type: 'text-delta', id: 'text-1', delta: 'Hello ' },
       {
         type: 'tool-call',
         toolCallId: 'c1',
@@ -197,7 +197,7 @@ describe('AiSdkModel end-to-end scenarios', () => {
         input: '{"q":"a"}',
         providerMetadata: { meta: 1 },
       },
-      { type: 'text-delta', delta: 'world' },
+      { type: 'text-delta', id: 'text-1', delta: 'world' },
       {
         type: 'tool-call',
         toolCallId: 'c2',
@@ -237,10 +237,17 @@ describe('AiSdkModel end-to-end scenarios', () => {
     }
 
     const final = events.at(-1);
+    expect(
+      events.filter((event) => event.type === 'output_text_delta'),
+    ).toEqual([
+      { type: 'output_text_delta', itemId: 'text-1', delta: 'Hello ' },
+      { type: 'output_text_delta', itemId: 'text-1', delta: 'world' },
+    ]);
     expect(final.type).toBe('response_done');
     expect(final.response.output).toEqual([
       {
         type: 'message',
+        id: 'text-1',
         role: 'assistant',
         content: [{ type: 'output_text', text: 'Hello world' }],
         status: 'completed',

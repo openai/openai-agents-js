@@ -2010,6 +2010,7 @@ export class AiSdkModel implements Model {
         SerializedTool | SerializedHandoff
       >();
       let textOutput: protocol.OutputText | undefined;
+      let textItemId: string | undefined;
 
       // State for tracking reasoning blocks (for Anthropic extended thinking):
       // Track reasoning deltas so we can preserve Anthropic signatures even when text is redacted.
@@ -2031,11 +2032,19 @@ export class AiSdkModel implements Model {
 
         switch (part.type) {
           case 'text-delta': {
+            const itemId = (part as any).id as string | undefined;
             if (!textOutput) {
               textOutput = { type: 'output_text', text: '' };
+              textItemId = itemId;
+            } else if (itemId !== textItemId) {
+              textItemId = undefined;
             }
             textOutput.text += (part as any).delta;
-            yield { type: 'output_text_delta', delta: (part as any).delta };
+            yield {
+              type: 'output_text_delta',
+              delta: (part as any).delta,
+              ...(itemId ? { itemId } : {}),
+            };
             break;
           }
           case 'reasoning-start': {
@@ -2180,6 +2189,7 @@ export class AiSdkModel implements Model {
         );
         outputs.push({
           type: 'message',
+          ...(textItemId ? { id: textItemId } : {}),
           role: 'assistant',
           content: [{ ...textOutput, text: transformedText }],
           status: 'completed',

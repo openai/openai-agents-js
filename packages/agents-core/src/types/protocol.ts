@@ -910,6 +910,10 @@ export type UsageData = z.infer<typeof UsageData>;
 export const StreamEventTextStream = SharedBase.extend({
   type: z.literal('output_text_delta'),
   /**
+   * The ID of the output item this delta belongs to, when provided by the model.
+   */
+  itemId: z.string().optional(),
+  /**
    * The delta text that was streamed by the modelto the user.
    */
   delta: z.string(),

@@ -4014,6 +4014,7 @@ describe('OpenAIResponsesModel', () => {
         {
           type: 'output_text_delta',
           delta: 'delta',
+          itemId: 'item-1',
           providerData: {
             content_index: 0,
             item_id: 'item-1',
