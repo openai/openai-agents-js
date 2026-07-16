@@ -143,6 +143,9 @@ describe('processModelResponse', () => {
         trackingNumber: z.string(),
       }),
       deferLoading: true,
+      providerData: {
+        anthropic: { deferLoading: true },
+      },
       execute: async () => 'tomorrow',
     });
     const shippingCredit = tool({
@@ -198,6 +201,9 @@ describe('processModelResponse', () => {
         execution: 'client',
       },
     });
+    expect(
+      (result.newItems[1] as ToolSearchOutputItem).rawItem.tools[0],
+    ).not.toHaveProperty('providerData');
     expect(result.hasToolsOrApprovalsToRun()).toBe(true);
   });
 
