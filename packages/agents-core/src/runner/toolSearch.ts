@@ -160,16 +160,18 @@ function serializeFunctionToolForToolSearchOutput(
 ): protocol.ToolSearchOutputTool {
   const serialized = serializeTool(tool) as Record<string, unknown>;
   const namespace = getExplicitFunctionToolNamespace(tool);
+  const { providerData: _providerData, ...toolSearchPayload } = serialized;
+  void _providerData;
 
   if (!namespace) {
-    return serialized as protocol.ToolSearchOutputTool;
+    return toolSearchPayload as protocol.ToolSearchOutputTool;
   }
 
   const {
     namespace: _namespace,
     namespaceDescription,
     ...toolPayload
-  } = serialized;
+  } = toolSearchPayload;
   void namespaceDescription;
   return toolPayload as protocol.ToolSearchOutputTool;
 }

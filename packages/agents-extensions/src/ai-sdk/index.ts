@@ -31,6 +31,7 @@ import {
   withGenerationSpan,
   getLogger,
   ModelSettingsToolChoice,
+  HostedTool,
 } from '@openai/agents';
 import {
   getToolSearchProviderCallId,
@@ -77,8 +78,67 @@ type LanguageModelV2ProviderTool = {
 };
 
 type LanguageModelV2ProviderToolCompat =
-  | LanguageModelV2ProviderDefinedTool
-  | LanguageModelV2ProviderTool;
+  LanguageModelV2ProviderDefinedTool | LanguageModelV2ProviderTool;
+
+/**
+ * Provider tool definition returned by an AI SDK provider tool factory.
+ */
+export type AiSdkProviderTool = {
+  type?: string;
+  id?: string;
+  args?: Record<string, any>;
+};
+
+type AiSdkProviderToolConfig = {
+  id: string;
+  args: Record<string, any>;
+};
+
+const AI_SDK_PROVIDER_TOOL_KEY = 'aiSdkProviderTool';
+
+/**
+ * Adapts an AI SDK provider's server-executed tool-search definition for use
+ * with an Agents SDK agent.
+ *
+ * @param providerTool - A provider tool returned by an AI SDK tool factory.
+ * @returns A hosted tool-search tool understood by the AI SDK adapter.
+ */
+export function aiSdkToolSearchTool(
+  providerTool: AiSdkProviderTool,
+): HostedTool {
+  if (
+    !providerTool ||
+    (providerTool.type !== 'provider' &&
+      providerTool.type !== 'provider-defined')
+  ) {
+    throw new UserError(
+      'aiSdkToolSearchTool() requires an AI SDK provider tool definition.',
+    );
+  }
+  if (typeof providerTool.id !== 'string' || providerTool.id.trim() === '') {
+    throw new UserError(
+      'aiSdkToolSearchTool() requires a provider tool with a non-empty id.',
+    );
+  }
+  if (providerTool.args !== undefined && !isRecord(providerTool.args)) {
+    throw new UserError(
+      'aiSdkToolSearchTool() requires provider tool args to be an object.',
+    );
+  }
+
+  return {
+    type: 'hosted_tool',
+    name: 'tool_search',
+    providerData: {
+      type: 'tool_search',
+      execution: 'server',
+      [AI_SDK_PROVIDER_TOOL_KEY]: {
+        id: providerTool.id,
+        args: providerTool.args ?? {},
+      } satisfies AiSdkProviderToolConfig,
+    },
+  };
+}
 
 type LanguageModelV2CallOptionsCompat = Omit<
   LanguageModelV2CallOptions,
@@ -105,8 +165,7 @@ type LanguageModelV2Compat = Omit<
 };
 
 type LanguageModelCompatible =
-  | LanguageModelV2Compat
-  | LanguageModelV3Compatible;
+  LanguageModelV2Compat | LanguageModelV3Compatible;
 
 type SerializedComputerTool = Extract<SerializedTool, { type: 'computer' }>;
 
@@ -203,19 +262,17 @@ export function itemsToLanguageV2Messages(
   const toolCallNamesById = new Map<string, string>();
   const pendingToolSearchCallIds: string[] = [];
   const pendingServerToolSearchCallIds: string[] = [];
+  const serverToolSearchCallIds = new Set<string>();
   let generatedToolSearchCallId = 0;
   let currentAssistantMessage: LanguageModelV2Message | undefined;
   let pendingReasonerReasoning:
-    | { text: string; providerOptions: Record<string, any> }
-    | undefined;
+    { text: string; providerOptions: Record<string, any> } | undefined;
   const collapsedItems = collapseReplacedToolSearchOutputs(items);
   const consumePendingReasonerReasoning = () => {
-    if (
-      !(
-        shouldIncludeReasoningContent(model, modelSettings) &&
-        pendingReasonerReasoning
-      )
-    ) {
+    if (!(
+      shouldIncludeReasoningContent(model, modelSettings) &&
+      pendingReasonerReasoning
+    )) {
       return undefined;
     }
 
@@ -480,6 +537,7 @@ export function itemsToLanguageV2Messages(
           pendingToolSearchCallIds.push(toolCallId);
         } else {
           pendingServerToolSearchCallIds.push(toolCallId);
+          serverToolSearchCallIds.add(toolCallId);
         }
         toolCallNamesById.set(toolCallId, 'tool_search');
         const content: LanguageModelV2ToolCallPart = {
@@ -487,25 +545,16 @@ export function itemsToLanguageV2Messages(
           toolCallId,
           toolName: 'tool_search',
           input: item.arguments,
+          ...(getToolSearchExecution(item) === 'server'
+            ? { providerExecuted: true }
+            : {}),
           providerOptions: toProviderOptions(item.providerData, model),
         };
         currentAssistantMessage.content.push(content);
       }
       continue;
     } else if (item.type === 'tool_search_output') {
-      flushPendingReasonerReasoningToMessages();
-      if (currentAssistantMessage) {
-        messages.push(currentAssistantMessage);
-        currentAssistantMessage = undefined;
-      }
-      const rawToolSearchExecution =
-        (item as { execution?: unknown }).execution ??
-        item.providerData?.execution;
-      const toolSearchExecution =
-        rawToolSearchExecution === 'client' ||
-        rawToolSearchExecution === 'server'
-          ? rawToolSearchExecution
-          : undefined;
+      const toolSearchExecution = getToolSearchExecution(item);
       const toolCallId =
         toolSearchExecution === 'server'
           ? takeQueuedToolSearchResultCallId(
@@ -521,23 +570,94 @@ export function itemsToLanguageV2Messages(
               return `tool_search_${generatedToolSearchCallId}`;
             });
       const toolName = toolCallNamesById.get(toolCallId) ?? 'tool_search';
+      const isMatchedServerToolSearchResult =
+        toolSearchExecution === 'server' &&
+        serverToolSearchCallIds.has(toolCallId);
+      const providerOptions = toProviderOptions(item.providerData, model);
+      const isError = item.status === 'failed';
       const toolResult: LanguageModelV2ToolResultPart = {
         type: 'tool-result',
         toolCallId,
         toolName,
         output: {
-          type: 'json',
-          value: {
-            ...(typeof item.status === 'string' ? { status: item.status } : {}),
-            tools: item.tools,
-          },
+          type: isError ? 'error-json' : 'json',
+          value: isMatchedServerToolSearchResult
+            ? isError && item.tools.length === 1
+              ? item.tools[0]
+              : item.tools
+            : {
+                ...(typeof item.status === 'string'
+                  ? { status: item.status }
+                  : {}),
+                tools: item.tools,
+              },
         },
-        providerOptions: toProviderOptions(item.providerData, model),
+        providerOptions,
       };
+
+      if (isMatchedServerToolSearchResult) {
+        if (!currentAssistantMessage) {
+          currentAssistantMessage = {
+            role: 'assistant',
+            content: [],
+            providerOptions,
+          };
+        }
+        if (
+          Array.isArray(currentAssistantMessage.content) &&
+          currentAssistantMessage.role === 'assistant'
+        ) {
+          appendPendingReasonerReasoningToCurrentAssistant();
+          const serverToolCallIndex = currentAssistantMessage.content.findIndex(
+            (part) =>
+              part.type === 'tool-call' && part.toolCallId === toolCallId,
+          );
+          const firstPendingClientToolCallIndex =
+            currentAssistantMessage.content.findIndex(
+              (part) => part.type === 'tool-call' && !part.providerExecuted,
+            );
+
+          if (
+            serverToolCallIndex >= 0 &&
+            firstPendingClientToolCallIndex >= 0 &&
+            firstPendingClientToolCallIndex < serverToolCallIndex
+          ) {
+            const [serverToolCall] = currentAssistantMessage.content.splice(
+              serverToolCallIndex,
+              1,
+            );
+            currentAssistantMessage.content.splice(
+              firstPendingClientToolCallIndex,
+              0,
+              serverToolCall,
+              toolResult,
+            );
+          } else if (serverToolCallIndex >= 0) {
+            currentAssistantMessage.content.splice(
+              serverToolCallIndex + 1,
+              0,
+              toolResult,
+            );
+          } else {
+            currentAssistantMessage.content.push(toolResult);
+          }
+          currentAssistantMessage.providerOptions = {
+            ...currentAssistantMessage.providerOptions,
+            ...providerOptions,
+          };
+        }
+        continue;
+      }
+
+      flushPendingReasonerReasoningToMessages();
+      if (currentAssistantMessage) {
+        messages.push(currentAssistantMessage);
+        currentAssistantMessage = undefined;
+      }
       messages.push({
         role: 'tool',
         content: [toolResult],
-        providerOptions: toProviderOptions(item.providerData, model),
+        providerOptions,
       });
       continue;
     }
@@ -810,6 +930,28 @@ function isHostedToolSearchTool(
   );
 }
 
+function getAiSdkProviderToolConfig(
+  tool: SerializedTool | SerializedHandoff | undefined,
+): AiSdkProviderToolConfig | undefined {
+  if (!isHostedToolSearchTool(tool)) {
+    return undefined;
+  }
+
+  const config = tool.providerData?.[AI_SDK_PROVIDER_TOOL_KEY];
+  if (
+    !isRecord(config) ||
+    typeof config.id !== 'string' ||
+    !isRecord(config.args)
+  ) {
+    return undefined;
+  }
+
+  return {
+    id: config.id,
+    args: config.args,
+  };
+}
+
 function normalizeToolSearchArguments(value: unknown): unknown {
   if (typeof value !== 'string') {
     return value ?? {};
@@ -825,6 +967,19 @@ function normalizeToolSearchArguments(value: unknown): unknown {
   } catch {
     return value;
   }
+}
+
+function getToolSearchExecution(value: {
+  execution?: unknown;
+  providerData?: unknown;
+}): 'client' | 'server' | undefined {
+  const providerExecution = isRecord(value.providerData)
+    ? value.providerData.execution
+    : undefined;
+  const execution = value.execution ?? providerExecution;
+  return execution === 'client' || execution === 'server'
+    ? execution
+    : undefined;
 }
 
 function takeQueuedToolSearchResultCallId(
@@ -902,13 +1057,26 @@ function createProtocolToolCallItem(args: {
   toolName: string;
   input: unknown;
   providerData: Record<string, any> | undefined;
+  providerExecuted?: boolean;
 }): protocol.FunctionCallItem | protocol.ToolSearchCallItem {
-  const { requestedTool, toolCallId, toolName, input, providerData } = args;
+  const {
+    requestedTool,
+    toolCallId,
+    toolName,
+    input,
+    providerData,
+    providerExecuted,
+  } = args;
 
   if (isHostedToolSearchTool(requestedTool)) {
+    const execution =
+      providerExecuted || getToolSearchExecution(requestedTool) === 'server'
+        ? 'server'
+        : 'client';
     return {
       type: 'tool_search_call',
       id: toolCallId,
+      ...(execution === 'server' ? { execution } : {}),
       arguments: normalizeToolSearchArguments(input),
       status: 'completed',
       providerData,
@@ -931,6 +1099,52 @@ function createProtocolToolCallItem(args: {
     name: toolName,
     arguments: toolCallArguments,
     status: 'completed',
+    providerData,
+  };
+}
+
+function getAiSdkToolResultValue(part: any): unknown {
+  if ('result' in part) {
+    return part.result;
+  }
+
+  if (isRecord(part.output) && part.output.type === 'json') {
+    return part.output.value;
+  }
+
+  return undefined;
+}
+
+function createProtocolToolSearchOutputItem(args: {
+  requestedTool: SerializedTool | SerializedHandoff | undefined;
+  toolCallId: string;
+  part: any;
+  providerData: Record<string, any> | undefined;
+}): protocol.ToolSearchOutputItem | undefined {
+  const { requestedTool, toolCallId, part, providerData } = args;
+  if (!getAiSdkProviderToolConfig(requestedTool)) {
+    return undefined;
+  }
+
+  const result = getAiSdkToolResultValue(part);
+  const isError = part.isError === true;
+  let tools: protocol.ToolSearchOutputTool[];
+  if (isError && isRecord(result)) {
+    tools = [result];
+  } else if (!isError && Array.isArray(result) && result.every(isRecord)) {
+    tools = result;
+  } else {
+    throw new UserError(
+      `AI SDK provider tool_search returned an invalid result for call "${toolCallId}". Expected an array of tool references or an error object.`,
+    );
+  }
+
+  return {
+    type: 'tool_search_output',
+    callId: toolCallId,
+    execution: 'server',
+    status: isError ? 'failed' : 'completed',
+    tools,
     providerData,
   };
 }
@@ -1228,11 +1442,13 @@ export function toolToLanguageV2Tool(
         'The AI SDK adapter does not support deferred Responses function tools (`toolNamespace()` or `deferLoading: true`). Use a Responses API model directly.',
       );
     }
+    const providerOptions = toProviderOptions(tool.providerData, model);
     return {
       type: 'function',
       name: getSerializedFunctionToolName(tool),
       description: tool.description,
       inputSchema: tool.parameters as JSONSchema7,
+      ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
     };
   }
 
@@ -1241,6 +1457,16 @@ export function toolToLanguageV2Tool(
   const providerToolPrefix = getProviderToolPrefix(model);
 
   if (tool.type === 'hosted_tool') {
+    const providerToolConfig = getAiSdkProviderToolConfig(tool);
+    if (providerToolConfig) {
+      return {
+        type: providerToolType,
+        id: providerToolConfig.id,
+        name: tool.name,
+        args: providerToolConfig.args,
+      };
+    }
+
     return {
       type: providerToolType,
       id: `${providerToolPrefix}.${tool.name}`,
@@ -1518,35 +1744,66 @@ export class AiSdkModel implements Model {
           });
         }
 
-        const toolCalls = resultContent.filter(
+        const hasToolCalls = resultContent.some(
           (c: any) => c && c.type === 'tool-call',
         );
-        const hasToolCalls = toolCalls.length > 0;
-        for (const toolCall of toolCalls) {
-          const requestedTool =
-            typeof toolCall.toolName === 'string'
-              ? requestedToolsByName.get(toolCall.toolName)
-              : undefined;
-
-          if (!requestedTool && toolCall.toolName) {
-            this.#logger.warn(
-              `Received tool call for unknown tool '${toolCall.toolName}'.`,
-            );
+        const requestedToolsByCallId = new Map<
+          string,
+          SerializedTool | SerializedHandoff
+        >();
+        for (const part of resultContent) {
+          if (
+            !part ||
+            (part.type !== 'tool-call' && part.type !== 'tool-result')
+          ) {
+            continue;
           }
 
-          output.push(
-            createProtocolToolCallItem({
-              requestedTool,
-              toolCallId: toolCall.toolCallId,
-              toolName: toolCall.toolName,
-              input: toolCall.input,
-              providerData: mergeProviderData(
-                baseProviderData,
-                toolCall.providerMetadata ??
-                  (hasToolCalls ? result.providerMetadata : undefined),
-              ),
-            }),
-          );
+          const requestedTool =
+            typeof part.toolName === 'string'
+              ? (requestedToolsByName.get(part.toolName) ??
+                requestedToolsByCallId.get(part.toolCallId))
+              : requestedToolsByCallId.get(part.toolCallId);
+
+          if (part.type === 'tool-call') {
+            if (!requestedTool && part.toolName) {
+              this.#logger.warn(
+                `Received tool call for unknown tool '${part.toolName}'.`,
+              );
+            }
+            if (requestedTool && typeof part.toolCallId === 'string') {
+              requestedToolsByCallId.set(part.toolCallId, requestedTool);
+            }
+
+            output.push(
+              createProtocolToolCallItem({
+                requestedTool,
+                toolCallId: part.toolCallId,
+                toolName: part.toolName,
+                input: part.input,
+                providerExecuted: part.providerExecuted,
+                providerData: mergeProviderData(
+                  baseProviderData,
+                  part.providerMetadata ??
+                    (hasToolCalls ? result.providerMetadata : undefined),
+                ),
+              }),
+            );
+            continue;
+          }
+
+          const toolSearchOutput = createProtocolToolSearchOutputItem({
+            requestedTool,
+            toolCallId: part.toolCallId,
+            part,
+            providerData: mergeProviderData(
+              baseProviderData,
+              part.providerMetadata ?? result.providerMetadata,
+            ),
+          });
+          if (toolSearchOutput) {
+            output.push(toolSearchOutput);
+          }
         }
 
         // Some of other platforms may return both tool calls and text.
@@ -1742,10 +1999,16 @@ export class AiSdkModel implements Model {
       let usageCompletionTokens = 0;
       let usageInputTokensDetails: Record<string, number> | undefined;
       let usageOutputTokensDetails: Record<string, number> | undefined;
-      const functionCalls: Record<
+      const toolItems: Array<
+        | protocol.FunctionCallItem
+        | protocol.ToolSearchCallItem
+        | protocol.ToolSearchOutputItem
+      > = [];
+      const toolCallItemIndexById = new Map<string, number>();
+      const requestedToolsByCallId = new Map<
         string,
-        protocol.FunctionCallItem | protocol.ToolSearchCallItem
-      > = {};
+        SerializedTool | SerializedHandoff
+      >();
       let textOutput: protocol.OutputText | undefined;
 
       // State for tracking reasoning blocks (for Anthropic extended thinking):
@@ -1816,16 +2079,51 @@ export class AiSdkModel implements Model {
                 typeof (part as any).toolName === 'string'
                   ? requestedToolsByName.get((part as any).toolName)
                   : undefined;
-              functionCalls[toolCallId] = createProtocolToolCallItem({
+              if (requestedTool) {
+                requestedToolsByCallId.set(toolCallId, requestedTool);
+              }
+              const toolCallItem = createProtocolToolCallItem({
                 requestedTool,
                 toolCallId,
                 toolName: (part as any).toolName,
                 input: (part as any).input,
+                providerExecuted: (part as any).providerExecuted,
                 providerData: mergeProviderData(
                   baseProviderData,
                   (part as any).providerMetadata,
                 ),
               });
+              const existingIndex = toolCallItemIndexById.get(toolCallId);
+              if (existingIndex === undefined) {
+                toolCallItemIndexById.set(toolCallId, toolItems.length);
+                toolItems.push(toolCallItem);
+              } else {
+                toolItems[existingIndex] = toolCallItem;
+              }
+            }
+            break;
+          }
+          case 'tool-result': {
+            const toolCallId = (part as any).toolCallId;
+            if (!toolCallId) {
+              break;
+            }
+            const requestedTool =
+              typeof (part as any).toolName === 'string'
+                ? (requestedToolsByName.get((part as any).toolName) ??
+                  requestedToolsByCallId.get(toolCallId))
+                : requestedToolsByCallId.get(toolCallId);
+            const toolSearchOutput = createProtocolToolSearchOutputItem({
+              requestedTool,
+              toolCallId,
+              part,
+              providerData: mergeProviderData(
+                baseProviderData,
+                (part as any).providerMetadata,
+              ),
+            });
+            if (toolSearchOutput) {
+              toolItems.push(toolSearchOutput);
             }
             break;
           }
@@ -1891,12 +2189,12 @@ export class AiSdkModel implements Model {
           ),
         });
       }
-      for (const fc of Object.values(functionCalls)) {
+      for (const toolItem of toolItems) {
         outputs.push({
-          ...fc,
+          ...toolItem,
           providerData: mergeProviderData(
             baseProviderData,
-            fc.providerData,
+            toolItem.providerData,
             responseId ? { responseId } : undefined,
           ),
         });

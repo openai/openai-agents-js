@@ -392,6 +392,11 @@ export type SerializedFunctionTool = {
   deferLoading?: FunctionTool['deferLoading'];
 
   /**
+   * Additional provider-specific metadata forwarded with the function tool definition.
+   */
+  providerData?: FunctionTool['providerData'];
+
+  /**
    * Responses API only. Explicit namespace used to group related function tools.
    */
   namespace?: string;
