@@ -9,6 +9,7 @@ import logger from './logger';
 type StreamingState = {
   started: boolean;
   text_content: protocol.OutputText | null;
+  messageItemId: string | undefined;
   refusal_content: protocol.Refusal | null;
   function_calls: Record<number, protocol.FunctionCallItem>;
   ignored_tool_call_indexes: Set<number>;
@@ -26,6 +27,7 @@ export async function* convertChatCompletionsStreamToResponses(
   const state: StreamingState = {
     started: false,
     text_content: null,
+    messageItemId: undefined,
     refusal_content: null,
     function_calls: {},
     ignored_tool_call_indexes: new Set(),
@@ -103,10 +105,13 @@ export async function* convertChatCompletionsStreamToResponses(
           type: 'output_text',
           providerData: { annotations: [] },
         };
+        state.messageItemId =
+          response.id && response.id !== FAKE_ID ? response.id : undefined;
       }
       yield {
         type: 'output_text_delta',
         delta: delta.content,
+        ...(state.messageItemId ? { itemId: state.messageItemId } : {}),
         providerData: {
           ...chunk,
         },
@@ -188,7 +193,7 @@ export async function* convertChatCompletionsStreamToResponses(
       content.push(state.refusal_content);
     }
     outputs.push({
-      id: outputItemId,
+      id: state.messageItemId ?? outputItemId,
       content,
       role: 'assistant',
       type: 'message',

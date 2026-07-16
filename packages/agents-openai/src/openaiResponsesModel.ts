@@ -3282,8 +3282,10 @@ export class OpenAIResponsesModel implements Model {
         } else if (eventType === 'response.output_text.delta') {
           const { delta, ...remainingEvent } = event as unknown as {
             delta: string;
+            item_id?: string;
             output_index?: number;
           } & Record<string, any>;
+          const itemId = remainingEvent.item_id;
           const outputItem =
             typeof remainingEvent.output_index === 'number'
               ? outputItemsByIndex.get(remainingEvent.output_index)
@@ -3297,6 +3299,7 @@ export class OpenAIResponsesModel implements Model {
             yield {
               type: 'output_text_delta',
               delta: delta,
+              ...(typeof itemId === 'string' ? { itemId } : {}),
               providerData: remainingEvent,
             };
           }

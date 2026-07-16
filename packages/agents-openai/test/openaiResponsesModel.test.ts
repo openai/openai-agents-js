@@ -3965,6 +3965,23 @@ describe('OpenAIResponsesModel', () => {
           output_index: 0,
           sequence_number: 1,
         } as any,
+        {
+          type: 'response.completed',
+          response: {
+            id: 'res2',
+            output: [
+              {
+                id: 'item-1',
+                type: 'message',
+                status: 'completed',
+                content: [{ type: 'output_text', text: 'delta' }],
+                role: 'assistant',
+              },
+            ],
+            usage: {},
+          },
+          sequence_number: 2,
+        } as any,
       ];
       async function* fakeStream() {
         yield* events;
@@ -3999,7 +4016,7 @@ describe('OpenAIResponsesModel', () => {
         headers: HEADERS,
         signal: abort.signal,
       });
-      expect(received).toEqual([
+      expect(received.slice(0, 4)).toEqual([
         {
           type: 'response_started',
           providerData: events[0],
@@ -4014,6 +4031,7 @@ describe('OpenAIResponsesModel', () => {
         {
           type: 'output_text_delta',
           delta: 'delta',
+          itemId: 'item-1',
           providerData: {
             content_index: 0,
             item_id: 'item-1',
@@ -4031,6 +4049,19 @@ describe('OpenAIResponsesModel', () => {
           },
         },
       ]);
+      const textDelta = received.find(
+        (event) => event.type === 'output_text_delta',
+      );
+      const completed = received.find(
+        (event) => event.type === 'response_done',
+      );
+
+      expect(textDelta).toMatchObject({ itemId: 'item-1' });
+      expect(completed).toMatchObject({
+        response: {
+          output: [expect.objectContaining({ type: 'message', id: 'item-1' })],
+        },
+      });
     });
   });
 

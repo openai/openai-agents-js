@@ -104,6 +104,7 @@ describe('convertChatCompletionsStreamToResponses', () => {
     expect(events[2]).toEqual({
       type: 'output_text_delta',
       delta: 'hello',
+      itemId: 'res1',
       providerData: { ...chunk1 },
     });
     expect(events[3]).toEqual({
@@ -241,6 +242,46 @@ describe('convertChatCompletionsStreamToResponses', () => {
     // The usage reported on the middle chunk must be retained even though the
     // trailing tool_calls chunk carries no usage of its own.
     expect(final.response.usage.totalTokens).toBe(3);
+  });
+
+  it('uses a response ID received after the first text chunk for the final message', async () => {
+    const firstChunk = {
+      ...makeChunk({ content: 'hello' }),
+      id: '',
+    } as ChatCompletionChunk;
+    const finalChunk = {
+      ...makeChunk({}),
+      id: 'late-response-id',
+      choices: [],
+    } as ChatCompletionChunk;
+
+    async function* stream(): AsyncGenerator<
+      ChatCompletionChunk,
+      void,
+      unknown
+    > {
+      yield firstChunk;
+      yield finalChunk;
+    }
+
+    const response = { id: FAKE_ID } as ChatCompletion;
+    const events: any[] = [];
+    for await (const event of convertChatCompletionsStreamToResponses(
+      response,
+      stream() as any,
+    )) {
+      events.push(event);
+    }
+
+    expect(events[2]).toEqual({
+      type: 'output_text_delta',
+      delta: 'hello',
+      providerData: firstChunk,
+    });
+    expect(events.at(-1).response.output[0]).toMatchObject({
+      id: 'late-response-id',
+      type: 'message',
+    });
   });
 
   it('preserves usage reported on an earlier chunk when the final chunk has no usage', async () => {
