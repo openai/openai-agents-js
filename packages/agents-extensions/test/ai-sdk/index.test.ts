@@ -876,6 +876,53 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('replays provider-executed tool search errors as error results', () => {
+    const errorResult = {
+      type: 'tool_search_tool_result_error',
+      errorCode: 'invalid_pattern',
+    };
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'tool_search_call',
+        id: 'search_1',
+        execution: 'server',
+        arguments: { query: '[' },
+        status: 'completed',
+      },
+      {
+        type: 'tool_search_output',
+        callId: 'search_1',
+        execution: 'server',
+        status: 'failed',
+        tools: [errorResult],
+      },
+    ];
+
+    expect(itemsToLanguageV2Messages(stubModel({}), items)).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'search_1',
+            toolName: 'tool_search',
+            input: { query: '[' },
+            providerExecuted: true,
+            providerOptions: {},
+          },
+          {
+            type: 'tool-result',
+            toolCallId: 'search_1',
+            toolName: 'tool_search',
+            output: { type: 'error-json', value: errorResult },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
   test('does not queue hosted tool_search calls as pending client searches', () => {
     const items: protocol.ModelItem[] = [
       {
@@ -1994,7 +2041,104 @@ describe('AiSdkModel.getResponse', () => {
     });
   });
 
-  test('rejects malformed provider-executed tool search results', async () => {
+  test('preserves provider-executed tool search errors and continues the run', async () => {
+    const prompts: any[] = [];
+    const errorResult = {
+      type: 'tool_search_tool_result_error',
+      errorCode: 'invalid_pattern',
+    };
+    const model = new AiSdkModel(
+      stubModel(
+        {
+          async doGenerate(options) {
+            prompts.push(options.prompt);
+            if (prompts.length > 1) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: 'The tool search failed, so I used a fallback.',
+                  },
+                ],
+                usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                response: { id: 'response_2' },
+                finishReason: 'stop',
+                warnings: [],
+              } as any;
+            }
+
+            return {
+              content: [
+                {
+                  type: 'tool-call',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  input: {},
+                  providerExecuted: true,
+                },
+                {
+                  type: 'tool-result',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  isError: true,
+                  result: errorResult,
+                },
+              ],
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              response: { id: 'response_1' },
+              finishReason: 'error',
+              warnings: [],
+            } as any;
+          },
+        },
+        { provider: 'anthropic.messages', specificationVersion: 'v3' },
+      ),
+    );
+
+    const result = await run(
+      new Agent({
+        name: 'Tool search agent',
+        model,
+        tools: [
+          aiSdkToolSearchTool({
+            type: 'provider',
+            id: 'anthropic.tool_search_regex_20251119',
+          }),
+        ],
+      }),
+      'Find a tool.',
+    );
+
+    expect(result.finalOutput).toBe(
+      'The tool search failed, so I used a fallback.',
+    );
+    expect(result.history).toContainEqual(
+      expect.objectContaining({
+        type: 'tool_search_output',
+        callId: 'search_1',
+        execution: 'server',
+        status: 'failed',
+        tools: [errorResult],
+      }),
+    );
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'assistant',
+          content: expect.arrayContaining([
+            expect.objectContaining({
+              type: 'tool-result',
+              toolCallId: 'search_1',
+              output: { type: 'error-json', value: errorResult },
+            }),
+          ]),
+        }),
+      ]),
+    );
+  });
+
+  test('rejects malformed successful provider-executed tool search results', async () => {
     const model = new AiSdkModel(
       stubModel(
         {
@@ -2012,13 +2156,12 @@ describe('AiSdkModel.getResponse', () => {
                   type: 'tool-result',
                   toolCallId: 'search_1',
                   toolName: 'tool_search',
-                  isError: true,
-                  result: { errorCode: 'invalid_tool_catalog' },
+                  result: { type: 'unexpected_success_shape' },
                 },
               ],
               usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
               response: { id: 'response_1' },
-              finishReason: 'error',
+              finishReason: 'tool-calls',
               warnings: [],
             } as any;
           },
@@ -2043,7 +2186,9 @@ describe('AiSdkModel.getResponse', () => {
           tracing: false,
         } as any),
       ),
-    ).rejects.toThrow(/Expected an array of tool references/);
+    ).rejects.toThrow(
+      /Expected an array of tool references or an error object/,
+    );
   });
 
   test('rejects ambiguous hosted and custom tool_search names in doGenerate', async () => {

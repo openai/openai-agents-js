@@ -574,14 +574,17 @@ export function itemsToLanguageV2Messages(
         toolSearchExecution === 'server' &&
         serverToolSearchCallIds.has(toolCallId);
       const providerOptions = toProviderOptions(item.providerData, model);
+      const isError = item.status === 'failed';
       const toolResult: LanguageModelV2ToolResultPart = {
         type: 'tool-result',
         toolCallId,
         toolName,
         output: {
-          type: 'json',
+          type: isError ? 'error-json' : 'json',
           value: isMatchedServerToolSearchResult
-            ? item.tools
+            ? isError && item.tools.length === 1
+              ? item.tools[0]
+              : item.tools
             : {
                 ...(typeof item.status === 'string'
                   ? { status: item.status }
@@ -1092,13 +1095,15 @@ function createProtocolToolSearchOutputItem(args: {
   }
 
   const result = getAiSdkToolResultValue(part);
-  if (
-    part.isError === true ||
-    !Array.isArray(result) ||
-    !result.every(isRecord)
-  ) {
+  const isError = part.isError === true;
+  let tools: protocol.ToolSearchOutputTool[];
+  if (isError && isRecord(result)) {
+    tools = [result];
+  } else if (!isError && Array.isArray(result) && result.every(isRecord)) {
+    tools = result;
+  } else {
     throw new UserError(
-      `AI SDK provider tool_search returned an invalid result for call "${toolCallId}". Expected an array of tool references.`,
+      `AI SDK provider tool_search returned an invalid result for call "${toolCallId}". Expected an array of tool references or an error object.`,
     );
   }
 
@@ -1106,8 +1111,8 @@ function createProtocolToolSearchOutputItem(args: {
     type: 'tool_search_output',
     callId: toolCallId,
     execution: 'server',
-    status: 'completed',
-    tools: result,
+    status: isError ? 'failed' : 'completed',
+    tools,
     providerData,
   };
 }
