@@ -243,8 +243,7 @@ describe('createAiSdkUiMessageStreamResponse', () => {
     ]);
 
     const textStart = chunks.find((chunk) => chunk.type === 'text-start') as
-      | { id: string }
-      | undefined;
+      { id: string } | undefined;
     const textEnd = chunks.find((chunk) => chunk.type === 'text-end');
     const textDelta = chunks.find((chunk) => chunk.type === 'text-delta');
     const textStartId = textStart?.id;
@@ -1053,6 +1052,7 @@ describe('createAiSdkUiMessageStreamResponse', () => {
 
     const messageOutput = new RunMessageOutputItem(
       {
+        id: 'message-1',
         type: 'message',
         role: 'assistant',
         status: 'completed',
@@ -1066,6 +1066,7 @@ describe('createAiSdkUiMessageStreamResponse', () => {
       yield new RunRawModelStreamEvent({
         type: 'output_text_delta',
         delta: 'Hello again',
+        itemId: 'message-1',
       });
       yield new RunRawModelStreamEvent({
         type: 'response_done',
@@ -1087,7 +1088,55 @@ describe('createAiSdkUiMessageStreamResponse', () => {
     const deltas = chunks.filter((chunk) => chunk.type === 'text-delta');
 
     expect(deltas).toHaveLength(1);
-    expect(deltas[0]).toMatchObject({ delta: 'Hello again' });
+    expect(deltas[0]).toMatchObject({
+      id: 'message-1',
+      delta: 'Hello again',
+    });
+  });
+
+  test('emits a completed message with a different item ID', async () => {
+    const agent = new Agent({ name: 'Test Agent' });
+    const messageOutput = new RunMessageOutputItem(
+      {
+        id: 'message-2',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'Separate message' }],
+      },
+      agent,
+    );
+
+    const events = (async function* () {
+      yield new RunRawModelStreamEvent({ type: 'response_started' });
+      yield new RunRawModelStreamEvent({
+        type: 'output_text_delta',
+        delta: 'Streamed message',
+        itemId: 'message-1',
+      });
+      yield new RunRawModelStreamEvent({
+        type: 'response_done',
+        response: {
+          id: 'resp-distinct',
+          usage: {
+            inputTokens: 1,
+            outputTokens: 2,
+            totalTokens: 3,
+          },
+          output: [{ type: 'unknown' }],
+        },
+      });
+      yield new RunItemStreamEvent('message_output_created', messageOutput);
+    })();
+
+    const response = createAiSdkUiMessageStreamResponse(events);
+    const chunks = await readUiMessageChunks(response);
+    const deltas = chunks.filter((chunk) => chunk.type === 'text-delta');
+
+    expect(deltas).toEqual([
+      { type: 'text-delta', id: 'message-1', delta: 'Streamed message' },
+      { type: 'text-delta', id: 'message-2', delta: 'Separate message' },
+    ]);
   });
 
   test('falls back for invalid JSON arguments and maps non-function tool inputs', async () => {

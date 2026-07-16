@@ -104,6 +104,7 @@ describe('convertChatCompletionsStreamToResponses', () => {
     expect(events[2]).toEqual({
       type: 'output_text_delta',
       delta: 'hello',
+      itemId: 'res1',
       providerData: { ...chunk1 },
     });
     expect(events[3]).toEqual({
