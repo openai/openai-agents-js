@@ -24,6 +24,7 @@ Use this reference for model/provider resolution, settings merge, Responses vers
 ## Retry and Persistent Transports
 
 - Model retries are opt-in. Apply abort and replay-safety vetoes before user policy, preserve failed-attempt usage, and do not retry a stateful request unless the provider indicates replay is safe or the request boundary proves it.
+- Providers with ambiguous in-flight acceptance must mark the attempt replay-unsafe before a runner timeout can mask their eventual transport error. Responses and Hosted Multi-Agent WebSocket attempts become replay-unsafe after the request frame is sent; pre-send timeouts remain eligible for the configured retry policy.
 - Responses WebSocket mode reuses a persistent connection and chains requests with connection-local state. Serialize access per session, propagate terminal errors, and close only the session-owned socket.
 - Compare HTTP and WebSocket Responses behavior for input, continuation, raw events, terminal items, and errors; transport choice must not change runner semantics.
 

@@ -21,6 +21,7 @@ import {
   mergeQueryParamsIntoURL,
 } from '../../responsesTransportUtils';
 import {
+  ResponsesWebSocketTimeoutError,
   withAbortSignal,
   withTimeout,
 } from '../../responsesWebSocketConnection';
@@ -446,6 +447,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     let sentFrameWasReturnedUnsent = false;
     let reachedResponseBoundary = false;
     let threwError = false;
+    let markReplayUnsafe: (() => void) | undefined;
     const requestTimeoutDeadline =
       this.#createWebSocketRequestTimeoutDeadline();
     const sendWebSocketFrame = (
@@ -462,10 +464,12 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
         requestMayHaveReachedServer = true;
       }
       webSocket.send(frame as any);
+      markReplayUnsafe?.();
     };
 
     try {
       const builtRequest = this._buildResponsesCreateRequest(request, true);
+      markReplayUnsafe = builtRequest.markReplayUnsafe;
       const requestData = builtRequest.requestData;
       const webSocket = await this.#ensureWebSocket(
         {
@@ -1075,7 +1079,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
       requestTimeoutDeadline.deadlineAtMs - Date.now(),
     );
     if (remainingTimeoutMs <= 0) {
-      throw new Error(errorMessage);
+      throw new ResponsesWebSocketTimeoutError(errorMessage);
     }
 
     return { timeoutMs: remainingTimeoutMs, errorMessage };

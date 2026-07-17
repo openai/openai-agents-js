@@ -1,12 +1,14 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   Agent,
+  ModelRequestTimeoutError,
   retryPolicies,
   run,
   Runner,
   RunStreamEvent,
   setDefaultModelProvider,
   setTracingDisabled,
+  UserError,
 } from '../src';
 import { mergeAgentToolRunConfig } from '../src/agentToolRunConfig';
 import type { Model, ModelRequest } from '../src/model';
@@ -943,6 +945,446 @@ describe('retry policies', () => {
     }
   });
 
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
+    'rejects invalid model request timeout %s before calling the model',
+    async (requestTimeoutMs) => {
+      let attempts = 0;
+      const model: Model = {
+        async getResponse() {
+          attempts += 1;
+          return {
+            usage: new Usage(),
+            output: [fakeModelMessage('unexpected')],
+          };
+        },
+        async *getStreamedResponse() {
+          yield* [];
+        },
+      };
+
+      await expect(
+        run(
+          new Agent({
+            name: 'InvalidRequestTimeoutAgent',
+            model,
+            modelSettings: { requestTimeoutMs },
+          }),
+          'hello',
+        ),
+      ).rejects.toBeInstanceOf(UserError);
+      expect(attempts).toBe(0);
+    },
+  );
+
+  it('times out one non-streaming model request without retrying by default', async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    let attemptSignal: AbortSignal | undefined;
+
+    try {
+      const model: Model = {
+        async getResponse(request) {
+          attempts += 1;
+          attemptSignal = request.signal;
+          return await new Promise<never>(() => {});
+        },
+        async *getStreamedResponse() {
+          yield* [];
+        },
+      };
+
+      const resultPromise = run(
+        new Agent({
+          name: 'TimedModelRequestAgent',
+          model,
+          modelSettings: { requestTimeoutMs: 25 },
+        }),
+        'hello',
+      );
+      const errorPromise = resultPromise.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      const error = await errorPromise;
+
+      expect(error).toBeInstanceOf(ModelRequestTimeoutError);
+      expect(error).toMatchObject({ timeoutMs: 25 });
+      expect(attempts).toBe(1);
+      expect(attemptSignal?.aborted).toBe(true);
+      expect(attemptSignal?.reason).toBe(error);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries a timed-out model request with a fresh per-attempt deadline', async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    const attemptSignals: AbortSignal[] = [];
+    const retryContexts: Array<{
+      isAbort: boolean;
+      isNetworkError: boolean;
+      isTimeout?: boolean;
+    }> = [];
+    const timeoutPolicy = retryPolicies.timeout();
+
+    try {
+      const model: Model = {
+        async getResponse(request) {
+          attempts += 1;
+          attemptSignals.push(request.signal!);
+          if (attempts === 1) {
+            return await new Promise<never>(() => {});
+          }
+          return {
+            usage: new Usage({ requests: 1 }),
+            output: [fakeModelMessage('Recovered after timeout')],
+          };
+        },
+        async *getStreamedResponse() {
+          yield* [];
+        },
+      };
+
+      const resultPromise = run(
+        new Agent({
+          name: 'RetryTimedModelRequestAgent',
+          model,
+          modelSettings: {
+            requestTimeoutMs: 25,
+            retry: {
+              maxRetries: 1,
+              backoff: { initialDelayMs: 0, jitter: false },
+              policy: async (context) => {
+                retryContexts.push(context.normalized);
+                return await timeoutPolicy(context);
+              },
+            },
+          },
+        }),
+        'hello',
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+
+      expect(result.finalOutput).toBe('Recovered after timeout');
+      expect(attempts).toBe(2);
+      expect(result.state.usage.requests).toBe(2);
+      expect(attemptSignals[0]?.aborted).toBe(true);
+      expect(attemptSignals[0]?.reason).toBeInstanceOf(
+        ModelRequestTimeoutError,
+      );
+      expect(attemptSignals[1]?.aborted).toBe(false);
+      expect(retryContexts).toEqual([
+        {
+          isAbort: false,
+          isNetworkError: true,
+          isTimeout: true,
+        },
+      ]);
+
+      await vi.advanceTimersByTimeAsync(25);
+      expect(attemptSignals[1]?.aborted).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves a caller abort instead of converting it to a model timeout', async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    const controller = new AbortController();
+
+    try {
+      const model: Model = {
+        async getResponse() {
+          attempts += 1;
+          return await new Promise<never>(() => {});
+        },
+        async *getStreamedResponse() {
+          yield* [];
+        },
+      };
+
+      const resultPromise = run(
+        new Agent({
+          name: 'CallerAbortBeforeTimeoutAgent',
+          model,
+          modelSettings: {
+            requestTimeoutMs: 100,
+            retry: {
+              maxRetries: 1,
+              policy: retryPolicies.timeout(),
+            },
+          },
+        }),
+        'hello',
+        { signal: controller.signal },
+      );
+      const errorPromise = resultPromise.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+      await vi.advanceTimersByTimeAsync(10);
+      controller.abort();
+      const error = await errorPromise;
+
+      expect(error).toMatchObject({ name: 'AbortError' });
+      expect(error).not.toBeInstanceOf(ModelRequestTimeoutError);
+      expect(attempts).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(attempts).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('matches provider transport timeouts with the timeout policy', async () => {
+    let attempts = 0;
+    const model: Model = {
+      async getResponse() {
+        attempts += 1;
+        if (attempts === 1) {
+          const error = new Error('Request timed out');
+          error.name = 'APIConnectionTimeoutError';
+          throw error;
+        }
+        return {
+          usage: new Usage({ requests: 1 }),
+          output: [fakeModelMessage('Recovered from provider timeout')],
+        };
+      },
+      async *getStreamedResponse() {
+        yield* [];
+      },
+    };
+
+    const result = await run(
+      new Agent({
+        name: 'ProviderTimeoutAgent',
+        model,
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            backoff: { initialDelayMs: 0, jitter: false },
+            policy: retryPolicies.timeout(),
+          },
+        },
+      }),
+      'hello',
+    );
+
+    expect(result.finalOutput).toBe('Recovered from provider timeout');
+    expect(attempts).toBe(2);
+  });
+
+  it('retries a streaming timeout before any event is emitted', async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    const attemptSignals: AbortSignal[] = [];
+
+    try {
+      const model: Model = {
+        async getResponse() {
+          throw new Error('not used');
+        },
+        async *getStreamedResponse(request): AsyncIterable<StreamEvent> {
+          attempts += 1;
+          attemptSignals.push(request.signal!);
+          if (attempts === 1) {
+            await new Promise<never>((_, reject) => {
+              const signal = request.signal!;
+              signal.addEventListener('abort', () => reject(signal.reason), {
+                once: true,
+              });
+            });
+          }
+          yield { type: 'response_started' };
+          yield createDoneEvent('Streaming timeout recovered');
+        },
+      };
+
+      const result = await run(
+        new Agent({
+          name: 'StreamingTimeoutRetryAgent',
+          model,
+          modelSettings: {
+            requestTimeoutMs: 25,
+            retry: {
+              maxRetries: 1,
+              backoff: { initialDelayMs: 0, jitter: false },
+              policy: retryPolicies.timeout(),
+            },
+          },
+        }),
+        'hello',
+        { stream: true },
+      );
+      const consumePromise = (async () => {
+        for await (const _event of result) {
+          // Consume the stream to completion.
+        }
+      })();
+
+      await vi.advanceTimersByTimeAsync(25);
+      await consumePromise;
+
+      expect(result.finalOutput).toBe('Streaming timeout recovered');
+      expect(attempts).toBe(2);
+      expect(attemptSignals[0]?.aborted).toBe(true);
+      expect(attemptSignals[1]?.aborted).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['throws synchronously', 'rejects', 'never settles'] as const)(
+    'preserves a streaming timeout when iterator cleanup %s',
+    async (cleanupBehavior) => {
+      vi.useFakeTimers();
+      let attempts = 0;
+      let firstIteratorCleanupStarted = false;
+      let retryStartedAfterCleanup = false;
+      const firstIterator = {
+        next: vi.fn(
+          async () =>
+            await new Promise<IteratorResult<StreamEvent>>(() => {
+              // Intentionally ignores the aborted request signal. The runner
+              // must close this iterator explicitly before starting a retry.
+            }),
+        ),
+        return: vi.fn(() => {
+          firstIteratorCleanupStarted = true;
+          if (cleanupBehavior === 'throws synchronously') {
+            throw new Error('iterator cleanup threw');
+          }
+          if (cleanupBehavior === 'rejects') {
+            return Promise.reject(new Error('iterator cleanup rejected'));
+          }
+          return new Promise<IteratorResult<StreamEvent>>(() => {});
+        }),
+      };
+
+      try {
+        const model: Model = {
+          async getResponse() {
+            throw new Error('not used');
+          },
+          getStreamedResponse(): AsyncIterable<StreamEvent> {
+            attempts += 1;
+            if (attempts === 1) {
+              return {
+                [Symbol.asyncIterator]: () => firstIterator,
+              };
+            }
+
+            retryStartedAfterCleanup = firstIteratorCleanupStarted;
+            return {
+              async *[Symbol.asyncIterator]() {
+                yield { type: 'response_started' } as const;
+                yield createDoneEvent('Streaming timeout recovered');
+              },
+            };
+          },
+        };
+
+        const result = await run(
+          new Agent({
+            name: 'StreamingTimeoutIteratorCleanupAgent',
+            model,
+            modelSettings: {
+              requestTimeoutMs: 25,
+              retry: {
+                maxRetries: 1,
+                backoff: { initialDelayMs: 0, jitter: false },
+                policy: retryPolicies.timeout(),
+              },
+            },
+          }),
+          'hello',
+          { stream: true },
+        );
+        const consumePromise = (async () => {
+          for await (const _event of result) {
+            // Consume the stream to completion.
+          }
+        })();
+
+        await vi.advanceTimersByTimeAsync(25);
+        await consumePromise;
+
+        expect(firstIterator.return).toHaveBeenCalledOnce();
+        expect(retryStartedAfterCleanup).toBe(true);
+        expect(result.finalOutput).toBe('Streaming timeout recovered');
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('does not retry a streaming timeout after an event is emitted', async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    const seenEvents: RunStreamEvent[] = [];
+
+    try {
+      const model: Model = {
+        async getResponse() {
+          throw new Error('not used');
+        },
+        async *getStreamedResponse(request): AsyncIterable<StreamEvent> {
+          attempts += 1;
+          yield { type: 'response_started' };
+          await new Promise<never>((_, reject) => {
+            const signal = request.signal!;
+            signal.addEventListener('abort', () => reject(signal.reason), {
+              once: true,
+            });
+          });
+        },
+      };
+
+      const result = await run(
+        new Agent({
+          name: 'StreamingVisibleTimeoutAgent',
+          model,
+          modelSettings: {
+            requestTimeoutMs: 25,
+            retry: {
+              maxRetries: 1,
+              policy: retryPolicies.timeout(),
+            },
+          },
+        }),
+        'hello',
+        { stream: true },
+      );
+      const consumePromise = (async () => {
+        for await (const event of result) {
+          seenEvents.push(event);
+        }
+      })();
+      const errorPromise = consumePromise.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      const error = await errorPromise;
+
+      expect(error).toBeInstanceOf(ModelRequestTimeoutError);
+      expect(attempts).toBe(1);
+      expect(seenEvents).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('treats websocket transport error codes as network errors', async () => {
     let attempts = 0;
     const model: Model = {
@@ -1418,8 +1860,7 @@ describe('retry policies', () => {
   it('deep merges retry settings between runner and agent configs', async () => {
     const policy = () => true;
     let capturedRetrySettings:
-      | ModelRequest['modelSettings']['retry']
-      | undefined;
+      ModelRequest['modelSettings']['retry'] | undefined;
 
     const model: Model = {
       async getResponse(request: ModelRequest) {
@@ -1474,8 +1915,7 @@ describe('retry policies', () => {
   it('inherits runner retry policy when an agent overrides only backoff', async () => {
     const policy = () => true;
     let capturedRetrySettings:
-      | ModelRequest['modelSettings']['retry']
-      | undefined;
+      ModelRequest['modelSettings']['retry'] | undefined;
 
     const model: Model = {
       async getResponse(request: ModelRequest) {

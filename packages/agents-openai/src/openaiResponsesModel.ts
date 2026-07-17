@@ -34,6 +34,7 @@ import { HEADERS } from './defaults';
 import {
   ResponsesWebSocketConnection,
   ResponsesWebSocketInternalError,
+  ResponsesWebSocketTimeoutError,
   isWebSocketNotOpenError,
   shouldWrapNoEventWebSocketError,
   throwIfAborted,
@@ -98,6 +99,7 @@ type BuiltResponsesCreateRequest = {
   requestData: Record<string, any>;
   sdkRequestHeaders: ResponsesCreateRequestSDKHeaders;
   signal: AbortSignal | undefined;
+  markReplayUnsafe: (() => void) | undefined;
   transportExtraHeaders?: Record<string, unknown>;
   transportExtraQuery?: Record<string, unknown>;
 };
@@ -3154,6 +3156,11 @@ export class OpenAIResponsesModel implements Model {
       requestData,
       sdkRequestHeaders,
       signal: request.signal,
+      markReplayUnsafe: (
+        request as ModelRequest & {
+          _internal?: { markReplayUnsafe?: () => void };
+        }
+      )._internal?.markReplayUnsafe,
       transportExtraHeaders: transportOverrides.extraHeaders,
       transportExtraQuery: transportOverrides.extraQuery,
     };
@@ -3479,6 +3486,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
       requestTimeoutDeadline,
     );
 
+    let sentRequestFrame = false;
     let receivedAnyEvent = false;
     let sawTerminalResponseEvent = false;
     try {
@@ -3523,6 +3531,8 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
           );
           await activeConnection.send(serializedFrame);
         }
+        sentRequestFrame = true;
+        builtRequest.markReplayUnsafe?.();
       };
       await sendSerializedFrame();
 
@@ -3578,6 +3588,13 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
         }
       }
     } catch (error) {
+      if (sentRequestFrame && error instanceof Error) {
+        (
+          error as Error & {
+            unsafeToReplay?: boolean;
+          }
+        ).unsafeToReplay = true;
+      }
       if (
         !receivedAnyEvent &&
         !(error instanceof OpenAI.APIUserAbortError) &&
@@ -3949,7 +3966,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
       requestTimeoutDeadline.deadlineAtMs - Date.now(),
     );
     if (remainingTimeoutMs <= 0) {
-      throw new Error(errorMessage);
+      throw new ResponsesWebSocketTimeoutError(errorMessage);
     }
 
     return { timeoutMs: remainingTimeoutMs, errorMessage };
