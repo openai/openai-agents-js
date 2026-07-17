@@ -1,5 +1,15 @@
 # @openai/agents-openai
 
+## 0.13.5
+
+### Patch Changes
+
+- 72ca4bc: fix: correlate streamed text deltas with completed output items (#1484)
+- Updated dependencies [2437c35]
+- Updated dependencies [72ca4bc]
+- Updated dependencies [f1ae0b4]
+  - @openai/agents-core@0.13.5
+
 ## 0.13.4
 
 ### Patch Changes
