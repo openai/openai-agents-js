@@ -93,6 +93,7 @@ async function collectAgentCapabilities<TContext>(
   const handoffs = await executionAgent.getEnabledHandoffs(state._context);
   const configuredTools = (await executionAgent.getAllTools(
     state._context,
+    state._currentAgentSpan,
   )) as Tool<TContext>[];
   const runtimeLoadedTools = state.getToolSearchRuntimeTools(
     state._currentAgent,

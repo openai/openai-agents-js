@@ -8,6 +8,7 @@ import type { Capability } from '../capabilities';
 import type { SandboxAgent } from '../agent';
 import { cloneManifest, Manifest } from '../manifest';
 import type { SandboxSessionLike, SandboxSessionState } from '../session';
+import type { Span, Trace } from '../../tracing';
 import {
   getDefaultSandboxInstructions,
   renderFilesystemInstructions,
@@ -24,6 +25,7 @@ type PrepareSandboxAgentArgs<TContext, TOutput extends AgentOutputType> = {
   capabilities?: Capability[];
   runConfigModel?: SandboxRuntimeModel;
   processManifest?: boolean;
+  tracingParent?: Span<any> | Trace;
 };
 
 export type ResolvedSandboxRuntimeModel = {
@@ -45,6 +47,7 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
   capabilities,
   runConfigModel,
   processManifest = true,
+  tracingParent,
 }: PrepareSandboxAgentArgs<TContext, TOutput>): SandboxAgent<
   TContext,
   TOutput
@@ -59,7 +62,8 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
     capability
       .bind(session)
       .bindRunAs(agent.runAs)
-      .bindModel(resolvedModel, resolvedModelInstance),
+      .bindModel(resolvedModel, resolvedModelInstance)
+      .bindTracingParent(tracingParent),
   );
   const boundCapabilityTypes = new Set(
     boundCapabilities.map((capability) => capability.type),

@@ -1,4 +1,5 @@
 import { DeepPartial } from '../types';
+import { StreamedRunResult } from '../result';
 import {
   resetCurrentSpan,
   setCurrentSpan,
@@ -10,6 +11,8 @@ import {
   ResponseSpanData,
   SpanData,
   AgentSpanData,
+  TaskSpanData,
+  TurnSpanData,
   FunctionSpanData,
   HandoffSpanData,
   GenerationSpanData,
@@ -24,6 +27,20 @@ import { Trace } from './traces';
 
 type CreateArgs<TData extends SpanData> = DeepPartial<CreateSpanOptions<TData>>;
 
+function setSpanError(span: Span<any>, error: unknown): void {
+  const errorRecord =
+    typeof error === 'object' && error !== null
+      ? (error as { message?: unknown; data?: Record<string, any> })
+      : undefined;
+  span.setError({
+    message:
+      typeof errorRecord?.message === 'string'
+        ? errorRecord.message
+        : String(error),
+    data: errorRecord?.data,
+  });
+}
+
 function _withSpanFactory<
   TData extends SpanData,
   TCreateSpanFunction extends (...args: any[]) => Span<TData>,
@@ -36,18 +53,38 @@ function _withSpanFactory<
     return withNewSpanContext(async () => {
       const span = createSpan(...args);
       setCurrentSpan(span);
+      let endDeferred = false;
       try {
         span.start();
-        return await fn(span);
-      } catch (error: any) {
-        span.setError({
-          message: error.message,
-          data: error.data,
-        });
+        const result = await fn(span);
+        if (result instanceof StreamedRunResult) {
+          const streamLoopPromise = result._getStreamLoopPromise();
+          if (streamLoopPromise) {
+            endDeferred = true;
+            resetCurrentSpan();
+            void streamLoopPromise.then(
+              () => {
+                if (result.error !== null && result.error !== undefined) {
+                  setSpanError(span, result.error);
+                }
+                span.end();
+              },
+              (error) => {
+                setSpanError(span, error);
+                span.end();
+              },
+            );
+          }
+        }
+        return result;
+      } catch (error: unknown) {
+        setSpanError(span, error);
         throw error;
       } finally {
-        span.end();
-        resetCurrentSpan();
+        if (!endDeferred) {
+          span.end();
+          resetCurrentSpan();
+        }
       }
     });
   };
@@ -130,6 +167,61 @@ export const withAgentSpan = _withSpanFactory<
   AgentSpanData,
   typeof createAgentSpan
 >(createAgentSpan);
+
+/**
+ * Create a new task span. A task represents one top-level Runner invocation.
+ * The span will not be started automatically.
+ */
+export function createTaskSpan(
+  options?: CreateArgs<TaskSpanData>,
+  parent?: Span<any> | Trace,
+): Span<TaskSpanData> {
+  return getGlobalTraceProvider().createSpan(
+    {
+      ...options,
+      data: {
+        type: 'task',
+        name: options?.data?.name ?? 'Agent workflow',
+        ...options?.data,
+      },
+    },
+    parent,
+  );
+}
+
+/** Create a task span and automatically start and end it. */
+export const withTaskSpan = _withSpanFactory<
+  TaskSpanData,
+  typeof createTaskSpan
+>(createTaskSpan);
+
+/**
+ * Create a new turn span. A turn represents one agent loop iteration.
+ * The span will not be started automatically.
+ */
+export function createTurnSpan(
+  options: CreateArgs<TurnSpanData> & {
+    data: { turn: number; agent_name: string };
+  },
+  parent?: Span<any> | Trace,
+): Span<TurnSpanData> {
+  return getGlobalTraceProvider().createSpan(
+    {
+      ...options,
+      data: {
+        type: 'turn',
+        ...options.data,
+      },
+    },
+    parent,
+  );
+}
+
+/** Create a turn span and automatically start and end it. */
+export const withTurnSpan = _withSpanFactory<
+  TurnSpanData,
+  typeof createTurnSpan
+>(createTurnSpan);
 
 /**
  * Create a new function span. The span will not be started automatically, you should either

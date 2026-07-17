@@ -1,4 +1,9 @@
-import { getCurrentTrace, withCustomSpan } from '../../tracing';
+import {
+  getCurrentTrace,
+  Trace,
+  withCustomSpan,
+  withTraceContext,
+} from '../../tracing';
 import type { Span } from '../../tracing';
 import type { CustomSpanData } from '../../tracing/spans';
 import { emitSandboxEvent, serializeSandboxEventError } from '../events';
@@ -6,7 +11,8 @@ import { emitSandboxEvent, serializeSandboxEventError } from '../events';
 export async function withSandboxSpan<T>(
   name: string,
   data: Record<string, unknown>,
-  fn: () => Promise<T>,
+  fn: (span?: Span<CustomSpanData>) => Promise<T>,
+  parent?: Span<any> | Trace,
 ): Promise<T> {
   const startedAt = Date.now();
   await emitSandboxEvent({
@@ -19,7 +25,7 @@ export async function withSandboxSpan<T>(
 
   const runWithEvents = async (span?: Span<CustomSpanData>): Promise<T> => {
     try {
-      const result = await fn();
+      const result = await fn(span);
       await emitSandboxEvent({
         type: 'sandbox_operation',
         name,
@@ -45,16 +51,42 @@ export async function withSandboxSpan<T>(
     }
   };
 
-  if (!getCurrentTrace()) {
+  if (!getCurrentTrace() && !parent) {
     return await runWithEvents();
   }
 
-  return await withCustomSpan(async (span) => await runWithEvents(span), {
-    data: {
-      name,
-      data,
-    },
-  });
+  const runWithSpan = async () =>
+    await withCustomSpan(
+      async (span) => await runWithEvents(span),
+      {
+        data: {
+          name,
+          data,
+        },
+      },
+      parent,
+    );
+
+  if (!getCurrentTrace() && parent) {
+    const trace =
+      parent instanceof Trace
+        ? parent
+        : new Trace({
+            traceId: parent.traceId,
+            name: 'Agent workflow',
+            metadata: parent.traceMetadata,
+            tracingApiKey: parent.tracingApiKey,
+          });
+    return await withTraceContext(
+      {
+        trace,
+        span: parent instanceof Trace ? undefined : parent,
+      },
+      runWithSpan,
+    );
+  }
+
+  return await runWithSpan();
 }
 
 function recordSandboxSpanError(

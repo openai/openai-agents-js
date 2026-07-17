@@ -18,6 +18,8 @@ import type { Tool } from '../tool';
 import type { AgentInputItem, UnknownContext } from '../types';
 import type * as protocol from '../types/protocol';
 import type { ModelInputData } from './conversation';
+import type { Span } from '../tracing/spans';
+import type { Trace } from '../tracing/traces';
 
 export type ToolRunHandoff = {
   toolCall: protocol.FunctionCallItem;
@@ -79,7 +81,10 @@ export type PreparedModelCall<TContext = UnknownContext> =
   AgentArtifacts<TContext> & {
     model: Model;
     explicitlyModelSet: boolean;
-    modelRequestInternal: { reasoningEffortImplicit: boolean };
+    modelRequestInternal: {
+      reasoningEffortImplicit: boolean;
+      tracingParent?: Span<any> | Trace;
+    };
     modelSettings: ModelSettings;
     modelInput: ModelInputData;
     prompt?: Prompt;

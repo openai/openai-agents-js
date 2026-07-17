@@ -53,6 +53,7 @@ import {
   splitResponsesTransportOverrides,
 } from './responsesTransportUtils';
 import type { OpenAIClient } from './openaiClient';
+
 import {
   CodeInterpreterStatus,
   FileSearchStatus,
@@ -80,6 +81,16 @@ import {
   formatInlineData,
   getInlineMediaType,
 } from '@openai/agents-core/utils/internal';
+
+type ModelTracingParent = Parameters<typeof createResponseSpan>[1];
+
+function getModelTracingParent(request: ModelRequest): ModelTracingParent {
+  return (
+    request as ModelRequest & {
+      _internal?: { tracingParent?: ModelTracingParent };
+    }
+  )._internal?.tracingParent;
+}
 
 type ToolChoice =
   | ToolChoiceOptions
@@ -3178,17 +3189,21 @@ export class OpenAIResponsesModel implements Model {
    * @returns A promise that resolves to the response from the model.
    */
   async getResponse(request: ModelRequest): Promise<ModelResponse> {
-    const response = await withResponseSpan(async (span) => {
-      const response = await this._fetchResponse(request, false);
+    const response = await withResponseSpan(
+      async (span) => {
+        const response = await this._fetchResponse(request, false);
 
-      if (request.tracing) {
-        span.spanData.response_id = response.id;
-        span.spanData._input = request.input;
-        span.spanData._response = response;
-      }
+        if (request.tracing) {
+          span.spanData.response_id = response.id;
+          span.spanData._input = request.input;
+          span.spanData._response = response;
+        }
 
-      return response;
-    });
+        return response;
+      },
+      undefined,
+      getModelTracingParent(request),
+    );
 
     const responseForSDKOutput = this._getResponseForSDKOutput(response);
     const output: ModelResponse = {
@@ -3212,7 +3227,9 @@ export class OpenAIResponsesModel implements Model {
   async *getStreamedResponse(
     request: ModelRequest,
   ): AsyncIterable<ResponseStreamEvent> {
-    const span = request.tracing ? createResponseSpan() : undefined;
+    const span = request.tracing
+      ? createResponseSpan(undefined, getModelTracingParent(request))
+      : undefined;
     try {
       if (span) {
         span.start();

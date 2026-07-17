@@ -9,6 +9,8 @@ import {
 } from './tool';
 import { Computer } from './computer';
 import { Handoff } from './handoff';
+import type { Span } from './tracing/spans';
+import type { Trace } from './tracing/traces';
 import {
   AgentInputItem,
   AgentOutputItem,
@@ -548,6 +550,7 @@ export type ModelRequest = {
   _internal?: {
     runnerManagedRetry?: boolean;
     reasoningEffortImplicit?: boolean;
+    tracingParent?: Span<any> | Trace;
   };
 };
 

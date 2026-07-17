@@ -22,6 +22,7 @@ import {
   type ReasoningItemIdPolicy,
 } from './items';
 import logger from '../logger';
+import { getRunStateUsageRecorder } from './usageTracking';
 
 export type PreparedInputWithSessionResult = {
   preparedInput: string | AgentInputItem[];
@@ -686,17 +687,17 @@ async function runCompactionOnSession(
     return;
   }
   const usage = compactionResult.usage;
-  state._context.usage.add(
-    new Usage({
-      requests: 1,
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      totalTokens: usage.totalTokens,
-      inputTokensDetails: usage.inputTokensDetails,
-      outputTokensDetails: usage.outputTokensDetails,
-      requestUsageEntries: [usage],
-    }),
-  );
+  const usageIncrement = new Usage({
+    requests: 1,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.totalTokens,
+    inputTokensDetails: usage.inputTokensDetails,
+    outputTokensDetails: usage.outputTokensDetails,
+    requestUsageEntries: [usage],
+  });
+  state._context.usage.add(usageIncrement);
+  getRunStateUsageRecorder(state)?.(usageIncrement);
 }
 
 function buildItemFrequencyMap(

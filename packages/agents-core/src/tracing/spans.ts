@@ -19,6 +19,31 @@ export type AgentSpanData = SpanDataBase & {
   output_type?: string;
 };
 
+export type TurnUsageData = {
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  cache_write_input_tokens: number;
+};
+
+export type TaskUsageData = TurnUsageData & {
+  requests: number;
+  total_tokens: number;
+};
+
+export type TaskSpanData = SpanDataBase & {
+  type: 'task';
+  name: string;
+  usage?: TaskUsageData;
+};
+
+export type TurnSpanData = SpanDataBase & {
+  type: 'turn';
+  turn: number;
+  agent_name: string;
+  usage?: TurnUsageData;
+};
+
 export type FunctionSpanData = SpanDataBase & {
   type: 'function';
   name: string;
@@ -116,6 +141,8 @@ export type MCPListToolsSpanData = SpanDataBase & {
 
 export type SpanData =
   | AgentSpanData
+  | TaskSpanData
+  | TurnSpanData
   | FunctionSpanData
   | GenerationSpanData
   | ResponseSpanData
@@ -268,10 +295,37 @@ export class Span<TData extends SpanData> {
       parent_id: this.parentId,
       started_at: this.startedAt,
       ended_at: this.endedAt,
-      span_data: removePrivateFields(this.spanData),
+      span_data: removePrivateFields(serializeSpanData(this.spanData)),
       error: this.error,
     };
   }
+}
+
+function serializeSpanData(spanData: SpanData): SpanData | CustomSpanData {
+  if (spanData.type === 'task') {
+    return {
+      type: 'custom',
+      name: 'task',
+      data: {
+        sdk_span_type: 'task',
+        name: spanData.name,
+        ...(spanData.usage ? { usage: spanData.usage } : {}),
+      },
+    };
+  }
+  if (spanData.type === 'turn') {
+    return {
+      type: 'custom',
+      name: 'turn',
+      data: {
+        sdk_span_type: 'turn',
+        turn: spanData.turn,
+        agent_name: spanData.agent_name,
+        ...(spanData.usage ? { usage: spanData.usage } : {}),
+      },
+    };
+  }
+  return spanData;
 }
 
 export class NoopSpan<TSpanData extends SpanData> extends Span<TSpanData> {
