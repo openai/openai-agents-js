@@ -68,7 +68,7 @@ The additional options are:
 | `callModelInputFilter` | – | Hook to edit the model input (items + optional instructions) just before calling the model. See [Call model input filter](#call-model-input-filter). |
 | `toolErrorFormatter` | – | Hook to customize tool error messages returned to the model. See [Tool error formatter](#tool-error-formatter). |
 | `reasoningItemIdPolicy` | – | Controls whether reasoning-item `id`s are preserved or omitted when prior run items are turned back into model input. See [Reasoning item ID policy](#reasoning-item-id-policy). |
-| `tracing` | – | Per-run tracing configuration overrides (for example, export API key). |
+| `tracing` | – | Per-run tracing configuration overrides, including the export API key and `includeTaskAndTurnSpans`. |
 | `sandbox` | – | Sandbox client, live session, session state, snapshot, manifest override, or concurrency limits for `SandboxAgent` runs. See [Sandbox agents](/openai-agents-js/guides/sandbox-agents/concepts). |
 | `toolExecution` | – | SDK-side execution settings for local tool calls. Use `toolExecution.maxFunctionToolConcurrency` to limit how many function tools run at once, and `toolExecution.preApprovalInputGuardrails` to run function-tool input guardrails before pending approval requests. |
 | `toolNotFoundBehavior` | `'raise_error'` | Controls unresolved function tool calls emitted by the model. Use `'return_error_to_model'` to return a model-visible tool error and continue the run. |
@@ -97,7 +97,7 @@ If you are creating your own `Runner` instance, you can pass in a `RunConfig` ob
 | `workflowName` | `string` | Appears in the Traces dashboard – helps group related runs. |
 | `traceId` / `groupId` | `string` | Manually specify the trace or group ID instead of letting the SDK generate one. |
 | `traceMetadata` | `Record<string, string>` | Arbitrary metadata to attach to every span. |
-| `tracing` | `TracingConfig` | Per-run tracing overrides (for example, export API key). |
+| `tracing` | `TracingConfig` | Per-run tracing overrides, including the export API key and `includeTaskAndTurnSpans`. |
 | `sessionInputCallback` | `SessionInputCallback` | Default history merge strategy for all runs on this runner. |
 | `callModelInputFilter` | `CallModelInputFilter` | Global hook to edit model inputs before each model call. |
 | `toolErrorFormatter` | `ToolErrorFormatter` | Global hook to customize tool error messages returned to the model. |

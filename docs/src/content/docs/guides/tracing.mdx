@@ -55,13 +55,25 @@ For example, in a Cloudflare Worker, you should wrap your code into a `try/catch
 By default, the SDK traces the following:
 
 - The entire `run()` or `Runner.run()` is wrapped in a `Trace`.
+- Each `run()` or `Runner.run()` invocation is wrapped in a task span.
 - Each time an agent runs, it is wrapped in `AgentSpan`
+- Each model/tool loop iteration is wrapped in a turn span.
 - LLM generations are wrapped in `GenerationSpan`
 - Function tool calls are each wrapped in `FunctionSpan`
 - Guardrails are wrapped in `GuardrailSpan`
 - Handoffs are wrapped in `HandoffSpan`
 
 By default, the trace is named "Agent workflow". You can set this name if you use `withTrace`, or you can configure the name and other properties with the [`RunConfig.workflowName`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#workflowname).
+
+Task and turn spans add a high-level `task -> agent -> turn` hierarchy and aggregate token usage for each scope. To omit only these runner-created spans while keeping agent, model, tool, guardrail, and handoff spans, set `includeTaskAndTurnSpans` to `false`:
+
+```ts
+const runner = new Runner({
+  tracing: { includeTaskAndTurnSpans: false },
+});
+```
+
+You can also pass the same `tracing` option to an individual `run()` call. This setting does not affect task or turn spans that you create manually with `createTaskSpan()` or `createTurnSpan()`.
 
 In addition, you can set up [custom trace processors](#custom-tracing-processors) to push traces to other destinations (as a replacement, or secondary destination).
 
