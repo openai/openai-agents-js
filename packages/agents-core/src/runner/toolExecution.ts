@@ -1,6 +1,9 @@
 import { FunctionCallResultItem } from '../types/protocol';
 import { Agent, AgentOutputType, ToolsToFinalOutputResult } from '../agent';
-import { setAgentToolParentRunConfigOnDetails } from '../agentToolRunConfig';
+import {
+  setAgentToolParentRunConfigOnDetails,
+  setToolCallParentSpanOnDetails,
+} from '../agentToolRunConfig';
 import { consumeAgentToolRunResult } from '../agentToolRunResults';
 import { ToolCallError, ToolTimeoutError, UserError } from '../errors';
 import { getTransferMessage, HandoffInputData } from '../handoff';
@@ -67,6 +70,11 @@ import type {
   ToolRunShell,
 } from './types';
 import { SingleStepResult } from './steps';
+import {
+  getRunStateUsageRecorder,
+  setToolUsageRecorder,
+} from './usageTracking';
+import { getRunStateTurnSpanParent } from './invocationContext';
 
 type FunctionToolCallDeps<TContext = UnknownContext> = {
   agent: Agent<TContext, any>;
@@ -83,12 +91,10 @@ const TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
 
 type ParseToolArgumentsResult =
-  | { success: true; args: any }
-  | { success: false; error: Error };
+  { success: true; args: any } | { success: false; error: Error };
 
 type ToolInputGuardrailCheckResult =
-  | { type: 'allow' }
-  | { type: 'reject'; message: string };
+  { type: 'allow' } | { type: 'reject'; message: string };
 
 function getFunctionToolIdentity<TContext>(
   toolRun: ToolRunFunction<TContext>,
@@ -360,7 +366,7 @@ async function buildApprovalRejectionResult<TContext>(
   const { agent, runner, state, toolErrorFormatter } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
   const traceToolName = getFunctionToolTraceName(toolRun);
-  return withToolFunctionSpan(runner, traceToolName, async (span) => {
+  return withRunStateToolFunctionSpan(deps, traceToolName, async (span) => {
     const response = await resolveApprovalRejectionMessage({
       runContext: state._context,
       toolType: 'function',
@@ -496,7 +502,7 @@ async function runApprovedFunctionTool<TContext>(
   const { agent, runner, state, agentToolParentRunConfig } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
   const traceToolName = getFunctionToolTraceName(toolRun);
-  return withToolFunctionSpan(runner, traceToolName, async (span) => {
+  return withRunStateToolFunctionSpan(deps, traceToolName, async (span) => {
     if (span && runner.config.traceIncludeSensitiveData) {
       span.spanData.input = toolRun.toolCall.arguments;
     }
@@ -536,10 +542,12 @@ async function runApprovedFunctionTool<TContext>(
             executedInput = cloneForCustomDataContext(input);
           },
         };
+        setToolUsageRecorder(toolDetails, getRunStateUsageRecorder(state));
         setAgentToolParentRunConfigOnDetails(
           toolDetails,
           agentToolParentRunConfig ?? runner.config,
         );
+        setToolCallParentSpanOnDetails(toolDetails, span);
         toolOutput = await invokeFunctionTool({
           tool: toolRun.tool,
           runContext: state._context,
@@ -598,8 +606,7 @@ async function runApprovedFunctionTool<TContext>(
       };
 
       const nestedRunResult = consumeAgentToolRunResult(toolRun.toolCall) as
-        | RunResult<TContext, Agent<TContext, any>>
-        | undefined;
+        RunResult<TContext, Agent<TContext, any>> | undefined;
       if (nestedRunResult) {
         functionResult.agentRunResult = nestedRunResult;
         const nestedInterruptions = nestedRunResult.interruptions;
@@ -726,16 +733,34 @@ async function withToolFunctionSpan<T>(
   runner: Runner,
   toolName: string,
   fn: (span?: Span<FunctionSpanData>) => Promise<T>,
+  parent?: Span<any>,
 ): Promise<T> {
-  if (runner.config.tracingDisabled || !getCurrentTrace()) {
+  if (runner.config.tracingDisabled || (!getCurrentTrace() && !parent)) {
     return fn();
   }
 
-  return withFunctionSpan(async (span) => fn(span), {
-    data: {
-      name: toolName,
+  return withFunctionSpan(
+    async (span) => fn(span),
+    {
+      data: {
+        name: toolName,
+      },
     },
-  });
+    parent,
+  );
+}
+
+async function withRunStateToolFunctionSpan<TContext, T>(
+  deps: FunctionToolCallDeps<TContext>,
+  toolName: string,
+  fn: (span?: Span<FunctionSpanData>) => Promise<T>,
+): Promise<T> {
+  return withToolFunctionSpan(
+    deps.runner,
+    toolName,
+    fn,
+    getRunStateTurnSpanParent(deps.state) ?? deps.state._currentAgentSpan,
+  );
 }
 
 type ApprovalResolution = 'approved' | 'rejected' | 'pending';
@@ -814,8 +839,7 @@ async function resolveToolApproval(options: {
 }
 
 type ApprovalDecisionResult =
-  | { status: 'approved' }
-  | { status: 'pending' | 'rejected'; item: RunItem };
+  { status: 'approved' } | { status: 'pending' | 'rejected'; item: RunItem };
 
 async function handleToolApprovalDecision(options: {
   runContext: RunContext;
@@ -1415,6 +1439,7 @@ export async function executeHandoffCalls<
   runHandoffs: ToolRunHandoff[],
   runner: Runner,
   runContext: RunContext<TContext>,
+  parent?: Span<any>,
 ): Promise<import('./steps').SingleStepResult> {
   newStepItems = [...newStepItems];
 
@@ -1526,6 +1551,7 @@ export async function executeHandoffCalls<
         from_agent: agent.name,
       },
     },
+    parent,
   );
 }
 

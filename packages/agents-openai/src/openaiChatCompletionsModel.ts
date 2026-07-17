@@ -35,10 +35,21 @@ import {
   convertHandoffTool,
   itemsToMessages,
 } from './openaiChatCompletionsConverter';
+
 import { protocol } from '@openai/agents-core';
 import { getOpenAIRetryAdvice } from './retryAdvice';
 import { normalizePromptCacheRetention } from './utils/modelSettings';
 import type { OpenAIClient } from './openaiClient';
+
+type ModelTracingParent = Parameters<typeof createGenerationSpan>[1];
+
+function getModelTracingParent(request: ModelRequest): ModelTracingParent {
+  return (
+    request as ModelRequest & {
+      _internal?: { tracingParent?: ModelTracingParent };
+    }
+  )._internal?.tracingParent;
+}
 
 export const FAKE_ID = 'FAKE_ID';
 const GPT_56_MODEL_PATTERN =
@@ -100,24 +111,28 @@ export class OpenAIChatCompletionsModel implements Model {
     this.#handleUnsupportedPrompt(request);
     this.#handleUnsupportedReasoningSettings(request);
 
-    const response = await withGenerationSpan(async (span) => {
-      span.spanData.model = this.#model;
-      span.spanData.model_config = request.modelSettings
-        ? {
-            temperature: request.modelSettings.temperature,
-            top_p: request.modelSettings.topP,
-            frequency_penalty: request.modelSettings.frequencyPenalty,
-            presence_penalty: request.modelSettings.presencePenalty,
-            reasoning_effort: request.modelSettings.reasoning?.effort,
-            verbosity: request.modelSettings.text?.verbosity,
-          }
-        : { base_url: this.#client.baseURL };
-      const response = await this.#fetchResponse(request, span, false);
-      if (span && request.tracing === true) {
-        span.spanData.output = [response];
-      }
-      return response;
-    });
+    const response = await withGenerationSpan(
+      async (span) => {
+        span.spanData.model = this.#model;
+        span.spanData.model_config = request.modelSettings
+          ? {
+              temperature: request.modelSettings.temperature,
+              top_p: request.modelSettings.topP,
+              frequency_penalty: request.modelSettings.frequencyPenalty,
+              presence_penalty: request.modelSettings.presencePenalty,
+              reasoning_effort: request.modelSettings.reasoning?.effort,
+              verbosity: request.modelSettings.text?.verbosity,
+            }
+          : { base_url: this.#client.baseURL };
+        const response = await this.#fetchResponse(request, span, false);
+        if (span && request.tracing === true) {
+          span.spanData.output = [response];
+        }
+        return response;
+      },
+      undefined,
+      getModelTracingParent(request),
+    );
 
     const output: protocol.OutputModelItem[] = [];
     if (response.choices && response.choices[0]) {
@@ -239,7 +254,9 @@ export class OpenAIChatCompletionsModel implements Model {
     this.#handleUnsupportedPrompt(request);
     this.#handleUnsupportedReasoningSettings(request);
 
-    const span = request.tracing ? createGenerationSpan() : undefined;
+    const span = request.tracing
+      ? createGenerationSpan(undefined, getModelTracingParent(request))
+      : undefined;
     try {
       if (span) {
         span.spanData.model = this.#model;

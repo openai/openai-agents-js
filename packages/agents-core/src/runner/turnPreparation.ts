@@ -16,6 +16,7 @@ import {
 } from './guardrails';
 import { prepareModelInputItems } from './items';
 import { ensureAgentSpan } from './tracing';
+import type { Span, Trace } from '../tracing';
 import { getToolCallOutputItem } from './toolExecution';
 import type { ProcessedResponse } from './types';
 
@@ -47,6 +48,8 @@ type PrepareTurnOptions<
     agent: TAgent,
     turnInput: AgentInputItem[],
   ) => void;
+  onAgentSpanReady?: (turn: number, agentName: string) => void;
+  agentSpanParent?: Span<any> | Trace;
 };
 
 export async function prepareTurn<
@@ -64,6 +67,8 @@ export async function prepareTurn<
     inputGuardrailDefs,
     guardrailHandlers,
     emitAgentStart,
+    onAgentSpanReady,
+    agentSpanParent,
   } = options;
 
   const { isResumingFromInterruption } = beginTurn(state, {
@@ -93,8 +98,10 @@ export async function prepareTurn<
       handoffs: [],
       tools: [],
       currentSpan: state._currentAgentSpan,
+      parent: agentSpanParent,
     }),
   );
+  onAgentSpanReady?.(state._currentTurn, state._currentAgent.name);
 
   const { parallelGuardrailPromise } = await runInputGuardrailsForTurn(
     state,

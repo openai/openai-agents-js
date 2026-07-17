@@ -5,6 +5,7 @@ import { UserError } from '../../errors';
 import logger from '../../logger';
 import type { RunState } from '../../runState';
 import type { AgentInputItem } from '../../types';
+import type { Span, Trace } from '../../tracing';
 import { Manifest } from '../manifest';
 import { registerSandboxPreStopHook } from '../runtime/sessionLifecycle';
 import { withSandboxSpan } from '../runtime/spans';
@@ -73,6 +74,7 @@ export function getOrCreateSandboxMemoryGenerationManager(args: {
   memory: Memory;
   runAs?: string;
   runAgent: SandboxMemoryAgentRunner;
+  tracingParent?: Span<any> | Trace;
 }): SandboxMemoryGenerationManager {
   if (args.memory.generate === null) {
     throw new UserError(
@@ -101,6 +103,7 @@ export function getOrCreateSandboxMemoryGenerationManager(args: {
       existing.manager.updateRuntimeContext({
         runAs: args.runAs,
         runAgent: args.runAgent,
+        tracingParent: args.tracingParent,
       });
       return existing.manager;
     }
@@ -138,6 +141,7 @@ export class SandboxMemoryGenerationManager {
   private readonly memory: Memory;
   private runAs?: string;
   private runAgent: SandboxMemoryAgentRunner;
+  private tracingParent?: Span<any> | Trace;
   private readonly storage: SandboxMemoryStorage;
   private readonly pendingRolloutIds = new Set<string>();
   private flushPromise?: Promise<void>;
@@ -149,15 +153,18 @@ export class SandboxMemoryGenerationManager {
     memory: Memory;
     runAs?: string;
     runAgent: SandboxMemoryAgentRunner;
+    tracingParent?: Span<any> | Trace;
   }) {
     this.session = args.session;
     this.memory = args.memory;
     this.runAs = args.runAs;
     this.runAgent = args.runAgent;
+    this.tracingParent = args.tracingParent;
     this.storage = new SandboxMemoryStorage({
       session: args.session,
       runAs: args.runAs,
       store: args.memory.store,
+      tracingParent: args.tracingParent,
     });
     this.unregisterPreStopHook = registerSandboxPreStopHook(
       this.session,
@@ -174,10 +181,15 @@ export class SandboxMemoryGenerationManager {
   updateRuntimeContext(args: {
     runAs?: string;
     runAgent: SandboxMemoryAgentRunner;
+    tracingParent?: Span<any> | Trace;
   }): void {
     this.runAs = args.runAs;
     this.runAgent = args.runAgent;
-    this.storage.updateRuntimeContext({ runAs: args.runAs });
+    this.tracingParent = args.tracingParent;
+    this.storage.updateRuntimeContext({
+      runAs: args.runAs,
+      tracingParent: args.tracingParent,
+    });
   }
 
   async enqueueState<TContext>(
@@ -218,6 +230,7 @@ export class SandboxMemoryGenerationManager {
         );
         this.pendingRolloutIds.add(rolloutId);
       },
+      this.tracingParent,
     );
   }
 
@@ -276,6 +289,7 @@ export class SandboxMemoryGenerationManager {
             }
           }
         },
+        this.tracingParent,
       );
     } finally {
       this.pendingRolloutIds.clear();

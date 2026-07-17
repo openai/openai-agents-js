@@ -22,9 +22,11 @@ import {
   setDefaultModelProvider,
   setTraceProcessors,
   setTracingDisabled,
+  setTracingContextStorage,
   createAgentSpan,
   getCurrentSpan,
   setCurrentSpan,
+  ToolGuardrailFunctionOutputFactory,
   withTrace,
   tool,
   type Span,
@@ -48,6 +50,8 @@ import {
   Entry,
   filesystem,
   Manifest,
+  memory,
+  type MemoryStore,
   SANDBOX_SESSION_STATE_VERSION,
   shell,
   skills,
@@ -72,6 +76,7 @@ import {
   FakeShell,
   fakeModelMessage,
 } from './stubs';
+import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../src/shims/shims-browser';
 
 class StubEditor implements Editor {
   async createFile(
@@ -138,14 +143,16 @@ class RecordingStreamingModel implements Model {
 class OpenAIChatCompletionsModel extends RecordingFakeModel {}
 
 class RecordingTracingProcessor implements TracingProcessor {
+  public readonly tracesStarted: Trace[] = [];
+  public readonly tracesEnded: Trace[] = [];
   public readonly spansEnded: Span<any>[] = [];
 
-  async onTraceStart(_trace: Trace): Promise<void> {
-    // no-op
+  async onTraceStart(trace: Trace): Promise<void> {
+    this.tracesStarted.push(trace);
   }
 
-  async onTraceEnd(_trace: Trace): Promise<void> {
-    // no-op
+  async onTraceEnd(trace: Trace): Promise<void> {
+    this.tracesEnded.push(trace);
   }
 
   async onSpanStart(_span: Span<any>): Promise<void> {
@@ -394,6 +401,49 @@ class FakeSandboxClient implements SandboxClient<
   }
 }
 
+function createSandboxBarrier(participantCount: number) {
+  let remaining = participantCount;
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return async () => {
+    remaining -= 1;
+    if (remaining === 0) {
+      release();
+    }
+    await ready;
+  };
+}
+
+class CoordinatedTracingSandboxClient extends FakeSandboxClient {
+  constructor(
+    private readonly waitForCreatePeers: () => Promise<void>,
+    private readonly waitForClosePeers: () => Promise<void>,
+  ) {
+    super();
+  }
+
+  override async create(
+    args?: SandboxClientCreateArgs<SandboxClientOptions> | Manifest,
+    manifestOptions?: SandboxClientOptions,
+  ): Promise<SandboxSessionLike<FakeSandboxSessionState>> {
+    await this.waitForCreatePeers();
+    return await super.create(args, manifestOptions);
+  }
+
+  protected override lifecycleHandlers(
+    state: FakeSandboxSessionState,
+  ): Partial<SandboxSessionLike<FakeSandboxSessionState>> {
+    return {
+      close: async () => {
+        await this.waitForClosePeers();
+        this.closeCalls.push(state.sessionId);
+      },
+    };
+  }
+}
+
 class NonPersistentFakeSandboxClient extends FakeSandboxClient {
   override async resume(
     state: FakeSandboxSessionState,
@@ -609,6 +659,7 @@ describe('sandbox runner integration', () => {
   afterEach(() => {
     setTraceProcessors([]);
     setTracingDisabled(true);
+    setTracingContextStorage(undefined);
   });
 
   it('requires RunConfig.sandbox when execution reaches a SandboxAgent', async () => {
@@ -2234,6 +2285,43 @@ describe('sandbox runner integration', () => {
     expect(sandboxRuntime.cleanup).toHaveBeenCalledOnce();
   });
 
+  it('finishes an interrupted agent span when task tracing owns its lifecycle', async () => {
+    setTracingDisabled(false);
+    const agent = new Agent<unknown, any>({ name: 'InterruptedAgent' });
+    const state = new RunState<unknown, Agent<unknown, any>>(
+      new RunContext(),
+      'Hello',
+      agent,
+      1,
+    );
+    const cleanupError = new Error('cleanup failed');
+    const sandboxRuntime = {
+      enqueueMemoryGeneration: vi.fn().mockResolvedValue(undefined),
+      cleanup: vi.fn().mockRejectedValue(cleanupError),
+    } as unknown as SandboxRuntimeManager<unknown>;
+
+    await withTrace('Interrupted agent span cleanup test', async () => {
+      const span = createAgentSpan({ data: { name: 'InterruptedAgent' } });
+      state._currentAgentSpan = span;
+      span.start();
+      setCurrentSpan(span);
+
+      await expect(
+        finalizeSandboxRuntime({
+          state,
+          sandboxRuntime,
+          preserveSessionsForInterruption: true,
+          finishAgentSpanForInterruption: true,
+          runAgent: async () => ({ finalOutput: undefined }),
+        }),
+      ).rejects.toBe(cleanupError);
+      expect(span.endedAt).not.toBeNull();
+      expect(getCurrentSpan()).toBeNull();
+    });
+
+    expect(sandboxRuntime.cleanup).toHaveBeenCalledOnce();
+  });
+
   it('preserves serialized sessions for sandbox agents untouched by a resumed run', async () => {
     const client = new FakeSandboxClient();
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
@@ -2353,6 +2441,293 @@ describe('sandbox runner integration', () => {
         'sandbox.shutdown',
       ]),
     );
+  });
+
+  it.each([true, false])(
+    'keeps parallel sandbox lifecycle spans in their own browser-runtime traces (task/turn=%s)',
+    async (includeTaskAndTurnSpans) => {
+      setTracingContextStorage(new BrowserAsyncLocalStorage());
+      const processor = new RecordingTracingProcessor();
+      setTraceProcessors([processor]);
+      setTracingDisabled(false);
+      const waitForCreatePeers = createSandboxBarrier(2);
+      const waitForClosePeers = createSandboxBarrier(2);
+      const agentA = new SandboxAgent({
+        name: `Parallel Sandbox Worker A ${includeTaskAndTurnSpans}`,
+        model: new RecordingFakeModel([
+          {
+            output: [fakeModelMessage('sandbox A done')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+      const agentB = new SandboxAgent({
+        name: `Parallel Sandbox Worker B ${includeTaskAndTurnSpans}`,
+        model: new RecordingFakeModel([
+          {
+            output: [fakeModelMessage('sandbox B done')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      await Promise.all([
+        run(agentA, 'Hello A', {
+          sandbox: {
+            client: new CoordinatedTracingSandboxClient(
+              waitForCreatePeers,
+              waitForClosePeers,
+            ),
+          },
+          tracing: { includeTaskAndTurnSpans },
+        }),
+        run(agentB, 'Hello B', {
+          sandbox: {
+            client: new CoordinatedTracingSandboxClient(
+              waitForCreatePeers,
+              waitForClosePeers,
+            ),
+          },
+          tracing: { includeTaskAndTurnSpans },
+        }),
+      ]);
+
+      for (const agent of [agentA, agentB]) {
+        const agentSpan = processor.spansEnded.find(
+          (span) =>
+            span.spanData.type === 'agent' && span.spanData.name === agent.name,
+        );
+        const taskSpan = processor.spansEnded.find(
+          (span) =>
+            span.spanData.type === 'task' &&
+            span.spanId === agentSpan?.parentId,
+        );
+        const turnSpan = processor.spansEnded.find(
+          (span) =>
+            span.spanData.type === 'turn' &&
+            span.spanData.agent_name === agent.name,
+        );
+        const rootSpan = includeTaskAndTurnSpans ? taskSpan : agentSpan;
+        const shutdownSpan = processor.spansEnded.find(
+          (span) =>
+            span.spanData.type === 'custom' &&
+            span.spanData.name === 'sandbox.shutdown' &&
+            span.spanData.data.agent_name === agent.name,
+        );
+        const prepareSpan = processor.spansEnded.find(
+          (span) =>
+            span.spanData.type === 'custom' &&
+            span.spanData.name === 'sandbox.prepare_agent' &&
+            span.spanData.data.agent_name === agent.name,
+        );
+        const createSpan = processor.spansEnded.find(
+          (span) =>
+            span.spanData.type === 'custom' &&
+            span.spanData.name === 'sandbox.create_session' &&
+            span.spanData.data.agent_name === agent.name,
+        );
+        const cleanupSessionsSpan = processor.spansEnded.find(
+          (span) =>
+            span.spanData.type === 'custom' &&
+            span.spanData.name === 'sandbox.cleanup_sessions' &&
+            span.traceId === rootSpan?.traceId,
+        );
+        const cleanupSpan = processor.spansEnded.find(
+          (span) =>
+            span.spanData.type === 'custom' &&
+            span.spanData.name === 'sandbox.cleanup' &&
+            span.traceId === rootSpan?.traceId,
+        );
+        expect(shutdownSpan?.traceId).toBe(rootSpan?.traceId);
+        expect(prepareSpan?.parentId).toBe(
+          includeTaskAndTurnSpans ? turnSpan?.spanId : agentSpan?.spanId,
+        );
+        expect(createSpan?.parentId).toBe(prepareSpan?.spanId);
+        expect(cleanupSpan?.parentId).toBe(rootSpan?.spanId);
+        expect(cleanupSessionsSpan?.parentId).toBe(cleanupSpan?.spanId);
+        expect(shutdownSpan?.parentId).toBe(cleanupSessionsSpan?.spanId);
+      }
+    },
+  );
+
+  it('keeps parallel sandbox capability spans under their function spans in browser runtimes', async () => {
+    setTracingContextStorage(new BrowserAsyncLocalStorage());
+    const processor = new RecordingTracingProcessor();
+    setTraceProcessors([processor]);
+    setTracingDisabled(false);
+    const waitForBothGuardrails = createSandboxBarrier(2);
+
+    const createAgent = (label: string) =>
+      new SandboxAgent({
+        name: `Parallel sandbox capability agent ${label}`,
+        model: new RecordingFakeModel([
+          {
+            output: [
+              {
+                id: `tool-${label}`,
+                type: 'function_call',
+                name: 'exec_command',
+                callId: `tool-${label}`,
+                status: 'completed',
+                arguments: JSON.stringify({ cmd: `echo ${label}` }),
+              },
+            ],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage(`sandbox ${label} done`)],
+            usage: new Usage(),
+          },
+        ]),
+        capabilities: [
+          shell({
+            configureTools: (tools) =>
+              tools.map((capabilityTool) =>
+                capabilityTool.type === 'function' &&
+                capabilityTool.name === 'exec_command'
+                  ? {
+                      ...capabilityTool,
+                      inputGuardrails: [
+                        {
+                          type: 'tool_input' as const,
+                          name: `wait-for-peer-${label}`,
+                          run: async () => {
+                            await waitForBothGuardrails();
+                            return ToolGuardrailFunctionOutputFactory.allow();
+                          },
+                        },
+                      ],
+                    }
+                  : capabilityTool,
+              ),
+          }),
+        ],
+      });
+
+    const agents = [createAgent('A'), createAgent('B')];
+    await Promise.all(
+      agents.map((agent, index) =>
+        run(agent, `Hello ${index}`, {
+          sandbox: { client: new FakeSandboxClient() },
+        }),
+      ),
+    );
+
+    for (const label of ['A', 'B']) {
+      const functionSpan = processor.spansEnded.find(
+        (span) =>
+          span.spanData.type === 'function' &&
+          span.spanData.name === 'exec_command' &&
+          span.spanData.input === JSON.stringify({ cmd: `echo ${label}` }),
+      );
+      const sandboxSpan = processor.spansEnded.find(
+        (span) =>
+          span.spanData.type === 'custom' &&
+          span.spanData.name === 'sandbox.exec' &&
+          span.spanData.data.cmd === `echo ${label}`,
+      );
+      expect(sandboxSpan?.parentId).toBe(functionSpan?.spanId);
+      expect(sandboxSpan?.traceId).toBe(functionSpan?.traceId);
+    }
+  });
+
+  it('keeps parallel sandbox memory-read spans under their turn spans in browser runtimes', async () => {
+    setTracingContextStorage(new BrowserAsyncLocalStorage());
+    const processor = new RecordingTracingProcessor();
+    setTraceProcessors([processor]);
+    setTracingDisabled(false);
+    const waitForBothReads = createSandboxBarrier(2);
+
+    const createAgent = (label: string) => {
+      const store: MemoryStore = {
+        read: async () => {
+          await waitForBothReads();
+          return null;
+        },
+        write: async () => undefined,
+      };
+      return new SandboxAgent({
+        name: `Parallel sandbox memory agent ${label}`,
+        model: new RecordingFakeModel([
+          {
+            output: [fakeModelMessage(`sandbox ${label} done`)],
+            usage: new Usage(),
+          },
+        ]),
+        capabilities: [
+          shell(),
+          memory({
+            read: { liveUpdate: false },
+            generate: false,
+            layout: { memoriesDir: `memories-${label.toLowerCase()}` },
+            store,
+          }),
+        ],
+      });
+    };
+
+    const agents = [createAgent('A'), createAgent('B')];
+    await Promise.all(
+      agents.map((agent, index) =>
+        run(agent, `Hello ${index}`, {
+          sandbox: { client: new FakeSandboxClient() },
+        }),
+      ),
+    );
+
+    for (const label of ['A', 'B']) {
+      const turnSpan = processor.spansEnded.find(
+        (span) =>
+          span.spanData.type === 'turn' &&
+          span.spanData.agent_name === `Parallel sandbox memory agent ${label}`,
+      );
+      const memorySpan = processor.spansEnded.find(
+        (span) =>
+          span.spanData.type === 'custom' &&
+          span.spanData.name === 'sandbox.memory.read_summary' &&
+          span.spanData.data.path ===
+            `memories-${label.toLowerCase()}/memory_summary.md`,
+      );
+      expect(memorySpan?.parentId).toBe(turnSpan?.spanId);
+      expect(memorySpan?.traceId).toBe(turnSpan?.traceId);
+    }
+  });
+
+  it('does not emit sandbox spans when runner tracing is disabled', async () => {
+    const processor = new RecordingTracingProcessor();
+    setTraceProcessors([processor]);
+    setTracingDisabled(false);
+    const sandboxAgent = new SandboxAgent({
+      name: 'Tracing-disabled sandbox agent',
+      model: new RecordingFakeModel([
+        {
+          output: [
+            {
+              id: 'tool-disabled',
+              type: 'function_call',
+              name: 'exec_command',
+              callId: 'tool-disabled',
+              status: 'completed',
+              arguments: JSON.stringify({ cmd: 'echo disabled' }),
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('sandbox done')],
+          usage: new Usage(),
+        },
+      ]),
+      capabilities: [shell()],
+    });
+
+    await new Runner({ tracingDisabled: true }).run(sandboxAgent, 'Hello', {
+      sandbox: { client: new FakeSandboxClient() },
+    });
+
+    expect(processor.spansEnded).toHaveLength(0);
+    expect(processor.tracesStarted).toHaveLength(0);
+    expect(processor.tracesEnded).toHaveLength(0);
   });
 
   it('rejects concurrent reuse of the same SandboxAgent across runs', async () => {
