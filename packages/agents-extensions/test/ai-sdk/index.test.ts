@@ -1421,6 +1421,82 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('converts V3 image tool outputs without relying on URL extensions', () => {
+    const imageUrl =
+      'https://images.unsplash.com/photo-1505761671935-60b3a7427bad?auto=format&fit=crop&w=400&q=80';
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        callId: 'tool-1',
+        name: 'describe_image',
+        arguments: '{}',
+      } as any,
+      {
+        type: 'function_call_result',
+        callId: 'tool-1',
+        name: 'describe_image',
+        output: [
+          { type: 'input_text', text: 'A scenic view.' },
+          {
+            type: 'input_image',
+            image: imageUrl,
+          },
+          {
+            type: 'input_image',
+            image: 'data:image/png;base64,aGVsbG8=',
+          },
+        ],
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(
+      stubModel({}, { specificationVersion: 'v3' }),
+      items,
+    );
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'tool-1',
+            toolName: 'describe_image',
+            input: {},
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'tool-1',
+            toolName: 'describe_image',
+            output: {
+              type: 'content',
+              value: [
+                { type: 'text', text: 'A scenic view.' },
+                {
+                  type: 'image-url',
+                  url: imageUrl,
+                },
+                {
+                  type: 'image-data',
+                  data: 'aGVsbG8=',
+                  mediaType: 'image/png',
+                },
+              ],
+            },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
   test('handles undefined providerData without throwing', () => {
     const items: protocol.ModelItem[] = [
       {
