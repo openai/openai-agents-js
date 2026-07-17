@@ -1,5 +1,13 @@
 # @openai/agents-core
 
+## 0.13.5
+
+### Patch Changes
+
+- 2437c35: feat: add AI SDK provider-executed tool search support (#1479)
+- 72ca4bc: fix: correlate streamed text deltas with completed output items (#1484)
+- f1ae0b4: fix: decode persisted binary sandbox manifest content without host base64 globals
+
 ## 0.13.4
 
 ### Patch Changes

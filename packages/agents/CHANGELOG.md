@@ -1,5 +1,17 @@
 # @openai/agents
 
+## 0.13.5
+
+### Patch Changes
+
+- 7344ce7: docs: clarify sandbox client support on Windows
+- Updated dependencies [2437c35]
+- Updated dependencies [72ca4bc]
+- Updated dependencies [f1ae0b4]
+  - @openai/agents-core@0.13.5
+  - @openai/agents-openai@0.13.5
+  - @openai/agents-realtime@0.13.5
+
 ## 0.13.4
 
 ### Patch Changes
