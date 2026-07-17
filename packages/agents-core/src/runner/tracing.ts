@@ -2,11 +2,18 @@ import { Agent } from '../agent';
 import { Handoff } from '../handoff';
 import { ModelTracing } from '../model';
 import { Tool } from '../tool';
-import { setCurrentSpan } from '../tracing/context';
-import { createAgentSpan } from '../tracing';
+import { resetCurrentSpan, setCurrentSpan } from '../tracing/context';
+import { createAgentSpan, createTaskSpan, createTurnSpan } from '../tracing';
 import { getGlobalTraceProvider } from '../tracing/provider';
-import { Span } from '../tracing/spans';
+import {
+  Span,
+  type TaskSpanData,
+  type TaskUsageData,
+  type TurnSpanData,
+  type TurnUsageData,
+} from '../tracing/spans';
 import { Trace } from '../tracing/traces';
+import type { Usage } from '../usage';
 
 export type TraceOverrideConfig = {
   traceId?: string;
@@ -22,6 +29,110 @@ type EnsureAgentSpanParams<TContext> = {
   tools: Tool<TContext>[];
   currentSpan?: ReturnType<typeof createAgentSpan>;
 };
+
+type UsageSnapshot = {
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+};
+
+export type RunnerSpanLifecycle<TSpanData extends TaskSpanData | TurnSpanData> =
+  {
+    span: Span<TSpanData>;
+    usageStart: UsageSnapshot;
+  };
+
+function sumUsageDetail(usage: Usage, key: string): number {
+  return usage.inputTokensDetails.reduce(
+    (total, details) => total + (details[key] ?? 0),
+    0,
+  );
+}
+
+function snapshotUsage(usage: Usage): UsageSnapshot {
+  return {
+    requests: usage.requests,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.totalTokens,
+    cachedInputTokens: sumUsageDetail(usage, 'cached_tokens'),
+    cacheWriteInputTokens: sumUsageDetail(usage, 'cache_write_tokens'),
+  };
+}
+
+function usageDelta(start: UsageSnapshot, end: Usage): UsageSnapshot {
+  const current = snapshotUsage(end);
+  return {
+    requests: current.requests - start.requests,
+    inputTokens: current.inputTokens - start.inputTokens,
+    outputTokens: current.outputTokens - start.outputTokens,
+    totalTokens: current.totalTokens - start.totalTokens,
+    cachedInputTokens: current.cachedInputTokens - start.cachedInputTokens,
+    cacheWriteInputTokens:
+      current.cacheWriteInputTokens - start.cacheWriteInputTokens,
+  };
+}
+
+function hasUsage(usage: UsageSnapshot): boolean {
+  return Object.values(usage).some((value) => value !== 0);
+}
+
+function toTurnUsageData(usage: UsageSnapshot): TurnUsageData {
+  return {
+    input_tokens: usage.inputTokens,
+    output_tokens: usage.outputTokens,
+    cached_input_tokens: usage.cachedInputTokens,
+    cache_write_input_tokens: usage.cacheWriteInputTokens,
+  };
+}
+
+export function startTaskSpan(
+  name: string,
+  usage: Usage,
+): RunnerSpanLifecycle<TaskSpanData> {
+  const span = createTaskSpan({ data: { name } });
+  span.start();
+  setCurrentSpan(span);
+  return { span, usageStart: snapshotUsage(usage) };
+}
+
+export function startTurnSpan(
+  turn: number,
+  agentName: string,
+  usage: Usage,
+): RunnerSpanLifecycle<TurnSpanData> {
+  const span = createTurnSpan({ data: { turn, agent_name: agentName } });
+  span.start();
+  setCurrentSpan(span);
+  return { span, usageStart: snapshotUsage(usage) };
+}
+
+export function finishRunnerSpan(
+  lifecycle: RunnerSpanLifecycle<TaskSpanData | TurnSpanData> | undefined,
+  usage: Usage,
+): void {
+  if (!lifecycle) {
+    return;
+  }
+  const delta = usageDelta(lifecycle.usageStart, usage);
+  if (hasUsage(delta)) {
+    if (lifecycle.span.spanData.type === 'task') {
+      const taskUsage: TaskUsageData = {
+        ...toTurnUsageData(delta),
+        requests: delta.requests,
+        total_tokens: delta.totalTokens,
+      };
+      lifecycle.span.spanData.usage = taskUsage;
+    } else {
+      lifecycle.span.spanData.usage = toTurnUsageData(delta);
+    }
+  }
+  lifecycle.span.end();
+  resetCurrentSpan();
+}
 
 /**
  * Normalizes tracing configuration into the format expected by model providers.

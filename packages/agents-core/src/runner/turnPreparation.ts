@@ -47,6 +47,7 @@ type PrepareTurnOptions<
     agent: TAgent,
     turnInput: AgentInputItem[],
   ) => void;
+  onAgentSpanReady?: (turn: number, agentName: string) => void;
 };
 
 export async function prepareTurn<
@@ -64,6 +65,7 @@ export async function prepareTurn<
     inputGuardrailDefs,
     guardrailHandlers,
     emitAgentStart,
+    onAgentSpanReady,
   } = options;
 
   const { isResumingFromInterruption } = beginTurn(state, {
@@ -95,6 +97,7 @@ export async function prepareTurn<
       currentSpan: state._currentAgentSpan,
     }),
   );
+  onAgentSpanReady?.(state._currentTurn, state._currentAgent.name);
 
   const { parallelGuardrailPromise } = await runInputGuardrailsForTurn(
     state,

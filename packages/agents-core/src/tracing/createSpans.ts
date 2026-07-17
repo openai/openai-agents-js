@@ -10,6 +10,8 @@ import {
   ResponseSpanData,
   SpanData,
   AgentSpanData,
+  TaskSpanData,
+  TurnSpanData,
   FunctionSpanData,
   HandoffSpanData,
   GenerationSpanData,
@@ -130,6 +132,61 @@ export const withAgentSpan = _withSpanFactory<
   AgentSpanData,
   typeof createAgentSpan
 >(createAgentSpan);
+
+/**
+ * Create a new task span. A task represents one top-level Runner invocation.
+ * The span will not be started automatically.
+ */
+export function createTaskSpan(
+  options?: CreateArgs<TaskSpanData>,
+  parent?: Span<any> | Trace,
+): Span<TaskSpanData> {
+  return getGlobalTraceProvider().createSpan(
+    {
+      ...options,
+      data: {
+        type: 'task',
+        name: options?.data?.name ?? 'Agent workflow',
+        ...options?.data,
+      },
+    },
+    parent,
+  );
+}
+
+/** Create a task span and automatically start and end it. */
+export const withTaskSpan = _withSpanFactory<
+  TaskSpanData,
+  typeof createTaskSpan
+>(createTaskSpan);
+
+/**
+ * Create a new turn span. A turn represents one agent loop iteration.
+ * The span will not be started automatically.
+ */
+export function createTurnSpan(
+  options: CreateArgs<TurnSpanData> & {
+    data: { turn: number; agent_name: string };
+  },
+  parent?: Span<any> | Trace,
+): Span<TurnSpanData> {
+  return getGlobalTraceProvider().createSpan(
+    {
+      ...options,
+      data: {
+        type: 'turn',
+        ...options.data,
+      },
+    },
+    parent,
+  );
+}
+
+/** Create a turn span and automatically start and end it. */
+export const withTurnSpan = _withSpanFactory<
+  TurnSpanData,
+  typeof createTurnSpan
+>(createTurnSpan);
 
 /**
  * Create a new function span. The span will not be started automatically, you should either

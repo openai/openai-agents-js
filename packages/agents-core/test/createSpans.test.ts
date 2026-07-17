@@ -6,6 +6,8 @@ import {
   createGuardrailSpan,
   createSpeechSpan,
   createMCPListToolsSpan,
+  createTaskSpan,
+  createTurnSpan,
   withAgentSpan,
   withFunctionSpan,
 } from '../src/tracing/createSpans';
@@ -77,6 +79,35 @@ describe('create*Span helpers', () => {
     expect(createSpanMock).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ type: 'agent', name: 'Agent' }),
+      }),
+      undefined,
+    );
+  });
+
+  it('createTaskSpan falls back to the default workflow name', () => {
+    createTaskSpan();
+
+    expect(createSpanMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          type: 'task',
+          name: 'Agent workflow',
+        }),
+      }),
+      undefined,
+    );
+  });
+
+  it('createTurnSpan records the turn and agent name', () => {
+    createTurnSpan({ data: { turn: 2, agent_name: 'Researcher' } });
+
+    expect(createSpanMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          type: 'turn',
+          turn: 2,
+          agent_name: 'Researcher',
+        },
       }),
       undefined,
     );
