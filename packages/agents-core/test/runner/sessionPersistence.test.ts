@@ -1745,6 +1745,242 @@ describe('prepareInputItemsWithSession', () => {
     expect(result.sessionItems).toEqual(toAgentInputList('fresh input'));
   });
 
+  it('keeps resumable programs when callbacks drop only the program output', async () => {
+    const program: AgentInputItem = {
+      type: 'program',
+      callId: 'program_1',
+      code: 'return "done";',
+      fingerprint: 'fingerprint:program-1',
+    };
+    const programOutput: AgentInputItem = {
+      type: 'program_output',
+      callId: 'program_1',
+      output: 'done',
+      status: 'completed',
+    };
+    const functionCall: AgentInputItem = {
+      type: 'function_call',
+      callId: 'lookup_1',
+      name: 'lookup',
+      arguments: '{}',
+      caller: { type: 'program', callerId: 'program_1' },
+    };
+    const functionOutput: AgentInputItem = {
+      type: 'function_call_result',
+      callId: 'lookup_1',
+      name: 'lookup',
+      status: 'completed',
+      output: 'done',
+      caller: { type: 'program', callerId: 'program_1' },
+    };
+    const hostedCall: AgentInputItem = {
+      type: 'hosted_tool_call',
+      id: 'ci_1',
+      name: 'code_interpreter_call',
+      status: 'completed',
+      caller: { type: 'program', callerId: 'program_1' },
+      providerData: { type: 'code_interpreter_call' },
+    };
+    const session = new StubSession([
+      program,
+      functionCall,
+      functionOutput,
+      hostedCall,
+      programOutput,
+    ]);
+
+    const result = await prepareInputItemsWithSession(
+      'fresh input',
+      session,
+      (history, newItems) => [...history.slice(0, -1), ...newItems],
+    );
+
+    expect(result.preparedInput).toEqual([
+      program,
+      functionCall,
+      functionOutput,
+      hostedCall,
+      ...toAgentInputList('fresh input'),
+    ]);
+    expect(result.sessionItems).toEqual(toAgentInputList('fresh input'));
+  });
+
+  it('drops program outputs when callbacks remove their program calls', async () => {
+    const program: AgentInputItem = {
+      type: 'program',
+      callId: 'program_orphan',
+      code: 'return "done";',
+      fingerprint: 'fingerprint:orphan',
+    };
+    const programOutput: AgentInputItem = {
+      type: 'program_output',
+      callId: 'program_orphan',
+      output: 'done',
+      status: 'completed',
+    };
+    const session = new StubSession([program, programOutput]);
+
+    const result = await prepareInputItemsWithSession(
+      'fresh input',
+      session,
+      (history, newItems) => [history[1]!, ...newItems],
+    );
+
+    expect(result.preparedInput).toEqual(toAgentInputList('fresh input'));
+    expect(result.sessionItems).toEqual(toAgentInputList('fresh input'));
+  });
+
+  it('drops program-owned pairs when callbacks remove their program calls', async () => {
+    const program: AgentInputItem = {
+      type: 'program',
+      callId: 'program_orphan',
+      code: 'return await tools.lookup({});',
+      fingerprint: 'fingerprint:orphan',
+    };
+    const functionCall: AgentInputItem = {
+      type: 'function_call',
+      callId: 'lookup_orphan',
+      name: 'lookup',
+      arguments: '{}',
+      caller: { type: 'program', callerId: 'program_orphan' },
+    };
+    const functionOutput: AgentInputItem = {
+      type: 'function_call_result',
+      callId: 'lookup_orphan',
+      name: 'lookup',
+      status: 'completed',
+      output: 'done',
+      caller: { type: 'program', callerId: 'program_orphan' },
+    };
+    const programOutput: AgentInputItem = {
+      type: 'program_output',
+      callId: 'program_orphan',
+      output: 'done',
+      status: 'completed',
+    };
+    const session = new StubSession([
+      program,
+      functionCall,
+      functionOutput,
+      programOutput,
+    ]);
+
+    const result = await prepareInputItemsWithSession(
+      'fresh input',
+      session,
+      (history, newItems) => [...history.slice(1), ...newItems],
+    );
+
+    expect(result.preparedInput).toEqual(toAgentInputList('fresh input'));
+    expect(result.sessionItems).toEqual(toAgentInputList('fresh input'));
+  });
+
+  it('drops dangling owned results from completed session programs', async () => {
+    const program: AgentInputItem = {
+      type: 'program',
+      callId: 'program_completed',
+      code: 'return await tools.lookup({});',
+      fingerprint: 'fingerprint:completed',
+    };
+    const functionCall: AgentInputItem = {
+      type: 'function_call',
+      callId: 'lookup_completed',
+      name: 'lookup',
+      arguments: '{}',
+      caller: { type: 'program', callerId: 'program_completed' },
+    };
+    const functionOutput: AgentInputItem = {
+      type: 'function_call_result',
+      callId: 'lookup_completed',
+      name: 'lookup',
+      status: 'completed',
+      output: 'done',
+      caller: { type: 'program', callerId: 'program_completed' },
+    };
+    const programOutput: AgentInputItem = {
+      type: 'program_output',
+      callId: 'program_completed',
+      output: 'done',
+      status: 'completed',
+    };
+    const session = new StubSession([
+      program,
+      functionCall,
+      functionOutput,
+      programOutput,
+    ]);
+
+    const result = await prepareInputItemsWithSession(
+      'fresh input',
+      session,
+      (history, newItems) => [history[0]!, ...history.slice(2), ...newItems],
+    );
+
+    expect(result.preparedInput).toEqual([
+      program,
+      programOutput,
+      ...toAgentInputList('fresh input'),
+    ]);
+    expect(result.sessionItems).toEqual(toAgentInputList('fresh input'));
+  });
+
+  it('drops pending programs with incomplete owned calls from session history', async () => {
+    const program: AgentInputItem = {
+      type: 'program',
+      callId: 'program_orphan',
+      code: 'return await tools.lookup({});',
+      fingerprint: 'fingerprint:orphan',
+    };
+    const functionCall: AgentInputItem = {
+      type: 'function_call',
+      callId: 'lookup_orphan',
+      name: 'lookup',
+      arguments: '{}',
+      caller: { type: 'program', callerId: 'program_orphan' },
+    };
+    const session = new StubSession([program, functionCall]);
+
+    const result = await prepareInputItemsWithSession('fresh input', session);
+
+    expect(result.preparedInput).toEqual(toAgentInputList('fresh input'));
+    expect(result.sessionItems).toEqual(toAgentInputList('fresh input'));
+  });
+
+  it('keeps pending programs with completed owned pairs in session history', async () => {
+    const program: AgentInputItem = {
+      type: 'program',
+      callId: 'program_pending',
+      code: 'return await tools.lookup({});',
+      fingerprint: 'fingerprint:pending',
+    };
+    const functionCall: AgentInputItem = {
+      type: 'function_call',
+      callId: 'lookup_1',
+      name: 'lookup',
+      arguments: '{}',
+      caller: { type: 'program', callerId: 'program_pending' },
+    };
+    const functionOutput: AgentInputItem = {
+      type: 'function_call_result',
+      callId: 'lookup_1',
+      name: 'lookup',
+      status: 'completed',
+      output: 'done',
+      caller: { type: 'program', callerId: 'program_pending' },
+    };
+    const session = new StubSession([program, functionCall, functionOutput]);
+
+    const result = await prepareInputItemsWithSession('fresh input', session);
+
+    expect(result.preparedInput).toEqual([
+      program,
+      functionCall,
+      functionOutput,
+      ...toAgentInputList('fresh input'),
+    ]);
+    expect(result.sessionItems).toEqual(toAgentInputList('fresh input'));
+  });
+
   it('preserves caller pending shell calls when callbacks also surface orphan history', async () => {
     const historyShell: AgentInputItem = {
       type: 'shell_call',

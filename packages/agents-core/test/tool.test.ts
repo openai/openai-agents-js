@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi } from 'vitest';
 import {
   applyPatchTool,
   computerTool,
@@ -17,7 +17,8 @@ import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
 import { serializeTool } from '../src/utils/serialize';
 import { FakeEditor, FakeShell } from './stubs';
-import { ToolTimeoutError } from '../src/errors';
+import { InvalidToolOutputError, ToolTimeoutError } from '../src/errors';
+import type { JsonObjectSchema } from '../src/types';
 
 interface Bar {
   bar: string;
@@ -52,6 +53,229 @@ describe('Tool', () => {
     });
 
     expect(t.deferLoading).toBe(true);
+  });
+
+  it('records provider data when requested', () => {
+    const t = tool({
+      name: 'provider_lookup',
+      description: 'Provider-specific lookup tool.',
+      parameters: z.object({
+        query: z.string(),
+      }),
+      providerData: {
+        anthropic: { deferLoading: true },
+      },
+      execute: async () => ({ bar: 'ok' }),
+    });
+
+    expect(t.providerData).toEqual({
+      anthropic: { deferLoading: true },
+    });
+  });
+
+  it('records Programmatic Tool Calling metadata', () => {
+    const outputSchema = {
+      type: 'object',
+      properties: { value: { type: 'string' } },
+      required: ['value'],
+      additionalProperties: false,
+    } as any;
+    const t = tool({
+      name: 'structured_lookup',
+      description: 'Return structured data.',
+      parameters: z.object({ query: z.string() }),
+      allowedCallers: ['programmatic'],
+      outputSchema,
+      execute: async ({ query }) => ({ value: query }),
+    });
+
+    expect(t.allowedCallers).toEqual(['programmatic']);
+    expect(t.outputSchema).toBe(outputSchema);
+    expect(serializeTool(t)).toMatchObject({
+      allowedCallers: ['programmatic'],
+      outputSchema,
+    });
+  });
+
+  it('uses unknown for plain JSON Schema output types', () => {
+    const outputSchema: JsonObjectSchema<{
+      value: { type: 'string' };
+    }> = {
+      type: 'object',
+      properties: { value: { type: 'string' } },
+      required: ['value'],
+      additionalProperties: false,
+    };
+    const t = tool({
+      name: 'plain_json_schema_output',
+      description: 'Return structured data.',
+      parameters: z.object({}),
+      outputSchema,
+      execute: async () => ({ value: 'ok' }),
+    });
+
+    expectTypeOf(t.invoke(new RunContext(), '{}')).toEqualTypeOf<
+      Promise<unknown>
+    >();
+  });
+
+  it('converts a Zod output schema and infers the execute result', () => {
+    const outputSchema = z.object({
+      value: z.string(),
+      count: z.number(),
+    });
+    const t = tool({
+      name: 'structured_zod_lookup',
+      description: 'Return structured data.',
+      parameters: z.object({ query: z.string() }),
+      allowedCallers: ['programmatic'],
+      outputSchema,
+      execute: async ({ query }) => ({ value: query, count: 1 }),
+    });
+
+    expect(t.outputSchema).toEqual({
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      properties: {
+        value: { type: 'string' },
+        count: { type: 'number' },
+      },
+      required: ['value', 'count'],
+      additionalProperties: false,
+    });
+    expectTypeOf(t.invoke(new RunContext(), '{"query":"test"}')).toEqualTypeOf<
+      Promise<string | { value: string; count: number }>
+    >();
+
+    tool({
+      name: 'invalid_structured_zod_lookup',
+      description: 'Type-check an invalid structured result.',
+      parameters: z.object({ query: z.string() }),
+      outputSchema,
+      // @ts-expect-error The execute result must match the Zod output schema.
+      execute: async ({ query }) => ({ value: query, count: 'one' }),
+    });
+
+    tool({
+      name: 'invalid_structured_zod_fallback',
+      description: 'Type-check an invalid structured fallback.',
+      parameters: z.object({}),
+      outputSchema,
+      execute: async () => ({ value: 'ok', count: 1 }),
+      // @ts-expect-error The error fallback must match the Zod output schema.
+      errorFunction: () => ({ value: 'fallback', count: 'one' }),
+    });
+  });
+
+  it('validates and transforms Zod output schemas at runtime', async () => {
+    const t = tool({
+      name: 'runtime_structured_zod_lookup',
+      description: 'Return structured data.',
+      parameters: z.object({}),
+      outputSchema: z.object({ value: z.string().trim() }),
+      execute: async () => ({ value: '  ok  ' }),
+    });
+
+    await expect(t.invoke(new RunContext(), '{}')).resolves.toEqual({
+      value: 'ok',
+    });
+  });
+
+  it('rejects invalid Zod output at runtime', async () => {
+    const t = tool({
+      name: 'invalid_runtime_structured_zod_lookup',
+      description: 'Return structured data.',
+      parameters: z.object({}),
+      outputSchema: z.object({ value: z.string() }),
+      execute: async () => ({ value: 123 }) as any,
+    });
+
+    await expect(t.invoke(new RunContext(), '{}')).rejects.toMatchObject({
+      name: 'InvalidToolOutputError',
+      toolOutput: { output: { value: 123 } },
+    });
+  });
+
+  it('requires schema-compatible error fallbacks for Zod outputs', async () => {
+    const validFallback = tool({
+      name: 'valid_structured_error_fallback',
+      description: 'Return structured data.',
+      parameters: z.object({}),
+      outputSchema: z.object({ value: z.string() }),
+      execute: async () => {
+        throw new Error('boom');
+      },
+      errorFunction: () => ({ value: 'fallback' }),
+    });
+    const invalidFallback = tool({
+      name: 'invalid_structured_error_fallback',
+      description: 'Return structured data.',
+      parameters: z.object({}),
+      outputSchema: z.object({ value: z.string() }),
+      execute: async () => {
+        throw new Error('boom');
+      },
+      errorFunction: () => ({ value: 123 }) as any,
+    });
+    const noFallback = tool({
+      name: 'structured_error_without_fallback',
+      description: 'Return structured data.',
+      parameters: z.object({}),
+      outputSchema: z.object({ value: z.string() }),
+      execute: async () => {
+        throw new Error('boom');
+      },
+    });
+
+    await expect(validFallback.invoke(new RunContext(), '{}')).resolves.toEqual(
+      { value: 'fallback' },
+    );
+    await expect(
+      invalidFallback.invoke(new RunContext(), '{}'),
+    ).rejects.toBeInstanceOf(InvalidToolOutputError);
+    await expect(noFallback.invoke(new RunContext(), '{}')).rejects.toThrow(
+      'boom',
+    );
+  });
+
+  it('rejects invalid allowedCallers values at tool construction', () => {
+    expect(() =>
+      tool({
+        name: 'empty_allowed_callers',
+        description: 'Invalid configuration.',
+        parameters: z.object({}),
+        allowedCallers: [] as any,
+        execute: async () => 'ok',
+      }),
+    ).toThrow(/must contain at least one caller/);
+    expect(() =>
+      shellTool({
+        shell: new FakeShell(),
+        allowedCallers: ['programmatic', 'programmatic'] as any,
+      }),
+    ).toThrow(/must not contain duplicate callers/);
+    for (const invalidCaller of ['', 0, false, undefined, null]) {
+      expect(() =>
+        tool({
+          name: 'falsy_invalid_allowed_caller',
+          description: 'Invalid configuration.',
+          parameters: z.object({}),
+          allowedCallers: [invalidCaller] as any,
+          execute: async () => 'ok',
+        }),
+      ).toThrow(/contains unsupported caller/);
+    }
+
+    const typecheckEmptyAllowedCallers = () =>
+      tool({
+        name: 'typecheck_empty_allowed_callers',
+        description: 'Invalid configuration.',
+        parameters: z.object({}),
+        // @ts-expect-error allowedCallers must be non-empty.
+        allowedCallers: [],
+        execute: async () => 'ok',
+      });
+    expectTypeOf(typecheckEmptyAllowedCallers).toBeFunction();
   });
 
   it('toolNamespace returns shallow-cloned function tools', () => {
@@ -917,6 +1141,91 @@ describe('tool.invoke', () => {
     });
 
     expect(result).toBe("Tool 'slow' timed out after 5ms.");
+  });
+
+  it('raises timeouts by default for structured outputs', async () => {
+    const t = tool({
+      name: 'structured_slow',
+      description: 'slow structured tool',
+      parameters: z.object({}),
+      outputSchema: z.object({ status: z.string() }),
+      timeoutMs: 5,
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return { status: 'done' };
+      },
+    });
+
+    await expect(
+      invokeFunctionTool({
+        tool: t,
+        runContext: new RunContext(),
+        input: '{}',
+      }),
+    ).rejects.toBeInstanceOf(ToolTimeoutError);
+  });
+
+  it('validates structured timeout fallbacks', async () => {
+    const t = tool({
+      name: 'structured_timeout_fallback',
+      description: 'slow structured tool',
+      parameters: z.object({}),
+      outputSchema: z.object({ status: z.string() }),
+      timeoutMs: 5,
+      timeoutBehavior: 'error_as_result',
+      timeoutErrorFunction: (_context, _error, details) => ({
+        status: details?.toolCall?.callId ?? 'timed-out',
+      }),
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return { status: 'done' };
+      },
+    });
+
+    await expect(
+      invokeFunctionTool({
+        tool: t,
+        runContext: new RunContext(),
+        input: '{}',
+        details: {
+          toolCall: {
+            type: 'function_call',
+            callId: 'call-structured-timeout',
+            name: 'structured_timeout_fallback',
+            arguments: '{}',
+            status: 'completed',
+          },
+        },
+      }),
+    ).resolves.toEqual({ status: 'call-structured-timeout' });
+  });
+
+  it('requires timeout fallbacks for structured error results', () => {
+    expect(() =>
+      tool({
+        name: 'structured_timeout_without_fallback',
+        description: 'Invalid structured timeout configuration.',
+        parameters: z.object({}),
+        outputSchema: z.object({ status: z.string() }),
+        timeoutMs: 5,
+        timeoutBehavior: 'error_as_result',
+        execute: async () => ({ status: 'done' }),
+        // The cast verifies the runtime boundary in addition to the type test.
+      } as any),
+    ).toThrow(/requires timeoutErrorFunction/);
+
+    const typecheckMissingTimeoutFallback = () =>
+      // @ts-expect-error Structured error results require timeoutErrorFunction.
+      tool({
+        name: 'typecheck_structured_timeout_without_fallback',
+        description: 'Invalid structured timeout configuration.',
+        parameters: z.object({}),
+        outputSchema: z.object({ status: z.string() }),
+        timeoutMs: 5,
+        timeoutBehavior: 'error_as_result',
+        execute: async () => ({ status: 'done' }),
+      });
+    expectTypeOf(typecheckMissingTimeoutFallback).toBeFunction();
   });
 
   it('enforces timeout when invoking FunctionTool directly', async () => {

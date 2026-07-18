@@ -36,6 +36,7 @@ import {
   collectInterruptions,
   getToolCallOutputItem,
 } from './toolExecution';
+import { getRunStateTurnSpanParent } from './invocationContext';
 import { handleHostedMcpApprovals } from './mcpApprovals';
 import * as ProviderData from '../types/providerData';
 import * as protocol from '../types/protocol';
@@ -877,8 +878,7 @@ export async function resolveInterruptedTurn<TContext>(
         item.rawItem.id ??
         (
           item.rawItem.providerData as
-            | ProviderData.HostedMCPApprovalRequest
-            | undefined
+            ProviderData.HostedMCPApprovalRequest | undefined
         )?.id;
       if (approvalRequestId) {
         return hostedMcpApprovals.pendingApprovalIds.has(approvalRequestId);
@@ -1069,6 +1069,7 @@ export async function resolveTurnAfterModelResponse<
       processedResponse.handoffs as ToolRunHandoff[],
       runner,
       state._context,
+      getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
     );
   }
 

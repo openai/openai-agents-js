@@ -4,3 +4,5 @@ export {
   type JsonCompatibleValue,
   type SanitizeJsonCompatibleValueOptions,
 } from './jsonCompatible';
+export { recordToolUsage } from '../runner/usageTracking';
+export { normalizeToolAllowedCallers } from './toolCallers';

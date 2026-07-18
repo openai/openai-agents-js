@@ -51,6 +51,7 @@ import {
   type StructuredToolInputBuilder,
 } from './agentToolInput';
 import {
+  getToolCallParentSpanFromDetails,
   getAgentToolParentRunConfigFromDetails,
   getInheritedAgentToolRunConfig,
   mergeAgentToolRunConfig,
@@ -59,10 +60,15 @@ import type { ZodObjectLike } from './utils/zodCompat';
 import { saveAgentToolRunResult } from './agentToolRunResults';
 import { registerAgentToolSourceAgent } from './agentToolSourceRegistry';
 import type { AgentToolInvocation } from './agentToolInvocation';
+import {
+  getToolUsageRecorder,
+  setRunnerParentUsageRecorder,
+} from './runner/usageTracking';
+import { setRunnerInvocationSpanParent } from './runner/invocationContext';
+import type { Span } from './tracing';
 
 type CompletedRunResult<TContext, TAgent extends Agent<TContext, any>> = (
-  | RunResult<TContext, TAgent>
-  | StreamedRunResult<TContext, TAgent>
+  RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>
 ) & {
   finalOutput: ResolvedAgentOutput<TAgent['outputType']>;
 };
@@ -451,8 +457,7 @@ type ExtractHandoffOutput<T> = T extends Handoff<any, infer O> ? O : never;
 export type HandoffsOutputUnion<
   Handoffs extends readonly (Agent<any, any> | Handoff<any, any>)[],
 > =
-  | ExtractAgentOutput<Handoffs[number]>
-  | ExtractHandoffOutput<Handoffs[number]>;
+  ExtractAgentOutput<Handoffs[number]> | ExtractHandoffOutput<Handoffs[number]>;
 
 /**
  * Helper type for config with handoffs
@@ -739,8 +744,7 @@ export class Agent<
       parameters: toolParameters,
       strict: true,
       needsApproval: needsApproval as
-        | boolean
-        | ToolApprovalFunction<ToolInputParametersStrict>,
+        boolean | ToolApprovalFunction<ToolInputParametersStrict>,
       isEnabled,
       execute: async (
         params: ToolExecuteArgument<ToolInputParametersStrict>,
@@ -794,6 +798,11 @@ export class Agent<
           runConfig,
         );
         const runner = new Runner(nestedRunConfig);
+        setRunnerParentUsageRecorder(runner, getToolUsageRecorder(details));
+        setRunnerInvocationSpanParent(
+          runner,
+          getToolCallParentSpanFromDetails(details),
+        );
         const resumeContextStrategy = resumeState?.contextStrategy ?? 'merge';
         const resumeContext =
           resumeContextStrategy === 'preferSerialized' ? undefined : runContext;
@@ -991,6 +1000,7 @@ export class Agent<
    */
   async getMcpTools(
     runContext: RunContext<TContext>,
+    tracingParent?: Span<any>,
   ): Promise<Tool<TContext>[]> {
     if (this.mcpServers.length > 0) {
       const includeServerInToolNames =
@@ -1005,6 +1015,7 @@ export class Agent<
         reservedToolNames: includeServerInToolNames
           ? await this.getMcpToolReservedNames(runContext)
           : undefined,
+        tracingParent,
       });
     }
 
@@ -1037,8 +1048,9 @@ export class Agent<
    */
   async getAllTools(
     runContext: RunContext<TContext>,
+    tracingParent?: Span<any>,
   ): Promise<Tool<TContext>[]> {
-    const mcpTools = await this.getMcpTools(runContext);
+    const mcpTools = await this.getMcpTools(runContext, tracingParent);
     const enabledTools: Tool<TContext>[] = [];
 
     for (const candidate of this.tools) {

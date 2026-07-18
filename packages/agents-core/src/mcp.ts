@@ -40,6 +40,7 @@ import {
   cachedMcpToolKeysByServer as _cachedToolKeysByServer,
   cachedMcpTools as _cachedTools,
 } from './mcpToolCache';
+import { getToolCallParentSpanFromDetails } from './agentToolRunConfig';
 
 export {
   BaseMCPServerSSE,
@@ -165,8 +166,7 @@ export interface MCPBlobResourceContent {
 }
 
 export type MCPResourceContent =
-  | MCPTextResourceContent
-  | MCPBlobResourceContent;
+  MCPTextResourceContent | MCPBlobResourceContent;
 
 /**
  * Result returned by `listResources`.
@@ -458,11 +458,13 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
   runContext,
   agent,
   generateMCPToolCacheKey,
+  tracingParent,
 }: {
   server: MCPServer;
   runContext?: RunContext<TContext>;
   agent?: Agent<any, any>;
   generateMCPToolCacheKey?: MCPToolCacheKeyGenerator;
+  tracingParent?: Span<any>;
 }): Promise<MCPTool[]> {
   const cacheKey = (generateMCPToolCacheKey || defaultMCPToolCacheKey)({
     server,
@@ -540,13 +542,17 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
     return mcpTools;
   };
 
-  if (!getCurrentTrace()) {
+  if (!tracingParent && !getCurrentTrace()) {
     return listToolsForServer();
   }
 
-  return withMCPListToolsSpan(listToolsForServer, {
-    data: { server: server.name },
-  });
+  return withMCPListToolsSpan(
+    listToolsForServer,
+    {
+      data: { server: server.name },
+    },
+    tracingParent,
+  );
 }
 
 function convertMcpToolsToFunctionTools<TContext = UnknownContext>({
@@ -580,6 +586,7 @@ async function getFunctionToolsFromServer<TContext = UnknownContext>({
   agent,
   generateMCPToolCacheKey,
   errorFunction,
+  tracingParent,
 }: {
   server: MCPServer;
   convertSchemasToStrict: boolean;
@@ -587,12 +594,14 @@ async function getFunctionToolsFromServer<TContext = UnknownContext>({
   agent?: Agent<any, any>;
   generateMCPToolCacheKey?: MCPToolCacheKeyGenerator;
   errorFunction?: MCPToolErrorFunction | null;
+  tracingParent?: Span<any>;
 }): Promise<FunctionTool<TContext, any, unknown>[]> {
   const mcpTools = await getMcpToolsFromServer({
     server,
     runContext,
     agent,
     generateMCPToolCacheKey,
+    tracingParent,
   });
   return convertMcpToolsToFunctionTools({
     mcpTools,
@@ -614,6 +623,7 @@ export type GetAllMcpToolsOptions<TContext> = {
   errorFunction?: MCPToolErrorFunction | null;
   includeServerInToolNames?: boolean;
   reservedToolNames?: Set<string>;
+  tracingParent?: Span<any>;
 };
 
 /**
@@ -644,6 +654,7 @@ export async function getAllMcpTools<TContext = UnknownContext>(
     errorFunction,
     includeServerInToolNames = false,
     reservedToolNames,
+    tracingParent,
   } = opts;
   const allTools: Tool<TContext>[] = [];
   const toolNames = new Set<string>();
@@ -658,6 +669,7 @@ export async function getAllMcpTools<TContext = UnknownContext>(
           runContext: runContextFromOpts,
           agent: agentFromOpts,
           generateMCPToolCacheKey,
+          tracingParent,
         }),
       })),
     );
@@ -701,6 +713,7 @@ export async function getAllMcpTools<TContext = UnknownContext>(
       agent: agentFromOpts,
       generateMCPToolCacheKey,
       errorFunction,
+      tracingParent,
     });
     const serverToolNames = new Set(serverTools.map((t) => t.name));
     const intersection = [...serverToolNames]
@@ -992,7 +1005,8 @@ export function mcpToFunctionTool(
     } else if (typeof input === 'object' && input != null) {
       args = input;
     }
-    const currentSpan = getCurrentSpan();
+    const currentSpan =
+      getToolCallParentSpanFromDetails(details) ?? getCurrentSpan();
     if (currentSpan) {
       currentSpan.spanData['mcp_data'] = { server: server.name };
     }
@@ -1190,8 +1204,7 @@ export interface FullCommandMCPServerStdioOptions extends BaseMCPServerStdioOpti
   fullCommand: string;
 }
 export type MCPServerStdioOptions =
-  | DefaultMCPServerStdioOptions
-  | FullCommandMCPServerStdioOptions;
+  DefaultMCPServerStdioOptions | FullCommandMCPServerStdioOptions;
 
 export interface MCPServerStreamableHttpOptions {
   url: string;

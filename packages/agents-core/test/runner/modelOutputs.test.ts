@@ -28,6 +28,7 @@ import {
   shellTool,
   tool,
   toolNamespace,
+  type HostedTool,
 } from '../../src/tool';
 import {
   FUNCTION_TOOL_NAMESPACE,
@@ -52,6 +53,12 @@ beforeAll(() => {
   setDefaultModelProvider(new FakeModelProvider());
 });
 
+const PROGRAMMATIC_TOOL_CALLING_TOOL: HostedTool = {
+  type: 'hosted_tool',
+  name: 'programmatic_tool_calling',
+  providerData: { type: 'programmatic_tool_calling' },
+};
+
 function createLegacyNamespacedTool<T extends Record<string, any>>(
   tool: T,
   namespace: string,
@@ -72,6 +79,586 @@ function createLegacyNamespacedTool<T extends Record<string, any>>(
 }
 
 describe('processModelResponse', () => {
+  it('classifies program calls and outputs as ordered run items', () => {
+    const result = processModelResponse(
+      {
+        output: [
+          {
+            type: 'program',
+            id: 'prog_1',
+            callId: 'call_prog_1',
+            code: 'text("ok")',
+            fingerprint: 'fp_1',
+          },
+          {
+            type: 'program_output',
+            id: 'prog_out_1',
+            callId: 'call_prog_1',
+            output: 'ok',
+            status: 'completed',
+          },
+        ],
+        usage: new Usage(),
+      },
+      TEST_AGENT,
+      [PROGRAMMATIC_TOOL_CALLING_TOOL],
+      [],
+    );
+
+    expect(result.newItems).toHaveLength(2);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+    expect(result.newItems[1]).toBeInstanceOf(ToolCallOutputItem);
+    expect(result.toolsUsed).toEqual(['programmatic_tool_calling']);
+  });
+
+  it('rejects program calls when programmaticToolCallingTool is unavailable in sync and async processing', async () => {
+    const programCall: protocol.ProgramCallItem = {
+      type: 'program',
+      id: 'prog_unavailable',
+      callId: 'call_prog_unavailable',
+      code: 'text("ok")',
+      fingerprint: 'fp_unavailable',
+    };
+    const response: ModelResponse = {
+      output: [programCall],
+      usage: new Usage(),
+    };
+
+    expect(() => processModelResponse(response, TEST_AGENT, [], [])).toThrow(
+      /without programmaticToolCallingTool\(\)/,
+    );
+
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+        },
+      },
+      async () => [],
+    );
+    const toolSearchCall: protocol.ToolSearchCallItem = {
+      type: 'tool_search_call',
+      id: 'ts_before_program',
+      status: 'completed',
+      arguments: { paths: [] },
+      providerData: {
+        call_id: 'call_ts_before_program',
+        execution: 'client',
+      },
+    };
+
+    await expect(
+      processModelResponseAsync(
+        {
+          output: [toolSearchCall, programCall],
+          usage: new Usage(),
+        },
+        TEST_AGENT,
+        [clientToolSearch],
+        [],
+        new RunState(new RunContext(), 'hello', TEST_AGENT, 1),
+        [],
+      ),
+    ).rejects.toThrow(/without programmaticToolCallingTool\(\)/);
+  });
+
+  it('accepts program calls when a prompt may supply programmaticToolCallingTool in sync and async processing', async () => {
+    const programCall: protocol.ProgramCallItem = {
+      type: 'program',
+      id: 'prog_prompt_supplied',
+      callId: 'call_prog_prompt_supplied',
+      code: 'text("ok")',
+      fingerprint: 'fp_prompt_supplied',
+    };
+    const response: ModelResponse = {
+      output: [programCall],
+      usage: new Usage(),
+    };
+    const processingOptions = { allowPromptSuppliedTools: true };
+
+    const syncResult = processModelResponse(
+      response,
+      TEST_AGENT,
+      [],
+      [],
+      [],
+      'raise_error',
+      processingOptions,
+    );
+    expect(syncResult.toolsUsed).toEqual(['programmatic_tool_calling']);
+
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+        },
+      },
+      async () => [],
+    );
+    const toolSearchCall: protocol.ToolSearchCallItem = {
+      type: 'tool_search_call',
+      id: 'ts_before_prompt_program',
+      status: 'completed',
+      arguments: { paths: [] },
+      providerData: {
+        call_id: 'call_ts_before_prompt_program',
+        execution: 'client',
+      },
+    };
+    const asyncResult = await processModelResponseAsync(
+      {
+        output: [toolSearchCall, programCall],
+        usage: new Usage(),
+      },
+      TEST_AGENT,
+      [clientToolSearch],
+      [],
+      new RunState(new RunContext(), 'hello', TEST_AGENT, 1),
+      [],
+      'raise_error',
+      processingOptions,
+    );
+    expect(asyncResult.toolsUsed).toEqual([
+      'tool_search',
+      'programmatic_tool_calling',
+    ]);
+  });
+
+  it('rejects function and handoff calls from disallowed callers', () => {
+    const programOnlyFunction = tool({
+      name: 'program_only',
+      description: 'Program-only function.',
+      parameters: z.object({}),
+      allowedCallers: ['programmatic'],
+      execute: async () => 'ok',
+    });
+    const directFunctionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      callId: 'call_direct',
+      name: 'program_only',
+      arguments: '{}',
+    };
+    expect(() =>
+      processModelResponse(
+        { output: [directFunctionCall], usage: new Usage() },
+        TEST_AGENT,
+        [programOnlyFunction],
+        [],
+      ),
+    ).toThrow(/caller direct/);
+
+    const programFunctionCall: protocol.FunctionCallItem = {
+      ...TEST_MODEL_FUNCTION_CALL,
+      caller: { type: 'program', callerId: 'call_program' },
+    };
+    expect(() =>
+      processModelResponse(
+        { output: [programFunctionCall], usage: new Usage() },
+        TEST_AGENT,
+        [TEST_TOOL],
+        [],
+      ),
+    ).toThrow(/caller programmatic/);
+
+    const target = new Agent({ name: 'Target' });
+    const targetHandoff = handoff(target);
+    const programHandoffCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      callId: 'call_handoff',
+      name: targetHandoff.toolName,
+      arguments: '{}',
+      caller: { type: 'program', callerId: 'call_program' },
+    };
+    expect(() =>
+      processModelResponse(
+        { output: [programHandoffCall], usage: new Usage() },
+        TEST_AGENT,
+        [],
+        [targetHandoff],
+      ),
+    ).toThrow(/caller programmatic/);
+  });
+
+  it('rejects direct Code Interpreter calls for programmatic-only tools in sync and async processing', async () => {
+    const codeInterpreter: HostedTool = {
+      type: 'hosted_tool',
+      name: 'code_interpreter',
+      providerData: {
+        type: 'code_interpreter',
+        container: { type: 'auto' },
+        allowed_callers: ['programmatic'],
+      },
+    };
+    const directCodeInterpreterCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      id: 'ci_direct',
+      name: 'code_interpreter_call',
+      status: 'completed',
+      providerData: {
+        type: 'code_interpreter_call',
+        code: 'print("hello")',
+        outputs: [],
+      },
+    };
+    const response: ModelResponse = {
+      output: [directCodeInterpreterCall],
+      usage: new Usage(),
+    };
+
+    expect(() =>
+      processModelResponse(response, TEST_AGENT, [codeInterpreter], []),
+    ).toThrow(/caller direct/);
+
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+        },
+      },
+      async () => [],
+    );
+    const toolSearchCall: protocol.ToolSearchCallItem = {
+      type: 'tool_search_call',
+      id: 'ts_before_ci',
+      status: 'completed',
+      arguments: { paths: [] },
+      providerData: {
+        call_id: 'call_ts_before_ci',
+        execution: 'client',
+      },
+    };
+
+    await expect(
+      processModelResponseAsync(
+        {
+          output: [toolSearchCall, directCodeInterpreterCall],
+          usage: new Usage(),
+        },
+        TEST_AGENT,
+        [clientToolSearch, codeInterpreter],
+        [],
+        new RunState(new RunContext(), 'hello', TEST_AGENT, 1),
+        [],
+      ),
+    ).rejects.toThrow(/caller direct/);
+  });
+
+  it.each(['mcp_call', 'mcp_list_tools'] as const)(
+    'rejects direct %s items for programmatic-only MCP servers in sync and async processing',
+    async (mcpCallType) => {
+      const mcpTool = hostedMcpTool({
+        serverLabel: 'server',
+        serverUrl: 'https://mcp.example.com/server',
+        requireApproval: 'never',
+        allowedCallers: ['programmatic'],
+      });
+      const directMcpCall: protocol.HostedToolCallItem = {
+        type: 'hosted_tool_call',
+        id: `${mcpCallType}_direct`,
+        name: mcpCallType,
+        status: 'completed',
+        providerData:
+          mcpCallType === 'mcp_call'
+            ? {
+                type: mcpCallType,
+                id: 'mcp_call_direct',
+                server_label: 'server',
+                name: 'lookup',
+                arguments: '{}',
+              }
+            : {
+                type: mcpCallType,
+                id: 'mcp_list_tools_direct',
+                server_label: 'server',
+                tools: [],
+              },
+      };
+
+      expect(() =>
+        processModelResponse(
+          { output: [directMcpCall], usage: new Usage() },
+          TEST_AGENT,
+          [mcpTool],
+          [],
+        ),
+      ).toThrow(/caller direct/);
+
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: {
+            type: 'tool_search',
+            execution: 'client',
+          },
+        },
+        async () => [],
+      );
+      const toolSearchCall: protocol.ToolSearchCallItem = {
+        type: 'tool_search_call',
+        id: `ts_before_${mcpCallType}`,
+        status: 'completed',
+        arguments: { paths: [] },
+        providerData: {
+          call_id: `call_ts_before_${mcpCallType}`,
+          execution: 'client',
+        },
+      };
+
+      await expect(
+        processModelResponseAsync(
+          {
+            output: [toolSearchCall, directMcpCall],
+            usage: new Usage(),
+          },
+          TEST_AGENT,
+          [clientToolSearch, mcpTool],
+          [],
+          new RunState(new RunContext(), 'hello', TEST_AGENT, 1),
+          [],
+        ),
+      ).rejects.toThrow(/caller direct/);
+    },
+  );
+
+  it.each(['mcp_call', 'mcp_list_tools', 'mcp_approval_request'] as const)(
+    'rejects programmatic %s items before a deferred MCP server is loaded',
+    async (mcpCallType) => {
+      const mcpTool = hostedMcpTool({
+        serverLabel: 'server',
+        serverUrl: 'https://mcp.example.com/server',
+        requireApproval: 'always',
+        deferLoading: true,
+        allowedCallers: ['programmatic'],
+      });
+      const programmaticMcpCall: protocol.HostedToolCallItem = {
+        type: 'hosted_tool_call',
+        id: `${mcpCallType}_programmatic`,
+        name: mcpCallType,
+        status: 'completed',
+        caller: { type: 'program', callerId: 'call_program' },
+        providerData:
+          mcpCallType === 'mcp_call'
+            ? {
+                type: mcpCallType,
+                id: 'mcp_call_programmatic',
+                server_label: 'server',
+                name: 'lookup',
+                arguments: '{}',
+              }
+            : mcpCallType === 'mcp_list_tools'
+              ? {
+                  type: mcpCallType,
+                  id: 'mcp_list_tools_programmatic',
+                  server_label: 'server',
+                  tools: [],
+                }
+              : {
+                  type: mcpCallType,
+                  id: 'mcp_approval_programmatic',
+                  server_label: 'server',
+                  name: 'lookup',
+                  arguments: '{}',
+                },
+      };
+
+      expect(() =>
+        processModelResponse(
+          { output: [programmaticMcpCall], usage: new Usage() },
+          TEST_AGENT,
+          [mcpTool],
+          [],
+        ),
+      ).toThrow(
+        /deferred MCP call server before it was loaded via tool_search/,
+      );
+
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: {
+            type: 'tool_search',
+            execution: 'client',
+          },
+        },
+        async () => [],
+      );
+      const toolSearchCall: protocol.ToolSearchCallItem = {
+        type: 'tool_search_call',
+        id: `ts_before_unloaded_${mcpCallType}`,
+        status: 'completed',
+        arguments: { paths: [] },
+        providerData: {
+          call_id: `call_ts_before_unloaded_${mcpCallType}`,
+          execution: 'client',
+        },
+      };
+
+      await expect(
+        processModelResponseAsync(
+          {
+            output: [toolSearchCall, programmaticMcpCall],
+            usage: new Usage(),
+          },
+          TEST_AGENT,
+          [clientToolSearch, mcpTool],
+          [],
+          new RunState(new RunContext(), 'hello', TEST_AGENT, 1),
+          [],
+        ),
+      ).rejects.toThrow(
+        /deferred MCP call server before it was loaded via tool_search/,
+      );
+    },
+  );
+
+  it('accepts programmatic calls after a deferred MCP server is loaded', () => {
+    const mcpTool = hostedMcpTool({
+      serverLabel: 'server',
+      serverUrl: 'https://mcp.example.com/server',
+      requireApproval: 'never',
+      deferLoading: true,
+      allowedCallers: ['programmatic'],
+    });
+    const priorItems = [
+      new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_server',
+          status: 'completed',
+          tools: [mcpTool.providerData],
+        },
+        TEST_AGENT,
+      ),
+    ];
+    const programmaticMcpCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      id: 'mcp_call_programmatic',
+      name: 'mcp_call',
+      status: 'completed',
+      caller: { type: 'program', callerId: 'call_program' },
+      providerData: {
+        type: 'mcp_call',
+        id: 'mcp_call_programmatic',
+        server_label: 'server',
+        name: 'lookup',
+        arguments: '{}',
+      },
+    };
+
+    const result = processModelResponse(
+      { output: [programmaticMcpCall], usage: new Usage() },
+      TEST_AGENT,
+      [mcpTool],
+      [],
+      priorItems,
+    );
+
+    expect(result.newItems).toHaveLength(1);
+    expect(result.newItems[0]).toBeInstanceOf(ToolCallItem);
+  });
+
+  it('rejects shell and apply_patch calls from disallowed callers', () => {
+    const programShellCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'call_shell',
+      action: { commands: ['echo hi'] },
+      caller: { type: 'program', callerId: 'call_program' },
+    };
+    expect(() =>
+      processModelResponse(
+        { output: [programShellCall], usage: new Usage() },
+        TEST_AGENT,
+        [shellTool({ shell: new FakeShell() })],
+        [],
+      ),
+    ).toThrow(/caller programmatic/);
+
+    const directApplyPatchCall: protocol.ApplyPatchCallItem = {
+      type: 'apply_patch_call',
+      callId: 'call_patch',
+      status: 'completed',
+      operation: { type: 'delete_file', path: 'temp.txt' },
+    };
+    expect(() =>
+      processModelResponse(
+        { output: [directApplyPatchCall], usage: new Usage() },
+        TEST_AGENT,
+        [
+          applyPatchTool({
+            editor: new FakeEditor(),
+            allowedCallers: ['programmatic'],
+          }),
+        ],
+        [],
+      ),
+    ).toThrow(/caller direct/);
+  });
+
+  it('queues function, shell, and apply_patch calls from allowed program callers', () => {
+    const programFunction = tool({
+      name: 'program_function',
+      description: 'Program-callable function.',
+      parameters: z.object({}),
+      allowedCallers: ['programmatic'],
+      execute: async () => 'ok',
+    });
+    const programShell = shellTool({
+      shell: new FakeShell(),
+      allowedCallers: ['programmatic'],
+    });
+    const programApplyPatch = applyPatchTool({
+      editor: new FakeEditor(),
+      allowedCallers: ['programmatic'],
+    });
+    const caller = { type: 'program' as const, callerId: 'call_program' };
+
+    const result = processModelResponse(
+      {
+        output: [
+          {
+            type: 'function_call',
+            callId: 'call_function',
+            name: 'program_function',
+            arguments: '{}',
+            caller,
+          },
+          {
+            type: 'shell_call',
+            callId: 'call_shell',
+            action: { commands: ['echo hi'] },
+            caller,
+          },
+          {
+            type: 'apply_patch_call',
+            callId: 'call_patch',
+            status: 'completed',
+            operation: { type: 'delete_file', path: 'temp.txt' },
+            caller,
+          },
+        ],
+        usage: new Usage(),
+      },
+      TEST_AGENT,
+      [programFunction, programShell, programApplyPatch],
+      [],
+    );
+
+    expect(result.functions).toHaveLength(1);
+    expect(result.shellActions).toHaveLength(1);
+    expect(result.applyPatchActions).toHaveLength(1);
+  });
+
   it('processes message outputs and tool calls', () => {
     const modelResponse: ModelResponse = TEST_MODEL_RESPONSE_WITH_FUNCTION;
 
@@ -143,6 +730,9 @@ describe('processModelResponse', () => {
         trackingNumber: z.string(),
       }),
       deferLoading: true,
+      providerData: {
+        anthropic: { deferLoading: true },
+      },
       execute: async () => 'tomorrow',
     });
     const shippingCredit = tool({
@@ -198,6 +788,9 @@ describe('processModelResponse', () => {
         execution: 'client',
       },
     });
+    expect(
+      (result.newItems[1] as ToolSearchOutputItem).rawItem.tools[0],
+    ).not.toHaveProperty('providerData');
     expect(result.hasToolsOrApprovalsToRun()).toBe(true);
   });
 
@@ -753,6 +1346,71 @@ describe('processModelResponse', () => {
     });
     expect(execute).toHaveBeenCalledTimes(1);
     expect(state.getToolSearchRuntimeTools(agent)).toEqual([lookupAccount]);
+  });
+
+  it('rejects disallowed callers for tools loaded by custom client tool_search', async () => {
+    const programOnlyLookup = tool({
+      name: 'lookup_account',
+      description: 'Look up an account.',
+      parameters: z.object({ accountId: z.string() }),
+      allowedCallers: ['programmatic'],
+      execute: async () => 'account',
+    });
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+          parameters: {
+            type: 'object',
+            properties: {
+              namespaceHints: {
+                type: 'array',
+                items: { type: 'string' },
+              },
+            },
+            required: ['namespaceHints'],
+            additionalProperties: false,
+          },
+        },
+      },
+      async () => programOnlyLookup,
+    );
+    const agent = new Agent({ name: 'CustomClientToolSearchAgent' });
+    const state = new RunState(new RunContext(), 'hello', agent, 3);
+
+    await expect(
+      processModelResponseAsync(
+        {
+          output: [
+            {
+              type: 'tool_search_call',
+              id: 'ts_call_lookup',
+              status: 'completed',
+              arguments: { namespaceHints: ['crm'] },
+              providerData: {
+                call_id: 'call_tool_search_lookup',
+                execution: 'client',
+              },
+            },
+            {
+              type: 'function_call',
+              callId: 'call_lookup_account',
+              name: 'lookup_account',
+              arguments: '{"accountId":"acct_42"}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        agent,
+        [clientToolSearch],
+        [],
+        state,
+        [],
+      ),
+    ).rejects.toThrow(/caller direct/);
   });
 
   it('does not auto-execute tool_search calls that explicitly request server execution', () => {
@@ -1908,6 +2566,98 @@ describe('processModelResponse', () => {
     ).toThrow(ModelBehaviorError);
   });
 
+  it('preserves callers on hosted MCP approval items in sync and async processing', async () => {
+    const mcpTool = hostedMcpTool({
+      serverLabel: 'server',
+      requireApproval: 'always',
+      allowedCallers: ['programmatic'],
+    });
+    const hostedCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      name: 'mcp_approval_request',
+      id: 'mcpr_program',
+      status: 'in_progress',
+      caller: { type: 'program', callerId: 'call_prog_1' },
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'server',
+        name: 'lookup',
+        id: 'mcpr_program',
+        arguments: '{}',
+      },
+    };
+    const response: ModelResponse = {
+      output: [hostedCall],
+      usage: new Usage(),
+    };
+
+    const syncResult = processModelResponse(
+      response,
+      TEST_AGENT,
+      [mcpTool],
+      [],
+    );
+    const asyncResult = await processModelResponseAsync(
+      response,
+      TEST_AGENT,
+      [mcpTool],
+      [],
+      new RunState(new RunContext(), 'hello', TEST_AGENT, 1),
+      [],
+    );
+
+    for (const result of [syncResult, asyncResult]) {
+      expect(
+        (
+          result.mcpApprovalRequests[0].requestItem
+            .rawItem as protocol.HostedToolCallItem
+        ).caller,
+      ).toEqual({
+        type: 'program',
+        callerId: 'call_prog_1',
+      });
+    }
+  });
+
+  it('rejects direct MCP approvals for programmatic-only servers', async () => {
+    const mcpTool = hostedMcpTool({
+      serverLabel: 'server',
+      requireApproval: 'always',
+      allowedCallers: ['programmatic'],
+    });
+    const hostedCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      name: 'mcp_approval_request',
+      id: 'mcpr_direct',
+      status: 'in_progress',
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'server',
+        name: 'lookup',
+        id: 'mcpr_direct',
+        arguments: '{}',
+      },
+    };
+    const response: ModelResponse = {
+      output: [hostedCall],
+      usage: new Usage(),
+    };
+
+    expect(() =>
+      processModelResponse(response, TEST_AGENT, [mcpTool], []),
+    ).toThrow(ModelBehaviorError);
+    await expect(
+      processModelResponseAsync(
+        response,
+        TEST_AGENT,
+        [mcpTool],
+        [],
+        new RunState(new RunContext(), 'hello', TEST_AGENT, 1),
+        [],
+      ),
+    ).rejects.toThrow(ModelBehaviorError);
+  });
+
   it('resolves hosted MCP approval requests from tool_search-loaded servers', () => {
     const toolSearchOutput: protocol.ToolSearchOutputItem = {
       type: 'tool_search_output',
@@ -1919,6 +2669,7 @@ describe('processModelResponse', () => {
           server_label: 'shopify',
           server_url: 'https://mcp.example.com/shopify',
           require_approval: 'always',
+          allowed_callers: ['programmatic'],
         },
       ],
     } as any;
@@ -1927,6 +2678,7 @@ describe('processModelResponse', () => {
       name: 'mcp_approval_request',
       id: 'mcpr_shopify',
       status: 'in_progress',
+      caller: { type: 'program', callerId: 'call_prog_1' },
       providerData: {
         type: 'mcp_approval_request',
         server_label: 'shopify',
@@ -1948,6 +2700,7 @@ describe('processModelResponse', () => {
       server_label: 'shopify',
       server_url: 'https://mcp.example.com/shopify',
       require_approval: 'always',
+      allowed_callers: ['programmatic'],
     });
   });
 

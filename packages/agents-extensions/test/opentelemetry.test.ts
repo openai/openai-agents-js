@@ -132,6 +132,44 @@ describe('OpenTelemetryTracingProcessor', () => {
     }> = [
       {
         data: {
+          type: 'task',
+          name: 'Review workflow',
+          usage: {
+            requests: 2,
+            input_tokens: 12,
+            output_tokens: 4,
+            total_tokens: 16,
+            cached_input_tokens: 3,
+            cache_write_input_tokens: 1,
+          },
+        },
+        expected: {
+          'openai.agents.task.name': 'Review workflow',
+          'openai.agents.task.requests': 2,
+          'gen_ai.usage.input_tokens': 12,
+          'openai.agents.usage.total_tokens': 16,
+        },
+      },
+      {
+        data: {
+          type: 'turn',
+          turn: 2,
+          agent_name: 'Reviewer',
+          usage: {
+            input_tokens: 8,
+            output_tokens: 3,
+            cached_input_tokens: 2,
+            cache_write_input_tokens: 0,
+          },
+        },
+        expected: {
+          'openai.agents.turn.number': 2,
+          'gen_ai.agent.name': 'Reviewer',
+          'gen_ai.usage.output_tokens': 3,
+        },
+      },
+      {
+        data: {
           type: 'generation',
           model: 'gpt-5',
           input: [{ role: 'user' }],

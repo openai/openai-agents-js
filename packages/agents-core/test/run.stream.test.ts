@@ -113,6 +113,107 @@ class AbortAfterStreamedFunctionCallModel implements Model {
   }
 }
 
+class AbortAfterStreamedProgramModel implements Model {
+  public requests: ModelRequest[] = [];
+
+  constructor(private readonly responseId: string) {}
+
+  async getResponse(request: ModelRequest): Promise<ModelResponse> {
+    this.requests.push(request);
+    return {
+      output: [fakeModelMessage('reconciled')],
+      usage: new Usage(),
+      responseId: 'resp-reconciled',
+    };
+  }
+
+  async *getStreamedResponse(
+    request: ModelRequest,
+  ): AsyncIterable<StreamEvent> {
+    this.requests.push(request);
+    yield {
+      type: 'model',
+      event: {
+        type: 'response.created',
+        response: {
+          id: this.responseId,
+        },
+      },
+    };
+    yield {
+      type: 'model',
+      event: {
+        type: 'response.output_item.done',
+        item: {
+          type: 'program',
+          id: 'prog_abort',
+          call_id: 'call_prog_abort',
+          code: 'text("done");',
+          fingerprint: 'fingerprint:abort',
+        },
+      },
+    };
+    const error = new Error('aborted');
+    error.name = 'AbortError';
+    throw error;
+  }
+}
+
+class AbortAfterStreamedProgramToolCallsModel implements Model {
+  public requests: ModelRequest[] = [];
+
+  async getResponse(request: ModelRequest): Promise<ModelResponse> {
+    this.requests.push(request);
+    return {
+      output: [fakeModelMessage('reconciled')],
+      usage: new Usage(),
+      responseId: 'resp-reconciled',
+    };
+  }
+
+  async *getStreamedResponse(
+    request: ModelRequest,
+  ): AsyncIterable<StreamEvent> {
+    this.requests.push(request);
+    for (const item of [
+      {
+        type: 'program',
+        id: 'prog_abort',
+        call_id: 'call_prog_abort',
+        code: 'await tools.shell();',
+        fingerprint: 'fingerprint:abort',
+      },
+      {
+        type: 'shell_call',
+        id: 'shell_abort',
+        call_id: 'call_shell_abort',
+        status: 'completed',
+        action: { commands: ['sleep 10'] },
+        caller: { type: 'program', caller_id: 'call_prog_abort' },
+      },
+      {
+        type: 'apply_patch_call',
+        id: 'patch_abort',
+        call_id: 'call_patch_abort',
+        status: 'completed',
+        operation: { type: 'delete_file', path: 'temporary.txt' },
+        caller: { type: 'program', caller_id: 'call_prog_abort' },
+      },
+    ]) {
+      yield {
+        type: 'model',
+        event: {
+          type: 'response.output_item.done',
+          item,
+        },
+      };
+    }
+    const error = new Error('aborted');
+    error.name = 'AbortError';
+    throw error;
+  }
+}
+
 // Test for unhandled rejection when stream loop throws
 
 describe('Runner.run (streaming)', () => {
@@ -390,6 +491,73 @@ describe('Runner.run (streaming)', () => {
       callId: 'call_abort',
       status: 'incomplete',
     });
+  });
+
+  it('reconciles streamed programs without outputs on abort', async () => {
+    const model = new AbortAfterStreamedProgramModel('resp-aborted');
+    const agent = new Agent({ name: 'AbortProgram', model });
+
+    const result = await run(agent, 'hi', {
+      stream: true,
+      conversationId: 'conv-program-abort',
+    });
+
+    await result.completed;
+
+    expect(model.requests).toHaveLength(2);
+    expect(model.requests[1].conversationId).toBe('conv-program-abort');
+    expect(getRequestInputItems(model.requests[1])).toEqual([
+      expect.objectContaining({
+        type: 'program_output',
+        id: expect.stringMatching(/^prog_out_[0-9a-f]{32}$/),
+        callId: 'call_prog_abort',
+        status: 'incomplete',
+        output: 'aborted',
+      }),
+    ]);
+  });
+
+  it('reconciles program-owned shell and apply_patch calls on abort', async () => {
+    const model = new AbortAfterStreamedProgramToolCallsModel();
+    const agent = new Agent({ name: 'AbortProgramTools', model });
+
+    const result = await run(agent, 'hi', {
+      stream: true,
+      conversationId: 'conv-program-tools-abort',
+    });
+
+    await result.completed;
+
+    expect(model.requests).toHaveLength(2);
+    expect(model.requests[1].conversationId).toBe('conv-program-tools-abort');
+    expect(getRequestInputItems(model.requests[1])).toEqual([
+      {
+        type: 'shell_call_output',
+        callId: 'call_shell_abort',
+        status: 'incomplete',
+        output: [
+          {
+            stdout: '',
+            stderr: 'aborted',
+            outcome: { type: 'timeout' },
+          },
+        ],
+        caller: { type: 'program', callerId: 'call_prog_abort' },
+      },
+      {
+        type: 'apply_patch_call_output',
+        callId: 'call_patch_abort',
+        status: 'failed',
+        output: 'aborted',
+        caller: { type: 'program', callerId: 'call_prog_abort' },
+      },
+      expect.objectContaining({
+        type: 'program_output',
+        callId: 'call_prog_abort',
+        status: 'incomplete',
+        output: 'aborted',
+      }),
+    ]);
   });
 
   it('emits agent_updated_stream_event with new agent on handoff', async () => {
@@ -3058,8 +3226,7 @@ describe('Runner.run (streaming)', () => {
       .mockResolvedValue();
 
     let resolveGuardrail:
-      | ((value: GuardrailFunctionOutput) => void)
-      | undefined;
+      ((value: GuardrailFunctionOutput) => void) | undefined;
     const guardrail = {
       name: 'parallel-allow',
       execute: vi.fn(

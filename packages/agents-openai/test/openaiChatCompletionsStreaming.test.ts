@@ -104,6 +104,7 @@ describe('convertChatCompletionsStreamToResponses', () => {
     expect(events[2]).toEqual({
       type: 'output_text_delta',
       delta: 'hello',
+      itemId: 'res1',
       providerData: { ...chunk1 },
     });
     expect(events[3]).toEqual({
@@ -238,7 +239,95 @@ describe('convertChatCompletionsStreamToResponses', () => {
         arguments: 'a',
       },
     ]);
-    expect(final.response.usage.totalTokens).toBe(0);
+    // The usage reported on the middle chunk must be retained even though the
+    // trailing tool_calls chunk carries no usage of its own.
+    expect(final.response.usage.totalTokens).toBe(3);
+  });
+
+  it('uses a response ID received after the first text chunk for the final message', async () => {
+    const firstChunk = {
+      ...makeChunk({ content: 'hello' }),
+      id: '',
+    } as ChatCompletionChunk;
+    const finalChunk = {
+      ...makeChunk({}),
+      id: 'late-response-id',
+      choices: [],
+    } as ChatCompletionChunk;
+
+    async function* stream(): AsyncGenerator<
+      ChatCompletionChunk,
+      void,
+      unknown
+    > {
+      yield firstChunk;
+      yield finalChunk;
+    }
+
+    const response = { id: FAKE_ID } as ChatCompletion;
+    const events: any[] = [];
+    for await (const event of convertChatCompletionsStreamToResponses(
+      response,
+      stream() as any,
+    )) {
+      events.push(event);
+    }
+
+    expect(events[2]).toEqual({
+      type: 'output_text_delta',
+      delta: 'hello',
+      providerData: firstChunk,
+    });
+    expect(events.at(-1).response.output[0]).toMatchObject({
+      id: 'late-response-id',
+      type: 'message',
+    });
+  });
+
+  it('preserves usage reported on an earlier chunk when the final chunk has no usage', async () => {
+    async function* stream(): AsyncGenerator<
+      ChatCompletionChunk,
+      void,
+      unknown
+    > {
+      // usage is delivered on an early chunk (some OpenAI-compatible
+      // providers or gateways may emit a later chunk without usage after
+      // reporting usage)...
+      yield makeChunk(
+        { content: 'Hello' },
+        { prompt_tokens: 100, completion_tokens: 5, total_tokens: 105 },
+      );
+      // ...and the terminal chunk carries no usage at all.
+      yield {
+        id: 'c',
+        created: 0,
+        model: 'm',
+        object: 'chat.completion.chunk',
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      } as any;
+    }
+
+    const resp = { id: 'r' } as any;
+    const events: any[] = [];
+    for await (const e of convertChatCompletionsStreamToResponses(
+      resp,
+      stream() as any,
+    )) {
+      events.push(e);
+    }
+
+    const final = events[events.length - 1];
+    expect(final.type).toBe('response_done');
+    expect(final.response.usage).toMatchObject({
+      inputTokens: 100,
+      outputTokens: 5,
+      totalTokens: 105,
+    });
+    expect(resp.usage).toMatchObject({
+      prompt_tokens: 100,
+      completion_tokens: 5,
+      total_tokens: 105,
+    });
   });
 
   it('ignores chunks with empty choices', async () => {

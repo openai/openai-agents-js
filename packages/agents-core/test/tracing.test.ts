@@ -71,6 +71,7 @@ import { Usage } from '../src/usage';
 import * as protocol from '../src/types/protocol';
 import { setDefaultModelProvider } from '../src/providers';
 import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../src/shims/shims-browser';
+import { supportsProcessLifecycleEvents as workerdSupportsProcessLifecycleEvents } from '../src/shims/shims-workerd';
 
 const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
 
@@ -437,6 +438,45 @@ describe('Trace & Span lifecycle', () => {
 
     onceSpy.mockRestore();
     onSpy.mockRestore();
+  });
+
+  it('does not register process cleanup listeners in workerd', async () => {
+    const onceSpy = vi.spyOn(process, 'once');
+    const onSpy = vi.spyOn(process, 'on');
+
+    vi.resetModules();
+    vi.doMock('@openai/agents-core/_shims', async () => {
+      const actual = await vi.importActual('@openai/agents-core/_shims');
+      return {
+        ...(actual as Record<string, unknown>),
+        supportsProcessLifecycleEvents: workerdSupportsProcessLifecycleEvents,
+      };
+    });
+
+    try {
+      const { TraceProvider: WorkerdTraceProvider } =
+        await import('../src/tracing/provider');
+      new WorkerdTraceProvider();
+
+      expect(workerdSupportsProcessLifecycleEvents()).toBe(false);
+      expect(onceSpy).not.toHaveBeenCalledWith(
+        'beforeExit',
+        expect.any(Function),
+      );
+      expect(
+        onSpy.mock.calls.filter(
+          ([event]) =>
+            event === 'SIGINT' ||
+            event === 'SIGTERM' ||
+            event === 'unhandledRejection',
+        ),
+      ).toEqual([]);
+    } finally {
+      onceSpy.mockRestore();
+      onSpy.mockRestore();
+      vi.resetModules();
+      vi.unmock('@openai/agents-core/_shims');
+    }
   });
 
   it('does not force exit when beforeExit tracing cleanup times out', async () => {
@@ -1386,12 +1426,16 @@ describe('withTrace & span helpers (integration)', () => {
     const traceStartTimes: number[] = [];
     const traceEndTimes: number[] = [];
     const spanEndTimes: number[] = [];
+    let finishTraceEnd: (() => void) | undefined;
 
     class OrderTrackingProcessor implements TracingProcessor {
       async onTraceStart(_trace: Trace): Promise<void> {
         traceStartTimes.push(Date.now());
       }
       async onTraceEnd(_trace: Trace): Promise<void> {
+        await new Promise<void>((resolve) => {
+          finishTraceEnd = resolve;
+        });
         traceEndTimes.push(Date.now());
       }
       async onSpanStart(_span: Span<any>): Promise<void> {
@@ -1450,13 +1494,14 @@ describe('withTrace & span helpers (integration)', () => {
     // Run with streaming
     const result = await runner.run(agent, 'test input', { stream: true });
 
-    // Consume the stream
-    for await (const _event of result) {
-      // consume all events
-    }
-
-    // Wait for completion
-    await result.completed;
+    let completed = false;
+    const completion = result.completed.then(() => {
+      completed = true;
+    });
+    await vi.waitFor(() => expect(finishTraceEnd).toBeDefined());
+    expect(completed).toBe(false);
+    finishTraceEnd?.();
+    await completion;
 
     // onTraceEnd should be called after all spans have ended
     expect(traceStartTimes.length).toBe(1);
@@ -1578,6 +1623,72 @@ describe('MultiTracingProcessor', () => {
     expect(calls).toEqual(['work']);
     finishStart?.();
     await vi.waitFor(() => expect(calls).toEqual(['work', 'start', 'end']));
+  });
+
+  it.each(['forceFlush', 'shutdown'] as const)(
+    'waits for pending span end delivery before %s',
+    async (operation) => {
+      let finishStart: (() => void) | undefined;
+      const receivingProcessor = new TestProcessor();
+      receivingProcessor.onSpanStart = async (span) => {
+        await new Promise<void>((resolve) => {
+          finishStart = resolve;
+        });
+        receivingProcessor.spansStarted.push(span);
+      };
+      const multiProcessor = new MultiTracingProcessor();
+      multiProcessor.addTraceProcessor(receivingProcessor);
+      const span = spanFor(multiProcessor);
+
+      span.start();
+      span.end();
+      const lifecycleOperation = multiProcessor[operation]();
+
+      expect(receivingProcessor.spansEnded).toHaveLength(0);
+      finishStart?.();
+      await lifecycleOperation;
+
+      expect(receivingProcessor.spansEnded).toEqual([span]);
+    },
+  );
+
+  it('does not make trace end wait for another trace lifecycle', async () => {
+    let finishOtherStart: (() => void) | undefined;
+    let targetTraceEnded = false;
+    const receivingProcessor = new TestProcessor();
+    receivingProcessor.onSpanStart = async (span) => {
+      if (span.traceId === 'trace_other') {
+        await new Promise<void>((resolve) => {
+          finishOtherStart = resolve;
+        });
+      }
+      receivingProcessor.spansStarted.push(span);
+    };
+    receivingProcessor.onTraceEnd = async () => {
+      targetTraceEnded = true;
+    };
+    const multiProcessor = new MultiTracingProcessor();
+    multiProcessor.addTraceProcessor(receivingProcessor);
+    const otherSpan = new Span(
+      {
+        traceId: 'trace_other',
+        spanId: 'span_other',
+        data: { type: 'custom', name: 'other', data: {} },
+      },
+      multiProcessor,
+    );
+    otherSpan.start();
+    otherSpan.end();
+
+    await multiProcessor.onTraceEnd(
+      new Trace({ traceId: 'trace_target', name: 'target' }),
+    );
+
+    expect(targetTraceEnded).toBe(true);
+    expect(receivingProcessor.spansEnded).toHaveLength(0);
+    finishOtherStart?.();
+    await multiProcessor.forceFlush();
+    expect(receivingProcessor.spansEnded).toEqual([otherSpan]);
   });
 
   it('continues span lifecycle delivery after a processor fails', async () => {

@@ -28,6 +28,20 @@ describe('tool result correlation', () => {
   it.each<CorrelationPair>([
     {
       call: {
+        type: 'program',
+        callId: 'shared:program',
+        code: 'return "done";',
+        fingerprint: 'fingerprint:program',
+      },
+      result: {
+        type: 'program_output',
+        callId: 'shared:program',
+        output: 'done',
+        status: 'completed',
+      },
+    },
+    {
+      call: {
         type: 'function_call',
         callId: 'shared:function',
         name: 'test',
@@ -224,6 +238,19 @@ describe('tool result correlation', () => {
     expect(
       getUnresolvedToolResultCorrelationsForResponse([call, output]),
     ).toEqual([]);
+  });
+
+  it('keeps program calls unresolved until their program output arrives', () => {
+    const call: AgentInputItem = {
+      type: 'program',
+      callId: 'pending-program',
+      code: 'return "pending";',
+      fingerprint: 'fingerprint:pending-program',
+    };
+
+    expect(getUnresolvedToolResultCorrelationsForResponse([call])).toEqual([
+      getToolResultCorrelationForCall(call),
+    ]);
   });
 
   it('does not correlate unrelated hosted tool calls', () => {

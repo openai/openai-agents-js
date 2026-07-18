@@ -26,6 +26,7 @@ export {
   AgentsError,
   GuardrailExecutionError,
   InputGuardrailTripwireTriggered,
+  InvalidToolOutputError,
   MaxTurnsExceededError,
   ModelBehaviorError,
   ModelRefusalError,
@@ -37,6 +38,7 @@ export {
   UserError,
   SystemError,
 } from './errors';
+export type { ToolOutputErrorContext } from './errors';
 export {
   RunAgentUpdatedStreamEvent,
   RunRawModelStreamEvent,
@@ -225,6 +227,8 @@ export {
   ToolExecuteArgument,
   ToolEnabledFunction,
   ToolOptionsWithGuardrails,
+  ToolAllowedCaller,
+  ToolAllowedCallers,
 } from './tool';
 export type {
   ClientToolSearchExecutor,
@@ -248,6 +252,7 @@ export type {
   ShellToolContainerNetworkPolicyDisabled,
   ShellToolContainerNetworkPolicyDomainSecret,
   ToolInputParameters,
+  ToolOutputSchema,
   ToolOptions,
   ToolNamespaceOptions,
   ToolOutputCustomData,
@@ -283,6 +288,9 @@ export type {
   ShellCallResultItem,
   ApplyPatchCallItem,
   ApplyPatchCallResultItem,
+  ProgramCallItem,
+  ProgramCallResultItem,
+  ToolCaller,
   FunctionCallItem,
   FunctionCallResultItem,
   JsonSchemaDefinition,

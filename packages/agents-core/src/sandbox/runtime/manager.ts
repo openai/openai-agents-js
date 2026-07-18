@@ -3,6 +3,7 @@ import logger from '../../logger';
 import { UserError } from '../../errors';
 import type { RunState } from '../../runState';
 import type { AgentInputItem } from '../../types';
+import type { Span, Trace } from '../../tracing';
 import type { SandboxAgent } from '../agent';
 import type { Memory } from '../capabilities/memory';
 import { isMemoryCapability } from '../capabilities/memory';
@@ -131,8 +132,9 @@ export class SandboxRuntimeManager<TContext> {
     currentAgent: Agent<TContext, AgentOutputType>;
     turnInput: AgentInputItem[];
     runConfigModel?: SandboxRuntimeModel;
+    tracingParent?: Span<any> | Trace;
   }): Promise<SandboxPreparedAgent<TContext>> {
-    const { currentAgent, turnInput, runConfigModel } = args;
+    const { currentAgent, turnInput, runConfigModel, tracingParent } = args;
     if (!isSandboxAgent(currentAgent)) {
       this.activeMemory = undefined;
       return {
@@ -152,15 +154,16 @@ export class SandboxRuntimeManager<TContext> {
       {
         agent_name: currentAgent.name,
       },
-      async () => {
+      async (prepareSpan) => {
         this.acquireAgent(currentAgent);
-        const session = await this.ensureSession(currentAgent);
+        const session = await this.ensureSession(currentAgent, prepareSpan);
         // Bind a clone to the live session so capability tools and instructions can carry
         // per-session state without mutating the public SandboxAgent instance.
         const executionAgent = this.getPreparedAgent(
           currentAgent,
           session,
           runConfigModel,
+          tracingParent,
         );
         const memory = executionAgent.capabilities.find(isMemoryCapability);
         if (memory) {
@@ -181,6 +184,7 @@ export class SandboxRuntimeManager<TContext> {
           ),
         };
       },
+      tracingParent,
     );
   }
 
@@ -188,20 +192,24 @@ export class SandboxRuntimeManager<TContext> {
     state: RunState<TContext, Agent<TContext, AgentOutputType>>,
     options: {
       preserveOwnedSessions?: boolean;
+      tracingParent?: Span<any> | Trace;
     } = {},
   ): Promise<void> {
     const preserveOwnedSessions = options.preserveOwnedSessions ?? false;
-    const runCleanup = async () => {
+    const runCleanup = async (cleanupSpan?: Span<any> | Trace) => {
       let preserveCleanupHandles = false;
       try {
-        const cleanupPlan = await this.planCleanup(state, {
-          preserveOwnedSessions,
-        });
+        const cleanupPlan = await this.planCleanup(
+          state,
+          { preserveOwnedSessions },
+          cleanupSpan,
+        );
         await this.executeCleanupPlan(state, cleanupPlan, {
           onCloseError: () => {
             preserveCleanupHandles = true;
           },
           preserveOwnedSessions,
+          tracingParent: cleanupSpan,
         });
       } finally {
         this.releaseAgents();
@@ -224,11 +232,16 @@ export class SandboxRuntimeManager<TContext> {
       this.preparedAgents.size === 0 &&
       this.ownedSessionAgentKeys.size === 0
     ) {
-      await runCleanup();
+      await runCleanup(options.tracingParent);
       return;
     }
 
-    await withSandboxSpan('sandbox.cleanup', {}, runCleanup);
+    await withSandboxSpan(
+      'sandbox.cleanup',
+      {},
+      runCleanup,
+      options.tracingParent,
+    );
   }
 
   private async planCleanup(
@@ -236,11 +249,16 @@ export class SandboxRuntimeManager<TContext> {
     options: {
       preserveOwnedSessions: boolean;
     },
+    tracingParent?: Span<any> | Trace,
   ): Promise<SandboxCleanupPlan> {
     if (this.sessionsByAgentKey.size > 0) {
       return await this.planCleanupForActiveSessions(state, options);
     }
-    return await this.planCleanupForSerializedStateOnly(state, options);
+    return await this.planCleanupForSerializedStateOnly(
+      state,
+      options,
+      tracingParent,
+    );
   }
 
   private async planCleanupForActiveSessions(
@@ -306,6 +324,7 @@ export class SandboxRuntimeManager<TContext> {
     options: {
       preserveOwnedSessions: boolean;
     },
+    tracingParent?: Span<any> | Trace,
   ): Promise<SandboxCleanupPlan> {
     const cleanupPlan: SandboxCleanupPlan = options.preserveOwnedSessions
       ? {}
@@ -340,7 +359,7 @@ export class SandboxRuntimeManager<TContext> {
       if (hasPreservedOwnedSessions(sandboxState)) {
         if (this.sandboxConfig?.client) {
           try {
-            await this.adoptPreservedOwnedSessions();
+            await this.adoptPreservedOwnedSessions(tracingParent);
             if (this.ownedSessionAgentKeys.size > 0) {
               cleanupPlan.ownedSessionCloseTarget = 'all';
               cleanupPlan.afterOwnedSessionClose = {
@@ -377,6 +396,7 @@ export class SandboxRuntimeManager<TContext> {
     options: {
       onCloseError: () => void;
       preserveOwnedSessions: boolean;
+      tracingParent?: Span<any> | Trace;
     },
   ): Promise<void> {
     if (plan.ownedSessionCloseTarget) {
@@ -387,6 +407,7 @@ export class SandboxRuntimeManager<TContext> {
             : plan.ownedSessionCloseTarget,
           {
             preserveOwnedSessions: options.preserveOwnedSessions,
+            tracingParent: options.tracingParent,
           },
         );
       } catch (error) {
@@ -482,6 +503,7 @@ export class SandboxRuntimeManager<TContext> {
       inputOverride?: string | AgentInputItem[];
       sdkSessionId?: () => Promise<string | undefined>;
       runAgent: SandboxMemoryAgentRunner;
+      tracingParent?: Span<any> | Trace;
     },
   ): Promise<void> {
     if (!this.activeMemory || this.activeMemory.memory.generate === null) {
@@ -494,6 +516,7 @@ export class SandboxRuntimeManager<TContext> {
         memory: this.activeMemory.memory,
         runAs: this.activeMemory.runAs,
         runAgent: args.runAgent,
+        tracingParent: args.tracingParent,
       });
       await manager.enqueueState(state, {
         exception: args.exception,
@@ -509,7 +532,9 @@ export class SandboxRuntimeManager<TContext> {
     }
   }
 
-  async adoptPreservedOwnedSessions(): Promise<boolean> {
+  async adoptPreservedOwnedSessions(
+    tracingParent?: Span<any> | Trace,
+  ): Promise<boolean> {
     const sandboxState = getSerializedSandboxState(this.runState);
     if (!hasPreservedOwnedSessions(sandboxState)) {
       return false;
@@ -572,6 +597,7 @@ export class SandboxRuntimeManager<TContext> {
           await client.resume!(serializedState, {
             archiveLimits: this.sandboxConfig?.archiveLimits,
           }),
+        tracingParent,
       );
       this.applyArchiveLimits(session);
       this.sessionsByAgentKey.set(agentKey, session);
@@ -593,6 +619,7 @@ export class SandboxRuntimeManager<TContext> {
 
   private async ensureSession(
     agent: SandboxAgent<TContext, AgentOutputType>,
+    tracingParent?: Span<any> | Trace,
   ): Promise<SandboxSessionLike<SandboxSessionState>> {
     const agentId = getObjectId(agent);
     const agentKey = this.agentKey(agent);
@@ -606,6 +633,7 @@ export class SandboxRuntimeManager<TContext> {
       this.applyArchiveLimits(existingByKey);
       await this.ensureSessionStarted(existingByKey, agent, 'resume', {
         oncePerSession: true,
+        tracingParent,
       });
       this.currentAgentId = agentId;
       this.sessionsByAgent.set(agentId, existingByKey);
@@ -628,6 +656,7 @@ export class SandboxRuntimeManager<TContext> {
       );
       await this.ensureSessionStarted(session, agent, 'provided', {
         oncePerSession: true,
+        tracingParent,
       });
       this.registerSessionForAgent(agent, session);
       return session;
@@ -636,10 +665,16 @@ export class SandboxRuntimeManager<TContext> {
     const configuredManifest = this.resolveConfiguredManifest(agent);
 
     const client = this.requireClient();
-    const resumed = await this.resumeSessionForAgent(client, agent);
+    const resumed = await this.resumeSessionForAgent(
+      client,
+      agent,
+      tracingParent,
+    );
     if (resumed) {
       this.applyArchiveLimits(resumed);
-      await this.ensureSessionStarted(resumed, agent, 'resume');
+      await this.ensureSessionStarted(resumed, agent, 'resume', {
+        tracingParent,
+      });
       this.registerSessionForAgent(agent, resumed, { owned: true });
       return resumed;
     }
@@ -667,9 +702,12 @@ export class SandboxRuntimeManager<TContext> {
         backend_id: client.backendId,
       },
       async () => await createSession(createArgs),
+      tracingParent,
     );
     this.applyArchiveLimits(session);
-    await this.ensureSessionStarted(session, agent, 'create');
+    await this.ensureSessionStarted(session, agent, 'create', {
+      tracingParent,
+    });
     this.registerSessionForAgent(agent, session, { owned: true });
     return session;
   }
@@ -707,6 +745,7 @@ export class SandboxRuntimeManager<TContext> {
     reason: string,
     options: {
       oncePerSession?: boolean;
+      tracingParent?: Span<any> | Trace;
     } = {},
   ): Promise<void> {
     if (!session.start) {
@@ -736,6 +775,7 @@ export class SandboxRuntimeManager<TContext> {
       async () => {
         await session.start!({ reason });
       },
+      options.tracingParent,
     );
     if (options.oncePerSession) {
       this.sessionStartPromises.set(session, startPromise);
@@ -754,6 +794,7 @@ export class SandboxRuntimeManager<TContext> {
     agent: SandboxAgent<TContext, AgentOutputType>,
     session: SandboxSessionLike<SandboxSessionState>,
     runConfigModel?: SandboxRuntimeModel,
+    tracingParent?: Span<any> | Trace,
   ): SandboxAgent<TContext, AgentOutputType> {
     const agentId = getObjectId(agent);
     const manifestSignature = getManifestSignature(session.state.manifest);
@@ -763,7 +804,14 @@ export class SandboxRuntimeManager<TContext> {
       this.preparedSessions.get(agentId) === session &&
       this.preparedManifestSignatures.get(agentId) === manifestSignature
     ) {
-      return cached as SandboxAgent<TContext, AgentOutputType>;
+      const cachedSandboxAgent = cached as SandboxAgent<
+        TContext,
+        AgentOutputType
+      >;
+      for (const capability of cachedSandboxAgent.capabilities) {
+        capability.bindTracingParent(tracingParent);
+      }
+      return cachedSandboxAgent;
     }
 
     // Capability instructions include a rendered filesystem view, so a manifest change
@@ -774,6 +822,7 @@ export class SandboxRuntimeManager<TContext> {
       capabilities: cloneSandboxCapabilities(agent.capabilities),
       runConfigModel,
       processManifest: false,
+      tracingParent,
     });
     this.preparedAgents.set(agentId, prepared);
     this.preparedSessions.set(agentId, session);
@@ -784,6 +833,7 @@ export class SandboxRuntimeManager<TContext> {
   private async resumeSessionForAgent(
     client: SandboxClient,
     agent: SandboxAgent<TContext, AgentOutputType>,
+    tracingParent?: Span<any> | Trace,
   ): Promise<SandboxSessionLike<SandboxSessionState> | undefined> {
     const agentKey = this.agentKey(agent);
     const serializedEntry = getSerializedSessionEntryForAgent(
@@ -819,6 +869,7 @@ export class SandboxRuntimeManager<TContext> {
           await client.resume!(this.sandboxConfig!.sessionState!, {
             archiveLimits: this.sandboxConfig?.archiveLimits,
           }),
+        tracingParent,
       );
     }
 
@@ -840,6 +891,7 @@ export class SandboxRuntimeManager<TContext> {
         await client.resume!(serializedState, {
           archiveLimits: this.sandboxConfig?.archiveLimits,
         }),
+      tracingParent,
     );
   }
 
@@ -945,6 +997,7 @@ export class SandboxRuntimeManager<TContext> {
     agentKeys?: Iterable<string>,
     options: {
       preserveOwnedSessions?: boolean;
+      tracingParent?: Span<any> | Trace;
     } = {},
   ): Promise<void> {
     const keysToClose = [...(agentKeys ?? this.ownedSessionAgentKeys)].filter(
@@ -972,7 +1025,7 @@ export class SandboxRuntimeManager<TContext> {
       {
         session_count: sessionsToClose.size,
       },
-      async () => {
+      async (cleanupSessionsSpan) => {
         await Promise.all(
           [...sessionsToClose].map(async ([session, agentName]) => {
             await withSandboxSpan(
@@ -988,10 +1041,12 @@ export class SandboxRuntimeManager<TContext> {
                     : undefined,
                 );
               },
+              cleanupSessionsSpan,
             );
           }),
         );
       },
+      options.tracingParent,
     );
   }
 

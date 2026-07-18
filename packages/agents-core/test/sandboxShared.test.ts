@@ -39,6 +39,7 @@ const processPlatformDescriptor = Object.getOwnPropertyDescriptor(
 afterEach(() => {
   vi.doUnmock('node:os');
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   vi.resetModules();
   if (processPlatformDescriptor) {
     Object.defineProperty(process, 'platform', processPlatformDescriptor);
@@ -302,6 +303,23 @@ describe('sandbox shared helpers', () => {
     expect(
       (restored.entries.nested as any).children['payload.bin'].content,
     ).toEqual(bytes);
+  });
+
+  it('restores binary manifest files without host base64 globals', () => {
+    const bytes = Uint8Array.from([0, 255, 34, 17, 128]);
+    const serialized = serializeManifestRecord(
+      new Manifest({
+        entries: {
+          'payload.bin': file({ content: bytes }),
+        },
+      }),
+    );
+    vi.stubGlobal('Buffer', undefined);
+    vi.stubGlobal('atob', undefined);
+
+    const restored = deserializeManifest(serialized);
+
+    expect((restored.entries['payload.bin'] as any).content).toEqual(bytes);
   });
 
   it('materializes manifest environment values and preserves runtime overrides', async () => {

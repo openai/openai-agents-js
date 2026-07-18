@@ -76,6 +76,37 @@ function describeSpan(
   }: OpenTelemetryTracingProcessorOptions,
 ): SpanDescriptor {
   switch (data.type) {
+    case 'task':
+      return {
+        name: `task ${data.name}`,
+        operationName: 'task',
+        attributes: compactAttributes({
+          'openai.agents.task.name': data.name,
+          'openai.agents.task.requests': data.usage?.requests,
+          'gen_ai.usage.input_tokens': data.usage?.input_tokens,
+          'gen_ai.usage.output_tokens': data.usage?.output_tokens,
+          'openai.agents.usage.cached_input_tokens':
+            data.usage?.cached_input_tokens,
+          'openai.agents.usage.cache_write_input_tokens':
+            data.usage?.cache_write_input_tokens,
+          'openai.agents.usage.total_tokens': data.usage?.total_tokens,
+        }),
+      };
+    case 'turn':
+      return {
+        name: `turn ${data.turn}`,
+        operationName: 'turn',
+        attributes: compactAttributes({
+          'openai.agents.turn.number': data.turn,
+          'gen_ai.agent.name': data.agent_name,
+          'gen_ai.usage.input_tokens': data.usage?.input_tokens,
+          'gen_ai.usage.output_tokens': data.usage?.output_tokens,
+          'openai.agents.usage.cached_input_tokens':
+            data.usage?.cached_input_tokens,
+          'openai.agents.usage.cache_write_input_tokens':
+            data.usage?.cache_write_input_tokens,
+        }),
+      };
     case 'agent':
       return {
         name: `invoke_agent ${data.name}`,

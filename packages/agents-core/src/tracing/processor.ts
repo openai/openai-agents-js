@@ -51,6 +51,12 @@ export interface TracingProcessor {
   onSpanEnd(span: Span): Promise<void>;
 
   /**
+   * Registers asynchronous span lifecycle delivery so flush and shutdown can
+   * wait for fire-and-forget Span.end() calls. Processor composites can opt in.
+   */
+  registerPendingSpanLifecycle?(span: Span, delivery: Promise<void>): void;
+
+  /**
    * Runs work while this processor's representation of the span is active.
    * Async onSpanStart work may still be pending, so context-managing processors
    * must initialize any required span representation idempotently in this hook.
@@ -338,6 +344,44 @@ export class BatchTraceProcessor implements TracingProcessor {
 
 export class MultiTracingProcessor implements TracingProcessor {
   #processors: TracingProcessor[] = [];
+  #pendingSpanLifecycle = new Map<string, Set<Promise<void>>>();
+
+  registerPendingSpanLifecycle(span: Span, delivery: Promise<void>): void {
+    const pendingForTrace =
+      this.#pendingSpanLifecycle.get(span.traceId) ?? new Set<Promise<void>>();
+    this.#pendingSpanLifecycle.set(span.traceId, pendingForTrace);
+    const tracked = delivery.finally(() => {
+      pendingForTrace.delete(tracked);
+      if (pendingForTrace.size === 0) {
+        this.#pendingSpanLifecycle.delete(span.traceId);
+      }
+    });
+    pendingForTrace.add(tracked);
+  }
+
+  #drainPendingSpanLifecycle(traceId?: string): Promise<void> | undefined {
+    const pendingForTrace = traceId
+      ? this.#pendingSpanLifecycle.get(traceId)
+      : undefined;
+    if (traceId && (!pendingForTrace || pendingForTrace.size === 0)) {
+      return undefined;
+    }
+    if (!traceId && this.#pendingSpanLifecycle.size === 0) return undefined;
+    return (async () => {
+      if (pendingForTrace) {
+        while (pendingForTrace.size > 0) {
+          await Promise.allSettled([...pendingForTrace]);
+        }
+        return;
+      }
+      while (this.#pendingSpanLifecycle.size > 0) {
+        const pending = [...this.#pendingSpanLifecycle.values()].flatMap(
+          (deliveries) => [...deliveries],
+        );
+        await Promise.allSettled(pending);
+      }
+    })();
+  }
 
   async #runLifecycle(
     name: string,
@@ -379,6 +423,8 @@ export class MultiTracingProcessor implements TracingProcessor {
   }
 
   async onTraceEnd(trace: Trace): Promise<void> {
+    const pendingLifecycle = this.#drainPendingSpanLifecycle(trace.traceId);
+    if (pendingLifecycle) await pendingLifecycle;
     await this.#runLifecycle('trace end', (processor) =>
       processor.onTraceEnd(trace),
     );
@@ -459,12 +505,16 @@ export class MultiTracingProcessor implements TracingProcessor {
   }
 
   async shutdown(timeout?: number): Promise<void> {
+    const pendingLifecycle = this.#drainPendingSpanLifecycle();
+    if (pendingLifecycle) await pendingLifecycle;
     for (const processor of this.#processors) {
       await processor.shutdown(timeout);
     }
   }
 
   async forceFlush(): Promise<void> {
+    const pendingLifecycle = this.#drainPendingSpanLifecycle();
+    if (pendingLifecycle) await pendingLifecycle;
     for (const processor of this.#processors) {
       await processor.forceFlush();
     }

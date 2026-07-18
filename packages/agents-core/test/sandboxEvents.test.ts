@@ -12,12 +12,18 @@ import {
 } from '../src/sandbox';
 import {
   setTraceProcessors,
+  setTracingContextStorage,
   setTracingDisabled,
+  createCustomSpan,
+  getCurrentSpan,
+  getCurrentTrace,
   withTrace,
   type Span,
   type Trace,
   type TracingProcessor,
 } from '../src/tracing';
+import { getGlobalTraceProvider } from '../src/tracing/provider';
+import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../src/shims/shims-browser';
 
 class RecordingProcessor implements TracingProcessor {
   spansEnded: Span<any>[] = [];
@@ -35,9 +41,121 @@ class RecordingProcessor implements TracingProcessor {
 describe('sandbox events', () => {
   afterEach(() => {
     clearSandboxEventSinks();
+    setTracingContextStorage();
     setTracingDisabled(true);
     setTraceProcessors([]);
   });
+
+  it.each([
+    { browser: false, parentType: 'trace' as const },
+    { browser: false, parentType: 'span' as const },
+    { browser: true, parentType: 'trace' as const },
+    { browser: true, parentType: 'span' as const },
+  ])(
+    'restores tracing context for an explicit $parentType parent without ambient context (browser=$browser)',
+    async ({ browser, parentType }) => {
+      if (browser) {
+        setTracingContextStorage(new BrowserAsyncLocalStorage());
+      }
+      const processor = new RecordingProcessor();
+      setTraceProcessors([processor]);
+      setTracingDisabled(false);
+      const trace = getGlobalTraceProvider().createTrace({
+        name: 'detached sandbox operation',
+      });
+      await trace.start();
+      const parentSpan = createCustomSpan(
+        { data: { name: 'sandbox parent', data: {} } },
+        trace,
+      );
+      parentSpan.start();
+      const parent = parentType === 'trace' ? trace : parentSpan;
+
+      expect(getCurrentTrace()).toBeNull();
+      expect(getCurrentSpan()).toBeNull();
+      await expect(
+        withSandboxSpan(
+          'sandbox.detached',
+          { parent_type: parentType },
+          async (span) => {
+            expect(getCurrentTrace()?.traceId).toBe(trace.traceId);
+            expect(getCurrentSpan()).toBe(span);
+            return 'ok';
+          },
+          parent,
+        ),
+      ).resolves.toBe('ok');
+      expect(getCurrentTrace()).toBeNull();
+      expect(getCurrentSpan()).toBeNull();
+
+      const sandboxSpan = processor.spansEnded.find(
+        (span) =>
+          span.spanData.type === 'custom' &&
+          span.spanData.name === 'sandbox.detached',
+      );
+      expect(sandboxSpan?.traceId).toBe(trace.traceId);
+      expect(sandboxSpan?.parentId).toBe(
+        parentType === 'span' ? parentSpan.spanId : null,
+      );
+
+      parentSpan.end();
+      await trace.end();
+    },
+  );
+
+  it.each([false, true])(
+    'preserves detached sandbox failures and restores context (browser=%s)',
+    async (browser) => {
+      if (browser) {
+        setTracingContextStorage(new BrowserAsyncLocalStorage());
+      }
+      const processor = new RecordingProcessor();
+      setTraceProcessors([processor]);
+      setTracingDisabled(false);
+      const trace = getGlobalTraceProvider().createTrace({
+        name: 'detached sandbox failure',
+      });
+      await trace.start();
+      const parentSpan = createCustomSpan(
+        { data: { name: 'sandbox parent', data: {} } },
+        trace,
+      );
+      parentSpan.start();
+      const operationError = new SandboxProviderError('cleanup unavailable', {
+        status: 503,
+      });
+
+      await expect(
+        withSandboxSpan(
+          'sandbox.detached_cleanup',
+          {},
+          async () => {
+            throw operationError;
+          },
+          parentSpan,
+        ),
+      ).rejects.toBe(operationError);
+      expect(getCurrentTrace()).toBeNull();
+      expect(getCurrentSpan()).toBeNull();
+
+      const sandboxSpan = processor.spansEnded.find(
+        (span) =>
+          span.spanData.type === 'custom' &&
+          span.spanData.name === 'sandbox.detached_cleanup',
+      );
+      expect(sandboxSpan?.parentId).toBe(parentSpan.spanId);
+      expect(sandboxSpan?.spanData.data).toMatchObject({
+        error_retryable: true,
+        error: {
+          message: 'cleanup unavailable',
+          retryable: true,
+        },
+      });
+
+      parentSpan.end();
+      await trace.end();
+    },
+  );
 
   it('emits operation start and end events without exposing operation output', async () => {
     const events: SandboxEvent[] = [];

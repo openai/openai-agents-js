@@ -22,6 +22,12 @@ These examples demonstrate the hosted tools provided by the Agents SDK.
   pnpm examples:tools-tool-search
   ```
 
+- `programmatic-tool-calling.ts` – Uses hosted JavaScript to run read-only inventory tools concurrently and reduce their results into a replenishment plan.
+
+  ```bash
+  pnpm examples:tools-programmatic-tool-calling
+  ```
+
 - `codex.ts` – Runs the Codex CLI via the codex tool wrapper with streaming event logs and skill usage. Requires `CODEX_API_KEY` or `OPENAI_API_KEY` (Codex falls back to this unless `CODEX_API_KEY` is set). You can set `CODEX_PATH` to override the Codex CLI path.
 
   ```bash

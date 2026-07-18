@@ -29,6 +29,10 @@ export { NoopSpan, Span } from './spans';
 export type {
   SpanData,
   AgentSpanData,
+  TaskSpanData,
+  TurnSpanData,
+  TaskUsageData,
+  TurnUsageData,
   FunctionSpanData,
   GenerationUsageData,
   GenerationSpanData,

@@ -9,6 +9,8 @@ import {
 } from './tool';
 import { Computer } from './computer';
 import { Handoff } from './handoff';
+import type { Span } from './tracing/spans';
+import type { Trace } from './tracing/traces';
 import {
   AgentInputItem,
   AgentOutputItem,
@@ -392,6 +394,21 @@ export type SerializedFunctionTool = {
   deferLoading?: FunctionTool['deferLoading'];
 
   /**
+   * Additional provider-specific metadata forwarded with the function tool definition.
+   */
+  providerData?: FunctionTool['providerData'];
+
+  /**
+   * Responses API only. Execution contexts allowed to invoke the function.
+   */
+  allowedCallers?: FunctionTool['allowedCallers'];
+
+  /**
+   * Responses API only. Schema for the JSON value encoded in string outputs.
+   */
+  outputSchema?: FunctionTool['outputSchema'];
+
+  /**
    * Responses API only. Explicit namespace used to group related function tools.
    */
   namespace?: string;
@@ -413,11 +430,13 @@ export type SerializedShellTool = {
   type: ShellTool['type'];
   name: ShellTool['name'];
   environment?: ShellTool['environment'];
+  allowedCallers?: ShellTool['allowedCallers'];
 };
 
 export type SerializedApplyPatchTool = {
   type: ApplyPatchTool['type'];
   name: ApplyPatchTool['name'];
+  allowedCallers?: ApplyPatchTool['allowedCallers'];
 };
 
 export type SerializedHostedTool = {
@@ -543,6 +562,7 @@ export type ModelRequest = {
   _internal?: {
     runnerManagedRetry?: boolean;
     reasoningEffortImplicit?: boolean;
+    tracingParent?: Span<any> | Trace;
   };
 };
 

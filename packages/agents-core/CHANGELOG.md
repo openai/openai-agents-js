@@ -1,5 +1,28 @@
 # @openai/agents-core
 
+## 0.13.5
+
+### Patch Changes
+
+- 2437c35: feat: add AI SDK provider-executed tool search support (#1479)
+- 72ca4bc: fix: correlate streamed text deltas with completed output items (#1484)
+- f1ae0b4: fix: decode persisted binary sandbox manifest content without host base64 globals
+
+## 0.13.4
+
+### Patch Changes
+
+- a1670ce: fix: fail zodJsonSchemaCompat union/tuple conversion instead of silently dropping unconvertible members
+
+  When the fallback zod-to-JSON-schema converter met a union (or tuple) member it could not convert — for example a discriminated-union variant containing `z.preprocess` — it silently filtered the member out and emitted the remaining schema. The result looked valid but forbade outputs the Zod schema accepts: an agent whose `outputType` union lost a variant could never emit that action under structured outputs. Conversion now fails the whole union/tuple so the caller raises the existing descriptive `UserError` instead of degrading the model's output space.
+
+## 0.13.3
+
+### Patch Changes
+
+- a1ea36f: test: improve retry, MCP approval, and Realtime sequencing coverage
+- 4292ecc: fix: avoid installing tracing process-lifecycle listeners in workerd and browsers
+
 ## 0.13.2
 
 ### Patch Changes

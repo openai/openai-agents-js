@@ -26,6 +26,10 @@ export function isTracingLoopRunningByDefault(): boolean {
   return false;
 }
 
+export function supportsProcessLifecycleEvents(): boolean {
+  return false;
+}
+
 /**
  * Use the Node versions of MCP helpers
  */
