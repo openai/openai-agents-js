@@ -212,8 +212,13 @@ export class OpenAIRealtimeWebRTC
 
         let peerConnection: RTCPeerConnection = new RTCPeerConnection();
         if (this.options.changePeerConnection) {
-          peerConnection =
-            await this.options.changePeerConnection(peerConnection);
+          try {
+            peerConnection =
+              await this.options.changePeerConnection(peerConnection);
+          } catch (error) {
+            peerConnection.close();
+            throw error;
+          }
         }
 
         const dataChannel = peerConnection.createDataChannel('oai-events');

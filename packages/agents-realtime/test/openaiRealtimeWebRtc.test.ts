@@ -621,6 +621,32 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     expect(originalConnections[0]?.ontrack).toBeNull();
     expect(lastChannel).toBe(rtc.connectionState.dataChannel);
   });
+
+  it('closes the provisional peer connection if changePeerConnection fails', async () => {
+    const close = vi.fn();
+
+    class ProvisionalPeerConnection extends FakeRTCPeerConnection {
+      close() {
+        close();
+        super.close();
+      }
+    }
+
+    (global as any).RTCPeerConnection = ProvisionalPeerConnection as any;
+    const rtc = new OpenAIRealtimeWebRTC({
+      changePeerConnection: async () => {
+        throw new Error('replacement failed');
+      },
+    });
+    rtc.on('error', () => {});
+
+    await expect(rtc.connect({ apiKey: 'ek_test' })).rejects.toThrow(
+      'replacement failed',
+    );
+
+    expect(close).toHaveBeenCalledOnce();
+    expect(rtc.status).toBe('disconnected');
+  });
 });
 
 describe('OpenAIRealtimeWebRTC.connectionState', () => {
