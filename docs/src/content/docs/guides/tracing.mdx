@@ -55,11 +55,17 @@ For example, in a Cloudflare Worker, you should wrap your code into a `try/catch
 By default, the SDK traces the following:
 
 - The entire `run()` or `Runner.run()` is wrapped in a `Trace`.
-- Each time an agent runs, it is wrapped in `AgentSpan`
-- LLM generations are wrapped in `GenerationSpan`
-- Function tool calls are each wrapped in `FunctionSpan`
-- Guardrails are wrapped in `GuardrailSpan`
-- Handoffs are wrapped in `HandoffSpan`
+- Each top-level runner invocation is wrapped in a `TaskSpan`.
+- Each time an agent runs, it is wrapped in an `AgentSpan`.
+- Each agent loop iteration is wrapped in a `TurnSpan`.
+- LLM generations are wrapped in a `GenerationSpan`.
+- Function tool calls are each wrapped in a `FunctionSpan`.
+- Guardrails are wrapped in a `GuardrailSpan`.
+- Handoffs are wrapped in a `HandoffSpan`.
+
+The default hierarchy is `TaskSpan` → `AgentSpan` → `TurnSpan`, with model and tool work nested under the turn. A task span aggregates request and token usage for the invocation. Each turn span records the turn number, agent name, and input, output, cached-input, and cache-write token counts.
+
+Task and turn spans are enabled by default. Set `tracing: { includeTaskAndTurnSpans: false }` on a `Runner` or an individual run to omit this additional hierarchy. Per-run tracing options override the runner-level setting.
 
 By default, the trace is named "Agent workflow". You can set this name if you use `withTrace`, or you can configure the name and other properties with the [`RunConfig.workflowName`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#workflowname).
 
@@ -87,7 +93,7 @@ The current trace is tracked via a [Node.js `AsyncLocalStorage`](https://nodejs.
 
 ## Creating spans
 
-You can use the various `create*Span()` (e.g. `createGenerationSpan()`, `createFunctionSpan()`, etc.) methods to create a span. In general, you don't need to manually create spans. A [`createCustomSpan()`](/openai-agents-js/openai/agents-core/functions/createcustomspan/) function is available for tracking custom span information.
+You can use the various `create*Span()` methods, such as `createTaskSpan()`, `createTurnSpan()`, `createGenerationSpan()`, and `createFunctionSpan()`, to create a span. Matching helpers such as `withTaskSpan()` and `withTurnSpan()` create and manage the span lifecycle around a callback. In general, you don't need to manually create spans. A [`createCustomSpan()`](/openai-agents-js/openai/agents-core/functions/createcustomspan/) function is available for tracking custom span information.
 
 Spans are automatically part of the current trace, and are nested under the nearest current span, which is tracked via a [Node.js `AsyncLocalStorage`](https://nodejs.org/api/async_context.html#class-asynclocalstorage) or the respective environment polyfills.
 
