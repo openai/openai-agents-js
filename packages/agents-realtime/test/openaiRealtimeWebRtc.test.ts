@@ -72,12 +72,7 @@ class FakeRTCPeerConnection {
 
   _simulateStateChange(
     state:
-      | 'new'
-      | 'connecting'
-      | 'connected'
-      | 'disconnected'
-      | 'failed'
-      | 'closed',
+      'new' | 'connecting' | 'connected' | 'disconnected' | 'failed' | 'closed',
   ) {
     if (this.connectionState === state) return;
     this.connectionState = state;
@@ -462,15 +457,23 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
 
   it('ignores stale data channel errors after a failed connect is retried', async () => {
     let shouldFailConnection = true;
-    const rtc = new OpenAIRealtimeWebRTC({
-      changePeerConnection: async (peerConnection) => {
+    Object.defineProperty(globalThis, 'fetch', {
+      value: async () => {
         if (shouldFailConnection) {
           shouldFailConnection = false;
           throw new Error('first connection failed');
         }
-        return peerConnection;
+        return {
+          ok: true,
+          status: 200,
+          text: async () => 'answer',
+          headers: { get: () => null },
+        };
       },
+      configurable: true,
+      writable: true,
     });
+    const rtc = new OpenAIRealtimeWebRTC();
     rtc.on('error', () => {});
 
     await expect(rtc.connect({ apiKey: 'ek_test' })).rejects.toThrow(
@@ -568,14 +571,55 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     expect(() => rtc.sendEvent({ type: 'test' } as any)).toThrow();
   });
 
-  it('allows overriding the peer connection', async () => {
-    class NewPeerConnection extends FakeRTCPeerConnection {}
+  it('sets up the peer connection returned by changePeerConnection', async () => {
+    const track = { enabled: true };
+    const audioElement = { autoplay: false, srcObject: null };
+    const originalConnections: FakeRTCPeerConnection[] = [];
+    const createDataChannel = vi.fn();
+    const addTrack = vi.fn();
+    const createOffer = vi.fn();
+
+    class OriginalPeerConnection extends FakeRTCPeerConnection {
+      constructor() {
+        super();
+        originalConnections.push(this);
+      }
+    }
+
+    class NewPeerConnection extends FakeRTCPeerConnection {
+      createDataChannel(name: string) {
+        createDataChannel(name);
+        return super.createDataChannel(name);
+      }
+      addTrack(addedTrack?: unknown) {
+        addTrack(addedTrack);
+      }
+      async createOffer() {
+        createOffer();
+        return super.createOffer();
+      }
+    }
     const custom = new NewPeerConnection();
+    (global as any).RTCPeerConnection = OriginalPeerConnection as any;
     const rtc = new OpenAIRealtimeWebRTC({
       changePeerConnection: async () => custom as any,
+      mediaStream: {
+        getAudioTracks: () => [track],
+      } as any,
+      audioElement: audioElement as any,
     });
+
     await rtc.connect({ apiKey: 'ek_test' });
+
     expect(rtc.connectionState.peerConnection).toBe(custom as any);
+    expect(createDataChannel).toHaveBeenCalledWith('oai-events');
+    expect(addTrack).toHaveBeenCalledWith(track);
+    expect(createOffer).toHaveBeenCalledOnce();
+    expect(custom.ontrack).toBeTypeOf('function');
+    custom.ontrack?.({ streams: ['remote-stream'] } as any);
+    expect(audioElement.srcObject).toBe('remote-stream');
+    expect(originalConnections[0]?.ontrack).toBeNull();
+    expect(lastChannel).toBe(rtc.connectionState.dataChannel);
   });
 });
 

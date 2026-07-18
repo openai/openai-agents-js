@@ -70,7 +70,8 @@ export type OpenAIRealtimeWebRTCOptions = {
   /**
    * Optional hook invoked with the freshly created peer connection. Returning a
    * different connection will override the one created by the transport layer.
-   * This is called right before the offer is created and can be asynchronous.
+   * This is called before the transport configures the data channel and media,
+   * and can be asynchronous.
    */
   changePeerConnection?: (
     peerConnection: RTCPeerConnection,
@@ -210,6 +211,11 @@ export class OpenAIRealtimeWebRTC
         const connectionUrl = new URL(baseUrl);
 
         let peerConnection: RTCPeerConnection = new RTCPeerConnection();
+        if (this.options.changePeerConnection) {
+          peerConnection =
+            await this.options.changePeerConnection(peerConnection);
+        }
+
         const dataChannel = peerConnection.createDataChannel('oai-events');
         let callId: string | undefined = undefined;
 
@@ -371,17 +377,6 @@ export class OpenAIRealtimeWebRTC
             audio: true,
           }));
         peerConnection.addTrack(stream.getAudioTracks()[0]);
-
-        if (this.options.changePeerConnection) {
-          const originalPeerConnection = peerConnection;
-          peerConnection =
-            await this.options.changePeerConnection(peerConnection);
-          if (originalPeerConnection !== peerConnection) {
-            originalPeerConnection.onconnectionstatechange = null;
-          }
-          attachConnectionStateHandler(peerConnection);
-          this.#state = { ...this.#state, peerConnection };
-        }
 
         const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
