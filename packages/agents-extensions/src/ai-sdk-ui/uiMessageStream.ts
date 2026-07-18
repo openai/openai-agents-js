@@ -99,6 +99,14 @@ function extractToolInput(item: RunToolCallItem): ToolInputPayload | null {
     };
   }
 
+  if (raw.type === 'program' && typeof raw.code === 'string') {
+    return {
+      toolCallId,
+      toolName: 'programmatic_tool_calling',
+      input: { code: raw.code },
+    };
+  }
+
   if (raw.type === 'hosted_tool_call') {
     const input =
       typeof raw.arguments === 'string' ? parseJsonArgs(raw.arguments) : {};

@@ -178,11 +178,18 @@ function toOpenAIToolSearchOutputToolPayload(
   }
 
   if (tool.type === 'function') {
-    const { deferLoading, ...rest } = tool as Record<string, any>;
+    const { deferLoading, allowedCallers, outputSchema, ...rest } =
+      tool as Record<string, any>;
     return {
       ...rest,
       ...(typeof deferLoading === 'boolean'
         ? { defer_loading: deferLoading }
+        : {}),
+      ...(Array.isArray(allowedCallers)
+        ? { allowed_callers: allowedCallers }
+        : {}),
+      ...(outputSchema && typeof outputSchema === 'object'
+        ? { output_schema: outputSchema }
         : {}),
     };
   }
@@ -221,11 +228,17 @@ function fromOpenAIToolSearchOutputToolPayload(
   }
 
   if (tool.type === 'function') {
-    const { defer_loading, ...rest } = tool;
+    const { defer_loading, allowed_callers, output_schema, ...rest } = tool;
     return {
       ...rest,
       ...(typeof defer_loading === 'boolean'
         ? { deferLoading: defer_loading }
+        : {}),
+      ...(Array.isArray(allowed_callers)
+        ? { allowedCallers: allowed_callers }
+        : {}),
+      ...(output_schema && typeof output_schema === 'object'
+        ? { outputSchema: output_schema }
         : {}),
     };
   }
@@ -338,6 +351,7 @@ const HostedToolChoice = z.enum([
   'code_interpreter',
   'image_generation',
   'mcp',
+  'programmatic_tool_calling',
   // Specialized local tools
   'shell',
   'apply_patch',
@@ -658,6 +672,110 @@ function assertSupportedToolChoice(
   ) {
     throw new UserError(
       'modelSettings.toolChoice="tool_search" is only supported for a custom function named "tool_search". Responses does not support forcing the built-in tool_search tool. Use "auto" instead.',
+    );
+  }
+}
+
+function collectProgrammaticToolConfiguration(tools: ResponsesTool[]): {
+  hasProgrammaticToolCalling: boolean;
+  hasToolSearch: boolean;
+  programmaticEligibleTools: ResponsesTool[];
+  programmaticOnlyTools: ResponsesTool[];
+} {
+  let hasProgrammaticToolCalling = false;
+  let hasToolSearch = false;
+  const programmaticEligibleTools: ResponsesTool[] = [];
+  const programmaticOnlyTools: ResponsesTool[] = [];
+
+  const visit = (tool: ResponsesTool) => {
+    if (tool.type === 'namespace' && Array.isArray(tool.tools)) {
+      for (const nestedTool of tool.tools) {
+        visit(nestedTool);
+      }
+      return;
+    }
+
+    if (tool.type === 'programmatic_tool_calling') {
+      hasProgrammaticToolCalling = true;
+      return;
+    }
+
+    if (tool.type === 'tool_search') {
+      hasToolSearch = true;
+    }
+
+    const allowedCallers = (tool as { allowed_callers?: unknown })
+      .allowed_callers;
+    if (
+      !Array.isArray(allowedCallers) ||
+      !allowedCallers.includes('programmatic')
+    ) {
+      return;
+    }
+
+    programmaticEligibleTools.push(tool);
+    if (!allowedCallers.includes('direct')) {
+      programmaticOnlyTools.push(tool);
+    }
+  };
+
+  for (const tool of tools) {
+    visit(tool);
+  }
+
+  return {
+    hasProgrammaticToolCalling,
+    hasToolSearch,
+    programmaticEligibleTools,
+    programmaticOnlyTools,
+  };
+}
+
+function describeResponsesTool(tool: ResponsesTool): string {
+  const name = (tool as { name?: unknown }).name;
+  return typeof name === 'string' ? name : String(tool.type);
+}
+
+function assertValidProgrammaticToolCallingConfiguration(
+  toolChoice: ToolChoice | undefined,
+  tools: ResponsesTool[],
+  options?: { allowPromptSuppliedTools?: boolean },
+): void {
+  const allowPromptSuppliedTools = options?.allowPromptSuppliedTools === true;
+  const {
+    hasProgrammaticToolCalling,
+    hasToolSearch,
+    programmaticEligibleTools,
+    programmaticOnlyTools,
+  } = collectProgrammaticToolConfiguration(tools);
+  const forcesProgrammaticToolCalling =
+    typeof toolChoice === 'object' &&
+    (toolChoice as { type?: unknown }).type === 'programmatic_tool_calling';
+
+  if (
+    forcesProgrammaticToolCalling &&
+    !hasProgrammaticToolCalling &&
+    !allowPromptSuppliedTools
+  ) {
+    throw new UserError(
+      'modelSettings.toolChoice="programmatic_tool_calling" requires programmaticToolCallingTool() in the agent tools.',
+    );
+  }
+
+  if (programmaticOnlyTools.length > 0 && !hasProgrammaticToolCalling) {
+    throw new UserError(
+      `Tools restricted to programmatic callers require programmaticToolCallingTool(). Affected tools: ${programmaticOnlyTools.map(describeResponsesTool).join(', ')}.`,
+    );
+  }
+
+  if (
+    hasProgrammaticToolCalling &&
+    !hasToolSearch &&
+    programmaticEligibleTools.length === 0 &&
+    !allowPromptSuppliedTools
+  ) {
+    throw new UserError(
+      'programmaticToolCallingTool() requires at least one tool whose allowedCallers includes "programmatic".',
     );
   }
 }
@@ -1476,6 +1594,10 @@ function convertTool<_TContext = unknown>(
       description: tool.description,
       parameters: tool.parameters,
       strict: tool.strict,
+      ...(tool.allowedCallers
+        ? { allowed_callers: [...tool.allowedCallers] }
+        : {}),
+      ...(tool.outputSchema ? { output_schema: tool.outputSchema } : {}),
     };
     if (tool.deferLoading) {
       openaiTool.defer_loading = true;
@@ -1514,6 +1636,9 @@ function convertTool<_TContext = unknown>(
       tool: {
         type: 'shell',
         environment: toOpenAIShellEnvironment(tool.environment),
+        ...(tool.allowedCallers
+          ? { allowed_callers: [...tool.allowedCallers] }
+          : {}),
       } as OpenAI.Responses.FunctionShellTool,
       include: undefined,
     };
@@ -1521,6 +1646,9 @@ function convertTool<_TContext = unknown>(
     return {
       tool: {
         type: 'apply_patch',
+        ...(tool.allowedCallers
+          ? { allowed_callers: [...tool.allowedCallers] }
+          : {}),
       } as OpenAI.Responses.ApplyPatchTool,
       include: undefined,
     };
@@ -1574,6 +1702,7 @@ function convertTool<_TContext = unknown>(
         tool: {
           type: 'code_interpreter',
           container: tool.providerData.container,
+          allowed_callers: tool.providerData.allowed_callers,
         },
         include: tool.providerData.include_outputs
           ? ['code_interpreter_call.outputs']
@@ -1586,6 +1715,13 @@ function convertTool<_TContext = unknown>(
           execution: tool.providerData.execution,
           description: tool.providerData.description,
           parameters: tool.providerData.parameters,
+        },
+        include: undefined,
+      };
+    } else if (tool.providerData?.type === 'programmatic_tool_calling') {
+      return {
+        tool: {
+          type: 'programmatic_tool_calling',
         },
         include: undefined,
       };
@@ -1618,6 +1754,7 @@ function convertTool<_TContext = unknown>(
         require_approval: convertMCPRequireApproval(
           tool.providerData.require_approval,
         ),
+        allowed_callers: tool.providerData.allowed_callers,
         server_description: tool.providerData.server_description,
       };
       if (tool.providerData.defer_loading === true) {
@@ -1910,6 +2047,36 @@ function isMessageItem(item: protocol.ModelItem): item is protocol.MessageItem {
   return false;
 }
 
+type OpenAIToolCaller =
+  { type: 'direct' } | { type: 'program'; caller_id: string };
+
+function toOpenAIToolCaller(
+  caller: protocol.ToolCaller | undefined,
+): OpenAIToolCaller | undefined {
+  if (!caller) {
+    return undefined;
+  }
+  if (caller.type === 'direct') {
+    return { type: 'direct' };
+  }
+  return { type: 'program', caller_id: caller.callerId };
+}
+
+function fromOpenAIToolCaller(
+  caller: unknown,
+): protocol.ToolCaller | undefined {
+  if (!isRecord(caller)) {
+    return undefined;
+  }
+  if (caller.type === 'direct') {
+    return { type: 'direct' };
+  }
+  if (caller.type === 'program' && typeof caller.caller_id === 'string') {
+    return { type: 'program', callerId: caller.caller_id };
+  }
+  return undefined;
+}
+
 function getPrompt(prompt: ModelRequest['prompt']):
   | {
       id: string;
@@ -2010,6 +2177,43 @@ function getInputItems(
       return toolSearchOutput;
     }
 
+    if (item.type === 'program') {
+      return {
+        type: 'program',
+        id: item.id!,
+        call_id: item.callId,
+        code: item.code,
+        fingerprint: item.fingerprint,
+        ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
+          'type',
+          'id',
+          'call_id',
+          'callId',
+          'code',
+          'fingerprint',
+        ]),
+      } satisfies OpenAI.Responses.ResponseInputItem.Program;
+    }
+
+    if (item.type === 'program_output') {
+      return {
+        type: 'program_output',
+        id: item.id!,
+        call_id: item.callId,
+        result: item.output,
+        status: item.status,
+        ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
+          'type',
+          'id',
+          'call_id',
+          'callId',
+          'output',
+          'result',
+          'status',
+        ]),
+      } satisfies OpenAI.Responses.ResponseInputItem.ProgramOutput;
+    }
+
     if (item.type === 'function_call') {
       const entry: ResponseFunctionToolCallWithNamespace = {
         id: item.id,
@@ -2018,6 +2222,7 @@ function getInputItems(
         call_id: item.callId,
         arguments: item.arguments,
         status: item.status,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
         ...(typeof item.namespace === 'string'
           ? { namespace: item.namespace }
           : {}),
@@ -2029,6 +2234,7 @@ function getInputItems(
           'arguments',
           'status',
           'namespace',
+          'caller',
         ]),
       };
 
@@ -2046,6 +2252,7 @@ function getInputItems(
         call_id: item.callId,
         output: normalizedOutput,
         status: item.status,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
         ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
           'type',
           'id',
@@ -2053,6 +2260,7 @@ function getInputItems(
           'output',
           'status',
           'namespace',
+          'caller',
         ]),
       };
       return entry as unknown as OpenAI.Responses.ResponseInputItem.FunctionCallOutput;
@@ -2175,12 +2383,15 @@ function getInputItems(
         item.providerData,
       );
 
-      const entry: OpenAI.Responses.ResponseInputItem.ShellCall = {
+      const entry: OpenAI.Responses.ResponseInputItem.ShellCall & {
+        caller?: ReturnType<typeof toOpenAIToolCaller>;
+      } = {
         type: 'shell_call',
         id: item.id,
         call_id: item.callId,
         status: item.status ?? 'in_progress',
         action,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
         ...shellProviderData,
       };
 
@@ -2205,11 +2416,14 @@ function getInputItems(
 
       const entry: OpenAI.Responses.ResponseInputItem.ShellCallOutput & {
         max_output_length?: number;
+        caller?: ReturnType<typeof toOpenAIToolCaller>;
       } = {
         type: 'shell_call_output',
         call_id: item.callId,
         output: sanitizedOutputs,
         id: item.id ?? undefined,
+        status: item.status ?? undefined,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
       };
       if (typeof item.maxOutputLength === 'number') {
         entry.max_output_length = item.maxOutputLength;
@@ -2222,30 +2436,41 @@ function getInputItems(
       if (!item.operation) {
         throw new UserError('apply_patch_call missing operation');
       }
-      const entry: OpenAI.Responses.ResponseInputItem.ApplyPatchCall = {
+      const entry: OpenAI.Responses.ResponseInputItem.ApplyPatchCall & {
+        caller?: ReturnType<typeof toOpenAIToolCaller>;
+      } = {
         type: 'apply_patch_call',
         id: item.id ?? undefined,
         call_id: item.callId,
         status: item.status ?? 'in_progress',
         operation: item.operation,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
       };
 
       return entry;
     }
 
     if (item.type === 'apply_patch_call_output') {
-      const entry: OpenAI.Responses.ResponseInputItem.ApplyPatchCallOutput = {
+      const entry: OpenAI.Responses.ResponseInputItem.ApplyPatchCallOutput & {
+        caller?: ReturnType<typeof toOpenAIToolCaller>;
+      } = {
         type: 'apply_patch_call_output',
         id: item.id ?? undefined,
         call_id: item.callId,
         status: item.status ?? 'completed',
         output: item.output ?? undefined,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
       };
 
       return entry;
     }
 
     if (item.type === 'hosted_tool_call') {
+      const hostedCaller = (
+        item as protocol.HostedToolCallItem & {
+          caller?: protocol.ToolCaller;
+        }
+      ).caller;
       if (
         item.providerData?.type === 'web_search_call' ||
         item.providerData?.type === 'web_search' // for backward compatibility
@@ -2292,7 +2517,9 @@ function getInputItems(
         item.providerData?.type === 'code_interpreter_call' ||
         item.providerData?.type === 'code_interpreter' // for backward compatibility
       ) {
-        const entry: OpenAI.Responses.ResponseCodeInterpreterToolCall = {
+        const entry: OpenAI.Responses.ResponseCodeInterpreterToolCall & {
+          caller?: OpenAIToolCaller;
+        } = {
           ...camelOrSnakeToSnakeCase(item.providerData), // place here to prioritize the below fields
           type: 'code_interpreter_call',
           id: item.id!,
@@ -2303,6 +2530,7 @@ function getInputItems(
             item.providerData?.outputs ?? item.providerData?.results ?? [],
           status: CodeInterpreterStatus.parse(item.status ?? 'failed'),
           container_id: item.providerData?.container_id,
+          ...(hostedCaller ? { caller: toOpenAIToolCaller(hostedCaller) } : {}),
         };
 
         return entry;
@@ -2329,13 +2557,16 @@ function getInputItems(
       ) {
         const providerData =
           item.providerData as ProviderData.HostedMCPListTools;
-        const entry: OpenAI.Responses.ResponseInputItem.McpListTools = {
+        const entry: OpenAI.Responses.ResponseInputItem.McpListTools & {
+          caller?: OpenAIToolCaller;
+        } = {
           ...camelOrSnakeToSnakeCase(item.providerData),
           type: 'mcp_list_tools',
           id: item.id!,
           tools: camelOrSnakeToSnakeCase(providerData.tools) as any,
           server_label: providerData.server_label,
           error: providerData.error,
+          ...(hostedCaller ? { caller: toOpenAIToolCaller(hostedCaller) } : {}),
         };
         return entry;
       } else if (
@@ -2344,13 +2575,16 @@ function getInputItems(
       ) {
         const providerData =
           item.providerData as ProviderData.HostedMCPApprovalRequest;
-        const entry: OpenAI.Responses.ResponseInputItem.McpApprovalRequest = {
+        const entry: OpenAI.Responses.ResponseInputItem.McpApprovalRequest & {
+          caller?: OpenAIToolCaller;
+        } = {
           ...camelOrSnakeToSnakeCase(item.providerData), // place here to prioritize the below fields
           type: 'mcp_approval_request',
           id: providerData.id ?? item.id!,
           name: providerData.name,
           arguments: providerData.arguments,
           server_label: providerData.server_label,
+          ...(hostedCaller ? { caller: toOpenAIToolCaller(hostedCaller) } : {}),
         };
         return entry;
       } else if (
@@ -2359,13 +2593,16 @@ function getInputItems(
       ) {
         const providerData =
           item.providerData as ProviderData.HostedMCPApprovalResponse;
-        const entry: OpenAI.Responses.ResponseInputItem.McpApprovalResponse = {
+        const entry: OpenAI.Responses.ResponseInputItem.McpApprovalResponse & {
+          caller?: OpenAIToolCaller;
+        } = {
           ...camelOrSnakeToSnakeCase(providerData),
           type: 'mcp_approval_response',
           id: providerData.id,
           approve: providerData.approve,
           approval_request_id: providerData.approval_request_id,
           reason: providerData.reason,
+          ...(hostedCaller ? { caller: toOpenAIToolCaller(hostedCaller) } : {}),
         };
         return entry;
       } else if (
@@ -2373,7 +2610,9 @@ function getInputItems(
         item.name === 'mcp_call'
       ) {
         const providerData = item.providerData as ProviderData.HostedMCPCall;
-        const entry: OpenAI.Responses.ResponseInputItem.McpCall = {
+        const entry: OpenAI.Responses.ResponseInputItem.McpCall & {
+          caller?: OpenAIToolCaller;
+        } = {
           // output, which can be a large text string, is optional here, so we don't include it
           // output: item.output,
           ...camelOrSnakeToSnakeCase(providerData), // place here to prioritize the below fields
@@ -2383,6 +2622,7 @@ function getInputItems(
           arguments: providerData.arguments,
           server_label: providerData.server_label,
           error: providerData.error,
+          ...(hostedCaller ? { caller: toOpenAIToolCaller(hostedCaller) } : {}),
         };
         return entry;
       }
@@ -2502,6 +2742,44 @@ function convertToOutputItem(
         providerData,
       };
       return output;
+    } else if (item.type === 'program') {
+      const {
+        id,
+        call_id,
+        code,
+        fingerprint,
+        type: _type,
+        ...providerData
+      } = item as OpenAI.Responses.ResponseOutputItem.Program &
+        Record<string, unknown>;
+      const output: protocol.ProgramCallItem = {
+        type: 'program',
+        id,
+        callId: call_id,
+        code,
+        fingerprint,
+        providerData,
+      };
+      return output;
+    } else if (item.type === 'program_output') {
+      const {
+        id,
+        call_id,
+        result,
+        status,
+        type: _type,
+        ...providerData
+      } = item as OpenAI.Responses.ResponseOutputItem.ProgramOutput &
+        Record<string, unknown>;
+      const output: protocol.ProgramCallResultItem = {
+        type: 'program_output',
+        id,
+        callId: call_id,
+        output: result,
+        status,
+        providerData,
+      };
+      return output;
     } else if (
       item.type === 'file_search_call' ||
       item.type === 'web_search_call' ||
@@ -2509,6 +2787,12 @@ function convertToOutputItem(
       item.type === 'code_interpreter_call'
     ) {
       const { status, ...remainingItem } = item;
+      const caller = fromOpenAIToolCaller(
+        (remainingItem as { caller?: unknown }).caller,
+      );
+      if (caller) {
+        delete (remainingItem as { caller?: unknown }).caller;
+      }
       let outputData = undefined;
       if ('result' in remainingItem && remainingItem.result !== null) {
         // type: "image_generation_call"
@@ -2521,6 +2805,7 @@ function convertToOutputItem(
         name: item.type,
         status,
         output: outputData,
+        ...(caller ? { caller } : {}),
         providerData: remainingItem,
       };
       return output;
@@ -2530,6 +2815,7 @@ function convertToOutputItem(
         call_id,
         name,
         namespace,
+        caller,
         status,
         arguments: args,
         ...providerData
@@ -2542,6 +2828,7 @@ function convertToOutputItem(
         ...(typeof namespace === 'string' ? { namespace } : {}),
         status,
         arguments: args,
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       return output;
@@ -2553,6 +2840,7 @@ function convertToOutputItem(
         name: toolName,
         function_name: functionName,
         namespace,
+        caller,
         ...providerData
       } = item as OpenAI.Responses.ResponseFunctionToolCallOutputItem & {
         name?: string;
@@ -2567,6 +2855,7 @@ function convertToOutputItem(
         ...(typeof namespace === 'string' ? { namespace } : {}),
         status: status ?? 'completed',
         output: convertFunctionCallOutputToProtocol(rawOutput),
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       return output;
@@ -2590,7 +2879,7 @@ function convertToOutputItem(
       };
       return output;
     } else if (item.type === 'shell_call') {
-      const { call_id, status, action, ...providerData } = item;
+      const { call_id, status, action, caller, ...providerData } = item;
       const shellAction: protocol.ShellAction = {
         commands: Array.isArray(action?.commands) ? action.commands : [],
       };
@@ -2608,6 +2897,7 @@ function convertToOutputItem(
         callId: call_id,
         status: status ?? 'in_progress',
         action: shellAction,
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       return output;
@@ -2616,6 +2906,8 @@ function convertToOutputItem(
         call_id,
         output: responseOutput,
         max_output_length,
+        status,
+        caller,
         ...providerData
       } = item as ResponseShellCallOutput;
       let normalizedOutput: protocol.ShellCallOutputContent[] = [];
@@ -2640,6 +2932,8 @@ function convertToOutputItem(
         id: item.id ?? undefined,
         callId: call_id,
         output: normalizedOutput,
+        ...(status ? { status } : {}),
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       if (typeof max_output_length === 'number') {
@@ -2647,7 +2941,7 @@ function convertToOutputItem(
       }
       return output;
     } else if (item.type === 'apply_patch_call') {
-      const { call_id, status, operation, ...providerData } = item;
+      const { call_id, status, operation, caller, ...providerData } = item;
       if (!operation) {
         throw new UserError('apply_patch_call missing operation');
       }
@@ -2684,6 +2978,7 @@ function convertToOutputItem(
         callId: call_id,
         status: status ?? 'in_progress',
         operation: normalizedOperation,
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       return output;
@@ -2692,6 +2987,7 @@ function convertToOutputItem(
         call_id,
         status,
         output: responseOutput,
+        caller,
         ...providerData
       } = item as unknown as ResponseApplyPatchCallOutput;
       const output: protocol.ApplyPatchCallResultItem = {
@@ -2700,40 +2996,62 @@ function convertToOutputItem(
         callId: call_id,
         status,
         output: typeof responseOutput === 'string' ? responseOutput : undefined,
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       return output;
     } else if (item.type === 'mcp_list_tools') {
       const { ...providerData } = item;
+      const caller = fromOpenAIToolCaller(
+        (providerData as Record<string, unknown>).caller,
+      );
+      if (caller) {
+        delete (providerData as Record<string, unknown>).caller;
+      }
       const output: protocol.HostedToolCallItem = {
         type: 'hosted_tool_call',
         id: item.id!,
         name: item.type,
         status: 'completed',
         output: undefined,
+        ...(caller ? { caller } : {}),
         providerData,
       };
       return output;
     } else if (item.type === 'mcp_approval_request') {
       const { ...providerData } = item;
+      const caller = fromOpenAIToolCaller(
+        (providerData as Record<string, unknown>).caller,
+      );
+      if (caller) {
+        delete (providerData as Record<string, unknown>).caller;
+      }
       const output: protocol.HostedToolCallItem = {
         type: 'hosted_tool_call',
         id: item.id!,
         name: 'mcp_approval_request',
         status: 'completed',
         output: undefined,
+        ...(caller ? { caller } : {}),
         providerData,
       };
       return output;
     } else if (item.type === 'mcp_call') {
       // Avoiding to duplicate potentially large output data
       const { output: outputData, ...providerData } = item;
+      const caller = fromOpenAIToolCaller(
+        (providerData as Record<string, unknown>).caller,
+      );
+      if (caller) {
+        delete (providerData as Record<string, unknown>).caller;
+      }
       const output: protocol.HostedToolCallItem = {
         type: 'hosted_tool_call',
         id: item.id!,
         name: item.type,
         status: 'completed',
         output: outputData || undefined,
+        ...(caller ? { caller } : {}),
         providerData,
       };
       return output;
@@ -3064,6 +3382,11 @@ export class OpenAIResponsesModel implements Model {
     assertSupportedToolChoice(toolChoice, toolChoiceValidationTools, {
       allowPromptSuppliedTools,
     });
+    assertValidProgrammaticToolCallingConfiguration(
+      toolChoice,
+      toolChoiceValidationTools,
+      { allowPromptSuppliedTools },
+    );
     const { text, ...restOfProviderData } = providerDataWithoutTransport;
 
     if (request.modelSettings.reasoning) {

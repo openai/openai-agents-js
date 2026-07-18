@@ -1119,6 +1119,30 @@ describe('OpenAIChatCompletionsModel', () => {
     expect(client.chat.completions.create).not.toHaveBeenCalled();
   });
 
+  it('rejects Programmatic Tool Calling before sending a request', async () => {
+    const client = new FakeClient();
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [
+        {
+          type: 'hosted_tool',
+          name: 'programmatic_tool_calling',
+          providerData: { type: 'programmatic_tool_calling' },
+        },
+      ],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await expect(withTrace('t', () => model.getResponse(req))).rejects.toThrow(
+      'Programmatic Tool Calling is only supported with the Responses API.',
+    );
+    expect(client.chat.completions.create).not.toHaveBeenCalled();
+  });
+
   it('rejects required toolChoice when no tools are available', async () => {
     const client = new FakeClient();
     const model = new OpenAIChatCompletionsModel(client as any, 'gpt');

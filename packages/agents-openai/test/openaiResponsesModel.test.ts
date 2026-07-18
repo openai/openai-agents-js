@@ -2340,6 +2340,212 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it.each([
+    {
+      name: 'forced PTC without the helper tool',
+      toolChoice: 'programmatic_tool_calling',
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup_account',
+          description: 'Look up an account.',
+          parameters: { type: 'object', properties: {} },
+          strict: true,
+          allowedCallers: ['programmatic'],
+        },
+      ],
+      error: /requires programmaticToolCallingTool\(\)/,
+    },
+    {
+      name: 'programmatic-only tools without the helper tool',
+      toolChoice: undefined,
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup_account',
+          description: 'Look up an account.',
+          parameters: { type: 'object', properties: {} },
+          strict: true,
+          allowedCallers: ['programmatic'],
+        },
+      ],
+      error:
+        /Tools restricted to programmatic callers require programmaticToolCallingTool\(\)/,
+    },
+    {
+      name: 'the PTC helper without an eligible tool',
+      toolChoice: undefined,
+      tools: [
+        {
+          type: 'hosted_tool',
+          name: 'programmatic_tool_calling',
+          providerData: { type: 'programmatic_tool_calling' },
+        },
+      ],
+      error:
+        /requires at least one tool whose allowedCallers includes "programmatic"/,
+    },
+  ])('rejects $name before sending a Responses request', async (testCase) => {
+    await withTrace('test', async () => {
+      const createMock = vi.fn();
+      const model = new OpenAIResponsesModel(
+        { responses: { create: createMock } } as unknown as OpenAI,
+        'gpt-5.2',
+      );
+
+      await expect(
+        model.getResponse({
+          systemInstructions: undefined,
+          input: 'look up an account',
+          modelSettings: { toolChoice: testCase.toolChoice },
+          tools: testCase.tools,
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+          signal: undefined,
+        } as any),
+      ).rejects.toThrow(testCase.error);
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('rejects programmatic-only SDK tools without the helper when a prompt may supply tools', async () => {
+    await withTrace('test', async () => {
+      const createMock = vi.fn().mockResolvedValue({
+        id: 'res-prompt-programmatic-only-tool',
+        usage: {},
+        output: [],
+      });
+      const model = new OpenAIResponsesModel(
+        { responses: { create: createMock } } as unknown as OpenAI,
+        'gpt-5.2',
+      );
+
+      await expect(
+        model.getResponse({
+          systemInstructions: undefined,
+          prompt: { promptId: 'pmpt_programmatic_tool_calling' },
+          input: 'look up an account',
+          modelSettings: {},
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup_account',
+              description: 'Look up an account.',
+              parameters: { type: 'object', properties: {} },
+              strict: true,
+              allowedCallers: ['programmatic'],
+            },
+          ],
+          toolsExplicitlyProvided: false,
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+          signal: undefined,
+        } as any),
+      ).rejects.toThrow(
+        /Tools restricted to programmatic callers require programmaticToolCallingTool\(\)/,
+      );
+      expect(createMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('allows a prompt to supply eligible tools for an SDK PTC helper', async () => {
+    await withTrace('test', async () => {
+      const createMock = vi.fn().mockResolvedValue({
+        id: 'res-prompt-eligible-tool',
+        usage: {},
+        output: [],
+      });
+      const model = new OpenAIResponsesModel(
+        { responses: { create: createMock } } as unknown as OpenAI,
+        'gpt-5.2',
+      );
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        prompt: { promptId: 'pmpt_programmatic_tool_calling' },
+        input: 'look up an account',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'programmatic_tool_calling',
+            providerData: { type: 'programmatic_tool_calling' },
+          },
+        ],
+        toolsExplicitlyProvided: false,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it.each([
+    {
+      name: 'an explicitly eligible function',
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup_account',
+          description: 'Look up an account.',
+          parameters: { type: 'object', properties: {} },
+          strict: true,
+          allowedCallers: ['programmatic'],
+        },
+        {
+          type: 'hosted_tool',
+          name: 'programmatic_tool_calling',
+          providerData: { type: 'programmatic_tool_calling' },
+        },
+      ],
+    },
+    {
+      name: 'tool search that can load an eligible tool later',
+      tools: [
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search' },
+        },
+        {
+          type: 'hosted_tool',
+          name: 'programmatic_tool_calling',
+          providerData: { type: 'programmatic_tool_calling' },
+        },
+      ],
+    },
+  ])('accepts a complete PTC configuration with $name', async (testCase) => {
+    await withTrace('test', async () => {
+      const createMock = vi.fn().mockResolvedValue({
+        id: 'res-programmatic-tool-calling',
+        usage: {},
+        output: [],
+      });
+      const model = new OpenAIResponsesModel(
+        { responses: { create: createMock } } as unknown as OpenAI,
+        'gpt-5.2',
+      );
+
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'look up an account',
+        modelSettings: {},
+        tools: testCase.tools,
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any);
+
+      expect(createMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('allows namespaced function tool_choice values for immediate namespace tools', async () => {
     await withTrace('test', async () => {
       const fakeResponse = {

@@ -365,6 +365,7 @@ function normalizeHostedMcpProviderData(
     connector_id?: unknown;
     authorization?: unknown;
     allowed_tools?: unknown;
+    allowed_callers?: unknown;
     defer_loading?: unknown;
     headers?: unknown;
     require_approval?: unknown;
@@ -399,6 +400,14 @@ function normalizeHostedMcpProviderData(
   if (candidate.allowed_tools !== undefined) {
     normalized.allowed_tools =
       candidate.allowed_tools as ProviderData.HostedMCPTool<any>['allowed_tools'];
+  }
+  if (
+    Array.isArray(candidate.allowed_callers) &&
+    candidate.allowed_callers.every(
+      (caller) => caller === 'direct' || caller === 'programmatic',
+    )
+  ) {
+    normalized.allowed_callers = candidate.allowed_callers;
   }
   if (candidate.defer_loading === true) {
     normalized.defer_loading = true;

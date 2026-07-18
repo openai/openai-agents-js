@@ -337,6 +337,12 @@ export function itemsToLanguageV2Messages(
   };
 
   for (const item of collapsedItems) {
+    if ('caller' in item && item.caller?.type === 'program') {
+      throw new UserError(
+        'The AI SDK adapter does not support Programmatic Tool Calling history. Use a Responses API model directly.',
+      );
+    }
+
     if (item.type === 'message' || typeof item.type === 'undefined') {
       const { role, content, providerData } = item;
       if (role === 'system') {
@@ -1472,6 +1478,16 @@ export function toolToLanguageV2Tool(
   model: LanguageModelCompatible,
   tool: SerializedTool,
 ): LanguageModelV2FunctionTool | LanguageModelV2ProviderToolCompat {
+  if (
+    (tool.type === 'function' ||
+      tool.type === 'shell' ||
+      tool.type === 'apply_patch') &&
+    tool.allowedCallers?.some((caller) => caller === 'programmatic')
+  ) {
+    throw new UserError(
+      'The AI SDK adapter does not support Programmatic Tool Calling. Use a Responses API model directly.',
+    );
+  }
   if (tool.type === 'function') {
     if (tool.deferLoading) {
       throw new UserError(
@@ -1479,6 +1495,11 @@ export function toolToLanguageV2Tool(
       );
     }
     const providerOptions = toProviderOptions(tool.providerData, model);
+    if (tool.outputSchema) {
+      throw new UserError(
+        'The AI SDK adapter does not support Responses function outputSchema. Use a Responses API model directly.',
+      );
+    }
     return {
       type: 'function',
       name: getSerializedFunctionToolName(tool),
@@ -1503,6 +1524,15 @@ export function toolToLanguageV2Tool(
       };
     }
 
+    if (
+      tool.providerData?.type === 'programmatic_tool_calling' ||
+      (Array.isArray(tool.providerData?.allowed_callers) &&
+        tool.providerData.allowed_callers.includes('programmatic'))
+    ) {
+      throw new UserError(
+        'The AI SDK adapter does not support Programmatic Tool Calling. Use a Responses API model directly.',
+      );
+    }
     return {
       type: providerToolType,
       id: `${providerToolPrefix}.${tool.name}`,

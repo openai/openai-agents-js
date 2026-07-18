@@ -83,6 +83,31 @@ describe('RealtimeSession', () => {
     await session.connect({ apiKey: 'test' });
   });
 
+  it('rejects programmatic function tools before connecting', async () => {
+    const execute = vi.fn(async () => 'should not run');
+    const programmaticTool = tool({
+      name: 'program_only',
+      description: 'Only callable from a program.',
+      parameters: z.object({}),
+      allowedCallers: ['programmatic'],
+      execute,
+    });
+    const agent = new RealtimeAgent({
+      name: 'Programmatic tool agent',
+      tools: [programmaticTool],
+    });
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+
+    await expect(localSession.connect({ apiKey: 'test' })).rejects.toThrow(
+      "Realtime does not support function tool 'program_only' with allowedCallers including 'programmatic'. Programmatic Tool Calling is only supported with the Responses API.",
+    );
+    expect(localTransport.connectCalls).toHaveLength(0);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('rejects duplicate function tool and handoff names before connecting', async () => {
     const targetAgent = new RealtimeAgent({ name: 'Billing' });
     const duplicateTool = tool({

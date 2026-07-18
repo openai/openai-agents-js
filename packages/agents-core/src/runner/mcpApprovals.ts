@@ -46,15 +46,13 @@ export async function handleHostedMcpApprovals<TContext>({
     }
 
     const providerData = rawItem.providerData as
-      | ProviderData.HostedMCPApprovalRequest
-      | undefined;
+      ProviderData.HostedMCPApprovalRequest | undefined;
     if (!providerData) {
       continue;
     }
 
     const toolData = approvalRequest.mcpTool.providerData as
-      | ProviderData.HostedMCPTool<TContext>
-      | undefined;
+      ProviderData.HostedMCPTool<TContext> | undefined;
     const approvalRequestId = rawItem.id ?? providerData.id;
 
     if (toolData?.on_approval) {
@@ -73,6 +71,7 @@ export async function handleHostedMcpApprovals<TContext>({
             type: 'hosted_tool_call',
             name: 'mcp_approval_response',
             providerData: approvalResponseData,
+            ...(rawItem.caller ? { caller: rawItem.caller } : {}),
           },
           agent as Agent<unknown, 'text'>,
         ),
@@ -100,6 +99,7 @@ export async function handleHostedMcpApprovals<TContext>({
             type: 'hosted_tool_call',
             name: 'mcp_approval_response',
             providerData: approvalResponseData,
+            ...(rawItem.caller ? { caller: rawItem.caller } : {}),
           },
           agent as Agent<unknown, 'text'>,
         ),

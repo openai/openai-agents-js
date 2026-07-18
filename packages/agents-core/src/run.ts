@@ -1200,6 +1200,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               state,
               [...preparedCall.turnInput, ...state._generatedItems],
               options.toolNotFoundBehavior,
+              {
+                allowPromptSuppliedTools: preparedCall.allowPromptSuppliedTools,
+              },
             );
 
             state._lastProcessedResponse = processedResponse;
@@ -1682,7 +1685,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               );
             } catch (error) {
               logger.debug(
-                'Failed to reconcile streamed function calls after abort.',
+                'Failed to reconcile streamed tool calls after abort.',
                 error,
               );
             }
@@ -1796,6 +1799,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             result.state,
             [...preparedCall.turnInput, ...result.state._generatedItems],
             options.toolNotFoundBehavior,
+            {
+              allowPromptSuppliedTools: preparedCall.allowPromptSuppliedTools,
+            },
           );
 
           result.state._lastProcessedResponse = processedResponse;
@@ -2196,6 +2202,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       state._context,
     );
     const prompt = await executionAgent.getPrompt(state._context);
+    const allowPromptSuppliedTools =
+      Boolean(prompt) &&
+      !(
+        artifacts.toolsExplicitlyProvided &&
+        artifacts.serializedTools.length === 0 &&
+        artifacts.serializedHandoffs.length === 0
+      );
 
     const { modelInput, sourceItems, persistedItems, filterApplied } =
       await applyCallModelInputFilter(
@@ -2228,6 +2241,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       modelSettings,
       modelInput,
       prompt,
+      allowPromptSuppliedTools,
       previousResponseId,
       conversationId,
       sourceItems,

@@ -88,6 +88,7 @@ export type PreparedModelCall<TContext = UnknownContext> =
     modelSettings: ModelSettings;
     modelInput: ModelInputData;
     prompt?: Prompt;
+    allowPromptSuppliedTools: boolean;
     previousResponseId?: string;
     conversationId?: string;
     sourceItems: (AgentInputItem | undefined)[];

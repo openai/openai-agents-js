@@ -6,6 +6,7 @@ import {
 import type { AgentInputItem } from '../types';
 
 const SIMPLE_TOOL_RESULT_TYPE_BY_CALL_TYPE = {
+  program: 'program_output',
   function_call: 'function_call_result',
   computer_call: 'computer_call_result',
   shell_call: 'shell_call_output',

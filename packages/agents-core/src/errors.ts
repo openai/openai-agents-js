@@ -101,6 +101,41 @@ export class InvalidToolInputError extends ModelBehaviorError {
 export class UserError extends AgentsError {}
 
 /**
+ * Context from a function tool output that failed runtime validation.
+ */
+export type ToolOutputErrorContext = {
+  /** The run context at the time of the error. */
+  runContext?: RunContext<any>;
+  /** The invalid value returned by the tool or one of its fallback paths. */
+  output?: unknown;
+  /** The details of the tool call made by the model. */
+  details?: ToolInvocationErrorContext['details'];
+};
+
+/**
+ * Error thrown when a function tool returns a value that does not match its
+ * runtime output schema.
+ */
+export class InvalidToolOutputError extends UserError {
+  /** The original error thrown during validation, if any. */
+  originalError?: unknown;
+
+  /** Context from the tool output that failed validation. */
+  toolOutput?: ToolOutputErrorContext;
+
+  constructor(
+    message: string,
+    state?: RunState<any, Agent<any, any>>,
+    originalError?: unknown,
+    toolOutput?: ToolOutputErrorContext,
+  ) {
+    super(message, state);
+    this.originalError = originalError;
+    this.toolOutput = toolOutput;
+  }
+}
+
+/**
  * Error thrown when a guardrail execution fails.
  */
 export class GuardrailExecutionError extends AgentsError {
