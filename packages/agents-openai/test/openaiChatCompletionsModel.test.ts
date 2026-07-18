@@ -593,6 +593,43 @@ describe('OpenAIChatCompletionsModel', () => {
     ]);
   });
 
+  it('handles refusal message with empty-string content', async () => {
+    // Some providers (e.g. Azure OpenAI) return an empty string instead of
+    // null for `content` alongside a refusal. The refusal must still be
+    // surfaced rather than being dropped in favor of an empty text message.
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [{ message: { content: '', refusal: 'no' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    const result = await withTrace('t', () => model.getResponse(req));
+
+    expect(result.output).toEqual([
+      {
+        id: 'r',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          { type: 'refusal', refusal: 'no', providerData: { content: '' } },
+        ],
+      },
+    ]);
+  });
+
   it('handles audio message', async () => {
     const client = new FakeClient();
     const response = {
