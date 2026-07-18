@@ -18,6 +18,8 @@ import { ResponseCreateSequencer } from './responseCreateSequencer';
 import { HEADERS } from './utils';
 
 const PEER_CONNECTION_DISCONNECTED_GRACE_MS = 5000;
+const CONNECTION_CLOSED_DURING_SETUP =
+  'Connection closed before peer connection setup completed';
 
 /**
  * The connection state of the WebRTC connection.
@@ -102,6 +104,8 @@ export class OpenAIRealtimeWebRTC
   #muted = false;
   #connectPromise: Promise<void> | undefined;
   #connectAttemptId = 0;
+  #connectCancelled = false;
+  #pendingPeerConnection: RTCPeerConnection | undefined;
   #peerConnectionDisconnectedTimeout: ReturnType<typeof setTimeout> | undefined;
   #responseCreateSequencer = new ResponseCreateSequencer(
     (event) => this.#sendEventNow(event),
@@ -171,6 +175,7 @@ export class OpenAIRealtimeWebRTC
       return;
     }
 
+    this.#connectCancelled = false;
     const model = options.model ?? this.currentModel;
     this.currentModel = model;
     const baseUrl = options.url ?? this.#url;
@@ -188,6 +193,11 @@ export class OpenAIRealtimeWebRTC
         apiKey = await this._getApiKey(options);
       } catch (error) {
         rejectConnection(error);
+        return;
+      }
+
+      if (this.#connectCancelled) {
+        rejectConnection(new Error(CONNECTION_CLOSED_DURING_SETUP));
         return;
       }
 
@@ -210,14 +220,33 @@ export class OpenAIRealtimeWebRTC
 
         const connectionUrl = new URL(baseUrl);
 
-        let peerConnection: RTCPeerConnection = new RTCPeerConnection();
+        const provisionalPeerConnection = new RTCPeerConnection();
+        let peerConnection: RTCPeerConnection = provisionalPeerConnection;
         if (this.options.changePeerConnection) {
+          this.#pendingPeerConnection = provisionalPeerConnection;
           try {
-            peerConnection =
+            const replacementPeerConnection =
               await this.options.changePeerConnection(peerConnection);
+
+            if (this.#connectCancelled) {
+              if (replacementPeerConnection !== provisionalPeerConnection) {
+                replacementPeerConnection.close();
+              }
+              rejectConnection(new Error(CONNECTION_CLOSED_DURING_SETUP));
+              return;
+            }
+            peerConnection = replacementPeerConnection;
           } catch (error) {
-            peerConnection.close();
+            if (this.#connectCancelled) {
+              rejectConnection(new Error(CONNECTION_CLOSED_DURING_SETUP));
+              return;
+            }
+            provisionalPeerConnection.close();
             throw error;
+          } finally {
+            if (this.#pendingPeerConnection === provisionalPeerConnection) {
+              this.#pendingPeerConnection = undefined;
+            }
           }
         }
 
@@ -555,6 +584,14 @@ export class OpenAIRealtimeWebRTC
    * Close the connection to the Realtime API and disconnects the underlying WebRTC connection.
    */
   close() {
+    if (this.#connectPromise) {
+      this.#connectCancelled = true;
+    }
+    if (this.#pendingPeerConnection) {
+      const pendingPeerConnection = this.#pendingPeerConnection;
+      this.#pendingPeerConnection = undefined;
+      pendingPeerConnection.close();
+    }
     this.#clearPeerConnectionDisconnectedTimeout();
     this.#responseCreateSequencer.releaseWaiters();
     this.#cancelOngoingResponse = false;

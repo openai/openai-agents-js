@@ -647,6 +647,54 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     expect(close).toHaveBeenCalledOnce();
     expect(rtc.status).toBe('disconnected');
   });
+
+  it('cancels peer connection setup if close is called during changePeerConnection', async () => {
+    const replacement = createDeferred<RTCPeerConnection>();
+    const provisionalClose = vi.fn();
+    const replacementClose = vi.fn();
+    const createDataChannel = vi.fn();
+
+    class ProvisionalPeerConnection extends FakeRTCPeerConnection {
+      close() {
+        provisionalClose();
+        super.close();
+      }
+    }
+
+    class ReplacementPeerConnection extends FakeRTCPeerConnection {
+      createDataChannel(name: string) {
+        createDataChannel(name);
+        return super.createDataChannel(name);
+      }
+      close() {
+        replacementClose();
+        super.close();
+      }
+    }
+
+    (global as any).RTCPeerConnection = ProvisionalPeerConnection as any;
+    const changePeerConnection = vi.fn(() => replacement.promise);
+    const rtc = new OpenAIRealtimeWebRTC({ changePeerConnection });
+    const connectionChanges: string[] = [];
+    rtc.on('connection_change', (status) => connectionChanges.push(status));
+
+    const connectPromise = rtc.connect({ apiKey: 'ek_test' });
+    const rejection = expect(connectPromise).rejects.toThrow(
+      'Connection closed before peer connection setup completed',
+    );
+    await vi.waitFor(() => expect(changePeerConnection).toHaveBeenCalledOnce());
+
+    rtc.close();
+    expect(provisionalClose).toHaveBeenCalledOnce();
+
+    replacement.resolve(new ReplacementPeerConnection() as any);
+    await rejection;
+
+    expect(replacementClose).toHaveBeenCalledOnce();
+    expect(createDataChannel).not.toHaveBeenCalled();
+    expect(connectionChanges).toEqual([]);
+    expect(rtc.status).toBe('disconnected');
+  });
 });
 
 describe('OpenAIRealtimeWebRTC.connectionState', () => {
