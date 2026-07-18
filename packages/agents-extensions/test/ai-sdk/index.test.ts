@@ -1421,7 +1421,7 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
-  test('converts V3 image tool outputs without relying on URL extensions', () => {
+  test('converts V3 image tool outputs and preserves file IDs', () => {
     const imageUrl =
       'https://images.unsplash.com/photo-1505761671935-60b3a7427bad?auto=format&fit=crop&w=400&q=80';
     const items: protocol.ModelItem[] = [
@@ -1444,6 +1444,10 @@ describe('itemsToLanguageV2Messages', () => {
           {
             type: 'input_image',
             image: 'data:image/png;base64,aGVsbG8=',
+          },
+          {
+            type: 'input_image',
+            image: { id: 'file_image_123' },
           },
         ],
       } as any,
@@ -1486,6 +1490,10 @@ describe('itemsToLanguageV2Messages', () => {
                   type: 'image-data',
                   data: 'aGVsbG8=',
                   mediaType: 'image/png',
+                },
+                {
+                  type: 'image-file-id',
+                  fileId: 'file_image_123',
                 },
               ],
             },

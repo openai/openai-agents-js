@@ -1164,7 +1164,8 @@ function convertStructuredOutputsToAiSdkOutput(
   type ImagePart =
     | { type: 'media'; data: string; mediaType: string }
     | { type: 'image-data'; data: string; mediaType: string }
-    | { type: 'image-url'; url: string };
+    | { type: 'image-url'; url: string }
+    | { type: 'image-file-id'; fileId: string };
 
   const isV3 = specVersion === 'v3';
   const textParts: string[] = [];
@@ -1176,17 +1177,31 @@ function convertStructuredOutputsToAiSdkOutput(
       continue;
     }
     if (item.type === 'input_image') {
+      const imageObjectFileId =
+        isRecord(item.image) && typeof item.image.id === 'string'
+          ? item.image.id
+          : undefined;
+      const legacyFileId =
+        typeof (item as any).fileId === 'string'
+          ? (item as any).fileId
+          : undefined;
+      const imageFileId = imageObjectFileId ?? legacyFileId;
+
+      if (isV3 && imageFileId) {
+        imageParts.push({ type: 'image-file-id', fileId: imageFileId });
+        continue;
+      }
+
       const imageValue =
         typeof item.image === 'string'
           ? item.image
-          : isRecord(item.image) && typeof item.image.id === 'string'
-            ? `openai-file:${item.image.id}`
+          : imageObjectFileId
+            ? `openai-file:${imageObjectFileId}`
             : typeof (item as any).imageUrl === 'string'
               ? (item as any).imageUrl
               : undefined;
 
-      const legacyFileId = (item as any).fileId;
-      if (!imageValue && typeof legacyFileId === 'string') {
+      if (!imageValue && legacyFileId) {
         textParts.push(`[image file_id=${legacyFileId}]`);
         continue;
       }
