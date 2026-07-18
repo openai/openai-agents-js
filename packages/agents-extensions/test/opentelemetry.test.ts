@@ -120,7 +120,6 @@ function createRealOtelHarness() {
 
 describe('OpenTelemetryTracingProcessor', () => {
   test('falls back to the trace root when a restored parent is missing', async () => {
-    // Arrange
     const harness = createMockOtelHarness();
     const agentTrace = await harness.start();
     const child = createAgentSpan(
@@ -128,11 +127,9 @@ describe('OpenTelemetryTracingProcessor', () => {
       { parentId: 'span_missing' },
     );
 
-    // Act
     await harness.processor.onSpanStart(child);
     await harness.processor.onTraceEnd(agentTrace);
 
-    // Assert
     expect(trace.getSpan(harness.startSpan.mock.calls[1][2]!)).toBe(
       harness.spans[0],
     );
@@ -140,7 +137,6 @@ describe('OpenTelemetryTracingProcessor', () => {
   });
 
   test('refreshes mutable span attributes during trace cleanup', async () => {
-    // Arrange
     const harness = createMockOtelHarness();
     const agentTrace = await harness.start();
     const agentSpan = createAgentSpan({
@@ -154,10 +150,8 @@ describe('OpenTelemetryTracingProcessor', () => {
     agentSpan.spanData.tools = ['fetch_page'];
     agentSpan.spanData.handoffs = ['Escalation'];
 
-    // Act
     await harness.processor.onTraceEnd(agentTrace);
 
-    // Assert
     expect(harness.spans[1].setAttributes).toHaveBeenCalledWith(
       expect.objectContaining({
         'openai.agents.agent.tools': ['fetch_page'],
@@ -167,7 +161,6 @@ describe('OpenTelemetryTracingProcessor', () => {
   });
 
   test('maps span data to semantic attributes while keeping content private by default', async () => {
-    // Arrange
     const cases: Array<{
       data: SpanData;
       options?: OpenTelemetryTracingProcessorOptions;
@@ -284,12 +277,10 @@ describe('OpenTelemetryTracingProcessor', () => {
       },
     ];
 
-    // Act
     const attributesByCase = await Promise.all(
       cases.map(({ data, options }) => captureSpanAttributes(data, options)),
     );
 
-    // Assert
     cases.forEach(({ expected, absent = [] }, index) => {
       const attributes = attributesByCase[index];
       expect(attributes).toEqual(expect.objectContaining(expected));
@@ -298,7 +289,6 @@ describe('OpenTelemetryTracingProcessor', () => {
   });
 
   test('exports sanitized custom data', async () => {
-    // Arrange
     const data: Record<string, unknown> = { kept: true, bigint: 1n };
     data.circular = data;
     const customSpanData: SpanData = {
@@ -307,12 +297,10 @@ describe('OpenTelemetryTracingProcessor', () => {
       data,
     };
 
-    // Act
     const attributes = await captureSpanAttributes(customSpanData, {
       recordCustomData: true,
     });
 
-    // Assert
     expect(attributes).toEqual(
       expect.objectContaining({
         'openai.agents.custom.data': '{"kept":true}',
@@ -321,7 +309,6 @@ describe('OpenTelemetryTracingProcessor', () => {
   });
 
   test('contains suppression policy failures', async () => {
-    // Arrange
     const diagnostic = vi.spyOn(diag, 'error').mockImplementation(() => {});
     const policyError = new Error('policy failed');
     const harness = createMockOtelHarness({
@@ -333,12 +320,10 @@ describe('OpenTelemetryTracingProcessor', () => {
     await harness.start();
     await harness.processor.onSpanStart(response);
 
-    // Act
     await expect(
       harness.processor.withSpan(response, async () => 'result'),
     ).resolves.toBe('result');
 
-    // Assert
     expect(diagnostic).toHaveBeenCalledWith(
       'OpenTelemetry suppression policy failed',
       policyError,
@@ -347,7 +332,6 @@ describe('OpenTelemetryTracingProcessor', () => {
   });
 
   test('contains OTel span context setup failures', async () => {
-    // Arrange
     const diagnostic = vi.spyOn(diag, 'error').mockImplementation(() => {});
     const setupError = new Error('span setup failed');
     const processor = new OpenTelemetryTracingProcessor({
@@ -363,12 +347,10 @@ describe('OpenTelemetryTracingProcessor', () => {
     const response = createAgentSpan({ type: 'response' });
     await processor.onTraceStart(createTrace());
 
-    // Act
     await expect(
       processor.withSpan(response, async () => 'result'),
     ).resolves.toBe('result');
 
-    // Assert
     expect(diagnostic).toHaveBeenCalledWith(
       'OpenTelemetry span context setup failed',
       setupError,
@@ -377,7 +359,6 @@ describe('OpenTelemetryTracingProcessor', () => {
   });
 
   test('delegates flush and shutdown when configured', async () => {
-    // Arrange
     const forceFlush = vi.fn(async () => undefined);
     const shutdown = vi.fn(async (_timeout?: number) => undefined);
     const processor = new OpenTelemetryTracingProcessor({
@@ -385,17 +366,14 @@ describe('OpenTelemetryTracingProcessor', () => {
       shutdown,
     });
 
-    // Act
     await processor.forceFlush();
     await processor.shutdown(5000);
 
-    // Assert
     expect(forceFlush).toHaveBeenCalledOnce();
     expect(shutdown).toHaveBeenCalledWith(5000);
   });
 
   test('exports a real hierarchy and preserves tool instrumentation', async () => {
-    // Arrange
     const harness = createRealOtelHarness();
     const agentTrace = createTrace('trace_123', 'Agent workflow');
     agentTrace.groupId = 'group_123';
@@ -414,7 +392,6 @@ describe('OpenTelemetryTracingProcessor', () => {
     let responseInstrumentationSuppressed = false;
 
     try {
-      // Act
       await harness.processor.onTraceStart(agentTrace);
       await harness.processor.onSpanStart(agent);
       await harness.processor.onSpanStart(tool);
@@ -433,7 +410,6 @@ describe('OpenTelemetryTracingProcessor', () => {
       await harness.processor.onSpanEnd(agent);
       await harness.processor.onTraceEnd(agentTrace);
 
-      // Assert
       const spans = await harness.finishedSpans();
       const byName = (name: string) => spans.find((span) => span.name === name);
       const root = byName('Agent workflow');

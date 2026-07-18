@@ -1418,7 +1418,6 @@ describe('OpenAIChatCompletionsModel', () => {
   });
 
   it('runs streamed requests and source iteration in model span context', async () => {
-    // Arrange
     const contextProbe = createTracingContextProbe('generation');
     const client = new FakeClient();
     async function* fakeStream() {
@@ -1446,14 +1445,12 @@ describe('OpenAIChatCompletionsModel', () => {
       tracing: true,
     };
 
-    // Act
     await withTestTracingProcessor(contextProbe.processor, () =>
       withTrace('test', () =>
         consumeAsyncIterable(model.getStreamedResponse(request)),
       ),
     );
 
-    // Assert
     expect(contextProbe.observations).toEqual([true, true]);
   });
 

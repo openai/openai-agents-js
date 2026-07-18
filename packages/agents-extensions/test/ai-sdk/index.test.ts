@@ -3038,7 +3038,6 @@ describe('AiSdkModel.getStreamedResponse', () => {
   });
 
   test('runs streamed requests and source iteration in model span context', async () => {
-    // Arrange
     const contextProbe = createTracingContextProbe('generation');
     const model = new AiSdkModel(
       stubModel({
@@ -3061,7 +3060,6 @@ describe('AiSdkModel.getStreamedResponse', () => {
       }),
     );
 
-    // Act
     await withTestTracingProcessor(contextProbe.processor, () =>
       withTrace('test', () =>
         consumeAsyncIterable(
@@ -3077,7 +3075,6 @@ describe('AiSdkModel.getStreamedResponse', () => {
       ),
     );
 
-    // Assert
     expect(contextProbe.observations).toEqual([true, true]);
   });
 

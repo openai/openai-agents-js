@@ -4277,7 +4277,6 @@ describe('OpenAIResponsesModel', () => {
   });
 
   it('runs streamed requests and source iteration in model span context', async () => {
-    // Arrange
     const contextProbe = createTracingContextProbe('response');
     async function* fakeStream() {
       contextProbe.observe();
@@ -4305,14 +4304,12 @@ describe('OpenAIResponsesModel', () => {
       signal: undefined,
     };
 
-    // Act
     await withTestTracingProcessor(contextProbe.processor, () =>
       withTrace('test', () =>
         consumeAsyncIterable(model.getStreamedResponse(request as any)),
       ),
     );
 
-    // Assert
     expect(contextProbe.observations).toEqual([true, true]);
   });
 

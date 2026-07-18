@@ -786,7 +786,6 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('activates agent span context for streaming completion hooks', async () => {
-    // Arrange
     const contextProbe = createTracingContextProbe('agent');
     const observedContext: Record<string, boolean> = {};
     const agent = new Agent({
@@ -801,13 +800,11 @@ describe('Runner.run (streaming)', () => {
       observedContext.runnerEnd = contextProbe.isActive();
     });
 
-    // Act
     await withTestTracingProcessor(contextProbe.processor, async () => {
       const result = await runner.run(agent, 'hello', { stream: true });
       await result.completed;
     });
 
-    // Assert
     expect(observedContext).toEqual({
       agentEnd: true,
       runnerEnd: true,
