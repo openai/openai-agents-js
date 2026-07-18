@@ -649,10 +649,11 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
   });
 
   it('cancels peer connection setup if close is called during changePeerConnection', async () => {
-    const replacement = createDeferred<RTCPeerConnection>();
+    const firstReplacement = createDeferred<RTCPeerConnection>();
     const provisionalClose = vi.fn();
-    const replacementClose = vi.fn();
-    const createDataChannel = vi.fn();
+    const staleReplacementClose = vi.fn();
+    const staleCreateDataChannel = vi.fn();
+    const retryCreateDataChannel = vi.fn();
 
     class ProvisionalPeerConnection extends FakeRTCPeerConnection {
       close() {
@@ -661,19 +662,30 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
       }
     }
 
-    class ReplacementPeerConnection extends FakeRTCPeerConnection {
+    class StaleReplacementPeerConnection extends FakeRTCPeerConnection {
       createDataChannel(name: string) {
-        createDataChannel(name);
+        staleCreateDataChannel(name);
         return super.createDataChannel(name);
       }
       close() {
-        replacementClose();
+        staleReplacementClose();
         super.close();
       }
     }
 
+    class RetryPeerConnection extends FakeRTCPeerConnection {
+      createDataChannel(name: string) {
+        retryCreateDataChannel(name);
+        return super.createDataChannel(name);
+      }
+    }
+
     (global as any).RTCPeerConnection = ProvisionalPeerConnection as any;
-    const changePeerConnection = vi.fn(() => replacement.promise);
+    const retryPeerConnection = new RetryPeerConnection();
+    const changePeerConnection = vi
+      .fn()
+      .mockImplementationOnce(() => firstReplacement.promise)
+      .mockImplementationOnce(() => retryPeerConnection as any);
     const rtc = new OpenAIRealtimeWebRTC({ changePeerConnection });
     const connectionChanges: string[] = [];
     rtc.on('connection_change', (status) => connectionChanges.push(status));
@@ -686,14 +698,20 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
 
     rtc.close();
     expect(provisionalClose).toHaveBeenCalledOnce();
-
-    replacement.resolve(new ReplacementPeerConnection() as any);
     await rejection;
 
-    expect(replacementClose).toHaveBeenCalledOnce();
-    expect(createDataChannel).not.toHaveBeenCalled();
-    expect(connectionChanges).toEqual([]);
-    expect(rtc.status).toBe('disconnected');
+    await rtc.connect({ apiKey: 'ek_test' });
+    expect(rtc.status).toBe('connected');
+
+    firstReplacement.resolve(new StaleReplacementPeerConnection() as any);
+    await vi.waitFor(() =>
+      expect(staleReplacementClose).toHaveBeenCalledOnce(),
+    );
+
+    expect(staleCreateDataChannel).not.toHaveBeenCalled();
+    expect(retryCreateDataChannel).toHaveBeenCalledOnce();
+    expect(connectionChanges).toEqual(['connecting', 'connected']);
+    expect(rtc.connectionState.peerConnection).toBe(retryPeerConnection as any);
   });
 });
 
