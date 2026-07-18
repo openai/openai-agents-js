@@ -17,6 +17,7 @@ import {
   Span,
 } from '@openai/agents-core';
 import {
+  consumeAsyncIterable,
   createTracingContextProbe,
   withTestTracingProcessor,
 } from '../../../helpers/tests/tracing';
@@ -4276,17 +4277,17 @@ describe('OpenAIResponsesModel', () => {
   });
 
   it('runs streamed requests and source iteration in model span context', async () => {
+    // Arrange
     const contextProbe = createTracingContextProbe('response');
-    const contextChecks: boolean[] = [];
     async function* fakeStream() {
-      contextChecks.push(contextProbe.isActive());
+      contextProbe.observe();
       yield {
         type: 'response.created',
         response: { id: 'res-context', usage: {}, output: [] },
       } as any;
     }
     const createMock = vi.fn(async () => {
-      contextChecks.push(contextProbe.isActive());
+      contextProbe.observe();
       return fakeStream();
     });
     const fakeClient = {
@@ -4304,15 +4305,15 @@ describe('OpenAIResponsesModel', () => {
       signal: undefined,
     };
 
-    await withTestTracingProcessor(contextProbe.processor, async () => {
-      await withTrace('test', async () => {
-        for await (const _event of model.getStreamedResponse(request as any)) {
-          // Consume the stream.
-        }
-      });
-    });
+    // Act
+    await withTestTracingProcessor(contextProbe.processor, () =>
+      withTrace('test', () =>
+        consumeAsyncIterable(model.getStreamedResponse(request as any)),
+      ),
+    );
 
-    expect(contextChecks).toEqual([true, true]);
+    // Assert
+    expect(contextProbe.observations).toEqual([true, true]);
   });
 
   it('emits response.completed once as a raw model event', async () => {

@@ -6,6 +6,7 @@ import {
   setTracingDisabled,
 } from '@openai/agents-core';
 import {
+  consumeAsyncIterable,
   createTracingContextProbe,
   withTestTracingProcessor,
 } from '../../../helpers/tests/tracing';
@@ -1417,15 +1418,15 @@ describe('OpenAIChatCompletionsModel', () => {
   });
 
   it('runs streamed requests and source iteration in model span context', async () => {
+    // Arrange
     const contextProbe = createTracingContextProbe('generation');
-    const contextChecks: boolean[] = [];
     const client = new FakeClient();
     async function* fakeStream() {
-      contextChecks.push(contextProbe.isActive());
+      contextProbe.observe();
       yield { id: 'c' } as any;
     }
     client.chat.completions.create.mockImplementation(async () => {
-      contextChecks.push(contextProbe.isActive());
+      contextProbe.observe();
       return fakeStream();
     });
     vi.mocked(convertChatCompletionsStreamToResponses).mockImplementationOnce(
@@ -1445,15 +1446,15 @@ describe('OpenAIChatCompletionsModel', () => {
       tracing: true,
     };
 
-    await withTestTracingProcessor(contextProbe.processor, async () => {
-      await withTrace('t', async () => {
-        for await (const _event of model.getStreamedResponse(request)) {
-          // Consume the stream.
-        }
-      });
-    });
+    // Act
+    await withTestTracingProcessor(contextProbe.processor, () =>
+      withTrace('test', () =>
+        consumeAsyncIterable(model.getStreamedResponse(request)),
+      ),
+    );
 
-    expect(contextChecks).toEqual([true, true]);
+    // Assert
+    expect(contextProbe.observations).toEqual([true, true]);
   });
 
   it('passes strict feature validation to the stream converter', async () => {

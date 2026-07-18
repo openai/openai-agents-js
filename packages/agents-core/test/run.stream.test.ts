@@ -48,6 +48,33 @@ import {
   withTestTracingProcessor,
 } from '../../../helpers/tests/tracing';
 
+class FinalOutputStreamingModel implements Model {
+  constructor(private readonly output = 'Final output') {}
+
+  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+    return {
+      output: [fakeModelMessage(this.output)],
+      usage: new Usage(),
+    };
+  }
+
+  async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+    yield {
+      type: 'response_done',
+      response: {
+        id: 'response_final',
+        usage: {
+          requests: 1,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+        },
+        output: [fakeModelMessage(this.output)],
+      },
+    } as StreamEvent;
+  }
+}
+
 function getFirstTextContent(item: AgentInputItem): string | undefined {
   if (item.type !== 'message') {
     return undefined;
@@ -720,65 +747,34 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('emits agent_end lifecycle event for streaming agents', async () => {
-    const contextProbe = createTracingContextProbe('agent');
-    class SimpleStreamingModel implements Model {
-      constructor(private resp: ModelResponse) {}
-      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-        return this.resp;
-      }
-      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'r',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: this.resp.output,
-          },
-        } as any;
-      }
-    }
-
     const agent = new Agent({
       name: 'TestAgent',
-      model: new SimpleStreamingModel({
-        output: [fakeModelMessage('Final output')],
-        usage: new Usage(),
-      }),
+      model: new FinalOutputStreamingModel(),
     });
 
     // Track agent_end events on both the agent and runner
     const agentEndEvents: Array<{ context: any; output: string }> = [];
     const runnerEndEvents: Array<{ context: any; agent: any; output: string }> =
       [];
-    const observedContext: Record<string, boolean> = {};
 
     agent.on('agent_end', (context, output) => {
       agentEndEvents.push({ context, output });
-      observedContext.agentEnd = contextProbe.isActive();
     });
 
     // Create a runner instance to listen for events
-    const runner = new Runner({ tracingDisabled: false });
+    const runner = new Runner();
     runner.on('agent_end', (context, agent, output) => {
       runnerEndEvents.push({ context, agent, output });
-      observedContext.runnerEnd = contextProbe.isActive();
     });
 
-    await withTestTracingProcessor(contextProbe.processor, async () => {
-      const result = await runner.run(agent, 'test input', { stream: true });
+    const result = await runner.run(agent, 'test input', { stream: true });
 
-      // Consume the stream
-      const events: RunStreamEvent[] = [];
-      for await (const e of result.toStream()) {
-        events.push(e);
-      }
-      await result.completed;
-    });
+    // Consume the stream
+    const events: RunStreamEvent[] = [];
+    for await (const e of result.toStream()) {
+      events.push(e);
+    }
+    await result.completed;
 
     // Verify agent_end was called on both agent and runner
     expect(agentEndEvents).toHaveLength(1);
@@ -787,38 +783,41 @@ describe('Runner.run (streaming)', () => {
     expect(runnerEndEvents).toHaveLength(1);
     expect(runnerEndEvents[0].agent).toBe(agent);
     expect(runnerEndEvents[0].output).toBe('Final output');
-    expect(observedContext).toEqual({ agentEnd: true, runnerEnd: true });
+  });
+
+  it('activates agent span context for streaming completion hooks', async () => {
+    // Arrange
+    const contextProbe = createTracingContextProbe('agent');
+    const observedContext: Record<string, boolean> = {};
+    const agent = new Agent({
+      name: 'StreamingCompletionContextAgent',
+      model: new FinalOutputStreamingModel(),
+    });
+    const runner = new Runner({ tracingDisabled: false });
+    agent.on('agent_end', () => {
+      observedContext.agentEnd = contextProbe.isActive();
+    });
+    runner.on('agent_end', () => {
+      observedContext.runnerEnd = contextProbe.isActive();
+    });
+
+    // Act
+    await withTestTracingProcessor(contextProbe.processor, async () => {
+      const result = await runner.run(agent, 'hello', { stream: true });
+      await result.completed;
+    });
+
+    // Assert
+    expect(observedContext).toEqual({
+      agentEnd: true,
+      runnerEnd: true,
+    });
   });
 
   it('emits turn input on agent_start during streaming runs', async () => {
-    class LifecycleStreamingModel implements Model {
-      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-        return {
-          output: [fakeModelMessage('Final output')],
-          usage: new Usage(),
-        };
-      }
-
-      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'r_lifecycle',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: [fakeModelMessage('Final output')],
-          },
-        } as any;
-      }
-    }
-
     const agent = new Agent({
       name: 'StreamLifecycleAgent',
-      model: new LifecycleStreamingModel(),
+      model: new FinalOutputStreamingModel(),
     });
     const runner = new Runner();
 

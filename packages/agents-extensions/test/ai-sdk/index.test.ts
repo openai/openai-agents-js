@@ -19,6 +19,7 @@ import {
 import type { SerializedOutputType } from '@openai/agents';
 import { allowConsole } from '../../../../helpers/tests/console-guard';
 import {
+  consumeAsyncIterable,
   createTracingContextProbe,
   withTestTracingProcessor,
 } from '../../../../helpers/tests/tracing';
@@ -3037,16 +3038,16 @@ describe('AiSdkModel.getStreamedResponse', () => {
   });
 
   test('runs streamed requests and source iteration in model span context', async () => {
+    // Arrange
     const contextProbe = createTracingContextProbe('generation');
-    const contextChecks: boolean[] = [];
     const model = new AiSdkModel(
       stubModel({
         async doStream() {
-          contextChecks.push(contextProbe.isActive());
+          contextProbe.observe();
           return {
             stream: new ReadableStream({
               pull(controller) {
-                contextChecks.push(contextProbe.isActive());
+                contextProbe.observe();
                 controller.enqueue({
                   type: 'finish',
                   finishReason: 'stop',
@@ -3060,22 +3061,24 @@ describe('AiSdkModel.getStreamedResponse', () => {
       }),
     );
 
-    await withTestTracingProcessor(contextProbe.processor, async () => {
-      await withTrace('test', async () => {
-        for await (const _event of model.getStreamedResponse({
-          input: 'hi',
-          tools: [],
-          handoffs: [],
-          modelSettings: {},
-          outputType: 'text',
-          tracing: true,
-        } as any)) {
-          // Consume the stream.
-        }
-      });
-    });
+    // Act
+    await withTestTracingProcessor(contextProbe.processor, () =>
+      withTrace('test', () =>
+        consumeAsyncIterable(
+          model.getStreamedResponse({
+            input: 'hi',
+            tools: [],
+            handoffs: [],
+            modelSettings: {},
+            outputType: 'text',
+            tracing: true,
+          } as any),
+        ),
+      ),
+    );
 
-    expect(contextChecks).toEqual([true, true]);
+    // Assert
+    expect(contextProbe.observations).toEqual([true, true]);
   });
 
   test('applies transformOutputText to finalized streamed assistant text', async () => {
