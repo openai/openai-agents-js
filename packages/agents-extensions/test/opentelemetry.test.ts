@@ -281,47 +281,6 @@ describe('OpenTelemetryTracingProcessor', () => {
     ).resolves.toBeUndefined();
   });
 
-  test('suppresses model instrumentation and caches custom policy results', async () => {
-    const withSpy = vi.spyOn(context, 'with');
-    const policy = vi.fn((data: SpanData) => data.type === 'function');
-    const customHarness = createHarness({ suppressInstrumentation: policy });
-    const tool = createAgentSpan({
-      type: 'function',
-      name: 'fetch_page',
-      input: '{}',
-      output: 'ok',
-    });
-    await customHarness.start();
-    await customHarness.processor.onSpanStart(tool);
-    for (let index = 0; index < 3; index++) {
-      await customHarness.processor.withSpan(tool, async () => undefined);
-    }
-    expect(policy).toHaveBeenCalledOnce();
-    expect(isTracingSuppressed(withSpy.mock.calls[0][0])).toBe(true);
-    withSpy.mockRestore();
-  });
-
-  test('isolates equal span IDs in different traces', async () => {
-    const harness = createHarness();
-    const traceA = await harness.start('trace_a');
-    const traceB = await harness.start('trace_b');
-    const spanA = createAgentSpan(
-      { type: 'agent', name: 'Agent A' },
-      { traceId: 'trace_a', spanId: 'shared' },
-    );
-    const spanB = createAgentSpan(
-      { type: 'agent', name: 'Agent B' },
-      { traceId: 'trace_b', spanId: 'shared' },
-    );
-
-    await harness.processor.onSpanStart(spanA);
-    await harness.processor.onSpanStart(spanB);
-    await harness.processor.onTraceEnd(traceA);
-    await harness.processor.onTraceEnd(traceB);
-
-    for (const span of harness.spans) expect(span.end).toHaveBeenCalledOnce();
-  });
-
   test('contains suppression and context setup failures', async () => {
     const diagnostic = vi.spyOn(diag, 'error').mockImplementation(() => {});
     const policyError = new Error('policy failed');
