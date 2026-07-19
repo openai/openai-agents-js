@@ -238,6 +238,8 @@ export class OpenAIRealtimeWebRTC
               await this.options.changePeerConnection(peerConnection);
 
             if (connectAttempt.cancelled) {
+              // Let a newer attempt awaiting the same replacement publish ownership first.
+              await Promise.resolve();
               if (
                 replacementPeerConnection !== provisionalPeerConnection &&
                 replacementPeerConnection !== this.#state.peerConnection
