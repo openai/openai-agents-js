@@ -654,6 +654,33 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     expect(rtc.status).toBe('disconnected');
   });
 
+  it('closes the selected peer connection if data channel setup fails', async () => {
+    const replacementClose = vi.fn();
+
+    class ReplacementPeerConnection extends FakeRTCPeerConnection {
+      createDataChannel(_name: string): never {
+        throw new Error('data channel setup failed');
+      }
+      close() {
+        replacementClose();
+        super.close();
+      }
+    }
+
+    const replacementPeerConnection = new ReplacementPeerConnection();
+    const rtc = new OpenAIRealtimeWebRTC({
+      changePeerConnection: async () => replacementPeerConnection as any,
+    });
+    rtc.on('error', () => {});
+
+    await expect(rtc.connect({ apiKey: 'ek_test' })).rejects.toThrow(
+      'data channel setup failed',
+    );
+
+    expect(replacementClose).toHaveBeenCalledOnce();
+    expect(rtc.status).toBe('disconnected');
+  });
+
   it('cancels peer connection setup if close is called during changePeerConnection', async () => {
     const firstReplacement = createDeferred<RTCPeerConnection>();
     const provisionalClose = vi.fn();

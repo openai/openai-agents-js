@@ -271,9 +271,9 @@ export class OpenAIRealtimeWebRTC
         const connectionUrl = new URL(baseUrl);
 
         const provisionalPeerConnection = new RTCPeerConnection();
+        connectAttempt.pendingPeerConnection = provisionalPeerConnection;
         let peerConnection: RTCPeerConnection = provisionalPeerConnection;
         if (this.options.changePeerConnection) {
-          connectAttempt.pendingPeerConnection = provisionalPeerConnection;
           try {
             const replacementPeerConnection =
               await this.options.changePeerConnection(peerConnection);
@@ -296,20 +296,20 @@ export class OpenAIRealtimeWebRTC
               provisionalPeerConnection.close();
             }
             peerConnection = replacementPeerConnection;
+            connectAttempt.pendingPeerConnection = peerConnection;
           } catch (error) {
             resolveSelectedPeerConnection(undefined);
             if (connectAttempt.cancelled) {
               rejectConnection(new Error(CONNECTION_CLOSED_DURING_SETUP));
               return;
             }
-            provisionalPeerConnection.close();
-            throw error;
-          } finally {
             if (
               connectAttempt.pendingPeerConnection === provisionalPeerConnection
             ) {
               connectAttempt.pendingPeerConnection = undefined;
             }
+            provisionalPeerConnection.close();
+            throw error;
           }
         } else {
           resolveSelectedPeerConnection(provisionalPeerConnection);
@@ -333,6 +333,9 @@ export class OpenAIRealtimeWebRTC
           dataChannel,
           callId,
         };
+        if (connectAttempt.pendingPeerConnection === peerConnection) {
+          connectAttempt.pendingPeerConnection = undefined;
+        }
         this.emit('connection_change', this.#state.status);
 
         dataChannel.addEventListener('open', () => {
@@ -514,6 +517,11 @@ export class OpenAIRealtimeWebRTC
 
         await peerConnection.setRemoteDescription(answer);
       } catch (error) {
+        if (connectAttempt.pendingPeerConnection) {
+          const pendingPeerConnection = connectAttempt.pendingPeerConnection;
+          connectAttempt.pendingPeerConnection = undefined;
+          pendingPeerConnection.close();
+        }
         resolveSelectedPeerConnection(undefined);
         this.close();
         this._onError(error);
