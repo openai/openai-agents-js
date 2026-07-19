@@ -575,6 +575,7 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     const track = { enabled: true };
     const audioElement = { autoplay: false, srcObject: null };
     const originalConnections: FakeRTCPeerConnection[] = [];
+    const originalClose = vi.fn();
     const createDataChannel = vi.fn();
     const addTrack = vi.fn();
     const createOffer = vi.fn();
@@ -583,6 +584,10 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
       constructor() {
         super();
         originalConnections.push(this);
+      }
+      close() {
+        originalClose();
+        super.close();
       }
     }
 
@@ -615,6 +620,7 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     expect(createDataChannel).toHaveBeenCalledWith('oai-events');
     expect(addTrack).toHaveBeenCalledWith(track);
     expect(createOffer).toHaveBeenCalledOnce();
+    expect(originalClose).toHaveBeenCalledOnce();
     expect(custom.ontrack).toBeTypeOf('function');
     custom.ontrack?.({ streams: ['remote-stream'] } as any);
     expect(audioElement.srcObject).toBe('remote-stream');

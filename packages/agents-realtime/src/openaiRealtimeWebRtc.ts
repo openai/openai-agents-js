@@ -249,6 +249,9 @@ export class OpenAIRealtimeWebRTC
               rejectConnection(new Error(CONNECTION_CLOSED_DURING_SETUP));
               return;
             }
+            if (replacementPeerConnection !== provisionalPeerConnection) {
+              provisionalPeerConnection.close();
+            }
             peerConnection = replacementPeerConnection;
           } catch (error) {
             if (connectAttempt.cancelled) {
