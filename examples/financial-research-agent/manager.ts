@@ -10,6 +10,8 @@ import { searchAgent } from './agents';
 import { verifierAgent, VerificationResult } from './agents';
 import { writerAgent, FinancialReportData } from './agents';
 
+const MAX_REPORT_REVISIONS = 2;
+
 function formatSearchResults(searchResults: string[]): string {
   return searchResults
     .map((result, index) => `Source summary ${index + 1}:\n${result}`)
@@ -23,13 +25,39 @@ async function summaryExtractor(
   return String(runResult.finalOutput.summary);
 }
 
+const reportWriterAgent = writerAgent.clone({
+  tools: [
+    financialsAgent.asTool({
+      toolName: 'fundamentals_analysis',
+      toolDescription: 'Use to get a short write-up of key financial metrics',
+      customOutputExtractor: summaryExtractor,
+    }),
+    riskAgent.asTool({
+      toolName: 'risk_analysis',
+      toolDescription: 'Use to get a short write-up of potential red flags',
+      customOutputExtractor: summaryExtractor,
+    }),
+  ],
+});
+
 export class FinancialResearchManager {
   async run(query: string): Promise<void> {
     console.log(`[start] Starting financial research...`);
     const searchPlan = await this.planSearches(query);
     const searchResults = await this.performSearches(searchPlan);
-    const report = await this.writeReport(query, searchResults);
-    const verification = await this.verifyReport(report, searchResults);
+    let report = await this.writeReport(query, searchResults);
+    let verification = await this.verifyReport(report, searchResults);
+    let revisions = 0;
+    while (!verification.verified && revisions < MAX_REPORT_REVISIONS) {
+      report = await this.reviseReport(
+        query,
+        report,
+        verification,
+        searchResults,
+      );
+      verification = await this.verifyReport(report, searchResults);
+      revisions++;
+    }
     const finalReport = `Report summary\n\n${report.short_summary}`;
     console.log(finalReport);
     console.log('\n\n=====REPORT=====\n\n');
@@ -83,23 +111,9 @@ export class FinancialResearchManager {
     query: string,
     searchResults: string[],
   ): Promise<FinancialReportData> {
-    // Expose the specialist analysts as tools
-    const fundamentalsTool = financialsAgent.asTool({
-      toolName: 'fundamentals_analysis',
-      toolDescription: 'Use to get a short write-up of key financial metrics',
-      customOutputExtractor: summaryExtractor,
-    });
-    const riskTool = riskAgent.asTool({
-      toolName: 'risk_analysis',
-      toolDescription: 'Use to get a short write-up of potential red flags',
-      customOutputExtractor: summaryExtractor,
-    });
-    const writerWithTools = writerAgent.clone({
-      tools: [fundamentalsTool, riskTool],
-    });
     console.log(`[writing] Thinking about report...`);
     const inputData = `Original query: ${query}\n\n${formatSearchResults(searchResults)}`;
-    const result = await run(writerWithTools, inputData);
+    const result = await run(reportWriterAgent, inputData);
     console.log(`[writing] Done writing report.`);
     return result.finalOutput!;
   }
@@ -112,6 +126,30 @@ export class FinancialResearchManager {
     const inputData = `Report:\n${report.markdown_report}\n\nSource summaries:\n${formatSearchResults(searchResults)}`;
     const result = await run(verifierAgent, inputData);
     console.log(`[verifying] Done verifying report.`);
+    return result.finalOutput!;
+  }
+
+  async reviseReport(
+    query: string,
+    report: FinancialReportData,
+    verification: VerificationResult,
+    searchResults: string[],
+  ): Promise<FinancialReportData> {
+    console.log(`[revising] Revising report from verifier feedback...`);
+    const inputData = `Original query: ${query}
+
+The current report failed verification. Revise it to resolve every verifier issue. Remove unsupported claims instead of guessing, and preserve explicit uncertainty when the supplied sources conflict.
+
+Verifier feedback:
+${verification.issues}
+
+Current report:
+${JSON.stringify(report, null, 2)}
+
+Source summaries:
+${formatSearchResults(searchResults)}`;
+    const result = await run(reportWriterAgent, inputData);
+    console.log(`[revising] Done revising report.`);
     return result.finalOutput!;
   }
 }

@@ -10,6 +10,10 @@ const rootDir = dirname(fileURLToPath(import.meta.url));
 const packagesDir = resolve(rootDir, 'packages');
 const workspacePackages = readWorkspacePackages(packagesDir);
 const testAliases = createWorkspacePackageAliases(workspacePackages);
+const financialResearchExampleRoot = resolve(
+  rootDir,
+  'examples/financial-research-agent',
+);
 
 const baseTestConfig = {
   setupFiles: [resolve(rootDir, 'helpers/tests/console-guard.ts')],
@@ -30,6 +34,19 @@ const packageProjects = workspacePackages.map(({ name, root }) => {
   };
 });
 
+const financialResearchExampleProject = {
+  root: financialResearchExampleRoot,
+  resolve: {
+    alias: testAliases,
+  },
+  test: {
+    ...baseTestConfig,
+    alias: testAliases,
+    name: 'financial-research-agent-example',
+    include: ['manager.test.ts'],
+  },
+};
+
 export default defineConfig({
   test: {
     pool: 'threads',
@@ -42,6 +59,7 @@ export default defineConfig({
         },
       },
       ...packageProjects,
+      financialResearchExampleProject,
     ],
     // Coverage options are global in Vitest workspaces.
     // Keep the filter at the root to avoid scanning docs/examples/dist output.
