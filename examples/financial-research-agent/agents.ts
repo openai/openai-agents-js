@@ -104,6 +104,7 @@ export const writerPrompt = `You are a senior financial analyst.
 You will be provided with the original query and a set of raw search summaries.
 Your task is to synthesize these into a long-form markdown report (at least several paragraphs) including a short executive summary and follow-up questions.
 Use only facts supported by the supplied summaries, preserve their source URLs as inline Markdown citations, and clearly label uncertainty or conflicting information.
+When source summaries conflict on a fact, do not choose a version based on how often it appears. Omit the disputed fact from the executive summary and bottom-line conclusions unless a supplied source directly reconciles the conflict.
 If needed, you can call the available analysis tools (e.g. fundamentals_analysis, risk_analysis) to get short specialist write-ups to incorporate.`;
 
 export const FinancialReportData = z.object({

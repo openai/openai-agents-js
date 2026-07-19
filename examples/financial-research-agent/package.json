@@ -7,6 +7,7 @@
   },
   "scripts": {
     "build-check": "tsc --noEmit",
-    "start": "tsx main.ts"
+    "start": "tsx main.ts",
+    "test": "tsx --test manager.test.ts"
   }
 }
