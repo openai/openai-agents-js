@@ -1,5 +1,4 @@
-import assert from 'node:assert/strict';
-import test from 'node:test';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import {
   FinancialReportData,
   FinancialSearchPlan,
@@ -63,14 +62,22 @@ class TestFinancialResearchManager extends FinancialResearchManager {
   }
 }
 
+beforeEach(() => {
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 test('revises and re-verifies until the report passes verification', async () => {
   const manager = new TestFinancialResearchManager();
   manager.verificationFailuresBeforePass = 2;
 
   await manager.run('Research query');
 
-  assert.equal(manager.revisionCalls, 2);
-  assert.equal(manager.verificationCalls, 3);
+  expect(manager.revisionCalls).toBe(2);
+  expect(manager.verificationCalls).toBe(3);
 });
 
 test('does not revise a report that passes verification', async () => {
@@ -78,6 +85,6 @@ test('does not revise a report that passes verification', async () => {
 
   await manager.run('Research query');
 
-  assert.equal(manager.revisionCalls, 0);
-  assert.equal(manager.verificationCalls, 1);
+  expect(manager.revisionCalls).toBe(0);
+  expect(manager.verificationCalls).toBe(1);
 });
