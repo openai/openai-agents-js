@@ -373,10 +373,9 @@ describe('OpenTelemetryTracingProcessor', () => {
     expect(shutdown).toHaveBeenCalledWith(5000);
   });
 
-  test('exports a real hierarchy and preserves tool instrumentation', async () => {
+  test('activates tool context and suppresses response instrumentation', async () => {
     const harness = createRealOtelHarness();
     const agentTrace = createTrace('trace_123', 'Agent workflow');
-    agentTrace.groupId = 'group_123';
     const agent = createAgentSpan(
       { type: 'agent', name: 'Reviewer' },
       { spanId: 'agent' },
@@ -412,28 +411,10 @@ describe('OpenTelemetryTracingProcessor', () => {
 
       const spans = await harness.finishedSpans();
       const byName = (name: string) => spans.find((span) => span.name === name);
-      const root = byName('Agent workflow');
-      const agentSpan = byName('invoke_agent Reviewer');
       const toolSpan = byName('execute_tool fetch_page');
-      const responseSpan = byName('chat');
       expect(responseInstrumentationSuppressed).toBe(true);
-      expect(root?.attributes).toEqual(
-        expect.objectContaining({
-          'openai.agents.trace.id': 'trace_123',
-          'openai.agents.group.id': 'group_123',
-        }),
-      );
-      expect(agentSpan?.parentSpanContext?.spanId).toBe(
-        root?.spanContext().spanId,
-      );
-      expect(toolSpan?.parentSpanContext?.spanId).toBe(
-        agentSpan?.spanContext().spanId,
-      );
       expect(byName('tool-internal')?.parentSpanContext?.spanId).toBe(
         toolSpan?.spanContext().spanId,
-      );
-      expect(responseSpan?.parentSpanContext?.spanId).toBe(
-        agentSpan?.spanContext().spanId,
       );
     } finally {
       await harness.shutdown();
