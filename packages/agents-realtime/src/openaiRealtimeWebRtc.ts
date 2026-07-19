@@ -238,7 +238,10 @@ export class OpenAIRealtimeWebRTC
               await this.options.changePeerConnection(peerConnection);
 
             if (connectAttempt.cancelled) {
-              if (replacementPeerConnection !== provisionalPeerConnection) {
+              if (
+                replacementPeerConnection !== provisionalPeerConnection &&
+                replacementPeerConnection !== this.#state.peerConnection
+              ) {
                 replacementPeerConnection.close();
               }
               rejectConnection(new Error(CONNECTION_CLOSED_DURING_SETUP));

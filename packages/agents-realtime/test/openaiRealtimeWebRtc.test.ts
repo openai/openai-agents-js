@@ -713,6 +713,45 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     expect(connectionChanges).toEqual(['connecting', 'connected']);
     expect(rtc.connectionState.peerConnection).toBe(retryPeerConnection as any);
   });
+
+  it('keeps a replacement peer connection reused by a retry open', async () => {
+    const firstReplacement = createDeferred<RTCPeerConnection>();
+    const sharedClose = vi.fn();
+
+    class SharedPeerConnection extends FakeRTCPeerConnection {
+      close() {
+        sharedClose();
+        super.close();
+      }
+    }
+
+    const sharedPeerConnection = new SharedPeerConnection();
+    const changePeerConnection = vi
+      .fn()
+      .mockImplementationOnce(() => firstReplacement.promise)
+      .mockImplementationOnce(() => sharedPeerConnection as any);
+    const rtc = new OpenAIRealtimeWebRTC({ changePeerConnection });
+
+    const firstConnect = rtc.connect({ apiKey: 'ek_test' });
+    const firstRejection = expect(firstConnect).rejects.toThrow(
+      'Connection closed before peer connection setup completed',
+    );
+    await vi.waitFor(() => expect(changePeerConnection).toHaveBeenCalledOnce());
+
+    rtc.close();
+    await firstRejection;
+    await rtc.connect({ apiKey: 'ek_test' });
+
+    firstReplacement.resolve(sharedPeerConnection as any);
+    await firstReplacement.promise;
+    await Promise.resolve();
+
+    expect(sharedClose).not.toHaveBeenCalled();
+    expect(rtc.status).toBe('connected');
+    expect(rtc.connectionState.peerConnection).toBe(
+      sharedPeerConnection as any,
+    );
+  });
 });
 
 describe('OpenAIRealtimeWebRTC.connectionState', () => {
