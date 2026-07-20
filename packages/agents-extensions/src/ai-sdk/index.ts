@@ -47,8 +47,8 @@ import {
 import { isZodObject } from '@openai/agents/utils';
 import { extractUsage, toTracingUsage } from './usage';
 
-// Minimal compatibility type to allow V3 (or future) models that follow the same shape as V2.
-type LanguageModelV3Compatible = {
+// Minimal compatibility type to allow V3/V4 models that follow the same shape as V2.
+type LanguageModelV3OrV4Compatible = {
   specificationVersion: string;
   provider: string;
   modelId: string;
@@ -62,7 +62,7 @@ type LanguageModelV3Compatible = {
     | any;
 };
 
-// Minimal provider tool shapes to avoid SDK type name drift across v2/v3.
+// Minimal provider tool shapes to avoid SDK type name drift across v2/v3/v4.
 type LanguageModelV2ProviderDefinedTool = {
   type: 'provider-defined';
   id: string;
@@ -165,7 +165,9 @@ type LanguageModelV2Compat = Omit<
 };
 
 type LanguageModelCompatible =
-  LanguageModelV2Compat | LanguageModelV3Compatible;
+  LanguageModelV2Compat | LanguageModelV3OrV4Compatible;
+
+type AiSdkSpecificationVersion = 'v2' | 'v3' | 'v4' | 'unknown';
 
 type SerializedComputerTool = Extract<SerializedTool, { type: 'computer' }>;
 
@@ -185,7 +187,7 @@ function hasComputerDisplayMetadata(
 
 function getSpecVersion(
   model: LanguageModelCompatible,
-): 'v2' | 'v3' | 'unknown' {
+): AiSdkSpecificationVersion {
   const spec = (model as any)?.specificationVersion;
   if (!spec) {
     // Default to v2 for backward compatibility with older AI SDK model wrappers.
@@ -197,6 +199,9 @@ function getSpecVersion(
   if (typeof spec === 'string' && spec.toLowerCase().startsWith('v3')) {
     return 'v3';
   }
+  if (typeof spec === 'string' && spec.toLowerCase().startsWith('v4')) {
+    return 'v4';
+  }
   return 'unknown';
 }
 
@@ -206,9 +211,26 @@ function ensureSupportedModel(model: LanguageModelCompatible): void {
     throw new UserError(
       `Unsupported AI SDK specificationVersion: ${String(
         (model as any)?.specificationVersion,
-      )}. Only v2 and v3 are supported.`,
+      )}. Only v2, v3, and v4 are supported.`,
     );
   }
+}
+
+function toAiSdkFileData(
+  model: LanguageModelCompatible,
+  data: string | URL,
+): any {
+  if (getSpecVersion(model) !== 'v4') {
+    return data;
+  }
+
+  return typeof data === 'string'
+    ? { type: 'data', data }
+    : { type: 'url', url: data };
+}
+
+function getProviderReferenceKey(model: LanguageModelCompatible): string {
+  return model.provider.split('.')[0] || model.provider;
 }
 
 type ParsedInlineImageData = {
@@ -392,7 +414,7 @@ export function itemsToLanguageV2Messages(
                     if (inlineImage) {
                       return {
                         type: 'file',
-                        data: inlineImage.data,
+                        data: toAiSdkFileData(model, inlineImage.data),
                         mediaType: inlineImage.mediaType,
                         providerOptions: toProviderOptions(
                           contentProviderData,
@@ -404,7 +426,7 @@ export function itemsToLanguageV2Messages(
                     const url = new URL(imageSource);
                     return {
                       type: 'file',
-                      data: url,
+                      data: toAiSdkFileData(model, url),
                       mediaType: 'image/*',
                       providerOptions: toProviderOptions(
                         contentProviderData,
@@ -512,7 +534,7 @@ export function itemsToLanguageV2Messages(
         type: 'tool-result',
         toolCallId: item.callId,
         toolName,
-        output: convertToAiSdkOutput(item.output, getSpecVersion(model)),
+        output: convertToAiSdkOutput(item.output, model),
         providerOptions: toProviderOptions(item.providerData, model),
       };
       messages.push({
@@ -766,13 +788,13 @@ function handoffToLanguageV2Tool(
 
 function convertToAiSdkOutput(
   output: protocol.FunctionCallResultItem['output'],
-  specVersion: 'v2' | 'v3' | 'unknown',
+  model: LanguageModelCompatible,
 ): LanguageModelV2ToolResultPart['output'] {
   if (typeof output === 'string') {
     return { type: 'text', value: output };
   }
   if (Array.isArray(output)) {
-    return convertStructuredOutputsToAiSdkOutput(output, specVersion);
+    return convertStructuredOutputsToAiSdkOutput(output, model);
   }
   if (isRecord(output) && typeof output.type === 'string') {
     if (output.type === 'text' && typeof output.text === 'string') {
@@ -782,10 +804,7 @@ function convertToAiSdkOutput(
       const structuredOutputs = convertLegacyToolOutputContent(
         output as protocol.ToolCallOutputContent,
       );
-      return convertStructuredOutputsToAiSdkOutput(
-        structuredOutputs,
-        specVersion,
-      );
+      return convertStructuredOutputsToAiSdkOutput(structuredOutputs, model);
     }
   }
   return { type: 'text', value: String(output) };
@@ -1165,15 +1184,25 @@ function createProtocolToolSearchOutputItem(args: {
  */
 function convertStructuredOutputsToAiSdkOutput(
   outputs: protocol.ToolCallStructuredOutput[],
-  specVersion: 'v2' | 'v3' | 'unknown',
+  model: LanguageModelCompatible,
 ): LanguageModelV2ToolResultPart['output'] {
   type ImagePart =
     | { type: 'media'; data: string; mediaType: string }
     | { type: 'image-data'; data: string; mediaType: string }
     | { type: 'image-url'; url: string }
-    | { type: 'image-file-id'; fileId: string };
+    | { type: 'image-file-id'; fileId: string }
+    | {
+        type: 'file';
+        data:
+          | { type: 'data'; data: string }
+          | { type: 'url'; url: URL }
+          | { type: 'reference'; reference: Record<string, string> };
+        mediaType: string;
+      };
 
+  const specVersion = getSpecVersion(model);
   const isV3 = specVersion === 'v3';
+  const isV4 = specVersion === 'v4';
   const textParts: string[] = [];
   const imageParts: ImagePart[] = [];
 
@@ -1193,8 +1222,21 @@ function convertStructuredOutputsToAiSdkOutput(
           : undefined;
       const imageFileId = imageObjectFileId ?? legacyFileId;
 
-      if (isV3 && imageFileId) {
-        imageParts.push({ type: 'image-file-id', fileId: imageFileId });
+      if ((isV3 || isV4) && imageFileId) {
+        imageParts.push(
+          isV4
+            ? {
+                type: 'file',
+                data: {
+                  type: 'reference',
+                  reference: {
+                    [getProviderReferenceKey(model)]: imageFileId,
+                  },
+                },
+                mediaType: 'image',
+              }
+            : { type: 'image-file-id', fileId: imageFileId },
+        );
         continue;
       }
 
@@ -1218,30 +1260,42 @@ function convertStructuredOutputsToAiSdkOutput(
       const inlineImage = parseBase64ImageDataUrl(imageValue);
       if (inlineImage) {
         imageParts.push(
-          isV3
+          isV4
             ? {
-                type: 'image-data',
-                data: inlineImage.data,
+                type: 'file',
+                data: { type: 'data', data: inlineImage.data },
                 mediaType: inlineImage.mediaType,
               }
-            : {
-                type: 'media',
-                data: inlineImage.data,
-                mediaType: inlineImage.mediaType,
-              },
+            : isV3
+              ? {
+                  type: 'image-data',
+                  data: inlineImage.data,
+                  mediaType: inlineImage.mediaType,
+                }
+              : {
+                  type: 'media',
+                  data: inlineImage.data,
+                  mediaType: inlineImage.mediaType,
+                },
         );
         continue;
       }
       try {
         const url = new URL(imageValue);
         imageParts.push(
-          isV3
-            ? { type: 'image-url', url: url.toString() }
-            : {
-                type: 'media',
-                data: url.toString(),
-                mediaType: 'image/*',
-              },
+          isV4
+            ? {
+                type: 'file',
+                data: { type: 'url', url },
+                mediaType: 'image',
+              }
+            : isV3
+              ? { type: 'image-url', url: url.toString() }
+              : {
+                  type: 'media',
+                  data: url.toString(),
+                  mediaType: 'image/*',
+                },
         );
       } catch {
         textParts.push(imageValue);
@@ -1509,8 +1563,11 @@ export function toolToLanguageV2Tool(
     };
   }
 
+  const specificationVersion = getSpecVersion(model);
   const providerToolType =
-    getSpecVersion(model) === 'v3' ? 'provider' : 'provider-defined';
+    specificationVersion === 'v3' || specificationVersion === 'v4'
+      ? 'provider'
+      : 'provider-defined';
   const providerToolPrefix = getProviderToolPrefix(model);
 
   if (tool.type === 'hosted_tool') {
@@ -1564,7 +1621,8 @@ export function toolToLanguageV2Tool(
 }
 
 function getProviderToolPrefix(model: LanguageModelCompatible): string {
-  if (getSpecVersion(model) !== 'v3') {
+  const specificationVersion = getSpecVersion(model);
+  if (specificationVersion !== 'v3' && specificationVersion !== 'v4') {
     return model.provider;
   }
   const providerLower = model.provider.toLowerCase();
@@ -1601,7 +1659,7 @@ export type AiSdkOutputTextTransformContext = {
   request: ModelRequest;
   provider: string;
   modelId: string;
-  specificationVersion: 'v2' | 'v3' | 'unknown';
+  specificationVersion: AiSdkSpecificationVersion;
   stream: boolean;
 };
 
@@ -1620,8 +1678,8 @@ export type AiSdkModelOptions = {
 };
 
 /**
- * Wraps a model from the AI SDK that adheres to the LanguageModelV2 spec to be used used as a model
- * in the OpenAI Agents SDK to use other models.
+ * Wraps a model from the AI SDK that adheres to the LanguageModel v2, v3, or v4
+ * specification to be used as a model in the OpenAI Agents SDK.
  *
  * While you can use this with the OpenAI models, it is recommended to use the default OpenAI model
  * provider instead.
@@ -2380,8 +2438,8 @@ export class AiSdkModel implements Model {
 }
 
 /**
- * Wraps a model from the AI SDK that adheres to the LanguageModelV2 spec to be used used as a model
- * in the OpenAI Agents SDK to use other models.
+ * Wraps a model from the AI SDK that adheres to the LanguageModel v2, v3, or v4
+ * specification to be used as a model in the OpenAI Agents SDK.
  *
  * While you can use this with the OpenAI models, it is recommended to use the default OpenAI model
  * provider instead.
