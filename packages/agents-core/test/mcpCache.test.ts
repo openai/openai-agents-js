@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { getAllMcpTools, invalidateServerToolsCache } from '../src/mcp';
+import {
+  getAllMcpTools,
+  invalidateServerToolsCache,
+  MCPServerStdio,
+  MCPServerSSE,
+} from '../src/mcp';
 import { UserError } from '../src/errors';
 import { tool, type FunctionTool } from '../src/tool';
 import { withTrace } from '../src/tracing';
@@ -840,5 +845,164 @@ describe('MCP tools without tracing', () => {
     const tools = await getAllMcpTools([server]);
     expect(tools.map((tool) => tool.name)).toEqual(['tool']);
     expect(listCalls).toBe(1);
+  });
+});
+
+// Regression tests for the public MCPServerStdio / MCPServerSSE wrappers.
+// These wrappers keep their own `_cachedTools` (separate from the underlying
+// shim's cache). Previously only MCPServerStreamableHttp cleared that wrapper
+// cache on connect()/close()/invalidateToolsCache(), so the Stdio/SSE wrappers
+// served stale tools forever after invalidation or reconnect.
+function toolNamed(name: string) {
+  return {
+    name,
+    description: '',
+    inputSchema: { type: 'object', properties: {} },
+  };
+}
+
+function createStubUnderlying(initialTools: any[]) {
+  let toolList = [...initialTools];
+  let invalidateCalls = 0;
+  const stub = {
+    name: 'stub',
+    async connect() {},
+    async close() {},
+    async listTools() {
+      return [...toolList];
+    },
+    async invalidateToolsCache() {
+      invalidateCalls += 1;
+    },
+    async callToolResult() {
+      return { content: [] as CallToolResultContent[] } as any;
+    },
+    async callTool() {
+      return [] as CallToolResultContent[];
+    },
+  };
+  return {
+    stub,
+    setTools: (tools: any[]) => (toolList = [...tools]),
+    invalidateCalls: () => invalidateCalls,
+  };
+}
+
+describe('MCPServerStdio wrapper cache invalidation', () => {
+  it('returns fresh tools after invalidateToolsCache()', async () => {
+    const server = new MCPServerStdio({
+      command: 'noop',
+      name: 'stub',
+      cacheToolsList: true,
+    });
+    const { stub, setTools } = createStubUnderlying([toolNamed('a')]);
+    (server as any).underlying = stub;
+
+    await server.connect();
+    expect((await server.listTools()).map((t: any) => t.name)).toEqual(['a']);
+
+    setTools([toolNamed('b')]);
+    await server.invalidateToolsCache();
+    expect((await server.listTools()).map((t: any) => t.name)).toEqual(['b']);
+  });
+
+  it('does not serve stale tools after close()', async () => {
+    const server = new MCPServerStdio({
+      command: 'noop',
+      name: 'stub',
+      cacheToolsList: true,
+    });
+    const { stub, setTools } = createStubUnderlying([toolNamed('a')]);
+    (server as any).underlying = stub;
+
+    await server.connect();
+    await server.listTools();
+
+    setTools([toolNamed('b')]);
+    await server.close();
+    expect((await server.listTools()).map((t: any) => t.name)).toEqual(['b']);
+  });
+
+  it('clears the wrapper cache on connect() (reconnect scenario)', async () => {
+    const server = new MCPServerStdio({
+      command: 'noop',
+      name: 'stub',
+      cacheToolsList: true,
+    });
+    const { stub, setTools } = createStubUnderlying([toolNamed('a')]);
+    (server as any).underlying = stub;
+
+    await server.connect();
+    await server.listTools();
+
+    setTools([toolNamed('b')]);
+    await server.connect();
+    expect((await server.listTools()).map((t: any) => t.name)).toEqual(['b']);
+  });
+
+  it('forwards invalidateToolsCache() to the underlying shim', async () => {
+    const server = new MCPServerStdio({
+      command: 'noop',
+      name: 'stub',
+      cacheToolsList: true,
+    });
+    const { stub, invalidateCalls } = createStubUnderlying([toolNamed('a')]);
+    (server as any).underlying = stub;
+
+    await server.invalidateToolsCache();
+    expect(invalidateCalls()).toBe(1);
+  });
+});
+
+describe('MCPServerSSE wrapper cache invalidation', () => {
+  it('returns fresh tools after invalidateToolsCache()', async () => {
+    const server = new MCPServerSSE({
+      url: 'http://localhost:1',
+      name: 'stub',
+      cacheToolsList: true,
+    });
+    const { stub, setTools } = createStubUnderlying([toolNamed('a')]);
+    (server as any).underlying = stub;
+
+    await server.connect();
+    expect((await server.listTools()).map((t: any) => t.name)).toEqual(['a']);
+
+    setTools([toolNamed('b')]);
+    await server.invalidateToolsCache();
+    expect((await server.listTools()).map((t: any) => t.name)).toEqual(['b']);
+  });
+
+  it('does not serve stale tools after close()', async () => {
+    const server = new MCPServerSSE({
+      url: 'http://localhost:1',
+      name: 'stub',
+      cacheToolsList: true,
+    });
+    const { stub, setTools } = createStubUnderlying([toolNamed('a')]);
+    (server as any).underlying = stub;
+
+    await server.connect();
+    await server.listTools();
+
+    setTools([toolNamed('b')]);
+    await server.close();
+    expect((await server.listTools()).map((t: any) => t.name)).toEqual(['b']);
+  });
+
+  it('clears the wrapper cache on connect() (reconnect scenario)', async () => {
+    const server = new MCPServerSSE({
+      url: 'http://localhost:1',
+      name: 'stub',
+      cacheToolsList: true,
+    });
+    const { stub, setTools } = createStubUnderlying([toolNamed('a')]);
+    (server as any).underlying = stub;
+
+    await server.connect();
+    await server.listTools();
+
+    setTools([toolNamed('b')]);
+    await server.connect();
+    expect((await server.listTools()).map((t: any) => t.name)).toEqual(['b']);
   });
 });
