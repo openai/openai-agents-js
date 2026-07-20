@@ -14,6 +14,29 @@ const deepseek = createDeepSeek({
     const body = JSON.parse(init.body) as Record<string, unknown>;
     requestBodies.push(body);
 
+    if (requestBodies.length === 2) {
+      const messages = body.messages;
+      const toolResultMessage = Array.isArray(messages)
+        ? messages.find(
+            (message) =>
+              typeof message === 'object' &&
+              message !== null &&
+              'role' in message &&
+              message.role === 'tool',
+          )
+        : undefined;
+
+      if (
+        !toolResultMessage ||
+        toolResultMessage.tool_call_id !== 'call-weather' ||
+        toolResultMessage.content !== 'Berlin is sunny.'
+      ) {
+        throw new Error(
+          'Expected the second request to contain the matching weather tool result.',
+        );
+      }
+    }
+
     const response =
       requestBodies.length === 1
         ? {
@@ -97,20 +120,6 @@ try {
   const firstTools = requestBodies[0]?.tools;
   if (!Array.isArray(firstTools) || firstTools.length !== 1) {
     throw new Error('Expected the first request to include one function tool.');
-  }
-
-  const secondMessages = requestBodies[1]?.messages;
-  if (
-    !Array.isArray(secondMessages) ||
-    !secondMessages.some(
-      (message) =>
-        typeof message === 'object' &&
-        message !== null &&
-        'role' in message &&
-        message.role === 'tool',
-    )
-  ) {
-    throw new Error('Expected the second request to include the tool result.');
   }
 
   console.log(`[AISDK_V4_RESPONSE]${result.finalOutput}[/AISDK_V4_RESPONSE]`);
