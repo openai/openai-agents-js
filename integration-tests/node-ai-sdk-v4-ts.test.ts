@@ -16,10 +16,16 @@ describe('Node.js (TypeScript + AI SDK v4)', () => {
     await execa`npm install`;
   }, 60000);
 
-  test('should build-check, build, and run', { timeout: 120000 }, async () => {
-    await execa`npm run build-check`;
-    await execa`npm run build`;
-    const { stdout } = await execa`npm run start`;
-    expect(stdout).toContain('[AISDK_V4_MODEL_READY]');
-  });
+  test(
+    'published packages handle an AI SDK v4 tool loop',
+    { timeout: 120000 },
+    async () => {
+      await execa`npm run build-check`;
+      await execa`npm run build`;
+      const { stdout } = await execa`npm run start`;
+      expect(stdout).toContain(
+        '[AISDK_V4_RESPONSE]Berlin is sunny.[/AISDK_V4_RESPONSE]',
+      );
+    },
+  );
 });
