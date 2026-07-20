@@ -27,6 +27,7 @@ export type RemoteWorkspaceTarIo = RemoteManifestWriter & {
 export type WorkspaceTarValidationOptions = {
   allowSymlinks?: boolean;
   allowExternalSymlinkTargets?: boolean;
+  rejectRelPaths?: Iterable<string>;
   rejectSymlinkRelPaths?: Iterable<string>;
   skipRelPaths?: Iterable<string>;
   rootName?: string;
@@ -60,6 +61,9 @@ export async function persistRemoteWorkspaceTar(args: {
   manifest: Manifest;
   io: RemoteWorkspaceTarIo;
   archivePath?: string;
+  skipRelPaths?: Iterable<string>;
+  rootAnchoredExcludes?: boolean;
+  oneFileSystem?: boolean;
 }): Promise<Uint8Array> {
   const root = args.manifest.root;
   const archivePath = args.archivePath ?? remoteArchivePath(args.providerName);
@@ -72,11 +76,16 @@ export async function persistRemoteWorkspaceTar(args: {
     runCommand: args.io.runCommand,
   });
 
-  const excludeArgs = workspaceTarExcludeArgs(args.manifest);
+  const excludeArgs = workspaceTarExcludeArgs(
+    args.manifest,
+    args.skipRelPaths,
+    args.rootAnchoredExcludes ? { rootAnchored: true } : {},
+  );
   const tarCommand = [
     `mkdir -p -- ${shellQuote(root)}`,
     [
       'tar',
+      ...(args.oneFileSystem ? ['--one-file-system'] : []),
       ...excludeArgs,
       '-C',
       shellQuote(root),
@@ -131,6 +140,7 @@ export async function hydrateRemoteWorkspaceTar(args: {
   data: WorkspaceArchiveData;
   archivePath?: string;
   archiveLimits?: SandboxArchiveLimits | null;
+  oneFileSystem?: boolean;
 }): Promise<void> {
   const root = args.manifest.root;
   const archive = toWorkspaceArchiveBytes(args.data);
@@ -150,10 +160,13 @@ export async function hydrateRemoteWorkspaceTar(args: {
 
   try {
     await args.io.writeFile(archivePath, archive);
+    const clearWorkspaceCommand = args.oneFileSystem
+      ? `find ${shellQuote(root)} -xdev -depth -mindepth 1 -delete`
+      : `find ${shellQuote(root)} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +`;
     const result = await args.io.runCommand(
       [
         `mkdir -p -- ${shellQuote(root)}`,
-        `find ${shellQuote(root)} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +`,
+        clearWorkspaceCommand,
         `tar -C ${shellQuote(root)} -xf ${shellQuote(archivePath)}`,
       ].join(' && '),
     );
@@ -215,6 +228,9 @@ export function validateWorkspaceTarArchive(
 ): void {
   const bytes = toWorkspaceArchiveBytes(data);
   const archiveLimits = resolveSandboxArchiveLimits(options.archiveLimits);
+  const rejectedPaths = [...(options.rejectRelPaths ?? [])].map(
+    normalizeTarRelPath,
+  );
   checkArchiveInputBytes(bytes.byteLength, archiveLimits);
   const membersByPath = new Map<string, TarMember>();
   const symlinkPaths = new Set<string>();
@@ -224,7 +240,7 @@ export function validateWorkspaceTarArchive(
   let pendingPax: Record<string, string> | undefined;
 
   try {
-    for (let offset = 0; offset < bytes.byteLength; ) {
+    for (let offset = 0; offset < bytes.byteLength;) {
       const header = bytes.subarray(offset, offset + TAR_BLOCK_SIZE);
       if (header.byteLength < TAR_BLOCK_SIZE) {
         throw tarError('<tar>', 'truncated header');
@@ -279,6 +295,7 @@ export function validateWorkspaceTarArchive(
       if (!member) {
         continue;
       }
+      assertTarMemberDoesNotOverlapRejectedPath(member, rejectedPaths);
       checkArchiveMemberCount(members.length + 1, name, archiveLimits);
       if (member.type === 'file') {
         extractedBytes += size;
@@ -341,14 +358,30 @@ export function toWorkspaceArchiveBytes(
   return Uint8Array.from(data);
 }
 
-export function workspaceTarExcludeArgs(manifest: Manifest): string[] {
-  return [...manifest.ephemeralPersistencePaths()]
+export function workspaceTarExcludeArgs(
+  manifest: Manifest,
+  additionalPaths: Iterable<string> = [],
+  options: { rootAnchored?: boolean } = {},
+): string[] {
+  const excludedPaths = [
+    ...new Set([...manifest.ephemeralPersistencePaths(), ...additionalPaths]),
+  ]
     .filter((path) => path.length > 0)
-    .sort((left, right) => left.localeCompare(right))
-    .flatMap((path) => [
+    .sort((left, right) => left.localeCompare(right));
+  if (excludedPaths.length === 0) {
+    return [];
+  }
+  if (!options.rootAnchored) {
+    return excludedPaths.flatMap((path) => [
       `--exclude=${shellQuote(path)}`,
       `--exclude=${shellQuote(`./${path}`)}`,
     ]);
+  }
+  return [
+    '--anchored',
+    '--no-wildcards',
+    ...excludedPaths.map((path) => `--exclude=${shellQuote(`./${path}`)}`),
+  ];
 }
 
 type TarMember = {
@@ -398,6 +431,26 @@ function validateTarMember(
   }
 
   throw tarError(name, 'unsupported member type');
+}
+
+function assertTarMemberDoesNotOverlapRejectedPath(
+  member: TarMember,
+  rejectedPaths: Iterable<string>,
+): void {
+  for (const rejectedPath of rejectedPaths) {
+    if (
+      rejectedPath === '' ||
+      member.path === rejectedPath ||
+      member.path.startsWith(`${rejectedPath}/`) ||
+      (member.type !== 'directory' &&
+        rejectedPath.startsWith(`${member.path}/`))
+    ) {
+      throw tarError(
+        member.rawName,
+        `archive member overlaps protected path: ${rejectedPath}`,
+      );
+    }
+  }
 }
 
 function validateSymlinkTarget(

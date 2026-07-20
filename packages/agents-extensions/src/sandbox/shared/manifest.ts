@@ -4,6 +4,7 @@ import {
   Manifest,
   normalizeRelativePath,
   type SandboxConcurrencyLimits,
+  SandboxMountError,
   SandboxUnsupportedFeatureError,
   type Entry,
   type Mount,
@@ -164,6 +165,7 @@ export type ManifestMaterializationOptions = {
   materializeMount?: (
     absolutePath: string,
     entry: Mount | TypedMount,
+    declaredMountPath?: string,
   ) => Promise<void>;
   applyMetadata?: (absolutePath: string, entry: Entry) => Promise<void>;
   concurrencyLimits?: SandboxConcurrencyLimits;
@@ -171,6 +173,7 @@ export type ManifestMaterializationOptions = {
   localSourceGrants?: Manifest['extraPathGrants'];
   resolvePath?: RemoteSandboxPathResolver;
   logicalPath?: string;
+  declaredMountPath?: string;
 };
 
 type DeferredMountMaterializationOptions = ManifestMaterializationOptions & {
@@ -290,6 +293,12 @@ export async function applyMaterializedManifestToState<TOptions extends object>(
   options: TOptions,
 ): Promise<void> {
   const previousManifest = state.manifest;
+  const nextManifest = mergeManifestDelta(previousManifest, manifest);
+  const nextEnvironment = await mergeMaterializedEnvironment(
+    previousManifest,
+    nextManifest,
+    state.environment,
+  );
   await materializeManifestEntries(
     writer,
     manifest,
@@ -298,12 +307,8 @@ export async function applyMaterializedManifestToState<TOptions extends object>(
     materializeEntry,
     options,
   );
-  state.manifest = mergeManifestDelta(previousManifest, manifest);
-  state.environment = await mergeMaterializedEnvironment(
-    previousManifest,
-    state.manifest,
-    state.environment,
-  );
+  state.manifest = nextManifest;
+  state.environment = nextEnvironment;
 }
 
 export async function materializeManifestEntries<TOptions extends object>(
@@ -345,14 +350,89 @@ export async function materializeManifestEntries<TOptions extends object>(
     },
   );
 
+  const remainingMountTargets = [];
   for (const {
     mountPath,
     entry,
   } of manifest.mountTargetsForMaterialization()) {
     const logicalPath = resolveSandboxRelativePath(manifest.root, mountPath);
-    const absolutePath = await resolvePath(logicalPath, { forWrite: true });
-    await materializeEntry(writer, absolutePath, entry, providerLabel, options);
+    remainingMountTargets.push({
+      entry,
+      logicalPath,
+      mountPath,
+    });
   }
+
+  const materializedMountPaths = new Map<string, string>();
+  while (remainingMountTargets.length > 0) {
+    const currentlyResolvedTargets = [];
+    for (const target of remainingMountTargets) {
+      const absolutePath = await resolvePath(target.logicalPath, {
+        forWrite: true,
+      });
+      currentlyResolvedTargets.push({
+        absolutePath,
+        target,
+      });
+    }
+
+    currentlyResolvedTargets.sort(
+      compareResolvedMountTargetsForMaterialization,
+    );
+    const nextTarget = currentlyResolvedTargets[0]!;
+    const targetIndex = remainingMountTargets.indexOf(nextTarget.target);
+    remainingMountTargets.splice(targetIndex, 1);
+    const { absolutePath } = nextTarget;
+    const { entry, logicalPath, mountPath } = nextTarget.target;
+    const duplicateMountPath = materializedMountPaths.get(absolutePath);
+    if (duplicateMountPath) {
+      throw new SandboxMountError(
+        `${providerLabel} cannot materialize multiple mounts that resolve to the same path.`,
+        {
+          provider: providerLabel,
+          mountPath: absolutePath,
+          declaredMountPaths: [duplicateMountPath, mountPath],
+        },
+        'mount_config_invalid',
+      );
+    }
+    materializedMountPaths.set(absolutePath, mountPath);
+    await materializeEntry(writer, absolutePath, entry, providerLabel, {
+      ...options,
+      logicalPath,
+      declaredMountPath: mountPath,
+    });
+  }
+}
+
+function compareResolvedMountTargetsForMaterialization(
+  left: { absolutePath: string; target: { logicalPath: string } },
+  right: { absolutePath: string; target: { logicalPath: string } },
+): number {
+  if (
+    isDescendantSandboxPath(right.target.logicalPath, left.target.logicalPath)
+  ) {
+    return -1;
+  }
+  if (
+    isDescendantSandboxPath(left.target.logicalPath, right.target.logicalPath)
+  ) {
+    return 1;
+  }
+  const depthDelta =
+    sandboxPathDepth(left.absolutePath) - sandboxPathDepth(right.absolutePath);
+  return depthDelta || left.absolutePath.localeCompare(right.absolutePath);
+}
+
+function isDescendantSandboxPath(path: string, ancestor: string): boolean {
+  if (path === ancestor) {
+    return false;
+  }
+  return ancestor === '' || path.startsWith(`${ancestor}/`);
+}
+
+function sandboxPathDepth(path: string): number {
+  return path.split('/').filter(Boolean).length;
 }
 
 export async function runLimited<T>(
@@ -414,7 +494,11 @@ export async function materializeInlineManifestEntry(
       return;
     }
     if (options.materializeMount) {
-      await options.materializeMount(absolutePath, entry);
+      await options.materializeMount(
+        absolutePath,
+        entry,
+        options.declaredMountPath,
+      );
       return;
     }
     throw new SandboxUnsupportedFeatureError(

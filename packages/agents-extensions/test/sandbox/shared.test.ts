@@ -1909,6 +1909,25 @@ describe('remote sandbox path helpers', () => {
         { allowExternalSymlinkTargets: false },
       ),
     ).not.toThrow();
+
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'mounted/file.txt', content: 'bad' }]),
+        { rejectRelPaths: ['mounted'] },
+      ),
+    ).toThrow(/archive member overlaps protected path: mounted/);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'parent', content: 'bad' }]),
+        { rejectRelPaths: ['parent/mounted'] },
+      ),
+    ).toThrow(/archive member overlaps protected path: parent\/mounted/);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'parent', type: '5' }]),
+        { rejectRelPaths: ['parent/mounted'] },
+      ),
+    ).not.toThrow();
   });
 
   test('validates tar root members, PAX paths, and long names', () => {
@@ -2118,6 +2137,40 @@ describe('remote sandbox path helpers', () => {
     );
   });
 
+  test('clears tar workspaces without crossing filesystem boundaries when requested', async () => {
+    const commands: string[] = [];
+
+    await hydrateRemoteWorkspaceTar({
+      providerName: 'FakeProvider',
+      manifest: new Manifest({ root: '/custom/workspace' }),
+      data: makeTarArchive([{ name: 'safe/file.txt', content: 'ok' }]),
+      oneFileSystem: true,
+      io: {
+        mkdir: vi.fn(),
+        readFile: vi.fn(),
+        writeFile: vi.fn(),
+        runCommand: vi.fn(async (command: string) => {
+          commands.push(command);
+          return command.includes('resolve-workspace-path.sh')
+            ? {
+                status: 0,
+                stdout: '/custom/workspace\n',
+                stderr: '',
+              }
+            : {
+                status: 0,
+                stdout: '',
+                stderr: '',
+              };
+        }),
+      },
+    });
+
+    expect(commands.find((command) => command.includes('tar -C'))).toContain(
+      "find '/custom/workspace' -xdev -depth -mindepth 1 -delete",
+    );
+  });
+
   test('rejects filesystem root before hydrating tar archives', async () => {
     const archive = makeTarArchive([{ name: 'safe/file.txt', content: 'ok' }]);
     const io = {
@@ -2160,6 +2213,40 @@ describe('remote sandbox path helpers', () => {
     expect(io.runCommand).not.toHaveBeenCalled();
   });
 
+  test('persists tar workspaces without crossing filesystem boundaries when requested', async () => {
+    const archive = makeTarArchive([{ name: 'safe/file.txt', content: 'ok' }]);
+    const commands: string[] = [];
+
+    await persistRemoteWorkspaceTar({
+      providerName: 'FakeProvider',
+      manifest: new Manifest({ root: '/custom/workspace' }),
+      oneFileSystem: true,
+      io: {
+        mkdir: vi.fn(),
+        readFile: vi.fn(async () => archive),
+        writeFile: vi.fn(),
+        runCommand: vi.fn(async (command: string) => {
+          commands.push(command);
+          return command.includes('resolve-workspace-path.sh')
+            ? {
+                status: 0,
+                stdout: '/custom/workspace\n',
+                stderr: '',
+              }
+            : {
+                status: 0,
+                stdout: '',
+                stderr: '',
+              };
+        }),
+      },
+    });
+
+    expect(commands.find((command) => command.includes('tar '))).toContain(
+      'tar --one-file-system',
+    );
+  });
+
   test('builds tar exclude args from ephemeral entries and mount targets', () => {
     const manifest = new Manifest({
       entries: {
@@ -2180,6 +2267,15 @@ describe('remote sandbox path helpers', () => {
       "--exclude='mounted'",
       "--exclude='./mounted'",
       "--exclude='secret'",
+      "--exclude='./secret'",
+    ]);
+    expect(
+      workspaceTarExcludeArgs(manifest, [], { rootAnchored: true }),
+    ).toEqual([
+      '--anchored',
+      '--no-wildcards',
+      "--exclude='./cache'",
+      "--exclude='./mounted'",
       "--exclude='./secret'",
     ]);
   });
@@ -2554,6 +2650,106 @@ describe('remote sandbox path helpers', () => {
       'mounted',
       'mounted/cache',
       'mounted/cache/nested',
+      'mounted/cache',
+      'mounted/cache/nested',
+      'mounted/cache/nested',
+    ]);
+  });
+
+  test('re-resolves child mount paths after materializing their parent mount', async () => {
+    const operations: string[] = [];
+    let parentMounted = false;
+
+    await materializeInlineManifest(
+      {
+        mkdir: async () => {},
+        writeFile: async () => {},
+      },
+      new Manifest({
+        root: '/workspace',
+        entries: {
+          parent: mount({
+            source: 's3://bucket/parent',
+            mountPath: 'mounted',
+            mountStrategy: { type: 'in_container' },
+          }),
+          'mounted/link': mount({
+            source: 's3://bucket/child',
+            mountStrategy: { type: 'in_container' },
+          }),
+        },
+      }),
+      'test',
+      async (path) => {
+        if (path === 'mounted/link' && !parentMounted) {
+          return '/workspace/underlying-target';
+        }
+        return `/workspace/${path}`;
+      },
+      {
+        materializeMount: async (absolutePath, entry) => {
+          operations.push(`mount:${entry.source}:${absolutePath}`);
+          if (entry.source === 's3://bucket/parent') {
+            parentMounted = true;
+          }
+        },
+      },
+    );
+
+    expect(operations).toEqual([
+      'mount:s3://bucket/parent:/workspace/mounted',
+      'mount:s3://bucket/child:/workspace/mounted/link',
+    ]);
+  });
+
+  test('defers duplicate checks until parent mounts replace underlying links', async () => {
+    const operations: string[] = [];
+    let parentMounted = false;
+
+    await materializeInlineManifest(
+      {
+        mkdir: async () => {},
+        writeFile: async () => {},
+      },
+      new Manifest({
+        root: '/workspace',
+        entries: {
+          parent: mount({
+            source: 's3://bucket/parent',
+            mountPath: 'mounted',
+            mountStrategy: { type: 'in_container' },
+          }),
+          'mounted/first': mount({
+            source: 's3://bucket/first',
+            mountStrategy: { type: 'in_container' },
+          }),
+          'mounted/second': mount({
+            source: 's3://bucket/second',
+            mountStrategy: { type: 'in_container' },
+          }),
+        },
+      }),
+      'test',
+      async (path) => {
+        if (path.startsWith('mounted/') && !parentMounted) {
+          return '/workspace/underlying-target';
+        }
+        return `/workspace/${path}`;
+      },
+      {
+        materializeMount: async (absolutePath, entry) => {
+          operations.push(`mount:${entry.source}:${absolutePath}`);
+          if (entry.source === 's3://bucket/parent') {
+            parentMounted = true;
+          }
+        },
+      },
+    );
+
+    expect(operations).toEqual([
+      'mount:s3://bucket/parent:/workspace/mounted',
+      'mount:s3://bucket/first:/workspace/mounted/first',
+      'mount:s3://bucket/second:/workspace/mounted/second',
     ]);
   });
 
@@ -2615,6 +2811,7 @@ describe('remote sandbox path helpers', () => {
     expect(resolvedPaths).toEqual([
       'copied/source.txt',
       'mounted',
+      'mounted/cache',
       'mounted/cache',
     ]);
   });
@@ -2680,6 +2877,7 @@ describe('remote sandbox path helpers', () => {
       'project/note.txt',
       'project/parent',
       'project/mounted',
+      'project/mounted/cache',
       'project/mounted/cache',
     ]);
     expect(state.manifest.entries.project).toMatchObject({
