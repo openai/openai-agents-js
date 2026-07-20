@@ -675,8 +675,8 @@ importers:
         version: 4.4.1
     devDependencies:
       '@ai-sdk/provider':
-        specifier: ^3.0.0
-        version: 3.0.2
+        specifier: ^4.0.3
+        version: 4.0.3
       '@blaxel/core':
         specifier: 0.2.82
         version: 0.2.82(@hey-api/openapi-ts@0.96.1(magicast@0.5.3)(typescript@5.9.3))(debug@4.4.1)
@@ -850,6 +850,10 @@ packages:
   '@ai-sdk/provider@3.0.4':
     resolution: {integrity: sha512-5KXyBOSEX+l67elrEa+wqo/LSsSTtrPj9Uoh3zMbe/ceQX4ucHI3b9nUEfNkGF3Ry1svv90widAt+aiKdIJasQ==}
     engines: {node: '>=18'}
+
+  '@ai-sdk/provider@4.0.3':
+    resolution: {integrity: sha512-e0CpNWJUY7OxAFAnCZkw+ri9QOHWwTs1tXP42782KFGCU07qt8NiXCrCVowyCB5dP2r5/Uls+g2oPd8kOJn9dw==}
+    engines: {node: '>=22'}
 
   '@ai-sdk/react@3.0.44':
     resolution: {integrity: sha512-TiCzQMRJZ8ASZjemz9eeX0/C5f6G1boRhrxVE3aNKvpuO/RUVQvkHsCIiJF3JgCyCEgQo//BqrXah1aSqgKDDA==}
@@ -8037,6 +8041,10 @@ snapshots:
       json-schema: 0.4.0
 
   '@ai-sdk/provider@3.0.4':
+    dependencies:
+      json-schema: 0.4.0
+
+  '@ai-sdk/provider@4.0.3':
     dependencies:
       json-schema: 0.4.0
 

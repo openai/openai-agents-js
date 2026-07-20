@@ -321,6 +321,151 @@ describe('AiSdkModel end-to-end scenarios', () => {
     });
   });
 
+  test('supports v4 generation, reasoning, usage, and abort propagation', async () => {
+    const controller = new AbortController();
+    let receivedOptions: any;
+    const transformOutputText = vi.fn((text, context) => {
+      expect(context.specificationVersion).toBe('v4');
+      return text;
+    });
+    const v4Model: any = {
+      specificationVersion: 'v4',
+      provider: 'deepseek.chat',
+      modelId: 'deepseek-chat',
+      supportedUrls: {},
+      async doGenerate(options: any) {
+        receivedOptions = options;
+        return {
+          content: [
+            { type: 'reasoning', text: 'thinking' },
+            { type: 'text', text: 'hello v4' },
+          ],
+          usage: {
+            inputTokens: {
+              total: 3,
+              noCache: 2,
+              cacheRead: 1,
+              cacheWrite: 0,
+            },
+            outputTokens: { total: 5, text: 4, reasoning: 1 },
+          },
+          response: { id: 'resp-v4' },
+          providerMetadata: {},
+          finishReason: { unified: 'stop', raw: 'stop' },
+          warnings: [],
+        };
+      },
+      async doStream() {
+        return { stream: partsStream([]) };
+      },
+    };
+
+    const model = new AiSdkModel(v4Model, { transformOutputText });
+    const response = await withTrace('v4-model', () =>
+      model.getResponse({
+        input: 'prompt',
+        tools: [],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+        signal: controller.signal,
+      } as any),
+    );
+
+    expect(receivedOptions.abortSignal).toBe(controller.signal);
+    expect(transformOutputText).toHaveBeenCalledOnce();
+    expect(response.output.map((item) => item.type)).toEqual([
+      'reasoning',
+      'message',
+    ]);
+    expect(response.output[1]).toMatchObject({
+      type: 'message',
+      content: [{ type: 'output_text', text: 'hello v4' }],
+    });
+    expect(response.usage).toMatchObject({
+      inputTokens: 3,
+      outputTokens: 5,
+      totalTokens: 8,
+    });
+  });
+
+  test('supports v4 streaming reasoning and object-shaped usage', async () => {
+    const controller = new AbortController();
+    let receivedOptions: any;
+    const v4Model: any = {
+      specificationVersion: 'v4',
+      provider: 'deepseek.chat',
+      modelId: 'deepseek-chat',
+      supportedUrls: {},
+      async doGenerate() {
+        return { content: [], usage: {} };
+      },
+      async doStream(options: any) {
+        receivedOptions = options;
+        return {
+          stream: partsStream([
+            { type: 'reasoning-start', id: 'reasoning-1' },
+            {
+              type: 'reasoning-delta',
+              id: 'reasoning-1',
+              delta: 'thinking',
+            },
+            { type: 'reasoning-end', id: 'reasoning-1' },
+            { type: 'text-delta', id: 'text-1', delta: 'hello v4' },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: {
+                inputTokens: {
+                  total: 2,
+                  noCache: 2,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                },
+                outputTokens: { total: 4, text: 3, reasoning: 1 },
+              },
+            },
+          ]),
+        };
+      },
+    };
+
+    const model = new AiSdkModel(v4Model);
+    const events: any[] = [];
+    for await (const event of model.getStreamedResponse({
+      input: 'prompt',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+      signal: controller.signal,
+    } as any)) {
+      events.push(event);
+    }
+
+    const final = events.at(-1);
+    expect(receivedOptions.abortSignal).toBe(controller.signal);
+    expect(final.response.output.map((item: any) => item.type)).toEqual([
+      'reasoning',
+      'message',
+    ]);
+    expect(final.response.usage).toMatchObject({
+      inputTokens: 2,
+      outputTokens: 4,
+      totalTokens: 6,
+    });
+  });
+
+  test('rejects unsupported specification versions', () => {
+    expect(
+      () => new AiSdkModel(stubModel({}, { specificationVersion: 'v5' })),
+    ).toThrow(
+      'Unsupported AI SDK specificationVersion: v5. Only v2, v3, and v4 are supported.',
+    );
+  });
+
   test('returns JSON schema output in streaming finish', async () => {
     const schema: JSONSchema7 = {
       type: 'object',
@@ -1376,6 +1521,44 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('converts v4 user images to tagged file data', () => {
+    const imageUrl = 'https://example.com/image.png';
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'input_image', image: 'data:image/png;base64,aGVsbG8=' },
+          { type: 'input_image', image: imageUrl },
+        ],
+      } as any,
+    ];
+    const msgs = itemsToLanguageV2Messages(
+      stubModel({}, { specificationVersion: 'v4' }),
+      items,
+    );
+
+    expect(msgs).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: { type: 'data', data: 'aGVsbG8=' },
+            mediaType: 'image/png',
+            providerOptions: {},
+          },
+          {
+            type: 'file',
+            data: { type: 'url', url: new URL(imageUrl) },
+            mediaType: 'image/*',
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
   test('converts structured tool output lists', () => {
     const items: protocol.ModelItem[] = [
       {
@@ -1530,6 +1713,76 @@ describe('itemsToLanguageV2Messages', () => {
         providerOptions: {},
       },
     ]);
+  });
+
+  test('converts v4 image tool outputs to canonical file parts', () => {
+    const imageUrl = 'https://example.com/image.png';
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        callId: 'tool-1',
+        name: 'describe_image',
+        arguments: '{}',
+      } as any,
+      {
+        type: 'function_call_result',
+        callId: 'tool-1',
+        name: 'describe_image',
+        output: [
+          { type: 'input_text', text: 'A scenic view.' },
+          { type: 'input_image', image: imageUrl },
+          {
+            type: 'input_image',
+            image: 'data:image/png;base64,aGVsbG8=',
+          },
+          { type: 'input_image', image: { id: 'file_image_123' } },
+        ],
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(
+      stubModel(
+        {},
+        { provider: 'openai.responses', specificationVersion: 'v4' },
+      ),
+      items,
+    );
+    expect(msgs[1]).toEqual({
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'tool-1',
+          toolName: 'describe_image',
+          output: {
+            type: 'content',
+            value: [
+              { type: 'text', text: 'A scenic view.' },
+              {
+                type: 'file',
+                data: { type: 'url', url: new URL(imageUrl) },
+                mediaType: 'image',
+              },
+              {
+                type: 'file',
+                data: { type: 'data', data: 'aGVsbG8=' },
+                mediaType: 'image/png',
+              },
+              {
+                type: 'file',
+                data: {
+                  type: 'reference',
+                  reference: { openai: 'file_image_123' },
+                },
+                mediaType: 'image',
+              },
+            ],
+          },
+          providerOptions: {},
+        },
+      ],
+      providerOptions: {},
+    });
   });
 
   test('handles undefined providerData without throwing', () => {
@@ -1749,7 +2002,7 @@ describe('toolToLanguageV2Tool', () => {
     });
   });
 
-  test('preserves AI SDK provider tool ids for v2 and v3 models', () => {
+  test('preserves AI SDK provider tool ids for v2, v3, and v4 models', () => {
     const tool = aiSdkToolSearchTool({
       type: 'provider',
       id: 'anthropic.tool_search_regex_20251119',
@@ -1773,24 +2026,38 @@ describe('toolToLanguageV2Tool', () => {
       name: 'tool_search',
       args: { maxUses: 2 },
     });
+
+    const v4Model = stubModel(
+      {},
+      { provider: 'anthropic.messages', specificationVersion: 'v4' },
+    );
+    expect(toolToLanguageV2Tool(v4Model, tool)).toEqual({
+      type: 'provider',
+      id: 'anthropic.tool_search_regex_20251119',
+      name: 'tool_search',
+      args: { maxUses: 2 },
+    });
   });
 
-  test('normalizes OpenAI v3 builtin tool IDs', () => {
-    const v3Model = stubModel(
-      {},
-      { provider: 'openai.responses', specificationVersion: 'v3' },
-    );
+  test('normalizes OpenAI v3 and v4 builtin tool IDs', () => {
     const tool = {
       type: 'hosted_tool',
       name: 'file_search',
       providerData: { args: { query: 'x' } },
     } as any;
-    expect(toolToLanguageV2Tool(v3Model, tool)).toEqual({
-      type: 'provider',
-      id: 'openai.file_search',
-      name: 'file_search',
-      args: { query: 'x' },
-    });
+
+    for (const specificationVersion of ['v3', 'v4']) {
+      const model = stubModel(
+        {},
+        { provider: 'openai.responses', specificationVersion },
+      );
+      expect(toolToLanguageV2Tool(model, tool)).toEqual({
+        type: 'provider',
+        id: 'openai.file_search',
+        name: 'file_search',
+        args: { query: 'x' },
+      });
+    }
   });
 
   test('maps computer tools', () => {

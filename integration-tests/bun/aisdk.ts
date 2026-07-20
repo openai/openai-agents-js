@@ -4,13 +4,19 @@ import { Agent, Runner } from '@openai/agents';
 import { aisdk } from '@openai/agents-extensions/ai-sdk';
 
 const fakeModel = {
+  specificationVersion: 'v4',
   provider: 'fake',
   modelId: 'fake-model',
   async doGenerate() {
     return {
       content: [{ type: 'text', text: 'hello' }],
-      usage: { inputTokens: 1, outputTokens: 1 },
+      usage: {
+        inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: 1, text: 1, reasoning: 0 },
+      },
       providerMetadata: {},
+      finishReason: { unified: 'stop', raw: 'stop' },
+      warnings: [],
     };
   },
 };
