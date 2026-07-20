@@ -290,7 +290,6 @@ Before opening a pull request, always run `$changeset-validation` to ensure all 
 - ✅ All automated checks pass (build, tests, lint).
 - ✅ Tests cover new behavior and edge cases.
 - ✅ Code is readable and maintainable.
-- ✅ Public APIs have doc comments.
 - ✅ Examples updated if behavior changes.
 - ✅ Documentation (in `docs/`) updated for user-facing changes.
 - ✅ Commit history is clean and follows Conventional Commits.
