@@ -18,6 +18,15 @@ import { ResponseCreateSequencer } from './responseCreateSequencer';
 import { HEADERS } from './utils';
 
 const PEER_CONNECTION_DISCONNECTED_GRACE_MS = 5000;
+const CONNECTION_CLOSED_DURING_SETUP =
+  'Connection closed before peer connection setup completed';
+
+type WebRTCConnectAttempt = {
+  cancelled: boolean;
+  rejectConnection: (reason?: unknown) => void;
+  selectedPeerConnection: Promise<RTCPeerConnection | undefined>;
+  pendingPeerConnection?: RTCPeerConnection;
+};
 
 /**
  * The connection state of the WebRTC connection.
@@ -70,7 +79,8 @@ export type OpenAIRealtimeWebRTCOptions = {
   /**
    * Optional hook invoked with the freshly created peer connection. Returning a
    * different connection will override the one created by the transport layer.
-   * This is called right before the offer is created and can be asynchronous.
+   * This is called before the transport configures the data channel and media,
+   * and can be asynchronous.
    */
   changePeerConnection?: (
     peerConnection: RTCPeerConnection,
@@ -101,6 +111,7 @@ export class OpenAIRealtimeWebRTC
   #muted = false;
   #connectPromise: Promise<void> | undefined;
   #connectAttemptId = 0;
+  #connectAttempt: WebRTCConnectAttempt | undefined;
   #peerConnectionDisconnectedTimeout: ReturnType<typeof setTimeout> | undefined;
   #responseCreateSequencer = new ResponseCreateSequencer(
     (event) => this.#sendEventNow(event),
@@ -145,6 +156,34 @@ export class OpenAIRealtimeWebRTC
     return this.#muted;
   }
 
+  async #isPeerConnectionSelectedByNewerAttempt(
+    peerConnection: RTCPeerConnection,
+    staleAttempt: WebRTCConnectAttempt,
+  ) {
+    while (true) {
+      if (this.#state.peerConnection === peerConnection) {
+        return true;
+      }
+
+      const activeAttempt = this.#connectAttempt;
+      if (!activeAttempt || activeAttempt === staleAttempt) {
+        return false;
+      }
+
+      const selectedPeerConnection = await activeAttempt.selectedPeerConnection;
+      if (
+        selectedPeerConnection === peerConnection ||
+        this.#state.peerConnection === peerConnection
+      ) {
+        return true;
+      }
+
+      if (this.#connectAttempt === activeAttempt) {
+        return false;
+      }
+    }
+  }
+
   /**
    * Connect to the Realtime API. This will establish the connection to the OpenAI Realtime API
    * via WebRTC.
@@ -174,25 +213,47 @@ export class OpenAIRealtimeWebRTC
     this.currentModel = model;
     const baseUrl = options.url ?? this.#url;
     const attemptId = ++this.#connectAttemptId;
-    let resolveConnection: () => void;
-    let rejectConnection: (reason?: unknown) => void;
+    let resolveConnection!: () => void;
+    let rejectConnection!: (reason?: unknown) => void;
     const connectionReady = new Promise<void>((resolve, reject) => {
       resolveConnection = resolve;
       rejectConnection = reject;
     });
+    let resolveSelectedPeerConnection!: (
+      peerConnection: RTCPeerConnection | undefined,
+    ) => void;
+    const selectedPeerConnection = new Promise<RTCPeerConnection | undefined>(
+      (resolve) => {
+        resolveSelectedPeerConnection = resolve;
+      },
+    );
+    const connectAttempt: WebRTCConnectAttempt = {
+      cancelled: false,
+      rejectConnection,
+      selectedPeerConnection,
+    };
+    this.#connectAttempt = connectAttempt;
 
     const prepareConnection = async () => {
       let apiKey: string | undefined;
       try {
         apiKey = await this._getApiKey(options);
       } catch (error) {
+        resolveSelectedPeerConnection(undefined);
         rejectConnection(error);
+        return;
+      }
+
+      if (connectAttempt.cancelled) {
+        resolveSelectedPeerConnection(undefined);
+        rejectConnection(new Error(CONNECTION_CLOSED_DURING_SETUP));
         return;
       }
 
       const isClientKey =
         typeof apiKey === 'string' && apiKey.startsWith('ek_');
       if (isBrowserEnvironment() && !this.#useInsecureApiKey && !isClientKey) {
+        resolveSelectedPeerConnection(undefined);
         rejectConnection(
           new UserError(
             'Using the WebRTC connection in a browser environment requires an ephemeral client key. If you need to use a regular API key, use the WebSocket transport or set the `useInsecureApiKey` option to true.',
@@ -209,7 +270,51 @@ export class OpenAIRealtimeWebRTC
 
         const connectionUrl = new URL(baseUrl);
 
-        let peerConnection: RTCPeerConnection = new RTCPeerConnection();
+        const provisionalPeerConnection = new RTCPeerConnection();
+        connectAttempt.pendingPeerConnection = provisionalPeerConnection;
+        let peerConnection: RTCPeerConnection = provisionalPeerConnection;
+        if (this.options.changePeerConnection) {
+          try {
+            const replacementPeerConnection =
+              await this.options.changePeerConnection(peerConnection);
+            resolveSelectedPeerConnection(replacementPeerConnection);
+
+            if (connectAttempt.cancelled) {
+              if (
+                replacementPeerConnection !== provisionalPeerConnection &&
+                !(await this.#isPeerConnectionSelectedByNewerAttempt(
+                  replacementPeerConnection,
+                  connectAttempt,
+                ))
+              ) {
+                replacementPeerConnection.close();
+              }
+              rejectConnection(new Error(CONNECTION_CLOSED_DURING_SETUP));
+              return;
+            }
+            if (replacementPeerConnection !== provisionalPeerConnection) {
+              provisionalPeerConnection.close();
+            }
+            peerConnection = replacementPeerConnection;
+            connectAttempt.pendingPeerConnection = peerConnection;
+          } catch (error) {
+            resolveSelectedPeerConnection(undefined);
+            if (connectAttempt.cancelled) {
+              rejectConnection(new Error(CONNECTION_CLOSED_DURING_SETUP));
+              return;
+            }
+            if (
+              connectAttempt.pendingPeerConnection === provisionalPeerConnection
+            ) {
+              connectAttempt.pendingPeerConnection = undefined;
+            }
+            provisionalPeerConnection.close();
+            throw error;
+          }
+        } else {
+          resolveSelectedPeerConnection(provisionalPeerConnection);
+        }
+
         const dataChannel = peerConnection.createDataChannel('oai-events');
         let callId: string | undefined = undefined;
 
@@ -228,6 +333,9 @@ export class OpenAIRealtimeWebRTC
           dataChannel,
           callId,
         };
+        if (connectAttempt.pendingPeerConnection === peerConnection) {
+          connectAttempt.pendingPeerConnection = undefined;
+        }
         this.emit('connection_change', this.#state.status);
 
         dataChannel.addEventListener('open', () => {
@@ -372,17 +480,6 @@ export class OpenAIRealtimeWebRTC
           }));
         peerConnection.addTrack(stream.getAudioTracks()[0]);
 
-        if (this.options.changePeerConnection) {
-          const originalPeerConnection = peerConnection;
-          peerConnection =
-            await this.options.changePeerConnection(peerConnection);
-          if (originalPeerConnection !== peerConnection) {
-            originalPeerConnection.onconnectionstatechange = null;
-          }
-          attachConnectionStateHandler(peerConnection);
-          this.#state = { ...this.#state, peerConnection };
-        }
-
         const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
 
@@ -420,6 +517,12 @@ export class OpenAIRealtimeWebRTC
 
         await peerConnection.setRemoteDescription(answer);
       } catch (error) {
+        if (connectAttempt.pendingPeerConnection) {
+          const pendingPeerConnection = connectAttempt.pendingPeerConnection;
+          connectAttempt.pendingPeerConnection = undefined;
+          pendingPeerConnection.close();
+        }
+        resolveSelectedPeerConnection(undefined);
         this.close();
         this._onError(error);
         rejectConnection(error);
@@ -429,7 +532,8 @@ export class OpenAIRealtimeWebRTC
     this.#connectPromise = connectionReady.finally(() => {
       // Only clear if this is still the active connection attempt.
       // A newer connect() may have already replaced #connectPromise.
-      if (this.#connectAttemptId === attemptId) {
+      if (this.#connectAttempt === connectAttempt) {
+        this.#connectAttempt = undefined;
         this.#connectPromise = undefined;
       }
     });
@@ -555,6 +659,22 @@ export class OpenAIRealtimeWebRTC
    * Close the connection to the Realtime API and disconnects the underlying WebRTC connection.
    */
   close() {
+    const connectAttempt = this.#connectAttempt;
+    if (connectAttempt) {
+      connectAttempt.cancelled = true;
+    }
+    if (connectAttempt?.pendingPeerConnection) {
+      const pendingPeerConnection = connectAttempt.pendingPeerConnection;
+      connectAttempt.pendingPeerConnection = undefined;
+      pendingPeerConnection.close();
+      connectAttempt.rejectConnection(
+        new Error(CONNECTION_CLOSED_DURING_SETUP),
+      );
+      if (this.#connectAttempt === connectAttempt) {
+        this.#connectAttempt = undefined;
+        this.#connectPromise = undefined;
+      }
+    }
     this.#clearPeerConnectionDisconnectedTimeout();
     this.#responseCreateSequencer.releaseWaiters();
     this.#cancelOngoingResponse = false;
