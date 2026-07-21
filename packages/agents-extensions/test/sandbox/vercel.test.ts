@@ -2,15 +2,21 @@ import {
   Manifest,
   SandboxArchiveError,
   SandboxLifecycleError,
+  SandboxMountError,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
+  s3Mount,
 } from '@openai/agents-core/sandbox';
+import { serializeManifestRecord } from '@openai/agents-core/sandbox/internal';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   decodeNativeSnapshotRef,
   encodeNativeSnapshotRef,
 } from '../../src/sandbox/shared';
-import { VercelSandboxClient } from '../../src/sandbox/vercel';
+import {
+  VercelCloudBucketMountStrategy,
+  VercelSandboxClient,
+} from '../../src/sandbox/vercel';
 import { resolvedRemotePathFromValidationCommand } from './remotePathValidation';
 import { makeTarArchive } from './tarFixture';
 
@@ -24,6 +30,103 @@ const stopMock = vi.fn();
 const snapshotMock = vi.fn();
 const domainMock = vi.fn();
 const remoteFilePaths = new Set<string>();
+const mountedPaths = new Set<string>();
+
+type MockRunCommandParams = {
+  cmd?: string;
+  args?: string[];
+};
+
+function commandResult(
+  exitCode: number,
+  stdout: string = '',
+  stderr: string = '',
+) {
+  const result = {
+    exitCode,
+    output: vi.fn(async (stream?: 'stdout' | 'stderr' | 'both') => {
+      if (stream === 'stderr') {
+        return stderr;
+      }
+      if (stream === 'both') {
+        return `${stdout}${stderr}`;
+      }
+      return stdout;
+    }),
+    wait: vi.fn(),
+    kill: vi.fn(async () => {}),
+  };
+  result.wait.mockResolvedValue(result);
+  return result;
+}
+
+function deferred(): {
+  promise: Promise<void>;
+  resolve: () => void;
+} {
+  let resolve!: () => void;
+  const promise = new Promise<void>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
+
+function isolatedMountCommand(
+  params: MockRunCommandParams,
+): { command: string; args: string[] } | undefined {
+  if (params.cmd !== '/usr/bin/env') {
+    return undefined;
+  }
+  const args = params.args ?? [];
+  let commandIndex = 1;
+  while (args[commandIndex]?.includes('=')) {
+    commandIndex += 1;
+  }
+  const command = args[commandIndex];
+  return command ? { command, args: args.slice(commandIndex + 1) } : undefined;
+}
+
+async function defaultRunCommand(params: MockRunCommandParams = {}) {
+  const isolated = isolatedMountCommand(params);
+  if (isolated) {
+    switch (isolated.command) {
+      case 'sh':
+      case 'dnf':
+      case 'mkdir':
+        return commandResult(0);
+      case 'rpm':
+        return commandResult(0, '1.21.0\n');
+      case 'find':
+        return commandResult(0, '');
+      case 'id':
+        return commandResult(0, isolated.args[0] === '-u' ? '1000\n' : '100\n');
+      case 'mount-s3':
+        mountedPaths.add(isolated.args[1]!);
+        return commandResult(0);
+      case 'findmnt': {
+        const mountPath = isolated.args.at(-1)!;
+        return mountedPaths.has(mountPath)
+          ? commandResult(0, 'mountpoint-s3\n')
+          : commandResult(1);
+      }
+      case 'umount':
+        mountedPaths.delete(isolated.args[0]!);
+        return commandResult(0);
+      case 'mountpoint':
+        return commandResult(mountedPaths.has(isolated.args.at(-1)!) ? 0 : 1);
+      default:
+        return commandResult(1, '', `unexpected command: ${isolated.command}`);
+    }
+  }
+
+  const command = params.args?.[1] ?? '';
+  const path = testExistsPath(command);
+  if (path) {
+    return commandResult(remoteFilePaths.has(path) ? 0 : 1);
+  }
+  const resolvedPath = resolvedRemotePathFromValidationCommand(command);
+  return commandResult(0, resolvedPath ? `${resolvedPath}\n` : 'README.md\n');
+}
 
 function makeSandbox(
   sandboxId: string,
@@ -66,6 +169,21 @@ function testExistsPath(command: string): string | undefined {
   return command.match(/^test -e '([^']+)'$/u)?.[1];
 }
 
+function vercelS3Manifest(
+  path: string = 'bucket',
+  overrides: Partial<Parameters<typeof s3Mount>[0]> = {},
+): Manifest {
+  return new Manifest({
+    entries: {
+      [path]: s3Mount({
+        bucket: 'example-bucket',
+        mountStrategy: new VercelCloudBucketMountStrategy(),
+        ...overrides,
+      }),
+    },
+  });
+}
+
 vi.mock('@vercel/sandbox', () => ({
   Sandbox: {
     create: createMock,
@@ -88,30 +206,11 @@ describe('VercelSandboxClient', () => {
     snapshotMock.mockReset();
     domainMock.mockReset();
     remoteFilePaths.clear();
+    mountedPaths.clear();
 
     createMock.mockResolvedValue(makeSandbox('vercel_test'));
     getMock.mockResolvedValue(makeSandbox('vercel_test'));
-    runCommandMock.mockImplementation(
-      async (params: { args?: string[] } = {}) => {
-        const command = params.args?.[1] ?? '';
-        const path = testExistsPath(command);
-        if (path) {
-          return {
-            exitCode: remoteFilePaths.has(path) ? 0 : 1,
-            output: vi.fn().mockResolvedValue(''),
-          };
-        }
-        const resolvedPath = resolvedRemotePathFromValidationCommand(command);
-        return {
-          exitCode: 0,
-          output: vi
-            .fn()
-            .mockResolvedValue(
-              resolvedPath ? `${resolvedPath}\n` : 'README.md\n',
-            ),
-        };
-      },
-    );
+    runCommandMock.mockImplementation(defaultRunCommand);
     mkDirMock.mockResolvedValue(undefined);
     readFileToBufferMock.mockResolvedValue(
       Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00]),
@@ -144,6 +243,760 @@ describe('VercelSandboxClient', () => {
       }),
     ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
     expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('requires explicit acknowledgement before exposing S3 credentials', async () => {
+    const client = new VercelSandboxClient();
+
+    await expect(
+      client.create(
+        vercelS3Manifest('bucket', {
+          accessKeyId: 'access-key',
+          secretAccessKey: 'secret-key',
+        }),
+      ),
+    ).rejects.toBeInstanceOf(SandboxMountError);
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('mounts a fixed S3 manifest without persisting its credentials', async () => {
+    const client = new VercelSandboxClient({
+      allowS3CredentialExposure: true,
+    });
+    const session = await client.create(
+      vercelS3Manifest('bucket', {
+        accessKeyId: 'access-key',
+        secretAccessKey: 'secret-key',
+        sessionToken: 'session-token',
+        region: 'us-east-1',
+      }),
+    );
+
+    const mountCall = runCommandMock.mock.calls.find(([params]) => {
+      return isolatedMountCommand(params)?.command === 'mount-s3';
+    });
+    expect(mountCall?.[0]).toEqual(
+      expect.objectContaining({
+        cmd: '/usr/bin/env',
+        args: expect.arrayContaining([
+          '-i',
+          'AWS_ACCESS_KEY_ID=access-key',
+          'AWS_SECRET_ACCESS_KEY=secret-key',
+          'AWS_SESSION_TOKEN=session-token',
+          'AWS_REGION=us-east-1',
+          'mount-s3',
+          'example-bucket',
+          '/vercel/sandbox/bucket',
+        ]),
+        env: {},
+        sudo: true,
+      }),
+    );
+
+    const [storedMount] =
+      session.state.manifest.mountTargetsForMaterialization();
+    expect(storedMount?.entry).toMatchObject({
+      type: 's3_mount',
+      bucket: 'example-bucket',
+      ephemeral: true,
+    });
+    expect(storedMount?.entry).not.toHaveProperty('accessKeyId');
+    expect(storedMount?.entry).not.toHaveProperty('secretAccessKey');
+    expect(storedMount?.entry).not.toHaveProperty('sessionToken');
+
+    const serialized = await client.serializeSessionState(session.state);
+    expect(JSON.stringify(serialized)).not.toContain('access-key');
+    expect(JSON.stringify(serialized)).not.toContain('secret-key');
+    expect(JSON.stringify(serialized)).not.toContain('session-token');
+  });
+
+  test('retains an owned mount entry when the caller mutates its manifest', async () => {
+    const manifest = new Manifest({
+      root: '/vercel/sandbox',
+      entries: {
+        bucket: s3Mount({
+          bucket: 'example-bucket',
+          mountStrategy: new VercelCloudBucketMountStrategy(),
+        }),
+      },
+    });
+    const client = new VercelSandboxClient();
+    const session = await client.create(manifest);
+
+    Object.assign(manifest.entries.bucket!, {
+      bucket: 'mutated-bucket',
+      endpointUrl: 'https://mutated.example.test',
+      readOnly: false,
+    });
+    readFileToBufferMock.mockResolvedValue(
+      makeTarArchive([{ name: 'README.md', content: 'persisted' }]),
+    );
+    runCommandMock.mockClear();
+
+    await session.persistWorkspace();
+
+    const remountCall = runCommandMock.mock.calls.find(([params]) => {
+      return isolatedMountCommand(params)?.command === 'mount-s3';
+    });
+    const remountArgs = isolatedMountCommand(remountCall?.[0] ?? {})?.args;
+    expect(remountArgs).toEqual(
+      expect.arrayContaining([
+        'example-bucket',
+        '/vercel/sandbox/bucket',
+        '--read-only',
+      ]),
+    );
+    expect(remountArgs).not.toContain('mutated-bucket');
+    expect(remountArgs).not.toContain('https://mutated.example.test');
+  });
+
+  test('forwards allowlisted configured AWS authentication to mount-s3', async () => {
+    const client = new VercelSandboxClient({
+      env: {
+        AWS_ACCESS_KEY_ID: 'environment-access-key',
+        AWS_SECRET_ACCESS_KEY: 'environment-secret-key',
+        AWS_SESSION_TOKEN: 'environment-session-token',
+        AWS_ROLE_ARN: 'arn:aws:iam::123456789012:role/sandbox',
+        AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/secrets/aws/token',
+        UNRELATED_SECRET: 'do-not-forward',
+      },
+    });
+
+    const session = await client.create(vercelS3Manifest());
+
+    const mountCall = runCommandMock.mock.calls.find(([params]) => {
+      return isolatedMountCommand(params)?.command === 'mount-s3';
+    });
+    expect(mountCall?.[0].args).toEqual(
+      expect.arrayContaining([
+        'AWS_ACCESS_KEY_ID=environment-access-key',
+        'AWS_SECRET_ACCESS_KEY=environment-secret-key',
+        'AWS_SESSION_TOKEN=environment-session-token',
+        'AWS_ROLE_ARN=arn:aws:iam::123456789012:role/sandbox',
+        'AWS_WEB_IDENTITY_TOKEN_FILE=/var/run/secrets/aws/token',
+      ]),
+    );
+    expect(mountCall?.[0].args).not.toContain(
+      'UNRELATED_SECRET=do-not-forward',
+    );
+
+    const serialized = await client.serializeSessionState(session.state);
+    expect(serialized.environment).toMatchObject({
+      AWS_ROLE_ARN: 'arn:aws:iam::123456789012:role/sandbox',
+      AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/secrets/aws/token',
+      UNRELATED_SECRET: 'do-not-forward',
+    });
+    expect(JSON.stringify(serialized)).not.toContain('environment-access-key');
+    expect(JSON.stringify(serialized)).not.toContain('environment-secret-key');
+    expect(JSON.stringify(serialized)).not.toContain(
+      'environment-session-token',
+    );
+    expect(session.state.environment).toMatchObject({
+      AWS_ACCESS_KEY_ID: 'environment-access-key',
+      AWS_SECRET_ACCESS_KEY: 'environment-secret-key',
+      AWS_SESSION_TOKEN: 'environment-session-token',
+    });
+  });
+
+  test('does not persist manifest-sourced AWS credentials for mounted sessions', async () => {
+    const client = new VercelSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          bucket: s3Mount({
+            bucket: 'example-bucket',
+            mountStrategy: new VercelCloudBucketMountStrategy(),
+          }),
+        },
+        environment: {
+          AWS_ACCESS_KEY_ID: 'manifest-access-key',
+          AWS_SECRET_ACCESS_KEY: 'manifest-secret-key',
+          AWS_SESSION_TOKEN: 'manifest-session-token',
+          AWS_REGION: 'us-east-1',
+          UNRELATED_ENV: 'keep-me',
+        },
+      }),
+    );
+
+    const providerState = await client.serializeSessionState(session.state);
+    const envelopeManifest = serializeManifestRecord(session.state.manifest);
+    const serialized = JSON.stringify({
+      manifest: envelopeManifest,
+      providerState,
+    });
+
+    expect(serialized).not.toContain('manifest-access-key');
+    expect(serialized).not.toContain('manifest-secret-key');
+    expect(serialized).not.toContain('manifest-session-token');
+    expect(envelopeManifest.environment).toMatchObject({
+      AWS_REGION: { value: 'us-east-1' },
+      UNRELATED_ENV: { value: 'keep-me' },
+    });
+    expect(session.state.environment).toMatchObject({
+      AWS_ACCESS_KEY_ID: 'manifest-access-key',
+      AWS_SECRET_ACCESS_KEY: 'manifest-secret-key',
+      AWS_SESSION_TOKEN: 'manifest-session-token',
+    });
+  });
+
+  test('does not combine inline static keys with an inherited session token', async () => {
+    const client = new VercelSandboxClient({
+      allowS3CredentialExposure: true,
+      env: {
+        AWS_ACCESS_KEY_ID: 'environment-access-key',
+        AWS_SECRET_ACCESS_KEY: 'environment-secret-key',
+        AWS_SESSION_TOKEN: 'environment-session-token',
+      },
+    });
+
+    await client.create(
+      vercelS3Manifest('bucket', {
+        accessKeyId: 'inline-access-key',
+        secretAccessKey: 'inline-secret-key',
+      }),
+    );
+
+    const mountCall = runCommandMock.mock.calls.find(([params]) => {
+      return isolatedMountCommand(params)?.command === 'mount-s3';
+    });
+    expect(mountCall?.[0].args).toEqual(
+      expect.arrayContaining([
+        'AWS_ACCESS_KEY_ID=inline-access-key',
+        'AWS_SECRET_ACCESS_KEY=inline-secret-key',
+      ]),
+    );
+    expect(mountCall?.[0].args).not.toContain(
+      'AWS_SESSION_TOKEN=environment-session-token',
+    );
+  });
+
+  test('uses an inline session token with inline temporary keys', async () => {
+    const client = new VercelSandboxClient({
+      allowS3CredentialExposure: true,
+      env: {
+        AWS_ACCESS_KEY_ID: 'environment-access-key',
+        AWS_SECRET_ACCESS_KEY: 'environment-secret-key',
+        AWS_SESSION_TOKEN: 'environment-session-token',
+      },
+    });
+
+    await client.create(
+      vercelS3Manifest('bucket', {
+        accessKeyId: 'inline-access-key',
+        secretAccessKey: 'inline-secret-key',
+        sessionToken: 'inline-session-token',
+      }),
+    );
+
+    const mountCall = runCommandMock.mock.calls.find(([params]) => {
+      return isolatedMountCommand(params)?.command === 'mount-s3';
+    });
+    expect(mountCall?.[0].args).toEqual(
+      expect.arrayContaining([
+        'AWS_ACCESS_KEY_ID=inline-access-key',
+        'AWS_SECRET_ACCESS_KEY=inline-secret-key',
+        'AWS_SESSION_TOKEN=inline-session-token',
+      ]),
+    );
+    expect(mountCall?.[0].args).not.toContain(
+      'AWS_SESSION_TOKEN=environment-session-token',
+    );
+  });
+
+  test('rejects unsupported and overlapping mount topology before provisioning', async () => {
+    const unsupported = vercelS3Manifest('bucket', {
+      mountStrategy: { type: 'other' },
+    });
+    const overlapping = new Manifest({
+      entries: {
+        parent: s3Mount({
+          bucket: 'parent',
+          mountStrategy: new VercelCloudBucketMountStrategy(),
+        }),
+        child: s3Mount({
+          bucket: 'child',
+          mountPath: 'parent/child',
+          mountStrategy: new VercelCloudBucketMountStrategy(),
+        }),
+      },
+    });
+    const client = new VercelSandboxClient();
+
+    await expect(client.create(unsupported)).rejects.toBeInstanceOf(
+      SandboxUnsupportedFeatureError,
+    );
+    await expect(client.create(overlapping)).rejects.toBeInstanceOf(
+      SandboxMountError,
+    );
+    await expect(
+      client.create(vercelS3Manifest('bucket', { mountPath: '/workspace' })),
+    ).rejects.toBeInstanceOf(SandboxMountError);
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects mount paths that resolve through symlinks', async () => {
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        const command = params.args?.[1] ?? '';
+        if (
+          resolvedRemotePathFromValidationCommand(command) ===
+          '/vercel/sandbox/bucket'
+        ) {
+          return commandResult(0, '/tmp/redirected-bucket\n');
+        }
+        return await defaultRunCommand(params);
+      },
+    );
+    const client = new VercelSandboxClient();
+
+    await expect(client.create(vercelS3Manifest())).rejects.toBeInstanceOf(
+      SandboxMountError,
+    );
+    expect(stopMock).toHaveBeenCalledOnce();
+    expect(
+      runCommandMock.mock.calls.some(
+        ([params]) => isolatedMountCommand(params)?.command === 'mount-s3',
+      ),
+    ).toBe(false);
+  });
+
+  test('rolls back partial initial mounts before stopping the sandbox', async () => {
+    const events: string[] = [];
+    let mountCount = 0;
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        const isolated = isolatedMountCommand(params);
+        if (isolated?.command === 'mount-s3') {
+          mountCount += 1;
+          events.push(`mount-${mountCount}`);
+          if (mountCount === 2) {
+            return commandResult(1, '', 'second mount failed');
+          }
+        } else if (isolated?.command === 'umount') {
+          events.push('umount');
+        }
+        return await defaultRunCommand(params);
+      },
+    );
+    stopMock.mockImplementation(async () => {
+      events.push('stop');
+    });
+    const manifest = new Manifest({
+      entries: {
+        first: s3Mount({
+          bucket: 'first',
+          mountStrategy: new VercelCloudBucketMountStrategy(),
+        }),
+        second: s3Mount({
+          bucket: 'second',
+          mountStrategy: new VercelCloudBucketMountStrategy(),
+        }),
+      },
+    });
+
+    await expect(
+      new VercelSandboxClient().create(manifest),
+    ).rejects.toBeInstanceOf(SandboxMountError);
+
+    expect(events).toEqual(['mount-1', 'mount-2', 'umount', 'stop']);
+    expect(mountedPaths.size).toBe(0);
+  });
+
+  test('rolls back an initial mount when output collection fails', async () => {
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        const isolated = isolatedMountCommand(params);
+        if (isolated?.command !== 'mount-s3') {
+          return await defaultRunCommand(params);
+        }
+        mountedPaths.add(isolated.args[1]!);
+        const result = commandResult(0);
+        result.output.mockImplementation(
+          async (stream?: 'stdout' | 'stderr' | 'both') => {
+            if (stream === 'stdout') {
+              throw new Error('output timed out');
+            }
+            return '';
+          },
+        );
+        return result;
+      },
+    );
+    stopMock.mockRejectedValueOnce(new Error('stop failed'));
+
+    await expect(
+      new VercelSandboxClient().create(vercelS3Manifest()),
+    ).rejects.toThrow(/failed to mount the S3 bucket.*Stop error: stop failed/);
+
+    expect(mountedPaths.size).toBe(0);
+    expect(
+      runCommandMock.mock.calls.some(
+        ([params]) => isolatedMountCommand(params)?.command === 'umount',
+      ),
+    ).toBe(true);
+  });
+
+  test('reconciles a timed-out mount command before rolling it back', async () => {
+    vi.spyOn(AbortSignal, 'timeout').mockReturnValue(
+      AbortSignal.abort(new DOMException('timed out', 'TimeoutError')),
+    );
+    let mountCommand: ReturnType<typeof commandResult> | undefined;
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        const isolated = isolatedMountCommand(params);
+        if (isolated?.command !== 'mount-s3') {
+          return await defaultRunCommand(params);
+        }
+        const result = commandResult(137);
+        result.wait.mockImplementation(
+          async (options?: { signal?: AbortSignal }) => {
+            options?.signal?.throwIfAborted();
+            mountedPaths.add(isolated.args[1]!);
+            return result;
+          },
+        );
+        mountCommand = result;
+        return result;
+      },
+    );
+    stopMock.mockRejectedValueOnce(new Error('stop failed'));
+
+    await expect(
+      new VercelSandboxClient().create(vercelS3Manifest()),
+    ).rejects.toThrow(/failed to mount the S3 bucket.*Stop error: stop failed/);
+
+    expect(mountCommand?.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(mountCommand?.wait).toHaveBeenCalledTimes(2);
+    expect(mountedPaths.size).toBe(0);
+    expect(
+      runCommandMock.mock.calls.some(
+        ([params]) => isolatedMountCommand(params)?.command === 'umount',
+      ),
+    ).toBe(true);
+  });
+
+  test('rejects dynamic manifest mutation after mounting', async () => {
+    const client = new VercelSandboxClient();
+    const session = await client.create(vercelS3Manifest());
+
+    await expect(
+      session.materializeEntry({
+        path: 'new.txt',
+        entry: { type: 'file', content: 'new' },
+      }),
+    ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
+    await expect(session.applyManifest(new Manifest())).rejects.toBeInstanceOf(
+      SandboxUnsupportedFeatureError,
+    );
+  });
+
+  test('rejects resume for serialized state that contains mounts', async () => {
+    const client = new VercelSandboxClient();
+    const session = await client.create(vercelS3Manifest());
+
+    await expect(client.resume(session.state)).rejects.toBeInstanceOf(
+      SandboxUnsupportedFeatureError,
+    );
+    expect(getMock).not.toHaveBeenCalled();
+  });
+
+  test('uses tar persistence and restores mounts around the archive operation', async () => {
+    const archive = makeTarArchive([
+      { name: 'README.md', content: 'persisted' },
+    ]);
+    readFileToBufferMock.mockResolvedValue(archive);
+    const client = new VercelSandboxClient({
+      workspacePersistence: 'snapshot',
+    });
+    const session = await client.create(vercelS3Manifest());
+    const callOffset = runCommandMock.mock.calls.length;
+
+    await expect(session.persistWorkspace()).resolves.toEqual(archive);
+
+    const calls = runCommandMock.mock.calls.slice(callOffset);
+    const commandNames = calls.map(([params]) => {
+      const isolated = isolatedMountCommand(params);
+      if (isolated) {
+        return isolated.command;
+      }
+      return params.args?.[1]?.includes('tar ') ? 'tar' : 'other';
+    });
+    expect(commandNames.indexOf('umount')).toBeGreaterThan(
+      commandNames.indexOf('findmnt'),
+    );
+    expect(commandNames.indexOf('tar')).toBeGreaterThan(
+      commandNames.indexOf('umount'),
+    );
+    expect(commandNames.lastIndexOf('mount-s3')).toBeGreaterThan(
+      commandNames.indexOf('tar'),
+    );
+    expect(snapshotMock).not.toHaveBeenCalled();
+  });
+
+  test('serializes mount-detaching persistence and session I/O', async () => {
+    const archive = makeTarArchive([
+      { name: 'README.md', content: 'persisted' },
+    ]);
+    readFileToBufferMock.mockResolvedValue(archive);
+    const firstTarStarted = deferred();
+    const releaseFirstTar = deferred();
+    let blockedFirstTar = false;
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        const command = params.args?.[1] ?? '';
+        if (
+          !blockedFirstTar &&
+          command.includes('tar ') &&
+          command.includes(' -cf ')
+        ) {
+          blockedFirstTar = true;
+          firstTarStarted.resolve();
+          await releaseFirstTar.promise;
+        }
+        return await defaultRunCommand(params);
+      },
+    );
+    const session = await new VercelSandboxClient().create(vercelS3Manifest());
+    const callOffset = runCommandMock.mock.calls.length;
+
+    const firstPersist = session.persistWorkspace();
+    await firstTarStarted.promise;
+    const secondPersist = session.persistWorkspace();
+    const exec = session.execCommand({ cmd: 'printf ready' });
+    await Promise.resolve();
+
+    expect(
+      runCommandMock.mock.calls
+        .slice(callOffset)
+        .some(([params]) => params.args?.[1] === 'printf ready'),
+    ).toBe(false);
+
+    releaseFirstTar.resolve();
+    await expect(
+      Promise.all([firstPersist, secondPersist, exec]),
+    ).resolves.toEqual([archive, archive, expect.any(String)]);
+    expect(
+      runCommandMock.mock.calls
+        .slice(callOffset)
+        .some(([params]) => params.args?.[1] === 'printf ready'),
+    ).toBe(true);
+
+    const transitionCommands = runCommandMock.mock.calls
+      .slice(callOffset)
+      .map(([params]) => isolatedMountCommand(params)?.command)
+      .filter((command) => command === 'umount' || command === 'mount-s3');
+    expect(transitionCommands).toEqual([
+      'umount',
+      'mount-s3',
+      'umount',
+      'mount-s3',
+    ]);
+  });
+
+  test('rejects hydrate archives that overlap mounts before detaching them', async () => {
+    const client = new VercelSandboxClient();
+    const session = await client.create(vercelS3Manifest());
+    const callOffset = runCommandMock.mock.calls.length;
+
+    await expect(
+      session.hydrateWorkspace(
+        makeTarArchive([{ name: 'bucket/file.txt', content: 'overwrite' }]),
+      ),
+    ).rejects.toBeInstanceOf(SandboxArchiveError);
+
+    expect(
+      runCommandMock.mock.calls
+        .slice(callOffset)
+        .some(([params]) => isolatedMountCommand(params)?.command === 'umount'),
+    ).toBe(false);
+  });
+
+  test('rejects non-writable mount ancestors before detaching them', async () => {
+    const session = await new VercelSandboxClient().create(
+      vercelS3Manifest('cache/bucket'),
+    );
+    const callOffset = runCommandMock.mock.calls.length;
+
+    await expect(
+      session.hydrateWorkspace(
+        makeTarArchive([{ name: 'cache', type: '5', mode: 0o555 }]),
+      ),
+    ).rejects.toThrow(/archive directory blocks protected path/);
+
+    expect(
+      runCommandMock.mock.calls
+        .slice(callOffset)
+        .some(([params]) => isolatedMountCommand(params)?.command === 'umount'),
+    ).toBe(false);
+  });
+
+  test('honors null archive limit overrides while mounts are active', async () => {
+    const archive = makeTarArchive([
+      { name: 'README.md', content: 'larger than one byte' },
+    ]);
+    const client = new VercelSandboxClient();
+    const session = await client.create(vercelS3Manifest(), {
+      archiveLimits: {
+        maxInputBytes: null,
+        maxExtractedBytes: 1,
+        maxMembers: null,
+      },
+    });
+
+    await expect(session.hydrateWorkspace(archive)).rejects.toBeInstanceOf(
+      SandboxArchiveError,
+    );
+    const callOffset = runCommandMock.mock.calls.length;
+
+    await expect(
+      session.hydrateWorkspace(archive, { archiveLimits: null }),
+    ).resolves.toBeUndefined();
+
+    const transitionCommands = runCommandMock.mock.calls
+      .slice(callOffset)
+      .map(([params]) => isolatedMountCommand(params)?.command)
+      .filter((command) => command === 'umount' || command === 'mount-s3');
+    expect(transitionCommands).toEqual(['umount', 'mount-s3']);
+  });
+
+  test('stops the sandbox when a detached mount cannot be restored', async () => {
+    const archive = makeTarArchive([
+      { name: 'README.md', content: 'persisted' },
+    ]);
+    readFileToBufferMock.mockResolvedValue(archive);
+    const client = new VercelSandboxClient();
+    const session = await client.create(vercelS3Manifest());
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        if (isolatedMountCommand(params)?.command === 'mount-s3') {
+          return commandResult(1, '', 'mount failed');
+        }
+        return await defaultRunCommand(params);
+      },
+    );
+
+    await expect(session.persistWorkspace()).rejects.toBeInstanceOf(
+      SandboxLifecycleError,
+    );
+    expect(stopMock).toHaveBeenCalledOnce();
+    await expect(session.close()).resolves.toBeUndefined();
+  });
+
+  test('unmounts active S3 buckets before stopping the sandbox', async () => {
+    const client = new VercelSandboxClient();
+    const session = await client.create(vercelS3Manifest());
+    const callOffset = runCommandMock.mock.calls.length;
+
+    await session.close();
+
+    const closeCommands = runCommandMock.mock.calls
+      .slice(callOffset)
+      .map(([params]) => isolatedMountCommand(params)?.command);
+    expect(closeCommands).toContain('findmnt');
+    expect(closeCommands).toContain('umount');
+    expect(mountedPaths.has('/vercel/sandbox/bucket')).toBe(false);
+    expect(stopMock).toHaveBeenCalledOnce();
+  });
+
+  test('continues unmounting after an individual cleanup failure', async () => {
+    const manifest = new Manifest({
+      entries: {
+        first: s3Mount({
+          bucket: 'first',
+          mountStrategy: new VercelCloudBucketMountStrategy(),
+        }),
+        second: s3Mount({
+          bucket: 'second',
+          mountStrategy: new VercelCloudBucketMountStrategy(),
+        }),
+      },
+    });
+    const session = await new VercelSandboxClient().create(manifest);
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        const isolated = isolatedMountCommand(params);
+        if (
+          isolated?.command === 'umount' &&
+          isolated.args[0] === '/vercel/sandbox/second'
+        ) {
+          return commandResult(1, '', 'unmount failed');
+        }
+        return await defaultRunCommand(params);
+      },
+    );
+    stopMock.mockRejectedValueOnce(new Error('stop failed'));
+
+    await expect(session.close()).rejects.toThrow(
+      /failed to unmount one or more S3 buckets.*Stop error: stop failed/,
+    );
+
+    expect(mountedPaths.has('/vercel/sandbox/first')).toBe(false);
+    expect(mountedPaths.has('/vercel/sandbox/second')).toBe(true);
+  });
+
+  test('keeps a failed mounted close retryable and blocks session I/O', async () => {
+    const session = await new VercelSandboxClient().create(vercelS3Manifest());
+    stopMock
+      .mockRejectedValueOnce(new Error('temporary stop failure'))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(session.close()).rejects.toThrow(/temporary stop failure/);
+    await expect(
+      session.execCommand({ cmd: 'printf unsafe' }),
+    ).rejects.toBeInstanceOf(SandboxLifecycleError);
+
+    await expect(session.close()).resolves.toBeUndefined();
+    expect(stopMock).toHaveBeenCalledTimes(2);
+    expect(mountedPaths.size).toBe(0);
+  });
+
+  test('keeps cleanup retryable when a failed remount cannot stop the sandbox', async () => {
+    const archive = makeTarArchive([
+      { name: 'README.md', content: 'persisted' },
+    ]);
+    readFileToBufferMock.mockResolvedValue(archive);
+    const session = await new VercelSandboxClient().create(vercelS3Manifest());
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        if (isolatedMountCommand(params)?.command === 'mount-s3') {
+          return commandResult(1, '', 'mount failed');
+        }
+        return await defaultRunCommand(params);
+      },
+    );
+    stopMock
+      .mockRejectedValueOnce(new Error('temporary stop failure'))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(session.persistWorkspace()).rejects.toThrow(
+      /could not stop the sandbox/,
+    );
+    await expect(
+      session.execCommand({ cmd: 'printf unsafe' }),
+    ).rejects.toBeInstanceOf(SandboxLifecycleError);
+
+    await expect(session.close()).resolves.toBeUndefined();
+    expect(stopMock).toHaveBeenCalledTimes(2);
+  });
+
+  test('reports operation, remount, and stop errors together', async () => {
+    const session = await new VercelSandboxClient().create(vercelS3Manifest());
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        if (isolatedMountCommand(params)?.command === 'mount-s3') {
+          return commandResult(1, '', 'mount failed');
+        }
+        if (params.args?.[1]?.includes(' -cf ')) {
+          return commandResult(1, '', 'archive failed');
+        }
+        return await defaultRunCommand(params);
+      },
+    );
+    stopMock.mockRejectedValueOnce(new Error('stop failed'));
+
+    await expect(session.persistWorkspace()).rejects.toThrow(
+      /Preceding error: VercelSandboxClient failed to create a workspace tar archive.*Transition error: VercelSandboxClient failed to mount the S3 bucket.*Stop error: stop failed/,
+    );
   });
 
   test('creates a sandbox, remaps the default root, and executes commands', async () => {
@@ -1965,6 +2818,15 @@ describe('VercelSandboxClient', () => {
     await client.serializeSessionState(session.state);
 
     expect(client.canReusePreservedOwnedSession(session.state)).toBe(false);
+  });
+
+  test('reuses mounted sessions as live handles for in-process preservation', async () => {
+    const client = new VercelSandboxClient();
+    const session = await client.create(vercelS3Manifest(), {
+      workspacePersistence: 'snapshot',
+    });
+
+    expect(client.canReusePreservedOwnedSession(session.state)).toBe(true);
   });
 
   test('does not stop a sandbox twice across shutdown and delete lifecycle hooks', async () => {

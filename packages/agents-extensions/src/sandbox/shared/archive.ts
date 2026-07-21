@@ -27,6 +27,7 @@ export type RemoteWorkspaceTarIo = RemoteManifestWriter & {
 export type WorkspaceTarValidationOptions = {
   allowSymlinks?: boolean;
   allowExternalSymlinkTargets?: boolean;
+  rejectRelPaths?: Iterable<string>;
   rejectSymlinkRelPaths?: Iterable<string>;
   skipRelPaths?: Iterable<string>;
   rootName?: string;
@@ -215,6 +216,9 @@ export function validateWorkspaceTarArchive(
 ): void {
   const bytes = toWorkspaceArchiveBytes(data);
   const archiveLimits = resolveSandboxArchiveLimits(options.archiveLimits);
+  const rejectedPaths = [...(options.rejectRelPaths ?? [])].map(
+    normalizeTarRelPath,
+  );
   checkArchiveInputBytes(bytes.byteLength, archiveLimits);
   const membersByPath = new Map<string, TarMember>();
   const symlinkPaths = new Set<string>();
@@ -224,7 +228,7 @@ export function validateWorkspaceTarArchive(
   let pendingPax: Record<string, string> | undefined;
 
   try {
-    for (let offset = 0; offset < bytes.byteLength; ) {
+    for (let offset = 0; offset < bytes.byteLength;) {
       const header = bytes.subarray(offset, offset + TAR_BLOCK_SIZE);
       if (header.byteLength < TAR_BLOCK_SIZE) {
         throw tarError('<tar>', 'truncated header');
@@ -274,11 +278,28 @@ export function validateWorkspaceTarArchive(
       ) {
         continue;
       }
-
+      const mode =
+        rejectedPaths.length > 0 && rawType === '5'
+          ? parseTarOctal(header, 100, 8)
+          : undefined;
+      if (rawType === '5' && safeTarMemberRelPath(name) === null) {
+        assertTarMemberDoesNotOverlapRejectedPath(
+          { rawName: name, path: '', type: 'directory' },
+          rejectedPaths,
+          options.rootName,
+          mode,
+        );
+      }
       const member = validateTarMember(name, rawType, options, linkName);
       if (!member) {
         continue;
       }
+      assertTarMemberDoesNotOverlapRejectedPath(
+        member,
+        rejectedPaths,
+        options.rootName,
+        mode,
+      );
       checkArchiveMemberCount(members.length + 1, name, archiveLimits);
       if (member.type === 'file') {
         extractedBytes += size;
@@ -345,10 +366,10 @@ export function workspaceTarExcludeArgs(manifest: Manifest): string[] {
   return [...manifest.ephemeralPersistencePaths()]
     .filter((path) => path.length > 0)
     .sort((left, right) => left.localeCompare(right))
-    .flatMap((path) => [
-      `--exclude=${shellQuote(path)}`,
-      `--exclude=${shellQuote(`./${path}`)}`,
-    ]);
+    .map(
+      (path) =>
+        `--exclude=${shellQuote(`./${path.replace(/([*?[\]\\])/gu, '\\$1')}`)}`,
+    );
 }
 
 type TarMember = {
@@ -398,6 +419,57 @@ function validateTarMember(
   }
 
   throw tarError(name, 'unsupported member type');
+}
+
+function assertTarMemberDoesNotOverlapRejectedPath(
+  member: TarMember,
+  rejectedPaths: Iterable<string>,
+  rootName?: string,
+  mode?: number,
+): void {
+  const memberPaths = [member.path];
+  const normalizedRootName = rootName
+    ? normalizeTarRelPath(rootName)
+    : undefined;
+  if (normalizedRootName && member.path === normalizedRootName) {
+    memberPaths.push('');
+  } else if (
+    normalizedRootName &&
+    member.path.startsWith(`${normalizedRootName}/`)
+  ) {
+    memberPaths.push(member.path.slice(normalizedRootName.length + 1));
+  }
+
+  for (const rejectedPath of rejectedPaths) {
+    for (const memberPath of memberPaths) {
+      const isAncestor =
+        memberPath === ''
+          ? rejectedPath !== ''
+          : rejectedPath.startsWith(`${memberPath}/`);
+      if (
+        member.type === 'directory' &&
+        isAncestor &&
+        mode !== undefined &&
+        (mode & 0o300) !== 0o300
+      ) {
+        throw tarError(
+          member.rawName,
+          `archive directory blocks protected path: ${rejectedPath}`,
+        );
+      }
+      if (
+        rejectedPath === '' ||
+        memberPath === rejectedPath ||
+        memberPath.startsWith(`${rejectedPath}/`) ||
+        (member.type !== 'directory' && isAncestor)
+      ) {
+        throw tarError(
+          member.rawName,
+          `archive member overlaps protected path: ${rejectedPath}`,
+        );
+      }
+    }
+  }
 }
 
 function validateSymlinkTarget(
@@ -512,21 +584,30 @@ function shouldSkipTarMember(
   memberName: string,
   options: { skipRelPaths: Iterable<string>; rootName?: string },
 ): boolean {
+  return matchesTarMemberPath(
+    memberName,
+    options.skipRelPaths,
+    options.rootName,
+  );
+}
+
+function matchesTarMemberPath(
+  memberName: string,
+  candidates: Iterable<string>,
+  rootName?: string,
+): boolean {
   const relPath = safeTarMemberRelPath(memberName);
   if (relPath === null) {
     return false;
   }
   const variants = [relPath];
-  const rootName = options.rootName;
   if (rootName && relPath === rootName) {
     variants.push('');
   } else if (rootName && relPath.startsWith(`${rootName}/`)) {
     variants.push(relPath.slice(rootName.length + 1));
   }
 
-  return variants.some((variant) =>
-    matchesNormalizedPath(variant, options.skipRelPaths),
-  );
+  return variants.some((variant) => matchesNormalizedPath(variant, candidates));
 }
 
 function matchesNormalizedPath(

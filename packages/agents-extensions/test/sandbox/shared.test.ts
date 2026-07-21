@@ -2012,6 +2012,63 @@ describe('remote sandbox path helpers', () => {
     ).toThrow(/unsupported member type/);
   });
 
+  test('rejects archive members that overlap protected paths', () => {
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'cache/data.json', content: 'unsafe' }]),
+        { rejectRelPaths: ['cache'] },
+      ),
+    ).toThrow(SandboxArchiveError);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'safe/cache.txt', content: 'safe' }]),
+        { rejectRelPaths: ['cache'] },
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([
+          { name: 'workspace/cache/data.json', content: 'unsafe' },
+        ]),
+        {
+          rejectRelPaths: ['cache'],
+          rootName: 'workspace',
+        },
+      ),
+    ).toThrow(SandboxArchiveError);
+
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'cache', content: 'blocking file' }]),
+        { rejectRelPaths: ['cache/mounted'] },
+      ),
+    ).toThrow(SandboxArchiveError);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'cache', type: '5', mode: 0o755 }]),
+        { rejectRelPaths: ['cache/mounted'] },
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'cache', type: '5', mode: 0o555 }]),
+        { rejectRelPaths: ['cache/mounted'] },
+      ),
+    ).toThrow(/archive directory blocks protected path: cache\/mounted/);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: '.', type: '5', mode: 0o555 }]),
+        { rejectRelPaths: ['cache/mounted'] },
+      ),
+    ).toThrow(/archive directory blocks protected path: cache\/mounted/);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'README.md', content: 'protected root' }]),
+        { rejectRelPaths: [''] },
+      ),
+    ).toThrow(SandboxArchiveError);
+  });
+
   test('rejects workspace tar archives over resource limits', () => {
     const archive = makeTarArchive([
       { name: 'one.txt', content: '1' },
@@ -2164,6 +2221,11 @@ describe('remote sandbox path helpers', () => {
     const manifest = new Manifest({
       entries: {
         keep: { type: 'file', content: 'keep' },
+        'literal[1]*?': {
+          type: 'file',
+          content: 'literal',
+          ephemeral: true,
+        },
         secret: { type: 'file', content: 'secret', ephemeral: true },
         mounted: mount({
           source: 's3://bucket/data',
@@ -2175,11 +2237,9 @@ describe('remote sandbox path helpers', () => {
     });
 
     expect(workspaceTarExcludeArgs(manifest)).toEqual([
-      "--exclude='cache'",
       "--exclude='./cache'",
-      "--exclude='mounted'",
+      "--exclude='./literal\\[1\\]\\*\\?'",
       "--exclude='./mounted'",
-      "--exclude='secret'",
       "--exclude='./secret'",
     ]);
   });

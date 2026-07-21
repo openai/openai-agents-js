@@ -28,6 +28,14 @@ Use this reference for sandbox preparation, sessions, capabilities, manifests, m
 - Keep shared archive, path, mount, process, session, and snapshot semantics in `sandbox/shared/`. Provider adapters should translate those contracts rather than fork validation rules.
 - Preserve structured provider error details and retryability without exposing credentials. Cleanup failure can be significant even when execution already failed; retain both causes.
 
+### Remote mount simplicity boundary
+
+Remote mounts should default to one narrow lifecycle: declare them during sandbox creation, keep their contents outside workspace persistence, and unmount them during close. When persistence or hydration requires detaching a mount, restore it immediately afterward. Mount credentials must remain trusted current configuration and must not be reconstructed from serialized session state.
+
+Treat dynamic mount mutation, snapshot-backed mounts, and resumable mounts as opt-in provider capabilities rather than default requirements. If a privileged mount transition becomes ambiguous, stop the sandbox instead of adding reconciliation or recovery state. Do not add credential resolvers, refresh loops, persisted mount registries, or dynamic mount APIs unless the provider exposes a trusted primitive that makes the lifecycle transition unambiguous and the change is supported by focused provider evidence.
+
+Provider adapters may deliberately support a narrower lifecycle. Document that boundary next to the adapter state that enforces it so future maintainers do not mistake an intentional exclusion for an unfinished feature. The Vercel S3 adapter follows the create-time-only form of this policy.
+
 ## Review Checklist
 
 1. Trace create, prepare, mount/materialize, execute, snapshot, preserve/destroy, resume, and failure cleanup.
