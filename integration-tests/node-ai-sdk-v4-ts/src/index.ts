@@ -3,6 +3,10 @@ import { Agent, getGlobalTraceProvider, run, tool } from '@openai/agents';
 import { aisdk } from '@openai/agents-extensions/ai-sdk';
 import { z } from 'zod';
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 const requestBodies: Array<Record<string, unknown>> = [];
 const deepseek = createDeepSeek({
   apiKey: 'integration-test-key',
@@ -118,8 +122,38 @@ try {
   }
 
   const firstTools = requestBodies[0]?.tools;
-  if (!Array.isArray(firstTools) || firstTools.length !== 1) {
-    throw new Error('Expected the first request to include one function tool.');
+  const firstTool =
+    Array.isArray(firstTools) && firstTools.length === 1
+      ? firstTools[0]
+      : undefined;
+  const functionDefinition =
+    isRecord(firstTool) && isRecord(firstTool.function)
+      ? firstTool.function
+      : undefined;
+  const parameters =
+    functionDefinition && isRecord(functionDefinition.parameters)
+      ? functionDefinition.parameters
+      : undefined;
+  const properties =
+    parameters && isRecord(parameters.properties)
+      ? parameters.properties
+      : undefined;
+  const citySchema =
+    properties && isRecord(properties.city) ? properties.city : undefined;
+
+  if (
+    !isRecord(firstTool) ||
+    firstTool.type !== 'function' ||
+    functionDefinition?.name !== 'get_weather' ||
+    functionDefinition.description !== 'Get the weather for a city.' ||
+    parameters?.type !== 'object' ||
+    citySchema?.type !== 'string' ||
+    !Array.isArray(parameters.required) ||
+    !parameters.required.includes('city')
+  ) {
+    throw new Error(
+      'Expected the first request to contain the serialized weather tool definition.',
+    );
   }
 
   console.log(`[AISDK_V4_RESPONSE]${result.finalOutput}[/AISDK_V4_RESPONSE]`);
