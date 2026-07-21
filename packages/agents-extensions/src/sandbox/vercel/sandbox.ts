@@ -649,6 +649,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     );
     assertNoOverlappingMountPath(this.activeMounts.keys(), mountPath);
     await this.assertCanonicalMountPath(mountPath);
+    this.activeMounts.set(mountPath, entry);
     await mountVercelCloudBucket({
       entry,
       mountPath,
@@ -658,7 +659,6 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
         await this.assertCanonicalMountPath(mountPath);
       },
     });
-    this.activeMounts.set(mountPath, entry);
   }
 
   private async assertCanonicalMountPath(mountPath: string): Promise<void> {
@@ -779,11 +779,27 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
   }
 
   private async unmountAll(): Promise<void> {
+    const errors: string[] = [];
     for (const mountPath of [...this.activeMounts.keys()].reverse()) {
-      await unmountVercelCloudBucket({
-        mountPath,
-        runCommand: this.mountCommand,
-      });
+      try {
+        await unmountVercelCloudBucket({
+          mountPath,
+          runCommand: this.mountCommand,
+        });
+      } catch (error) {
+        errors.push(`${mountPath}: ${providerErrorMessage(error)}`);
+      }
+    }
+    if (errors.length > 0) {
+      throw new SandboxMountError(
+        'VercelSandboxClient failed to unmount one or more S3 buckets.',
+        {
+          provider: 'vercel',
+          sandboxId: this.state.sandboxId,
+          errors,
+        },
+        'mount_failed',
+      );
     }
   }
 

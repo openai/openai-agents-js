@@ -598,6 +598,39 @@ describe('VercelSandboxClient', () => {
     expect(mountedPaths.size).toBe(0);
   });
 
+  test('rolls back an initial mount when output collection fails', async () => {
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        const isolated = isolatedMountCommand(params);
+        if (isolated?.command !== 'mount-s3') {
+          return await defaultRunCommand(params);
+        }
+        mountedPaths.add(isolated.args[1]!);
+        return {
+          exitCode: 0,
+          output: vi.fn(async (stream?: 'stdout' | 'stderr' | 'both') => {
+            if (stream === 'stdout') {
+              throw new Error('output timed out');
+            }
+            return '';
+          }),
+        };
+      },
+    );
+    stopMock.mockRejectedValueOnce(new Error('stop failed'));
+
+    await expect(
+      new VercelSandboxClient().create(vercelS3Manifest()),
+    ).rejects.toThrow(/failed to mount the S3 bucket.*Stop error: stop failed/);
+
+    expect(mountedPaths.size).toBe(0);
+    expect(
+      runCommandMock.mock.calls.some(
+        ([params]) => isolatedMountCommand(params)?.command === 'umount',
+      ),
+    ).toBe(true);
+  });
+
   test('rejects dynamic manifest mutation after mounting', async () => {
     const client = new VercelSandboxClient();
     const session = await client.create(vercelS3Manifest());
@@ -819,6 +852,42 @@ describe('VercelSandboxClient', () => {
     expect(closeCommands).toContain('umount');
     expect(mountedPaths.has('/vercel/sandbox/bucket')).toBe(false);
     expect(stopMock).toHaveBeenCalledOnce();
+  });
+
+  test('continues unmounting after an individual cleanup failure', async () => {
+    const manifest = new Manifest({
+      entries: {
+        first: s3Mount({
+          bucket: 'first',
+          mountStrategy: new VercelCloudBucketMountStrategy(),
+        }),
+        second: s3Mount({
+          bucket: 'second',
+          mountStrategy: new VercelCloudBucketMountStrategy(),
+        }),
+      },
+    });
+    const session = await new VercelSandboxClient().create(manifest);
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        const isolated = isolatedMountCommand(params);
+        if (
+          isolated?.command === 'umount' &&
+          isolated.args[0] === '/vercel/sandbox/second'
+        ) {
+          return commandResult(1, '', 'unmount failed');
+        }
+        return await defaultRunCommand(params);
+      },
+    );
+    stopMock.mockRejectedValueOnce(new Error('stop failed'));
+
+    await expect(session.close()).rejects.toThrow(
+      /failed to unmount one or more S3 buckets.*Stop error: stop failed/,
+    );
+
+    expect(mountedPaths.has('/vercel/sandbox/first')).toBe(false);
+    expect(mountedPaths.has('/vercel/sandbox/second')).toBe(true);
   });
 
   test('keeps a failed mounted close retryable and blocks session I/O', async () => {
