@@ -42,7 +42,7 @@ function commandResult(
   stdout: string = '',
   stderr: string = '',
 ) {
-  return {
+  const result = {
     exitCode,
     output: vi.fn(async (stream?: 'stdout' | 'stderr' | 'both') => {
       if (stream === 'stderr') {
@@ -53,7 +53,11 @@ function commandResult(
       }
       return stdout;
     }),
+    wait: vi.fn(),
+    kill: vi.fn(async () => {}),
   };
+  result.wait.mockResolvedValue(result);
+  return result;
 }
 
 function deferred(): {
@@ -606,15 +610,16 @@ describe('VercelSandboxClient', () => {
           return await defaultRunCommand(params);
         }
         mountedPaths.add(isolated.args[1]!);
-        return {
-          exitCode: 0,
-          output: vi.fn(async (stream?: 'stdout' | 'stderr' | 'both') => {
+        const result = commandResult(0);
+        result.output.mockImplementation(
+          async (stream?: 'stdout' | 'stderr' | 'both') => {
             if (stream === 'stdout') {
               throw new Error('output timed out');
             }
             return '';
-          }),
-        };
+          },
+        );
+        return result;
       },
     );
     stopMock.mockRejectedValueOnce(new Error('stop failed'));
@@ -623,6 +628,45 @@ describe('VercelSandboxClient', () => {
       new VercelSandboxClient().create(vercelS3Manifest()),
     ).rejects.toThrow(/failed to mount the S3 bucket.*Stop error: stop failed/);
 
+    expect(mountedPaths.size).toBe(0);
+    expect(
+      runCommandMock.mock.calls.some(
+        ([params]) => isolatedMountCommand(params)?.command === 'umount',
+      ),
+    ).toBe(true);
+  });
+
+  test('reconciles a timed-out mount command before rolling it back', async () => {
+    vi.spyOn(AbortSignal, 'timeout').mockReturnValue(
+      AbortSignal.abort(new DOMException('timed out', 'TimeoutError')),
+    );
+    let mountCommand: ReturnType<typeof commandResult> | undefined;
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        const isolated = isolatedMountCommand(params);
+        if (isolated?.command !== 'mount-s3') {
+          return await defaultRunCommand(params);
+        }
+        const result = commandResult(137);
+        result.wait.mockImplementation(
+          async (options?: { signal?: AbortSignal }) => {
+            options?.signal?.throwIfAborted();
+            mountedPaths.add(isolated.args[1]!);
+            return result;
+          },
+        );
+        mountCommand = result;
+        return result;
+      },
+    );
+    stopMock.mockRejectedValueOnce(new Error('stop failed'));
+
+    await expect(
+      new VercelSandboxClient().create(vercelS3Manifest()),
+    ).rejects.toThrow(/failed to mount the S3 bucket.*Stop error: stop failed/);
+
+    expect(mountCommand?.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(mountCommand?.wait).toHaveBeenCalledTimes(2);
     expect(mountedPaths.size).toBe(0);
     expect(
       runCommandMock.mock.calls.some(

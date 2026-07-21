@@ -146,6 +146,9 @@ type VercelSandboxInstance = {
   runCommand(
     params: VercelSandboxRunCommandParams,
   ): Promise<VercelCommandFinishedLike>;
+  runDetachedCommand(
+    params: VercelSandboxRunCommandParams,
+  ): Promise<VercelCommandLike>;
   mkDir(path: string): Promise<void>;
   readFileToBuffer(file: {
     path: string;
@@ -169,6 +172,11 @@ type VercelCommandFinishedLike = {
     stream?: 'stdout' | 'stderr' | 'both',
     options?: { signal?: AbortSignal },
   ): Promise<string>;
+};
+
+type VercelCommandLike = {
+  wait(options?: { signal?: AbortSignal }): Promise<VercelCommandFinishedLike>;
+  kill(signal?: 'SIGKILL'): Promise<void>;
 };
 
 class VercelMountOperationMutex {
@@ -862,7 +870,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     const signal = options?.timeoutMs
       ? AbortSignal.timeout(options.timeoutMs)
       : undefined;
-    const result = await this.sandbox.runCommand({
+    const trackedCommand = await this.sandbox.runDetachedCommand({
       cmd: '/usr/bin/env',
       args: [
         '-i',
@@ -875,8 +883,28 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       ],
       env: {},
       ...(options?.sudo ? { sudo: true } : {}),
-      ...(signal ? { signal } : {}),
     });
+    let result: VercelCommandFinishedLike;
+    try {
+      result = await trackedCommand.wait(signal ? { signal } : undefined);
+    } catch (error) {
+      if (!signal?.aborted) {
+        throw error;
+      }
+      try {
+        await trackedCommand.kill('SIGKILL');
+      } catch {
+        // The command may have completed between the timed-out wait and kill.
+      }
+      try {
+        await trackedCommand.wait();
+      } catch (reconciliationError) {
+        throw new UserError(
+          `VercelSandboxClient could not confirm that a timed-out mount command stopped. Timeout error: ${providerErrorMessage(error)} Reconciliation error: ${providerErrorMessage(reconciliationError)}`,
+        );
+      }
+      throw error;
+    }
     return {
       status: result.exitCode ?? 1,
       stdout: await result.output('stdout', { signal }),
@@ -1637,6 +1665,13 @@ function adaptVercelSandbox(sandbox: VercelSdkSandbox): VercelSandboxInstance {
       adaptVercelCommandFinished(
         await sandbox.runCommand(params as VercelSdkRunCommandParams),
       ),
+    runDetachedCommand: async (params) =>
+      adaptVercelCommand(
+        await sandbox.runCommand({
+          ...(params as VercelSdkRunCommandParams),
+          detached: true,
+        }),
+      ),
     mkDir: async (path) => await sandbox.mkDir(path),
     readFileToBuffer: async (file) => await sandbox.readFileToBuffer(file),
     writeFiles: async (files) => await sandbox.writeFiles(files),
@@ -1665,6 +1700,16 @@ function adaptVercelCommandFinished(
   return {
     exitCode: command.exitCode,
     output: async (stream, options) => await command.output(stream, options),
+  };
+}
+
+function adaptVercelCommand(
+  command: import('@vercel/sandbox').Command,
+): VercelCommandLike {
+  return {
+    wait: async (options) =>
+      adaptVercelCommandFinished(await command.wait(options)),
+    kill: async (signal) => await command.kill(signal),
   };
 }
 
