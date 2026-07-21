@@ -350,13 +350,16 @@ export function toWorkspaceArchiveBytes(
 }
 
 export function workspaceTarExcludeArgs(manifest: Manifest): string[] {
-  return [...manifest.ephemeralPersistencePaths()]
+  const excludeArgs = [...manifest.ephemeralPersistencePaths()]
     .filter((path) => path.length > 0)
     .sort((left, right) => left.localeCompare(right))
     .flatMap((path) => [
       `--exclude=${shellQuote(path)}`,
       `--exclude=${shellQuote(`./${path}`)}`,
     ]);
+  return excludeArgs.length > 0
+    ? ['--anchored', '--no-wildcards', ...excludeArgs]
+    : [];
 }
 
 type TarMember = {

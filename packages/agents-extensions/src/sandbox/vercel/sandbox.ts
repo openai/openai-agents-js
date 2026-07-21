@@ -816,8 +816,11 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     }
 
     if (stopError) {
+      const precedingErrorMessage = precedingError
+        ? ` Preceding error: ${providerErrorMessage(precedingError)}`
+        : '';
       throw new UserError(
-        `VercelSandboxClient failed to ${operation} and could not stop the sandbox. Transition error: ${providerErrorMessage(transitionError)} Stop error: ${providerErrorMessage(stopError)}`,
+        `VercelSandboxClient failed to ${operation} and could not stop the sandbox.${precedingErrorMessage} Transition error: ${providerErrorMessage(transitionError)} Stop error: ${providerErrorMessage(stopError)}`,
       );
     }
     this.closeCompleted = true;

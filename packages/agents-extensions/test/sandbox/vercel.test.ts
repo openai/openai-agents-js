@@ -847,6 +847,26 @@ describe('VercelSandboxClient', () => {
     expect(stopMock).toHaveBeenCalledTimes(2);
   });
 
+  test('reports operation, remount, and stop errors together', async () => {
+    const session = await new VercelSandboxClient().create(vercelS3Manifest());
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        if (isolatedMountCommand(params)?.command === 'mount-s3') {
+          return commandResult(1, '', 'mount failed');
+        }
+        if (params.args?.[1]?.includes(' -cf ')) {
+          return commandResult(1, '', 'archive failed');
+        }
+        return await defaultRunCommand(params);
+      },
+    );
+    stopMock.mockRejectedValueOnce(new Error('stop failed'));
+
+    await expect(session.persistWorkspace()).rejects.toThrow(
+      /Preceding error: VercelSandboxClient failed to create a workspace tar archive.*Transition error: VercelSandboxClient failed to mount the S3 bucket.*Stop error: stop failed/,
+    );
+  });
+
   test('creates a sandbox, remaps the default root, and executes commands', async () => {
     const client = new VercelSandboxClient();
     const session = await client.create(

@@ -2220,6 +2220,8 @@ describe('remote sandbox path helpers', () => {
     });
 
     expect(workspaceTarExcludeArgs(manifest)).toEqual([
+      '--anchored',
+      '--no-wildcards',
       "--exclude='cache'",
       "--exclude='./cache'",
       "--exclude='mounted'",
