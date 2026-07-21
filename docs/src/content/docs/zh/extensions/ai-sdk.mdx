@@ -14,19 +14,19 @@ import aiSdkUiMessageStreamExample from '../../../../../../examples/docs/extensi
 import aiSdkUiMessageStreamResponseExample from '../../../../../../examples/docs/extensions/ai-sdk-ui-message-stream-response.ts?raw';
 import aiSdkTextStreamResponseExample from '../../../../../../examples/docs/extensions/ai-sdk-text-stream-response.ts?raw';
 
-Agents SDK 开箱即用地通过 Responses API 或 Chat Completions API 支持 OpenAI 模型。不过，如果您想使用其他模型，[Vercel AI SDK](https://sdk.vercel.ai/) 提供了一系列受支持的模型，可通过此适配器接入 Agents SDK。
+Agents SDK 开箱即用，可通过 Responses API 或 Chat Completions API 使用 OpenAI 模型。不过，如果您希望使用其他模型，[Vercel AI SDK](https://sdk.vercel.ai/) 提供了一系列受支持的模型，可以通过此适配器将它们接入 Agents SDK。
 
 ## 设置
 
 <Steps>
 
-1. 通过安装 extensions 包来安装 AI SDK 适配器：
+1. 安装扩展包，以安装 AI SDK 适配器：
 
    ```bash
    npm install @openai/agents-extensions
    ```
 
-2. 从 [Vercel 的 AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models) 中选择所需的模型包并安装：
+2. 从 [Vercel AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models) 中选择所需的模型包并安装：
 
    ```bash
    npm install @ai-sdk/openai
@@ -46,9 +46,9 @@ Agents SDK 开箱即用地通过 Responses API 或 Chat Completions API 支持 O
 
 <Code lang="typescript" code={aiSdkSetupExample} title="AI SDK 设置" />
 
-## 提供商元数据传递
+## 提供商元数据的传递
 
-如果您需要随消息发送提供商特定的选项，请通过 `providerMetadata` 传递。其值会直接转发到底层 AI SDK 模型。例如，Agents SDK 中的以下 `providerData`
+如果需要随消息发送提供商特定的选项，请通过 `providerMetadata` 传递。这些值会直接转发给底层 AI SDK 模型。例如，Agents SDK 中的以下 `providerData`
 
 <Code
   lang="typescript"
@@ -56,7 +56,7 @@ Agents SDK 开箱即用地通过 Responses API 或 Chat Completions API 支持 O
   title="Agents SDK providerData"
 />
 
-会在使用 AI SDK 集成时变为
+在使用 AI SDK 集成时会变为
 
 <Code
   lang="typescript"
@@ -64,9 +64,9 @@ Agents SDK 开箱即用地通过 Responses API 或 Chat Completions API 支持 O
   title="AI SDK providerMetadata"
 />
 
-## 最终输出文本规范化
+## 最终输出文本的规范化
 
-某些提供商会以带有额外包装的纯文本形式返回 structured outputs，例如 JSON 代码围栏。如果您需要在 Agents 运行时验证最终输出之前进行提供商特定的清理，请在创建适配器时传入 `transformOutputText`：
+某些提供商会以带有额外包装的纯文本形式返回结构化输出，例如 JSON 代码围栏。如果在智能体运行时验证最终输出之前需要执行提供商特定的清理，请在创建适配器时传入 `transformOutputText`：
 
 <Code
   lang="typescript"
@@ -74,54 +74,63 @@ Agents SDK 开箱即用地通过 Responses API 或 Chat Completions API 支持 O
   title="规范化最终输出文本"
 />
 
-`transformOutputText` 会在非流式响应的最终助手文本上运行，也会在流式响应的最终 `response_done` 事件上运行。它不会修改增量 `output_text_delta` 事件。
+对于非流式响应，`transformOutputText` 会对最终确定的助手文本运行；对于流式响应，则会对最终的 `response_done` 事件运行。它不会修改增量 `output_text_delta` 事件。
 
 ## 重试
 
-`modelSettings.retry` 也适用于 AI SDK 支持的模型，因为重试由 Agents 运行时实现，而不仅仅由默认 OpenAI 提供商实现。
+`modelSettings.retry` 同样适用于由 AI SDK 支持的模型，因为重试由智能体运行时实现，而不只是由默认 OpenAI 提供商实现。
 
-这意味着您可以附加在其他地方使用的相同重试配置：
+这意味着您可以使用与其他场景相同的重试配置：
 
-- 在 `Agent`、`Runner` 或两者上设置 `modelSettings.retry`。
-- 组合 `retryPolicies`，例如 `networkError()`、`httpStatus([...])` 或 `providerSuggested()`。
-- 请注意，只有当被包装的 AI SDK 模型能够通过适配器暴露重试建议时，`providerSuggested()` 才有帮助。
+- 在 `Agent`、`Runner` 或二者上设置 `modelSettings.retry`。
+- 组合使用 `networkError()`、`httpStatus([...])` 或 `providerSuggested()` 等 `retryPolicies`。
+- 请注意，仅当封装的 AI SDK 模型能够通过适配器提供重试建议时，`providerSuggested()` 才会起作用。
 
-如需使用 `aisdk(openai(...))` 的完整示例，请参阅 [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts)。如需了解重试 API 本身，包括流式传输和有状态后续请求的安全边界，请参阅[模型](/openai-agents-js/zh/guides/models#model-retries)。
+有关使用 `aisdk(openai(...))` 的完整示例，请参阅 [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts)。有关重试 API 本身，包括流式传输和有状态后续请求的安全边界，请参阅[模型](/openai-agents-js/zh/guides/models#model-retries)。
 
-## 合适集成的选择
+## 集成选择
 
-`@openai/agents-extensions` 中有两个相关集成：
+`@openai/agents-extensions` 中有两种相关集成：
 
-- `@openai/agents-extensions/ai-sdk` 会适配 AI SDK 模型，使 `Agent` 可以在其上运行。
-- `@openai/agents-extensions/ai-sdk-ui` 会适配流式传输的 Agents SDK 运行，使 AI SDK UI 路由可以返回标准的流式传输 `Response`。
+- `@openai/agents-extensions/ai-sdk` 用于适配 AI SDK 模型，使 `Agent` 可以在其上运行。
+- `@openai/agents-extensions/ai-sdk-ui` 用于适配 Agents SDK 的流式运行，使 AI SDK UI 路由能够返回标准的流式 `Response`。
 
 ### AI SDK 模型注意事项
 
-- `@openai/agents-extensions/ai-sdk` 适配器仍处于 beta 阶段，因此值得针对您选择的提供商进行仔细测试，尤其是较小的提供商。
-- 如果您使用的是 OpenAI 模型，请优先使用默认 OpenAI 模型提供商，而不是此适配器。
-- 受支持的 AI SDK 提供商必须暴露 `specificationVersion` `v2` 或 `v3`。如果您需要较旧的 v1 提供商风格，请将 [examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1) 中的模块复制到您的项目中。
-- 通过此适配器使用计算机工具时，需要提供显示元数据。请确保工具同时包含 `environment` 和 `dimensions` 元数据。
-- 此处不支持延迟的 Responses 工具加载流程。这包括 `toolNamespace()`、带有 `deferLoading: true` 的函数工具，以及 `toolSearchTool()`。如果您需要工具搜索，请直接使用 OpenAI Responses 模型。请参阅[工具](/openai-agents-js/zh/guides/tools#deferred-tool-loading-with-tool-search)和[模型](/openai-agents-js/zh/guides/models#responses-only-deferred-tool-loading)。
+- `@openai/agents-extensions/ai-sdk` 适配器仍处于测试阶段，因此建议针对您选择的提供商仔细测试，尤其是规模较小的提供商。
+- 如果您使用 OpenAI 模型，建议优先使用默认的 OpenAI 模型提供商，而不是此适配器。
+- 受支持的 AI SDK 提供商必须公开值为 `v2`、`v3` 或 `v4` 的 `specificationVersion`。如果需要旧版 v1 提供商样式，请将 [examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1) 中的模块复制到您的项目中。
+- 通过此适配器使用计算机工具时需要提供显示元数据。请确保工具同时包含 `environment` 和 `dimensions` 元数据。
+- 此处不支持延迟 Responses 工具加载流程，包括 `toolNamespace()`、设置了 `deferLoading: true` 的函数工具以及 `toolSearchTool()`。如果需要工具搜索，请直接使用 OpenAI Responses 模型。请参阅[工具](/openai-agents-js/zh/guides/tools#deferred-tool-loading-with-tool-search)和[模型](/openai-agents-js/zh/guides/models#responses-only-deferred-tool-loading)。
+- AI SDK 模型适配器不支持程序化工具调用。它会拒绝 `programmaticToolCallingTool()`、`allowedCallers` 包含 `'programmatic'` 的工具、程序化工具调用历史记录项以及 Responses `outputSchema`。如需使用这些功能，请直接使用 OpenAI Responses 模型。
 
-## AI SDK UI 流式传输辅助工具
+### 图像工具输出
 
-`@openai/agents-extensions/ai-sdk-ui` 提供响应辅助工具，用于将 Agents SDK 流接入 AI SDK UI 路由：
+该适配器会保留函数工具返回的 `ToolOutputImage` 值，包括远程 URL、base64 数据和 OpenAI 文件 ID。AI SDK v2 模型会接收 `media` 部分。AI SDK v3 模型会接收 `image-url`、`image-data` 或 `image-file-id` 部分，以便提供商使用原始图像表示形式。
 
-- `createAiSdkTextStreamResponse(source, options?)` 用于纯文本流式传输响应。
-- `createAiSdkUiMessageStream(source)` 用于更底层的 `ReadableStream<UIMessageChunk>`。
-- `createAiSdkUiMessageStreamResponse(source, options?)` 用于 `UIMessageChunk` 流式传输响应。
+有关完整示例，请参阅 [`examples/ai-sdk/image-tool-output.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/image-tool-output.ts)。
 
-这些辅助工具接受 `StreamedRunResult`、类流来源或兼容的包装对象。响应辅助工具会返回带有适合流式传输的 header 的 `Response`。
+## AI SDK UI 流式辅助函数
 
-当您的路由应直接返回 AI SDK 响应时，请使用 `createAiSdkUiMessageStreamResponse(...)`。当您想自行控制响应或渲染层，同时仍使用维护中的 Agents SDK 到 AI SDK `UIMessageChunk` 转换时，请使用 `createAiSdkUiMessageStream(...)`。当您只需要纯文本时，请使用 `createAiSdkTextStreamResponse(...)`。
+`@openai/agents-extensions/ai-sdk-ui` 提供了响应辅助函数，用于将 Agents SDK 流接入 AI SDK UI 路由：
 
-响应辅助工具还通过 `options` 接受可选的响应设置：
+- `createAiSdkTextStreamResponse(source, options?)` 用于纯文本流式响应。
+- `createAiSdkUiMessageStream(source)` 用于较底层的 `ReadableStream<UIMessageChunk>`。
+- `createAiSdkUiMessageStreamResponse(source, options?)` 用于 `UIMessageChunk` 流式响应。
 
-- `headers`：要合并到流式传输响应中的额外响应 header。
+这些辅助函数接受 `StreamedRunResult`、类流源或兼容的包装器对象。响应辅助函数会返回带有适合流式传输的标头的 `Response`。
+
+当路由应直接返回 AI SDK 响应时，请使用 `createAiSdkUiMessageStreamResponse(...)`。如果您希望自行控制响应或渲染层，同时仍使用由 Agents SDK 维护的 AI SDK `UIMessageChunk` 转换，请使用 `createAiSdkUiMessageStream(...)`。如果只需要纯文本，请使用 `createAiSdkTextStreamResponse(...)`。
+
+即使 AI SDK 模型适配器无法发起程序化工具调用流程，UI 流式辅助函数也可以封装使用该流程的 OpenAI Responses 流式运行。程序项会作为 `programmatic_tool_calling` 工具输入发出，对应的程序结果则会作为 `program_output` 工具输出发出。
+
+响应辅助函数还可通过 `options` 接受可选的响应设置：
+
+- `headers`：要合并到流式响应中的附加响应标头。
 - `status`：返回的 `Response` 的 HTTP 状态码。
 - `statusText`：返回的 `Response` 的 HTTP 状态文本。
 
-更底层的 UI 消息流示例：
+较底层的 UI 消息流示例：
 
 <Code lang="typescript" code={aiSdkUiMessageStreamExample} title="UI 消息流" />
 
@@ -133,7 +142,7 @@ Agents SDK 开箱即用地通过 Responses API 或 Chat Completions API 支持 O
   title="UI 消息流响应"
 />
 
-用于仅文本流式传输的 Next.js 路由示例：
+用于纯文本流式传输的 Next.js 路由示例：
 
 <Code
   lang="typescript"
@@ -141,4 +150,4 @@ Agents SDK 开箱即用地通过 Responses API 或 Chat Completions API 支持 O
   title="文本流响应"
 />
 
-如需端到端用法，请参阅此代码仓库中的 `examples/ai-sdk-ui` 应用。
+有关端到端用法，请参阅此仓库中的 `examples/ai-sdk-ui` 应用。
