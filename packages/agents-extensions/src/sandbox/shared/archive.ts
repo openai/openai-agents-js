@@ -216,6 +216,9 @@ export function validateWorkspaceTarArchive(
 ): void {
   const bytes = toWorkspaceArchiveBytes(data);
   const archiveLimits = resolveSandboxArchiveLimits(options.archiveLimits);
+  const rejectedPaths = [...(options.rejectRelPaths ?? [])].map(
+    normalizeTarRelPath,
+  );
   checkArchiveInputBytes(bytes.byteLength, archiveLimits);
   const membersByPath = new Map<string, TarMember>();
   const symlinkPaths = new Set<string>();
@@ -275,20 +278,15 @@ export function validateWorkspaceTarArchive(
       ) {
         continue;
       }
-      if (
-        matchesTarMemberPath(
-          name,
-          options.rejectRelPaths ?? [],
-          options.rootName,
-        )
-      ) {
-        throw tarError(name, 'archive path overlaps a protected path');
-      }
-
       const member = validateTarMember(name, rawType, options, linkName);
       if (!member) {
         continue;
       }
+      assertTarMemberDoesNotOverlapRejectedPath(
+        member,
+        rejectedPaths,
+        options.rootName,
+      );
       checkArchiveMemberCount(members.length + 1, name, archiveLimits);
       if (member.type === 'file') {
         extractedBytes += size;
@@ -408,6 +406,42 @@ function validateTarMember(
   }
 
   throw tarError(name, 'unsupported member type');
+}
+
+function assertTarMemberDoesNotOverlapRejectedPath(
+  member: TarMember,
+  rejectedPaths: Iterable<string>,
+  rootName?: string,
+): void {
+  const memberPaths = [member.path];
+  const normalizedRootName = rootName
+    ? normalizeTarRelPath(rootName)
+    : undefined;
+  if (normalizedRootName && member.path === normalizedRootName) {
+    memberPaths.push('');
+  } else if (
+    normalizedRootName &&
+    member.path.startsWith(`${normalizedRootName}/`)
+  ) {
+    memberPaths.push(member.path.slice(normalizedRootName.length + 1));
+  }
+
+  for (const rejectedPath of rejectedPaths) {
+    for (const memberPath of memberPaths) {
+      if (
+        rejectedPath === '' ||
+        memberPath === rejectedPath ||
+        memberPath.startsWith(`${rejectedPath}/`) ||
+        (member.type !== 'directory' &&
+          rejectedPath.startsWith(`${memberPath}/`))
+      ) {
+        throw tarError(
+          member.rawName,
+          `archive member overlaps protected path: ${rejectedPath}`,
+        );
+      }
+    }
+  }
 }
 
 function validateSymlinkTarget(

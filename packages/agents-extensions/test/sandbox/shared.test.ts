@@ -2012,7 +2012,7 @@ describe('remote sandbox path helpers', () => {
     ).toThrow(/unsupported member type/);
   });
 
-  test('rejects archive members at or below protected paths', () => {
+  test('rejects archive members that overlap protected paths', () => {
     expect(() =>
       validateWorkspaceTarArchive(
         makeTarArchive([{ name: 'cache/data.json', content: 'unsafe' }]),
@@ -2034,6 +2034,25 @@ describe('remote sandbox path helpers', () => {
           rejectRelPaths: ['cache'],
           rootName: 'workspace',
         },
+      ),
+    ).toThrow(SandboxArchiveError);
+
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'cache', content: 'blocking file' }]),
+        { rejectRelPaths: ['cache/mounted'] },
+      ),
+    ).toThrow(SandboxArchiveError);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'cache', type: '5' }]),
+        { rejectRelPaths: ['cache/mounted'] },
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'README.md', content: 'protected root' }]),
+        { rejectRelPaths: [''] },
       ),
     ).toThrow(SandboxArchiveError);
   });

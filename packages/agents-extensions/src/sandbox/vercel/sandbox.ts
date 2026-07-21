@@ -30,9 +30,11 @@ import {
   deserializeRemoteSandboxSessionStateValues,
   decodeNativeSnapshotRef,
   encodeNativeSnapshotRef,
+  hydrateRemoteWorkspaceTar,
   materializeEnvironment,
   MOUNT_MANIFEST_METADATA_SUPPORT,
   posixDirname,
+  persistRemoteWorkspaceTar,
   providerErrorDetails,
   providerErrorMessage,
   resolveSandboxAbsolutePath,
@@ -49,6 +51,7 @@ import {
   isProviderSandboxNotFoundError,
   withProviderError,
   withSandboxSpan,
+  validateRemoteSandboxPathForManifest,
   validateWorkspaceTarArchive,
   RemoteSandboxSessionBase,
   type RemoteSandboxCommandOptions,
@@ -162,6 +165,25 @@ type VercelCommandFinishedLike = {
   ): Promise<string>;
 };
 
+class VercelMountOperationMutex {
+  private tail: Promise<void> = Promise.resolve();
+
+  async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.tail;
+    let release!: () => void;
+    this.tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+}
+
 export type VercelWorkspacePersistence = 'tar' | 'snapshot';
 
 export interface VercelSandboxClientOptions extends SandboxClientOptions {
@@ -232,6 +254,8 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
   private readonly pendingDirCreates = new Map<string, Promise<void>>();
   private closePromise?: Promise<void>;
   private closeCompleted = false;
+  private mountFailure?: string;
+  private readonly mountOperationMutex = new VercelMountOperationMutex();
   /**
    * This provider applies the remote mount simplicity boundary by fixing the
    * mount set at creation and keeping it only in memory.
@@ -374,11 +398,21 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     await this.materializeManifestEntries(
       cloneManifestWithoutMountEntries(manifest),
     );
-    for (const {
-      entry,
-      mountPath,
-    } of manifest.mountTargetsForMaterialization()) {
-      await this.mountInitialEntry(entry, mountPath);
+    try {
+      for (const {
+        entry,
+        mountPath,
+      } of manifest.mountTargetsForMaterialization()) {
+        await this.mountInitialEntry(entry, mountPath);
+      }
+    } catch (error) {
+      const rollbackErrors = await this.rollbackInitialMounts();
+      if (rollbackErrors.length > 0) {
+        throw new UserError(
+          `Failed to apply the initial Vercel S3 mounts and roll back partial mounts. Mount error: ${providerErrorMessage(error)} Rollback errors: ${rollbackErrors.join('; ')}`,
+        );
+      }
+      throw error;
     }
   }
 
@@ -390,7 +424,11 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
   async persistWorkspace(): Promise<Uint8Array> {
     if (this.activeMounts.size > 0) {
       return await this.withMountsDetached(async () => {
-        return await this.persistWorkspaceTar();
+        return await persistRemoteWorkspaceTar({
+          providerName: 'VercelSandboxClient',
+          manifest: this.state.manifest,
+          io: this.mountTransitionArchiveIo(),
+        });
       });
     }
     if (this.state.workspacePersistence === 'snapshot') {
@@ -447,7 +485,13 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
         ),
       });
       await this.withMountsDetached(async () => {
-        await this.hydrateWorkspaceTar(data, options);
+        await hydrateRemoteWorkspaceTar({
+          providerName: 'VercelSandboxClient',
+          manifest: this.state.manifest,
+          io: this.mountTransitionArchiveIo(),
+          data,
+          archiveLimits: options.archiveLimits ?? this.getArchiveLimits(),
+        });
       });
       this.resetKnownDirs();
       this.knownDirs.add(this.state.manifest.root);
@@ -524,33 +568,44 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
   }
 
   private async closeMountedSandbox(): Promise<void> {
-    let unmountError: unknown;
-    try {
-      await this.unmountAll();
-    } catch (error) {
-      unmountError = error;
-    }
+    await this.mountOperationMutex.runExclusive(async () => {
+      if (this.closeCompleted) {
+        return;
+      }
 
-    let stopError: unknown;
-    try {
-      await stopVercelSandbox(this.sandbox);
-    } catch (error) {
-      stopError = error;
-    }
-    this.closeCompleted = true;
-    this.activeMounts.clear();
+      let unmountError: unknown;
+      try {
+        await this.unmountAll();
+      } catch (error) {
+        unmountError = error;
+      }
 
-    if (unmountError && stopError) {
-      throw new UserError(
-        `Failed to unmount Vercel S3 buckets and stop the sandbox. Unmount error: ${providerErrorMessage(unmountError)} Stop error: ${providerErrorMessage(stopError)}`,
-      );
-    }
-    if (unmountError) {
-      throw unmountError;
-    }
-    if (stopError) {
-      throw stopError;
-    }
+      let stopError: unknown;
+      try {
+        await stopVercelSandbox(this.sandbox);
+      } catch (error) {
+        stopError = error;
+      }
+
+      if (!stopError) {
+        this.closeCompleted = true;
+        this.activeMounts.clear();
+      } else {
+        this.markMountSessionUnusable(stopError);
+      }
+
+      if (unmountError && stopError) {
+        throw new UserError(
+          `Failed to unmount Vercel S3 buckets and stop the sandbox. Unmount error: ${providerErrorMessage(unmountError)} Stop error: ${providerErrorMessage(stopError)}`,
+        );
+      }
+      if (unmountError) {
+        throw unmountError;
+      }
+      if (stopError) {
+        throw stopError;
+      }
+    });
   }
 
   async shutdown(): Promise<void> {
@@ -588,6 +643,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       entry,
       mountPath,
       runCommand: this.mountCommand,
+      environment: this.state.environment,
       validateMountPath: async () => {
         await this.assertCanonicalMountPath(mountPath);
       },
@@ -599,6 +655,22 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     const resolvedPath = await this.resolveRemotePath(mountPath, {
       forWrite: true,
     });
+    this.assertResolvedMountPath(mountPath, resolvedPath);
+  }
+
+  private async assertCanonicalMountPathDuringTransition(
+    mountPath: string,
+  ): Promise<void> {
+    const resolvedPath = await this.resolveRemotePathDirect(mountPath, {
+      forWrite: true,
+    });
+    this.assertResolvedMountPath(mountPath, resolvedPath);
+  }
+
+  private assertResolvedMountPath(
+    mountPath: string,
+    resolvedPath: string,
+  ): void {
     if (resolvedPath !== mountPath) {
       throw new SandboxMountError(
         'VercelSandboxClient refuses an S3 mount path that resolves through a symlink.',
@@ -612,6 +684,40 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     }
   }
 
+  private async rollbackInitialMounts(): Promise<string[]> {
+    const errors: string[] = [];
+    for (const mountPath of [...this.activeMounts.keys()].reverse()) {
+      try {
+        await unmountVercelCloudBucket({
+          mountPath,
+          runCommand: this.mountCommand,
+        });
+        this.activeMounts.delete(mountPath);
+      } catch (error) {
+        errors.push(`${mountPath}: ${providerErrorMessage(error)}`);
+      }
+    }
+    return errors;
+  }
+
+  private assertMountSessionUsable(): void {
+    if (!this.mountFailure) {
+      return;
+    }
+    throw new SandboxLifecycleError(
+      'VercelSandboxClient cannot perform workspace operations after a failed S3 mount cleanup.',
+      {
+        provider: 'vercel',
+        sandboxId: this.state.sandboxId,
+        cause: this.mountFailure,
+      },
+    );
+  }
+
+  private markMountSessionUnusable(error: unknown): void {
+    this.mountFailure ??= providerErrorMessage(error);
+  }
+
   /**
    * Runs tar persistence while external bucket files are outside the workspace.
    *
@@ -620,6 +726,15 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
    * operation completed.
    */
   private async withMountsDetached<T>(operation: () => Promise<T>): Promise<T> {
+    return await this.mountOperationMutex.runExclusive(async () => {
+      this.assertMountSessionUsable();
+      return await this.withMountsDetachedLocked(operation);
+    });
+  }
+
+  private async withMountsDetachedLocked<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
     try {
       await this.unmountAll();
     } catch (error) {
@@ -664,13 +779,14 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
 
   private async remountAll(): Promise<void> {
     for (const [mountPath, entry] of this.activeMounts) {
-      await this.assertCanonicalMountPath(mountPath);
+      await this.assertCanonicalMountPathDuringTransition(mountPath);
       await mountVercelCloudBucket({
         entry,
         mountPath,
         runCommand: this.mountCommand,
+        environment: this.state.environment,
         validateMountPath: async () => {
-          await this.assertCanonicalMountPath(mountPath);
+          await this.assertCanonicalMountPathDuringTransition(mountPath);
         },
       });
     }
@@ -681,20 +797,21 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     transitionError: unknown,
     precedingError?: unknown,
   ): Promise<never> {
+    this.markMountSessionUnusable(transitionError);
     let stopError: unknown;
     try {
       await stopVercelSandbox(this.sandbox);
     } catch (error) {
       stopError = error;
     }
-    this.closeCompleted = true;
-    this.activeMounts.clear();
 
     if (stopError) {
       throw new UserError(
         `VercelSandboxClient failed to ${operation} and could not stop the sandbox. Transition error: ${providerErrorMessage(transitionError)} Stop error: ${providerErrorMessage(stopError)}`,
       );
     }
+    this.closeCompleted = true;
+    this.activeMounts.clear();
     throw new SandboxLifecycleError(
       `VercelSandboxClient failed to ${operation}; the sandbox was stopped.`,
       {
@@ -737,6 +854,81 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       stderr: await result.output('stderr', { signal }),
     };
   };
+
+  private mountTransitionArchiveIo() {
+    return {
+      runCommand: async (command: string) =>
+        await this.runRemoteCommandDirect(command, {
+          kind: 'archive',
+          workdir: this.state.manifest.root,
+        }),
+      mkdir: async (path: string) => await this.ensureDir(path),
+      readFile: async (path: string) => await this.readRemoteFileDirect(path),
+      writeFile: async (path: string, content: string | Uint8Array) =>
+        await this.writeRemoteFileDirect(path, content),
+    };
+  }
+
+  private async resolveRemotePathDirect(
+    path: string,
+    options: { forWrite?: boolean } = {},
+  ): Promise<string> {
+    return await validateRemoteSandboxPathForManifest({
+      manifest: this.state.manifest,
+      path,
+      options,
+      runCommand: async (command) =>
+        await this.runRemoteCommandDirect(command, {
+          kind: 'path',
+          workdir: this.state.manifest.root,
+        }),
+    });
+  }
+
+  private async runWorkspaceOperation<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    this.assertMountSessionUsable();
+    if (this.activeMounts.size === 0) {
+      return await operation();
+    }
+    return await this.mountOperationMutex.runExclusive(async () => {
+      this.assertMountSessionUsable();
+      return await operation();
+    });
+  }
+
+  private async runRemoteCommandDirect(
+    command: string,
+    options: RemoteSandboxCommandOptions,
+  ): Promise<RemoteSandboxCommandResult> {
+    const result = await this.execShell(command, options.workdir, undefined);
+    return {
+      status: result.exitCode,
+      stdout: result.output,
+      stderr: '',
+    };
+  }
+
+  private async readRemoteFileDirect(path: string): Promise<Uint8Array> {
+    const bytes = await this.sandbox.readFileToBuffer({ path });
+    if (!bytes) {
+      throw new UserError(`Sandbox path not found: ${path}`);
+    }
+    return await toUint8Array(bytes);
+  }
+
+  private async writeRemoteFileDirect(
+    path: string,
+    content: string | Uint8Array,
+  ): Promise<void> {
+    await this.sandbox.writeFiles([
+      {
+        path,
+        content,
+      },
+    ]);
+  }
 
   private async execShell(
     command: string,
@@ -995,16 +1187,15 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     command: string,
     options: RemoteSandboxCommandOptions,
   ): Promise<RemoteSandboxCommandResult> {
-    const result = await this.execShell(command, options.workdir, undefined);
-    return {
-      status: result.exitCode,
-      stdout: result.output,
-      stderr: '',
-    };
+    return await this.runWorkspaceOperation(
+      async () => await this.runRemoteCommandDirect(command, options),
+    );
   }
 
   protected override async mkdirRemote(path: string): Promise<void> {
-    await this.ensureDir(path);
+    await this.runWorkspaceOperation(async () => {
+      await this.ensureDir(path);
+    });
   }
 
   protected override async readRemoteText(path: string): Promise<string> {
@@ -1012,43 +1203,43 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
   }
 
   protected override async readRemoteFile(path: string): Promise<Uint8Array> {
-    const bytes = await this.sandbox.readFileToBuffer({ path });
-    if (!bytes) {
-      throw new UserError(`Sandbox path not found: ${path}`);
-    }
-    return await toUint8Array(bytes);
+    return await this.runWorkspaceOperation(
+      async () => await this.readRemoteFileDirect(path),
+    );
   }
 
   protected override async writeRemoteFile(
     path: string,
     content: string | Uint8Array,
   ): Promise<void> {
-    await this.sandbox.writeFiles([
-      {
-        path,
-        content,
-      },
-    ]);
+    await this.runWorkspaceOperation(async () => {
+      await this.writeRemoteFileDirect(path, content);
+    });
   }
 
   protected override async deleteRemotePath(path: string): Promise<void> {
-    const result = await this.runRemoteCommand(`rm -f -- ${shellQuote(path)}`, {
-      kind: 'manifest',
-      workdir: this.state.manifest.root,
-    });
-    if (result.status !== 0) {
-      throw new SandboxProviderError(
-        'VercelSandboxClient failed to delete path.',
+    await this.runWorkspaceOperation(async () => {
+      const result = await this.runRemoteCommandDirect(
+        `rm -f -- ${shellQuote(path)}`,
         {
-          provider: 'vercel',
-          operation: 'delete path',
-          sandboxId: this.state.sandboxId,
-          path,
-          exitCode: result.status,
-          output: result.stdout ?? '',
+          kind: 'manifest',
+          workdir: this.state.manifest.root,
         },
       );
-    }
+      if (result.status !== 0) {
+        throw new SandboxProviderError(
+          'VercelSandboxClient failed to delete path.',
+          {
+            provider: 'vercel',
+            operation: 'delete path',
+            sandboxId: this.state.sandboxId,
+            path,
+            exitCode: result.status,
+            output: result.stdout ?? '',
+          },
+        );
+      }
+    });
   }
 }
 
@@ -1457,7 +1648,21 @@ function assertVercelMountManifest(
       manifest.root,
       mountPath,
     );
-    resolveSandboxRelativePath(manifest.root, absoluteMountPath);
+    const relativeMountPath = resolveSandboxRelativePath(
+      manifest.root,
+      absoluteMountPath,
+    );
+    if (!relativeMountPath) {
+      throw new SandboxMountError(
+        'VercelSandboxClient does not support mounting an S3 bucket at the workspace root.',
+        {
+          provider: 'vercel',
+          mountPath: absoluteMountPath,
+          root: manifest.root,
+        },
+        'mount_config_invalid',
+      );
+    }
     assertNoOverlappingMountPath(mountPaths, absoluteMountPath);
     mountPaths.push(absoluteMountPath);
 

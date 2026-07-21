@@ -55,6 +55,17 @@ function commandResult(
   };
 }
 
+function deferred(): {
+  promise: Promise<void>;
+  resolve: () => void;
+} {
+  let resolve!: () => void;
+  const promise = new Promise<void>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
+
 function isolatedMountCommand(
   params: MockRunCommandParams,
 ): { command: string; args: string[] } | undefined {
@@ -294,6 +305,37 @@ describe('VercelSandboxClient', () => {
     expect(JSON.stringify(serialized)).not.toContain('session-token');
   });
 
+  test('forwards allowlisted configured AWS authentication to mount-s3', async () => {
+    const client = new VercelSandboxClient({
+      env: {
+        AWS_ACCESS_KEY_ID: 'environment-access-key',
+        AWS_SECRET_ACCESS_KEY: 'environment-secret-key',
+        AWS_SESSION_TOKEN: 'environment-session-token',
+        AWS_ROLE_ARN: 'arn:aws:iam::123456789012:role/sandbox',
+        AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/secrets/aws/token',
+        UNRELATED_SECRET: 'do-not-forward',
+      },
+    });
+
+    await client.create(vercelS3Manifest());
+
+    const mountCall = runCommandMock.mock.calls.find(([params]) => {
+      return isolatedMountCommand(params)?.command === 'mount-s3';
+    });
+    expect(mountCall?.[0].args).toEqual(
+      expect.arrayContaining([
+        'AWS_ACCESS_KEY_ID=environment-access-key',
+        'AWS_SECRET_ACCESS_KEY=environment-secret-key',
+        'AWS_SESSION_TOKEN=environment-session-token',
+        'AWS_ROLE_ARN=arn:aws:iam::123456789012:role/sandbox',
+        'AWS_WEB_IDENTITY_TOKEN_FILE=/var/run/secrets/aws/token',
+      ]),
+    );
+    expect(mountCall?.[0].args).not.toContain(
+      'UNRELATED_SECRET=do-not-forward',
+    );
+  });
+
   test('rejects unsupported and overlapping mount topology before provisioning', async () => {
     const unsupported = vercelS3Manifest('bucket', {
       mountStrategy: { type: 'other' },
@@ -319,6 +361,9 @@ describe('VercelSandboxClient', () => {
     await expect(client.create(overlapping)).rejects.toBeInstanceOf(
       SandboxMountError,
     );
+    await expect(
+      client.create(vercelS3Manifest('bucket', { mountPath: '/workspace' })),
+    ).rejects.toBeInstanceOf(SandboxMountError);
     expect(createMock).not.toHaveBeenCalled();
   });
 
@@ -346,6 +391,48 @@ describe('VercelSandboxClient', () => {
         ([params]) => isolatedMountCommand(params)?.command === 'mount-s3',
       ),
     ).toBe(false);
+  });
+
+  test('rolls back partial initial mounts before stopping the sandbox', async () => {
+    const events: string[] = [];
+    let mountCount = 0;
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        const isolated = isolatedMountCommand(params);
+        if (isolated?.command === 'mount-s3') {
+          mountCount += 1;
+          events.push(`mount-${mountCount}`);
+          if (mountCount === 2) {
+            return commandResult(1, '', 'second mount failed');
+          }
+        } else if (isolated?.command === 'umount') {
+          events.push('umount');
+        }
+        return await defaultRunCommand(params);
+      },
+    );
+    stopMock.mockImplementation(async () => {
+      events.push('stop');
+    });
+    const manifest = new Manifest({
+      entries: {
+        first: s3Mount({
+          bucket: 'first',
+          mountStrategy: new VercelCloudBucketMountStrategy(),
+        }),
+        second: s3Mount({
+          bucket: 'second',
+          mountStrategy: new VercelCloudBucketMountStrategy(),
+        }),
+      },
+    });
+
+    await expect(
+      new VercelSandboxClient().create(manifest),
+    ).rejects.toBeInstanceOf(SandboxMountError);
+
+    expect(events).toEqual(['mount-1', 'mount-2', 'umount', 'stop']);
+    expect(mountedPaths.size).toBe(0);
   });
 
   test('rejects dynamic manifest mutation after mounting', async () => {
@@ -406,6 +493,66 @@ describe('VercelSandboxClient', () => {
     expect(snapshotMock).not.toHaveBeenCalled();
   });
 
+  test('serializes mount-detaching persistence and session I/O', async () => {
+    const archive = makeTarArchive([
+      { name: 'README.md', content: 'persisted' },
+    ]);
+    readFileToBufferMock.mockResolvedValue(archive);
+    const firstTarStarted = deferred();
+    const releaseFirstTar = deferred();
+    let blockedFirstTar = false;
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        const command = params.args?.[1] ?? '';
+        if (
+          !blockedFirstTar &&
+          command.includes('tar ') &&
+          command.includes(' -cf ')
+        ) {
+          blockedFirstTar = true;
+          firstTarStarted.resolve();
+          await releaseFirstTar.promise;
+        }
+        return await defaultRunCommand(params);
+      },
+    );
+    const session = await new VercelSandboxClient().create(vercelS3Manifest());
+    const callOffset = runCommandMock.mock.calls.length;
+
+    const firstPersist = session.persistWorkspace();
+    await firstTarStarted.promise;
+    const secondPersist = session.persistWorkspace();
+    const exec = session.execCommand({ cmd: 'printf ready' });
+    await Promise.resolve();
+
+    expect(
+      runCommandMock.mock.calls
+        .slice(callOffset)
+        .some(([params]) => params.args?.[1] === 'printf ready'),
+    ).toBe(false);
+
+    releaseFirstTar.resolve();
+    await expect(
+      Promise.all([firstPersist, secondPersist, exec]),
+    ).resolves.toEqual([archive, archive, expect.any(String)]);
+    expect(
+      runCommandMock.mock.calls
+        .slice(callOffset)
+        .some(([params]) => params.args?.[1] === 'printf ready'),
+    ).toBe(true);
+
+    const transitionCommands = runCommandMock.mock.calls
+      .slice(callOffset)
+      .map(([params]) => isolatedMountCommand(params)?.command)
+      .filter((command) => command === 'umount' || command === 'mount-s3');
+    expect(transitionCommands).toEqual([
+      'umount',
+      'mount-s3',
+      'umount',
+      'mount-s3',
+    ]);
+  });
+
   test('rejects hydrate archives that overlap mounts before detaching them', async () => {
     const client = new VercelSandboxClient();
     const session = await client.create(vercelS3Manifest());
@@ -461,6 +608,51 @@ describe('VercelSandboxClient', () => {
     expect(closeCommands).toContain('umount');
     expect(mountedPaths.has('/vercel/sandbox/bucket')).toBe(false);
     expect(stopMock).toHaveBeenCalledOnce();
+  });
+
+  test('keeps a failed mounted close retryable and blocks session I/O', async () => {
+    const session = await new VercelSandboxClient().create(vercelS3Manifest());
+    stopMock
+      .mockRejectedValueOnce(new Error('temporary stop failure'))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(session.close()).rejects.toThrow(/temporary stop failure/);
+    await expect(
+      session.execCommand({ cmd: 'printf unsafe' }),
+    ).rejects.toBeInstanceOf(SandboxLifecycleError);
+
+    await expect(session.close()).resolves.toBeUndefined();
+    expect(stopMock).toHaveBeenCalledTimes(2);
+    expect(mountedPaths.size).toBe(0);
+  });
+
+  test('keeps cleanup retryable when a failed remount cannot stop the sandbox', async () => {
+    const archive = makeTarArchive([
+      { name: 'README.md', content: 'persisted' },
+    ]);
+    readFileToBufferMock.mockResolvedValue(archive);
+    const session = await new VercelSandboxClient().create(vercelS3Manifest());
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        if (isolatedMountCommand(params)?.command === 'mount-s3') {
+          return commandResult(1, '', 'mount failed');
+        }
+        return await defaultRunCommand(params);
+      },
+    );
+    stopMock
+      .mockRejectedValueOnce(new Error('temporary stop failure'))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(session.persistWorkspace()).rejects.toThrow(
+      /could not stop the sandbox/,
+    );
+    await expect(
+      session.execCommand({ cmd: 'printf unsafe' }),
+    ).rejects.toBeInstanceOf(SandboxLifecycleError);
+
+    await expect(session.close()).resolves.toBeUndefined();
+    expect(stopMock).toHaveBeenCalledTimes(2);
   });
 
   test('creates a sandbox, remaps the default root, and executes commands', async () => {

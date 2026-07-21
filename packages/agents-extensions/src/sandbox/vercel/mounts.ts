@@ -16,6 +16,16 @@ const MOUNTPOINT_S3_PACKAGE = 'mount-s3';
 const MOUNTPOINT_INSTALL_TIMEOUT_MS = 5 * 60_000;
 const MOUNTPOINT_COMMAND_TIMEOUT_MS = 2 * 60_000;
 const MOUNTPOINT_S3_SOURCE = 'mountpoint-s3';
+const MOUNTPOINT_AWS_ENVIRONMENT_NAMES = [
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_REGION',
+  'AWS_DEFAULT_REGION',
+  'AWS_ROLE_ARN',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'AWS_ROLE_SESSION_NAME',
+] as const;
 
 /**
  * Selects Vercel's create-time-only application of the remote mount policy.
@@ -84,6 +94,7 @@ export async function mountVercelCloudBucket(args: {
   entry: Entry;
   mountPath: string;
   runCommand: VercelMountCommand;
+  environment?: Record<string, string>;
   validateMountPath?: () => Promise<void>;
 }): Promise<void> {
   const config = resolveVercelS3MountConfig(args.entry);
@@ -115,7 +126,7 @@ export async function mountVercelCloudBucket(args: {
     command: 'mount-s3',
     commandArgs: mountArguments(config, args.mountPath, owner),
     options: {
-      env: mountEnvironment(config),
+      env: mountEnvironment(config, args.environment),
       sudo: true,
       timeoutMs: MOUNTPOINT_COMMAND_TIMEOUT_MS,
     },
@@ -358,8 +369,14 @@ function isSupportedMountpointVersion(
 
 function mountEnvironment(
   config: VercelS3MountConfig,
+  configuredEnvironment: Record<string, string> = {},
 ): Record<string, string> | undefined {
-  const environment: Record<string, string> = {};
+  const environment = Object.fromEntries(
+    MOUNTPOINT_AWS_ENVIRONMENT_NAMES.flatMap((name) => {
+      const value = configuredEnvironment[name];
+      return typeof value === 'string' ? [[name, value]] : [];
+    }),
+  );
   if (config.accessKeyId && config.secretAccessKey) {
     environment.AWS_ACCESS_KEY_ID = config.accessKeyId;
     environment.AWS_SECRET_ACCESS_KEY = config.secretAccessKey;
