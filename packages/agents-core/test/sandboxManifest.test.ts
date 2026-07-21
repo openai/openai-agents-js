@@ -875,6 +875,14 @@ describe('Manifest', () => {
     expect(directory.toString()).toBe('drwxr-x---');
   });
 
+  it.each([
+    ['drwxr-xr-x.', 'drwxr-xr-x'],
+    ['-rw-r--r--+', '-rw-r--r--'],
+    ['-rw-r--r--@', '-rw-r--r--'],
+  ])('strips a trailing alternate access marker: %s', (value, expected) => {
+    expect(Permissions.fromString(value).toString()).toBe(expected);
+  });
+
   it('parses position-specific special permission bits', () => {
     const stickyDirectory = Permissions.fromString('drwxrwxrwt');
     const specialWithExec = Permissions.fromString('-rwsr-sr-t');

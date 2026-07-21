@@ -78,7 +78,7 @@ export class Permissions {
 
   static fromString(value: string): Permissions {
     const permissions =
-      value.length === 11 && /[@+]$/u.test(value) ? value.slice(0, -1) : value;
+      value.length === 11 && /[.@+]$/u.test(value) ? value.slice(0, -1) : value;
     if (permissions.length !== 10) {
       throw new Error(`Invalid permissions string length: ${value}`);
     }
