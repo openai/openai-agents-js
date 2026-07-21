@@ -24,6 +24,7 @@
     "start:web-search-filters": "tsx web-search-filters.ts",
     "start:code-interpreter": "tsx code-interpreter.ts",
     "start:image-generation": "tsx image-generation.ts",
+    "start:programmatic-tool-calling": "tsx programmatic-tool-calling.ts",
     "start:shell": "tsx local-shell.ts",
     "start:local-shell": "tsx local-shell.ts",
     "start:container-shell": "tsx container-shell-skill-ref.ts",

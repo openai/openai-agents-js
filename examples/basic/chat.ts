@@ -29,6 +29,9 @@ const weatherAgent = new Agent({
   instructions:
     'You answer weather questions. Always call get_weather before answering.',
   handoffDescription: 'Knows everything about the weather but nothing else.',
+  modelSettings: {
+    toolChoice: 'required',
+  },
   tools: [getWeatherTool],
 });
 

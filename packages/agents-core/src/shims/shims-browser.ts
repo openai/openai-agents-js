@@ -2,12 +2,7 @@
 
 export { EventEmitter, EventEmitterEvents } from './interface';
 import { EventEmitter, Timeout, Timer } from './interface';
-
-// Use function instead of exporting the value to prevent
-// circular dependency resolution issues caused by other exports in '@openai/agents-core/_shims'
-export function loadEnv(): Record<string, string | undefined> {
-  return {};
-}
+export { isBrowserEnvironment, loadEnv } from './config-browser';
 
 type EventMap = Record<string, any[]>;
 
@@ -212,11 +207,11 @@ export class AsyncLocalStorage<T = any> {
   }
 }
 
-export function isBrowserEnvironment(): boolean {
-  return true;
+export function isTracingLoopRunningByDefault(): boolean {
+  return false;
 }
 
-export function isTracingLoopRunningByDefault(): boolean {
+export function supportsProcessLifecycleEvents(): boolean {
   return false;
 }
 

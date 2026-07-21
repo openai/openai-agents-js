@@ -1,6 +1,6 @@
 import { Agent, AgentOutputType } from './agent';
 import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
-import { ModelBehaviorError } from './errors';
+import { AgentsError, ModelBehaviorError } from './errors';
 import {
   defineInputGuardrail,
   defineOutputGuardrail,
@@ -24,13 +24,15 @@ import { RunState } from './runState';
 import { RunItem } from './items';
 import {
   getCurrentTrace,
-  getOrCreateTrace,
+  getCurrentTraceContext,
   resetCurrentSpan,
   setCurrentSpan,
   withNewSpanContext,
   withTrace,
+  withTraceContext,
 } from './tracing/context';
 import type { TracingConfig } from './tracing';
+import { includeTaskAndTurnSpans, mergeTracingConfig } from './tracing/config';
 import { Usage } from './usage';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
 import { DEFAULT_MAX_TURNS } from './runner/constants';
@@ -79,7 +81,30 @@ import {
   handleInterruptedOutcome,
   resumeInterruptedTurn,
 } from './runner/runLoop';
-import { applyTraceOverrides, getTracing } from './runner/tracing';
+import {
+  applyTraceOverrides,
+  ensureActiveAgentSpanForInterruptedResume,
+  ensureTurnSpan,
+  finishRunnerSpan,
+  getTracing,
+  setRunnerSpanError,
+  startRunnerInvocationSpans,
+  startTurnSpan,
+  recordRunnerSpanUsage,
+  type RunnerSpanLifecycle,
+} from './runner/tracing';
+import {
+  getRunnerParentUsageRecorder,
+  setRunStateUsageRecorder,
+} from './runner/usageTracking';
+import {
+  getRunnerInvocationSpanParent,
+  getRunStateTurnSpanParent,
+  setRunStateTurnSpanParent,
+} from './runner/invocationContext';
+import type { Span, TaskSpanData } from './tracing/spans';
+import { NoopTrace, type Trace } from './tracing/traces';
+import { NOOP_TRACE_OR_SPAN_ID } from './tracing/utils';
 import type { ReasoningItemIdPolicy } from './runner/items';
 import type {
   AgentArtifacts,
@@ -369,6 +394,10 @@ class LazyDefaultModelProvider implements ModelProvider {
   }
 }
 
+function isNoopTrace(trace: Trace | null | undefined): boolean {
+  return trace instanceof NoopTrace || trace?.traceId === NOOP_TRACE_OR_SPAN_ID;
+}
+
 // --------------------------------------------------------------
 //  Runner
 // --------------------------------------------------------------
@@ -395,8 +424,7 @@ export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
   agent: TAgent,
   input: string | AgentInputItem[] | RunState<TContext, TAgent>,
   options?:
-    | StreamRunOptions<TContext, TAgent>
-    | NonStreamRunOptions<TContext, TAgent>,
+    StreamRunOptions<TContext, TAgent> | NonStreamRunOptions<TContext, TAgent>,
 ): Promise<RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>> {
   const runner = getDefaultRunner();
   if (options?.stream) {
@@ -512,6 +540,26 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   ): Promise<
     RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>
   > {
+    if (input instanceof RunState) {
+      if (isNoopTrace(input._trace)) {
+        input._trace = null;
+      }
+      if (input._currentAgentSpan?.spanId === NOOP_TRACE_OR_SPAN_ID) {
+        input.setCurrentAgentSpan(undefined);
+      }
+    }
+    const capturedInvocationTraceContext = getCurrentTraceContext();
+    const invocationTraceContext = isNoopTrace(
+      capturedInvocationTraceContext?.trace,
+    )
+      ? undefined
+      : capturedInvocationTraceContext;
+    const configuredInvocationSpanParent = getRunnerInvocationSpanParent(this);
+    const invocationSpanParent: Span<any> | Trace | undefined =
+      configuredInvocationSpanParent ??
+      (input instanceof RunState && input._trace
+        ? input._trace
+        : (invocationTraceContext?.span ?? invocationTraceContext?.trace));
     const resolvedOptions = options ?? { stream: false, context: undefined };
     // Per-run options take precedence over runner defaults for session memory behavior.
     const sessionInputCallback =
@@ -531,7 +579,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const toolNotFoundBehavior =
       resolvedOptions.toolNotFoundBehavior ?? this.config.toolNotFoundBehavior;
     const hasCallModelInputFilter = Boolean(callModelInputFilter);
-    const tracingConfig = resolvedOptions.tracing ?? this.config.tracing;
+    const tracingConfig = mergeTracingConfig(
+      this.config.tracing,
+      resolvedOptions.tracing,
+    );
     const traceOverrides = {
       ...this.traceOverrides,
       ...(resolvedOptions.tracing?.apiKey !== undefined
@@ -546,7 +597,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       reasoningItemIdPolicy,
       toolExecution,
       toolNotFoundBehavior,
+      tracing: tracingConfig,
     };
+    const useTaskAndTurnSpans =
+      !this.config.tracingDisabled && includeTaskAndTurnSpans(tracingConfig);
     const resumingFromState = input instanceof RunState;
     const preserveTurnPersistenceOnResume =
       resumingFromState &&
@@ -603,7 +657,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const ensureStreamInputPersisted =
       sessionPersistence?.buildPersistInputOnce(serverManagesConversation);
 
-    const executeRun = async () => {
+    const executeRun = async (
+      effectiveInvocationSpanParent = invocationSpanParent,
+    ) => {
       if (effectiveOptions.stream) {
         const streamResult = await this.#runIndividualStream(
           agent,
@@ -616,6 +672,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             sdkSessionId: async () => await session?.getSessionId(),
             inputOverride: () => sessionPersistence?.getItemsForPersistence(),
           },
+          effectiveInvocationSpanParent,
         );
         return streamResult;
       }
@@ -629,18 +686,52 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           sdkSessionId: async () => await session?.getSessionId(),
           inputOverride: () => sessionPersistence?.getItemsForPersistence(),
         },
+        effectiveInvocationSpanParent,
+        sessionPersistence && !serverManagesConversation
+          ? async (result) => {
+              await saveToSession(
+                session,
+                sessionPersistence.getItemsForPersistence(),
+                result,
+              );
+            }
+          : undefined,
       );
-      // See note above: allow sessions to run for callbacks/state but skip writes when the server
-      // is the source of truth for transcript history.
-      if (sessionPersistence && !serverManagesConversation) {
-        await saveToSession(
-          session,
-          sessionPersistence.getItemsForPersistence(),
-          runResult,
-        );
-      }
       return runResult;
     };
+
+    if (this.config.tracingDisabled) {
+      const disabledTrace = new NoopTrace();
+      if (preparedInput instanceof RunState) {
+        preparedInput._currentAgentSpan?.end();
+        preparedInput._trace = null;
+        preparedInput.setCurrentAgentSpan(undefined);
+      }
+      return withTrace(disabledTrace, async () => {
+        try {
+          const result = await executeRun(disabledTrace);
+          const clearDisabledTraceState = () => {
+            result.state._trace = null;
+            result.state.setCurrentAgentSpan(undefined);
+          };
+          if (result instanceof StreamedRunResult) {
+            void result.completed.then(
+              clearDisabledTraceState,
+              clearDisabledTraceState,
+            );
+          } else {
+            clearDisabledTraceState();
+          }
+          return result;
+        } catch (error) {
+          if (error instanceof AgentsError && error.state) {
+            error.state._trace = null;
+            error.state.setCurrentAgentSpan(undefined);
+          }
+          throw error;
+        }
+      });
+    }
 
     if (preparedInput instanceof RunState && preparedInput._trace) {
       const applied = applyTraceOverrides(
@@ -651,22 +742,28 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       preparedInput._trace = applied.trace;
       preparedInput._currentAgentSpan = applied.currentSpan;
       return withTrace(preparedInput._trace, async () => {
-        if (preparedInput._currentAgentSpan) {
+        if (preparedInput._currentAgentSpan && !useTaskAndTurnSpans) {
           setCurrentSpan(preparedInput._currentAgentSpan);
         }
         return executeRun();
       });
     }
-    return getOrCreateTrace(
-      async () => {
-        if (preparedInput instanceof RunState && !preparedInput._trace) {
-          preparedInput._trace = getCurrentTrace();
-        }
-        return executeRun();
-      },
+    const executeInInvocationTrace = async (
+      effectiveInvocationSpanParent = invocationSpanParent,
+    ) => {
+      if (preparedInput instanceof RunState && !preparedInput._trace) {
+        preparedInput._trace = getCurrentTrace();
+      }
+      return executeRun(effectiveInvocationSpanParent);
+    };
+    if (invocationTraceContext) {
+      return withTraceContext(invocationTraceContext, executeInInvocationTrace);
+    }
+    return withTrace(
+      this.config.workflowName ?? 'Agent workflow',
+      async (trace) => executeInInvocationTrace(trace),
       {
         traceId: this.config.traceId,
-        name: this.config.workflowName,
         groupId: this.config.groupId,
         metadata: this.config.traceMetadata,
         // Per-run tracing config overrides exporter defaults such as environment API key.
@@ -742,10 +839,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       typeof options.toolExecution !== 'undefined';
     const hasToolNotFoundBehaviorOverride =
       typeof options.toolNotFoundBehavior !== 'undefined';
+    const hasTracingOverride = typeof options.tracing !== 'undefined';
     if (
       !hasSandboxOverride &&
       !hasToolExecutionOverride &&
-      !hasToolNotFoundBehaviorOverride
+      !hasToolNotFoundBehaviorOverride &&
+      !hasTracingOverride
     ) {
       return this.config;
     }
@@ -758,6 +857,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       ...(hasToolNotFoundBehaviorOverride
         ? { toolNotFoundBehavior: options.toolNotFoundBehavior }
         : {}),
+      ...(hasTracingOverride ? { tracing: options.tracing } : {}),
     };
   }
 
@@ -780,6 +880,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     ) => void,
     preserveTurnPersistenceOnResume?: boolean,
     sandboxMemoryRunContext?: SandboxMemoryPersistenceContext,
+    invocationSpanParent?: Span<any> | Trace,
+    persistResult?: (result: RunResult<TContext, TAgent>) => Promise<void>,
   ): Promise<RunResult<TContext, TAgent>> {
     return withNewSpanContext(async () => {
       // if we have a saved state we use that one, otherwise we create a new one
@@ -854,9 +956,58 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       const toolErrorFormatter =
         options.toolErrorFormatter ?? this.config.toolErrorFormatter;
 
+      const useTaskAndTurnSpans =
+        !this.config.tracingDisabled &&
+        includeTaskAndTurnSpans(options.tracing);
+      const resumingInterruptedTurn =
+        isResumedState && state._currentStep?.type === 'next_step_interruption';
+      const invocationSpans = useTaskAndTurnSpans
+        ? startRunnerInvocationSpans({
+            name:
+              getCurrentTrace()?.name ??
+              this.config.workflowName ??
+              'Agent workflow',
+            agent: state._currentAgent,
+            restoredAgentSpan: isResumedState
+              ? state._currentAgentSpan
+              : undefined,
+            resumeInterruptedTurn: resumingInterruptedTurn,
+            parent: invocationSpanParent,
+          })
+        : undefined;
+      const taskSpan = invocationSpans?.taskSpan;
+      const optOutResumeAgentSpan =
+        resumingInterruptedTurn && !useTaskAndTurnSpans
+          ? ensureActiveAgentSpanForInterruptedResume({
+              agent: state._currentAgent,
+              restoredAgentSpan: isResumedState
+                ? state._currentAgentSpan
+                : undefined,
+              parent: invocationSpanParent ?? getCurrentTrace() ?? undefined,
+            })
+          : undefined;
+      if (useTaskAndTurnSpans && isResumedState) {
+        state.setCurrentAgentSpan(invocationSpans?.agentSpan);
+      } else if (optOutResumeAgentSpan) {
+        state.setCurrentAgentSpan(optOutResumeAgentSpan);
+      }
+
       // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
       let continuingInterruptedTurn = false;
       let runError: unknown;
+      let currentTurnSpan: ReturnType<typeof startTurnSpan> | undefined;
+      const parentUsageRecorder = getRunnerParentUsageRecorder(this);
+      const recordUsage = (usage: Usage) => {
+        recordRunnerSpanUsage(taskSpan, usage);
+        recordRunnerSpanUsage(currentTurnSpan, usage);
+        parentUsageRecorder?.(usage);
+      };
+      setRunStateUsageRecorder(state, recordUsage);
+      let completedResult: RunResult<TContext, TAgent> | undefined;
+      const completeResult = (result: RunResult<TContext, TAgent>) => {
+        completedResult = result;
+        return result;
+      };
 
       try {
         while (true) {
@@ -873,7 +1024,19 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               runConfigModel: await this.#resolveSandboxRuntimeModelForAgent(
                 state._currentAgent,
               ),
+              tracingParent:
+                getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
             });
+
+            if (useTaskAndTurnSpans) {
+              currentTurnSpan = ensureTurnSpan(
+                currentTurnSpan,
+                state._currentTurn,
+                state._currentAgent.name,
+                state._currentAgentSpan,
+              );
+              setRunStateTurnSpanParent(state, currentTurnSpan.span);
+            }
 
             const interruptedOutcome = await resumeInterruptedTurn({
               state,
@@ -892,9 +1055,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 continuingInterruptedTurn = value;
               },
             });
+            if (!shouldContinue) {
+              finishRunnerSpan(currentTurnSpan);
+              setRunStateTurnSpanParent(state, undefined);
+              currentTurnSpan = undefined;
+            }
             if (shouldReturn) {
               // we are still in an interruption, so we need to avoid an infinite loop
-              return new RunResult<TContext, TAgent>(state);
+              return completeResult(new RunResult<TContext, TAgent>(state));
             }
             if (shouldContinue) {
               continue;
@@ -924,6 +1092,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               emitAgentStart: (context, agent, inputItems) => {
                 this.emit('agent_start', context, agent, inputItems);
               },
+              onAgentSpanReady: useTaskAndTurnSpans
+                ? (turn, agentName) => {
+                    currentTurnSpan = ensureTurnSpan(
+                      currentTurnSpan,
+                      turn,
+                      agentName,
+                      state._currentAgentSpan,
+                    );
+                    setRunStateTurnSpanParent(state, currentTurnSpan.span);
+                  }
+                : undefined,
+              agentSpanParent: taskSpan?.span ?? invocationSpanParent,
             });
             if (
               preserveTurnPersistenceOnResume &&
@@ -941,6 +1121,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               runConfigModel: await this.#resolveSandboxRuntimeModelForAgent(
                 state._currentAgent,
               ),
+              tracingParent: currentTurnSpan?.span ?? state._currentAgentSpan,
             });
             const artifacts = await prepareAgentArtifacts(
               state,
@@ -971,6 +1152,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 previousResponseId: preparedCall.previousResponseId,
                 conversationId: preparedCall.conversationId,
                 modelSettings: preparedCall.modelSettings,
+                _internal: preparedCall.modelRequestInternal,
                 tools: preparedCall.serializedTools,
                 toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
                 outputType: convertAgentOutputTypeToSerializable(
@@ -995,6 +1177,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
             state._modelResponses.push(state._lastTurnResponse);
             state._context.usage.add(state._lastTurnResponse.usage);
+            recordUsage(state._lastTurnResponse.usage);
             state._noActiveAgentRun = false;
 
             // After each turn record the items echoed by the server so future requests only
@@ -1017,6 +1200,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               state,
               [...preparedCall.turnInput, ...state._generatedItems],
               options.toolNotFoundBehavior,
+              {
+                allowPromptSuppliedTools: preparedCall.allowPromptSuppliedTools,
+              },
             );
 
             state._lastProcessedResponse = processedResponse;
@@ -1043,6 +1229,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               toolsUsed: state._lastProcessedResponse?.toolsUsed ?? [],
               resetTurnPersistence: !isResumedState,
             });
+            if (turnResult.nextStep.type !== 'next_step_final_output') {
+              finishRunnerSpan(currentTurnSpan);
+              setRunStateTurnSpanParent(state, undefined);
+              currentTurnSpan = undefined;
+            }
           }
 
           const currentStep = state._currentStep;
@@ -1058,6 +1249,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 this.outputGuardrailDefs,
                 currentStep.output,
               );
+              finishRunnerSpan(currentTurnSpan);
+              setRunStateTurnSpanParent(state, undefined);
+              currentTurnSpan = undefined;
               state._currentTurnInProgress = false;
               this.emit(
                 'agent_end',
@@ -1070,7 +1264,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 state._context,
                 currentStep.output,
               );
-              return new RunResult<TContext, TAgent>(state);
+              return completeResult(new RunResult<TContext, TAgent>(state));
             case 'next_step_handoff':
               state.setCurrentAgent(currentStep.newAgent as TAgent);
               if (state._currentAgentSpan) {
@@ -1086,7 +1280,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               break;
             case 'next_step_interruption':
               // Interrupted. Don't run any guardrails.
-              return new RunResult<TContext, TAgent>(state);
+              return completeResult(new RunResult<TContext, TAgent>(state));
             case 'next_step_run_again':
               state._currentTurnInProgress = false;
               logger.debug('Running next loop');
@@ -1108,7 +1302,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           },
         });
         if (handledResult) {
-          return handledResult;
+          return completeResult(handledResult);
         }
         if (state._currentAgentSpan) {
           state._currentAgentSpan.setError({
@@ -1116,21 +1310,51 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             data: { error: String(err) },
           });
         }
+        setRunnerSpanError(currentTurnSpan, err);
+        setRunnerSpanError(taskSpan, err);
         runError = err;
         throw err;
       } finally {
+        finishRunnerSpan(currentTurnSpan);
+        setRunStateTurnSpanParent(state, undefined);
         const preserveSandboxSessions =
           state._currentStep?.type === 'next_step_interruption';
-        await finalizeSandboxRuntime({
-          state: state as RunState<TContext, Agent<TContext, AgentOutputType>>,
-          sandboxRuntime,
-          preserveSessionsForInterruption: preserveSandboxSessions,
-          runError,
-          groupId: this.config.groupId,
-          memoryContext: sandboxMemoryRunContext,
-          runAgent: async (agent, input, runOptions) =>
-            await this.run(agent, input, runOptions),
-        });
+        try {
+          try {
+            await finalizeSandboxRuntime({
+              state: state as RunState<
+                TContext,
+                Agent<TContext, AgentOutputType>
+              >,
+              sandboxRuntime,
+              preserveSessionsForInterruption: preserveSandboxSessions,
+              finishAgentSpanForInterruption:
+                Boolean(taskSpan) || runError !== undefined,
+              runError,
+              groupId: this.config.groupId,
+              memoryContext: sandboxMemoryRunContext,
+              runAgent: async (agent, input, runOptions) =>
+                await this.run(agent, input, runOptions),
+              tracingParent:
+                taskSpan?.span ??
+                state._currentAgentSpan ??
+                invocationSpanParent,
+            });
+          } catch (error) {
+            setRunnerSpanError(taskSpan, error);
+            await Promise.reject(error);
+          }
+          if (completedResult) {
+            try {
+              await persistResult?.(completedResult);
+            } catch (error) {
+              setRunnerSpanError(taskSpan, error);
+              await Promise.reject(error);
+            }
+          }
+        } finally {
+          finishRunnerSpan(taskSpan);
+        }
       }
     });
   }
@@ -1154,6 +1378,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     ) => void,
     preserveTurnPersistenceOnResume?: boolean,
     sandboxMemoryRunContext?: SandboxMemoryPersistenceContext,
+    taskSpan?: RunnerSpanLifecycle<TaskSpanData>,
+    invocationSpanParent?: Span<any> | Trace,
   ): Promise<void> {
     const resolvedReasoningItemIdPolicy =
       options.reasoningItemIdPolicy ??
@@ -1220,10 +1446,20 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const toolErrorFormatter =
       options.toolErrorFormatter ?? this.config.toolErrorFormatter;
     const agentToolParentRunConfig = this.#getAgentToolParentRunConfig(options);
+    const useTaskAndTurnSpans =
+      !this.config.tracingDisabled && includeTaskAndTurnSpans(options.tracing);
 
     // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
     let continuingInterruptedTurn = false;
     let runError: unknown;
+    let currentTurnSpan: ReturnType<typeof startTurnSpan> | undefined;
+    const parentUsageRecorder = getRunnerParentUsageRecorder(this);
+    const recordUsage = (usage: Usage) => {
+      recordRunnerSpanUsage(taskSpan, usage);
+      recordRunnerSpanUsage(currentTurnSpan, usage);
+      parentUsageRecorder?.(usage);
+    };
+    setRunStateUsageRecorder(result.state, recordUsage);
 
     try {
       while (true) {
@@ -1241,7 +1477,20 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             runConfigModel: await this.#resolveSandboxRuntimeModelForAgent(
               result.state._currentAgent,
             ),
+            tracingParent:
+              getRunStateTurnSpanParent(result.state) ??
+              result.state._currentAgentSpan,
           });
+
+          if (useTaskAndTurnSpans) {
+            currentTurnSpan = ensureTurnSpan(
+              currentTurnSpan,
+              result.state._currentTurn,
+              result.state._currentAgent.name,
+              result.state._currentAgentSpan,
+            );
+            setRunStateTurnSpanParent(result.state, currentTurnSpan.span);
+          }
 
           const interruptedOutcome = await resumeInterruptedTurn({
             state: result.state,
@@ -1263,6 +1512,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               continuingInterruptedTurn = value;
             },
           });
+          if (!shouldContinue) {
+            finishRunnerSpan(currentTurnSpan);
+            setRunStateTurnSpanParent(result.state, undefined);
+            currentTurnSpan = undefined;
+          }
           if (shouldReturn) {
             // we are still in an interruption, so we need to avoid an infinite loop
             return;
@@ -1301,6 +1555,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             emitAgentStart: (context, agent, inputItems) => {
               this.emit('agent_start', context, agent, inputItems);
             },
+            onAgentSpanReady: useTaskAndTurnSpans
+              ? (turn, agentName) => {
+                  currentTurnSpan = ensureTurnSpan(
+                    currentTurnSpan,
+                    turn,
+                    agentName,
+                    result.state._currentAgentSpan,
+                  );
+                  setRunStateTurnSpanParent(result.state, currentTurnSpan.span);
+                }
+              : undefined,
+            agentSpanParent: taskSpan?.span ?? invocationSpanParent,
           });
           if (
             preserveTurnPersistenceOnResume &&
@@ -1322,6 +1588,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             runConfigModel: await this.#resolveSandboxRuntimeModelForAgent(
               result.state._currentAgent,
             ),
+            tracingParent:
+              currentTurnSpan?.span ?? result.state._currentAgentSpan,
           });
           const artifacts = await prepareAgentArtifacts(
             result.state,
@@ -1389,6 +1657,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   ),
                   conversationId: preparedCall.conversationId,
                   modelSettings: preparedCall.modelSettings,
+                  _internal: preparedCall.modelRequestInternal,
                   tools: preparedCall.serializedTools,
                   toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
                   handoffs: preparedCall.serializedHandoffs,
@@ -1405,6 +1674,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 abortReconciliationState,
                 reconciliationResponse,
               );
+              result.state._context.usage.add(reconciliationResponse.usage);
+              recordUsage(reconciliationResponse.usage);
               serverConversationTracker.trackServerItems(
                 reconciliationResponse,
               );
@@ -1414,7 +1685,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               );
             } catch (error) {
               logger.debug(
-                'Failed to reconcile streamed function calls after abort.',
+                'Failed to reconcile streamed tool calls after abort.',
                 error,
               );
             }
@@ -1439,6 +1710,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 previousResponseId: preparedCall.previousResponseId,
                 conversationId: preparedCall.conversationId,
                 modelSettings: preparedCall.modelSettings,
+                _internal: preparedCall.modelRequestInternal,
                 tools: preparedCall.serializedTools,
                 toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
                 handoffs: preparedCall.serializedHandoffs,
@@ -1467,6 +1739,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   requestId: parsed.response.requestId,
                 };
                 result.state._context.usage.add(finalResponse.usage);
+                recordUsage(finalResponse.usage);
               }
               if (result.cancelled) {
                 // When the user's code exits a loop to consume the stream, we need to break
@@ -1526,6 +1799,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             result.state,
             [...preparedCall.turnInput, ...result.state._generatedItems],
             options.toolNotFoundBehavior,
+            {
+              allowPromptSuppliedTools: preparedCall.allowPromptSuppliedTools,
+            },
           );
 
           result.state._lastProcessedResponse = processedResponse;
@@ -1560,6 +1836,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               addStepToRunResult(result, step, { skipItems: preToolItems });
             },
           });
+          if (turnResult.nextStep.type !== 'next_step_final_output') {
+            finishRunnerSpan(currentTurnSpan);
+            setRunStateTurnSpanParent(result.state, undefined);
+            currentTurnSpan = undefined;
+          }
         }
 
         const currentStep = result.state._currentStep;
@@ -1571,6 +1852,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 this.outputGuardrailDefs,
                 currentStep.output,
               );
+              finishRunnerSpan(currentTurnSpan);
+              setRunStateTurnSpanParent(result.state, undefined);
+              currentTurnSpan = undefined;
             } catch (error) {
               // Do not leave blocked output visible through StreamedRunResult.finalOutput.
               result.state._currentStep = undefined;
@@ -1664,9 +1948,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           data: { error: String(error) },
         });
       }
+      setRunnerSpanError(currentTurnSpan, error);
+      setRunnerSpanError(taskSpan, error);
       runError = error;
       throw error;
     } finally {
+      finishRunnerSpan(currentTurnSpan);
+      setRunStateTurnSpanParent(result.state, undefined);
       if (guardrailTracker.pending) {
         await guardrailTracker.awaitCompletion({ suppressErrors: true });
       }
@@ -1679,19 +1967,34 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       }
       const preserveSandboxSessions =
         result.state._currentStep?.type === 'next_step_interruption';
-      await finalizeSandboxRuntime({
-        state: result.state as RunState<
-          TContext,
-          Agent<TContext, AgentOutputType>
-        >,
-        sandboxRuntime,
-        preserveSessionsForInterruption: preserveSandboxSessions,
-        runError,
-        groupId: this.config.groupId,
-        memoryContext: sandboxMemoryRunContext,
-        runAgent: async (agent, input, runOptions) =>
-          await this.run(agent, input, runOptions),
-      });
+      try {
+        try {
+          await finalizeSandboxRuntime({
+            state: result.state as RunState<
+              TContext,
+              Agent<TContext, AgentOutputType>
+            >,
+            sandboxRuntime,
+            preserveSessionsForInterruption: preserveSandboxSessions,
+            finishAgentSpanForInterruption:
+              Boolean(taskSpan) || runError !== undefined,
+            runError,
+            groupId: this.config.groupId,
+            memoryContext: sandboxMemoryRunContext,
+            runAgent: async (agent, input, runOptions) =>
+              await this.run(agent, input, runOptions),
+            tracingParent:
+              taskSpan?.span ??
+              result.state._currentAgentSpan ??
+              invocationSpanParent,
+          });
+        } catch (error) {
+          setRunnerSpanError(taskSpan, error);
+          await Promise.reject(error);
+        }
+      } finally {
+        finishRunnerSpan(taskSpan);
+      }
     }
   }
 
@@ -1712,6 +2015,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     ) => void,
     preserveTurnPersistenceOnResume?: boolean,
     sandboxMemoryRunContext?: SandboxMemoryPersistenceContext,
+    invocationSpanParent?: Span<any> | Trace,
   ): Promise<StreamedRunResult<TContext, TAgent>> {
     options = options ?? ({} as StreamRunOptions<TContext>);
     return withNewSpanContext(async () => {
@@ -1734,6 +2038,41 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         if (options.maxTurns !== undefined) {
           state._maxTurns = options.maxTurns;
         }
+      }
+      const useTaskAndTurnSpans =
+        !this.config.tracingDisabled &&
+        includeTaskAndTurnSpans(options.tracing);
+      const resumingInterruptedTurn =
+        isResumedState && state._currentStep?.type === 'next_step_interruption';
+      const invocationSpans = useTaskAndTurnSpans
+        ? startRunnerInvocationSpans({
+            name:
+              getCurrentTrace()?.name ??
+              this.config.workflowName ??
+              'Agent workflow',
+            agent: state._currentAgent,
+            restoredAgentSpan: isResumedState
+              ? state._currentAgentSpan
+              : undefined,
+            resumeInterruptedTurn: resumingInterruptedTurn,
+            parent: invocationSpanParent,
+          })
+        : undefined;
+      const taskSpan = invocationSpans?.taskSpan;
+      const optOutResumeAgentSpan =
+        resumingInterruptedTurn && !useTaskAndTurnSpans
+          ? ensureActiveAgentSpanForInterruptedResume({
+              agent: state._currentAgent,
+              restoredAgentSpan: isResumedState
+                ? state._currentAgentSpan
+                : undefined,
+              parent: invocationSpanParent ?? getCurrentTrace() ?? undefined,
+            })
+          : undefined;
+      if (useTaskAndTurnSpans && isResumedState) {
+        state.setCurrentAgentSpan(invocationSpans?.agentSpan);
+      } else if (optOutResumeAgentSpan) {
+        state.setCurrentAgentSpan(optOutResumeAgentSpan);
       }
       const sandboxRuntime = new SandboxRuntimeManager<TContext>({
         startingAgent: agent,
@@ -1779,6 +2118,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         sessionInputUpdate,
         preserveTurnPersistenceOnResume,
         sandboxMemoryRunContext,
+        taskSpan,
+        invocationSpanParent,
       ).then(
         () => {
           result._done();
@@ -1829,6 +2170,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           explicitlyModelSet,
           resolvedModelName,
         );
+    const modelRequestInternal = {
+      reasoningEffortImplicit:
+        implicitModelSettings?.reasoning?.effort !== undefined &&
+        !hasExplicitTopLevelReasoningEffort(this.config.modelSettings) &&
+        !hasExplicitTopLevelReasoningEffort(agentModelSettings),
+      tracingParent:
+        getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
+    };
 
     let modelSettings = mergeModelSettings(
       implicitModelSettings,
@@ -1853,6 +2202,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       state._context,
     );
     const prompt = await executionAgent.getPrompt(state._context);
+    const allowPromptSuppliedTools =
+      Boolean(prompt) &&
+      !(
+        artifacts.toolsExplicitlyProvided &&
+        artifacts.serializedTools.length === 0 &&
+        artifacts.serializedHandoffs.length === 0
+      );
 
     const { modelInput, sourceItems, persistedItems, filterApplied } =
       await applyCallModelInputFilter(
@@ -1881,9 +2237,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       ...artifacts,
       model,
       explicitlyModelSet,
+      modelRequestInternal,
       modelSettings,
       modelInput,
       prompt,
+      allowPromptSuppliedTools,
       previousResponseId,
       conversationId,
       sourceItems,
@@ -1896,6 +2254,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 // internal helpers and constants
 
 let defaultRunner: Runner | undefined;
+
+function hasExplicitTopLevelReasoningEffort(settings?: ModelSettings): boolean {
+  return settings?.reasoning?.effort !== undefined;
+}
 
 const getDefaultRunner = (): Runner => {
   if (!defaultRunner) {

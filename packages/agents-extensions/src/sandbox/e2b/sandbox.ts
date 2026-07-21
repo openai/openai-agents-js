@@ -85,7 +85,7 @@ type E2BSandboxInstance = {
   pty?: E2BPtyApi;
   getHost?(port: number): string | Promise<string>;
   createSnapshot?(): Promise<{ snapshotId?: string }>;
-  kill(): Promise<void>;
+  kill(): Promise<void | boolean>;
   pause?(): Promise<boolean>;
 };
 

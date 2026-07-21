@@ -119,6 +119,60 @@ describe('content extraction helpers', () => {
     ]);
   });
 
+  test('extractAllUserContent preserves prompt-cache breakpoints', () => {
+    const promptCacheBreakpoint = { mode: 'explicit' } as const;
+    const userContent: protocol.UserMessageItem['content'] = [
+      {
+        type: 'input_text',
+        text: 'one',
+        promptCacheBreakpoint,
+      },
+      {
+        type: 'input_image',
+        image: 'http://img',
+        promptCacheBreakpoint,
+      },
+      {
+        type: 'input_file',
+        file: 'data:text/plain;base64,SGVsbG8=',
+        filename: 'hello.txt',
+        promptCacheBreakpoint,
+      },
+      {
+        type: 'audio',
+        audio: 'AAA=',
+        format: 'wav',
+        promptCacheBreakpoint,
+      },
+    ];
+
+    expect(extractAllUserContent(userContent)).toEqual([
+      {
+        type: 'text',
+        text: 'one',
+        prompt_cache_breakpoint: promptCacheBreakpoint,
+      },
+      {
+        type: 'image_url',
+        image_url: { url: 'http://img' },
+        prompt_cache_breakpoint: promptCacheBreakpoint,
+      },
+      {
+        type: 'file',
+        file: {
+          file_data: 'data:text/plain;base64,SGVsbG8=',
+          filename: 'hello.txt',
+        },
+        prompt_cache_breakpoint: promptCacheBreakpoint,
+      },
+      {
+        type: 'input_audio',
+        input_audio: { data: 'AAA=', format: 'wav' },
+        prompt_cache_breakpoint: promptCacheBreakpoint,
+      },
+    ]);
+  });
+
   test('extractAllUserContent preserves extras but ignores reserved providerData fields', () => {
     const userContent: protocol.UserMessageItem['content'] = [
       {
@@ -947,6 +1001,20 @@ describe('itemsToMessages', () => {
 });
 
 describe('tool helpers', () => {
+  test('itemsToMessages rejects Programmatic Tool Calling history', () => {
+    expect(() =>
+      itemsToMessages([
+        {
+          type: 'program',
+          id: 'prog_1',
+          callId: 'call_prog_1',
+          code: 'text("ok")',
+          fingerprint: 'fp_1',
+        },
+      ]),
+    ).toThrow(/Programmatic Tool Calling history is not supported/);
+  });
+
   test('toolToOpenAI rejects non-function tools', () => {
     const tool: SerializedTool = { type: 'builtin' } as any;
     expect(() => toolToOpenAI(tool)).toThrow();

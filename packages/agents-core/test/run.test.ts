@@ -60,6 +60,7 @@ import {
   hostedMcpTool,
   computerTool,
   shellTool,
+  type HostedTool,
 } from '../src/tool';
 import logger from '../src/logger';
 import { getGlobalTraceProvider } from '../src/tracing/provider';
@@ -82,6 +83,12 @@ import {
   ModelRequest,
   ModelSettings,
 } from '../src/model';
+
+const PROGRAMMATIC_TOOL_CALLING_TOOL: HostedTool = {
+  type: 'hosted_tool',
+  name: 'programmatic_tool_calling',
+  providerData: { type: 'programmatic_tool_calling' },
+};
 
 function getFirstTextContent(item: AgentInputItem): string | undefined {
   if (item.type !== 'message') {
@@ -1035,6 +1042,219 @@ describe('Runner.run', () => {
       expect(model.requests).toHaveLength(2);
       expect(model.requests[0]?.modelSettings.toolChoice).toBe('required');
       expect(model.requests[1]?.modelSettings.toolChoice).toBe('none');
+    });
+
+    it('continues Programmatic Tool Calling through nested calls and program output', async () => {
+      class ProgrammaticToolCallingModel implements Model {
+        requests: ModelRequest[] = [];
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.requests.push(request);
+          if (this.requests.length === 1) {
+            return {
+              output: [
+                {
+                  type: 'program',
+                  id: 'prog_1',
+                  callId: 'call_prog_1',
+                  code: 'const values = await Promise.all([tools.lookup({key:"a"}), tools.lookup({key:"b"})]); text(JSON.stringify(values));',
+                  fingerprint: 'fp_1',
+                },
+                {
+                  type: 'function_call',
+                  id: 'fc_1',
+                  callId: 'call_1',
+                  name: 'lookup',
+                  arguments: '{"key":"a"}',
+                  caller: { type: 'program', callerId: 'call_prog_1' },
+                },
+                {
+                  type: 'function_call',
+                  id: 'fc_2',
+                  callId: 'call_2',
+                  name: 'lookup',
+                  arguments: '{"key":"b"}',
+                  caller: { type: 'program', callerId: 'call_prog_1' },
+                },
+              ],
+              usage: new Usage(),
+            };
+          }
+          if (this.requests.length === 2) {
+            return {
+              output: [
+                {
+                  type: 'program_output',
+                  id: 'prog_out_1',
+                  callId: 'call_prog_1',
+                  output: '[{"key":"a"},{"key":"b"}]',
+                  status: 'completed',
+                },
+              ],
+              usage: new Usage(),
+            };
+          }
+          return {
+            output: [fakeModelMessage('Program completed.')],
+            usage: new Usage(),
+          };
+        }
+
+        async *getStreamedResponse(): AsyncIterable<protocol.StreamEvent> {
+          yield* [];
+          throw new Error('Not implemented');
+        }
+      }
+
+      const model = new ProgrammaticToolCallingModel();
+      const lookup = tool({
+        name: 'lookup',
+        description: 'Return the requested key.',
+        parameters: z.object({ key: z.string() }),
+        allowedCallers: ['programmatic'],
+        outputSchema: {
+          type: 'object',
+          properties: { key: { type: 'string' } },
+          required: ['key'],
+          additionalProperties: false,
+        },
+        execute: async ({ key }) => ({ key }),
+      });
+      const agent = new Agent({
+        name: 'ProgramAgent',
+        model,
+        tools: [lookup, PROGRAMMATIC_TOOL_CALLING_TOOL],
+        toolUseBehavior: 'stop_on_first_tool',
+        modelSettings: { toolChoice: 'programmatic_tool_calling' },
+      });
+
+      const result = await run(agent, 'Run the program.');
+
+      expect(result.finalOutput).toBe('Program completed.');
+      expect(model.requests).toHaveLength(3);
+      expect(model.requests[0]?.modelSettings.toolChoice).toBe(
+        'programmatic_tool_calling',
+      );
+      expect(model.requests[1]?.modelSettings.toolChoice).toBeUndefined();
+      const secondInput = model.requests[1]?.input as AgentInputItem[];
+      expect(secondInput.map((item) => item.type)).toEqual([
+        'message',
+        'program',
+        'function_call',
+        'function_call',
+        'function_call_result',
+        'function_call_result',
+      ]);
+      expect(
+        secondInput
+          .filter((item) => item.type === 'function_call_result')
+          .map((item) => item.caller),
+      ).toEqual([
+        { type: 'program', callerId: 'call_prog_1' },
+        { type: 'program', callerId: 'call_prog_1' },
+      ]);
+      const thirdInput = model.requests[2]?.input as AgentInputItem[];
+      expect(thirdInput.at(-1)).toMatchObject({
+        type: 'program_output',
+        callId: 'call_prog_1',
+        output: '[{"key":"a"},{"key":"b"}]',
+      });
+    });
+
+    it('accepts Programmatic Tool Calling supplied by a prompt template', async () => {
+      const lookup = tool({
+        name: 'prompt_lookup',
+        description: 'Return the requested key.',
+        parameters: z.object({ key: z.string() }),
+        allowedCallers: ['programmatic'],
+        outputSchema: {
+          type: 'object',
+          properties: { key: { type: 'string' } },
+          required: ['key'],
+          additionalProperties: false,
+        },
+        execute: async ({ key }) => ({ key }),
+      });
+      const agent = new Agent({
+        name: 'PromptProgramAgent',
+        model: new FakeModel([
+          {
+            output: [
+              {
+                type: 'program',
+                id: 'prog_prompt_supplied',
+                callId: 'call_prog_prompt_supplied',
+                code: 'text(await tools.prompt_lookup({key:"prompt"}))',
+                fingerprint: 'fp_prompt_supplied',
+              },
+              {
+                type: 'function_call',
+                id: 'fc_prompt_supplied',
+                callId: 'call_prompt_lookup',
+                name: 'prompt_lookup',
+                arguments: '{"key":"prompt"}',
+                caller: {
+                  type: 'program',
+                  callerId: 'call_prog_prompt_supplied',
+                },
+              },
+            ],
+            usage: new Usage(),
+          },
+          {
+            output: [
+              {
+                type: 'program_output',
+                id: 'prog_out_prompt_supplied',
+                callId: 'call_prog_prompt_supplied',
+                output: '{"key":"prompt"}',
+                status: 'completed',
+              },
+              fakeModelMessage('Prompt program completed.'),
+            ],
+            usage: new Usage(),
+          },
+        ]),
+        prompt: { promptId: 'pmpt_programmatic_tool_calling' },
+        tools: [lookup],
+      });
+
+      const result = await run(agent, 'Run the prompt program.');
+
+      expect(result.finalOutput).toBe('Prompt program completed.');
+      expect(result.newItems.map((item) => item.rawItem.type)).toEqual([
+        'program',
+        'function_call',
+        'function_call_result',
+        'program_output',
+        'message',
+      ]);
+    });
+
+    it('rejects prompt-supplied Programmatic Tool Calling when tools are explicitly disabled', async () => {
+      const agent = new Agent({
+        name: 'PromptProgramAgent',
+        model: new FakeModel([
+          {
+            output: [
+              {
+                type: 'program',
+                id: 'prog_prompt_disabled',
+                callId: 'call_prog_prompt_disabled',
+                code: 'text("blocked")',
+                fingerprint: 'fp_prompt_disabled',
+              },
+            ],
+            usage: new Usage(),
+          },
+        ]),
+        prompt: { promptId: 'pmpt_programmatic_tool_calling' },
+        tools: [],
+      });
+
+      await expect(run(agent, 'Run the prompt program.')).rejects.toThrow(
+        /without programmaticToolCallingTool\(\)/,
+      );
     });
 
     it('sholuld handle structured output', async () => {
@@ -5460,26 +5680,35 @@ describe('Runner.run', () => {
       expect(requestSettings.text?.verbosity).toBe('medium');
     });
 
-    it('uses model-specific defaults when the RunConfig model is explicit', async () => {
-      const modelResponse: ModelResponse = {
-        output: [fakeModelMessage('Hello explicit runner GPT-5')],
-        usage: new Usage(),
-      };
-      const inspectableModel = new InspectableModel(modelResponse);
-      const runner = new Runner({
-        model: 'gpt-5',
-        modelProvider: new InspectableModelProvider(inspectableModel),
-      });
-      const agent = new Agent({ name: 'RunnerModelAgent' });
+    it.each([
+      ['gpt-5', 'low'],
+      ['gpt-5.6', 'none'],
+    ] as const)(
+      'uses model-specific defaults when the RunConfig model is %s',
+      async (modelName, reasoningEffort) => {
+        const modelResponse: ModelResponse = {
+          output: [fakeModelMessage('Hello explicit runner GPT-5')],
+          usage: new Usage(),
+        };
+        const inspectableModel = new InspectableModel(modelResponse);
+        const runner = new Runner({
+          model: modelName,
+          modelProvider: new InspectableModelProvider(inspectableModel),
+        });
+        const agent = new Agent({ name: 'RunnerModelAgent' });
 
-      const result = await runner.run(agent, 'hello');
+        const result = await runner.run(agent, 'hello');
 
-      expect(result.finalOutput).toBe('Hello explicit runner GPT-5');
-      expect(inspectableModel.lastRequest?.modelSettings).toMatchObject({
-        reasoning: { effort: 'low' },
-        text: { verbosity: 'low' },
-      });
-    });
+        expect(result.finalOutput).toBe('Hello explicit runner GPT-5');
+        expect(inspectableModel.lastRequest?.modelSettings).toMatchObject({
+          reasoning: { effort: reasoningEffort },
+          text: { verbosity: 'low' },
+        });
+        expect(
+          inspectableModel.lastRequest?._internal?.reasoningEffortImplicit,
+        ).toBe(true);
+      },
+    );
 
     it('lets RunConfig modelSettings override implicit model defaults', async () => {
       const modelResponse: ModelResponse = {
@@ -5505,6 +5734,9 @@ describe('Runner.run', () => {
         text: { verbosity: 'low' },
         temperature: 0.7,
       });
+      expect(
+        inspectableModel.lastRequest?._internal?.reasoningEffortImplicit,
+      ).toBe(false);
     });
   });
 

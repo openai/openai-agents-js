@@ -11,6 +11,7 @@ import {
   toFunctionToolName,
   toSmartString,
 } from '@openai/agents-core/utils';
+import { recordToolUsage } from '@openai/agents-core/utils/internal';
 import type {
   CustomSpanData,
   FunctionCallItem,
@@ -209,15 +210,13 @@ const codexRunContextParametersSchema = z
   .strict();
 
 type CodexToolParametersSchema =
-  | typeof codexParametersSchema
-  | typeof codexRunContextParametersSchema;
+  typeof codexParametersSchema | typeof codexRunContextParametersSchema;
 type CodexToolParameters = z.infer<typeof codexParametersSchema>;
 type CodexToolRunContextParameters = z.infer<
   typeof codexRunContextParametersSchema
 >;
 type AnyCodexToolParameters =
-  | CodexToolParameters
-  | CodexToolRunContextParameters;
+  CodexToolParameters | CodexToolRunContextParameters;
 type OutputSchemaDescriptor = z.infer<typeof OutputSchemaDescriptorSchema>;
 type OutputSchemaField = z.infer<typeof OutputSchemaFieldSchema>;
 
@@ -255,9 +254,7 @@ export type CodexToolOptions = {
    * This schema is applied to every Codex turn.
    */
   outputSchema?:
-    | OutputSchemaDescriptor
-    | Record<string, unknown>
-    | z.ZodTypeAny;
+    OutputSchemaDescriptor | Record<string, unknown> | z.ZodTypeAny;
   /**
    * Reuse an existing Codex instance. When omitted a new Codex instance will be created.
    */
@@ -493,15 +490,15 @@ export function codexTool(
           typeof usage.cached_input_tokens === 'number'
             ? { cached_input_tokens: usage.cached_input_tokens }
             : undefined;
-        runContext.usage.add(
-          new Usage({
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            total_tokens: usage.input_tokens + usage.output_tokens,
-            input_tokens_details: inputTokensDetails,
-            requests: 1,
-          }),
-        );
+        const usageIncrement = new Usage({
+          input_tokens: usage.input_tokens,
+          output_tokens: usage.output_tokens,
+          total_tokens: usage.input_tokens + usage.output_tokens,
+          input_tokens_details: inputTokensDetails,
+          requests: 1,
+        });
+        runContext.usage.add(usageIncrement);
+        recordToolUsage(details, usageIncrement);
       }
       if (useRunContextThreadId) {
         storeThreadIdInRunContext(
@@ -1064,11 +1061,7 @@ function buildLiteral(
     return undefined;
   }
   const literal = extractFirst(def, 'value', 'literal') as
-    | string
-    | number
-    | boolean
-    | null
-    | undefined;
+    string | number | boolean | null | undefined;
   if (literal === undefined) {
     return undefined;
   }

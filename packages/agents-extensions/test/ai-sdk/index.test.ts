@@ -1,6 +1,7 @@
 import { describe, test, expect, vi } from 'vitest';
 import {
   AiSdkModel,
+  aiSdkToolSearchTool,
   aisdk,
   getResponseFormat,
   itemsToLanguageV2Messages,
@@ -186,9 +187,9 @@ describe('AiSdkModel end-to-end scenarios', () => {
     expect(result.finalOutput).toEqual({ content: 'structured' });
   });
 
-  test('streams interleaved text and multiple tool calls with usage', async () => {
+  test('streams text blocks and tool calls with a stable message ID', async () => {
     const parts = [
-      { type: 'text-delta', delta: 'Hello ' },
+      { type: 'text-delta', id: 'text-1', delta: 'Hello ' },
       {
         type: 'tool-call',
         toolCallId: 'c1',
@@ -196,7 +197,7 @@ describe('AiSdkModel end-to-end scenarios', () => {
         input: '{"q":"a"}',
         providerMetadata: { meta: 1 },
       },
-      { type: 'text-delta', delta: 'world' },
+      { type: 'text-delta', id: 'text-2', delta: 'world' },
       {
         type: 'tool-call',
         toolCallId: 'c2',
@@ -236,10 +237,17 @@ describe('AiSdkModel end-to-end scenarios', () => {
     }
 
     const final = events.at(-1);
+    expect(
+      events.filter((event) => event.type === 'output_text_delta'),
+    ).toEqual([
+      { type: 'output_text_delta', itemId: 'text-1', delta: 'Hello ' },
+      { type: 'output_text_delta', itemId: 'text-1', delta: 'world' },
+    ]);
     expect(final.type).toBe('response_done');
     expect(final.response.output).toEqual([
       {
         type: 'message',
+        id: 'text-1',
         role: 'assistant',
         content: [{ type: 'output_text', text: 'Hello world' }],
         status: 'completed',
@@ -311,6 +319,151 @@ describe('AiSdkModel end-to-end scenarios', () => {
       type: 'message',
       content: [{ type: 'output_text', text: 'hello v3' }],
     });
+  });
+
+  test('supports v4 generation, reasoning, usage, and abort propagation', async () => {
+    const controller = new AbortController();
+    let receivedOptions: any;
+    const transformOutputText = vi.fn((text, context) => {
+      expect(context.specificationVersion).toBe('v4');
+      return text;
+    });
+    const v4Model: any = {
+      specificationVersion: 'v4',
+      provider: 'deepseek.chat',
+      modelId: 'deepseek-chat',
+      supportedUrls: {},
+      async doGenerate(options: any) {
+        receivedOptions = options;
+        return {
+          content: [
+            { type: 'reasoning', text: 'thinking' },
+            { type: 'text', text: 'hello v4' },
+          ],
+          usage: {
+            inputTokens: {
+              total: 3,
+              noCache: 2,
+              cacheRead: 1,
+              cacheWrite: 0,
+            },
+            outputTokens: { total: 5, text: 4, reasoning: 1 },
+          },
+          response: { id: 'resp-v4' },
+          providerMetadata: {},
+          finishReason: { unified: 'stop', raw: 'stop' },
+          warnings: [],
+        };
+      },
+      async doStream() {
+        return { stream: partsStream([]) };
+      },
+    };
+
+    const model = new AiSdkModel(v4Model, { transformOutputText });
+    const response = await withTrace('v4-model', () =>
+      model.getResponse({
+        input: 'prompt',
+        tools: [],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+        signal: controller.signal,
+      } as any),
+    );
+
+    expect(receivedOptions.abortSignal).toBe(controller.signal);
+    expect(transformOutputText).toHaveBeenCalledOnce();
+    expect(response.output.map((item) => item.type)).toEqual([
+      'reasoning',
+      'message',
+    ]);
+    expect(response.output[1]).toMatchObject({
+      type: 'message',
+      content: [{ type: 'output_text', text: 'hello v4' }],
+    });
+    expect(response.usage).toMatchObject({
+      inputTokens: 3,
+      outputTokens: 5,
+      totalTokens: 8,
+    });
+  });
+
+  test('supports v4 streaming reasoning and object-shaped usage', async () => {
+    const controller = new AbortController();
+    let receivedOptions: any;
+    const v4Model: any = {
+      specificationVersion: 'v4',
+      provider: 'deepseek.chat',
+      modelId: 'deepseek-chat',
+      supportedUrls: {},
+      async doGenerate() {
+        return { content: [], usage: {} };
+      },
+      async doStream(options: any) {
+        receivedOptions = options;
+        return {
+          stream: partsStream([
+            { type: 'reasoning-start', id: 'reasoning-1' },
+            {
+              type: 'reasoning-delta',
+              id: 'reasoning-1',
+              delta: 'thinking',
+            },
+            { type: 'reasoning-end', id: 'reasoning-1' },
+            { type: 'text-delta', id: 'text-1', delta: 'hello v4' },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: {
+                inputTokens: {
+                  total: 2,
+                  noCache: 2,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                },
+                outputTokens: { total: 4, text: 3, reasoning: 1 },
+              },
+            },
+          ]),
+        };
+      },
+    };
+
+    const model = new AiSdkModel(v4Model);
+    const events: any[] = [];
+    for await (const event of model.getStreamedResponse({
+      input: 'prompt',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+      signal: controller.signal,
+    } as any)) {
+      events.push(event);
+    }
+
+    const final = events.at(-1);
+    expect(receivedOptions.abortSignal).toBe(controller.signal);
+    expect(final.response.output.map((item: any) => item.type)).toEqual([
+      'reasoning',
+      'message',
+    ]);
+    expect(final.response.usage).toMatchObject({
+      inputTokens: 2,
+      outputTokens: 4,
+      totalTokens: 6,
+    });
+  });
+
+  test('rejects unsupported specification versions', () => {
+    expect(
+      () => new AiSdkModel(stubModel({}, { specificationVersion: 'v5' })),
+    ).toThrow(
+      'Unsupported AI SDK specificationVersion: v5. Only v2, v3, and v4 are supported.',
+    );
   });
 
   test('returns JSON schema output in streaming finish', async () => {
@@ -824,31 +977,35 @@ describe('itemsToLanguageV2Messages', () => {
         ],
         providerData: { execution: 'server' },
       } as any,
+      {
+        type: 'function_call',
+        callId: 'weather_1',
+        name: 'get_weather',
+        arguments: '{"city":"Tokyo"}',
+        status: 'completed',
+      },
     ];
 
     const msgs = itemsToLanguageV2Messages(stubModel({}), items);
-    expect(msgs[0]).toMatchObject({
-      role: 'assistant',
-      content: [
-        {
-          type: 'tool-call',
-          toolCallId: 'ts_call_server',
-          toolName: 'tool_search',
-        },
-      ],
-    });
-    expect(msgs[1]).toEqual({
-      role: 'tool',
-      content: [
-        {
-          type: 'tool-result',
-          toolCallId: 'ts_call_server',
-          toolName: 'tool_search',
-          output: {
-            type: 'json',
-            value: {
-              status: 'completed',
-              tools: [
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'ts_call_server',
+            toolName: 'tool_search',
+            input: { paths: ['billing'], query: 'lookup invoice' },
+            providerExecuted: true,
+            providerOptions: { execution: 'server' },
+          },
+          {
+            type: 'tool-result',
+            toolCallId: 'ts_call_server',
+            toolName: 'tool_search',
+            output: {
+              type: 'json',
+              value: [
                 {
                   type: 'tool_reference',
                   functionName: 'lookup_invoice',
@@ -856,12 +1013,156 @@ describe('itemsToLanguageV2Messages', () => {
                 },
               ],
             },
+            providerOptions: { execution: 'server' },
           },
-          providerOptions: { execution: 'server' },
-        },
-      ],
-      providerOptions: { execution: 'server' },
-    });
+          {
+            type: 'tool-call',
+            toolCallId: 'weather_1',
+            toolName: 'get_weather',
+            input: { city: 'Tokyo' },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: { execution: 'server' },
+      },
+    ]);
+  });
+
+  test('orders provider-executed tool searches before pending client calls', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        callId: 'weather_1',
+        name: 'get_weather',
+        arguments: '{"city":"Tokyo"}',
+        status: 'completed',
+      },
+      {
+        type: 'tool_search_call',
+        id: 'search_1',
+        execution: 'server',
+        arguments: { query: 'weather tools' },
+        status: 'completed',
+      },
+      {
+        type: 'tool_search_output',
+        callId: 'search_1',
+        execution: 'server',
+        status: 'completed',
+        tools: [
+          {
+            type: 'tool_reference',
+            toolName: 'get_forecast',
+          },
+        ],
+      },
+      {
+        type: 'function_call_result',
+        callId: 'weather_1',
+        name: 'get_weather',
+        status: 'completed',
+        output: 'sunny',
+      },
+    ];
+
+    expect(itemsToLanguageV2Messages(stubModel({}), items)).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'search_1',
+            toolName: 'tool_search',
+            input: { query: 'weather tools' },
+            providerExecuted: true,
+            providerOptions: {},
+          },
+          {
+            type: 'tool-result',
+            toolCallId: 'search_1',
+            toolName: 'tool_search',
+            output: {
+              type: 'json',
+              value: [
+                {
+                  type: 'tool_reference',
+                  toolName: 'get_forecast',
+                },
+              ],
+            },
+            providerOptions: {},
+          },
+          {
+            type: 'tool-call',
+            toolCallId: 'weather_1',
+            toolName: 'get_weather',
+            input: { city: 'Tokyo' },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'weather_1',
+            toolName: 'get_weather',
+            output: { type: 'text', value: 'sunny' },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('replays provider-executed tool search errors as error results', () => {
+    const errorResult = {
+      type: 'tool_search_tool_result_error',
+      errorCode: 'invalid_pattern',
+    };
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'tool_search_call',
+        id: 'search_1',
+        execution: 'server',
+        arguments: { query: '[' },
+        status: 'completed',
+      },
+      {
+        type: 'tool_search_output',
+        callId: 'search_1',
+        execution: 'server',
+        status: 'failed',
+        tools: [errorResult],
+      },
+    ];
+
+    expect(itemsToLanguageV2Messages(stubModel({}), items)).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'search_1',
+            toolName: 'tool_search',
+            input: { query: '[' },
+            providerExecuted: true,
+            providerOptions: {},
+          },
+          {
+            type: 'tool-result',
+            toolCallId: 'search_1',
+            toolName: 'tool_search',
+            output: { type: 'error-json', value: errorResult },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
   });
 
   test('does not queue hosted tool_search calls as pending client searches', () => {
@@ -915,7 +1216,7 @@ describe('itemsToLanguageV2Messages', () => {
     ];
 
     const msgs = itemsToLanguageV2Messages(stubModel({}), items);
-    expect(msgs[3]).toEqual({
+    expect(msgs[1]).toEqual({
       role: 'tool',
       content: [
         {
@@ -1027,6 +1328,33 @@ describe('itemsToLanguageV2Messages', () => {
       { type: 'hosted_tool_call', name: 'search' } as any,
     ];
     expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow();
+  });
+
+  test('rejects Programmatic Tool Calling caller history', () => {
+    const caller = { type: 'program' as const, callerId: 'call_program' };
+    expect(() =>
+      itemsToLanguageV2Messages(stubModel({}), [
+        {
+          type: 'function_call',
+          callId: 'call_function',
+          name: 'lookup',
+          arguments: '{}',
+          caller,
+        },
+      ]),
+    ).toThrow(/does not support Programmatic Tool Calling history/);
+    expect(() =>
+      itemsToLanguageV2Messages(stubModel({}), [
+        {
+          type: 'function_call_result',
+          callId: 'call_function',
+          name: 'lookup',
+          status: 'completed',
+          output: 'ok',
+          caller,
+        },
+      ]),
+    ).toThrow(/does not support Programmatic Tool Calling history/);
   });
 
   test('throws on computer tool calls and results', () => {
@@ -1249,6 +1577,103 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('converts v4 user images to tagged file data', () => {
+    const imageUrl = 'https://example.com/image.png';
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'input_image', image: 'data:image/png;base64,aGVsbG8=' },
+          { type: 'input_image', image: imageUrl },
+        ],
+      } as any,
+    ];
+    const msgs = itemsToLanguageV2Messages(
+      stubModel({}, { specificationVersion: 'v4' }),
+      items,
+    );
+
+    expect(msgs).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: { type: 'data', data: 'aGVsbG8=' },
+            mediaType: 'image/png',
+            providerOptions: {},
+          },
+          {
+            type: 'file',
+            data: { type: 'url', url: new URL(imageUrl) },
+            mediaType: 'image/*',
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('converts v4 user input_file content to tagged file data', () => {
+    const rawBase64 = Buffer.from('inline file').toString('base64');
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: 'data:application/pdf;base64,JVBERi0=',
+          },
+          {
+            type: 'input_file',
+            file: { url: 'https://example.com/report.pdf' },
+            providerData: { mediaType: 'application/pdf' },
+          },
+          {
+            type: 'input_file',
+            file: rawBase64,
+            providerData: { mediaType: 'text/plain' },
+          },
+        ],
+      } as any,
+    ];
+    const msgs = itemsToLanguageV2Messages(
+      stubModel({}, { specificationVersion: 'v4' }),
+      items,
+    );
+
+    expect(msgs).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: { type: 'data', data: 'JVBERi0=' },
+            mediaType: 'application/pdf',
+            providerOptions: {},
+          },
+          {
+            type: 'file',
+            data: {
+              type: 'url',
+              url: new URL('https://example.com/report.pdf'),
+            },
+            mediaType: 'application/pdf',
+            providerOptions: { mediaType: 'application/pdf' },
+          },
+          {
+            type: 'file',
+            data: { type: 'data', data: rawBase64 },
+            mediaType: 'text/plain',
+            providerOptions: { mediaType: 'text/plain' },
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
   test('converts structured tool output lists', () => {
     const rawBase64 = Buffer.from('tool file').toString('base64');
     const items: protocol.ModelItem[] = [
@@ -1347,6 +1772,220 @@ describe('itemsToLanguageV2Messages', () => {
         providerOptions: {},
       },
     ]);
+  });
+
+  test('converts V3 image tool outputs and preserves file IDs', () => {
+    const imageUrl =
+      'https://images.unsplash.com/photo-1505761671935-60b3a7427bad?auto=format&fit=crop&w=400&q=80';
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        callId: 'tool-1',
+        name: 'describe_image',
+        arguments: '{}',
+      } as any,
+      {
+        type: 'function_call_result',
+        callId: 'tool-1',
+        name: 'describe_image',
+        output: [
+          { type: 'input_text', text: 'A scenic view.' },
+          {
+            type: 'input_image',
+            image: imageUrl,
+          },
+          {
+            type: 'input_image',
+            image: 'data:image/png;base64,aGVsbG8=',
+          },
+          {
+            type: 'input_image',
+            image: { id: 'file_image_123' },
+          },
+          {
+            type: 'input_file',
+            file: 'data:application/pdf;base64,JVBERi0=',
+          },
+          {
+            type: 'input_file',
+            file: { url: 'https://example.com/report.pdf' },
+          },
+          {
+            type: 'input_file',
+            file: { id: 'file_document_123' },
+          },
+        ],
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(
+      stubModel({}, { specificationVersion: 'v3' }),
+      items,
+    );
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'tool-1',
+            toolName: 'describe_image',
+            input: {},
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'tool-1',
+            toolName: 'describe_image',
+            output: {
+              type: 'content',
+              value: [
+                { type: 'text', text: 'A scenic view.' },
+                {
+                  type: 'image-url',
+                  url: imageUrl,
+                },
+                {
+                  type: 'image-data',
+                  data: 'aGVsbG8=',
+                  mediaType: 'image/png',
+                },
+                {
+                  type: 'image-file-id',
+                  fileId: 'file_image_123',
+                },
+                {
+                  type: 'file-data',
+                  data: 'JVBERi0=',
+                  mediaType: 'application/pdf',
+                },
+                {
+                  type: 'file-url',
+                  url: 'https://example.com/report.pdf',
+                },
+                {
+                  type: 'file-id',
+                  fileId: 'file_document_123',
+                },
+              ],
+            },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('converts v4 image tool outputs to canonical file parts', () => {
+    const imageUrl = 'https://example.com/image.png';
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        callId: 'tool-1',
+        name: 'describe_image',
+        arguments: '{}',
+      } as any,
+      {
+        type: 'function_call_result',
+        callId: 'tool-1',
+        name: 'describe_image',
+        output: [
+          { type: 'input_text', text: 'A scenic view.' },
+          { type: 'input_image', image: imageUrl },
+          {
+            type: 'input_image',
+            image: 'data:image/png;base64,aGVsbG8=',
+          },
+          { type: 'input_image', image: { id: 'file_image_123' } },
+          {
+            type: 'input_file',
+            file: 'data:application/pdf;base64,JVBERi0=',
+          },
+          {
+            type: 'input_file',
+            file: { url: 'https://example.com/report.pdf' },
+            providerData: { mediaType: 'application/pdf' },
+          },
+          {
+            type: 'input_file',
+            file: { id: 'file_document_123' },
+            providerData: { mediaType: 'application/pdf' },
+          },
+        ],
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(
+      stubModel(
+        {},
+        { provider: 'openai.responses', specificationVersion: 'v4' },
+      ),
+      items,
+    );
+    expect(msgs[1]).toEqual({
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'tool-1',
+          toolName: 'describe_image',
+          output: {
+            type: 'content',
+            value: [
+              { type: 'text', text: 'A scenic view.' },
+              {
+                type: 'file',
+                data: { type: 'url', url: new URL(imageUrl) },
+                mediaType: 'image',
+              },
+              {
+                type: 'file',
+                data: { type: 'data', data: 'aGVsbG8=' },
+                mediaType: 'image/png',
+              },
+              {
+                type: 'file',
+                data: {
+                  type: 'reference',
+                  reference: { openai: 'file_image_123' },
+                },
+                mediaType: 'image',
+              },
+              {
+                type: 'file',
+                data: { type: 'data', data: 'JVBERi0=' },
+                mediaType: 'application/pdf',
+              },
+              {
+                type: 'file',
+                data: {
+                  type: 'url',
+                  url: new URL('https://example.com/report.pdf'),
+                },
+                mediaType: 'application/pdf',
+              },
+              {
+                type: 'file',
+                data: {
+                  type: 'reference',
+                  reference: { openai: 'file_document_123' },
+                },
+                mediaType: 'application/pdf',
+              },
+            ],
+          },
+          providerOptions: {},
+        },
+      ],
+      providerOptions: {},
+    });
   });
 
   test('handles undefined providerData without throwing', () => {
@@ -1461,6 +2100,32 @@ describe('toolToLanguageV2Tool', () => {
     });
   });
 
+  test('maps provider data on function tools to provider options', () => {
+    const anthropicModel = stubModel(
+      {},
+      { provider: 'anthropic.messages', specificationVersion: 'v3' },
+    );
+    const tool = {
+      type: 'function',
+      name: 'get_weather',
+      description: 'Get the weather.',
+      parameters: {} as any,
+      providerData: {
+        anthropic: { deferLoading: true },
+      },
+    } as any;
+
+    expect(toolToLanguageV2Tool(anthropicModel, tool)).toEqual({
+      type: 'function',
+      name: 'get_weather',
+      description: 'Get the weather.',
+      inputSchema: {},
+      providerOptions: {
+        anthropic: { deferLoading: true },
+      },
+    });
+  });
+
   test('maps same-name namespaces to qualified names', () => {
     const tool = {
       type: 'function',
@@ -1488,6 +2153,26 @@ describe('toolToLanguageV2Tool', () => {
     expect(() => toolToLanguageV2Tool(model, tool)).toThrow(
       /AI SDK adapter does not support deferred Responses function tools/,
     );
+  });
+
+  test('rejects Programmatic Tool Calling tools', () => {
+    expect(() =>
+      toolToLanguageV2Tool(model, {
+        type: 'function',
+        name: 'lookup',
+        description: 'd',
+        parameters: {} as any,
+        allowedCallers: ['programmatic'],
+      } as any),
+    ).toThrow(/does not support Programmatic Tool Calling/);
+
+    expect(() =>
+      toolToLanguageV2Tool(model, {
+        type: 'hosted_tool',
+        name: 'programmatic_tool_calling',
+        providerData: { type: 'programmatic_tool_calling' },
+      } as any),
+    ).toThrow(/does not support Programmatic Tool Calling/);
   });
 
   test('maps builtin tools', () => {
@@ -1538,22 +2223,62 @@ describe('toolToLanguageV2Tool', () => {
     });
   });
 
-  test('normalizes OpenAI v3 builtin tool IDs', () => {
+  test('preserves AI SDK provider tool ids for v2, v3, and v4 models', () => {
+    const tool = aiSdkToolSearchTool({
+      type: 'provider',
+      id: 'anthropic.tool_search_regex_20251119',
+      args: { maxUses: 2 },
+    });
+
+    expect(toolToLanguageV2Tool(model, tool)).toEqual({
+      type: 'provider-defined',
+      id: 'anthropic.tool_search_regex_20251119',
+      name: 'tool_search',
+      args: { maxUses: 2 },
+    });
+
     const v3Model = stubModel(
       {},
-      { provider: 'openai.responses', specificationVersion: 'v3' },
+      { provider: 'anthropic.messages', specificationVersion: 'v3' },
     );
+    expect(toolToLanguageV2Tool(v3Model, tool)).toEqual({
+      type: 'provider',
+      id: 'anthropic.tool_search_regex_20251119',
+      name: 'tool_search',
+      args: { maxUses: 2 },
+    });
+
+    const v4Model = stubModel(
+      {},
+      { provider: 'anthropic.messages', specificationVersion: 'v4' },
+    );
+    expect(toolToLanguageV2Tool(v4Model, tool)).toEqual({
+      type: 'provider',
+      id: 'anthropic.tool_search_regex_20251119',
+      name: 'tool_search',
+      args: { maxUses: 2 },
+    });
+  });
+
+  test('normalizes OpenAI v3 and v4 builtin tool IDs', () => {
     const tool = {
       type: 'hosted_tool',
       name: 'file_search',
       providerData: { args: { query: 'x' } },
     } as any;
-    expect(toolToLanguageV2Tool(v3Model, tool)).toEqual({
-      type: 'provider',
-      id: 'openai.file_search',
-      name: 'file_search',
-      args: { query: 'x' },
-    });
+
+    for (const specificationVersion of ['v3', 'v4']) {
+      const model = stubModel(
+        {},
+        { provider: 'openai.responses', specificationVersion },
+      );
+      expect(toolToLanguageV2Tool(model, tool)).toEqual({
+        type: 'provider',
+        id: 'openai.file_search',
+        name: 'file_search',
+        args: { query: 'x' },
+      });
+    }
   });
 
   test('maps computer tools', () => {
@@ -1620,6 +2345,51 @@ describe('AiSdkModel.getResponse', () => {
         type: 'message',
         role: 'assistant',
         content: [{ type: 'output_text', text: 'ok' }],
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id',
+          p: 1,
+        },
+      },
+    ]);
+  });
+
+  test('concatenates multiple text output parts', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              { type: 'text', text: 'Hello ' },
+              { type: 'text', text: 'world' },
+            ],
+            usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+            providerMetadata: { p: 1 },
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const res = await withTrace('t', () =>
+      model.getResponse({
+        input: 'hi',
+        tools: [],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+
+    expect(res.output).toEqual([
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Hello world' }],
         status: 'completed',
         providerData: {
           model: 'stub:m',
@@ -1898,6 +2668,243 @@ describe('AiSdkModel.getResponse', () => {
     ]);
     expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+
+  test('preserves provider-executed tool search call and result order in doGenerate', async () => {
+    const model = new AiSdkModel(
+      stubModel(
+        {
+          async doGenerate() {
+            return {
+              content: [
+                {
+                  type: 'tool-call',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  input: { query: 'weather' },
+                  providerExecuted: true,
+                },
+                {
+                  type: 'tool-result',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  result: [{ type: 'tool_reference', toolName: 'get_weather' }],
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'weather_1',
+                  toolName: 'get_weather',
+                  input: { city: 'Tokyo' },
+                },
+              ],
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              providerMetadata: {},
+              response: { id: 'response_1' },
+              finishReason: 'tool-calls',
+              warnings: [],
+            } as any;
+          },
+        },
+        { provider: 'anthropic.messages', specificationVersion: 'v3' },
+      ),
+    );
+
+    const result = await withTrace('t', () =>
+      model.getResponse({
+        input: 'Find the weather tool and use it.',
+        tools: [
+          aiSdkToolSearchTool({
+            type: 'provider',
+            id: 'anthropic.tool_search_regex_20251119',
+          }),
+          {
+            type: 'function',
+            name: 'get_weather',
+            description: 'Get the weather.',
+            parameters: { type: 'object', properties: {} },
+            strict: true,
+            providerData: { anthropic: { deferLoading: true } },
+          } as any,
+        ],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+
+    expect(result.output.map((item) => item.type)).toEqual([
+      'tool_search_call',
+      'tool_search_output',
+      'function_call',
+    ]);
+    expect(result.output[0]).toMatchObject({
+      type: 'tool_search_call',
+      id: 'search_1',
+      execution: 'server',
+      arguments: { query: 'weather' },
+    });
+    expect(result.output[1]).toMatchObject({
+      type: 'tool_search_output',
+      callId: 'search_1',
+      execution: 'server',
+      tools: [{ type: 'tool_reference', toolName: 'get_weather' }],
+    });
+    expect(result.output[2]).toMatchObject({
+      type: 'function_call',
+      callId: 'weather_1',
+      name: 'get_weather',
+    });
+  });
+
+  test('preserves provider-executed tool search errors and continues the run', async () => {
+    const prompts: any[] = [];
+    const errorResult = {
+      type: 'tool_search_tool_result_error',
+      errorCode: 'invalid_pattern',
+    };
+    const model = new AiSdkModel(
+      stubModel(
+        {
+          async doGenerate(options) {
+            prompts.push(options.prompt);
+            if (prompts.length > 1) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: 'The tool search failed, so I used a fallback.',
+                  },
+                ],
+                usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                response: { id: 'response_2' },
+                finishReason: 'stop',
+                warnings: [],
+              } as any;
+            }
+
+            return {
+              content: [
+                {
+                  type: 'tool-call',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  input: {},
+                  providerExecuted: true,
+                },
+                {
+                  type: 'tool-result',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  isError: true,
+                  result: errorResult,
+                },
+              ],
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              response: { id: 'response_1' },
+              finishReason: 'error',
+              warnings: [],
+            } as any;
+          },
+        },
+        { provider: 'anthropic.messages', specificationVersion: 'v3' },
+      ),
+    );
+
+    const result = await run(
+      new Agent({
+        name: 'Tool search agent',
+        model,
+        tools: [
+          aiSdkToolSearchTool({
+            type: 'provider',
+            id: 'anthropic.tool_search_regex_20251119',
+          }),
+        ],
+      }),
+      'Find a tool.',
+    );
+
+    expect(result.finalOutput).toBe(
+      'The tool search failed, so I used a fallback.',
+    );
+    expect(result.history).toContainEqual(
+      expect.objectContaining({
+        type: 'tool_search_output',
+        callId: 'search_1',
+        execution: 'server',
+        status: 'failed',
+        tools: [errorResult],
+      }),
+    );
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'assistant',
+          content: expect.arrayContaining([
+            expect.objectContaining({
+              type: 'tool-result',
+              toolCallId: 'search_1',
+              output: { type: 'error-json', value: errorResult },
+            }),
+          ]),
+        }),
+      ]),
+    );
+  });
+
+  test('rejects malformed successful provider-executed tool search results', async () => {
+    const model = new AiSdkModel(
+      stubModel(
+        {
+          async doGenerate() {
+            return {
+              content: [
+                {
+                  type: 'tool-call',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  input: {},
+                  providerExecuted: true,
+                },
+                {
+                  type: 'tool-result',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  result: { type: 'unexpected_success_shape' },
+                },
+              ],
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              response: { id: 'response_1' },
+              finishReason: 'tool-calls',
+              warnings: [],
+            } as any;
+          },
+        },
+        { provider: 'anthropic.messages', specificationVersion: 'v3' },
+      ),
+    );
+
+    await expect(
+      withTrace('t', () =>
+        model.getResponse({
+          input: 'Find a tool.',
+          tools: [
+            aiSdkToolSearchTool({
+              type: 'provider',
+              id: 'anthropic.tool_search_regex_20251119',
+            }),
+          ],
+          handoffs: [],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: false,
+        } as any),
+      ),
+    ).rejects.toThrow(
+      /Expected an array of tool references or an error object/,
+    );
   });
 
   test('rejects ambiguous hosted and custom tool_search names in doGenerate', async () => {
@@ -2715,6 +3722,91 @@ describe('AiSdkModel.getStreamedResponse', () => {
     ]);
     expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+
+  test('preserves provider-executed tool search call and result order in streaming mode', async () => {
+    const parts = [
+      {
+        type: 'tool-call',
+        toolCallId: 'search_1',
+        toolName: 'tool_search',
+        input: { query: 'weather' },
+        providerExecuted: true,
+      },
+      {
+        type: 'tool-result',
+        toolCallId: 'search_1',
+        toolName: 'tool_search',
+        result: [{ type: 'tool_reference', toolName: 'get_weather' }],
+      },
+      {
+        type: 'tool-call',
+        toolCallId: 'weather_1',
+        toolName: 'get_weather',
+        input: { city: 'Tokyo' },
+      },
+      { type: 'response-metadata', id: 'response_stream_1' },
+      {
+        type: 'finish',
+        finishReason: 'tool-calls',
+        usage: { inputTokens: 3, outputTokens: 4 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel(
+        {
+          async doStream() {
+            return { stream: partsStream(parts) } as any;
+          },
+        },
+        { provider: 'anthropic.messages', specificationVersion: 'v3' },
+      ),
+    );
+
+    const events: any[] = [];
+    for await (const event of model.getStreamedResponse({
+      input: 'Find the weather tool and use it.',
+      tools: [
+        aiSdkToolSearchTool({
+          type: 'provider',
+          id: 'anthropic.tool_search_regex_20251119',
+        }),
+        {
+          type: 'function',
+          name: 'get_weather',
+          description: 'Get the weather.',
+          parameters: { type: 'object', properties: {} },
+          strict: true,
+          providerData: { anthropic: { deferLoading: true } },
+        } as any,
+      ],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      events.push(event);
+    }
+
+    const final = events.at(-1);
+    expect(final.response.output.map((item: any) => item.type)).toEqual([
+      'tool_search_call',
+      'tool_search_output',
+      'function_call',
+    ]);
+    expect(final.response.output[0]).toMatchObject({
+      id: 'search_1',
+      execution: 'server',
+    });
+    expect(final.response.output[1]).toMatchObject({
+      callId: 'search_1',
+      execution: 'server',
+      tools: [{ type: 'tool_reference', toolName: 'get_weather' }],
+    });
+    expect(final.response.output[2]).toMatchObject({
+      callId: 'weather_1',
+      name: 'get_weather',
+    });
   });
 
   test('includes base providerData in streaming mode even when providerMetadata is not present', async () => {

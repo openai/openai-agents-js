@@ -1,5 +1,51 @@
 # @openai/agents-realtime
 
+## 0.13.5
+
+### Patch Changes
+
+- Updated dependencies [2437c35]
+- Updated dependencies [72ca4bc]
+- Updated dependencies [f1ae0b4]
+  - @openai/agents-core@0.13.5
+
+## 0.13.4
+
+### Patch Changes
+
+- Updated dependencies [a1670ce]
+  - @openai/agents-core@0.13.4
+
+## 0.13.3
+
+### Patch Changes
+
+- a1ea36f: test: improve retry, MCP approval, and Realtime sequencing coverage
+- Updated dependencies [a1ea36f]
+- Updated dependencies [4292ecc]
+  - @openai/agents-core@0.13.3
+
+## 0.13.2
+
+### Patch Changes
+
+- 760ef8e: fix(realtime): surface the provider error when the WebRTC `/realtime/calls` request fails
+
+  The WebRTC transport now checks `response.ok` before treating the `/realtime/calls` response as an SDP answer. On a non-2xx response it throws an error carrying the provider's message (e.g. `insufficient_quota`, invalid ephemeral key) instead of passing the error body to `setRemoteDescription`, which previously surfaced as an opaque "Failed to parse SessionDescription".
+
+- Updated dependencies [4c14038]
+- Updated dependencies [e5b75e1]
+- Updated dependencies [240b6eb]
+  - @openai/agents-core@0.13.2
+
+## 0.13.1
+
+### Patch Changes
+
+- Updated dependencies [532ab2b]
+- Updated dependencies [ec48462]
+  - @openai/agents-core@0.13.1
+
 ## 0.13.0
 
 ### Minor Changes

@@ -1,5 +1,63 @@
 # @openai/agents
 
+## 0.13.5
+
+### Patch Changes
+
+- 7344ce7: docs: clarify sandbox client support on Windows
+- Updated dependencies [2437c35]
+- Updated dependencies [72ca4bc]
+- Updated dependencies [f1ae0b4]
+  - @openai/agents-core@0.13.5
+  - @openai/agents-openai@0.13.5
+  - @openai/agents-realtime@0.13.5
+
+## 0.13.4
+
+### Patch Changes
+
+- Updated dependencies [db1fe16]
+- Updated dependencies [a1670ce]
+  - @openai/agents-openai@0.13.4
+  - @openai/agents-core@0.13.4
+  - @openai/agents-realtime@0.13.4
+
+## 0.13.3
+
+### Patch Changes
+
+- Updated dependencies [a1ea36f]
+- Updated dependencies [4292ecc]
+  - @openai/agents-core@0.13.3
+  - @openai/agents-openai@0.13.3
+  - @openai/agents-realtime@0.13.3
+
+## 0.13.2
+
+### Patch Changes
+
+- Updated dependencies [4c14038]
+- Updated dependencies [e5b75e1]
+- Updated dependencies [48cdb52]
+- Updated dependencies [240b6eb]
+- Updated dependencies [760ef8e]
+  - @openai/agents-core@0.13.2
+  - @openai/agents-openai@0.13.2
+  - @openai/agents-realtime@0.13.2
+
+## 0.13.1
+
+### Patch Changes
+
+- 532ab2b: fix: support openai-node v6.46.0 usage types
+- ec48462: feat: add GPT-5.6 model defaults, reasoning, and sandbox compaction support
+- 1f9af9f: docs: cover sandbox, text, and realtime agents in the package README
+- Updated dependencies [532ab2b]
+- Updated dependencies [ec48462]
+  - @openai/agents-core@0.13.1
+  - @openai/agents-openai@0.13.1
+  - @openai/agents-realtime@0.13.1
+
 ## 0.13.0
 
 ### Minor Changes

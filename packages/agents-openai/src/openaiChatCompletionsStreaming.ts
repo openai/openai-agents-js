@@ -9,6 +9,7 @@ import logger from './logger';
 type StreamingState = {
   started: boolean;
   text_content: protocol.OutputText | null;
+  messageItemId: string | undefined;
   refusal_content: protocol.Refusal | null;
   function_calls: Record<number, protocol.FunctionCallItem>;
   ignored_tool_call_indexes: Set<number>;
@@ -26,6 +27,7 @@ export async function* convertChatCompletionsStreamToResponses(
   const state: StreamingState = {
     started: false,
     text_content: null,
+    messageItemId: undefined,
     refusal_content: null,
     function_calls: {},
     ignored_tool_call_indexes: new Set(),
@@ -59,8 +61,13 @@ export async function* convertChatCompletionsStreamToResponses(
       },
     };
 
-    // This is always set by the OpenAI API, but not by others e.g. LiteLLM
-    usage = (chunk as any).usage || undefined;
+    // Usage is not always reported on the final chunk: some OpenAI-compatible
+    // providers or gateways may emit a later chunk without usage after
+    // reporting usage, so only overwrite it when the current chunk actually
+    // carries usage data.
+    if ((chunk as any).usage) {
+      usage = (chunk as any).usage;
+    }
 
     if (!chunk.choices || chunk.choices.length === 0) continue;
 
@@ -98,10 +105,13 @@ export async function* convertChatCompletionsStreamToResponses(
           type: 'output_text',
           providerData: { annotations: [] },
         };
+        state.messageItemId =
+          response.id && response.id !== FAKE_ID ? response.id : undefined;
       }
       yield {
         type: 'output_text_delta',
         delta: delta.content,
+        ...(state.messageItemId ? { itemId: state.messageItemId } : {}),
         providerData: {
           ...chunk,
         },
@@ -183,7 +193,7 @@ export async function* convertChatCompletionsStreamToResponses(
       content.push(state.refusal_content);
     }
     outputs.push({
-      id: outputItemId,
+      id: state.messageItemId ?? outputItemId,
       content,
       role: 'assistant',
       type: 'message',

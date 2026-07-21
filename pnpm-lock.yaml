@@ -129,9 +129,15 @@ importers:
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
+      '@openai/agents-openai':
+        specifier: workspace:*
+        version: link:../../packages/agents-openai
       chalk:
         specifier: ^5.4.1
         version: 5.4.1
+      openai:
+        specifier: ^6.46.0
+        version: 6.46.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
       zod:
         specifier: ^4.0.0
         version: 4.3.5
@@ -287,6 +293,9 @@ importers:
       '@openai/agents-extensions':
         specifier: workspace:*
         version: link:../../packages/agents-extensions
+      '@openai/agents-openai':
+        specifier: workspace:*
+        version: link:../../packages/agents-openai
       '@openai/agents-realtime':
         specifier: workspace:*
         version: link:../../packages/agents-realtime
@@ -666,8 +675,8 @@ importers:
         version: 4.4.1
     devDependencies:
       '@ai-sdk/provider':
-        specifier: ^3.0.0
-        version: 3.0.2
+        specifier: ^4.0.3
+        version: 4.0.3
       '@blaxel/core':
         specifier: 0.2.82
         version: 0.2.82(@hey-api/openapi-ts@0.96.1(magicast@0.5.3)(typescript@5.9.3))(debug@4.4.1)
@@ -675,8 +684,8 @@ importers:
         specifier: 0.162.0
         version: 0.162.0(debug@4.4.1)(ws@8.21.0)
       '@e2b/code-interpreter':
-        specifier: 2.3.3
-        version: 2.3.3
+        specifier: 2.6.1
+        version: 2.6.1
       '@openai/agents':
         specifier: workspace:>=0.0.0
         version: link:../agents
@@ -696,8 +705,8 @@ importers:
         specifier: ^6.0.42
         version: 6.0.42(zod@4.3.5)
       e2b:
-        specifier: ^2.14.1
-        version: 2.19.0
+        specifier: 2.32.0
+        version: 2.32.0
       modal:
         specifier: 0.7.6
         version: 0.7.6
@@ -841,6 +850,10 @@ packages:
   '@ai-sdk/provider@3.0.4':
     resolution: {integrity: sha512-5KXyBOSEX+l67elrEa+wqo/LSsSTtrPj9Uoh3zMbe/ceQX4ucHI3b9nUEfNkGF3Ry1svv90widAt+aiKdIJasQ==}
     engines: {node: '>=18'}
+
+  '@ai-sdk/provider@4.0.3':
+    resolution: {integrity: sha512-e0CpNWJUY7OxAFAnCZkw+ri9QOHWwTs1tXP42782KFGCU07qt8NiXCrCVowyCB5dP2r5/Uls+g2oPd8kOJn9dw==}
+    engines: {node: '>=22'}
 
   '@ai-sdk/react@3.0.44':
     resolution: {integrity: sha512-TiCzQMRJZ8ASZjemz9eeX0/C5f6G1boRhrxVE3aNKvpuO/RUVQvkHsCIiJF3JgCyCEgQo//BqrXah1aSqgKDDA==}
@@ -1222,8 +1235,8 @@ packages:
     resolution: {integrity: sha512-MPvYsZWEwVJymNYpH6bnFMzPb+FwqGrvBG9zkmUQzQbHSqi+urpngJSYfxCmNZkOz7SxYk07HFga9iFzWM0pww==}
     deprecated: 'Moved to @daytona/sdk, same API, no breaking changes. Please update: npm uninstall @daytonaio/sdk && npm i @daytona/sdk'
 
-  '@e2b/code-interpreter@2.3.3':
-    resolution: {integrity: sha512-WOpSwc1WpvxyOijf6WMbR76BUuvd2O9ddXgCHHi65lkuy6YgQGq7oyd8PNsT331O9Tqbccjy6uF4xanSdLX1UA==}
+  '@e2b/code-interpreter@2.6.1':
+    resolution: {integrity: sha512-5sKJaw2w/XZNHq7NpcNm8cpGu3IHlwLjavRd6V5BsVQyyl+5zGnSWE+EvA6W1VHDbPXiSdm6pN8cREWAifdrJw==}
     engines: {node: '>=20'}
 
   '@emnapi/runtime@1.11.1':
@@ -4446,9 +4459,9 @@ packages:
   duplexify@4.1.3:
     resolution: {integrity: sha512-M3BmBhwJRZsSx38lZyhE53Csddgzl5R7xGJNk7CVddZD6CcmwMCH8J+7AprIrQKH7TonKxaCjcv27Qmf+sQ+oA==}
 
-  e2b@2.19.0:
-    resolution: {integrity: sha512-Tpm5F6BJAkRoSXqBA1/VLHn/OP4mCsDTX0FWP6UMxC2MU26nJ2fXgPZNdYOyTvi4gyNd1GeEQzUCbAmODh/GuQ==}
-    engines: {node: '>=20'}
+  e2b@2.32.0:
+    resolution: {integrity: sha512-gdim5paDburEw92qrxZwxmQK/xFH7BRE49XTPxJDYzXyonSPygvf2dgnm+nurZhglLiyhV/e7XAYr5x6d+61dA==}
+    engines: {node: '>=20.18.1'}
 
   eastasianwidth@0.2.0:
     resolution: {integrity: sha512-I88TYZWc9XiYHRQ4/3c5rjjfgkjhLyW2luGIheGERbNQ6OY7yTybanSpDXZa8y7VUP9YmDcYa+eyq4ca7iLqWA==}
@@ -7230,6 +7243,10 @@ packages:
     resolution: {integrity: sha512-tOG/7GyXpFevhXVh8jOPJrmtRpOTsYqUIkVdVooZYJS/z8WhfQUX8RJILmeuJNinGAMSu1veBr4asSHFt5/hng==}
     engines: {node: '>=18'}
 
+  tar@7.5.19:
+    resolution: {integrity: sha512-4LeEWl96twnS2Q7Bz4MGqgazLqO+hJN63GZxXoIqh1T3VweYD997gbU1ItNsQafqqXTXd5WFyFdReLtwvRBNiw==}
+    engines: {node: '>=18'}
+
   term-size@2.2.1:
     resolution: {integrity: sha512-wK0Ri4fOGjv/XPy8SBHZChl8CM7uMc5VML7SqiQ0zG7+J5Vr+RMQDoHa2CNT6KHUnTGIXH34UDMkPzAUyapBZg==}
     engines: {node: '>=8'}
@@ -7451,6 +7468,10 @@ packages:
 
   undici@7.25.0:
     resolution: {integrity: sha512-xXnp4kTyor2Zq+J1FfPI6Eq3ew5h6Vl0F/8d9XU5zZQf1tX9s2Su1/3PiMmUANFULpmksxkClamIZcaUqryHsQ==}
+    engines: {node: '>=20.18.1'}
+
+  undici@7.28.0:
+    resolution: {integrity: sha512-cRZYrTDwWznlnRiPjggAGxZXanty6M8RV1ff8Wm4LWXBp7/IG8v5DnOm74DtUBp9OONpK75YlPnIjQqX0dBDtA==}
     engines: {node: '>=20.18.1'}
 
   unicorn-magic@0.3.0:
@@ -8020,6 +8041,10 @@ snapshots:
       json-schema: 0.4.0
 
   '@ai-sdk/provider@3.0.4':
+    dependencies:
+      json-schema: 0.4.0
+
+  '@ai-sdk/provider@4.0.3':
     dependencies:
       json-schema: 0.4.0
 
@@ -8934,9 +8959,9 @@ snapshots:
       - supports-color
       - ws
 
-  '@e2b/code-interpreter@2.3.3':
+  '@e2b/code-interpreter@2.6.1':
     dependencies:
-      e2b: 2.19.0
+      e2b: 2.32.0
 
   '@emnapi/runtime@1.11.1':
     dependencies:
@@ -12248,7 +12273,7 @@ snapshots:
       readable-stream: 3.6.2
       stream-shift: 1.0.3
 
-  e2b@2.19.0:
+  e2b@2.32.0:
     dependencies:
       '@bufbuild/protobuf': 2.11.0
       '@connectrpc/connect': 2.0.0-rc.3(@bufbuild/protobuf@2.11.0)
@@ -12259,7 +12284,8 @@ snapshots:
       glob: 11.1.0
       openapi-fetch: 0.14.1
       platform: 1.3.6
-      tar: 7.5.13
+      tar: 7.5.19
+      undici: 7.28.0
 
   eastasianwidth@0.2.0: {}
 
@@ -15847,6 +15873,14 @@ snapshots:
       minizlib: 3.1.0
       yallist: 5.0.0
 
+  tar@7.5.19:
+    dependencies:
+      '@isaacs/fs-minipass': 4.0.1
+      chownr: 3.0.0
+      minipass: 7.1.3
+      minizlib: 3.1.0
+      yallist: 5.0.0
+
   term-size@2.2.1: {}
 
   test-exclude@7.0.2:
@@ -16043,6 +16077,8 @@ snapshots:
   undici-types@6.21.0: {}
 
   undici@7.25.0: {}
+
+  undici@7.28.0: {}
 
   unicorn-magic@0.3.0: {}
 

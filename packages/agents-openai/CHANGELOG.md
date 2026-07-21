@@ -1,5 +1,56 @@
 # @openai/agents-openai
 
+## 0.13.5
+
+### Patch Changes
+
+- 72ca4bc: fix: correlate streamed text deltas with completed output items (#1484)
+- Updated dependencies [2437c35]
+- Updated dependencies [72ca4bc]
+- Updated dependencies [f1ae0b4]
+  - @openai/agents-core@0.13.5
+
+## 0.13.4
+
+### Patch Changes
+
+- db1fe16: fix: preserve token usage reported on earlier Chat Completions stream chunks
+
+  When streaming Chat Completions, usage was overwritten on every chunk, so a trailing chunk without usage reset the previously reported totals to zero. Some OpenAI-compatible providers or gateways may emit a later chunk without usage after reporting usage on an earlier chunk, which caused `response_done` to report `inputTokens`/`outputTokens`/`totalTokens` as 0. Usage is now retained when a later chunk omits it, while the normal OpenAI path (usage on the final chunk) is unchanged.
+
+- Updated dependencies [a1670ce]
+  - @openai/agents-core@0.13.4
+
+## 0.13.3
+
+### Patch Changes
+
+- a1ea36f: test: improve retry, MCP approval, and Realtime sequencing coverage
+- Updated dependencies [a1ea36f]
+- Updated dependencies [4292ecc]
+  - @openai/agents-core@0.13.3
+
+## 0.13.2
+
+### Patch Changes
+
+- e5b75e1: feat: support GPT-5.6 reasoning and prompt-cache request controls
+- 48cdb52: feat: add experimental hosted Multi-agent Responses support
+- Updated dependencies [4c14038]
+- Updated dependencies [e5b75e1]
+- Updated dependencies [240b6eb]
+  - @openai/agents-core@0.13.2
+
+## 0.13.1
+
+### Patch Changes
+
+- 532ab2b: fix: support openai-node v6.46.0 usage types
+- ec48462: feat: add GPT-5.6 model defaults, reasoning, and sandbox compaction support
+- Updated dependencies [532ab2b]
+- Updated dependencies [ec48462]
+  - @openai/agents-core@0.13.1
+
 ## 0.13.0
 
 ### Patch Changes

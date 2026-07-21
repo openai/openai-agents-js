@@ -33,14 +33,9 @@ export async function runAgents(model: AiSdkModel) {
   // This image features the clock tower commonly known as Big Ben attached to the Palace of Westminster in London, captured against a clear blue sky. The ornate architecture and the clock face stand out prominently above surrounding buildings, with a hint of passing traffic below.
 }
 
-import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-// import { openai } from '@ai-sdk/openai';
+import { openai } from '@ai-sdk/openai';
 
 (async function () {
-  // const model = aisdk(openai('gpt-4.1-nano'));
-  const openRouter = createOpenRouter({
-    apiKey: process.env.OPENROUTER_API_KEY,
-  });
-  const model = aisdk(openRouter('openai/gpt-oss-120b'));
+  const model = aisdk(openai('gpt-5.6-luna'));
   await runAgents(model);
 })();

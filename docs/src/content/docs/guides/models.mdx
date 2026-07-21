@@ -3,7 +3,7 @@ title: Models
 description: Choose and configure language models for your agents
 ---
 
-import { Code } from '@astrojs/starlight/components';
+import { Aside, Code } from '@astrojs/starlight/components';
 import modelCustomProviderExample from '../../../../../examples/docs/models/customProviders.ts?raw';
 import setDefaultOpenAIKeyExample from '../../../../../examples/docs/config/setDefaultOpenAIKey.ts?raw';
 import modelSettingsExample from '../../../../../examples/docs/models/modelSettings.ts?raw';
@@ -14,11 +14,13 @@ import gpt5DefaultModelSettingsExample from '../../../../../examples/docs/models
 import setDefaultModelProviderExample from '../../../../../examples/docs/models/setDefaultModelProvider.ts?raw';
 import setTracingExportApiKeyExample from '../../../../../examples/docs/config/setTracingExportApiKey.ts?raw';
 import retryExample from '../../../../../examples/docs/models/retry.ts?raw';
+import hostedMultiAgentExample from '../../../../../examples/docs/models/hostedMultiAgent.ts?raw';
+import gpt56RequestControlsExample from '../../../../../examples/docs/models/gpt56RequestControls.ts?raw';
 
 Every Agent ultimately calls an LLM. The SDK abstracts models behind two lightweight interfaces:
 
 - [`Model`](/openai-agents-js/openai/agents/interfaces/model) – knows how to make _one_ request against a specific API.
-- [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – resolves human‑readable model **names** (e.g. `'gpt‑5.4'`) to `Model` instances.
+- [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – resolves human‑readable model **names** (e.g. `'gpt-5.6-sol'`) to `Model` instances.
 
 In day‑to‑day work you normally only interact with model **names** and occasionally `ModelSettings`.
 
@@ -34,12 +36,12 @@ In day‑to‑day work you normally only interact with model **names** and occas
 
 When you don't specify a model when initializing an `Agent`, the default model will be used. The default is currently [`gpt-5.4-mini`](https://developers.openai.com/api/docs/models/gpt-5.4-mini) with `reasoning.effort: "none"` and `text.verbosity: "low"` for a balance of quality and latency.
 
-If you want to switch to another model like [`gpt-5.5`](https://developers.openai.com/api/docs/models/gpt-5.5), there are two ways to configure your agents.
+If you want to switch to another model like `gpt-5.6-sol`, there are two ways to configure your agents.
 
 First, if you want to consistently use a specific model for all agents that do not set a custom model, set the `OPENAI_DEFAULT_MODEL` environment variable before running your agents.
 
 ```bash
-export OPENAI_DEFAULT_MODEL=gpt-5.5
+export OPENAI_DEFAULT_MODEL=gpt-5.6-sol
 node my-awesome-agent.js
 ```
 
@@ -53,7 +55,7 @@ Second, you can set a default model for a `Runner` instance. If you don't set a 
 
 #### GPT-5.x models
 
-When you use any GPT-5.x model such as [`gpt-5.4`](https://developers.openai.com/api/docs/models/gpt-5.4) in this way, the SDK applies default `modelSettings`. It sets the ones that work the best for most use cases. To adjust the reasoning effort for the default model, pass your own `modelSettings`:
+When you use any GPT-5.x model such as [`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol) in this way, the SDK applies default `modelSettings`. It sets the ones that work the best for most use cases. To adjust the reasoning effort for the default model, pass your own `modelSettings`:
 
 <Code
   lang="typescript"
@@ -139,9 +141,68 @@ See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/t
 
 `toolSearchTool()`, `toolNamespace()`, and function tools or hosted MCP tools that set `deferLoading: true` require the OpenAI Responses API. The Chat Completions provider rejects namespaced or deferred function tools, and the AI SDK adapter does not support deferred Responses tool-loading flows. Use a Responses model directly when you need tool search.
 
-Tool search is supported only on GPT-5.4 and newer model releases that support it in the Responses API.
+Tool search is supported only on GPT-5.6 Sol and newer model releases that support it in the Responses API.
 
 When a run includes deferred tools, add `toolSearchTool()` to the same agent and keep `modelSettings.toolChoice` on `'auto'`. The SDK does not let you force the built-in `tool_search` tool or a deferred function tool by name because the model needs to decide when to load those definitions. See the [Tools guide](/openai-agents-js/guides/tools#deferred-tool-loading-with-tool-search) and the official [OpenAI tool search guide](https://developers.openai.com/api/docs/guides/tools-tool-search) for the full setup.
+
+### Hosted Multi-agent (Experimental)
+
+<Aside type="caution" title="Experimental beta">
+  Hosted Multi-agent uses beta Responses API item schemas and is available only
+  through the experimental
+  `@openai/agents-openai/experimental/hosted-multi-agent` export. The API and
+  SDK surface may change.
+</Aside>
+
+Install the provider package and OpenAI client as direct dependencies because the example imports both packages directly:
+
+```bash
+npm install @openai/agents-openai openai
+```
+
+Hosted Multi-agent lets GPT-5.6 models create and coordinate a tree of subagents through the Responses API. This differs from [SDK handoffs](/openai-agents-js/guides/handoffs/) and agents-as-tools: the application does not create local `Agent` objects for hosted subagents or schedule their work. The hosted root agent delegates work, the service coordinates the subagents, and `/root` synthesizes the final answer. See the official [Multi-agent guide](https://developers.openai.com/api/docs/guides/tools-multi-agent) for the beta API behavior and supported models.
+
+#### Configure the experimental model
+
+Construct `OpenAIHostedMultiAgentModel` explicitly and pass it to an SDK `Agent`. Constructing the model is the opt-in; there is no separate enabled flag.
+
+The experimental model uses a persistent Responses WebSocket. Local function outputs are injected into the active hosted response with `response.inject`, so keep the same model instance for the entire run and close it when it is no longer needed.
+
+<Code
+  lang="typescript"
+  code={hostedMultiAgentExample}
+  title="Run a hosted Multi-agent workflow"
+/>
+
+For streaming observability, including hosted collaboration records and subagent messages, see the [complete example](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/hosted-multi-agent-beta.ts).
+
+Omit `maxConcurrentSubagents` to keep the service default, currently three. A supplied value must be a positive integer.
+
+#### Tool execution and attribution
+
+Every hosted agent uses the request's model and sees the same local tool definitions. When any hosted agent emits a normal `function_call`, the existing Agents SDK runner executes the application tool. The Responses API's call ID is the routing token: the SDK injects the matching `function_call_output` into the active hosted response for the caller that requested it.
+
+`getHostedAgentMetadata(details)` reads the hosted agent name from a tool callback's third argument. This metadata is useful for logs and application authorization, but it does not control routing. Do not dispatch a function result by agent name; preserve and use the call ID.
+
+Tool arguments arrive from the service over the WebSocket, and tool outputs are injected back into the active hosted response. Keep sensitive-data policy, tool authorization, and approval checks in the application. If a tool has side effects, make it idempotent by call ID so an interrupted continuation cannot repeat the effect.
+
+#### Output and streaming behavior
+
+Only the `/root` message whose phase is `final_answer` becomes ordinary assistant output and contributes to `finalOutput`. Function calls remain ordinary SDK tool calls so the runner can execute them, and stable Responses items such as reasoning and hosted tool calls keep their existing SDK representations. Subagent messages, root commentary, and hosted collaboration records stay on the active WebSocket response and are not added to SDK history.
+
+Raw streaming events remain available through `raw_model_stream_event`, including hosted records and subagent messages. High-level item streaming keeps stable Responses items while filtering beta-only collaboration records, and high-level text streaming contains only the root final answer. This keeps RunState and session history provider-neutral while preserving the complete hosted event stream for observability.
+
+Consume a streamed run through its terminal event. If the stream consumer stops early, the SDK closes the WebSocket and abandons the active hosted response; a later run starts a new hosted response instead of resuming the abandoned one.
+
+#### Current limitations
+
+The experimental SDK model supports Responses WebSocket transport only. The beta Responses API also supports hosted Multi-agent over HTTP, but `OpenAIHostedMultiAgentModel` keeps one WebSocket open so the SDK runner can inject each local function output into the active response before continuing.
+
+Continuation state for an in-progress hosted response is held by the `OpenAIHostedMultiAgentModel` instance. The model can reconnect a closed WebSocket before injecting a pending function output, but approvals and interrupted tools must still be resumed with the same model instance and the same WebSocket transport headers and query. Recreating the model loses the continuation state. One model instance also supports only one active run at a time.
+
+Transport failures are replay-safe only when the SDK knows the request frame was not sent. Once the server may have received the frame, the SDK marks the error as unsafe to replay and does not automatically repeat the hosted turn. See [Model retries](#model-retries) for the general retry policy.
+
+Do not combine this model with SDK handoffs, `reasoning.summary`, or `max_tool_calls`; these combinations fail before the request is sent. Server-side compaction thresholds configured with `modelSettings.contextManagement` remain supported, while explicit calls to the Responses compaction endpoint are outside this model's lifecycle. You can continue using SDK handoffs and agents-as-tools with the stable `OpenAIResponsesModel`.
 
 ---
 
@@ -162,9 +223,12 @@ When a run includes deferred tools, add `toolSearchTool()` to the same agent and
 | `truncation` | `'auto' \| 'disabled'` | Token truncation strategy. |
 | `maxTokens` | `number` | Maximum tokens in the response. |
 | `store` | `boolean` | Persist the response for retrieval / RAG workflows. |
-| `promptCacheRetention` | `'in-memory' \| '24h' \| null` | Controls provider prompt-cache retention when supported. |
+| `promptCacheRetention` | `'in-memory' \| '24h' \| null` | Controls the legacy maximum prompt-cache retention policy when supported. This is independent of `promptCacheOptions.ttl`. |
+| `promptCacheOptions` | `{ mode?: 'implicit' \| 'explicit'; ttl?: '30m' }` | Controls implicit or explicit prompt-cache breakpoints for GPT-5.6 and later models. |
 | `contextManagement` | `ModelSettingsContextManagement` | Controls provider context management, such as server-side compaction. |
-| `reasoning.effort` | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh'` | Reasoning effort for gpt-5.x models. |
+| `reasoning.effort` | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh' \| 'max'` | Reasoning effort for supported gpt-5.x models. `max` is supported by GPT-5.6. |
+| `reasoning.mode` | `'standard' \| 'pro' \| string` | Selects the reasoning execution mode. This setting requires the Responses API. |
+| `reasoning.context` | `'auto' \| 'current_turn' \| 'all_turns' \| null` | Controls which reasoning items are rendered back to the model on later turns. This setting requires the Responses API. |
 | `reasoning.summary` | `'auto' \| 'concise' \| 'detailed'` | Controls how much reasoning summary the model returns. |
 | `text.verbosity` | `'low' \| 'medium' \| 'high'` | Text verbosity for gpt-5.x etc. |
 | `providerData` | `Record<string, any>` | Provider-specific passthrough options forwarded to the underlying model. |
@@ -174,7 +238,21 @@ Attach settings at either level:
 
 <Code lang="typescript" code={modelSettingsExample} title="Model settings" />
 
-`Runner`‑level settings override any conflicting per‑agent settings. `retry` is the notable exception: its nested fields are merged across runner and agent settings unless you explicitly clear inherited values with `undefined`.
+`Runner`‑level settings override conflicting per-agent settings. Nested fields in `reasoning`, `text`, `promptCacheOptions`, and `retry` are merged across runner and agent settings unless you explicitly clear an inherited value with `undefined`.
+
+#### GPT-5.6 reasoning and prompt-cache controls
+
+GPT-5.6 adds request-level reasoning modes and explicit prompt-cache breakpoints. `reasoning.mode` and `reasoning.context` are Responses-only settings. `OpenAIChatCompletionsModel` warns once and ignores them, or raises a `UserError` before the request when strict feature validation is enabled. `reasoning.effort` remains available on supported Chat Completions models.
+
+`promptCacheOptions` is forwarded by both the Responses and Chat Completions model paths. The default `implicit` mode lets OpenAI choose an automatic breakpoint in addition to any explicit breakpoints. Set `mode: 'explicit'` to use only content parts marked with `promptCacheBreakpoint: { mode: 'explicit' }`. The currently supported minimum cache lifetime is `30m`.
+
+<Code
+  lang="typescript"
+  code={gpt56RequestControlsExample}
+  title="Configure GPT-5.6 request controls"
+/>
+
+Explicit breakpoints are supported on GPT-5.6 and later models. The supported content-part types and breakpoint limits vary by API; see the official [prompt cache breakpoint guide](https://developers.openai.com/api/docs/guides/prompt-caching#prompt-cache-breakpoints) for current details.
 
 ### Model retries
 
@@ -255,7 +333,7 @@ Agents can be configured with a `prompt` parameter, indicating a server-stored p
 
 Any additional agent configuration, like tools or instructions, will override the values you may have configured in your stored prompt.
 
-When a stored prompt already defines the model, the SDK does not send the agent's default model unless you explicitly override it. That matters for `computerTool()`: prompt-managed runs keep the legacy preview wire shape by default for compatibility. To opt into the GA Responses computer tool on a prompt-managed run, explicitly set `modelSettings.toolChoice: 'computer'` or send an explicit model such as [`gpt-5.4`](https://developers.openai.com/api/docs/models/gpt-5.4). See [Tools](/openai-agents-js/guides/tools#computer-tool-specifics) for the surrounding computer-use details.
+When a stored prompt already defines the model, the SDK does not send the agent's default model unless you explicitly override it. That matters for `computerTool()`: prompt-managed runs keep the legacy preview wire shape by default for compatibility. To opt into the GA Responses computer tool on a prompt-managed run, explicitly set `modelSettings.toolChoice: 'computer'` or send an explicit model such as [`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol). See [Tools](/openai-agents-js/guides/tools#computer-tool-specifics) for the surrounding computer-use details.
 
 ---
 

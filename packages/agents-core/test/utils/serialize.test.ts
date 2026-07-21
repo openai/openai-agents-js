@@ -196,6 +196,28 @@ describe('serialize utilities', () => {
     });
   });
 
+  it('serializes function tool provider data', () => {
+    const providerLookup = tool({
+      name: 'provider_lookup',
+      description: 'Provider-specific lookup tool.',
+      parameters: z.object({
+        query: z.string(),
+      }),
+      providerData: {
+        anthropic: { deferLoading: true },
+      },
+      execute: async () => 'ok',
+    });
+
+    expect(serializeTool(providerLookup)).toMatchObject({
+      type: 'function',
+      name: 'provider_lookup',
+      providerData: {
+        anthropic: { deferLoading: true },
+      },
+    });
+  });
+
   it('serializeHandoff', () => {
     const h: any = {
       toolName: 'hn',

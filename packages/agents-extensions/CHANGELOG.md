@@ -1,5 +1,50 @@
 # @openai/agents-extensions
 
+## 0.13.5
+
+### Patch Changes
+
+- 2437c35: feat: add AI SDK provider-executed tool search support (#1479)
+- 72ca4bc: fix: correlate streamed text deltas with completed output items (#1484)
+- f86acf5: chore: bump E2B version
+- Updated dependencies [2437c35]
+- Updated dependencies [72ca4bc]
+- Updated dependencies [f1ae0b4]
+  - @openai/agents-core@0.13.5
+
+## 0.13.4
+
+### Patch Changes
+
+- 6c12d5c: fix: concatenate all text parts in AI SDK non-streaming responses instead of keeping only the first
+- Updated dependencies [a1670ce]
+  - @openai/agents-core@0.13.4
+
+## 0.13.3
+
+### Patch Changes
+
+- Updated dependencies [a1ea36f]
+- Updated dependencies [4292ecc]
+  - @openai/agents-core@0.13.3
+
+## 0.13.2
+
+### Patch Changes
+
+- Updated dependencies [4c14038]
+- Updated dependencies [e5b75e1]
+- Updated dependencies [240b6eb]
+  - @openai/agents-core@0.13.2
+
+## 0.13.1
+
+### Patch Changes
+
+- Updated dependencies [532ab2b]
+- Updated dependencies [ec48462]
+  - @openai/agents-core@0.13.1
+
 ## 0.13.0
 
 ### Patch Changes

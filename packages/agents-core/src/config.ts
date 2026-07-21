@@ -1,6 +1,4 @@
-// Use function instead of exporting the value to prevent
-// circular dependency resolution issues caused by other exports in '@openai/agents-core/_shims'
-import * as _shims from '@openai/agents-core/_shims';
+import * as _configShims from '@openai/agents-core/_shims/config';
 
 function fallbackIsBrowserEnvironment(): boolean {
   return (
@@ -12,8 +10,8 @@ function fallbackIsBrowserEnvironment(): boolean {
 
 function isBrowserEnvironment(): boolean {
   try {
-    if (typeof _shims?.isBrowserEnvironment === 'function') {
-      return _shims.isBrowserEnvironment();
+    if (typeof _configShims?.isBrowserEnvironment === 'function') {
+      return _configShims.isBrowserEnvironment();
     }
   } catch {
     // Fallback below.
@@ -28,7 +26,7 @@ function isBrowserEnvironment(): boolean {
  */
 export function loadEnv(): Record<string, string | undefined> {
   try {
-    const env = _shims?.loadEnv?.();
+    const env = _configShims?.loadEnv?.();
     return typeof env === 'object' && env != null ? env : {};
   } catch {
     return {};

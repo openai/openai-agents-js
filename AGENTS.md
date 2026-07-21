@@ -43,6 +43,16 @@ Before sending the final response for a task, inspect the actual task diff. If i
 
 Skip `$pr-draft-summary` only when no eligible files changed, every change is limited to repo metadata or docs without behavior impact, the task is conversation-only, or the user explicitly says not to include the PR draft block.
 
+### Git Worktree and Branch Safety
+
+Work in the user's current checkout and on the current branch by default. If the Codex task is already running in a selected Git worktree or primary checkout, use that checkout without requesting additional permission, including for commands that operate on its dependency tree. Do not create or switch to another Git worktree, and do not create or switch branches, unless the user explicitly asks for or approves that exact action in the current conversation. A request to implement, investigate, review, test, or verify changes does not by itself authorize changing the active worktree or branch.
+
+If isolation or a different checkout is needed, explain why and ask the user before changing Git state. This requirement also applies when another rule or workflow recommends a linked worktree: stop and request approval instead of choosing or creating one automatically.
+
+### pnpm Safety
+
+Use pnpm in the user's selected checkout without changing worktrees or branches. Do not use `CI=1`, `--force`, or `confirmModulesPurge=false` to bypass an incompatible `node_modules` prompt. Stop and diagnose the pnpm configuration mismatch instead of silently recreating dependencies. Keep machine-specific pnpm store and shell configuration outside the repository.
+
 ### ExecPlans
 
 When writing complex features or significant refactors, use an ExecPlan (as described in PLANS.md) from design to implementation. Store each ExecPlan file under `plans/` with a descriptive name, and create the directory if it does not exist. Call out compatibility risk only when the plan changes behavior shipped in the latest release tag or a released/otherwise supported durable format. Do not treat branch-local interface churn or unreleased post-tag changes on `main` as breaking by default; prefer direct replacement over compatibility layers in those cases. Confirm the approach when changes could impact package consumers or durable external data that is already supported outside the current branch.
@@ -123,8 +133,8 @@ Use this checklist when the touched code is in the relevant area. Add focused re
 
 ### Development Workflow
 
-1.  Sync with `main` (or default branch).
-2.  Create a feature/fix branch with a descriptive name:
+1.  Stay in the user's current checkout and on the current branch unless the user explicitly asks for or approves a Git state change.
+2.  If the user explicitly requests a feature/fix branch, create one with a descriptive name:
     ```bash
     git checkout -b feat/<short-description>
     ```
@@ -200,7 +210,7 @@ See [this README](integration-tests/README.md) for details.
 
 #### Mandatory Local Run Order
 
-When `$code-change-verification` applies (see Mandatory Skill Usage), run the full validation sequence locally via the `$code-change-verification` skill; do not skip any step, and preserve the skill-defined barriers (`pnpm i`, `pnpm build`, then the remaining validation steps).
+When `$code-change-verification` applies (see Mandatory Skill Usage), run the full validation sequence locally via the `$code-change-verification` skill; do not skip any step, and preserve the skill-defined barriers (`pnpm i --frozen-lockfile`, `pnpm build`, then the remaining validation steps).
 
 Before opening a pull request, always run `$changeset-validation` to ensure all changed packages are covered by a changeset and the validation passes; if no packages were touched and a changeset is unnecessary, you can skip creating one.
 
@@ -280,7 +290,6 @@ Before opening a pull request, always run `$changeset-validation` to ensure all 
 - ✅ All automated checks pass (build, tests, lint).
 - ✅ Tests cover new behavior and edge cases.
 - ✅ Code is readable and maintainable.
-- ✅ Public APIs have doc comments.
 - ✅ Examples updated if behavior changes.
 - ✅ Documentation (in `docs/`) updated for user-facing changes.
 - ✅ Commit history is clean and follows Conventional Commits.

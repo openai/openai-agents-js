@@ -2,6 +2,8 @@ import {
   BaseMCPServerSSE,
   BaseMCPServerStdio,
   BaseMCPServerStreamableHttp,
+} from '../../mcpShared';
+import type {
   CallToolResult,
   CallToolResultContent,
   MCPListResourcesParams,

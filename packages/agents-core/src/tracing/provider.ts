@@ -1,4 +1,5 @@
 import { getCurrentSpan, getCurrentTrace } from './context';
+import { supportsProcessLifecycleEvents } from '@openai/agents-core/_shims';
 import { tracing } from '../config';
 import logger from '../logger';
 import { MultiTracingProcessor, TracingProcessor } from './processor';
@@ -318,7 +319,11 @@ export class TraceProvider {
 
   /** Adds listeners to `process` to ensure `shutdown` occurs before exit. */
   #addCleanupListeners(): void {
-    if (typeof process !== 'undefined' && typeof process.on === 'function') {
+    if (
+      supportsProcessLifecycleEvents() &&
+      typeof process !== 'undefined' &&
+      typeof process.on === 'function'
+    ) {
       // handling Node.js process termination
       const cleanup = async () => {
         const timeoutMs = 5000;

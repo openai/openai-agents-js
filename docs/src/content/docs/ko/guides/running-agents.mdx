@@ -11,15 +11,15 @@ import chatLoopExample from '../../../../../../examples/docs/running-agents/chat
 import conversationIdExample from '../../../../../../examples/docs/running-agents/conversationId.ts?raw';
 import previousResponseIdExample from '../../../../../../examples/docs/running-agents/previousResponseId.ts?raw';
 
-에이전트는 자체적으로 아무것도 하지 않습니다. `Runner` 클래스나 `run()` 유틸리티로 에이전트를 **실행**합니다.
+에이전트는 스스로 아무 작업도 하지 않습니다. `Runner` 클래스나 `run()` 유틸리티로 에이전트를 **실행**해야 합니다.
 
-> 턴을 실행하거나, 이벤트를 스트리밍하거나, 대화 상태를 관리하려면 [에이전트](/openai-agents-js/ko/guides/agents)를 읽은 후 이 페이지를 읽으세요. 에이전트 정의 방법을 아직 결정 중이라면 먼저 [에이전트](/openai-agents-js/ko/guides/agents)에서 시작하세요.
+> 턴을 실행하거나, 이벤트를 스트리밍하거나, 대화 상태를 관리하려면 [에이전트](/openai-agents-js/ko/guides/agents)를 읽은 후 이 페이지를 살펴보세요. 아직 에이전트를 정의하는 방법을 결정하는 중이라면 먼저 [에이전트](/openai-agents-js/ko/guides/agents)부터 시작하세요.
 
 <Code lang="typescript" code={helloWorldExample} title="간단한 실행" />
 
-커스텀 runner가 필요하지 않다면, 싱글톤 기본 `Runner` 인스턴스를 실행하는 `run()` 유틸리티도 사용할 수 있습니다.
+사용자 지정 러너가 필요하지 않다면 싱글턴 기본 `Runner` 인스턴스를 실행하는 `run()` 유틸리티를 사용할 수도 있습니다.
 
-또는 직접 러너 인스턴스를 만들 수 있습니다.
+또는 자체 러너 인스턴스를 생성할 수 있습니다.
 
 <Code
   lang="typescript"
@@ -27,92 +27,92 @@ import previousResponseIdExample from '../../../../../../examples/docs/running-a
   title="간단한 실행"
 />
 
-에이전트를 실행한 후에는 최종 출력과 실행의 전체 기록이 포함된 [실행 결과](/openai-agents-js/ko/guides/results) 객체를 받게 됩니다.
+에이전트를 실행하면 최종 출력과 전체 실행 기록이 포함된 [실행 결과](/openai-agents-js/ko/guides/results) 객체를 받습니다.
 
-## Runner 수명 주기 및 설정
+## Runner 수명 주기 및 구성
 
 ### 에이전트 루프
 
-Runner의 run 메서드를 사용할 때는 시작 에이전트와 입력을 전달합니다. 입력은 문자열(사용자 메시지로 간주됨)이거나 OpenAI Responses API의 항목인 입력 항목 목록일 수 있습니다.
+Runner의 run 메서드를 사용할 때 시작 에이전트와 입력을 전달합니다. 입력은 문자열(사용자 메시지로 간주됨)이거나 OpenAI Responses API의 항목인 입력 항목 목록일 수 있습니다.
 
-그런 다음 runner는 루프를 실행합니다.
+그러면 러너가 다음 루프를 실행합니다.
 
 1. 현재 입력으로 현재 에이전트의 모델을 호출합니다.
 2. LLM 응답을 검사합니다.
    - **최종 출력** → 반환합니다.
-   - **핸드오프** → 새 에이전트로 전환하고, 누적된 대화 기록을 유지한 뒤, 1로 이동합니다.
-   - **도구 호출** → 도구를 실행하고, 결과를 대화에 추가한 뒤, 1로 이동합니다.
-3. `maxTurns`가 `null`이 아닌 한, `maxTurns`에 도달하면 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror)를 throw합니다.
+   - **핸드오프** → 새 에이전트로 전환하고 누적된 대화 기록을 유지한 후 1단계로 이동합니다.
+   - **도구 호출** → 도구를 실행하고 결과를 대화에 추가한 후 1단계로 이동합니다.
+3. `maxTurns`가 `null`이 아닌 경우 `maxTurns`에 도달하면 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror)를 발생시킵니다.
 
 <Aside type="note">
-  LLM 출력이 "최종 출력"으로 간주되는 규칙은 원하는 타입의 텍스트 출력을
-  생성하고 도구 호출이 없는 경우입니다.
+  LLM 출력이 "최종 출력"으로 간주되려면 원하는 유형의 텍스트 출력을 생성하고
+  도구 호출이 없어야 합니다.
 </Aside>
 
 #### Runner 수명 주기
 
-앱이 시작될 때 `Runner`를 만들고 요청 전반에서 재사용하세요. 이 인스턴스는 모델 제공자와 트레이싱 옵션 같은 전역 설정을 저장합니다. 완전히 다른 설정이 필요한 경우에만 다른 `Runner`를 만드세요. 간단한 스크립트에서는 내부적으로 기본 runner를 사용하는 `run()`을 호출할 수도 있습니다.
+앱이 시작될 때 `Runner`를 생성하고 여러 요청에서 재사용하세요. 인스턴스에는 모델 제공자 및 트레이싱 옵션과 같은 전역 구성이 저장됩니다. 완전히 다른 설정이 필요한 경우에만 다른 `Runner`를 생성하세요. 간단한 스크립트에서는 내부적으로 기본 러너를 사용하는 `run()`을 호출할 수도 있습니다.
 
 ### 실행 인수
 
-`run()` 메서드의 입력은 실행을 시작할 초기 에이전트, 실행 입력, 그리고 옵션 집합입니다.
+`run()` 메서드의 입력은 실행을 시작할 초기 에이전트, 실행 입력, 옵션 집합입니다.
 
-입력은 문자열(사용자 메시지로 간주됨), [입력 항목](/openai-agents-js/openai/agents-core/type-aliases/agentinputitem) 목록, 또는 [휴먼 인 더 루프 (HITL)](/openai-agents-js/ko/guides/human-in-the-loop) 에이전트를 구축하는 경우 [`RunState`](/openai-agents-js/openai/agents-core/classes/runstate) 객체일 수 있습니다.
+입력은 문자열(사용자 메시지로 간주됨), [입력 항목](/openai-agents-js/openai/agents-core/type-aliases/agentinputitem) 목록 또는 [휴먼 인 더 루프 (HITL)](/openai-agents-js/ko/guides/human-in-the-loop) 에이전트를 구축하는 경우 [`RunState`](/openai-agents-js/openai/agents-core/classes/runstate) 객체일 수 있습니다.
 
 추가 옵션은 다음과 같습니다.
 
 | 옵션 | 기본값 | 설명 |
 | --- | --- | --- |
-| `stream` | `false` | `true`이면 호출이 `StreamedRunResult`를 반환하고 모델에서 도착하는 이벤트를 내보냅니다. |
-| `context` | – | 모든 도구 / 가드레일 / 핸드오프에 전달되는 컨텍스트 객체입니다. 자세한 내용은 [컨텍스트 관리](/openai-agents-js/ko/guides/context)을 참고하세요. |
-| `maxTurns` | `10` | 안전 제한입니다. 도달하면 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror)를 throw합니다. 제한을 비활성화하려면 `null`을 전달하세요. |
-| `signal` | – | 취소를 위한 `AbortSignal`입니다. |
-| `session` | – | 세션 지속성 구현입니다. [세션](/openai-agents-js/ko/guides/sessions)을 참고하세요. |
-| `sessionInputCallback` | – | 세션 기록과 새 입력에 대한 커스텀 병합 로직입니다. 모델 호출 전에 실행됩니다. [세션](/openai-agents-js/ko/guides/sessions)을 참고하세요. |
-| `callModelInputFilter` | – | 모델을 호출하기 직전에 모델 입력(항목 + 선택적 instructions)을 수정하는 훅입니다. [모델 호출 입력 필터](#call-model-input-filter)를 참고하세요. |
-| `toolErrorFormatter` | – | 모델에 반환되는 도구 오류 메시지를 사용자 지정하는 훅입니다. [도구 오류 포매터](#tool-error-formatter)를 참고하세요. |
-| `reasoningItemIdPolicy` | – | 이전 실행 항목을 다시 모델 입력으로 변환할 때 추론 항목 `id`를 유지할지 생략할지 제어합니다. [추론 항목 ID 정책](#reasoning-item-id-policy)을 참고하세요. |
-| `tracing` | – | 실행별 트레이싱 설정 재정의입니다(예: 내보내기 API 키). |
-| `sandbox` | – | `SandboxAgent` 실행을 위한 샌드박스 클라이언트, 라이브 세션, 세션 상태, 스냅샷, manifest 재정의 또는 동시성 제한입니다. [개념](/openai-agents-js/ko/guides/sandbox-agents/concepts)을 참고하세요. |
-| `toolExecution` | – | 로컬 도구 호출을 위한 SDK 측 실행 설정입니다. 한 번에 실행할 함수 도구 수를 제한하려면 `toolExecution.maxFunctionToolConcurrency`를 사용하고, 승인 대기 요청 전에 함수 도구 입력 가드레일을 실행하려면 `toolExecution.preApprovalInputGuardrails`를 사용하세요. |
-| `toolNotFoundBehavior` | `'raise_error'` | 모델이 내보낸 해결되지 않은 함수 도구 호출을 제어합니다. 모델에 표시되는 도구 오류를 반환하고 실행을 계속하려면 `'return_error_to_model'`을 사용하세요. |
-| `errorHandlers` | – | 지원되는 런타임 오류(현재 `maxTurns`)에 대한 핸들러입니다. [오류 핸들러](#error-handlers)를 참고하세요. |
+| `stream` | `false` | `true`이면 호출이 `StreamedRunResult`를 반환하고 모델에서 이벤트가 도착하는 즉시 내보냅니다. |
+| `context` | – | 모든 도구 / 가드레일 / 핸드오프에 전달되는 컨텍스트 객체입니다. 자세한 내용은 [컨텍스트 관리](/openai-agents-js/ko/guides/context)를 참조하세요. |
+| `maxTurns` | `10` | 안전 제한입니다. 제한에 도달하면 [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror)를 발생시킵니다. 제한을 비활성화하려면 `null`을 전달하세요. |
+| `signal` | – | 취소에 사용하는 `AbortSignal`입니다. |
+| `session` | – | 세션 지속성 구현입니다. [세션](/openai-agents-js/ko/guides/sessions)을 참조하세요. |
+| `sessionInputCallback` | – | 세션 기록과 새 입력을 병합하는 사용자 지정 로직으로, 모델 호출 전에 실행됩니다. [세션](/openai-agents-js/ko/guides/sessions)을 참조하세요. |
+| `callModelInputFilter` | – | 모델을 호출하기 직전에 모델 입력(항목 + 선택적 instructions)을 수정하는 훅입니다. [모델 호출 입력 필터](#call-model-input-filter)를 참조하세요. |
+| `toolErrorFormatter` | – | 모델에 반환되는 도구 오류 메시지를 사용자 지정하는 훅입니다. [도구 오류 포매터](#tool-error-formatter)를 참조하세요. |
+| `reasoningItemIdPolicy` | – | 이전 실행 항목을 다시 모델 입력으로 변환할 때 추론 항목의 `id`를 유지할지 생략할지 제어합니다. [추론 항목 ID 정책](#reasoning-item-id-policy)을 참조하세요. |
+| `tracing` | – | 실행별 트레이싱 구성 재정의입니다(예: 내보내기 API 키). |
+| `sandbox` | – | `SandboxAgent` 실행을 위한 샌드박스 클라이언트, 라이브 세션, 세션 상태, 스냅샷, 매니페스트 재정의 또는 동시성 제한입니다. [개념](/openai-agents-js/ko/guides/sandbox-agents/concepts)을 참조하세요. |
+| `toolExecution` | – | 로컬 도구 호출에 대한 SDK 측 실행 설정입니다. 동시에 실행되는 함수 도구 수를 제한하려면 `toolExecution.maxFunctionToolConcurrency`를 사용하고, 대기 중인 승인 요청 전에 함수 도구 입력 가드레일을 실행하려면 `toolExecution.preApprovalInputGuardrails`를 사용하세요. |
+| `toolNotFoundBehavior` | `'raise_error'` | 모델이 내보낸 확인할 수 없는 함수 도구 호출을 제어합니다. 모델에 표시되는 도구 오류를 반환하고 실행을 계속하려면 `'return_error_to_model'`을 사용하세요. |
+| `errorHandlers` | – | 지원되는 런타임 오류의 핸들러입니다. [오류 핸들러](#error-handlers)를 참조하세요. |
 | `conversationId` | – | 서버 측 대화를 재사용합니다(OpenAI Responses API + Conversations API만 해당). |
-| `previousResponseId` | – | 대화를 생성하지 않고 이전 Responses API 호출에서 이어갑니다(OpenAI Responses API만 해당). |
+| `previousResponseId` | – | 대화를 생성하지 않고 이전 Responses API 호출부터 계속합니다(OpenAI Responses API만 해당). |
 
 ### 스트리밍
 
-스트리밍을 사용하면 LLM이 실행되는 동안 스트리밍 이벤트도 받을 수 있습니다. 스트림이 시작되면 `StreamedRunResult`에는 생성된 모든 새 출력을 포함하여 실행에 대한 완전한 정보가 포함됩니다. `for await` 루프를 사용해 스트리밍 이벤트를 반복 처리할 수 있습니다. 자세한 내용은 [스트리밍](/openai-agents-js/ko/guides/streaming)을 참고하세요.
+스트리밍을 사용하면 LLM이 실행되는 동안 스트리밍 이벤트도 받을 수 있습니다. 스트림이 시작되면 `StreamedRunResult`에 새로 생성된 모든 출력을 포함한 전체 실행 정보가 포함됩니다. `for await` 루프를 사용해 스트리밍 이벤트를 순회할 수 있습니다. 자세한 내용은 [스트리밍](/openai-agents-js/ko/guides/streaming)을 참조하세요.
 
-### 실행 설정
+### 실행 구성
 
-직접 `Runner` 인스턴스를 만드는 경우 `RunConfig` 객체를 전달해 runner를 설정할 수 있습니다.
+자체 `Runner` 인스턴스를 생성하는 경우 `RunConfig` 객체를 전달해 러너를 구성할 수 있습니다.
 
-| 필드 | 타입 | 목적 |
+| 필드 | 유형 | 용도 |
 | --- | --- | --- |
-| `model` | `string \| Model` | 실행의 **모든** 에이전트에 특정 모델을 강제합니다. |
-| `modelProvider` | `ModelProvider` | 모델 이름을 해석합니다. 기본값은 OpenAI 제공자입니다. |
-| `modelSettings` | `ModelSettings` | 에이전트별 설정을 재정의하는 전역 튜닝 매개변수입니다. 선택적 재시도 설정을 포함한 자세한 내용은 [모델](/openai-agents-js/ko/guides/models#modelsettings)을 참고하세요. |
-| `handoffInputFilter` | `HandoffInputFilter` | 핸드오프 수행 시 입력 항목을 변경합니다(핸드오프 자체에 이미 정의된 것이 없는 경우). |
-| `inputGuardrails` | `InputGuardrail[]` | _초기_ 사용자 입력에 적용되는 가드레일입니다. |
+| `model` | `string \| Model` | 실행에 포함된 **모든** 에이전트에 특정 모델을 강제로 적용합니다. |
+| `modelProvider` | `ModelProvider` | 모델 이름을 확인합니다. 기본값은 OpenAI 제공자입니다. |
+| `modelSettings` | `ModelSettings` | 에이전트별 설정을 재정의하는 전역 조정 매개변수입니다. 옵트인 재시도 구성을 포함한 자세한 내용은 [모델](/openai-agents-js/ko/guides/models#modelsettings)을 참조하세요. |
+| `handoffInputFilter` | `HandoffInputFilter` | 핸드오프를 수행할 때 입력 항목을 변경합니다(핸드오프 자체에 이미 정의되어 있지 않은 경우). |
+| `inputGuardrails` | `InputGuardrail[]` | _최초_ 사용자 입력에 적용되는 가드레일입니다. |
 | `outputGuardrails` | `OutputGuardrail[]` | _최종_ 출력에 적용되는 가드레일입니다. |
 | `tracingDisabled` | `boolean` | OpenAI 트레이싱을 완전히 비활성화합니다. |
 | `traceIncludeSensitiveData` | `boolean` | 스팬은 계속 내보내면서 트레이스에서 LLM/도구 입력 및 출력을 제외합니다. |
 | `workflowName` | `string` | Traces 대시보드에 표시되며 관련 실행을 그룹화하는 데 도움이 됩니다. |
-| `traceId` / `groupId` | `string` | SDK가 생성하게 두는 대신 trace 또는 group ID를 수동으로 지정합니다. |
-| `traceMetadata` | `Record<string, string>` | 모든 span에 첨부할 임의의 메타데이터입니다. |
+| `traceId` / `groupId` | `string` | SDK가 생성하도록 두는 대신 트레이스 또는 그룹 ID를 직접 지정합니다. |
+| `traceMetadata` | `Record<string, string>` | 모든 스팬에 연결할 임의의 메타데이터입니다. |
 | `tracing` | `TracingConfig` | 실행별 트레이싱 재정의입니다(예: 내보내기 API 키). |
-| `sessionInputCallback` | `SessionInputCallback` | 이 runner의 모든 실행에 대한 기본 기록 병합 전략입니다. |
+| `sessionInputCallback` | `SessionInputCallback` | 이 러너의 모든 실행에 적용되는 기본 기록 병합 전략입니다. |
 | `callModelInputFilter` | `CallModelInputFilter` | 각 모델 호출 전에 모델 입력을 수정하는 전역 훅입니다. |
 | `toolErrorFormatter` | `ToolErrorFormatter` | 모델에 반환되는 도구 오류 메시지를 사용자 지정하는 전역 훅입니다. |
-| `reasoningItemIdPolicy` | `ReasoningItemIdPolicy` | 생성된 항목을 이후 모델 호출에 재생할 때 추론 항목 `id`를 유지하거나 생략하는 기본 정책입니다. |
-| `sandbox` | `SandboxRunConfig` | `SandboxAgent` 실행을 위한 기본 샌드박스 런타임 설정입니다. |
-| `toolExecution` | `ToolExecutionConfig` | 로컬 도구 호출을 위한 기본 SDK 측 실행 설정입니다. `maxFunctionToolConcurrency`는 각 턴의 로컬 함수 도구 동시성을 제한합니다. 설정하지 않거나 `null`이면 한 턴에서 내보낸 모든 함수 도구 호출을 시작합니다. `preApprovalInputGuardrails`는 승인 대기 요청 전에 함수 도구 입력 가드레일을 실행하도록 선택합니다. |
-| `toolNotFoundBehavior` | `ToolNotFoundBehavior` | 해결되지 않은 함수 도구 호출에 대한 기본 동작입니다. `'raise_error'`는 `ModelBehaviorError`를 발생시키고, `'return_error_to_model'`은 모델에 표시되는 도구 오류를 반환한 뒤 실행을 계속하게 합니다. |
+| `reasoningItemIdPolicy` | `ReasoningItemIdPolicy` | 생성된 항목을 이후 모델 호출의 입력으로 다시 전달할 때 추론 항목의 `id`를 유지하거나 생략하는 기본 정책입니다. |
+| `sandbox` | `SandboxRunConfig` | `SandboxAgent` 실행의 기본 샌드박스 런타임 구성입니다. |
+| `toolExecution` | `ToolExecutionConfig` | 로컬 도구 호출에 대한 기본 SDK 측 실행 설정입니다. `maxFunctionToolConcurrency`는 각 턴의 로컬 함수 도구 동시 실행 수를 제한합니다. 설정하지 않거나 `null`이면 한 턴에서 내보낸 모든 함수 도구 호출을 시작합니다. `preApprovalInputGuardrails`는 대기 중인 승인 요청 전에 함수 도구 입력 가드레일을 실행하도록 옵트인합니다. |
+| `toolNotFoundBehavior` | `ToolNotFoundBehavior` | 확인할 수 없는 함수 도구 호출에 대한 기본 동작입니다. `'raise_error'`는 `ModelBehaviorError`를 발생시키고, `'return_error_to_model'`은 모델에 표시되는 도구 오류를 반환한 후 실행을 계속합니다. |
 
 `toolExecution.maxFunctionToolConcurrency`는 `1` 이상의 정수여야 합니다. 이 설정은 로컬 함수 도구의 SDK 측 실행만 제한합니다. 제공자 측 `modelSettings.parallelToolCalls`는 변경하지 않습니다.
 
-`toolExecution.preApprovalInputGuardrails`는 기본적으로 비활성화되어 있습니다. `true`로 설정하면, 승인이 필요한 로컬 함수 도구가 SDK에서 승인 대기 인터럽션(중단 처리)을 기록하기 전에 입력 가드레일을 실행합니다. 가드레일이 `rejectContent`를 반환하면 SDK는 승인을 요청하는 대신 해당 거부 메시지를 도구 출력으로 다시 보냅니다. 가드레일이 호출을 허용하면 승인 요청은 그대로 발생하며, 승인이 해결된 후 도구 실행 직전에 동일한 입력 가드레일이 다시 실행됩니다.
+`toolExecution.preApprovalInputGuardrails`는 기본적으로 비활성화되어 있습니다. `true`로 설정하면 승인이 필요한 로컬 함수 도구가 SDK에서 대기 중인 승인 인터럽션(중단 처리)을 기록하기 전에 입력 가드레일을 실행합니다. 가드레일이 `rejectContent`를 반환하면 SDK는 승인을 요청하는 대신 해당 거부 메시지를 도구 출력으로 다시 보냅니다. 가드레일이 호출을 허용하면 승인 요청은 그대로 발생하며, 승인이 처리된 후 도구 실행 직전에 동일한 입력 가드레일이 다시 실행됩니다.
 
 ## 상태 및 대화 관리
 
@@ -120,40 +120,44 @@ Runner의 run 메서드를 사용할 때는 시작 에이전트와 입력을 전
 
 다음 턴으로 상태를 전달하는 일반적인 방법은 네 가지입니다.
 
-| 전략 | 상태 위치 | 적합한 경우 | 다음 턴에 전달할 값 |
+| 전략 | 상태 저장 위치 | 적합한 용도 | 다음 턴에 전달할 항목 |
 | --- | --- | --- | --- |
-| `result.history` | 앱 메모리 | 작은 채팅 루프, 완전한 수동 제어, 모든 제공자 | `result.history` |
-| `session` | 사용자 스토리지 + SDK | 영구 채팅 상태, 재개 가능한 실행, 커스텀 스토어 | 동일한 `session` 인스턴스(또는 스토어 기반 인스턴스) |
-| `conversationId` | OpenAI Conversations API | worker/서비스 전반의 공유 서버 측 상태 | 동일한 `conversationId`와 새 사용자 턴만 |
-| `previousResponseId` | OpenAI Responses API만 해당 | 대화를 생성하지 않고 이어가는 가장 단순한 서버 관리형 방식 | `result.lastResponseId`와 새 사용자 턴만 |
+| `result.history` | 앱 메모리 | 소규모 채팅 루프, 완전한 수동 제어, 모든 제공자 | `result.history` |
+| `session` | 스토리지 + SDK | 지속성 있는 채팅 상태, 재개 가능한 실행, 사용자 지정 스토어 | 동일한 `session` 인스턴스(또는 스토어 기반 인스턴스) |
+| `conversationId` | OpenAI Conversations API | 작업자/서비스 간 공유되는 서버 측 상태 | 동일한 `conversationId`와 새로운 사용자 턴만 |
+| `previousResponseId` | OpenAI Responses API만 해당 | 대화를 생성하지 않는 가장 간단한 서버 관리형 연속 실행 | `result.lastResponseId`와 새로운 사용자 턴만 |
 
-`result.history`와 `session`은 클라이언트 관리형입니다. `conversationId`와 `previousResponseId`는 OpenAI 관리형이며 OpenAI Responses API를 사용할 때만 적용됩니다. 대부분의 애플리케이션에서는 대화당 하나의 지속성 전략을 선택하세요. 두 계층을 의도적으로 조정하는 경우가 아니라면, 클라이언트 관리형 기록과 서버 관리형 상태를 함께 사용하면 컨텍스트가 중복될 수 있습니다.
+`result.history`와 `session`은 클라이언트에서 관리합니다. `conversationId`와 `previousResponseId`는 OpenAI에서 관리하며 OpenAI Responses API를 사용할 때만 적용됩니다. 대부분의 애플리케이션에서는 대화마다 하나의 지속성 전략을 선택하세요. 두 계층을 의도적으로 조정하는 경우가 아니라면 클라이언트 관리형 기록과 서버 관리형 상태를 혼합할 때 컨텍스트가 중복될 수 있습니다.
 
-샌드박스 에이전트는 또 다른 상태 계층인 라이브 샌드박스 작업 공간을 추가합니다. 대화 기록에는 일반 SDK의 `session`, `conversationId`, 또는 `previousResponseId`를 사용하고, 샌드박스 파일 시스템 상태에는 `sandbox.session`, `sandbox.sessionState`, `RunState`, 또는 스냅샷을 사용하세요. 작업 공간 수명 주기는 [개념](/openai-agents-js/ko/guides/sandbox-agents/concepts)을 참고하세요.
+샌드박스 에이전트에는 라이브 샌드박스 워크스페이스라는 또 다른 상태 계층이 있습니다. 대화 기록에는 일반 SDK의 `session`, `conversationId` 또는 `previousResponseId`를 사용하고, 샌드박스 파일 시스템 상태에는 `sandbox.session`, `sandbox.sessionState`, `RunState` 또는 스냅샷을 사용하세요. 워크스페이스 수명 주기는 [개념](/openai-agents-js/ko/guides/sandbox-agents/concepts)을 참조하세요.
 
-### 대화 / 채팅 스레드
+### 대화/채팅 스레드
 
-`runner.run()`(또는 `run()` 유틸리티)을 호출할 때마다 애플리케이션 수준 대화의 한 **턴**을 나타냅니다. `RunResult` 중 최종 사용자에게 얼마나 보여줄지는 사용자가 선택합니다. 어떤 경우에는 `finalOutput`만 보여주고, 다른 경우에는 생성된 모든 항목을 보여줄 수 있습니다.
+각 `runner.run()` 호출(또는 `run()` 유틸리티 호출)은 애플리케이션 수준 대화의 한 **턴**을 나타냅니다. 최종 사용자에게 `RunResult`를 얼마나 보여줄지는 직접 선택할 수 있습니다. 때로는 `finalOutput`만 보여주고, 다른 경우에는 생성된 모든 항목을 보여줄 수 있습니다.
 
-<Code lang="typescript" code={chatLoopExample} title="대화 기록 전달 예시" />
+<Code
+  lang="typescript"
+  code={chatLoopExample}
+  title="대화 기록을 이어가는 예시"
+/>
 
-대화형 버전은 [채팅 예제](https://github.com/openai/openai-agents-js/tree/main/examples/basic/chat.ts)를 참고하세요.
+대화형 버전은 [채팅 예제](https://github.com/openai/openai-agents-js/tree/main/examples/basic/chat.ts)를 참조하세요.
 
 #### 서버 관리형 대화
 
-매 턴마다 전체 로컬 대화 기록을 보내는 대신 OpenAI Responses API가 대화 기록을 유지하게 할 수 있습니다. 이는 긴 대화나 여러 서비스를 조율할 때 유용합니다. 아래의 두 서버 관리형 방식 중 어느 것을 사용하든 각 요청에는 새 턴의 입력만 전달하세요. API가 이전 상태를 재사용합니다. 자세한 내용은 [대화 상태 가이드](https://developers.openai.com/api/docs/guides/conversation-state)를 참고하세요.
+매 턴마다 전체 로컬 대화 기록을 전송하는 대신 OpenAI Responses API가 대화 기록을 유지하도록 할 수 있습니다. 이는 긴 대화나 여러 서비스를 조율할 때 유용합니다. 아래 서버 관리형 방식 중 하나를 사용할 때는 각 요청에 새 턴의 입력만 전달하세요. API가 이전 상태를 재사용합니다. 자세한 내용은 [대화 상태 가이드](https://developers.openai.com/api/docs/guides/conversation-state)를 참조하세요.
 
 OpenAI는 서버 측 상태를 재사용하는 두 가지 방법을 제공합니다.
 
-##### 1. 전체 대화에 `conversationId` 사용
+##### 1. 전체 대화에 사용하는 `conversationId`
 
-[Conversations API](https://platform.openai.com/docs/api-reference/conversations/create)를 사용해 대화를 한 번 생성한 다음, 모든 턴에서 해당 ID를 재사용할 수 있습니다. SDK는 새로 생성된 항목만 자동으로 포함합니다.
+[Conversations API](https://platform.openai.com/docs/api-reference/conversations/create)를 사용해 대화를 한 번 생성한 다음 모든 턴에서 해당 ID를 재사용할 수 있습니다. SDK는 새로 생성된 항목만 자동으로 포함합니다.
 
 <Code lang="typescript" code={conversationIdExample} title="서버 대화 재사용" />
 
-##### 2. 마지막 턴에서 이어가기 위한 `previousResponseId`
+##### 2. 마지막 턴부터 계속하기 위한 `previousResponseId`
 
-어차피 Responses API만으로 시작하려는 경우, 이전 응답에서 반환된 ID를 사용해 각 요청을 체이닝할 수 있습니다. 이렇게 하면 전체 대화 리소스를 만들지 않고도 턴 간 컨텍스트가 유지됩니다.
+Responses API만으로 시작하려는 경우 이전 응답에서 반환된 ID를 사용해 각 요청을 연결할 수 있습니다. 이렇게 하면 전체 대화 리소스를 생성하지 않고도 여러 턴에 걸쳐 컨텍스트를 유지할 수 있습니다.
 
 <Code
   lang="typescript"
@@ -161,107 +165,108 @@ OpenAI는 서버 측 상태를 재사용하는 두 가지 방법을 제공합니
   title="previousResponseId로 연결"
 />
 
-`conversationId`와 `previousResponseId`는 서로 배타적입니다. 여러 시스템에서 공유할 수 있는 이름 있는 대화 리소스가 필요하면 `conversationId`를 사용하고, 한 응답에서 다음 응답으로 이어지는 가장 가벼운 SDK 수준의 기본 구성 요소만 필요하면 `previousResponseId`를 사용하세요.
+`conversationId`와 `previousResponseId`는 함께 사용할 수 없습니다. 여러 시스템에서 공유할 수 있는 이름이 지정된 대화 리소스가 필요하면 `conversationId`를 사용하고, 한 응답에서 다음 응답으로 이어지는 가장 가벼운 SDK 수준의 연속 실행 기본 구성 요소만 필요하면 `previousResponseId`를 사용하세요.
 
 ## 훅 및 사용자 지정
 
 ### 모델 호출 입력 필터
 
-`callModelInputFilter`를 사용해 모델이 호출되기 _바로 직전_ 모델 입력을 수정하세요. 이 훅은 현재 에이전트, 컨텍스트, 결합된 입력 항목(있는 경우 세션 기록 포함)을 받습니다. 민감한 데이터를 제거하거나, 오래된 메시지를 삭제하거나, 추가 시스템 지침을 주입하려면 업데이트된 `input` 배열과 선택적 `instructions`를 반환하세요.
+모델이 호출되기 *직전*에 모델 입력을 수정하려면 `callModelInputFilter`를 사용하세요. 이 훅은 현재 에이전트, 컨텍스트, 결합된 입력 항목(세션 기록이 있는 경우 포함)을 받습니다. 민감한 데이터를 삭제하거나, 오래된 메시지를 제거하거나, 추가 시스템 지침을 주입하려면 업데이트된 `input` 배열과 선택적 `instructions`를 반환하세요.
 
-실행별로는 `runner.run(..., { callModelInputFilter })`에 설정하거나, `Runner` 설정의 기본값으로는 `RunConfig`의 `callModelInputFilter`에 설정하세요.
+실행별로 `runner.run(..., { callModelInputFilter })`에 설정하거나 `Runner` 구성의 기본값(`RunConfig`의 `callModelInputFilter`)으로 설정할 수 있습니다.
 
-반환 값은 `ModelInputData` 객체여야 합니다: `{ input: AgentInputItem[], instructions? }`. `input` 필드는 필수이며 배열이어야 합니다. 다른 형태를 반환하면 `UserError`가 throw됩니다.
+반환 값은 `ModelInputData` 객체인 `{ input: AgentInputItem[], instructions? }`여야 합니다. `input` 필드는 필수이며 배열이어야 합니다. 다른 형태를 반환하면 `UserError`가 발생합니다.
 
-SDK는 필터를 호출하기 전에 준비된 턴 입력을 복제합니다. `session`도 사용 중이라면 필터링된 복제본이 지속되므로, 여기서 적용한 제거 또는 잘라내기가 저장된 세션 기록에도 반영됩니다.
+SDK는 필터를 호출하기 전에 준비된 턴 입력을 복제합니다. `session`도 사용하는 경우 필터링된 복제본이 저장되므로 여기에서 적용한 삭제 또는 잘라내기가 저장된 세션 기록에도 반영됩니다.
 
-`conversationId` 또는 `previousResponseId`를 사용할 때 훅은 다음 Responses API 호출을 위해 준비된 페이로드에서 실행됩니다. 이전 서버 관리형 컨텍스트는 API가 복구하므로, 해당 호출의 필터링된 배열은 이전 기록 전체 재생이 아니라 이미 새 턴 델타만 나타낼 수 있습니다. 이 최종 필터 단계 전에 저장된 기록과 현재 턴이 병합되는 방식을 변경해야 한다면 `sessionInputCallback`을 사용하세요.
+`conversationId` 또는 `previousResponseId`를 사용하면 다음 Responses API 호출을 위해 준비된 페이로드에서 훅이 실행됩니다. 이전 서버 관리형 컨텍스트는 API에서 복구하므로 해당 호출의 필터링된 배열에는 이전 기록 전체를 다시 전달하는 대신 새 턴의 변경분만 이미 포함되어 있을 수 있습니다. 이 최종 필터 단계 전에 저장된 기록과 현재 턴을 병합하는 방식을 변경해야 한다면 `sessionInputCallback`을 사용하세요.
 
 ### 도구 오류 포매터
 
-`toolErrorFormatter`를 사용해 모델로 다시 전송되는 도구 오류 메시지를 사용자 지정하세요. 이를 통해 SDK 기본 메시지 대신 도메인별 문구(예: 컴플라이언스 지침)를 반환할 수 있습니다.
+모델로 다시 전송되는 도구 오류 메시지를 사용자 지정하려면 `toolErrorFormatter`를 사용하세요. 이를 통해 SDK 기본 메시지 대신 도메인별 문구(예: 규정 준수 지침)를 반환할 수 있습니다.
 
-포매터는 실행별로 설정하거나(`runner.run(..., { toolErrorFormatter })`), `RunConfig`에서 전역으로 설정할 수 있습니다(`new Runner(...)`의 `toolErrorFormatter`).
+포매터는 실행별로 설정하거나(`runner.run(..., { toolErrorFormatter })`) `RunConfig`에 전역으로 설정할 수 있습니다(`new Runner(...)`의 `toolErrorFormatter`).
 
-이 포매터는 승인 거부에 대한 전역 폴백입니다. 특정 인터럽션(중단 처리)을 `result.state.reject(interruption, { message: '...' })`로 거부하면 해당 호출별 `message`가 `toolErrorFormatter`보다 우선합니다. 둘 다 제공되지 않으면 SDK는 기본 거부 텍스트인 `Tool execution was not approved.`로 폴백합니다.
+이 포매터는 승인 거부에 대한 전역 폴백입니다. 특정 인터럽션(중단 처리)을 `result.state.reject(interruption, { message: '...' })`로 거부하면 해당 호출별 `message`가 `toolErrorFormatter`보다 우선합니다. 둘 다 제공되지 않으면 SDK는 기본 거부 텍스트인 `Tool execution was not approved.`를 사용합니다.
 
-포매터는 `toolNotFoundBehavior: 'return_error_to_model'`이 해결되지 않은 함수 도구 호출을 모델에 표시되는 도구 출력으로 변환할 때도 실행됩니다. 이 경우 기본 메시지는 `Tool '<name>' not found.`입니다.
+`toolNotFoundBehavior: 'return_error_to_model'`이 확인할 수 없는 함수 도구 호출을 모델에 표시되는 도구 출력으로 변환할 때도 포매터가 실행됩니다. 이 경우 기본 메시지는 `Tool '<name>' not found.`입니다.
 
 포매터는 다음을 받습니다.
 
-- `kind`(`'approval_rejected'` 또는 `'tool_not_found'`)
-- `toolType`(`'function'`, `'computer'`, `'shell'`, 또는 `'apply_patch'`)
+- `kind` (`'approval_rejected'` 또는 `'tool_not_found'`)
+- `toolType` (`'function'`, `'computer'`, `'shell'` 또는 `'apply_patch'`)
 - `toolName`
 - `callId`
 - `defaultMessage`(현재 오류 종류에 대한 SDK 폴백 메시지)
 - `runContext`
 
-메시지를 재정의하려면 문자열을 반환하고, SDK 기본값을 유지하려면 `undefined`를 반환하세요. 포매터가 throw하거나 문자열이 아닌 값을 반환하면 SDK는 경고를 기록하고 현재 오류 종류의 기본 메시지로 폴백합니다.
+메시지를 재정의하려면 문자열을 반환하고, SDK 기본값을 유지하려면 `undefined`를 반환하세요. 포매터에서 예외가 발생하거나 문자열이 아닌 값을 반환하면 SDK는 경고를 기록하고 현재 오류 종류의 기본 메시지를 사용합니다.
 
 ### 추론 항목 ID 정책
 
-`reasoningItemIdPolicy`를 사용해 SDK가 이전에 생성된 실행 항목을 이후 모델 입력을 위한 `AgentInputItem[]`로 다시 변환할 때 추론 항목이 `id` 필드를 유지할지 제어하세요.
+SDK가 이전에 생성된 실행 항목을 이후 모델 입력을 위한 `AgentInputItem[]`로 다시 변환할 때 추론 항목의 `id` 필드를 유지할지 제어하려면 `reasoningItemIdPolicy`를 사용하세요.
 
-이는 SDK가 생성된 모델 항목을 입력으로 재생하는 위치에 영향을 줍니다. 예를 들면 다음과 같습니다.
+이는 SDK가 생성된 모델 항목을 입력으로 다시 전달하는 다음과 같은 경우에 영향을 줍니다.
 
-- 동일한 실행 내부의 후속 모델 호출(예: 도구 실행 후),
-- 생성된 항목을 입력/기록으로 재사용하는 후속 턴,
-- 저장된 `RunState`에서 재개된 실행,
-- `result.history` / `result.output` 같은 파생 결과 뷰(모델 입력 형태의 배열입니다).
+- 동일한 실행 내 후속 모델 호출(예: 도구 실행 후)
+- 생성된 항목을 입력/기록으로 재사용하는 후속 턴
+- 저장된 `RunState`에서 재개된 실행
+- `result.history` / `result.output`과 같은 파생 결과 뷰(모델 입력 형태의 배열)
 - `'preserve'`(기본값)는 추론 항목 ID를 유지합니다.
 - `'omit'`은 추론 항목이 입력으로 다시 전송되기 전에 `id` 필드를 제거합니다.
 - 추론 항목이 아닌 항목은 영향을 받지 않습니다.
 
-이 정책이 변경하지 **않는** 항목:
+이 정책으로 **변경되지 않는** 항목은 다음과 같습니다.
 
-- 원문 모델 응답(`result.rawResponses`),
-- 실행 항목(`result.newItems`),
-- 제공자가 반환한 모델의 현재 턴 출력.
+- 원문 모델 응답(`result.rawResponses`)
+- 실행 항목(`result.newItems`)
+- 제공자가 반환한 모델의 현재 턴 출력
 
-즉, 이 정책은 SDK가 이전 생성 항목에서 **다음 입력**을 구성할 때 적용됩니다.
+즉, 이 정책은 SDK가 이전에 생성된 항목에서 **다음 입력**을 구축할 때 적용됩니다.
 
-정책은 실행별로 설정하거나(`runner.run(..., { reasoningItemIdPolicy: 'omit' })`), runner 기본값으로 설정할 수 있습니다(`new Runner({ reasoningItemIdPolicy: 'omit', ... })`). 저장된 `RunState`에서 재개할 때는 재정의하지 않는 한 이전에 결정된 정책이 재사용됩니다.
+정책은 실행별로 설정하거나(`runner.run(..., { reasoningItemIdPolicy: 'omit' })`) 러너의 기본값으로 설정할 수 있습니다(`new Runner({ reasoningItemIdPolicy: 'omit', ... })`). 저장된 `RunState`에서 재개할 때는 재정의하지 않는 한 이전에 결정된 정책을 재사용합니다.
 
-#### `callModelInputFilter`와의 상호 작용
+#### `callModelInputFilter`와의 상호작용
 
-`reasoningItemIdPolicy`는 `callModelInputFilter`보다 먼저 적용됩니다. 커스텀 동작이 필요하다면 `callModelInputFilter`에서 준비된 입력을 검사하고, 모델 호출 전에 추론 ID를 수동으로 다시 추가하거나 제거할 수 있습니다.
+`reasoningItemIdPolicy`는 `callModelInputFilter`보다 먼저 적용됩니다. 사용자 지정 동작이 필요한 경우에도 `callModelInputFilter`에서 준비된 입력을 검사하고 모델 호출 전에 추론 ID를 수동으로 다시 추가하거나 제거할 수 있습니다.
 
 #### `'omit'` 사용 시점
 
-재생되는 추론 항목을 ID 없이 정규화하려는 경우(예: 전달/재생되는 모델 입력을 더 단순하게 유지하거나 앱 파이프라인의 연동 요구사항에 맞추기 위해) `'omit'`을 사용하세요.
+다시 전달되는 추론 항목을 ID 없이 정규화하려는 경우(예: 전달하거나 다시 재생하는 모델 입력을 더 단순하게 유지하거나 앱 파이프라인의 연동 요구 사항을 충족하기 위해) `'omit'`을 사용하세요.
 
-백엔드/제공자가 요청 유효성 검사 오류로 재생된 추론 항목을 거부하는 경우(예: 후속 입력의 추론 항목 ID와 관련된 HTTP `400` 오류)에도 유용한 문제 해결 옵션입니다. 이러한 경우 `'omit'`으로 재생된 추론 ID를 제거하면 백엔드가 새 요청에 유효하지 않은 것으로 취급하는 ID를 보내는 일을 피할 수 있습니다.
+백엔드/제공자가 다시 전달된 추론 항목을 요청 유효성 검사 오류로 거부하는 경우에도 유용한 문제 해결 옵션입니다(예: 후속 입력의 추론 항목 ID와 관련된 HTTP `400` 오류). 이 경우 `'omit'`으로 다시 전달되는 추론 ID를 제거하면 백엔드가 새 요청에서 유효하지 않다고 판단하는 ID를 전송하지 않을 수 있습니다.
 
-SDK가 재생된 입력을 통해 추론 항목 ID를 전달하기를 원하고 해당 연동이 이를 허용한다면 `'preserve'`를 유지하세요.
+SDK가 다시 전달되는 입력에 추론 항목 ID를 유지하도록 하고 연동 환경에서 이를 허용한다면 `'preserve'`를 유지하세요.
 
 ## 오류 및 복구
 
 ### 오류 핸들러
 
-`errorHandlers`를 사용하면 지원되는 런타임 오류를 throw하는 대신 최종 출력으로 변환할 수 있습니다. 지원되는 키는 `maxTurns`와 `modelRefusal`입니다.
+지원되는 런타임 오류를 발생시키는 대신 최종 출력으로 변환하려면 `errorHandlers`를 사용하세요. 지원되는 키는 `maxTurns`, `modelRefusal`, `invalidFinalOutput`입니다.
 
-- `errorHandlers.maxTurns`는 max-turn 오류만 처리합니다.
+- `errorHandlers.maxTurns`는 최대 턴 오류만 처리합니다.
 - `errorHandlers.modelRefusal`은 [`ModelRefusalError`](/openai-agents-js/openai/agents-core/classes/modelrefusalerror)로 노출되는 모델 거부를 처리합니다.
-- `errorHandlers.default`는 지원되는 종류에 대한 폴백으로 사용됩니다.
-- 핸들러는 `{ error, context, runData }`를 받고 `{ finalOutput, includeInHistory? }`를 반환할 수 있습니다.
+- `errorHandlers.invalidFinalOutput`은 구조화된 최종 출력이 없거나 출력 스키마 유효성 검사에 실패했을 때 발생하는 [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) 인스턴스를 처리합니다. 핸들러는 모델을 재시도하거나 도구 부수 효과를 다시 실행하지 않고 검증된 폴백을 반환합니다.
+- `errorHandlers.default`는 지원되는 오류 종류의 폴백으로 사용됩니다.
+- 핸들러는 `{ error, context, runData }`를 받고 `{ finalOutput, includeInHistory? }`를 반환할 수 있습니다. 반환되는 `finalOutput`은 현재 에이전트의 `outputType`과 일치해야 합니다. structured outputs의 경우 SDK는 실행을 완료하기 전에 폴백을 검증합니다. `undefined`를 반환하면 해당 오류의 기본 동작이 유지됩니다.
 
 ### 예외
 
-SDK는 catch할 수 있는 몇 가지 오류를 throw합니다.
+SDK는 포착할 수 있는 몇 가지 오류를 발생시킵니다.
 
 - [`MaxTurnsExceededError`](/openai-agents-js/openai/agents-core/classes/maxturnsexceedederror) – `maxTurns`에 도달했습니다.
-- [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) – 모델이 잘못된 출력을 생성했습니다(예: 형식이 잘못된 JSON, 알 수 없는 도구).
-- [`ModelRefusalError`](/openai-agents-js/openai/agents-core/classes/modelrefusalerror) – 모델이 요청된 출력 생성을 거부했습니다.
+- [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) – 모델이 잘못된 출력을 생성했습니다(예: 잘못된 형식의 JSON, 알 수 없는 도구).
+- [`ModelRefusalError`](/openai-agents-js/openai/agents-core/classes/modelrefusalerror) – 모델이 요청된 출력을 생성하기를 거부했습니다.
 - [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/inputguardrailtripwiretriggered) / [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/outputguardrailtripwiretriggered) – 가드레일 위반입니다.
 - [`ToolInputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/toolinputguardrailtripwiretriggered) / [`ToolOutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/tooloutputguardrailtripwiretriggered) – 도구 가드레일 위반입니다.
-- [`GuardrailExecutionError`](/openai-agents-js/openai/agents-core/classes/guardrailexecutionerror) – 가드레일이 완료되지 못했습니다.
-- [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror) – 함수 도구가 `timeoutMs`를 초과했고 `timeoutBehavior: 'raise_exception'`을 사용했습니다.
-- [`ToolCallError`](/openai-agents-js/openai/agents-core/classes/toolcallerror) – 타임아웃이 아닌 오류로 함수 도구 실행에 실패했습니다.
-- [`UserError`](/openai-agents-js/openai/agents-core/classes/usererror) – 설정 또는 사용자 입력에 따라 throw된 모든 오류입니다.
+- [`GuardrailExecutionError`](/openai-agents-js/openai/agents-core/classes/guardrailexecutionerror) – 가드레일 실행을 완료하지 못했습니다.
+- [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror) – 함수 도구가 `timeoutMs`를 초과하고 `timeoutBehavior: 'raise_exception'`을 사용했습니다.
+- [`ToolCallError`](/openai-agents-js/openai/agents-core/classes/toolcallerror) – 시간 초과가 아닌 오류로 함수 도구 실행에 실패했습니다.
+- [`UserError`](/openai-agents-js/openai/agents-core/classes/usererror) – 구성 또는 사용자 입력에 따라 발생한 모든 오류입니다.
 
-모두 기본 `AgentsError` 클래스를 확장하며, 현재 실행 상태에 접근할 수 있는 `state` 속성을 제공할 수 있습니다.
+모두 기본 `AgentsError` 클래스를 확장하며, 이 클래스는 현재 실행 상태에 접근할 수 있는 `state` 속성을 제공할 수 있습니다.
 
-다음은 `GuardrailExecutionError`를 처리하는 예제 코드입니다. 입력 가드레일은 첫 번째 사용자 입력에서만 실행되므로, 이 예제는 원래 입력과 컨텍스트로 실행을 다시 시작합니다. 또한 저장된 상태를 재사용해 모델을 다시 호출하지 않고 출력 가드레일을 재시도하는 방법도 보여줍니다.
+다음은 `GuardrailExecutionError`를 처리하는 코드 예제입니다. 입력 가드레일은 최초 사용자 입력에서만 실행되므로 이 예제에서는 원래 입력과 컨텍스트로 실행을 다시 시작합니다. 또한 저장된 상태를 재사용하여 모델을 다시 호출하지 않고 출력 가드레일을 재시도하는 방법도 보여 줍니다.
 
 <Code
   lang="typescript"
@@ -269,12 +274,12 @@ SDK는 catch할 수 있는 몇 가지 오류를 throw합니다.
   title="가드레일 실행 오류"
 />
 
-입력과 출력 재시도:
+입력 및 출력 재시도 비교:
 
-- 입력 가드레일은 실행의 맨 처음 사용자 입력에서만 실행되므로, 이를 재시도하려면 동일한 입력/컨텍스트로 새 실행을 시작해야 합니다. 저장된 `state`를 전달해도 입력 가드레일은 다시 트리거되지 않습니다.
-- 출력 가드레일은 모델 응답 후에 실행되므로, `GuardrailExecutionError`에서 저장된 `state`를 재사용해 다른 모델 호출 없이 출력 가드레일을 다시 실행할 수 있습니다.
+- 입력 가드레일은 실행의 맨 처음 사용자 입력에서만 실행되므로 동일한 입력/컨텍스트로 새 실행을 시작하여 재시도해야 합니다. 저장된 `state`를 전달해도 입력 가드레일은 다시 트리거되지 않습니다.
+- 출력 가드레일은 모델 응답 후에 실행되므로 `GuardrailExecutionError`에서 저장된 `state`를 재사용해 모델을 다시 호출하지 않고 출력 가드레일을 다시 실행할 수 있습니다.
 
-위 예제를 실행하면 다음 출력을 볼 수 있습니다.
+위 예제를 실행하면 다음과 같은 출력이 표시됩니다.
 
 ```
 Guardrail execution failed (input): Error: Input guardrail failed to complete: Error: Something is wrong!
@@ -287,9 +292,9 @@ Output guardrail tripped after retry with saved state
 
 ## 관련 가이드
 
-- [에이전트](/openai-agents-js/ko/guides/agents): 실행 전에 에이전트를 정의하는 방법
-- [실행 결과](/openai-agents-js/ko/guides/results): `finalOutput`, 실행 항목, 인터럽션(중단 처리), 재개 상태
-- [세션](/openai-agents-js/ko/guides/sessions): 지속적인 SDK 관리 메모리
-- [도구](/openai-agents-js/ko/guides/tools): 실행 루프 중 사용되는 기능
-- [모델](/openai-agents-js/ko/guides/models): 제공자 설정 및 Responses 전송 방식
-- 프로덕션 준비를 위해 [가드레일](/openai-agents-js/ko/guides/guardrails) 또는 [트레이싱](/openai-agents-js/ko/guides/tracing) 추가.
+- 실행 전에 에이전트를 정의하는 방법은 [에이전트](/openai-agents-js/ko/guides/agents)를 참조하세요.
+- `finalOutput`, 실행 항목, 인터럽션(중단 처리), 재개 상태는 [실행 결과](/openai-agents-js/ko/guides/results)를 참조하세요.
+- 지속성 있는 SDK 관리형 메모리는 [세션](/openai-agents-js/ko/guides/sessions)을 참조하세요.
+- 실행 루프 중에 사용하는 기능은 [도구](/openai-agents-js/ko/guides/tools)를 참조하세요.
+- 제공자 구성과 Responses 전송 방식은 [모델](/openai-agents-js/ko/guides/models)을 참조하세요.
+- 프로덕션 준비를 위해 [가드레일](/openai-agents-js/ko/guides/guardrails)이나 [트레이싱](/openai-agents-js/ko/guides/tracing)을 추가하세요.

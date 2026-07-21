@@ -10,7 +10,7 @@ import { Agent } from '../src/agent';
 import { handoff } from '../src/handoff';
 import { run, Runner } from '../src/run';
 import { setDefaultModelProvider } from '../src';
-import { tool } from '../src/tool';
+import { tool, type HostedTool } from '../src/tool';
 import type { Model, ModelProvider } from '../src/model';
 import {
   Manifest,
@@ -39,6 +39,12 @@ import {
 import { SandboxMemoryStorage } from '../src/sandbox/memory/storage';
 import { Usage } from '../src/usage';
 import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
+
+const PROGRAMMATIC_TOOL_CALLING_TOOL: HostedTool = {
+  type: 'hosted_tool',
+  name: 'programmatic_tool_calling',
+  providerData: { type: 'programmatic_tool_calling' },
+};
 
 class MemoryPhaseModelProvider implements ModelProvider {
   readonly calls: string[] = [];
@@ -1035,6 +1041,64 @@ describe('Sandbox memory generation', () => {
     expect(serialized).not.toContain('UNKNOWN_SECRET');
     expect(serialized).not.toContain('REASONING_SECRET');
     expect(serialized).not.toContain('RAW_REASONING_SECRET');
+  });
+
+  it('preserves Programmatic Tool Calling items in rollout payloads', async () => {
+    const session = new MemorySession();
+    const agent = new SandboxAgent({
+      name: 'sandbox',
+      model: new FakeModel([
+        {
+          output: [
+            {
+              type: 'program',
+              id: 'prog_1',
+              callId: 'call_prog_1',
+              code: 'text("PROGRAM_RESULT")',
+              fingerprint: 'fp_1',
+            },
+            {
+              type: 'program_output',
+              id: 'prog_out_1',
+              callId: 'call_prog_1',
+              output: 'PROGRAM_RESULT',
+              status: 'completed',
+            },
+            fakeModelMessage('Program completed.'),
+          ],
+          usage: new Usage(),
+        },
+      ]),
+      tools: [PROGRAMMATIC_TOOL_CALLING_TOOL],
+      capabilities: [
+        memory({
+          read: false,
+          generate: createNoopMemoryGenerationConfig(),
+        }),
+      ],
+    });
+
+    await run(agent, 'Run the program.', { sandbox: { session } });
+
+    const rolloutFile = [...session.files.keys()].find(
+      (path) => path.startsWith('sessions/') && path.endsWith('.jsonl'),
+    );
+    expect(rolloutFile).toBeDefined();
+    const payload = JSON.parse(session.files.get(rolloutFile!) ?? '{}');
+
+    expect(payload.generated_items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'program',
+          callId: 'call_prog_1',
+        }),
+        expect.objectContaining({
+          type: 'program_output',
+          callId: 'call_prog_1',
+          output: 'PROGRAM_RESULT',
+        }),
+      ]),
+    );
   });
 
   it('clears active memory when handing off to a non-sandbox agent', async () => {

@@ -1,5 +1,5 @@
 ---
-'@openai/agents-extensions': minor
+'@openai/agents-extensions': patch
 ---
 
-Support URL and data URL `input_file` content in the AI SDK adapter.
+feat(ai-sdk): support URL, data URL, and raw base64 file inputs and tool outputs

@@ -35,12 +35,25 @@ import {
   convertHandoffTool,
   itemsToMessages,
 } from './openaiChatCompletionsConverter';
+
 import { protocol } from '@openai/agents-core';
 import { getOpenAIRetryAdvice } from './retryAdvice';
 import { normalizePromptCacheRetention } from './utils/modelSettings';
 import type { OpenAIClient } from './openaiClient';
 
+type ModelTracingParent = Parameters<typeof createGenerationSpan>[1];
+
+function getModelTracingParent(request: ModelRequest): ModelTracingParent {
+  return (
+    request as ModelRequest & {
+      _internal?: { tracingParent?: ModelTracingParent };
+    }
+  )._internal?.tracingParent;
+}
+
 export const FAKE_ID = 'FAKE_ID';
+const GPT_56_MODEL_PATTERN =
+  /^gpt-5\.6(?:-(?:sol|terra|luna)(?:-\d{4}-\d{2}-\d{2})?)?$/;
 
 // Some Chat Completions API compatible providers return a reasoning property on the message
 // If that's the case we handle them separately
@@ -77,6 +90,7 @@ export class OpenAIChatCompletionsModel implements Model {
   #strictFeatureValidation: boolean;
   #hasWarnedUnsupportedPrompt = false;
   #hasWarnedUnsupportedConversationState = false;
+  #hasWarnedUnsupportedReasoningSettings = false;
 
   constructor(
     client: OpenAIClient,
@@ -95,25 +109,30 @@ export class OpenAIChatCompletionsModel implements Model {
   async getResponse(request: ModelRequest): Promise<ModelResponse> {
     this.#handleUnsupportedServerManagedConversationState(request);
     this.#handleUnsupportedPrompt(request);
+    this.#handleUnsupportedReasoningSettings(request);
 
-    const response = await withGenerationSpan(async (span) => {
-      span.spanData.model = this.#model;
-      span.spanData.model_config = request.modelSettings
-        ? {
-            temperature: request.modelSettings.temperature,
-            top_p: request.modelSettings.topP,
-            frequency_penalty: request.modelSettings.frequencyPenalty,
-            presence_penalty: request.modelSettings.presencePenalty,
-            reasoning_effort: request.modelSettings.reasoning?.effort,
-            verbosity: request.modelSettings.text?.verbosity,
-          }
-        : { base_url: this.#client.baseURL };
-      const response = await this.#fetchResponse(request, span, false);
-      if (span && request.tracing === true) {
-        span.spanData.output = [response];
-      }
-      return response;
-    });
+    const response = await withGenerationSpan(
+      async (span) => {
+        span.spanData.model = this.#model;
+        span.spanData.model_config = request.modelSettings
+          ? {
+              temperature: request.modelSettings.temperature,
+              top_p: request.modelSettings.topP,
+              frequency_penalty: request.modelSettings.frequencyPenalty,
+              presence_penalty: request.modelSettings.presencePenalty,
+              reasoning_effort: request.modelSettings.reasoning?.effort,
+              verbosity: request.modelSettings.text?.verbosity,
+            }
+          : { base_url: this.#client.baseURL };
+        const response = await this.#fetchResponse(request, span, false);
+        if (span && request.tracing === true) {
+          span.spanData.output = [response];
+        }
+        return response;
+      },
+      undefined,
+      getModelTracingParent(request),
+    );
 
     const output: protocol.OutputModelItem[] = [];
     if (response.choices && response.choices[0]) {
@@ -233,8 +252,11 @@ export class OpenAIChatCompletionsModel implements Model {
   ): AsyncIterable<ResponseStreamEvent> {
     this.#handleUnsupportedServerManagedConversationState(request);
     this.#handleUnsupportedPrompt(request);
+    this.#handleUnsupportedReasoningSettings(request);
 
-    const span = request.tracing ? createGenerationSpan() : undefined;
+    const span = request.tracing
+      ? createGenerationSpan(undefined, getModelTracingParent(request))
+      : undefined;
     try {
       if (span) {
         span.spanData.model = this.#model;
@@ -372,6 +394,39 @@ export class OpenAIChatCompletionsModel implements Model {
     }
   }
 
+  #handleUnsupportedReasoningSettings(request: ModelRequest) {
+    const reasoning = request.modelSettings.reasoning;
+    if (!reasoning) {
+      return;
+    }
+
+    const unsupported = (['mode', 'context'] as const).filter(
+      (name) => reasoning[name] !== undefined && reasoning[name] !== null,
+    );
+    if (unsupported.length === 0) {
+      return;
+    }
+
+    const unsupportedParams = unsupported
+      .map((name) => `reasoning.${name}`)
+      .join(', ');
+    const message =
+      `OpenAIChatCompletionsModel does not support ${unsupportedParams}. ` +
+      'These reasoning settings require the Responses API; Chat Completions only uses reasoning.effort.';
+
+    if (this.#strictFeatureValidation) {
+      throw new UserError(message);
+    }
+
+    if (!this.#hasWarnedUnsupportedReasoningSettings) {
+      logger.warn(
+        `${message} Ignoring unsupported reasoning settings; ` +
+          'enable strict feature validation to raise an error instead.',
+      );
+      this.#hasWarnedUnsupportedReasoningSettings = true;
+    }
+  }
+
   /**
    * @internal
    */
@@ -396,6 +451,31 @@ export class OpenAIChatCompletionsModel implements Model {
     const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [];
     if (request.tools) {
       for (const tool of request.tools) {
+        if (
+          (tool.type === 'function' ||
+            tool.type === 'shell' ||
+            tool.type === 'apply_patch') &&
+          tool.allowedCallers?.some((caller) => caller === 'programmatic')
+        ) {
+          throw new UserError(
+            'Tools callable from Programmatic Tool Calling are only supported with the Responses API.',
+          );
+        }
+        if (tool.type === 'function' && tool.outputSchema) {
+          throw new UserError(
+            'Function tool outputSchema is only supported with the Responses API.',
+          );
+        }
+        if (
+          tool.type === 'hosted_tool' &&
+          (tool.providerData?.type === 'programmatic_tool_calling' ||
+            (Array.isArray(tool.providerData?.allowed_callers) &&
+              tool.providerData.allowed_callers.includes('programmatic')))
+        ) {
+          throw new UserError(
+            'Programmatic Tool Calling is only supported with the Responses API.',
+          );
+        }
         if (tool.type === 'function') {
           if (
             typeof tool.namespace === 'string' &&
@@ -444,10 +524,20 @@ export class OpenAIChatCompletionsModel implements Model {
       span.spanData.input = messages;
     }
 
-    const providerData = request.modelSettings.providerData ?? {};
+    const providerData = { ...(request.modelSettings.providerData ?? {}) };
+    const requestInternal = (
+      request as ModelRequest & {
+        _internal?: { reasoningEffortImplicit?: boolean };
+      }
+    )._internal;
+    const omitImplicitReasoningEffort =
+      requestInternal?.reasoningEffortImplicit === true &&
+      (providerData.reasoning_effort !== undefined ||
+        (tools.length > 0 && GPT_56_MODEL_PATTERN.test(this.#model)));
     if (
       request.modelSettings.reasoning &&
-      request.modelSettings.reasoning.effort
+      request.modelSettings.reasoning.effort &&
+      !omitImplicitReasoningEffort
     ) {
       // merge the top-level reasoning.effort into provider data
       providerData.reasoning_effort = request.modelSettings.reasoning.effort;
@@ -483,6 +573,7 @@ export class OpenAIChatCompletionsModel implements Model {
       prompt_cache_retention: normalizePromptCacheRetention(
         request.modelSettings.promptCacheRetention,
       ),
+      prompt_cache_options: request.modelSettings.promptCacheOptions,
       ...providerData,
     };
 
