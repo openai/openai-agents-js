@@ -102,8 +102,7 @@ export interface RunResultData<
    * The output of the last agent, or any handoff agent.
    */
   finalOutput?:
-    | ResolvedAgentOutput<TAgent['outputType']>
-    | HandoffsOutput<THandoffs>;
+    ResolvedAgentOutput<TAgent['outputType']> | HandoffsOutput<THandoffs>;
 
   /**
    * The interruptions that occurred during the agent run.
@@ -329,6 +328,7 @@ export class StreamedRunResult<
   #completedPromiseReject: ((err: unknown) => void) | undefined;
   #cancelled: boolean = false;
   #streamLoopPromise: Promise<void> | undefined;
+  #traceLifecyclePromise: Promise<void> | undefined;
   #abortHandler: (() => void) | undefined;
   #abortHandlerRef: AbortHandlerRef<() => void> | undefined;
   #combinedSignalCleanup: () => void = () => {};
@@ -450,7 +450,17 @@ export class StreamedRunResult<
    * stream directly.
    */
   get completed() {
-    return this.#completedPromise;
+    const traceLifecyclePromise = this.#traceLifecyclePromise;
+    if (!traceLifecyclePromise) {
+      return this.#completedPromise;
+    }
+    return this.#completedPromise.then(
+      () => traceLifecyclePromise,
+      async (error) => {
+        await traceLifecyclePromise;
+        throw error;
+      },
+    );
   }
 
   /**
@@ -516,6 +526,11 @@ export class StreamedRunResult<
    */
   _getStreamLoopPromise(): Promise<void> | undefined {
     return this.#streamLoopPromise;
+  }
+
+  /** @internal Ensures completed includes deferred trace finalization. */
+  _setTraceLifecyclePromise(promise: Promise<void>): void {
+    this.#traceLifecyclePromise = promise;
   }
 
   /**

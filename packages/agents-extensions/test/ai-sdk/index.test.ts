@@ -18,6 +18,11 @@ import {
 } from '@ai-sdk/provider';
 import type { SerializedOutputType } from '@openai/agents';
 import { allowConsole } from '../../../../helpers/tests/console-guard';
+import {
+  consumeAsyncIterable,
+  createTracingContextProbe,
+  withTestTracingProcessor,
+} from '../../../../helpers/tests/tracing';
 import { z } from 'zod';
 
 function stubModel(
@@ -3297,6 +3302,47 @@ describe('AiSdkModel.getStreamedResponse', () => {
         },
       },
     ]);
+  });
+
+  test('runs streamed requests and source iteration in model span context', async () => {
+    const contextProbe = createTracingContextProbe('generation');
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          contextProbe.observe();
+          return {
+            stream: new ReadableStream({
+              pull(controller) {
+                contextProbe.observe();
+                controller.enqueue({
+                  type: 'finish',
+                  finishReason: 'stop',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                });
+                controller.close();
+              },
+            }),
+          } as any;
+        },
+      }),
+    );
+
+    await withTestTracingProcessor(contextProbe.processor, () =>
+      withTrace('test', () =>
+        consumeAsyncIterable(
+          model.getStreamedResponse({
+            input: 'hi',
+            tools: [],
+            handoffs: [],
+            modelSettings: {},
+            outputType: 'text',
+            tracing: true,
+          } as any),
+        ),
+      ),
+    );
+
+    expect(contextProbe.observations).toEqual([true, true]);
   });
 
   test('applies transformOutputText to finalized streamed assistant text', async () => {

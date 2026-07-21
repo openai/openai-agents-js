@@ -273,7 +273,11 @@ export class OpenAIChatCompletionsModel implements Model {
         span.start();
         setCurrentSpan(span);
       }
-      const stream = await this.#fetchResponse(request, span, true);
+      const stream = span
+        ? span.withContextForAsyncIterable(() =>
+            this.#fetchResponse(request, span, true),
+          )
+        : await this.#fetchResponse(request, span, true);
 
       const response: OpenAI.Chat.Completions.ChatCompletion = {
         id: FAKE_ID,

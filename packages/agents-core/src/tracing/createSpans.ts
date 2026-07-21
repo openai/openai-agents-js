@@ -56,7 +56,7 @@ function _withSpanFactory<
       let endDeferred = false;
       try {
         span.start();
-        const result = await fn(span);
+        const result = await span.withContext(() => fn(span));
         if (result instanceof StreamedRunResult) {
           const streamLoopPromise = result._getStreamLoopPromise();
           if (streamLoopPromise) {

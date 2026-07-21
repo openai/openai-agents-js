@@ -5,6 +5,11 @@ import {
   withTrace,
   setTracingDisabled,
 } from '@openai/agents-core';
+import {
+  consumeAsyncIterable,
+  createTracingContextProbe,
+  withTestTracingProcessor,
+} from '../../../helpers/tests/tracing';
 import { OpenAIChatCompletionsModel } from '../src/openaiChatCompletionsModel';
 import { HEADERS } from '../src/defaults';
 import logger from '../src/logger';
@@ -1410,6 +1415,43 @@ describe('OpenAIChatCompletionsModel', () => {
       vi.mocked(convertChatCompletionsStreamToResponses).mock.calls[0]?.[2],
     ).toEqual({ strictFeatureValidation: false });
     expect(events).toEqual([{ type: 'first' }, { type: 'second' }]);
+  });
+
+  it('runs streamed requests and source iteration in model span context', async () => {
+    const contextProbe = createTracingContextProbe('generation');
+    const client = new FakeClient();
+    async function* fakeStream() {
+      contextProbe.observe();
+      yield { id: 'c' } as any;
+    }
+    client.chat.completions.create.mockImplementation(async () => {
+      contextProbe.observe();
+      return fakeStream();
+    });
+    vi.mocked(convertChatCompletionsStreamToResponses).mockImplementationOnce(
+      async function* (_response, stream) {
+        for await (const _event of stream) {
+          yield { type: 'response_done', response: { usage: {} } } as any;
+        }
+      },
+    );
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const request: any = {
+      input: 'hi',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: true,
+    };
+
+    await withTestTracingProcessor(contextProbe.processor, () =>
+      withTrace('test', () =>
+        consumeAsyncIterable(model.getStreamedResponse(request)),
+      ),
+    );
+
+    expect(contextProbe.observations).toEqual([true, true]);
   });
 
   it('passes strict feature validation to the stream converter', async () => {

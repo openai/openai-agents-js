@@ -6,6 +6,10 @@ import {
   type GenerationSpanData,
   type Trace,
 } from '@openai/agents-core';
+import {
+  sanitizeJsonCompatibleValue,
+  type JsonCompatibleValue,
+} from '@openai/agents-core/utils/internal';
 import { getTracingExportApiKey, HEADERS } from './defaults';
 import logger from './logger';
 
@@ -23,14 +27,6 @@ export type OpenAITracingExporterOptions = {
 };
 
 type GenerationUsageData = NonNullable<GenerationSpanData['usage']>;
-type JsonCompatibleValue =
-  | null
-  | string
-  | number
-  | boolean
-  | JsonCompatibleValue[]
-  | { [key: string]: JsonCompatibleValue };
-
 const OPENAI_TRACING_MAX_FIELD_BYTES = 100_000;
 const OPENAI_TRACING_MAX_RECURSION_DEPTH = 1_000;
 const OPENAI_TRACING_STRING_TRUNCATION_SUFFIX = '... [truncated]';
@@ -61,7 +57,6 @@ async function sleepWithAbort(
     signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
-const UNSERIALIZABLE = Symbol('openaiTracingExporter.unserializable');
 const textEncoder = new TextEncoder();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -152,97 +147,6 @@ function truncateStringForJsonLimit(value: string, maxBytes: number): string {
   }
 
   return best;
-}
-
-function sanitizeJsonCompatibleValue(
-  value: unknown,
-  seen: Set<object> = new Set(),
-  depth: number = 0,
-): JsonCompatibleValue | typeof UNSERIALIZABLE {
-  if (depth >= OPENAI_TRACING_MAX_RECURSION_DEPTH) {
-    return UNSERIALIZABLE;
-  }
-
-  if (
-    value === null ||
-    typeof value === 'string' ||
-    typeof value === 'boolean'
-  ) {
-    return value;
-  }
-
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : UNSERIALIZABLE;
-  }
-
-  if (value && typeof value === 'object' && hasToJSON(value)) {
-    if (seen.has(value)) {
-      return UNSERIALIZABLE;
-    }
-
-    seen.add(value);
-    try {
-      return sanitizeJsonCompatibleValue(value.toJSON(), seen, depth + 1);
-    } catch {
-      return UNSERIALIZABLE;
-    } finally {
-      seen.delete(value);
-    }
-  }
-
-  if (Array.isArray(value)) {
-    if (seen.has(value)) {
-      return UNSERIALIZABLE;
-    }
-
-    seen.add(value);
-    const sanitized: JsonCompatibleValue[] = [];
-    try {
-      for (const nestedValue of value) {
-        const sanitizedNested = sanitizeJsonCompatibleValue(
-          nestedValue,
-          seen,
-          depth + 1,
-        );
-        sanitized.push(
-          sanitizedNested === UNSERIALIZABLE ? null : sanitizedNested,
-        );
-      }
-    } finally {
-      seen.delete(value);
-    }
-
-    return sanitized;
-  }
-
-  if (value && typeof value === 'object') {
-    if (seen.has(value)) {
-      return UNSERIALIZABLE;
-    }
-
-    seen.add(value);
-    const sanitized: Record<string, JsonCompatibleValue> = {};
-    try {
-      for (const [key, nestedValue] of Object.entries(value)) {
-        const sanitizedNested = sanitizeJsonCompatibleValue(
-          nestedValue,
-          seen,
-          depth + 1,
-        );
-        if (sanitizedNested !== UNSERIALIZABLE) {
-          sanitized[key] = sanitizedNested;
-        }
-      }
-    } catch {
-      return UNSERIALIZABLE;
-    } finally {
-      seen.delete(value);
-    }
-
-    return sanitized;
-  }
-
-  return UNSERIALIZABLE;
 }
 
 function getValueTypeName(value: unknown): string {
@@ -535,8 +439,10 @@ function truncateSpanFieldValue(value: unknown): unknown {
   }
 
   try {
-    const sanitizedValue = sanitizeJsonCompatibleValue(value);
-    if (sanitizedValue === UNSERIALIZABLE) {
+    const sanitizedValue = sanitizeJsonCompatibleValue(value, {
+      maxDepth: OPENAI_TRACING_MAX_RECURSION_DEPTH,
+    });
+    if (sanitizedValue === undefined) {
       return truncatedPreview(value);
     }
 
@@ -587,8 +493,10 @@ function sanitizeGenerationUsageForTracesIngest(
   const details: Record<string, JsonCompatibleValue> = {};
   if (isPlainObject(usage.details)) {
     for (const [key, value] of Object.entries(usage.details)) {
-      const sanitizedValue = sanitizeJsonCompatibleValue(value);
-      if (sanitizedValue !== UNSERIALIZABLE) {
+      const sanitizedValue = sanitizeJsonCompatibleValue(value, {
+        maxDepth: OPENAI_TRACING_MAX_RECURSION_DEPTH,
+      });
+      if (sanitizedValue !== undefined) {
         details[key] = sanitizedValue;
       }
     }
@@ -603,8 +511,10 @@ function sanitizeGenerationUsageForTracesIngest(
     ) {
       continue;
     }
-    const sanitizedValue = sanitizeJsonCompatibleValue(value);
-    if (sanitizedValue !== UNSERIALIZABLE) {
+    const sanitizedValue = sanitizeJsonCompatibleValue(value, {
+      maxDepth: OPENAI_TRACING_MAX_RECURSION_DEPTH,
+    });
+    if (sanitizedValue !== undefined) {
       details[key] = sanitizedValue;
     }
   }

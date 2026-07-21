@@ -16,6 +16,11 @@ import {
   type ResponseStreamEvent,
   Span,
 } from '@openai/agents-core';
+import {
+  consumeAsyncIterable,
+  createTracingContextProbe,
+  withTestTracingProcessor,
+} from '../../../helpers/tests/tracing';
 import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/resources/responses/responses';
 
 describe('OpenAIResponsesModel', () => {
@@ -4269,6 +4274,43 @@ describe('OpenAIResponsesModel', () => {
         },
       });
     });
+  });
+
+  it('runs streamed requests and source iteration in model span context', async () => {
+    const contextProbe = createTracingContextProbe('response');
+    async function* fakeStream() {
+      contextProbe.observe();
+      yield {
+        type: 'response.created',
+        response: { id: 'res-context', usage: {}, output: [] },
+      } as any;
+    }
+    const createMock = vi.fn(async () => {
+      contextProbe.observe();
+      return fakeStream();
+    });
+    const fakeClient = {
+      responses: { create: createMock },
+    } as unknown as OpenAI;
+    const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+    const request = {
+      systemInstructions: undefined,
+      input: 'hi',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: true,
+      signal: undefined,
+    };
+
+    await withTestTracingProcessor(contextProbe.processor, () =>
+      withTrace('test', () =>
+        consumeAsyncIterable(model.getStreamedResponse(request as any)),
+      ),
+    );
+
+    expect(contextProbe.observations).toEqual([true, true]);
   });
 
   it('emits response.completed once as a raw model event', async () => {

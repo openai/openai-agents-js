@@ -184,6 +184,8 @@ export class Span<TData extends SpanData> {
   #endedAt: string | null;
   #error: SpanError | null;
   #tracingApiKey: string | undefined;
+  #startPromise: Promise<void> | undefined;
+  #startCompleted = false;
 
   #previousSpan: Span<any> | undefined;
 
@@ -228,6 +230,39 @@ export class Span<TData extends SpanData> {
     this.#previousSpan = span;
   }
 
+  async withContext<T>(fn: () => Promise<T>): Promise<T> {
+    if (!this.#processor.withSpan) {
+      return fn();
+    }
+    return this.#processor.withSpan(this, fn);
+  }
+
+  /** Runs async iterable creation and consumption inside this span's context. */
+  async *withContextForAsyncIterable<T>(
+    createIterable: () => AsyncIterable<T> | Promise<AsyncIterable<T>>,
+  ): AsyncIterable<T> {
+    const iterable = await this.withContext(async () => createIterable());
+    const iterator = await this.withContext(async () =>
+      iterable[Symbol.asyncIterator](),
+    );
+    let completed = false;
+
+    try {
+      while (true) {
+        const result = await this.withContext(async () => iterator.next());
+        if (result.done) {
+          completed = true;
+          return;
+        }
+        yield result.value;
+      }
+    } finally {
+      if (!completed && iterator.return) {
+        await this.withContext(async () => iterator.return!());
+      }
+    }
+  }
+
   start() {
     if (this.#startedAt) {
       logger.warn('Span already started');
@@ -235,7 +270,14 @@ export class Span<TData extends SpanData> {
     }
 
     this.#startedAt = timeIso();
-    this.#processor.onSpanStart(this);
+    this.#startPromise = this.#processor
+      .onSpanStart(this)
+      .catch((error) => {
+        logger.error('Tracing processor failed while starting span', error);
+      })
+      .then(() => {
+        this.#startCompleted = true;
+      });
   }
 
   end() {
@@ -245,7 +287,17 @@ export class Span<TData extends SpanData> {
     }
 
     this.#endedAt = timeIso();
-    this.#processor.onSpanEnd(this);
+    const delivery = (
+      this.#startCompleted
+        ? this.#processor.onSpanEnd(this)
+        : (async () => {
+            await this.#startPromise;
+            await this.#processor.onSpanEnd(this);
+          })()
+    ).catch((error) => {
+      logger.error('Tracing processor failed while ending span', error);
+    });
+    this.#processor.registerPendingSpanLifecycle?.(this, delivery);
   }
 
   setError(error: SpanError) {
@@ -342,6 +394,10 @@ export class NoopSpan<TSpanData extends SpanData> extends Span<TSpanData> {
 
   start() {
     return;
+  }
+
+  async withContext<T>(fn: () => Promise<T>): Promise<T> {
+    return fn();
   }
 
   end() {

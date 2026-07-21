@@ -36,8 +36,7 @@ export type TracingContextStorage<TStore = any> = {
 
 const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
 let localFallbackAls:
-  | TracingContextStorage<ContextState | undefined>
-  | undefined;
+  TracingContextStorage<ContextState | undefined> | undefined;
 
 // Global symbols ensure that if multiple copies of agents-core are loaded
 // (e.g., via different npm resolution paths or bundlers), they all share the
@@ -109,8 +108,7 @@ export function setTracingContextStorage(
 
 function getActiveContext() {
   const store = getContextAsyncLocalStorage().getStore() as
-    | ContextState
-    | undefined;
+    ContextState | undefined;
   if (store?.active === true) {
     return store;
   }
@@ -292,15 +290,19 @@ function _wrapFunctionWithTraceLifecycle<T>(
         const streamLoopPromise = result._getStreamLoopPromise();
         if (streamLoopPromise) {
           cleanupDeferred = true;
-          streamLoopPromise.finally(async () => {
+          const traceLifecyclePromise = streamLoopPromise.finally(async () => {
             try {
               if (started) {
+                // Stream-aware span helpers end in reactions to this same promise.
+                // Let them register their lifecycle delivery before trace cleanup drains it.
+                await Promise.resolve();
                 await trace.end();
               }
             } finally {
               cleanupContext();
             }
           });
+          result._setTraceLifecyclePromise(traceLifecyclePromise);
 
           return result;
         }
@@ -349,8 +351,7 @@ export async function withTrace<T>(
     active: true,
   };
   const previousAlsStore = getContextAsyncLocalStorage().getStore() as
-    | ContextState
-    | undefined;
+    ContextState | undefined;
 
   return getContextAsyncLocalStorage().run(
     context,
@@ -381,8 +382,7 @@ export async function getOrCreateTrace<T>(
     active: true,
   };
   const previousAlsStore = getContextAsyncLocalStorage().getStore() as
-    | ContextState
-    | undefined;
+    ContextState | undefined;
   return getContextAsyncLocalStorage().run(
     newContext,
     _wrapFunctionWithTraceLifecycle(fn, newContext, previousAlsStore),

@@ -3561,7 +3561,11 @@ export class OpenAIResponsesModel implements Model {
           span.spanData._input = request.input;
         }
       }
-      const response = await this._fetchResponse(request, true);
+      const response = span
+        ? span.withContextForAsyncIterable(() =>
+            this._fetchResponse(request, true),
+          )
+        : await this._fetchResponse(request, true);
 
       let finalResponse: OpenAI.Responses.Response | undefined;
       const outputItemsByIndex = new Map<number, Record<string, any>>();

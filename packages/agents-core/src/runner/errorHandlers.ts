@@ -23,6 +23,7 @@ import type {
 import { runOutputGuardrails } from './guardrails';
 import { getTurnInput } from './items';
 import { streamStepItemsToRunResult } from './streaming';
+import { withAgentSpanContext } from './tracing';
 
 /**
  * Error kinds supported by run error handlers.
@@ -88,7 +89,7 @@ type TryHandleRunErrorArgs<TContext, TAgent extends Agent<any, any>> = {
     context: RunContext<TContext>,
     agent: TAgent,
     outputText: string,
-  ) => void;
+  ) => void | Promise<void>;
   streamResult?: StreamedRunResult<TContext, TAgent>;
 };
 
@@ -211,12 +212,14 @@ export const tryHandleRunError = async <
 }: TryHandleRunErrorArgs<TContext, TAgent>): Promise<
   RunResult<TContext, TAgent> | undefined
 > => {
-  const handlerResult = await resolveRunErrorHandler({
-    error,
-    errorHandlers,
-    context: state._context,
-    runData: buildRunData(state),
-  });
+  const handlerResult = await withAgentSpanContext(state, () =>
+    resolveRunErrorHandler({
+      error,
+      errorHandlers,
+      context: state._context,
+      runData: buildRunData(state),
+    }),
+  );
   if (!handlerResult) {
     return undefined;
   }
@@ -242,6 +245,6 @@ export const tryHandleRunError = async <
   state._finalOutputSource = 'error_handler';
   await runOutputGuardrails(state, outputGuardrailDefs, outputText);
   state._currentTurnInProgress = false;
-  emitAgentEnd(state._context, state._currentAgent, outputText);
+  await emitAgentEnd(state._context, state._currentAgent, outputText);
   return new RunResult<TContext, TAgent>(state);
 };

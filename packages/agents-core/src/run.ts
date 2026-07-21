@@ -91,6 +91,8 @@ import {
   startRunnerInvocationSpans,
   startTurnSpan,
   recordRunnerSpanUsage,
+  withAgentSpanContext,
+  withRunnerSpanContext,
   type RunnerSpanLifecycle,
 } from './runner/tracing';
 import {
@@ -447,6 +449,21 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     traceMetadata?: Record<string, string>;
     tracingApiKey?: string;
   };
+
+  async #emitAgentEnd<
+    TContext,
+    TAgent extends Agent<TContext, AgentOutputType>,
+  >(
+    state: RunState<TContext, TAgent>,
+    agent: TAgent,
+    outputText: string,
+  ): Promise<void> {
+    const emit = async () => {
+      this.emit('agent_end', state._context, agent, outputText);
+      agent.emit('agent_end', state._context, outputText);
+    };
+    await withAgentSpanContext(state, emit);
+  }
 
   /**
    * Creates a runner with optional defaults that apply to every subsequent run invocation.
@@ -1127,14 +1144,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               state,
               preparedSandboxAgent.executionAgent,
             );
-            const preparedCall = await this.#prepareModelCall(
-              state,
-              preparedSandboxAgent.executionAgent,
-              options,
-              artifacts,
-              preparedSandboxAgent.turnInput,
-              serverConversationTracker,
-              sessionInputUpdate,
+            const preparedCall = await withAgentSpanContext(state, () =>
+              this.#prepareModelCall(
+                state,
+                preparedSandboxAgent.executionAgent,
+                options,
+                artifacts,
+                preparedSandboxAgent.turnInput,
+                serverConversationTracker,
+                sessionInputUpdate,
+              ),
             );
 
             await guardrailTracker.throwIfError();
@@ -1192,34 +1211,44 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               );
             }
 
-            const processedResponse = await processModelResponseAsync(
-              state._lastTurnResponse,
-              state._currentAgent,
-              preparedCall.tools,
-              preparedCall.handoffs,
-              state,
-              [...preparedCall.turnInput, ...state._generatedItems],
-              options.toolNotFoundBehavior,
-              {
-                allowPromptSuppliedTools: preparedCall.allowPromptSuppliedTools,
-              },
+            const lastTurnResponse = state._lastTurnResponse;
+            const processedResponse = await withRunnerSpanContext(
+              currentTurnSpan?.span ?? state._currentAgentSpan,
+              () =>
+                processModelResponseAsync(
+                  lastTurnResponse,
+                  state._currentAgent,
+                  preparedCall.tools,
+                  preparedCall.handoffs,
+                  state,
+                  [...preparedCall.turnInput, ...state._generatedItems],
+                  options.toolNotFoundBehavior,
+                  {
+                    allowPromptSuppliedTools:
+                      preparedCall.allowPromptSuppliedTools,
+                  },
+                ),
             );
 
             state._lastProcessedResponse = processedResponse;
 
             await guardrailTracker.awaitCompletion();
 
-            const turnResult = await resolveTurnAfterModelResponse(
-              state._currentAgent,
-              state._originalInput,
-              state._generatedItems,
-              state._lastTurnResponse,
-              state._lastProcessedResponse!,
-              this,
-              state,
-              toolErrorFormatter,
-              agentToolParentRunConfig,
-              options.errorHandlers,
+            const turnResult = await withRunnerSpanContext(
+              currentTurnSpan?.span ?? state._currentAgentSpan,
+              () =>
+                resolveTurnAfterModelResponse(
+                  state._currentAgent,
+                  state._originalInput,
+                  state._generatedItems,
+                  lastTurnResponse,
+                  state._lastProcessedResponse!,
+                  this,
+                  state,
+                  toolErrorFormatter,
+                  agentToolParentRunConfig,
+                  options.errorHandlers,
+                ),
             );
 
             applyTurnResult({
@@ -1253,15 +1282,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               setRunStateTurnSpanParent(state, undefined);
               currentTurnSpan = undefined;
               state._currentTurnInProgress = false;
-              this.emit(
-                'agent_end',
-                state._context,
+              await this.#emitAgentEnd(
+                state,
                 state._currentAgent,
-                currentStep.output,
-              );
-              state._currentAgent.emit(
-                'agent_end',
-                state._context,
                 currentStep.output,
               );
               return completeResult(new RunResult<TContext, TAgent>(state));
@@ -1296,10 +1319,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           state,
           errorHandlers: options.errorHandlers,
           outputGuardrailDefs: this.outputGuardrailDefs,
-          emitAgentEnd: (context, agent, outputText) => {
-            this.emit('agent_end', context, agent, outputText);
-            agent.emit('agent_end', context, outputText);
-          },
+          emitAgentEnd: (_context, agent, outputText) =>
+            this.#emitAgentEnd(state, agent, outputText),
         });
         if (handledResult) {
           return completeResult(handledResult);
@@ -1596,14 +1617,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             preparedSandboxAgent.executionAgent,
           );
 
-          const preparedCall = await this.#prepareModelCall(
-            result.state,
-            preparedSandboxAgent.executionAgent,
-            options,
-            artifacts,
-            preparedSandboxAgent.turnInput,
-            serverConversationTracker,
-            sessionInputUpdate,
+          const preparedCall = await withAgentSpanContext(result.state, () =>
+            this.#prepareModelCall(
+              result.state,
+              preparedSandboxAgent.executionAgent,
+              options,
+              artifacts,
+              preparedSandboxAgent.turnInput,
+              serverConversationTracker,
+              sessionInputUpdate,
+            ),
           );
 
           await guardrailTracker.throwIfError();
@@ -1791,17 +1814,22 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             );
           }
           result.state._modelResponses.push(result.state._lastTurnResponse);
-          const processedResponse = await processModelResponseAsync(
-            result.state._lastTurnResponse,
-            currentAgent,
-            preparedCall.tools,
-            preparedCall.handoffs,
-            result.state,
-            [...preparedCall.turnInput, ...result.state._generatedItems],
-            options.toolNotFoundBehavior,
-            {
-              allowPromptSuppliedTools: preparedCall.allowPromptSuppliedTools,
-            },
+          const processedResponse = await withRunnerSpanContext(
+            currentTurnSpan?.span ?? result.state._currentAgentSpan,
+            () =>
+              processModelResponseAsync(
+                finalResponse,
+                currentAgent,
+                preparedCall.tools,
+                preparedCall.handoffs,
+                result.state,
+                [...preparedCall.turnInput, ...result.state._generatedItems],
+                options.toolNotFoundBehavior,
+                {
+                  allowPromptSuppliedTools:
+                    preparedCall.allowPromptSuppliedTools,
+                },
+              ),
           );
 
           result.state._lastProcessedResponse = processedResponse;
@@ -1813,17 +1841,21 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             streamStepItemsToRunResult(result, processedResponse.newItems);
           }
 
-          const turnResult = await resolveTurnAfterModelResponse(
-            currentAgent,
-            result.state._originalInput,
-            result.state._generatedItems,
-            result.state._lastTurnResponse,
-            result.state._lastProcessedResponse!,
-            this,
-            result.state,
-            toolErrorFormatter,
-            agentToolParentRunConfig,
-            options.errorHandlers,
+          const turnResult = await withRunnerSpanContext(
+            currentTurnSpan?.span ?? result.state._currentAgentSpan,
+            () =>
+              resolveTurnAfterModelResponse(
+                currentAgent,
+                result.state._originalInput,
+                result.state._generatedItems,
+                finalResponse,
+                result.state._lastProcessedResponse!,
+                this,
+                result.state,
+                toolErrorFormatter,
+                agentToolParentRunConfig,
+                options.errorHandlers,
+              ),
           );
 
           applyTurnResult({
@@ -1867,15 +1899,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             if (!serverManagesConversation) {
               await saveStreamResultToSession(options.session, result);
             }
-            this.emit(
-              'agent_end',
-              result.state._context,
+            await this.#emitAgentEnd(
+              result.state,
               currentAgent,
-              currentStep.output,
-            );
-            currentAgent.emit(
-              'agent_end',
-              result.state._context,
               currentStep.output,
             );
             return;
@@ -1929,10 +1955,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         state: result.state,
         errorHandlers: options.errorHandlers,
         outputGuardrailDefs: this.outputGuardrailDefs,
-        emitAgentEnd: (context, agent, outputText) => {
-          this.emit('agent_end', context, agent, outputText);
-          agent.emit('agent_end', context, outputText);
-        },
+        emitAgentEnd: (_context, agent, outputText) =>
+          this.#emitAgentEnd(result.state, agent, outputText),
         streamResult: result,
       });
       if (handledResult) {

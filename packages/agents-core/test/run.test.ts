@@ -65,6 +65,11 @@ import {
 import logger from '../src/logger';
 import { getGlobalTraceProvider } from '../src/tracing/provider';
 import {
+  createTestTracingProcessor,
+  createTracingContextProbe,
+  withTestTracingProcessor,
+} from '../../../helpers/tests/tracing';
+import {
   FakeModel,
   fakeModelRefusal,
   fakeModelMessageWithRefusal,
@@ -986,6 +991,144 @@ describe('Runner.run', () => {
       ]);
     });
 
+    it('activates agent span context for hooks and dynamic preparation', async () => {
+      const contextProbe = createTracingContextProbe('agent');
+      const observedContext: Record<string, boolean> = {};
+      const dynamicTool = tool({
+        name: 'dynamic_tool',
+        description: 'A dynamically enabled tool',
+        parameters: z.object({}),
+        isEnabled: async () => {
+          observedContext.toolDiscovery = contextProbe.isActive();
+          return false;
+        },
+        execute: async () => 'unused',
+      });
+      const agent = new Agent({
+        name: 'ContextAgent',
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('done')],
+            usage: new Usage(),
+          },
+        ]),
+        instructions: async () => {
+          observedContext.instructions = contextProbe.isActive();
+          return 'Dynamic instructions';
+        },
+        tools: [dynamicTool],
+      });
+      agent.on('agent_start', () => {
+        observedContext.agentStart = contextProbe.isActive();
+      });
+      const runner = new Runner({ tracingDisabled: false });
+
+      await withTestTracingProcessor(contextProbe.processor, async () => {
+        await runner.run(agent, 'hello');
+      });
+
+      expect(observedContext).toEqual({
+        agentStart: true,
+        toolDiscovery: true,
+        instructions: true,
+      });
+    });
+
+    it('activates agent span context for completion hooks', async () => {
+      const contextProbe = createTracingContextProbe('agent');
+      const observedContext: Record<string, boolean> = {};
+      const agent = new Agent({
+        name: 'CompletionContextAgent',
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('done')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+      const runner = new Runner({ tracingDisabled: false });
+      agent.on('agent_end', () => {
+        observedContext.agentEnd = contextProbe.isActive();
+      });
+      runner.on('agent_end', () => {
+        observedContext.runnerEnd = contextProbe.isActive();
+      });
+
+      await withTestTracingProcessor(contextProbe.processor, () =>
+        runner.run(agent, 'hello'),
+      );
+
+      expect(observedContext).toEqual({
+        agentEnd: true,
+        runnerEnd: true,
+      });
+    });
+
+    it('activates turn span context for post-model callbacks', async () => {
+      const contextProbe = createTracingContextProbe('turn');
+      let formatterContextActive = false;
+      const agent = new Agent({
+        name: 'PostModelContextAgent',
+        model: new FakeModel([
+          {
+            output: [
+              {
+                ...TEST_MODEL_FUNCTION_CALL,
+                name: 'missing_tool',
+                callId: 'call_missing',
+                arguments: '{}',
+              },
+            ],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('recovered')],
+            usage: new Usage(),
+          },
+        ]),
+        toolUseBehavior: 'run_llm_again',
+      });
+
+      await withTestTracingProcessor(contextProbe.processor, async () => {
+        await new Runner({ tracingDisabled: false }).run(agent, 'hello', {
+          toolNotFoundBehavior: 'return_error_to_model',
+          toolErrorFormatter: () => {
+            formatterContextActive = contextProbe.isActive();
+            return 'missing tool';
+          },
+        });
+      });
+
+      expect(formatterContextActive).toBe(true);
+    });
+
+    it('activates agent span context for error handlers', async () => {
+      const contextProbe = createTracingContextProbe('agent');
+      let errorHandlerContextActive = false;
+      const agent = new Agent({
+        name: 'ErrorContextAgent',
+        model: new FakeModel([
+          {
+            output: [fakeModelRefusal('Cannot continue')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      await withTestTracingProcessor(contextProbe.processor, async () => {
+        await new Runner({ tracingDisabled: false }).run(agent, 'hello', {
+          errorHandlers: {
+            modelRefusal: () => {
+              errorHandlerContextActive = contextProbe.isActive();
+              return { finalOutput: 'fallback' };
+            },
+          },
+        });
+      });
+
+      expect(errorHandlerContextActive).toBe(true);
+    });
+
     it('applies toolChoice updates from agent_tool_end before the next model call', async () => {
       class ToolChoiceTrackingModel implements Model {
         requests: ModelRequest[] = [];
@@ -1786,6 +1929,49 @@ describe('Runner.run', () => {
       const restored = await RunState.fromString(agent, JSON.stringify(json));
       const resumed = await run(agent, restored);
       expect(resumed.finalOutput).toBe(first.finalOutput);
+    });
+
+    it('represents a restored agent span before entering its context', async () => {
+      const representedSpans = new Set<string>();
+      let enteredRepresentedAgentSpan = false;
+      const processor = createTestTracingProcessor({
+        async onSpanStart(span) {
+          representedSpans.add(span.spanId);
+        },
+        async onSpanEnd(span) {
+          representedSpans.delete(span.spanId);
+        },
+        async withSpan(span, fn) {
+          if (span.spanData.type === 'agent') {
+            enteredRepresentedAgentSpan = representedSpans.has(span.spanId);
+          }
+          return fn();
+        },
+      });
+      const agent = new Agent({
+        name: 'ResumeTracing',
+        model: new FakeModel([
+          { output: [fakeModelMessage('resumed')], usage: new Usage() },
+        ]),
+      });
+
+      await withTestTracingProcessor(processor, async () => {
+        const provider = getGlobalTraceProvider();
+        const state = new RunState(new RunContext(), 'hi', agent, 1);
+        const trace = provider.createTrace({ name: 'Restored trace' });
+        state._trace = trace;
+        state._currentAgentSpan = provider.createSpan(
+          { data: { type: 'agent', name: agent.name } },
+          trace,
+        );
+        const restored = await RunState.fromString(
+          agent,
+          JSON.stringify(state.toJSON()),
+        );
+        await new Runner({ tracingDisabled: false }).run(agent, restored);
+      });
+
+      expect(enteredRepresentedAgentSpan).toBe(true);
     });
 
     it('resumes from schema 1.0 RunState', async () => {

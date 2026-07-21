@@ -1,4 +1,3 @@
-import type { Stream } from 'openai/streaming';
 import type { CompletionUsage } from 'openai/resources/completions';
 import { protocol, UserError } from '@openai/agents-core';
 import { ChatCompletion, ChatCompletionChunk } from 'openai/resources/chat';
@@ -20,7 +19,7 @@ type StreamingState = {
 
 export async function* convertChatCompletionsStreamToResponses(
   response: ChatCompletion,
-  stream: Stream<ChatCompletionChunk>,
+  stream: AsyncIterable<ChatCompletionChunk>,
   options: { strictFeatureValidation?: boolean } = {},
 ): AsyncIterable<protocol.StreamEvent> {
   let usage: CompletionUsage | undefined = undefined;
