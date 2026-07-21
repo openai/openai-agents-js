@@ -380,6 +380,9 @@ function mountEnvironment(
   if (config.accessKeyId && config.secretAccessKey) {
     environment.AWS_ACCESS_KEY_ID = config.accessKeyId;
     environment.AWS_SECRET_ACCESS_KEY = config.secretAccessKey;
+    if (!config.sessionToken) {
+      delete environment.AWS_SESSION_TOKEN;
+    }
   }
   if (config.sessionToken) {
     environment.AWS_SESSION_TOKEN = config.sessionToken;

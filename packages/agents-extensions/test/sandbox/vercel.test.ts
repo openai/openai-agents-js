@@ -317,7 +317,7 @@ describe('VercelSandboxClient', () => {
       },
     });
 
-    await client.create(vercelS3Manifest());
+    const session = await client.create(vercelS3Manifest());
 
     const mountCall = runCommandMock.mock.calls.find(([params]) => {
       return isolatedMountCommand(params)?.command === 'mount-s3';
@@ -333,6 +333,87 @@ describe('VercelSandboxClient', () => {
     );
     expect(mountCall?.[0].args).not.toContain(
       'UNRELATED_SECRET=do-not-forward',
+    );
+
+    const serialized = await client.serializeSessionState(session.state);
+    expect(serialized.environment).toMatchObject({
+      AWS_ROLE_ARN: 'arn:aws:iam::123456789012:role/sandbox',
+      AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/secrets/aws/token',
+      UNRELATED_SECRET: 'do-not-forward',
+    });
+    expect(JSON.stringify(serialized)).not.toContain('environment-access-key');
+    expect(JSON.stringify(serialized)).not.toContain('environment-secret-key');
+    expect(JSON.stringify(serialized)).not.toContain(
+      'environment-session-token',
+    );
+    expect(session.state.environment).toMatchObject({
+      AWS_ACCESS_KEY_ID: 'environment-access-key',
+      AWS_SECRET_ACCESS_KEY: 'environment-secret-key',
+      AWS_SESSION_TOKEN: 'environment-session-token',
+    });
+  });
+
+  test('does not combine inline static keys with an inherited session token', async () => {
+    const client = new VercelSandboxClient({
+      allowS3CredentialExposure: true,
+      env: {
+        AWS_ACCESS_KEY_ID: 'environment-access-key',
+        AWS_SECRET_ACCESS_KEY: 'environment-secret-key',
+        AWS_SESSION_TOKEN: 'environment-session-token',
+      },
+    });
+
+    await client.create(
+      vercelS3Manifest('bucket', {
+        accessKeyId: 'inline-access-key',
+        secretAccessKey: 'inline-secret-key',
+      }),
+    );
+
+    const mountCall = runCommandMock.mock.calls.find(([params]) => {
+      return isolatedMountCommand(params)?.command === 'mount-s3';
+    });
+    expect(mountCall?.[0].args).toEqual(
+      expect.arrayContaining([
+        'AWS_ACCESS_KEY_ID=inline-access-key',
+        'AWS_SECRET_ACCESS_KEY=inline-secret-key',
+      ]),
+    );
+    expect(mountCall?.[0].args).not.toContain(
+      'AWS_SESSION_TOKEN=environment-session-token',
+    );
+  });
+
+  test('uses an inline session token with inline temporary keys', async () => {
+    const client = new VercelSandboxClient({
+      allowS3CredentialExposure: true,
+      env: {
+        AWS_ACCESS_KEY_ID: 'environment-access-key',
+        AWS_SECRET_ACCESS_KEY: 'environment-secret-key',
+        AWS_SESSION_TOKEN: 'environment-session-token',
+      },
+    });
+
+    await client.create(
+      vercelS3Manifest('bucket', {
+        accessKeyId: 'inline-access-key',
+        secretAccessKey: 'inline-secret-key',
+        sessionToken: 'inline-session-token',
+      }),
+    );
+
+    const mountCall = runCommandMock.mock.calls.find(([params]) => {
+      return isolatedMountCommand(params)?.command === 'mount-s3';
+    });
+    expect(mountCall?.[0].args).toEqual(
+      expect.arrayContaining([
+        'AWS_ACCESS_KEY_ID=inline-access-key',
+        'AWS_SECRET_ACCESS_KEY=inline-secret-key',
+        'AWS_SESSION_TOKEN=inline-session-token',
+      ]),
+    );
+    expect(mountCall?.[0].args).not.toContain(
+      'AWS_SESSION_TOKEN=environment-session-token',
     );
   });
 

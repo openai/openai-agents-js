@@ -69,6 +69,11 @@ import {
 const DEFAULT_VERCEL_WORKSPACE_ROOT = '/vercel/sandbox';
 const VERCEL_MOUNT_COMMAND_PATH =
   '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+const VERCEL_S3_CREDENTIAL_ENVIRONMENT_NAMES = [
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+] as const;
 
 type VercelSdkSandboxClass = typeof import('@vercel/sandbox').Sandbox;
 type VercelSdkSandbox = import('@vercel/sandbox').Sandbox;
@@ -1389,7 +1394,12 @@ export class VercelSandboxClient implements SandboxClient<
         },
       });
     }
-    return serializeRemoteSandboxSessionState(state);
+    return serializeRemoteSandboxSessionState({
+      ...state,
+      environment: hasVercelMounts(state.manifest)
+        ? omitVercelS3CredentialEnvironment(state.environment)
+        : state.environment,
+    });
   }
 
   canPersistOwnedSessionState(state: VercelSandboxSessionState): boolean {
@@ -1701,6 +1711,16 @@ function sanitizeVercelMountManifest(manifest: Manifest): Manifest {
 
 function hasVercelMounts(manifest: Manifest): boolean {
   return manifest.mountTargetsForMaterialization().length > 0;
+}
+
+function omitVercelS3CredentialEnvironment(
+  environment: Record<string, string>,
+): Record<string, string> {
+  const serializedEnvironment = { ...environment };
+  for (const name of VERCEL_S3_CREDENTIAL_ENVIRONMENT_NAMES) {
+    delete serializedEnvironment[name];
+  }
+  return serializedEnvironment;
 }
 
 function assertNoOverlappingMountPath(
