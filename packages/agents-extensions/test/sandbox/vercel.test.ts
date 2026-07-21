@@ -734,6 +734,25 @@ describe('VercelSandboxClient', () => {
     ).toBe(false);
   });
 
+  test('rejects non-writable mount ancestors before detaching them', async () => {
+    const session = await new VercelSandboxClient().create(
+      vercelS3Manifest('cache/bucket'),
+    );
+    const callOffset = runCommandMock.mock.calls.length;
+
+    await expect(
+      session.hydrateWorkspace(
+        makeTarArchive([{ name: 'cache', type: '5', mode: 0o555 }]),
+      ),
+    ).rejects.toThrow(/archive directory blocks protected path/);
+
+    expect(
+      runCommandMock.mock.calls
+        .slice(callOffset)
+        .some(([params]) => isolatedMountCommand(params)?.command === 'umount'),
+    ).toBe(false);
+  });
+
   test('honors null archive limit overrides while mounts are active', async () => {
     const archive = makeTarArchive([
       { name: 'README.md', content: 'larger than one byte' },

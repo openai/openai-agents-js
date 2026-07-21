@@ -278,6 +278,18 @@ export function validateWorkspaceTarArchive(
       ) {
         continue;
       }
+      const mode =
+        rejectedPaths.length > 0 && rawType === '5'
+          ? parseTarOctal(header, 100, 8)
+          : undefined;
+      if (rawType === '5' && safeTarMemberRelPath(name) === null) {
+        assertTarMemberDoesNotOverlapRejectedPath(
+          { rawName: name, path: '', type: 'directory' },
+          rejectedPaths,
+          options.rootName,
+          mode,
+        );
+      }
       const member = validateTarMember(name, rawType, options, linkName);
       if (!member) {
         continue;
@@ -286,6 +298,7 @@ export function validateWorkspaceTarArchive(
         member,
         rejectedPaths,
         options.rootName,
+        mode,
       );
       checkArchiveMemberCount(members.length + 1, name, archiveLimits);
       if (member.type === 'file') {
@@ -415,6 +428,7 @@ function assertTarMemberDoesNotOverlapRejectedPath(
   member: TarMember,
   rejectedPaths: Iterable<string>,
   rootName?: string,
+  mode?: number,
 ): void {
   const memberPaths = [member.path];
   const normalizedRootName = rootName
@@ -431,12 +445,26 @@ function assertTarMemberDoesNotOverlapRejectedPath(
 
   for (const rejectedPath of rejectedPaths) {
     for (const memberPath of memberPaths) {
+      const isAncestor =
+        memberPath === ''
+          ? rejectedPath !== ''
+          : rejectedPath.startsWith(`${memberPath}/`);
+      if (
+        member.type === 'directory' &&
+        isAncestor &&
+        mode !== undefined &&
+        (mode & 0o300) !== 0o300
+      ) {
+        throw tarError(
+          member.rawName,
+          `archive directory blocks protected path: ${rejectedPath}`,
+        );
+      }
       if (
         rejectedPath === '' ||
         memberPath === rejectedPath ||
         memberPath.startsWith(`${rejectedPath}/`) ||
-        (member.type !== 'directory' &&
-          rejectedPath.startsWith(`${memberPath}/`))
+        (member.type !== 'directory' && isAncestor)
       ) {
         throw tarError(
           member.rawName,

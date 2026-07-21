@@ -2045,10 +2045,22 @@ describe('remote sandbox path helpers', () => {
     ).toThrow(SandboxArchiveError);
     expect(() =>
       validateWorkspaceTarArchive(
-        makeTarArchive([{ name: 'cache', type: '5' }]),
+        makeTarArchive([{ name: 'cache', type: '5', mode: 0o755 }]),
         { rejectRelPaths: ['cache/mounted'] },
       ),
     ).not.toThrow();
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: 'cache', type: '5', mode: 0o555 }]),
+        { rejectRelPaths: ['cache/mounted'] },
+      ),
+    ).toThrow(/archive directory blocks protected path: cache\/mounted/);
+    expect(() =>
+      validateWorkspaceTarArchive(
+        makeTarArchive([{ name: '.', type: '5', mode: 0o555 }]),
+        { rejectRelPaths: ['cache/mounted'] },
+      ),
+    ).toThrow(/archive directory blocks protected path: cache\/mounted/);
     expect(() =>
       validateWorkspaceTarArchive(
         makeTarArchive([{ name: 'README.md', content: 'protected root' }]),
