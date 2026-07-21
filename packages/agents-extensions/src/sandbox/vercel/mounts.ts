@@ -16,9 +16,13 @@ const MOUNTPOINT_S3_PACKAGE = 'mount-s3';
 const MOUNTPOINT_INSTALL_TIMEOUT_MS = 5 * 60_000;
 const MOUNTPOINT_COMMAND_TIMEOUT_MS = 2 * 60_000;
 const MOUNTPOINT_S3_SOURCE = 'mountpoint-s3';
-const FINDMNT_RAW_ESCAPE_SEQUENCE = /(?:\\x[0-9a-f]{2})+/giu;
-const FINDMNT_RAW_BYTE_ESCAPE = /\\x([0-9a-f]{2})/giu;
 
+/**
+ * Selects Vercel's create-time-only application of the remote mount policy.
+ *
+ * This strategy does not imply dynamic mount mutation, credential refresh, or
+ * resumable mounts. Those exclusions keep the provider lifecycle auditable.
+ */
 export class VercelCloudBucketMountStrategy {
   readonly [key: string]: unknown;
   readonly type = 'vercel_cloud_bucket';
@@ -57,47 +61,6 @@ type VercelMountOwner = {
   gid: string;
 };
 
-export type VercelS3MountCredentials = {
-  accessKeyId?: string;
-  secretAccessKey?: string;
-  sessionToken?: string;
-  /** Expiration time for temporary credentials. */
-  expiration?: Date;
-};
-
-export type VercelS3MountConfiguration = {
-  /** Logical manifest entry path relative to the workspace root. */
-  logicalPath: string;
-  /** Current trusted mount path, absolute or relative to the workspace root. */
-  mountPath: string;
-  /** Current trusted mount configuration, optionally including credentials. */
-  mount: S3Mount;
-};
-
-/**
- * Resolves the complete authoritative S3 mount set for a resumed session.
- *
- * `persistedMounts` is untrusted context and must not be returned without
- * validating it against current trusted configuration.
- */
-export type VercelS3MountConfigurationResolver = (args: {
-  persistedMounts: ReadonlyArray<{
-    logicalPath: string;
-    mountPath: string;
-    mount: Readonly<S3Mount>;
-  }>;
-}) =>
-  | ReadonlyArray<VercelS3MountConfiguration>
-  | Promise<ReadonlyArray<VercelS3MountConfiguration>>;
-
-export type VercelS3MountCredentialResolver = (args: {
-  mountPath: string;
-  mount: Readonly<S3Mount>;
-}) =>
-  | VercelS3MountCredentials
-  | undefined
-  | Promise<VercelS3MountCredentials | undefined>;
-
 export function isVercelCloudBucketMountEntry(entry: Entry): entry is S3Mount {
   return (
     entry.type === 's3_mount' &&
@@ -105,14 +68,25 @@ export function isVercelCloudBucketMountEntry(entry: Entry): entry is S3Mount {
   );
 }
 
+export function hasVercelS3Credentials(entry: S3Mount): boolean {
+  return (
+    readOptionalString(entry, 'accessKeyId') !== undefined ||
+    readOptionalString(entry, 'secretAccessKey') !== undefined ||
+    readOptionalString(entry, 'sessionToken') !== undefined
+  );
+}
+
+export function validateVercelCloudBucketMountEntry(entry: Entry): void {
+  resolveVercelS3MountConfig(entry);
+}
+
 export async function mountVercelCloudBucket(args: {
   entry: Entry;
   mountPath: string;
   runCommand: VercelMountCommand;
-  credentials?: VercelS3MountCredentials;
   validateMountPath?: () => Promise<void>;
 }): Promise<void> {
-  const config = resolveVercelS3MountConfig(args.entry, args.credentials);
+  const config = resolveVercelS3MountConfig(args.entry);
   await ensureMountpoint(args.runCommand);
 
   await runRequiredCommand({
@@ -135,14 +109,13 @@ export async function mountVercelCloudBucket(args: {
   await assertEmptyMountDirectory(args.runCommand, args.mountPath);
   await args.validateMountPath?.();
 
-  const environment = mountEnvironment(config);
   await runRequiredCommand({
     runCommand: args.runCommand,
     label: 'mount the S3 bucket',
     command: 'mount-s3',
     commandArgs: mountArguments(config, args.mountPath, owner),
     options: {
-      env: environment,
+      env: mountEnvironment(config),
       sudo: true,
       timeoutMs: MOUNTPOINT_COMMAND_TIMEOUT_MS,
     },
@@ -160,6 +133,7 @@ export async function unmountVercelCloudBucket(args: {
   if (!(await isVercelCloudBucketMounted(args))) {
     return;
   }
+
   const commandArgs = [args.mountPath];
   const result = await invokeCommand({
     runCommand: args.runCommand,
@@ -219,130 +193,55 @@ export async function isVercelCloudBucketMounted(args: {
       timeoutMs: MOUNTPOINT_COMMAND_TIMEOUT_MS,
     },
   });
-  if (result.status === 0) {
-    const actualSource = result.stdout?.trim();
-    if (actualSource === MOUNTPOINT_S3_SOURCE) {
-      return true;
-    }
-    throw new SandboxMountError(
-      'VercelSandboxClient found an unexpected filesystem at the S3 mount path.',
-      {
-        provider: 'vercel',
-        command: displayCommand('findmnt', commandArgs),
-        mountPath: args.mountPath,
-        mountIdentityMismatch: true,
-        expectedSource: MOUNTPOINT_S3_SOURCE,
-        actualSource: actualSource ?? '',
-      },
-      'mount_failed',
-    );
-  }
   if (result.status === 1) {
     return false;
   }
-  throw commandFailure({
-    label: 'check the S3 mountpoint source',
-    command: 'findmnt',
-    commandArgs,
-    result,
-    details: {
-      mountPath: args.mountPath,
-    },
-  });
-}
-
-export async function listVercelCloudBucketMountPaths(args: {
-  runCommand: VercelMountCommand;
-}): Promise<string[]> {
-  const commandArgs = [
-    '--noheadings',
-    '--raw',
-    '--output',
-    'TARGET',
-    '--source',
-    MOUNTPOINT_S3_SOURCE,
-  ];
-  const result = await invokeCommand({
-    runCommand: args.runCommand,
-    label: 'list S3 mountpoints',
-    command: 'findmnt',
-    commandArgs,
-    options: {
-      timeoutMs: MOUNTPOINT_COMMAND_TIMEOUT_MS,
-    },
-  });
-  if (result.status === 1) {
-    return [];
-  }
   if (result.status !== 0) {
     throw commandFailure({
-      label: 'list S3 mountpoints',
+      label: 'check the S3 mountpoint source',
       command: 'findmnt',
       commandArgs,
       result,
+      details: {
+        mountPath: args.mountPath,
+      },
     });
   }
-  const mountPaths = (result.stdout ?? '')
-    .split(/\r?\n/u)
-    .map((path) => path.trim())
-    .filter((path) => path.length > 0)
-    .map(decodeFindmntRawValue);
-  if (mountPaths.length === 0) {
-    throw new SandboxMountError(
-      'VercelSandboxClient could not determine the live S3 mount paths.',
-      {
-        provider: 'vercel',
-        command: displayCommand('findmnt', commandArgs),
-      },
-      'mount_failed',
-    );
-  }
-  return mountPaths;
-}
 
-function decodeFindmntRawValue(value: string): string {
-  return value.replace(FINDMNT_RAW_ESCAPE_SEQUENCE, (escapedBytes) =>
-    new TextDecoder().decode(
-      Uint8Array.from(
-        [...escapedBytes.matchAll(FINDMNT_RAW_BYTE_ESCAPE)].map((match) =>
-          Number.parseInt(match[1]!, 16),
-        ),
-      ),
-    ),
+  const actualSource = result.stdout?.trim();
+  if (actualSource === MOUNTPOINT_S3_SOURCE) {
+    return true;
+  }
+  throw new SandboxMountError(
+    'VercelSandboxClient found an unexpected filesystem at the S3 mount path.',
+    {
+      provider: 'vercel',
+      command: displayCommand('findmnt', commandArgs),
+      mountPath: args.mountPath,
+      expectedSource: MOUNTPOINT_S3_SOURCE,
+      actualSource: actualSource ?? '',
+    },
+    'mount_failed',
   );
 }
 
-export function readVercelS3MountCredentials(
-  entry: Entry,
-): VercelS3MountCredentials | undefined {
-  const credentials = normalizeVercelS3MountCredentials({
-    accessKeyId: readOptionalString(entry, 'accessKeyId'),
-    secretAccessKey: readOptionalString(entry, 'secretAccessKey'),
-    sessionToken: readOptionalString(entry, 'sessionToken'),
-  });
-  return credentials.accessKeyId ? credentials : undefined;
-}
-
-export function normalizeVercelS3MountCredentials(
-  credentials: VercelS3MountCredentials = {},
-): VercelS3MountCredentials {
-  const accessKeyId = readOptionalString(credentials, 'accessKeyId');
-  const secretAccessKey = readOptionalString(credentials, 'secretAccessKey');
-  const sessionToken = readOptionalString(credentials, 'sessionToken');
-  const expiration = credentials.expiration;
-  if (
-    expiration !== undefined &&
-    (!(expiration instanceof Date) || !Number.isFinite(expiration.getTime()))
-  ) {
-    throw new SandboxMountError(
-      'Vercel S3 mount credential expiration must be a valid Date.',
+function resolveVercelS3MountConfig(entry: Entry): VercelS3MountConfig {
+  if (!isVercelCloudBucketMountEntry(entry)) {
+    throw new SandboxUnsupportedFeatureError(
+      'VercelSandboxClient only supports VercelCloudBucketMountStrategy on S3 mount entries.',
       {
         provider: 'vercel',
-        mountType: 's3_mount',
+        feature: 'entry.mountStrategy',
+        mountType: entry.type,
+        strategyType: (entry as { mountStrategy?: { type?: unknown } })
+          .mountStrategy?.type,
       },
-      'mount_config_invalid',
     );
   }
+
+  const accessKeyId = readOptionalString(entry, 'accessKeyId');
+  const secretAccessKey = readOptionalString(entry, 'secretAccessKey');
+  const sessionToken = readOptionalString(entry, 'sessionToken');
   validateCredentialPair({
     accessKeyId,
     secretAccessKey,
@@ -364,48 +263,12 @@ export function normalizeVercelS3MountCredentials(
       'mount_config_invalid',
     );
   }
-  if (expiration && !accessKeyId) {
-    throw new SandboxMountError(
-      'Vercel S3 mounts require accessKeyId and secretAccessKey when credential expiration is provided.',
-      {
-        provider: 'vercel',
-        mountType: 's3_mount',
-      },
-      'mount_config_invalid',
-    );
-  }
-  return {
-    ...(accessKeyId ? { accessKeyId } : {}),
-    ...(secretAccessKey ? { secretAccessKey } : {}),
-    ...(sessionToken ? { sessionToken } : {}),
-    ...(expiration ? { expiration: new Date(expiration.getTime()) } : {}),
-  };
-}
-
-function resolveVercelS3MountConfig(
-  entry: Entry,
-  credentials?: VercelS3MountCredentials,
-): VercelS3MountConfig {
-  if (!isVercelCloudBucketMountEntry(entry)) {
-    throw new SandboxUnsupportedFeatureError(
-      'VercelSandboxClient only supports VercelCloudBucketMountStrategy on S3 mount entries.',
-      {
-        provider: 'vercel',
-        feature: 'entry.mountStrategy',
-        mountType: entry.type,
-        strategyType: (entry as { mountStrategy?: { type?: unknown } })
-          .mountStrategy?.type,
-      },
-    );
-  }
-
-  const normalizedCredentials = normalizeVercelS3MountCredentials(
-    credentials ?? readVercelS3MountCredentials(entry),
-  );
 
   return {
     mount: entry,
-    ...normalizedCredentials,
+    ...(accessKeyId ? { accessKeyId } : {}),
+    ...(secretAccessKey ? { secretAccessKey } : {}),
+    ...(sessionToken ? { sessionToken } : {}),
     region: readOptionalString(entry, 'region'),
     endpointUrl: readOptionalString(entry, 'endpointUrl'),
     prefix: readOptionalString(entry, 'prefix'),
@@ -422,30 +285,27 @@ async function ensureMountpoint(runCommand: VercelMountCommand): Promise<void> {
       timeoutMs: MOUNTPOINT_COMMAND_TIMEOUT_MS,
     },
   });
-  if (check.status === 0) {
-    await assertMountpointVersion(runCommand);
-    return;
+  if (check.status !== 0) {
+    await runRequiredCommand({
+      runCommand,
+      label: 'install Mountpoint for Amazon S3',
+      command: 'dnf',
+      commandArgs: [
+        'install',
+        '-y',
+        '--setopt=gpgcheck=1',
+        'fuse',
+        MOUNTPOINT_S3_PACKAGE,
+      ],
+      options: {
+        sudo: true,
+        timeoutMs: MOUNTPOINT_INSTALL_TIMEOUT_MS,
+      },
+      details: {
+        package: MOUNTPOINT_S3_PACKAGE,
+      },
+    });
   }
-
-  await runRequiredCommand({
-    runCommand,
-    label: 'install Mountpoint for Amazon S3',
-    command: 'dnf',
-    commandArgs: [
-      'install',
-      '-y',
-      '--setopt=gpgcheck=1',
-      'fuse',
-      MOUNTPOINT_S3_PACKAGE,
-    ],
-    options: {
-      sudo: true,
-      timeoutMs: MOUNTPOINT_INSTALL_TIMEOUT_MS,
-    },
-    details: {
-      package: 'mount-s3',
-    },
-  });
   await assertMountpointVersion(runCommand);
 }
 

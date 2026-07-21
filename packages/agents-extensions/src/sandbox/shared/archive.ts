@@ -61,9 +61,6 @@ export async function persistRemoteWorkspaceTar(args: {
   manifest: Manifest;
   io: RemoteWorkspaceTarIo;
   archivePath?: string;
-  skipRelPaths?: Iterable<string>;
-  rootAnchoredExcludes?: boolean;
-  oneFileSystem?: boolean;
 }): Promise<Uint8Array> {
   const root = args.manifest.root;
   const archivePath = args.archivePath ?? remoteArchivePath(args.providerName);
@@ -76,16 +73,11 @@ export async function persistRemoteWorkspaceTar(args: {
     runCommand: args.io.runCommand,
   });
 
-  const excludeArgs = workspaceTarExcludeArgs(
-    args.manifest,
-    args.skipRelPaths,
-    args.rootAnchoredExcludes ? { rootAnchored: true } : {},
-  );
+  const excludeArgs = workspaceTarExcludeArgs(args.manifest);
   const tarCommand = [
     `mkdir -p -- ${shellQuote(root)}`,
     [
       'tar',
-      ...(args.oneFileSystem ? ['--one-file-system'] : []),
       ...excludeArgs,
       '-C',
       shellQuote(root),
@@ -140,7 +132,6 @@ export async function hydrateRemoteWorkspaceTar(args: {
   data: WorkspaceArchiveData;
   archivePath?: string;
   archiveLimits?: SandboxArchiveLimits | null;
-  oneFileSystem?: boolean;
 }): Promise<void> {
   const root = args.manifest.root;
   const archive = toWorkspaceArchiveBytes(args.data);
@@ -160,13 +151,10 @@ export async function hydrateRemoteWorkspaceTar(args: {
 
   try {
     await args.io.writeFile(archivePath, archive);
-    const clearWorkspaceCommand = args.oneFileSystem
-      ? `find ${shellQuote(root)} -xdev -depth -mindepth 1 -delete`
-      : `find ${shellQuote(root)} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +`;
     const result = await args.io.runCommand(
       [
         `mkdir -p -- ${shellQuote(root)}`,
-        clearWorkspaceCommand,
+        `find ${shellQuote(root)} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +`,
         `tar -C ${shellQuote(root)} -xf ${shellQuote(archivePath)}`,
       ].join(' && '),
     );
@@ -228,9 +216,6 @@ export function validateWorkspaceTarArchive(
 ): void {
   const bytes = toWorkspaceArchiveBytes(data);
   const archiveLimits = resolveSandboxArchiveLimits(options.archiveLimits);
-  const rejectedPaths = [...(options.rejectRelPaths ?? [])].map(
-    normalizeTarRelPath,
-  );
   checkArchiveInputBytes(bytes.byteLength, archiveLimits);
   const membersByPath = new Map<string, TarMember>();
   const symlinkPaths = new Set<string>();
@@ -290,12 +275,20 @@ export function validateWorkspaceTarArchive(
       ) {
         continue;
       }
+      if (
+        matchesTarMemberPath(
+          name,
+          options.rejectRelPaths ?? [],
+          options.rootName,
+        )
+      ) {
+        throw tarError(name, 'archive path overlaps a protected path');
+      }
 
       const member = validateTarMember(name, rawType, options, linkName);
       if (!member) {
         continue;
       }
-      assertTarMemberDoesNotOverlapRejectedPath(member, rejectedPaths);
       checkArchiveMemberCount(members.length + 1, name, archiveLimits);
       if (member.type === 'file') {
         extractedBytes += size;
@@ -358,30 +351,14 @@ export function toWorkspaceArchiveBytes(
   return Uint8Array.from(data);
 }
 
-export function workspaceTarExcludeArgs(
-  manifest: Manifest,
-  additionalPaths: Iterable<string> = [],
-  options: { rootAnchored?: boolean } = {},
-): string[] {
-  const excludedPaths = [
-    ...new Set([...manifest.ephemeralPersistencePaths(), ...additionalPaths]),
-  ]
+export function workspaceTarExcludeArgs(manifest: Manifest): string[] {
+  return [...manifest.ephemeralPersistencePaths()]
     .filter((path) => path.length > 0)
-    .sort((left, right) => left.localeCompare(right));
-  if (excludedPaths.length === 0) {
-    return [];
-  }
-  if (!options.rootAnchored) {
-    return excludedPaths.flatMap((path) => [
+    .sort((left, right) => left.localeCompare(right))
+    .flatMap((path) => [
       `--exclude=${shellQuote(path)}`,
       `--exclude=${shellQuote(`./${path}`)}`,
     ]);
-  }
-  return [
-    '--anchored',
-    '--no-wildcards',
-    ...excludedPaths.map((path) => `--exclude=${shellQuote(`./${path}`)}`),
-  ];
 }
 
 type TarMember = {
@@ -431,26 +408,6 @@ function validateTarMember(
   }
 
   throw tarError(name, 'unsupported member type');
-}
-
-function assertTarMemberDoesNotOverlapRejectedPath(
-  member: TarMember,
-  rejectedPaths: Iterable<string>,
-): void {
-  for (const rejectedPath of rejectedPaths) {
-    if (
-      rejectedPath === '' ||
-      member.path === rejectedPath ||
-      member.path.startsWith(`${rejectedPath}/`) ||
-      (member.type !== 'directory' &&
-        rejectedPath.startsWith(`${member.path}/`))
-    ) {
-      throw tarError(
-        member.rawName,
-        `archive member overlaps protected path: ${rejectedPath}`,
-      );
-    }
-  }
 }
 
 function validateSymlinkTarget(
@@ -565,21 +522,30 @@ function shouldSkipTarMember(
   memberName: string,
   options: { skipRelPaths: Iterable<string>; rootName?: string },
 ): boolean {
+  return matchesTarMemberPath(
+    memberName,
+    options.skipRelPaths,
+    options.rootName,
+  );
+}
+
+function matchesTarMemberPath(
+  memberName: string,
+  candidates: Iterable<string>,
+  rootName?: string,
+): boolean {
   const relPath = safeTarMemberRelPath(memberName);
   if (relPath === null) {
     return false;
   }
   const variants = [relPath];
-  const rootName = options.rootName;
   if (rootName && relPath === rootName) {
     variants.push('');
   } else if (rootName && relPath.startsWith(`${rootName}/`)) {
     variants.push(relPath.slice(rootName.length + 1));
   }
 
-  return variants.some((variant) =>
-    matchesNormalizedPath(variant, options.skipRelPaths),
-  );
+  return variants.some((variant) => matchesNormalizedPath(variant, candidates));
 }
 
 function matchesNormalizedPath(
