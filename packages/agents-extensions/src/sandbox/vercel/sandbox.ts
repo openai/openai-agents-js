@@ -483,9 +483,13 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
           },
         );
       }
+      const archiveLimits =
+        options.archiveLimits === undefined
+          ? this.getArchiveLimits()
+          : options.archiveLimits;
       validateWorkspaceTarArchive(data, {
         allowSymlinks: false,
-        archiveLimits: options.archiveLimits ?? this.getArchiveLimits(),
+        archiveLimits,
         rejectRelPaths: [...this.activeMounts.keys()].map((mountPath) =>
           resolveSandboxRelativePath(this.state.manifest.root, mountPath),
         ),
@@ -496,7 +500,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
           manifest: this.state.manifest,
           io: this.mountTransitionArchiveIo(),
           data,
-          archiveLimits: options.archiveLimits ?? this.getArchiveLimits(),
+          archiveLimits,
         });
       });
       this.resetKnownDirs();

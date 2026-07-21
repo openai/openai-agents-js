@@ -734,6 +734,35 @@ describe('VercelSandboxClient', () => {
     ).toBe(false);
   });
 
+  test('honors null archive limit overrides while mounts are active', async () => {
+    const archive = makeTarArchive([
+      { name: 'README.md', content: 'larger than one byte' },
+    ]);
+    const client = new VercelSandboxClient();
+    const session = await client.create(vercelS3Manifest(), {
+      archiveLimits: {
+        maxInputBytes: null,
+        maxExtractedBytes: 1,
+        maxMembers: null,
+      },
+    });
+
+    await expect(session.hydrateWorkspace(archive)).rejects.toBeInstanceOf(
+      SandboxArchiveError,
+    );
+    const callOffset = runCommandMock.mock.calls.length;
+
+    await expect(
+      session.hydrateWorkspace(archive, { archiveLimits: null }),
+    ).resolves.toBeUndefined();
+
+    const transitionCommands = runCommandMock.mock.calls
+      .slice(callOffset)
+      .map(([params]) => isolatedMountCommand(params)?.command)
+      .filter((command) => command === 'umount' || command === 'mount-s3');
+    expect(transitionCommands).toEqual(['umount', 'mount-s3']);
+  });
+
   test('stops the sandbox when a detached mount cannot be restored', async () => {
     const archive = makeTarArchive([
       { name: 'README.md', content: 'persisted' },
