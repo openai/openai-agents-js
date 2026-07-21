@@ -7,6 +7,7 @@ import {
   SandboxUnsupportedFeatureError,
   s3Mount,
 } from '@openai/agents-core/sandbox';
+import { serializeManifestRecord } from '@openai/agents-core/sandbox/internal';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   decodeNativeSnapshotRef,
@@ -350,6 +351,47 @@ describe('VercelSandboxClient', () => {
       AWS_ACCESS_KEY_ID: 'environment-access-key',
       AWS_SECRET_ACCESS_KEY: 'environment-secret-key',
       AWS_SESSION_TOKEN: 'environment-session-token',
+    });
+  });
+
+  test('does not persist manifest-sourced AWS credentials for mounted sessions', async () => {
+    const client = new VercelSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          bucket: s3Mount({
+            bucket: 'example-bucket',
+            mountStrategy: new VercelCloudBucketMountStrategy(),
+          }),
+        },
+        environment: {
+          AWS_ACCESS_KEY_ID: 'manifest-access-key',
+          AWS_SECRET_ACCESS_KEY: 'manifest-secret-key',
+          AWS_SESSION_TOKEN: 'manifest-session-token',
+          AWS_REGION: 'us-east-1',
+          UNRELATED_ENV: 'keep-me',
+        },
+      }),
+    );
+
+    const providerState = await client.serializeSessionState(session.state);
+    const envelopeManifest = serializeManifestRecord(session.state.manifest);
+    const serialized = JSON.stringify({
+      manifest: envelopeManifest,
+      providerState,
+    });
+
+    expect(serialized).not.toContain('manifest-access-key');
+    expect(serialized).not.toContain('manifest-secret-key');
+    expect(serialized).not.toContain('manifest-session-token');
+    expect(envelopeManifest.environment).toMatchObject({
+      AWS_REGION: { value: 'us-east-1' },
+      UNRELATED_ENV: { value: 'keep-me' },
+    });
+    expect(session.state.environment).toMatchObject({
+      AWS_ACCESS_KEY_ID: 'manifest-access-key',
+      AWS_SECRET_ACCESS_KEY: 'manifest-secret-key',
+      AWS_SESSION_TOKEN: 'manifest-session-token',
     });
   });
 
@@ -2555,6 +2597,15 @@ describe('VercelSandboxClient', () => {
     await client.serializeSessionState(session.state);
 
     expect(client.canReusePreservedOwnedSession(session.state)).toBe(false);
+  });
+
+  test('reuses mounted sessions as live handles for in-process preservation', async () => {
+    const client = new VercelSandboxClient();
+    const session = await client.create(vercelS3Manifest(), {
+      workspacePersistence: 'snapshot',
+    });
+
+    expect(client.canReusePreservedOwnedSession(session.state)).toBe(true);
   });
 
   test('does not stop a sandbox twice across shutdown and delete lifecycle hooks', async () => {

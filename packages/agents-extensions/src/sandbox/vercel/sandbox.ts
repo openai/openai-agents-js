@@ -1,6 +1,7 @@
 import { UserError } from '@openai/agents-core';
 import { loadEnv } from '@openai/agents-core/_shims';
 import {
+  Environment,
   isMount,
   Manifest,
   SandboxLifecycleError,
@@ -1412,7 +1413,7 @@ export class VercelSandboxClient implements SandboxClient<
 
   canReusePreservedOwnedSession(state: VercelSandboxSessionState): boolean {
     if (hasVercelMounts(state.manifest)) {
-      return false;
+      return true;
     }
     return (
       state.workspacePersistence !== 'snapshot' ||
@@ -1695,7 +1696,8 @@ function assertVercelMountManifest(
 
 function sanitizeVercelMountManifest(manifest: Manifest): Manifest {
   const sanitized = cloneManifestWithRoot(manifest, manifest.root);
-  for (const { entry } of sanitized.mountTargetsForMaterialization()) {
+  const mountTargets = sanitized.mountTargetsForMaterialization();
+  for (const { entry } of mountTargets) {
     if (entry.type !== 's3_mount') {
       continue;
     }
@@ -1705,6 +1707,17 @@ function sanitizeVercelMountManifest(manifest: Manifest): Manifest {
     // Persist topology only for exclusion and rejection checks. It is never
     // authoritative input for remounting a resumed session.
     entry.ephemeral = true;
+  }
+  if (mountTargets.length > 0) {
+    for (const name of VERCEL_S3_CREDENTIAL_ENVIRONMENT_NAMES) {
+      const environment = sanitized.environment[name];
+      if (environment) {
+        sanitized.environment[name] = new Environment({
+          ...environment.init(),
+          ephemeral: true,
+        });
+      }
+    }
   }
   return sanitized;
 }
