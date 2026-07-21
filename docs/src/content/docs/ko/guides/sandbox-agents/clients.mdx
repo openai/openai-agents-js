@@ -10,7 +10,6 @@ import exposedPortsExample from '../../../../../../../examples/docs/sandbox-agen
 import manifestConcurrencyExample from '../../../../../../../examples/docs/sandbox-agents/manifest-concurrency.ts?raw';
 import resumeSessionStateExample from '../../../../../../../examples/docs/sandbox-agents/resume-session-state.ts?raw';
 import selectLocalClientExample from '../../../../../../../examples/docs/sandbox-agents/select-local-client.ts?raw';
-import vercelS3MountExample from '../../../../../../../examples/docs/sandbox-agents/vercel-s3-mount.ts?raw';
 
 이 페이지를 사용하여 샌드박스 작업을 실행할 위치를 선택합니다. 대부분의 경우 `SandboxAgent` 정의는 그대로 유지하고 `sandbox` 실행 옵션에서 샌드박스 클라이언트와 클라이언트별 옵션만 변경합니다.
 
@@ -159,28 +158,7 @@ Unix 로컬 방식에서 Docker로 전환하려면 에이전트 정의는 그대
 | `DaytonaSandboxClient` | S3, GCS, R2, Azure Blob 및 Box 마운트 엔트리에서 `DaytonaCloudBucketMountStrategy`를 사용하는 rclone 기반 마운트를 지원합니다. |
 | `E2BSandboxClient` | S3, GCS, R2, Azure Blob 및 Box 마운트 엔트리에서 `E2BCloudBucketMountStrategy`를 사용하는 rclone 기반 마운트를 지원합니다. |
 | `RunloopSandboxClient` | S3, GCS, R2, Azure Blob 및 Box 마운트 엔트리에서 `RunloopCloudBucketMountStrategy`를 사용하는 rclone 기반 마운트를 지원합니다. |
-| `VercelSandboxClient` | `VercelCloudBucketMountStrategy`를 사용하는 생성 시점의 S3 마운트를 지원합니다. |
-
-### Vercel S3 마운트
-
-Vercel 샌드박스 내부에 S3 버킷을 노출하려면 `s3Mount()` 엔트리와 함께 `VercelCloudBucketMountStrategy`를 사용합니다. 클라이언트는 샌드박스에서 Mountpoint for Amazon S3 1.21 이상을 사용할 수 있도록 합니다. 마운트는 기본적으로 읽기 전용입니다. 에이전트에서 버킷 객체를 덮어쓰거나 삭제해야 하는 경우에만 `readOnly: false`를 설정합니다.
-
-이 예제에서는 수명이 짧은 AWS 자격 증명을 마운트 엔트리에 전달합니다. 해당 자격 증명은 원격 샌드박스의 명령으로 전달되므로 클라이언트에는 명시적인 `allowS3CredentialExposure: true` 확인이 필요합니다. 대신 표준 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` 및 선택적 `AWS_SESSION_TOKEN` 변수를 클라이언트의 `env` 옵션이나 매니페스트 환경을 통해 제공할 수 있습니다.
-
-<Code
-  lang="typescript"
-  code={vercelS3MountExample}
-  title="Vercel 샌드박스에 S3 버킷 마운트"
-/>
-
-Vercel S3 마운트의 수명 주기는 의도적으로 제한되어 있습니다.
-
-- 샌드박스를 생성하는 데 사용하는 매니페스트에 모든 마운트를 선언합니다. 마운트가 활성화된 후에는 `materializeEntry()`와 `applyManifest()`가 지원되지 않습니다.
-- 여러 실행에서 동일한 마운트 샌드박스가 필요하면 활성 세션을 재사용합니다. 마운트가 포함된 직렬화된 세션 상태는 재개할 수 없습니다.
-- 마운트된 버킷 콘텐츠는 워크스페이스 영속화에서 제외됩니다. Tar 영속화 및 하이드레이션은 마운트를 일시적으로 분리한 후 복원하지만, 마운트가 활성화된 상태에서는 Vercel 네이티브 스냅샷 하이드레이션이 지원되지 않습니다.
-- 세션을 닫으면 샌드박스를 중지하기 전에 버킷의 마운트가 해제됩니다.
-
-마운트 경로는 Vercel 워크스페이스 내부에 있어야 하고, 워크스페이스 루트일 수 없으며, 다른 마운트 경로와 겹칠 수 없습니다. 또한 클라이언트는 선언된 마운트 경로를 덮어쓰는 하이드레이션 아카이브를 거부합니다.
+| `VercelSandboxClient` | `VercelCloudBucketMountStrategy`를 사용하는 생성 시점의 S3 마운트를 지원합니다. 인라인 자격 증명에는 `allowS3CredentialExposure: true`가 필요합니다. 직렬화된 마운트 상태는 재개할 수 없으므로 마운트된 활성 세션을 재사용하세요. |
 
 아래 표에는 각 백엔드에서 직접 마운트할 수 있는 원격 스토리지 엔트리가 요약되어 있습니다.
 

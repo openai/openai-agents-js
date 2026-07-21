@@ -10,7 +10,6 @@ import exposedPortsExample from '../../../../../../../examples/docs/sandbox-agen
 import manifestConcurrencyExample from '../../../../../../../examples/docs/sandbox-agents/manifest-concurrency.ts?raw';
 import resumeSessionStateExample from '../../../../../../../examples/docs/sandbox-agents/resume-session-state.ts?raw';
 import selectLocalClientExample from '../../../../../../../examples/docs/sandbox-agents/select-local-client.ts?raw';
-import vercelS3MountExample from '../../../../../../../examples/docs/sandbox-agents/vercel-s3-mount.ts?raw';
 
 使用本页面选择沙盒任务的运行位置。在大多数情况下，`SandboxAgent` 定义保持不变，只需更改 `sandbox` 运行选项中的沙盒客户端和客户端专用选项。
 
@@ -159,28 +158,7 @@ Unix 本地模式是基于本地文件系统开始开发的最简单方式。如
 | `DaytonaSandboxClient` | 对于 S3、GCS、R2、Azure Blob 和 Box 挂载条目，支持通过 `DaytonaCloudBucketMountStrategy` 使用由 rclone 支持的挂载。 |
 | `E2BSandboxClient` | 对于 S3、GCS、R2、Azure Blob 和 Box 挂载条目，支持通过 `E2BCloudBucketMountStrategy` 使用由 rclone 支持的挂载。 |
 | `RunloopSandboxClient` | 对于 S3、GCS、R2、Azure Blob 和 Box 挂载条目，支持通过 `RunloopCloudBucketMountStrategy` 使用由 rclone 支持的挂载。 |
-| `VercelSandboxClient` | 支持通过 `VercelCloudBucketMountStrategy` 在创建时挂载 S3。 |
-
-### Vercel S3 挂载
-
-将 `VercelCloudBucketMountStrategy` 与 `s3Mount()` 条目结合使用，可在 Vercel 沙盒中公开 S3 存储桶。客户端会确保沙盒中提供 Mountpoint for Amazon S3 1.21 或更高版本。挂载默认为只读；仅当智能体必须覆盖或删除存储桶对象时，才应设置 `readOnly: false`。
-
-此示例通过挂载条目传入短期 AWS 凭据。由于这些凭据会被转发给远程沙盒中的命令，因此客户端要求明确设置 `allowS3CredentialExposure: true` 以表示确认。您也可以通过客户端的 `env` 选项或清单环境提供标准的 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY` 和可选的 `AWS_SESSION_TOKEN` 变量。
-
-<Code
-  lang="typescript"
-  code={vercelS3MountExample}
-  title="在 Vercel 沙盒中挂载 S3 存储桶"
-/>
-
-Vercel S3 挂载有意采用严格受限的生命周期：
-
-- 在用于创建沙盒的清单中声明每个挂载。挂载生效后，不再支持 `materializeEntry()` 和 `applyManifest()`。
-- 如果需要在多次运行中使用同一个已挂载沙盒，请复用活动会话。包含挂载信息的序列化会话状态无法恢复。
-- 已挂载存储桶的内容不包含在工作区持久化数据中。Tar 持久化和恢复操作会临时分离并重新连接挂载，而存在活动挂载时不支持原生 Vercel 快照恢复。
-- 关闭会话时，会先卸载存储桶，再停止沙盒。
-
-挂载路径必须位于 Vercel 工作区内，不能是工作区根目录，也不能与其他挂载路径重叠。客户端还会拒绝可能覆盖已声明挂载路径的恢复归档文件。
+| `VercelSandboxClient` | 支持通过 `VercelCloudBucketMountStrategy` 在创建时挂载 S3。内联凭据需要设置 `allowS3CredentialExposure: true`。由于序列化的挂载状态无法恢复，请复用已挂载的活动会话。 |
 
 下表汇总了各后端可以直接挂载的远程存储条目：
 

@@ -10,7 +10,6 @@ import exposedPortsExample from '../../../../../../examples/docs/sandbox-agents/
 import manifestConcurrencyExample from '../../../../../../examples/docs/sandbox-agents/manifest-concurrency.ts?raw';
 import resumeSessionStateExample from '../../../../../../examples/docs/sandbox-agents/resume-session-state.ts?raw';
 import selectLocalClientExample from '../../../../../../examples/docs/sandbox-agents/select-local-client.ts?raw';
-import vercelS3MountExample from '../../../../../../examples/docs/sandbox-agents/vercel-s3-mount.ts?raw';
 
 Use this page to choose where sandbox work should run. In most cases, the `SandboxAgent` definition stays the same while the sandbox client and client-specific options change in the `sandbox` run option.
 
@@ -160,28 +159,7 @@ Hosted sandbox clients expose provider-specific mount strategies. Choose the bac
 | `DaytonaSandboxClient` | Supports rclone-backed mounts with `DaytonaCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
 | `E2BSandboxClient` | Supports rclone-backed mounts with `E2BCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
 | `RunloopSandboxClient` | Supports rclone-backed mounts with `RunloopCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
-| `VercelSandboxClient` | Supports create-time S3 mounts with `VercelCloudBucketMountStrategy`. |
-
-### Vercel S3 mounts
-
-Use `VercelCloudBucketMountStrategy` with an `s3Mount()` entry to expose an S3 bucket inside a Vercel sandbox. The client ensures that Mountpoint for Amazon S3 1.21 or later is available in the sandbox. Mounts are read-only by default; set `readOnly: false` only when the agent must overwrite or delete bucket objects.
-
-This example passes short-lived AWS credentials on the mount entry. Because those credentials are forwarded to a command in the remote sandbox, the client requires the explicit `allowS3CredentialExposure: true` acknowledgement. You can instead supply the standard `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional `AWS_SESSION_TOKEN` variables through the client's `env` option or the manifest environment.
-
-<Code
-  lang="typescript"
-  code={vercelS3MountExample}
-  title="Mount an S3 bucket in a Vercel sandbox"
-/>
-
-Vercel S3 mounts have a deliberately narrow lifecycle:
-
-- Declare every mount in the manifest used to create the sandbox. After a mount is active, `materializeEntry()` and `applyManifest()` are not supported.
-- Reuse the live session when you need the same mounted sandbox across runs. Serialized session state that contains mounts cannot be resumed.
-- Mounted bucket contents are excluded from workspace persistence. Tar persistence and hydration temporarily detach and restore the mounts, while native Vercel snapshot hydration is not supported with active mounts.
-- Closing the session unmounts the buckets before stopping the sandbox.
-
-Mount paths must remain inside the Vercel workspace, cannot be the workspace root, and cannot overlap another mount path. The client also rejects hydrate archives that would overwrite a declared mount path.
+| `VercelSandboxClient` | Supports create-time S3 mounts with `VercelCloudBucketMountStrategy`. Inline credentials require `allowS3CredentialExposure: true`; reuse the live mounted session because serialized mount state cannot be resumed. |
 
 The table below summarizes which remote storage entries each backend can mount directly:
 
