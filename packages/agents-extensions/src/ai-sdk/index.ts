@@ -357,6 +357,12 @@ export function itemsToLanguageV2Messages(
       ...currentAssistantMessage.providerOptions,
     };
   };
+  const flushCurrentAssistantMessage = () => {
+    if (currentAssistantMessage) {
+      messages.push(currentAssistantMessage);
+      currentAssistantMessage = undefined;
+    }
+  };
 
   for (const item of collapsedItems) {
     if ('caller' in item && item.caller?.type === 'program') {
@@ -369,6 +375,7 @@ export function itemsToLanguageV2Messages(
       const { role, content, providerData } = item;
       if (role === 'system') {
         flushPendingReasonerReasoningToMessages();
+        flushCurrentAssistantMessage();
         messages.push({
           role: 'system',
           content: content,
@@ -379,6 +386,7 @@ export function itemsToLanguageV2Messages(
 
       if (role === 'user') {
         flushPendingReasonerReasoningToMessages();
+        flushCurrentAssistantMessage();
         messages.push({
           role,
           content:
@@ -445,10 +453,7 @@ export function itemsToLanguageV2Messages(
       }
 
       if (role === 'assistant') {
-        if (currentAssistantMessage) {
-          messages.push(currentAssistantMessage);
-          currentAssistantMessage = undefined;
-        }
+        flushCurrentAssistantMessage();
 
         const assistantProviderOptions = toProviderOptions(providerData, model);
         const assistantContent: Array<
@@ -524,10 +529,7 @@ export function itemsToLanguageV2Messages(
       continue;
     } else if (item.type === 'function_call_result') {
       flushPendingReasonerReasoningToMessages();
-      if (currentAssistantMessage) {
-        messages.push(currentAssistantMessage);
-        currentAssistantMessage = undefined;
-      }
+      flushCurrentAssistantMessage();
       const toolName =
         toolCallNamesById.get(item.callId) ?? getAiSdkToolName(item);
       const toolResult: LanguageModelV2ToolResultPart = {
@@ -678,10 +680,7 @@ export function itemsToLanguageV2Messages(
       }
 
       flushPendingReasonerReasoningToMessages();
-      if (currentAssistantMessage) {
-        messages.push(currentAssistantMessage);
-        currentAssistantMessage = undefined;
-      }
+      flushCurrentAssistantMessage();
       messages.push({
         role: 'tool',
         content: [toolResult],

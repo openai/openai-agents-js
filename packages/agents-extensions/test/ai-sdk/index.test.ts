@@ -1118,6 +1118,62 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('flushes a pending provider-executed tool search before the next user turn', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [{ type: 'input_text', text: 'first question' }],
+      } as any,
+      {
+        type: 'tool_search_call',
+        id: 'search_1',
+        execution: 'server',
+        arguments: { query: 'site tools' },
+        status: 'completed',
+      } as any,
+      {
+        type: 'tool_search_output',
+        callId: 'search_1',
+        execution: 'server',
+        status: 'completed',
+        tools: [{ type: 'tool_reference', toolName: 'list_sites' }],
+      } as any,
+      {
+        role: 'user',
+        content: [{ type: 'input_text', text: 'follow-up question' }],
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+
+    // The provider-executed tool search folds its result into a pending
+    // assistant message. It must be flushed BEFORE the follow-up user message,
+    // otherwise the prompt ends on an assistant turn and Anthropic rejects it
+    // as an unintended assistant-message prefill.
+    expect(msgs.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
+    // The folded server tool-use + its result survive the flush intact.
+    expect(msgs[1].content).toEqual([
+      {
+        type: 'tool-call',
+        toolCallId: 'search_1',
+        toolName: 'tool_search',
+        input: { query: 'site tools' },
+        providerExecuted: true,
+        providerOptions: {},
+      },
+      {
+        type: 'tool-result',
+        toolCallId: 'search_1',
+        toolName: 'tool_search',
+        output: {
+          type: 'json',
+          value: [{ type: 'tool_reference', toolName: 'list_sites' }],
+        },
+        providerOptions: {},
+      },
+    ]);
+  });
+
   test('replays provider-executed tool search errors as error results', () => {
     const errorResult = {
       type: 'tool_search_tool_result_error',
