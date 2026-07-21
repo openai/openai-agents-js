@@ -2221,6 +2221,11 @@ describe('remote sandbox path helpers', () => {
     const manifest = new Manifest({
       entries: {
         keep: { type: 'file', content: 'keep' },
+        'literal[1]*?': {
+          type: 'file',
+          content: 'literal',
+          ephemeral: true,
+        },
         secret: { type: 'file', content: 'secret', ephemeral: true },
         mounted: mount({
           source: 's3://bucket/data',
@@ -2232,13 +2237,9 @@ describe('remote sandbox path helpers', () => {
     });
 
     expect(workspaceTarExcludeArgs(manifest)).toEqual([
-      '--anchored',
-      '--no-wildcards',
-      "--exclude='cache'",
       "--exclude='./cache'",
-      "--exclude='mounted'",
+      "--exclude='./literal\\[1\\]\\*\\?'",
       "--exclude='./mounted'",
-      "--exclude='secret'",
       "--exclude='./secret'",
     ]);
   });
