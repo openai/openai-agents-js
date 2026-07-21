@@ -306,6 +306,46 @@ describe('VercelSandboxClient', () => {
     expect(JSON.stringify(serialized)).not.toContain('session-token');
   });
 
+  test('retains an owned mount entry when the caller mutates its manifest', async () => {
+    const manifest = new Manifest({
+      root: '/vercel/sandbox',
+      entries: {
+        bucket: s3Mount({
+          bucket: 'example-bucket',
+          mountStrategy: new VercelCloudBucketMountStrategy(),
+        }),
+      },
+    });
+    const client = new VercelSandboxClient();
+    const session = await client.create(manifest);
+
+    Object.assign(manifest.entries.bucket!, {
+      bucket: 'mutated-bucket',
+      endpointUrl: 'https://mutated.example.test',
+      readOnly: false,
+    });
+    readFileToBufferMock.mockResolvedValue(
+      makeTarArchive([{ name: 'README.md', content: 'persisted' }]),
+    );
+    runCommandMock.mockClear();
+
+    await session.persistWorkspace();
+
+    const remountCall = runCommandMock.mock.calls.find(([params]) => {
+      return isolatedMountCommand(params)?.command === 'mount-s3';
+    });
+    const remountArgs = isolatedMountCommand(remountCall?.[0] ?? {})?.args;
+    expect(remountArgs).toEqual(
+      expect.arrayContaining([
+        'example-bucket',
+        '/vercel/sandbox/bucket',
+        '--read-only',
+      ]),
+    );
+    expect(remountArgs).not.toContain('mutated-bucket');
+    expect(remountArgs).not.toContain('https://mutated.example.test');
+  });
+
   test('forwards allowlisted configured AWS authentication to mount-s3', async () => {
     const client = new VercelSandboxClient({
       env: {

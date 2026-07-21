@@ -1768,7 +1768,7 @@ function resolveManifestRoot(manifest: Manifest): Manifest {
     manifest.root === DEFAULT_VERCEL_WORKSPACE_ROOT ||
     manifest.root.startsWith(`${DEFAULT_VERCEL_WORKSPACE_ROOT}/`)
   ) {
-    return manifest;
+    return cloneManifestWithRoot(manifest, manifest.root);
   }
 
   throw new UserError(
