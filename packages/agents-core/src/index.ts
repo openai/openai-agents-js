@@ -127,6 +127,10 @@ export {
   GetAllMcpToolsOptions,
   MCPToolCacheKeyGenerator,
   MCPToolErrorFunction,
+  MCPServerLoggingLevel,
+  MCPServerLoggingMessage,
+  MCPServerLoggingHandler,
+  MCPServerLoggingOptions,
 } from './mcp';
 export {
   MCPServers,

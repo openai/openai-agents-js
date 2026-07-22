@@ -316,7 +316,7 @@ const mcpServer = new MCPServerStdio({
 
 The `handler` receives each notification's `level`, optional `logger`, `data` payload, and any protocol `meta`. When `level` is omitted the server decides which messages to emit. Requesting a `level` is best-effort: if the server rejects it the connection stays up and a warning is logged.
 
-Only enable `serverLogging` for servers you trust. A server controls how often it logs and what `data`/`meta` it sends, so treat those payloads as untrusted input. Keep your `handler` from throwing: exceptions raised inside it are swallowed by the MCP client and your logs will silently stop flowing.
+Only enable `serverLogging` for servers you trust. A server controls how often it logs and what `data`/`meta` it sends, so treat those payloads as untrusted input. If your `handler` throws, the error is caught and logged as a warning rather than interrupting the run, but the offending notification is dropped, so prefer a handler that does not throw.
 
 ### Tool filtering
 

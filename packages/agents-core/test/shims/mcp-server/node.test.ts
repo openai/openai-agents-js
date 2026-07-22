@@ -213,6 +213,32 @@ describe('NodeMCPServerStdio', () => {
     await server.close();
   });
 
+  test('should not let a throwing logging handler reject the notification', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const handler = vi.fn().mockRejectedValue(new Error('handler boom'));
+    const server = new NodeMCPServerStdio({
+      name: 'logging-throw-test',
+      fullCommand: 'test',
+      serverLogging: {
+        handler,
+      },
+    });
+
+    await server.connect();
+    // The notification callback must resolve even though the handler rejects.
+    await expect(
+      lastNotificationHandler({
+        method: 'notifications/message',
+        params: { level: 'info', data: 'boom' },
+      }),
+    ).resolves.toBeUndefined();
+    expect(handler).toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+    await server.close();
+  });
+
   test('should stay connected when logging/setLevel fails', async () => {
     // Requesting a level is best-effort: a server that advertises the logging
     // capability but rejects logging/setLevel must not fail the connection.

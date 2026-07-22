@@ -90,12 +90,19 @@ async function registerMCPServerLoggingHandler(
     LoggingMessageNotificationSchema,
     async (notification) => {
       const { level, logger: loggerName, data, _meta } = notification.params;
-      await serverLogging.handler({
-        level,
-        logger: loggerName,
-        data,
-        meta: _meta,
-      });
+      // Isolate the user handler: a throwing/rejecting handler must not escape
+      // this callback, since nothing awaits the notification and it would
+      // otherwise surface as an unhandled rejection.
+      try {
+        await serverLogging.handler({
+          level,
+          logger: loggerName,
+          data,
+          meta: _meta,
+        });
+      } catch (error) {
+        logger.warn('MCP server logging handler threw; ignoring:', error);
+      }
     },
   );
 }
