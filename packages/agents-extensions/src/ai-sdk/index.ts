@@ -1314,8 +1314,11 @@ function convertStructuredOutputsToAiSdkOutput(
   outputs: protocol.ToolCallStructuredOutput[],
   model: LanguageModelCompatible,
 ): LanguageModelV2ToolResultPart['output'] {
-  type ImagePart =
+  type StructuredContentPart =
     | { type: 'media'; data: string; mediaType: string }
+    | { type: 'file-data'; data: string; mediaType: string; filename?: string }
+    | { type: 'file-url'; url: string }
+    | { type: 'file-id'; fileId: string | Record<string, string> }
     | { type: 'image-data'; data: string; mediaType: string }
     | { type: 'image-url'; url: string }
     | { type: 'image-file-id'; fileId: string }
@@ -1326,13 +1329,14 @@ function convertStructuredOutputsToAiSdkOutput(
           | { type: 'url'; url: URL }
           | { type: 'reference'; reference: Record<string, string> };
         mediaType: string;
+        filename?: string;
       };
 
   const specVersion = getSpecVersion(model);
   const isV3 = specVersion === 'v3';
   const isV4 = specVersion === 'v4';
   const textParts: string[] = [];
-  const imageParts: ImagePart[] = [];
+  const contentParts: StructuredContentPart[] = [];
 
   for (const item of outputs) {
     if (item.type === 'input_text') {
@@ -1351,7 +1355,7 @@ function convertStructuredOutputsToAiSdkOutput(
       const imageFileId = imageObjectFileId ?? legacyFileId;
 
       if ((isV3 || isV4) && imageFileId) {
-        imageParts.push(
+        contentParts.push(
           isV4
             ? {
                 type: 'file',
@@ -1387,7 +1391,7 @@ function convertStructuredOutputsToAiSdkOutput(
       }
       const inlineImage = parseBase64ImageDataUrl(imageValue);
       if (inlineImage) {
-        imageParts.push(
+        contentParts.push(
           isV4
             ? {
                 type: 'file',
@@ -1410,7 +1414,7 @@ function convertStructuredOutputsToAiSdkOutput(
       }
       try {
         const url = new URL(imageValue);
-        imageParts.push(
+        contentParts.push(
           isV4
             ? {
                 type: 'file',
@@ -1433,6 +1437,7 @@ function convertStructuredOutputsToAiSdkOutput(
 
     if (item.type === 'input_file') {
       const fileValue = item.file;
+      const filename = item.filename;
       const mediaType =
         getStringProviderField(item.providerData, 'mediaType') ??
         'application/octet-stream';
@@ -1440,31 +1445,84 @@ function convertStructuredOutputsToAiSdkOutput(
       if (typeof fileValue === 'string') {
         const inlineFile = parseBase64DataUrl(fileValue);
         if (inlineFile) {
-          mediaParts.push({
-            type: 'media',
-            data: inlineFile.data,
-            mediaType: inlineFile.mediaType,
-          });
+          contentParts.push(
+            isV4
+              ? {
+                  type: 'file',
+                  data: { type: 'data', data: inlineFile.data },
+                  mediaType: inlineFile.mediaType,
+                  ...(filename ? { filename } : {}),
+                }
+              : isV3
+                ? {
+                    type: 'file-data',
+                    data: inlineFile.data,
+                    mediaType: inlineFile.mediaType,
+                    ...(filename ? { filename } : {}),
+                  }
+                : {
+                    type: 'media',
+                    data: inlineFile.data,
+                    mediaType: inlineFile.mediaType,
+                  },
+          );
           continue;
         }
 
         if (isLikelyOpenAIFileId(fileValue)) {
-          textParts.push(`[file id=${fileValue}]`);
+          if (isV4) {
+            contentParts.push({
+              type: 'file',
+              data: {
+                type: 'reference',
+                reference: { [getProviderReferenceKey(model)]: fileValue },
+              },
+              mediaType,
+              ...(filename ? { filename } : {}),
+            });
+          } else if (isV3) {
+            contentParts.push({ type: 'file-id', fileId: fileValue });
+          } else {
+            textParts.push(`[file id=${fileValue}]`);
+          }
           continue;
         }
 
         if (isRawBase64FileData(fileValue)) {
-          mediaParts.push({
-            type: 'media',
-            data: fileValue,
-            mediaType,
-          });
+          contentParts.push(
+            isV4
+              ? {
+                  type: 'file',
+                  data: { type: 'data', data: fileValue },
+                  mediaType,
+                  ...(filename ? { filename } : {}),
+                }
+              : isV3
+                ? {
+                    type: 'file-data',
+                    data: fileValue,
+                    mediaType,
+                    ...(filename ? { filename } : {}),
+                  }
+                : { type: 'media', data: fileValue, mediaType },
+          );
           continue;
         }
 
         try {
           const url = new URL(fileValue);
-          textParts.push(`[file url=${url.toString()}]`);
+          if (isV4) {
+            contentParts.push({
+              type: 'file',
+              data: { type: 'url', url },
+              mediaType,
+              ...(filename ? { filename } : {}),
+            });
+          } else if (isV3) {
+            contentParts.push({ type: 'file-url', url: url.toString() });
+          } else {
+            textParts.push(`[file url=${url.toString()}]`);
+          }
         } catch {
           textParts.push(fileValue);
         }
@@ -1477,7 +1535,18 @@ function convertStructuredOutputsToAiSdkOutput(
         if (fileUrl) {
           try {
             const url = new URL(fileUrl);
-            textParts.push(`[file url=${url.toString()}]`);
+            if (isV4) {
+              contentParts.push({
+                type: 'file',
+                data: { type: 'url', url },
+                mediaType,
+                ...(filename ? { filename } : {}),
+              });
+            } else if (isV3) {
+              contentParts.push({ type: 'file-url', url: url.toString() });
+            } else {
+              textParts.push(`[file url=${url.toString()}]`);
+            }
           } catch {
             textParts.push(fileUrl);
           }
@@ -1486,7 +1555,21 @@ function convertStructuredOutputsToAiSdkOutput(
 
         const fileId = getStringProviderField(fileObject, 'id');
         if (fileId) {
-          textParts.push(`[file id=${fileId}]`);
+          if (isV4) {
+            contentParts.push({
+              type: 'file',
+              data: {
+                type: 'reference',
+                reference: { [getProviderReferenceKey(model)]: fileId },
+              },
+              mediaType,
+              ...(filename ? { filename } : {}),
+            });
+          } else if (isV3) {
+            contentParts.push({ type: 'file-id', fileId });
+          } else {
+            textParts.push(`[file id=${fileId}]`);
+          }
           continue;
         }
       }
@@ -1496,16 +1579,18 @@ function convertStructuredOutputsToAiSdkOutput(
     }
   }
 
-  if (imageParts.length === 0) {
+  if (contentParts.length === 0) {
     return { type: 'text', value: textParts.join('') };
   }
 
-  const value: Array<{ type: 'text'; text: string } | ImagePart> = [];
+  const value: Array<
+    { type: 'text'; text: string } | StructuredContentPart
+  > = [];
 
   if (textParts.length > 0) {
     value.push({ type: 'text', text: textParts.join('') });
   }
-  value.push(...imageParts);
+  value.push(...contentParts);
   return {
     type: 'content',
     value,

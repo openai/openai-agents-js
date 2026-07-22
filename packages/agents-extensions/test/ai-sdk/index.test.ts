@@ -1855,6 +1855,19 @@ describe('itemsToLanguageV2Messages', () => {
             type: 'input_image',
             image: { id: 'file_image_123' },
           },
+          {
+            type: 'input_file',
+            file: 'data:application/pdf;base64,JVBERi0=',
+            filename: 'inline.pdf',
+          },
+          {
+            type: 'input_file',
+            file: { url: 'https://example.com/report.pdf' },
+          },
+          {
+            type: 'input_file',
+            file: { id: 'file_document_123' },
+          },
         ],
       } as any,
     ];
@@ -1901,6 +1914,20 @@ describe('itemsToLanguageV2Messages', () => {
                   type: 'image-file-id',
                   fileId: 'file_image_123',
                 },
+                {
+                  type: 'file-data',
+                  data: 'JVBERi0=',
+                  mediaType: 'application/pdf',
+                  filename: 'inline.pdf',
+                },
+                {
+                  type: 'file-url',
+                  url: 'https://example.com/report.pdf',
+                },
+                {
+                  type: 'file-id',
+                  fileId: 'file_document_123',
+                },
               ],
             },
             providerOptions: {},
@@ -1932,6 +1959,23 @@ describe('itemsToLanguageV2Messages', () => {
             image: 'data:image/png;base64,aGVsbG8=',
           },
           { type: 'input_image', image: { id: 'file_image_123' } },
+          {
+            type: 'input_file',
+            file: 'data:application/pdf;base64,JVBERi0=',
+            filename: 'inline.pdf',
+          },
+          {
+            type: 'input_file',
+            file: { url: 'https://example.com/report.pdf' },
+            filename: 'report.pdf',
+            providerData: { mediaType: 'application/pdf' },
+          },
+          {
+            type: 'input_file',
+            file: { id: 'file_document_123' },
+            filename: 'document.pdf',
+            providerData: { mediaType: 'application/pdf' },
+          },
         ],
       } as any,
     ];
@@ -1971,6 +2015,30 @@ describe('itemsToLanguageV2Messages', () => {
                   reference: { openai: 'file_image_123' },
                 },
                 mediaType: 'image',
+              },
+              {
+                type: 'file',
+                data: { type: 'data', data: 'JVBERi0=' },
+                mediaType: 'application/pdf',
+                filename: 'inline.pdf',
+              },
+              {
+                type: 'file',
+                data: {
+                  type: 'url',
+                  url: new URL('https://example.com/report.pdf'),
+                },
+                mediaType: 'application/pdf',
+                filename: 'report.pdf',
+              },
+              {
+                type: 'file',
+                data: {
+                  type: 'reference',
+                  reference: { openai: 'file_document_123' },
+                },
+                mediaType: 'application/pdf',
+                filename: 'document.pdf',
               },
             ],
           },
