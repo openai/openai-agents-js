@@ -15,6 +15,7 @@ import {
 import { TransportSendOptions } from '@modelcontextprotocol/sdk/shared/transport';
 import { JSONRPCMessage } from '@modelcontextprotocol/sdk/types';
 import { DEFAULT_REQUEST_TIMEOUT_MSEC } from '@modelcontextprotocol/sdk/shared/protocol';
+import logger from '../../../src/logger';
 
 let lastConnectOptions: any;
 let lastListToolsOptions: any;
@@ -26,6 +27,13 @@ let lastCallToolOptions: any;
 let lastCallToolParams: any;
 let lastReadResourceOptions: any;
 let lastReadResourceParams: any;
+let lastNotificationSchema: any;
+let lastNotificationHandler: any;
+let lastSetLoggingLevel: any;
+let lastSetLoggingLevelOptions: any;
+let loggingOperationOrder: string[];
+let mockServerCapabilities: any;
+let mockSetLoggingLevelError: any;
 
 beforeEach(() => {
   lastConnectOptions = undefined;
@@ -38,6 +46,16 @@ beforeEach(() => {
   lastCallToolParams = undefined;
   lastReadResourceOptions = undefined;
   lastReadResourceParams = undefined;
+  lastNotificationSchema = undefined;
+  lastNotificationHandler = undefined;
+  lastSetLoggingLevel = undefined;
+  lastSetLoggingLevelOptions = undefined;
+  loggingOperationOrder = [];
+  // Default to a server that advertises the `logging` capability so that
+  // `logging/setLevel` is exercised. Individual tests override this to model
+  // sessions where capabilities were never discovered.
+  mockServerCapabilities = { logging: {} };
+  mockSetLoggingLevelError = undefined;
 });
 
 describe('NodeMCPServerStdio', () => {
@@ -149,6 +167,87 @@ describe('NodeMCPServerStdio', () => {
     await server.close();
   });
 
+  test('should subscribe to MCP server logging messages', async () => {
+    const handler = vi.fn();
+    const server = new NodeMCPServerStdio({
+      name: 'logging-test',
+      fullCommand: 'test',
+      clientSessionTimeoutSeconds: 11,
+      serverLogging: {
+        level: 'info',
+        handler,
+      },
+    });
+
+    await server.connect();
+    await lastNotificationHandler({
+      method: 'notifications/message',
+      params: {
+        level: 'info',
+        logger: 'mock-server',
+        data: { progress: 'halfway' },
+        _meta: { requestId: 'req-123' },
+      },
+    });
+
+    // Handler must be registered before connect() so notifications emitted
+    // during the initialize handshake are not dropped, and setLoggingLevel is
+    // only sent afterwards.
+    expect(loggingOperationOrder).toEqual([
+      'setNotificationHandler',
+      'connect',
+      'setLoggingLevel',
+    ]);
+    expect(lastNotificationSchema?.shape?.method?.value).toBe(
+      'notifications/message',
+    );
+    expect(lastSetLoggingLevel).toBe('info');
+    expect(lastSetLoggingLevelOptions?.timeout).toBe(11000);
+    expect(handler).toHaveBeenCalledWith({
+      level: 'info',
+      logger: 'mock-server',
+      data: { progress: 'halfway' },
+      meta: { requestId: 'req-123' },
+    });
+
+    await server.close();
+  });
+
+  test('should stay connected when logging/setLevel fails', async () => {
+    // Requesting a level is best-effort: a server that advertises the logging
+    // capability but rejects logging/setLevel must not fail the connection.
+    mockSetLoggingLevelError = new Error('setLevel not supported');
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const handler = vi.fn();
+    const server = new NodeMCPServerStdio({
+      name: 'logging-failure-test',
+      fullCommand: 'test',
+      serverLogging: {
+        level: 'info',
+        handler,
+      },
+    });
+
+    await expect(server.connect()).resolves.toBeUndefined();
+    expect(warnSpy).toHaveBeenCalled();
+    // Server remains usable and notifications remain subscribed.
+    const tools = await server.listTools();
+    expect(tools).toHaveLength(1);
+    await lastNotificationHandler({
+      method: 'notifications/message',
+      params: { level: 'info', data: 'still flowing' },
+    });
+    expect(handler).toHaveBeenCalledWith({
+      level: 'info',
+      logger: undefined,
+      data: 'still flowing',
+      meta: undefined,
+    });
+
+    warnSpy.mockRestore();
+    await server.close();
+  });
+
   test('should forward resource requests to session methods', async () => {
     const server = new NodeMCPServerStdio({
       name: 'resource-test',
@@ -228,8 +327,26 @@ class MockClient {
     this.options = options;
   }
   connect(_transport: any, options?: any): Promise<void> {
+    loggingOperationOrder.push('connect');
     lastConnectOptions = options;
     return Promise.resolve();
+  }
+  setNotificationHandler(schema: any, handler: any): void {
+    loggingOperationOrder.push('setNotificationHandler');
+    lastNotificationSchema = schema;
+    lastNotificationHandler = handler;
+  }
+  setLoggingLevel(level: any, options?: any): Promise<any> {
+    loggingOperationOrder.push('setLoggingLevel');
+    lastSetLoggingLevel = level;
+    lastSetLoggingLevelOptions = options;
+    if (mockSetLoggingLevelError) {
+      return Promise.reject(mockSetLoggingLevelError);
+    }
+    return Promise.resolve({});
+  }
+  getServerCapabilities(): any {
+    return mockServerCapabilities;
   }
   listTools(_params?: any, options?: any): Promise<any> {
     lastListToolsOptions = options;
@@ -433,6 +550,42 @@ describe('NodeMCPServerSSE', () => {
     await server.close();
   });
 
+  test('should subscribe to MCP server logging without changing level', async () => {
+    const handler = vi.fn();
+    const server = new NodeMCPServerSSE({
+      url: 'https://example.com/sse',
+      name: 'test-sse-logging',
+      serverLogging: {
+        handler,
+      },
+    });
+
+    await server.connect();
+    await lastNotificationHandler({
+      method: 'notifications/message',
+      params: {
+        level: 'debug',
+        data: 'working',
+      },
+    });
+
+    // Without an explicit level the client subscribes to notifications but must
+    // not send logging/setLevel.
+    expect(loggingOperationOrder).toEqual([
+      'setNotificationHandler',
+      'connect',
+    ]);
+    expect(lastSetLoggingLevel).toBeUndefined();
+    expect(handler).toHaveBeenCalledWith({
+      level: 'debug',
+      logger: undefined,
+      data: 'working',
+      meta: undefined,
+    });
+
+    await server.close();
+  });
+
   test('should forward resource requests to session methods', async () => {
     const server = new NodeMCPServerSSE({
       url: 'https://example.com/sse',
@@ -608,6 +761,93 @@ describe('NodeMCPServerStreamableHttp', () => {
     await server.close();
 
     expect(server.sessionId).toBeUndefined();
+  });
+
+  test('should subscribe to streamable HTTP MCP server logging', async () => {
+    const handler = vi.fn();
+    const server = new NodeMCPServerStreamableHttp({
+      url: 'https://example.com/stream',
+      name: 'test-stream-logging',
+      clientSessionTimeoutSeconds: 3,
+      serverLogging: {
+        level: 'warning',
+        handler,
+      },
+    });
+
+    await server.connect();
+    await lastNotificationHandler({
+      method: 'notifications/message',
+      params: {
+        level: 'warning',
+        logger: 'stream-server',
+        data: ['retrying'],
+      },
+    });
+
+    expect(loggingOperationOrder).toEqual([
+      'setNotificationHandler',
+      'connect',
+      'setLoggingLevel',
+    ]);
+    expect(lastSetLoggingLevel).toBe('warning');
+    expect(lastSetLoggingLevelOptions?.timeout).toBe(3000);
+    expect(handler).toHaveBeenCalledWith({
+      level: 'warning',
+      logger: 'stream-server',
+      data: ['retrying'],
+      meta: undefined,
+    });
+
+    await server.close();
+  });
+
+  test('should not send logging/setLevel when reusing an explicit session', async () => {
+    // Regression: reconnecting to an explicit `sessionId` skips the initialize
+    // handshake, so server capabilities are unknown. Sending logging/setLevel
+    // in that state rejects and breaks the connection, so it must be skipped
+    // while notifications remain subscribed.
+    mockServerCapabilities = undefined;
+    const handler = vi.fn();
+    const server = new NodeMCPServerStreamableHttp({
+      url: 'https://example.com/stream',
+      name: 'test-stream-session-logging',
+      sessionId: 'existing-session',
+      serverLogging: {
+        level: 'info',
+        handler,
+      },
+    });
+
+    await server.connect();
+    await lastNotificationHandler({
+      method: 'notifications/message',
+      params: {
+        level: 'info',
+        data: 'still logging',
+      },
+    });
+
+    // The connection was made against the explicit session, which is what
+    // causes initialize (and therefore capability discovery) to be skipped.
+    expect(
+      MockStreamableHTTPClientTransport.instances.some(
+        (instance) => instance.sessionId === 'existing-session',
+      ),
+    ).toBe(true);
+    expect(loggingOperationOrder).not.toContain('setLoggingLevel');
+    expect(lastSetLoggingLevel).toBeUndefined();
+    expect(
+      loggingOperationOrder.indexOf('setNotificationHandler'),
+    ).toBeLessThan(loggingOperationOrder.indexOf('connect'));
+    expect(handler).toHaveBeenCalledWith({
+      level: 'info',
+      logger: undefined,
+      data: 'still logging',
+      meta: undefined,
+    });
+
+    await server.close();
   });
 
   test('should forward resource requests to session methods', async () => {

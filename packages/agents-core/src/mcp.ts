@@ -59,6 +59,57 @@ export type MCPToolErrorFunction = (args: {
   error: Error | unknown;
 }) => Promise<string> | string;
 
+/**
+ * Severity levels emitted by MCP servers via `notifications/message`, matching
+ * the levels defined by the MCP specification. Declared structurally so that
+ * consuming `@openai/agents-core` never forces resolution of the optional
+ * `@modelcontextprotocol/sdk` package.
+ */
+export type MCPServerLoggingLevel =
+  | 'debug'
+  | 'info'
+  | 'notice'
+  | 'warning'
+  | 'error'
+  | 'critical'
+  | 'alert'
+  | 'emergency';
+
+/**
+ * A single logging notification emitted by an MCP server.
+ */
+export interface MCPServerLoggingMessage {
+  /** Severity of the log message. */
+  level: MCPServerLoggingLevel;
+  /** Optional name of the logger that produced the message. */
+  logger?: string;
+  /** Arbitrary JSON-serializable payload attached to the message. */
+  data: unknown;
+  /** Optional protocol-level metadata (`_meta`) attached to the notification. */
+  meta?: Record<string, unknown>;
+}
+
+/**
+ * Handler invoked for every MCP `notifications/message` logging event.
+ */
+export type MCPServerLoggingHandler = (
+  message: MCPServerLoggingMessage,
+) => void | Promise<void>;
+
+/**
+ * Options for subscribing to logging notifications emitted by an MCP server.
+ */
+export interface MCPServerLoggingOptions {
+  /**
+   * Minimum severity to request from the server via `logging/setLevel`. The
+   * request is only sent when the connected server advertises the `logging`
+   * capability; when omitted the server decides which messages to emit.
+   */
+  level?: MCPServerLoggingLevel;
+  /** Invoked for each logging notification the server sends. */
+  handler: MCPServerLoggingHandler;
+}
+
 const MCP_FUNCTION_TOOL_NAME_MAX_LENGTH = 64;
 const MCP_FUNCTION_TOOL_HASH_LENGTH = 8;
 
@@ -1194,6 +1245,11 @@ export interface BaseMCPServerStdioOptions {
    * Set to null to rethrow errors instead of converting them.
    */
   errorFunction?: MCPToolErrorFunction | null;
+  /**
+   * Subscribe to logging notifications (`notifications/message`) emitted by the
+   * MCP server. Useful for surfacing progress from long-running tools.
+   */
+  serverLogging?: MCPServerLoggingOptions;
   timeout?: number;
 }
 export interface DefaultMCPServerStdioOptions extends BaseMCPServerStdioOptions {
@@ -1231,6 +1287,11 @@ export interface MCPServerStreamableHttpOptions {
    * Set to null to rethrow errors instead of converting them.
    */
   errorFunction?: MCPToolErrorFunction | null;
+  /**
+   * Subscribe to logging notifications (`notifications/message`) emitted by the
+   * MCP server. Useful for surfacing progress from long-running tools.
+   */
+  serverLogging?: MCPServerLoggingOptions;
   timeout?: number;
 
   // ----------------------------------------------------
@@ -1273,6 +1334,11 @@ export interface MCPServerSSEOptions {
    * Set to null to rethrow errors instead of converting them.
    */
   errorFunction?: MCPToolErrorFunction | null;
+  /**
+   * Subscribe to logging notifications (`notifications/message`) emitted by the
+   * MCP server. Useful for surfacing progress from long-running tools.
+   */
+  serverLogging?: MCPServerLoggingOptions;
   timeout?: number;
 
   // ----------------------------------------------------
