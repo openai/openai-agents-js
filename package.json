@@ -13,7 +13,7 @@
     "docs:translate": "pnpm -F docs translate",
     "docs:build": "pnpm -F docs build",
     "docs:scripts:check": "pnpm exec tsc --pretty false --project docs/tsconfig.scripts.json",
-    "test": "CI=1 NODE_ENV=test vitest",
+    "test": "CI=1 NODE_ENV=test vitest && pnpm test:rclone-pin",
     "test:coverage": "NODE_ENV=test vitest run --coverage",
     "test:examples": "pnpm -r build-check",
     "test:integration": "NODE_ENV=test vitest run --config=vitest.integration.config.ts",
