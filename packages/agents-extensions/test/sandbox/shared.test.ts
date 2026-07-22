@@ -81,6 +81,8 @@ import {
 import {
   isRcloneCloudBucketMountEntry,
   mountRcloneCloudBucket,
+  rcloneArchiveArch,
+  rcloneInstallCommand,
   unmountRcloneMount,
 } from '../../src/sandbox/shared/inContainerMounts';
 import { makePaxRecord, makeTarArchive } from './tarFixture';
@@ -88,6 +90,7 @@ import {
   Manifest,
   SandboxArchiveError,
   SandboxConfigurationError,
+  SandboxMountError,
   SandboxPathResolutionError,
   SandboxProviderError,
   SandboxSnapshotError,
@@ -288,6 +291,101 @@ describe('exposed port helpers', () => {
 });
 
 describe('remote sandbox path helpers', () => {
+  test.each([
+    ['x86_64', 'amd64'],
+    ['amd64', 'amd64'],
+    ['i386', '386'],
+    ['i686', '386'],
+    ['aarch64', 'arm64'],
+    ['arm64', 'arm64'],
+    ['armv7l', 'arm-v7'],
+    ['armv6l', 'arm-v6'],
+    ['armv5l', 'arm'],
+  ])('maps rclone architecture %s to %s', (machine, expected) => {
+    expect(rcloneArchiveArch(machine)).toBe(expected);
+  });
+
+  test('rejects unsupported rclone architectures', () => {
+    expect(rcloneArchiveArch('mips64')).toBeUndefined();
+  });
+
+  test('pins and verifies the rclone archive before atomic installation', () => {
+    const command = rcloneInstallCommand('amd64');
+
+    expect(command).toContain(
+      'https://downloads.rclone.org/v1.74.4/rclone-v1.74.4-linux-amd64.zip',
+    );
+    expect(command).toContain(
+      'fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d',
+    );
+    expect(command).toContain('sha256sum --check --strict -');
+    expect(command).toContain('mktemp /usr/local/bin/.rclone.XXXXXX');
+    expect(command).toContain('mv -f "$target_tmp" /usr/local/bin/rclone');
+    expect(command).not.toContain('https://rclone.org/install.sh');
+  });
+
+  test('reports rclone archive checksum failures', async () => {
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          mode: 'nfs',
+          remoteName: 'logs',
+        },
+      },
+    };
+
+    let caught: unknown;
+    try {
+      await mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        pattern: {
+          type: 'rclone',
+          mode: 'nfs',
+          remoteName: 'logs',
+        },
+        installRcloneViaScript: true,
+        runCommand: async (command) => {
+          if (
+            command ===
+            'command -v rclone >/dev/null 2>&1 || test -x /usr/local/bin/rclone'
+          ) {
+            return { status: 1 };
+          }
+          if (command === 'uname -m') {
+            return { status: 0, stdout: 'x86_64\n' };
+          }
+          if (command.includes('sha256sum --check --strict -')) {
+            return { status: 86, stderr: 'checksum mismatch' };
+          }
+          return { status: 0 };
+        },
+        writeFile: recordMountWrite(new Map<string, string>()),
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(SandboxMountError);
+    expect((caught as SandboxMountError).message).toContain(
+      'checksum verification failed',
+    );
+    expect((caught as SandboxMountError).details).toMatchObject({
+      provider: 'test',
+      package: 'rclone',
+      version: '1.74.4',
+      architecture: 'amd64',
+      status: 86,
+    });
+  });
+
   test('mounts Box entries through the shared rclone helper', async () => {
     const commands: string[] = [];
     const writes = new Map<string, string>();

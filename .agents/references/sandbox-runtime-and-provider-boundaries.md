@@ -14,6 +14,7 @@ Use this reference for sandbox preparation, sessions, capabilities, manifests, m
 - Validate real host paths, normalized sandbox paths, traversal, symlinks, Git subpaths, archive entries, and extraction limits before materialization. A lexical prefix check is not a filesystem trust boundary.
 - Path grants must be enforced by every materialization route they claim to cover. Do not document a grant for local files, directories, archives, or Git sources unless that path actually consults it.
 - Keep remote mount commands allowlisted and separate command arguments from shell text. Validate privileged command environment and user selection.
+- Pin binaries downloaded by privileged sandbox setup to immutable release artifacts, verify embedded checksums before execution or installation, and replace final executables atomically. Pin updaters must enforce any observation cooldown against the release and every required asset's creation time, then cross-check checksum manifests against server-computed asset digests.
 - Mount secrets and temporary archives must be cleaned on every failure path, including provider create, upload, extract, and late timeout completion.
 
 ## Session and Process Lifecycle
