@@ -861,6 +861,15 @@ describe('remote sandbox path helpers', () => {
         },
         runCommand: async (command) => {
           commands.push(command);
+          if (
+            command ===
+            'command -v rclone >/dev/null 2>&1 || test -x /usr/local/bin/rclone'
+          ) {
+            return { status: 0, stdout: '' };
+          }
+          if (command === 'command -v rclone >/dev/null 2>&1') {
+            return { status: 1, stdout: '' };
+          }
           if (command.includes('mount -v -t nfs')) {
             return { status: 1, stderr: 'mount failed' };
           }
@@ -882,6 +891,14 @@ describe('remote sandbox path helpers', () => {
       "openai_agents_kill_pidfile '/tmp/openai-agents-test-logs.nfs.pid' 'rclone' 'serve' 'nfs'",
     );
     expect(cleanupCommand).not.toContain('kill "$(cat');
+    expect(commands).toContain(
+      "'/usr/local/bin/rclone' 'serve' 'nfs' '--help' >/dev/null 2>&1",
+    );
+    expect(
+      commands.some((command) =>
+        command.includes("('/usr/local/bin/rclone' 'serve' 'nfs'"),
+      ),
+    ).toBe(true);
   });
 
   test('accept in-root absolute workspace paths', () => {

@@ -61,6 +61,9 @@ type RcloneMountConfig = {
 
 const DEFAULT_PACKAGE_MANAGERS: Array<'apt' | 'apk'> = ['apt'];
 const RCLONE_CHECKSUM_MISMATCH_STATUS = 86;
+const RCLONE_INSTALL_PATH = '/usr/local/bin/rclone';
+const RCLONE_ON_PATH_CHECK_COMMAND = 'command -v rclone >/dev/null 2>&1';
+const RCLONE_AVAILABLE_CHECK_COMMAND = `${RCLONE_ON_PATH_CHECK_COMMAND} || test -x ${RCLONE_INSTALL_PATH}`;
 
 // BEGIN RCLONE RELEASE PIN
 const RCLONE_VERSION = '1.74.4';
@@ -157,7 +160,7 @@ export async function mountRcloneCloudBucket(
   if (mode === 'fuse') {
     await ensureFuseSupport(options);
   }
-  await ensureRclone(options);
+  const rclonePath = await ensureRclone(options);
   const config = await resolveRcloneMountConfig(options, pattern, remoteName);
   const configPath = `/tmp/openai-agents-${options.providerId}-${config.remoteName}.conf`;
 
@@ -179,11 +182,11 @@ export async function mountRcloneCloudBucket(
   });
 
   if (mode === 'nfs') {
-    await mountRcloneNfs(options, pattern, config, configPath);
+    await mountRcloneNfs(options, pattern, config, configPath, rclonePath);
     return;
   }
 
-  await mountRcloneFuse(options, pattern, config, configPath);
+  await mountRcloneFuse(options, pattern, config, configPath, rclonePath);
 }
 
 export async function unmountRcloneMount(args: {
@@ -233,12 +236,13 @@ async function mountRcloneFuse(
   pattern: RcloneMountPattern,
   config: RcloneMountConfig,
   configPath: string,
+  rclonePath: string,
 ): Promise<void> {
   const userIds = await defaultUserIds(options.runCommand);
   // rclone FUSE needs stable uid/gid options so files appear owned by the sandbox's
   // default user instead of root when the provider image supports id lookup.
   const mountArgs = [
-    'rclone',
+    rclonePath,
     'mount',
     `${config.remoteName}:${config.remotePath}`,
     options.mountPath,
@@ -273,11 +277,11 @@ async function mountRcloneNfs(
   pattern: RcloneMountPattern,
   config: RcloneMountConfig,
   configPath: string,
+  rclonePath: string,
 ): Promise<void> {
   await runRequiredMountCommand(options, {
     label: 'check rclone nfs server support',
-    command:
-      '/usr/local/bin/rclone serve nfs --help >/dev/null 2>&1 || rclone serve nfs --help >/dev/null 2>&1',
+    command: `${joinShellArgs([rclonePath, 'serve', 'nfs', '--help'])} >/dev/null 2>&1`,
     timeoutMs: 30_000,
   });
 
@@ -285,7 +289,7 @@ async function mountRcloneNfs(
   const pidPath = `/tmp/openai-agents-${options.providerId}-${config.remoteName}.nfs.pid`;
   const logPath = `/tmp/openai-agents-${options.providerId}-${config.remoteName}.nfs.log`;
   const serverArgs = [
-    'rclone',
+    rclonePath,
     'serve',
     'nfs',
     `${config.remoteName}:${config.remotePath}`,
@@ -677,13 +681,15 @@ async function ensureFuseSupport(
 
 async function ensureRclone(
   options: RcloneCloudBucketMountOptions,
-): Promise<void> {
-  const check = await options.runCommand(
-    'command -v rclone >/dev/null 2>&1 || test -x /usr/local/bin/rclone',
-    { timeoutMs: 30_000 },
-  );
+): Promise<string> {
+  const check = await options.runCommand(RCLONE_AVAILABLE_CHECK_COMMAND, {
+    timeoutMs: 30_000,
+  });
   if (check.status === 0) {
-    return;
+    const onPath = await options.runCommand(RCLONE_ON_PATH_CHECK_COMMAND, {
+      timeoutMs: 30_000,
+    });
+    return onPath.status === 0 ? 'rclone' : RCLONE_INSTALL_PATH;
   }
 
   if (options.installRcloneViaScript) {
@@ -694,10 +700,10 @@ async function ensureRclone(
 
   await runRequiredMountCommand(options, {
     label: 'check rclone after install',
-    command:
-      'command -v rclone >/dev/null 2>&1 || test -x /usr/local/bin/rclone',
+    command: RCLONE_AVAILABLE_CHECK_COMMAND,
     timeoutMs: 30_000,
   });
+  return options.installRcloneViaScript ? RCLONE_INSTALL_PATH : 'rclone';
 }
 
 async function installRcloneViaScript(
