@@ -308,10 +308,19 @@ export class StreamedRunResult<
   }
 
   /**
-   * The current turn number
+   * The current turn number, capped at the configured `maxTurns` limit.
+   *
+   * The runner increments `RunState._currentTurn` at the start of a turn,
+   * *before* it checks the `maxTurns` limit, so on a handled max-turn boundary
+   * (e.g. `maxTurns: 0`) the raw counter reads one higher than the number of
+   * turns actually admitted by the limit. Cap the public value at `maxTurns` so
+   * it always reflects the turns the limit allowed to run; when `maxTurns` is
+   * `null` (no limit) the raw counter is surfaced unchanged.
    */
   public get currentTurn(): number {
-    return this.state._currentTurn;
+    const current = this.state._currentTurn;
+    const max = this.state._maxTurns;
+    return max === null ? current : Math.min(current, max);
   }
 
   /**
