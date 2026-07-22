@@ -1215,7 +1215,7 @@ describe('E2BSandboxClient', () => {
     ).toBe(true);
   });
 
-  test('continues mount setup when E2B throws for install probes', async () => {
+  test('uses the installed rclone path when E2B PATH excludes it', async () => {
     let rcloneProbeFailures = 0;
     runMock.mockImplementation(async (command: string) => {
       const resolvedPath = resolvedRemotePathFromValidationCommand(command);
@@ -1235,6 +1235,13 @@ describe('E2BSandboxClient', () => {
           stderr: 'rclone missing',
         });
       }
+      if (command === 'uname -m') {
+        return {
+          stdout: 'x86_64\n',
+          stderr: '',
+          exitCode: 0,
+        };
+      }
       return {
         stdout: '',
         stderr: '',
@@ -1245,6 +1252,9 @@ describe('E2BSandboxClient', () => {
 
     await client.create(
       new Manifest({
+        environment: {
+          PATH: '/usr/bin:/bin',
+        },
         entries: {
           data: {
             type: 's3_mount',
@@ -1263,9 +1273,14 @@ describe('E2BSandboxClient', () => {
         String(command).includes('command -v apt-get'),
       ),
     ).toBe(true);
+    const installCommand = runMock.mock.calls
+      .map(([command]) => String(command))
+      .find((command) => command.includes('sha256sum --check --strict -'));
+    expect(installCommand).toContain('rclone-v1.74.4-linux-amd64.zip');
+    expect(installCommand).not.toContain('https://rclone.org/install.sh');
     expect(
       runMock.mock.calls.some(([command]) =>
-        String(command).includes("'rclone' 'mount'"),
+        String(command).includes("'/usr/local/bin/rclone' 'mount'"),
       ),
     ).toBe(true);
   });

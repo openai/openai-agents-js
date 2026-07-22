@@ -49,11 +49,7 @@ export type RcloneCloudBucketMountOptions = {
 };
 
 type RcloneBucketMount =
-  | S3Mount
-  | R2Mount
-  | GCSMount
-  | AzureBlobMount
-  | BoxMount;
+  S3Mount | R2Mount | GCSMount | AzureBlobMount | BoxMount;
 
 type RcloneMountConfig = {
   remoteName: string;
@@ -64,6 +60,25 @@ type RcloneMountConfig = {
 };
 
 const DEFAULT_PACKAGE_MANAGERS: Array<'apt' | 'apk'> = ['apt'];
+const RCLONE_CHECKSUM_MISMATCH_STATUS = 86;
+const RCLONE_INSTALL_PATH = '/usr/local/bin/rclone';
+const RCLONE_ON_PATH_CHECK_COMMAND = 'command -v rclone >/dev/null 2>&1';
+const RCLONE_AVAILABLE_CHECK_COMMAND = `${RCLONE_ON_PATH_CHECK_COMMAND} || test -x ${RCLONE_INSTALL_PATH}`;
+
+// BEGIN RCLONE RELEASE PIN
+const RCLONE_VERSION = '1.74.4';
+const RCLONE_SHA256_BY_ARCH = {
+  '386': '7feee086d7ff72652c5a91ef4b4a576941ccd33b2929772a2d70471904e516f0',
+  amd64: 'fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d',
+  arm: '8135524b9b85111fa512f10a3fa191736a8d4d6ac3b3169af0763503744e95c9',
+  'arm-v6': 'c9e1048feb597938884c0fff314d5d9a002599933cb94ce17fee19599cbfa3f1',
+  'arm-v7': '75844809d25d2534da96220727e7746a300e30ec8c676ca98c47affe5a752e7b',
+  arm64: '97685285c9ad6a0cf17d5844115d2a67245af6444db672187074bd9c358de419',
+} as const;
+// END RCLONE RELEASE PIN
+
+type RcloneArchiveArch = keyof typeof RCLONE_SHA256_BY_ARCH;
+
 const SAFE_PIDFILE_KILL_FUNCTION = String.raw`openai_agents_kill_pidfile() {
   pidfile=$1
   shift
@@ -145,7 +160,7 @@ export async function mountRcloneCloudBucket(
   if (mode === 'fuse') {
     await ensureFuseSupport(options);
   }
-  await ensureRclone(options);
+  const rclonePath = await ensureRclone(options);
   const config = await resolveRcloneMountConfig(options, pattern, remoteName);
   const configPath = `/tmp/openai-agents-${options.providerId}-${config.remoteName}.conf`;
 
@@ -167,11 +182,11 @@ export async function mountRcloneCloudBucket(
   });
 
   if (mode === 'nfs') {
-    await mountRcloneNfs(options, pattern, config, configPath);
+    await mountRcloneNfs(options, pattern, config, configPath, rclonePath);
     return;
   }
 
-  await mountRcloneFuse(options, pattern, config, configPath);
+  await mountRcloneFuse(options, pattern, config, configPath, rclonePath);
 }
 
 export async function unmountRcloneMount(args: {
@@ -221,12 +236,13 @@ async function mountRcloneFuse(
   pattern: RcloneMountPattern,
   config: RcloneMountConfig,
   configPath: string,
+  rclonePath: string,
 ): Promise<void> {
   const userIds = await defaultUserIds(options.runCommand);
   // rclone FUSE needs stable uid/gid options so files appear owned by the sandbox's
   // default user instead of root when the provider image supports id lookup.
   const mountArgs = [
-    'rclone',
+    rclonePath,
     'mount',
     `${config.remoteName}:${config.remotePath}`,
     options.mountPath,
@@ -261,11 +277,11 @@ async function mountRcloneNfs(
   pattern: RcloneMountPattern,
   config: RcloneMountConfig,
   configPath: string,
+  rclonePath: string,
 ): Promise<void> {
   await runRequiredMountCommand(options, {
     label: 'check rclone nfs server support',
-    command:
-      '/usr/local/bin/rclone serve nfs --help >/dev/null 2>&1 || rclone serve nfs --help >/dev/null 2>&1',
+    command: `${joinShellArgs([rclonePath, 'serve', 'nfs', '--help'])} >/dev/null 2>&1`,
     timeoutMs: 30_000,
   });
 
@@ -273,7 +289,7 @@ async function mountRcloneNfs(
   const pidPath = `/tmp/openai-agents-${options.providerId}-${config.remoteName}.nfs.pid`;
   const logPath = `/tmp/openai-agents-${options.providerId}-${config.remoteName}.nfs.log`;
   const serverArgs = [
-    'rclone',
+    rclonePath,
     'serve',
     'nfs',
     `${config.remoteName}:${config.remotePath}`,
@@ -665,13 +681,15 @@ async function ensureFuseSupport(
 
 async function ensureRclone(
   options: RcloneCloudBucketMountOptions,
-): Promise<void> {
-  const check = await options.runCommand(
-    'command -v rclone >/dev/null 2>&1 || test -x /usr/local/bin/rclone',
-    { timeoutMs: 30_000 },
-  );
+): Promise<string> {
+  const check = await options.runCommand(RCLONE_AVAILABLE_CHECK_COMMAND, {
+    timeoutMs: 30_000,
+  });
   if (check.status === 0) {
-    return;
+    const onPath = await options.runCommand(RCLONE_ON_PATH_CHECK_COMMAND, {
+      timeoutMs: 30_000,
+    });
+    return onPath.status === 0 ? 'rclone' : RCLONE_INSTALL_PATH;
   }
 
   if (options.installRcloneViaScript) {
@@ -682,10 +700,10 @@ async function ensureRclone(
 
   await runRequiredMountCommand(options, {
     label: 'check rclone after install',
-    command:
-      'command -v rclone >/dev/null 2>&1 || test -x /usr/local/bin/rclone',
+    command: RCLONE_AVAILABLE_CHECK_COMMAND,
     timeoutMs: 30_000,
   });
+  return options.installRcloneViaScript ? RCLONE_INSTALL_PATH : 'rclone';
 }
 
 async function installRcloneViaScript(
@@ -696,19 +714,107 @@ async function installRcloneViaScript(
     command: 'command -v apt-get >/dev/null 2>&1',
     timeoutMs: 30_000,
   });
+  const machineResult = await options.runCommand('uname -m', {
+    timeoutMs: 30_000,
+  });
+  const machine = (machineResult.stdout ?? '').trim();
+  const arch =
+    machineResult.status === 0 ? rcloneArchiveArch(machine) : undefined;
+  if (!arch) {
+    throw new SandboxMountError(
+      `${options.providerName} cannot install rclone on this architecture.`,
+      {
+        provider: options.providerId,
+        package: 'rclone',
+        architecture: machine || 'unknown',
+      },
+    );
+  }
   await runRequiredMountCommand(options, {
     label: 'install rclone prerequisites',
     command:
-      'DEBIAN_FRONTEND=noninteractive DEBCONF_NOWARNINGS=yes apt-get -o Dpkg::Use-Pty=0 update -qq && DEBIAN_FRONTEND=noninteractive DEBCONF_NOWARNINGS=yes apt-get -o Dpkg::Use-Pty=0 install -y -qq curl unzip ca-certificates',
+      'DEBIAN_FRONTEND=noninteractive DEBCONF_NOWARNINGS=yes apt-get -o Dpkg::Use-Pty=0 update -qq && DEBIAN_FRONTEND=noninteractive DEBCONF_NOWARNINGS=yes apt-get -o Dpkg::Use-Pty=0 install -y -qq ca-certificates coreutils curl unzip',
     timeoutMs: 300_000,
     user: 'root',
   });
-  await runRequiredMountCommand(options, {
-    label: 'install rclone',
-    command: 'curl -fsSL https://rclone.org/install.sh | bash',
+  const install = await options.runCommand(rcloneInstallCommand(arch), {
     timeoutMs: 300_000,
     user: 'root',
   });
+  if (install.status !== 0) {
+    throw new SandboxMountError(
+      install.status === RCLONE_CHECKSUM_MISMATCH_STATUS
+        ? `${options.providerName} rclone archive checksum verification failed.`
+        : `${options.providerName} cloud bucket mount failed while trying to install rclone.`,
+      {
+        provider: options.providerId,
+        package: 'rclone',
+        version: RCLONE_VERSION,
+        architecture: arch,
+        status: install.status,
+        stderr: install.stderr,
+        stdout: install.stdout,
+      },
+    );
+  }
+}
+
+/** @internal */
+export function rcloneArchiveArch(
+  machine: string,
+): RcloneArchiveArch | undefined {
+  const normalized = machine.trim().toLowerCase();
+  if (normalized === 'x86_64' || normalized === 'amd64') {
+    return 'amd64';
+  }
+  if (normalized === 'x86' || /^i[3-6]86$/u.test(normalized)) {
+    return '386';
+  }
+  if (normalized === 'aarch64' || normalized === 'arm64') {
+    return 'arm64';
+  }
+  if (normalized.startsWith('armv7')) {
+    return 'arm-v7';
+  }
+  if (normalized.startsWith('armv6')) {
+    return 'arm-v6';
+  }
+  if (normalized.startsWith('arm')) {
+    return 'arm';
+  }
+  return undefined;
+}
+
+/** @internal */
+export function rcloneInstallCommand(arch: RcloneArchiveArch): string {
+  const archive = `rclone-v${RCLONE_VERSION}-linux-${arch}.zip`;
+  const sha256 = RCLONE_SHA256_BY_ARCH[arch];
+  const url = `https://downloads.rclone.org/v${RCLONE_VERSION}/${archive}`;
+  return [
+    'set -eu',
+    'tmp_dir="$(mktemp -d)"',
+    'target_tmp=""',
+    'cleanup() {',
+    '  rm -rf "$tmp_dir"',
+    '  if [ -n "$target_tmp" ]; then rm -f "$target_tmp"; fi',
+    '}',
+    'trap cleanup EXIT',
+    "trap 'exit 1' HUP INT TERM",
+    `archive=${shellQuote(archive)}`,
+    `expected_sha256=${shellQuote(sha256)}`,
+    `url=${shellQuote(url)}`,
+    'curl --fail --location --silent --show-error --proto \'=https\' --tlsv1.2 --output "$tmp_dir/$archive" "$url"',
+    'if ! printf \'%s  %s\\n\' "$expected_sha256" "$tmp_dir/$archive" | sha256sum --check --strict -; then',
+    `  exit ${RCLONE_CHECKSUM_MISMATCH_STATUS}`,
+    'fi',
+    'unzip -q "$tmp_dir/$archive" -d "$tmp_dir/unpacked"',
+    'install -d -m 0755 /usr/local/bin',
+    'target_tmp="$(mktemp /usr/local/bin/.rclone.XXXXXX)"',
+    'install -m 0755 "$tmp_dir/unpacked/${archive%.zip}/rclone" "$target_tmp"',
+    'mv -f "$target_tmp" /usr/local/bin/rclone',
+    'target_tmp=""',
+    `/usr/local/bin/rclone version | head -n 1 | grep -Fx ${shellQuote(`rclone v${RCLONE_VERSION}`)}`,
+  ].join('\n');
 }
 
 async function installPackage(
