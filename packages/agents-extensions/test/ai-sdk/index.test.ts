@@ -1805,6 +1805,7 @@ describe('itemsToLanguageV2Messages', () => {
           {
             type: 'input_file',
             file: 'data:application/pdf;base64,JVBERi0=',
+            filename: 'inline.pdf',
           },
           {
             type: 'input_file',
@@ -1864,6 +1865,7 @@ describe('itemsToLanguageV2Messages', () => {
                   type: 'file-data',
                   data: 'JVBERi0=',
                   mediaType: 'application/pdf',
+                  filename: 'inline.pdf',
                 },
                 {
                   type: 'file-url',
@@ -1907,15 +1909,18 @@ describe('itemsToLanguageV2Messages', () => {
           {
             type: 'input_file',
             file: 'data:application/pdf;base64,JVBERi0=',
+            filename: 'inline.pdf',
           },
           {
             type: 'input_file',
             file: { url: 'https://example.com/report.pdf' },
+            filename: 'report.pdf',
             providerData: { mediaType: 'application/pdf' },
           },
           {
             type: 'input_file',
             file: { id: 'file_document_123' },
+            filename: 'document.pdf',
             providerData: { mediaType: 'application/pdf' },
           },
         ],
@@ -1962,6 +1967,7 @@ describe('itemsToLanguageV2Messages', () => {
                 type: 'file',
                 data: { type: 'data', data: 'JVBERi0=' },
                 mediaType: 'application/pdf',
+                filename: 'inline.pdf',
               },
               {
                 type: 'file',
@@ -1970,6 +1976,7 @@ describe('itemsToLanguageV2Messages', () => {
                   url: new URL('https://example.com/report.pdf'),
                 },
                 mediaType: 'application/pdf',
+                filename: 'report.pdf',
               },
               {
                 type: 'file',
@@ -1978,6 +1985,7 @@ describe('itemsToLanguageV2Messages', () => {
                   reference: { openai: 'file_document_123' },
                 },
                 mediaType: 'application/pdf',
+                filename: 'document.pdf',
               },
             ],
           },
