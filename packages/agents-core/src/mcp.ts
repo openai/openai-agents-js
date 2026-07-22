@@ -223,10 +223,15 @@ export class MCPServerStdio
   get name(): string {
     return this.underlying.name;
   }
-  connect(): Promise<void> {
+  private clearLocalToolsCache(): void {
+    this._cachedTools = undefined;
+  }
+  async connect(): Promise<void> {
+    this.clearLocalToolsCache();
     return this.underlying.connect();
   }
-  close(): Promise<void> {
+  async close(): Promise<void> {
+    this.clearLocalToolsCache();
     return this.underlying.close();
   }
   async listTools(): Promise<MCPTool[]> {
@@ -266,7 +271,8 @@ export class MCPServerStdio
   readResource(uri: string): Promise<MCPReadResourceResult> {
     return this.underlying.readResource(uri);
   }
-  invalidateToolsCache(): Promise<void> {
+  async invalidateToolsCache(): Promise<void> {
+    this.clearLocalToolsCache();
     return this.underlying.invalidateToolsCache();
   }
 }
@@ -373,10 +379,15 @@ export class MCPServerSSE
   get name(): string {
     return this.underlying.name;
   }
-  connect(): Promise<void> {
+  private clearLocalToolsCache(): void {
+    this._cachedTools = undefined;
+  }
+  async connect(): Promise<void> {
+    this.clearLocalToolsCache();
     return this.underlying.connect();
   }
-  close(): Promise<void> {
+  async close(): Promise<void> {
+    this.clearLocalToolsCache();
     return this.underlying.close();
   }
   async listTools(): Promise<MCPTool[]> {
@@ -416,7 +427,8 @@ export class MCPServerSSE
   readResource(uri: string): Promise<MCPReadResourceResult> {
     return this.underlying.readResource(uri);
   }
-  invalidateToolsCache(): Promise<void> {
+  async invalidateToolsCache(): Promise<void> {
+    this.clearLocalToolsCache();
     return this.underlying.invalidateToolsCache();
   }
 }
