@@ -155,6 +155,34 @@ describe('DaytonaSandboxClient', () => {
     ).toBe(true);
   });
 
+  test.each([undefined, 'root'])(
+    'preserves Daytona provider identity for failed path probes with runAs=%s',
+    async (runAs) => {
+      const client = new DaytonaSandboxClient();
+      const session = await client.create(new Manifest());
+      const originalImplementation = executeCommandMock.getMockImplementation();
+      executeCommandMock.mockImplementation(async (command, ...args) => {
+        if (String(command).includes('test -e ')) {
+          return {
+            exitCode: 1,
+            result: 'Permission denied',
+            artifacts: { stdout: 'Permission denied' },
+          };
+        }
+        return await originalImplementation?.(command, ...args);
+      });
+
+      await expect(session.pathExists('blocked', runAs)).rejects.toMatchObject({
+        code: 'provider_error',
+        details: {
+          provider: 'daytona',
+          path: '/home/daytona/workspace/blocked',
+          status: 1,
+        },
+      });
+    },
+  );
+
   test('cleans up when workspace root preparation fails', async () => {
     executeCommandMock.mockResolvedValueOnce({
       exitCode: 1,

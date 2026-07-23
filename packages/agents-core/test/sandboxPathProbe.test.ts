@@ -72,6 +72,37 @@ describe('sandbox path probes', () => {
   });
 
   it.each([
+    'sandbox not found',
+    'executable file not found',
+    'test: /workspace/other: No such file or directory',
+  ])('rejects unrelated not-found diagnostics: %s', async (diagnostic) => {
+    const runCommand = vi.fn(async (_command: string) => ({
+      status: 1,
+      stderr: diagnostic,
+    }));
+
+    await expect(
+      probeSandboxPathExists({ path: '/workspace/missing', runCommand }),
+    ).rejects.toBeInstanceOf(SandboxWorkspaceArchiveReadError);
+    expect(runCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it('confirms generic missing diagnostics with a path-specific probe', async () => {
+    const runCommand = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 1, stderr: 'missing path' })
+      .mockResolvedValueOnce({
+        status: 1,
+        stderr: 'find: /workspace/missing: No such file or directory',
+      });
+
+    await expect(
+      probeSandboxPathExists({ path: '/workspace/missing', runCommand }),
+    ).resolves.toBe(false);
+    expect(runCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
     { status: 1, stderr: 'Permission denied' },
     { status: 2, stderr: 'Input/output error' },
     { status: 1, timedOut: true },

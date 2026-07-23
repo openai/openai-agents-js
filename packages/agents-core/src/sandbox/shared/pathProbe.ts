@@ -139,10 +139,12 @@ export async function probeSandboxPathExists(
     throw createPathProbeError(options, initial);
   }
   if (diagnostic.length > 0) {
-    if (isMissingPathDiagnostic(diagnostic)) {
+    if (isMissingPathDiagnostic(diagnostic, options.path)) {
       return false;
     }
-    throw createPathProbeError(options, initial);
+    if (!hasMissingPathDiagnostic(diagnostic)) {
+      throw createPathProbeError(options, initial);
+    }
   }
 
   const result = await options.runCommand(
@@ -155,7 +157,7 @@ export async function probeSandboxPathExists(
     const probeDiagnostic = pathProbeDiagnostic(result);
     if (
       (!result.stdout?.trim() && probeDiagnostic.length === 0) ||
-      isMissingPathDiagnostic(probeDiagnostic)
+      isMissingPathDiagnostic(probeDiagnostic, options.path)
     ) {
       return false;
     }
@@ -171,10 +173,21 @@ function pathProbeDiagnostic(result: SandboxPathProbeResult): string {
   return result.stderr?.trim() ?? '';
 }
 
-function isMissingPathDiagnostic(diagnostic: string): boolean {
+function hasMissingPathDiagnostic(diagnostic: string): boolean {
   return /(?:no such file or directory|not found|does not exist|missing(?: path| file)?)/iu.test(
     diagnostic,
   );
+}
+
+function isMissingPathDiagnostic(diagnostic: string, path: string): boolean {
+  if (!hasMissingPathDiagnostic(diagnostic)) {
+    return false;
+  }
+  const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  return new RegExp(
+    `(?:^|[\\s"'\\x60])${escapedPath}(?:$|[\\s"':\\x60])`,
+    'u',
+  ).test(diagnostic);
 }
 
 function createPathProbeError(

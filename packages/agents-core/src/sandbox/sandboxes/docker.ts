@@ -10,6 +10,7 @@ import {
   SandboxConfigurationError,
   SandboxMountError,
   SandboxUnsupportedFeatureError,
+  SandboxWorkspaceReadNotFoundError,
 } from '../errors';
 import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -529,12 +530,34 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   }
 
   async readDockerFileAs(path: string, runAs?: string): Promise<Uint8Array> {
-    const output = await this.runCheckedDockerFilesystemCommand(
+    const result = await this.runDockerFilesystemCommand(
       `base64 -- ${shellQuote(path)}`,
       { runAs },
-      `read file ${path}`,
     );
-    return Buffer.from(output.replace(/\s+/gu, ''), 'base64');
+    if (result.status !== 0) {
+      if (
+        result.status === 1 &&
+        !result.timedOut &&
+        !result.signal &&
+        !result.error
+      ) {
+        const exists = await probeSandboxPathExists({
+          path,
+          runCommand: async (command) =>
+            await this.runDockerFilesystemCommand(command, { runAs }),
+        });
+        if (!exists) {
+          throw new SandboxWorkspaceReadNotFoundError(
+            `DockerSandboxClient file does not exist: ${path}`,
+            { path },
+          );
+        }
+      }
+      throw new UserError(
+        `DockerSandboxClient failed to read file ${path}: ${formatSandboxProcessError(result)}`,
+      );
+    }
+    return Buffer.from(result.stdout.replace(/\s+/gu, ''), 'base64');
   }
 
   async writeDockerTextFileAs(

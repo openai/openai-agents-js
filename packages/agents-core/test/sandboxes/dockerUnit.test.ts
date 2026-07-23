@@ -43,6 +43,7 @@ import {
   inContainerMountStrategy,
   Manifest,
   NoopSnapshotSpec,
+  skills,
 } from '../../src/sandbox/local';
 
 const success = (stdout = ''): SandboxProcessResult => ({
@@ -1548,6 +1549,89 @@ describe('DockerSandboxClient unit behavior', () => {
         status: result.status,
       },
     });
+  });
+
+  it('normalizes missing Docker filesystem reads to typed not-found errors', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = args.at(-1) ?? '';
+      const path = '/workspace/.agents/.git/SKILL.md';
+      if (command.startsWith('base64 --')) {
+        return dockerSpawnResult({
+          status: 1,
+          stderr: `base64: ${path}: No such file or directory`,
+        });
+      }
+      if (command.startsWith('test -e')) {
+        return dockerSpawnResult({
+          status: 1,
+          stderr: `test: ${path}: No such file or directory`,
+        });
+      }
+      return dockerSpawnResult({ status: 0 });
+    });
+    const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+    const session = await client.create(new Manifest());
+
+    await expect(
+      session.readFile({ path: '.agents/.git/SKILL.md', runAs: 'node' }),
+    ).rejects.toMatchObject({
+      code: 'workspace_read_not_found',
+      details: { path: '/workspace/.agents/.git/SKILL.md' },
+    });
+  });
+
+  it('skips Docker Git metadata when discovering materialized skills', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = args.at(-1) ?? '';
+      const missingPath = '/workspace/.agents/.git/SKILL.md';
+      if (command.startsWith('find ')) {
+        return dockerSpawnResult({ stdout: 'd\t.git\nd\tdynamic-skill\n' });
+      }
+      if (command.includes(missingPath)) {
+        return dockerSpawnResult({
+          status: 1,
+          stderr: `base64: ${missingPath}: No such file or directory`,
+        });
+      }
+      if (command.startsWith('base64 --')) {
+        return dockerSpawnResult({
+          stdout: Buffer.from(
+            '---\nname: dynamic-skill\ndescription: Dynamic skill\n---\n',
+          ).toString('base64'),
+        });
+      }
+      return dockerSpawnResult({ status: 0 });
+    });
+    const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+    const session = await client.create(new Manifest());
+    const capability = skills({ from: { type: 'dir', children: {} } });
+    capability.bind(session).bindRunAs('node');
+
+    await expect(
+      capability.instructions(session.state.manifest),
+    ).resolves.toContain('- dynamic-skill: Dynamic skill');
   });
 
   it('provisions manifest identity metadata inside the container', async () => {
