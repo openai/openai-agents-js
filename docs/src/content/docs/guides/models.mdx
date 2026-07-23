@@ -107,7 +107,9 @@ When you instantiate `OpenAIProvider` directly, these options control client con
 | `useResponsesWebSocket` | Use the WebSocket transport for Responses models resolved by this provider. Defaults to the process-wide `setOpenAIResponsesTransport(...)` setting. |
 | `cacheResponsesWebSocketModels` | Reuse websocket-backed Responses model wrappers for connection reuse. Defaults to `true`; call `provider.close()` during shutdown to close cached wrappers. |
 | `responsesWebSocketOptions` | Advanced options forwarded to websocket-backed Responses model wrappers. |
-| `strictFeatureValidation` | For Chat Completions models, raise `UserError` for Responses-only features such as `previousResponseId`, `conversationId`, and `prompt`. By default those features are warned and ignored. |
+| `strictFeatureValidation` | For Chat Completions models, raise `UserError` for Responses-only features such as `previousResponseId`, `conversationId`, `prompt`, and assistant message phases. By default those features are warned and ignored. |
+
+When a Responses assistant message includes a `phase` of `commentary` or `final_answer`, the SDK preserves it as a top-level field on the history item. That phase survives session replay through `OpenAIConversationsSession` and serialized `RunState`. Chat Completions has no equivalent field, so it warns and drops the phase by default; set `strictFeatureValidation: true` to reject that conversion instead.
 
 #### Responses WebSocket transport
 

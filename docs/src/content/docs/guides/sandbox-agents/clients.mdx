@@ -96,6 +96,10 @@ Manifest entries are prepared before the agent runs. You can tune materializatio
 
 `manifestEntries` limits parallel top-level entry work. `localDirFiles` limits file copy concurrency inside `localDir()` entries.
 
+### Filesystem existence checks
+
+When a session implements `pathExists()`, `false` means the backend confirmed that the path is missing. Permission errors, I/O failures, and provider probe failures reject with a provider error instead of being treated as a missing path. This prevents editor, manifest, and memory flows from overwriting or replacing paths that may exist but are inaccessible.
+
 ## Mounts and remote storage
 
 Mount entries describe what storage to expose; mount strategies describe how a sandbox backend attaches that storage. Import the built-in mount entries and generic strategies from `@openai/agents/sandbox`.
@@ -160,6 +164,8 @@ Hosted sandbox clients expose provider-specific mount strategies. Choose the bac
 | `E2BSandboxClient` | Supports rclone-backed mounts with `E2BCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
 | `RunloopSandboxClient` | Supports rclone-backed mounts with `RunloopCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
 | `VercelSandboxClient` | Supports create-time S3 mounts with `VercelCloudBucketMountStrategy`. Inline credentials require `allowS3CredentialExposure: true`; reuse the live mounted session because serialized mount state cannot be resumed. |
+
+For E2B and Runloop rclone-backed mounts, the SDK uses an existing `rclone` binary when available. Otherwise it installs an SDK-pinned Linux archive only after verifying its SHA-256 checksum; unsupported architectures and checksum failures abort the mount.
 
 The table below summarizes which remote storage entries each backend can mount directly:
 

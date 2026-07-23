@@ -12,10 +12,7 @@ import setTracingExportApiKeyExample from '../../../../../examples/docs/config/s
 import setTracingDisabledExample from '../../../../../examples/docs/config/setTracingDisabled.ts?raw';
 import getLoggerExample from '../../../../../examples/docs/config/getLogger.ts?raw';
 
-This page covers **SDK-wide defaults** that you usually set once during app startup, such as the
-default OpenAI client, transport, tracing export key, and debug logging behavior. These settings
-apply process-wide by default, so this is the right place for universal configuration rather than
-per-agent or per-run tuning.
+This page covers **SDK-wide defaults** that you usually set once during app startup, such as the default OpenAI client, transport, tracing export key, and debug logging behavior. These settings apply process-wide by default, so this is the right place for universal configuration rather than per-agent or per-run tuning.
 
 If you need to configure a specific `Agent`, `Runner`, or `run()` call instead, see:
 
@@ -67,8 +64,7 @@ This process-wide default only affects models that are later resolved through th
 
 ### Tracing
 
-Tracing is enabled by default in supported server runtimes. It is disabled by default in browsers
-and when `NODE_ENV=test`.
+Tracing is enabled by default in supported server runtimes. It is disabled by default in browsers and when `NODE_ENV=test`.
 
 By default trace export uses the same OpenAI key from the section above.
 
@@ -114,8 +110,12 @@ To disable logging LLM inputs and outputs:
 export OPENAI_AGENTS_DONT_LOG_MODEL_DATA=1
 ```
 
+This also redacts model-related error objects and details from SDK error logs, leaving only a safe error type.
+
 To disable logging tool inputs and outputs:
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_TOOL_DATA=1
 ```
+
+This also redacts tool-related error objects and details from SDK error logs, including tool execution, approval formatting, and Realtime tool handling failures.

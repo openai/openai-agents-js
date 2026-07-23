@@ -112,7 +112,7 @@ There are two related integrations in `@openai/agents-extensions`:
 
 ### Image tool outputs
 
-The adapter preserves `ToolOutputImage` values returned by function tools, including remote URLs, base64 data, and OpenAI file IDs. AI SDK v2 models receive `media` parts. AI SDK v3 models receive `image-url`, `image-data`, or `image-file-id` parts so the provider can consume the original image representation.
+The adapter preserves `ToolOutputImage` values returned by function tools, including remote URLs, base64 data, and OpenAI file IDs. AI SDK v2 models receive `media` parts. AI SDK v3 models receive `image-url`, `image-data`, or `image-file-id` parts. AI SDK v4 models receive `file` parts whose data is represented as a URL, inline data, or a provider reference for file IDs. This lets each supported model version consume the original image representation.
 
 See [`examples/ai-sdk/image-tool-output.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/image-tool-output.ts) for a complete example.
 
