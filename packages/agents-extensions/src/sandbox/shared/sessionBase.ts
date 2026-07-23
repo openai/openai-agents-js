@@ -50,6 +50,7 @@ import {
   parseExposedPortEndpoint,
   recordResolvedExposedPortEndpoint,
 } from './ports';
+import { probeRemoteSandboxPathExists } from './pathProbe';
 import { assertRunAsUnsupported } from './session';
 import type {
   RemoteManifestWriter,
@@ -59,11 +60,7 @@ import type {
 } from './types';
 
 export type RemoteSandboxCommandKind =
-  | 'archive'
-  | 'exec'
-  | 'manifest'
-  | 'path'
-  | 'running';
+  'archive' | 'exec' | 'manifest' | 'path' | 'running';
 
 export type RemoteSandboxCommandOptions = {
   kind: RemoteSandboxCommandKind;
@@ -187,15 +184,17 @@ export abstract class RemoteSandboxSessionBase<
   async pathExists(path: string, runAs?: string): Promise<boolean> {
     this.assertFilesystemRunAs(runAs);
     const absolutePath = await this.resolveRemotePath(path);
-    const result = await this.runRemoteCommand(
-      `test -e ${shellQuote(absolutePath)}`,
-      {
-        kind: 'path',
-        workdir: this.state.manifest.root,
-        runAs,
-      },
-    );
-    return result.status === 0;
+    return await probeRemoteSandboxPathExists({
+      providerName: this.providerName,
+      providerId: this.providerId,
+      path: absolutePath,
+      runCommand: async (command) =>
+        await this.runRemoteCommand(command, {
+          kind: 'path',
+          workdir: this.state.manifest.root,
+          runAs,
+        }),
+    });
   }
 
   async readFile(args: ReadFileArgs): Promise<Uint8Array> {
@@ -363,8 +362,7 @@ export abstract class RemoteSandboxSessionBase<
   }
 
   protected manifestMetadataSupport():
-    | SandboxManifestMetadataSupport
-    | undefined {
+    SandboxManifestMetadataSupport | undefined {
     return undefined;
   }
 

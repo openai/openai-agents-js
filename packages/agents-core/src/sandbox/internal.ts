@@ -39,6 +39,11 @@ export {
 } from './shared/environment';
 export { shellQuote } from './shared/shell';
 export {
+  isSandboxPathNotFoundError,
+  probeSandboxPathExists,
+  type SandboxPathProbeResult,
+} from './shared/pathProbe';
+export {
   isRecord,
   isStringRecord,
   readOptionalBoolean,

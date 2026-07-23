@@ -55,6 +55,7 @@ import {
   truncateOutput,
 } from '../shared/output';
 import { assertConfiguredExposedPort } from '../shared/ports';
+import { probeRemoteSandboxPathExists } from '../shared/pathProbe';
 import {
   addPtyWebSocketListener,
   appendPtyOutput,
@@ -376,15 +377,28 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
   async pathExists(path: string, runAs?: string): Promise<boolean> {
     const absolutePath = await this.resolveRemotePath(path);
     if (!runAs) {
-      const result = await this.execShell(
-        `test -e ${shellQuote(absolutePath)}`,
-      );
-      return result.exitCode === 0;
+      return await probeRemoteSandboxPathExists({
+        providerName: 'CloudflareSandboxClient',
+        providerId: 'cloudflare',
+        path: absolutePath,
+        runCommand: async (command) => {
+          const result = await this.execShell(command);
+          return {
+            status: result.exitCode,
+            stdout: result.stdout,
+            stderr: result.stderr,
+          };
+        },
+      });
     }
     return await runAsRemotePathExists(
       absolutePath,
       runAs,
       this.runAsCommandRunner.bind(this),
+      {
+        providerName: 'CloudflareSandboxClient',
+        providerId: 'cloudflare',
+      },
     );
   }
 
@@ -708,9 +722,12 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     });
   }
 
-  private async execShell(
-    shellCommand: string,
-  ): Promise<{ exitCode: number; output: string }> {
+  private async execShell(shellCommand: string): Promise<{
+    exitCode: number;
+    output: string;
+    stdout: string;
+    stderr: string;
+  }> {
     const response = await this.fetch(
       `/v1/sandbox/${this.state.sandboxId}/exec`,
       {
@@ -853,6 +870,8 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     return {
       exitCode: exitCode ?? 1,
       output,
+      stdout,
+      stderr,
     };
   }
 
@@ -865,8 +884,8 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     );
     return {
       status: result.exitCode,
-      stdout: result.output,
-      stderr: '',
+      stdout: result.stdout,
+      stderr: result.stderr,
     };
   }
 
@@ -999,8 +1018,8 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         const result = await this.execShell(command);
         return {
           status: result.exitCode,
-          stdout: result.output,
-          stderr: '',
+          stdout: result.stdout,
+          stderr: result.stderr,
         };
       },
     });

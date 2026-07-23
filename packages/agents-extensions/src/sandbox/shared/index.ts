@@ -96,6 +96,7 @@ export {
   type RemoteRunAsCommandResult,
   type RemoteRunAsCommandRunner,
 } from './runAs';
+export { probeRemoteSandboxPathExists } from './pathProbe';
 export {
   RemoteSandboxSessionBase,
   type RemoteSandboxCommandKind,

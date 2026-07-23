@@ -309,6 +309,103 @@ describe('CloudflareSandboxClient', () => {
     ).toBe(true);
   });
 
+  test.each([
+    { status: 1, stderr: 'Permission denied' },
+    { status: 2, stderr: 'Input/output error' },
+  ])('preserves failed Cloudflare filesystem probes: %j', async (result) => {
+    const client = new CloudflareSandboxClient();
+    const session = await client.create(new Manifest(), {
+      workerUrl: 'https://worker.example.com',
+    });
+    const originalFetchImplementation = vi
+      .mocked(global.fetch)
+      .getMockImplementation();
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      if (String(input).includes('/exec')) {
+        const payload = JSON.parse(String(init?.body)) as { argv?: string[] };
+        if (payload.argv?.[2]?.startsWith('test -e ')) {
+          return sseExecResponse([
+            {
+              event: 'stderr',
+              data: Buffer.from(result.stderr).toString('base64'),
+            },
+            {
+              event: 'exit',
+              data: JSON.stringify({ exit_code: result.status }),
+            },
+          ]);
+        }
+      }
+      return await originalFetchImplementation!(input, init);
+    });
+
+    await expect(
+      session.pathExists('/workspace/blocked'),
+    ).rejects.toMatchObject({
+      code: 'provider_error',
+      details: {
+        provider: 'cloudflare',
+        path: '/workspace/blocked',
+        status: result.status,
+      },
+    });
+  });
+
+  test.each([undefined, 'root'])(
+    'does not expose Cloudflare path probe stdout for runAs %s',
+    async (runAs) => {
+      const sensitiveOutput = 'sensitive login profile output';
+      const client = new CloudflareSandboxClient();
+      const session = await client.create(new Manifest(), {
+        workerUrl: 'https://worker.example.com',
+      });
+      const originalFetchImplementation = vi
+        .mocked(global.fetch)
+        .getMockImplementation();
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        if (String(input).includes('/exec')) {
+          const payload = JSON.parse(String(init?.body)) as { argv?: string[] };
+          if (payload.argv?.[2]?.includes('test -e ')) {
+            return sseExecResponse([
+              {
+                event: 'stdout',
+                data: Buffer.from(sensitiveOutput).toString('base64'),
+              },
+              {
+                event: 'stderr',
+                data: Buffer.from('Permission denied').toString('base64'),
+              },
+              {
+                event: 'exit',
+                data: JSON.stringify({ exit_code: 1 }),
+              },
+            ]);
+          }
+        }
+        return await originalFetchImplementation!(input, init);
+      });
+
+      let thrown: unknown;
+      try {
+        await session.pathExists('/workspace/blocked', runAs);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(SandboxProviderError);
+      expect(thrown).toMatchObject({
+        details: {
+          provider: 'cloudflare',
+          path: '/workspace/blocked',
+          status: 1,
+          stdoutBytes: sensitiveOutput.length,
+        },
+      });
+      expect((thrown as Error).message).toContain('Permission denied');
+      expect((thrown as Error).message).not.toContain(sensitiveOutput);
+    },
+  );
+
   test('rejects invalid sandbox ids returned by create', async () => {
     vi.mocked(global.fetch).mockResolvedValueOnce(
       jsonResponse({ id: '../cf_test' }),
@@ -852,6 +949,11 @@ describe('CloudflareSandboxClient', () => {
             ),
           },
           { event: 'exit', data: JSON.stringify({ exit_code: 0 }) },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        sseExecResponse([
+          { event: 'exit', data: JSON.stringify({ exit_code: 1 }) },
         ]),
       )
       .mockResolvedValueOnce(

@@ -166,7 +166,7 @@ function vercelHttpError(status: number): Error {
 }
 
 function testExistsPath(command: string): string | undefined {
-  return command.match(/^test -e '([^']+)'$/u)?.[1];
+  return command.match(/^test -e '([^']+)'(?:$| \|\| \(path=)/u)?.[1];
 }
 
 function vercelS3Manifest(
@@ -1496,6 +1496,29 @@ describe('VercelSandboxClient', () => {
         content: 'hello',
       },
     ]);
+  });
+
+  test.each([
+    { status: 1, stderr: 'Permission denied' },
+    { status: 2, stderr: 'Input/output error' },
+  ])('preserves failed Vercel filesystem probes: %j', async (result) => {
+    const client = new VercelSandboxClient();
+    const session = await client.create(new Manifest());
+    runCommandMock.mockImplementation(async (params: MockRunCommandParams) => {
+      if (params.args?.[1]?.startsWith('test -e ')) {
+        return commandResult(result.status, '', result.stderr);
+      }
+      return await defaultRunCommand(params);
+    });
+
+    await expect(session.pathExists('blocked')).rejects.toMatchObject({
+      code: 'provider_error',
+      details: {
+        provider: 'vercel',
+        path: '/vercel/sandbox/blocked',
+        status: result.status,
+      },
+    });
   });
 
   test('fails editor deletes when remote rm fails', async () => {

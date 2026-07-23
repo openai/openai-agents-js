@@ -1661,6 +1661,27 @@ describe('remote sandbox path helpers', () => {
     expect(files.has('renamed/new.txt')).toBe(false);
   });
 
+  test('does not treat unreadable editor fallback reads as missing files', async () => {
+    const denied = Object.assign(new Error('Permission denied'), {
+      code: 'EACCES',
+    });
+    const editor = new RemoteSandboxEditor({
+      readText: async () => {
+        throw denied;
+      },
+      writeText: vi.fn(),
+      deletePath: vi.fn(),
+    });
+
+    await expect(
+      editor.createFile({
+        type: 'create_file',
+        path: '/workspace/blocked',
+        diff: '+hello',
+      }),
+    ).rejects.toBe(denied);
+  });
+
   test('prepares runAs remote writes with privileged ownership commands', async () => {
     const commands: Array<{
       command: string;
@@ -1761,7 +1782,32 @@ describe('remote sandbox path helpers', () => {
         command: "test -e '/workspace/missing'",
         options: { runAs: 'sandbox-user' },
       },
+      {
+        command: expect.stringContaining('OPENAI_AGENTS_READ_PATH_PROBE_V1'),
+        options: { runAs: 'sandbox-user' },
+      },
     ]);
+  });
+
+  test.each([
+    { status: 1, stderr: 'Permission denied' },
+    { status: 2, stderr: 'Input/output error' },
+  ])('preserves failed runAs path probes: %j', async (result) => {
+    await expect(
+      runAsRemotePathExists(
+        '/workspace/blocked',
+        'sandbox-user',
+        async () => result,
+        { providerName: 'FakeSandboxClient', providerId: 'fake' },
+      ),
+    ).rejects.toMatchObject({
+      code: 'provider_error',
+      details: {
+        provider: 'fake',
+        path: '/workspace/blocked',
+        status: result.status,
+      },
+    });
   });
 
   test('reports runAs command failures with provider context', async () => {
@@ -1826,18 +1872,22 @@ describe('remote sandbox path helpers', () => {
       options: { runAs: 'sandbox-user' },
     });
     expect(commands[1]).toEqual({
+      command: expect.stringContaining('OPENAI_AGENTS_READ_PATH_PROBE_V1'),
+      options: { runAs: 'sandbox-user' },
+    });
+    expect(commands[2]).toEqual({
       command: "mkdir -p -- '/workspace/src'",
       options: { runAs: 'sandbox-user' },
     });
-    expect(commands[2]).toMatchObject({
+    expect(commands[3]).toMatchObject({
       command: expect.stringContaining("chown 'sandbox-user':'sandbox-user'"),
       options: { runAs: 'root' },
     });
-    expect(commands[3]).toMatchObject({
+    expect(commands[4]).toMatchObject({
       command: expect.stringContaining("cat -- '/tmp/openai-agents-"),
       options: { runAs: 'sandbox-user' },
     });
-    expect(commands[4]).toMatchObject({
+    expect(commands[5]).toMatchObject({
       command: expect.stringContaining("rm -f -- '/tmp/openai-agents-"),
       options: { runAs: 'root' },
     });

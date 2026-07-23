@@ -10,6 +10,7 @@ import {
   SandboxConfigurationError,
   SandboxMountError,
   SandboxUnsupportedFeatureError,
+  SandboxWorkspaceReadNotFoundError,
 } from '../errors';
 import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -93,6 +94,7 @@ import {
 } from './shared/runProcess';
 import { resolveFallbackShellCommand } from './shared/shellCommand';
 import { shellQuote } from '../shared/shell';
+import { probeSandboxPathExists } from '../shared/pathProbe';
 import {
   deserializeLocalSandboxSessionStateValues,
   normalizeExposedPorts,
@@ -163,11 +165,12 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     if (!runAs && !this.pathRequiresDockerFilesystem(path)) {
       return await super.pathExists(path);
     }
-    const result = await this.runDockerFilesystemCommand(
-      `test -e ${shellQuote(this.resolveContainerFilesystemPath(path))}`,
-      { runAs },
-    );
-    return result.status === 0;
+    const absolutePath = this.resolveContainerFilesystemPath(path);
+    return await probeSandboxPathExists({
+      path: absolutePath,
+      runCommand: async (command) =>
+        await this.runDockerFilesystemCommand(command, { runAs }),
+    });
   }
 
   override async readFile(args: ReadFileArgs): Promise<Uint8Array> {
@@ -191,12 +194,13 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       return await super.listDir(args);
     }
     const absolutePath = this.resolveContainerFilesystemPath(args.path);
-    const output = await this.runCheckedDockerFilesystemCommand(
+    const output = await this.runReadableDockerFilesystemCommand(
       [
         `find ${shellQuote(absolutePath)} -mindepth 1 -maxdepth 1 -printf '%y\\t%f\\n'`,
       ].join(' && '),
       { runAs: args.runAs },
       `list directory ${absolutePath}`,
+      absolutePath,
     );
     const logicalPath = this.resolveLogicalPath(args.path);
     return output
@@ -527,12 +531,46 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   }
 
   async readDockerFileAs(path: string, runAs?: string): Promise<Uint8Array> {
-    const output = await this.runCheckedDockerFilesystemCommand(
+    const output = await this.runReadableDockerFilesystemCommand(
       `base64 -- ${shellQuote(path)}`,
       { runAs },
       `read file ${path}`,
+      path,
     );
     return Buffer.from(output.replace(/\s+/gu, ''), 'base64');
+  }
+
+  private async runReadableDockerFilesystemCommand(
+    command: string,
+    options: { runAs?: string },
+    action: string,
+    path: string,
+  ): Promise<string> {
+    const result = await this.runDockerFilesystemCommand(command, options);
+    if (result.status !== 0) {
+      if (
+        result.status === 1 &&
+        !result.timedOut &&
+        !result.signal &&
+        !result.error
+      ) {
+        const exists = await probeSandboxPathExists({
+          path,
+          runCommand: async (command) =>
+            await this.runDockerFilesystemCommand(command, options),
+        });
+        if (!exists) {
+          throw new SandboxWorkspaceReadNotFoundError(
+            `DockerSandboxClient path does not exist: ${path}`,
+            { path },
+          );
+        }
+      }
+      throw new UserError(
+        `DockerSandboxClient failed to ${action}: ${formatSandboxProcessError(result)}`,
+      );
+    }
+    return result.stdout;
   }
 
   async writeDockerTextFileAs(

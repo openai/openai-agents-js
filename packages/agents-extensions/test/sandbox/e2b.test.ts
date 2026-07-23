@@ -1164,6 +1164,13 @@ describe('E2BSandboxClient', () => {
         };
       }
       if (command.startsWith('test -e ')) {
+        if (command.includes('OPENAI_AGENTS_READ_PATH_PROBE_V1')) {
+          return {
+            stdout: '',
+            stderr: 'find: /workspace/missing.txt: No such file or directory',
+            exitCode: 1,
+          };
+        }
         throw Object.assign(new Error('missing path'), {
           exitCode: 1,
           stderr: 'missing path',
