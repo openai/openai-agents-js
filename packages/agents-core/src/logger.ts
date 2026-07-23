@@ -59,6 +59,44 @@ export function getLogger(namespace: string = 'openai-agents'): Logger {
   };
 }
 
+export function getSafeErrorType(error: unknown): string {
+  const errorType = typeof error;
+
+  try {
+    return error instanceof Error ? 'Error' : errorType;
+  } catch {
+    return errorType;
+  }
+}
+
+export function logToolActionError(
+  targetLogger: Logger,
+  message: string,
+  error: unknown,
+  ...details: unknown[]
+): void {
+  if (targetLogger.dontLogToolData) {
+    targetLogger.error(message, getSafeErrorType(error));
+    return;
+  }
+
+  targetLogger.error(message, error, ...details);
+}
+
+export function logModelActionError(
+  targetLogger: Logger,
+  message: string,
+  error: unknown,
+  ...details: unknown[]
+): void {
+  if (targetLogger.dontLogModelData) {
+    targetLogger.error(message, getSafeErrorType(error));
+    return;
+  }
+
+  targetLogger.error(message, error, ...details);
+}
+
 export const logger = getLogger('openai-agents:core');
 
 export default logger;

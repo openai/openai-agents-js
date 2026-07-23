@@ -1,4 +1,4 @@
-import logger from '../logger';
+import logger, { getSafeErrorType } from '../logger';
 import { RunContext } from '../runContext';
 import type { ToolErrorFormatter, ToolErrorFormatterArgs } from '../run';
 
@@ -56,8 +56,11 @@ export async function resolveApprovalRejectionMessage<TContext>({
       );
     }
   } catch (error) {
+    const errorDetails = logger.dontLogToolData
+      ? getSafeErrorType(error)
+      : toErrorMessage(error);
     logger.warn(
-      `toolErrorFormatter threw while formatting approval rejection: ${toErrorMessage(error)}`,
+      `toolErrorFormatter threw while formatting approval rejection: ${errorDetails}`,
     );
   }
 

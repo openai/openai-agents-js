@@ -14,6 +14,7 @@ import {
   OpenAIRealtimeBase,
 } from '../src/openaiRealtimeBase';
 import logger from '../src/logger';
+import { responseDoneEventSchema } from '../src/openaiRealtimeEvents';
 
 class TestBase extends OpenAIRealtimeBase {
   status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' =
@@ -341,6 +342,81 @@ describe('OpenAIRealtimeBase helpers', () => {
 
     expect(logger.error).toHaveBeenCalled();
   });
+
+  it.each([true, false])(
+    'applies tool-data logging policy to malformed function call items (%s)',
+    (redactToolData) => {
+      const secret = 'SECRET_REALTIME_TOOL_VALUE_123';
+      vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(
+        redactToolData,
+      );
+      const base = new TestBase();
+      const toolCall = {
+        type: 'function_call',
+        id: '1',
+        callId: 'c1',
+        name: 'tool',
+        arguments: 123,
+        secret,
+      } as any;
+
+      base.sendFunctionCallOutput(toolCall, secret, false);
+
+      if (redactToolData) {
+        expect(logger.error).toHaveBeenCalledWith(
+          'Error parsing tool call item',
+          'Error',
+        );
+        expect(
+          JSON.stringify(vi.mocked(logger.error).mock.calls),
+        ).not.toContain(secret);
+      } else {
+        expect(logger.error).toHaveBeenCalledWith(
+          'Error parsing tool call item',
+          expect.any(Error),
+          toolCall,
+        );
+      }
+    },
+  );
+
+  it.each([true, false])(
+    'applies model-data logging policy to invalid response events (%s)',
+    (redactModelData) => {
+      const secret = 'SECRET_REALTIME_MODEL_VALUE_123';
+      vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(
+        redactModelData,
+      );
+      vi.spyOn(responseDoneEventSchema, 'safeParse').mockReturnValueOnce({
+        success: false,
+        error: new Error(secret),
+      } as any);
+      const base = new TestBase();
+
+      (base as any)._onMessage({
+        data: JSON.stringify({
+          type: 'response.done',
+          event_id: 'response-invalid',
+          response: { status: 'completed' },
+        }),
+      });
+
+      if (redactModelData) {
+        expect(logger.error).toHaveBeenCalledWith(
+          'Error parsing response done event',
+          'Error',
+        );
+        expect(
+          JSON.stringify(vi.mocked(logger.error).mock.calls),
+        ).not.toContain(secret);
+      } else {
+        expect(logger.error).toHaveBeenCalledWith(
+          'Error parsing response done event',
+          expect.any(Error),
+        );
+      }
+    },
+  );
 
   it('sendAudio optionally commits', () => {
     const base = new TestBase();
@@ -778,6 +854,51 @@ describe('OpenAIRealtimeBase helpers', () => {
       tools: [{ name: 'tool', description: 'desc' }],
     });
   });
+
+  it.each([true, false])(
+    'applies tool-data logging policy when MCP tool events fail (%s)',
+    (redactToolData) => {
+      const secret = 'SECRET_MCP_EVENT_VALUE_123';
+      vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(
+        redactToolData,
+      );
+      const base = new TestBase();
+      base.on('mcp_tools_listed', () => {
+        throw new Error(secret);
+      });
+
+      (base as any)._onMessage({
+        data: JSON.stringify({
+          type: 'conversation.item.done',
+          event_id: 'mcp-secret-event',
+          item: {
+            id: 'tools1',
+            type: 'mcp_list_tools',
+            server_label: 'srv',
+            tools: [{ name: 'tool', description: secret }],
+          },
+        }),
+      });
+
+      if (redactToolData) {
+        expect(logger.error).toHaveBeenCalledWith(
+          'Error emitting mcp_tools_listed',
+          'Error',
+        );
+        expect(
+          JSON.stringify(vi.mocked(logger.error).mock.calls),
+        ).not.toContain(secret);
+      } else {
+        expect(logger.error).toHaveBeenCalledWith(
+          'Error emitting mcp_tools_listed',
+          expect.any(Error),
+          expect.objectContaining({
+            tools: [{ name: 'tool', description: secret }],
+          }),
+        );
+      }
+    },
+  );
 
   it('emits error events when server reports errors', () => {
     const base = new TestBase();

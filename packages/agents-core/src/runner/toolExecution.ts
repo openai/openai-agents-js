@@ -22,7 +22,7 @@ import {
   RunToolCallOutputItem,
 } from '../items';
 import { assistant } from '../helpers/message';
-import logger, { Logger } from '../logger';
+import logger, { Logger, logToolActionError } from '../logger';
 import { ModelResponse } from '../model';
 import {
   ComputerSafetyCheck,
@@ -376,7 +376,11 @@ function parseToolArguments<TContext>(
     }
     return { success: true, args: parsedArgs };
   } catch (error) {
-    logger.debug(`Failed to parse tool arguments for ${toolName}: ${error}`);
+    if (logger.dontLogToolData) {
+      logger.debug(`Failed to parse tool arguments for ${toolName}`);
+    } else {
+      logger.debug(`Failed to parse tool arguments for ${toolName}: ${error}`);
+    }
     return { success: false, error: error as Error };
   }
 }
@@ -1154,7 +1158,7 @@ export async function executeShellActions(
               error: traceError,
             },
           });
-          _logger.error('Failed to execute shell action:', err);
+          logToolActionError(_logger, 'Failed to execute shell action:', err);
         }
 
         shellOutputs = shellOutputs ?? [];
@@ -1309,7 +1313,11 @@ export async function executeApplyPatchOperations(
               error: traceError,
             },
           });
-          _logger.error('Failed to execute apply_patch operation:', err);
+          logToolActionError(
+            _logger,
+            'Failed to execute apply_patch operation:',
+            err,
+          );
         }
 
         const rawItem: protocol.ApplyPatchCallResultItem = {
@@ -1495,7 +1503,11 @@ export async function executeComputerActions(
             runContext,
           );
         } catch (err) {
-          _logger.error('Failed to execute computer action:', err);
+          logToolActionError(
+            _logger,
+            'Failed to execute computer action:',
+            err,
+          );
           output = '';
           const errorText = toErrorMessage(err);
           const traceError = getTraceToolError(

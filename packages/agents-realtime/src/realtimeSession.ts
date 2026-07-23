@@ -17,8 +17,10 @@ import {
 import { RuntimeEventEmitter } from '@openai/agents-core/_shims';
 import { isZodObject, toSmartString } from '@openai/agents-core/utils';
 import {
+  getSafeErrorType,
   hasDynamicFunctionToolApprovalPolicy,
   hasInspectableFunctionToolArguments,
+  logToolActionError,
 } from '@openai/agents-core/utils/internal';
 import type {
   RealtimeSessionConfig,
@@ -697,8 +699,11 @@ export class RealtimeSession<
         );
       }
     } catch (error) {
+      const errorDetails = logger.dontLogToolData
+        ? getSafeErrorType(error)
+        : toErrorMessage(error);
       logger.warn(
-        `toolErrorFormatter threw while formatting approval rejection: ${toErrorMessage(error)}`,
+        `toolErrorFormatter threw while formatting approval rejection: ${errorDetails}`,
       );
     }
 
@@ -1162,7 +1167,7 @@ export class RealtimeSession<
         }
         await this.#handleFunctionCall(event, dispatchSnapshot);
       } catch (error) {
-        logger.error('Error handling function call', error);
+        logToolActionError(logger, 'Error handling function call', error);
         this.emit('error', {
           type: 'error',
           error,
