@@ -159,6 +159,20 @@ describe('StreamedRunResult', () => {
     expect(sr.error).toBe(null);
   });
 
+  it('currentTurn reflects the run state turn counter, capped at maxTurns', () => {
+    const state = createState(); // createState uses maxTurns = 1
+    const sr = new StreamedRunResult({ state });
+    expect(sr.currentTurn).toBe(0);
+    // The runner bumps RunState._currentTurn once per model request; the result
+    // should surface it live rather than stay pinned at its initial 0 -- but
+    // capped at maxTurns, since the counter is bumped before the limit check.
+    state._currentTurn = 3;
+    expect(sr.currentTurn).toBe(1); // Math.min(3, maxTurns=1)
+    // With no configured limit (maxTurns null), the raw counter is surfaced.
+    state._maxTurns = null;
+    expect(sr.currentTurn).toBe(3);
+  });
+
   it('records errors and rejects completed promise', async () => {
     const state = createState();
     const sr = new StreamedRunResult({ state });

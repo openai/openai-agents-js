@@ -3483,3 +3483,100 @@ function createSessionMock(): Session {
     clearSession: vi.fn().mockResolvedValue(undefined),
   };
 }
+
+// A streaming model that returns one queued ModelResponse per turn, mirroring
+// the QueueStreamingModel used elsewhere in this file.
+class QueuedTurnStreamingModel implements Model {
+  constructor(private readonly responses: ModelResponse[]) {}
+
+  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+    const response = this.responses.shift();
+    if (!response) {
+      throw new Error('No response found');
+    }
+    return response;
+  }
+
+  async *getStreamedResponse(
+    request: ModelRequest,
+  ): AsyncIterable<StreamEvent> {
+    const response = await this.getResponse(request);
+    yield {
+      type: 'response_done',
+      response: {
+        id: response.responseId ?? 'resp-current-turn',
+        usage: {
+          requests: response.usage.requests,
+          inputTokens: response.usage.inputTokens,
+          outputTokens: response.usage.outputTokens,
+          totalTokens: response.usage.totalTokens,
+        },
+        output: response.output.map((item) =>
+          protocol.OutputModelItem.parse(item),
+        ),
+      },
+    } satisfies StreamEvent;
+  }
+}
+
+describe('StreamedRunResult.currentTurn (streamed runs)', () => {
+  beforeAll(() => {
+    setTracingDisabled(true);
+  });
+
+  it('tracks the real turn count across a multi-turn streamed run', async () => {
+    const lookup = tool({
+      name: 'lookup',
+      description: 'Look something up.',
+      parameters: z.object({ q: z.string() }),
+      execute: async () => 'ok',
+    });
+    const agent = new Agent({
+      name: 'MultiTurnStreamingAgent',
+      model: new QueuedTurnStreamingModel([
+        {
+          output: [
+            {
+              type: 'function_call',
+              id: 'fc_lookup',
+              callId: 'call_lookup',
+              name: 'lookup',
+              status: 'completed',
+              arguments: JSON.stringify({ q: 'x' }),
+            } as protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+      ]),
+      tools: [lookup],
+      toolUseBehavior: 'run_llm_again',
+    });
+
+    const result = await run(agent, 'go', { stream: true });
+    await result.completed;
+
+    // Two model requests => two turns. Previously currentTurn was pinned at 0.
+    expect(result.finalOutput).toBe('done');
+    expect(result.currentTurn).toBe(2);
+  });
+
+  it('caps currentTurn at maxTurns on a handled max-turn boundary', async () => {
+    // maxTurns: 0 -- the runner increments _currentTurn to 1 before the limit
+    // check, then raises MaxTurnsExceededError without ever calling the model.
+    // The public currentTurn must report 0 (turns the limit admitted), not 1.
+    const agent = new Agent({
+      name: 'MaxTurnsZeroAgent',
+      model: new FakeModel(),
+    });
+
+    const result = await run(agent, 'go', { stream: true, maxTurns: 0 });
+    await expect(result.completed).rejects.toBeInstanceOf(
+      MaxTurnsExceededError,
+    );
+    expect(result.currentTurn).toBe(0);
+  });
+});
