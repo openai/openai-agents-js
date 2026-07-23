@@ -35,6 +35,8 @@ import {
   FUNCTION_TOOL_PARSED_INPUT_CALLBACK,
   ApplyPatchToolCustomDataContext,
   invokeFunctionTool,
+  hasDynamicFunctionToolApprovalPolicy,
+  hasInspectableFunctionToolArguments,
   validateFunctionToolOutput,
   resolveComputer,
   Tool,
@@ -243,9 +245,23 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
 
   const executeToolRun = async (toolRun: ToolRunFunction<TContext>) => {
     const parseResult = parseToolArguments(toolRun);
+    const dynamicApprovalPolicy = hasDynamicFunctionToolApprovalPolicy(
+      toolRun.tool,
+    );
 
     // Handle parse errors gracefully instead of crashing.
     if (!parseResult.success) {
+      if (dynamicApprovalPolicy) {
+        const approvalOutcome = await handleFunctionApproval(
+          deps,
+          toolRun,
+          undefined,
+          true,
+        );
+        if (approvalOutcome !== 'approved') {
+          return approvalOutcome;
+        }
+      }
       return buildParseErrorResult(deps, toolRun, parseResult.error);
     }
 
@@ -253,6 +269,8 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
       deps,
       toolRun,
       parseResult.args,
+      dynamicApprovalPolicy &&
+        !hasInspectableFunctionToolArguments(parseResult.args),
     );
     if (approvalOutcome !== 'approved') {
       return approvalOutcome;
@@ -494,6 +512,7 @@ async function handleFunctionApproval<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
   parsedArgs: any,
+  forceApproval: boolean = false,
 ): Promise<'approved' | FunctionToolResult<TContext>> {
   const { agent, state } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
@@ -511,11 +530,13 @@ async function handleFunctionApproval<TContext>(
     return 'approved';
   }
 
-  const needsApproval = await toolRun.tool.needsApproval(
-    state._context,
-    parsedArgs,
-    toolRun.toolCall.callId,
-  );
+  const needsApproval =
+    forceApproval ||
+    (await toolRun.tool.needsApproval(
+      state._context,
+      parsedArgs,
+      toolRun.toolCall.callId,
+    ));
 
   if (!needsApproval) {
     return 'approved';

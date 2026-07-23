@@ -2577,6 +2577,201 @@ describe('executeShellActions', () => {
       expect(invokeSpy).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['malformed JSON', '{'],
+      ['an array', '[]'],
+      ['null', 'null'],
+      ['a number', '42'],
+      ['a string', '"unsafe"'],
+      ['a boolean', 'true'],
+    ])(
+      'requires approval without invoking a dynamic policy for %s',
+      async (_label, args) => {
+        const needsApproval = vi.fn(async () => false);
+        const t = tool({
+          name: 'hi',
+          description: 'dynamic approval tool',
+          parameters: {
+            type: 'object',
+            properties: {},
+            required: [],
+            additionalProperties: false,
+          },
+          needsApproval,
+          execute: vi.fn(async () => 'ok'),
+        }) as unknown as FunctionTool;
+        const invokeSpy = vi.spyOn(t, 'invoke');
+
+        const result = await executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall: { ...toolCall, arguments: args }, tool: t }],
+          runner,
+          state,
+        );
+
+        expect(result[0].type).toBe('function_approval');
+        expect(needsApproval).not.toHaveBeenCalled();
+        expect(invokeSpy).not.toHaveBeenCalled();
+      },
+    );
+
+    it('fails closed for directly constructed dynamic approval policies', async () => {
+      const needsApproval = vi.fn(async () => false);
+      const t = {
+        ...tool({
+          name: 'hi',
+          description: 'directly constructed approval tool',
+          parameters: {
+            type: 'object',
+            properties: {},
+            required: [],
+            additionalProperties: false,
+          },
+          needsApproval: false,
+          execute: vi.fn(async () => 'ok'),
+        }),
+        needsApproval,
+      } as unknown as FunctionTool;
+      const invokeSpy = vi.spyOn(t, 'invoke');
+
+      const result = await executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall: { ...toolCall, arguments: '[]' }, tool: t }],
+        runner,
+        state,
+      );
+
+      expect(result[0].type).toBe('function_approval');
+      expect(needsApproval).not.toHaveBeenCalled();
+      expect(invokeSpy).not.toHaveBeenCalled();
+    });
+
+    it('continues evaluating dynamic approval policies for valid objects', async () => {
+      const needsApproval = vi.fn(async () => false);
+      const t = tool({
+        name: 'hi',
+        description: 'dynamic approval tool',
+        parameters: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+        needsApproval,
+        execute: vi.fn(async () => 'ok'),
+      }) as unknown as FunctionTool;
+
+      const result = await executeFunctionToolCalls(
+        state._currentAgent,
+        [
+          {
+            toolCall: { ...toolCall, arguments: '{"safe":true}' },
+            tool: t,
+          },
+        ],
+        runner,
+        state,
+      );
+
+      expect(result[0].type).toBe('function_output');
+      expect(needsApproval).toHaveBeenCalledWith(
+        state._context,
+        { safe: true },
+        toolCall.callId,
+      );
+    });
+
+    it('rejects malformed arguments without invoking the approval policy', async () => {
+      const needsApproval = vi.fn(async () => false);
+      const t = tool({
+        name: 'hi',
+        description: 'dynamic approval tool',
+        parameters: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+        needsApproval,
+        execute: vi.fn(async () => 'ok'),
+      }) as unknown as FunctionTool;
+      const invalidCall = { ...toolCall, arguments: '{' };
+      state._context.rejectTool(
+        new ToolApprovalItem(invalidCall, state._currentAgent),
+      );
+      const invokeSpy = vi.spyOn(t, 'invoke');
+
+      const result = await executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall: invalidCall, tool: t }],
+        runner,
+        state,
+      );
+
+      expect(result[0].type).toBe('function_output');
+      expect(needsApproval).not.toHaveBeenCalled();
+      expect(invokeSpy).not.toHaveBeenCalled();
+    });
+
+    it('keeps approved malformed arguments on the existing parse-error path', async () => {
+      const needsApproval = vi.fn(async () => false);
+      const t = tool({
+        name: 'hi',
+        description: 'dynamic approval tool',
+        parameters: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+        needsApproval,
+        execute: vi.fn(async () => 'ok'),
+      }) as unknown as FunctionTool;
+      const invalidCall = { ...toolCall, arguments: '{' };
+      state._context.approveTool(
+        new ToolApprovalItem(invalidCall, state._currentAgent),
+      );
+      const invokeSpy = vi.spyOn(t, 'invoke');
+
+      const result = await executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall: invalidCall, tool: t }],
+        runner,
+        state,
+      );
+
+      expect(result[0]).toMatchObject({
+        type: 'function_output',
+        output: expect.stringContaining('valid JSON'),
+      });
+      expect(needsApproval).not.toHaveBeenCalled();
+      expect(invokeSpy).not.toHaveBeenCalled();
+    });
+
+    it('preserves fixed approval behavior for non-object arguments', async () => {
+      const t = tool({
+        name: 'hi',
+        description: 'fixed approval tool',
+        parameters: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+        needsApproval: false,
+        execute: vi.fn(async () => 'ok'),
+      }) as unknown as FunctionTool;
+
+      const result = await executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall: { ...toolCall, arguments: '[]' }, tool: t }],
+        runner,
+        state,
+      );
+
+      expect(result[0].type).toBe('function_output');
+    });
+
     it('does not run input guardrails before pending approval by default', async () => {
       const guardrailRun = vi.fn(async () =>
         ToolGuardrailFunctionOutputFactory.allow(),
