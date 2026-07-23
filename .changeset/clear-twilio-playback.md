@@ -2,4 +2,4 @@
 '@openai/agents-extensions': patch
 ---
 
-fix: clear Twilio playback on manual interrupt (#1173)
+fix: clear buffered Twilio playback and preserve Realtime truncation on interrupt (#1173)
