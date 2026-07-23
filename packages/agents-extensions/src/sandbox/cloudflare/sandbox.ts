@@ -385,7 +385,8 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
           const result = await this.execShell(command);
           return {
             status: result.exitCode,
-            stderr: result.output,
+            stdout: result.stdout,
+            stderr: result.stderr,
           };
         },
       });
@@ -721,9 +722,12 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     });
   }
 
-  private async execShell(
-    shellCommand: string,
-  ): Promise<{ exitCode: number; output: string }> {
+  private async execShell(shellCommand: string): Promise<{
+    exitCode: number;
+    output: string;
+    stdout: string;
+    stderr: string;
+  }> {
     const response = await this.fetch(
       `/v1/sandbox/${this.state.sandboxId}/exec`,
       {
@@ -866,6 +870,8 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     return {
       exitCode: exitCode ?? 1,
       output,
+      stdout,
+      stderr,
     };
   }
 
@@ -878,8 +884,8 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     );
     return {
       status: result.exitCode,
-      stdout: result.output,
-      stderr: '',
+      stdout: result.stdout,
+      stderr: result.stderr,
     };
   }
 
@@ -1012,8 +1018,8 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         const result = await this.execShell(command);
         return {
           status: result.exitCode,
-          stdout: result.output,
-          stderr: '',
+          stdout: result.stdout,
+          stderr: result.stderr,
         };
       },
     });

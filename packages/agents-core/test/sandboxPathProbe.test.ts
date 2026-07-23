@@ -2,6 +2,7 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readdir,
   rm,
   symlink,
   writeFile,
@@ -210,12 +211,26 @@ describe('sandbox path probes', () => {
       await expect(
         probeSandboxPathExists({ path: invalid, runCommand }),
       ).rejects.toBeInstanceOf(SandboxWorkspaceArchiveReadError);
-      await expect(
-        probeSandboxPathExists({
-          path: join(inaccessible, 'nested.txt'),
-          runCommand,
-        }),
-      ).rejects.toBeInstanceOf(SandboxWorkspaceArchiveReadError);
+      const canTraverseInaccessible = await readdir(inaccessible).then(
+        () => true,
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === 'EACCES' || error.code === 'EPERM') {
+            return false;
+          }
+          throw error;
+        },
+      );
+      const inaccessiblePathProbe = probeSandboxPathExists({
+        path: join(inaccessible, 'nested.txt'),
+        runCommand,
+      });
+      if (canTraverseInaccessible) {
+        await expect(inaccessiblePathProbe).resolves.toBe(false);
+      } else {
+        await expect(inaccessiblePathProbe).rejects.toBeInstanceOf(
+          SandboxWorkspaceArchiveReadError,
+        );
+      }
     } finally {
       await chmod(inaccessible, 0o700);
       await rm(root, { recursive: true, force: true });
