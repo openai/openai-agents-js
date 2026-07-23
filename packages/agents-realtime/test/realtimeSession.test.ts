@@ -1190,6 +1190,241 @@ describe('RealtimeSession', () => {
     expect(invokeSpy).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['malformed JSON', '{'],
+    ['an array', '[]'],
+    ['null', 'null'],
+    ['a number', '42'],
+    ['a string', '"unsafe"'],
+    ['a boolean', 'true'],
+  ])(
+    'requires realtime approval without invoking a dynamic policy for %s',
+    async (_label, args) => {
+      const needsApproval = vi.fn(async () => false);
+      const execute = vi.fn(async () => 'ok');
+      const guardedTool = tool({
+        name: 'dynamic_approval',
+        description: 'Dynamic approval tool',
+        parameters: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+        needsApproval,
+        execute,
+      });
+      const agent = new RealtimeAgent({
+        name: 'ApprovalAgent',
+        handoffs: [],
+        tools: [guardedTool],
+      });
+      const localTransport = new FakeTransport();
+      const localSession = new RealtimeSession(agent, {
+        transport: localTransport,
+      });
+      await localSession.connect({ apiKey: 'test' });
+
+      const approvalRequest = waitForEvent<any[]>(
+        localSession,
+        'tool_approval_requested',
+      );
+      localTransport.emit('function_call', {
+        type: 'function_call',
+        name: 'dynamic_approval',
+        callId: 'invalid-approval-call',
+        arguments: args,
+        status: 'completed',
+        responseId: 'invalid-approval-response',
+      } as any);
+
+      const [, , payload] = await approvalRequest;
+      expect(payload.type).toBe('function_approval');
+      expect(needsApproval).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(localTransport.sendFunctionCallOutputCalls).toHaveLength(0);
+    },
+  );
+
+  it('fails closed for directly constructed realtime approval policies', async () => {
+    const needsApproval = vi.fn(async () => false);
+    const execute = vi.fn(async () => 'ok');
+    const guardedTool = {
+      ...tool({
+        name: 'direct_approval',
+        description: 'Direct approval tool',
+        parameters: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+        needsApproval: false,
+        execute,
+      }),
+      needsApproval,
+    };
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [guardedTool],
+    });
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const approvalRequest = waitForEvent<any[]>(
+      localSession,
+      'tool_approval_requested',
+    );
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'direct_approval',
+      callId: 'direct-approval-call',
+      arguments: '[]',
+      status: 'completed',
+      responseId: 'direct-approval-response',
+    } as any);
+
+    const [, , payload] = await approvalRequest;
+    expect(payload.type).toBe('function_approval');
+    expect(needsApproval).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('continues evaluating realtime approval policies for valid objects', async () => {
+    const needsApproval = vi.fn(async () => false);
+    const execute = vi.fn(async () => 'ok');
+    const guardedTool = tool({
+      name: 'dynamic_approval',
+      description: 'Dynamic approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval,
+      execute,
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [guardedTool],
+    });
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const output = localTransport.waitForNextFunctionCallOutput();
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'dynamic_approval',
+      callId: 'valid-approval-call',
+      arguments: '{"safe":true}',
+      status: 'completed',
+      responseId: 'valid-approval-response',
+    } as any);
+
+    await output;
+    expect(needsApproval).toHaveBeenCalledWith(
+      localSession.context,
+      { safe: true },
+      'valid-approval-call',
+    );
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('rejects malformed realtime arguments without invoking the approval policy', async () => {
+    const needsApproval = vi.fn(async () => false);
+    const execute = vi.fn(async () => 'ok');
+    const guardedTool = tool({
+      name: 'dynamic_approval',
+      description: 'Dynamic approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval,
+      execute,
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [guardedTool],
+    });
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const approvalRequest = waitForEvent<any[]>(
+      localSession,
+      'tool_approval_requested',
+    );
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'dynamic_approval',
+      callId: 'malformed-rejection-call',
+      arguments: '{',
+      status: 'completed',
+      responseId: 'malformed-rejection-response',
+    } as any);
+    const [, , payload] = await approvalRequest;
+
+    await localSession.reject(payload.approvalItem);
+
+    expect(localTransport.sendFunctionCallOutputCalls).toHaveLength(1);
+    expect(needsApproval).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('preserves fixed realtime approval behavior for non-object arguments', async () => {
+    const execute = vi.fn(async () => 'ok');
+    const guardedTool = tool({
+      name: 'fixed_approval',
+      description: 'Fixed approval tool',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      needsApproval: false,
+      execute,
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [guardedTool],
+    });
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const output = localTransport.waitForNextFunctionCallOutput();
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: 'fixed_approval',
+      callId: 'fixed-approval-call',
+      arguments: '[]',
+      status: 'completed',
+      responseId: 'fixed-approval-response',
+    } as any);
+
+    await output;
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
   it('keeps pending approvals distinct when call IDs are missing', async () => {
     const execute = vi.fn(async ({ request }: { request: string }) => request);
     const needsApprovalTool = tool({

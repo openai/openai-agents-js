@@ -84,6 +84,21 @@ export const FUNCTION_TOOL_PARSED_INPUT_CALLBACK = Symbol(
 const FUNCTION_TOOL_OUTPUT_VALIDATOR = Symbol(
   'openai.agents.functionToolOutputValidator',
 );
+const STATIC_FUNCTION_TOOL_APPROVAL_POLICIES = new WeakSet<
+  ToolApprovalFunction<any>
+>();
+
+export function hasDynamicFunctionToolApprovalPolicy(
+  tool: Pick<FunctionTool<any, any, any>, 'needsApproval'>,
+): boolean {
+  return !STATIC_FUNCTION_TOOL_APPROVAL_POLICIES.has(tool.needsApproval);
+}
+
+export function hasInspectableFunctionToolArguments(
+  value: unknown,
+): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 export type ToolCallDetails = {
   toolCall?: protocol.FunctionCallItem;
@@ -2298,6 +2313,9 @@ export function tool<
           typeof options.needsApproval === 'boolean'
             ? options.needsApproval
             : false;
+  if (typeof options.needsApproval !== 'function') {
+    STATIC_FUNCTION_TOOL_APPROVAL_POLICIES.add(needsApproval);
+  }
 
   const isEnabled: ToolEnabledFunction<Context> =
     typeof options.isEnabled === 'function'
