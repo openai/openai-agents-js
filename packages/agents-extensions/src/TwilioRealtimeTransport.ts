@@ -59,6 +59,7 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
   #audioChunkCount: number = 0;
   #lastPlayedChunkCount: number = 0;
   #previousItemId: string | null = null;
+  #pendingPlaybackItemId: string | null = null;
   #shouldClearOnInterrupt: boolean = true;
   #logger = getLogger('openai-agents:extensions:twilio');
 
@@ -147,11 +148,24 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
                   );
                 }
               } else if (data.mark.name.startsWith('done:')) {
-                this.#lastPlayedChunkCount = 0;
+                const itemId = data.mark.name.slice('done:'.length);
+                if (itemId === this.#pendingPlaybackItemId) {
+                  this.#pendingPlaybackItemId = null;
+                  if (itemId === this.currentItemId) {
+                    this.#audioChunkCount = 0;
+                    this.#lastPlayedChunkCount = 0;
+                    this.#previousItemId = null;
+                    super._afterAudioDoneEvent();
+                  }
+                }
               }
               break;
             case 'start':
               this.#streamSid = data.start.streamSid;
+              this.#audioChunkCount = 0;
+              this.#lastPlayedChunkCount = 0;
+              this.#previousItemId = null;
+              this.#pendingPlaybackItemId = null;
               break;
             default:
               break;
@@ -186,17 +200,33 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
       },
     );
     this.on('audio_done', () => {
+      const itemId = this.currentItemId;
+      if (this.#streamSid == null || itemId == null) {
+        this.#pendingPlaybackItemId = null;
+        return;
+      }
+      this.#pendingPlaybackItemId = itemId;
       this.#twilioWebSocket.send(
         JSON.stringify({
           event: 'mark',
           mark: {
-            name: `done:${this.currentItemId}`,
+            name: `done:${itemId}`,
           },
           streamSid: this.#streamSid,
         }),
       );
     });
     await super.connect(options);
+  }
+
+  protected override _afterAudioDoneEvent() {
+    // OpenAI can finish streaming before Twilio has played its buffered audio.
+    // Retain the base transport's item and timing state until Twilio acknowledges
+    // the matching done mark so a later interrupt can still truncate unheard audio.
+    if (this.#pendingPlaybackItemId === this.currentItemId) {
+      return;
+    }
+    super._afterAudioDoneEvent();
   }
 
   updateSessionConfig(config: Partial<RealtimeSessionConfig>): void {
@@ -220,9 +250,8 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
 
   interrupt(cancelOngoingResponse: boolean = true) {
     // Twilio may still be playing buffered audio after the OpenAI response has
-    // finished streaming and the base transport has reset its audio state.
-    // Always clear Twilio playback first, then let the base transport truncate
-    // the OpenAI conversation item if it still has one to truncate.
+    // finished streaming. Clear Twilio playback first, then let the retained
+    // base transport state truncate any audio the caller did not hear.
     this.#clearTwilioAudio();
     // Avoid sending a duplicate Twilio `clear` when super.interrupt() calls
     // this transport's overridden _interrupt().
@@ -231,6 +260,10 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
       super.interrupt(cancelOngoingResponse);
     } finally {
       this.#shouldClearOnInterrupt = true;
+      this.#pendingPlaybackItemId = null;
+      this.#audioChunkCount = 0;
+      this.#lastPlayedChunkCount = 0;
+      this.#previousItemId = null;
     }
   }
 

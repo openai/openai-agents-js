@@ -28,6 +28,11 @@ vi.mock('@openai/agents/realtime', () => {
   FakeOpenAIRealtimeWebSocket.prototype.close = vi.fn();
   FakeOpenAIRealtimeWebSocket.prototype.interrupt = vi.fn();
   FakeOpenAIRealtimeWebSocket.prototype._interrupt = vi.fn();
+  FakeOpenAIRealtimeWebSocket.prototype._afterAudioDoneEvent = vi.fn(function (
+    this: any,
+  ) {
+    this.currentItemId = null;
+  });
   FakeOpenAIRealtimeWebSocket.prototype.updateSessionConfig = vi.fn();
   return { OpenAIRealtimeWebSocket: FakeOpenAIRealtimeWebSocket, utils };
 });
@@ -229,6 +234,108 @@ describe('TwilioRealtimeTransportLayer', () => {
     expect(truncateSpy).toHaveBeenCalledWith(55, false);
   });
 
+  test('interrupt truncates an item while Twilio is still playing completed audio', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const interruptSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.interrupt);
+    const truncateSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype._interrupt);
+    const resetSpy = vi.mocked(
+      (OpenAIRealtimeWebSocket.prototype as any)._afterAudioDoneEvent,
+    );
+    interruptSpy.mockImplementationOnce(function (
+      this: any,
+      cancelOngoingResponse = true,
+    ) {
+      if (this.currentItemId == null) {
+        return;
+      }
+      this._interrupt(0, cancelOngoingResponse);
+      this.currentItemId = null;
+    });
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({ event: 'start', start: { streamSid: 'sid' } }),
+    });
+    // @ts-expect-error - we're testing protected readonly fields
+    transport.currentItemId = 'item-1';
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'mark',
+          mark: { name: 'item-1:5' },
+        }),
+    });
+
+    transport.emit('audio_done');
+    transport['_afterAudioDoneEvent']();
+
+    expect(resetSpy).not.toHaveBeenCalled();
+    // @ts-expect-error - we're testing protected readonly fields
+    expect(transport.currentItemId).toBe('item-1');
+
+    transport.interrupt(false);
+
+    expect(twilio.send).toHaveBeenCalledWith(
+      JSON.stringify({ event: 'clear', streamSid: 'sid' }),
+    );
+    expect(truncateSpy).toHaveBeenCalledWith(55, false);
+  });
+
+  test('resets retained audio state only for the matching Twilio done mark', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: twilio as any,
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const resetSpy = vi.mocked(
+      (OpenAIRealtimeWebSocket.prototype as any)._afterAudioDoneEvent,
+    );
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({ event: 'start', start: { streamSid: 'sid' } }),
+    });
+    // @ts-expect-error - we're testing protected readonly fields
+    transport.currentItemId = 'item-1';
+    transport.emit('audio_done');
+    transport['_afterAudioDoneEvent']();
+
+    // A new response can start before Twilio acknowledges the previous done mark.
+    // @ts-expect-error - we're testing protected readonly fields
+    transport.currentItemId = 'item-2';
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'mark',
+          mark: { name: 'done:item-1' },
+        }),
+    });
+
+    expect(resetSpy).not.toHaveBeenCalled();
+    // @ts-expect-error - we're testing protected readonly fields
+    expect(transport.currentItemId).toBe('item-2');
+
+    transport.emit('audio_done');
+    transport['_afterAudioDoneEvent']();
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'mark',
+          mark: { name: 'done:item-2' },
+        }),
+    });
+
+    expect(resetSpy).toHaveBeenCalledTimes(1);
+    // @ts-expect-error - we're testing protected readonly fields
+    expect(transport.currentItemId).toBeNull();
+  });
+
   test('_onAudio resets chunk count and emits', async () => {
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
@@ -420,6 +527,10 @@ describe('TwilioRealtimeTransportLayer', () => {
     twilio.emit('message', {
       toString: () => JSON.stringify({ event: 'mark', mark: { name: 'u:7' } }),
     });
+    // @ts-expect-error - we're testing protected readonly fields
+    transport.currentItemId = 'u';
+    transport.emit('audio_done');
+    transport['_afterAudioDoneEvent']();
     twilio.emit('message', {
       toString: () =>
         JSON.stringify({ event: 'mark', mark: { name: 'done:u' } }),
