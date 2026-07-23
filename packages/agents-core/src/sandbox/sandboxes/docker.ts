@@ -93,6 +93,7 @@ import {
 } from './shared/runProcess';
 import { resolveFallbackShellCommand } from './shared/shellCommand';
 import { shellQuote } from '../shared/shell';
+import { probeSandboxPathExists } from '../shared/pathProbe';
 import {
   deserializeLocalSandboxSessionStateValues,
   normalizeExposedPorts,
@@ -163,11 +164,12 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     if (!runAs && !this.pathRequiresDockerFilesystem(path)) {
       return await super.pathExists(path);
     }
-    const result = await this.runDockerFilesystemCommand(
-      `test -e ${shellQuote(this.resolveContainerFilesystemPath(path))}`,
-      { runAs },
-    );
-    return result.status === 0;
+    const absolutePath = this.resolveContainerFilesystemPath(path);
+    return await probeSandboxPathExists({
+      path: absolutePath,
+      runCommand: async (command) =>
+        await this.runDockerFilesystemCommand(command, { runAs }),
+    });
   }
 
   override async readFile(args: ReadFileArgs): Promise<Uint8Array> {

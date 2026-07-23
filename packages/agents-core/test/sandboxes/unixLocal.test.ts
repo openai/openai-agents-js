@@ -24,6 +24,7 @@ import {
   applyOwnershipRecursive,
   materializeLocalWorkspaceManifest,
   materializeLocalWorkspaceManifestMounts,
+  pathExists,
 } from '../../src/sandbox/sandboxes/shared/localWorkspace';
 
 const ONE_BY_ONE_PNG = Uint8Array.from(
@@ -44,6 +45,27 @@ describe('UnixLocalSandboxClient', () => {
 
   afterEach(async () => {
     await rm(rootDir, { recursive: true, force: true });
+  });
+
+  it('distinguishes missing local paths from invalid and recursive symbolic links', async () => {
+    const missingPath = join(rootDir, 'missing');
+    const brokenPath = join(rootDir, 'broken');
+    const invalidPath = join(rootDir, 'invalid');
+    const recursivePath = join(rootDir, 'recursive');
+    await writeFile(join(rootDir, 'not-a-directory'), 'hello');
+    await symlink('missing-target', brokenPath);
+    await symlink('not-a-directory/child', invalidPath);
+    await symlink('recursive', recursivePath);
+
+    await expect(pathExists(missingPath)).resolves.toBe(false);
+    await expect(pathExists(rootDir)).resolves.toBe(true);
+    await expect(pathExists(brokenPath)).resolves.toBe(false);
+    await expect(pathExists(invalidPath)).rejects.toMatchObject({
+      code: 'ENOTDIR',
+    });
+    await expect(pathExists(recursivePath)).rejects.toMatchObject({
+      code: 'ELOOP',
+    });
   });
 
   it('materializes manifest entries and runs commands in the workspace', async () => {

@@ -209,6 +209,17 @@ describe('ModalSandboxClient', () => {
     sandboxExecMock.mockImplementation(
       async (command: string[], _params?: Record<string, unknown>) => {
         if (command[0] === '/bin/sh') {
+          if (command[2]?.includes('OPENAI_AGENTS_READ_PATH_PROBE_V1')) {
+            return {
+              stdin: {
+                writeText: async (_text: string) => {},
+                close: async () => {},
+              },
+              stdout: textStream(''),
+              stderr: textStream(''),
+              wait: async () => 1,
+            };
+          }
           const resolvedPath = resolvedRemotePathFromValidationCommand(
             command[2] ?? '',
           );
@@ -356,6 +367,38 @@ describe('ModalSandboxClient', () => {
         command.join(' ').includes("target_user='root'"),
       ),
     ).toBe(true);
+  });
+
+  test.each([
+    { status: 1, stderr: 'Permission denied' },
+    { status: 2, stderr: 'Input/output error' },
+  ])('preserves failed Modal filesystem probes: %j', async (result) => {
+    const client = new ModalSandboxClient();
+    const session = await client.create(new Manifest(), {
+      appName: 'sandbox-tests',
+    } satisfies ModalSandboxClientOptions);
+    const originalImplementation = sandboxExecMock.getMockImplementation();
+    sandboxExecMock.mockImplementation(async (command, options) => {
+      if (command[0] === 'test') {
+        return {
+          stdout: textStream(''),
+          stderr: textStream(result.stderr),
+          wait: async () => result.status,
+        };
+      }
+      return await originalImplementation?.(command, options);
+    });
+
+    await expect(
+      session.pathExists('/workspace/blocked'),
+    ).rejects.toMatchObject({
+      code: 'provider_error',
+      details: {
+        provider: 'modal',
+        path: '/workspace/blocked',
+        status: result.status,
+      },
+    });
   });
 
   test('clears exec yield timers when commands finish before timeout', async () => {

@@ -14,6 +14,7 @@ import {
 } from '../entries';
 import { SandboxSkillsConfigError } from '../errors';
 import { normalizeRelativePath, type Manifest } from '../manifest';
+import { isSandboxPathNotFoundError } from '../shared/pathProbe';
 import { prompt } from '../runtime/prompts';
 import type { MaterializeEntryArgs } from '../session';
 import { Capability, requireBoundSession } from './base';
@@ -223,8 +224,11 @@ class SkillsCapability extends Capability {
         path: this.skillsPath,
         runAs: this._runAs,
       });
-    } catch {
-      return [];
+    } catch (error) {
+      if (isSandboxPathNotFoundError(error)) {
+        return [];
+      }
+      throw error;
     }
 
     const metadata: SkillIndexEntry[] = [];
@@ -239,8 +243,11 @@ class SkillsCapability extends Capability {
           path: joinRelativePaths(entry.path, 'SKILL.md'),
           runAs: this._runAs,
         });
-      } catch {
-        continue;
+      } catch (error) {
+        if (isSandboxPathNotFoundError(error)) {
+          continue;
+        }
+        throw error;
       }
 
       const markdown =

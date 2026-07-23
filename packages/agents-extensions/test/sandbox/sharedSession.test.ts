@@ -117,6 +117,22 @@ class FakeRemoteSession extends RemoteSandboxSessionBase<FakeRemoteSessionState>
   }
 }
 
+class FailedPathProbeSession extends FakeRemoteSession {
+  constructor(private readonly result: RemoteSandboxCommandResult) {
+    super();
+  }
+
+  protected override async runRemoteCommand(
+    command: string,
+    options: RemoteSandboxCommandOptions,
+  ): Promise<RemoteSandboxCommandResult> {
+    if (command.startsWith('test -e ')) {
+      return this.result;
+    }
+    return await super.runRemoteCommand(command, options);
+  }
+}
+
 describe('shared sandbox session helpers', () => {
   test('rejects unsupported core create options for provider clients', () => {
     expect(() =>
@@ -378,6 +394,22 @@ describe('shared sandbox session helpers', () => {
       host: 'sandbox.example.com',
       port: 8080,
       tls: true,
+    });
+  });
+
+  test.each([
+    { status: 1, stderr: 'Permission denied' },
+    { status: 2, stderr: 'Input/output error' },
+  ])('preserves failed remote path probes: %j', async (result) => {
+    const session = new FailedPathProbeSession(result);
+
+    await expect(session.pathExists('blocked')).rejects.toMatchObject({
+      code: 'provider_error',
+      details: {
+        provider: 'fake',
+        path: '/workspace/blocked',
+        status: result.status,
+      },
     });
   });
 

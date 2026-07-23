@@ -1520,6 +1520,36 @@ describe('DockerSandboxClient unit behavior', () => {
     );
   });
 
+  it.each([
+    { status: 1, stderr: 'Permission denied' },
+    { status: 2, stderr: 'Input/output error' },
+  ])('preserves failed Docker filesystem probes: %j', async (result) => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation(() => dockerSpawnResult(result));
+    const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+    const session = await client.create(new Manifest());
+
+    await expect(
+      session.pathExists('blocked.txt', 'node'),
+    ).rejects.toMatchObject({
+      code: 'workspace_archive_read_error',
+      details: {
+        path: '/workspace/blocked.txt',
+        status: result.status,
+      },
+    });
+  });
+
   it('provisions manifest identity metadata inside the container', async () => {
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {

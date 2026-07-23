@@ -28,6 +28,7 @@ import {
 import {
   normalizePosixPath,
   relativePosixPathWithinRoot,
+  shellQuote,
 } from '@openai/agents-core/sandbox/internal';
 import { posix as pathPosix } from 'node:path';
 import {
@@ -49,6 +50,7 @@ import {
   manifestMaterializationOptionsWithRunAs,
   materializeEnvironment,
   persistRemoteWorkspaceTar,
+  probeRemoteSandboxPathExists,
   providerErrorMessage,
   assertConfiguredExposedPort,
   getCachedExposedPortEndpoint,
@@ -216,9 +218,7 @@ type ModalCloudBucketMountsProvider = () => Promise<
 >;
 
 export type ModalWorkspacePersistence =
-  | 'tar'
-  | 'snapshot_filesystem'
-  | 'snapshot_directory';
+  'tar' | 'snapshot_filesystem' | 'snapshot_directory';
 
 export type ModalImageSelectorKind = 'image' | 'id' | 'tag';
 
@@ -524,18 +524,44 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
   async pathExists(path: string, runAs?: string): Promise<boolean> {
     const absolutePath = await this.resolveRemotePath(path);
     if (!runAs) {
-      const process = await this.sandbox.exec(['test', '-e', absolutePath], {
-        mode: 'text',
-        workdir: this.state.manifest.root,
-        stdout: 'ignore',
-        stderr: 'pipe',
+      return await probeRemoteSandboxPathExists({
+        providerName: 'ModalSandboxClient',
+        providerId: 'modal',
+        path: absolutePath,
+        runCommand: async (command) => {
+          const argv =
+            command === `test -e ${shellQuote(absolutePath)}`
+              ? ['test', '-e', absolutePath]
+              : ['/bin/sh', '-c', command];
+          const process = await this.sandbox.exec(argv, {
+            mode: 'text',
+            workdir: this.state.manifest.root,
+            stdout: 'ignore',
+            stderr: 'pipe',
+          });
+          let stderr = '';
+          const stderrPump = startTextStreamPump(process.stderr, (chunk) => {
+            stderr += chunk;
+          });
+          try {
+            const status = await process.wait();
+            await stderrPump.promise;
+            return { status, stderr };
+          } catch (error) {
+            await stderrPump.cancel();
+            throw error;
+          }
+        },
       });
-      return (await process.wait()) === 0;
     }
     return await runAsRemotePathExists(
       absolutePath,
       runAs,
       this.runAsCommandRunner.bind(this),
+      {
+        providerName: 'ModalSandboxClient',
+        providerId: 'modal',
+      },
     );
   }
 
@@ -1302,8 +1328,7 @@ export class ModalSandboxClient implements SandboxClient<
         );
         const imageState = modalImageStateFromOptions(resolvedOptions);
         let cloudBucketMounts:
-          | Record<string, ModalCloudBucketMountLike>
-          | undefined;
+          Record<string, ModalCloudBucketMountLike> | undefined;
         let sandbox: ModalSandboxLike;
         if (resolvedOptions.sandbox) {
           sandbox = await withProviderError(
