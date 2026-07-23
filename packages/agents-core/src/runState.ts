@@ -94,7 +94,8 @@ import {
  * - 1.11: Allows null maxTurns to persist runs without a turn limit.
  * - 1.12: Adds optional missing function tool calls to processed responses.
  * - 1.13: Adds optional SDK-only customData on tool output run items.
- * - 1.14: Adds Programmatic Tool Calling program items, outputs, and caller linkage.
+ * - 1.14: Adds Programmatic Tool Calling program items, outputs, caller linkage,
+ *   and optional assistant message phases.
  */
 export const CURRENT_SCHEMA_VERSION = '1.14' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [

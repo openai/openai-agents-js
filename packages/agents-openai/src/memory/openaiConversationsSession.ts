@@ -331,10 +331,19 @@ function stripAssistantReplayMetadata(item: AgentInputItem): AgentInputItem {
 
   const {
     id: _id,
-    providerData: _providerData,
+    providerData,
     provider_data: _provider_data,
     ...rest
   } = record;
+  if (
+    typeof rest.phase === 'undefined' &&
+    providerData &&
+    typeof providerData === 'object' &&
+    !Array.isArray(providerData) &&
+    typeof (providerData as Record<string, unknown>).phase !== 'undefined'
+  ) {
+    rest.phase = (providerData as Record<string, unknown>).phase;
+  }
   return rest as AgentInputItem;
 }
 

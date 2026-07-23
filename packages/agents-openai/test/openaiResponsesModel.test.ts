@@ -127,6 +127,174 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it.each(['commentary', 'final_answer'] as const)(
+    'preserves assistant message phase "%s" in requests and responses',
+    async (phase) => {
+      const fakeResponse = {
+        id: 'res-phase',
+        usage: {},
+        output: [
+          {
+            id: 'assistant-output',
+            type: 'message',
+            status: 'completed',
+            role: 'assistant',
+            phase,
+            content: [{ type: 'output_text', text: 'response' }],
+          },
+        ],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const model = new OpenAIResponsesModel(
+        { responses: { create: createMock } } as unknown as OpenAI,
+        'gpt-test',
+      );
+
+      const result = await withTrace('assistant-phase', () =>
+        model.getResponse({
+          input: [
+            {
+              type: 'message',
+              id: 'assistant-input',
+              role: 'assistant',
+              status: 'completed',
+              phase,
+              content: [{ type: 'output_text', text: 'previous reply' }],
+              providerData: {
+                phase: phase === 'commentary' ? 'final_answer' : 'commentary',
+                customMetadata: 'keep',
+              },
+            },
+          ],
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any),
+      );
+
+      expect(createMock.mock.calls[0][0].input[0]).toMatchObject({
+        role: 'assistant',
+        phase,
+        custom_metadata: 'keep',
+      });
+      expect(result.output[0]).toMatchObject({ phase });
+      expect(result.output[0]?.providerData).toMatchObject({ phase });
+    },
+  );
+
+  it('preserves assistant phases stored in legacy providerData', async () => {
+    const createMock = vi.fn().mockResolvedValue({
+      id: 'res-legacy-phase',
+      usage: {},
+      output: [],
+    });
+    const model = new OpenAIResponsesModel(
+      { responses: { create: createMock } } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    await withTrace('assistant-legacy-phase', () =>
+      model.getResponse({
+        input: [
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'previous reply' }],
+            providerData: { phase: 'commentary' },
+          },
+        ],
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      } as any),
+    );
+
+    expect(createMock.mock.calls[0][0].input[0]).toHaveProperty(
+      'phase',
+      'commentary',
+    );
+  });
+
+  it('does not send assistant-only phases on user or system messages', async () => {
+    const createMock = vi.fn().mockResolvedValue({
+      id: 'res-user-phase',
+      usage: {},
+      output: [],
+    });
+    const model = new OpenAIResponsesModel(
+      { responses: { create: createMock } } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    await withTrace('non-assistant-phase', () =>
+      model.getResponse({
+        input: [
+          {
+            type: 'message',
+            role: 'system',
+            content: 'instructions',
+            providerData: { phase: 'commentary', customFlag: true },
+          },
+          {
+            type: 'message',
+            role: 'user',
+            content: 'user input',
+            providerData: { phase: 'final_answer', customFlag: true },
+          },
+        ],
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      } as any),
+    );
+
+    expect(createMock.mock.calls[0][0].input).toEqual([
+      expect.objectContaining({ role: 'system', custom_flag: true }),
+      expect.objectContaining({ role: 'user', custom_flag: true }),
+    ]);
+    expect(createMock.mock.calls[0][0].input[0]).not.toHaveProperty('phase');
+    expect(createMock.mock.calls[0][0].input[1]).not.toHaveProperty('phase');
+  });
+
+  it('rejects invalid assistant message phases before making a request', async () => {
+    const createMock = vi.fn();
+    const model = new OpenAIResponsesModel(
+      { responses: { create: createMock } } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    await expect(
+      withTrace('assistant-invalid-phase', () =>
+        model.getResponse({
+          input: [
+            {
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              phase: 'invalid',
+              content: [{ type: 'output_text', text: 'previous reply' }],
+            },
+          ],
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any),
+      ),
+    ).rejects.toThrow(
+      'Invalid assistant message phase: "invalid". Expected "commentary" or "final_answer".',
+    );
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
   it('getRetryAdvice does not suggest retries from transport heuristics alone', () => {
     const fakeClient = {
       responses: { create: vi.fn() },
@@ -4182,6 +4350,7 @@ describe('OpenAIResponsesModel', () => {
                 status: 'completed',
                 content: [{ type: 'output_text', text: 'delta' }],
                 role: 'assistant',
+                phase: 'commentary',
               },
             ],
             usage: {},
@@ -4265,7 +4434,13 @@ describe('OpenAIResponsesModel', () => {
       expect(textDelta).toMatchObject({ itemId: 'item-1' });
       expect(completed).toMatchObject({
         response: {
-          output: [expect.objectContaining({ type: 'message', id: 'item-1' })],
+          output: [
+            expect.objectContaining({
+              type: 'message',
+              id: 'item-1',
+              phase: 'commentary',
+            }),
+          ],
         },
       });
     });
