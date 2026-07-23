@@ -734,14 +734,23 @@ export class RealtimeSession<
       dynamicApprovalPolicy &&
       (argumentParseError !== undefined ||
         !hasInspectableFunctionToolArguments(parsedArgs));
+    const existingApproval = dynamicApprovalPolicy
+      ? this.context.isToolApproved({
+          toolName: tool.name,
+          callId: toolCall.callId,
+        })
+      : undefined;
     const needsApproval =
       forceApproval ||
+      existingApproval !== undefined ||
       (await tool.needsApproval(this.#context, parsedArgs, toolCall.callId));
     if (needsApproval) {
-      const approval = this.context.isToolApproved({
-        toolName: tool.name,
-        callId: toolCall.callId,
-      });
+      const approval =
+        existingApproval ??
+        this.context.isToolApproved({
+          toolName: tool.name,
+          callId: toolCall.callId,
+        });
       if (approval === false) {
         this.#pendingFunctionCalls.delete(toolCall.callId);
         this.emit('agent_tool_start', this.#context, agent, tool, {
@@ -800,7 +809,9 @@ export class RealtimeSession<
 
     this.#pendingFunctionCalls.delete(toolCall.callId);
     if (argumentParseError !== undefined) {
-      throw argumentParseError;
+      const errorMessage = `An error occurred while parsing tool arguments. Please try again with valid JSON. Error: ${toErrorMessage(argumentParseError)}`;
+      this.#transport.sendFunctionCallOutput(toolCall, errorMessage, true);
+      return;
     }
 
     const inputGuardrailResult = await runToolInputGuardrails({
