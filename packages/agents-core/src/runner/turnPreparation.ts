@@ -118,7 +118,7 @@ export async function prepareTurn<
       )
     : prepareModelInputItems(
         input,
-        generatedItems,
+        state.getModelInputGeneratedItems(generatedItems),
         state._reasoningItemIdPolicy,
       );
 

@@ -13,6 +13,7 @@ import {
   UserError,
 } from '../errors';
 import { getTransferMessage, HandoffInputData } from '../handoff';
+import { nestHandoffHistory } from './handoffHistory';
 import {
   RunHandoffCallItem,
   RunHandoffOutputItem,
@@ -1580,6 +1581,7 @@ export async function executeHandoffCalls<
   runner: Runner,
   runContext: RunContext<TContext>,
   parent?: Span<any>,
+  state?: RunState<TContext, Agent<TContext, TOutput>>,
 ): Promise<import('./steps').SingleStepResult> {
   newStepItems = [...newStepItems];
 
@@ -1617,6 +1619,8 @@ export async function executeHandoffCalls<
       const handoff = actualHandoff.handoff;
       const inputFilter =
         handoff.inputFilter ?? runner.config.handoffInputFilter;
+      const shouldNestHistory =
+        handoff.nestHandoffHistory ?? runner.config.nestHandoffHistory ?? false;
       if (inputFilter != null && typeof inputFilter !== 'function') {
         throw Object.assign(
           new UserError('Invalid handoff input filter: not callable'),
@@ -1625,6 +1629,16 @@ export async function executeHandoffCalls<
               details: 'not callable',
             },
           },
+        );
+      }
+
+      if (
+        shouldNestHistory &&
+        inputFilter == null &&
+        (state?._conversationId || state?._previousResponseId)
+      ) {
+        throw new UserError(
+          'Nested handoff history cannot rewrite a server-managed conversation. Disable nestHandoffHistory or remove conversationId and previousResponseId.',
         );
       }
 
@@ -1659,23 +1673,39 @@ export async function executeHandoffCalls<
       runner.emit('agent_handoff', runContext, agent, newAgent);
       agent.emit('agent_handoff', runContext, newAgent);
 
-      if (inputFilter != null) {
+      let modelInputItems: RunItem[] | undefined;
+
+      if (inputFilter != null || shouldNestHistory) {
         logger.debug('Filtering inputs for handoff');
 
         const handoffInputData: HandoffInputData = {
           inputHistory: Array.isArray(originalInput)
             ? [...originalInput]
             : originalInput,
-          preHandoffItems: [...preStepItems],
+          preHandoffItems: state
+            ? [...state.getModelInputGeneratedItems(preStepItems)]
+            : [...preStepItems],
           newItems: [...newStepItems],
           runContext,
         };
 
-        const filtered = inputFilter(handoffInputData);
+        const filtered = inputFilter
+          ? inputFilter(handoffInputData)
+          : nestHandoffHistory(handoffInputData, {
+              historyMapper: runner.config.handoffHistoryMapper,
+            });
 
         originalInput = filtered.inputHistory;
-        preStepItems = filtered.preHandoffItems;
-        newStepItems = filtered.newItems;
+        if (filtered.inputItems !== undefined) {
+          modelInputItems = [
+            ...filtered.preHandoffItems,
+            ...filtered.inputItems,
+          ];
+          newStepItems = filtered.newItems;
+        } else {
+          preStepItems = filtered.preHandoffItems;
+          newStepItems = filtered.newItems;
+        }
       }
 
       return new SingleStepResult(
@@ -1684,6 +1714,8 @@ export async function executeHandoffCalls<
         preStepItems,
         newStepItems,
         { type: 'next_step_handoff', newAgent },
+        undefined,
+        modelInputItems,
       );
     },
     {

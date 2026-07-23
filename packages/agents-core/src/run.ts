@@ -13,7 +13,7 @@ import type {
   OutputGuardrailDefinition,
   OutputGuardrailMetadata,
 } from './guardrail';
-import { Handoff, HandoffInputFilter } from './handoff';
+import { Handoff, HandoffHistoryMapper, HandoffInputFilter } from './handoff';
 import { RunHooks } from './lifecycle';
 import logger from './logger';
 import { Model, ModelProvider, ModelResponse, ModelSettings } from './model';
@@ -227,6 +227,18 @@ export type RunConfig = {
    * agent. See the documentation in `Handoff.inputFilter` for more details.
    */
   handoffInputFilter?: HandoffInputFilter;
+
+  /**
+   * Opt in to compact prior agent history when handing off to another agent.
+   * This setting is disabled by default and cannot rewrite server-managed history.
+   */
+  nestHandoffHistory?: boolean;
+
+  /**
+   * Maps the complete handoff transcript into exact next-agent input history.
+   * Only used when nested handoff history is enabled.
+   */
+  handoffHistoryMapper?: HandoffHistoryMapper;
 
   /**
    * A list of input guardrails to run on the initial run input.
@@ -460,6 +472,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       model: config.model,
       modelSettings: config.modelSettings,
       handoffInputFilter: config.handoffInputFilter,
+      nestHandoffHistory: config.nestHandoffHistory ?? false,
+      handoffHistoryMapper: config.handoffHistoryMapper,
       inputGuardrails: config.inputGuardrails,
       outputGuardrails: config.outputGuardrails,
       tracingDisabled: config.tracingDisabled ?? false,

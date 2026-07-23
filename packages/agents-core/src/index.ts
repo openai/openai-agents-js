@@ -84,9 +84,14 @@ export {
   Handoff,
   HandoffCloneOptions,
   handoff,
+  HandoffHistoryMapper,
   HandoffInputData,
   HandoffEnabledFunction,
 } from './handoff';
+export {
+  defaultHandoffHistoryMapper,
+  nestHandoffHistory,
+} from './runner/handoffHistory';
 export { assistant, system, user } from './helpers/message';
 export {
   extractAllTextOutput,

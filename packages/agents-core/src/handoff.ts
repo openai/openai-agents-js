@@ -34,6 +34,14 @@ export type HandoffInputData = {
    * handoff and the tool output message representing the response from the handoff output.
    */
   newItems: RunItem[];
+
+  /**
+   * Optional items to send to the next agent instead of `newItems`.
+   *
+   * Keep `newItems` unchanged when the complete handoff transcript must remain
+   * available to session persistence while the next agent receives filtered input.
+   */
+  inputItems?: RunItem[];
   /**
    * The context of the handoff.
    * Note that, since this property was added later on, it's optional to pass from users.
@@ -42,6 +50,13 @@ export type HandoffInputData = {
 };
 
 export type HandoffInputFilter = (input: HandoffInputData) => HandoffInputData;
+
+/**
+ * Maps a normalized handoff transcript into the exact next-agent input history.
+ */
+export type HandoffHistoryMapper = (
+  transcript: AgentInputItem[],
+) => AgentInputItem[];
 
 /**
  * Generates the message that will be given as tool output to the model that requested the handoff.
@@ -97,8 +112,7 @@ type HandoffEnabledPredicate<TContext = UnknownContext> = (args: {
 }) => boolean | Promise<boolean>;
 
 type HandoffEnabledOption<TContext> =
-  | boolean
-  | HandoffEnabledPredicate<TContext>;
+  boolean | HandoffEnabledPredicate<TContext>;
 
 export type HandoffEnabledFunction<TContext = UnknownContext> = (args: {
   runContext: RunContext<TContext>;
@@ -151,6 +165,11 @@ export type HandoffCloneOptions<
    * A function that filters the inputs that are passed to the cloned handoff's agent.
    */
   inputFilter?: HandoffInputFilter;
+
+  /**
+   * Overrides the runner-wide nested handoff history setting for this handoff.
+   */
+  nestHandoffHistory?: boolean;
 
   /**
    * Determines whether the cloned handoff should be available for the current run.
@@ -219,6 +238,11 @@ export class Handoff<
   public inputFilter?: HandoffInputFilter;
 
   /**
+   * Overrides the runner-wide nested handoff history setting for this handoff.
+   */
+  public nestHandoffHistory?: boolean;
+
+  /**
    * The agent that is being handed off to.
    */
   public agent: Agent<TContext, TOutput>;
@@ -265,6 +289,8 @@ export class Handoff<
     cloned.strictJsonSchema =
       overrides.strictJsonSchema ?? this.strictJsonSchema;
     cloned.inputFilter = overrides.inputFilter ?? this.inputFilter;
+    cloned.nestHandoffHistory =
+      overrides.nestHandoffHistory ?? this.nestHandoffHistory;
     cloned.isEnabled = overrides.isEnabled ?? this.isEnabled;
 
     return cloned;
@@ -327,6 +353,11 @@ export type HandoffConfig<
    * A function that filters the inputs that are passed to the next agent.
    */
   inputFilter?: HandoffInputFilter;
+
+  /**
+   * Overrides the runner-wide nested handoff history setting for this handoff.
+   */
+  nestHandoffHistory?: boolean;
 
   /**
    * Determines whether the handoff should be available to the model for the current run.
@@ -436,6 +467,10 @@ export function handoff<
 
   if (config.inputFilter != null) {
     handoff.inputFilter = config.inputFilter;
+  }
+
+  if (config.nestHandoffHistory !== undefined) {
+    handoff.nestHandoffHistory = config.nestHandoffHistory;
   }
 
   return handoff;

@@ -102,8 +102,7 @@ export interface RunResultData<
    * The output of the last agent, or any handoff agent.
    */
   finalOutput?:
-    | ResolvedAgentOutput<TAgent['outputType']>
-    | HandoffsOutput<THandoffs>;
+    ResolvedAgentOutput<TAgent['outputType']> | HandoffsOutput<THandoffs>;
 
   /**
    * The interruptions that occurred during the agent run.
@@ -145,7 +144,7 @@ class RunResultBase<
   get history(): AgentInputItem[] {
     return getTurnInput(
       this.input,
-      this.newItems,
+      this.state.getModelInputGeneratedItems(this.newItems),
       this.state._reasoningItemIdPolicy,
     );
   }

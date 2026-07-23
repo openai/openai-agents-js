@@ -57,14 +57,25 @@ describe('handoff()', () => {
       toolNameOverride: 't',
       toolDescriptionOverride: 'd',
       inputFilter: filter,
+      nestHandoffHistory: true,
     });
     expect(h.toolName).toBe('t');
     expect(h.toolDescription).toBe('d');
     expect(h.inputFilter).toBe(filter);
+    expect(h.nestHandoffHistory).toBe(true);
   });
 });
 
 describe('Handoff#clone', () => {
+  it('preserves and overrides nested handoff history settings', () => {
+    const original = handoff(agent, { nestHandoffHistory: true });
+
+    expect(original.clone().nestHandoffHistory).toBe(true);
+    expect(
+      original.clone({ nestHandoffHistory: false }).nestHandoffHistory,
+    ).toBe(false);
+  });
+
   it('returns a distinct Handoff instance and leaves the original unchanged', async () => {
     const targetAgent = new Agent({ name: 'Target Agent' });
     const filter = vi.fn((data) => data);

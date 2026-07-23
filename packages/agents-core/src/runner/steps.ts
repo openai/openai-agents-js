@@ -32,6 +32,7 @@ export class SingleStepResult {
     public newStepItems: RunItem[],
     public nextStep: NextStep,
     public finalOutputSource?: FinalOutputSource,
+    public modelInputItems?: RunItem[],
   ) {}
 
   get generatedItems(): RunItem[] {

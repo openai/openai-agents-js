@@ -43,6 +43,12 @@ export function applyTurnResult<
   state._toolUseTracker.addToolUse(agent, toolsUsed);
   state._originalInput = turnResult.originalInput;
   state._generatedItems = turnResult.generatedItems;
+  if (turnResult.modelInputItems !== undefined) {
+    state.setHandoffModelInputItems(
+      turnResult.modelInputItems,
+      state._generatedItems.length,
+    );
+  }
   if (
     resetTurnPersistence &&
     turnResult.nextStep.type === 'next_step_run_again'

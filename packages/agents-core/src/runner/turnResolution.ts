@@ -1067,6 +1067,7 @@ export async function resolveTurnAfterModelResponse<
       runner,
       state._context,
       getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
+      state,
     );
   }
 
