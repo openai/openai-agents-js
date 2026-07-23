@@ -194,12 +194,13 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       return await super.listDir(args);
     }
     const absolutePath = this.resolveContainerFilesystemPath(args.path);
-    const output = await this.runCheckedDockerFilesystemCommand(
+    const output = await this.runReadableDockerFilesystemCommand(
       [
         `find ${shellQuote(absolutePath)} -mindepth 1 -maxdepth 1 -printf '%y\\t%f\\n'`,
       ].join(' && '),
       { runAs: args.runAs },
       `list directory ${absolutePath}`,
+      absolutePath,
     );
     const logicalPath = this.resolveLogicalPath(args.path);
     return output
@@ -530,10 +531,22 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   }
 
   async readDockerFileAs(path: string, runAs?: string): Promise<Uint8Array> {
-    const result = await this.runDockerFilesystemCommand(
+    const output = await this.runReadableDockerFilesystemCommand(
       `base64 -- ${shellQuote(path)}`,
       { runAs },
+      `read file ${path}`,
+      path,
     );
+    return Buffer.from(output.replace(/\s+/gu, ''), 'base64');
+  }
+
+  private async runReadableDockerFilesystemCommand(
+    command: string,
+    options: { runAs?: string },
+    action: string,
+    path: string,
+  ): Promise<string> {
+    const result = await this.runDockerFilesystemCommand(command, options);
     if (result.status !== 0) {
       if (
         result.status === 1 &&
@@ -544,20 +557,20 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
         const exists = await probeSandboxPathExists({
           path,
           runCommand: async (command) =>
-            await this.runDockerFilesystemCommand(command, { runAs }),
+            await this.runDockerFilesystemCommand(command, options),
         });
         if (!exists) {
           throw new SandboxWorkspaceReadNotFoundError(
-            `DockerSandboxClient file does not exist: ${path}`,
+            `DockerSandboxClient path does not exist: ${path}`,
             { path },
           );
         }
       }
       throw new UserError(
-        `DockerSandboxClient failed to read file ${path}: ${formatSandboxProcessError(result)}`,
+        `DockerSandboxClient failed to ${action}: ${formatSandboxProcessError(result)}`,
       );
     }
-    return Buffer.from(result.stdout.replace(/\s+/gu, ''), 'base64');
+    return result.stdout;
   }
 
   async writeDockerTextFileAs(
