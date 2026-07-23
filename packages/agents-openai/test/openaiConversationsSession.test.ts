@@ -515,6 +515,7 @@ describe('OpenAIConversationsSession', () => {
       type: 'message',
       role: 'assistant',
       content: [],
+      phase: 'commentary',
       providerData: { server: 'metadata' },
       provider_data: { server: 'snake' },
     };
@@ -538,6 +539,41 @@ describe('OpenAIConversationsSession', () => {
       type: 'message',
       role: 'assistant',
       content: [],
+      phase: 'commentary',
+    });
+  });
+
+  it('preserves legacy assistant phases when stripping replay metadata', () => {
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list: vi.fn(),
+            create: vi.fn(),
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    expect(
+      session.prepareHistoryItemForModelInput({
+        id: 'conv-assistant',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [],
+        providerData: { phase: 'final_answer', ignored: 'metadata' },
+      } as any),
+    ).toEqual({
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [],
+      phase: 'final_answer',
     });
   });
 

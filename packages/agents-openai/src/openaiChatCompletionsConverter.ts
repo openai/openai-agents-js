@@ -310,6 +310,21 @@ export function itemsToMessages(
       const { content, role, providerData } = item;
       flushAssistantMessage();
       if (role === 'assistant') {
+        const phase = item.phase ?? providerData?.phase;
+        if (typeof phase !== 'undefined' && phase !== null) {
+          if (phase !== 'commentary' && phase !== 'final_answer') {
+            throw new UserError(
+              `Invalid assistant message phase: ${JSON.stringify(phase)}. Expected "commentary" or "final_answer".`,
+            );
+          }
+
+          const message =
+            'Assistant message phase is not supported by the Chat Completions API. Use the Responses API to preserve assistant message phases.';
+          if (options.strictFeatureValidation) {
+            throw new UserError(message);
+          }
+          logger.warn(`${message} The phase will be dropped.`);
+        }
         const assistant: ChatCompletionAssistantMessageParam = {
           role: 'assistant',
           content: extractAllAssistantContent(content),
@@ -318,6 +333,7 @@ export function itemsToMessages(
             'content',
             'tool_calls',
             'audio',
+            'phase',
           ]),
         };
 
@@ -339,6 +355,7 @@ export function itemsToMessages(
           ...getProviderDataWithoutReservedKeys(providerData, [
             'role',
             'content',
+            'phase',
           ]),
         });
       } else if (role === 'system') {
@@ -348,6 +365,7 @@ export function itemsToMessages(
           ...getProviderDataWithoutReservedKeys(providerData, [
             'role',
             'content',
+            'phase',
           ]),
         });
       }

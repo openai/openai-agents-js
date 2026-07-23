@@ -169,6 +169,51 @@ describe('RunState', () => {
     expect(restored.history).toEqual(state.history);
   });
 
+  it.each(['commentary', 'final_answer'] as const)(
+    'preserves assistant phase "%s" across history and serialized model responses',
+    async (phase) => {
+      const context = new RunContext();
+      const agent = new Agent({ name: 'AssistantPhaseAgent' });
+      const state = new RunState(context, 'input', agent, 1);
+      const message: protocol.AssistantMessageItem = {
+        ...TEST_MODEL_MESSAGE,
+        phase,
+      };
+      state._generatedItems.push(new RunMessageOutputItem(message, agent));
+      state._modelResponses = [
+        {
+          usage: new Usage(),
+          output: [message],
+          responseId: 'response-phase',
+        },
+      ];
+
+      const restored = await RunState.fromString(agent, state.toString());
+
+      expect(restored.history[1]).toMatchObject({ phase });
+      expect(restored._generatedItems[0]?.rawItem).toMatchObject({ phase });
+      expect(restored._modelResponses[0]?.output[0]).toMatchObject({ phase });
+      expect(restored.toJSON().$schemaVersion).toBe('1.14');
+    },
+  );
+
+  it('rejects invalid assistant message phases when restoring run state', async () => {
+    const agent = new Agent({ name: 'InvalidAssistantPhaseAgent' });
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+    state._generatedItems.push(
+      new RunMessageOutputItem(
+        { ...TEST_MODEL_MESSAGE, phase: 'commentary' },
+        agent,
+      ),
+    );
+    const serialized = state.toJSON();
+    (serialized.generatedItems[0]?.rawItem as any).phase = 'invalid';
+
+    await expect(
+      RunState.fromString(agent, JSON.stringify(serialized)),
+    ).rejects.toThrow();
+  });
+
   it('preserves reasoningItemIdPolicy after serialization', async () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'ReasoningPolicyState' });

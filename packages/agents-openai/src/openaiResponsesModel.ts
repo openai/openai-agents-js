@@ -1984,6 +1984,7 @@ function getMessageItem(
         'id',
         'role',
         'content',
+        'phase',
       ]),
     };
   }
@@ -1998,6 +1999,7 @@ function getMessageItem(
           'id',
           'role',
           'content',
+          'phase',
         ]),
       };
     }
@@ -2010,23 +2012,37 @@ function getMessageItem(
         'id',
         'role',
         'content',
+        'phase',
       ]),
     };
   }
 
   if (item.role === 'assistant') {
+    const phase =
+      item.phase ?? getProviderDataField<unknown>(item.providerData, ['phase']);
+    if (
+      typeof phase !== 'undefined' &&
+      phase !== 'commentary' &&
+      phase !== 'final_answer'
+    ) {
+      throw new UserError(
+        `Invalid assistant message phase: ${JSON.stringify(phase)}. Expected "commentary" or "final_answer".`,
+      );
+    }
     const assistantMessage: OpenAI.Responses.ResponseOutputMessage = {
       type: 'message',
       id: item.id!,
       role: 'assistant',
       content: item.content.map(getOutputMessageContent),
       status: item.status,
+      ...(typeof phase === 'undefined' ? {} : { phase }),
       ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
         'type',
         'id',
         'role',
         'content',
         'status',
+        'phase',
       ]),
     };
     return assistantMessage;
@@ -2696,14 +2712,22 @@ function convertToOutputItem(
 ): protocol.OutputModelItem[] {
   return items.map((item) => {
     if (item.type === 'message') {
-      const { id, type, role, content, status, ...providerData } = item;
+      const { id, type, role, content, status, phase, ...providerData } = item;
       return {
         id,
         type,
         role,
         content: content.map(convertToMessageContentItem),
         status,
-        providerData,
+        ...(phase === 'commentary' || phase === 'final_answer'
+          ? { phase }
+          : {}),
+        providerData: {
+          ...providerData,
+          ...(phase === 'commentary' || phase === 'final_answer'
+            ? { phase }
+            : {}),
+        },
       };
     } else if (item.type === 'tool_search_call') {
       const {

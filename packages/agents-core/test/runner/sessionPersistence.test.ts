@@ -1331,6 +1331,7 @@ describe('prepareInputItemsWithSession', () => {
       type: 'message',
       role: 'assistant',
       status: 'completed',
+      phase: 'commentary',
       content: [
         {
           type: 'output_text',
@@ -1370,6 +1371,7 @@ describe('prepareInputItemsWithSession', () => {
         type: 'message',
         role: 'assistant',
         status: 'completed',
+        phase: 'commentary',
         content: [
           {
             type: 'output_text',
