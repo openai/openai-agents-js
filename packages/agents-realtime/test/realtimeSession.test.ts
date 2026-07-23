@@ -1085,6 +1085,63 @@ describe('RealtimeSession', () => {
     },
   );
 
+  it('emits function call errors when a redacted guardrail throws a hostile Proxy', async () => {
+    const guardrailError = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error('SECRET_PROXY_TRAP_123');
+        },
+      },
+    );
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const flagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(true);
+    const localTransport = new FakeTransport();
+    const guardrail = defineToolInputGuardrail({
+      name: 'throw-hostile-proxy',
+      run: async () => {
+        throw guardrailError;
+      },
+    });
+    const guardedTool = tool({
+      name: 'guarded_hostile_proxy',
+      description: 'guarded tool',
+      parameters: z.object({}),
+      execute: vi.fn(async () => 'never'),
+      inputGuardrails: [guardrail],
+    }) as any;
+    const localSession = new RealtimeSession(
+      new RealtimeAgent({ name: 'A', tools: [guardedTool] }),
+      { transport: localTransport },
+    );
+
+    try {
+      await localSession.connect({ apiKey: 'test' });
+      const errorEvent = waitForEvent<any[]>(localSession, 'error');
+
+      localTransport.emit('function_call', {
+        type: 'function_call',
+        name: 'guarded_hostile_proxy',
+        callId: 'hostile-proxy-call',
+        status: 'completed',
+        arguments: '{}',
+        responseId: 'hostile-proxy-response',
+      } as any);
+
+      const [error] = await errorEvent;
+      expect(error.error).toBe(guardrailError);
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Error handling function call',
+        'object',
+      );
+    } finally {
+      flagSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
   it('applies output tool guardrail rejectContent and replaces output', async () => {
     const localTransport = new FakeTransport();
     const guardrail = defineToolOutputGuardrail({
@@ -2098,6 +2155,66 @@ describe('RealtimeSession', () => {
       );
       expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secret);
       expect(constructorGetter).not.toHaveBeenCalled();
+    } finally {
+      flagSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('falls back when a redacted toolErrorFormatter throws a hostile Proxy', async () => {
+    const formatterError = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error('SECRET_PROXY_TRAP_123');
+        },
+      },
+    );
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const flagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(true);
+    const needsApprovalTool = tool({
+      name: 'needs_approval',
+      description: 'Needs approval tool',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute: vi.fn(async () => 'ok'),
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [needsApprovalTool],
+    });
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+      toolErrorFormatter: () => {
+        throw formatterError;
+      },
+    });
+
+    try {
+      await localSession.connect({ apiKey: 'test' });
+      const toolCall: TransportToolCallEvent = {
+        type: 'function_call',
+        name: 'needs_approval',
+        callId: 'call-hostile-formatter',
+        arguments: '{}',
+        responseId: 'approval-hostile-formatter-response',
+      };
+      localSession.context.rejectTool(
+        new RunToolApprovalItem(toolCall as any, agent),
+      );
+      const outputPromise = localTransport.waitForNextFunctionCallOutput();
+
+      localTransport.emit('function_call', toolCall as any);
+      const [, output] = await outputPromise;
+
+      expect(output).toBe('Tool execution was not approved.');
+      expect(warnSpy).toHaveBeenCalledWith(
+        'toolErrorFormatter threw while formatting approval rejection: object',
+      );
     } finally {
       flagSpy.mockRestore();
       warnSpy.mockRestore();

@@ -3314,6 +3314,52 @@ describe('executeShellActions', () => {
       }
     });
 
+    it('falls back when a redacted toolErrorFormatter throws a hostile Proxy', async () => {
+      const formatterError = new Proxy(
+        {},
+        {
+          getPrototypeOf() {
+            throw new Error('SECRET_PROXY_TRAP_123');
+          },
+        },
+      );
+      const t = makeTool(true);
+      vi.spyOn(state._context, 'isToolApproved').mockReturnValue(false as any);
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(true);
+      const customRunner = new Runner({
+        tracingDisabled: true,
+        toolErrorFormatter: () => {
+          throw formatterError;
+        },
+      });
+
+      try {
+        const result = await withTrace('test', () =>
+          executeFunctionToolCalls(
+            state._currentAgent,
+            [{ toolCall, tool: t }],
+            customRunner,
+            state,
+            customRunner.config.toolErrorFormatter,
+          ),
+        );
+
+        expect(result[0].type).toBe('function_output');
+        if (result[0].type === 'function_output') {
+          expect(result[0].output).toBe('Tool execution was not approved.');
+        }
+        expect(warnSpy).toHaveBeenCalledWith(
+          'toolErrorFormatter threw while formatting approval rejection: object',
+        );
+      } finally {
+        flagSpy.mockRestore();
+        warnSpy.mockRestore();
+      }
+    });
+
     it('clears pending nested agent run when approval is rejected', async () => {
       const t = makeTool(true);
       state.setPendingAgentToolRun(t.name, toolCall.callId, 'pending-state');

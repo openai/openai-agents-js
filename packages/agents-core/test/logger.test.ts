@@ -97,6 +97,54 @@ describe('logger', () => {
     expect(getSafeErrorType({ secret: 'SECRET_LOG_VALUE_123' })).toBe('object');
   });
 
+  test.each([
+    [
+      'revoked Proxy',
+      () => {
+        const { proxy, revoke } = Proxy.revocable({}, {});
+        revoke();
+        return proxy;
+      },
+    ],
+    [
+      'Proxy with a throwing prototype trap',
+      () =>
+        new Proxy(
+          {},
+          {
+            getPrototypeOf() {
+              throw new Error('SECRET_PROXY_TRAP_123');
+            },
+          },
+        ),
+    ],
+  ] as const)('safely classifies a %s', async (_description, createError) => {
+    const { getSafeErrorType } = await import('../src/logger');
+
+    expect(getSafeErrorType(createError())).toBe('object');
+  });
+
+  test.each([
+    ['tool', 'logToolActionError', 'dontLogToolData'],
+    ['model', 'logModelActionError', 'dontLogModelData'],
+  ] as const)(
+    'safely redacts hostile %s error values',
+    async (_kind, helperName, flagName) => {
+      const loggerModule = await import('../src/logger');
+      const targetLogger = loggerModule.getLogger('test');
+      const errorSpy = vi
+        .spyOn(targetLogger, 'error')
+        .mockImplementation(() => {});
+      vi.spyOn(targetLogger, flagName, 'get').mockReturnValue(true);
+      const { proxy, revoke } = Proxy.revocable({}, {});
+      revoke();
+
+      loggerModule[helperName](targetLogger, 'Operation failed', proxy);
+
+      expect(errorSpy).toHaveBeenCalledWith('Operation failed', 'object');
+    },
+  );
+
   test('does not inspect overridden Error constructors', async () => {
     const { getSafeErrorType } = await import('../src/logger');
     const constructorGetter = vi.fn(() => {
