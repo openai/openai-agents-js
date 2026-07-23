@@ -75,6 +75,8 @@ describe('sandbox path probes', () => {
     'sandbox not found',
     'executable file not found',
     'test: /workspace/other: No such file or directory',
+    `command "test -e '/workspace/missing'" failed: sandbox not found`,
+    `command "test -e '/workspace/missing'" failed: executable file not found`,
   ])('rejects unrelated not-found diagnostics: %s', async (diagnostic) => {
     const runCommand = vi.fn(async (_command: string) => ({
       status: 1,
@@ -85,6 +87,23 @@ describe('sandbox path probes', () => {
       probeSandboxPathExists({ path: '/workspace/missing', runCommand }),
     ).rejects.toBeInstanceOf(SandboxWorkspaceArchiveReadError);
     expect(runCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    'test: /workspace/missing: No such file or directory',
+    `base64: '/workspace/missing': No such file or directory`,
+    '/workspace/missing not found',
+    'missing path: /workspace/missing',
+  ])('accepts path-associated missing diagnostics: %s', async (diagnostic) => {
+    const runCommand = vi.fn(async (_command: string) => ({
+      status: 1,
+      stderr: diagnostic,
+    }));
+
+    await expect(
+      probeSandboxPathExists({ path: '/workspace/missing', runCommand }),
+    ).resolves.toBe(false);
+    expect(runCommand).toHaveBeenCalledOnce();
   });
 
   it('confirms generic missing diagnostics with a path-specific probe', async () => {

@@ -308,9 +308,17 @@ export async function pathExists(path: string): Promise<boolean> {
       throw probeError;
     }
     if (info.isSymbolicLink()) {
-      return false;
+      try {
+        await stat(path);
+        return true;
+      } catch (retryError) {
+        if (isSandboxPathNotFoundError(retryError)) {
+          return false;
+        }
+        throw retryError;
+      }
     }
-    throw error;
+    return true;
   }
 }
 

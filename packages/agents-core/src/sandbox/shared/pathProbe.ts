@@ -184,9 +184,12 @@ function isMissingPathDiagnostic(diagnostic: string, path: string): boolean {
     return false;
   }
   const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const pathExpression = `(?:["'\\x60])?${escapedPath}(?:["'\\x60])?`;
+  const missingExpression =
+    '(?:no such file or directory|not found|does not exist|missing(?: path| file)?)';
   return new RegExp(
-    `(?:^|[\\s"'\\x60])${escapedPath}(?:$|[\\s"':\\x60])`,
-    'u',
+    `(?:${pathExpression}\\s*:\\s*${missingExpression}|${pathExpression}\\s+(?:was\\s+)?${missingExpression}|${missingExpression}\\s*:?\\s*${pathExpression})(?:$|[\\s.;])`,
+    'iu',
   ).test(diagnostic);
 }
 
