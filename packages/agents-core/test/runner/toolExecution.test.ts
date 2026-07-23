@@ -2050,7 +2050,7 @@ describe('executeShellActions', () => {
     });
     expect(mockLogger.error).toHaveBeenCalledWith(
       'Failed to execute shell action:',
-      shell.error,
+      'Error',
     );
   });
 
@@ -2340,7 +2340,7 @@ describe('executeShellActions', () => {
       expect(rawItem.output).toBe('cannot delete');
       expect(mockLogger.error).toHaveBeenCalledWith(
         'Failed to execute apply_patch operation:',
-        editor.errors.delete_file,
+        'Error',
       );
     });
 
@@ -3267,6 +3267,51 @@ describe('executeShellActions', () => {
         'toolErrorFormatter threw while formatting approval rejection: formatter failed',
       );
       warnSpy.mockRestore();
+    });
+
+    it('redacts toolErrorFormatter errors when tool-data logging is disabled', async () => {
+      const secret = 'SECRET_FORMATTER_VALUE_123';
+      const constructorGetter = vi.fn(() => {
+        throw new Error('The Error constructor must not be inspected.');
+      });
+      const formatterError = new Error(secret);
+      Object.defineProperty(formatterError, 'constructor', {
+        get: constructorGetter,
+      });
+      const t = makeTool(true);
+      vi.spyOn(state._context, 'isToolApproved').mockReturnValue(false as any);
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(true);
+      const customRunner = new Runner({
+        tracingDisabled: true,
+        toolErrorFormatter: () => {
+          throw formatterError;
+        },
+      });
+
+      try {
+        const result = await withTrace('test', () =>
+          executeFunctionToolCalls(
+            state._currentAgent,
+            [{ toolCall, tool: t }],
+            customRunner,
+            state,
+            customRunner.config.toolErrorFormatter,
+          ),
+        );
+
+        expect(result[0].type).toBe('function_output');
+        expect(warnSpy).toHaveBeenCalledWith(
+          'toolErrorFormatter threw while formatting approval rejection: Error',
+        );
+        expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secret);
+        expect(constructorGetter).not.toHaveBeenCalled();
+      } finally {
+        flagSpy.mockRestore();
+        warnSpy.mockRestore();
+      }
     });
 
     it('clears pending nested agent run when approval is rejected', async () => {
@@ -4425,7 +4470,7 @@ describe('executeShellActions', () => {
       });
       expect(mockLogger.error).toHaveBeenCalledWith(
         'Failed to execute computer action:',
-        expect.any(Error),
+        'Error',
       );
     });
 

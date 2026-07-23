@@ -5,3 +5,8 @@ export {
   hasDynamicFunctionToolApprovalPolicy,
   hasInspectableFunctionToolArguments,
 } from '../tool';
+export {
+  getSafeErrorType,
+  logModelActionError,
+  logToolActionError,
+} from '../logger';
