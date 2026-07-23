@@ -18,6 +18,7 @@ import {
   isSandboxPathNotFoundError,
   probeSandboxPathExists,
 } from '../src/sandbox/shared/pathProbe';
+import { shellQuote } from '../src/sandbox/shared/shell';
 import { runSandboxProcess } from '../src/sandbox/sandboxes/shared/runProcess';
 
 describe('sandbox path probes', () => {
@@ -182,6 +183,67 @@ describe('sandbox path probes', () => {
     });
     expect((thrown as Error).message).not.toContain(sensitiveOutput);
   });
+
+  it.each([
+    {
+      name: 'regular file',
+      createCommand: (path: string, _target: string) =>
+        `printf created > ${shellQuote(path)}`,
+      exists: true,
+    },
+    {
+      name: 'directory',
+      createCommand: (path: string, _target: string) =>
+        `mkdir -- ${shellQuote(path)}`,
+      exists: true,
+    },
+    {
+      name: 'valid symbolic link',
+      createCommand: (path: string, target: string) =>
+        `ln -s -- ${shellQuote(target)} ${shellQuote(path)}`,
+      exists: true,
+    },
+    {
+      name: 'dangling symbolic link',
+      createCommand: (path: string, _target: string) =>
+        `ln -s -- missing-target ${shellQuote(path)}`,
+      exists: false,
+    },
+  ])(
+    'retries a $name created during the fallback lookup',
+    async ({ createCommand, exists }) => {
+      const root = await mkdtemp(join(tmpdir(), 'agents-path-probe-race-'));
+      const path = join(root, 'created');
+      const target = join(root, 'target');
+      const marker = join(root, 'lookup-started');
+      await writeFile(target, 'target');
+      const runCommand = async (command: string) => {
+        const interceptedCommand = command.includes(
+          'OPENAI_AGENTS_READ_PATH_PROBE_V1',
+        )
+          ? [
+              'find() {',
+              `  if [ ! -e ${shellQuote(marker)} ]; then`,
+              `    printf created > ${shellQuote(marker)}`,
+              `    ${createCommand(path, target)}`,
+              '  fi',
+              '  command find "$@"',
+              '}',
+              command,
+            ].join('\n')
+          : command;
+        return await runSandboxProcess('/bin/sh', ['-c', interceptedCommand]);
+      };
+
+      try {
+        await expect(
+          probeSandboxPathExists({ path, runCommand }),
+        ).resolves.toBe(exists);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('classifies real missing paths, broken links, and inaccessible ancestors', async () => {
     const root = await mkdtemp(join(tmpdir(), 'agents-path-probe-'));

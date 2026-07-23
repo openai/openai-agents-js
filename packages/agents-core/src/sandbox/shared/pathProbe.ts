@@ -23,8 +23,10 @@ const READ_PATH_PROBE_SCRIPT = `
 # OPENAI_AGENTS_READ_PATH_PROBE_V1
 LC_ALL=C
 export LC_ALL
+original_path=$path
 resolved_path=
 symlink_depth=0
+lookup_retries=0
 
 resolve_probe_path() {
   if [ "$symlink_depth" -gt 40 ] || [ "\${#1}" -gt 4095 ]; then
@@ -88,6 +90,19 @@ while :; do
     )
     lookup_status=\${lookup_result##*.}
     lookup_error=\${lookup_result%.*}
+    if [ "$lookup_status" -eq 0 ]; then
+      if [ "$lookup_retries" -ge 1 ]; then
+        exit 2
+      fi
+      lookup_retries=$((lookup_retries + 1))
+      resolved_path=
+      symlink_depth=0
+      resolve_probe_path "$original_path" || exit 2
+      path=$resolved_path
+      candidate=$path
+      child=
+      continue
+    fi
     if [ "$lookup_status" -eq 1 ]; then
       lookup_error=$(printf %s "$lookup_error")
       case "$lookup_error" in
