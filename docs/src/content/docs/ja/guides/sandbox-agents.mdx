@@ -6,39 +6,40 @@ description: Create your first sandbox agent with an isolated workspace, filesys
 import { Aside, Code } from '@astrojs/starlight/components';
 import basicExample from '../../../../../../examples/docs/sandbox-agents/basic.ts?raw';
 
-<Aside type="caution" title="ベータ機能">
+<Aside type="caution" title="ベータ版機能">
   サンドボックスエージェントはベータ版です。API
-  の詳細、デフォルト、サポートされる機能は
-  一般提供までに変更される可能性があり、今後さらに高度な機能が追加される予定です。
+  の詳細、デフォルト、およびサポートされる機能は
+  正式提供の開始前に変更される可能性があります。また、今後さらに高度な機能が
+  追加される予定です。
 </Aside>
 
-最近のエージェントは、ファイルシステム内の実ファイルを操作できるときに最も力を発揮します。Agents SDK の **サンドボックスエージェント** は、大規模なドキュメントセットの検索、ファイル編集、コマンド実行、成果物の生成、保存されたサンドボックス状態からの作業再開をモデルが行える永続的なワークスペースを提供します。
+エージェントは、ファイルシステム上の実ファイルを操作できると、最も効果的に機能します。Agents SDK の **サンドボックスエージェント** は、大規模なドキュメント群の検索、ファイルの編集、コマンドの実行、成果物の生成、保存済みのサンドボックス状態からの作業再開が可能な永続ワークスペースをモデルに提供します。
 
-SDK は、ファイルのステージング、ファイルシステムツール、シェルアクセス、サンドボックスのライフサイクル、スナップショット、プロバイダー固有の連携コードを自分でつなぎ合わせなくても、その実行ハーネスを利用できるようにします。通常の `Agent` と `Runner` の流れはそのままに、ワークスペース用の `Manifest`、サンドボックスネイティブなツール用の capabilities、作業の実行場所を指定する `sandbox` 実行オプションを追加します。
+SDK は、ファイルのステージング、ファイルシステムツール、shell アクセス、サンドボックスのライフサイクル、スナップショット、プロバイダー固有の連携コードを自分で組み合わせることなく、この実行基盤を提供します。通常の `Agent` と `Runner` のフローを維持したまま、ワークスペース用の `Manifest`、サンドボックスネイティブツール用のケイパビリティ、処理の実行場所を指定する `sandbox` 実行オプションを追加できます。
 
 ## 前提条件
 
 - Node.js 22 以降
-- OpenAI Agents SDK の基本的な知識
-- サンドボックスクライアント。ローカル開発では `UnixLocalSandboxClient` から始めます
+- OpenAI Agents SDK に関する基本的な知識
+- サンドボックスクライアント。macOS または Linux でローカル開発を行う場合は、`UnixLocalSandboxClient` から始めてください。Windows では、代わりに `DockerSandboxClient` またはホステッドサンドボックスクライアントを使用してください。
 
-このクイックスタートでは Node.js と npm コマンドを使用しますが、SDK は Node.js に限定されません。プロジェクトが互換性のあるパッケージ解決とランタイム API を使用している場合、サンドボックスエージェントは Deno や Bun でも実行できます。
+このクイックスタートでは Node.js と npm のコマンドを使用しますが、SDK は Node.js に限定されません。プロジェクトで互換性のあるパッケージ解決方式とランタイム API を使用している場合、サンドボックスエージェントは Deno と Bun でも実行できます。
 
 ## インストール
 
-SDK をまだインストールしていない場合:
+SDK をまだインストールしていない場合は、次を実行します。
 
 ```bash
 npm install @openai/agents
 ```
 
-Docker を利用するサンドボックスでは、Docker をローカルにインストールし、`@openai/agents/sandbox/local` の `DockerSandboxClient` を使用します。
+Docker ベースのサンドボックスを使用する場合は、Docker をローカルにインストールし、`@openai/agents/sandbox/local` の `DockerSandboxClient` を使用します。
 
-`tty: true` を指定して対話的なローカル PTY セッションを使用する場合、SDK を実行するプロセスでは `python3`、または `OPENAI_AGENTS_PYTHON` 経由で利用できる Python 3 も必要です。非 PTY のシェルコマンドでは Python は不要です。
+`tty: true` を指定して対話型のローカル PTY セッションを使用する場合、SDK を実行するプロセスでは、Python 3 を `python3` として、または `OPENAI_AGENTS_PYTHON` 経由で利用できる必要もあります。非 PTY の shell コマンドでは Python は必要ありません。
 
 ## ローカルサンドボックスエージェントの作成
 
-この例では、`repo/` 配下のローカルリポジトリをステージングし、ローカルスキルを遅延読み込みし、ランナーがその実行用に Unix ローカルのサンドボックスセッションを作成できるようにします。エージェント定義がマニフェストと capabilities を保持し、実行設定ではこの実行に使うサンドボックスクライアントだけを選択します。
+この例では、ローカルリポジトリを `repo/` 配下にステージングし、ローカルスキルを遅延読み込みして、実行用の Unix ローカルサンドボックスセッションを Runner が作成できるようにします。エージェント定義がマニフェストとケイパビリティを保持し、実行設定では今回の実行に使用するサンドボックスクライアントのみを選択します。
 
 <Code
   lang="typescript"
@@ -48,20 +49,20 @@ Docker を利用するサンドボックスでは、Docker をローカルにイ
 
 ## 主な選択肢
 
-基本的な実行が動くようになったら、多くの人が次に検討する選択肢は次のとおりです。
+基本的な実行が動作した後、多くの場合に次に使用する選択肢は以下のとおりです。
 
-- `defaultManifest`: 新しいサンドボックスセッション用のファイル、リポジトリ、ディレクトリ、マウント
-- `instructions`: プロンプト全体に適用する短いワークフロールール
+- `defaultManifest`: 新しいサンドボックスセッションで使用するファイル、リポジトリ、ディレクトリ、マウント
+- `instructions`: 複数のプロンプトに共通して適用する短いワークフロールール
 - `baseInstructions`: SDK のサンドボックスプロンプトを置き換えるための高度なエスケープハッチ
-- `capabilities`: ファイルシステム編集 / 画像検査、シェル、スキル、メモリ、コンパクションなどのサンドボックスネイティブなツール
-- `runAs`: モデル向けツールで使うサンドボックス上のユーザー ID
-- `sandbox.client`: サンドボックスバックエンド
-- `sandbox.session`、`sandbox.sessionState`、または `sandbox.snapshot`: 後続の実行で以前の作業へ再接続する方法
+- `capabilities`: ファイルシステムの編集／画像検査、shell、スキル、メモリ、コンテキスト圧縮などのサンドボックスネイティブツール
+- `runAs`: モデルが使用するツール向けのサンドボックスユーザー ID
+- `sandbox.client`: サンドボックスのバックエンド
+- `sandbox.session`、`sandbox.sessionState`、または `sandbox.snapshot`: 後続の実行で以前の作業に再接続する方法
 
 ## 次のステップ
 
-- [コンセプト](/openai-agents-js/ja/guides/sandbox-agents/concepts): マニフェスト、capabilities、権限、スナップショット、実行設定、合成パターンを理解します
-- [サンドボックスクライアント](/openai-agents-js/ja/guides/sandbox-agents/clients): Unix ローカル、Docker、ホスト型プロバイダー、マウント戦略を選択します
-- [エージェントメモリ](/openai-agents-js/ja/guides/sandbox-agents/memory): 以前のサンドボックス実行から得た知見を保持して再利用します
+- [コンセプト](/openai-agents-js/ja/guides/sandbox-agents/concepts): マニフェスト、ケイパビリティ、権限、スナップショット、実行設定、構成パターンの理解
+- [サンドボックスクライアント](/openai-agents-js/ja/guides/sandbox-agents/clients): Unix ローカル、Docker、ホステッドプロバイダー、マウント戦略の選択
+- [エージェントメモリ](/openai-agents-js/ja/guides/sandbox-agents/memory): 以前のサンドボックス実行から得た知見の保存と再利用
 
-シェルアクセスがたまに使うツールの 1 つにすぎない場合は、[ツール](/openai-agents-js/ja/guides/tools) のホスト型シェルから始めてください。ワークスペースの分離、サンドボックスクライアントの選択、またはサンドボックスセッションの再開動作が設計に含まれる場合は、サンドボックスエージェントを使用してください。
+shell アクセスが必要になるのが一時的なツール利用に限られる場合は、[ツール](/openai-agents-js/ja/guides/tools)の組み込み shell から始めてください。ワークスペースの分離、サンドボックスクライアントの選択、サンドボックスセッションの再開動作が設計の一部となる場合は、サンドボックスエージェントを使用してください。

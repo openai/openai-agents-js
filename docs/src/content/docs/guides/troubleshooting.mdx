@@ -39,6 +39,8 @@ Enable debug logging by setting the `DEBUG` environment variable to `openai-agen
 DEBUG=openai-agents:*
 ```
 
+Model and tool data remains redacted by default. If you need those details, see [Sensitive data in logs](/openai-agents-js/guides/config#sensitive-data-in-logs) and only opt in where logs are handled securely.
+
 Alternatively, you can scope the debugging to specific parts of the SDK:
 
 - `openai-agents:core` — for the main execution logic of the SDK
