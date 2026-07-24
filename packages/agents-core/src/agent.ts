@@ -590,19 +590,31 @@ export class Agent<
       config.handoffOutputTypeWarningEnabled === undefined ||
       config.handoffOutputTypeWarningEnabled
     ) {
-      if (!logger.dontLogModelData && this.handoffs && this.outputType) {
-        const outputTypes = new Set<string>([JSON.stringify(this.outputType)]);
+      if (this.handoffs && this.outputType) {
+        const outputTypes: unknown[] = [this.outputType];
         for (const h of this.handoffs) {
           if ('outputType' in h && h.outputType) {
-            outputTypes.add(JSON.stringify(h.outputType));
+            outputTypes.push(h.outputType);
           } else if ('agent' in h && h.agent.outputType) {
-            outputTypes.add(JSON.stringify(h.agent.outputType));
+            outputTypes.push(h.agent.outputType);
           }
         }
-        if (outputTypes.size > 1) {
-          logger.warn(
-            `[Agent] Warning: Handoff agents have different output types: ${Array.from(outputTypes).join(', ')}. You can make it type-safe by using Agent.create({ ... }) method instead.`,
+
+        if (logger.dontLogModelData) {
+          if (new Set<unknown>(outputTypes).size > 1) {
+            logger.warn(
+              '[Agent] Warning: Handoff agents have different output types. Output type details are redacted. You can make it type-safe by using Agent.create({ ... }) method instead.',
+            );
+          }
+        } else {
+          const serializedOutputTypes = outputTypes.map((type) =>
+            JSON.stringify(type),
           );
+          if (new Set<string>(serializedOutputTypes).size > 1) {
+            logger.warn(
+              `[Agent] Warning: Handoff agents have different output types: ${serializedOutputTypes.join(', ')}. You can make it type-safe by using Agent.create({ ... }) method instead.`,
+            );
+          }
         }
       }
     }
