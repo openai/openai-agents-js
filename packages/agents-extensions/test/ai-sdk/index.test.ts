@@ -3068,7 +3068,7 @@ describe('AiSdkModel.getResponse', () => {
       },
     ]);
     expect(warnSpy).toHaveBeenCalledWith(
-      "Received tool call for unknown tool 'foo'.",
+      'Received tool call for an unknown tool. Tool name is redacted.',
     );
     warnSpy.mockRestore();
   });
@@ -3243,7 +3243,7 @@ describe('AiSdkModel.getResponse', () => {
       ...resultProviderMetadata,
     });
     expect(warnSpy).toHaveBeenCalledWith(
-      "Received tool call for unknown tool 'foo'.",
+      'Received tool call for an unknown tool. Tool name is redacted.',
     );
     warnSpy.mockRestore();
   });

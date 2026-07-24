@@ -690,6 +690,12 @@ describe('ConsoleSpanExporter', () => {
   it('logs traces and spans when tracing is enabled', async () => {
     allowConsole(['log']);
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const modelDataSpy = vi
+      .spyOn(coreLogger, 'dontLogModelData', 'get')
+      .mockReturnValue(false);
+    const toolDataSpy = vi
+      .spyOn(coreLogger, 'dontLogToolData', 'get')
+      .mockReturnValue(false);
     const originalEnv = process.env.NODE_ENV;
     const originalDisableTracing = process.env.OPENAI_AGENTS_DISABLE_TRACING;
     process.env.NODE_ENV = 'production';
@@ -721,6 +727,8 @@ describe('ConsoleSpanExporter', () => {
     expect(messages.some((msg) => msg.includes('Export span'))).toBe(true);
 
     logSpy.mockRestore();
+    modelDataSpy.mockRestore();
+    toolDataSpy.mockRestore();
     process.env.NODE_ENV = originalEnv;
     if (typeof originalDisableTracing === 'undefined') {
       delete process.env.OPENAI_AGENTS_DISABLE_TRACING;
@@ -917,7 +925,7 @@ describe('BatchTraceProcessor', () => {
       expect(exportCalls).toBe(1);
       expect(errorSpy).toHaveBeenCalledWith(
         'Tracing exporter failed to export batch',
-        expect.any(Error),
+        'object',
       );
 
       await processor.onTraceStart(recovered);

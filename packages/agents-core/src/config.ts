@@ -37,14 +37,15 @@ export function loadEnv(): Record<string, string | undefined> {
  * Checks if a flag is enabled in the environment.
  *
  * @param flagName - The name of the flag to check.
+ * @param defaultValue - The value to return when the flag is not set.
  * @returns `true` if the flag is enabled, `false` otherwise.
  */
-function isEnabled(flagName: string): boolean {
-  const env = loadEnv();
-  return (
-    typeof env !== 'undefined' &&
-    (env[flagName] === 'true' || env[flagName] === '1')
-  );
+function isEnabled(flagName: string, defaultValue: boolean = false): boolean {
+  const flagValue = loadEnv()[flagName];
+  if (flagValue === undefined) {
+    return defaultValue;
+  }
+  return flagValue === 'true' || flagValue === '1';
 }
 
 /**
@@ -67,9 +68,9 @@ export const tracing = {
  */
 export const logging = {
   get dontLogModelData() {
-    return isEnabled('OPENAI_AGENTS_DONT_LOG_MODEL_DATA');
+    return isEnabled('OPENAI_AGENTS_DONT_LOG_MODEL_DATA', true);
   },
   get dontLogToolData() {
-    return isEnabled('OPENAI_AGENTS_DONT_LOG_TOOL_DATA');
+    return isEnabled('OPENAI_AGENTS_DONT_LOG_TOOL_DATA', true);
   },
 };

@@ -3292,7 +3292,7 @@ describe('executeShellActions', () => {
         expect(res[0].output).toBe('Tool execution was not approved.');
       }
       expect(warnSpy).toHaveBeenCalledWith(
-        'toolErrorFormatter threw while formatting approval rejection: formatter failed',
+        'toolErrorFormatter threw while formatting approval rejection: object',
       );
       warnSpy.mockRestore();
     });

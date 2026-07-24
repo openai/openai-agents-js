@@ -1227,7 +1227,7 @@ describe('OpenAITracingExporter', () => {
     await exporter.export([item]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(errorSpy).toHaveBeenCalledWith(
-      '[non-fatal] Tracing client error 400: bad',
+      '[non-fatal] Tracing client error 400. Response data is redacted.',
     );
     errorSpy.mockRestore();
   });

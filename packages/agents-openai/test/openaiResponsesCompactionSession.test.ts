@@ -583,7 +583,7 @@ describe('OpenAIResponsesCompactionSession', () => {
       expect(underlyingSession.addCalls).toBe(2);
       expect(warn).toHaveBeenCalledWith(
         'Restored previous session history after compaction replacement failed.',
-        expect.any(Error),
+        'object',
       );
     } finally {
       warn.mockRestore();
@@ -732,7 +732,7 @@ describe('OpenAIResponsesCompactionSession', () => {
       expect(underlyingSession.popCalls).toBe(0);
       expect(warn).toHaveBeenCalledWith(
         'Restored previous session history after compaction replacement failed.',
-        expect.any(Error),
+        'object',
       );
     } finally {
       warn.mockRestore();
@@ -812,7 +812,7 @@ describe('OpenAIResponsesCompactionSession', () => {
       expect(underlyingSession.addCalls).toBe(1);
       expect(warn).toHaveBeenCalledWith(
         'Restored previous session history after compaction replacement failed.',
-        expect.any(Error),
+        'object',
       );
     } finally {
       warn.mockRestore();
@@ -864,7 +864,7 @@ describe('OpenAIResponsesCompactionSession', () => {
       ).rejects.toThrow('replacement failed');
       expect(warn).toHaveBeenCalledWith(
         'Failed to restore session history after compaction replacement failed.',
-        expect.any(Error),
+        'object',
       );
       expect(underlyingSession.clearCalls).toBe(2);
       expect(underlyingSession.addCalls).toBe(2);

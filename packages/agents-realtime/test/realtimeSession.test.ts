@@ -1020,7 +1020,7 @@ describe('RealtimeSession', () => {
     expect(invokeSpy).not.toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalledWith(
       'Error handling function call',
-      expect.any(Error),
+      'object',
     );
     errorSpy.mockRestore();
   });
@@ -1225,7 +1225,7 @@ describe('RealtimeSession', () => {
     expect(invokeSpy).toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalledWith(
       'Error handling function call',
-      expect.any(Error),
+      'object',
     );
     errorSpy.mockRestore();
   });
@@ -2094,7 +2094,7 @@ describe('RealtimeSession', () => {
     expect(startResponse).toBe(true);
     expect(invokeSpy).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
-      'toolErrorFormatter threw while formatting approval rejection: formatter failed',
+      'toolErrorFormatter threw while formatting approval rejection: object',
     );
     warnSpy.mockRestore();
   });
