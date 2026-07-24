@@ -45,7 +45,32 @@ function isEnabled(flagName: string, defaultValue: boolean = false): boolean {
   if (flagValue === undefined) {
     return defaultValue;
   }
-  return flagValue === 'true' || flagValue === '1';
+  if (flagValue === 'true' || flagValue === '1') {
+    return true;
+  }
+  if (flagValue === 'false' || flagValue === '0') {
+    return false;
+  }
+  return defaultValue;
+}
+
+let sensitiveDataLoggingEnabledOverride: boolean | undefined;
+
+/**
+ * Enables or disables sensitive model and tool data logging programmatically.
+ * This override takes precedence over the logging environment variables.
+ *
+ * @param enabled - Whether sensitive model and tool data may be logged.
+ */
+export function setSensitiveDataLoggingEnabled(enabled: boolean): void {
+  sensitiveDataLoggingEnabledOverride = enabled;
+}
+
+function shouldSuppressSensitiveData(flagName: string): boolean {
+  if (sensitiveDataLoggingEnabledOverride !== undefined) {
+    return !sensitiveDataLoggingEnabledOverride;
+  }
+  return isEnabled(flagName, true);
 }
 
 /**
@@ -68,9 +93,9 @@ export const tracing = {
  */
 export const logging = {
   get dontLogModelData() {
-    return isEnabled('OPENAI_AGENTS_DONT_LOG_MODEL_DATA', true);
+    return shouldSuppressSensitiveData('OPENAI_AGENTS_DONT_LOG_MODEL_DATA');
   },
   get dontLogToolData() {
-    return isEnabled('OPENAI_AGENTS_DONT_LOG_TOOL_DATA', true);
+    return shouldSuppressSensitiveData('OPENAI_AGENTS_DONT_LOG_TOOL_DATA');
   },
 };

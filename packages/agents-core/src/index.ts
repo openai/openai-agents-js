@@ -103,6 +103,7 @@ export {
 } from './items';
 export { AgentHooks } from './lifecycle';
 export { getLogger } from './logger';
+export { setSensitiveDataLoggingEnabled } from './config';
 export { applyDiff } from './utils/applyDiff';
 export {
   getAllMcpTools,

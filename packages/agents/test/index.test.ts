@@ -9,6 +9,7 @@ describe('Exports', () => {
   test('Agent is out there', () => {
     const agent = new Agents.Agent({ name: 'Test' });
     expect(agent.name).toBe('Test');
+    expect(typeof Agents.setSensitiveDataLoggingEnabled).toBe('function');
   });
 });
 
