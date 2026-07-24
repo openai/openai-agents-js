@@ -173,13 +173,38 @@ test('resolves logger instances stored in object literals', () => {
       audit,
     };
     sinks.audit.error('Nested audit failed', response);
+    sinks['audit'].warn('Bracket audit failed', response);
     sinks.auditAlias.warn('Audit alias failed', response);
     sinks.audit.info('Shorthand audit failed', response);
   `);
 
   assert.deepEqual(
     findings.map(({ method }) => method),
-    ['error', 'warn', 'info'],
+    ['error', 'warn', 'warn', 'info'],
+  );
+});
+
+test('resolves extracted Logger method aliases', () => {
+  const findings = inventorySource(`
+    const logger = getLogger('fixture');
+    const { error: report, warn } = logger;
+    const debug = logger['debug'];
+    const reportAlias = report;
+
+    report('Report failed', secret);
+    warn('Warning', secret);
+    debug('Debug value', secret);
+    reportAlias('Alias failed', secret);
+  `);
+
+  assert.deepEqual(
+    findings.map(({ kind, method }) => ({ kind, method })),
+    [
+      { kind: 'logger', method: 'error' },
+      { kind: 'logger', method: 'warn' },
+      { kind: 'logger', method: 'debug' },
+      { kind: 'logger', method: 'error' },
+    ],
   );
 });
 
@@ -204,6 +229,28 @@ test('resolves Logger-typed object members', () => {
   assert.deepEqual(
     findings.map(({ method }) => method),
     ['error', 'warn', 'info'],
+  );
+});
+
+test('resolves Logger subtypes declared with heritage clauses', () => {
+  const findings = inventorySource(`
+    interface AuditLogger extends Logger {}
+    interface NestedAuditLogger extends AuditLogger {}
+    class ServiceLogger implements Logger {}
+    class NestedServiceLogger extends ServiceLogger {}
+
+    function report(
+      audit: NestedAuditLogger,
+      service: NestedServiceLogger,
+    ) {
+      audit.error('Audit failed', secret);
+      service.warn('Service failed', secret);
+    }
+  `);
+
+  assert.deepEqual(
+    findings.map(({ method }) => method),
+    ['error', 'warn'],
   );
 });
 

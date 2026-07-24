@@ -161,11 +161,35 @@ function typeIsLoggerValue(typeNode, loggerTypeBindings) {
   );
 }
 
+function heritageReferencesLogger(node, loggerTypeBindings) {
+  return Boolean(
+    node.heritageClauses?.some((clause) =>
+      clause.types.some((heritageType) => {
+        const expression = unwrapExpression(heritageType.expression);
+        if (
+          (ts.isIdentifier(expression) &&
+            loggerTypeBindings.has(expression.text)) ||
+          (ts.isPropertyAccessExpression(expression) &&
+            expression.name.text === 'Logger')
+        ) {
+          return true;
+        }
+        return (
+          heritageType.typeArguments?.some((type) =>
+            typeIsLoggerValue(type, loggerTypeBindings),
+          ) === true
+        );
+      }),
+    ),
+  );
+}
+
 function collectLoggingSymbols(sourceFile) {
   const consoleBindings = new Set(['console']);
   const consoleMethodBindings = new Map();
   const loggerBindings = new Set();
   const loggerFactoryBindings = new Set(['getLogger']);
+  const loggerMethodBindings = new Map();
   const loggerNamespaceBindings = new Set();
   const loggerPropertyNames = new Set();
   const loggerTypeBindings = new Set(['Logger']);
@@ -324,14 +348,14 @@ function collectLoggingSymbols(sourceFile) {
       if (isLoggerFactoryCall(current)) {
         return true;
       }
-      if (ts.isPropertyAccessExpression(current)) {
-        const propertyName = propertyNameText(current.name, sourceFile);
-        const receiver = unwrapExpression(current.expression);
+      const access = propertyAccessParts(current);
+      if (access) {
+        const receiver = unwrapExpression(access.receiver);
         return (
-          loggerPropertyNames.has(propertyName) ||
+          loggerPropertyNames.has(access.method) ||
           (ts.isIdentifier(receiver) &&
             loggerNamespaceBindings.has(receiver.text) &&
-            propertyName === 'logger')
+            access.method === 'logger')
         );
       }
       if (ts.isConditionalExpression(current)) {
@@ -350,6 +374,49 @@ function collectLoggingSymbols(sourceFile) {
         );
       }
       return false;
+    }
+    function resolveLoggerMethod(expression) {
+      const current = unwrapExpression(expression);
+      if (ts.isIdentifier(current)) {
+        return loggerMethodBindings.get(current.text) ?? null;
+      }
+      const access = propertyAccessParts(current);
+      return access &&
+        LOGGER_METHODS.has(access.method) &&
+        isKnownLoggerExpression(access.receiver)
+        ? access.method
+        : null;
+    }
+    function recordLoggerMethodDeclaration(declaration) {
+      if (!declaration.initializer) {
+        return;
+      }
+      if (ts.isIdentifier(declaration.name)) {
+        addMapping(
+          loggerMethodBindings,
+          declaration.name.text,
+          resolveLoggerMethod(declaration.initializer),
+        );
+        return;
+      }
+      if (
+        !ts.isObjectBindingPattern(declaration.name) ||
+        !isKnownLoggerExpression(declaration.initializer)
+      ) {
+        return;
+      }
+      for (const element of declaration.name.elements) {
+        if (element.dotDotDotToken || !ts.isIdentifier(element.name)) {
+          continue;
+        }
+        const method = propertyNameText(
+          element.propertyName ?? element.name,
+          sourceFile,
+        );
+        if (LOGGER_METHODS.has(method)) {
+          addMapping(loggerMethodBindings, element.name.text, method);
+        }
+      }
     }
     function recordDeclaration(declaration) {
       if (typeIsLoggerValue(declaration.type, loggerTypeBindings)) {
@@ -396,6 +463,14 @@ function collectLoggingSymbols(sourceFile) {
         add(loggerTypeBindings, current.name.text);
       }
       if (
+        (ts.isInterfaceDeclaration(current) ||
+          ts.isClassDeclaration(current)) &&
+        current.name &&
+        heritageReferencesLogger(current, loggerTypeBindings)
+      ) {
+        add(loggerTypeBindings, current.name.text);
+      }
+      if (
         ts.isPropertySignature(current) &&
         typeIsLoggerValue(current.type, loggerTypeBindings)
       ) {
@@ -410,6 +485,7 @@ function collectLoggingSymbols(sourceFile) {
       }
       if (ts.isVariableDeclaration(current)) {
         recordConsoleDeclaration(current);
+        recordLoggerMethodDeclaration(current);
       }
       if (
         ts.isPropertyAssignment(current) &&
@@ -431,8 +507,11 @@ function collectLoggingSymbols(sourceFile) {
         if (isKnownLoggerExpression(current.right)) {
           if (ts.isIdentifier(target)) {
             add(loggerBindings, target.text);
-          } else if (ts.isPropertyAccessExpression(target)) {
-            add(loggerPropertyNames, propertyNameText(target.name, sourceFile));
+          } else {
+            const targetAccess = propertyAccessParts(target);
+            if (targetAccess) {
+              add(loggerPropertyNames, targetAccess.method);
+            }
           }
         }
         if (ts.isIdentifier(target)) {
@@ -443,6 +522,11 @@ function collectLoggingSymbols(sourceFile) {
             consoleMethodBindings,
             target.text,
             resolveConsoleMethod(current.right),
+          );
+          addMapping(
+            loggerMethodBindings,
+            target.text,
+            resolveLoggerMethod(current.right),
           );
         }
       }
@@ -469,16 +553,16 @@ function collectLoggingSymbols(sourceFile) {
         loggerNamespaceBindings.has(unwrapExpression(access.receiver).text),
       );
     }
-    if (ts.isPropertyAccessExpression(current)) {
-      const propertyName = propertyNameText(current.name, sourceFile);
-      const receiver = unwrapExpression(current.expression);
+    const access = propertyAccessParts(current);
+    if (access) {
+      const receiver = unwrapExpression(access.receiver);
       return (
-        loggerPropertyNames.has(propertyName) ||
+        loggerPropertyNames.has(access.method) ||
         (receiver.kind === ts.SyntaxKind.ThisKeyword &&
-          propertyName === 'logger') ||
+          access.method === 'logger') ||
         (ts.isIdentifier(receiver) &&
           loggerNamespaceBindings.has(receiver.text) &&
-          propertyName === 'logger')
+          access.method === 'logger')
       );
     }
     return false;
@@ -519,7 +603,25 @@ function collectLoggingSymbols(sourceFile) {
       : null;
   }
 
-  return { isLoggerReceiver, resolveConsoleMethod, resolveSensitiveHelper };
+  function resolveLoggerMethod(expression) {
+    const current = unwrapExpression(expression);
+    if (ts.isIdentifier(current)) {
+      return loggerMethodBindings.get(current.text) ?? null;
+    }
+    const access = propertyAccessParts(current);
+    return access &&
+      LOGGER_METHODS.has(access.method) &&
+      isLoggerReceiver(access.receiver)
+      ? access.method
+      : null;
+  }
+
+  return {
+    isLoggerReceiver,
+    resolveConsoleMethod,
+    resolveLoggerMethod,
+    resolveSensitiveHelper,
+  };
 }
 
 function isStaticString(expression) {
@@ -766,8 +868,12 @@ export function inventorySource(sourceText, filePath = 'fixture.ts') {
   );
   const findings = [];
   const occurrences = new Map();
-  const { isLoggerReceiver, resolveConsoleMethod, resolveSensitiveHelper } =
-    collectLoggingSymbols(sourceFile);
+  const {
+    isLoggerReceiver,
+    resolveConsoleMethod,
+    resolveLoggerMethod,
+    resolveSensitiveHelper,
+  } = collectLoggingSymbols(sourceFile);
 
   function recordCall(call, kind, method, policy) {
     const start = sourceFile.getLineAndCharacterOfPosition(call.getStart());
@@ -810,9 +916,17 @@ export function inventorySource(sourceText, filePath = 'fixture.ts') {
   function visit(node) {
     if (ts.isCallExpression(node)) {
       const consoleMethod = resolveConsoleMethod(node.expression);
+      const loggerMethod = resolveLoggerMethod(node.expression);
       const sensitiveHelper = resolveSensitiveHelper(node.expression);
       if (consoleMethod) {
         recordCall(node, 'console', consoleMethod, 'none');
+      } else if (loggerMethod) {
+        recordCall(
+          node,
+          'logger',
+          loggerMethod,
+          guardedPolicy(node, sourceFile),
+        );
       } else if (sensitiveHelper) {
         recordCall(
           node,
