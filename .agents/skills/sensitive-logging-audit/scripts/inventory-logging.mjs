@@ -320,6 +320,18 @@ function collectLoggerSymbols(sourceFile) {
         recordDeclaration(current);
       }
       if (
+        ts.isPropertyAssignment(current) &&
+        isKnownLoggerExpression(current.initializer)
+      ) {
+        add(loggerPropertyNames, propertyNameText(current.name, sourceFile));
+      }
+      if (
+        ts.isShorthandPropertyAssignment(current) &&
+        loggerBindings.has(current.name.text)
+      ) {
+        add(loggerPropertyNames, current.name.text);
+      }
+      if (
         ts.isBinaryExpression(current) &&
         current.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
         isKnownLoggerExpression(current.right)
@@ -420,14 +432,41 @@ function referencesIdentifier(node, identifier) {
   return found;
 }
 
-function enclosingRejectedValueIdentifier(node) {
+function bindingIdentifiers(name) {
+  const identifiers = [];
+
+  function visit(current) {
+    if (ts.isIdentifier(current)) {
+      identifiers.push(current.text);
+      return;
+    }
+    if (
+      ts.isObjectBindingPattern(current) ||
+      ts.isArrayBindingPattern(current)
+    ) {
+      for (const element of current.elements) {
+        if (ts.isBindingElement(element)) {
+          visit(element.name);
+        }
+      }
+    }
+  }
+
+  visit(name);
+  return identifiers;
+}
+
+function enclosingRejectedValueIdentifiers(node) {
+  const identifiers = new Set();
   let current = node.parent;
   while (current) {
     if (ts.isCatchClause(current)) {
       const declaration = current.variableDeclaration;
-      return declaration && ts.isIdentifier(declaration.name)
-        ? declaration.name.text
-        : null;
+      if (declaration) {
+        for (const identifier of bindingIdentifiers(declaration.name)) {
+          identifiers.add(identifier);
+        }
+      }
     }
     if (ts.isFunctionLike(current)) {
       const callback = current;
@@ -446,15 +485,17 @@ function enclosingRejectedValueIdentifier(node) {
             call.arguments[0].text === 'unhandledRejection');
         if (isRejectionHandler) {
           const parameter = callback.parameters[0];
-          return parameter && ts.isIdentifier(parameter.name)
-            ? parameter.name.text
-            : null;
+          if (parameter) {
+            for (const identifier of bindingIdentifiers(parameter.name)) {
+              identifiers.add(identifier);
+            }
+          }
         }
       }
     }
     current = current.parent;
   }
-  return null;
+  return [...identifiers];
 }
 
 function normalizeNodeText(node, sourceFile) {
@@ -493,10 +534,34 @@ function callSiteContext(node, sourceFile) {
       parts.push(`${ts.SyntaxKind[current.kind]}:${name}`);
     }
     if (ts.isIfStatement(current)) {
-      const branch = current.thenStatement === child ? 'then' : 'else';
+      const branch =
+        current.expression === child
+          ? 'condition'
+          : current.thenStatement === child
+            ? 'then'
+            : 'else';
       parts.push(
         `if:${normalizeNodeText(current.expression, sourceFile)}:${branch}`,
       );
+    }
+    if (ts.isConditionalExpression(current)) {
+      const branch =
+        current.condition === child
+          ? 'condition'
+          : current.whenTrue === child
+            ? 'true'
+            : 'false';
+      parts.push(
+        `conditional:${normalizeNodeText(current.condition, sourceFile)}:${branch}`,
+      );
+    }
+    if (ts.isCaseClause(current)) {
+      parts.push(`case:${normalizeNodeText(current.expression, sourceFile)}`);
+    } else if (ts.isDefaultClause(current)) {
+      parts.push('case:default');
+    }
+    if (ts.isSwitchStatement(current)) {
+      parts.push(`switch:${normalizeNodeText(current.expression, sourceFile)}`);
     }
     if (ts.isCallExpression(current) && current.arguments.includes(child)) {
       const callbackIndex = current.arguments.indexOf(child);
@@ -593,11 +658,10 @@ export function inventorySource(sourceText, filePath = 'fixture.ts') {
     const occurrenceKey = `${context}\0${normalizedCall}`;
     const occurrence = occurrences.get(occurrenceKey) ?? 0;
     occurrences.set(occurrenceKey, occurrence + 1);
-    const catchVariable = enclosingRejectedValueIdentifier(call);
-    const referencesCatchValue = Boolean(
-      catchVariable &&
+    const catchValues = enclosingRejectedValueIdentifiers(call);
+    const referencedCatchValues = catchValues.filter((catchValue) =>
       call.arguments.some((argument) =>
-        referencesIdentifier(argument, catchVariable),
+        referencesIdentifier(argument, catchValue),
       ),
     );
     const dynamicMessage = hasDynamicMessage(call);
@@ -615,7 +679,10 @@ export function inventorySource(sourceText, filePath = 'fixture.ts') {
           ? 'dynamic-message'
           : 'static-message',
       policy,
-      catchValue: referencesCatchValue ? catchVariable : null,
+      catchValue:
+        referencedCatchValues.length > 0
+          ? referencedCatchValues.join(', ')
+          : null,
       context,
       signals: signalsFor(normalizedCall),
       call: normalizedCall,

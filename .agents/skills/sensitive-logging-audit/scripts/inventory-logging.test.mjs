@@ -110,6 +110,23 @@ test('flags promise rejection handler values as caught values', () => {
   );
 });
 
+test('flags destructured rejection values as caught values', () => {
+  const findings = inventorySource(`
+    const logger = getLogger('fixture');
+    try {
+      await run();
+    } catch ({ message, cause: nestedCause }) {
+      logger.error('Run failed', message, nestedCause);
+    }
+    run().catch(({ reason }) => logger.warn('Run failed', reason));
+  `);
+
+  assert.deepEqual(
+    findings.map(({ catchValue }) => catchValue),
+    ['message, nestedCause', 'reason'],
+  );
+});
+
 test('resolves logger factories, imports, aliases, properties, and types', () => {
   const findings = inventorySource(`
     import defaultSink from './logger';
@@ -144,6 +161,25 @@ test('resolves logger factories, imports, aliases, properties, and types', () =>
   assert.deepEqual(
     findings.map(({ method }) => method),
     ['error', 'warn', 'error', 'info', 'error', 'error', 'error', 'error'],
+  );
+});
+
+test('resolves logger instances stored in object literals', () => {
+  const findings = inventorySource(`
+    const audit = getLogger('audit');
+    const sinks = {
+      audit: getLogger('nested-audit'),
+      auditAlias: audit,
+      audit,
+    };
+    sinks.audit.error('Nested audit failed', response);
+    sinks.auditAlias.warn('Audit alias failed', response);
+    sinks.audit.info('Shorthand audit failed', response);
+  `);
+
+  assert.deepEqual(
+    findings.map(({ method }) => method),
+    ['error', 'warn', 'info'],
   );
 });
 
@@ -204,6 +240,40 @@ test('fingerprints distinguish call sites and survive unrelated line shifts', ()
     shiftedFindings.map(({ fingerprint }) => fingerprint),
     findings.map(({ fingerprint }) => fingerprint),
   );
+});
+
+test('fingerprints identify switch branches without order-dependent reuse', () => {
+  const source = `
+    const logger = getLogger('fixture');
+    switch (kind) {
+      case 'model':
+        logger.error('Operation failed', error);
+        break;
+      case 'tool':
+        logger.error('Operation failed', error);
+        break;
+      default:
+        logger.error('Operation failed', error);
+    }
+  `;
+  const sourceWithEarlierCase = source.replace(
+    "case 'model':",
+    `case 'new':
+        logger.error('Operation failed', error);
+        break;
+      case 'model':`,
+  );
+  const findings = inventorySource(source);
+  const shiftedFindings = inventorySource(sourceWithEarlierCase);
+
+  assert.equal(new Set(findings.map(({ fingerprint }) => fingerprint)).size, 3);
+  assert.deepEqual(
+    shiftedFindings.slice(1).map(({ fingerprint }) => fingerprint),
+    findings.map(({ fingerprint }) => fingerprint),
+  );
+  assert.match(findings[0].context, /switch:kind>case:'model'/);
+  assert.match(findings[1].context, /switch:kind>case:'tool'/);
+  assert.match(findings[2].context, /switch:kind>case:default/);
 });
 
 test('normalizes path separators before recording and hashing', () => {
