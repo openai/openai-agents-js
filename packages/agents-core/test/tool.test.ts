@@ -983,6 +983,42 @@ describe('tool.invoke', () => {
     expect(res).toBe('hi there');
   });
 
+  it('strips strict nulls through local JSON Schema references', async () => {
+    const execute = vi.fn(() => 'ok');
+    const t = tool({
+      name: 'local_ref',
+      description: 'Uses a local JSON Schema reference.',
+      parameters: {
+        type: 'object',
+        properties: {
+          payload: { $ref: '#/$defs/payload' },
+        },
+        required: ['payload'],
+        $defs: {
+          payload: {
+            type: 'object',
+            properties: {
+              note: { type: 'string' },
+            },
+            required: [],
+          },
+        },
+      } as any,
+      execute,
+    });
+
+    await t.invoke(
+      new RunContext(),
+      JSON.stringify({ payload: { note: null } }),
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      { payload: {} },
+      expect.any(RunContext),
+      undefined,
+    );
+  });
+
   it('uses errorFunction on parse error', async () => {
     const t = tool({
       name: 'fail',

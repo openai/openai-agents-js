@@ -210,6 +210,149 @@ describe('utils/strictToolSchema', () => {
     });
   });
 
+  it('strips strict nulls through $defs references', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        payload: { $ref: '#/$defs/payload' },
+      },
+      required: ['payload'],
+      $defs: {
+        payload: {
+          type: 'object',
+          properties: {
+            note: { type: 'string' },
+          },
+          required: [],
+        },
+      },
+    };
+
+    expect(
+      stripStrictNullsForJsonSchema(schema, {
+        payload: { note: null },
+      }),
+    ).toEqual({ payload: {} });
+  });
+
+  it('strips strict nulls through legacy definitions references', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        payload: { $ref: '#/definitions/payload' },
+      },
+      required: ['payload'],
+      definitions: {
+        payload: {
+          type: 'object',
+          properties: {
+            note: { type: 'string' },
+          },
+          required: [],
+        },
+      },
+    };
+
+    expect(
+      stripStrictNullsForJsonSchema(schema, {
+        payload: { note: null },
+      }),
+    ).toEqual({ payload: {} });
+  });
+
+  it('decodes RFC 6901 escaped reference tokens', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        payload: { $ref: '#/$defs/path~1with~0tilde' },
+      },
+      required: ['payload'],
+      $defs: {
+        'path/with~tilde': {
+          type: 'object',
+          properties: {
+            note: { type: 'string' },
+          },
+          required: [],
+        },
+      },
+    };
+
+    expect(
+      stripStrictNullsForJsonSchema(schema, {
+        payload: { note: null },
+      }),
+    ).toEqual({ payload: {} });
+  });
+
+  it('stops resolving cyclic references', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        payload: { $ref: '#/$defs/first' },
+      },
+      required: ['payload'],
+      $defs: {
+        first: { $ref: '#/$defs/second' },
+        second: { $ref: '#/$defs/first' },
+      },
+    };
+    const value = { payload: { note: null } };
+
+    expect(stripStrictNullsForJsonSchema(schema, value)).toEqual(value);
+  });
+
+  it('strips strict nulls through recursive root references', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        note: { type: 'string' },
+        child: { $ref: '#' },
+      },
+      required: [],
+    };
+
+    expect(
+      stripStrictNullsForJsonSchema(schema, {
+        note: null,
+        child: { note: null },
+      }),
+    ).toEqual({ child: {} });
+  });
+
+  it('strips nulls unless every referenced allOf branch allows null', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        value: { $ref: '#/$defs/value' },
+      },
+      required: [],
+      $defs: {
+        value: {
+          allOf: [{ type: ['string', 'null'] }, { type: 'string' }],
+        },
+      },
+    };
+
+    expect(stripStrictNullsForJsonSchema(schema, { value: null })).toEqual({});
+  });
+
+  it.each([
+    ['unresolved', '#/$defs/missing'],
+    ['external', 'https://example.com/schema.json#/$defs/payload'],
+  ])('leaves values behind %s references unchanged', (_name, $ref) => {
+    const schema = {
+      type: 'object',
+      properties: {
+        payload: { $ref },
+      },
+      required: ['payload'],
+    };
+    const value = { payload: { note: null } };
+
+    expect(stripStrictNullsForJsonSchema(schema, value)).toEqual(value);
+  });
+
   it('strips strict nulls from optional Zod object, union, array, tuple, and record fields', () => {
     const schema = z.object({
       direct: z.string().optional(),

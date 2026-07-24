@@ -102,7 +102,7 @@ function isSchemaNullable(schema: Record<string, unknown>): boolean {
     return true;
   }
 
-  for (const key of ['anyOf', 'oneOf', 'allOf']) {
+  for (const key of ['anyOf', 'oneOf']) {
     const entries = schema[key];
     if (
       Array.isArray(entries) &&
@@ -117,6 +117,20 @@ function isSchemaNullable(schema: Record<string, unknown>): boolean {
     }
   }
 
+  const allOf = schema.allOf;
+  if (
+    Array.isArray(allOf) &&
+    allOf.length > 0 &&
+    allOf.every(
+      (entry) =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        isSchemaNullable(entry as Record<string, unknown>),
+    )
+  ) {
+    return true;
+  }
+
   return false;
 }
 
@@ -125,45 +139,73 @@ export function stripStrictNullsForJsonSchema(
   value: unknown,
   optionalProperty: boolean = false,
 ): unknown {
+  return stripStrictNullsForJsonSchemaEntry(
+    schema,
+    value,
+    optionalProperty,
+    schema,
+  );
+}
+
+function stripStrictNullsForJsonSchemaEntry(
+  schema: unknown,
+  value: unknown,
+  optionalProperty: boolean,
+  rootSchema: unknown,
+): unknown {
   if (value === undefined) {
     return undefined;
   }
   if (value === null) {
-    if (optionalProperty && !jsonSchemaAllowsNull(schema)) {
+    if (optionalProperty && !jsonSchemaAllowsNull(schema, rootSchema)) {
       return undefined;
     }
     return value;
   }
 
+  const resolvedSchema = resolveLocalJsonSchema(schema, rootSchema);
+
   if (Array.isArray(value)) {
-    const schemaRecord = isRecord(schema) ? schema : undefined;
+    const schemaRecord = isRecord(resolvedSchema) ? resolvedSchema : undefined;
     const items = schemaRecord?.items;
     if (Array.isArray(items)) {
       return value.map((entry, index) =>
-        stripStrictNullsForJsonSchema(items[index], entry),
+        stripStrictNullsForJsonSchemaEntry(
+          items[index],
+          entry,
+          false,
+          rootSchema,
+        ),
       );
     }
     if (items && typeof items === 'object') {
-      return value.map((entry) => stripStrictNullsForJsonSchema(items, entry));
+      return value.map((entry) =>
+        stripStrictNullsForJsonSchemaEntry(items, entry, false, rootSchema),
+      );
     }
     return value;
   }
 
-  if (!isRecord(value) || !isJsonSchemaObject(schema)) {
+  if (!isRecord(value) || !isJsonSchemaObject(resolvedSchema)) {
     return value;
   }
 
-  const properties = isRecord(schema.properties) ? schema.properties : {};
+  const properties = isRecord(resolvedSchema.properties)
+    ? resolvedSchema.properties
+    : {};
   const required = new Set(
-    Array.isArray(schema.required) ? schema.required.map(String) : [],
+    Array.isArray(resolvedSchema.required)
+      ? resolvedSchema.required.map(String)
+      : [],
   );
   const normalized: Record<string, unknown> = { ...value };
 
   for (const [key, propertySchema] of Object.entries(properties)) {
-    const nextValue = stripStrictNullsForJsonSchema(
+    const nextValue = stripStrictNullsForJsonSchemaEntry(
       propertySchema,
       normalized[key],
       !required.has(key),
+      rootSchema,
     );
     if (typeof nextValue === 'undefined') {
       delete normalized[key];
@@ -192,8 +234,68 @@ function isJsonSchemaObject(schema: unknown): schema is Record<
   );
 }
 
-function jsonSchemaAllowsNull(schema: unknown): boolean {
-  return isRecord(schema) ? isSchemaNullable(schema) : false;
+function jsonSchemaAllowsNull(schema: unknown, rootSchema: unknown): boolean {
+  if (!isRecord(schema)) {
+    return false;
+  }
+  if (isSchemaNullable(schema)) {
+    return true;
+  }
+
+  const resolvedSchema = resolveLocalJsonSchema(schema, rootSchema);
+  return (
+    resolvedSchema !== schema &&
+    isRecord(resolvedSchema) &&
+    isSchemaNullable(resolvedSchema)
+  );
+}
+
+function resolveLocalJsonSchema(schema: unknown, rootSchema: unknown): unknown {
+  let current = schema;
+  const visitedReferences = new Set<string>();
+
+  while (isRecord(current) && typeof current.$ref === 'string') {
+    const reference = current.$ref;
+    if (
+      (reference !== '#' && !reference.startsWith('#/')) ||
+      visitedReferences.has(reference)
+    ) {
+      return schema;
+    }
+    visitedReferences.add(reference);
+
+    const resolved =
+      reference === '#'
+        ? rootSchema
+        : resolveJsonPointer(rootSchema, reference);
+    if (typeof resolved === 'undefined') {
+      return schema;
+    }
+    current = resolved;
+  }
+
+  return current;
+}
+
+function resolveJsonPointer(root: unknown, reference: string): unknown {
+  let current = root;
+
+  for (const rawToken of reference.slice(2).split('/')) {
+    if (/~(?:[^01]|$)/.test(rawToken)) {
+      return undefined;
+    }
+    const token = rawToken.replace(/~1/g, '/').replace(/~0/g, '~');
+    if (
+      typeof current !== 'object' ||
+      current === null ||
+      !Object.prototype.hasOwnProperty.call(current, token)
+    ) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[token];
+  }
+
+  return current;
 }
 
 export function stripStrictNullsForZodSchema(
