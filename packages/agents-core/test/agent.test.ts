@@ -165,6 +165,111 @@ describe('Agent', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
+  it('warns for different JSON schemas without exposing details when model logging is disabled', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(true);
+    const parentSecret = 'SECRET_PARENT_SCHEMA_DESCRIPTION_123';
+    const handoffSecret = 'SECRET_HANDOFF_SCHEMA_DESCRIPTION_456';
+    const createOutputType = (property: string, description: string) =>
+      ({
+        type: 'json_schema',
+        name: 'StructuredOutput',
+        strict: true,
+        schema: {
+          type: 'object',
+          properties: { [property]: { type: 'string', description } },
+          required: [property],
+          additionalProperties: false,
+        },
+      }) as JsonSchemaDefinition;
+    const handoffAgent = new Agent({
+      name: 'HandoffAgent',
+      outputType: createOutputType('child', handoffSecret),
+    });
+
+    new Agent({
+      name: 'ParentAgent',
+      outputType: createOutputType('parent', parentSecret),
+      handoffs: [handoffAgent],
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[Agent] Warning: Handoff agents have different output types. Output type details are redacted. You can make it type-safe by using Agent.create({ ... }) method instead.',
+    );
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(parentSecret);
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(handoffSecret);
+  });
+
+  it('warns for different Zod schemas without exposing details when model logging is disabled', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(true);
+    const parentSecret = 'SECRET_PARENT_ZOD_DESCRIPTION_123';
+    const handoffSecret = 'SECRET_HANDOFF_ZOD_DESCRIPTION_456';
+    const handoffAgent = new Agent({
+      name: 'HandoffAgent',
+      outputType: z.object({ child: z.string().describe(handoffSecret) }),
+    });
+
+    new Agent({
+      name: 'ParentAgent',
+      outputType: z.object({ parent: z.string().describe(parentSecret) }),
+      handoffs: [handoffAgent],
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[Agent] Warning: Handoff agents have different output types. Output type details are redacted. You can make it type-safe by using Agent.create({ ... }) method instead.',
+    );
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(parentSecret);
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(handoffSecret);
+  });
+
+  it('does not invoke JSON schema accessors when model logging is disabled', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(true);
+    const propertiesGetter = vi.fn(() => {
+      throw new Error('SECRET_SCHEMA_GETTER_123');
+    });
+    const schema = {
+      type: 'object',
+      required: [],
+      additionalProperties: false,
+    } as Record<string, unknown>;
+    Object.defineProperty(schema, 'properties', {
+      enumerable: true,
+      get: propertiesGetter,
+    });
+    const handoffAgent = new Agent({
+      name: 'HandoffAgent',
+      outputType: {
+        type: 'json_schema',
+        name: 'AccessorOutput',
+        strict: true,
+        schema,
+      } as JsonSchemaDefinition,
+    });
+
+    expect(
+      () =>
+        new Agent({
+          name: 'ParentAgent',
+          outputType: {
+            type: 'json_schema',
+            name: 'AccessorOutput',
+            strict: true,
+            schema: {
+              type: 'object',
+              properties: {},
+              required: [],
+              additionalProperties: false,
+            },
+          },
+          handoffs: [handoffAgent],
+        }),
+    ).not.toThrow();
+    expect(propertiesGetter).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
   it('honors an explicit opt-out from handoff output type warnings', () => {
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(true);
