@@ -84,6 +84,7 @@ export {
   FunctionTool,
   ModelBehaviorError,
   OutputGuardrailTripwireTriggered,
+  setSensitiveDataLoggingEnabled,
   tool,
   UserError,
 } from '@openai/agents-core';

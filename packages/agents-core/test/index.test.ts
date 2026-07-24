@@ -12,6 +12,7 @@ describe('index.ts', () => {
     });
     expect(agent).toBeDefined();
     expect(agent.name).toEqual('TestAgent');
+    expect(typeof AgentsCore.setSensitiveDataLoggingEnabled).toBe('function');
   });
 
   test('does not expose sandbox exports from the top-level entry', () => {

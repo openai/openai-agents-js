@@ -36,6 +36,39 @@ describe('logger', () => {
     expect(toolDataSpy).toHaveBeenCalledTimes(1);
   });
 
+  test('applies the programmatic sensitive data logging override to logger instances', async () => {
+    const { setSensitiveDataLoggingEnabled } = await import('../src/config');
+    const loggerModule = await import('../src/logger');
+    const targetLogger = loggerModule.getLogger('test');
+    const errorSpy = vi
+      .spyOn(targetLogger, 'error')
+      .mockImplementation(() => {});
+    const secret = 'SECRET_PROGRAMMATIC_LOG_OVERRIDE_123';
+    const error = new Error(secret);
+    const details = { secret };
+
+    setSensitiveDataLoggingEnabled(true);
+    loggerModule.logModelActionError(
+      targetLogger,
+      'Operation failed',
+      error,
+      details,
+    );
+    expect(errorSpy).toHaveBeenCalledWith('Operation failed', error, details);
+    expect(JSON.stringify(errorSpy.mock.calls)).toContain(secret);
+
+    errorSpy.mockClear();
+    setSensitiveDataLoggingEnabled(false);
+    loggerModule.logToolActionError(
+      targetLogger,
+      'Operation failed',
+      error,
+      details,
+    );
+    expect(errorSpy).toHaveBeenCalledWith('Operation failed', 'object');
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(secret);
+  });
+
   test.each([
     ['tool', 'logToolActionError', 'dontLogToolData'],
     ['model', 'logModelActionError', 'dontLogModelData'],

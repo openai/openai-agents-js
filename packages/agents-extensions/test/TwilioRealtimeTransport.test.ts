@@ -158,12 +158,7 @@ describe('TwilioRealtimeTransportLayer', () => {
     transport.on('error', errListener);
     twilio.emit('message', { toString: () => 'bad{' });
     expect(errListener).toHaveBeenCalled();
-    expect(errorSpy).toHaveBeenCalledWith(
-      'Error parsing message:',
-      expect.any(Error),
-      'Message:',
-      expect.any(Object),
-    );
+    expect(errorSpy).toHaveBeenCalledWith('Error parsing message:', 'object');
     errorSpy.mockRestore();
 
     twilio.emit('close');
@@ -364,7 +359,9 @@ describe('TwilioRealtimeTransportLayer', () => {
     twilio.emit('message', {
       toString: () => JSON.stringify({ event: 'mark', mark: { name: 'u:x' } }),
     });
-    expect(warnSpy).toHaveBeenCalledWith('Invalid mark name received:', 'u:x');
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Invalid mark name received. Mark data is redacted.',
+    );
 
     twilio.emit('message', {
       toString: () =>

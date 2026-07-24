@@ -37,14 +37,47 @@ export function loadEnv(): Record<string, string | undefined> {
  * Checks if a flag is enabled in the environment.
  *
  * @param flagName - The name of the flag to check.
+ * @param defaultValue - The value to return when the flag is not set.
  * @returns `true` if the flag is enabled, `false` otherwise.
  */
-function isEnabled(flagName: string): boolean {
-  const env = loadEnv();
-  return (
-    typeof env !== 'undefined' &&
-    (env[flagName] === 'true' || env[flagName] === '1')
-  );
+function isEnabled(flagName: string, defaultValue: boolean = false): boolean {
+  const flagValue = loadEnv()[flagName];
+  if (flagValue === undefined) {
+    return defaultValue;
+  }
+  if (flagValue === 'true' || flagValue === '1') {
+    return true;
+  }
+  if (flagValue === 'false' || flagValue === '0') {
+    return false;
+  }
+  return defaultValue;
+}
+
+let sensitiveDataLoggingEnabledOverride: boolean | undefined;
+
+/**
+ * Enables or disables sensitive model and tool data logging programmatically.
+ * This override takes precedence over the logging environment variables.
+ *
+ * @param enabled - Whether sensitive model and tool data may be logged.
+ * @throws {TypeError} If `enabled` is not a primitive boolean.
+ */
+export function setSensitiveDataLoggingEnabled(enabled: boolean): void {
+  if (typeof enabled !== 'boolean') {
+    sensitiveDataLoggingEnabledOverride = false;
+    throw new TypeError(
+      'Sensitive data logging can only be enabled or disabled with a boolean value.',
+    );
+  }
+  sensitiveDataLoggingEnabledOverride = enabled;
+}
+
+function shouldSuppressSensitiveData(flagName: string): boolean {
+  if (sensitiveDataLoggingEnabledOverride !== undefined) {
+    return !sensitiveDataLoggingEnabledOverride;
+  }
+  return isEnabled(flagName, true);
 }
 
 /**
@@ -67,9 +100,9 @@ export const tracing = {
  */
 export const logging = {
   get dontLogModelData() {
-    return isEnabled('OPENAI_AGENTS_DONT_LOG_MODEL_DATA');
+    return shouldSuppressSensitiveData('OPENAI_AGENTS_DONT_LOG_MODEL_DATA');
   },
   get dontLogToolData() {
-    return isEnabled('OPENAI_AGENTS_DONT_LOG_TOOL_DATA');
+    return shouldSuppressSensitiveData('OPENAI_AGENTS_DONT_LOG_TOOL_DATA');
   },
 };
