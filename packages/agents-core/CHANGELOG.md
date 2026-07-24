@@ -1,5 +1,22 @@
 # @openai/agents-core
 
+## 0.14.0
+
+### Minor Changes
+
+- f7771c1: feat: add default task and turn tracing with a per-run opt-out
+- 67e9733: feat: disable sensitive model and tool data logging by default with a programmatic opt-in
+
+### Patch Changes
+
+- 457166e: fix: redact sensitive tool and model data from error logs
+- 02ef342: feat: add Programmatic Tool Calling with caller-aware replay, runtime-validated Zod outputs, configuration preflight, examples, and explicit unsupported-adapter errors
+- b45fd21: fix: preserve assistant message phases across Responses history and replay
+- efdd60e: fix: fail closed when dynamic tool approval receives invalid arguments
+- fa7c36f: fix: honor sensitive logging flags across runtime error and payload paths
+- a3092ca: fix: distinguish missing sandbox paths from inaccessible files and provider failures
+- 68cc86b: fix: parse SELinux security-context markers in permission strings
+
 ## 0.13.5
 
 ### Patch Changes

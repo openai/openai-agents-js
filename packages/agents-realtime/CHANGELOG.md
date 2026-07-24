@@ -1,5 +1,28 @@
 # @openai/agents-realtime
 
+## 0.14.0
+
+### Minor Changes
+
+- 67e9733: feat: disable sensitive model and tool data logging by default with a programmatic opt-in
+
+### Patch Changes
+
+- 457166e: fix: redact sensitive tool and model data from error logs
+- 02ef342: feat: add Programmatic Tool Calling with caller-aware replay, runtime-validated Zod outputs, configuration preflight, examples, and explicit unsupported-adapter errors
+- efdd60e: fix: fail closed when dynamic tool approval receives invalid arguments
+- fa7c36f: fix: honor sensitive logging flags across runtime error and payload paths
+- Updated dependencies [f7771c1]
+- Updated dependencies [457166e]
+- Updated dependencies [02ef342]
+- Updated dependencies [b45fd21]
+- Updated dependencies [efdd60e]
+- Updated dependencies [fa7c36f]
+- Updated dependencies [67e9733]
+- Updated dependencies [a3092ca]
+- Updated dependencies [68cc86b]
+  - @openai/agents-core@0.14.0
+
 ## 0.13.5
 
 ### Patch Changes
