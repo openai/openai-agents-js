@@ -13,33 +13,35 @@ OpenAI Agents SDK 支持以下服务器环境：
 
 ### 有限支持
 
-- **Cloudflare Workers**：Agents SDK 可用于 Cloudflare Workers，但目前存在一些限制：
-  - SDK 当前需要启用 `nodejs_compat`
-  - 需要在请求结束时手动刷新追踪。更多详情请参阅[追踪](/openai-agents-js/zh/guides/tracing#export-loop-lifecycle)。
-  - 由于 Cloudflare Workers 对 `AsyncLocalStorage` 的支持有限，某些追踪可能不准确
-  - 出站 WebSocket 连接必须使用基于 fetch 的升级（而不是全局 `WebSocket` 构造函数）。对于 Realtime，请使用 `@openai/agents-extensions` 中的 Cloudflare 传输机制（`CloudflareRealtimeTransportLayer`）。
-- **Responses API WebSocket 传输机制**：
+- **Cloudflare Workers**：Agents SDK 可在 Cloudflare Workers 中使用，但目前存在一些限制：
+  - SDK 当前要求启用 `nodejs_compat`
+  - 必须在请求结束时手动刷新追踪数据。有关更多详细信息，请参阅[追踪](/openai-agents-js/zh/guides/tracing#export-loop-lifecycle)。
+  - 由于 Cloudflare Workers 对 `AsyncLocalStorage` 的支持有限，某些追踪数据可能不准确
+  - 出站 WebSocket 连接必须使用基于 fetch 的升级机制（而不是全局 `WebSocket` 构造函数）。对于 Realtime，请使用 `@openai/agents-extensions` 中的 Cloudflare 传输层（`CloudflareRealtimeTransportLayer`）。
+- **Responses API WebSocket 传输**：
   - 需要全局 `WebSocket` 实现。
-  - `WebSocket` 实现必须支持握手时的自定义标头。
-  - 许多浏览器风格的 WebSocket API（以及一些边缘运行时）不支持自定义出站标头。在这些环境中，请改用默认的 HTTP Responses 传输机制。
-  - 如果你看到提示缺少全局 `WebSocket` 实现或不支持自定义标头的错误，则说明该运行时的 WebSocket 实现与 Responses WebSocket 传输机制不兼容。
+  - `WebSocket` 实现必须支持在握手时使用自定义标头。
+  - 许多浏览器风格的 WebSocket API（以及一些边缘运行时）不支持自定义出站标头。在这些环境中，请改用默认的 HTTP Responses 传输。
+  - 如果出现错误，提示缺少全局 `WebSocket` 实现或不支持自定义标头，则说明运行时的 WebSocket 实现与 Responses WebSocket 传输不兼容。
 - **浏览器**：
-  - 核心 SDK 可以打包供浏览器使用，但其中默认禁用追踪。
-- **v8 isolates**：
-  - 如果使用带有合适浏览器 polyfill 的打包工具，应该可以将 SDK 打包用于 v8 isolates，但追踪无法工作
-  - v8 isolates 尚未经过广泛测试
+  - 核心 SDK 可以打包后在浏览器中使用，但浏览器环境默认禁用追踪。
+- **v8 隔离实例**：
+  - 如果使用带有适当浏览器 polyfill 的打包工具，应该能够为 v8 隔离实例打包 SDK，但追踪将无法工作
+  - v8 隔离实例尚未经过广泛测试
 
 ## 调试日志
 
-如果你在使用 SDK 时遇到问题，可以启用调试日志，以获取有关正在发生的情况的更多信息。
+如果您在使用 SDK 时遇到问题，可以启用调试日志，以获取有关当前状况的更多信息。
 
-通过将 `DEBUG` 环境变量设置为 `openai-agents:*` 来启用调试日志。
+将 `DEBUG` 环境变量设置为 `openai-agents:*`，即可启用调试日志。
 
 ```bash
 DEBUG=openai-agents:*
 ```
 
-或者，你可以将调试范围限定到 SDK 的特定部分：
+默认情况下，模型和工具数据仍会被隐去。如果需要这些详细信息，请参阅[日志中的敏感数据](/openai-agents-js/zh/guides/config#sensitive-data-in-logs)，并且仅在日志得到安全处理时选择启用。
+
+您也可以将调试范围限定到 SDK 的特定部分：
 
 - `openai-agents:core` — 用于 SDK 的主要执行逻辑
 - `openai-agents:openai` — 用于 OpenAI API 调用
