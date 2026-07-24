@@ -92,4 +92,19 @@ describe('logging', () => {
     expect(logging.dontLogModelData).toBe(false);
     expect(logging.dontLogToolData).toBe(false);
   });
+
+  test.each(['false', 1, null, undefined, new Boolean(true)])(
+    'rejects non-boolean programmatic override %j and fails closed',
+    async (invalidValue) => {
+      const { logging, setSensitiveDataLoggingEnabled } =
+        await import('../src/config');
+      setSensitiveDataLoggingEnabled(true);
+
+      expect(() =>
+        setSensitiveDataLoggingEnabled(invalidValue as never),
+      ).toThrow(TypeError);
+      expect(logging.dontLogModelData).toBe(true);
+      expect(logging.dontLogToolData).toBe(true);
+    },
+  );
 });

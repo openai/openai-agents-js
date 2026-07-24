@@ -61,8 +61,15 @@ let sensitiveDataLoggingEnabledOverride: boolean | undefined;
  * This override takes precedence over the logging environment variables.
  *
  * @param enabled - Whether sensitive model and tool data may be logged.
+ * @throws {TypeError} If `enabled` is not a primitive boolean.
  */
 export function setSensitiveDataLoggingEnabled(enabled: boolean): void {
+  if (typeof enabled !== 'boolean') {
+    sensitiveDataLoggingEnabledOverride = false;
+    throw new TypeError(
+      'Sensitive data logging can only be enabled or disabled with a boolean value.',
+    );
+  }
   sensitiveDataLoggingEnabledOverride = enabled;
 }
 

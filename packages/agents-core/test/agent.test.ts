@@ -128,6 +128,7 @@ describe('Agent', () => {
           properties: { value: { type: 'string' } },
           required: ['value'],
           additionalProperties: false,
+          toJSON,
         },
         toJSON,
       }) as unknown as JsonSchemaDefinition;
@@ -145,6 +146,37 @@ describe('Agent', () => {
     expect(warnSpy).not.toHaveBeenCalled();
     expect(parentToJSON).not.toHaveBeenCalled();
     expect(handoffToJSON).not.toHaveBeenCalled();
+  });
+
+  it('warns when schemas differ by an output property named toJSON', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(true);
+    const createOutputType = (properties: Record<string, { type: string }>) =>
+      ({
+        type: 'json_schema',
+        name: 'ToJsonPropertyOutput',
+        strict: true,
+        schema: {
+          type: 'object',
+          properties,
+          required: [],
+          additionalProperties: false,
+        },
+      }) as JsonSchemaDefinition;
+    const handoffAgent = new Agent({
+      name: 'HandoffAgent',
+      outputType: createOutputType({}),
+    });
+
+    new Agent({
+      name: 'ParentAgent',
+      outputType: createOutputType({ toJSON: { type: 'string' } }),
+      handoffs: [handoffAgent],
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[Agent] Warning: Handoff agents have different output types. Output type details are redacted. You can make it type-safe by using Agent.create({ ... }) method instead.',
+    );
   });
 
   it('does not warn for separately constructed equivalent Zod schemas when model logging is disabled', () => {

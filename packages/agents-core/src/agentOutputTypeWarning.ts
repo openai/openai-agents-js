@@ -1,7 +1,15 @@
 import type { AgentOutputType } from './agent';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
 
-type StructuralComparison = 'equal' | 'different' | 'unknown';
+type ComparableJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | ComparableJsonValue[]
+  | { [key: string]: ComparableJsonValue };
+
+const NOT_COMPARABLE = Symbol('notComparable');
 
 function isPrimitiveOutputType(value: unknown): boolean {
   return (
@@ -81,39 +89,6 @@ function getComparableOutputType(outputType: unknown): unknown | undefined {
   }
 }
 
-function getComparableObjectProperties(
-  value: object,
-): Record<string, PropertyDescriptor> | undefined {
-  let descriptors: Record<string, PropertyDescriptor>;
-  try {
-    descriptors = Object.getOwnPropertyDescriptors(value);
-  } catch (_error) {
-    return undefined;
-  }
-
-  const comparable: Record<string, PropertyDescriptor> = {};
-  for (const [key, descriptor] of Object.entries(descriptors)) {
-    if (!descriptor.enumerable || key === 'toJSON') {
-      continue;
-    }
-    if (!('value' in descriptor)) {
-      return undefined;
-    }
-    if (
-      descriptor.value === undefined ||
-      typeof descriptor.value === 'function' ||
-      typeof descriptor.value === 'symbol'
-    ) {
-      continue;
-    }
-    if (typeof descriptor.value === 'bigint') {
-      return undefined;
-    }
-    comparable[key] = descriptor;
-  }
-  return comparable;
-}
-
 function detectArray(value: object): boolean | undefined {
   try {
     return Array.isArray(value);
@@ -129,124 +104,143 @@ function readArrayLength(value: object): number | undefined {
     : undefined;
 }
 
-function compareJsonLikeValues(
-  left: unknown,
-  right: unknown,
-  visited: WeakMap<object, WeakMap<object, StructuralComparison>>,
-): StructuralComparison {
-  if (Object.is(left, right)) {
-    return 'equal';
-  }
-  if (left === null || right === null) {
-    return 'different';
-  }
-  if (typeof left !== typeof right) {
-    return 'different';
-  }
-  if (typeof left !== 'object' || typeof right !== 'object') {
-    if (
-      (typeof left === 'number' && !Number.isFinite(left)) ||
-      (typeof right === 'number' && !Number.isFinite(right)) ||
-      typeof left === 'bigint' ||
-      typeof left === 'function' ||
-      typeof left === 'symbol' ||
-      typeof left === 'undefined'
-    ) {
-      return 'unknown';
-    }
-    return 'different';
-  }
-
-  const leftIsArray = detectArray(left);
-  const rightIsArray = detectArray(right);
-  if (leftIsArray === undefined || rightIsArray === undefined) {
-    return 'unknown';
-  }
-  if (leftIsArray !== rightIsArray) {
-    return 'different';
-  }
-
-  const priorComparison = visited.get(left)?.get(right);
-  if (priorComparison) {
-    return priorComparison === 'unknown' ? 'unknown' : priorComparison;
-  }
-  const rightComparisons = visited.get(left) ?? new WeakMap();
-  visited.set(left, rightComparisons);
-  rightComparisons.set(right, 'unknown');
-
-  if (leftIsArray && rightIsArray) {
-    const leftLength = readArrayLength(left);
-    const rightLength = readArrayLength(right);
-    if (leftLength === undefined || rightLength === undefined) {
-      return 'unknown';
-    }
-    if (leftLength !== rightLength) {
-      rightComparisons.set(right, 'different');
-      return 'different';
-    }
-    for (let index = 0; index < leftLength; index += 1) {
-      const leftValue = readOwnDataProperty(left, index);
-      const rightValue = readOwnDataProperty(right, index);
-      if (!leftValue || !rightValue) {
-        return 'unknown';
-      }
-      const comparison = compareJsonLikeValues(
-        leftValue.found ? leftValue.value : null,
-        rightValue.found ? rightValue.value : null,
-        visited,
-      );
-      if (comparison !== 'equal') {
-        rightComparisons.set(right, comparison);
-        return comparison;
-      }
-    }
-    rightComparisons.set(right, 'equal');
-    return 'equal';
-  }
-
-  const leftProperties = getComparableObjectProperties(left);
-  const rightProperties = getComparableObjectProperties(right);
-  if (!leftProperties || !rightProperties) {
-    return 'unknown';
-  }
-  const leftKeys = Object.keys(leftProperties).sort();
-  const rightKeys = Object.keys(rightProperties).sort();
-  if (
-    leftKeys.length !== rightKeys.length ||
-    leftKeys.some((key, index) => key !== rightKeys[index])
-  ) {
-    rightComparisons.set(right, 'different');
-    return 'different';
-  }
-
-  for (const key of leftKeys) {
-    const comparison = compareJsonLikeValues(
-      leftProperties[key].value,
-      rightProperties[key].value,
-      visited,
-    );
-    if (comparison !== 'equal') {
-      rightComparisons.set(right, comparison);
-      return comparison;
-    }
-  }
-  rightComparisons.set(right, 'equal');
-  return 'equal';
+function isOmittedJsonObjectValue(value: unknown): boolean {
+  return (
+    value === undefined ||
+    typeof value === 'function' ||
+    typeof value === 'symbol'
+  );
 }
 
-function compareStructuredOutputTypes(
-  comparableLeft: unknown,
-  comparableRight: unknown,
-): StructuralComparison {
-  if (comparableLeft === undefined || comparableRight === undefined) {
-    return 'unknown';
+function toComparableJsonValue(
+  value: unknown,
+  ancestors: Set<object>,
+): ComparableJsonValue | typeof NOT_COMPARABLE {
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'boolean'
+  ) {
+    return value;
   }
-  return compareJsonLikeValues(comparableLeft, comparableRight, new WeakMap());
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : NOT_COMPARABLE;
+  }
+  if (typeof value !== 'object') {
+    return NOT_COMPARABLE;
+  }
+  if (ancestors.has(value)) {
+    return NOT_COMPARABLE;
+  }
+
+  const isArray = detectArray(value);
+  if (isArray === undefined) {
+    return NOT_COMPARABLE;
+  }
+
+  ancestors.add(value);
+  try {
+    if (isArray) {
+      const length = readArrayLength(value);
+      if (length === undefined) {
+        return NOT_COMPARABLE;
+      }
+      const comparable: ComparableJsonValue[] = [];
+      for (let index = 0; index < length; index += 1) {
+        const element = readOwnDataProperty(value, index);
+        if (!element) {
+          return NOT_COMPARABLE;
+        }
+        if (!element.found || isOmittedJsonObjectValue(element.value)) {
+          comparable.push(null);
+          continue;
+        }
+        const comparableElement = toComparableJsonValue(
+          element.value,
+          ancestors,
+        );
+        if (comparableElement === NOT_COMPARABLE) {
+          return NOT_COMPARABLE;
+        }
+        comparable.push(comparableElement);
+      }
+      return comparable;
+    }
+
+    let descriptors: Record<string, PropertyDescriptor>;
+    try {
+      descriptors = Object.getOwnPropertyDescriptors(value);
+    } catch (_error) {
+      return NOT_COMPARABLE;
+    }
+
+    const comparable: { [key: string]: ComparableJsonValue } =
+      Object.create(null);
+    for (const key of Object.keys(descriptors).sort()) {
+      const descriptor = descriptors[key];
+      if (!descriptor.enumerable) {
+        continue;
+      }
+      if (!('value' in descriptor)) {
+        return NOT_COMPARABLE;
+      }
+      if (isOmittedJsonObjectValue(descriptor.value)) {
+        continue;
+      }
+      const comparableProperty = toComparableJsonValue(
+        descriptor.value,
+        ancestors,
+      );
+      if (comparableProperty === NOT_COMPARABLE) {
+        return NOT_COMPARABLE;
+      }
+      comparable[key] = comparableProperty;
+    }
+    return comparable;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function stringifyComparableJsonValue(value: ComparableJsonValue): string {
+  if (value === null) {
+    return 'null';
+  }
+  if (typeof value === 'string') {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stringifyComparableJsonValue).join(',')}]`;
+  }
+  return `{${Object.keys(value)
+    .map(
+      (key) =>
+        `${JSON.stringify(key)}:${stringifyComparableJsonValue(value[key])}`,
+    )
+    .join(',')}}`;
+}
+
+function getOutputTypeFingerprint(outputType: unknown): string | undefined {
+  const comparableOutputType = getComparableOutputType(outputType);
+  if (comparableOutputType === undefined) {
+    return undefined;
+  }
+  const comparableJsonValue = toComparableJsonValue(
+    comparableOutputType,
+    new Set(),
+  );
+  if (comparableJsonValue === NOT_COMPARABLE) {
+    return undefined;
+  }
+  return stringifyComparableJsonValue(comparableJsonValue);
 }
 
 /**
- * Returns true only when different output types can be established without invoking schema
- * serialization hooks. Supported structured schemas are compared without exposing their details.
+ * Returns true only when different output types can be established from canonical snapshots that
+ * do not invoke schema accessors or serialization hooks.
  *
  * @internal
  */
@@ -256,7 +250,7 @@ export function hasDefinitelyDifferentOutputTypes(
   if (outputTypes.length < 2) {
     return false;
   }
-  const comparableOutputTypes = outputTypes.map(getComparableOutputType);
+  const outputTypeFingerprints = outputTypes.map(getOutputTypeFingerprint);
 
   for (let leftIndex = 0; leftIndex < outputTypes.length - 1; leftIndex += 1) {
     for (
@@ -275,11 +269,12 @@ export function hasDefinitelyDifferentOutputTypes(
       ) {
         return true;
       }
+      const leftFingerprint = outputTypeFingerprints[leftIndex];
+      const rightFingerprint = outputTypeFingerprints[rightIndex];
       if (
-        compareStructuredOutputTypes(
-          comparableOutputTypes[leftIndex],
-          comparableOutputTypes[rightIndex],
-        ) === 'different'
+        leftFingerprint !== undefined &&
+        rightFingerprint !== undefined &&
+        leftFingerprint !== rightFingerprint
       ) {
         return true;
       }
