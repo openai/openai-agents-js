@@ -295,6 +295,29 @@ With this setting, a `search` tool from a `docs` server is exposed to the model 
 
 Generated names are ASCII-safe, stay within the function-tool name limit, and avoid local function tool names and enabled handoff names on the same agent. The setting only affects local Streamable HTTP and stdio MCP tools; hosted MCP tools keep their hosted server labels and tool metadata.
 
+### Server logging
+
+Stdio, SSE, and Streamable HTTP MCP servers can emit `notifications/message` logging events while a tool runs. This is useful for surfacing progress from long-running tools instead of waiting silently. Subscribe by passing `serverLogging` to the server:
+
+```ts
+const mcpServer = new MCPServerStdio({
+  name: 'Logging Demo Server',
+  fullCommand: 'pnpm tsx logging-server.ts',
+  serverLogging: {
+    // Optional: request a minimum severity from the server. Only sent when the
+    // server advertises the `logging` capability.
+    level: 'info',
+    handler: ({ level, logger, data }) => {
+      console.log(`[mcp:${level}] ${logger ?? 'server'}`, data);
+    },
+  },
+});
+```
+
+The `handler` receives each notification's `level`, optional `logger`, `data` payload, and any protocol `meta`. When `level` is omitted the server decides which messages to emit. Requesting a `level` is best-effort: if the server rejects it the connection stays up and a warning is logged.
+
+Only enable `serverLogging` for servers you trust. A server controls how often it logs and what `data`/`meta` it sends, so treat those payloads as untrusted input. If your `handler` throws, the error is caught and logged as a warning rather than interrupting the run, but the offending notification is dropped, so prefer a handler that does not throw.
+
 ### Tool filtering
 
 You can restrict which tools are exposed from each server by passing either a static filter via `createMCPToolStaticFilter` or a custom function. Here’s a combined example showing both approaches:

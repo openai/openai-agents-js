@@ -20,6 +20,7 @@ import type {
   MCPListResourcesResult,
   MCPListResourceTemplatesResult,
   MCPReadResourceResult,
+  MCPServerLoggingOptions,
   MCPServerStdioOptions,
   MCPServerStreamableHttpOptions,
   MCPServerSSEOptions,
@@ -68,6 +69,75 @@ function buildRequestOptions(
       : { timeout: clientSessionTimeoutSeconds * 1000 };
   const mergedOptions = { ...(baseOptions ?? {}), ...(overrides ?? {}) };
   return Object.keys(mergedOptions).length === 0 ? undefined : mergedOptions;
+}
+
+/**
+ * Subscribe to the MCP server's `notifications/message` logging events.
+ *
+ * Registered before `connect()` so that log notifications emitted during the
+ * initialize handshake are not dropped.
+ */
+async function registerMCPServerLoggingHandler(
+  client: Client,
+  serverLogging: MCPServerLoggingOptions | undefined,
+): Promise<void> {
+  if (!serverLogging) {
+    return;
+  }
+  const { LoggingMessageNotificationSchema } =
+    await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
+  client.setNotificationHandler(
+    LoggingMessageNotificationSchema,
+    async (notification) => {
+      const { level, logger: loggerName, data, _meta } = notification.params;
+      // Isolate the user handler: a throwing/rejecting handler must not escape
+      // this callback, since nothing awaits the notification and it would
+      // otherwise surface as an unhandled rejection.
+      try {
+        await serverLogging.handler({
+          level,
+          logger: loggerName,
+          data,
+          meta: _meta,
+        });
+      } catch (error) {
+        logger.warn('MCP server logging handler threw; ignoring:', error);
+      }
+    },
+  );
+}
+
+/**
+ * Request a minimum logging level from the MCP server via `logging/setLevel`.
+ *
+ * `logging/setLevel` requires the server to advertise the `logging` capability,
+ * which is only known after the initialize handshake. When a session is reused
+ * without initializing (for example an explicit streamable HTTP `sessionId`)
+ * the capability is unknown, so the request is skipped rather than allowed to
+ * reject and tear down the connection. Requesting the level is a best-effort
+ * convenience: if the server rejects it, we log a warning and stay connected
+ * instead of failing the whole connection over an optional feature.
+ */
+async function applyMCPServerLoggingLevel(
+  client: Client,
+  serverLogging: MCPServerLoggingOptions | undefined,
+  requestOptions?: RequestOptions,
+): Promise<void> {
+  if (!serverLogging?.level) {
+    return;
+  }
+  const capabilities = client.getServerCapabilities?.();
+  if (!capabilities?.logging) {
+    return;
+  }
+  try {
+    await client.setLoggingLevel(serverLogging.level, requestOptions);
+  } catch (error) {
+    logger.warn(
+      'Failed to set MCP server logging level; continuing without it:',
+      error,
+    );
+  }
 }
 
 type MaybeSessionTransport = Transport & {
@@ -239,7 +309,16 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
+      await registerMCPServerLoggingHandler(
+        this.session,
+        this.params.serverLogging,
+      );
       await this.session.connect(this.transport, requestOptions);
+      await applyMCPServerLoggingLevel(
+        this.session,
+        this.params.serverLogging,
+        requestOptions,
+      );
       this.serverInitializeResult = {
         serverInfo: { name: this._name, version: '1.0.0' },
       } as InitializeResult;
@@ -450,7 +529,16 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
+      await registerMCPServerLoggingHandler(
+        this.session,
+        this.params.serverLogging,
+      );
       await this.session.connect(this.transport, requestOptions);
+      await applyMCPServerLoggingLevel(
+        this.session,
+        this.params.serverLogging,
+        requestOptions,
+      );
       this.serverInitializeResult = {
         serverInfo: { name: this._name, version: '1.0.0' },
       } as InitializeResult;
@@ -730,7 +818,13 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
+      await registerMCPServerLoggingHandler(client, this.params.serverLogging);
       await client.connect(transport, requestOptions);
+      await applyMCPServerLoggingLevel(
+        client,
+        this.params.serverLogging,
+        requestOptions,
+      );
       return { client, transport };
     } catch (error) {
       await this.closeStreamableHttpClient(
@@ -980,12 +1074,21 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
+      await registerMCPServerLoggingHandler(
+        args.client,
+        this.params.serverLogging,
+      );
       await args.client.connect(transport, requestOptions);
       if (args.sessionId !== undefined) {
         // Reconnecting with an existing session skips initialize(), so resend
         // initialized to reopen the shared SSE stream for async responses.
         await this.reopenSharedStreamableHttpSession(args.client);
       }
+      await applyMCPServerLoggingLevel(
+        args.client,
+        this.params.serverLogging,
+        requestOptions,
+      );
       return { client: args.client, transport };
     } catch (error) {
       await this.closeStreamableHttpClient(
