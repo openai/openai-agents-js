@@ -66,6 +66,7 @@ import {
 } from './runner/usageTracking';
 import { setRunnerInvocationSpanParent } from './runner/invocationContext';
 import type { Span } from './tracing';
+import { hasDefinitelyDifferentOutputTypes } from './agentOutputTypeWarning';
 
 type CompletedRunResult<TContext, TAgent extends Agent<TContext, any>> = (
   RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>
@@ -601,7 +602,7 @@ export class Agent<
         }
 
         if (logger.dontLogModelData) {
-          if (new Set<unknown>(outputTypes).size > 1) {
+          if (hasDefinitelyDifferentOutputTypes(outputTypes)) {
             logger.warn(
               '[Agent] Warning: Handoff agents have different output types. Output type details are redacted. You can make it type-safe by using Agent.create({ ... }) method instead.',
             );
