@@ -53,6 +53,23 @@ test('recognizes model and tool policy boundaries', () => {
   );
 });
 
+test('reads policy conditions from conditional expressions', () => {
+  const findings = inventorySource(`
+    const logger = getLogger('fixture');
+    logger.dontLogToolData
+      ? logger.warn('Tool logging disabled')
+      : logger.warn('Tool failed', error);
+  `);
+
+  assert.deepEqual(
+    findings.map(({ method, policy }) => ({ method, policy })),
+    [
+      { method: 'warn', policy: 'tool-guard' },
+      { method: 'warn', policy: 'tool-guard' },
+    ],
+  );
+});
+
 test('flags caught values passed to logger and console calls', () => {
   const findings = inventorySource(`
     const appLogger: Logger = getLogger('app');
@@ -127,6 +144,41 @@ test('resolves logger factories, imports, aliases, properties, and types', () =>
   assert.deepEqual(
     findings.map(({ method }) => method),
     ['error', 'warn', 'error', 'info', 'error', 'error', 'error', 'error'],
+  );
+});
+
+test('inventories every direct console method', () => {
+  const findings = inventorySource(`
+    console.dir(secret);
+    console.table(payload);
+    console.trace(error);
+  `);
+
+  assert.deepEqual(
+    findings.map(({ kind, method, policy }) => ({ kind, method, policy })),
+    [
+      { kind: 'console', method: 'dir', policy: 'none' },
+      { kind: 'console', method: 'table', policy: 'none' },
+      { kind: 'console', method: 'trace', policy: 'none' },
+    ],
+  );
+});
+
+test('resolves sensitive helper import aliases and namespace accesses', () => {
+  const findings = inventorySource(`
+    import { logToolActionError as reportFailure } from './logger';
+    import * as logging from '@openai/agents-core/utils/internal';
+
+    reportFailure(logger, 'Tool failed', error, payload);
+    logging.logModelActionError(logger, 'Model failed', error, response);
+  `);
+
+  assert.deepEqual(
+    findings.map(({ method, policy }) => ({ method, policy })),
+    [
+      { method: 'logToolActionError', policy: 'tool-helper' },
+      { method: 'logModelActionError', policy: 'model-helper' },
+    ],
   );
 });
 

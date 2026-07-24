@@ -153,6 +153,13 @@ function collectLoggerSymbols(sourceFile) {
   const loggerNamespaceBindings = new Set();
   const loggerPropertyNames = new Set();
   const loggerTypeBindings = new Set(['Logger']);
+  const sensitiveHelperBindings = new Map(
+    [...SENSITIVE_HELPERS].map(([name, policy]) => [
+      name,
+      { method: name, policy },
+    ]),
+  );
+  const sensitiveHelperNamespaceBindings = new Set();
 
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement)) {
@@ -171,6 +178,7 @@ function collectLoggerSymbols(sourceFile) {
     const bindings = clause.namedBindings;
     if (bindings && ts.isNamespaceImport(bindings)) {
       loggerNamespaceBindings.add(bindings.name.text);
+      sensitiveHelperNamespaceBindings.add(bindings.name.text);
       continue;
     }
     if (!bindings || !ts.isNamedImports(bindings)) {
@@ -185,6 +193,13 @@ function collectLoggerSymbols(sourceFile) {
         loggerBindings.add(local);
       } else if (imported === 'Logger') {
         loggerTypeBindings.add(local);
+      }
+      const sensitivePolicy = SENSITIVE_HELPERS.get(imported);
+      if (sensitivePolicy) {
+        sensitiveHelperBindings.set(local, {
+          method: imported,
+          policy: sensitivePolicy,
+        });
       }
     }
   }
@@ -354,7 +369,27 @@ function collectLoggerSymbols(sourceFile) {
     return false;
   }
 
-  return { isLoggerReceiver };
+  function resolveSensitiveHelper(expression) {
+    const current = unwrapExpression(expression);
+    if (ts.isIdentifier(current)) {
+      return sensitiveHelperBindings.get(current.text) ?? null;
+    }
+    const access = propertyAccessParts(current);
+    if (!access) {
+      return null;
+    }
+    const receiver = unwrapExpression(access.receiver);
+    if (
+      !ts.isIdentifier(receiver) ||
+      !sensitiveHelperNamespaceBindings.has(receiver.text)
+    ) {
+      return null;
+    }
+    const policy = SENSITIVE_HELPERS.get(access.method);
+    return policy ? { method: access.method, policy } : null;
+  }
+
+  return { isLoggerReceiver, resolveSensitiveHelper };
 }
 
 function isStaticString(expression) {
@@ -482,7 +517,10 @@ function guardedPolicy(node, sourceFile) {
       break;
     }
     if (ts.isIfStatement(current) || ts.isConditionalExpression(current)) {
-      const condition = current.expression.getText(sourceFile);
+      const conditionNode = ts.isIfStatement(current)
+        ? current.expression
+        : current.condition;
+      const condition = conditionNode.getText(sourceFile);
       const hasModelPolicy = condition.includes('dontLogModelData');
       const hasToolPolicy = condition.includes('dontLogToolData');
       if (hasModelPolicy && hasToolPolicy) {
@@ -545,7 +583,8 @@ export function inventorySource(sourceText, filePath = 'fixture.ts') {
   );
   const findings = [];
   const occurrences = new Map();
-  const { isLoggerReceiver } = collectLoggerSymbols(sourceFile);
+  const { isLoggerReceiver, resolveSensitiveHelper } =
+    collectLoggerSymbols(sourceFile);
 
   function recordCall(call, kind, method, policy) {
     const start = sourceFile.getLineAndCharacterOfPosition(call.getStart());
@@ -585,23 +624,23 @@ export function inventorySource(sourceText, filePath = 'fixture.ts') {
 
   function visit(node) {
     if (ts.isCallExpression(node)) {
-      const unwrappedExpression = unwrapExpression(node.expression);
-      if (
-        ts.isIdentifier(unwrappedExpression) &&
-        SENSITIVE_HELPERS.has(unwrappedExpression.text)
-      ) {
+      const sensitiveHelper = resolveSensitiveHelper(node.expression);
+      if (sensitiveHelper) {
         recordCall(
           node,
           'sensitive-helper',
-          unwrappedExpression.text,
-          SENSITIVE_HELPERS.get(unwrappedExpression.text),
+          sensitiveHelper.method,
+          sensitiveHelper.policy,
         );
       } else {
         const access = propertyAccessParts(node.expression);
-        if (access && LOGGER_METHODS.has(access.method)) {
+        if (access) {
           if (isConsoleReceiver(access.receiver)) {
             recordCall(node, 'console', access.method, 'none');
-          } else if (isLoggerReceiver(access.receiver)) {
+          } else if (
+            LOGGER_METHODS.has(access.method) &&
+            isLoggerReceiver(access.receiver)
+          ) {
             recordCall(
               node,
               'logger',
