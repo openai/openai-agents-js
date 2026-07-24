@@ -42,6 +42,40 @@ describe('Agent', () => {
     expect(agent.resetToolChoice).toBe(true);
   });
 
+  it('does not inspect handoff output schemas when model logging is disabled', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(true);
+    const secret = 'SECRET_HANDOFF_OUTPUT_SCHEMA_123';
+    const toJSON = vi.fn(() => ({ secret }));
+    const outputType = {
+      type: 'json_schema',
+      name: 'SensitiveOutput',
+      strict: true,
+      schema: {
+        type: 'object',
+        properties: { secret: { type: 'string', description: secret } },
+        required: ['secret'],
+        additionalProperties: false,
+      },
+      toJSON,
+    } as unknown as JsonSchemaDefinition;
+    const handoffAgent = new Agent({
+      name: 'HandoffAgent',
+      outputType: z.object({ value: z.string() }),
+    });
+
+    expect(
+      () =>
+        new Agent({
+          name: 'ParentAgent',
+          outputType,
+          handoffs: [handoffAgent],
+        }),
+    ).not.toThrow();
+    expect(toJSON).not.toHaveBeenCalled();
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secret);
+  });
+
   it('should throw if name is missing', () => {
     expect(() => new Agent({} as any)).toThrow('Agent must have a name.');
     expect(() => new Agent({ name: '' } as any)).toThrow(

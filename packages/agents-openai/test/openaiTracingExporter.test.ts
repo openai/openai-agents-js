@@ -1232,6 +1232,100 @@ describe('OpenAITracingExporter', () => {
     errorSpy.mockRestore();
   });
 
+  it.each([
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'does not inspect client-error bodies when model=%s or tool=%s logging is disabled',
+    async (dontLogModelData, dontLogToolData) => {
+      const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+      vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(
+        dontLogModelData,
+      );
+      vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(
+        dontLogToolData,
+      );
+      const text = vi.fn(async () => 'SECRET_TRACE_CLIENT_BODY_123');
+      const cancel = vi.fn(async () => {});
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text,
+        body: { cancel },
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const exporter = new OpenAITracingExporter({
+        apiKey: 'key3',
+        endpoint: 'u',
+        maxRetries: 2,
+      });
+
+      await exporter.export([fakeSpan]);
+
+      expect(text).not.toHaveBeenCalled();
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        '[non-fatal] Tracing client error 400. Response data is redacted.',
+      );
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(
+        'SECRET_TRACE_CLIENT_BODY_123',
+      );
+    },
+  );
+
+  it('keeps tracing client errors non-fatal when response cancellation fails', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(true);
+    vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(false);
+    const secret = 'SECRET_TRACE_CANCEL_FAILURE_123';
+    const text = vi.fn(async () => secret);
+    const cancel = vi.fn().mockRejectedValue(new Error(secret));
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text,
+      body: { cancel },
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key3',
+      endpoint: 'u',
+      maxRetries: 2,
+    });
+
+    await expect(exporter.export([fakeSpan])).resolves.toBeUndefined();
+
+    expect(text).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[non-fatal] Tracing client error 400. Response data is redacted.',
+    );
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(secret);
+  });
+
+  it('redacts tracing request failures when sensitive logging is disabled', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(false);
+    vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(true);
+    const secret = 'SECRET_TRACE_REQUEST_FAILURE_123';
+    const fetchMock = vi.fn().mockRejectedValue(new Error(secret));
+    vi.stubGlobal('fetch', fetchMock);
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key3',
+      endpoint: 'u',
+      maxRetries: 1,
+    });
+
+    await exporter.export([fakeSpan]);
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[non-fatal] Tracing: request failed:',
+      'object',
+    );
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(secret);
+  });
+
   it('uses item-level API keys when exporting', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal('fetch', fetchMock);

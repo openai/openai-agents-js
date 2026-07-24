@@ -168,6 +168,52 @@ describe('StreamedRunResult', () => {
     expect(sr.error).toBe(err);
   });
 
+  it.each([
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'redacts streamed run errors when model=%s or tool=%s logging is disabled',
+    async (dontLogModelData, dontLogToolData) => {
+      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+      vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(
+        dontLogModelData,
+      );
+      vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(
+        dontLogToolData,
+      );
+      const state = createState();
+      const sr = new StreamedRunResult({ state });
+      const secret = 'SECRET_STREAMED_RUN_ERROR_123';
+      const err = new Error(secret);
+
+      sr._raiseError(err);
+
+      await expect(sr.completed).rejects.toBe(err);
+      expect(sr.error).toBe(err);
+      expect(debugSpy).toHaveBeenCalledWith('Resulted in an error:', 'object');
+      expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(secret);
+      vi.restoreAllMocks();
+    },
+  );
+
+  it('keeps rejecting when redacted streamed run logging receives a revoked Proxy', async () => {
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(true);
+    vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(false);
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+
+    sr._raiseError(proxy);
+
+    await expect(sr.completed).rejects.toBe(proxy);
+    expect(sr.error).toBe(proxy);
+    expect(debugSpy).toHaveBeenCalledWith('Resulted in an error:', 'object');
+    vi.restoreAllMocks();
+  });
+
   it('handles abort while iterating without throwing', async () => {
     const state = createState();
     const controller = new AbortController();

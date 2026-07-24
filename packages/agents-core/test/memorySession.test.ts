@@ -1,6 +1,7 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 import { MemorySession } from '../src/memory/memorySession';
+import type { Logger } from '../src/logger';
 import type { AgentInputItem } from '../src/types';
 
 const createUserMessage = (text: string): AgentInputItem => ({
@@ -14,6 +15,61 @@ const createUserMessage = (text: string): AgentInputItem => ({
 });
 
 describe('MemorySession', () => {
+  test.each([
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'redacts item contents when model=%s or tool=%s logging is disabled',
+    async (dontLogModelData, dontLogToolData) => {
+      const debug = vi.fn();
+      const logger: Logger = {
+        namespace: 'memory-session-test',
+        debug,
+        error: vi.fn(),
+        warn: vi.fn(),
+        dontLogModelData,
+        dontLogToolData,
+      };
+      const secret = 'SECRET_MEMORY_SESSION_VALUE_123';
+      const session = new MemorySession({
+        sessionId: 'session-redacted',
+        logger,
+        initialItems: [createUserMessage(secret)],
+      });
+
+      expect(await session.getItems()).toEqual([createUserMessage(secret)]);
+      await session.addItems([createUserMessage(`${secret}-added`)]);
+      expect(await session.popItem()).toEqual(
+        createUserMessage(`${secret}-added`),
+      );
+
+      expect(JSON.stringify(debug.mock.calls)).not.toContain(secret);
+    },
+  );
+
+  test('preserves item diagnostics when model and tool logging are enabled', async () => {
+    const debug = vi.fn();
+    const logger: Logger = {
+      namespace: 'memory-session-test',
+      debug,
+      error: vi.fn(),
+      warn: vi.fn(),
+      dontLogModelData: false,
+      dontLogToolData: false,
+    };
+    const secret = 'SECRET_MEMORY_SESSION_DIAGNOSTIC_123';
+    const session = new MemorySession({
+      sessionId: 'session-diagnostic',
+      logger,
+      initialItems: [createUserMessage(secret)],
+    });
+
+    await session.getItems();
+
+    expect(JSON.stringify(debug.mock.calls)).toContain(secret);
+  });
+
   test('stores and retrieves items in memory', async () => {
     const initialItems = [createUserMessage('hello')];
     const session = new MemorySession({

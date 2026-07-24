@@ -1,6 +1,6 @@
 import type { Agent, AgentOutputType } from '../agent';
 import { UserError } from '../errors';
-import logger from '../logger';
+import logger, { logToolActionWarning } from '../logger';
 import { rehydrateProcessedResponseTools, type RunState } from '../runState';
 import type { SandboxRuntimeManager } from '../sandbox/runtime';
 import type { SandboxMemoryAgentRunner } from '../sandbox/memory/generation';
@@ -93,7 +93,11 @@ export async function finalizeSandboxRuntime<TContext>(args: {
     try {
       await disposeResolvedComputers({ runContext: state._context });
     } catch (error) {
-      logger.warn(`Failed to dispose computers after run: ${error}`);
+      logToolActionWarning(
+        logger,
+        'Failed to dispose computers after run:',
+        error,
+      );
     }
   }
 

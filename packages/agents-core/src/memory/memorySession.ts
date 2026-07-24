@@ -38,9 +38,11 @@ export class MemorySession implements SessionHistoryRewriteAwareSession {
   async getItems(limit?: number): Promise<AgentInputItem[]> {
     if (limit === undefined) {
       const cloned = this.items.map(cloneAgentItem);
-      this.logger.debug(
-        `Getting items from memory session (${this.sessionId}): ${JSON.stringify(cloned)}`,
-      );
+      if (!this.logger.dontLogModelData && !this.logger.dontLogToolData) {
+        this.logger.debug(
+          `Getting items from memory session (${this.sessionId}): ${JSON.stringify(cloned)}`,
+        );
+      }
       return cloned;
     }
     if (limit <= 0) {
@@ -48,9 +50,11 @@ export class MemorySession implements SessionHistoryRewriteAwareSession {
     }
     const start = Math.max(this.items.length - limit, 0);
     const items = this.items.slice(start).map(cloneAgentItem);
-    this.logger.debug(
-      `Getting items from memory session (${this.sessionId}): ${JSON.stringify(items)}`,
-    );
+    if (!this.logger.dontLogModelData && !this.logger.dontLogToolData) {
+      this.logger.debug(
+        `Getting items from memory session (${this.sessionId}): ${JSON.stringify(items)}`,
+      );
+    }
     return items;
   }
 
@@ -59,9 +63,11 @@ export class MemorySession implements SessionHistoryRewriteAwareSession {
       return;
     }
     const cloned = items.map(cloneAgentItem);
-    this.logger.debug(
-      `Adding items to memory session (${this.sessionId}): ${JSON.stringify(cloned)}`,
-    );
+    if (!this.logger.dontLogModelData && !this.logger.dontLogToolData) {
+      this.logger.debug(
+        `Adding items to memory session (${this.sessionId}): ${JSON.stringify(cloned)}`,
+      );
+    }
     this.items = [...this.items, ...cloned];
   }
 
@@ -71,9 +77,11 @@ export class MemorySession implements SessionHistoryRewriteAwareSession {
     }
     const item = this.items[this.items.length - 1];
     const cloned = cloneAgentItem(item);
-    this.logger.debug(
-      `Popping item from memory session (${this.sessionId}): ${JSON.stringify(cloned)}`,
-    );
+    if (!this.logger.dontLogModelData && !this.logger.dontLogToolData) {
+      this.logger.debug(
+        `Popping item from memory session (${this.sessionId}): ${JSON.stringify(cloned)}`,
+      );
+    }
     this.items = this.items.slice(0, -1);
     return cloned;
   }

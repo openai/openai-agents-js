@@ -9,6 +9,7 @@ import { RunContext } from '../src/runContext';
 import { Agent } from '../src/agent';
 import { handoff } from '../src/handoff';
 import { z } from 'zod';
+import logger from '../src/logger';
 
 class StubServer extends NodeMCPServerStdio {
   public toolList: any[];
@@ -37,6 +38,74 @@ class StubServer extends NodeMCPServerStdio {
 }
 
 describe('MCP tools cache invalidation', () => {
+  it('suppresses MCP filter diagnostics when tool logging is disabled', async () => {
+    const serverSecret = 'SECRET_MCP_FILTER_PATH_123';
+    const toolSecret = 'SECRET_MCP_FILTER_TOOL_123';
+    const server = new StubServer(
+      `streamable-http: https://example.test/mcp/${serverSecret}`,
+      [
+        {
+          name: toolSecret,
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ],
+    );
+    server.toolFilter = { blockedToolNames: [toolSecret] };
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    const toolFlagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(true);
+
+    try {
+      const result = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'AgentOne' }),
+      });
+
+      expect(result).toEqual([]);
+      expect(debugSpy).not.toHaveBeenCalled();
+    } finally {
+      debugSpy.mockRestore();
+      toolFlagSpy.mockRestore();
+    }
+  });
+
+  it('preserves sanitized MCP filter diagnostics when tool logging is enabled', async () => {
+    const server = new StubServer(
+      'streamable-http: https://example.test/mcp?token=SECRET_MCP_FILTER_QUERY_123',
+      [
+        {
+          name: 'blocked_tool',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ],
+    );
+    server.toolFilter = { blockedToolNames: ['blocked_tool'] };
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    const toolFlagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(false);
+
+    try {
+      const result = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'AgentOne' }),
+      });
+
+      expect(result).toEqual([]);
+      expect(debugSpy).toHaveBeenCalledWith(
+        'MCP Tool (server: streamable-http: https://example.test/mcp, tool: blocked_tool) is blocked by the static filter.',
+      );
+    } finally {
+      debugSpy.mockRestore();
+      toolFlagSpy.mockRestore();
+    }
+  });
+
   it('fetches fresh tools after cache invalidation', async () => {
     await withTrace('test', async () => {
       const toolsA = [

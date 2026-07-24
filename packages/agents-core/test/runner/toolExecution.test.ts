@@ -34,7 +34,7 @@ import {
   executeShellActions,
   getToolCallOutputItem,
 } from '../../src/runner/toolExecution';
-import type { Logger } from '../../src/logger';
+import logger, { type Logger } from '../../src/logger';
 import { Runner } from '../../src/run';
 import { RunContext } from '../../src/runContext';
 import { RunResult, StreamedRunResult } from '../../src/result';
@@ -77,7 +77,6 @@ import {
 import * as protocol from '../../src/types/protocol';
 import { AgentToolUseTracker } from '../../src/runner/toolUseTracker';
 import { z } from 'zod';
-import logger from '../../src/logger';
 import {
   defaultProcessor,
   TracingProcessor,
@@ -776,6 +775,35 @@ describe('addStepToRunResult', () => {
       'tool_output',
     ]);
   });
+
+  it.each([
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'redacts unknown run items when model=%s or tool=%s logging is disabled',
+    (dontLogModelData, dontLogToolData) => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(
+        dontLogModelData,
+      );
+      vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(
+        dontLogToolData,
+      );
+      const streamedResult = new StreamedRunResult();
+      const secret = 'SECRET_UNKNOWN_RUN_ITEM_123';
+
+      streamStepItemsToRunResult(streamedResult, [
+        { type: 'unknown', secret } as any,
+      ]);
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Unknown item type. Item data is redacted.',
+      );
+      expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secret);
+      vi.restoreAllMocks();
+    },
+  );
 });
 
 describe('AgentToolUseTracker', () => {
@@ -2050,7 +2078,7 @@ describe('executeShellActions', () => {
     });
     expect(mockLogger.error).toHaveBeenCalledWith(
       'Failed to execute shell action:',
-      'Error',
+      'object',
     );
   });
 
@@ -2340,7 +2368,7 @@ describe('executeShellActions', () => {
       expect(rawItem.output).toBe('cannot delete');
       expect(mockLogger.error).toHaveBeenCalledWith(
         'Failed to execute apply_patch operation:',
-        'Error',
+        'object',
       );
     });
 
@@ -3304,7 +3332,7 @@ describe('executeShellActions', () => {
 
         expect(result[0].type).toBe('function_output');
         expect(warnSpy).toHaveBeenCalledWith(
-          'toolErrorFormatter threw while formatting approval rejection: Error',
+          'toolErrorFormatter threw while formatting approval rejection: object',
         );
         expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secret);
         expect(constructorGetter).not.toHaveBeenCalled();
@@ -4516,7 +4544,7 @@ describe('executeShellActions', () => {
       });
       expect(mockLogger.error).toHaveBeenCalledWith(
         'Failed to execute computer action:',
-        'Error',
+        'object',
       );
     });
 

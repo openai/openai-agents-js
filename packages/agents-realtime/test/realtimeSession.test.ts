@@ -1069,7 +1069,7 @@ describe('RealtimeSession', () => {
         if (redactToolData) {
           expect(errorSpy).toHaveBeenCalledWith(
             'Error handling function call',
-            'Error',
+            'object',
           );
           expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(secret);
         } else {
@@ -2151,7 +2151,7 @@ describe('RealtimeSession', () => {
 
       expect(output).toBe('Tool execution was not approved.');
       expect(warnSpy).toHaveBeenCalledWith(
-        'toolErrorFormatter threw while formatting approval rejection: Error',
+        'toolErrorFormatter threw while formatting approval rejection: object',
       );
       expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secret);
       expect(constructorGetter).not.toHaveBeenCalled();

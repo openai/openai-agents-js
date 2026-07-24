@@ -15,7 +15,7 @@ import type {
 } from './guardrail';
 import { Handoff, HandoffInputFilter } from './handoff';
 import { RunHooks } from './lifecycle';
-import logger from './logger';
+import logger, { logModelAndToolActionDebug } from './logger';
 import { Model, ModelProvider, ModelResponse, ModelSettings } from './model';
 import { getDefaultModelProvider } from './providers';
 import { RunContext } from './runContext';
@@ -1684,7 +1684,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 serverConversationTracker.previousResponseId,
               );
             } catch (error) {
-              logger.debug(
+              logModelAndToolActionDebug(
+                logger,
                 'Failed to reconcile streamed tool calls after abort.',
                 error,
               );

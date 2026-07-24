@@ -24,7 +24,9 @@ test('inventories static and dynamic logger calls', () => {
 test('recognizes model and tool policy boundaries', () => {
   const findings = inventorySource(`
     import {
+      logModelAndToolActionWarning,
       logModelActionError,
+      logToolActionDebug,
       logToolActionError,
     } from './logger';
 
@@ -38,6 +40,8 @@ test('recognizes model and tool policy boundaries', () => {
       logger.warn('Tool failed', error);
     }
     logModelActionError(logger, 'Model failed', error, event);
+    logModelAndToolActionWarning(logger, 'Run failed', error, event);
+    logToolActionDebug(logger, 'Tool debug failed', error, toolCall);
     logToolActionError(logger, 'Tool failed', error, toolCall);
   `);
 
@@ -48,6 +52,11 @@ test('recognizes model and tool policy boundaries', () => {
       { method: 'warn', policy: 'none' },
       { method: 'warn', policy: 'tool-guard' },
       { method: 'logModelActionError', policy: 'model-helper' },
+      {
+        method: 'logModelAndToolActionWarning',
+        policy: 'model+tool-helper',
+      },
+      { method: 'logToolActionDebug', policy: 'tool-helper' },
       { method: 'logToolActionError', policy: 'tool-helper' },
     ],
   );

@@ -365,7 +365,7 @@ describe('OpenAIRealtimeBase helpers', () => {
       if (redactToolData) {
         expect(logger.error).toHaveBeenCalledWith(
           'Error parsing tool call item',
-          'Error',
+          'object',
         );
         expect(
           JSON.stringify(vi.mocked(logger.error).mock.calls),
@@ -404,7 +404,7 @@ describe('OpenAIRealtimeBase helpers', () => {
       if (redactModelData) {
         expect(logger.error).toHaveBeenCalledWith(
           'Error parsing response done event',
-          'Error',
+          'object',
         );
         expect(
           JSON.stringify(vi.mocked(logger.error).mock.calls),
@@ -883,7 +883,7 @@ describe('OpenAIRealtimeBase helpers', () => {
       if (redactToolData) {
         expect(logger.error).toHaveBeenCalledWith(
           'Error emitting mcp_tools_listed',
-          'Error',
+          'object',
         );
         expect(
           JSON.stringify(vi.mocked(logger.error).mock.calls),

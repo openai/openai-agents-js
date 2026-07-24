@@ -590,7 +590,7 @@ export class Agent<
       config.handoffOutputTypeWarningEnabled === undefined ||
       config.handoffOutputTypeWarningEnabled
     ) {
-      if (this.handoffs && this.outputType) {
+      if (!logger.dontLogModelData && this.handoffs && this.outputType) {
         const outputTypes = new Set<string>([JSON.stringify(this.outputType)]);
         for (const h of this.handoffs) {
           if ('outputType' in h && h.outputType) {

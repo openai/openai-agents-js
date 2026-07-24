@@ -1,5 +1,5 @@
 import type { Agent, AgentOutputType } from '../../agent';
-import logger from '../../logger';
+import logger, { logModelAndToolActionWarning } from '../../logger';
 import { UserError } from '../../errors';
 import type { RunState } from '../../runState';
 import type { AgentInputItem } from '../../types';
@@ -528,7 +528,11 @@ export class SandboxRuntimeManager<TContext> {
         },
       });
     } catch (error) {
-      logger.warn(`Failed to enqueue sandbox memory generation: ${error}`);
+      logModelAndToolActionWarning(
+        logger,
+        'Failed to enqueue sandbox memory generation:',
+        error,
+      );
     }
   }
 

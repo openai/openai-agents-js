@@ -24,7 +24,7 @@ import type {
   MCPServerStreamableHttpOptions,
   MCPServerSSEOptions,
 } from '../../mcp';
-import logger from '../../logger';
+import logger, { logToolActionError, logToolActionWarning } from '../../logger';
 
 export interface SessionMessage {
   message: any;
@@ -85,9 +85,7 @@ type ClientWithToolMetadataCacheReset = {
 };
 
 type StreamableHttpToolRecoveryStrategy =
-  | 'none'
-  | 'reconnect-only'
-  | 'reconnect-and-retry';
+  'none' | 'reconnect-only' | 'reconnect-and-retry';
 
 function hasSessionTransport(
   transport: any,
@@ -244,7 +242,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
         serverInfo: { name: this._name, version: '1.0.0' },
       } as InitializeResult;
     } catch (e) {
-      this.logger.error('Error initializing MCP server:', e);
+      logToolActionError(this.logger, 'Error initializing MCP server:', e);
       await this.close();
       throw e;
     }
@@ -393,7 +391,11 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
         // but if the server supports sessions we terminate to avoid leaks.
         await transport.terminateSession();
       } catch (error) {
-        this.logger.warn('Failed to terminate MCP session:', error);
+        logToolActionWarning(
+          this.logger,
+          'Failed to terminate MCP session:',
+          error,
+        );
       }
     }
     if (transport) {
@@ -455,7 +457,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
         serverInfo: { name: this._name, version: '1.0.0' },
       } as InitializeResult;
     } catch (e) {
-      this.logger.error('Error initializing MCP server:', e);
+      logToolActionError(this.logger, 'Error initializing MCP server:', e);
       await this.close();
       throw e;
     }
@@ -607,7 +609,11 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
           // but if the server supports sessions we terminate to avoid leaks.
           await transport.terminateSession();
         } catch (error) {
-          this.logger.warn('Failed to terminate MCP session:', error);
+          logToolActionWarning(
+            this.logger,
+            'Failed to terminate MCP session:',
+            error,
+          );
         }
       }
     }
@@ -841,7 +847,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         await detachedTransport.close().catch(() => {});
       }
     } catch (error) {
-      this.logger.warn(warningMessage, error);
+      logToolActionWarning(this.logger, warningMessage, error);
     }
   }
 
@@ -874,11 +880,11 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       );
     } else if (transport) {
       await transport.close().catch((error) => {
-        this.logger.warn(closeWarningMessage, error);
+        logToolActionWarning(this.logger, closeWarningMessage, error);
       });
     } else if (client) {
       await client.close().catch((error) => {
-        this.logger.warn(closeWarningMessage, error);
+        logToolActionWarning(this.logger, closeWarningMessage, error);
       });
     }
 
@@ -943,16 +949,16 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
 
     if (client.transport === transport) {
       await client.close().catch((error) => {
-        this.logger.warn(options.closeWarningMessage, error);
+        logToolActionWarning(this.logger, options.closeWarningMessage, error);
       });
       return;
     }
 
     await transport.close().catch((error) => {
-      this.logger.warn(options.closeWarningMessage, error);
+      logToolActionWarning(this.logger, options.closeWarningMessage, error);
     });
     await client.close().catch((error) => {
-      this.logger.warn(options.closeWarningMessage, error);
+      logToolActionWarning(this.logger, options.closeWarningMessage, error);
     });
   }
 
@@ -1245,7 +1251,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     } catch (e) {
       // A losing concurrent connect can fail after another connect already
       // published a healthy shared session, so avoid closing shared state here.
-      this.logger.error('Error initializing MCP server:', e);
+      logToolActionError(this.logger, 'Error initializing MCP server:', e);
       throw e;
     }
     this.debugLog(() => `Connected to MCP server: ${this._name}`);

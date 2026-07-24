@@ -3073,6 +3073,67 @@ describe('AiSdkModel.getResponse', () => {
     warnSpy.mockRestore();
   });
 
+  test.each([
+    'OPENAI_AGENTS_DONT_LOG_MODEL_DATA',
+    'OPENAI_AGENTS_DONT_LOG_TOOL_DATA',
+  ] as const)(
+    'redacts unknown tool names when %s is enabled',
+    async (flagName) => {
+      allowConsole(['warn']);
+      const original = process.env[flagName];
+      process.env[flagName] = '1';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const secret = 'SECRET_UNKNOWN_AI_SDK_TOOL_123';
+      const model = new AiSdkModel(
+        stubModel({
+          async doGenerate() {
+            return {
+              content: [
+                {
+                  type: 'tool-call',
+                  toolCallId: 'c1',
+                  toolName: secret,
+                  input: {} as any,
+                },
+              ],
+              usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+              providerMetadata: { p: 1 },
+              response: { id: 'id' },
+              finishReason: 'stop',
+              warnings: [],
+            } as any;
+          },
+        }),
+      );
+
+      try {
+        const res = await withTrace('t', () =>
+          model.getResponse({
+            input: 'hi',
+            tools: [],
+            handoffs: [],
+            modelSettings: {},
+            outputType: 'text',
+            tracing: false,
+          } as any),
+        );
+
+        expect(res.output[0]).toMatchObject({ name: secret });
+        expect(warnSpy).toHaveBeenCalledWith(
+          'Received tool call for an unknown tool. Tool name is redacted.',
+        );
+        expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secret);
+      } finally {
+        warnSpy.mockRestore();
+        if (typeof original === 'undefined') {
+          delete process.env[flagName];
+        } else {
+          process.env[flagName] = original;
+        }
+      }
+    },
+  );
+
   test('preserves per-tool-call providerMetadata (e.g., Gemini thoughtSignature)', async () => {
     const toolCallProviderMetadata = {
       google: { thoughtSignature: 'sig123' },

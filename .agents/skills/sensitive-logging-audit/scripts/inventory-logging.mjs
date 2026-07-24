@@ -18,8 +18,13 @@ const LOGGER_TYPE_PROPERTIES = [
 ];
 const STANDARD_GLOBALS = new Set(['global', 'globalThis', 'window']);
 const SENSITIVE_HELPERS = new Map([
+  ['logModelAndToolActionDebug', 'model+tool-helper'],
+  ['logModelAndToolActionError', 'model+tool-helper'],
+  ['logModelAndToolActionWarning', 'model+tool-helper'],
   ['logModelActionError', 'model-helper'],
+  ['logToolActionDebug', 'tool-helper'],
   ['logToolActionError', 'tool-helper'],
+  ['logToolActionWarning', 'tool-helper'],
 ]);
 const SENSITIVE_HELPER_MODULES = new Set([
   '@openai/agents-core/utils/internal',
