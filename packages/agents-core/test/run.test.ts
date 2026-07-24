@@ -363,6 +363,77 @@ describe('Runner.run', () => {
       });
     });
 
+    it('redacts hostile tool-not-found formatter errors and keeps the fallback result', async () => {
+      class RecordingModel extends FakeModel {
+        readonly requests: ModelRequest[] = [];
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.requests.push(request);
+          return super.getResponse(request);
+        }
+      }
+
+      const model = new RecordingModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: 'missing_tool',
+              callId: 'call_missing',
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('formatter fallback recovered')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'MissingToolFormatterFallbackAgent',
+        model,
+        toolUseBehavior: 'run_llm_again',
+      });
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(true);
+      const hostileError = new Proxy(
+        {},
+        {
+          getPrototypeOf() {
+            throw new Error('SECRET_TOOL_NOT_FOUND_FORMATTER_123');
+          },
+        },
+      );
+
+      const result = await run(agent, 'start', {
+        toolNotFoundBehavior: 'return_error_to_model',
+        toolErrorFormatter: () => {
+          throw hostileError;
+        },
+      });
+
+      expect(result.finalOutput).toBe('formatter fallback recovered');
+      expect(warnSpy).toHaveBeenCalledWith(
+        'toolErrorFormatter threw while formatting tool not found:',
+        'object',
+      );
+      expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(
+        'SECRET_TOOL_NOT_FOUND_FORMATTER_123',
+      );
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(secondInput).toContainEqual({
+        type: 'function_call_result',
+        name: 'missing_tool',
+        callId: 'call_missing',
+        status: 'completed',
+        output: {
+          type: 'text',
+          text: "Tool 'missing_tool' not found.",
+        },
+      });
+    });
+
     it('does not persist nested agent-tool metadata when resuming a RunState', async () => {
       const agent = new Agent({
         name: 'ReusedNestedStateAgent',

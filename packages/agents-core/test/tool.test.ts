@@ -19,6 +19,7 @@ import { serializeTool } from '../src/utils/serialize';
 import { FakeEditor, FakeShell } from './stubs';
 import { InvalidToolOutputError, ToolTimeoutError } from '../src/errors';
 import type { JsonObjectSchema } from '../src/types';
+import logger from '../src/logger';
 
 interface Bar {
   bar: string;
@@ -551,6 +552,49 @@ describe('Tool', () => {
     expect(dispose).toHaveBeenCalledTimes(1);
     expect(dispose).toHaveBeenCalledWith({ runContext: ctx, computer: first });
     expect(second).not.toBe(first);
+  });
+
+  it('redacts computer disposal errors and completes cleanup', async () => {
+    const computer = {
+      environment: 'mac' as const,
+      dimensions: [1, 1] as [number, number],
+      screenshot: async () => 'img',
+      click: async () => {},
+      doubleClick: async () => {},
+      drag: async () => {},
+      keypress: async () => {},
+      move: async () => {},
+      scroll: async () => {},
+      type: async () => {},
+      wait: async () => {},
+    };
+    const secret = 'SECRET_COMPUTER_DISPOSAL_123';
+    const initializer = vi.fn(async () => computer);
+    const t = computerTool({
+      computer: {
+        create: initializer,
+        dispose: async () => {
+          throw new Error(secret);
+        },
+      },
+    });
+    const ctx = new RunContext();
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(true);
+
+    await resolveComputer({ tool: t, runContext: ctx });
+    await expect(disposeResolvedComputers({ runContext: ctx })).resolves.toBe(
+      undefined,
+    );
+    await resolveComputer({ tool: t, runContext: ctx });
+
+    expect(initializer).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Failed to dispose computer for run context:',
+      'Error',
+    );
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secret);
+    vi.restoreAllMocks();
   });
 
   it('shellTool assigns default name', () => {

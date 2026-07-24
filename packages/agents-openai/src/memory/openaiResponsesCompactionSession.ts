@@ -12,6 +12,7 @@ import type {
   Session,
 } from '@openai/agents-core';
 import type { OpenAIResponsesCompactionResult } from '@openai/agents-core';
+import { logModelAndToolActionWarning } from '@openai/agents-core/utils/internal';
 import { DEFAULT_OPENAI_MODEL, getDefaultOpenAIClient } from '../defaults';
 import { getInputItems } from '../openaiResponsesModel';
 import {
@@ -24,9 +25,7 @@ const DEFAULT_COMPACTION_THRESHOLD = 10;
 const logger = getLogger('openai-agents:openai:compaction');
 
 export type OpenAIResponsesCompactionMode =
-  | 'previous_response_id'
-  | 'input'
-  | 'auto';
+  'previous_response_id' | 'input' | 'auto';
 
 export type OpenAIResponsesCompactionDecisionContext = {
   /**
@@ -328,7 +327,8 @@ export class OpenAIResponsesCompactionSession
     try {
       currentItems = await this.getAllUnderlyingSessionItems();
     } catch (inspectionError) {
-      logger.warn(
+      logModelAndToolActionWarning(
+        logger,
         'Failed to inspect session history after compaction replacement clear failed.',
         inspectionError,
       );
@@ -367,14 +367,16 @@ export class OpenAIResponsesCompactionSession
         await this.underlyingSession.addItems(previousItems);
       }
     } catch (restoreError) {
-      logger.warn(
+      logModelAndToolActionWarning(
+        logger,
         'Failed to restore session history after compaction replacement failed.',
         restoreError,
       );
       return;
     }
 
-    logger.warn(
+    logModelAndToolActionWarning(
+      logger,
       'Restored previous session history after compaction replacement failed.',
       error,
     );

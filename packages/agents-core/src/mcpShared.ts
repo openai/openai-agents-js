@@ -80,7 +80,7 @@ export abstract class BaseMCPServerStdio implements MCPServer {
    * @param buildMessage A function that returns the message to log.
    */
   protected debugLog(buildMessage: () => string): void {
-    if (debug.enabled(this.logger.namespace)) {
+    if (!this.logger.dontLogToolData && debug.enabled(this.logger.namespace)) {
       // Only build the message when debug logging is enabled.
       this.logger.debug(buildMessage());
     }
@@ -138,7 +138,7 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
    * @param buildMessage A function that returns the message to log.
    */
   protected debugLog(buildMessage: () => string): void {
-    if (debug.enabled(this.logger.namespace)) {
+    if (!this.logger.dontLogToolData && debug.enabled(this.logger.namespace)) {
       // Only build the message when debug logging is enabled.
       this.logger.debug(buildMessage());
     }
@@ -194,7 +194,7 @@ export abstract class BaseMCPServerSSE implements MCPServer {
    * @param buildMessage A function that returns the message to log.
    */
   protected debugLog(buildMessage: () => string): void {
-    if (debug.enabled(this.logger.namespace)) {
+    if (!this.logger.dontLogToolData && debug.enabled(this.logger.namespace)) {
       // Only build the message when debug logging is enabled.
       this.logger.debug(buildMessage());
     }

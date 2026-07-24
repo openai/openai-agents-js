@@ -69,18 +69,38 @@ export function getSafeErrorType(error: unknown): string {
   }
 }
 
+type SensitiveLogMethod = 'debug' | 'error' | 'warn';
+
+function logSensitiveActionError(
+  targetLogger: Logger,
+  method: SensitiveLogMethod,
+  redact: boolean,
+  message: string,
+  error: unknown,
+  details: unknown[],
+): void {
+  if (redact) {
+    targetLogger[method](message, getSafeErrorType(error));
+    return;
+  }
+
+  targetLogger[method](message, error, ...details);
+}
+
 export function logToolActionError(
   targetLogger: Logger,
   message: string,
   error: unknown,
   ...details: unknown[]
 ): void {
-  if (targetLogger.dontLogToolData) {
-    targetLogger.error(message, getSafeErrorType(error));
-    return;
-  }
-
-  targetLogger.error(message, error, ...details);
+  logSensitiveActionError(
+    targetLogger,
+    'error',
+    targetLogger.dontLogToolData,
+    message,
+    error,
+    details,
+  );
 }
 
 export function logModelActionError(
@@ -89,12 +109,94 @@ export function logModelActionError(
   error: unknown,
   ...details: unknown[]
 ): void {
-  if (targetLogger.dontLogModelData) {
-    targetLogger.error(message, getSafeErrorType(error));
-    return;
-  }
+  logSensitiveActionError(
+    targetLogger,
+    'error',
+    targetLogger.dontLogModelData,
+    message,
+    error,
+    details,
+  );
+}
 
-  targetLogger.error(message, error, ...details);
+export function logToolActionWarning(
+  targetLogger: Logger,
+  message: string,
+  error: unknown,
+  ...details: unknown[]
+): void {
+  logSensitiveActionError(
+    targetLogger,
+    'warn',
+    targetLogger.dontLogToolData,
+    message,
+    error,
+    details,
+  );
+}
+
+export function logToolActionDebug(
+  targetLogger: Logger,
+  message: string,
+  error: unknown,
+  ...details: unknown[]
+): void {
+  logSensitiveActionError(
+    targetLogger,
+    'debug',
+    targetLogger.dontLogToolData,
+    message,
+    error,
+    details,
+  );
+}
+
+export function logModelAndToolActionError(
+  targetLogger: Logger,
+  message: string,
+  error: unknown,
+  ...details: unknown[]
+): void {
+  logSensitiveActionError(
+    targetLogger,
+    'error',
+    targetLogger.dontLogModelData || targetLogger.dontLogToolData,
+    message,
+    error,
+    details,
+  );
+}
+
+export function logModelAndToolActionWarning(
+  targetLogger: Logger,
+  message: string,
+  error: unknown,
+  ...details: unknown[]
+): void {
+  logSensitiveActionError(
+    targetLogger,
+    'warn',
+    targetLogger.dontLogModelData || targetLogger.dontLogToolData,
+    message,
+    error,
+    details,
+  );
+}
+
+export function logModelAndToolActionDebug(
+  targetLogger: Logger,
+  message: string,
+  error: unknown,
+  ...details: unknown[]
+): void {
+  logSensitiveActionError(
+    targetLogger,
+    'debug',
+    targetLogger.dontLogModelData || targetLogger.dontLogToolData,
+    message,
+    error,
+    details,
+  );
 }
 
 export const logger = getLogger('openai-agents:core');

@@ -1890,9 +1890,18 @@ export class AiSdkModel implements Model {
 
           if (part.type === 'tool-call') {
             if (!requestedTool && part.toolName) {
-              this.#logger.warn(
-                `Received tool call for unknown tool '${part.toolName}'.`,
-              );
+              if (
+                this.#logger.dontLogModelData ||
+                this.#logger.dontLogToolData
+              ) {
+                this.#logger.warn(
+                  'Received tool call for an unknown tool. Tool name is redacted.',
+                );
+              } else {
+                this.#logger.warn(
+                  `Received tool call for unknown tool '${part.toolName}'.`,
+                );
+              }
             }
             if (requestedTool && typeof part.toolCallId === 'string') {
               requestedToolsByCallId.set(part.toolCallId, requestedTool);

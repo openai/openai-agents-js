@@ -12,7 +12,11 @@ import {
   type MCPListToolsSpanData,
   type Span,
 } from './tracing';
-import { logger as globalLogger, type Logger } from './logger';
+import {
+  logger as globalLogger,
+  logToolActionWarning,
+  type Logger,
+} from './logger';
 import {
   JsonObjectSchema,
   JsonObjectSchemaNonStrict,
@@ -1093,7 +1097,11 @@ export function mcpToFunctionTool(
         },
       });
     } catch (e) {
-      globalLogger.warn(`Error converting MCP schema to strict mode: ${e}`);
+      logToolActionWarning(
+        globalLogger,
+        'Error converting MCP schema to strict mode:',
+        e,
+      );
     }
   }
 

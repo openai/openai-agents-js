@@ -21,7 +21,7 @@ import { RunState } from './runState';
 import { RunContext } from './runContext';
 import type { AgentToolInvocation } from './agentToolInvocation';
 import type { InputGuardrailResult, OutputGuardrailResult } from './guardrail';
-import logger from './logger';
+import logger, { logModelAndToolActionDebug } from './logger';
 import { StreamEventTextStream } from './types/protocol';
 import type {
   ToolInputGuardrailResult,
@@ -102,8 +102,7 @@ export interface RunResultData<
    * The output of the last agent, or any handoff agent.
    */
   finalOutput?:
-    | ResolvedAgentOutput<TAgent['outputType']>
-    | HandoffsOutput<THandoffs>;
+    ResolvedAgentOutput<TAgent['outputType']> | HandoffsOutput<THandoffs>;
 
   /**
    * The interruptions that occurred during the agent run.
@@ -347,7 +346,11 @@ export class StreamedRunResult<
         [result.signal, this.#abortController.signal],
         {
           onAbortSignalAnyError: (error) => {
-            logger.debug(`AbortSignal.any failed, falling back: ${error}`);
+            logModelAndToolActionDebug(
+              logger,
+              'AbortSignal.any failed, falling back:',
+              error,
+            );
           },
         },
       );
@@ -425,7 +428,7 @@ export class StreamedRunResult<
     this.#error = err;
     this.#completedPromiseReject?.(err);
     this.#completedPromise.catch((e) => {
-      logger.debug(`Resulted in an error: ${e}`);
+      logModelAndToolActionDebug(logger, 'Resulted in an error:', e);
     });
     this.#detachAbortHandler();
   }
@@ -541,7 +544,11 @@ export class StreamedRunResult<
       try {
         controller.close();
       } catch (err) {
-        logger.debug(`Failed to close readable stream on abort: ${err}`);
+        logModelAndToolActionDebug(
+          logger,
+          'Failed to close readable stream on abort:',
+          err,
+        );
       }
     }
 
@@ -558,13 +565,21 @@ export class StreamedRunResult<
       try {
         this.#combinedSignal.removeEventListener('abort', this.#abortHandler);
       } catch (err) {
-        logger.debug(`Failed to remove abort listener: ${err}`);
+        logModelAndToolActionDebug(
+          logger,
+          'Failed to remove abort listener:',
+          err,
+        );
       }
     }
     try {
       this.#combinedSignalCleanup();
     } catch (err) {
-      logger.debug(`Failed to clean up combined abort listeners: ${err}`);
+      logModelAndToolActionDebug(
+        logger,
+        'Failed to clean up combined abort listeners:',
+        err,
+      );
     }
     this.#combinedSignalCleanup = () => {};
     this.#abortHandler = undefined;

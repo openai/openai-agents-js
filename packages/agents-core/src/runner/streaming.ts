@@ -74,7 +74,11 @@ function enqueueRunItemStreamEvent(
 ): void {
   const itemName = getRunItemStreamEventName(item);
   if (!itemName) {
-    logger.warn('Unknown item type: ', item);
+    if (logger.dontLogModelData || logger.dontLogToolData) {
+      logger.warn('Unknown item type. Item data is redacted.');
+    } else {
+      logger.warn('Unknown item type: ', item);
+    }
     return;
   }
   result._addItem(new RunItemStreamEvent(itemName, item));

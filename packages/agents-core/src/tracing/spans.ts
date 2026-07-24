@@ -240,7 +240,11 @@ export class Span<TData extends SpanData> {
 
   end() {
     if (this.#endedAt) {
-      logger.debug('Span already finished', this.spanData);
+      if (logger.dontLogModelData || logger.dontLogToolData) {
+        logger.debug('Span already finished. Span data is redacted.');
+      } else {
+        logger.debug('Span already finished', this.spanData);
+      }
       return;
     }
 

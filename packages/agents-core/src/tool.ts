@@ -22,7 +22,7 @@ import {
   ToolTimeoutError,
   UserError,
 } from './errors';
-import logger from './logger';
+import logger, { logToolActionWarning } from './logger';
 import { getCurrentSpan } from './tracing';
 import { RunToolApprovalItem, RunToolCallOutputItem } from './items';
 import { toSmartString } from './utils/smartString';
@@ -770,7 +770,11 @@ export async function disposeResolvedComputers<Context>({
     try {
       await dispose();
     } catch (error) {
-      logger.warn(`Failed to dispose computer for run context: ${error}`);
+      logToolActionWarning(
+        logger,
+        'Failed to dispose computer for run context:',
+        error,
+      );
     }
   }
 }

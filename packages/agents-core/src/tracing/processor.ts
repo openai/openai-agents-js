@@ -1,6 +1,6 @@
 import { Span as TSpan } from './spans';
 import { Trace } from './traces';
-import logger from '../logger';
+import logger, { logModelAndToolActionError } from '../logger';
 import {
   timer as _timer,
   isTracingLoopRunningByDefault,
@@ -83,6 +83,14 @@ export class ConsoleSpanExporter implements TracingExporter {
     }
 
     for (const item of items) {
+      if (logger.dontLogModelData || logger.dontLogToolData) {
+        console.log(
+          item.type === 'trace'
+            ? '[Exporter] Export trace. Trace data is redacted.'
+            : '[Exporter] Export span. Span data is redacted.',
+        );
+        continue;
+      }
       if (item.type === 'trace') {
         console.log(
           `[Exporter] Export trace traceId=${item.traceId} name=${item.name}${item.groupId ? ` groupId=${item.groupId}` : ''}`,
@@ -208,7 +216,11 @@ export class BatchTraceProcessor implements TracingProcessor {
       try {
         await this.#exporter.export(batch, combinedSignal.signal);
       } catch (error) {
-        logger.error('Tracing exporter failed to export batch', error);
+        logModelAndToolActionError(
+          logger,
+          'Tracing exporter failed to export batch',
+          error,
+        );
       } finally {
         combinedSignal.cleanup();
         this.#activeExportAbortControllers.delete(activeExportAbortController);

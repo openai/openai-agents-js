@@ -8,5 +8,10 @@ export {
 export {
   getSafeErrorType,
   logModelActionError,
+  logModelAndToolActionDebug,
+  logModelAndToolActionError,
+  logModelAndToolActionWarning,
+  logToolActionDebug,
   logToolActionError,
+  logToolActionWarning,
 } from '../logger';

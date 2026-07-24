@@ -1,4 +1,4 @@
-import { getLogger } from './logger';
+import { getLogger, logToolActionDebug, logToolActionError } from './logger';
 import type { MCPServer } from './mcp';
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
@@ -352,7 +352,11 @@ export class MCPServers {
   }
 
   private recordFailure(server: MCPServer, error: Error, phase: string): void {
-    logger.error(`Failed to ${phase} MCP server '${server.name}':`, error);
+    logToolActionError(
+      logger,
+      `Failed to ${phase} MCP server '${server.name}':`,
+      error,
+    );
     if (!this.failedServerSet.has(server)) {
       this.failedServers.push(server);
       this.failedServerSet.add(server);
@@ -384,11 +388,19 @@ export class MCPServers {
         if (!this.suppressAbortError) {
           throw err;
         }
-        logger.debug(`Close cancelled for MCP server '${server.name}': ${err}`);
+        logToolActionDebug(
+          logger,
+          `Close cancelled for MCP server '${server.name}':`,
+          err,
+        );
         this.errorsByServer.set(server, err);
         return;
       }
-      logger.error(`Failed to close MCP server '${server.name}':`, err);
+      logToolActionError(
+        logger,
+        `Failed to close MCP server '${server.name}':`,
+        err,
+      );
       this.errorsByServer.set(server, err);
     }
   }

@@ -6,6 +6,7 @@ import {
   type GenerationSpanData,
   type Trace,
 } from '@openai/agents-core';
+import { logModelAndToolActionError } from '@openai/agents-core/utils/internal';
 import { getTracingExportApiKey, HEADERS } from './defaults';
 import logger from './logger';
 
@@ -772,11 +773,17 @@ export class OpenAITracingExporter implements TracingExporter {
           }
 
           if (response.status >= 400 && response.status < 500) {
-            logger.error(
-              `[non-fatal] Tracing client error ${
-                response.status
-              }: ${await response.text()}`,
-            );
+            if (logger.dontLogModelData || logger.dontLogToolData) {
+              logger.error(
+                `[non-fatal] Tracing client error ${response.status}. Response data is redacted.`,
+              );
+            } else {
+              logger.error(
+                `[non-fatal] Tracing client error ${
+                  response.status
+                }: ${await response.text()}`,
+              );
+            }
             break;
           }
 
@@ -784,7 +791,11 @@ export class OpenAITracingExporter implements TracingExporter {
             `[non-fatal] Tracing: server error ${response.status}, retrying.`,
           );
         } catch (error: any) {
-          logger.error('[non-fatal] Tracing: request failed: ', error);
+          logModelAndToolActionError(
+            logger,
+            '[non-fatal] Tracing: request failed:',
+            error,
+          );
         }
 
         if (signal?.aborted) {

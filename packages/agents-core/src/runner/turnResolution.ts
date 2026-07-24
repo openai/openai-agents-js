@@ -7,7 +7,7 @@ import {
   RunToolApprovalItem,
   RunToolCallOutputItem,
 } from '../items';
-import logger from '../logger';
+import logger, { logToolActionWarning } from '../logger';
 import { ModelResponse } from '../model';
 import type { RunConfig, Runner, ToolErrorFormatter } from '../run';
 import { RunState } from '../runState';
@@ -84,9 +84,10 @@ async function resolveToolNotFoundMessage<TContext>(
       );
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.warn(
-      `toolErrorFormatter threw while formatting tool not found: ${message}`,
+    logToolActionWarning(
+      logger,
+      'toolErrorFormatter threw while formatting tool not found:',
+      error,
     );
   }
 

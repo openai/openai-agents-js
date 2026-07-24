@@ -10,6 +10,10 @@ import { loadEnv } from '../src/config';
 import { Agent } from '../src/agent';
 vi.mock('../src/config', () => ({
   loadEnv: vi.fn(),
+  logging: {
+    dontLogModelData: false,
+    dontLogToolData: false,
+  },
 }));
 const mockedLoadEnv = vi.mocked(loadEnv);
 beforeEach(() => {

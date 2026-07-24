@@ -12,12 +12,13 @@ import { OPENAI_SESSION_API } from '../src/memory/openaiSessionApi';
 class PartiallyFailingReplacementSession extends MemorySession {
   addCalls = 0;
   clearCalls = 0;
+  failureMessage = 'replacement failed';
 
   async addItems(items: AgentInputItem[]): Promise<void> {
     this.addCalls += 1;
     if (this.addCalls === 1) {
       await super.addItems(items.slice(0, 1));
-      throw new Error('replacement failed');
+      throw new Error(this.failureMessage);
     }
     await super.addItems(items);
   }
@@ -586,6 +587,63 @@ describe('OpenAIResponsesCompactionSession', () => {
       );
     } finally {
       warn.mockRestore();
+    }
+  });
+
+  it('redacts replacement errors while restoring the previous session history', async () => {
+    const original = process.env.OPENAI_AGENTS_DONT_LOG_MODEL_DATA;
+    process.env.OPENAI_AGENTS_DONT_LOG_MODEL_DATA = '1';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const secret = 'SECRET_COMPACTION_REPLACEMENT_123';
+    const history = [
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: secret }],
+      },
+    ] as AgentInputItem[];
+    const underlyingSession = new PartiallyFailingReplacementSession({
+      initialItems: history,
+    });
+    underlyingSession.failureMessage = secret;
+    const compact = vi.fn().mockResolvedValue({
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'compacted' }],
+        },
+      ],
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
+      },
+    });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      underlyingSession,
+      compactionMode: 'input',
+    });
+
+    try {
+      await expect(
+        session.runCompaction({ force: true, compactionMode: 'input' }),
+      ).rejects.toThrow(secret);
+      expect(await underlyingSession.getItems()).toEqual(history);
+      expect(warn).toHaveBeenCalledWith(
+        'Restored previous session history after compaction replacement failed.',
+        'Error',
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(secret);
+    } finally {
+      warn.mockRestore();
+      if (typeof original === 'undefined') {
+        delete process.env.OPENAI_AGENTS_DONT_LOG_MODEL_DATA;
+      } else {
+        process.env.OPENAI_AGENTS_DONT_LOG_MODEL_DATA = original;
+      }
     }
   });
 

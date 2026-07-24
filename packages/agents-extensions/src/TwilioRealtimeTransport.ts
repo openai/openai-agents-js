@@ -7,6 +7,7 @@ import {
   RealtimeSessionConfig,
 } from '@openai/agents/realtime';
 import { getLogger } from '@openai/agents';
+import { logModelActionError } from '@openai/agents-core/utils/internal';
 import type {
   WebSocket as NodeWebSocket,
   MessageEvent as NodeMessageEvent,
@@ -122,7 +123,9 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
         try {
           const data = JSON.parse(message.data.toString());
           if (this.#logger.dontLogModelData) {
-            this.#logger.debug('Twilio message:', data.event);
+            this.#logger.debug(
+              'Twilio message received. Message data is redacted.',
+            );
           } else {
             this.#logger.debug('Twilio message:', data);
           }
@@ -146,10 +149,16 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
                 if (Number.isFinite(count)) {
                   this.#lastPlayedChunkCount = count;
                 } else {
-                  this.#logger.warn(
-                    'Invalid mark name received:',
-                    data.mark.name,
-                  );
+                  if (this.#logger.dontLogModelData) {
+                    this.#logger.warn(
+                      'Invalid mark name received. Mark data is redacted.',
+                    );
+                  } else {
+                    this.#logger.warn(
+                      'Invalid mark name received:',
+                      data.mark.name,
+                    );
+                  }
                 }
               } else if (data.mark.name.startsWith('done:')) {
                 this.#lastPlayedChunkCount = 0;
@@ -162,7 +171,8 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
               break;
           }
         } catch (error) {
-          this.#logger.error(
+          logModelActionError(
+            this.#logger,
             'Error parsing message:',
             error,
             'Message:',
