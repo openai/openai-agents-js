@@ -9,7 +9,13 @@ import ts from 'typescript';
 const LOGGER_METHODS = new Set(['debug', 'error', 'info', 'log', 'warn']);
 const SENSITIVE_HELPERS = new Map([
   ['logModelActionError', 'model-helper'],
+  ['logModelActionWarning', 'model-helper'],
+  ['logModelAndToolActionDebug', 'model+tool-helper'],
+  ['logModelAndToolActionError', 'model+tool-helper'],
+  ['logModelAndToolActionWarning', 'model+tool-helper'],
   ['logToolActionError', 'tool-helper'],
+  ['logToolActionDebug', 'tool-helper'],
+  ['logToolActionWarning', 'tool-helper'],
 ]);
 const SOURCE_EXTENSIONS = new Set(['.cts', '.mts', '.ts', '.tsx']);
 
@@ -134,7 +140,7 @@ function referencesIdentifier(node, identifier) {
   return found;
 }
 
-function enclosingCatchVariable(node) {
+function enclosingRejectedValueIdentifier(node) {
   let current = node.parent;
   while (current) {
     if (ts.isCatchClause(current)) {
@@ -143,9 +149,79 @@ function enclosingCatchVariable(node) {
         ? declaration.name.text
         : null;
     }
+    if (ts.isFunctionLike(current)) {
+      const callback = current;
+      const call = callback.parent;
+      if (ts.isCallExpression(call)) {
+        const callbackIndex = call.arguments.indexOf(callback);
+        const access = propertyAccessParts(call.expression);
+        const isRejectionHandler =
+          (access?.method === 'catch' && callbackIndex === 0) ||
+          (access?.method === 'then' && callbackIndex === 1);
+        if (isRejectionHandler) {
+          const parameter = callback.parameters[0];
+          return parameter && ts.isIdentifier(parameter.name)
+            ? parameter.name.text
+            : null;
+        }
+      }
+    }
     current = current.parent;
   }
   return null;
+}
+
+function normalizeNodeText(node, sourceFile) {
+  return node.getText(sourceFile).replace(/\s+/g, ' ').trim();
+}
+
+function declarationName(node, sourceFile) {
+  if (
+    (ts.isFunctionDeclaration(node) ||
+      ts.isClassDeclaration(node) ||
+      ts.isMethodDeclaration(node) ||
+      ts.isPropertyDeclaration(node)) &&
+    node.name
+  ) {
+    return normalizeNodeText(node.name, sourceFile);
+  }
+  if (ts.isConstructorDeclaration(node)) {
+    return 'constructor';
+  }
+  if (ts.isVariableDeclaration(node)) {
+    return normalizeNodeText(node.name, sourceFile);
+  }
+  if (ts.isPropertyAssignment(node)) {
+    return normalizeNodeText(node.name, sourceFile);
+  }
+  return null;
+}
+
+function callSiteContext(node, sourceFile) {
+  const parts = [];
+  let child = node;
+  let current = node.parent;
+  while (current && !ts.isSourceFile(current)) {
+    const name = declarationName(current, sourceFile);
+    if (name) {
+      parts.push(`${ts.SyntaxKind[current.kind]}:${name}`);
+    }
+    if (ts.isIfStatement(current)) {
+      const branch = current.thenStatement === child ? 'then' : 'else';
+      parts.push(
+        `if:${normalizeNodeText(current.expression, sourceFile)}:${branch}`,
+      );
+    }
+    if (ts.isCallExpression(current) && current.arguments.includes(child)) {
+      const callbackIndex = current.arguments.indexOf(child);
+      parts.push(
+        `callback:${normalizeNodeText(current.expression, sourceFile)}:${callbackIndex}`,
+      );
+    }
+    child = current;
+    current = current.parent;
+  }
+  return parts.reverse().join('>') || '<module>';
 }
 
 function guardedPolicy(node, sourceFile) {
@@ -177,9 +253,9 @@ function normalizeCallText(call, sourceFile) {
   return call.getText(sourceFile).replace(/\s+/g, ' ').trim();
 }
 
-function fingerprint(path, normalizedCall) {
+function fingerprint(path, context, normalizedCall, occurrence) {
   return createHash('sha256')
-    .update(`${path}\0${normalizedCall}`)
+    .update(`${path}\0${context}\0${normalizedCall}\0${occurrence}`)
     .digest('hex')
     .slice(0, 12);
 }
@@ -216,11 +292,16 @@ export function inventorySource(sourceText, filePath = 'fixture.ts') {
     scriptKind,
   );
   const findings = [];
+  const occurrences = new Map();
 
   function recordCall(call, kind, method, policy) {
     const start = sourceFile.getLineAndCharacterOfPosition(call.getStart());
     const normalizedCall = normalizeCallText(call, sourceFile);
-    const catchVariable = enclosingCatchVariable(call);
+    const context = callSiteContext(call, sourceFile);
+    const occurrenceKey = `${context}\0${normalizedCall}`;
+    const occurrence = occurrences.get(occurrenceKey) ?? 0;
+    occurrences.set(occurrenceKey, occurrence + 1);
+    const catchVariable = enclosingRejectedValueIdentifier(call);
     const referencesCatchValue = Boolean(
       catchVariable &&
       call.arguments.some((argument) =>
@@ -230,7 +311,7 @@ export function inventorySource(sourceText, filePath = 'fixture.ts') {
     const dynamicMessage = hasDynamicMessage(call);
     const hasPayload = call.arguments.length > 1;
     findings.push({
-      fingerprint: fingerprint(filePath, normalizedCall),
+      fingerprint: fingerprint(filePath, context, normalizedCall, occurrence),
       file: filePath,
       line: start.line + 1,
       column: start.character + 1,
@@ -243,6 +324,7 @@ export function inventorySource(sourceText, filePath = 'fixture.ts') {
           : 'static-message',
       policy,
       catchValue: referencesCatchValue ? catchVariable : null,
+      context,
       signals: signalsFor(normalizedCall),
       call: normalizedCall,
     });
