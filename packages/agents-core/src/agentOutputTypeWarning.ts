@@ -114,6 +114,21 @@ function getComparableObjectProperties(
   return comparable;
 }
 
+function detectArray(value: object): boolean | undefined {
+  try {
+    return Array.isArray(value);
+  } catch (_error) {
+    return undefined;
+  }
+}
+
+function readArrayLength(value: object): number | undefined {
+  const length = readOwnDataProperty(value, 'length');
+  return length?.found && typeof length.value === 'number'
+    ? length.value
+    : undefined;
+}
+
 function compareJsonLikeValues(
   left: unknown,
   right: unknown,
@@ -142,8 +157,11 @@ function compareJsonLikeValues(
     return 'different';
   }
 
-  const leftIsArray = Array.isArray(left);
-  const rightIsArray = Array.isArray(right);
+  const leftIsArray = detectArray(left);
+  const rightIsArray = detectArray(right);
+  if (leftIsArray === undefined || rightIsArray === undefined) {
+    return 'unknown';
+  }
   if (leftIsArray !== rightIsArray) {
     return 'different';
   }
@@ -157,11 +175,16 @@ function compareJsonLikeValues(
   rightComparisons.set(right, 'unknown');
 
   if (leftIsArray && rightIsArray) {
-    if (left.length !== right.length) {
+    const leftLength = readArrayLength(left);
+    const rightLength = readArrayLength(right);
+    if (leftLength === undefined || rightLength === undefined) {
+      return 'unknown';
+    }
+    if (leftLength !== rightLength) {
       rightComparisons.set(right, 'different');
       return 'different';
     }
-    for (let index = 0; index < left.length; index += 1) {
+    for (let index = 0; index < leftLength; index += 1) {
       const leftValue = readOwnDataProperty(left, index);
       const rightValue = readOwnDataProperty(right, index);
       if (!leftValue || !rightValue) {
@@ -212,11 +235,9 @@ function compareJsonLikeValues(
 }
 
 function compareStructuredOutputTypes(
-  left: unknown,
-  right: unknown,
+  comparableLeft: unknown,
+  comparableRight: unknown,
 ): StructuralComparison {
-  const comparableLeft = getComparableOutputType(left);
-  const comparableRight = getComparableOutputType(right);
   if (comparableLeft === undefined || comparableRight === undefined) {
     return 'unknown';
   }
@@ -235,20 +256,34 @@ export function hasDefinitelyDifferentOutputTypes(
   if (outputTypes.length < 2) {
     return false;
   }
-  const firstOutputType = outputTypes[0];
+  const comparableOutputTypes = outputTypes.map(getComparableOutputType);
 
-  return outputTypes.slice(1).some((outputType) => {
-    if (Object.is(outputType, firstOutputType)) {
-      return false;
-    }
-    if (
-      isPrimitiveOutputType(firstOutputType) ||
-      isPrimitiveOutputType(outputType)
+  for (let leftIndex = 0; leftIndex < outputTypes.length - 1; leftIndex += 1) {
+    for (
+      let rightIndex = leftIndex + 1;
+      rightIndex < outputTypes.length;
+      rightIndex += 1
     ) {
-      return true;
+      const leftOutputType = outputTypes[leftIndex];
+      const rightOutputType = outputTypes[rightIndex];
+      if (Object.is(leftOutputType, rightOutputType)) {
+        continue;
+      }
+      if (
+        isPrimitiveOutputType(leftOutputType) ||
+        isPrimitiveOutputType(rightOutputType)
+      ) {
+        return true;
+      }
+      if (
+        compareStructuredOutputTypes(
+          comparableOutputTypes[leftIndex],
+          comparableOutputTypes[rightIndex],
+        ) === 'different'
+      ) {
+        return true;
+      }
     }
-    return (
-      compareStructuredOutputTypes(firstOutputType, outputType) === 'different'
-    );
-  });
+  }
+  return false;
 }

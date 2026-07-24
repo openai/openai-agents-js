@@ -270,6 +270,118 @@ describe('Agent', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
+  it('does not read array proxy lengths when model logging is disabled', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(true);
+    const lengthGetter = vi.fn(() => {
+      throw new Error('SECRET_ARRAY_LENGTH_GETTER_123');
+    });
+    const lengthDescriptorGetter = vi.fn(() => {
+      throw new Error('SECRET_ARRAY_LENGTH_DESCRIPTOR_456');
+    });
+    const required = new Proxy(['value'], {
+      get(target, property, receiver) {
+        if (property === 'length') {
+          return lengthGetter();
+        }
+        return Reflect.get(target, property, receiver);
+      },
+      getOwnPropertyDescriptor(target, property) {
+        if (property === 'length') {
+          return lengthDescriptorGetter();
+        }
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+    const handoffAgent = new Agent({
+      name: 'HandoffAgent',
+      outputType: {
+        type: 'json_schema',
+        name: 'ProxyArrayOutput',
+        strict: true,
+        schema: {
+          type: 'object',
+          properties: { value: { type: 'string' } },
+          required,
+          additionalProperties: false,
+        },
+      },
+    });
+
+    expect(
+      () =>
+        new Agent({
+          name: 'ParentAgent',
+          outputType: {
+            type: 'json_schema',
+            name: 'ProxyArrayOutput',
+            strict: true,
+            schema: {
+              type: 'object',
+              properties: { value: { type: 'string' } },
+              required: ['value'],
+              additionalProperties: false,
+            },
+          },
+          handoffs: [handoffAgent],
+        }),
+    ).not.toThrow();
+    expect(lengthGetter).not.toHaveBeenCalled();
+    expect(lengthDescriptorGetter).toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('compares handoff schemas when the parent schema is not comparable', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(true);
+    const propertiesGetter = vi.fn(() => {
+      throw new Error('SECRET_PARENT_SCHEMA_GETTER_123');
+    });
+    const parentSchema = {
+      type: 'object',
+      required: [],
+      additionalProperties: false,
+    } as Record<string, unknown>;
+    Object.defineProperty(parentSchema, 'properties', {
+      enumerable: true,
+      get: propertiesGetter,
+    });
+    const createHandoffAgent = (name: string, property: string) =>
+      new Agent({
+        name,
+        outputType: {
+          type: 'json_schema',
+          name: 'HandoffOutput',
+          strict: true,
+          schema: {
+            type: 'object',
+            properties: { [property]: { type: 'string' } },
+            required: [property],
+            additionalProperties: false,
+          },
+        },
+      });
+
+    new Agent({
+      name: 'ParentAgent',
+      outputType: {
+        type: 'json_schema',
+        name: 'ParentOutput',
+        strict: true,
+        schema: parentSchema,
+      } as JsonSchemaDefinition,
+      handoffs: [
+        createHandoffAgent('FirstHandoffAgent', 'first'),
+        createHandoffAgent('SecondHandoffAgent', 'second'),
+      ],
+    });
+
+    expect(propertiesGetter).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[Agent] Warning: Handoff agents have different output types. Output type details are redacted. You can make it type-safe by using Agent.create({ ... }) method instead.',
+    );
+  });
+
   it('honors an explicit opt-out from handoff output type warnings', () => {
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(true);
