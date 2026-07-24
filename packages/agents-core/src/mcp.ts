@@ -31,7 +31,7 @@ import type {
   MCPToolMetaContext,
   MCPToolMetaResolver,
 } from './mcpUtil';
-import { getMcpServerLogName } from './mcpLogging';
+import { getMcpServerDiagnosticName } from './mcpLogging';
 import type { RunContext } from './runContext';
 import type { Agent } from './agent';
 import { maybeExtractToolOutputCustomData } from './utils/customData';
@@ -455,6 +455,12 @@ export const defaultMCPToolCacheKey: MCPToolCacheKeyGenerator = ({
   return server.name;
 };
 
+function logMcpToolFilterDebug(buildMessage: () => string): void {
+  if (!globalLogger.dontLogToolData) {
+    globalLogger.debug(buildMessage());
+  }
+}
+
 /**
  * Fetches and filters raw MCP tools from a single MCP server.
  */
@@ -496,8 +502,9 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
           if (typeof filter === 'function') {
             const filtered = await filter(context, tool);
             if (!filtered) {
-              globalLogger.debug(
-                `MCP Tool (server: ${getMcpServerLogName(server.name)}, tool: ${tool.name}) is blocked by the callable filter.`,
+              logMcpToolFilterDebug(
+                () =>
+                  `MCP Tool (server: ${getMcpServerDiagnosticName(server.name)}, tool: ${tool.name}) is blocked by the callable filter.`,
               );
               continue;
             }
@@ -515,12 +522,14 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
                   : false;
               if (!allowed || blocked) {
                 if (blocked) {
-                  globalLogger.debug(
-                    `MCP Tool (server: ${getMcpServerLogName(server.name)}, tool: ${tool.name}) is blocked by the static filter.`,
+                  logMcpToolFilterDebug(
+                    () =>
+                      `MCP Tool (server: ${getMcpServerDiagnosticName(server.name)}, tool: ${tool.name}) is blocked by the static filter.`,
                   );
                 } else if (!allowed) {
-                  globalLogger.debug(
-                    `MCP Tool (server: ${getMcpServerLogName(server.name)}, tool: ${tool.name}) is not allowed by the static filter.`,
+                  logMcpToolFilterDebug(
+                    () =>
+                      `MCP Tool (server: ${getMcpServerDiagnosticName(server.name)}, tool: ${tool.name}) is not allowed by the static filter.`,
                   );
                 }
                 continue;

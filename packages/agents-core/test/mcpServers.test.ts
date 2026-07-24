@@ -102,6 +102,15 @@ class AbortConnectServer extends BaseTestServer {
   }
 }
 
+class AbortCloseServer extends BaseTestServer {
+  async close(): Promise<void> {
+    this.closeCalls += 1;
+    const error = new Error('close aborted');
+    error.name = 'AbortError';
+    throw error;
+  }
+}
+
 type Deferred<T> = {
   promise: Promise<T>;
   resolve: (value: T | PromiseLike<T>) => void;
@@ -179,9 +188,9 @@ describe('MCPServers', () => {
     mcpLogger.dontLogToolData = false;
   });
 
-  it('sanitizes URL-derived server names when connecting fails', async () => {
+  it('uses fixed messages for URL-derived server names when connecting fails in redacted mode', async () => {
     const serverName =
-      'streamable-http: https://example.test/mcp?token=SECRET_MCP_NAME_123';
+      'streamable-http: https://example.test/mcp/SECRET_MCP_PATH_123?token=SECRET_MCP_QUERY_123';
     const server = new FlakyServer(serverName, 1);
     mcpLogger.dontLogToolData = true;
 
@@ -192,20 +201,19 @@ describe('MCPServers', () => {
 
     expect(session.failed).toEqual([server]);
     expect(mcpLogger.error).toHaveBeenCalledWith(
-      "Failed to connect MCP server 'streamable-http: https://example.test/mcp':",
+      'Failed to connect MCP server:',
       'object',
     );
-    expect(JSON.stringify(mcpLogger.debug.mock.calls)).not.toContain(
-      'SECRET_MCP_NAME_123',
-    );
-    expect(JSON.stringify(mcpLogger.error.mock.calls)).not.toContain(
-      'SECRET_MCP_NAME_123',
-    );
+    const calls = JSON.stringify([
+      ...mcpLogger.debug.mock.calls,
+      ...mcpLogger.error.mock.calls,
+    ]);
+    expect(calls).not.toContain('SECRET_MCP_PATH_123');
+    expect(calls).not.toContain('SECRET_MCP_QUERY_123');
   });
 
-  it('sanitizes URL-derived server names when closing fails', async () => {
-    const serverName =
-      'sse: https://example.test/mcp?token=SECRET_MCP_CLOSE_NAME_123';
+  it('uses fixed messages for custom server names when closing fails in redacted mode', async () => {
+    const serverName = 'SECRET_CUSTOM_MCP_SERVER_123';
     const server = new FlakyCloseServer(serverName, 1);
     mcpLogger.dontLogToolData = true;
     const session = await connectMcpServers([server], {
@@ -216,14 +224,61 @@ describe('MCPServers', () => {
     await session.close();
 
     expect(mcpLogger.error).toHaveBeenCalledWith(
-      "Failed to close MCP server 'sse: https://example.test/mcp':",
+      'Failed to close MCP server:',
       'object',
     );
     const calls = JSON.stringify([
       ...mcpLogger.debug.mock.calls,
       ...mcpLogger.error.mock.calls,
     ]);
-    expect(calls).not.toContain('SECRET_MCP_CLOSE_NAME_123');
+    expect(calls).not.toContain(serverName);
+  });
+
+  it('uses fixed messages when closing is cancelled in redacted mode', async () => {
+    const serverName = 'SECRET_CANCELLED_MCP_SERVER_123';
+    const server = new AbortCloseServer(serverName);
+    mcpLogger.dontLogToolData = true;
+    const session = await connectMcpServers([server], {
+      connectTimeoutMs: null,
+      closeTimeoutMs: null,
+    });
+
+    await session.close();
+
+    expect(mcpLogger.debug).toHaveBeenCalledWith(
+      'Close cancelled for MCP server:',
+      'object',
+    );
+    const calls = JSON.stringify([
+      ...mcpLogger.debug.mock.calls,
+      ...mcpLogger.error.mock.calls,
+    ]);
+    expect(calls).not.toContain(serverName);
+  });
+
+  it('does not read server names while formatting redacted logs', async () => {
+    const server = new FlakyServer('unused', 1);
+    let nameReads = 0;
+    Object.defineProperty(server, 'name', {
+      configurable: true,
+      get: () => {
+        nameReads += 1;
+        return 'SECRET_MCP_GETTER_NAME_123';
+      },
+    });
+    mcpLogger.dontLogToolData = true;
+
+    const session = await connectMcpServers([server], {
+      connectTimeoutMs: null,
+      closeTimeoutMs: null,
+    });
+
+    expect(session.failed).toEqual([server]);
+    expect(nameReads).toBe(0);
+    expect(mcpLogger.error).toHaveBeenCalledWith(
+      'Failed to connect MCP server:',
+      'object',
+    );
   });
 
   it('preserves MCP server failure diagnostics when tool logging is enabled', async () => {

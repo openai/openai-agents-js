@@ -1,9 +1,10 @@
 const URL_DERIVED_NAME_PREFIXES = ['sse: ', 'streamable-http: '] as const;
 
 // Some transports use their full endpoint URL as the default server name.
-// Preserve ordinary names while removing URL credentials, query parameters,
-// and fragments before a server name is written to logs.
-export function getMcpServerLogName(name: string): string {
+// In diagnostic mode, preserve ordinary names while removing URL credentials,
+// query parameters, and fragments. Redacted logging must use a fixed label
+// without reading the server name at all.
+export function getMcpServerDiagnosticName(name: string): string {
   const prefix = URL_DERIVED_NAME_PREFIXES.find((candidate) =>
     name.startsWith(candidate),
   );
