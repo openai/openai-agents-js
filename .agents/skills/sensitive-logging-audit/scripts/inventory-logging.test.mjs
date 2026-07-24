@@ -224,11 +224,17 @@ test('resolves Logger-typed object members', () => {
     function reportInterface(options: AuditOptions) {
       options.sink.info('Interface options failed', secret);
     }
+    function reportDestructured({ logger }: { logger: Logger }) {
+      logger.error('Destructured options failed', secret);
+    }
+    function reportAliased({ logger: sink }: ReportOptions) {
+      sink.warn('Aliased destructuring failed', secret);
+    }
   `);
 
   assert.deepEqual(
     findings.map(({ method }) => method),
-    ['error', 'warn', 'info'],
+    ['error', 'warn', 'info', 'error', 'warn'],
   );
 });
 
@@ -291,6 +297,28 @@ test('resolves console object and extracted method aliases', () => {
       { kind: 'console', method: 'warn' },
       { kind: 'console', method: 'log' },
       { kind: 'console', method: 'trace' },
+    ],
+  );
+});
+
+test('method alias analysis converges across reassignments', () => {
+  const findings = inventorySource(`
+    let emit = console.log;
+    emit = console.error;
+
+    const logger = getLogger('fixture');
+    let report = logger.warn;
+    report = logger.error;
+
+    emit(secret);
+    report('Failed', secret);
+  `);
+
+  assert.deepEqual(
+    findings.map(({ kind, method }) => ({ kind, method })),
+    [
+      { kind: 'console', method: 'error|log' },
+      { kind: 'logger', method: 'error|warn' },
     ],
   );
 });

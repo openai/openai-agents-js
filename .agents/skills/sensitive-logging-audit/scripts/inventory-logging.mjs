@@ -191,6 +191,7 @@ function collectLoggingSymbols(sourceFile) {
   const loggerFactoryBindings = new Set(['getLogger']);
   const loggerMethodBindings = new Map();
   const loggerNamespaceBindings = new Set();
+  const loggerObjectTypeProperties = new Map();
   const loggerPropertyNames = new Set();
   const loggerTypeBindings = new Set(['Logger']);
   const sensitiveHelperBindings = new Map(
@@ -253,11 +254,67 @@ function collectLoggingSymbols(sourceFile) {
         changed = true;
       }
     }
-    function addMapping(map, key, value) {
-      if (key && value && map.get(key) !== value) {
-        map.set(key, value);
-        changed = true;
+    function addMappings(map, key, values) {
+      if (!key) {
+        return;
       }
+      for (const value of values) {
+        if (!value) {
+          continue;
+        }
+        let mapped = map.get(key);
+        if (!mapped) {
+          mapped = new Set();
+          map.set(key, mapped);
+        }
+        if (!mapped.has(value)) {
+          mapped.add(value);
+          changed = true;
+        }
+      }
+    }
+    function loggerPropertiesForType(typeNode) {
+      if (!typeNode) {
+        return new Set();
+      }
+      if (
+        ts.isParenthesizedTypeNode(typeNode) ||
+        ts.isTypeOperatorNode(typeNode)
+      ) {
+        return loggerPropertiesForType(typeNode.type);
+      }
+      if (ts.isUnionTypeNode(typeNode) || ts.isIntersectionTypeNode(typeNode)) {
+        return new Set(
+          typeNode.types.flatMap((type) => [...loggerPropertiesForType(type)]),
+        );
+      }
+      if (ts.isTypeLiteralNode(typeNode)) {
+        return new Set(
+          typeNode.members.flatMap((member) =>
+            ts.isPropertySignature(member) &&
+            typeIsLoggerValue(member.type, loggerTypeBindings)
+              ? [propertyNameText(member.name, sourceFile)]
+              : [],
+          ),
+        );
+      }
+      if (!ts.isTypeReferenceNode(typeNode)) {
+        return new Set();
+      }
+      const properties = new Set();
+      if (ts.isIdentifier(typeNode.typeName)) {
+        for (const property of loggerObjectTypeProperties.get(
+          typeNode.typeName.text,
+        ) ?? []) {
+          properties.add(property);
+        }
+      }
+      for (const typeArgument of typeNode.typeArguments ?? []) {
+        for (const property of loggerPropertiesForType(typeArgument)) {
+          properties.add(property);
+        }
+      }
+      return properties;
     }
     function isKnownConsoleExpression(expression) {
       const current = unwrapExpression(expression);
@@ -281,15 +338,15 @@ function collectLoggingSymbols(sourceFile) {
       }
       return false;
     }
-    function resolveConsoleMethod(expression) {
+    function resolveConsoleMethods(expression) {
       const current = unwrapExpression(expression);
       if (ts.isIdentifier(current)) {
-        return consoleMethodBindings.get(current.text) ?? null;
+        return consoleMethodBindings.get(current.text) ?? [];
       }
       const access = propertyAccessParts(current);
       return access && isKnownConsoleExpression(access.receiver)
-        ? access.method
-        : null;
+        ? [access.method]
+        : [];
     }
     function recordConsoleDeclaration(declaration) {
       if (!declaration.initializer) {
@@ -299,10 +356,10 @@ function collectLoggingSymbols(sourceFile) {
         if (isKnownConsoleExpression(declaration.initializer)) {
           add(consoleBindings, declaration.name.text);
         }
-        addMapping(
+        addMappings(
           consoleMethodBindings,
           declaration.name.text,
-          resolveConsoleMethod(declaration.initializer),
+          resolveConsoleMethods(declaration.initializer),
         );
         return;
       }
@@ -316,11 +373,9 @@ function collectLoggingSymbols(sourceFile) {
         if (element.dotDotDotToken || !ts.isIdentifier(element.name)) {
           continue;
         }
-        addMapping(
-          consoleMethodBindings,
-          element.name.text,
+        addMappings(consoleMethodBindings, element.name.text, [
           propertyNameText(element.propertyName ?? element.name, sourceFile),
-        );
+        ]);
       }
     }
     function isLoggerFactoryCall(expression) {
@@ -375,27 +430,27 @@ function collectLoggingSymbols(sourceFile) {
       }
       return false;
     }
-    function resolveLoggerMethod(expression) {
+    function resolveLoggerMethods(expression) {
       const current = unwrapExpression(expression);
       if (ts.isIdentifier(current)) {
-        return loggerMethodBindings.get(current.text) ?? null;
+        return loggerMethodBindings.get(current.text) ?? [];
       }
       const access = propertyAccessParts(current);
       return access &&
         LOGGER_METHODS.has(access.method) &&
         isKnownLoggerExpression(access.receiver)
-        ? access.method
-        : null;
+        ? [access.method]
+        : [];
     }
     function recordLoggerMethodDeclaration(declaration) {
       if (!declaration.initializer) {
         return;
       }
       if (ts.isIdentifier(declaration.name)) {
-        addMapping(
+        addMappings(
           loggerMethodBindings,
           declaration.name.text,
-          resolveLoggerMethod(declaration.initializer),
+          resolveLoggerMethods(declaration.initializer),
         );
         return;
       }
@@ -414,11 +469,26 @@ function collectLoggingSymbols(sourceFile) {
           sourceFile,
         );
         if (LOGGER_METHODS.has(method)) {
-          addMapping(loggerMethodBindings, element.name.text, method);
+          addMappings(loggerMethodBindings, element.name.text, [method]);
         }
       }
     }
     function recordDeclaration(declaration) {
+      if (ts.isObjectBindingPattern(declaration.name)) {
+        const loggerProperties = loggerPropertiesForType(declaration.type);
+        for (const element of declaration.name.elements) {
+          if (element.dotDotDotToken || !ts.isIdentifier(element.name)) {
+            continue;
+          }
+          const propertyName = propertyNameText(
+            element.propertyName ?? element.name,
+            sourceFile,
+          );
+          if (loggerProperties.has(propertyName)) {
+            add(loggerBindings, element.name.text);
+          }
+        }
+      }
       if (typeIsLoggerValue(declaration.type, loggerTypeBindings)) {
         if (ts.isPropertyDeclaration(declaration)) {
           add(
@@ -461,6 +531,32 @@ function collectLoggingSymbols(sourceFile) {
         typeIsLoggerValue(current.type, loggerTypeBindings)
       ) {
         add(loggerTypeBindings, current.name.text);
+      }
+      if (ts.isTypeAliasDeclaration(current)) {
+        addMappings(
+          loggerObjectTypeProperties,
+          current.name.text,
+          loggerPropertiesForType(current.type),
+        );
+      }
+      if (ts.isInterfaceDeclaration(current)) {
+        const properties = current.members.flatMap((member) =>
+          ts.isPropertySignature(member) &&
+          typeIsLoggerValue(member.type, loggerTypeBindings)
+            ? [propertyNameText(member.name, sourceFile)]
+            : [],
+        );
+        for (const clause of current.heritageClauses ?? []) {
+          for (const heritageType of clause.types) {
+            const expression = unwrapExpression(heritageType.expression);
+            if (ts.isIdentifier(expression)) {
+              properties.push(
+                ...(loggerObjectTypeProperties.get(expression.text) ?? []),
+              );
+            }
+          }
+        }
+        addMappings(loggerObjectTypeProperties, current.name.text, properties);
       }
       if (
         (ts.isInterfaceDeclaration(current) ||
@@ -518,15 +614,15 @@ function collectLoggingSymbols(sourceFile) {
           if (isKnownConsoleExpression(current.right)) {
             add(consoleBindings, target.text);
           }
-          addMapping(
+          addMappings(
             consoleMethodBindings,
             target.text,
-            resolveConsoleMethod(current.right),
+            resolveConsoleMethods(current.right),
           );
-          addMapping(
+          addMappings(
             loggerMethodBindings,
             target.text,
-            resolveLoggerMethod(current.right),
+            resolveLoggerMethods(current.right),
           );
         }
       }
@@ -591,7 +687,8 @@ function collectLoggingSymbols(sourceFile) {
   function resolveConsoleMethod(expression) {
     const current = unwrapExpression(expression);
     if (ts.isIdentifier(current)) {
-      return consoleMethodBindings.get(current.text) ?? null;
+      const methods = consoleMethodBindings.get(current.text);
+      return methods ? [...methods].sort().join('|') : null;
     }
     const access = propertyAccessParts(current);
     if (!access) {
@@ -606,7 +703,8 @@ function collectLoggingSymbols(sourceFile) {
   function resolveLoggerMethod(expression) {
     const current = unwrapExpression(expression);
     if (ts.isIdentifier(current)) {
-      return loggerMethodBindings.get(current.text) ?? null;
+      const methods = loggerMethodBindings.get(current.text);
+      return methods ? [...methods].sort().join('|') : null;
     }
     const access = propertyAccessParts(current);
     return access &&
