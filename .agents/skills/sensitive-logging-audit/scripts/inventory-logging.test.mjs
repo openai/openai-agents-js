@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { inventorySource } from './inventory-logging.mjs';
+import { inventorySource, inventorySources } from './inventory-logging.mjs';
 
 test('inventories static and dynamic logger calls', () => {
   const findings = inventorySource(`
@@ -238,6 +238,36 @@ test('resolves Logger-typed object members', () => {
   );
 });
 
+test('resolves imported Logger-valued object members', () => {
+  const findings = inventorySources({
+    'types.ts': `
+      export type Logger = {
+        namespace: string;
+        debug(message: string, ...args: unknown[]): void;
+        error(message: string, ...args: unknown[]): void;
+        warn(message: string, ...args: unknown[]): void;
+        dontLogModelData: boolean;
+        dontLogToolData: boolean;
+      };
+      export interface ReportOptions {
+        logger: Logger;
+      }
+    `,
+    'report.ts': `
+      import type { ReportOptions } from './types';
+
+      export function report(options: ReportOptions) {
+        options.logger.error('Imported options failed', secret);
+      }
+    `,
+  });
+
+  assert.deepEqual(
+    findings.map(({ file, method }) => ({ file, method })),
+    [{ file: 'report.ts', method: 'error' }],
+  );
+});
+
 test('resolves Logger subtypes declared with heritage clauses', () => {
   const findings = inventorySource(`
     interface AuditLogger extends Logger {}
@@ -273,6 +303,26 @@ test('inventories every direct console method', () => {
       { kind: 'console', method: 'dir', policy: 'none' },
       { kind: 'console', method: 'table', policy: 'none' },
       { kind: 'console', method: 'trace', policy: 'none' },
+    ],
+  );
+});
+
+test('recognizes globally qualified console receivers', () => {
+  const findings = inventorySource(`
+    globalThis.console.error('Global failure', secret);
+    window.console.warn(secret);
+    global.console.log(payload);
+    const sink = globalThis.console;
+    sink.trace(error);
+  `);
+
+  assert.deepEqual(
+    findings.map(({ kind, method }) => ({ kind, method })),
+    [
+      { kind: 'console', method: 'error' },
+      { kind: 'console', method: 'warn' },
+      { kind: 'console', method: 'log' },
+      { kind: 'console', method: 'trace' },
     ],
   );
 });
@@ -397,6 +447,35 @@ test('fingerprints identify switch branches without order-dependent reuse', () =
   assert.match(findings[0].context, /switch:kind>case:'model'/);
   assert.match(findings[1].context, /switch:kind>case:'tool'/);
   assert.match(findings[2].context, /switch:kind>case:default/);
+});
+
+test('fingerprints identify try branches without order-dependent reuse', () => {
+  const source = `
+    const logger = getLogger('fixture');
+    try {
+      logger.error('Operation failed', error);
+    } catch {
+      logger.error('Operation failed', error);
+    } finally {
+      logger.error('Operation failed', error);
+    }
+  `;
+  const sourceWithEarlierCall = source.replace(
+    'try {',
+    `logger.error('Operation failed', error);
+    try {`,
+  );
+  const findings = inventorySource(source);
+  const shiftedFindings = inventorySource(sourceWithEarlierCall);
+
+  assert.equal(new Set(findings.map(({ fingerprint }) => fingerprint)).size, 3);
+  assert.deepEqual(
+    shiftedFindings.slice(1).map(({ fingerprint }) => fingerprint),
+    findings.map(({ fingerprint }) => fingerprint),
+  );
+  assert.match(findings[0].context, /try:try/);
+  assert.match(findings[1].context, /try:catch/);
+  assert.match(findings[2].context, /try:finally/);
 });
 
 test('normalizes path separators before recording and hashing', () => {

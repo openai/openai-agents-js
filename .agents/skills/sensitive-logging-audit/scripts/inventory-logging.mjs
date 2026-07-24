@@ -2,11 +2,20 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { relative, resolve } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
 import process from 'node:process';
 import ts from 'typescript';
 
 const LOGGER_METHODS = new Set(['debug', 'error', 'info', 'log', 'warn']);
+const LOGGER_TYPE_PROPERTIES = [
+  'debug',
+  'dontLogModelData',
+  'dontLogToolData',
+  'error',
+  'namespace',
+  'warn',
+];
+const STANDARD_GLOBALS = new Set(['global', 'globalThis', 'window']);
 const SENSITIVE_HELPERS = new Map([
   ['logModelActionError', 'model-helper'],
   ['logModelActionWarning', 'model-helper'],
@@ -102,6 +111,31 @@ function propertyAccessParts(expression) {
   return null;
 }
 
+function isGloballyQualifiedConsole(expression) {
+  const access = propertyAccessParts(expression);
+  if (!access || access.method !== 'console') {
+    return false;
+  }
+  const receiver = unwrapExpression(access.receiver);
+  return ts.isIdentifier(receiver) && STANDARD_GLOBALS.has(receiver.text);
+}
+
+function checkerRecognizesLogger(expression, checker) {
+  if (!checker) {
+    return false;
+  }
+  try {
+    const type = checker.getApparentType(
+      checker.getNonNullableType(checker.getTypeAtLocation(expression)),
+    );
+    return LOGGER_TYPE_PROPERTIES.every((property) =>
+      checker.getPropertyOfType(type, property),
+    );
+  } catch {
+    return false;
+  }
+}
+
 function normalizeFilePath(path) {
   return path.replace(/\\/g, '/');
 }
@@ -184,7 +218,7 @@ function heritageReferencesLogger(node, loggerTypeBindings) {
   );
 }
 
-function collectLoggingSymbols(sourceFile) {
+function collectLoggingSymbols(sourceFile, checker) {
   const consoleBindings = new Set(['console']);
   const consoleMethodBindings = new Map();
   const loggerBindings = new Set();
@@ -321,6 +355,9 @@ function collectLoggingSymbols(sourceFile) {
       if (ts.isIdentifier(current)) {
         return consoleBindings.has(current.text);
       }
+      if (isGloballyQualifiedConsole(current)) {
+        return true;
+      }
       if (ts.isConditionalExpression(current)) {
         return (
           isKnownConsoleExpression(current.whenTrue) ||
@@ -397,6 +434,9 @@ function collectLoggingSymbols(sourceFile) {
     }
     function isKnownLoggerExpression(expression) {
       const current = unwrapExpression(expression);
+      if (checkerRecognizesLogger(current, checker)) {
+        return true;
+      }
       if (ts.isIdentifier(current)) {
         return loggerBindings.has(current.text);
       }
@@ -633,6 +673,9 @@ function collectLoggingSymbols(sourceFile) {
 
   function isLoggerReceiver(expression) {
     const current = unwrapExpression(expression);
+    if (checkerRecognizesLogger(current, checker)) {
+      return true;
+    }
     if (ts.isIdentifier(current)) {
       return loggerBindings.has(current.text);
     }
@@ -695,7 +738,8 @@ function collectLoggingSymbols(sourceFile) {
       return null;
     }
     const receiver = unwrapExpression(access.receiver);
-    return ts.isIdentifier(receiver) && consoleBindings.has(receiver.text)
+    return (ts.isIdentifier(receiver) && consoleBindings.has(receiver.text)) ||
+      isGloballyQualifiedConsole(receiver)
       ? access.method
       : null;
   }
@@ -881,6 +925,15 @@ function callSiteContext(node, sourceFile) {
     if (ts.isSwitchStatement(current)) {
       parts.push(`switch:${normalizeNodeText(current.expression, sourceFile)}`);
     }
+    if (ts.isTryStatement(current)) {
+      const branch =
+        current.tryBlock === child
+          ? 'try'
+          : current.catchClause === child
+            ? 'catch'
+            : 'finally';
+      parts.push(`try:${branch}`);
+    }
     if (ts.isCallExpression(current) && current.arguments.includes(child)) {
       const callbackIndex = current.arguments.indexOf(child);
       parts.push(
@@ -952,18 +1005,7 @@ function signalsFor(text) {
   return signals;
 }
 
-export function inventorySource(sourceText, filePath = 'fixture.ts') {
-  filePath = normalizeFilePath(filePath);
-  const scriptKind = filePath.endsWith('.tsx')
-    ? ts.ScriptKind.TSX
-    : ts.ScriptKind.TS;
-  const sourceFile = ts.createSourceFile(
-    filePath,
-    sourceText,
-    ts.ScriptTarget.Latest,
-    true,
-    scriptKind,
-  );
+function inventoryParsedSource(sourceFile, filePath, checker = null) {
   const findings = [];
   const occurrences = new Map();
   const {
@@ -971,7 +1013,7 @@ export function inventorySource(sourceText, filePath = 'fixture.ts') {
     resolveConsoleMethod,
     resolveLoggerMethod,
     resolveSensitiveHelper,
-  } = collectLoggingSymbols(sourceFile);
+  } = collectLoggingSymbols(sourceFile, checker);
 
   function recordCall(call, kind, method, policy) {
     const start = sourceFile.getLineAndCharacterOfPosition(call.getStart());
@@ -1056,6 +1098,92 @@ export function inventorySource(sourceText, filePath = 'fixture.ts') {
   return findings;
 }
 
+export function inventorySource(sourceText, filePath = 'fixture.ts') {
+  filePath = normalizeFilePath(filePath);
+  const scriptKind = filePath.endsWith('.tsx')
+    ? ts.ScriptKind.TSX
+    : ts.ScriptKind.TS;
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    scriptKind,
+  );
+  return inventoryParsedSource(sourceFile, filePath);
+}
+
+export function inventorySources(sources) {
+  const virtualRoot = resolve('/__sensitive_logging_inventory__');
+  const entries = Object.entries(sources).map(([filePath, sourceText]) => {
+    const normalizedPath = normalizeFilePath(filePath).replace(/^\/+/, '');
+    return {
+      absolutePath: resolve(virtualRoot, normalizedPath),
+      filePath: normalizedPath,
+      sourceText,
+    };
+  });
+  const sourceByPath = new Map(
+    entries.map((entry) => [entry.absolutePath, entry.sourceText]),
+  );
+  const options = {
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    noEmit: true,
+    skipLibCheck: true,
+    target: ts.ScriptTarget.Latest,
+  };
+  const host = ts.createCompilerHost(options);
+  const defaultDirectoryExists = host.directoryExists?.bind(host);
+  const defaultFileExists = host.fileExists.bind(host);
+  const defaultGetSourceFile = host.getSourceFile.bind(host);
+  const defaultRealpath = host.realpath?.bind(host);
+  const defaultReadFile = host.readFile.bind(host);
+  host.directoryExists = (directoryName) => {
+    const absoluteDirectory = resolve(directoryName);
+    return (
+      absoluteDirectory === virtualRoot ||
+      [...sourceByPath.keys()].some((fileName) =>
+        fileName.startsWith(`${absoluteDirectory}/`),
+      ) ||
+      defaultDirectoryExists?.(directoryName) === true
+    );
+  };
+  host.fileExists = (fileName) =>
+    sourceByPath.has(resolve(fileName)) || defaultFileExists(fileName);
+  host.realpath = (fileName) =>
+    sourceByPath.has(resolve(fileName))
+      ? resolve(fileName)
+      : (defaultRealpath?.(fileName) ?? fileName);
+  host.readFile = (fileName) =>
+    sourceByPath.get(resolve(fileName)) ?? defaultReadFile(fileName);
+  host.getSourceFile = (fileName, languageVersion, onError) => {
+    const sourceText = sourceByPath.get(resolve(fileName));
+    return sourceText === undefined
+      ? defaultGetSourceFile(fileName, languageVersion, onError)
+      : ts.createSourceFile(
+          fileName,
+          sourceText,
+          languageVersion,
+          true,
+          fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+        );
+  };
+  host.getCurrentDirectory = () => virtualRoot;
+  const program = ts.createProgram({
+    rootNames: entries.map((entry) => entry.absolutePath),
+    options,
+    host,
+  });
+  const checker = program.getTypeChecker();
+  return entries.flatMap((entry) => {
+    const sourceFile = program.getSourceFile(entry.absolutePath);
+    return sourceFile
+      ? inventoryParsedSource(sourceFile, entry.filePath, checker)
+      : [];
+  });
+}
+
 function summarize(findings) {
   const dynamic = findings.filter(
     (finding) => finding.shape !== 'static-message',
@@ -1119,6 +1247,36 @@ Default roots: packages/*/src
 `;
 }
 
+function createInventoryProgram(cwd, absolutePaths) {
+  let compilerOptions = {
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Node10,
+    noEmit: true,
+    skipLibCheck: true,
+    target: ts.ScriptTarget.Latest,
+  };
+  const configPath = ts.findConfigFile(cwd, ts.sys.fileExists, 'tsconfig.json');
+  if (configPath) {
+    const loaded = ts.readConfigFile(configPath, ts.sys.readFile);
+    if (!loaded.error) {
+      const parsed = ts.parseJsonConfigFileContent(
+        loaded.config,
+        ts.sys,
+        dirname(configPath),
+      );
+      compilerOptions = {
+        ...parsed.options,
+        noEmit: true,
+        skipLibCheck: true,
+      };
+    }
+  }
+  return ts.createProgram({
+    rootNames: absolutePaths,
+    options: compilerOptions,
+  });
+}
+
 export function run(argv = process.argv.slice(2)) {
   const options = parseArguments(argv);
   if (options.help) {
@@ -1141,13 +1299,16 @@ export function run(argv = process.argv.slice(2)) {
             }
           });
 
-  const findings = roots
-    .flatMap(collectSourceFiles)
-    .sort()
-    .flatMap((absolutePath) => {
-      const filePath = normalizeFilePath(relative(cwd, absolutePath));
-      return inventorySource(readFileSync(absolutePath, 'utf8'), filePath);
-    });
+  const absolutePaths = roots.flatMap(collectSourceFiles).sort();
+  const program = createInventoryProgram(cwd, absolutePaths);
+  const checker = program.getTypeChecker();
+  const findings = absolutePaths.flatMap((absolutePath) => {
+    const filePath = normalizeFilePath(relative(cwd, absolutePath));
+    const sourceFile = program.getSourceFile(absolutePath);
+    return sourceFile
+      ? inventoryParsedSource(sourceFile, filePath, checker)
+      : inventorySource(readFileSync(absolutePath, 'utf8'), filePath);
+  });
   const summary = summarize(findings);
 
   if (options.format === 'json') {
