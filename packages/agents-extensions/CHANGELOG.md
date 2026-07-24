@@ -1,5 +1,36 @@
 # @openai/agents-extensions
 
+## 0.14.0
+
+### Minor Changes
+
+- 67e9733: feat: disable sensitive model and tool data logging by default with a programmatic opt-in
+
+### Patch Changes
+
+- 929160b: feat: add Vercel S3 bucket mount support
+- f7771c1: feat: add default task and turn tracing with a per-run opt-out
+- b0aaeec: fix: preserve AI SDK v3 image tool outputs as image URLs, data, and file IDs
+- 02ef342: feat: add Programmatic Tool Calling with caller-aware replay, runtime-validated Zod outputs, configuration preflight, examples, and explicit unsupported-adapter errors
+- b04baf0: fix(ai-sdk): flush the pending assistant message before user and system turns
+
+  Provider-executed tool search folds its result into the in-progress assistant message and leaves it pending (no flush). The `user` and `system` message branches in `itemsToLanguageV2Messages` did not flush that pending assistant message before pushing their own, so a server tool-search turn followed by a new user turn emitted the assistant message last — the request ended on an assistant message and Anthropic rejected it as an unintended prefill. Route all turn-boundary branches through a shared `flushCurrentAssistantMessage()` helper so the pending assistant is always flushed first.
+
+- e8a4ffa: fix: support AI SDK v4 models and AI SDK 7 peers (#1499)
+- fa7c36f: fix: honor sensitive logging flags across runtime error and payload paths
+- a3092ca: fix: distinguish missing sandbox paths from inaccessible files and provider failures
+- d601be6: fix: pin and verify rclone sandbox installs
+- Updated dependencies [f7771c1]
+- Updated dependencies [457166e]
+- Updated dependencies [02ef342]
+- Updated dependencies [b45fd21]
+- Updated dependencies [efdd60e]
+- Updated dependencies [fa7c36f]
+- Updated dependencies [67e9733]
+- Updated dependencies [a3092ca]
+- Updated dependencies [68cc86b]
+  - @openai/agents-core@0.14.0
+
 ## 0.13.5
 
 ### Patch Changes
