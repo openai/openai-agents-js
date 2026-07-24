@@ -102,14 +102,259 @@ function propertyAccessParts(expression) {
   return null;
 }
 
-function isLoggerReceiver(expression, sourceFile) {
-  const text = expression.getText(sourceFile);
-  return /logger$/i.test(text);
-}
-
 function isConsoleReceiver(expression) {
   const unwrapped = unwrapExpression(expression);
   return ts.isIdentifier(unwrapped) && unwrapped.text === 'console';
+}
+
+function normalizeFilePath(path) {
+  return path.replace(/\\/g, '/');
+}
+
+function importName(specifier) {
+  return specifier.propertyName?.text ?? specifier.name.text;
+}
+
+function isLoggerModule(moduleName) {
+  return /(?:^|\/)logger(?:\.[cm]?[jt]s)?$/.test(moduleName);
+}
+
+function propertyNameText(name, sourceFile) {
+  return name ? normalizeNodeText(name, sourceFile) : null;
+}
+
+function typeReferencesLogger(typeNode, loggerTypeBindings) {
+  let found = false;
+  function visit(current) {
+    if (found) {
+      return;
+    }
+    if (
+      ts.isTypeReferenceNode(current) &&
+      ((ts.isIdentifier(current.typeName) &&
+        loggerTypeBindings.has(current.typeName.text)) ||
+        (ts.isQualifiedName(current.typeName) &&
+          current.typeName.right.text === 'Logger'))
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(current, visit);
+  }
+  if (typeNode) {
+    visit(typeNode);
+  }
+  return found;
+}
+
+function collectLoggerSymbols(sourceFile) {
+  const loggerBindings = new Set();
+  const loggerFactoryBindings = new Set(['getLogger']);
+  const loggerNamespaceBindings = new Set();
+  const loggerPropertyNames = new Set();
+  const loggerTypeBindings = new Set(['Logger']);
+
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) {
+      continue;
+    }
+    const moduleName = ts.isStringLiteral(statement.moduleSpecifier)
+      ? statement.moduleSpecifier.text
+      : '';
+    const clause = statement.importClause;
+    if (!clause) {
+      continue;
+    }
+    if (clause.name && isLoggerModule(moduleName)) {
+      loggerBindings.add(clause.name.text);
+    }
+    const bindings = clause.namedBindings;
+    if (bindings && ts.isNamespaceImport(bindings)) {
+      loggerNamespaceBindings.add(bindings.name.text);
+      continue;
+    }
+    if (!bindings || !ts.isNamedImports(bindings)) {
+      continue;
+    }
+    for (const specifier of bindings.elements) {
+      const imported = importName(specifier);
+      const local = specifier.name.text;
+      if (imported === 'getLogger') {
+        loggerFactoryBindings.add(local);
+      } else if (imported === 'logger') {
+        loggerBindings.add(local);
+      } else if (imported === 'Logger') {
+        loggerTypeBindings.add(local);
+      }
+    }
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    function add(set, value) {
+      if (value && !set.has(value)) {
+        set.add(value);
+        changed = true;
+      }
+    }
+    function isLoggerFactoryCall(expression) {
+      const current = unwrapExpression(expression);
+      if (!ts.isCallExpression(current)) {
+        return false;
+      }
+      const callee = unwrapExpression(current.expression);
+      if (ts.isIdentifier(callee) && loggerFactoryBindings.has(callee.text)) {
+        return true;
+      }
+      const access = propertyAccessParts(callee);
+      return Boolean(
+        access &&
+        access.method === 'getLogger' &&
+        ts.isIdentifier(unwrapExpression(access.receiver)) &&
+        loggerNamespaceBindings.has(unwrapExpression(access.receiver).text),
+      );
+    }
+    function isKnownLoggerExpression(expression) {
+      const current = unwrapExpression(expression);
+      if (ts.isIdentifier(current)) {
+        return loggerBindings.has(current.text);
+      }
+      if (isLoggerFactoryCall(current)) {
+        return true;
+      }
+      if (ts.isPropertyAccessExpression(current)) {
+        const propertyName = propertyNameText(current.name, sourceFile);
+        const receiver = unwrapExpression(current.expression);
+        return (
+          loggerPropertyNames.has(propertyName) ||
+          (ts.isIdentifier(receiver) &&
+            loggerNamespaceBindings.has(receiver.text) &&
+            propertyName === 'logger')
+        );
+      }
+      if (ts.isConditionalExpression(current)) {
+        return (
+          isKnownLoggerExpression(current.whenTrue) ||
+          isKnownLoggerExpression(current.whenFalse)
+        );
+      }
+      if (
+        ts.isBinaryExpression(current) &&
+        current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+      ) {
+        return (
+          isKnownLoggerExpression(current.left) ||
+          isKnownLoggerExpression(current.right)
+        );
+      }
+      return false;
+    }
+    function recordDeclaration(declaration) {
+      if (
+        declaration.type &&
+        typeReferencesLogger(declaration.type, loggerTypeBindings)
+      ) {
+        if (ts.isPropertyDeclaration(declaration)) {
+          add(
+            loggerPropertyNames,
+            propertyNameText(declaration.name, sourceFile),
+          );
+        } else if (ts.isIdentifier(declaration.name)) {
+          add(loggerBindings, declaration.name.text);
+          if (ts.isParameter(declaration) && declaration.modifiers?.length) {
+            add(
+              loggerPropertyNames,
+              propertyNameText(declaration.name, sourceFile),
+            );
+          }
+        }
+      }
+      if (
+        !declaration.initializer ||
+        !isKnownLoggerExpression(declaration.initializer)
+      ) {
+        return;
+      }
+      if (ts.isPropertyDeclaration(declaration)) {
+        add(
+          loggerPropertyNames,
+          propertyNameText(declaration.name, sourceFile),
+        );
+      } else if (ts.isIdentifier(declaration.name)) {
+        add(loggerBindings, declaration.name.text);
+      } else {
+        add(
+          loggerPropertyNames,
+          propertyNameText(declaration.name, sourceFile),
+        );
+      }
+    }
+    function visit(current) {
+      if (
+        ts.isTypeAliasDeclaration(current) &&
+        typeReferencesLogger(current.type, loggerTypeBindings)
+      ) {
+        add(loggerTypeBindings, current.name.text);
+      }
+      if (
+        ts.isVariableDeclaration(current) ||
+        ts.isParameter(current) ||
+        ts.isPropertyDeclaration(current)
+      ) {
+        recordDeclaration(current);
+      }
+      if (
+        ts.isBinaryExpression(current) &&
+        current.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        isKnownLoggerExpression(current.right)
+      ) {
+        const target = unwrapExpression(current.left);
+        if (ts.isIdentifier(target)) {
+          add(loggerBindings, target.text);
+        } else if (ts.isPropertyAccessExpression(target)) {
+          add(loggerPropertyNames, propertyNameText(target.name, sourceFile));
+        }
+      }
+      ts.forEachChild(current, visit);
+    }
+    visit(sourceFile);
+  }
+
+  function isLoggerReceiver(expression) {
+    const current = unwrapExpression(expression);
+    if (ts.isIdentifier(current)) {
+      return loggerBindings.has(current.text);
+    }
+    if (ts.isCallExpression(current)) {
+      const callee = unwrapExpression(current.expression);
+      if (ts.isIdentifier(callee) && loggerFactoryBindings.has(callee.text)) {
+        return true;
+      }
+      const access = propertyAccessParts(callee);
+      return Boolean(
+        access &&
+        access.method === 'getLogger' &&
+        ts.isIdentifier(unwrapExpression(access.receiver)) &&
+        loggerNamespaceBindings.has(unwrapExpression(access.receiver).text),
+      );
+    }
+    if (ts.isPropertyAccessExpression(current)) {
+      const propertyName = propertyNameText(current.name, sourceFile);
+      const receiver = unwrapExpression(current.expression);
+      return (
+        loggerPropertyNames.has(propertyName) ||
+        (receiver.kind === ts.SyntaxKind.ThisKeyword &&
+          propertyName === 'logger') ||
+        (ts.isIdentifier(receiver) &&
+          loggerNamespaceBindings.has(receiver.text) &&
+          propertyName === 'logger')
+      );
+    }
+    return false;
+  }
+
+  return { isLoggerReceiver };
 }
 
 function isStaticString(expression) {
@@ -157,7 +402,13 @@ function enclosingRejectedValueIdentifier(node) {
         const access = propertyAccessParts(call.expression);
         const isRejectionHandler =
           (access?.method === 'catch' && callbackIndex === 0) ||
-          (access?.method === 'then' && callbackIndex === 1);
+          (access?.method === 'then' && callbackIndex === 1) ||
+          ((access?.method === 'on' ||
+            access?.method === 'once' ||
+            access?.method === 'addListener') &&
+            callbackIndex === 1 &&
+            ts.isStringLiteral(call.arguments[0]) &&
+            call.arguments[0].text === 'unhandledRejection');
         if (isRejectionHandler) {
           const parameter = callback.parameters[0];
           return parameter && ts.isIdentifier(parameter.name)
@@ -281,6 +532,7 @@ function signalsFor(text) {
 }
 
 export function inventorySource(sourceText, filePath = 'fixture.ts') {
+  filePath = normalizeFilePath(filePath);
   const scriptKind = filePath.endsWith('.tsx')
     ? ts.ScriptKind.TSX
     : ts.ScriptKind.TS;
@@ -293,6 +545,7 @@ export function inventorySource(sourceText, filePath = 'fixture.ts') {
   );
   const findings = [];
   const occurrences = new Map();
+  const { isLoggerReceiver } = collectLoggerSymbols(sourceFile);
 
   function recordCall(call, kind, method, policy) {
     const start = sourceFile.getLineAndCharacterOfPosition(call.getStart());
@@ -348,7 +601,7 @@ export function inventorySource(sourceText, filePath = 'fixture.ts') {
         if (access && LOGGER_METHODS.has(access.method)) {
           if (isConsoleReceiver(access.receiver)) {
             recordCall(node, 'console', access.method, 'none');
-          } else if (isLoggerReceiver(access.receiver, sourceFile)) {
+          } else if (isLoggerReceiver(access.receiver)) {
             recordCall(
               node,
               'logger',
@@ -455,7 +708,7 @@ export function run(argv = process.argv.slice(2)) {
     .flatMap(collectSourceFiles)
     .sort()
     .flatMap((absolutePath) => {
-      const filePath = relative(cwd, absolutePath);
+      const filePath = normalizeFilePath(relative(cwd, absolutePath));
       return inventorySource(readFileSync(absolutePath, 'utf8'), filePath);
     });
   const summary = summarize(findings);

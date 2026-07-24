@@ -5,6 +5,7 @@ import { inventorySource } from './inventory-logging.mjs';
 
 test('inventories static and dynamic logger calls', () => {
   const findings = inventorySource(`
+    const logger = getLogger('fixture');
     logger.debug('ready');
     logger.warn(\`Failed for \${requestId}\`);
     logger.error('Request failed', error, response);
@@ -22,6 +23,7 @@ test('inventories static and dynamic logger calls', () => {
 
 test('recognizes model and tool policy boundaries', () => {
   const findings = inventorySource(`
+    const logger = getLogger('fixture');
     if (!logger.dontLogModelData) {
       logger.debug('Response:', response);
     }
@@ -53,6 +55,7 @@ test('recognizes model and tool policy boundaries', () => {
 
 test('flags caught values passed to logger and console calls', () => {
   const findings = inventorySource(`
+    const appLogger: Logger = getLogger('app');
     try {
       await run();
     } catch (reason) {
@@ -76,18 +79,60 @@ test('flags caught values passed to logger and console calls', () => {
 
 test('flags promise rejection handler values as caught values', () => {
   const findings = inventorySource(`
+    const logger = getLogger('fixture');
     run().catch((reason) => logger.warn('Run failed', reason));
     run().then(undefined, (error) => console.error('Run failed', error));
+    process.on('unhandledRejection', (reason, promise) => {
+      logger.error('Unhandled rejection', reason, promise);
+    });
   `);
 
   assert.deepEqual(
     findings.map(({ catchValue }) => catchValue),
-    ['reason', 'error'],
+    ['reason', 'error', 'reason'],
+  );
+});
+
+test('resolves logger factories, imports, aliases, properties, and types', () => {
+  const findings = inventorySource(`
+    import defaultSink from './logger';
+    import * as core from '@openai/agents-core';
+    import { getLogger as createSink, logger as sharedSink } from './logger';
+    import type { Logger as Sink } from './logger';
+
+    const audit = createSink('audit');
+    const alias = audit;
+    const namespaced = core.getLogger('namespaced');
+    defaultSink.error('Default failed', response);
+    sharedSink.warn('Shared failed', response);
+    audit.error('Audit failed', response);
+    alias.info('Alias failed', response);
+    namespaced.error('Namespaced failed', response);
+
+    class Service {
+      private readonly sink = createSink('service');
+      report(problem, injected: Sink) {
+        this.sink.error('Service failed', problem);
+        injected.error('Injected failed', problem);
+      }
+    }
+
+    class InheritedService {
+      report(problem) {
+        this.logger.error('Inherited logger failed', problem);
+      }
+    }
+  `);
+
+  assert.deepEqual(
+    findings.map(({ method }) => method),
+    ['error', 'warn', 'error', 'info', 'error', 'error', 'error', 'error'],
   );
 });
 
 test('fingerprints distinguish call sites and survive unrelated line shifts', () => {
   const source = `
+    const logger = getLogger('fixture');
     function logModel(error) {
       logger.error('Operation failed', error);
     }
@@ -107,6 +152,24 @@ test('fingerprints distinguish call sites and survive unrelated line shifts', ()
     shiftedFindings.map(({ fingerprint }) => fingerprint),
     findings.map(({ fingerprint }) => fingerprint),
   );
+});
+
+test('normalizes path separators before recording and hashing', () => {
+  const source = `
+    const logger = getLogger('fixture');
+    logger.error('Operation failed', error);
+  `;
+  const windowsFinding = inventorySource(
+    source,
+    'packages\\agents-core\\src\\fixture.ts',
+  )[0];
+  const posixFinding = inventorySource(
+    source,
+    'packages/agents-core/src/fixture.ts',
+  )[0];
+
+  assert.equal(windowsFinding.file, 'packages/agents-core/src/fixture.ts');
+  assert.equal(windowsFinding.fingerprint, posixFinding.fingerprint);
 });
 
 test('ignores unrelated methods that happen to share logger method names', () => {
