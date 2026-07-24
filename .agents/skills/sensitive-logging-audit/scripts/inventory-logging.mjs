@@ -7,6 +7,7 @@ import process from 'node:process';
 import ts from 'typescript';
 
 const LOGGER_METHODS = new Set(['debug', 'error', 'info', 'log', 'warn']);
+const COMPUTED_METHOD = 'computed';
 const LOGGER_TYPE_PROPERTIES = [
   'debug',
   'dontLogModelData',
@@ -93,19 +94,19 @@ function propertyAccessParts(expression) {
   const unwrapped = unwrapExpression(expression);
   if (ts.isPropertyAccessExpression(unwrapped)) {
     return {
+      computed: false,
       receiver: unwrapped.expression,
       method: unwrapped.name.text,
     };
   }
-  if (
-    ts.isElementAccessExpression(unwrapped) &&
-    unwrapped.argumentExpression &&
-    (ts.isStringLiteral(unwrapped.argumentExpression) ||
-      ts.isNoSubstitutionTemplateLiteral(unwrapped.argumentExpression))
-  ) {
+  if (ts.isElementAccessExpression(unwrapped) && unwrapped.argumentExpression) {
+    const isStatic =
+      ts.isStringLiteral(unwrapped.argumentExpression) ||
+      ts.isNoSubstitutionTemplateLiteral(unwrapped.argumentExpression);
     return {
+      computed: !isStatic,
       receiver: unwrapped.expression,
-      method: unwrapped.argumentExpression.text,
+      method: isStatic ? unwrapped.argumentExpression.text : COMPUTED_METHOD,
     };
   }
   return null;
@@ -477,7 +478,7 @@ function collectLoggingSymbols(sourceFile, checker) {
       }
       const access = propertyAccessParts(current);
       return access &&
-        LOGGER_METHODS.has(access.method) &&
+        (access.computed || LOGGER_METHODS.has(access.method)) &&
         isKnownLoggerExpression(access.receiver)
         ? [access.method]
         : [];
@@ -752,7 +753,7 @@ function collectLoggingSymbols(sourceFile, checker) {
     }
     const access = propertyAccessParts(current);
     return access &&
-      LOGGER_METHODS.has(access.method) &&
+      (access.computed || LOGGER_METHODS.has(access.method)) &&
       isLoggerReceiver(access.receiver)
       ? access.method
       : null;
@@ -818,6 +819,20 @@ function bindingIdentifiers(name) {
   return identifiers;
 }
 
+function isRejectionCallbackArgument(call, callbackIndex) {
+  const access = propertyAccessParts(call.expression);
+  return (
+    (access?.method === 'catch' && callbackIndex === 0) ||
+    (access?.method === 'then' && callbackIndex === 1) ||
+    ((access?.method === 'on' ||
+      access?.method === 'once' ||
+      access?.method === 'addListener') &&
+      callbackIndex === 1 &&
+      ts.isStringLiteral(call.arguments[0]) &&
+      call.arguments[0].text === 'unhandledRejection')
+  );
+}
+
 function enclosingRejectedValueIdentifiers(node) {
   const identifiers = new Set();
   let current = node.parent;
@@ -835,17 +850,7 @@ function enclosingRejectedValueIdentifiers(node) {
       const call = callback.parent;
       if (ts.isCallExpression(call)) {
         const callbackIndex = call.arguments.indexOf(callback);
-        const access = propertyAccessParts(call.expression);
-        const isRejectionHandler =
-          (access?.method === 'catch' && callbackIndex === 0) ||
-          (access?.method === 'then' && callbackIndex === 1) ||
-          ((access?.method === 'on' ||
-            access?.method === 'once' ||
-            access?.method === 'addListener') &&
-            callbackIndex === 1 &&
-            ts.isStringLiteral(call.arguments[0]) &&
-            call.arguments[0].text === 'unhandledRejection');
-        if (isRejectionHandler) {
+        if (isRejectionCallbackArgument(call, callbackIndex)) {
           const parameter = callback.parameters[0];
           if (parameter) {
             for (const identifier of bindingIdentifiers(parameter.name)) {
@@ -1015,13 +1020,38 @@ function inventoryParsedSource(sourceFile, filePath, checker = null) {
     resolveSensitiveHelper,
   } = collectLoggingSymbols(sourceFile, checker);
 
-  function recordCall(call, kind, method, policy) {
-    const start = sourceFile.getLineAndCharacterOfPosition(call.getStart());
-    const normalizedCall = normalizeCallText(call, sourceFile);
-    const context = callSiteContext(call, sourceFile);
+  function recordFinding(
+    node,
+    normalizedCall,
+    kind,
+    method,
+    shape,
+    policy,
+    catchValue,
+  ) {
+    const start = sourceFile.getLineAndCharacterOfPosition(node.getStart());
+    const context = callSiteContext(node, sourceFile);
     const occurrenceKey = `${context}\0${normalizedCall}`;
     const occurrence = occurrences.get(occurrenceKey) ?? 0;
     occurrences.set(occurrenceKey, occurrence + 1);
+    findings.push({
+      fingerprint: fingerprint(filePath, context, normalizedCall, occurrence),
+      file: filePath,
+      line: start.line + 1,
+      column: start.character + 1,
+      kind,
+      method,
+      shape,
+      policy,
+      catchValue,
+      context,
+      signals: signalsFor(normalizedCall),
+      call: normalizedCall,
+    });
+  }
+
+  function recordCall(call, kind, method, policy) {
+    const normalizedCall = normalizeCallText(call, sourceFile);
     const catchValues = enclosingRejectedValueIdentifiers(call);
     const referencedCatchValues = catchValues.filter((catchValue) =>
       call.arguments.some((argument) =>
@@ -1030,27 +1060,73 @@ function inventoryParsedSource(sourceFile, filePath, checker = null) {
     );
     const dynamicMessage = hasDynamicMessage(call);
     const hasPayload = call.arguments.length > 1;
-    findings.push({
-      fingerprint: fingerprint(filePath, context, normalizedCall, occurrence),
-      file: filePath,
-      line: start.line + 1,
-      column: start.character + 1,
+    recordFinding(
+      call,
+      normalizedCall,
       kind,
       method,
-      shape: hasPayload
+      hasPayload
         ? 'payload'
         : dynamicMessage
           ? 'dynamic-message'
           : 'static-message',
       policy,
-      catchValue:
-        referencedCatchValues.length > 0
-          ? referencedCatchValues.join(', ')
-          : null,
-      context,
-      signals: signalsFor(normalizedCall),
-      call: normalizedCall,
-    });
+      referencedCatchValues.length > 0
+        ? referencedCatchValues.join(', ')
+        : null,
+    );
+  }
+
+  function recordCallbackReference(
+    reference,
+    kind,
+    method,
+    policy,
+    parentCall,
+    callbackIndex,
+  ) {
+    recordFinding(
+      reference,
+      normalizeNodeText(reference, sourceFile),
+      kind,
+      method,
+      'dynamic-message',
+      policy,
+      isRejectionCallbackArgument(parentCall, callbackIndex)
+        ? 'rejection reason'
+        : null,
+    );
+  }
+
+  function recordCallbackReferences(call, parentIsSink) {
+    if (parentIsSink) {
+      return;
+    }
+    for (const [callbackIndex, argument] of call.arguments.entries()) {
+      const consoleMethod = resolveConsoleMethod(argument);
+      if (consoleMethod) {
+        recordCallbackReference(
+          argument,
+          'console',
+          consoleMethod,
+          'none',
+          call,
+          callbackIndex,
+        );
+        continue;
+      }
+      const loggerMethod = resolveLoggerMethod(argument);
+      if (loggerMethod) {
+        recordCallbackReference(
+          argument,
+          'logger',
+          loggerMethod,
+          guardedPolicy(argument, sourceFile),
+          call,
+          callbackIndex,
+        );
+      }
+    }
   }
 
   function visit(node) {
@@ -1058,6 +1134,9 @@ function inventoryParsedSource(sourceFile, filePath, checker = null) {
       const consoleMethod = resolveConsoleMethod(node.expression);
       const loggerMethod = resolveLoggerMethod(node.expression);
       const sensitiveHelper = resolveSensitiveHelper(node.expression);
+      const parentIsSink = Boolean(
+        consoleMethod || loggerMethod || sensitiveHelper,
+      );
       if (consoleMethod) {
         recordCall(node, 'console', consoleMethod, 'none');
       } else if (loggerMethod) {
@@ -1078,7 +1157,7 @@ function inventoryParsedSource(sourceFile, filePath, checker = null) {
         const access = propertyAccessParts(node.expression);
         if (access) {
           if (
-            LOGGER_METHODS.has(access.method) &&
+            (access.computed || LOGGER_METHODS.has(access.method)) &&
             isLoggerReceiver(access.receiver)
           ) {
             recordCall(
@@ -1090,6 +1169,7 @@ function inventoryParsedSource(sourceFile, filePath, checker = null) {
           }
         }
       }
+      recordCallbackReferences(node, parentIsSink);
     }
     ts.forEachChild(node, visit);
   }

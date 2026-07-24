@@ -110,6 +110,43 @@ test('flags promise rejection handler values as caught values', () => {
   );
 });
 
+test('inventories logging method references passed as callbacks', () => {
+  const findings = inventorySource(`
+    const logger = getLogger('fixture');
+    const { warn } = logger;
+    run().catch(console.error);
+    run().then(undefined, logger.error);
+    process.on('unhandledRejection', warn);
+    items.forEach(console.log);
+  `);
+
+  assert.deepEqual(
+    findings.map(({ kind, method, catchValue }) => ({
+      kind,
+      method,
+      catchValue,
+    })),
+    [
+      {
+        kind: 'console',
+        method: 'error',
+        catchValue: 'rejection reason',
+      },
+      {
+        kind: 'logger',
+        method: 'error',
+        catchValue: 'rejection reason',
+      },
+      {
+        kind: 'logger',
+        method: 'warn',
+        catchValue: 'rejection reason',
+      },
+      { kind: 'console', method: 'log', catchValue: null },
+    ],
+  );
+});
+
 test('flags destructured rejection values as caught values', () => {
   const findings = inventorySource(`
     const logger = getLogger('fixture');
@@ -369,6 +406,26 @@ test('method alias analysis converges across reassignments', () => {
     [
       { kind: 'console', method: 'error|log' },
       { kind: 'logger', method: 'error|warn' },
+    ],
+  );
+});
+
+test('inventories computed methods on known logging receivers', () => {
+  const findings = inventorySource(`
+    const logger = getLogger('fixture');
+    const level: 'error' | 'warn' = choose();
+    logger[level]('Logger failed', secret);
+    console[level]('Console failed', secret);
+    const emit = console[level];
+    emit(payload);
+  `);
+
+  assert.deepEqual(
+    findings.map(({ kind, method }) => ({ kind, method })),
+    [
+      { kind: 'logger', method: 'computed' },
+      { kind: 'console', method: 'computed' },
+      { kind: 'console', method: 'computed' },
     ],
   );
 });
