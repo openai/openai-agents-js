@@ -102,11 +102,6 @@ function propertyAccessParts(expression) {
   return null;
 }
 
-function isConsoleReceiver(expression) {
-  const unwrapped = unwrapExpression(expression);
-  return ts.isIdentifier(unwrapped) && unwrapped.text === 'console';
-}
-
 function normalizeFilePath(path) {
   return path.replace(/\\/g, '/');
 }
@@ -120,34 +115,55 @@ function isLoggerModule(moduleName) {
 }
 
 function propertyNameText(name, sourceFile) {
-  return name ? normalizeNodeText(name, sourceFile) : null;
+  if (!name) {
+    return null;
+  }
+  if (
+    ts.isIdentifier(name) ||
+    ts.isStringLiteral(name) ||
+    ts.isNoSubstitutionTemplateLiteral(name) ||
+    ts.isNumericLiteral(name)
+  ) {
+    return name.text;
+  }
+  return normalizeNodeText(name, sourceFile);
 }
 
-function typeReferencesLogger(typeNode, loggerTypeBindings) {
-  let found = false;
-  function visit(current) {
-    if (found) {
-      return;
-    }
-    if (
-      ts.isTypeReferenceNode(current) &&
-      ((ts.isIdentifier(current.typeName) &&
-        loggerTypeBindings.has(current.typeName.text)) ||
-        (ts.isQualifiedName(current.typeName) &&
-          current.typeName.right.text === 'Logger'))
-    ) {
-      found = true;
-      return;
-    }
-    ts.forEachChild(current, visit);
+function typeIsLoggerValue(typeNode, loggerTypeBindings) {
+  if (!typeNode) {
+    return false;
   }
-  if (typeNode) {
-    visit(typeNode);
+  if (ts.isParenthesizedTypeNode(typeNode) || ts.isTypeOperatorNode(typeNode)) {
+    return typeIsLoggerValue(typeNode.type, loggerTypeBindings);
   }
-  return found;
+  if (ts.isUnionTypeNode(typeNode) || ts.isIntersectionTypeNode(typeNode)) {
+    return typeNode.types.some((type) =>
+      typeIsLoggerValue(type, loggerTypeBindings),
+    );
+  }
+  if (!ts.isTypeReferenceNode(typeNode)) {
+    return false;
+  }
+  if (
+    (ts.isIdentifier(typeNode.typeName) &&
+      loggerTypeBindings.has(typeNode.typeName.text)) ||
+    (ts.isQualifiedName(typeNode.typeName) &&
+      typeNode.typeName.right.text === 'Logger')
+  ) {
+    return true;
+  }
+  return (
+    ts.isIdentifier(typeNode.typeName) &&
+    ['Partial', 'Readonly', 'Required'].includes(typeNode.typeName.text) &&
+    typeNode.typeArguments?.some((type) =>
+      typeIsLoggerValue(type, loggerTypeBindings),
+    ) === true
+  );
 }
 
-function collectLoggerSymbols(sourceFile) {
+function collectLoggingSymbols(sourceFile) {
+  const consoleBindings = new Set(['console']);
+  const consoleMethodBindings = new Map();
   const loggerBindings = new Set();
   const loggerFactoryBindings = new Set(['getLogger']);
   const loggerNamespaceBindings = new Set();
@@ -213,6 +229,76 @@ function collectLoggerSymbols(sourceFile) {
         changed = true;
       }
     }
+    function addMapping(map, key, value) {
+      if (key && value && map.get(key) !== value) {
+        map.set(key, value);
+        changed = true;
+      }
+    }
+    function isKnownConsoleExpression(expression) {
+      const current = unwrapExpression(expression);
+      if (ts.isIdentifier(current)) {
+        return consoleBindings.has(current.text);
+      }
+      if (ts.isConditionalExpression(current)) {
+        return (
+          isKnownConsoleExpression(current.whenTrue) ||
+          isKnownConsoleExpression(current.whenFalse)
+        );
+      }
+      if (
+        ts.isBinaryExpression(current) &&
+        current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+      ) {
+        return (
+          isKnownConsoleExpression(current.left) ||
+          isKnownConsoleExpression(current.right)
+        );
+      }
+      return false;
+    }
+    function resolveConsoleMethod(expression) {
+      const current = unwrapExpression(expression);
+      if (ts.isIdentifier(current)) {
+        return consoleMethodBindings.get(current.text) ?? null;
+      }
+      const access = propertyAccessParts(current);
+      return access && isKnownConsoleExpression(access.receiver)
+        ? access.method
+        : null;
+    }
+    function recordConsoleDeclaration(declaration) {
+      if (!declaration.initializer) {
+        return;
+      }
+      if (ts.isIdentifier(declaration.name)) {
+        if (isKnownConsoleExpression(declaration.initializer)) {
+          add(consoleBindings, declaration.name.text);
+        }
+        addMapping(
+          consoleMethodBindings,
+          declaration.name.text,
+          resolveConsoleMethod(declaration.initializer),
+        );
+        return;
+      }
+      if (
+        !ts.isObjectBindingPattern(declaration.name) ||
+        !isKnownConsoleExpression(declaration.initializer)
+      ) {
+        return;
+      }
+      for (const element of declaration.name.elements) {
+        if (element.dotDotDotToken || !ts.isIdentifier(element.name)) {
+          continue;
+        }
+        addMapping(
+          consoleMethodBindings,
+          element.name.text,
+          propertyNameText(element.propertyName ?? element.name, sourceFile),
+        );
+      }
+    }
     function isLoggerFactoryCall(expression) {
       const current = unwrapExpression(expression);
       if (!ts.isCallExpression(current)) {
@@ -266,10 +352,7 @@ function collectLoggerSymbols(sourceFile) {
       return false;
     }
     function recordDeclaration(declaration) {
-      if (
-        declaration.type &&
-        typeReferencesLogger(declaration.type, loggerTypeBindings)
-      ) {
+      if (typeIsLoggerValue(declaration.type, loggerTypeBindings)) {
         if (ts.isPropertyDeclaration(declaration)) {
           add(
             loggerPropertyNames,
@@ -308,9 +391,15 @@ function collectLoggerSymbols(sourceFile) {
     function visit(current) {
       if (
         ts.isTypeAliasDeclaration(current) &&
-        typeReferencesLogger(current.type, loggerTypeBindings)
+        typeIsLoggerValue(current.type, loggerTypeBindings)
       ) {
         add(loggerTypeBindings, current.name.text);
+      }
+      if (
+        ts.isPropertySignature(current) &&
+        typeIsLoggerValue(current.type, loggerTypeBindings)
+      ) {
+        add(loggerPropertyNames, propertyNameText(current.name, sourceFile));
       }
       if (
         ts.isVariableDeclaration(current) ||
@@ -318,6 +407,9 @@ function collectLoggerSymbols(sourceFile) {
         ts.isPropertyDeclaration(current)
       ) {
         recordDeclaration(current);
+      }
+      if (ts.isVariableDeclaration(current)) {
+        recordConsoleDeclaration(current);
       }
       if (
         ts.isPropertyAssignment(current) &&
@@ -333,14 +425,25 @@ function collectLoggerSymbols(sourceFile) {
       }
       if (
         ts.isBinaryExpression(current) &&
-        current.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        isKnownLoggerExpression(current.right)
+        current.operatorToken.kind === ts.SyntaxKind.EqualsToken
       ) {
         const target = unwrapExpression(current.left);
+        if (isKnownLoggerExpression(current.right)) {
+          if (ts.isIdentifier(target)) {
+            add(loggerBindings, target.text);
+          } else if (ts.isPropertyAccessExpression(target)) {
+            add(loggerPropertyNames, propertyNameText(target.name, sourceFile));
+          }
+        }
         if (ts.isIdentifier(target)) {
-          add(loggerBindings, target.text);
-        } else if (ts.isPropertyAccessExpression(target)) {
-          add(loggerPropertyNames, propertyNameText(target.name, sourceFile));
+          if (isKnownConsoleExpression(current.right)) {
+            add(consoleBindings, target.text);
+          }
+          addMapping(
+            consoleMethodBindings,
+            target.text,
+            resolveConsoleMethod(current.right),
+          );
         }
       }
       ts.forEachChild(current, visit);
@@ -401,7 +504,22 @@ function collectLoggerSymbols(sourceFile) {
     return policy ? { method: access.method, policy } : null;
   }
 
-  return { isLoggerReceiver, resolveSensitiveHelper };
+  function resolveConsoleMethod(expression) {
+    const current = unwrapExpression(expression);
+    if (ts.isIdentifier(current)) {
+      return consoleMethodBindings.get(current.text) ?? null;
+    }
+    const access = propertyAccessParts(current);
+    if (!access) {
+      return null;
+    }
+    const receiver = unwrapExpression(access.receiver);
+    return ts.isIdentifier(receiver) && consoleBindings.has(receiver.text)
+      ? access.method
+      : null;
+  }
+
+  return { isLoggerReceiver, resolveConsoleMethod, resolveSensitiveHelper };
 }
 
 function isStaticString(expression) {
@@ -648,8 +766,8 @@ export function inventorySource(sourceText, filePath = 'fixture.ts') {
   );
   const findings = [];
   const occurrences = new Map();
-  const { isLoggerReceiver, resolveSensitiveHelper } =
-    collectLoggerSymbols(sourceFile);
+  const { isLoggerReceiver, resolveConsoleMethod, resolveSensitiveHelper } =
+    collectLoggingSymbols(sourceFile);
 
   function recordCall(call, kind, method, policy) {
     const start = sourceFile.getLineAndCharacterOfPosition(call.getStart());
@@ -691,8 +809,11 @@ export function inventorySource(sourceText, filePath = 'fixture.ts') {
 
   function visit(node) {
     if (ts.isCallExpression(node)) {
+      const consoleMethod = resolveConsoleMethod(node.expression);
       const sensitiveHelper = resolveSensitiveHelper(node.expression);
-      if (sensitiveHelper) {
+      if (consoleMethod) {
+        recordCall(node, 'console', consoleMethod, 'none');
+      } else if (sensitiveHelper) {
         recordCall(
           node,
           'sensitive-helper',
@@ -702,9 +823,7 @@ export function inventorySource(sourceText, filePath = 'fixture.ts') {
       } else {
         const access = propertyAccessParts(node.expression);
         if (access) {
-          if (isConsoleReceiver(access.receiver)) {
-            recordCall(node, 'console', access.method, 'none');
-          } else if (
+          if (
             LOGGER_METHODS.has(access.method) &&
             isLoggerReceiver(access.receiver)
           ) {

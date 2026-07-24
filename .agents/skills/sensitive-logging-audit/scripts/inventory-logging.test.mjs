@@ -183,6 +183,30 @@ test('resolves logger instances stored in object literals', () => {
   );
 });
 
+test('resolves Logger-typed object members', () => {
+  const findings = inventorySource(`
+    type ReportOptions = { logger?: Logger };
+    interface AuditOptions {
+      sink: Readonly<Logger>;
+    }
+
+    function report(options: { logger: Logger }) {
+      options.logger.error('Inline options failed', secret);
+    }
+    function reportAlias(options: ReportOptions) {
+      options.logger?.warn('Alias options failed', secret);
+    }
+    function reportInterface(options: AuditOptions) {
+      options.sink.info('Interface options failed', secret);
+    }
+  `);
+
+  assert.deepEqual(
+    findings.map(({ method }) => method),
+    ['error', 'warn', 'info'],
+  );
+});
+
 test('inventories every direct console method', () => {
   const findings = inventorySource(`
     console.dir(secret);
@@ -196,6 +220,30 @@ test('inventories every direct console method', () => {
       { kind: 'console', method: 'dir', policy: 'none' },
       { kind: 'console', method: 'table', policy: 'none' },
       { kind: 'console', method: 'trace', policy: 'none' },
+    ],
+  );
+});
+
+test('resolves console object and extracted method aliases', () => {
+  const findings = inventorySource(`
+    const sink = console;
+    const nestedSink = sink;
+    const { warn, log: emit } = nestedSink;
+    const trace = console.trace;
+
+    sink.error('Request failed', secret);
+    warn(secret);
+    emit(payload);
+    trace(error);
+  `);
+
+  assert.deepEqual(
+    findings.map(({ kind, method }) => ({ kind, method })),
+    [
+      { kind: 'console', method: 'error' },
+      { kind: 'console', method: 'warn' },
+      { kind: 'console', method: 'log' },
+      { kind: 'console', method: 'trace' },
     ],
   );
 });
