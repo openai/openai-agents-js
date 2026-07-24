@@ -1,5 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CallToolResultContent, MCPServer, MCPTool } from '../src/mcp';
+
+const mcpLogger = vi.hoisted(() => ({
+  debug: vi.fn(),
+  error: vi.fn(),
+  warn: vi.fn(),
+  dontLogModelData: false,
+  dontLogToolData: false,
+}));
 
 vi.mock('../src/logger', async () => {
   const actual =
@@ -10,8 +18,15 @@ vi.mock('../src/logger', async () => {
       const base = actual.getLogger(namespace);
       return {
         ...base,
-        error: () => {},
-        warn: () => {},
+        debug: mcpLogger.debug,
+        error: mcpLogger.error,
+        warn: mcpLogger.warn,
+        get dontLogModelData() {
+          return mcpLogger.dontLogModelData;
+        },
+        get dontLogToolData() {
+          return mcpLogger.dontLogToolData;
+        },
       };
     },
   };
@@ -158,6 +173,74 @@ async function withTimeout<T>(
 }
 
 describe('MCPServers', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mcpLogger.dontLogModelData = false;
+    mcpLogger.dontLogToolData = false;
+  });
+
+  it('sanitizes URL-derived server names when connecting fails', async () => {
+    const serverName =
+      'streamable-http: https://example.test/mcp?token=SECRET_MCP_NAME_123';
+    const server = new FlakyServer(serverName, 1);
+    mcpLogger.dontLogToolData = true;
+
+    const session = await connectMcpServers([server], {
+      connectTimeoutMs: null,
+      closeTimeoutMs: null,
+    });
+
+    expect(session.failed).toEqual([server]);
+    expect(mcpLogger.error).toHaveBeenCalledWith(
+      "Failed to connect MCP server 'streamable-http: https://example.test/mcp':",
+      'object',
+    );
+    expect(JSON.stringify(mcpLogger.debug.mock.calls)).not.toContain(
+      'SECRET_MCP_NAME_123',
+    );
+    expect(JSON.stringify(mcpLogger.error.mock.calls)).not.toContain(
+      'SECRET_MCP_NAME_123',
+    );
+  });
+
+  it('sanitizes URL-derived server names when closing fails', async () => {
+    const serverName =
+      'sse: https://example.test/mcp?token=SECRET_MCP_CLOSE_NAME_123';
+    const server = new FlakyCloseServer(serverName, 1);
+    mcpLogger.dontLogToolData = true;
+    const session = await connectMcpServers([server], {
+      connectTimeoutMs: null,
+      closeTimeoutMs: null,
+    });
+
+    await session.close();
+
+    expect(mcpLogger.error).toHaveBeenCalledWith(
+      "Failed to close MCP server 'sse: https://example.test/mcp':",
+      'object',
+    );
+    const calls = JSON.stringify([
+      ...mcpLogger.debug.mock.calls,
+      ...mcpLogger.error.mock.calls,
+    ]);
+    expect(calls).not.toContain('SECRET_MCP_CLOSE_NAME_123');
+  });
+
+  it('preserves MCP server failure diagnostics when tool logging is enabled', async () => {
+    const serverName = 'diagnostic-server';
+    const server = new FlakyServer(serverName, 1);
+
+    await connectMcpServers([server], {
+      connectTimeoutMs: null,
+      closeTimeoutMs: null,
+    });
+
+    expect(mcpLogger.error).toHaveBeenCalledWith(
+      `Failed to connect MCP server '${serverName}':`,
+      expect.any(Error),
+    );
+  });
+
   it('reconnects failed servers only by default', async () => {
     const server = new FlakyServer('flaky', 1);
     const session = await connectMcpServers([server]);

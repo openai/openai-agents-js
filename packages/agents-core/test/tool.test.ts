@@ -591,7 +591,7 @@ describe('Tool', () => {
     expect(initializer).toHaveBeenCalledTimes(2);
     expect(warnSpy).toHaveBeenCalledWith(
       'Failed to dispose computer for run context:',
-      'Error',
+      'object',
     );
     expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secret);
     vi.restoreAllMocks();

@@ -2078,7 +2078,7 @@ describe('executeShellActions', () => {
     });
     expect(mockLogger.error).toHaveBeenCalledWith(
       'Failed to execute shell action:',
-      'Error',
+      'object',
     );
   });
 
@@ -2368,7 +2368,7 @@ describe('executeShellActions', () => {
       expect(rawItem.output).toBe('cannot delete');
       expect(mockLogger.error).toHaveBeenCalledWith(
         'Failed to execute apply_patch operation:',
-        'Error',
+        'object',
       );
     });
 
@@ -3332,7 +3332,7 @@ describe('executeShellActions', () => {
 
         expect(result[0].type).toBe('function_output');
         expect(warnSpy).toHaveBeenCalledWith(
-          'toolErrorFormatter threw while formatting approval rejection: Error',
+          'toolErrorFormatter threw while formatting approval rejection: object',
         );
         expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secret);
         expect(constructorGetter).not.toHaveBeenCalled();
@@ -4544,7 +4544,7 @@ describe('executeShellActions', () => {
       });
       expect(mockLogger.error).toHaveBeenCalledWith(
         'Failed to execute computer action:',
-        'Error',
+        'object',
       );
     });
 

@@ -1,5 +1,6 @@
 import { getLogger, logToolActionDebug, logToolActionError } from './logger';
 import type { MCPServer } from './mcp';
+import { getMcpServerLogName } from './mcpLogging';
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 10_000;
@@ -311,9 +312,10 @@ export class MCPServers {
   private async attemptConnect(server: MCPServer): Promise<void> {
     const raiseOnError = this.strict;
     try {
-      logger.debug(`Connecting MCP server '${server.name}'.`);
+      const serverLogName = getMcpServerLogName(server.name);
+      logger.debug(`Connecting MCP server '${serverLogName}'.`);
       await this.runConnect(server);
-      logger.debug(`Connected MCP server '${server.name}'.`);
+      logger.debug(`Connected MCP server '${serverLogName}'.`);
       if (this.failedServerSet.has(server)) {
         this.removeFailedServer(server);
         this.errorsByServer.delete(server);
@@ -352,9 +354,10 @@ export class MCPServers {
   }
 
   private recordFailure(server: MCPServer, error: Error, phase: string): void {
+    const serverLogName = getMcpServerLogName(server.name);
     logToolActionError(
       logger,
-      `Failed to ${phase} MCP server '${server.name}':`,
+      `Failed to ${phase} MCP server '${serverLogName}':`,
       error,
     );
     if (!this.failedServerSet.has(server)) {
@@ -378,10 +381,11 @@ export class MCPServers {
   }
 
   private async closeServer(server: MCPServer): Promise<void> {
+    const serverLogName = getMcpServerLogName(server.name);
     try {
-      logger.debug(`Closing MCP server '${server.name}'.`);
+      logger.debug(`Closing MCP server '${serverLogName}'.`);
       await this.runClose(server);
-      logger.debug(`Closed MCP server '${server.name}'.`);
+      logger.debug(`Closed MCP server '${serverLogName}'.`);
     } catch (error) {
       const err = toError(error);
       if (isAbortError(err)) {
@@ -390,7 +394,7 @@ export class MCPServers {
         }
         logToolActionDebug(
           logger,
-          `Close cancelled for MCP server '${server.name}':`,
+          `Close cancelled for MCP server '${serverLogName}':`,
           err,
         );
         this.errorsByServer.set(server, err);
@@ -398,7 +402,7 @@ export class MCPServers {
       }
       logToolActionError(
         logger,
-        `Failed to close MCP server '${server.name}':`,
+        `Failed to close MCP server '${serverLogName}':`,
         err,
       );
       this.errorsByServer.set(server, err);

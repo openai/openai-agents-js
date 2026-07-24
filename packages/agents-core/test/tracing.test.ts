@@ -963,7 +963,7 @@ describe('BatchTraceProcessor', () => {
       await vi.advanceTimersByTimeAsync(60);
       expect(errorSpy).toHaveBeenCalledWith(
         'Tracing exporter failed to export batch',
-        'Error',
+        'object',
       );
       expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(secret);
 

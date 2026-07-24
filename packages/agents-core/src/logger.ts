@@ -60,13 +60,7 @@ export function getLogger(namespace: string = 'openai-agents'): Logger {
 }
 
 export function getSafeErrorType(error: unknown): string {
-  const errorType = typeof error;
-
-  try {
-    return error instanceof Error ? 'Error' : errorType;
-  } catch {
-    return errorType;
-  }
+  return typeof error;
 }
 
 type SensitiveLogMethod = 'debug' | 'error' | 'warn';

@@ -634,7 +634,7 @@ describe('OpenAIResponsesCompactionSession', () => {
       expect(await underlyingSession.getItems()).toEqual(history);
       expect(warn).toHaveBeenCalledWith(
         'Restored previous session history after compaction replacement failed.',
-        'Error',
+        'object',
       );
       expect(JSON.stringify(warn.mock.calls)).not.toContain(secret);
     } finally {

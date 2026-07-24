@@ -1247,10 +1247,12 @@ describe('OpenAITracingExporter', () => {
         dontLogToolData,
       );
       const text = vi.fn(async () => 'SECRET_TRACE_CLIENT_BODY_123');
+      const cancel = vi.fn(async () => {});
       const fetchMock = vi.fn().mockResolvedValue({
         ok: false,
         status: 400,
         text,
+        body: { cancel },
       });
       vi.stubGlobal('fetch', fetchMock);
       const exporter = new OpenAITracingExporter({
@@ -1262,6 +1264,7 @@ describe('OpenAITracingExporter', () => {
       await exporter.export([fakeSpan]);
 
       expect(text).not.toHaveBeenCalled();
+      expect(cancel).toHaveBeenCalledTimes(1);
       expect(errorSpy).toHaveBeenCalledWith(
         '[non-fatal] Tracing client error 400. Response data is redacted.',
       );
@@ -1270,6 +1273,36 @@ describe('OpenAITracingExporter', () => {
       );
     },
   );
+
+  it('keeps tracing client errors non-fatal when response cancellation fails', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(true);
+    vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(false);
+    const secret = 'SECRET_TRACE_CANCEL_FAILURE_123';
+    const text = vi.fn(async () => secret);
+    const cancel = vi.fn().mockRejectedValue(new Error(secret));
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text,
+      body: { cancel },
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const exporter = new OpenAITracingExporter({
+      apiKey: 'key3',
+      endpoint: 'u',
+      maxRetries: 2,
+    });
+
+    await expect(exporter.export([fakeSpan])).resolves.toBeUndefined();
+
+    expect(text).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[non-fatal] Tracing client error 400. Response data is redacted.',
+    );
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(secret);
+  });
 
   it('redacts tracing request failures when sensitive logging is disabled', async () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
@@ -1288,7 +1321,7 @@ describe('OpenAITracingExporter', () => {
 
     expect(errorSpy).toHaveBeenCalledWith(
       '[non-fatal] Tracing: request failed:',
-      'Error',
+      'object',
     );
     expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(secret);
   });

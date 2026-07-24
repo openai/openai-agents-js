@@ -59,7 +59,7 @@ describe('logger', () => {
         },
       );
 
-      expect(errorSpy).toHaveBeenCalledWith('Operation failed', 'Error');
+      expect(errorSpy).toHaveBeenCalledWith('Operation failed', 'object');
       expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(secret);
     },
   );
@@ -85,7 +85,7 @@ describe('logger', () => {
         { secret },
       );
 
-      expect(logSpy).toHaveBeenCalledWith('Operation failed', 'Error');
+      expect(logSpy).toHaveBeenCalledWith('Operation failed', 'object');
       expect(JSON.stringify(logSpy.mock.calls)).not.toContain(secret);
     },
   );
@@ -123,7 +123,7 @@ describe('logger', () => {
           { secret },
         );
 
-        expect(logSpy).toHaveBeenCalledWith('Operation failed', 'Error');
+        expect(logSpy).toHaveBeenCalledWith('Operation failed', 'object');
         expect(JSON.stringify(logSpy.mock.calls)).not.toContain(secret);
       }
     },
@@ -217,6 +217,17 @@ describe('logger', () => {
     expect(getSafeErrorType(createError())).toBe('object');
   });
 
+  test('does not inspect object prototypes while classifying redacted values', async () => {
+    const { getSafeErrorType } = await import('../src/logger');
+    const getPrototypeOf = vi.fn(() => {
+      throw new Error('SECRET_GET_PROTOTYPE_TRAP_123');
+    });
+    const value = new Proxy({}, { getPrototypeOf });
+
+    expect(getSafeErrorType(value)).toBe('object');
+    expect(getPrototypeOf).not.toHaveBeenCalled();
+  });
+
   test.each([
     ['tool', 'logToolActionError', 'dontLogToolData'],
     ['model', 'logModelActionError', 'dontLogModelData'],
@@ -246,7 +257,7 @@ describe('logger', () => {
     const error = new Error('SECRET_LOG_VALUE_123');
     Object.defineProperty(error, 'constructor', { get: constructorGetter });
 
-    expect(getSafeErrorType(error)).toBe('Error');
+    expect(getSafeErrorType(error)).toBe('object');
     expect(constructorGetter).not.toHaveBeenCalled();
   });
 
@@ -266,7 +277,7 @@ describe('logger', () => {
         });
         return error;
       },
-      'Error',
+      'object',
     ],
     [
       'revoked Proxy',
@@ -319,6 +330,6 @@ describe('logger', () => {
       value: { name: 'SECRET_CONSTRUCTOR_NAME_123' },
     });
 
-    expect(getSafeErrorType(error)).toBe('Error');
+    expect(getSafeErrorType(error)).toBe('object');
   });
 });

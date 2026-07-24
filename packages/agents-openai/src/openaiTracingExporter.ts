@@ -774,6 +774,11 @@ export class OpenAITracingExporter implements TracingExporter {
 
           if (response.status >= 400 && response.status < 500) {
             if (logger.dontLogModelData || logger.dontLogToolData) {
+              try {
+                await response.body?.cancel();
+              } catch {
+                // Best-effort cleanup must not replace the tracing response error.
+              }
               logger.error(
                 `[non-fatal] Tracing client error ${response.status}. Response data is redacted.`,
               );

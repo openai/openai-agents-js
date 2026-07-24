@@ -200,7 +200,7 @@ describe('TwilioRealtimeTransportLayer', () => {
       expect(warnSpy).toHaveBeenCalledWith(
         'Invalid mark name received. Mark data is redacted.',
       );
-      expect(errorSpy).toHaveBeenCalledWith('Error parsing message:', 'Error');
+      expect(errorSpy).toHaveBeenCalledWith('Error parsing message:', 'object');
       expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secret);
       expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(secret);
       expect(emittedErrors).toHaveLength(1);

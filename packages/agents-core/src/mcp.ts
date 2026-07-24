@@ -31,6 +31,7 @@ import type {
   MCPToolMetaContext,
   MCPToolMetaResolver,
 } from './mcpUtil';
+import { getMcpServerLogName } from './mcpLogging';
 import type { RunContext } from './runContext';
 import type { Agent } from './agent';
 import { maybeExtractToolOutputCustomData } from './utils/customData';
@@ -496,7 +497,7 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
             const filtered = await filter(context, tool);
             if (!filtered) {
               globalLogger.debug(
-                `MCP Tool (server: ${server.name}, tool: ${tool.name}) is blocked by the callable filter.`,
+                `MCP Tool (server: ${getMcpServerLogName(server.name)}, tool: ${tool.name}) is blocked by the callable filter.`,
               );
               continue;
             }
@@ -515,11 +516,11 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
               if (!allowed || blocked) {
                 if (blocked) {
                   globalLogger.debug(
-                    `MCP Tool (server: ${server.name}, tool: ${tool.name}) is blocked by the static filter.`,
+                    `MCP Tool (server: ${getMcpServerLogName(server.name)}, tool: ${tool.name}) is blocked by the static filter.`,
                   );
                 } else if (!allowed) {
                   globalLogger.debug(
-                    `MCP Tool (server: ${server.name}, tool: ${tool.name}) is not allowed by the static filter.`,
+                    `MCP Tool (server: ${getMcpServerLogName(server.name)}, tool: ${tool.name}) is not allowed by the static filter.`,
                   );
                 }
                 continue;

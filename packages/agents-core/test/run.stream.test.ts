@@ -109,6 +109,20 @@ class AbortAfterStreamedFunctionCallModel implements Model {
   }
 }
 
+class FailingAbortReconciliationModel extends AbortAfterStreamedFunctionCallModel {
+  constructor(
+    responseId: string,
+    private readonly reconciliationError: unknown,
+  ) {
+    super(responseId);
+  }
+
+  override async getResponse(request: ModelRequest): Promise<ModelResponse> {
+    this.requests.push(request);
+    throw this.reconciliationError;
+  }
+}
+
 class AbortAfterStreamedProgramModel implements Model {
   public requests: ModelRequest[] = [];
 
@@ -467,6 +481,42 @@ describe('Runner.run (streaming)', () => {
       }),
     ]);
   });
+
+  it.each([
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'redacts abort reconciliation failures when model=%s or tool=%s logging is disabled',
+    async (dontLogModelData, dontLogToolData) => {
+      const secret = 'SECRET_ABORT_RECONCILIATION_123';
+      const model = new FailingAbortReconciliationModel(
+        'resp-aborted',
+        new Error(secret),
+      );
+      const agent = new Agent({ name: 'AbortReconcileFailure', model });
+      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+      vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(
+        dontLogModelData,
+      );
+      vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(
+        dontLogToolData,
+      );
+
+      const result = await run(agent, 'hi', {
+        stream: true,
+        conversationId: 'conv-abort-failure',
+      });
+
+      await expect(result.completed).resolves.toBeUndefined();
+      expect(model.requests).toHaveLength(2);
+      expect(debugSpy).toHaveBeenCalledWith(
+        'Failed to reconcile streamed tool calls after abort.',
+        'object',
+      );
+      expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(secret);
+    },
+  );
 
   it('uses the streamed response id when reconciling previousResponseId-only aborts', async () => {
     const model = new AbortAfterStreamedFunctionCallModel('resp-aborted');

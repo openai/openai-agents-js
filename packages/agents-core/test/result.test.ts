@@ -191,7 +191,7 @@ describe('StreamedRunResult', () => {
 
       await expect(sr.completed).rejects.toBe(err);
       expect(sr.error).toBe(err);
-      expect(debugSpy).toHaveBeenCalledWith('Resulted in an error:', 'Error');
+      expect(debugSpy).toHaveBeenCalledWith('Resulted in an error:', 'object');
       expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(secret);
       vi.restoreAllMocks();
     },
