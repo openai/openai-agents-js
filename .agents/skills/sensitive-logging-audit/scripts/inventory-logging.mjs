@@ -19,13 +19,10 @@ const LOGGER_TYPE_PROPERTIES = [
 const STANDARD_GLOBALS = new Set(['global', 'globalThis', 'window']);
 const SENSITIVE_HELPERS = new Map([
   ['logModelActionError', 'model-helper'],
-  ['logModelActionWarning', 'model-helper'],
-  ['logModelAndToolActionDebug', 'model+tool-helper'],
-  ['logModelAndToolActionError', 'model+tool-helper'],
-  ['logModelAndToolActionWarning', 'model+tool-helper'],
   ['logToolActionError', 'tool-helper'],
-  ['logToolActionDebug', 'tool-helper'],
-  ['logToolActionWarning', 'tool-helper'],
+]);
+const SENSITIVE_HELPER_MODULES = new Set([
+  '@openai/agents-core/utils/internal',
 ]);
 const SOURCE_EXTENSIONS = new Set(['.cts', '.mts', '.ts', '.tsx']);
 
@@ -149,6 +146,10 @@ function isLoggerModule(moduleName) {
   return /(?:^|\/)logger(?:\.[cm]?[jt]s)?$/.test(moduleName);
 }
 
+function isSensitiveHelperModule(moduleName) {
+  return isLoggerModule(moduleName) || SENSITIVE_HELPER_MODULES.has(moduleName);
+}
+
 function propertyNameText(name, sourceFile) {
   if (!name) {
     return null;
@@ -222,6 +223,7 @@ function heritageReferencesLogger(node, loggerTypeBindings) {
 function collectLoggingSymbols(sourceFile, checker) {
   const consoleBindings = new Set(['console']);
   const consoleMethodBindings = new Map();
+  const consolePropertyNames = new Set();
   const loggerBindings = new Set();
   const loggerFactoryBindings = new Set(['getLogger']);
   const loggerMethodBindings = new Map();
@@ -229,12 +231,7 @@ function collectLoggingSymbols(sourceFile, checker) {
   const loggerObjectTypeProperties = new Map();
   const loggerPropertyNames = new Set();
   const loggerTypeBindings = new Set(['Logger']);
-  const sensitiveHelperBindings = new Map(
-    [...SENSITIVE_HELPERS].map(([name, policy]) => [
-      name,
-      { method: name, policy },
-    ]),
-  );
+  const sensitiveHelperBindings = new Map();
   const sensitiveHelperNamespaceBindings = new Set();
 
   for (const statement of sourceFile.statements) {
@@ -244,6 +241,7 @@ function collectLoggingSymbols(sourceFile, checker) {
     const moduleName = ts.isStringLiteral(statement.moduleSpecifier)
       ? statement.moduleSpecifier.text
       : '';
+    const trustedSensitiveHelperModule = isSensitiveHelperModule(moduleName);
     const clause = statement.importClause;
     if (!clause) {
       continue;
@@ -254,7 +252,9 @@ function collectLoggingSymbols(sourceFile, checker) {
     const bindings = clause.namedBindings;
     if (bindings && ts.isNamespaceImport(bindings)) {
       loggerNamespaceBindings.add(bindings.name.text);
-      sensitiveHelperNamespaceBindings.add(bindings.name.text);
+      if (trustedSensitiveHelperModule) {
+        sensitiveHelperNamespaceBindings.add(bindings.name.text);
+      }
       continue;
     }
     if (!bindings || !ts.isNamedImports(bindings)) {
@@ -271,7 +271,7 @@ function collectLoggingSymbols(sourceFile, checker) {
         loggerTypeBindings.add(local);
       }
       const sensitivePolicy = SENSITIVE_HELPERS.get(imported);
-      if (sensitivePolicy) {
+      if (sensitivePolicy && trustedSensitiveHelperModule) {
         sensitiveHelperBindings.set(local, {
           method: imported,
           policy: sensitivePolicy,
@@ -357,6 +357,10 @@ function collectLoggingSymbols(sourceFile, checker) {
         return consoleBindings.has(current.text);
       }
       if (isGloballyQualifiedConsole(current)) {
+        return true;
+      }
+      const access = propertyAccessParts(current);
+      if (access && consolePropertyNames.has(access.method)) {
         return true;
       }
       if (ts.isConditionalExpression(current)) {
@@ -626,6 +630,18 @@ function collectLoggingSymbols(sourceFile, checker) {
       }
       if (
         ts.isPropertyAssignment(current) &&
+        isKnownConsoleExpression(current.initializer)
+      ) {
+        add(consolePropertyNames, propertyNameText(current.name, sourceFile));
+      }
+      if (
+        ts.isShorthandPropertyAssignment(current) &&
+        consoleBindings.has(current.name.text)
+      ) {
+        add(consolePropertyNames, current.name.text);
+      }
+      if (
+        ts.isPropertyAssignment(current) &&
         isKnownLoggerExpression(current.initializer)
       ) {
         add(loggerPropertyNames, propertyNameText(current.name, sourceFile));
@@ -665,6 +681,11 @@ function collectLoggingSymbols(sourceFile, checker) {
             target.text,
             resolveLoggerMethods(current.right),
           );
+        } else if (isKnownConsoleExpression(current.right)) {
+          const targetAccess = propertyAccessParts(target);
+          if (targetAccess) {
+            add(consolePropertyNames, targetAccess.method);
+          }
         }
       }
       ts.forEachChild(current, visit);
@@ -739,8 +760,10 @@ function collectLoggingSymbols(sourceFile, checker) {
       return null;
     }
     const receiver = unwrapExpression(access.receiver);
+    const receiverAccess = propertyAccessParts(receiver);
     return (ts.isIdentifier(receiver) && consoleBindings.has(receiver.text)) ||
-      isGloballyQualifiedConsole(receiver)
+      isGloballyQualifiedConsole(receiver) ||
+      (receiverAccess && consolePropertyNames.has(receiverAccess.method))
       ? access.method
       : null;
   }
@@ -951,8 +974,86 @@ function callSiteContext(node, sourceFile) {
   return parts.reverse().join('>') || '<module>';
 }
 
-function guardedPolicy(node, sourceFile) {
+function possibleBooleanResults(expression, flagName, flagValue) {
+  const current = unwrapExpression(expression);
+  if (
+    referencesIdentifier(current, flagName) &&
+    ((ts.isIdentifier(current) && current.text === flagName) ||
+      propertyAccessParts(current)?.method === flagName)
+  ) {
+    return new Set([flagValue]);
+  }
+  if (current.kind === ts.SyntaxKind.TrueKeyword) {
+    return new Set([true]);
+  }
+  if (current.kind === ts.SyntaxKind.FalseKeyword) {
+    return new Set([false]);
+  }
+  if (
+    ts.isPrefixUnaryExpression(current) &&
+    current.operator === ts.SyntaxKind.ExclamationToken
+  ) {
+    return new Set(
+      [...possibleBooleanResults(current.operand, flagName, flagValue)].map(
+        (value) => !value,
+      ),
+    );
+  }
+  if (ts.isBinaryExpression(current)) {
+    const operator = current.operatorToken.kind;
+    const left = possibleBooleanResults(current.left, flagName, flagValue);
+    const right = possibleBooleanResults(current.right, flagName, flagValue);
+    if (
+      operator === ts.SyntaxKind.AmpersandAmpersandToken ||
+      operator === ts.SyntaxKind.BarBarToken
+    ) {
+      const results = new Set();
+      for (const leftValue of left) {
+        for (const rightValue of right) {
+          results.add(
+            operator === ts.SyntaxKind.AmpersandAmpersandToken
+              ? leftValue && rightValue
+              : leftValue || rightValue,
+          );
+        }
+      }
+      return results;
+    }
+    if (
+      operator === ts.SyntaxKind.EqualsEqualsToken ||
+      operator === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+      operator === ts.SyntaxKind.ExclamationEqualsToken ||
+      operator === ts.SyntaxKind.ExclamationEqualsEqualsToken
+    ) {
+      const negated =
+        operator === ts.SyntaxKind.ExclamationEqualsToken ||
+        operator === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+      const results = new Set();
+      for (const leftValue of left) {
+        for (const rightValue of right) {
+          results.add(
+            negated ? leftValue !== rightValue : leftValue === rightValue,
+          );
+        }
+      }
+      return results;
+    }
+  }
+  return new Set([false, true]);
+}
+
+function branchGuaranteesFlagDisabled(condition, branchValue, flagName) {
+  return (
+    referencesIdentifier(condition, flagName) &&
+    !possibleBooleanResults(condition, flagName, true).has(branchValue)
+  );
+}
+
+function guardedPolicy(node) {
+  let child = node;
   let current = node.parent;
+  let modelGuard = false;
+  let toolGuard = false;
   while (current) {
     if (ts.isFunctionLike(current)) {
       break;
@@ -961,20 +1062,38 @@ function guardedPolicy(node, sourceFile) {
       const conditionNode = ts.isIfStatement(current)
         ? current.expression
         : current.condition;
-      const condition = conditionNode.getText(sourceFile);
-      const hasModelPolicy = condition.includes('dontLogModelData');
-      const hasToolPolicy = condition.includes('dontLogToolData');
-      if (hasModelPolicy && hasToolPolicy) {
-        return 'model+tool-guard';
-      }
-      if (hasModelPolicy) {
-        return 'model-guard';
-      }
-      if (hasToolPolicy) {
-        return 'tool-guard';
+      const trueBranch = ts.isIfStatement(current)
+        ? current.thenStatement
+        : current.whenTrue;
+      const falseBranch = ts.isIfStatement(current)
+        ? current.elseStatement
+        : current.whenFalse;
+      const branchValue =
+        child === trueBranch ? true : child === falseBranch ? false : null;
+      if (branchValue !== null) {
+        modelGuard ||= branchGuaranteesFlagDisabled(
+          conditionNode,
+          branchValue,
+          'dontLogModelData',
+        );
+        toolGuard ||= branchGuaranteesFlagDisabled(
+          conditionNode,
+          branchValue,
+          'dontLogToolData',
+        );
       }
     }
+    child = current;
     current = current.parent;
+  }
+  if (modelGuard && toolGuard) {
+    return 'model+tool-guard';
+  }
+  if (modelGuard) {
+    return 'model-guard';
+  }
+  if (toolGuard) {
+    return 'tool-guard';
   }
   return 'none';
 }
@@ -1121,7 +1240,7 @@ function inventoryParsedSource(sourceFile, filePath, checker = null) {
           argument,
           'logger',
           loggerMethod,
-          guardedPolicy(argument, sourceFile),
+          guardedPolicy(argument),
           call,
           callbackIndex,
         );
@@ -1140,12 +1259,7 @@ function inventoryParsedSource(sourceFile, filePath, checker = null) {
       if (consoleMethod) {
         recordCall(node, 'console', consoleMethod, 'none');
       } else if (loggerMethod) {
-        recordCall(
-          node,
-          'logger',
-          loggerMethod,
-          guardedPolicy(node, sourceFile),
-        );
+        recordCall(node, 'logger', loggerMethod, guardedPolicy(node));
       } else if (sensitiveHelper) {
         recordCall(
           node,
@@ -1160,12 +1274,7 @@ function inventoryParsedSource(sourceFile, filePath, checker = null) {
             (access.computed || LOGGER_METHODS.has(access.method)) &&
             isLoggerReceiver(access.receiver)
           ) {
-            recordCall(
-              node,
-              'logger',
-              access.method,
-              guardedPolicy(node, sourceFile),
-            );
+            recordCall(node, 'logger', access.method, guardedPolicy(node));
           }
         }
       }

@@ -23,17 +23,21 @@ test('inventories static and dynamic logger calls', () => {
 
 test('recognizes model and tool policy boundaries', () => {
   const findings = inventorySource(`
+    import {
+      logModelActionError,
+      logToolActionError,
+    } from './logger';
+
     const logger = getLogger('fixture');
     if (!logger.dontLogModelData) {
       logger.debug('Response:', response);
     }
     if (logger.dontLogToolData) {
-      logger.warn('Tool failed');
+      logger.warn('Tool data exposed', secret);
     } else {
       logger.warn('Tool failed', error);
     }
     logModelActionError(logger, 'Model failed', error, event);
-    logModelAndToolActionWarning(logger, 'Run failed', error, item);
     logToolActionError(logger, 'Tool failed', error, toolCall);
   `);
 
@@ -41,13 +45,9 @@ test('recognizes model and tool policy boundaries', () => {
     findings.map(({ method, policy }) => ({ method, policy })),
     [
       { method: 'debug', policy: 'model-guard' },
-      { method: 'warn', policy: 'tool-guard' },
+      { method: 'warn', policy: 'none' },
       { method: 'warn', policy: 'tool-guard' },
       { method: 'logModelActionError', policy: 'model-helper' },
-      {
-        method: 'logModelAndToolActionWarning',
-        policy: 'model+tool-helper',
-      },
       { method: 'logToolActionError', policy: 'tool-helper' },
     ],
   );
@@ -64,9 +64,31 @@ test('reads policy conditions from conditional expressions', () => {
   assert.deepEqual(
     findings.map(({ method, policy }) => ({ method, policy })),
     [
-      { method: 'warn', policy: 'tool-guard' },
+      { method: 'warn', policy: 'none' },
       { method: 'warn', policy: 'tool-guard' },
     ],
+  );
+});
+
+test('requires guard polarity to guarantee sensitive logging is enabled', () => {
+  const findings = inventorySource(`
+    const logger = getLogger('fixture');
+    if (!logger.dontLogToolData && ready) {
+      logger.error('Protected tool data', secret);
+    }
+    if (logger.dontLogModelData || disabled) {
+      logger.error('Potentially exposed model data', secret);
+    } else {
+      logger.error('Protected model data', secret);
+    }
+    if (!logger.dontLogModelData && !logger.dontLogToolData) {
+      logger.error('Protected model and tool data', secret);
+    }
+  `);
+
+  assert.deepEqual(
+    findings.map(({ policy }) => policy),
+    ['tool-guard', 'none', 'model-guard', 'model+tool-guard'],
   );
 });
 
@@ -370,11 +392,13 @@ test('resolves console object and extracted method aliases', () => {
     const nestedSink = sink;
     const { warn, log: emit } = nestedSink;
     const trace = console.trace;
+    const sinks = { raw: console };
 
     sink.error('Request failed', secret);
     warn(secret);
     emit(payload);
     trace(error);
+    sinks.raw.error('Object member failed', secret);
   `);
 
   assert.deepEqual(
@@ -384,6 +408,7 @@ test('resolves console object and extracted method aliases', () => {
       { kind: 'console', method: 'warn' },
       { kind: 'console', method: 'log' },
       { kind: 'console', method: 'trace' },
+      { kind: 'console', method: 'error' },
     ],
   );
 });
@@ -446,6 +471,25 @@ test('resolves sensitive helper import aliases and namespace accesses', () => {
       { method: 'logModelActionError', policy: 'model-helper' },
     ],
   );
+});
+
+test('does not trust sensitive helper spellings without provenance', () => {
+  const findings = inventorySource(`
+    import {
+      logModelActionError as unrelatedHelper,
+    } from './unrelated';
+    import * as unrelated from './unrelated';
+
+    function logToolActionError(target, message, secret) {
+      target(message, secret);
+    }
+
+    logToolActionError(sink, 'Local helper', secret);
+    unrelatedHelper(sink, 'Imported helper', secret);
+    unrelated.logToolActionError(sink, 'Namespace helper', secret);
+  `);
+
+  assert.equal(findings.length, 0);
 });
 
 test('fingerprints distinguish call sites and survive unrelated line shifts', () => {
