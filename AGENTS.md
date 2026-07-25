@@ -9,6 +9,7 @@ This guide helps new contributors get started with the OpenAI Agents JS monorepo
 1.  [Policies & Mandatory Rules](#policies--mandatory-rules)
 2.  [Project Structure Guide](#project-structure-guide)
 3.  [Operation Guide](#operation-guide)
+4.  [Code Review Rules](#code-review-rules)
 
 ## Policies & Mandatory Rules
 
@@ -35,7 +36,7 @@ When working on OpenAI API or OpenAI platform integrations in this repo (Respons
 
 #### `$implementation-strategy`
 
-Before changing runtime code, exported APIs, external configuration, persisted schemas, wire protocols, or other user-facing behavior, use `$implementation-strategy` to decide the compatibility boundary and implementation shape. Judge breaking changes against the latest release tag, not unreleased branch-local churn. Interfaces introduced or changed after the latest release tag may be rewritten without compatibility shims unless they already have a released or otherwise supported durable-state consumer, or the user explicitly asks for a migration path.
+Before changing or reviewing runtime code, exported APIs, external configuration, persisted schemas, wire protocols, or other user-facing behavior, use `$implementation-strategy` to decide the compatibility boundary and implementation shape. During review, use it before requesting compatibility layers, migrations, new abstractions, or broader refactors. Judge breaking changes against the latest release tag, not unreleased branch-local churn. Interfaces introduced or changed after the latest release tag may be rewritten without compatibility shims unless they already have a released or otherwise supported durable-state consumer, or the user explicitly asks for a migration path.
 
 #### `$pr-draft-summary`
 
@@ -285,7 +286,15 @@ Before opening a pull request, always run `$changeset-validation` to ensure all 
   pnpm changeset
   ```
 
-### Review Process & What Reviewers Look For
+## Code Review Rules
+
+- Use `$implementation-strategy` to establish the requested outcome and latest released compatibility boundary before judging implementation scope or architecture.
+- Treat added complexity as an actionable finding only when specific machinery is not required by the task, a released contract, supported durable state, or a verified runtime or platform risk. Identify the unnecessary machinery and recommend the smallest safe removal or direct replacement.
+- Do not request speculative abstractions, general-purpose helpers, configuration knobs, dependencies, compatibility layers, feature flags, parallel code paths, or extensibility for hypothetical future consumers.
+- Keep findings scoped to the patch. Do not block on unrelated cleanup, pre-existing bugs, or optional refactors; report them separately when useful.
+- Require a broader refactor only when concrete evidence shows the focused change would otherwise be incorrect, unsafe, incompatible, or materially harder to maintain.
+
+### Baseline review expectations
 
 - ✅ All automated checks pass (build, tests, lint).
 - ✅ Tests cover new behavior and edge cases.

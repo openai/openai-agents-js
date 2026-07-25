@@ -1,18 +1,19 @@
 ---
 name: implementation-strategy
-description: Decide how to implement runtime and API changes in openai-agents-js before editing code. Use when a task changes exported APIs, runtime behavior, schemas, tests, or docs and you need to choose the compatibility boundary, whether shims or migrations are warranted, and when unreleased interfaces can be rewritten directly.
+description: Decide how to implement or review runtime and API changes in openai-agents-js. Use when a task changes or reviews exported APIs, runtime behavior, schemas, tests, or docs and you need to choose the compatibility boundary, the smallest coherent implementation, whether shims or migrations are warranted, and when unreleased interfaces can be rewritten directly.
 ---
 
 # Implementation Strategy
 
 ## Overview
 
-Use this skill before editing code when the task changes runtime behavior or anything that might look like a compatibility concern. The goal is to keep implementations simple while protecting real released contracts and genuinely supported external state.
+Use this skill before editing or reviewing code when the task changes runtime behavior or anything that might look like a compatibility concern. The goal is to keep implementations and review requests focused while protecting real released contracts and genuinely supported external state.
 
 ## Quick start
 
-1. Identify the surface you are changing: released public API, unreleased branch-local API, internal helper, persisted schema, wire protocol, CLI/config/env surface, or docs/examples only.
-2. Determine the latest release boundary from `origin` first, and only fall back to local tags when remote tags are unavailable:
+1. Identify the surface you are changing or reviewing: released public API, unreleased branch-local API, internal helper, persisted schema, wire protocol, CLI/config/env surface, or docs/examples only.
+2. Define the concrete required outcome, supported behavior that must remain, and work that is outside the current task.
+3. Determine the latest release boundary from `origin` first, and only fall back to local tags when remote tags are unavailable:
    ```bash
    LATEST_RELEASE_TAG="$(
      git ls-remote --tags --refs origin 'v*' 2>/dev/null |
@@ -25,9 +26,17 @@ Use this skill before editing code when the task changes runtime behavior or any
    fi
    printf '%s\n' "$LATEST_RELEASE_TAG"
    ```
-3. Judge breaking-change risk against that latest release tag, not against unreleased branch churn or post-tag changes already on `main`. If the command fell back to local tags, treat the result as potentially stale and say so.
-4. Prefer the simplest implementation that satisfies the current task. Update callers, tests, docs, and examples directly instead of preserving superseded unreleased interfaces.
-5. Add a compatibility layer only when there is a concrete released consumer, an otherwise supported durable external state that requires it, or when the user explicitly asks for a migration path.
+4. Judge breaking-change risk against that latest release tag, not against unreleased branch churn or post-tag changes already on `main`. If the command fell back to local tags, treat the result as potentially stale and say so.
+5. Apply the scope and simplicity rules below to choose the implementation or review recommendation.
+6. Add a compatibility layer only when there is a concrete released consumer, an otherwise supported durable external state that requires it, or when the user explicitly asks for a migration path.
+
+## Scope and simplicity rules
+
+- Make the smallest coherent change that fully satisfies the current task and preserves required supported behavior.
+- Prefer existing patterns and direct implementations. Add a new abstraction, general-purpose helper, configuration knob, dependency, compatibility layer, feature flag, or parallel code path only when a concrete current requirement or supported contract needs it.
+- Trace only the code paths being changed and the contracts they rely on. Expand the investigation or implementation only when concrete evidence or validation exposes another required path.
+- Keep root-cause fixes within the requested boundary. Leave unrelated refactors, cleanup, feature work, and pre-existing failures out of the patch; report them separately when they materially affect the result.
+- Add focused tests for the required behavior and realistic regression paths. Do not generalize production code or test infrastructure for hypothetical future cases without evidence.
 
 ## Compatibility boundary rules
 
@@ -51,15 +60,23 @@ Use these checks alongside the release-boundary decision. They are not generic p
 
 ## Default implementation stance
 
-- Prefer deletion or replacement over aliases, overloads, shims, feature flags, and dual-write logic when the old shape is unreleased.
-- Do not preserve a confusing abstraction just because it exists in the current branch diff.
+- Prefer deletion or direct replacement over aliases, overloads, shims, feature flags, and dual-write logic when the old shape is unreleased.
 - If review feedback claims a change is breaking, verify it against the latest release tag and actual external impact before accepting the feedback.
 - If a change truly crosses the latest released contract boundary, call that out explicitly in the ExecPlan, changeset, and user-facing summary.
+
+## Applying this skill during review
+
+- Establish the requested outcome and compatibility boundary before judging whether the implementation is too narrow or too broad.
+- Treat complexity as an actionable finding only when specific added machinery is not needed by the current task, a released contract, supported durable state, or a verified runtime or platform risk. Name that machinery and recommend the smallest safe removal or replacement.
+- Do not request abstractions, configuration, dependencies, compatibility work, or extensibility for hypothetical future consumers.
+- Keep unrelated cleanup and pre-existing problems out of blocking findings. Report them separately only when they are useful to the maintainer.
+- Require a broader refactor only when concrete evidence shows that the focused change would otherwise be incorrect, unsafe, incompatible, or materially harder to maintain.
 
 ## When to stop and confirm
 
 - The change would alter behavior shipped in the latest release tag.
 - The change would modify durable external data or protocol formats that are already released or otherwise supported.
+- The correct solution would materially expand beyond the requested outcome or require unrelated architectural work.
 - The user explicitly asked for backward compatibility, deprecation, or migration support.
 
 ## Output expectations
@@ -69,3 +86,5 @@ When this skill materially affects the implementation approach, state the decisi
 - `Compatibility boundary: latest release tag v0.x.y; branch-local interface rewrite, no shim needed.`
 - `Compatibility boundary: latest release tag v0.x.y; unreleased RunState snapshot rewrite, no shim needed.`
 - `Compatibility boundary: released RunState schema; preserve compatibility and add migration coverage.`
+- `Scope decision: direct change using existing patterns; no new abstraction or adjacent cleanup needed.`
+- `Review decision: the added compatibility path has no released or supported consumer; replace it with the direct implementation.`
