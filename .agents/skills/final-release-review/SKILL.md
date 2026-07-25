@@ -44,6 +44,7 @@ The review must be stable and actionable: avoid variance between runs by using e
   - "Could regress" risk statements without concrete evidence.
   - Not running tests locally.
 - If evidence is incomplete, do not block. Report a validation action only when the diff establishes a concrete unresolved risk; otherwise omit the candidate.
+- A green gate must still explain the important release surfaces that were audited. Do not collapse a behavior-impacting release into a bare "No material risks identified" result.
 
 ## Workflow
 
@@ -72,6 +73,9 @@ The review must be stable and actionable: avoid variance between runs by using e
   - Check only the relevant symmetry and failure axes: streaming/non-streaming, fresh/resumed, client/server-managed state, success/error/abort, sequential/concurrent, Node/browser/workerd, and normal/partial-failure/repeated cleanup.
 - **Prove findings**
   - Promote a candidate to a finding only when the diff shows a concrete contract violation, a reachable supported-path regression, or a release-polish gap with user impact.
+  - Also retain substantiated non-blocking release considerations when they explain an intentional default change, public API or package expansion, durable schema transition, trace/logging behavior change, or other user-visible contract that is safe but important for release consumers to understand.
+  - For a green gate, report at least one such consideration whenever the diff changes runtime behavior, public APIs, package support, persisted schemas, protocols, configuration defaults, observability, or documented user workflows. Normally report two to five, grouped by contract rather than by directory.
+  - Assign **🟢 LOW** to a verified, correctly versioned, non-blocking consideration. Use neutral titles that describe the contract change; do not imply that a safe intentional change is a defect.
   - If static evidence cannot resolve a concrete semantic question, use the smallest public-path or packed-artifact probe that can. Prefer the same scenario against BASE and TARGET so environment failures and pre-existing behavior are separated from regressions.
   - Do not run repository unit-test slices merely to accumulate passing evidence. Run a focused test only when reproducing a specific failure or when no more direct contract, artifact, or runtime probe is available.
   - When you confirm a risk, cite the specific file/commit and explain the behavioral impact.
@@ -80,12 +84,12 @@ The review must be stable and actionable: avoid variance between runs by using e
     - **🟢 LOW**: low blast radius or clearly covered behavior; no release gate impact.
     - **🟡 MODERATE**: plausible user-facing regression signal; needs validation but not a confirmed blocker.
     - **🔴 HIGH**: confirmed or strongly evidenced release-blocking issue.
-  - Attach a validation action only to a concrete unresolved risk. Give the smallest command or task and a pass condition; do not add generic follow-up checks.
+  - Every reported item needs a concrete next step and pass condition. For an unresolved risk, give the smallest validation or fix. For a verified LOW consideration, use a release-handoff task such as preserving exact migration, opt-out, compatibility, or peer-range wording in generated release notes. Do not invent additional code or test work merely to populate the report.
   - Breaking changes do not automatically require a BLOCKED release call when they are already covered by an appropriate version bump and migration/upgrade notes; only block when the bump is missing/mismatched (e.g., patch bump) or when the breaking change introduces unresolved risk.
 - **Form a recommendation**
   - State BASE_TAG and TARGET explicitly.
   - Provide a concise diff summary (key directories/files and counts).
-  - List only substantiated breaking changes, regressions/bugs, improvement opportunities, and missing release notes/migrations. Do not turn every audit clue into a report item.
+  - List substantiated breaking changes, regressions/bugs, improvement opportunities, missing release notes/migrations, and the most important verified non-blocking contract changes. Do not turn every audit clue or touched directory into a report item.
   - Recommend ship/block and the exact checks needed to unblock if blocking. If a breaking change is properly versioned (minor/major), you may still recommend a GREEN LIGHT TO SHIP while calling out the change. Use emoji and boldface in the release call to make the gate obvious.
   - If you cannot provide a concrete unblock checklist item, do not use `BLOCKED`.
   - Do not include routine command results, pass counts, skips, deselections, or a validation-status inventory. Mention a validation limitation only when it materially changes a specific finding or the release call.
@@ -96,7 +100,7 @@ All output must be in English.
 
 Use the following report structure in every response produced by this skill. Be proactive and decisive: make a clear ship/block call near the top, and assign an explicit risk level (LOW/MODERATE/HIGH) to each finding with a short impact statement. Avoid overly cautious hedging when the risk is low and tests passed. Always use the fixed repository URL in the Diff section (`https://github.com/openai/openai-agents-js/compare/...`). Do not use `${GITHUB_REPOSITORY}` or any other template variable. Format risk levels as bold emoji labels: **🟢 LOW**, **🟡 MODERATE**, **🔴 HIGH**. Do not use Markdown links in the report. Keep the Diff URL as plain text, and cite repository files as plain text paths with optional line numbers.
 
-Every risk finding must contain an actionable next step. If the report uses `**🔴 BLOCKED**`, include an `Unblock checklist` section with at least one concrete command/task and a pass condition.
+Every Risk assessment item must contain an actionable next step. If the report uses `**🔴 BLOCKED**`, include an `Unblock checklist` section with at least one concrete command/task and a pass condition.
 
 ```
 ### Release readiness review (<tag> -> TARGET <ref>)
@@ -114,11 +118,11 @@ https://github.com/openai/openai-agents-js/compare/<tag>...<target-commit>
 - <N files changed (+A/-D); key areas touched: ...>
 
 ### Risk assessment (ordered by impact):
-1) **<Finding title>**
+1) **<Finding or release consideration title>**
    - Risk: **<🟢 LOW | 🟡 MODERATE | 🔴 HIGH>**. <Impact statement in one sentence.>
    - Evidence: <specific diff/test/commit signal; avoid generic statements>
    - Files: <path(s)>
-   - Action: <concrete next step command/task with pass criteria>
+   - Action: <concrete next step command/task and pass criteria>
 2) ...
 
 ### Unblock checklist (required when Release call is BLOCKED):
@@ -130,7 +134,9 @@ https://github.com/openai/openai-agents-js/compare/<tag>...<target-commit>
 - <BASE/TARGET or other assumptions that materially affect the release call>
 ```
 
-If no risks are found, include a "No material risks identified" line under Risk assessment and still provide a ship call. Do not add a verification-status section or report routine check results. If the report is not blocked, omit the `Unblock checklist` section.
+For a green gate, the Risk assessment must still itemize the important verified release considerations as **🟢 LOW** when the diff has behavior, API, package, schema, protocol, configuration, observability, or user-workflow impact. Do not use "No material risks identified" as the sole Risk assessment for such a release. That fallback is allowed only when the diff has no reportable contract or user-facing surface, such as a metadata-only release. Do not add a verification-status section or report routine check results. If the report is not blocked, omit the `Unblock checklist` section.
+
+Typical green items include a correctly versioned default change with its exact opt-in path, a durable schema bump with backward-read behavior, a peer-support expansion that retains older versions, or a tracing change with an explicit opt-out. Keep each item tied to consumer impact and a release-handoff pass condition.
 
 ## Resources
 

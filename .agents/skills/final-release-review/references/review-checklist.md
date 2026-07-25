@@ -21,17 +21,22 @@
   - Speculative risk without evidence.
   - Not running tests locally.
 - If uncertain, keep the gate green. Add a focused follow-up only when it resolves a concrete risk already identified in the diff.
+- A green gate is not an empty audit. Itemize the most important verified release considerations when the diff changes behavior, APIs, packages, schemas, defaults, observability, or user workflows.
 
 ## Actionability contract
 
-- Every risk finding should include:
+- Every risk finding or non-blocking release consideration should include:
   - `Evidence`: specific file/commit/diff/test signal.
   - `Impact`: one-sentence user or runtime effect.
   - `Action`: concrete command/task with pass criteria.
 - A candidate becomes a finding only when it has a concrete contract violation, a reachable supported path, or a release-polish gap with user impact.
+- A verified intentional change may become a **🟢 LOW** release consideration when it defines a contract users must understand, such as a default flip, new trace behavior, public API expansion, peer-range widening, or durable schema transition.
+- For a green gate with behavior or contract impact, include at least one consideration and normally two to five. Group related changes by consumer impact rather than listing files or commits individually.
+- For a resolved LOW consideration, the action may be a release-handoff check: retain exact compatibility, migration, opt-out, or configuration wording in generated release notes and state the pass condition.
 - Changed tests, missing tests, diff size, and risky patterns are discovery signals; they are not findings without contract or runtime evidence.
 - A `BLOCKED` report must contain an `Unblock checklist` with at least one executable item.
-- If no executable unblock item exists, do not block. Keep the gate green and include an action only for a concrete unresolved risk.
+- If no executable unblock item exists, do not block. Keep the gate green; use validation or fix actions for unresolved risks and release-handoff checks for resolved LOW considerations.
+- Do not use "No material risks identified" as the sole Risk assessment when the diff has reportable behavior or contract changes. Reserve it for metadata-only or otherwise non-reportable release diffs.
 
 ## Two-stage audit
 
@@ -104,8 +109,9 @@ If static inspection cannot resolve a concrete semantic question, run the smalle
 
 - BASE tag and TARGET ref used for the diff; confirm tags fetched.
 - High-level diff stats and key directories touched.
-- Only concrete, actionable findings with evidence, impact, affected files, and action.
+- Concrete, actionable findings plus the most important verified non-blocking release considerations, each with evidence, impact, affected files, and action.
 - A validation command or task only when it resolves a specific finding; include its pass criteria.
+- For a resolved LOW consideration, a precise generated-release-note or migration-wording check with a pass condition is sufficient; do not manufacture code changes or redundant tests.
 - Explicit release gate call (ship/block) with conditions to unblock.
 - `Unblock checklist` section when (and only when) gate is `BLOCKED`.
 - Do not report routine command results, pass counts, skips, deselections, or a validation-status inventory.
