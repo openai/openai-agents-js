@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "npm run test:core && npm run test:capabilities",
+    "test:core": "node --test --test-concurrency=1 test/core/*.test.mjs",
+    "test:capabilities": "node --test --test-concurrency=1 test/capabilities/*.test.mjs"
+  },
+  "dependencies": {
+    "@openai/agents": "latest",
+    "@openai/agents-openai": "latest",
+    "openai": "^6.46.0",
+    "zod": "^4.0.0"
+  }
+}

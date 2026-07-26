@@ -17,6 +17,8 @@
     "test:coverage": "NODE_ENV=test vitest run --coverage",
     "test:examples": "pnpm -r build-check",
     "test:integration": "NODE_ENV=test vitest run --config=vitest.integration.config.ts",
+    "test:integration:sdk-core": "NODE_ENV=test vitest run --config=vitest.integration.config.ts integration-tests/node-sdk-behavior.test.ts -t \"core behavior profile\"",
+    "test:integration:sdk-capabilities": "NODE_ENV=test vitest run --config=vitest.integration.config.ts integration-tests/node-sdk-behavior.test.ts -t \"capability behavior profile\"",
     "test:rclone-pin": "node --test scripts/update-rclone-pin.test.mjs",
     "test:watch": "NODE_ENV=test vitest --watch",
     "dev": "tsx scripts/dev.mts",
