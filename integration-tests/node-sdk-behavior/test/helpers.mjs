@@ -65,15 +65,3 @@ export function normalizeText(value) {
     .trim()
     .toUpperCase();
 }
-
-export function isBetaAccessError(error) {
-  const status = error?.status ?? error?.cause?.status;
-  const message = String(error?.message ?? error);
-  return (
-    status === 403 ||
-    status === 404 ||
-    /beta|hosted multi-agent|hosted multi agent|not (?:enabled|available)|access/i.test(
-      message,
-    )
-  );
-}

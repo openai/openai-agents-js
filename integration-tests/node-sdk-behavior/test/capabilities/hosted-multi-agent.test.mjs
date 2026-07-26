@@ -9,11 +9,11 @@ import {
 } from '@openai/agents-openai/experimental/hosted-multi-agent';
 import { z } from 'zod';
 
-import { createRunner, hostedModel, isBetaAccessError } from '../helpers.mjs';
+import { createRunner, hostedModel } from '../helpers.mjs';
 
 setTracingDisabled(true);
 
-test('hosted multi-agent preserves subagent tool caller identity', async (t) => {
+test('hosted multi-agent preserves subagent tool caller identity', async () => {
   const callers = new Set();
   const callIds = new Set();
   const inspectProposal = tool({
@@ -52,11 +52,6 @@ test('hosted multi-agent preserves subagent tool caller identity', async (t) => 
     assert.equal(callIds.size, 2);
     assert.ok(callers.size >= 2);
     assert.equal(callers.has('/root'), false);
-  } catch (error) {
-    if (isBetaAccessError(error)) {
-      return t.skip(`Hosted multi-agent beta is unavailable: ${error}`);
-    }
-    throw error;
   } finally {
     await model.close();
   }
