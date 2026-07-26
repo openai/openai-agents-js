@@ -458,16 +458,18 @@ export function itemsToLanguageV2Messages(
         const assistantProviderOptions = toProviderOptions(providerData, model);
         const assistantContent: Array<
           LanguageModelV2ReasoningPart | LanguageModelV2TextPart
-        > = content
-          .filter((c) => c.type === 'output_text')
-          .map<LanguageModelV2TextPart>((c) => {
-            const { providerData: contentProviderData } = c;
-            return {
-              type: 'text',
-              text: c.text,
-              providerOptions: toProviderOptions(contentProviderData, model),
-            };
-          });
+        > = content.flatMap<LanguageModelV2TextPart>((c) => {
+          if (c.type !== 'output_text' && c.type !== 'refusal') {
+            return [];
+          }
+
+          const { providerData: contentProviderData } = c;
+          return {
+            type: 'text',
+            text: c.type === 'output_text' ? c.text : c.refusal,
+            providerOptions: toProviderOptions(contentProviderData, model),
+          };
+        });
 
         if (
           shouldIncludeReasoningContent(model, modelSettings) &&
