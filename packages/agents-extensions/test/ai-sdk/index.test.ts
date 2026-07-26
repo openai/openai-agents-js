@@ -583,6 +583,63 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('converts assistant refusals to text content', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'refusal',
+            refusal: 'I cannot help with that.',
+            providerData: { test: { source: 'refusal' } },
+          },
+        ],
+        providerData: { message: { source: 'assistant' } },
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'text',
+            text: 'I cannot help with that.',
+            providerOptions: { test: { source: 'refusal' } },
+          },
+        ],
+        providerOptions: { message: { source: 'assistant' } },
+      },
+    ]);
+  });
+
+  test('preserves the order of assistant text and refusal content', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'output_text', text: 'Visible A' },
+          { type: 'refusal', refusal: 'Blocked B' },
+          { type: 'output_text', text: 'Visible C' },
+        ],
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Visible A', providerOptions: {} },
+          { type: 'text', text: 'Blocked B', providerOptions: {} },
+          { type: 'text', text: 'Visible C', providerOptions: {} },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
   test('preserves qualified names for namespaced function calls', () => {
     const items: protocol.ModelItem[] = [
       {
