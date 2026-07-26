@@ -170,6 +170,31 @@ Use `timeoutMs` to bound each function tool invocation.
 
 If you invoke a function tool directly, use [`invokeFunctionTool`](/openai-agents-js/openai/agents/functions/invokefunctiontool) to enforce the same timeout behavior as normal agent runs.
 
+#### Handling tool errors
+
+By default, when a tool's `execute` function throws, the SDK surfaces a generic error to the model. Use `errorFunction` to convert the thrown error into a controlled, model-visible message so the agent can recover or explain the failure to the user instead of crashing the run:
+
+```ts
+import { tool } from '@openai/agents';
+import { z } from 'zod';
+
+const getWeather = tool({
+  name: 'get_weather',
+  description: 'Get the current weather for a city.',
+  parameters: z.object({ city: z.string() }),
+  execute: async ({ city }) => {
+    // business logic may throw – let errorFunction handle it
+    throw new Error(`No weather data for ${city}`);
+  },
+  // Return a model-visible message instead of crashing the run.
+  errorFunction: (_context, error) => {
+    return `Tool failed: ${error instanceof Error ? error.message : String(error)}`;
+  },
+});
+```
+
+`errorFunction` receives the run context and the thrown error. Return a helpful string rather than throwing: the model sees your message as the tool result and can reason about the failure.
+
 #### Non‑strict JSON‑schema tools
 
 If you need the model to _guess_ invalid or partial input you can disable strict mode when using raw JSON schema:
