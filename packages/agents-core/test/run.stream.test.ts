@@ -1451,6 +1451,81 @@ describe('Runner.run (streaming)', () => {
     expect(toolCalledIndex).toBeLessThan(toolOutputIndex);
   });
 
+  it('aborts an in-flight function tool when the stream is cancelled', async () => {
+    let toolSignal: AbortSignal | undefined;
+    let markToolStarted: (() => void) | undefined;
+    const toolStarted = new Promise<void>((resolve) => {
+      markToolStarted = resolve;
+    });
+    const abortableTool = tool({
+      name: 'test',
+      description: 'waits for the stream to be cancelled',
+      parameters: z.object({ test: z.string() }),
+      execute: async (_input, _context, details) => {
+        toolSignal = details?.signal;
+        markToolStarted?.();
+        if (!toolSignal) {
+          throw new Error('Expected the stream abort signal');
+        }
+        if (!toolSignal.aborted) {
+          await new Promise<void>((resolve) => {
+            toolSignal?.addEventListener('abort', () => resolve(), {
+              once: true,
+            });
+          });
+        }
+        return 'cancelled';
+      },
+    });
+
+    class AbortableToolStreamModel implements Model {
+      #callCount = 0;
+
+      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        throw new Error('Unexpected non-streaming model request');
+      }
+
+      async *getStreamedResponse(
+        _request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const output =
+          this.#callCount++ === 0
+            ? [{ ...TEST_MODEL_FUNCTION_CALL }]
+            : [fakeModelMessage('done')];
+        yield {
+          type: 'response_done',
+          response: {
+            id: `resp-${this.#callCount}`,
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output,
+          },
+        } as StreamEvent;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'AbortableToolStreamAgent',
+      model: new AbortableToolStreamModel(),
+      tools: [abortableTool],
+    });
+    const result = await run(agent, 'start', { stream: true });
+    const reader = (result.toStream() as any).getReader();
+
+    await toolStarted;
+    expect(toolSignal).toBe(result._getAbortSignal());
+
+    await reader.cancel('stop');
+    await result._getStreamLoopPromise();
+
+    expect(result.cancelled).toBe(true);
+    expect(toolSignal?.aborted).toBe(true);
+  });
+
   it('enforces maxTurns across multiple streamed model calls', async () => {
     // Bug: After first model call, _lastTurnResponse is set, so turn counter never advances.
     // With maxTurns=1, we should only allow 1 model call, but currently allows 2.

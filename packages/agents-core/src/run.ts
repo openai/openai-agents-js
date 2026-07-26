@@ -1043,6 +1043,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               runner: this,
               toolErrorFormatter,
               agentToolParentRunConfig,
+              signal: options.signal,
             });
 
             // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
@@ -1220,6 +1221,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               toolErrorFormatter,
               agentToolParentRunConfig,
               options.errorHandlers,
+              options.signal,
             );
 
             applyTurnResult({
@@ -1497,6 +1499,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             runner: this,
             toolErrorFormatter,
             agentToolParentRunConfig,
+            signal: options.signal,
             onStepItems: (turnResult) => {
               addStepToRunResult(result, turnResult);
             },
@@ -1825,6 +1828,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             toolErrorFormatter,
             agentToolParentRunConfig,
             options.errorHandlers,
+            options.signal,
           );
 
           applyTurnResult({

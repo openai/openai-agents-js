@@ -64,6 +64,7 @@ export async function resumeInterruptedTurn<
   runner: Runner;
   toolErrorFormatter?: ToolErrorFormatter;
   agentToolParentRunConfig?: Partial<RunConfig>;
+  signal?: AbortSignal;
   onStepItems?: (turnResult: SingleStepResult) => void;
 }): Promise<InterruptedTurnOutcome> {
   const {
@@ -71,6 +72,7 @@ export async function resumeInterruptedTurn<
     runner,
     toolErrorFormatter,
     agentToolParentRunConfig,
+    signal,
     onStepItems,
   } = options;
   const turnResult = await resolveInterruptedTurn<TContext>(
@@ -83,6 +85,7 @@ export async function resumeInterruptedTurn<
     state,
     toolErrorFormatter,
     agentToolParentRunConfig,
+    signal,
   );
 
   applyTurnResult({
