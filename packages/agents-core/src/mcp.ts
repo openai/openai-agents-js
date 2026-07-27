@@ -1085,7 +1085,9 @@ export function mcpToFunctionTool(
       // ordinary failure; surface the cancellation instead. The reason is
       // thrown as-is — an aborted signal always carries one, and null is a
       // valid value the cancellation checks compare against by identity.
-      if (details?.signal?.aborted) {
+      // An explicit `errorFunction: null` opts out of every conversion, so
+      // the raw MCP failure is preserved for that configuration.
+      if (details?.signal?.aborted && errorFunction !== null) {
         throw details.signal.reason;
       }
       throw error;

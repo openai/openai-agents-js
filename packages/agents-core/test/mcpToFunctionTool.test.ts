@@ -892,6 +892,65 @@ describe('mcpToFunctionTool', () => {
     expect(await outcome).toEqual({ kind: 'rejected', error: null });
   });
 
+  it('preserves the raw MCP failure when errorFunction is null', async () => {
+    const mcpError = Object.assign(
+      new Error('MCP error -32001: Request cancelled'),
+      { code: -32001 },
+    );
+    let requestStarted!: () => void;
+    const requestStartedPromise = new Promise<void>((resolve) => {
+      requestStarted = resolve;
+    });
+    const tool = mcpToFunctionTool(
+      {
+        name: 'raw_error_tool',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      {
+        name: 'raw-error-server',
+        cacheToolsList: false,
+        errorFunction: null,
+        connect: async () => {},
+        close: async () => {},
+        listTools: async () => [],
+        callTool: ((
+          _name: string,
+          _args: unknown,
+          _meta?: unknown,
+          options?: { signal?: AbortSignal },
+        ) => {
+          requestStarted();
+          return new Promise<never>((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => reject(mcpError), {
+              once: true,
+            });
+          });
+        }) as any,
+        invalidateToolsCache: async () => {},
+      },
+      false,
+    );
+    const controller = new AbortController();
+
+    const invocation = tool.invoke(new RunContext({}), '{}', {
+      signal: controller.signal,
+    } as any);
+    const outcome = invocation.then(
+      (value) => ({ kind: 'resolved' as const, value }),
+      (error) => ({ kind: 'rejected' as const, error }),
+    );
+    await requestStartedPromise;
+    controller.abort(new Error('user aborted'));
+
+    expect(await outcome).toEqual({ kind: 'rejected', error: mcpError });
+  });
+
   it('keeps non-cancellation SDK errors on the normal error path', async () => {
     const serverError = Object.assign(new Error('MCP error -32603: boom'), {
       code: -32603,
