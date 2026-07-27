@@ -1011,8 +1011,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
       try {
         while (true) {
-          options.signal?.throwIfAborted();
-
           // if we don't have a current step, we treat this as a new run
           state._currentStep = state._currentStep ?? {
             type: 'next_step_run_again',
@@ -1047,6 +1045,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               agentToolParentRunConfig,
               signal: options.signal,
             });
+            options.signal?.throwIfAborted();
 
             // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
             // The counter will be reset when _currentTurn is incremented (starting a new turn)
@@ -1233,6 +1232,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               toolsUsed: state._lastProcessedResponse?.toolsUsed ?? [],
               resetTurnPersistence: !isResumedState,
             });
+            options.signal?.throwIfAborted();
             if (turnResult.nextStep.type !== 'next_step_final_output') {
               finishRunnerSpan(currentTurnSpan);
               setRunStateTurnSpanParent(state, undefined);
