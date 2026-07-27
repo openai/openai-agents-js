@@ -93,7 +93,6 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
   state: RunState<TContext, Agent<TContext, any>>;
   toolErrorFormatter?: ToolErrorFormatter;
   agentToolParentRunConfig?: Partial<RunConfig>;
-  signal?: AbortSignal;
 };
 
 const REDACTED_TOOL_ERROR_MESSAGE =
@@ -235,7 +234,6 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
   state: RunState<TContext, Agent<TContext, any>>,
   toolErrorFormatter?: ToolErrorFormatter,
   agentToolParentRunConfig?: Partial<RunConfig>,
-  signal?: AbortSignal,
 ): Promise<FunctionToolResult<TContext>[]> {
   const deps: FunctionToolCallDeps<TContext> = {
     agent,
@@ -243,7 +241,6 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     state,
     toolErrorFormatter,
     agentToolParentRunConfig,
-    signal,
   };
 
   const executeToolRun = async (toolRun: ToolRunFunction<TContext>) => {
@@ -612,7 +609,7 @@ async function runApprovedFunctionTool<TContext>(
   toolRun: ToolRunFunction<TContext>,
   parsedInput: unknown,
 ): Promise<FunctionToolResult<TContext>> {
-  const { agent, runner, state, agentToolParentRunConfig, signal } = deps;
+  const { agent, runner, state, agentToolParentRunConfig } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
   const traceToolName = getFunctionToolTraceName(toolRun);
   return withRunStateToolFunctionSpan(deps, traceToolName, async (span) => {
@@ -658,7 +655,6 @@ async function runApprovedFunctionTool<TContext>(
         toolDetails = {
           toolCall: toolRun.toolCall,
           resumeState,
-          ...(signal ? { signal } : {}),
           [FUNCTION_TOOL_PARSED_INPUT_CALLBACK]: (input: unknown) => {
             executedInput = cloneForCustomDataContext(input);
           },
