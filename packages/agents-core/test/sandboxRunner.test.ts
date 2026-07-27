@@ -2206,6 +2206,95 @@ describe('sandbox runner integration', () => {
     ).toBe(true);
   });
 
+  it('preserves owned sandbox sessions for a resumable streamed cancellation', async () => {
+    const client = new FakeSandboxClient();
+    let markToolStarted: (() => void) | undefined;
+    let releaseTool: (() => void) | undefined;
+    const toolStarted = new Promise<void>((resolve) => {
+      markToolStarted = resolve;
+    });
+    const toolCanFinish = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    const sandboxTool = tool({
+      name: 'sandbox_tool',
+      description: 'Settles when the streamed run is cancelled.',
+      parameters: z.object({}).strict(),
+      execute: async (_input, _context, details) => {
+        markToolStarted?.();
+        const signal = details?.signal;
+        if (!signal?.aborted) {
+          await Promise.race([
+            toolCanFinish,
+            new Promise<void>((resolve) => {
+              signal?.addEventListener('abort', () => resolve(), {
+                once: true,
+              });
+            }),
+          ]);
+        }
+        return 'cancelled tool result';
+      },
+    });
+    const sandboxModel = new RecordingStreamingModel([
+      {
+        output: [
+          {
+            id: 'fc_cancelled_sandbox_tool',
+            type: 'function_call',
+            name: 'sandbox_tool',
+            callId: 'call_cancelled_sandbox_tool',
+            status: 'completed',
+            arguments: '{}',
+          } satisfies protocol.FunctionCallItem,
+        ],
+        usage: new Usage(),
+      },
+      {
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      },
+    ]);
+    const sandboxAgent = new SandboxAgent({
+      name: 'CancelledSandboxWorker',
+      model: sandboxModel,
+      tools: [sandboxTool],
+      defaultManifest: new Manifest({ root: '/workspace' }),
+    });
+    const runner = new Runner();
+    const cancelled = await runner.run(sandboxAgent, 'Hello', {
+      stream: true,
+      sandbox: { client },
+    });
+    const reader = (cancelled.toStream() as any).getReader();
+
+    await toolStarted;
+    await reader.cancel('stop');
+    releaseTool?.();
+    await cancelled.completed;
+
+    expect(cancelled.cancelled).toBe(true);
+    expect(client.closeCalls).toEqual([]);
+    expect(cancelled.state._sandbox).toBeDefined();
+    expect(
+      cancelled.state._generatedItems.some(
+        (item) => item.rawItem.type === 'function_call_result',
+      ),
+    ).toBe(true);
+
+    const resumed = await runner.run(sandboxAgent, cancelled.state, {
+      stream: true,
+      sandbox: { client },
+    });
+    for await (const _event of resumed) {
+      // Drain the resumed run.
+    }
+
+    expect(resumed.finalOutput).toBe('done');
+    expect(client.createCalls).toHaveLength(1);
+    expect(client.closeCalls).toEqual(['session-1']);
+  });
+
   it('clears prior sandbox state when a resumed turn does not touch sandbox agents', async () => {
     const agent = new Agent<unknown, any>({ name: 'PlainAgent' });
     const state = new RunState<unknown, Agent<unknown, any>>(
