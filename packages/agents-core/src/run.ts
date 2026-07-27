@@ -1686,12 +1686,19 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
           };
 
+          // Preparation can run user-provided async code, so cancellation must be
+          // rechecked after its final await and before persisting or calling the model.
+          if (result.cancelled) {
+            await awaitGuardrailsAndPersistInput();
+            return;
+          }
+
           if (!delayStreamInputPersistence) {
             await persistStreamInputIfNeeded();
           }
 
-          // Preparation can run user-provided async code, so cancellation must be
-          // rechecked after its final await and immediately before calling the model.
+          // Persistence can also be asynchronous, so do not start the request if
+          // cancellation occurs while the session write is in progress.
           if (result.cancelled) {
             await awaitGuardrailsAndPersistInput();
             return;

@@ -29,6 +29,7 @@ import {
   OutputGuardrailTripwireTriggered,
   RunState,
   shellTool,
+  MemorySession,
 } from '../src';
 import {
   FakeModel,
@@ -1644,6 +1645,44 @@ describe('Runner.run (streaming)', () => {
 
     expect(result.cancelled).toBe(true);
     expect(model.callCount).toBe(1);
+  });
+
+  it('does not persist input when cancelled during initial preparation', async () => {
+    let markPreparationStarted: (() => void) | undefined;
+    let finishPreparation: (() => void) | undefined;
+    const preparationStarted = new Promise<void>((resolve) => {
+      markPreparationStarted = resolve;
+    });
+    const preparationCanFinish = new Promise<void>((resolve) => {
+      finishPreparation = resolve;
+    });
+    const model = new CountingFunctionToolStreamModel();
+    const agent = new Agent({
+      name: 'CancelInitialPreparationAgent',
+      model,
+    });
+    const runner = new Runner({
+      callModelInputFilter: async ({ modelData }) => {
+        markPreparationStarted?.();
+        await preparationCanFinish;
+        return modelData;
+      },
+    });
+    const session = new MemorySession();
+    const result = await runner.run(agent, 'not sent', {
+      stream: true,
+      session,
+    });
+    const reader = (result.toStream() as any).getReader();
+
+    await preparationStarted;
+    await reader.cancel('stop');
+    finishPreparation?.();
+    await result._getStreamLoopPromise();
+
+    expect(result.cancelled).toBe(true);
+    expect(model.callCount).toBe(0);
+    expect(await session.getItems()).toEqual([]);
   });
 
   it('surfaces a pending input guardrail failure after cancellation during preparation', async () => {
