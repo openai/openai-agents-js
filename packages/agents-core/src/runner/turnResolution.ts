@@ -630,6 +630,7 @@ export async function resolveInterruptedTurn<TContext>(
   state: RunState<TContext, Agent<TContext, any>>,
   toolErrorFormatter?: ToolErrorFormatter,
   agentToolParentRunConfig?: Partial<RunConfig>,
+  signal?: AbortSignal,
 ): Promise<SingleStepResult> {
   // call_ids for function tools
   const functionCallIds = originalPreStepItems
@@ -766,6 +767,7 @@ export async function resolveInterruptedTurn<TContext>(
     state,
     toolErrorFormatter,
     agentToolParentRunConfig,
+    signal,
   );
 
   // Computer actions may require approval; only pending approved actions are executed on resume.
@@ -956,6 +958,7 @@ export async function resolveTurnAfterModelResponse<
   toolErrorFormatter?: ToolErrorFormatter,
   agentToolParentRunConfig?: Partial<RunConfig>,
   errorHandlers?: RunErrorHandlers<TContext, TAgent>,
+  signal?: AbortSignal,
 ): Promise<SingleStepResult> {
   // Reuse the same array reference so we can compare object identity when deciding whether to
   // append new items, ensuring we never double-stream existing RunItems.
@@ -979,6 +982,7 @@ export async function resolveTurnAfterModelResponse<
       state,
       toolErrorFormatter,
       agentToolParentRunConfig,
+      signal,
     ),
     executeComputerActions(
       agent,

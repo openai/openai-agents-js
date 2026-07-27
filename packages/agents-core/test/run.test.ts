@@ -129,6 +129,65 @@ describe('Runner.run', () => {
       expect(runner.config.toolExecution).toBe(toolExecution);
     });
 
+    it('stops after an in-flight function tool observes run cancellation', async () => {
+      const controller = new AbortController();
+      const abortReason = new Error('stop tool');
+      let toolSignal: AbortSignal | undefined;
+      let markToolStarted: (() => void) | undefined;
+      const toolStarted = new Promise<void>((resolve) => {
+        markToolStarted = resolve;
+      });
+      const abortableTool = tool({
+        name: 'test',
+        description: 'waits for the run to be aborted',
+        parameters: z.object({ test: z.string() }),
+        execute: async (_input, _context, details) => {
+          toolSignal = details?.signal;
+          markToolStarted?.();
+          if (!toolSignal) {
+            throw new Error('Expected the run abort signal');
+          }
+          if (!toolSignal.aborted) {
+            await new Promise<void>((resolve) => {
+              toolSignal?.addEventListener('abort', () => resolve(), {
+                once: true,
+              });
+            });
+          }
+          return 'cancelled';
+        },
+      });
+      const model = new FakeModel([
+        {
+          output: [{ ...TEST_MODEL_FUNCTION_CALL }],
+          usage: new Usage(),
+        },
+      ]);
+      const getResponseSpy = vi.spyOn(model, 'getResponse');
+      const agent = new Agent({
+        name: 'AbortableToolAgent',
+        model,
+        tools: [abortableTool],
+      });
+      const state = new RunState(new RunContext(), 'start', agent, 10);
+
+      const runPromise = run(agent, state, { signal: controller.signal });
+      await toolStarted;
+
+      expect(toolSignal).toBe(controller.signal);
+      controller.abort(abortReason);
+
+      await expect(runPromise).rejects.toBe(abortReason);
+      expect(toolSignal?.aborted).toBe(true);
+      expect(toolSignal?.reason).toBe(abortReason);
+      expect(getResponseSpy).toHaveBeenCalledTimes(1);
+      expect(
+        state._generatedItems.filter(
+          (item) => item.rawItem.type === 'function_call_result',
+        ),
+      ).toHaveLength(1);
+    });
+
     it('accepts public tool not found behavior config', () => {
       const toolNotFoundBehavior =
         'return_error_to_model' satisfies ToolNotFoundBehavior;
