@@ -98,11 +98,13 @@ describe('NodeMCPServerStdio', () => {
 
     await server.connect();
     await server.listTools();
-    await server.callTool('mock-tool', {});
+    const signal = new AbortController().signal;
+    await server.callTool('mock-tool', {}, undefined, { signal });
 
     expect(lastConnectOptions?.timeout).toBe(6000);
     expect(lastListToolsOptions?.timeout).toBe(6000);
     expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
+    expect(lastCallToolOptions?.signal).toBe(signal);
 
     await server.close();
   });
@@ -404,11 +406,13 @@ describe('NodeMCPServerSSE', () => {
 
     await server.connect();
     await server.listTools();
-    await server.callTool('mock-tool', {});
+    const signal = new AbortController().signal;
+    await server.callTool('mock-tool', {}, undefined, { signal });
 
     expect(lastConnectOptions?.timeout).toBe(4000);
     expect(lastListToolsOptions?.timeout).toBe(4000);
     expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
+    expect(lastCallToolOptions?.signal).toBe(signal);
 
     await server.close();
   });
@@ -564,11 +568,13 @@ describe('NodeMCPServerStreamableHttp', () => {
 
     await server.connect();
     await server.listTools();
-    await server.callTool('mock-tool', {});
+    const signal = new AbortController().signal;
+    await server.callTool('mock-tool', {}, undefined, { signal });
 
     expect(lastConnectOptions?.timeout).toBe(9000);
     expect(lastListToolsOptions?.timeout).toBe(9000);
     expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
+    expect(lastCallToolOptions?.signal).toBe(signal);
 
     await server.close();
   });

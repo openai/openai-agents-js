@@ -128,6 +128,104 @@ describe('mcpToFunctionTool', () => {
     ]);
   });
 
+  it('passes the tool call signal to MCP calls', async () => {
+    const callTool = vi.fn(async () => [{ type: 'text', text: 'legacy' }]);
+    const callToolResult = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'structured' }],
+      structuredContent: { answer: 42 },
+    }));
+    const signal = new AbortController().signal;
+    const legacyTool = mcpToFunctionTool(
+      {
+        name: 'legacy_signal',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      {
+        name: 'legacy-signal-server',
+        cacheToolsList: false,
+        connect: async () => {},
+        close: async () => {},
+        listTools: async () => [],
+        callTool,
+        invalidateToolsCache: async () => {},
+      },
+      false,
+    );
+    const structuredTool = mcpToFunctionTool(
+      {
+        name: 'structured_signal',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      {
+        name: 'structured-signal-server',
+        cacheToolsList: false,
+        useStructuredContent: true,
+        connect: async () => {},
+        close: async () => {},
+        listTools: async () => [],
+        callTool,
+        callToolResult,
+        invalidateToolsCache: async () => {},
+      },
+      false,
+    );
+
+    await legacyTool.invoke(new RunContext({}), '{}', { signal });
+    await structuredTool.invoke(new RunContext({}), '{}', { signal });
+
+    expect(callTool).toHaveBeenCalledWith('legacy_signal', {}, undefined, {
+      signal,
+    });
+    expect(callToolResult).toHaveBeenCalledWith(
+      'structured_signal',
+      {},
+      undefined,
+      { signal },
+    );
+  });
+
+  it('preserves MCP call arity when no signal is present', async () => {
+    const callTool = vi.fn(async () => [{ type: 'text', text: 'ok' }]);
+    const tool = mcpToFunctionTool(
+      {
+        name: 'no_signal',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      {
+        name: 'no-signal-server',
+        cacheToolsList: false,
+        connect: async () => {},
+        close: async () => {},
+        listTools: async () => [],
+        callTool,
+        invalidateToolsCache: async () => {},
+      },
+      false,
+    );
+
+    await tool.invoke(new RunContext({}), '{}');
+
+    expect(callTool.mock.calls[0]).toEqual(['no_signal', {}]);
+  });
+
   it('uses structured MCP output only when explicitly enabled', async () => {
     const callTool = vi.fn(async () => [
       { type: 'text', text: 'legacy output' },
@@ -512,7 +610,9 @@ describe('mcpToFunctionTool', () => {
       false,
     );
 
-    const result = await tool.invoke(new RunContext({}), '{}');
+    const result = await tool.invoke(new RunContext({}), '{}', {
+      signal: new AbortController().signal,
+    });
 
     expect(result).toBe(
       'An error occurred while running the tool. Please try again. Error: AbortError: synthetic abort',
