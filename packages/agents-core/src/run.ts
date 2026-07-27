@@ -1011,6 +1011,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
       try {
         while (true) {
+          options.signal?.throwIfAborted();
+
           // if we don't have a current step, we treat this as a new run
           state._currentStep = state._currentStep ?? {
             type: 'next_step_run_again',

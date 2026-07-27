@@ -129,7 +129,7 @@ describe('Runner.run', () => {
       expect(runner.config.toolExecution).toBe(toolExecution);
     });
 
-    it('passes the run abort signal to an in-flight function tool', async () => {
+    it('stops after an in-flight function tool observes run cancellation', async () => {
       const controller = new AbortController();
       const abortReason = new Error('stop tool');
       let toolSignal: AbortSignal | undefined;
@@ -162,27 +162,30 @@ describe('Runner.run', () => {
           output: [{ ...TEST_MODEL_FUNCTION_CALL }],
           usage: new Usage(),
         },
-        {
-          output: [fakeModelMessage('done')],
-          usage: new Usage(),
-        },
       ]);
+      const getResponseSpy = vi.spyOn(model, 'getResponse');
       const agent = new Agent({
         name: 'AbortableToolAgent',
         model,
         tools: [abortableTool],
       });
+      const state = new RunState(new RunContext(), 'start', agent, 10);
 
-      const runPromise = run(agent, 'start', { signal: controller.signal });
+      const runPromise = run(agent, state, { signal: controller.signal });
       await toolStarted;
 
       expect(toolSignal).toBe(controller.signal);
       controller.abort(abortReason);
 
-      const result = await runPromise;
+      await expect(runPromise).rejects.toBe(abortReason);
       expect(toolSignal?.aborted).toBe(true);
       expect(toolSignal?.reason).toBe(abortReason);
-      expect(result.finalOutput).toBe('done');
+      expect(getResponseSpy).toHaveBeenCalledTimes(1);
+      expect(
+        state._generatedItems.filter(
+          (item) => item.rawItem.type === 'function_call_result',
+        ),
+      ).toHaveLength(1);
     });
 
     it('accepts public tool not found behavior config', () => {
