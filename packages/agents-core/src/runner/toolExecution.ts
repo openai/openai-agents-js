@@ -44,6 +44,7 @@ import {
 import type { ShellResult } from '../shell';
 import { RunContext } from '../runContext';
 import type { RunResult } from '../result';
+import { isAbortError } from '../utils/abortSignals';
 import { toSmartString } from '../utils/smartString';
 import { isZodObject } from '../utils';
 import { withFunctionSpan, withHandoffSpan } from '../tracing/createSpans';
@@ -86,6 +87,11 @@ import {
   setToolUsageRecorder,
 } from './usageTracking';
 import { getRunStateTurnSpanParent } from './invocationContext';
+import {
+  buildComputerAbortResult,
+  buildFunctionAbortResult,
+  COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
+} from './streamReconciliation';
 
 type FunctionToolCallDeps<TContext = UnknownContext> = {
   agent: Agent<TContext, any>;
@@ -93,13 +99,11 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
   state: RunState<TContext, Agent<TContext, any>>;
   toolErrorFormatter?: ToolErrorFormatter;
   agentToolParentRunConfig?: Partial<RunConfig>;
+  signal?: AbortSignal;
 };
 
 const REDACTED_TOOL_ERROR_MESSAGE =
   'Tool execution failed. Error details are redacted.';
-// 1x1 transparent PNG data URL used for rejected computer actions.
-const TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
 
 type ParseToolArgumentsResult =
   { success: true; args: any } | { success: false; error: Error };
@@ -234,6 +238,7 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
   state: RunState<TContext, Agent<TContext, any>>,
   toolErrorFormatter?: ToolErrorFormatter,
   agentToolParentRunConfig?: Partial<RunConfig>,
+  signal?: AbortSignal,
 ): Promise<FunctionToolResult<TContext>[]> {
   const deps: FunctionToolCallDeps<TContext> = {
     agent,
@@ -241,9 +246,14 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     state,
     toolErrorFormatter,
     agentToolParentRunConfig,
+    signal,
   };
 
   const executeToolRun = async (toolRun: ToolRunFunction<TContext>) => {
+    if (signal?.aborted) {
+      return buildFunctionCancellationResult(deps, toolRun);
+    }
+
     const parseResult = parseToolArguments(toolRun);
     const dynamicApprovalPolicy = hasDynamicFunctionToolApprovalPolicy(
       toolRun.tool,
@@ -275,7 +285,14 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     if (approvalOutcome !== 'approved') {
       return approvalOutcome;
     }
-    return runApprovedFunctionTool(deps, toolRun, parseResult.args);
+    try {
+      return await runApprovedFunctionTool(deps, toolRun, parseResult.args);
+    } catch (error) {
+      if (signal?.aborted && (error === signal.reason || isAbortError(error))) {
+        return buildFunctionCancellationResult(deps, toolRun);
+      }
+      throw error;
+    }
   };
 
   try {
@@ -335,28 +352,31 @@ async function executeToolRunsWithConcurrency<TContext>(
 
   const results: FunctionToolResult<TContext>[] = [];
   let nextIndex = 0;
-  let firstError: unknown;
+  let firstError: { value: unknown } | undefined;
 
   const worker = async () => {
     while (nextIndex < toolRuns.length && firstError === undefined) {
       const currentIndex = nextIndex;
       nextIndex += 1;
       try {
-        results[currentIndex] = await executeToolRun(toolRuns[currentIndex]);
+        const result = await executeToolRun(toolRuns[currentIndex]);
+        results[currentIndex] = result;
       } catch (error) {
-        firstError ??= error;
+        firstError ??= { value: error };
         break;
       }
     }
   };
 
   const workerCount = Math.min(maxConcurrency, toolRuns.length);
+  // Drain every started worker before returning so no function tool retains
+  // ownership after the run surfaces an error or cancellation.
   await Promise.allSettled(
     Array.from({ length: workerCount }, async () => worker()),
   );
 
   if (firstError !== undefined) {
-    throw firstError;
+    throw firstError.value;
   }
   return results;
 }
@@ -416,6 +436,20 @@ function buildFunctionFailureResult<TContext>(
       deps.agent,
       output,
     ),
+  };
+}
+
+function buildFunctionCancellationResult<TContext>(
+  deps: FunctionToolCallDeps<TContext>,
+  toolRun: ToolRunFunction<TContext>,
+): FunctionToolResult<TContext> {
+  const output = 'aborted';
+  const rawItem = buildFunctionAbortResult(toolRun.toolCall);
+  return {
+    type: 'function_output',
+    tool: toolRun.tool,
+    output,
+    runItem: new RunToolCallOutputItem(rawItem, deps.agent, output),
   };
 }
 
@@ -609,7 +643,7 @@ async function runApprovedFunctionTool<TContext>(
   toolRun: ToolRunFunction<TContext>,
   parsedInput: unknown,
 ): Promise<FunctionToolResult<TContext>> {
-  const { agent, runner, state, agentToolParentRunConfig } = deps;
+  const { agent, runner, state, agentToolParentRunConfig, signal } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
   const traceToolName = getFunctionToolTraceName(toolRun);
   return withRunStateToolFunctionSpan(deps, traceToolName, async (span) => {
@@ -627,6 +661,10 @@ async function runApprovedFunctionTool<TContext>(
           state._toolInputGuardrailResults.push(result);
         },
       });
+
+      if (signal?.aborted) {
+        return buildFunctionCancellationResult(deps, toolRun);
+      }
 
       emitToolStart(
         runner,
@@ -655,6 +693,7 @@ async function runApprovedFunctionTool<TContext>(
         toolDetails = {
           toolCall: toolRun.toolCall,
           resumeState,
+          ...(signal ? { signal } : {}),
           [FUNCTION_TOOL_PARSED_INPUT_CALLBACK]: (input: unknown) => {
             executedInput = cloneForCustomDataContext(input);
           },
@@ -665,6 +704,7 @@ async function runApprovedFunctionTool<TContext>(
           agentToolParentRunConfig ?? runner.config,
         );
         setToolCallParentSpanOnDetails(toolDetails, span);
+        signal?.throwIfAborted();
         const invokedToolOutput = await invokeFunctionTool({
           tool: toolRun.tool,
           runContext: state._context,
@@ -1378,12 +1418,18 @@ export async function executeComputerActions(
   runContext: RunContext,
   customLogger: Logger | undefined = undefined,
   toolErrorFormatter?: ToolErrorFormatter,
+  signal?: AbortSignal,
 ): Promise<RunItem[]> {
   const _logger = customLogger ?? logger;
   const results: RunItem[] = [];
   for (const action of actions) {
     const toolCall = action.toolCall;
     const computerTool = action.computer;
+    if (signal?.aborted) {
+      const rawItem = buildComputerAbortResult(toolCall);
+      results.push(new RunToolCallOutputItem(rawItem, agent, 'aborted'));
+      continue;
+    }
     const computerActions = getComputerToolActions(toolCall);
     let cachedRejectionMessage: string | undefined;
     const getRejectionMessage = async () => {
@@ -1434,7 +1480,7 @@ export async function executeComputerActions(
         const rejectionMessage = await getRejectionMessage();
         const rejectionOutput: protocol.ComputerToolOutput = {
           type: 'computer_screenshot',
-          data: TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL,
+          data: COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
           providerData: {
             approvalStatus: 'rejected',
             message: rejectionMessage,
@@ -1448,7 +1494,7 @@ export async function executeComputerActions(
         return new RunToolCallOutputItem(
           rawItem,
           agent,
-          TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL,
+          COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
         );
       },
     });
@@ -1776,7 +1822,18 @@ export async function checkForFinalOutputFromTools<
     );
   });
 
-  if (finalizationResults.length === 0) {
+  const isIncompleteFunctionResult = (result: FunctionToolResult<TContext>) => {
+    const rawItem = result.runItem.rawItem;
+    return (
+      result.type === 'function_output' &&
+      rawItem?.type === 'function_call_result' &&
+      rawItem.status === 'incomplete'
+    );
+  };
+  if (
+    finalizationResults.length === 0 ||
+    finalizationResults.some(isIncompleteFunctionResult)
+  ) {
     return NOT_FINAL_OUTPUT;
   }
 

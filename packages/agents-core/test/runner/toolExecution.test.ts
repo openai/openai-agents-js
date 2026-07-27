@@ -423,6 +423,83 @@ describe('checkForFinalOutputFromTools', () => {
   });
 
   it.each(['stop_on_first_tool' as const, { stopAtToolNames: ['weather'] }])(
+    'does not promote a completed sibling after an incomplete result with %j',
+    async (behavior) => {
+      const agent = new Agent({
+        name: 'IncompleteResult',
+        toolUseBehavior: behavior,
+      });
+      const cancelledTool = tool({
+        name: 'cancelled_tool',
+        description: 'cancelled tool',
+        parameters: z.object({}),
+        execute: async () => 'unused',
+      });
+      const incompleteResult: FunctionToolResult = {
+        type: 'function_output',
+        tool: cancelledTool,
+        output: 'aborted',
+        runItem: new ToolCallOutputItem(
+          {
+            type: 'function_call_result',
+            name: 'cancelled_tool',
+            callId: 'call_cancelled_incomplete',
+            status: 'incomplete',
+            output: { type: 'text', text: 'aborted' },
+          },
+          agent,
+          'aborted',
+        ),
+      };
+
+      const res = await checkForFinalOutputFromTools(
+        agent,
+        [incompleteResult, toolResult],
+        state,
+      );
+
+      expect(res.isFinalOutput).toBe(false);
+    },
+  );
+
+  it('does not invoke custom finalization after an incomplete result', async () => {
+    const finalize = vi.fn(async () => ({
+      isFinalOutput: true as const,
+      finalOutput: 'sunny',
+      isInterrupted: undefined,
+    }));
+    const agent = new Agent({
+      name: 'CustomIncompleteResult',
+      toolUseBehavior: finalize,
+    });
+    const incompleteResult: FunctionToolResult = {
+      type: 'function_output',
+      tool: weatherTool,
+      output: 'aborted',
+      runItem: new ToolCallOutputItem(
+        {
+          type: 'function_call_result',
+          name: 'weather',
+          callId: 'call_weather_incomplete',
+          status: 'incomplete',
+          output: { type: 'text', text: 'aborted' },
+        },
+        agent,
+        'aborted',
+      ),
+    };
+
+    const res = await checkForFinalOutputFromTools(
+      agent,
+      [incompleteResult, toolResult],
+      state,
+    );
+
+    expect(res.isFinalOutput).toBe(false);
+    expect(finalize).not.toHaveBeenCalled();
+  });
+
+  it.each(['stop_on_first_tool' as const, { stopAtToolNames: ['weather'] }])(
     'does not finalize program-owned tool results with %j',
     async (behavior) => {
       const agent = new Agent({
@@ -864,6 +941,46 @@ describe('executeComputerActions', () => {
     );
     expect(items).toHaveLength(1);
     expect((items[0] as any).output).toBe('data:image/png;base64,img');
+  });
+
+  it('does not start an action after cancellation', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('stop before computer action'));
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+    } as any;
+    const computer = computerTool({ computer: fakeComputer });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'cancelled-computer-call',
+      status: 'completed',
+      action: { type: 'screenshot' } as any,
+    };
+
+    const items = await executeComputerActions(
+      new Agent({ name: 'CancelledComputer' }),
+      [{ toolCall: call, computer }],
+      new Runner(),
+      new RunContext(),
+      undefined,
+      undefined,
+      controller.signal,
+    );
+
+    expect(fakeComputer.screenshot).not.toHaveBeenCalled();
+    expect(items[0]).toMatchObject({
+      rawItem: {
+        type: 'computer_call_result',
+        callId: call.callId,
+        output: {
+          type: 'computer_screenshot',
+          data: expect.stringMatching(/^data:image\/png;base64,/),
+        },
+        providerData: { status: 'incomplete' },
+      },
+    });
   });
 
   it('does not emit a success end event when computer customDataExtractor fails', async () => {
@@ -3657,6 +3774,94 @@ describe('executeShellActions', () => {
       ).toEqual(['ok-1', 'ok-2', 'ok-3']);
     });
 
+    it('surfaces an uncapped tool failure without waiting for a pending sibling', async () => {
+      let markSiblingStarted: (() => void) | undefined;
+      const siblingStarted = new Promise<void>((resolve) => {
+        markSiblingStarted = resolve;
+      });
+      let releaseSibling: (() => void) | undefined;
+      const siblingCanFinish = new Promise<void>((resolve) => {
+        releaseSibling = resolve;
+      });
+      const failingTool = tool({
+        name: 'failing_tool',
+        description: 'fails while a sibling remains pending',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: vi.fn(async () => {
+          await siblingStarted;
+          throw new Error('boom');
+        }),
+      }) as unknown as FunctionTool;
+      const pendingTool = tool({
+        name: 'pending_tool',
+        description: 'remains pending until released',
+        parameters: z.object({}),
+        execute: vi.fn(async () => {
+          markSiblingStarted?.();
+          await siblingCanFinish;
+          return 'done';
+        }),
+      }) as unknown as FunctionTool;
+
+      const resultPromise = executeFunctionToolCalls(
+        state._currentAgent,
+        [
+          {
+            toolCall: {
+              ...toolCall,
+              callId: 'failing-call',
+              name: 'failing_tool',
+            },
+            tool: failingTool,
+          },
+          {
+            toolCall: {
+              ...toolCall,
+              callId: 'pending-call',
+              name: 'pending_tool',
+            },
+            tool: pendingTool,
+          },
+        ],
+        runner,
+        state,
+      );
+      await siblingStarted;
+
+      try {
+        await expect(resultPromise).rejects.toThrow(
+          /Failed to run function tools/,
+        );
+      } finally {
+        releaseSibling?.();
+      }
+    });
+
+    it('preserves undefined rejections in uncapped tools', async () => {
+      const t = tool({
+        name: 'undefined_error',
+        description: 'rejects without an error value',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: vi.fn(async () => {
+          throw undefined;
+        }),
+      }) as unknown as FunctionTool;
+
+      const error = await withTrace('test', () =>
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall, tool: t }],
+          runner,
+          state,
+        ).catch((caught) => caught),
+      );
+
+      expect(error).toBeInstanceOf(ToolCallError);
+      expect((error as ToolCallError).error).toBeUndefined();
+    });
+
     it('limits function tool concurrency and preserves output order', async () => {
       let activeCount = 0;
       let maxSeenCount = 0;
@@ -3937,6 +4142,61 @@ describe('executeShellActions', () => {
       expect(invokeSpy).not.toHaveBeenCalled();
       expect(state._toolInputGuardrailResults).toHaveLength(1);
       expect(state._toolOutputGuardrailResults).toHaveLength(0);
+    });
+
+    it('does not invoke a tool when cancellation occurs during an input guardrail', async () => {
+      const controller = new AbortController();
+      let markGuardrailStarted: (() => void) | undefined;
+      const guardrailStarted = new Promise<void>((resolve) => {
+        markGuardrailStarted = resolve;
+      });
+      let releaseGuardrail: (() => void) | undefined;
+      const guardrailCanFinish = new Promise<void>((resolve) => {
+        releaseGuardrail = resolve;
+      });
+      const guardrail = defineToolInputGuardrail({
+        name: 'slow_allow',
+        run: async () => {
+          markGuardrailStarted?.();
+          await guardrailCanFinish;
+          return ToolGuardrailFunctionOutputFactory.allow();
+        },
+      });
+      const execute = vi.fn(async () => 'should-not-run');
+      const t = tool({
+        name: 'guarded_tool',
+        description: 'tool with an asynchronous input guardrail',
+        parameters: z.object({}),
+        execute,
+        inputGuardrails: [guardrail],
+      }) as unknown as FunctionTool;
+
+      const resultPromise = executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall, tool: t }],
+        runner,
+        state,
+        undefined,
+        undefined,
+        controller.signal,
+      );
+      await guardrailStarted;
+      controller.abort(new Error('stop during tool preparation'));
+      releaseGuardrail?.();
+
+      const result = await resultPromise;
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(result[0]).toMatchObject({
+        type: 'function_output',
+        runItem: {
+          rawItem: {
+            type: 'function_call_result',
+            callId: toolCall.callId,
+            status: 'incomplete',
+          },
+        },
+      });
     });
 
     it('rejects input guardrail messages for Zod output schemas without a fallback', async () => {
