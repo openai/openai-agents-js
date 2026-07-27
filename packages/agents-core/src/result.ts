@@ -411,8 +411,8 @@ export class StreamedRunResult<
     if (!this.cancelled && this.#readableController) {
       this.#readableController.close();
       this.#readableController = undefined;
-      this.#completedPromiseResolve?.();
     }
+    this.#completedPromiseResolve?.();
     this.#detachAbortHandler();
   }
 
@@ -552,7 +552,6 @@ export class StreamedRunResult<
       }
     }
 
-    this.#completedPromiseResolve?.();
     this.#detachAbortHandler();
   }
 
