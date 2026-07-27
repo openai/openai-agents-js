@@ -1685,6 +1685,60 @@ describe('Runner.run (streaming)', () => {
     expect(await session.getItems()).toEqual([]);
   });
 
+  it('starts the model request before asynchronous session persistence', async () => {
+    let markPersistenceStarted: (() => void) | undefined;
+    let finishPersistence: (() => void) | undefined;
+    const persistenceStarted = new Promise<void>((resolve) => {
+      markPersistenceStarted = resolve;
+    });
+    const persistenceCanFinish = new Promise<void>((resolve) => {
+      finishPersistence = resolve;
+    });
+    const persistedItems: AgentInputItem[] = [];
+    const session: Session = {
+      async getSessionId() {
+        return 'blocking-session';
+      },
+      async getItems() {
+        return structuredClone(persistedItems);
+      },
+      async addItems(items) {
+        markPersistenceStarted?.();
+        await persistenceCanFinish;
+        persistedItems.push(...structuredClone(items));
+      },
+      async popItem() {
+        return persistedItems.pop();
+      },
+      async clearSession() {
+        persistedItems.length = 0;
+      },
+    };
+    const model = new CountingFunctionToolStreamModel();
+    const agent = new Agent({
+      name: 'CancelDuringPersistenceAgent',
+      model,
+    });
+    const result = await run(agent, 'sent before persistence', {
+      stream: true,
+      session,
+    });
+    const reader = (result.toStream() as any).getReader();
+
+    await persistenceStarted;
+    const modelCallsWhenPersistenceStarted = model.callCount;
+    await reader.cancel('stop');
+    finishPersistence?.();
+    await result._getStreamLoopPromise();
+
+    expect(result.cancelled).toBe(true);
+    expect(modelCallsWhenPersistenceStarted).toBe(1);
+    expect(model.callCount).toBe(1);
+    expect(await session.getItems()).toMatchObject([
+      { role: 'user', content: 'sent before persistence' },
+    ]);
+  });
+
   it('surfaces a pending input guardrail failure after cancellation during preparation', async () => {
     let markGuardrailStarted: (() => void) | undefined;
     let finishGuardrail:
