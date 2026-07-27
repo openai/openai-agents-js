@@ -1352,11 +1352,41 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
           `Reconnecting closed streamable HTTP MCP session for ${toolName}.`,
       );
 
-      const recoveredClient = await this.reconnectClosedStreamableHttpClient({
+      // Race this caller's wait against its signal: a cancelled caller must
+      // unwind immediately, while the shared reconnection (and any late
+      // failure it produces) stays observed for other callers.
+      const reconnectPromise = this.reconnectClosedStreamableHttpClient({
         cause: error,
         failedClient: client,
         failedStateVersion: callToolStateVersion,
       });
+      let recoveredClient: Client;
+      const signal = options?.signal;
+      if (signal) {
+        let onAbort: (() => void) | undefined;
+        try {
+          recoveredClient = await Promise.race([
+            reconnectPromise,
+            new Promise<never>((_resolve, reject) => {
+              onAbort = () => reject(error);
+              if (signal.aborted) {
+                reject(error);
+                return;
+              }
+              signal.addEventListener('abort', onAbort, { once: true });
+            }),
+          ]);
+        } catch (raceError) {
+          reconnectPromise.catch(() => {});
+          throw raceError;
+        } finally {
+          if (onAbort) {
+            signal.removeEventListener('abort', onAbort);
+          }
+        }
+      } else {
+        recoveredClient = await reconnectPromise;
+      }
 
       if (recoveryStrategy === 'reconnect-only') {
         throw error;
