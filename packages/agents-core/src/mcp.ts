@@ -1060,23 +1060,34 @@ export function mcpToFunctionTool(
     const callOptions: MCPCallToolOptions | undefined = details?.signal
       ? { signal: details.signal }
       : undefined;
-    const result: CallToolResult =
-      (server.useStructuredContent === true ||
-        server.customDataExtractor !== undefined) &&
-      server.callToolResult
-        ? callOptions !== undefined
-          ? await server.callToolResult(mcpTool.name, args, meta, callOptions)
-          : meta === undefined
-            ? await server.callToolResult(mcpTool.name, args)
-            : await server.callToolResult(mcpTool.name, args, meta)
-        : {
-            content:
-              callOptions !== undefined
-                ? await server.callTool(mcpTool.name, args, meta, callOptions)
-                : meta === undefined
-                  ? await server.callTool(mcpTool.name, args)
-                  : await server.callTool(mcpTool.name, args, meta),
-          };
+    let result: CallToolResult;
+    try {
+      result =
+        (server.useStructuredContent === true ||
+          server.customDataExtractor !== undefined) &&
+        server.callToolResult
+          ? callOptions !== undefined
+            ? await server.callToolResult(mcpTool.name, args, meta, callOptions)
+            : meta === undefined
+              ? await server.callToolResult(mcpTool.name, args)
+              : await server.callToolResult(mcpTool.name, args, meta)
+          : {
+              content:
+                callOptions !== undefined
+                  ? await server.callTool(mcpTool.name, args, meta, callOptions)
+                  : meta === undefined
+                    ? await server.callTool(mcpTool.name, args)
+                    : await server.callTool(mcpTool.name, args, meta),
+            };
+    } catch (error) {
+      // The SDK rejects cancelled requests with an McpError (-32001) rather
+      // than the abort reason, which the tool error path would treat as an
+      // ordinary failure; surface the cancellation instead.
+      if (details?.signal?.aborted) {
+        throw details.signal.reason ?? error;
+      }
+      throw error;
+    }
     const content = result.content as CallToolResultContent;
     const resultMeta = result._meta ?? content._meta;
     const structuredContent =

@@ -771,4 +771,100 @@ describe('mcpToFunctionTool', () => {
       );
     });
   });
+
+  it('normalizes an SDK rejection as cancellation when the signal is aborted', async () => {
+    const mcpError = Object.assign(
+      new Error('MCP error -32001: Request cancelled'),
+      { code: -32001 },
+    );
+    let requestStarted!: () => void;
+    const requestStartedPromise = new Promise<void>((resolve) => {
+      requestStarted = resolve;
+    });
+    const callTool = vi.fn(
+      (
+        _name: string,
+        _args: unknown,
+        _meta?: unknown,
+        options?: { signal?: AbortSignal },
+      ) => {
+        requestStarted();
+        return new Promise<never>((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => reject(mcpError), {
+            once: true,
+          });
+        });
+      },
+    );
+    const tool = mcpToFunctionTool(
+      {
+        name: 'cancelling_tool',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      {
+        name: 'cancelling-server',
+        cacheToolsList: false,
+        connect: async () => {},
+        close: async () => {},
+        listTools: async () => [],
+        callTool: callTool as any,
+        invalidateToolsCache: async () => {},
+      },
+      false,
+    );
+    const controller = new AbortController();
+    const reason = new Error('user aborted');
+
+    const invocation = tool.invoke(new RunContext({}), '{}', {
+      signal: controller.signal,
+    } as any);
+    const outcome = invocation.then(
+      (value) => ({ kind: 'resolved' as const, value }),
+      (error) => ({ kind: 'rejected' as const, error }),
+    );
+    await requestStartedPromise;
+    controller.abort(reason);
+
+    expect(await outcome).toEqual({ kind: 'rejected', error: reason });
+  });
+
+  it('keeps non-cancellation SDK errors on the normal error path', async () => {
+    const serverError = Object.assign(new Error('MCP error -32603: boom'), {
+      code: -32603,
+    });
+    const tool = mcpToFunctionTool(
+      {
+        name: 'failing_tool',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      {
+        name: 'failing-server',
+        cacheToolsList: false,
+        connect: async () => {},
+        close: async () => {},
+        listTools: async () => [],
+        callTool: async () => {
+          throw serverError;
+        },
+        invalidateToolsCache: async () => {},
+      },
+      false,
+    );
+
+    const result = await tool.invoke(new RunContext({}), '{}');
+
+    expect(String(result)).toContain('An error occurred');
+  });
 });
