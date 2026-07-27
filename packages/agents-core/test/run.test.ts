@@ -3380,6 +3380,57 @@ describe('Runner.run', () => {
       expect(result.state._currentTurn).toBe(1);
     });
 
+    it('does not advance the turn when resuming a schema 1.0 approval interruption', async () => {
+      const approvalTool = tool({
+        name: 'get_weather',
+        description: 'Gets weather for a city.',
+        parameters: z.object({ city: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ city }) => `Weather in ${city}`,
+      });
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              type: 'function_call',
+              id: 'fc_1',
+              callId: 'call_weather_1',
+              name: 'get_weather',
+              status: 'completed',
+              arguments: JSON.stringify({ city: 'Seattle' }),
+              providerData: {},
+            } as protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+        },
+        { output: [fakeModelMessage('All set.')], usage: new Usage() },
+      ]);
+      const agent = new Agent({
+        name: 'LegacyApprovalResume',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'run_llm_again',
+      });
+
+      const interrupted = await run(agent, 'How is the weather?', {
+        maxTurns: 1,
+      });
+      const json = interrupted.state.toJSON() as any;
+      delete json.currentAgentSpan;
+      delete json.currentTurnInProgress;
+      delete json.conversationId;
+      delete json.previousResponseId;
+      json.$schemaVersion = '1.0';
+      const restored = await RunState.fromString(agent, JSON.stringify(json));
+      expect(restored._currentTurnInProgress).toBe(false);
+      restored.approve(restored.getInterruptions()[0]);
+
+      const resumed = await run(agent, restored, { maxTurns: 1 });
+
+      expect(resumed.finalOutput).toBe('All set.');
+      expect(resumed.state._currentTurn).toBe(1);
+    });
+
     it('does nothing when no input guardrails are configured', async () => {
       setTracingDisabled(false);
       setTraceProcessors([new BatchTraceProcessor(new FakeTracingExporter())]);

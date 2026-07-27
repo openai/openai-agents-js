@@ -124,6 +124,7 @@ export function handleInterruptedOutcome<
       return { shouldReturn: true, shouldContinue: false };
     case 'rerun_turn':
       // Clear the step so the outer loop treats this as a new run-again without incrementing the turn.
+      state._currentTurnInProgress = true;
       state._currentStep = undefined;
       return { shouldReturn: false, shouldContinue: true };
     case 'advance_step':

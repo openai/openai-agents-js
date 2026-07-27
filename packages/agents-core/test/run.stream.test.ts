@@ -1646,6 +1646,66 @@ describe('Runner.run (streaming)', () => {
     expect(model.callCount).toBe(1);
   });
 
+  it('surfaces a pending input guardrail failure after cancellation during preparation', async () => {
+    let markGuardrailStarted: (() => void) | undefined;
+    let finishGuardrail:
+      ((output: GuardrailFunctionOutput) => void) | undefined;
+    let markPreparationStarted: (() => void) | undefined;
+    let finishPreparation: (() => void) | undefined;
+    const guardrailStarted = new Promise<void>((resolve) => {
+      markGuardrailStarted = resolve;
+    });
+    const guardrailCanFinish = new Promise<GuardrailFunctionOutput>(
+      (resolve) => {
+        finishGuardrail = resolve;
+      },
+    );
+    const preparationStarted = new Promise<void>((resolve) => {
+      markPreparationStarted = resolve;
+    });
+    const preparationCanFinish = new Promise<void>((resolve) => {
+      finishPreparation = resolve;
+    });
+    const inputGuardrail = {
+      name: 'pending-guardrail',
+      execute: vi.fn(async () => {
+        markGuardrailStarted?.();
+        return guardrailCanFinish;
+      }),
+    };
+    const model = new CountingFunctionToolStreamModel();
+    const agent = new Agent({
+      name: 'CancelWithPendingGuardrailAgent',
+      model,
+    });
+    const runner = new Runner({
+      inputGuardrails: [inputGuardrail],
+      callModelInputFilter: async ({ modelData }) => {
+        markPreparationStarted?.();
+        await preparationCanFinish;
+        return modelData;
+      },
+    });
+    const result = await runner.run(agent, 'start', { stream: true });
+    const reader = (result.toStream() as any).getReader();
+
+    await Promise.all([guardrailStarted, preparationStarted]);
+    await reader.cancel('stop');
+    finishPreparation?.();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(model.callCount).toBe(0);
+
+    finishGuardrail?.({
+      tripwireTriggered: true,
+      outputInfo: { reason: 'blocked' },
+    });
+    await result._getStreamLoopPromise();
+
+    expect(result.error).toBeInstanceOf(InputGuardrailTripwireTriggered);
+    expect(result.state._currentTurnInProgress).toBe(false);
+    expect(model.callCount).toBe(0);
+  });
+
   it('enforces maxTurns across multiple streamed model calls', async () => {
     // Bug: After first model call, _lastTurnResponse is set, so turn counter never advances.
     // With maxTurns=1, we should only allow 1 model call, but currently allows 2.

@@ -1693,6 +1693,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           // Preparation can run user-provided async code, so cancellation must be
           // rechecked after its final await and immediately before calling the model.
           if (result.cancelled) {
+            await awaitGuardrailsAndPersistInput();
             return;
           }
 
