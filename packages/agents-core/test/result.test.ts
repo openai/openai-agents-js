@@ -230,9 +230,52 @@ describe('StreamedRunResult', () => {
     controller.abort();
 
     await expect(consumePromise).resolves.toBeUndefined();
+    sr._done();
     await expect(sr.completed).resolves.toBeUndefined();
     expect(sr.cancelled).toBe(true);
     expect(sr.error).toBe(null);
+  });
+
+  it('waits for the background run loop after cancellation', async () => {
+    const state = createState();
+    const controller = new AbortController();
+    const sr = new StreamedRunResult({ state, signal: controller.signal });
+    const reader = (sr.toStream() as any).getReader();
+
+    controller.abort();
+    await expect(reader.read()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+
+    let completedSettled = false;
+    void sr.completed.then(() => {
+      completedSettled = true;
+    });
+    await Promise.resolve();
+
+    expect(completedSettled).toBe(false);
+
+    sr._done();
+    await expect(sr.completed).resolves.toBeUndefined();
+  });
+
+  it('reports a background run error after cancellation', async () => {
+    const state = createState();
+    const controller = new AbortController();
+    const sr = new StreamedRunResult({ state, signal: controller.signal });
+    const reader = (sr.toStream() as any).getReader();
+    const error = new Error('failed after cancellation');
+
+    controller.abort();
+    await expect(reader.read()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    sr._raiseError(error);
+
+    await expect(sr.completed).rejects.toBe(error);
+    expect(sr.error).toBe(error);
   });
 
   it('preserves an already-aborted signal for the run loop', async () => {
@@ -247,6 +290,7 @@ describe('StreamedRunResult', () => {
     expect(signal).toBeDefined();
     expect(signal?.aborted).toBe(true);
     expect(sr.cancelled).toBe(true);
+    sr._done();
     await expect(sr.completed).resolves.toBeUndefined();
   });
 
@@ -263,6 +307,7 @@ describe('StreamedRunResult', () => {
 
     const reader = (sr.toStream() as any).getReader();
     await reader.cancel();
+    sr._done();
     await sr.completed;
 
     expect(sr.cancelled).toBe(true);

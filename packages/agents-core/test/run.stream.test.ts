@@ -1236,6 +1236,68 @@ describe('Runner.run (streaming)', () => {
     expect(result.error).toBe(null);
   });
 
+  it('waits for the background run loop after cancellation', async () => {
+    let markAbortObserved: (() => void) | undefined;
+    const abortObserved = new Promise<void>((resolve) => {
+      markAbortObserved = resolve;
+    });
+    let releaseModel: (() => void) | undefined;
+    const modelReleased = new Promise<void>((resolve) => {
+      releaseModel = resolve;
+    });
+
+    class SettlingStreamingModel implements Model {
+      async getResponse(): Promise<ModelResponse> {
+        throw new Error('Unexpected non-streaming model request');
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        yield { type: 'output_text_delta', delta: 'hello' } as StreamEvent;
+        if (!request.signal) {
+          throw new Error('Expected an abort signal');
+        }
+        if (!request.signal.aborted) {
+          await new Promise<void>((resolve) => {
+            request.signal?.addEventListener('abort', () => resolve(), {
+              once: true,
+            });
+          });
+        }
+        markAbortObserved?.();
+        await modelReleased;
+        const error = new Error('Aborted');
+        error.name = 'AbortError';
+        throw error;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'SettlingStream',
+      model: new SettlingStreamingModel(),
+    });
+    const result = await run(agent, 'go', { stream: true });
+    const reader = (result.toStream() as any).getReader();
+
+    await expect(reader.read()).resolves.toMatchObject({ done: false });
+    await reader.cancel('stop');
+    await abortObserved;
+
+    let completedSettled = false;
+    void result.completed.then(() => {
+      completedSettled = true;
+    });
+    await Promise.resolve();
+
+    expect(completedSettled).toBe(false);
+
+    releaseModel?.();
+    await expect(result.completed).resolves.toBeUndefined();
+    expect(result.cancelled).toBe(true);
+    expect(result.error).toBe(null);
+  });
+
   it('marks inputs as sent when aborted before first stream event in server-managed conversations', async () => {
     const waitWithAbort = (ms: number, signal?: AbortSignal) =>
       new Promise<void>((resolve, reject) => {
