@@ -1082,9 +1082,11 @@ export function mcpToFunctionTool(
     } catch (error) {
       // The SDK rejects cancelled requests with an McpError (-32001) rather
       // than the abort reason, which the tool error path would treat as an
-      // ordinary failure; surface the cancellation instead.
+      // ordinary failure; surface the cancellation instead. The reason is
+      // thrown as-is — an aborted signal always carries one, and null is a
+      // valid value the cancellation checks compare against by identity.
       if (details?.signal?.aborted) {
-        throw details.signal.reason ?? error;
+        throw details.signal.reason;
       }
       throw error;
     }
