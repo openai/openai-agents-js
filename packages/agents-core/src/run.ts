@@ -1467,6 +1467,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
     try {
       while (true) {
+        // Let the current action batch settle, but never start new work after cancellation.
+        if (result.cancelled) {
+          return;
+        }
+
         const currentAgent = result.state._currentAgent;
 
         result.state._currentStep = result.state._currentStep ?? {

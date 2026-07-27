@@ -62,6 +62,36 @@ function getRequestInputItems(request: ModelRequest): AgentInputItem[] {
   return Array.isArray(request.input) ? request.input : [];
 }
 
+class CountingFunctionToolStreamModel implements Model {
+  callCount = 0;
+
+  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+    throw new Error('Unexpected non-streaming model request');
+  }
+
+  async *getStreamedResponse(
+    _request: ModelRequest,
+  ): AsyncIterable<StreamEvent> {
+    const output =
+      this.callCount++ === 0
+        ? [{ ...TEST_MODEL_FUNCTION_CALL }]
+        : [fakeModelMessage('done')];
+    yield {
+      type: 'response_done',
+      response: {
+        id: `resp-${this.callCount}`,
+        usage: {
+          requests: 1,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+        },
+        output,
+      },
+    } as StreamEvent;
+  }
+}
+
 class AbortAfterStreamedFunctionCallModel implements Model {
   public requests: ModelRequest[] = [];
 
@@ -1478,39 +1508,10 @@ describe('Runner.run (streaming)', () => {
       },
     });
 
-    class AbortableToolStreamModel implements Model {
-      #callCount = 0;
-
-      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-        throw new Error('Unexpected non-streaming model request');
-      }
-
-      async *getStreamedResponse(
-        _request: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        const output =
-          this.#callCount++ === 0
-            ? [{ ...TEST_MODEL_FUNCTION_CALL }]
-            : [fakeModelMessage('done')];
-        yield {
-          type: 'response_done',
-          response: {
-            id: `resp-${this.#callCount}`,
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output,
-          },
-        } as StreamEvent;
-      }
-    }
-
+    const model = new CountingFunctionToolStreamModel();
     const agent = new Agent({
       name: 'AbortableToolStreamAgent',
-      model: new AbortableToolStreamModel(),
+      model,
       tools: [abortableTool],
     });
     const result = await run(agent, 'start', { stream: true });
@@ -1524,6 +1525,64 @@ describe('Runner.run (streaming)', () => {
 
     expect(result.cancelled).toBe(true);
     expect(toolSignal?.aborted).toBe(true);
+    expect(model.callCount).toBe(1);
+  });
+
+  it('does not start a new model turn after cancelling a resumed function tool', async () => {
+    let markToolStarted: (() => void) | undefined;
+    const toolStarted = new Promise<void>((resolve) => {
+      markToolStarted = resolve;
+    });
+    const abortableTool = tool({
+      name: 'test',
+      description: 'waits for the resumed stream to be cancelled',
+      parameters: z.object({ test: z.string() }),
+      needsApproval: true,
+      execute: async (_input, _context, details) => {
+        markToolStarted?.();
+        const signal = details?.signal;
+        if (!signal) {
+          throw new Error('Expected the stream abort signal');
+        }
+        if (!signal.aborted) {
+          await new Promise<void>((resolve) => {
+            signal.addEventListener('abort', () => resolve(), { once: true });
+          });
+        }
+        return 'cancelled';
+      },
+    });
+
+    const model = new CountingFunctionToolStreamModel();
+    const agent = new Agent({
+      name: 'ResumedAbortableToolStreamAgent',
+      model,
+      tools: [abortableTool],
+    });
+    const runner = new Runner();
+    const interrupted = await runner.run(agent, 'start', { stream: true });
+    for await (const _event of interrupted) {
+      // Drain the interrupted run.
+    }
+    expect(interrupted.interruptions).toHaveLength(1);
+    interrupted.state.approve(interrupted.interruptions[0]);
+
+    const resumed = await runner.run(agent, interrupted.state, {
+      stream: true,
+    });
+    const reader = (resumed.toStream() as any).getReader();
+
+    await toolStarted;
+    await reader.cancel('stop');
+    await resumed._getStreamLoopPromise();
+
+    expect(resumed.cancelled).toBe(true);
+    expect(model.callCount).toBe(1);
+    expect(
+      resumed.state._generatedItems.some(
+        (item) => item.rawItem.type === 'function_call_result',
+      ),
+    ).toBe(true);
   });
 
   it('enforces maxTurns across multiple streamed model calls', async () => {
