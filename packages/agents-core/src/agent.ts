@@ -893,8 +893,14 @@ export class Agent<
             }
             await streamResult.completed;
             if (streamResult.cancelled) {
-              combinedSignal?.throwIfAborted();
-              throw new Error('Nested agent run was cancelled.');
+              const finalOutputCommitted =
+                streamResult.state._currentStep?.type ===
+                  'next_step_final_output' &&
+                streamResult.state._currentTurnInProgress === false;
+              if (!finalOutputCommitted) {
+                combinedSignal?.throwIfAborted();
+                throw new Error('Nested agent run was cancelled.');
+              }
             }
           }
 

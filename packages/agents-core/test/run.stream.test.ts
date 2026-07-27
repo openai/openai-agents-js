@@ -1971,6 +1971,88 @@ describe('Runner.run (streaming)', () => {
     expect(model.callCount).toBe(2);
   });
 
+  it('preserves a nested agent output committed during cancellation', async () => {
+    let markGuardrailStarted: (() => void) | undefined;
+    let releaseGuardrail: (() => void) | undefined;
+    const guardrailStarted = new Promise<void>((resolve) => {
+      markGuardrailStarted = resolve;
+    });
+    const guardrailCanFinish = new Promise<void>((resolve) => {
+      releaseGuardrail = resolve;
+    });
+    const nestedGuardrail = {
+      name: 'delayed-nested-output-guardrail',
+      execute: vi.fn(async () => {
+        markGuardrailStarted?.();
+        await guardrailCanFinish;
+        return {
+          tripwireTriggered: false,
+          outputInfo: { safe: true },
+        };
+      }),
+    };
+    const nestedModel: Model = {
+      async getResponse() {
+        throw new Error('Unexpected non-streaming nested model request');
+      },
+      async *getStreamedResponse() {
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'nested-final-response',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [fakeModelMessage('nested final output')],
+          },
+        } as StreamEvent;
+      },
+    };
+    const nestedAgent = new Agent({
+      name: 'CommittedNestedStreamingAgent',
+      model: nestedModel,
+      outputGuardrails: [nestedGuardrail],
+    });
+    const nestedTool = nestedAgent.asTool({
+      toolName: 'test',
+      toolDescription: 'runs a nested streaming agent',
+      parameters: z.object({ test: z.string() }),
+      inputBuilder: ({ params }) => params.test,
+      onStream: () => {},
+    });
+    const model = new CountingFunctionToolStreamModel();
+    const agent = new Agent({
+      name: 'ParentOfCommittedNestedAgent',
+      model,
+      tools: [nestedTool],
+      toolUseBehavior: 'stop_on_first_tool',
+    });
+    const result = await run(agent, 'start', { stream: true });
+    const reader = (result.toStream() as any).getReader();
+
+    await guardrailStarted;
+    await reader.cancel('stop');
+    releaseGuardrail?.();
+    await result.completed;
+
+    expect(result.cancelled).toBe(true);
+    expect(result.finalOutput).toBe('nested final output');
+    expect(nestedGuardrail.execute).toHaveBeenCalledTimes(1);
+    expect(
+      result.state._generatedItems.find(
+        (item) => item.rawItem.type === 'function_call_result',
+      )?.rawItem,
+    ).toMatchObject({
+      type: 'function_call_result',
+      callId: TEST_MODEL_FUNCTION_CALL.callId,
+      status: 'completed',
+      output: { type: 'text', text: 'nested final output' },
+    });
+  });
+
   it('does not call the model when cancelled during next-turn preparation', async () => {
     let filterCalls = 0;
     let markNextTurnPreparationStarted: (() => void) | undefined;
