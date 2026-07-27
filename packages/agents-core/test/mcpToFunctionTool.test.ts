@@ -128,6 +128,88 @@ describe('mcpToFunctionTool', () => {
     ]);
   });
 
+  it('forwards the tool-call abort signal to MCP calls', async () => {
+    const callTool = vi.fn(async () => [
+      { type: 'text', text: 'legacy output' },
+    ]);
+    const server: MCPServer = {
+      name: 'signal-server',
+      cacheToolsList: false,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool,
+      invalidateToolsCache: async () => {},
+    };
+    const tool = mcpToFunctionTool(
+      {
+        name: 'signal_tool',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      server,
+      false,
+    );
+    const controller = new AbortController();
+
+    await tool.invoke(new RunContext({}), '{}', {
+      signal: controller.signal,
+    });
+
+    expect(callTool).toHaveBeenCalledWith('signal_tool', {}, undefined, {
+      signal: controller.signal,
+    });
+  });
+
+  it('forwards the tool-call abort signal to full-result MCP calls', async () => {
+    const callToolResult = vi.fn(async () => ({
+      content: [{ type: 'text', text: 'legacy output' }],
+      structuredContent: { answer: 42 },
+    }));
+    const server: MCPServer = {
+      name: 'full-result-signal-server',
+      cacheToolsList: false,
+      useStructuredContent: true,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool: async () => [{ type: 'text', text: 'legacy output' }],
+      callToolResult,
+      invalidateToolsCache: async () => {},
+    };
+    const tool = mcpToFunctionTool(
+      {
+        name: 'full_result_signal_tool',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      server,
+      false,
+    );
+    const controller = new AbortController();
+
+    await tool.invoke(new RunContext({}), '{}', {
+      signal: controller.signal,
+    });
+
+    expect(callToolResult).toHaveBeenCalledWith(
+      'full_result_signal_tool',
+      {},
+      undefined,
+      { signal: controller.signal },
+    );
+  });
+
   it('uses structured MCP output only when explicitly enabled', async () => {
     const callTool = vi.fn(async () => [
       { type: 'text', text: 'legacy output' },

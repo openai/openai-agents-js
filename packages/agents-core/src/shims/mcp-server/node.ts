@@ -16,6 +16,7 @@ import type {
   CallToolResultContent,
   DefaultMCPServerStdioOptions,
   InitializeResult,
+  MCPCallToolOptions,
   MCPListResourcesParams,
   MCPListResourcesResult,
   MCPListResourceTemplatesResult,
@@ -25,6 +26,7 @@ import type {
   MCPServerSSEOptions,
 } from '../../mcp';
 import logger, { logToolActionError, logToolActionWarning } from '../../logger';
+import { combineAbortSignals } from '../../utils/abortSignals';
 
 export interface SessionMessage {
   message: any;
@@ -68,6 +70,21 @@ function buildRequestOptions(
       : { timeout: clientSessionTimeoutSeconds * 1000 };
   const mergedOptions = { ...(baseOptions ?? {}), ...(overrides ?? {}) };
   return Object.keys(mergedOptions).length === 0 ? undefined : mergedOptions;
+}
+
+async function callWithMCPRequestSignal<T>(
+  sourceSignal: AbortSignal | undefined,
+  call: (requestSignal: AbortSignal | undefined) => Promise<T>,
+): Promise<T> {
+  const { signal: requestSignal, cleanup } = combineAbortSignals(sourceSignal);
+  try {
+    return await call(requestSignal);
+  } catch (error) {
+    sourceSignal?.throwIfAborted();
+    throw error;
+  } finally {
+    cleanup();
+  }
 }
 
 type MaybeSessionTransport = Transport & {
@@ -280,14 +297,16 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
+    options?: MCPCallToolOptions,
   ): Promise<CallToolResultContent> {
-    return (await this.callToolResult(toolName, args, meta)).content;
+    return (await this.callToolResult(toolName, args, meta, options)).content;
   }
 
   async callToolResult(
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
+    options?: MCPCallToolOptions,
   ): Promise<CallToolResult> {
     const { CallToolResultSchema } =
       await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
@@ -296,19 +315,23 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
         'Server not initialized. Make sure you call connect() first.',
       );
     }
-    const requestOptions = buildRequestOptions(
-      this.clientSessionTimeoutSeconds,
-      { timeout: this.timeout },
-    );
+    const session = this.session;
     const params = {
       name: toolName,
       arguments: args ?? {},
       ...(meta != null ? { _meta: meta } : {}),
     };
-    const response = await this.session.callTool(
-      params,
-      undefined,
-      requestOptions,
+    const response = await callWithMCPRequestSignal(
+      options?.signal,
+      (requestSignal) =>
+        session.callTool(
+          params,
+          undefined,
+          buildRequestOptions(this.clientSessionTimeoutSeconds, {
+            timeout: this.timeout,
+            signal: requestSignal,
+          }),
+        ),
     );
     const parsed = CallToolResultSchema.parse(response);
     const result = attachParsedCallToolResultMetadata(parsed as CallToolResult);
@@ -495,14 +518,16 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
+    options?: MCPCallToolOptions,
   ): Promise<CallToolResultContent> {
-    return (await this.callToolResult(toolName, args, meta)).content;
+    return (await this.callToolResult(toolName, args, meta, options)).content;
   }
 
   async callToolResult(
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
+    options?: MCPCallToolOptions,
   ): Promise<CallToolResult> {
     const { CallToolResultSchema } =
       await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
@@ -511,19 +536,23 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
         'Server not initialized. Make sure you call connect() first.',
       );
     }
-    const requestOptions = buildRequestOptions(
-      this.clientSessionTimeoutSeconds,
-      { timeout: this.timeout },
-    );
+    const session = this.session;
     const params = {
       name: toolName,
       arguments: args ?? {},
       ...(meta != null ? { _meta: meta } : {}),
     };
-    const response = await this.session.callTool(
-      params,
-      undefined,
-      requestOptions,
+    const response = await callWithMCPRequestSignal(
+      options?.signal,
+      (requestSignal) =>
+        session.callTool(
+          params,
+          undefined,
+          buildRequestOptions(this.clientSessionTimeoutSeconds, {
+            timeout: this.timeout,
+            signal: requestSignal,
+          }),
+        ),
     );
     const parsed = CallToolResultSchema.parse(response);
     const result = attachParsedCallToolResultMetadata(parsed as CallToolResult);
@@ -908,21 +937,27 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
+    options?: MCPCallToolOptions,
   ): Promise<CallToolResult> {
     const { CallToolResultSchema } =
       await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
-    const requestOptions = buildRequestOptions(
-      this.clientSessionTimeoutSeconds,
-      {
-        timeout: this.timeout,
-      },
-    );
     const params = {
       name: toolName,
       arguments: args ?? {},
       ...(meta != null ? { _meta: meta } : {}),
     };
-    const response = await client.callTool(params, undefined, requestOptions);
+    const response = await callWithMCPRequestSignal(
+      options?.signal,
+      (requestSignal) =>
+        client.callTool(
+          params,
+          undefined,
+          buildRequestOptions(this.clientSessionTimeoutSeconds, {
+            timeout: this.timeout,
+            signal: requestSignal,
+          }),
+        ),
+    );
     const parsed = CallToolResultSchema.parse(response);
     return attachParsedCallToolResultMetadata(parsed as CallToolResult);
   }
@@ -1288,14 +1323,16 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
+    options?: MCPCallToolOptions,
   ): Promise<CallToolResultContent> {
-    return (await this.callToolResult(toolName, args, meta)).content;
+    return (await this.callToolResult(toolName, args, meta, options)).content;
   }
 
   async callToolResult(
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
+    options?: MCPCallToolOptions,
   ): Promise<CallToolResult> {
     const client = this.session;
     if (!client) {
@@ -1307,7 +1344,13 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     let result: CallToolResult;
 
     try {
-      result = await this.callToolWithClient(client, toolName, args, meta);
+      result = await this.callToolWithClient(
+        client,
+        toolName,
+        args,
+        meta,
+        options,
+      );
     } catch (error) {
       const recoveryStrategy =
         await this.shouldReconnectClosedStreamableHttpClient(error, client);
@@ -1336,6 +1379,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
           toolName,
           args,
           meta,
+          options,
         );
       } catch (retryError) {
         throw attachCause(retryError, error);

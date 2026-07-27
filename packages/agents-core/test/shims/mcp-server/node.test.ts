@@ -7,11 +7,14 @@ import {
   beforeAll,
   beforeEach,
 } from 'vitest';
+import { getEventListeners } from 'node:events';
 import {
   NodeMCPServerStdio,
   NodeMCPServerSSE,
   NodeMCPServerStreamableHttp,
 } from '../../../src/shims/mcp-server/node';
+import { mcpToFunctionTool } from '../../../src/mcp';
+import { RunContext } from '../../../src/runContext';
 import { TransportSendOptions } from '@modelcontextprotocol/sdk/shared/transport';
 import { JSONRPCMessage } from '@modelcontextprotocol/sdk/types';
 import { DEFAULT_REQUEST_TIMEOUT_MSEC } from '@modelcontextprotocol/sdk/shared/protocol';
@@ -26,6 +29,9 @@ let lastCallToolOptions: any;
 let lastCallToolParams: any;
 let lastReadResourceOptions: any;
 let lastReadResourceParams: any;
+let callToolImplementation:
+  ((params: any, resultSchema: any, options: any) => Promise<any>) | undefined;
+let retainCallToolSignalListener = false;
 
 beforeEach(() => {
   lastConnectOptions = undefined;
@@ -38,6 +44,8 @@ beforeEach(() => {
   lastCallToolParams = undefined;
   lastReadResourceOptions = undefined;
   lastReadResourceParams = undefined;
+  callToolImplementation = undefined;
+  retainCallToolSignalListener = false;
 });
 
 describe('NodeMCPServerStdio', () => {
@@ -98,12 +106,85 @@ describe('NodeMCPServerStdio', () => {
 
     await server.connect();
     await server.listTools();
-    await server.callTool('mock-tool', {});
+    const controller = new AbortController();
+    await server.callTool('mock-tool', {}, undefined, {
+      signal: controller.signal,
+    });
 
     expect(lastConnectOptions?.timeout).toBe(6000);
     expect(lastListToolsOptions?.timeout).toBe(6000);
     expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
+    expect(lastCallToolOptions?.signal).toBeDefined();
+    expect(lastCallToolOptions?.signal).not.toBe(controller.signal);
 
+    await server.close();
+  });
+
+  test('should preserve caller cancellation for in-flight tool calls', async () => {
+    let markCallStarted: (() => void) | undefined;
+    const callStarted = new Promise<void>((resolve) => {
+      markCallStarted = resolve;
+    });
+    callToolImplementation = async (_params, _resultSchema, options) => {
+      markCallStarted?.();
+      return new Promise((_, reject) => {
+        options.signal.addEventListener(
+          'abort',
+          () => reject(new Error('MCP SDK wrapped cancellation')),
+          { once: true },
+        );
+      });
+    };
+    const server = new NodeMCPServerStdio({
+      name: 'cancel-in-flight',
+      fullCommand: 'test',
+    });
+    await server.connect();
+    const tool = mcpToFunctionTool(
+      {
+        name: 'mock-tool',
+        description: 'Mock tool',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      },
+      server,
+      false,
+    );
+    const controller = new AbortController();
+    const abortReason = new Error('caller cancelled');
+
+    const pendingCall = tool.invoke(new RunContext({}), '{}', {
+      signal: controller.signal,
+    });
+    await callStarted;
+    controller.abort(abortReason);
+
+    await expect(pendingCall).rejects.toBe(abortReason);
+    await server.close();
+  });
+
+  test('should isolate retained request listeners from the caller signal', async () => {
+    retainCallToolSignalListener = true;
+    const server = new NodeMCPServerStdio({
+      name: 'isolated-request-signal',
+      fullCommand: 'test',
+    });
+    await server.connect();
+    const controller = new AbortController();
+
+    await server.callTool('mock-tool', {}, undefined, {
+      signal: controller.signal,
+    });
+
+    expect(lastCallToolOptions.signal).not.toBe(controller.signal);
+    expect(getEventListeners(lastCallToolOptions.signal, 'abort')).toHaveLength(
+      1,
+    );
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
     await server.close();
   });
 
@@ -248,6 +329,12 @@ class MockClient {
   callTool(_params: any, _resultSchema?: any, options?: any): Promise<any> {
     lastCallToolParams = _params;
     lastCallToolOptions = options;
+    if (retainCallToolSignalListener && options?.signal) {
+      options.signal.addEventListener('abort', () => {});
+    }
+    if (callToolImplementation) {
+      return callToolImplementation(_params, _resultSchema, options);
+    }
     return Promise.resolve({
       content: [{ type: 'text', text: 'ok' }],
       _meta: { renderer: 'chart' },
@@ -404,11 +491,16 @@ describe('NodeMCPServerSSE', () => {
 
     await server.connect();
     await server.listTools();
-    await server.callTool('mock-tool', {});
+    const controller = new AbortController();
+    await server.callTool('mock-tool', {}, undefined, {
+      signal: controller.signal,
+    });
 
     expect(lastConnectOptions?.timeout).toBe(4000);
     expect(lastListToolsOptions?.timeout).toBe(4000);
     expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
+    expect(lastCallToolOptions?.signal).toBeDefined();
+    expect(lastCallToolOptions?.signal).not.toBe(controller.signal);
 
     await server.close();
   });
@@ -564,12 +656,51 @@ describe('NodeMCPServerStreamableHttp', () => {
 
     await server.connect();
     await server.listTools();
-    await server.callTool('mock-tool', {});
+    const controller = new AbortController();
+    await server.callTool('mock-tool', {}, undefined, {
+      signal: controller.signal,
+    });
 
     expect(lastConnectOptions?.timeout).toBe(9000);
     expect(lastListToolsOptions?.timeout).toBe(9000);
     expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
+    expect(lastCallToolOptions?.signal).toBeDefined();
+    expect(lastCallToolOptions?.signal).not.toBe(controller.signal);
 
+    await server.close();
+  });
+
+  test('should not reconnect after caller cancellation', async () => {
+    let markCallStarted: (() => void) | undefined;
+    const callStarted = new Promise<void>((resolve) => {
+      markCallStarted = resolve;
+    });
+    callToolImplementation = async (_params, _resultSchema, options) => {
+      markCallStarted?.();
+      return new Promise((_, reject) => {
+        options.signal.addEventListener(
+          'abort',
+          () => reject(new Error('MCP SDK wrapped cancellation')),
+          { once: true },
+        );
+      });
+    };
+    const server = new NodeMCPServerStreamableHttp({
+      url: 'https://example.com/stream',
+      name: 'cancel-without-reconnect',
+    });
+    await server.connect();
+    const controller = new AbortController();
+    const abortReason = new Error('caller cancelled');
+
+    const pendingCall = server.callTool('mock-tool', {}, undefined, {
+      signal: controller.signal,
+    });
+    await callStarted;
+    controller.abort(abortReason);
+
+    await expect(pendingCall).rejects.toBe(abortReason);
+    expect(MockStreamableHTTPClientTransport.instances).toHaveLength(1);
     await server.close();
   });
 
