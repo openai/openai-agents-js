@@ -1559,7 +1559,13 @@ describe('Runner.run (streaming)', () => {
       model,
       tools: [abortableTool],
     });
-    const runner = new Runner();
+    const inputGuardrail = vi.fn(async () => ({
+      tripwireTriggered: false,
+      outputInfo: {},
+    }));
+    const runner = new Runner({
+      inputGuardrails: [{ name: 'run-once', execute: inputGuardrail }],
+    });
     const interrupted = await runner.run(agent, 'start', { stream: true });
     for await (const _event of interrupted) {
       // Drain the interrupted run.
@@ -1583,6 +1589,17 @@ describe('Runner.run (streaming)', () => {
         (item) => item.rawItem.type === 'function_call_result',
       ),
     ).toBe(true);
+
+    const completed = await runner.run(agent, resumed.state, {
+      stream: true,
+    });
+    for await (const _event of completed) {
+      // Drain the completed run.
+    }
+
+    expect(completed.finalOutput).toBe('done');
+    expect(model.callCount).toBe(2);
+    expect(inputGuardrail).toHaveBeenCalledTimes(1);
   });
 
   it('does not call the model when cancelled during next-turn preparation', async () => {

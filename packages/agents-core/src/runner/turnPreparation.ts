@@ -39,7 +39,6 @@ type PrepareTurnOptions<
   generatedItems: RunItem[];
   isResumedState: boolean;
   preserveTurnPersistenceOnResume?: boolean;
-  continuingInterruptedTurn: boolean;
   serverConversationTracker?: ServerConversationTracker;
   inputGuardrailDefs: InputGuardrailDefinition[];
   guardrailHandlers?: GuardrailHandlers;
@@ -62,7 +61,6 @@ export async function prepareTurn<
     generatedItems,
     isResumedState,
     preserveTurnPersistenceOnResume,
-    continuingInterruptedTurn,
     serverConversationTracker,
     inputGuardrailDefs,
     guardrailHandlers,
@@ -71,10 +69,9 @@ export async function prepareTurn<
     agentSpanParent,
   } = options;
 
-  const { isResumingFromInterruption } = beginTurn(state, {
+  const { isResumingTurnInProgress } = beginTurn(state, {
     isResumedState,
     preserveTurnPersistenceOnResume,
-    continuingInterruptedTurn,
   });
 
   if (state._maxTurns !== null && state._currentTurn > state._maxTurns) {
@@ -106,7 +103,7 @@ export async function prepareTurn<
   const { parallelGuardrailPromise } = await runInputGuardrailsForTurn(
     state,
     inputGuardrailDefs,
-    isResumingFromInterruption,
+    isResumingTurnInProgress,
     guardrailHandlers,
   );
 
@@ -192,10 +189,10 @@ async function runInputGuardrailsForTurn<
 >(
   state: RunState<TContext, TAgent>,
   runnerGuardrails: InputGuardrailDefinition[],
-  isResumingFromInterruption: boolean,
+  isResumingTurnInProgress: boolean,
   handlers: GuardrailHandlers = {},
 ): Promise<{ parallelGuardrailPromise?: Promise<InputGuardrailResult[]> }> {
-  if (state._currentTurn !== 1 || isResumingFromInterruption) {
+  if (state._currentTurn !== 1 || isResumingTurnInProgress) {
     return {};
   }
 
@@ -222,17 +219,13 @@ function beginTurn<TContext, TAgent extends Agent<TContext, AgentOutputType>>(
   options: {
     isResumedState: boolean;
     preserveTurnPersistenceOnResume?: boolean;
-    continuingInterruptedTurn: boolean;
   },
-): { isResumingFromInterruption: boolean } {
-  const isResumingFromInterruption =
-    options.isResumedState && options.continuingInterruptedTurn;
-  const resumingTurnInProgress =
+): { isResumingTurnInProgress: boolean } {
+  const isResumingTurnInProgress =
     options.isResumedState && state._currentTurnInProgress === true;
 
-  // Do not advance the turn when resuming from an interruption; the next model call is
-  // still part of the same logical turn.
-  if (!isResumingFromInterruption && !resumingTurnInProgress) {
+  // Do not advance a turn that was already in progress before the state was resumed.
+  if (!isResumingTurnInProgress) {
     state._currentTurn++;
     if (!options.isResumedState || !options.preserveTurnPersistenceOnResume) {
       state.resetTurnPersistence();
@@ -245,5 +238,5 @@ function beginTurn<TContext, TAgent extends Agent<TContext, AgentOutputType>>(
   }
   state._currentTurnInProgress = true;
 
-  return { isResumingFromInterruption };
+  return { isResumingTurnInProgress };
 }

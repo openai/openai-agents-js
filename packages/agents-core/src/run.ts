@@ -992,8 +992,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         state.setCurrentAgentSpan(optOutResumeAgentSpan);
       }
 
-      // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
-      let continuingInterruptedTurn = false;
       let runError: unknown;
       let currentTurnSpan: ReturnType<typeof startTurnSpan> | undefined;
       const parentUsageRecorder = getRunnerParentUsageRecorder(this);
@@ -1053,9 +1051,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             const { shouldReturn, shouldContinue } = handleInterruptedOutcome({
               state,
               outcome: interruptedOutcome,
-              setContinuingInterruptedTurn: (value) => {
-                continuingInterruptedTurn = value;
-              },
             });
             if (!shouldContinue) {
               finishRunnerSpan(currentTurnSpan);
@@ -1072,8 +1067,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           if (state._currentStep.type === 'next_step_run_again') {
-            const wasContinuingInterruptedTurn = continuingInterruptedTurn;
-            continuingInterruptedTurn = false;
             const guardrailTracker = createGuardrailTracker();
             const previousTurn = state._currentTurn;
             const previousPersistedCount = state._currentTurnPersistedItemCount;
@@ -1084,7 +1077,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               generatedItems: state._generatedItems,
               isResumedState,
               preserveTurnPersistenceOnResume,
-              continuingInterruptedTurn: wasContinuingInterruptedTurn,
               serverConversationTracker,
               inputGuardrailDefs: this.inputGuardrailDefs,
               guardrailHandlers: {
@@ -1453,8 +1445,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const useTaskAndTurnSpans =
       !this.config.tracingDisabled && includeTaskAndTurnSpans(options.tracing);
 
-    // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
-    let continuingInterruptedTurn = false;
     let runError: unknown;
     let currentTurnSpan: ReturnType<typeof startTurnSpan> | undefined;
     const parentUsageRecorder = getRunnerParentUsageRecorder(this);
@@ -1518,9 +1508,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const { shouldReturn, shouldContinue } = handleInterruptedOutcome({
             state: result.state,
             outcome: interruptedOutcome,
-            setContinuingInterruptedTurn: (value) => {
-              continuingInterruptedTurn = value;
-            },
           });
           if (!shouldContinue) {
             finishRunnerSpan(currentTurnSpan);
@@ -1539,8 +1526,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         if (result.state._currentStep.type === 'next_step_run_again') {
           parallelGuardrailPromise = undefined;
           guardrailTracker = createGuardrailTracker();
-          const wasContinuingInterruptedTurn = continuingInterruptedTurn;
-          continuingInterruptedTurn = false;
           const previousTurn = result.state._currentTurn;
           const previousPersistedCount =
             result.state._currentTurnPersistedItemCount;
@@ -1551,7 +1536,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             generatedItems: result.newItems,
             isResumedState,
             preserveTurnPersistenceOnResume,
-            continuingInterruptedTurn: wasContinuingInterruptedTurn,
             serverConversationTracker,
             inputGuardrailDefs: this.inputGuardrailDefs,
             guardrailHandlers: {

@@ -115,9 +115,8 @@ export function handleInterruptedOutcome<
 >(options: {
   state: RunState<TContext, TAgent>;
   outcome: InterruptedTurnOutcome;
-  setContinuingInterruptedTurn: (value: boolean) => void;
 }): InterruptedTurnControl {
-  const { state, outcome, setContinuingInterruptedTurn } = options;
+  const { state, outcome } = options;
 
   switch (outcome.action) {
     case 'return_interruption':
@@ -125,11 +124,9 @@ export function handleInterruptedOutcome<
       return { shouldReturn: true, shouldContinue: false };
     case 'rerun_turn':
       // Clear the step so the outer loop treats this as a new run-again without incrementing the turn.
-      setContinuingInterruptedTurn(true);
       state._currentStep = undefined;
       return { shouldReturn: false, shouldContinue: true };
     case 'advance_step':
-      setContinuingInterruptedTurn(false);
       state._currentStep = outcome.nextStep;
       return { shouldReturn: false, shouldContinue: false };
     default: {
