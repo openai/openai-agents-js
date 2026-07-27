@@ -2063,6 +2063,97 @@ describe('Runner.run (streaming)', () => {
     });
   });
 
+  it('preserves a nested approval committed during cancellation', async () => {
+    let markPersistenceStarted: (() => void) | undefined;
+    let releasePersistence: (() => void) | undefined;
+    const persistenceStarted = new Promise<void>((resolve) => {
+      markPersistenceStarted = resolve;
+    });
+    const persistenceCanFinish = new Promise<void>((resolve) => {
+      releasePersistence = resolve;
+    });
+    let blockedNestedPersistence = false;
+    const saveResultSpy = vi
+      .spyOn(sessionPersistence, 'saveStreamResultToSession')
+      .mockImplementation(async (_session, nestedResult) => {
+        if (
+          !blockedNestedPersistence &&
+          nestedResult.state._currentStep?.type === 'next_step_interruption'
+        ) {
+          blockedNestedPersistence = true;
+          markPersistenceStarted?.();
+          await persistenceCanFinish;
+        }
+      });
+    const approvalTool = tool({
+      name: 'test',
+      description: 'requires approval in the nested agent',
+      parameters: z.object({ test: z.string() }),
+      needsApproval: true,
+      execute: async () => 'approved',
+    });
+    const nestedModel = new CountingFunctionToolStreamModel();
+    const nestedAgent = new Agent({
+      name: 'NestedApprovalAgent',
+      model: nestedModel,
+      tools: [approvalTool],
+    });
+    const nestedSession = createSessionMock();
+    const nestedTool = nestedAgent.asTool({
+      toolName: 'test',
+      toolDescription: 'runs a nested agent that requires approval',
+      parameters: z.object({ test: z.string() }),
+      inputBuilder: ({ params }) => params.test,
+      onStream: () => {},
+      runOptions: { session: nestedSession },
+    });
+    const outerModel = new CountingFunctionToolStreamModel();
+    const outerAgent = new Agent({
+      name: 'ParentOfNestedApprovalAgent',
+      model: outerModel,
+      tools: [nestedTool],
+    });
+    const runner = new Runner();
+    const cancelled = await runner.run(outerAgent, 'start', { stream: true });
+    const reader = (cancelled.toStream() as any).getReader();
+
+    await persistenceStarted;
+    await reader.cancel('stop');
+    releasePersistence?.();
+    await cancelled.completed;
+
+    expect(cancelled.cancelled).toBe(true);
+    expect(cancelled.interruptions).toHaveLength(1);
+    expect(cancelled.interruptions[0]?.agent).toBe(nestedAgent);
+    expect(
+      cancelled.state.hasPendingAgentToolRun(
+        nestedTool.name,
+        TEST_MODEL_FUNCTION_CALL.callId,
+      ),
+    ).toBe(true);
+    expect(
+      saveResultSpy.mock.calls.filter(([session]) => session === nestedSession),
+    ).toHaveLength(1);
+
+    cancelled.state.approve(cancelled.interruptions[0]);
+    const resumed = await runner.run(outerAgent, cancelled.state, {
+      stream: true,
+    });
+    for await (const _event of resumed) {
+      // Drain the resumed run.
+    }
+
+    expect(resumed.finalOutput).toBe('done');
+    expect(
+      resumed.state.hasPendingAgentToolRun(
+        nestedTool.name,
+        TEST_MODEL_FUNCTION_CALL.callId,
+      ),
+    ).toBe(false);
+    expect(nestedModel.callCount).toBe(2);
+    expect(outerModel.callCount).toBe(2);
+  });
+
   it('does not call the model when cancelled during next-turn preparation', async () => {
     let filterCalls = 0;
     let markNextTurnPreparationStarted: (() => void) | undefined;

@@ -893,11 +893,12 @@ export class Agent<
             }
             await streamResult.completed;
             if (streamResult.cancelled) {
-              const finalOutputCommitted =
-                streamResult.state._currentStep?.type ===
-                  'next_step_final_output' &&
-                streamResult.state._currentTurnInProgress === false;
-              if (!finalOutputCommitted) {
+              const currentStep = streamResult.state._currentStep;
+              const hasCommittedOutcome =
+                (currentStep?.type === 'next_step_final_output' &&
+                  streamResult.state._currentTurnInProgress === false) ||
+                (streamResult.interruptions?.length ?? 0) > 0;
+              if (!hasCommittedOutcome) {
                 combinedSignal?.throwIfAborted();
                 throw new Error('Nested agent run was cancelled.');
               }
@@ -935,6 +936,8 @@ export class Agent<
             outputText = await customOutputExtractor(
               completedResultWithAgentToolInvocation,
             );
+          } else if ((completedResult.interruptions?.length ?? 0) > 0) {
+            outputText = '';
           } else {
             const finalOutputText =
               typeof completedResult.finalOutput !== 'undefined'
