@@ -109,6 +109,7 @@ export {
   getAllMcpTools,
   invalidateServerToolsCache,
   mcpToFunctionTool,
+  MCPCallToolOptions,
   MCPBlobResourceContent,
   CallToolResult,
   CallToolResultContent,

@@ -64,6 +64,10 @@ export type MCPToolErrorFunction = (args: {
   error: Error | unknown;
 }) => Promise<string> | string;
 
+export interface MCPCallToolOptions {
+  signal?: AbortSignal;
+}
+
 const MCP_FUNCTION_TOOL_NAME_MAX_LENGTH = 64;
 const MCP_FUNCTION_TOOL_HASH_LENGTH = 8;
 
@@ -103,6 +107,7 @@ export interface MCPServer {
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
+    options?: MCPCallToolOptions,
   ): Promise<CallToolResultContent>;
   /**
    * Invoke a tool and return the full serializable MCP result.
@@ -111,6 +116,7 @@ export interface MCPServer {
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
+    options?: MCPCallToolOptions,
   ): Promise<CallToolResult>;
   invalidateToolsCache(): Promise<void>;
 }
@@ -248,15 +254,17 @@ export class MCPServerStdio
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
+    options?: MCPCallToolOptions,
   ): Promise<CallToolResultContent> {
-    return (await this.callToolResult(toolName, args, meta)).content;
+    return (await this.callToolResult(toolName, args, meta, options)).content;
   }
   callToolResult(
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
+    options?: MCPCallToolOptions,
   ): Promise<CallToolResult> {
-    return this.underlying.callToolResult(toolName, args, meta);
+    return this.underlying.callToolResult(toolName, args, meta, options);
   }
   listResources(
     params?: MCPListResourcesParams,
@@ -330,17 +338,24 @@ export class MCPServerStreamableHttp
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
+    options?: MCPCallToolOptions,
   ): Promise<CallToolResultContent> {
-    return (await this.callToolResult(toolName, args, meta)).content;
+    return (await this.callToolResult(toolName, args, meta, options)).content;
   }
   async callToolResult(
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
+    options?: MCPCallToolOptions,
   ): Promise<CallToolResult> {
     const previousSessionId = this.sessionId;
     try {
-      return await this.underlying.callToolResult(toolName, args, meta);
+      return await this.underlying.callToolResult(
+        toolName,
+        args,
+        meta,
+        options,
+      );
     } finally {
       if (previousSessionId !== this.sessionId) {
         this.clearLocalToolsCache();
@@ -398,15 +413,17 @@ export class MCPServerSSE
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
+    options?: MCPCallToolOptions,
   ): Promise<CallToolResultContent> {
-    return (await this.callToolResult(toolName, args, meta)).content;
+    return (await this.callToolResult(toolName, args, meta, options)).content;
   }
   callToolResult(
     toolName: string,
     args: Record<string, unknown> | null,
     meta?: Record<string, unknown> | null,
+    options?: MCPCallToolOptions,
   ): Promise<CallToolResult> {
-    return this.underlying.callToolResult(toolName, args, meta);
+    return this.underlying.callToolResult(toolName, args, meta, options);
   }
   listResources(
     params?: MCPListResourcesParams,
@@ -1027,19 +1044,29 @@ export function mcpToFunctionTool(
     const meta = runContext
       ? await resolveMcpToolMeta(server, runContext, mcpTool.name, args)
       : undefined;
-    const result: CallToolResult =
+    const callOptions = details?.signal
+      ? { signal: details.signal }
+      : undefined;
+    const useFullResult =
       (server.useStructuredContent === true ||
         server.customDataExtractor !== undefined) &&
-      server.callToolResult
-        ? meta === undefined
-          ? await server.callToolResult(mcpTool.name, args)
-          : await server.callToolResult(mcpTool.name, args, meta)
-        : {
-            content:
-              meta === undefined
-                ? await server.callTool(mcpTool.name, args)
-                : await server.callTool(mcpTool.name, args, meta),
-          };
+      server.callToolResult !== undefined;
+    let result: CallToolResult;
+    if (useFullResult) {
+      result = callOptions
+        ? await server.callToolResult!(mcpTool.name, args, meta, callOptions)
+        : meta === undefined
+          ? await server.callToolResult!(mcpTool.name, args)
+          : await server.callToolResult!(mcpTool.name, args, meta);
+    } else {
+      result = {
+        content: callOptions
+          ? await server.callTool(mcpTool.name, args, meta, callOptions)
+          : meta === undefined
+            ? await server.callTool(mcpTool.name, args)
+            : await server.callTool(mcpTool.name, args, meta),
+      };
+    }
     const content = result.content as CallToolResultContent;
     const resultMeta = result._meta ?? content._meta;
     const structuredContent =
