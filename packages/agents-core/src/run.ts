@@ -1723,11 +1723,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               },
             )) {
               await guardrailTracker.throwIfError();
-              // Cross the model request boundary before starting an asynchronous
-              // session write so cancellation cannot persist an unsent prompt.
-              if (!delayStreamInputPersistence) {
-                await persistStreamInputIfNeeded();
-              }
               markInputOnce();
               recordStreamEventForAbortReconciliation(
                 abortReconciliationState,
@@ -1744,14 +1739,22 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 result.state._context.usage.add(finalResponse.usage);
                 recordUsage(finalResponse.usage);
               }
+              result._addItem(new RunRawModelStreamEvent(event));
+              // Record pulled model events before awaiting session storage so a
+              // cancellation during the write cannot discard an accepted response.
+              if (!delayStreamInputPersistence) {
+                await persistStreamInputIfNeeded();
+              }
               if (result.cancelled) {
-                // When the user's code exits a loop to consume the stream, we need to break
-                // this loop to prevent internal false errors and unnecessary processing
                 await awaitGuardrailsAndPersistInput();
+                if (finalResponse) {
+                  // Finish resolving the accepted response and its current action
+                  // batch, then let the outer loop stop before another model turn.
+                  break;
+                }
                 await reconcileStreamAbortIfNeeded();
                 return;
               }
-              result._addItem(new RunRawModelStreamEvent(event));
             }
           } catch (error) {
             if (isAbortError(error)) {
@@ -1770,10 +1773,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           await awaitGuardrailsAndPersistInput();
-
-          if (result.cancelled) {
-            return;
-          }
 
           result.state._noActiveAgentRun = false;
 
@@ -1970,7 +1969,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         await persistStreamInputIfNeeded();
       }
       const preserveSandboxSessions =
-        result.state._currentStep?.type === 'next_step_interruption';
+        result.state._currentStep?.type === 'next_step_interruption' ||
+        (result.cancelled &&
+          result.state._currentStep?.type !== 'next_step_final_output');
       try {
         try {
           await finalizeSandboxRuntime({

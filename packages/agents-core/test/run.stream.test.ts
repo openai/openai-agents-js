@@ -1714,10 +1714,18 @@ describe('Runner.run (streaming)', () => {
         persistedItems.length = 0;
       },
     };
+    const executeTestTool = vi.fn(async () => 'completed');
+    const testTool = tool({
+      name: 'test',
+      description: 'records the accepted function call',
+      parameters: z.object({ test: z.string() }),
+      execute: executeTestTool,
+    });
     const model = new CountingFunctionToolStreamModel();
     const agent = new Agent({
       name: 'CancelDuringPersistenceAgent',
       model,
+      tools: [testTool],
     });
     const result = await run(agent, 'sent before persistence', {
       stream: true,
@@ -1734,9 +1742,25 @@ describe('Runner.run (streaming)', () => {
     expect(result.cancelled).toBe(true);
     expect(modelCallsWhenPersistenceStarted).toBe(1);
     expect(model.callCount).toBe(1);
+    expect(executeTestTool).toHaveBeenCalledTimes(1);
+    expect(result.state._modelResponses).toHaveLength(1);
+    expect(
+      result.state._generatedItems.some(
+        (item) => item.rawItem.type === 'function_call_result',
+      ),
+    ).toBe(true);
     expect(await session.getItems()).toMatchObject([
       { role: 'user', content: 'sent before persistence' },
     ]);
+
+    const resumed = await run(agent, result.state, { stream: true });
+    for await (const _event of resumed) {
+      // Drain the resumed run.
+    }
+
+    expect(resumed.finalOutput).toBe('done');
+    expect(model.callCount).toBe(2);
+    expect(executeTestTool).toHaveBeenCalledTimes(1);
   });
 
   it('surfaces a pending input guardrail failure after cancellation during preparation', async () => {
@@ -3604,7 +3628,7 @@ describe('Runner.run (streaming)', () => {
     expect(result.cancelled).toBe(true);
   });
 
-  it('persists streaming input after cancellation once parallel guardrails finish', async () => {
+  it('persists an accepted response after cancellation once parallel guardrails finish', async () => {
     const saveInputSpy = vi
       .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
@@ -3651,8 +3675,10 @@ describe('Runner.run (streaming)', () => {
     await result._getStreamLoopPromise();
 
     expect(saveInputSpy).toHaveBeenCalledTimes(1);
-    expect(saveResultSpy).not.toHaveBeenCalled();
+    expect(saveResultSpy).toHaveBeenCalledTimes(1);
     expect(guardrail.execute).toHaveBeenCalledTimes(1);
+    expect(result.state._modelResponses).toHaveLength(1);
+    expect(result.finalOutput).toBe('Chunk1');
   });
 
   it('resumes a cancelled in-progress turn without double-counting turns', async () => {
