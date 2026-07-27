@@ -1585,6 +1585,50 @@ describe('Runner.run (streaming)', () => {
     ).toBe(true);
   });
 
+  it('does not call the model when cancelled during next-turn preparation', async () => {
+    let filterCalls = 0;
+    let markNextTurnPreparationStarted: (() => void) | undefined;
+    let finishNextTurnPreparation: (() => void) | undefined;
+    const nextTurnPreparationStarted = new Promise<void>((resolve) => {
+      markNextTurnPreparationStarted = resolve;
+    });
+    const nextTurnPreparationCanFinish = new Promise<void>((resolve) => {
+      finishNextTurnPreparation = resolve;
+    });
+    const testTool = tool({
+      name: 'test',
+      description: 'completes before the next model turn',
+      parameters: z.object({ test: z.string() }),
+      execute: async () => 'completed',
+    });
+    const model = new CountingFunctionToolStreamModel();
+    const agent = new Agent({
+      name: 'CancelDuringPreparationAgent',
+      model,
+      tools: [testTool],
+    });
+    const runner = new Runner({
+      callModelInputFilter: async ({ modelData }) => {
+        filterCalls += 1;
+        if (filterCalls === 2) {
+          markNextTurnPreparationStarted?.();
+          await nextTurnPreparationCanFinish;
+        }
+        return modelData;
+      },
+    });
+    const result = await runner.run(agent, 'start', { stream: true });
+    const reader = (result.toStream() as any).getReader();
+
+    await nextTurnPreparationStarted;
+    await reader.cancel('stop');
+    finishNextTurnPreparation?.();
+    await result._getStreamLoopPromise();
+
+    expect(result.cancelled).toBe(true);
+    expect(model.callCount).toBe(1);
+  });
+
   it('enforces maxTurns across multiple streamed model calls', async () => {
     // Bug: After first model call, _lastTurnResponse is set, so turn counter never advances.
     // With maxTurns=1, we should only allow 1 model call, but currently allows 2.

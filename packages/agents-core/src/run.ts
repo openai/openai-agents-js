@@ -1702,11 +1702,17 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
           };
 
-          sentInputToModel = true;
           if (!delayStreamInputPersistence) {
             await persistStreamInputIfNeeded();
           }
 
+          // Preparation can run user-provided async code, so cancellation must be
+          // rechecked after its final await and immediately before calling the model.
+          if (result.cancelled) {
+            return;
+          }
+
+          sentInputToModel = true;
           try {
             for await (const event of getStreamedResponseWithRetry(
               preparedCall.model,
