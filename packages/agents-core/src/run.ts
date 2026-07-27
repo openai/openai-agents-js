@@ -1478,6 +1478,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
     try {
       while (true) {
+        // Let the current action batch settle, but never start new work after
+        // cancellation once a turn has already begun. Preserve the existing
+        // first-request behavior for an initially aborted stream.
+        if (result.cancelled && result.state._currentTurn > 0) {
+          return;
+        }
+
         const currentAgent = result.state._currentAgent;
 
         result.state._currentStep = result.state._currentStep ?? {
@@ -1512,6 +1519,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             runner: this,
             toolErrorFormatter,
             agentToolParentRunConfig,
+            signal: options.signal,
             onStepItems: (turnResult) => {
               addStepToRunResult(result, turnResult);
             },
@@ -1622,6 +1630,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           );
 
           await guardrailTracker.throwIfError();
+
+          // Initial request and session-persistence ordering remain unchanged.
+          // Once a logical turn is established, do not start another model
+          // request if cancellation arrives during asynchronous preparation.
+          if (
+            (sentInputToModel || preserveTurnPersistenceOnResume) &&
+            result.cancelled
+          ) {
+            return;
+          }
 
           let finalResponse: ModelResponse | undefined = undefined;
           const abortReconciliationState =
@@ -1840,6 +1858,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             toolErrorFormatter,
             agentToolParentRunConfig,
             options.errorHandlers,
+            options.signal,
           );
 
           applyTurnResult({
@@ -1857,6 +1876,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             setRunStateTurnSpanParent(result.state, undefined);
             currentTurnSpan = undefined;
           }
+        }
+
+        // Finalization is an atomic commit once entered: guardrails, persistence,
+        // and end hooks must run exactly once. Other next steps would start new
+        // work, so leave them resumable after cancellation.
+        if (
+          result.cancelled &&
+          result.state._currentStep.type !== 'next_step_final_output'
+        ) {
+          return;
         }
 
         const currentStep = result.state._currentStep;
@@ -1982,7 +2011,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         await persistStreamInputIfNeeded();
       }
       const preserveSandboxSessions =
-        result.state._currentStep?.type === 'next_step_interruption';
+        result.state._currentStep?.type === 'next_step_interruption' ||
+        (result.cancelled &&
+          result.state._currentTurnInProgress &&
+          runError === undefined);
       try {
         try {
           await finalizeSandboxRuntime({

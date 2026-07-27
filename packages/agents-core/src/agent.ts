@@ -892,6 +892,10 @@ export class Agent<
               });
             }
             await streamResult.completed;
+            if (streamResult.cancelled) {
+              combinedSignal?.throwIfAborted();
+              throw new Error('Nested agent run was cancelled.');
+            }
           }
 
           const completedResult = result as CompletedRunResult<
