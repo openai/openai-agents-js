@@ -12,7 +12,7 @@ import { safeExecute } from './utils/safeExecute';
 import { toFunctionToolName } from './utils/tools';
 import { getSchemaAndParserFromInputType } from './utils/tools';
 import { isZodObject } from './utils/typeGuards';
-import { combineAbortSignals } from './utils/abortSignals';
+import { combineAbortSignals, isAbortError } from './utils/abortSignals';
 import { RunContext } from './runContext';
 import type { RunConfig } from './run';
 import type { RunResult } from './result';
@@ -2259,7 +2259,9 @@ export function tool<
     return _invoke(runContext, input, details).catch(async (error) => {
       if (
         details?.signal?.aborted &&
-        details.signal.reason instanceof ToolTimeoutError
+        (error === details.signal.reason ||
+          isAbortError(error) ||
+          details.signal.reason instanceof ToolTimeoutError)
       ) {
         throw error;
       }

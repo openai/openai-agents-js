@@ -602,9 +602,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const useTaskAndTurnSpans =
       !this.config.tracingDisabled && includeTaskAndTurnSpans(tracingConfig);
     const resumingFromState = input instanceof RunState;
+    // A resumed turn may be inactive but already have persisted items.
     const preserveTurnPersistenceOnResume =
       resumingFromState &&
-      (input as RunState<TContext, TAgent>)._currentTurnInProgress === true;
+      ((input as RunState<TContext, TAgent>)._currentTurnInProgress === true ||
+        (input as RunState<TContext, TAgent>)._currentTurnPersistedItemCount >
+          0);
     const resumedConversationId = resumingFromState
       ? (input as RunState<TContext, TAgent>)._conversationId
       : undefined;
@@ -1004,6 +1007,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       };
       setRunStateUsageRecorder(state, recordUsage);
       let completedResult: RunResult<TContext, TAgent> | undefined;
+      let persistenceCheckpoint: RunResult<TContext, TAgent> | undefined;
       const completeResult = (result: RunResult<TContext, TAgent>) => {
         completedResult = result;
         return result;
@@ -1043,7 +1047,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               runner: this,
               toolErrorFormatter,
               agentToolParentRunConfig,
+              signal: options.signal,
             });
+            if (options.signal?.aborted) {
+              persistenceCheckpoint = new RunResult<TContext, TAgent>(state);
+            }
+            options.signal?.throwIfAborted();
 
             // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
             // The counter will be reset when _currentTurn is incremented (starting a new turn)
@@ -1220,6 +1229,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               toolErrorFormatter,
               agentToolParentRunConfig,
               options.errorHandlers,
+              options.signal,
             );
 
             applyTurnResult({
@@ -1229,6 +1239,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               toolsUsed: state._lastProcessedResponse?.toolsUsed ?? [],
               resetTurnPersistence: !isResumedState,
             });
+            if (options.signal?.aborted) {
+              persistenceCheckpoint = new RunResult<TContext, TAgent>(state);
+            }
+            options.signal?.throwIfAborted();
             if (turnResult.nextStep.type !== 'next_step_final_output') {
               finishRunnerSpan(currentTurnSpan);
               setRunStateTurnSpanParent(state, undefined);
@@ -1344,9 +1358,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             setRunnerSpanError(taskSpan, error);
             await Promise.reject(error);
           }
-          if (completedResult) {
+          const resultToPersist = completedResult ?? persistenceCheckpoint;
+          if (resultToPersist) {
             try {
-              await persistResult?.(completedResult);
+              await persistResult?.(resultToPersist);
             } catch (error) {
               setRunnerSpanError(taskSpan, error);
               await Promise.reject(error);

@@ -51,6 +51,11 @@ import {
   validateRunErrorHandlerFinalOutput,
 } from './errorHandlers';
 import { getTurnInput } from './items';
+import {
+  buildApplyPatchAbortResult,
+  buildFunctionAbortResult,
+  buildShellAbortResult,
+} from './streamReconciliation';
 
 const DEFAULT_TOOL_NOT_FOUND_MESSAGE = (toolName: string) =>
   `Tool '${toolName}' not found.`;
@@ -484,6 +489,7 @@ async function executeShellAndApplyPatchActionsInOrder<TContext>(args: {
   runner: Runner;
   state: RunState<TContext, Agent<TContext, any>>;
   toolErrorFormatter?: ToolErrorFormatter;
+  signal?: AbortSignal;
 }): Promise<RunItem[]> {
   const results: RunItem[] = [];
   for (const action of orderShellAndApplyPatchActions(
@@ -491,6 +497,14 @@ async function executeShellAndApplyPatchActionsInOrder<TContext>(args: {
     args.shellActions,
     args.applyPatchActions,
   )) {
+    if (args.signal?.aborted) {
+      const rawItem =
+        action.type === 'shell'
+          ? buildShellAbortResult(action.action.toolCall)
+          : buildApplyPatchAbortResult(action.action.toolCall);
+      results.push(new RunToolCallOutputItem(rawItem, args.agent, 'aborted'));
+      continue;
+    }
     const items =
       action.type === 'shell'
         ? await executeShellActions(
@@ -630,6 +644,7 @@ export async function resolveInterruptedTurn<TContext>(
   state: RunState<TContext, Agent<TContext, any>>,
   toolErrorFormatter?: ToolErrorFormatter,
   agentToolParentRunConfig?: Partial<RunConfig>,
+  signal?: AbortSignal,
 ): Promise<SingleStepResult> {
   // call_ids for function tools
   const functionCallIds = originalPreStepItems
@@ -766,6 +781,7 @@ export async function resolveInterruptedTurn<TContext>(
     state,
     toolErrorFormatter,
     agentToolParentRunConfig,
+    signal,
   );
 
   // Computer actions may require approval; only pending approved actions are executed on resume.
@@ -778,6 +794,7 @@ export async function resolveInterruptedTurn<TContext>(
           state._context,
           undefined,
           toolErrorFormatter,
+          signal,
         )
       : [];
 
@@ -791,6 +808,7 @@ export async function resolveInterruptedTurn<TContext>(
           runner,
           state,
           toolErrorFormatter,
+          signal,
         })
       : [];
   const pendingFunctionToolsNotFound = filterPendingActions(
@@ -956,6 +974,7 @@ export async function resolveTurnAfterModelResponse<
   toolErrorFormatter?: ToolErrorFormatter,
   agentToolParentRunConfig?: Partial<RunConfig>,
   errorHandlers?: RunErrorHandlers<TContext, TAgent>,
+  signal?: AbortSignal,
 ): Promise<SingleStepResult> {
   // Reuse the same array reference so we can compare object identity when deciding whether to
   // append new items, ensuring we never double-stream existing RunItems.
@@ -979,6 +998,7 @@ export async function resolveTurnAfterModelResponse<
       state,
       toolErrorFormatter,
       agentToolParentRunConfig,
+      signal,
     ),
     executeComputerActions(
       agent,
@@ -987,6 +1007,7 @@ export async function resolveTurnAfterModelResponse<
       state._context,
       undefined,
       toolErrorFormatter,
+      signal,
     ),
   ]);
   const shellAndApplyPatchResults =
@@ -1000,6 +1021,7 @@ export async function resolveTurnAfterModelResponse<
           runner,
           state,
           toolErrorFormatter,
+          signal,
         })
       : [];
   const toolNotFoundResults = await buildToolNotFoundOutputItems(
@@ -1058,17 +1080,24 @@ export async function resolveTurnAfterModelResponse<
 
   // process handoffs
   if (processedResponse.handoffs.length > 0) {
-    return await executeHandoffCalls(
-      agent,
-      originalInput,
-      preStepItems,
-      newItems,
-      newResponse,
-      processedResponse.handoffs as ToolRunHandoff[],
-      runner,
-      state._context,
-      getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
-    );
+    if (signal?.aborted) {
+      for (const { toolCall } of processedResponse.handoffs) {
+        const rawItem = buildFunctionAbortResult(toolCall);
+        appendIfNew(new RunToolCallOutputItem(rawItem, agent, rawItem.output));
+      }
+    } else {
+      return await executeHandoffCalls(
+        agent,
+        originalInput,
+        preStepItems,
+        newItems,
+        newResponse,
+        processedResponse.handoffs as ToolRunHandoff[],
+        runner,
+        state._context,
+        getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
+      );
+    }
   }
 
   const completedStep = await maybeCompleteTurnFromToolResults({

@@ -3,6 +3,8 @@ import { randomUUID } from '@openai/agents-core/_shims';
 import type { ModelRequest, ModelResponse } from '../model';
 import type {
   ApplyPatchCallResultItem,
+  ComputerCallResultItem,
+  ComputerUseCallItem,
   FunctionCallItem,
   FunctionCallResultItem,
   ProgramCallResultItem,
@@ -28,6 +30,71 @@ export type StreamAbortReconciliationState = {
   pendingApplyPatchCalls: Map<string, PendingStreamedToolCall>;
   pendingProgramCalls: Map<string, string>;
 };
+
+// 1x1 transparent PNG data URL used when a computer result requires an image
+// but cancellation prevents the SDK from capturing the current screen.
+export const COMPUTER_FALLBACK_SCREENSHOT_DATA_URL =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
+
+export function buildFunctionAbortResult(
+  toolCall: PendingStreamedFunctionCall,
+): FunctionCallResultItem {
+  return {
+    type: 'function_call_result',
+    name: toolCall.name,
+    ...(typeof toolCall.namespace === 'string'
+      ? { namespace: toolCall.namespace }
+      : {}),
+    callId: toolCall.callId,
+    status: 'incomplete',
+    output: { type: 'text', text: 'aborted' },
+    ...(toolCall.caller ? { caller: toolCall.caller } : {}),
+  };
+}
+
+export function buildComputerAbortResult(
+  toolCall: Pick<ComputerUseCallItem, 'callId'>,
+): ComputerCallResultItem {
+  return {
+    type: 'computer_call_result',
+    callId: toolCall.callId,
+    output: {
+      type: 'computer_screenshot',
+      data: COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
+    },
+    providerData: { status: 'incomplete' },
+  };
+}
+
+export function buildShellAbortResult(
+  toolCall: PendingStreamedToolCall,
+): ShellCallResultItem {
+  return {
+    type: 'shell_call_output',
+    callId: toolCall.callId,
+    status: 'incomplete',
+    output: [
+      {
+        stdout: '',
+        stderr: 'aborted',
+        outcome: { type: 'timeout' },
+      },
+    ],
+    ...(toolCall.caller ? { caller: toolCall.caller } : {}),
+  };
+}
+
+export function buildApplyPatchAbortResult(
+  toolCall: PendingStreamedToolCall,
+): ApplyPatchCallResultItem {
+  return {
+    type: 'apply_patch_call_output',
+    callId: toolCall.callId,
+    status: 'failed',
+    output: 'aborted',
+    ...(toolCall.caller ? { caller: toolCall.caller } : {}),
+  };
+}
 
 export function createStreamAbortReconciliationState(): StreamAbortReconciliationState {
   return {
@@ -160,43 +227,15 @@ export function buildAbortReconciliationInput(
 )[] {
   const functionOutputs = Array.from(
     state.pendingFunctionCalls.values(),
-    (toolCall): FunctionCallResultItem => ({
-      type: 'function_call_result',
-      name: toolCall.name,
-      ...(typeof toolCall.namespace === 'string'
-        ? { namespace: toolCall.namespace }
-        : {}),
-      callId: toolCall.callId,
-      status: 'incomplete',
-      output: { type: 'text', text: 'aborted' },
-      ...(toolCall.caller ? { caller: toolCall.caller } : {}),
-    }),
+    buildFunctionAbortResult,
   );
   const shellOutputs = Array.from(
     state.pendingShellCalls.values(),
-    (toolCall): ShellCallResultItem => ({
-      type: 'shell_call_output',
-      callId: toolCall.callId,
-      status: 'incomplete',
-      output: [
-        {
-          stdout: '',
-          stderr: 'aborted',
-          outcome: { type: 'timeout' },
-        },
-      ],
-      ...(toolCall.caller ? { caller: toolCall.caller } : {}),
-    }),
+    buildShellAbortResult,
   );
   const applyPatchOutputs = Array.from(
     state.pendingApplyPatchCalls.values(),
-    (toolCall): ApplyPatchCallResultItem => ({
-      type: 'apply_patch_call_output',
-      callId: toolCall.callId,
-      status: 'failed',
-      output: 'aborted',
-      ...(toolCall.caller ? { caller: toolCall.caller } : {}),
-    }),
+    buildApplyPatchAbortResult,
   );
   const programOutputs = Array.from(
     state.pendingProgramCalls,

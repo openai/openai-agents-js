@@ -7,6 +7,22 @@ type CombineAbortSignalsOptions = {
   onAbortSignalAnyError?: (error: unknown) => void;
 };
 
+export function isAbortError(error: unknown): boolean {
+  if (!error) {
+    return false;
+  }
+  if (error instanceof Error && error.name === 'AbortError') {
+    return true;
+  }
+  const DomExceptionCtor =
+    typeof DOMException !== 'undefined' ? DOMException : undefined;
+  return Boolean(
+    DomExceptionCtor &&
+    error instanceof DomExceptionCtor &&
+    error.name === 'AbortError',
+  );
+}
+
 export function combineAbortSignals(
   ...signals: (AbortSignal | undefined)[]
 ): CombineAbortSignalsResult {
