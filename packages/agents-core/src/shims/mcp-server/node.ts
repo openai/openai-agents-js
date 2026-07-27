@@ -1336,6 +1336,11 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         options,
       );
     } catch (error) {
+      // A cancelled call must not hold up settlement on reconnection; the
+      // caller is no longer waiting for a result.
+      if (options?.signal?.aborted) {
+        throw error;
+      }
       const recoveryStrategy =
         await this.shouldReconnectClosedStreamableHttpClient(error, client);
       if (recoveryStrategy === 'none') {
@@ -1354,6 +1359,10 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       });
 
       if (recoveryStrategy === 'reconnect-only') {
+        throw error;
+      }
+
+      if (options?.signal?.aborted) {
         throw error;
       }
 
