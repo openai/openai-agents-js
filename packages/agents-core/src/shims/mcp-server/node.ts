@@ -1347,6 +1347,12 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         throw error;
       }
 
+      // The strategy lookup awaits; cancellation may have arrived while it
+      // ran, and recovery mutates the shared client — recheck before starting.
+      if (options?.signal?.aborted) {
+        throw error;
+      }
+
       this.debugLog(
         () =>
           `Reconnecting closed streamable HTTP MCP session for ${toolName}.`,

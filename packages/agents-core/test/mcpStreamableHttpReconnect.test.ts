@@ -65,6 +65,33 @@ describe('NodeMCPServerStreamableHttp reconnect recovery under cancellation', ()
     expect(callToolWithClient).toHaveBeenCalledTimes(1);
   });
 
+  it('skips recovery when cancellation arrives during the strategy lookup', async () => {
+    const server = makeServer();
+    const connError = Object.assign(new Error('connection closed'), {
+      code: -32000,
+    });
+    const callToolWithClient = vi.fn(async () => {
+      throw connError;
+    });
+    const controller = new AbortController();
+    const shouldReconnect = vi.fn(async () => {
+      controller.abort(new Error('user aborted'));
+      return 'reconnect-and-retry';
+    });
+    const reconnect = vi.fn(async () => ({ fake: true }));
+    (server as any).callToolWithClient = callToolWithClient;
+    (server as any).shouldReconnectClosedStreamableHttpClient = shouldReconnect;
+    (server as any).reconnectClosedStreamableHttpClient = reconnect;
+
+    await expect(
+      server.callToolResult('slow_tool', {}, undefined, {
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(connError);
+    expect(reconnect).not.toHaveBeenCalled();
+    expect(callToolWithClient).toHaveBeenCalledTimes(1);
+  });
+
   it('unwinds immediately when cancellation arrives while reconnection is pending', async () => {
     const server = makeServer();
     const connError = Object.assign(new Error('connection closed'), {
@@ -73,13 +100,17 @@ describe('NodeMCPServerStreamableHttp reconnect recovery under cancellation', ()
     const callToolWithClient = vi.fn(async () => {
       throw connError;
     });
+    let reconnectStarted!: () => void;
+    const reconnectStartedPromise = new Promise<void>((resolve) => {
+      reconnectStarted = resolve;
+    });
     let releaseReconnect!: (client: unknown) => void;
-    const reconnect = vi.fn(
-      () =>
-        new Promise((resolve) => {
-          releaseReconnect = resolve;
-        }),
-    );
+    const reconnect = vi.fn(() => {
+      reconnectStarted();
+      return new Promise((resolve) => {
+        releaseReconnect = resolve;
+      });
+    });
     const shouldReconnect = vi.fn(async () => 'reconnect-and-retry');
     (server as any).callToolWithClient = callToolWithClient;
     (server as any).shouldReconnectClosedStreamableHttpClient = shouldReconnect;
@@ -95,7 +126,7 @@ describe('NodeMCPServerStreamableHttp reconnect recovery under cancellation', ()
         (error) => ({ kind: 'rejected' as const, error }),
       );
 
-    await Promise.resolve();
+    await reconnectStartedPromise;
     controller.abort(new Error('user aborted'));
 
     expect(await outcome).toEqual({ kind: 'rejected', error: connError });
