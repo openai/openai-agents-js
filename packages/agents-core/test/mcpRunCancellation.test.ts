@@ -10,9 +10,21 @@ import { FakeModel } from './stubs';
 
 setTracingDisabled(true);
 
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('MCP run cancellation', () => {
   it('cancels an in-flight MCP request without a stale completion', async () => {
-    let mcpCallStarted = false;
+    const requestStarted = deferred();
+    const releaseLateCompletion = deferred();
+    const lateCompletionRan = deferred();
     let mcpCallEnded = false;
     let mcpCancelled = false;
 
@@ -34,17 +46,17 @@ describe('MCP run cancellation', () => {
         } as any,
       ],
       callTool: (_name, _args, _meta, options) => {
-        mcpCallStarted = true;
+        requestStarted.resolve();
         return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => {
+          releaseLateCompletion.promise.then(() => {
             mcpCallEnded = true;
             resolve([{ type: 'text', text: 'late result' }] as any);
-          }, 800);
+            lateCompletionRan.resolve();
+          });
           options?.signal?.addEventListener(
             'abort',
             () => {
               mcpCancelled = true;
-              clearTimeout(timer);
               reject(new DOMException('MCP request cancelled', 'AbortError'));
             },
             { once: true },
@@ -84,7 +96,6 @@ describe('MCP run cancellation', () => {
       mcpServers: [server],
     });
     const controller = new AbortController();
-    const started = Date.now();
     const outcomePromise = run(agent, 'go', {
       signal: controller.signal,
     }).then(
@@ -92,19 +103,19 @@ describe('MCP run cancellation', () => {
       (error) => ({ kind: 'rejected' as const, error: String(error) }),
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await requestStarted.promise;
     controller.abort(new Error('user aborted'));
     const outcome = await outcomePromise;
-    const elapsed = Date.now() - started;
-    await new Promise((resolve) => setTimeout(resolve, 75));
 
     expect(outcome).toEqual({
       kind: 'rejected',
       error: expect.stringContaining('user aborted'),
     });
-    expect(mcpCallStarted).toBe(true);
     expect(mcpCancelled).toBe(true);
     expect(mcpCallEnded).toBe(false);
-    expect(elapsed).toBeLessThan(500);
+
+    releaseLateCompletion.resolve();
+    await lateCompletionRan.promise;
+    expect(mcpCallEnded).toBe(true);
   }, 5_000);
 });
