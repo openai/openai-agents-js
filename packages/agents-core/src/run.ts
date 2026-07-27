@@ -1634,10 +1634,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           // Initial request and session-persistence ordering remain unchanged.
           // Once a logical turn is established, do not start another model
           // request if cancellation arrives during asynchronous preparation.
-          if (
-            (sentInputToModel || preserveTurnPersistenceOnResume) &&
-            result.cancelled
-          ) {
+          if ((sentInputToModel || isResumedState) && result.cancelled) {
             return;
           }
 
@@ -1878,16 +1875,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
         }
 
-        // Finalization is an atomic commit once entered: guardrails, persistence,
-        // and end hooks must run exactly once. Other next steps would start new
-        // work, so leave them resumable after cancellation.
-        if (
-          result.cancelled &&
-          result.state._currentStep.type !== 'next_step_final_output'
-        ) {
-          return;
-        }
-
         const currentStep = result.state._currentStep;
         switch (currentStep.type) {
           case 'next_step_final_output':
@@ -2013,7 +2000,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       const preserveSandboxSessions =
         result.state._currentStep?.type === 'next_step_interruption' ||
         (result.cancelled &&
-          result.state._currentTurnInProgress &&
+          result.state._currentStep?.type !== 'next_step_final_output' &&
           runError === undefined);
       try {
         try {

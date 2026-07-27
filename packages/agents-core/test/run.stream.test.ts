@@ -1579,7 +1579,10 @@ describe('Runner.run (streaming)', () => {
       model,
       tools: [abortableTool],
     });
-    const result = await run(agent, 'start', { stream: true });
+    const result = await run(agent, 'start', {
+      stream: true,
+      maxTurns: 1,
+    });
     const reader = (result.toStream() as any).getReader();
 
     await toolStarted;
@@ -1590,6 +1593,7 @@ describe('Runner.run (streaming)', () => {
     expect(result.cancelled).toBe(true);
     expect(toolSignal?.aborted).toBe(true);
     expect(model.callCount).toBe(1);
+    expect(result.state._currentTurnInProgress).toBe(false);
     expect(
       result.state._generatedItems.some(
         (item) =>
@@ -1597,6 +1601,12 @@ describe('Runner.run (streaming)', () => {
           item.rawItem.status === 'completed',
       ),
     ).toBe(true);
+
+    const resumed = await run(agent, result.state, { stream: true });
+    await expect(resumed.completed).rejects.toBeInstanceOf(
+      MaxTurnsExceededError,
+    );
+    expect(model.callCount).toBe(1);
   });
 
   it('atomically finalizes a completed tool output after cancellation', async () => {
@@ -2131,7 +2141,7 @@ describe('Runner.run (streaming)', () => {
     await first.completed;
 
     expect(first.state._currentStep?.type).toBe('next_step_run_again');
-    expect(first.state._currentTurnInProgress).toBe(true);
+    expect(first.state._currentTurnInProgress).toBe(false);
 
     let markPreparationStarted: (() => void) | undefined;
     let releasePreparation: (() => void) | undefined;
