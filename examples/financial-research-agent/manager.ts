@@ -58,6 +58,11 @@ export class FinancialResearchManager {
       verification = await this.verifyReport(report, searchResults);
       revisions++;
     }
+    if (!verification.verified) {
+      throw new Error(
+        `Report failed verification after ${MAX_REPORT_REVISIONS} revisions:\n${verification.issues}`,
+      );
+    }
     const finalReport = `Report summary\n\n${report.short_summary}`;
     console.log(finalReport);
     console.log('\n\n=====REPORT=====\n\n');

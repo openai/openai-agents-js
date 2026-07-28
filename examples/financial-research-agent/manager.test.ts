@@ -88,3 +88,15 @@ test('does not revise a report that passes verification', async () => {
   expect(manager.revisionCalls).toBe(0);
   expect(manager.verificationCalls).toBe(1);
 });
+
+test('fails closed when the report remains unverified', async () => {
+  const manager = new TestFinancialResearchManager();
+  manager.verificationFailuresBeforePass = 3;
+
+  await expect(manager.run('Research query')).rejects.toThrow(
+    'Report failed verification after 2 revisions:\nResolve verification issue 3.',
+  );
+
+  expect(manager.revisionCalls).toBe(2);
+  expect(manager.verificationCalls).toBe(3);
+});

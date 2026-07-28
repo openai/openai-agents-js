@@ -18,7 +18,7 @@ async function main() {
   const agent = new Agent({
     name: 'Image generator',
     instructions: 'You are a helpful agent.',
-    tools: [imageGenerationTool({ quality: 'low', inputFidelity: 'high' })],
+    tools: [imageGenerationTool({ quality: 'low' })],
   });
 
   await withTrace('Image generation example', async () => {
