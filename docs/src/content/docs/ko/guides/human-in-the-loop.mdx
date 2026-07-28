@@ -9,15 +9,15 @@ import toolApprovalDefinition from '../../../../../../examples/docs/human-in-the
 
 이 가이드에서는 SDK의 승인 기반 휴먼인더루프 (HITL) 흐름을 설명합니다. 도구 호출에 승인이 필요하면 SDK는 실행을 일시 중지하고 `interruptions`를 반환하며, 나중에 동일한 `RunState`에서 실행을 재개할 수 있도록 합니다.
 
-이 승인 처리 범위는 현재 최상위 에이전트에만 한정되지 않고 실행 전체에 적용됩니다. 도구가 현재 에이전트, 핸드오프를 통해 도달한 에이전트 또는 중첩된 `agent.asTool()` 실행에 속한 경우에도 동일한 패턴이 적용됩니다. 중첩된 `agent.asTool()`의 경우에도 인터럽션(중단 처리)은 외부 실행에 표시되므로, 외부 `result.state`에서 이를 승인하거나 거부한 후 원래 루트 실행을 재개합니다.
+이 승인 메커니즘은 현재 최상위 에이전트에만 국한되지 않고 실행 전체에 적용됩니다. 도구가 현재 에이전트에 속하거나, 핸드오프를 통해 도달한 에이전트에 속하거나, 중첩된 `agent.asTool()` 실행에 속하는 경우에도 동일한 패턴이 적용됩니다. 중첩된 `agent.asTool()`의 경우에도 인터럽션(중단 처리)은 외부 실행에 표시되므로, 외부 `result.state`에서 승인하거나 거부한 다음 원래 루트 실행을 재개합니다.
 
-`agent.asTool()`에서는 서로 다른 두 계층에서 승인이 발생할 수 있습니다. 에이전트 도구 자체가 `asTool({ needsApproval })`을 통해 승인을 요구할 수 있으며, 중첩 실행이 시작된 후 중첩 에이전트 내부의 도구가 별도의 승인을 요청할 수도 있습니다. 두 경우 모두 동일한 외부 실행 인터럽션(중단 처리) 흐름을 통해 처리됩니다.
+`agent.asTool()`에서는 서로 다른 두 계층에서 승인이 발생할 수 있습니다. 에이전트 도구 자체가 `asTool({ needsApproval })`을 통해 승인을 요구할 수 있으며, 중첩된 실행이 시작된 후 중첩 에이전트 내부의 도구가 자체 승인을 요청할 수도 있습니다. 두 경우 모두 동일한 외부 실행의 인터럽션(중단 처리) 흐름을 통해 처리됩니다.
 
-이 페이지에서는 `interruptions`를 사용하는 수동 승인 흐름에 중점을 둡니다. 앱에서 코드로 결정할 수 있다면 일부 도구 유형은 프로그래밍 방식의 승인 콜백도 지원하므로 실행을 일시 중지하지 않고 계속할 수 있습니다. `agent.asTool()` 자체를 설정하는 방법은 [도구](/openai-agents-js/ko/guides/tools#4-agents-as-tools)를 참조하세요. 이 페이지에서는 해당 실행 계층 구조의 도구 중 하나라도 승인이 필요해진 이후의 동작을 설명합니다.
+이 페이지에서는 `interruptions`를 통한 수동 승인 흐름을 중점적으로 설명합니다. 애플리케이션이 코드에서 결정할 수 있다면 일부 도구 유형은 프로그래밍 방식의 승인 콜백도 지원하므로 실행을 일시 중지하지 않고 계속할 수 있습니다. `agent.asTool()` 자체를 설정하는 방법은 [도구](/openai-agents-js/ko/guides/tools#4-agents-as-tools)를 참조하세요. 이 페이지에서는 해당 실행 계층에 있는 도구에 승인이 필요해진 후의 동작을 설명합니다.
 
 ## 승인 흐름
 
-`needsApproval` 옵션을 `true` 또는 불리언 값을 반환하는 비동기 함수로 설정하여 승인이 필요한 도구를 정의할 수 있습니다.
+`needsApproval` 옵션을 `true`로 설정하거나 불리언을 반환하는 비동기 함수로 설정하여 승인이 필요한 도구를 정의할 수 있습니다.
 
 <Code
   lang="typescript"
@@ -28,43 +28,45 @@ import toolApprovalDefinition from '../../../../../../examples/docs/human-in-the
 
 ### 흐름
 
-1. 도구 호출이 실행되기 직전에 SDK가 해당 승인 규칙(`needsApproval` 또는 호스티드 MCP의 동등한 설정)을 평가합니다.
-2. 승인이 필요하지만 아직 저장된 결정이 없으면 도구 호출이 실행되지 않습니다. 대신 실행에 [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem)이 기록됩니다.
-3. 해당 턴이 끝나면 실행이 일시 중지되고, [실행 결과](/openai-agents-js/ko/guides/results)의 `interruptions` 배열에 대기 중인 모든 승인이 반환됩니다. 여기에는 중첩된 `agent.asTool()` 실행 내부에서 발생한 승인도 포함됩니다.
-4. 대기 중인 각 항목을 `result.state.approve(interruption)` 또는 `result.state.reject(interruption)`으로 처리합니다. 동일한 도구를 나머지 실행 동안 계속 승인하거나 거부하려면 `{ alwaysApprove: true }` 또는 `{ alwaysReject: true }`를 전달합니다. 거부할 때 `{ message: '...' }`를 전달하면 해당 도구 호출에 대해 모델로 다시 전송되는 거부 텍스트를 지정할 수도 있습니다.
-5. 업데이트된 `result.state`를 `runner.run(agent, state)`에 다시 전달하여 재개합니다. 여기서 `agent`는 해당 실행의 원래 최상위 에이전트입니다. SDK는 중첩된 에이전트 도구 실행을 포함하여 인터럽션(중단 처리)이 발생한 지점부터 계속 실행합니다.
+1. 도구 호출을 실행하기 직전에 SDK가 해당 승인 규칙(`needsApproval` 또는 이에 해당하는 호스티드 MCP 설정)을 평가합니다.
+2. 승인이 필요하지만 아직 저장된 결정이 없으면 도구 호출을 실행하지 않습니다. 대신 실행에 [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem)을 기록합니다.
+3. 해당 턴이 끝날 때 실행이 일시 중지되고, 중첩된 `agent.asTool()` 실행 내부에서 발생한 승인을 포함해 대기 중인 모든 승인이 [실행 결과](/openai-agents-js/ko/guides/results)의 `interruptions` 배열로 반환됩니다.
+4. 대기 중인 각 항목을 `result.state.approve(interruption)` 또는 `result.state.reject(interruption)`으로 처리합니다. 실행의 나머지 부분에서도 동일한 도구를 계속 승인하거나 거부하려면 `{ alwaysApprove: true }` 또는 `{ alwaysReject: true }`를 전달합니다. 거부할 때 `{ message: '...' }`도 전달하여 해당 도구 호출에 대해 모델로 반환되는 거부 메시지를 제어할 수 있습니다.
+5. 업데이트된 `result.state`를 `runner.run(agent, state)`에 다시 전달하여 재개합니다. 여기서 `agent`는 해당 실행의 원래 최상위 에이전트입니다. SDK는 중첩된 에이전트 도구 실행을 포함해 인터럽션(중단 처리)이 발생한 지점부터 계속 진행합니다.
 
-기본적으로 함수 도구 입력 가드레일은 승인 후 도구가 실행되기 직전에만 실행됩니다. 대기 중인 승인이 표시되기 전에 동일한 입력 가드레일로 로컬 함수 도구 호출을 검증하려면 `run()` 또는 `Runner`에 `toolExecution: { preApprovalInputGuardrails: true }`를 전달합니다. 사전 승인 가드레일이 호출을 거부하면 SDK는 승인 인터럽션(중단 처리)을 생성하는 대신 가드레일 메시지를 도구 출력으로 모델에 반환합니다. 호출을 허용하면 실행은 여전히 승인을 위해 일시 중지되며, 대기 중 도구 호출이 안전하지 않은 상태로 바뀌었을 가능성에 대비해 승인 후 입력 가드레일이 다시 실행됩니다.
+기본적으로 함수 도구 입력 가드레일은 승인 후 도구가 실행되기 직전에만 실행됩니다. 대기 중인 승인이 표시되기 전에 동일한 입력 가드레일로 로컬 함수 도구 호출을 검증하려면 `run()` 또는 `Runner`에 `toolExecution: { preApprovalInputGuardrails: true }`를 전달합니다. 사전 승인 가드레일에서 거부하면 SDK는 승인 인터럽션(중단 처리)을 생성하는 대신 가드레일 메시지를 도구 출력으로 모델에 반환합니다. 호출을 허용하면 실행은 여전히 승인을 위해 일시 중지되며, 승인 대기 중 도구 호출이 안전하지 않게 변경되었을 가능성에 대비해 승인 후 입력 가드레일을 다시 실행합니다.
 
-`{ alwaysApprove: true }` 또는 `{ alwaysReject: true }`로 생성한 지속적 결정은 실행 상태에 저장되므로, 나중에 동일한 일시 중지 실행을 재개할 때 `toString()` / `fromString()`을 거쳐도 유지됩니다.
+`needsApproval`이 함수인 경우 SDK는 도구 인수가 검사 가능한 객체로 파싱된 후에만 함수를 호출합니다. 잘못된 형식의 JSON과 객체가 아닌 값은 안전 우선으로 처리(fail closed)됩니다. SDK는 콜백을 호출하거나 도구를 실행하지 않고 승인을 요청합니다. 해당 호출을 승인해도 도구는 실행되지 않으며, 일반적인 인수 파싱 오류 경로를 계속 따릅니다. Realtime 함수 도구에도 동일한 규칙이 적용되며, 유효하지 않은 호출에 대해 `tool_approval_requested`를 내보냅니다.
 
-GA 모델에서 컴퓨터 도구 인터럽션(중단 처리)은 하나의 `computer_call`에 포함된 작업 배치를 나타낼 수 있습니다. SDK는 실행 전에 작업별로 `needsApproval`을 평가하므로, 대기 중인 승인 하나가 이동 + 클릭과 같은 작업 시퀀스를 포괄할 수 있습니다. UI를 렌더링하기 위해 `interruption.rawItem`을 검사하는 경우 GA의 `actions` 배열과 레거시 단일 `action` 필드를 모두 처리해야 합니다.
+`{ alwaysApprove: true }` 또는 `{ alwaysReject: true }`로 생성된 지속적 결정은 실행 상태에 저장되므로, 나중에 동일한 일시 중지 실행을 재개할 때 `toString()` / `fromString()`을 거쳐도 유지됩니다.
+
+GA 모델에서는 컴퓨터 도구 인터럽션(중단 처리)이 하나의 `computer_call`에 포함된 작업 배치를 나타낼 수 있습니다. SDK는 실행 전에 작업별로 `needsApproval`을 평가하므로, 하나의 대기 중 승인이 이동 + 클릭과 같은 작업 시퀀스를 포함할 수 있습니다. UI 렌더링을 위해 `interruption.rawItem`을 검사한다면 GA의 `actions` 배열과 레거시 단일 `action` 필드를 모두 처리해야 합니다.
 
 직렬화된 `RunState`는 현재 `computer` 도구 이름과 레거시 `computer_use_preview` 이름 모두에서 컴퓨터 승인을 보존하므로, 프리뷰에서 GA로 마이그레이션하는 동안에도 일시 중지된 실행을 문제없이 재개할 수 있습니다.
 
-`message`를 제공하지 않으면 SDK는 설정된 `toolErrorFormatter`가 있는 경우 이를 사용하고, 그렇지 않으면 기본 거부 텍스트를 사용합니다.
+`message`를 제공하지 않으면 SDK는 설정된 `toolErrorFormatter`가 있을 경우 이를 사용한 다음, 기본 거부 메시지를 사용합니다.
 
-대기 중인 모든 승인을 한 번에 처리할 필요는 없습니다. 일부 항목만 승인하거나 거부한 후 다시 실행하면 처리된 호출은 계속 진행되고, 처리되지 않은 항목은 `interruptions`에 남아 실행을 다시 일시 중지합니다.
+대기 중인 모든 승인을 한 번에 처리할 필요는 없습니다. 일부 항목만 승인하거나 거부한 후 다시 실행하면 처리된 호출은 계속 진행할 수 있으며, 처리되지 않은 호출은 `interruptions`에 남아 실행을 다시 일시 중지합니다.
 
 ### 자동 승인 결정
 
-수동 `interruptions`가 가장 일반적인 패턴이지만 유일한 방식은 아닙니다.
+수동 `interruptions`가 가장 일반적인 패턴이지만 유일한 방법은 아닙니다.
 
-- 로컬 `shellTool()`과 `applyPatchTool()`은 `onApproval`을 사용하여 코드에서 즉시 승인하거나 거부할 수 있습니다.
-- 호스티드 MCP 도구는 `requireApproval`과 `onApproval`을 함께 사용하여 동일한 방식으로 프로그래밍 방식의 결정을 내릴 수 있습니다.
+- 로컬 `shellTool()` 및 `applyPatchTool()`은 `onApproval`을 사용하여 코드에서 즉시 승인하거나 거부할 수 있습니다.
+- 호스티드 MCP 도구는 `requireApproval`을 `onApproval`과 함께 사용하여 동일한 방식으로 프로그래밍 방식의 결정을 내릴 수 있습니다.
 - 일반 함수 도구는 이 페이지에서 설명하는 수동 인터럽션(중단 처리) 흐름을 사용합니다.
 
-이러한 콜백이 결정을 반환하면 실행은 사람의 응답을 기다리기 위해 일시 중지되지 않고 계속됩니다. Realtime / 음성 세션 API의 경우 [음성 에이전트 구축](/openai-agents-js/ko/guides/voice-agents/build#approval-before-tool-execution)의 승인 흐름을 참조하세요.
+이러한 콜백이 결정을 반환하면 실행은 사람의 응답을 기다리기 위해 일시 중지되지 않고 계속됩니다. Realtime/음성 세션 API는 [음성 에이전트 구축](/openai-agents-js/ko/guides/voice-agents/build#approval-before-tool-execution)의 승인 흐름을 참조하세요.
 
 ### 스트리밍 및 세션
 
-동일한 인터럽션(중단 처리) 흐름이 스트리밍 실행에서도 작동합니다. 스트리밍 실행이 일시 중지되면 `stream.completed`를 기다린 후 `stream.interruptions`를 읽어 처리하고, 재개된 출력도 계속 스트리밍하려면 `{ stream: true }`와 함께 `run()`을 다시 호출합니다. 이 패턴의 스트리밍 버전은 [스트리밍](/openai-agents-js/ko/guides/streaming#human-in-the-loop-while-streaming)을 참조하세요.
+동일한 인터럽션(중단 처리) 흐름을 스트리밍 실행에서도 사용할 수 있습니다. 스트리밍 실행이 일시 중지되면 `stream.completed`를 기다리고 `stream.interruptions`를 읽어 처리한 다음, 재개된 출력도 계속 스트리밍하려면 `{ stream: true }`와 함께 `run()`을 다시 호출합니다. 이 패턴의 스트리밍 버전은 [스트리밍 중 휴먼인더루프 (HITL)](/openai-agents-js/ko/guides/streaming#human-in-the-loop-while-streaming)을 참조하세요.
 
-`session`도 사용하고 있다면 `RunState`에서 재개할 때 동일한 `session`을 계속 전달합니다. 그러면 입력을 다시 준비하지 않고 재개된 턴이 세션 메모리에 추가됩니다. 세션 수명 주기에 대한 자세한 내용은 [세션](/openai-agents-js/ko/guides/sessions)을 참조하세요.
+`session`도 사용하고 있다면 `RunState`에서 재개할 때 동일한 `session`을 계속 전달합니다. 그러면 입력을 다시 준비하지 않고 재개된 턴이 세션 메모리에 추가됩니다. 세션 수명 주기에 관한 자세한 내용은 [세션](/openai-agents-js/ko/guides/sessions)을 참조하세요.
 
 ## 예제
 
-다음은 터미널에서 승인을 요청하고 상태를 파일에 임시로 저장하는 더 완전한 휴먼인더루프 (HITL) 흐름의 예제입니다.
+다음은 터미널에서 승인을 요청하고 상태를 파일에 임시로 저장하는, 더 완전한 휴먼인더루프 (HITL) 흐름의 예제입니다.
 
 <Code
   lang="typescript"
@@ -74,36 +76,36 @@ GA 모델에서 컴퓨터 도구 인터럽션(중단 처리)은 하나의 `compu
 
 실제로 작동하는 엔드투엔드 버전은 [전체 예제 스크립트](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop.ts)를 참조하세요.
 
-## 장시간 승인 처리
+## 긴 승인 대기 시간 처리
 
-휴먼인더루프 (HITL) 흐름은 서버를 계속 실행해 두지 않고도 장시간 인터럽션(중단 처리)할 수 있도록 설계되었습니다. 요청을 종료하고 나중에 계속해야 하는 경우 상태를 직렬화한 후 나중에 재개할 수 있습니다.
+휴먼인더루프 (HITL) 흐름은 서버를 계속 실행하지 않고도 오랫동안 중단된 상태를 유지할 수 있도록 설계되었습니다. 요청을 종료한 후 나중에 계속해야 한다면 상태를 직렬화한 다음 나중에 재개할 수 있습니다.
 
 `result.state.toString()` 또는 `JSON.stringify(result.state)`을 사용하여 상태를 직렬화하고, 직렬화된 상태를 `RunState.fromString(agent, serializedState)`에 전달하여 나중에 재개할 수 있습니다. 여기서 `agent`는 전체 실행을 시작한 에이전트 인스턴스입니다.
 
-`RunState`가 직렬화될 때 SDK는 핸드오프 및 `Agent.asTool()` 그래프에 대한 안정적인 에이전트 식별자를 기록합니다. 따라서 실행을 재개하는 프로세스가 동일한 에이전트 그래프를 다시 구축한다면, 서로 다른 에이전트가 같은 `name`을 공유하더라도 일시 중지된 실행을 재개할 수 있습니다.
+`RunState`를 직렬화하면 SDK는 핸드오프 및 `Agent.asTool()` 그래프에 대한 안정적인 에이전트 식별자를 기록합니다. 실행을 재개하는 프로세스가 동일한 에이전트 그래프를 다시 구성한다면, 서로 다른 에이전트가 동일한 `name`을 사용해도 일시 중지된 실행을 재개할 수 있습니다.
 
-`RunState.fromString(agent, serializedState)`에 전달되는 `agent`는 다시 구축된 그래프의 루트입니다. 역직렬화 중에 SDK는 해당 에이전트의 핸드오프와 `Agent.asTool()` 참조를 탐색한 다음, 상태에 직렬화된 모든 에이전트 참조를 다시 구축된 그래프에 대응시킵니다. 여기에는 현재 에이전트뿐 아니라 생성된 항목, 처리된 모델 응답, 대기열에 추가된 다음 단계가 보유한 중첩 참조도 포함됩니다.
+`RunState.fromString(agent, serializedState)`에 전달되는 `agent`는 다시 구성된 그래프의 루트입니다. 역직렬화하는 동안 SDK는 해당 에이전트의 핸드오프와 `Agent.asTool()` 참조를 순회한 다음, 상태에 직렬화된 모든 에이전트 참조를 다시 구성된 그래프와 대조하여 확인합니다. 여기에는 현재 에이전트뿐만 아니라 생성된 항목, 처리된 모델 응답 및 큐에 대기 중인 다음 단계가 보유한 중첩 참조도 포함됩니다.
 
-다른 런타임이 모델이나 도구를 래핑한 에이전트처럼 대체된 그래프로 재개해야 한다면, 먼저 원래 그래프로 상태를 역직렬화한 후 다시 직렬화하고, 그 문자열을 대체된 루트 에이전트로 역직렬화합니다. `state.setCurrentAgent(agent)`를 호출하면 활성 에이전트만 변경되며, 역직렬화 중에 이미 대응된 중첩 참조는 다시 작성되지 않습니다.
+다른 런타임에서 모델이나 도구를 래핑한 에이전트처럼 대체된 그래프로 재개해야 한다면, 원래 그래프로 상태를 역직렬화하고 다시 직렬화한 다음 그 문자열을 대체된 루트 에이전트로 역직렬화합니다. `state.setCurrentAgent(agent)` 호출은 활성 에이전트만 변경하며, 역직렬화 중 이미 확인된 중첩 참조를 다시 작성하지 않습니다.
 
-재개된 프로세스에 새로운 컨텍스트 객체를 주입해야 한다면 대신 `RunState.fromStringWithContext(agent, serializedState, context, { contextStrategy })`를 사용합니다.
+재개된 프로세스에 새 컨텍스트 객체를 주입해야 한다면 대신 `RunState.fromStringWithContext(agent, serializedState, context, { contextStrategy })`를 사용합니다.
 
-- `contextStrategy: 'merge'`(기본값)는 제공된 `RunContext`를 유지하고 직렬화된 승인 상태를 병합하며, 새 컨텍스트에 이미 정의되어 있지 않으면 직렬화된 `toolInput`을 복원합니다.
-- `contextStrategy: 'replace'`는 제공된 `RunContext`를 그대로 사용하여 실행을 다시 구축합니다.
+- `contextStrategy: 'merge'`(기본값)는 제공된 `RunContext`를 유지하고 직렬화된 승인 상태를 병합하며, 새 컨텍스트에 이미 정의된 값이 없을 때 직렬화된 `toolInput`을 복원합니다.
+- `contextStrategy: 'replace'`는 제공된 `RunContext`를 있는 그대로 사용하여 실행을 다시 구성합니다.
 
-직렬화된 실행 상태에는 앱 컨텍스트와 함께 승인, 사용량, 중첩된 `toolInput`, 대기 중인 중첩 에이전트 도구 재개 정보 등 SDK가 관리하는 런타임 메타데이터가 포함됩니다. 직렬화된 상태를 저장하거나 전송하려는 경우 `runContext.context`를 영속 데이터로 취급하고, 상태와 함께 의도적으로 전달하려는 경우가 아니라면 여기에 비밀 정보를 넣지 마세요.
+직렬화된 실행 상태에는 앱 컨텍스트와 함께 승인, 사용량, 중첩된 `toolInput`, 대기 중인 중첩 에이전트 도구 재개 정보 등 SDK가 관리하는 런타임 메타데이터가 포함됩니다. 직렬화된 상태를 저장하거나 전송할 계획이라면 `runContext.context`를 영구 저장되는 데이터로 취급하고, 의도적으로 상태와 함께 이동시킬 목적이 아니라면 여기에 비밀 정보를 넣지 마세요.
 
-기본적으로 트레이싱 API 키는 비밀 정보가 실수로 영속화되지 않도록 직렬화된 상태에서 제외됩니다. 트레이싱 자격 증명을 상태와 함께 의도적으로 이동해야 하는 경우에만 `result.state.toString({ includeTracingApiKey: true })`를 전달하세요.
+실수로 비밀 정보를 영구 저장하지 않도록 기본적으로 트레이싱 API 키는 직렬화된 상태에서 제외됩니다. 트레이싱 자격 증명을 상태와 함께 의도적으로 이동해야 할 때만 `result.state.toString({ includeTracingApiKey: true })`를 전달하세요.
 
-이 방식으로 직렬화된 상태를 데이터베이스에 저장하거나 요청과 함께 보관할 수 있습니다.
+이렇게 하면 직렬화된 상태를 데이터베이스 또는 요청과 함께 저장할 수 있습니다.
 
-### 대기 중인 작업의 버전 관리
+### 대기 중 작업 버전 관리
 
 <Aside>
   이는 주로 에이전트를 변경하면서 직렬화된 상태를 더 오랫동안 저장하려는 경우에
   적용됩니다.
 </Aside>
 
-승인 요청에 시간이 오래 걸리고 에이전트 정의를 유의미한 방식으로 버전 관리하거나 Agents SDK 버전을 올리려는 경우, 현재는 패키지 별칭을 사용하여 두 버전의 Agents SDK를 병렬로 설치하고 자체 분기 로직을 구현하는 방식을 권장합니다.
+승인 요청에 오랜 시간이 걸리고 에이전트 정의를 의미 있는 방식으로 버전 관리하거나 Agents SDK 버전을 올리려는 경우, 현재는 패키지 별칭을 사용해 두 버전의 Agents SDK를 병렬로 설치하고 자체 분기 로직을 구현하는 방식을 권장합니다.
 
-실제로는 자체 코드에 버전 번호를 부여하고 이를 직렬화된 상태와 함께 저장한 다음, 역직렬화가 올바른 코드 버전을 사용하도록 해야 합니다.
+실제로는 자체 코드에 버전 번호를 할당하고 이를 직렬화된 상태와 함께 저장한 다음, 올바른 코드 버전으로 역직렬화되도록 안내해야 합니다.

@@ -84,11 +84,14 @@ If you can programmatically determine whether a tool call is safe, you can use t
 | `authorization` | `string` | Optional authorization token sent to the hosted MCP backend. |
 | `headers` | `Record<string, string>` | Optional extra request headers. |
 | `allowedTools` | `string[] \| object` | Allowlist of tool names exposed to the model. Pass `string[]` or `{ toolNames?: string[] }`. |
+| `allowedCallers` | `('direct' \| 'programmatic')[]` | Responses-only non-empty list controlling whether hosted MCP tools can be called directly, through Programmatic Tool Calling, or both. |
 | `deferLoading` | `boolean` | Responses-only deferred loading for hosted MCP tools. Requires `toolSearchTool()` in the same agent. |
 | `requireApproval` | `'never' \| 'always' \| object` | Approval policy for hosted MCP tool calls. Use the object form for per-tool overrides. Defaults to `'never'`. |
 | `onApproval` | Approval callback | Optional callback for programmatic approval/rejection when `requireApproval` requires approval handling. |
 
 Set `deferLoading: true` when you want the model to load a hosted MCP server's tool definitions on demand via tool search instead of exposing them up front. This only works with the OpenAI Responses API, requires `toolSearchTool()` in the same request, and should be used with GPT-5.4 and newer supported model releases. See the [Tools guide](/openai-agents-js/guides/tools#deferred-tool-loading-with-tool-search) for the full deferred-loading setup.
+
+Set `allowedCallers: ['programmatic']` when hosted MCP tools should only be called from model-generated JavaScript, or include both `'direct'` and `'programmatic'` to allow either path. Add `programmaticToolCallingTool()` to the same agent. Existing `requireApproval` and `onApproval` policies still apply when the program invokes an MCP tool. See [Programmatic Tool Calling](/openai-agents-js/guides/tools#programmatic-tool-calling) for the complete setup.
 
 `requireApproval` object form:
 

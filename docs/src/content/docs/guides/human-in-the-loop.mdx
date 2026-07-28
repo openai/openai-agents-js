@@ -36,6 +36,8 @@ You can define a tool that requires approval by setting the `needsApproval` opti
 
 By default, function-tool input guardrails run only after approval, immediately before the tool executes. If you want those same input guardrails to validate a local function-tool call before a pending approval is shown, pass `toolExecution: { preApprovalInputGuardrails: true }` to `run()` or `Runner`. When the pre-approval guardrail rejects, the SDK returns the guardrail message to the model as tool output instead of creating an approval interruption. When it allows the call, the run still pauses for approval, and the input guardrails run again after approval in case the tool call became unsafe while waiting.
 
+When `needsApproval` is a function, the SDK calls it only after the tool arguments have parsed into an inspectable object. Malformed JSON and non-object values fail closed: the SDK requests approval without invoking the callback or executing the tool. Approving that call still does not execute the tool; it continues through the normal argument parse-error path. Realtime function tools follow the same rule and emit `tool_approval_requested` for the invalid call.
+
 Sticky decisions created with `{ alwaysApprove: true }` or `{ alwaysReject: true }` are stored in the run state, so they survive `toString()` / `fromString()` when you resume the same paused run later.
 
 Computer tool interruptions can represent a batch of actions in one `computer_call` on GA models. The SDK evaluates `needsApproval` per action before execution, so one pending approval can cover a sequence such as move + click. If you inspect `interruption.rawItem` to render a UI, handle both the GA `actions` array and the legacy single `action` field.

@@ -174,6 +174,8 @@ Because the session stays live, the model for that session does not change durin
 
 Just like regular agents, Realtime Agents can call tools to perform actions. Realtime supports **function tools** (executed locally) and **hosted MCP tools** (executed remotely by the Realtime API). You can define a function tool using the same `tool()` helper you would use for a regular agent.
 
+Responses-only tool options do not carry over to Realtime agents. Function tool `outputSchema` and `allowedCallers` values that include `'programmatic'` are rejected, as are programmatic callers on hosted MCP tools. Use directly callable function or hosted MCP tools in a Realtime session, or delegate work that needs Programmatic Tool Calling to a Responses agent.
+
 <Code lang="typescript" code={defineToolExample} />
 
 #### Function tools

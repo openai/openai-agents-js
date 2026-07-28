@@ -108,6 +108,13 @@ There are two related integrations in `@openai/agents-extensions`:
 - Supported AI SDK providers must expose `specificationVersion` `v2`, `v3`, or `v4`. If you need the older v1 provider style, copy the module from [examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1) into your project.
 - Computer tools require display metadata when used through this adapter. Make sure the tool includes both `environment` and `dimensions` metadata.
 - Deferred Responses tool-loading flows are not supported here. That includes `toolNamespace()`, function tools with `deferLoading: true`, and `toolSearchTool()`. If you need tool search, use an OpenAI Responses model directly. See the [Tools guide](/openai-agents-js/guides/tools#deferred-tool-loading-with-tool-search) and [Models guide](/openai-agents-js/guides/models#responses-only-deferred-tool-loading).
+- Programmatic Tool Calling is not supported by the AI SDK model adapter. It rejects `programmaticToolCallingTool()`, tools whose `allowedCallers` includes `'programmatic'`, Programmatic Tool Calling history items, and Responses `outputSchema`. Use an OpenAI Responses model directly for these features.
+
+### Image tool outputs
+
+The adapter preserves `ToolOutputImage` values returned by function tools, including remote URLs, base64 data, and OpenAI file IDs. AI SDK v2 models receive `media` parts. AI SDK v3 models receive `image-url`, `image-data`, or `image-file-id` parts. AI SDK v4 models receive `file` parts whose data is represented as a URL, inline data, or a provider reference for file IDs. This lets each supported model version consume the original image representation.
+
+See [`examples/ai-sdk/image-tool-output.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/image-tool-output.ts) for a complete example.
 
 ## AI SDK UI stream helpers
 
@@ -120,6 +127,8 @@ There are two related integrations in `@openai/agents-extensions`:
 These helpers accept a `StreamedRunResult`, stream-like source, or compatible wrapper object. The response helpers return a `Response` with streaming-friendly headers.
 
 Use `createAiSdkUiMessageStreamResponse(...)` when your route should return the AI SDK response directly. Use `createAiSdkUiMessageStream(...)` when you want to own the response or rendering layer while still using the maintained Agents SDK to AI SDK `UIMessageChunk` translation. Use `createAiSdkTextStreamResponse(...)` when you only want plain text.
+
+The UI stream helpers can wrap a streamed OpenAI Responses run that uses Programmatic Tool Calling even though the AI SDK model adapter cannot originate that flow. Program items are emitted as `programmatic_tool_calling` tool inputs, and matching program results are emitted as `program_output` tool outputs.
 
 The response helpers also accept optional response settings through `options`:
 
