@@ -13,7 +13,13 @@ export {
   ToolUseBehavior,
   ToolUseBehaviorFlags,
 } from './agent';
-export type { CompletedAgentToolInvocationRunResult } from './agent';
+export type {
+  AgentTool,
+  AgentToolOptions,
+  AgentToolOptionsWithDefault,
+  AgentToolOptionsWithParameters,
+  CompletedAgentToolInvocationRunResult,
+} from './agent';
 export { Computer } from './computer';
 export { ShellAction, ShellResult, ShellOutputResult, Shell } from './shell';
 export {
@@ -102,6 +108,7 @@ export {
   RunToolSearchOutputItem,
 } from './items';
 export { AgentHooks } from './lifecycle';
+export type { AgentHookEvents, RunHookEvents } from './lifecycle';
 export { getLogger } from './logger';
 export { setSensitiveDataLoggingEnabled } from './config';
 export { applyDiff } from './utils/applyDiff';

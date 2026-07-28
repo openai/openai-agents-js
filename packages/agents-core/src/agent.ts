@@ -107,7 +107,7 @@ type AgentToolEventHandler<TAgent extends Agent<any, any>> = (
 ) => void | Promise<void>;
 type AgentToolInputBuilder<TParameters extends AgentToolInputParameters> =
   StructuredToolInputBuilder<ToolExecuteArgument<TParameters>>;
-type AgentToolOptions<
+export type AgentToolOptions<
   TContext,
   TAgent extends Agent<TContext, any>,
   TParameters extends AgentToolInputParameters,
@@ -171,21 +171,21 @@ type AgentToolOptions<
    */
   onStream?: (event: AgentToolStreamEvent<TAgent>) => void | Promise<void>;
 };
-type AgentToolOptionsWithDefault<
+export type AgentToolOptionsWithDefault<
   TContext,
   TAgent extends Agent<TContext, any>,
 > = Omit<
   AgentToolOptions<TContext, TAgent, typeof AgentAsToolInputSchema>,
   'parameters'
 > & { parameters?: undefined };
-type AgentToolOptionsWithParameters<
+export type AgentToolOptionsWithParameters<
   TContext,
   TAgent extends Agent<TContext, any>,
   TParameters extends AgentToolInputParameters,
 > = AgentToolOptions<TContext, TAgent, TParameters> & {
   parameters: TParameters;
 };
-type AgentTool<
+export type AgentTool<
   TContext,
   TAgent extends Agent<TContext, any>,
   TParameters extends AgentToolInputParameters,
