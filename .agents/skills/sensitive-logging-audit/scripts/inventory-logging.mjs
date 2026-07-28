@@ -1402,7 +1402,7 @@ function markdown(findings, summary, summaryOnly) {
     '',
     `- Total logging calls: ${summary.total}`,
     `- Dynamic calls: ${summary.dynamic}`,
-    `- Dynamic calls without an explicit model/tool policy: ${summary.unclassifiedDynamic}`,
+    `- Dynamic review candidates without an explicit model/tool policy: ${summary.unclassifiedDynamic}`,
     `- Calls that log a caught value: ${summary.catchValueLogs}`,
     `- Caught-value calls without an explicit model/tool policy: ${summary.unclassifiedCatchValueLogs}`,
     `- Raw console calls: ${summary.rawConsoleCalls}`,
@@ -1414,7 +1414,7 @@ function markdown(findings, summary, summaryOnly) {
 
   lines.push(
     '',
-    '| Location | Kind | Shape | Policy | Catch value | Signals | Fingerprint |',
+    '| Location | Kind | Shape | Policy | Catch value | Lexical hints | Fingerprint |',
     '| --- | --- | --- | --- | --- | --- | --- |',
   );
   for (const finding of findings) {
@@ -1429,8 +1429,9 @@ function markdown(findings, summary, summaryOnly) {
 function usage() {
   return `Usage: node .agents/skills/sensitive-logging-audit/scripts/inventory-logging.mjs [options] [roots...]
 
-Inventory runtime logger and console calls so every dynamic payload can be
-classified as model data, tool data, both, or operationally safe.
+Inventory runtime logger and console calls so every dynamic log candidate can
+be reviewed as model data, tool data, both, or operationally safe. Lexical
+hints prioritize review; they do not classify a finding as sensitive.
 
 Options:
   --format <markdown|json>  Output format (default: markdown)
