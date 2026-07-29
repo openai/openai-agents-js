@@ -139,6 +139,12 @@ export interface DockerSandboxClientOptions extends SandboxClientOptions {
 
 export interface DockerSandboxSessionState extends UnixLocalSandboxSessionState {
   sessionIdentity?: string;
+  /**
+   * Fingerprint of non-mount entries materialized before container creation.
+   * Entries applied later at runtime are intentionally not included. This is
+   * trusted same-process state and must not be serialized.
+   */
+  materializedEntriesFingerprint?: string;
   containerId: string;
   image: string;
   defaultUser?: string;
@@ -909,6 +915,8 @@ export class DockerSandboxClient implements SandboxClient<
     const session = new DockerSandboxSession({
       state: {
         sessionIdentity,
+        materializedEntriesFingerprint:
+          dockerMaterializedEntriesFingerprint(manifest),
         manifest,
         workspaceRootPath,
         workspaceRootOwned: true,
@@ -978,14 +986,29 @@ export class DockerSandboxClient implements SandboxClient<
     ) {
       return false;
     }
+    if (options.revalidateManifestEntries === true) {
+      if (state.materializedEntriesFingerprint === undefined) {
+        return false;
+      }
+      if (
+        state.materializedEntriesFingerprint !==
+        dockerMaterializedEntriesFingerprint(state.manifest)
+      ) {
+        throw new UserError(
+          'Docker sandbox resume cannot apply changes to non-mount manifest entries. Start a fresh sandbox session instead.',
+        );
+      }
+    }
+    let inspection: DockerContainerReuseInspection;
     try {
       if (!(await inspectContainerRunning(state.containerId))) {
         return false;
       }
-      return (await inspectRunningDockerContainerForReuse(state)).reusable;
+      inspection = await inspectRunningDockerContainerForReuse(state);
     } catch {
       return false;
     }
+    return inspection.reusable;
   }
 
   async serializeSessionState(
@@ -1064,6 +1087,7 @@ export class DockerSandboxClient implements SandboxClient<
       const trustedState: DockerSandboxSessionState = {
         ...state,
         sessionIdentity: undefined,
+        materializedEntriesFingerprint: undefined,
         image: resolvedOptions.image ?? DEFAULT_DOCKER_IMAGE,
         environment: await state.manifest.resolveEnvironment(),
         snapshotSpec:
@@ -1229,6 +1253,9 @@ export class DockerSandboxClient implements SandboxClient<
     const nextState = {
       ...state,
       sessionIdentity,
+      materializedEntriesFingerprint: dockerMaterializedEntriesFingerprint(
+        state.manifest,
+      ),
       workspaceRootPath,
       containerId: container.containerId,
       dockerVolumeNames: container.volumeNames,
@@ -1722,6 +1749,43 @@ function dockerMountAuthorityFingerprint(
       }),
     )
     .digest('hex');
+}
+
+function dockerMaterializedEntriesFingerprint(manifest: Manifest): string {
+  return createHash('sha256')
+    .update(
+      stableJsonStringify({
+        entries: dockerNonMountManifestEntries(manifest),
+      }),
+    )
+    .digest('hex');
+}
+
+function dockerNonMountManifestEntries(
+  manifest: Manifest,
+): Array<{ path: string; entry: Entry }> {
+  const flattened: Array<{ path: string; entry: Entry }> = [];
+  const visit = (children: Record<string, Entry>, parentPath = '') => {
+    for (const [name, entry] of Object.entries(children).sort(
+      ([left], [right]) => left.localeCompare(right),
+    )) {
+      const path = parentPath ? `${parentPath}/${name}` : name;
+      if (isMount(entry)) {
+        continue;
+      }
+      if (entry.type === 'dir') {
+        const { children: nestedChildren, ...directory } = entry;
+        flattened.push({ path, entry: directory as Entry });
+        if (nestedChildren) {
+          visit(nestedChildren, path);
+        }
+        continue;
+      }
+      flattened.push({ path, entry });
+    }
+  };
+  visit(manifest.entries);
+  return flattened;
 }
 
 function dockerExposedPortSetsEqual(left: number[], right: number[]): boolean {

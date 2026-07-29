@@ -79,6 +79,11 @@ export type SandboxPreservedSessionReuseOptions<
   TOptions extends SandboxClientOptions = SandboxClientOptions,
 > = {
   clientOptions?: TOptions;
+  /**
+   * Revalidate the entries materialized when the backend was created before
+   * reusing a same-process preserved session.
+   */
+  revalidateManifestEntries?: boolean;
 };
 
 export interface SandboxClient<
