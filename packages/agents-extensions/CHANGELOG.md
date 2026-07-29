@@ -1,5 +1,16 @@
 # @openai/agents-extensions
 
+## 0.14.1
+
+### Patch Changes
+
+- 73abbdc: fix: support native Windows host paths in sandbox path grants (#1537)
+- Updated dependencies [e4158f1]
+- Updated dependencies [73abbdc]
+- Updated dependencies [48094d0]
+- Updated dependencies [58e3a43]
+  - @openai/agents-core@0.14.1
+
 ## 0.14.0
 
 ### Minor Changes

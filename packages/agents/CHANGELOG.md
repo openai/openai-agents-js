@@ -1,5 +1,18 @@
 # @openai/agents
 
+## 0.14.1
+
+### Patch Changes
+
+- 58e3a43: fix: export lifecycle hook and agent tool helper types (#1534)
+- Updated dependencies [e4158f1]
+- Updated dependencies [73abbdc]
+- Updated dependencies [48094d0]
+- Updated dependencies [58e3a43]
+  - @openai/agents-core@0.14.1
+  - @openai/agents-openai@0.14.1
+  - @openai/agents-realtime@0.14.1
+
 ## 0.14.0
 
 ### Minor Changes

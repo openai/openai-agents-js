@@ -1,5 +1,14 @@
 # @openai/agents-core
 
+## 0.14.1
+
+### Patch Changes
+
+- e4158f1: fix: allow Docker command workdirs within sandbox path grants (#1539)
+- 73abbdc: fix: support native Windows host paths in sandbox path grants (#1537)
+- 48094d0: fix: preserve Docker path-grant sessions with verified live reuse and safe snapshot fallback
+- 58e3a43: fix: export lifecycle hook and agent tool helper types (#1534)
+
 ## 0.14.0
 
 ### Minor Changes
