@@ -59,6 +59,8 @@ There are two lifecycle styles.
 | SDK-owned | `sandbox: { client }` | The runner | The sandbox only needs to live for one run. |
 | Developer-owned | `sandbox: { session }` | Your code | You need to inspect files afterward, reuse the same live session, or coordinate multiple runs. |
 
+On normal completion or failure, the runner closes an SDK-owned session. When a run pauses for an approval interruption, or when an unfinished streamed run is cancelled, the runner instead preserves the owned sandbox state in `RunState` so the same run can continue.
+
 When you create a session yourself, close it yourself:
 
 <Code
@@ -83,6 +85,10 @@ Use `sessionState` when you want to reconnect to the same backend session throug
 />
 
 `RunState` can also preserve runner-managed sandbox state when you pause or resume a larger workflow. Use explicit `sessionState` when the sandbox lifecycle is managed outside a serialized run.
+
+For Docker, resuming the same in-memory `RunState` can reuse the live container only after the SDK verifies its identity and revalidates the current manifest, environment, and path grants. If live reuse is unavailable or rejected, Docker falls back to a restorable snapshot. A `RunState` serialized and reconstructed with `RunState.fromString(...)` does not carry trusted live-container authority, so Docker also restores from a snapshot instead of attaching to the serialized container ID. Resume fails rather than attaching to an unverified container when no restorable snapshot is configured.
+
+For local snapshots with no explicit `baseDir`, set `OPENAI_AGENTS_SANDBOX_SNAPSHOT_DIR` to override the storage directory. Otherwise the SDK uses `~/Library/Application Support/openai-agents-js/sandbox-snapshots` on macOS, `%LOCALAPPDATA%\openai-agents-js\sandbox-snapshots` on Windows, and `$XDG_STATE_HOME/openai-agents-js/sandbox-snapshots` on other platforms, with home-directory and temporary-directory fallbacks when those locations are unavailable.
 
 ### Manifest materialization
 
