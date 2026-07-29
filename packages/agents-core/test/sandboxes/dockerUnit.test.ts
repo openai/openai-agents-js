@@ -1895,7 +1895,7 @@ describe('DockerSandboxClient unit behavior', () => {
     );
   });
 
-  it('uses split path grants as command workdirs', async () => {
+  it('uses create-time path grants as command workdirs', async () => {
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
         if (args[0] === 'version') {
@@ -1917,6 +1917,10 @@ describe('DockerSandboxClient unit behavior', () => {
       new Manifest({
         extraPathGrants: [
           {
+            path: rootDir,
+            readOnly: true,
+          },
+          {
             path: '/mnt/shared-data',
             hostPath: rootDir,
             readOnly: true,
@@ -1925,6 +1929,25 @@ describe('DockerSandboxClient unit behavior', () => {
       }),
     );
 
+    await session.execCommand({
+      cmd: 'pwd',
+      workdir: rootDir,
+      yieldTimeMs: 0,
+    });
+    expect(childProcessMocks.spawn).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining([
+        'exec',
+        '-i',
+        '-w',
+        rootDir,
+        'container-123',
+        'pwd',
+      ]),
+      { stdio: 'pipe' },
+    );
+
+    childProcessMocks.spawn.mockClear();
     await session.execCommand({
       cmd: 'pwd',
       workdir: '/mnt/shared-data',
