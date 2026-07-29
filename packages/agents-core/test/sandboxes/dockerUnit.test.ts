@@ -2271,7 +2271,7 @@ describe('DockerSandboxClient unit behavior', () => {
     );
   });
 
-  it('allows extra path grants during docker manifest application for host filesystem helpers', async () => {
+  it('limits dynamically applied path grants to host filesystem helpers', async () => {
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
         if (args[0] === 'version') {
@@ -2295,6 +2295,13 @@ describe('DockerSandboxClient unit behavior', () => {
     );
 
     await expect(session.pathExists(rootDir)).resolves.toBe(true);
+    await expect(
+      session.execCommand({
+        cmd: 'pwd',
+        workdir: rootDir,
+      }),
+    ).rejects.toThrow();
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
   });
 
   it('rejects applying in-container mounts that need missing Docker privileges', async () => {
