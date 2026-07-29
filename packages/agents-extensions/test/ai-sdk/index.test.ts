@@ -1278,6 +1278,270 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('drops a provider-deferred tool_search call once the conversation moves past the resume window', () => {
+    // Anthropic defers a server tool_search co-emitted after a client tool
+    // call: the response carries the server_tool_use with no result. Once the
+    // conversation continues past that turn, replaying the unpaired call makes
+    // Anthropic reject the request with a 400.
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        callId: 'ui_1',
+        name: 'ui_status',
+        arguments: '{"status":"searching"}',
+        status: 'completed',
+      },
+      {
+        type: 'tool_search_call',
+        id: 'srvtoolu_1',
+        execution: 'server',
+        arguments: { query: 'billing tools' },
+        status: 'completed',
+      },
+      {
+        type: 'function_call_result',
+        callId: 'ui_1',
+        name: 'ui_status',
+        status: 'completed',
+        output: 'ok',
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [
+          { type: 'output_text', text: 'Continuing without the search.' },
+        ],
+        status: 'completed',
+      },
+    ];
+
+    expect(itemsToLanguageV2Messages(stubModel({}), items)).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'ui_1',
+            toolName: 'ui_status',
+            input: { status: 'searching' },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'ui_1',
+            toolName: 'ui_status',
+            output: { type: 'text', value: 'ok' },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'text',
+            text: 'Continuing without the search.',
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('keeps an unresolved provider-executed tool_search call while awaiting the deferred resume', () => {
+    // While the deferred call is still in the final assistant turn (followed
+    // only by client tool results), it must stay in history so the provider
+    // can resume it on the next request.
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        callId: 'ui_1',
+        name: 'ui_status',
+        arguments: '{"status":"searching"}',
+        status: 'completed',
+      },
+      {
+        type: 'tool_search_call',
+        id: 'srvtoolu_1',
+        execution: 'server',
+        arguments: { query: 'billing tools' },
+        status: 'completed',
+      },
+      {
+        type: 'function_call_result',
+        callId: 'ui_1',
+        name: 'ui_status',
+        status: 'completed',
+        output: 'ok',
+      },
+    ];
+
+    expect(itemsToLanguageV2Messages(stubModel({}), items)).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'ui_1',
+            toolName: 'ui_status',
+            input: { status: 'searching' },
+            providerOptions: {},
+          },
+          {
+            type: 'tool-call',
+            toolCallId: 'srvtoolu_1',
+            toolName: 'tool_search',
+            input: { query: 'billing tools' },
+            providerExecuted: true,
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'ui_1',
+            toolName: 'ui_status',
+            output: { type: 'text', value: 'ok' },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('pairs a deferred tool_search output from a later turn with its original call', () => {
+    // When the provider resumes the deferred search, its result begins the
+    // next response. The original call must stay in history and the late
+    // result must pair with it instead of being treated as an orphan.
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        callId: 'ui_1',
+        name: 'ui_status',
+        arguments: '{"status":"searching"}',
+        status: 'completed',
+      },
+      {
+        type: 'tool_search_call',
+        id: 'srvtoolu_1',
+        execution: 'server',
+        arguments: { query: 'billing tools' },
+        status: 'completed',
+      },
+      {
+        type: 'function_call_result',
+        callId: 'ui_1',
+        name: 'ui_status',
+        status: 'completed',
+        output: 'ok',
+      },
+      {
+        type: 'tool_search_output',
+        callId: 'srvtoolu_1',
+        execution: 'server',
+        status: 'completed',
+        tools: [{ type: 'tool_reference', toolName: 'lookup_invoice' }],
+      },
+    ];
+
+    expect(itemsToLanguageV2Messages(stubModel({}), items)).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'ui_1',
+            toolName: 'ui_status',
+            input: { status: 'searching' },
+            providerOptions: {},
+          },
+          {
+            type: 'tool-call',
+            toolCallId: 'srvtoolu_1',
+            toolName: 'tool_search',
+            input: { query: 'billing tools' },
+            providerExecuted: true,
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'ui_1',
+            toolName: 'ui_status',
+            output: { type: 'text', value: 'ok' },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'srvtoolu_1',
+            toolName: 'tool_search',
+            output: {
+              type: 'json',
+              value: [{ type: 'tool_reference', toolName: 'lookup_invoice' }],
+            },
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('keeps unresolved client tool_search calls even after the conversation continues', () => {
+    // Only provider-executed (server) tool_search calls are subject to the
+    // deferral cleanup; client calls are resolved by the runner and must be
+    // replayed unchanged regardless of position.
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'tool_search_call',
+        id: 'ts_client_1',
+        status: 'completed',
+        arguments: { paths: ['billing'] },
+        providerData: { execution: 'client' },
+      } as any,
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Searching...' }],
+        status: 'completed',
+      },
+    ];
+
+    const messages = itemsToLanguageV2Messages(stubModel({}), items);
+    const toolSearchCalls = messages.flatMap((message) =>
+      Array.isArray(message.content)
+        ? message.content.filter(
+            (part) => part.type === 'tool-call' && part.toolName === 'tool_search',
+          )
+        : [],
+    );
+    expect(toolSearchCalls).toHaveLength(1);
+  });
+
   test('does not queue hosted tool_search calls as pending client searches', () => {
     const items: protocol.ModelItem[] = [
       {

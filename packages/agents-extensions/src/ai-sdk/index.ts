@@ -34,6 +34,7 @@ import {
   HostedTool,
 } from '@openai/agents';
 import {
+  getToolSearchMatchKey,
   getToolSearchProviderCallId,
   resolveToolSearchCallId,
   shouldQueuePendingToolSearchCall,
@@ -289,7 +290,9 @@ export function itemsToLanguageV2Messages(
   let currentAssistantMessage: LanguageModelV2Message | undefined;
   let pendingReasonerReasoning:
     { text: string; providerOptions: Record<string, any> } | undefined;
-  const collapsedItems = collapseReplacedToolSearchOutputs(items);
+  const collapsedItems = dropAbandonedServerToolSearchCalls(
+    collapseReplacedToolSearchOutputs(items),
+  );
   const consumePendingReasonerReasoning = () => {
     if (!(
       shouldIncludeReasoningContent(model, modelSettings) &&
@@ -1049,6 +1052,108 @@ function getToolSearchOutputReplacementKey(
   }
 
   return undefined;
+}
+
+/**
+ * Returns whether the provider can still resume a deferred server tool_search
+ * call at `callIndex`: the call must remain in the final assistant turn,
+ * followed only by that turn's client tool calls and their results.
+ */
+function isAwaitingDeferredToolSearchResume(
+  items: protocol.ModelItem[],
+  callIndex: number,
+): boolean {
+  let sawClientToolResult = false;
+  for (let index = callIndex + 1; index < items.length; index += 1) {
+    const item = items[index];
+    if (item.type === 'function_call_result') {
+      sawClientToolResult = true;
+      continue;
+    }
+
+    if (item.type === 'tool_search_output') {
+      if (getToolSearchExecution(item) !== 'server') {
+        // Client tool_search results reply to the same assistant turn, just
+        // like function call results.
+        sawClientToolResult = true;
+        continue;
+      }
+      if (sawClientToolResult) {
+        return false;
+      }
+      continue;
+    }
+
+    if (sawClientToolResult) {
+      return false;
+    }
+
+    if (item.type === 'function_call' || item.type === 'tool_search_call') {
+      // Additional tool calls emitted in the same assistant turn.
+      continue;
+    }
+
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Anthropic defers a server tool_search that is co-emitted with a client tool
+ * call: the response carries the server_tool_use block without a result, and
+ * the caller resumes it by replying with only the client tool results. The
+ * unresolved call must stay in history while that resume is still possible,
+ * but once the conversation moves past the turn it can never be resolved and
+ * replaying the unpaired call makes the provider reject the request.
+ */
+function dropAbandonedServerToolSearchCalls(
+  items: protocol.ModelItem[],
+): protocol.ModelItem[] {
+  const unresolvedCalls: Array<{ index: number; key: string | undefined }> =
+    [];
+
+  items.forEach((item, index) => {
+    if (item.type === 'tool_search_call') {
+      if (getToolSearchExecution(item) === 'server') {
+        unresolvedCalls.push({ index, key: getToolSearchMatchKey(item) });
+      }
+      return;
+    }
+
+    if (
+      item.type !== 'tool_search_output' ||
+      getToolSearchExecution(item) !== 'server'
+    ) {
+      return;
+    }
+
+    // Mirror takeQueuedToolSearchResultCallId(): an explicit call id resolves
+    // the matching call; otherwise the result resolves the oldest pending one.
+    const explicitCallId = getToolSearchProviderCallId(item);
+    if (explicitCallId) {
+      const matchIndex = unresolvedCalls.findIndex(
+        (call) => call.key === explicitCallId,
+      );
+      if (matchIndex >= 0) {
+        unresolvedCalls.splice(matchIndex, 1);
+      }
+      return;
+    }
+
+    unresolvedCalls.shift();
+  });
+
+  const abandonedCallIndexes = new Set(
+    unresolvedCalls
+      .filter(({ index }) => !isAwaitingDeferredToolSearchResume(items, index))
+      .map(({ index }) => index),
+  );
+  if (abandonedCallIndexes.size === 0) {
+    return items;
+  }
+
+  return items.filter((_, index) => !abandonedCallIndexes.has(index));
 }
 
 function collapseReplacedToolSearchOutputs(
