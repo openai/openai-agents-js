@@ -1802,6 +1802,108 @@ describe('sandbox runner integration', () => {
     await manager.cleanup(runState);
   });
 
+  it('refreshes trusted environment for explicit Docker session state', async () => {
+    const client = new FakeSandboxClient();
+    Object.defineProperty(client, 'backendId', { value: 'docker' });
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingFakeModel([]),
+      defaultManifest: new Manifest({
+        environment: {
+          SECRET_ENV: {
+            value: '',
+            resolve: () => 'refreshed-secret',
+            ephemeral: true,
+          },
+        },
+      }),
+    });
+    const sessionState: FakeSandboxSessionState = {
+      manifest: new Manifest(),
+      sessionId: 'persisted',
+      environment: {
+        PROVIDER_ENV: 'provider-value',
+      },
+    };
+    const runState = new RunState<
+      unknown,
+      SandboxAgent<unknown, AgentOutputType>
+    >(new RunContext(), 'Hello', sandboxAgent, 1);
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: {
+        client,
+        sessionState,
+      },
+      runState,
+    });
+
+    await manager.prepareAgent({
+      currentAgent: sandboxAgent,
+      turnInput: [],
+    });
+
+    expect(client.resumeCalls[0]?.state.environment).toEqual({
+      PROVIDER_ENV: 'provider-value',
+      SECRET_ENV: 'refreshed-secret',
+    });
+    expect(
+      client.resumeCalls[0]?.state.manifest.environment.SECRET_ENV,
+    ).toEqual(
+      expect.objectContaining({
+        ephemeral: true,
+      }),
+    );
+    expect(sessionState.environment).toEqual({
+      PROVIDER_ENV: 'provider-value',
+    });
+
+    await manager.cleanup(runState);
+  });
+
+  it('rejects explicit Docker session state when trusted environment removes a key', async () => {
+    const client = new FakeSandboxClient();
+    Object.defineProperty(client, 'backendId', { value: 'docker' });
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingFakeModel([]),
+    });
+    const sessionState: FakeSandboxSessionState = {
+      manifest: new Manifest({
+        environment: {
+          REVOKED_ENV: 'credential',
+        },
+      }),
+      sessionId: 'persisted',
+      environment: {
+        REVOKED_ENV: 'credential',
+      },
+    };
+    const runState = new RunState<
+      unknown,
+      SandboxAgent<unknown, AgentOutputType>
+    >(new RunContext(), 'Hello', sandboxAgent, 1);
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: {
+        client,
+        sessionState,
+        manifest: new Manifest(),
+      },
+      runState,
+    });
+
+    await expect(
+      manager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      }),
+    ).rejects.toThrow(
+      'Docker sandbox session state cannot be resumed because the current trusted manifest removes an environment variable.',
+    );
+    expect(client.resumeCalls).toHaveLength(0);
+  });
+
   it('sanitizes manifest data in serialized sandbox state envelopes', async () => {
     const client = new FakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
@@ -5370,12 +5472,28 @@ describe('sandbox runner integration', () => {
     };
     await firstManager.cleanup(state, { preserveOwnedSessions: true });
     resolvedSecret = 'refreshed-secret';
+    const refreshedManifest = new Manifest({
+      environment: {
+        SECRET_ENV: {
+          value: '',
+          resolve: () => resolvedSecret,
+          ephemeral: true,
+        },
+        ADDED_ENV: 'added-value',
+      },
+      extraPathGrants: [
+        {
+          path: '/mnt/shared-data',
+          readOnly: true,
+        },
+      ],
+    });
 
     const secondManager = new SandboxRuntimeManager({
       startingAgent: sandboxAgent as Agent<unknown, any>,
       sandboxConfig: {
         client,
-        manifest,
+        manifest: refreshedManifest,
       },
       runState: state,
     });
@@ -5388,13 +5506,86 @@ describe('sandbox runner integration', () => {
       },
       {
         SECRET_ENV: 'refreshed-secret',
+        ADDED_ENV: 'added-value',
         PROVIDER_ENV: 'provider-value',
       },
     ]);
     expect(liveSession.state.environment).toEqual({
       SECRET_ENV: 'refreshed-secret',
+      ADDED_ENV: 'added-value',
       PROVIDER_ENV: 'provider-value',
     });
+    expect(Object.keys(liveSession.state.manifest.environment)).toEqual([
+      'SECRET_ENV',
+      'ADDED_ENV',
+    ]);
+
+    await secondManager.cleanup(state);
+  });
+
+  it('rejects live Docker reuse when trusted environment removes a key', async () => {
+    const client = new DockerRevalidatingLiveProcessFakeSandboxClient();
+    const initialManifest = new Manifest({
+      environment: {
+        REVOKED_ENV: 'credential',
+      },
+      extraPathGrants: [
+        {
+          path: '/mnt/shared-data',
+          readOnly: true,
+        },
+      ],
+    });
+    const sandboxAgent = new SandboxAgent({
+      name: 'SandboxWorker',
+      model: new RecordingFakeModel([]),
+    });
+    const state = new RunState<unknown, Agent<unknown, any>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent as Agent<unknown, any>,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: {
+        client,
+        manifest: initialManifest,
+      },
+      runState: state,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: sandboxAgent as Agent<unknown, any>,
+      turnInput: [],
+    });
+    const liveSession = client.createdSessions[0]!;
+    liveSession.state.environment = {
+      REVOKED_ENV: 'credential',
+      PROVIDER_ENV: 'provider-value',
+    };
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: {
+        client,
+        manifest: new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/shared-data',
+              readOnly: true,
+            },
+          ],
+        }),
+      },
+      runState: state,
+    });
+    await secondManager.adoptPreservedOwnedSessions();
+
+    expect(client.reuseChecks).toHaveLength(1);
+    expect(client.closeCalls).toEqual([liveSession.state.sessionId]);
+    expect(client.resumeCalls).toHaveLength(1);
+    expect(client.resumeCalls[0]?.state.environment).toBeUndefined();
 
     await secondManager.cleanup(state);
   });

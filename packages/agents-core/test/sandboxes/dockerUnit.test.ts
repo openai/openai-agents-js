@@ -2415,7 +2415,7 @@ describe('DockerSandboxClient unit behavior', () => {
     await secondSession.close();
   });
 
-  it('reuses a legacy zero-grant container with exact declared bind mounts', async () => {
+  it('reuses a legacy container with exact grant and declared bind mounts', async () => {
     let runCount = 0;
     const inspections = new Map<string, DockerContainerInspection>();
     processMocks.runSandboxProcess.mockImplementation(
@@ -2446,9 +2446,17 @@ describe('DockerSandboxClient unit behavior', () => {
       workspaceBaseDir: rootDir,
     });
     const declaredSource = join(rootDir, 'declared');
+    const grantedSource = join(rootDir, 'granted');
     await mkdir(declaredSource);
+    await mkdir(grantedSource);
     const session = await client.create(
       new Manifest({
+        extraPathGrants: [
+          {
+            path: grantedSource,
+            readOnly: true,
+          },
+        ],
         entries: {
           declared: {
             type: 'mount',

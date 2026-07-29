@@ -919,6 +919,16 @@ export class SandboxRuntimeManager<TContext> {
     }
 
     if (this.sandboxConfig?.sessionState) {
+      if (
+        client.backendId === 'docker' &&
+        Object.keys(this.sandboxConfig.sessionState.manifest.environment).some(
+          (key) => !(key in trustedManifest.environment),
+        )
+      ) {
+        throw new UserError(
+          'Docker sandbox session state cannot be resumed because the current trusted manifest removes an environment variable. Start a fresh session from a snapshot instead.',
+        );
+      }
       const sessionState = rebindPersistedPathGrants(
         this.sandboxConfig.sessionState,
         trustedManifest,
@@ -926,6 +936,12 @@ export class SandboxRuntimeManager<TContext> {
           replaceWithTrustedManifest: client.backendId === 'docker',
         },
       );
+      if (client.backendId === 'docker') {
+        sessionState.environment = {
+          ...(sessionState.environment ?? {}),
+          ...(await trustedManifest.resolveEnvironment()),
+        };
+      }
       assertHostPathGrantsRebound(sessionState);
       return await withSandboxSpan(
         'sandbox.resume_session',
@@ -1000,6 +1016,26 @@ export class SandboxRuntimeManager<TContext> {
       return liveEntry;
     }
 
+    const trustedManifest = args.trustedManifest;
+    if (
+      args.client.backendId === 'docker' &&
+      trustedManifest &&
+      Object.keys(liveEntry.session.state.manifest.environment).some(
+        (key) => !(key in trustedManifest.environment),
+      )
+    ) {
+      rejectLivePreservedOwnedSessionHandle({
+        state: this.runState,
+        session: liveEntry.session,
+      });
+      await cleanupSandboxSession(liveEntry.session);
+      forgetLivePreservedOwnedSessionHandle({
+        state: this.runState,
+        session: liveEntry.session,
+      });
+      return undefined;
+    }
+
     const candidateState = args.trustedManifest
       ? rebindPersistedPathGrants(
           liveEntry.session.state,
@@ -1032,13 +1068,16 @@ export class SandboxRuntimeManager<TContext> {
     // matches the current trusted manifest.
     liveEntry.session.state.manifest =
       args.client.backendId === 'docker' && args.trustedManifest
-        ? rebindPersistedPathGrants(
-            liveEntry.session.state,
+        ? manifestWithTrustedEnvironment(
+            rebindPersistedPathGrants(
+              liveEntry.session.state,
+              args.trustedManifest,
+              {
+                replaceWithTrustedGrantSet: true,
+              },
+            ).manifest,
             args.trustedManifest,
-            {
-              replaceWithTrustedGrantSet: true,
-            },
-          ).manifest
+          )
         : candidateState.manifest;
     if (args.client.backendId === 'docker') {
       liveEntry.session.state.environment = candidateState.environment;
@@ -1254,6 +1293,27 @@ function isDefaultManifest(manifest: Manifest): boolean {
     manifest.extraPathGrants.length === 0 &&
     isDefaultRemoteMountCommandAllowlist(manifest.remoteMountCommandAllowlist)
   );
+}
+
+function manifestWithTrustedEnvironment(
+  manifest: Manifest,
+  trustedManifest: Manifest,
+): Manifest {
+  return new Manifest({
+    version: manifest.version,
+    root: manifest.root,
+    entries: structuredClone(manifest.entries),
+    environment: Object.fromEntries(
+      Object.entries(trustedManifest.environment).map(([key, value]) => [
+        key,
+        value.init(),
+      ]),
+    ),
+    users: structuredClone(manifest.users),
+    groups: structuredClone(manifest.groups),
+    extraPathGrants: structuredClone(manifest.extraPathGrants),
+    remoteMountCommandAllowlist: [...manifest.remoteMountCommandAllowlist],
+  });
 }
 
 function removeClosedPreservedOwnedSessions(

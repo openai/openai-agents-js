@@ -1375,6 +1375,9 @@ async function inspectLegacyDockerContainerForReuse(
     state.workspaceRootPath,
     state.manifest.root,
   );
+  const pathGrantMountsBeforeInspect = await resolveDockerPathGrantMounts(
+    state.manifest,
+  );
   const manifestBindMountsBeforeInspect = await resolveDockerManifestBindMounts(
     state.manifest,
   );
@@ -1382,6 +1385,9 @@ async function inspectLegacyDockerContainerForReuse(
   const workspaceMountAfterInspect = await resolveDockerWorkspaceMount(
     state.workspaceRootPath,
     state.manifest.root,
+  );
+  const pathGrantMountsAfterInspect = await resolveDockerPathGrantMounts(
+    state.manifest,
   );
   const manifestBindMountsAfterInspect = await resolveDockerManifestBindMounts(
     state.manifest,
@@ -1405,12 +1411,16 @@ async function inspectLegacyDockerContainerForReuse(
         workspaceMountAfterInspect,
       ) &&
       dockerMountAuthoritySetsEqual(
+        pathGrantMountsBeforeInspect,
+        pathGrantMountsAfterInspect,
+      ) &&
+      dockerMountAuthoritySetsEqual(
         manifestBindMountsBeforeInspect,
         manifestBindMountsAfterInspect,
       ) &&
-      state.manifest.extraPathGrants.length === 0 &&
       dockerBindMountSetsEqual(actualBindMounts, [
         expectedWorkspaceMount,
+        ...dockerBindMountsFromAuthority(pathGrantMountsAfterInspect),
         ...dockerBindMountsFromAuthority(manifestBindMountsAfterInspect),
       ]),
   };
