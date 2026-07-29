@@ -24,6 +24,7 @@ import {
   addPtyWebSocketListener,
   appendPtyOutput,
   assertCoreSnapshotUnsupported,
+  assertRemoteSandboxSessionStateCanResume,
   assertResumeRecreateAllowed,
   createPtyProcessEntry,
   assertSandboxManifestMetadataSupported,
@@ -984,6 +985,7 @@ export class BlaxelSandboxClient implements SandboxClient<
   async resume(
     state: BlaxelSandboxSessionState,
   ): Promise<BlaxelSandboxSession> {
+    assertRemoteSandboxSessionStateCanResume(state);
     const SandboxInstance = await loadBlaxelSandboxClass();
     let sandbox: BlaxelSandboxLike;
     try {

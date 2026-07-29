@@ -89,6 +89,7 @@ import {
   sandboxUserShellCommand,
 } from '../shared/runAs';
 import {
+  assertRemoteSandboxSessionStateCanResume,
   deserializeRemoteSandboxSessionStateValues,
   serializeRemoteSandboxSessionState,
 } from '../shared/sessionState';
@@ -1210,6 +1211,7 @@ export class CloudflareSandboxClient implements SandboxClient<
   async resume(
     state: CloudflareSandboxSessionState,
   ): Promise<CloudflareSandboxSession> {
+    assertRemoteSandboxSessionStateCanResume(state);
     const sandboxId = normalizeCloudflarePersistedSandboxId(
       (state as Record<string, unknown>).sandboxId,
     );

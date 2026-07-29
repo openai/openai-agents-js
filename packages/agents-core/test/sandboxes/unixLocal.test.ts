@@ -1040,6 +1040,37 @@ describe('UnixLocalSandboxClient', () => {
     });
   });
 
+  it('rejects hostPath before applying a manifest delta', async () => {
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(new Manifest());
+
+    await expect(
+      session.applyManifest(
+        new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/shared-data',
+              hostPath: rootDir,
+              readOnly: true,
+            },
+          ],
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: 'unsupported_feature',
+      details: {
+        provider: 'UnixLocalSandboxClient',
+        feature: 'manifest.extraPathGrants.hostPath',
+        path: '/mnt/shared-data',
+      },
+    });
+    expect(session.state.manifest.extraPathGrants).toEqual([]);
+
+    await session.close();
+  });
+
   it('supports incremental filesystem operations and manifest application', async () => {
     const client = new UnixLocalSandboxClient({
       workspaceBaseDir: rootDir,

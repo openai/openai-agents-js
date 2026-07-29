@@ -33,6 +33,7 @@ import {
 import { posix as pathPosix } from 'node:path';
 import {
   assertCoreSnapshotUnsupported,
+  assertRemoteSandboxSessionStateCanResume,
   imageOutputFromBytes,
   RemoteSandboxEditor,
   assertTarWorkspacePersistence,
@@ -1495,6 +1496,7 @@ export class ModalSandboxClient implements SandboxClient<
   }
 
   async resume(state: ModalSandboxSessionState): Promise<ModalSandboxSession> {
+    assertRemoteSandboxSessionStateCanResume(state);
     if (!state.sandboxId) {
       throw new UserError(
         'Modal sandbox resume requires a persisted sandboxId.',

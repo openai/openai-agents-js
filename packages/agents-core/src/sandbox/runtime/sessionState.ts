@@ -2,12 +2,17 @@ import { UserError } from '../../errors';
 import type { RunState } from '../../runState';
 import type { Agent, AgentOutputType } from '../../agent';
 import type { SandboxClient } from '../client';
+import type { Manifest } from '../manifest';
 import {
   SANDBOX_SESSION_STATE_VERSION,
   type SandboxSessionState,
   type SandboxSessionStateEnvelope,
 } from '../session';
 import {
+  assertHostPathGrantsRebound,
+  deserializeHostPathGrantRedactionMetadata,
+  rebindPersistedPathGrants,
+  serializeHostPathGrantRedactionMetadata,
   serializeManifest,
   serializeManifestRecord,
 } from '../sandboxes/shared/manifestPersistence';
@@ -58,8 +63,24 @@ export function toSessionStateEnvelope(
       : {}),
     // Keep provider-owned fields separate from the SDK envelope so version and backend
     // checks can run before deserializing provider-specific state.
-    providerState,
+    providerState: {
+      ...providerStateWithoutSdkEnvelopeFields(providerState),
+      ...serializeHostPathGrantRedactionMetadata(state),
+    },
   };
+}
+
+function providerStateWithoutSdkEnvelopeFields(
+  providerState: Record<string, unknown>,
+): Record<string, unknown> {
+  const sanitized = { ...providerState };
+  delete sanitized.manifest;
+  delete sanitized.snapshot;
+  delete sanitized.snapshotFingerprint;
+  delete sanitized.snapshotFingerprintVersion;
+  delete sanitized.workspaceReady;
+  delete sanitized.exposedPorts;
+  return sanitized;
 }
 
 export function assertSessionStateEnvelope(
@@ -81,6 +102,7 @@ export function assertSessionStateEnvelope(
 export async function deserializeSandboxSessionStateEntry(
   client: SandboxClient,
   serializedEntry: SerializedSandboxSessionEntry | undefined,
+  trustedManifest?: Manifest,
 ): Promise<SandboxSessionState | undefined> {
   if (!serializedEntry) {
     return undefined;
@@ -97,9 +119,18 @@ export async function deserializeSandboxSessionStateEntry(
   }
   const envelope = serializedEntry.sessionState;
   assertSessionStateEnvelope(client, envelope);
-  return await client.deserializeSessionState(
+  const state = await client.deserializeSessionState(
     providerStateWithSdkEnvelopeFields(envelope),
   );
+  const reboundState = rebindPersistedPathGrants(
+    {
+      ...state,
+      ...deserializeHostPathGrantRedactionMetadata(envelope.providerState),
+    },
+    trustedManifest,
+  );
+  assertHostPathGrantsRebound(reboundState);
+  return reboundState;
 }
 
 function providerStateWithSdkEnvelopeFields(

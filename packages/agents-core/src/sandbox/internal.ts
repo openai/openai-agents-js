@@ -1,9 +1,12 @@
 export {
+  assertHostPathGrantsRebound,
+  deserializeHostPathGrantRedactionMetadata,
   deserializeManifest,
   mergeManifestEntryDelta,
   mergeManifestDelta,
   sanitizeEnvironmentForPersistence,
   serializeEnvironmentForPersistence,
+  serializeHostPathGrantRedactionMetadata,
   serializeManifest,
   serializeManifestRecord,
 } from './sandboxes/shared/manifestPersistence';
@@ -17,6 +20,7 @@ export {
   isHostPathWithinRoot,
   relativeHostPathEscapesRoot,
   relativeHostPathEscapesRootOrSelf,
+  sandboxPathGrantHostPath,
 } from './shared/hostPath';
 export {
   hasBackslashPathSeparator,

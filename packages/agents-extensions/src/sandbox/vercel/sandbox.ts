@@ -24,6 +24,7 @@ import {
 } from '@openai/agents-core/sandbox';
 import {
   assertCoreSnapshotUnsupported,
+  assertRemoteSandboxSessionStateCanResume,
   assertSandboxManifestMetadataSupported,
   assertRunAsUnsupported,
   cloneManifestWithoutMountEntries,
@@ -1520,6 +1521,7 @@ export class VercelSandboxClient implements SandboxClient<
   async resume(
     state: VercelSandboxSessionState,
   ): Promise<VercelSandboxSession> {
+    assertRemoteSandboxSessionStateCanResume(state);
     if (hasVercelMounts(state.manifest)) {
       // This is an intentional lifecycle boundary, not a missing restore path.
       // A fresh create supplies trusted credentials and mount configuration.

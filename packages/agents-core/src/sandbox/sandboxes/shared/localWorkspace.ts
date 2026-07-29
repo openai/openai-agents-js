@@ -39,6 +39,7 @@ import {
   isHostPathWithinRoot,
   isHostPathStrictlyWithinRoot,
   relativeHostPathEscapesRoot,
+  sandboxPathGrantHostPath,
 } from '../../shared/hostPath';
 import { isSandboxPathNotFoundError } from '../../shared/pathProbe';
 
@@ -651,7 +652,10 @@ function resolveLocalSourcePath(
   if (
     isHostPathWithinRoot(base, resolvedSourcePath) ||
     (options.localSourceGrants ?? []).some((grant) =>
-      isHostPathWithinRoot(resolve(grant.path), resolvedSourcePath),
+      isHostPathWithinRoot(
+        resolve(sandboxPathGrantHostPath(grant)),
+        resolvedSourcePath,
+      ),
     )
   ) {
     return resolvedSourcePath;

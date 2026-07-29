@@ -19,6 +19,7 @@ import {
 import { posix as pathPosix } from 'node:path';
 import {
   assertCoreSnapshotUnsupported,
+  assertRemoteSandboxSessionStateCanResume,
   assertTarWorkspacePersistence,
   assertResumeRecreateAllowed,
   assertRunAsUnsupported,
@@ -1522,6 +1523,7 @@ export class RunloopSandboxClient implements SandboxClient<
   async resume(
     state: RunloopSandboxSessionState,
   ): Promise<RunloopSandboxSession> {
+    assertRemoteSandboxSessionStateCanResume(state);
     const resumeState: RunloopSandboxSessionState = {
       ...state,
       baseUrl: this.options.baseUrl,

@@ -232,6 +232,13 @@ describe('sandbox shared helpers', () => {
           ephemeral: true,
         },
       },
+      extraPathGrants: [
+        {
+          path: '/mnt/shared-data',
+          hostPath: '/private/tmp/shared-data',
+          readOnly: true,
+        },
+      ],
     });
 
     const serialized = serializeManifestRecord(manifest);
@@ -264,6 +271,12 @@ describe('sandbox shared helpers', () => {
       environment: {
         KEPT: { value: 'ok' },
       },
+      extraPathGrants: [
+        {
+          path: '/mnt/shared-data',
+          readOnly: true,
+        },
+      ],
     });
     expect(serialized.entries).not.toHaveProperty('tmp.txt');
     expect(serialized.entries).not.toHaveProperty([
@@ -275,6 +288,30 @@ describe('sandbox shared helpers', () => {
       'dir',
       'children',
       'nested.tmp',
+    ]);
+    expect(serialized.extraPathGrants).not.toHaveProperty([0, 'hostPath']);
+  });
+
+  it('does not restore host path grants from persisted manifests', () => {
+    const restored = deserializeManifest({
+      version: 1,
+      root: '/workspace',
+      entries: {},
+      environment: {},
+      extraPathGrants: [
+        {
+          path: '/mnt/shared-data',
+          hostPath: '/private/tmp/untrusted-data',
+          readOnly: true,
+        },
+      ],
+    });
+
+    expect(restored.extraPathGrants).toEqual([
+      {
+        path: '/mnt/shared-data',
+        readOnly: true,
+      },
     ]);
   });
 
@@ -490,19 +527,33 @@ describe('sandbox shared helpers', () => {
   });
 
   it('merges manifest deltas by replacing named and path-keyed entries', () => {
+    const baseHostPath = process.cwd();
+    const updatedHostPath = `${process.cwd()}-updated`;
     const base = new Manifest({
       entries: {
         'base.txt': file({ content: 'base' }),
       },
       groups: [{ name: 'operators', users: [{ name: 'agent' }] }],
-      extraPathGrants: [{ path: '/tmp/base', readOnly: true }],
+      extraPathGrants: [
+        {
+          path: '/tmp/base',
+          hostPath: baseHostPath,
+          readOnly: true,
+        },
+      ],
     });
     const update = new Manifest({
       entries: {
         'update.txt': file({ content: 'update' }),
       },
       groups: [{ name: 'operators', users: [{ name: 'reviewer' }] }],
-      extraPathGrants: [{ path: '/tmp/base', readOnly: false }],
+      extraPathGrants: [
+        {
+          path: '/tmp/base',
+          hostPath: updatedHostPath,
+          readOnly: false,
+        },
+      ],
     });
 
     const merged = mergeManifestDelta(base, update);
@@ -512,7 +563,11 @@ describe('sandbox shared helpers', () => {
       { name: 'operators', users: [{ name: 'reviewer' }] },
     ]);
     expect(merged.extraPathGrants).toEqual([
-      { path: '/tmp/base', readOnly: false },
+      {
+        path: '/tmp/base',
+        hostPath: updatedHostPath,
+        readOnly: false,
+      },
     ]);
   });
 

@@ -39,7 +39,10 @@ import {
   prepareSandboxInterruptedTurnResume,
 } from '../src/runner/sandbox';
 import { serializeSandboxRuntimeState } from '../src/sandbox/runtime/sessionSerialization';
-import { deserializeSandboxSessionStateEntry } from '../src/sandbox/runtime/sessionState';
+import {
+  deserializeSandboxSessionStateEntry,
+  type SerializedSandboxSessionEntry,
+} from '../src/sandbox/runtime/sessionState';
 import {
   cleanupSandboxSession,
   registerSandboxPreStopHook,
@@ -383,9 +386,7 @@ class FakeSandboxClient implements SandboxClient<
     state: Record<string, unknown>,
   ): Promise<FakeSandboxSessionState> {
     return {
-      manifest: new Manifest({
-        root: String(state.root),
-      }),
+      manifest: new Manifest(state.manifest as any),
       sessionId: String(state.sessionId),
     };
   }
@@ -507,6 +508,42 @@ class DefaultSnapshotFakeSandboxClient extends FakeSandboxClient {
 class SerializedResumeFakeSandboxClient extends FakeSandboxClient {
   canReusePreservedOwnedSession(): boolean {
     return false;
+  }
+}
+
+class ManifestSerializingFakeSandboxClient extends FakeSandboxClient {
+  override async serializeSessionState(
+    state: FakeSandboxSessionState,
+    options: SandboxSessionSerializationOptions = {},
+  ): Promise<Record<string, unknown>> {
+    return {
+      ...(await super.serializeSessionState(state, options)),
+      manifest: state.manifest,
+    };
+  }
+}
+
+class RedactedHostPathSerializedResumeFakeSandboxClient extends SerializedResumeFakeSandboxClient {
+  override async serializeSessionState(
+    state: FakeSandboxSessionState,
+    options: SandboxSessionSerializationOptions = {},
+  ): Promise<Record<string, unknown>> {
+    return {
+      ...(await super.serializeSessionState(state, options)),
+      __openaiAgentsRedactedHostPathGrantPaths: state.manifest.extraPathGrants
+        .filter(({ hostPath }) => hostPath !== undefined)
+        .map(({ path }) => path),
+    };
+  }
+
+  override async deserializeSessionState(
+    state: Record<string, unknown>,
+  ): Promise<FakeSandboxSessionState> {
+    return {
+      ...(await super.deserializeSessionState(state)),
+      __openaiAgentsRedactedHostPathGrantPaths:
+        state.__openaiAgentsRedactedHostPathGrantPaths,
+    };
   }
 }
 
@@ -669,7 +706,7 @@ describe('sandbox runner integration', () => {
         usage: new Usage(),
       },
     ]);
-    const sandboxAgent = new SandboxAgent({
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'SandboxWorker',
       model: sandboxModel,
     });
@@ -1463,7 +1500,7 @@ describe('sandbox runner integration', () => {
   });
 
   it('serializes sandbox session state and resumes it on the next run', async () => {
-    const client = new FakeSandboxClient();
+    const client = new ManifestSerializingFakeSandboxClient();
     const sandboxModel = new RecordingFakeModel([
       {
         output: [fakeModelMessage('turn one')],
@@ -1477,7 +1514,16 @@ describe('sandbox runner integration', () => {
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
       model: sandboxModel,
-      defaultManifest: new Manifest({ root: '/workspace' }),
+      defaultManifest: new Manifest({
+        root: '/workspace',
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath: process.cwd(),
+            readOnly: true,
+          },
+        ],
+      }),
     });
     const runner = new Runner();
 
@@ -1498,6 +1544,7 @@ describe('sandbox runner integration', () => {
         workspaceReady: true,
         providerState: {
           sessionId: 'session-1',
+          __openaiAgentsRedactedHostPathGrantPaths: ['/mnt/shared-data'],
         },
       },
       sessionsByAgent: {
@@ -1506,12 +1553,14 @@ describe('sandbox runner integration', () => {
           sessionState: {
             providerState: {
               sessionId: 'session-1',
+              __openaiAgentsRedactedHostPathGrantPaths: ['/mnt/shared-data'],
             },
           },
         },
       },
     });
     expect(client.createCalls).toHaveLength(1);
+    expect(firstResult.state.toString()).not.toContain('hostPath');
     expect(client.serializedOptions).toEqual([
       {
         preserveOwnedSession: false,
@@ -1519,6 +1568,21 @@ describe('sandbox runner integration', () => {
         willCloseAfterSerialize: true,
       },
     ]);
+
+    const serializedEntry = firstResult.state._sandbox?.sessionsByAgent
+      .SandboxWorker as SerializedSandboxSessionEntry;
+    const markerlessEntry = structuredClone(serializedEntry);
+    delete markerlessEntry.sessionState.providerState
+      .__openaiAgentsRedactedHostPathGrantPaths;
+    await expect(
+      deserializeSandboxSessionStateEntry(
+        client,
+        markerlessEntry,
+        new Manifest({ root: '/workspace' }),
+      ),
+    ).rejects.toThrow(
+      'Sandbox session state contains path grants that are not present in the current trusted manifest: /mnt/shared-data.',
+    );
 
     const resumedState = await RunState.fromString(
       sandboxAgent,
@@ -1540,6 +1604,17 @@ describe('sandbox runner integration', () => {
     expect(client.createCalls).toHaveLength(1);
     expect(client.resumeCalls).toMatchObject([
       {
+        state: {
+          manifest: {
+            extraPathGrants: [
+              {
+                path: '/mnt/shared-data',
+                hostPath: process.cwd(),
+                readOnly: true,
+              },
+            ],
+          },
+        },
         archiveLimits: {
           maxInputBytes: 10,
           maxExtractedBytes: 20,
@@ -1547,6 +1622,82 @@ describe('sandbox runner integration', () => {
         },
       },
     ]);
+  });
+
+  it('rebinds explicit session state path grants without consuming their redaction metadata', async () => {
+    const client = new FakeSandboxClient();
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingFakeModel([]),
+      defaultManifest: new Manifest({
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath: process.cwd(),
+            readOnly: true,
+          },
+        ],
+      }),
+    });
+    const sessionState: FakeSandboxSessionState = {
+      manifest: new Manifest({
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            readOnly: true,
+          },
+        ],
+      }),
+      sessionId: 'persisted',
+      __openaiAgentsRedactedHostPathGrantPaths: ['/mnt/shared-data'],
+    };
+    const runState = new RunState<
+      unknown,
+      SandboxAgent<unknown, AgentOutputType>
+    >(new RunContext(), 'Hello', sandboxAgent, 1);
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: {
+        client,
+        sessionState,
+      },
+      runState,
+    });
+
+    await manager.prepareAgent({
+      currentAgent: sandboxAgent,
+      turnInput: [],
+    });
+
+    expect(client.resumeCalls).toMatchObject([
+      {
+        state: {
+          manifest: {
+            extraPathGrants: [
+              {
+                path: '/mnt/shared-data',
+                hostPath: process.cwd(),
+                readOnly: true,
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    expect(
+      client.resumeCalls[0]?.state.__openaiAgentsRedactedHostPathGrantPaths,
+    ).toBeUndefined();
+    expect(sessionState.manifest.extraPathGrants).toEqual([
+      {
+        path: '/mnt/shared-data',
+        readOnly: true,
+      },
+    ]);
+    expect(sessionState.__openaiAgentsRedactedHostPathGrantPaths).toEqual([
+      '/mnt/shared-data',
+    ]);
+
+    await manager.cleanup(runState);
   });
 
   it('sanitizes manifest data in serialized sandbox state envelopes', async () => {
@@ -1860,9 +2011,7 @@ describe('sandbox runner integration', () => {
     client.deserializeSessionState = async (state) => {
       deserializedStates.push(state);
       return {
-        manifest: new Manifest({
-          root: String((state.manifest as { root?: unknown }).root),
-        }),
+        manifest: new Manifest(state.manifest as any),
         sessionId: String(state.sessionId),
         snapshot: state.snapshot as FakeSandboxSessionState['snapshot'],
         snapshotFingerprint:
@@ -1875,33 +2024,52 @@ describe('sandbox runner integration', () => {
       };
     };
 
-    const state = await deserializeSandboxSessionStateEntry(client, {
-      backendId: 'fake-sandbox',
-      currentAgentKey: 'SandboxWorker',
-      currentAgentName: 'SandboxWorker',
-      sessionState: fakeSandboxSessionStateEnvelope(
-        {
-          sessionId: 'persisted',
-        },
-        {
-          manifest: {
-            version: 1,
-            root: '/workspace',
-            entries: {
-              'README.md': { type: 'file', content: 'hello\n' },
+    const state = await deserializeSandboxSessionStateEntry(
+      client,
+      {
+        backendId: 'fake-sandbox',
+        currentAgentKey: 'SandboxWorker',
+        currentAgentName: 'SandboxWorker',
+        sessionState: fakeSandboxSessionStateEnvelope(
+          {
+            sessionId: 'persisted',
+          },
+          {
+            manifest: {
+              version: 1,
+              root: '/workspace',
+              entries: {
+                'README.md': { type: 'file', content: 'hello\n' },
+              },
+              environment: {},
+              extraPathGrants: [
+                {
+                  path: '/mnt/shared-data',
+                  hostPath: '/private/tmp/untrusted-data',
+                  readOnly: false,
+                },
+              ],
             },
-            environment: {},
+            snapshot: { provider: 'snapshot' },
+            snapshotFingerprint: 'fingerprint',
+            snapshotFingerprintVersion: '2',
+            workspaceReady: false,
+            exposedPorts: {
+              '3000': { host: '127.0.0.1', port: 3000 },
+            },
           },
-          snapshot: { provider: 'snapshot' },
-          snapshotFingerprint: 'fingerprint',
-          snapshotFingerprintVersion: '2',
-          workspaceReady: false,
-          exposedPorts: {
-            '3000': { host: '127.0.0.1', port: 3000 },
+        ),
+      },
+      new Manifest({
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath: '/private/tmp/trusted-data',
+            readOnly: true,
           },
-        },
-      ),
-    });
+        ],
+      }),
+    );
 
     expect(deserializedStates[0]).toMatchObject({
       sessionId: 'persisted',
@@ -1923,6 +2091,13 @@ describe('sandbox runner integration', () => {
     expect(state?.exposedPorts).toEqual({
       '3000': { host: '127.0.0.1', port: 3000 },
     });
+    expect(state?.manifest.extraPathGrants).toEqual([
+      {
+        path: '/mnt/shared-data',
+        hostPath: '/private/tmp/trusted-data',
+        readOnly: true,
+      },
+    ]);
   });
 
   it('resets required tool choice after a sandbox agent uses a tool', async () => {
@@ -3170,6 +3345,87 @@ describe('sandbox runner integration', () => {
       'RuntimeWorker_2',
     ]);
     expect(state._sandbox?.currentAgentKey).toBe('RuntimeWorker_2');
+  });
+
+  it('rebinds preserved runtime agent path grants with their original identities', async () => {
+    const client = new RedactedHostPathSerializedResumeFakeSandboxClient();
+    const startingAgent = new Agent({
+      name: 'Router',
+      model: new RecordingFakeModel([]),
+    }) as Agent<unknown, AgentOutputType>;
+    const firstAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'RuntimeWorker',
+      model: new RecordingFakeModel([]),
+      defaultManifest: new Manifest({
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath: '/private/tmp/runtime-worker-first',
+            readOnly: true,
+          },
+        ],
+      }),
+    });
+    const secondAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'RuntimeWorker',
+      model: new RecordingFakeModel([]),
+      defaultManifest: new Manifest({
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath: '/private/tmp/runtime-worker-second',
+            readOnly: true,
+          },
+        ],
+      }),
+    });
+    const state = new RunState<unknown, Agent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      startingAgent,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent,
+      sandboxConfig: {
+        client,
+      },
+    });
+
+    await firstManager.prepareAgent({
+      currentAgent: firstAgent,
+      turnInput: [],
+    });
+    await firstManager.prepareAgent({
+      currentAgent: secondAgent,
+      turnInput: [],
+    });
+    state._currentAgent = secondAgent;
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+    expect(state._sandbox?.currentAgentKey).toBe('RuntimeWorker_2');
+    expect(JSON.stringify(state._sandbox)).not.toContain('hostPath');
+
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent,
+      sandboxConfig: {
+        client,
+      },
+      runState: state,
+    });
+    await secondManager.adoptPreservedOwnedSessions();
+
+    expect(
+      client.resumeCalls.map(
+        ({ state: resumedState }) =>
+          resumedState.manifest.extraPathGrants[0]?.hostPath,
+      ),
+    ).toEqual([
+      '/private/tmp/runtime-worker-first',
+      '/private/tmp/runtime-worker-second',
+    ]);
+
+    await secondManager.cleanup(state);
   });
 
   it('runs preStop without stopping provided sandbox sessions during cleanup', async () => {

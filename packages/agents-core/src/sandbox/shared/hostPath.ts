@@ -1,4 +1,24 @@
 import { isAbsolute, relative, sep } from 'node:path';
+import type { SandboxPathGrant } from '../pathGrants';
+
+export function sandboxPathGrantHostPath(grant: SandboxPathGrant): string {
+  const hostPath = grant.hostPath ?? grant.path;
+  if (grant.hostPath !== undefined && !isAbsolute(hostPath)) {
+    throw new Error(
+      `Sandbox path grant hostPath must be absolute on the current host: ${hostPath}`,
+    );
+  }
+  if (
+    grant.hostPath !== undefined &&
+    sep === '\\' &&
+    !/^[A-Za-z]:\\/u.test(hostPath)
+  ) {
+    throw new Error(
+      `Sandbox path grant hostPath must be drive-qualified on Windows: ${hostPath}`,
+    );
+  }
+  return hostPath;
+}
 
 export function relativeHostPathEscapesRoot(relativePath: string): boolean {
   return (

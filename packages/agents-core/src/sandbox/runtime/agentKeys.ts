@@ -17,6 +17,31 @@ export function allocateAgentKeys<TContext>(
   const keys = new Map<number, string>();
   const counts = new Map<string, number>();
   const usedKeys = new Set<string>();
+  for (const agent of collectReachableAgents(startingAgent)) {
+    keys.set(
+      getObjectId(agent),
+      allocateUniqueAgentKey(agent.name, counts, usedKeys),
+    );
+  }
+  return keys;
+}
+
+export function indexAgentsByKey<TContext>(
+  startingAgent: Agent<TContext, AgentOutputType>,
+  keys: ReadonlyMap<number, string>,
+): Map<string, Agent<TContext, AgentOutputType>> {
+  return new Map(
+    collectReachableAgents(startingAgent).flatMap((agent) => {
+      const key = keys.get(getObjectId(agent));
+      return key ? [[key, agent]] : [];
+    }),
+  );
+}
+
+function collectReachableAgents<TContext>(
+  startingAgent: Agent<TContext, AgentOutputType>,
+): Agent<TContext, AgentOutputType>[] {
+  const agents: Agent<TContext, AgentOutputType>[] = [];
   const queue: Agent<TContext, AgentOutputType>[] = [startingAgent];
   const visited = new Set<Agent<TContext, AgentOutputType>>();
 
@@ -26,11 +51,7 @@ export function allocateAgentKeys<TContext>(
       continue;
     }
     visited.add(agent);
-
-    keys.set(
-      getObjectId(agent),
-      allocateUniqueAgentKey(agent.name, counts, usedKeys),
-    );
+    agents.push(agent);
 
     for (const handoff of agent.handoffs) {
       queue.push(
@@ -41,7 +62,7 @@ export function allocateAgentKeys<TContext>(
     }
   }
 
-  return keys;
+  return agents;
 }
 
 function allocateUniqueAgentKey(

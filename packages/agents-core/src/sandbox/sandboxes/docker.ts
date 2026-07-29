@@ -3,6 +3,7 @@ import type {
   ApplyPatchOperation,
   ApplyPatchResult,
   Editor,
+  EditorInvocationContext,
 } from '../../editor';
 import type { ToolOutputImage } from '../../tool';
 import { applyDiff } from '../../utils/applyDiff';
@@ -73,9 +74,11 @@ import {
   pathExists,
 } from './shared/localWorkspace';
 import {
+  assertHostPathGrantsRebound,
   mergeManifestEntryDelta,
   mergeManifestDelta,
   sanitizeEnvironmentForPersistence,
+  serializeHostPathGrantRedactionMetadata,
   serializeManifest,
 } from './shared/manifestPersistence';
 import { imageOutputFromBytes } from '../shared/media';
@@ -105,6 +108,7 @@ import {
   readStringArray,
 } from '../shared/typeGuards';
 import { validateCredentialPair as validateSandboxCredentialPair } from '../shared/credentials';
+import { sandboxPathGrantHostPath } from '../shared/hostPath';
 
 const DEFAULT_DOCKER_IMAGE = 'python:3.14-slim';
 const DEFAULT_CONTAINER_COMMAND =
@@ -144,14 +148,15 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   }
 
   override createEditor(runAs?: string): Editor {
-    if (!runAs) {
-      return super.createEditor();
-    }
-    return new DockerSandboxEditor(this, runAs);
+    return new DockerSandboxEditor(
+      this,
+      runAs,
+      runAs ? undefined : super.createEditor(),
+    );
   }
 
   override async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
-    if (!args.runAs) {
+    if (!args.runAs && !this.pathRequiresDockerFilesystem(args.path)) {
       return await super.viewImage(args);
     }
     const bytes = await this.readDockerFileAs(
@@ -202,7 +207,11 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       `list directory ${absolutePath}`,
       absolutePath,
     );
-    const logicalPath = this.resolveLogicalPath(args.path);
+    const resolvedPath = new WorkspacePathPolicy({
+      root: this.state.manifest.root,
+      extraPathGrants: this.state.manifest.extraPathGrants,
+    }).resolve(args.path);
+    const logicalPath = resolvedPath.workspaceRelativePath ?? resolvedPath.path;
     return output
       .split(/\r?\n/u)
       .filter((line) => line.trim().length > 0)
@@ -220,7 +229,14 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
 
   private pathRequiresDockerFilesystem(path?: string): boolean {
     return Boolean(
-      dockerInContainerMountContainingPath(this.state.manifest, path),
+      dockerInContainerMountContainingPath(this.state.manifest, path) ||
+      dockerSplitPathGrantContainingPath(this.state.manifest, path),
+    );
+  }
+
+  pathUsesSplitGrant(path?: string): boolean {
+    return Boolean(
+      dockerSplitPathGrantContainingPath(this.state.manifest, path),
     );
   }
 
@@ -313,7 +329,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     manifest: Manifest,
     runAs?: string,
   ): Promise<void> {
-    assertDockerManifestDeltaSupported(manifest);
+    assertDockerManifestDeltaSupported(this.state.manifest, manifest);
     assertDockerCanApplyInContainerMounts(this.state.manifest, manifest);
     const environment = await manifest.resolveEnvironment();
     const previousEnvironment = this.state.environment;
@@ -576,7 +592,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   async writeDockerTextFileAs(
     path: string,
     content: string,
-    runAs: string,
+    runAs?: string,
   ): Promise<void> {
     const parent = dockerPosixDirname(path);
     await this.runCheckedDockerFilesystemCommand(
@@ -588,7 +604,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     );
   }
 
-  async deleteDockerPathAs(path: string, runAs: string): Promise<void> {
+  async deleteDockerPathAs(path: string, runAs?: string): Promise<void> {
     await this.runCheckedDockerFilesystemCommand(
       `rm -f -- ${shellQuote(path)}`,
       { runAs },
@@ -596,7 +612,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     );
   }
 
-  async mkdirDockerPathAs(path: string, runAs: string): Promise<void> {
+  async mkdirDockerPathAs(path: string, runAs?: string): Promise<void> {
     await this.runCheckedDockerFilesystemCommand(
       `mkdir -p -- ${shellQuote(path)}`,
       { runAs },
@@ -686,10 +702,21 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
 class DockerSandboxEditor implements Editor {
   constructor(
     private readonly session: DockerSandboxSession,
-    private readonly runAs: string,
+    private readonly runAs?: string,
+    private readonly hostEditor?: Editor,
   ) {}
 
   canAccessPathForEdit(path: string): boolean {
+    if (!this.shouldUseDockerFilesystem(path)) {
+      const canAccessPathForEdit = (
+        this.hostEditor as
+          | (Editor & {
+              canAccessPathForEdit?: (path: string) => boolean;
+            })
+          | undefined
+      )?.canAccessPathForEdit;
+      return canAccessPathForEdit?.call(this.hostEditor, path) ?? false;
+    }
     try {
       this.session.resolveContainerFilesystemPath(path, { forWrite: true });
       return true;
@@ -700,7 +727,11 @@ class DockerSandboxEditor implements Editor {
 
   async createFile(
     operation: Extract<ApplyPatchOperation, { type: 'create_file' }>,
+    context?: EditorInvocationContext,
   ): Promise<ApplyPatchResult> {
+    if (!this.shouldUseDockerFilesystem(operation.path)) {
+      return (await this.hostEditor!.createFile(operation, context)) ?? {};
+    }
     const path = this.session.resolveContainerFilesystemPath(operation.path, {
       forWrite: true,
     });
@@ -720,7 +751,11 @@ class DockerSandboxEditor implements Editor {
 
   async updateFile(
     operation: Extract<ApplyPatchOperation, { type: 'update_file' }>,
+    context?: EditorInvocationContext,
   ): Promise<ApplyPatchResult> {
+    if (!this.shouldUseDockerFilesystem(operation.path, operation.moveTo)) {
+      return (await this.hostEditor!.updateFile(operation, context)) ?? {};
+    }
     const path = this.session.resolveContainerFilesystemPath(operation.path, {
       forWrite: true,
     });
@@ -746,7 +781,11 @@ class DockerSandboxEditor implements Editor {
 
   async deleteFile(
     operation: Extract<ApplyPatchOperation, { type: 'delete_file' }>,
+    context?: EditorInvocationContext,
   ): Promise<ApplyPatchResult> {
+    if (!this.shouldUseDockerFilesystem(operation.path)) {
+      return (await this.hostEditor!.deleteFile(operation, context)) ?? {};
+    }
     await this.session.deleteDockerPathAs(
       this.session.resolveContainerFilesystemPath(operation.path, {
         forWrite: true,
@@ -754,6 +793,13 @@ class DockerSandboxEditor implements Editor {
       this.runAs,
     );
     return {};
+  }
+
+  private shouldUseDockerFilesystem(...paths: Array<string | undefined>) {
+    return (
+      !this.hostEditor ||
+      paths.some((path) => this.session.pathUsesSplitGrant(path))
+    );
   }
 }
 
@@ -863,6 +909,7 @@ export class DockerSandboxClient implements SandboxClient<
     state: DockerSandboxSessionState,
     options: SandboxClientResumeOptions = {},
   ): Promise<DockerSandboxSession> {
+    assertHostPathGrantsRebound(state);
     assertDockerManifestSupported(state.manifest);
     await ensureDockerAvailable();
     const archiveLimits =
@@ -875,6 +922,10 @@ export class DockerSandboxClient implements SandboxClient<
       state: restoredState,
       archiveLimits,
     });
+  }
+
+  canReusePreservedOwnedSession(state: DockerSandboxSessionState): boolean {
+    return state.manifest.extraPathGrants.length === 0;
   }
 
   async serializeSessionState(
@@ -890,6 +941,7 @@ export class DockerSandboxClient implements SandboxClient<
     state.snapshotSpec = snapshotSpec;
 
     return {
+      ...serializeHostPathGrantRedactionMetadata(state),
       manifest: serializeManifest(state.manifest),
       workspaceRootPath: state.workspaceRootPath,
       workspaceRootOwned: state.workspaceRootOwned,
@@ -934,7 +986,15 @@ export class DockerSandboxClient implements SandboxClient<
 
     if (workspaceExists) {
       if (containerRunning) {
-        return state;
+        if (state.manifest.extraPathGrants.length === 0) {
+          return state;
+        }
+        await this.cleanupDockerResources(state);
+        return await this.restartContainer(
+          state,
+          state.workspaceRootPath,
+          archiveLimits,
+        );
       }
       if (await canReuseLocalSnapshotWorkspace(state)) {
         await this.cleanupDockerResources(state);
@@ -1074,6 +1134,9 @@ async function cleanupStartedDockerContainer(args: {
 
 function assertDockerManifestSupported(manifest: Manifest): void {
   assertDockerManifestRootSupported(manifest);
+  for (const grant of manifest.extraPathGrants) {
+    sandboxPathGrantHostPath(grant);
+  }
   assertLocalWorkspaceManifestMetadataSupported(
     'DockerSandboxClient',
     manifest,
@@ -1085,10 +1148,31 @@ function assertDockerManifestSupported(manifest: Manifest): void {
   );
 }
 
-function assertDockerManifestDeltaSupported(manifest: Manifest): void {
+function assertDockerManifestDeltaSupported(
+  currentManifest: Manifest,
+  deltaManifest: Manifest,
+): void {
+  const currentGrantsByPath = new Map(
+    currentManifest.extraPathGrants.map((grant) => [grant.path, grant]),
+  );
+  const splitGrant = deltaManifest.extraPathGrants.find(
+    (grant) =>
+      grant.hostPath !== undefined ||
+      currentGrantsByPath.get(grant.path)?.hostPath !== undefined,
+  );
+  if (splitGrant) {
+    throw new SandboxUnsupportedFeatureError(
+      `DockerSandboxClient cannot add or change path grant hostPath for "${splitGrant.path}" on an already-running container. Configure it in the manifest passed to create().`,
+      {
+        provider: 'DockerSandboxClient',
+        feature: 'manifest.extraPathGrants.hostPath',
+        path: splitGrant.path,
+      },
+    );
+  }
   assertLocalWorkspaceManifestMetadataSupported(
     'DockerSandboxClient',
-    manifest,
+    deltaManifest,
     {
       allowLocalBindMounts: false,
       allowIdentityMetadata: true,
@@ -1474,6 +1558,25 @@ function dockerInContainerMountContainingPath(
   path?: string,
 ): string | undefined {
   return dockerMountContainingPath(manifest, path, isDockerInContainerMount);
+}
+
+function dockerSplitPathGrantContainingPath(
+  manifest: Manifest,
+  path?: string,
+): string | undefined {
+  const { grant } = new WorkspacePathPolicy({
+    root: manifest.root,
+    extraPathGrants: manifest.extraPathGrants,
+  }).resolve(path);
+  return grant && sandboxPathGrantUsesDistinctHostPath(grant)
+    ? grant.path
+    : undefined;
+}
+
+function sandboxPathGrantUsesDistinctHostPath(
+  grant: Manifest['extraPathGrants'][number],
+): boolean {
+  return grant.hostPath !== undefined && grant.hostPath !== grant.path;
 }
 
 function dockerMountContainingPath(
@@ -2301,7 +2404,7 @@ function dockerExtraPathGrantMountArgs(manifest: Manifest): string[] {
     '--mount',
     dockerMountArg({
       type: 'bind',
-      source: grant.path,
+      source: sandboxPathGrantHostPath(grant),
       target: grant.path,
       readOnly: grant.readOnly,
     }),
