@@ -173,7 +173,7 @@ jobs:
       - name: Run Windows sandbox path tests
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         shell: bash
-        run: pnpm exec vitest --run --project "@openai/agents-core" packages/agents-core/test/sandboxWorkspacePaths.test.ts packages/agents-core/test/sandboxManifest.test.ts
+        run: pnpm exec vitest --run --project "@openai/agents-core" packages/agents-core/test/sandboxWorkspacePaths.test.ts packages/agents-core/test/sandboxManifest.test.ts packages/agents-core/test/sandboxNativePathGrants.test.ts
       - name: Run Windows remote path tests
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         shell: bash

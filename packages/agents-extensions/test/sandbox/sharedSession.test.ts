@@ -9,9 +9,12 @@ import { describe, expect, test } from 'vitest';
 import {
   assertCoreConcurrencyLimitsUnsupported,
   assertCoreSnapshotUnsupported,
+  assertRemoteSandboxSessionStateCanResume,
   assertResumeRecreateAllowed,
+  deserializeRemoteSandboxSessionStateValues,
   isProviderSandboxNotFoundError,
   closeRemoteSessionOnManifestError,
+  serializeRemoteSandboxSessionState,
   withProviderError,
   providerErrorRetryability,
   RemoteSandboxSessionBase,
@@ -134,6 +137,37 @@ class FailedPathProbeSession extends FakeRemoteSession {
 }
 
 describe('shared sandbox session helpers', () => {
+  test('rejects direct resume when native host paths need trusted rebinding', () => {
+    const serialized = serializeRemoteSandboxSessionState({
+      manifest: new Manifest({
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath: process.cwd(),
+            readOnly: true,
+          },
+        ],
+      }),
+      environment: {},
+    });
+    const deserialized = deserializeRemoteSandboxSessionStateValues(serialized);
+
+    expect(serialized.__openaiAgentsRedactedHostPathGrantPaths).toEqual([
+      '/mnt/shared-data',
+    ]);
+    expect(deserialized.manifest.extraPathGrants).toEqual([
+      {
+        path: '/mnt/shared-data',
+        readOnly: true,
+      },
+    ]);
+    expect(() =>
+      assertRemoteSandboxSessionStateCanResume(deserialized),
+    ).toThrow(
+      'Sandbox session state requires trusted hostPath values for these path grants: /mnt/shared-data.',
+    );
+  });
+
   test('rejects unsupported core create options for provider clients', () => {
     expect(() =>
       assertCoreSnapshotUnsupported('ProviderSandboxClient', { type: 'noop' }),

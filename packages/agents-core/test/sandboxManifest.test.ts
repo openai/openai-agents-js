@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os';
+import { join, normalize, sep } from 'node:path';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   cloneManifest,
@@ -580,6 +582,7 @@ describe('Manifest', () => {
   });
 
   it('clones manifests without sharing entries or environment values', () => {
+    const hostPath = join(tmpdir(), 'manifest-clone-data');
     const manifest = new Manifest({
       entries: {
         'notes.txt': {
@@ -597,7 +600,13 @@ describe('Manifest', () => {
       },
       users: [{ name: 'sandbox-user' }],
       groups: [{ name: 'sandbox-group', users: [{ name: 'sandbox-user' }] }],
-      extraPathGrants: [{ path: '/tmp/data', readOnly: true }],
+      extraPathGrants: [
+        {
+          path: '/tmp/data',
+          hostPath,
+          readOnly: true,
+        },
+      ],
       remoteMountCommandAllowlist: ['ls', 'cat'],
     });
     const cloned = cloneManifest(manifest);
@@ -623,6 +632,7 @@ describe('Manifest', () => {
     expect(cloned.extraPathGrants).toEqual([
       {
         path: '/tmp/data',
+        hostPath: normalize(hostPath),
         readOnly: true,
       },
     ]);
@@ -630,6 +640,7 @@ describe('Manifest', () => {
   });
 
   it('normalizes manifest identity, permissions, and path policy fields', () => {
+    const hostPath = join(tmpdir(), 'manifest-normalized-data');
     const manifest = new Manifest({
       users: [{ name: ' sandbox-user ' }],
       groups: [
@@ -641,6 +652,7 @@ describe('Manifest', () => {
       extraPathGrants: [
         {
           path: '/var/tmp/data',
+          hostPath,
           readOnly: true,
           description: 'fixture data',
         },
@@ -680,6 +692,7 @@ describe('Manifest', () => {
     expect(manifest.extraPathGrants).toEqual([
       {
         path: '/var/tmp/data',
+        hostPath: normalize(hostPath),
         readOnly: true,
         description: 'fixture data',
       },
@@ -934,6 +947,61 @@ describe('Manifest', () => {
     expect(
       () =>
         new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/data',
+              hostPath: 'relative/data',
+            },
+          ],
+        }),
+    ).toThrow(/hostPath must be an absolute host path/i);
+    expect(
+      () =>
+        new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/data',
+              hostPath: `${tmpdir()}${sep}..${sep}data`,
+            },
+          ],
+        }),
+    ).toThrow(/path grant hostPath must not contain parent segments/i);
+    expect(
+      () =>
+        new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/data',
+              host_path: join(tmpdir(), 'data'),
+            } as never,
+          ],
+        }),
+    ).toThrow(/snake_case key "host_path" is not supported/i);
+    expect(
+      () =>
+        new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/data',
+              hostPath: '//server/share/data',
+            },
+          ],
+        }),
+    ).toThrow(/hostPath does not support UNC or device paths/i);
+    expect(
+      () =>
+        new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/data',
+              hostPath: 'C:\\',
+            },
+          ],
+        }),
+    ).toThrow(/hostPath must not be filesystem root/i);
+    expect(
+      () =>
+        new Manifest({
           entries: {
             data: {
               type: 'mount',
@@ -1175,5 +1243,39 @@ describe('Manifest', () => {
     expect(rendered.renderedPaths).toBeLessThan(rendered.totalPaths);
     expect(rendered.text.length).toBeLessThanOrEqual(180);
     expect(rendered.text).toContain('truncated');
+  });
+
+  it('normalizes Windows drive host paths without changing sandbox paths', () => {
+    const manifest = new Manifest({
+      extraPathGrants: [
+        {
+          path: '/mnt/shared-skills',
+          hostPath: 'C:/Users/example/shared-skills',
+          readOnly: true,
+        },
+      ],
+    });
+
+    expect(manifest.extraPathGrants).toEqual([
+      {
+        path: '/mnt/shared-skills',
+        hostPath: 'C:\\Users\\example\\shared-skills',
+        readOnly: true,
+      },
+    ]);
+  });
+
+  it('preserves whitespace in POSIX host paths', () => {
+    const manifest = new Manifest({
+      extraPathGrants: [
+        {
+          path: '/mnt/shared-data',
+          hostPath: '/srv/shared-data ',
+          readOnly: true,
+        },
+      ],
+    });
+
+    expect(manifest.extraPathGrants[0]?.hostPath).toBe('/srv/shared-data ');
   });
 });

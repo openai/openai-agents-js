@@ -26,6 +26,7 @@ import {
 import {
   appendPtyOutput,
   assertCoreSnapshotUnsupported,
+  assertRemoteSandboxSessionStateCanResume,
   assertTarWorkspacePersistence,
   createPtyProcessEntry,
   imageOutputFromBytes,
@@ -1184,6 +1185,7 @@ export class DaytonaSandboxClient implements SandboxClient<
   async resume(
     state: DaytonaSandboxSessionState,
   ): Promise<DaytonaSandboxSession> {
+    assertRemoteSandboxSessionStateCanResume(state);
     const client = await createDaytonaClient({
       ...this.options,
       apiKey: state.apiKey ?? this.options.apiKey,

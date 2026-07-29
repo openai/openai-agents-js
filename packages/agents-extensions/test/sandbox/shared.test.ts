@@ -2958,8 +2958,16 @@ describe('remote sandbox path helpers', () => {
       'test',
       {
         localSourceGrants: [
-          { path: dirname(sourceFile), readOnly: true },
-          { path: sourceDir, readOnly: true },
+          {
+            path: '/mnt/source-file',
+            hostPath: dirname(sourceFile),
+            readOnly: true,
+          },
+          {
+            path: '/mnt/source-dir',
+            hostPath: sourceDir,
+            readOnly: true,
+          },
         ],
       },
     );

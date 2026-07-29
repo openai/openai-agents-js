@@ -9,6 +9,7 @@ import {
 } from '../../shared/typeGuards';
 import type { LocalSandboxSnapshot, LocalSandboxSnapshotSpec } from '../types';
 import { rehydrateLocalSnapshotSpec } from './localSnapshots';
+import { deserializeHostPathGrantRedactionMetadata } from './manifestPersistence';
 
 export type LocalSandboxSessionStateValues = {
   manifest: Manifest;
@@ -49,6 +50,7 @@ export function deserializeLocalSandboxSessionStateValues(
       readOptionalNumberArray(state.configuredExposedPorts),
     ),
     exposedPorts: readExposedPortsState(state),
+    ...deserializeHostPathGrantRedactionMetadata(state),
   };
 }
 

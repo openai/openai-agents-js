@@ -22,6 +22,7 @@ import {
 import {
   appendPtyOutput,
   assertCoreSnapshotUnsupported,
+  assertRemoteSandboxSessionStateCanResume,
   assertResumeRecreateAllowed,
   assertTarWorkspacePersistence,
   createPtyProcessEntry,
@@ -975,6 +976,7 @@ export class E2BSandboxClient implements SandboxClient<
   }
 
   async resume(state: E2BSandboxSessionState): Promise<E2BSandboxSession> {
+    assertRemoteSandboxSessionStateCanResume(state);
     const Sandbox = await loadE2BSandboxClass(state.sandboxType);
     const connect = Sandbox.connect ?? Sandbox.resume;
     if (connect) {

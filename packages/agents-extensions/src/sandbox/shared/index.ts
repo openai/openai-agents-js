@@ -105,6 +105,7 @@ export {
   type RemoteSandboxSessionBaseOptions,
 } from './sessionBase';
 export {
+  assertRemoteSandboxSessionStateCanResume,
   deserializeRemoteSandboxSessionStateValues,
   serializeRemoteSandboxSessionState,
 } from './sessionState';

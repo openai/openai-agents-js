@@ -1856,6 +1856,363 @@ describe('DockerSandboxClient unit behavior', () => {
     );
   });
 
+  it('uses hostPath as the Docker bind source and path as the target', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await client.create(
+      new Manifest({
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath: rootDir,
+            readOnly: true,
+          },
+        ],
+      }),
+    );
+
+    const runCall = processMocks.runSandboxProcess.mock.calls.find(
+      ([, args]) => args[0] === 'run',
+    );
+    expect(runCall?.[1]).toEqual(
+      expect.arrayContaining([
+        '--mount',
+        `type=bind,source=${rootDir},target=/mnt/shared-data,readonly`,
+      ]),
+    );
+  });
+
+  it('uses the container filesystem for split path grants', async () => {
+    const pngBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = args.at(-1) ?? '';
+      if (command.startsWith('base64 --')) {
+        const bytes = command.includes('picture.png')
+          ? pngBytes
+          : new TextEncoder().encode('hello');
+        return dockerSpawnResult({
+          stdout: Buffer.from(bytes).toString('base64'),
+          status: 0,
+        });
+      }
+      if (command.startsWith('find ')) {
+        return dockerSpawnResult({ stdout: 'f\tdata.txt\n', status: 0 });
+      }
+      return dockerSpawnResult({ status: 0 });
+    });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          'workspace.txt': {
+            type: 'file',
+            content: 'workspace',
+          },
+        },
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath: rootDir,
+          },
+        ],
+      }),
+    );
+    const editor = session.createEditor();
+
+    await editor.deleteFile({
+      type: 'delete_file',
+      path: 'workspace.txt',
+    });
+    await expect(
+      stat(join(session.state.workspaceRootPath, 'workspace.txt')),
+    ).rejects.toThrow();
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+
+    await expect(session.pathExists('/mnt/shared-data/data.txt')).resolves.toBe(
+      true,
+    );
+    await expect(
+      session
+        .readFile({ path: '/mnt/shared-data/data.txt' })
+        .then((bytes) => new TextDecoder().decode(bytes)),
+    ).resolves.toBe('hello');
+    await expect(
+      session.listDir({ path: '/mnt/shared-data' }),
+    ).resolves.toEqual([
+      {
+        name: 'data.txt',
+        path: '/mnt/shared-data/data.txt',
+        type: 'file',
+      },
+    ]);
+    await expect(
+      session.viewImage({ path: '/mnt/shared-data/picture.png' }),
+    ).resolves.toMatchObject({
+      type: 'image',
+      image: {
+        data: pngBytes,
+        mediaType: 'image/png',
+      },
+    });
+    await editor.deleteFile({
+      type: 'delete_file',
+      path: '/mnt/shared-data/data.txt',
+    });
+
+    const dockerCommands = childProcessMocks.spawn.mock.calls.map(([, args]) =>
+      (args as string[]).at(-1),
+    );
+    expect(dockerCommands).toEqual(
+      expect.arrayContaining([
+        "test -e '/mnt/shared-data/data.txt'",
+        "base64 -- '/mnt/shared-data/data.txt'",
+        "find '/mnt/shared-data' -mindepth 1 -maxdepth 1 -printf '%y\\t%f\\n'",
+        "base64 -- '/mnt/shared-data/picture.png'",
+        "rm -f -- '/mnt/shared-data/data.txt'",
+      ]),
+    );
+  });
+
+  it('rejects split path grants when applying a manifest delta', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(new Manifest());
+
+    await expect(
+      session.applyManifest(
+        new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/shared-data',
+              hostPath: rootDir,
+            },
+          ],
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: 'unsupported_feature',
+      details: {
+        provider: 'DockerSandboxClient',
+        feature: 'manifest.extraPathGrants.hostPath',
+        path: '/mnt/shared-data',
+      },
+    });
+    expect(session.state.manifest.extraPathGrants).toEqual([]);
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+
+    const splitSession = await client.create(
+      new Manifest({
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath: rootDir,
+          },
+        ],
+      }),
+    );
+    await expect(
+      splitSession.applyManifest(
+        new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/shared-data',
+            },
+          ],
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: 'unsupported_feature',
+      details: {
+        feature: 'manifest.extraPathGrants.hostPath',
+        path: '/mnt/shared-data',
+      },
+    });
+    expect(splitSession.state.manifest.extraPathGrants).toEqual([
+      {
+        path: '/mnt/shared-data',
+        hostPath: rootDir,
+        readOnly: false,
+      },
+    ]);
+  });
+
+  it('restarts a running container before using rebound path grants', async () => {
+    let runCount = 0;
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          return success(`container-${runCount}\n`);
+        }
+        if (args[0] === 'inspect') {
+          return success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath: join(rootDir, 'original-source'),
+            readOnly: false,
+          },
+        ],
+      }),
+    );
+    const reboundHostPath = join(rootDir, 'rebound-source');
+
+    const resumed = await client.resume({
+      ...session.state,
+      manifest: new Manifest({
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath: reboundHostPath,
+            readOnly: true,
+          },
+        ],
+      }),
+    });
+
+    expect(resumed.state.containerId).toBe('container-2');
+    expect(client.canReusePreservedOwnedSession(session.state)).toBe(false);
+    const calls = processMocks.runSandboxProcess.mock.calls;
+    const removeIndex = calls.findIndex(
+      ([, args]) => args[0] === 'rm' && args[2] === 'container-1',
+    );
+    const secondRunIndex = calls.findIndex(
+      ([, args], index) => index > removeIndex && args[0] === 'run',
+    );
+    expect(removeIndex).toBeGreaterThanOrEqual(0);
+    expect(secondRunIndex).toBeGreaterThan(removeIndex);
+    expect(calls[secondRunIndex]?.[1]).toEqual(
+      expect.arrayContaining([
+        '--mount',
+        `type=bind,source=${reboundHostPath},target=/mnt/shared-data,readonly`,
+      ]),
+    );
+  });
+
+  it('rejects foreign host paths before checking Docker or creating a workspace', async () => {
+    const foreignHostPath = process.platform === 'win32' ? '/data' : 'C:\\data';
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await expect(
+      client.create(
+        new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/shared-data',
+              hostPath: foreignHostPath,
+              readOnly: true,
+            },
+          ],
+        }),
+      ),
+    ).rejects.toThrow(/hostPath must (?:be absolute|be drive-qualified)/i);
+
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+    await expect(readdir(rootDir)).resolves.toEqual([]);
+  });
+
+  it('rejects direct resume when native host paths need trusted rebinding', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: new NoopSnapshotSpec(),
+    });
+    const session = await client.create(
+      new Manifest({
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath: rootDir,
+            readOnly: true,
+          },
+        ],
+      }),
+    );
+
+    const serialized = JSON.parse(
+      JSON.stringify(await client.serializeSessionState(session.state)),
+    ) as Record<string, unknown>;
+    const deserialized = await client.deserializeSessionState(serialized);
+
+    expect(serialized.__openaiAgentsRedactedHostPathGrantPaths).toEqual([
+      '/mnt/shared-data',
+    ]);
+    expect(deserialized.manifest.extraPathGrants).toEqual([
+      {
+        path: '/mnt/shared-data',
+        readOnly: true,
+      },
+    ]);
+    await expect(client.resume(deserialized)).rejects.toThrow(
+      'Sandbox session state requires trusted hostPath values for these path grants: /mnt/shared-data.',
+    );
+  });
+
   it('allows extra path grants during docker manifest application for host filesystem helpers', async () => {
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {

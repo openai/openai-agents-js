@@ -32,6 +32,7 @@ import {
   acquireSandboxAgent,
   allocateAgentKeys,
   getObjectId,
+  indexAgentsByKey,
   isSandboxAgent,
   releaseSandboxAgents,
 } from './agentKeys';
@@ -44,6 +45,10 @@ import {
 } from './livePreservedSessions';
 import { applyManifestToProvidedSession } from './providedSessionManifest';
 import { serializeSandboxRuntimeState } from './sessionSerialization';
+import {
+  assertHostPathGrantsRebound,
+  rebindPersistedPathGrants,
+} from '../sandboxes/shared/manifestPersistence';
 import {
   cleanupSandboxSession,
   hasSessionCleanup,
@@ -77,6 +82,16 @@ type SandboxCleanupPlan = {
   deferredError?: unknown;
 };
 
+type SandboxAgentIdentityRegistry = {
+  agentKeys: Map<number, string>;
+  agentsByKey: Map<string, Agent<any, AgentOutputType>>;
+};
+
+const sandboxAgentIdentitiesByRunState = new WeakMap<
+  object,
+  SandboxAgentIdentityRegistry
+>();
+
 export class SandboxRuntimeManager<TContext> {
   private readonly sandboxConfig?: SandboxRunConfig;
   private readonly runState?: RunState<
@@ -84,6 +99,7 @@ export class SandboxRuntimeManager<TContext> {
     Agent<TContext, AgentOutputType>
   >;
   private readonly agentKeys: Map<number, string>;
+  private readonly agentsByKey: Map<string, Agent<TContext, AgentOutputType>>;
   private readonly acquiredAgents = new Map<
     number,
     SandboxAgent<TContext, AgentOutputType>
@@ -125,7 +141,22 @@ export class SandboxRuntimeManager<TContext> {
   }) {
     this.sandboxConfig = args.sandboxConfig;
     this.runState = args.runState;
-    this.agentKeys = allocateAgentKeys(args.startingAgent);
+    const existingIdentityRegistry = args.runState
+      ? sandboxAgentIdentitiesByRunState.get(args.runState)
+      : undefined;
+    if (existingIdentityRegistry) {
+      this.agentKeys = existingIdentityRegistry.agentKeys;
+      this.agentsByKey = existingIdentityRegistry.agentsByKey;
+    } else {
+      this.agentKeys = allocateAgentKeys(args.startingAgent);
+      this.agentsByKey = indexAgentsByKey(args.startingAgent, this.agentKeys);
+      if (args.runState) {
+        sandboxAgentIdentitiesByRunState.set(args.runState, {
+          agentKeys: this.agentKeys,
+          agentsByKey: this.agentsByKey,
+        });
+      }
+    }
   }
 
   async prepareAgent(args: {
@@ -212,6 +243,14 @@ export class SandboxRuntimeManager<TContext> {
           tracingParent: cleanupSpan,
         });
       } finally {
+        if (hasPreservedOwnedSessions(getSerializedSandboxState(state))) {
+          sandboxAgentIdentitiesByRunState.set(state, {
+            agentKeys: this.agentKeys,
+            agentsByKey: this.agentsByKey,
+          });
+        } else {
+          sandboxAgentIdentitiesByRunState.delete(state);
+        }
         this.releaseAgents();
         this.sessionsByAgent.clear();
         if (!preserveCleanupHandles) {
@@ -587,6 +626,7 @@ export class SandboxRuntimeManager<TContext> {
       const serializedState = await deserializeSandboxSessionStateEntry(
         client,
         entry,
+        this.resolveTrustedManifestForAgentKey(agentKey),
       );
       if (!serializedState) {
         continue;
@@ -672,6 +712,7 @@ export class SandboxRuntimeManager<TContext> {
     const resumed = await this.resumeSessionForAgent(
       client,
       agent,
+      configuredManifest.manifest,
       tracingParent,
     );
     if (resumed) {
@@ -837,6 +878,7 @@ export class SandboxRuntimeManager<TContext> {
   private async resumeSessionForAgent(
     client: SandboxClient,
     agent: SandboxAgent<TContext, AgentOutputType>,
+    trustedManifest: Manifest,
     tracingParent?: Span<any> | Trace,
   ): Promise<SandboxSessionLike<SandboxSessionState> | undefined> {
     const agentKey = this.agentKey(agent);
@@ -863,6 +905,11 @@ export class SandboxRuntimeManager<TContext> {
     }
 
     if (this.sandboxConfig?.sessionState) {
+      const sessionState = rebindPersistedPathGrants(
+        this.sandboxConfig.sessionState,
+        trustedManifest,
+      );
+      assertHostPathGrantsRebound(sessionState);
       return await withSandboxSpan(
         'sandbox.resume_session',
         {
@@ -870,7 +917,7 @@ export class SandboxRuntimeManager<TContext> {
           backend_id: client.backendId,
         },
         async () =>
-          await client.resume!(this.sandboxConfig!.sessionState!, {
+          await client.resume!(sessionState, {
             archiveLimits: this.sandboxConfig?.archiveLimits,
           }),
         tracingParent,
@@ -880,6 +927,7 @@ export class SandboxRuntimeManager<TContext> {
     const serializedState = await deserializeSandboxSessionStateEntry(
       client,
       serializedEntry,
+      trustedManifest,
     );
     if (!serializedState) {
       return undefined;
@@ -945,11 +993,13 @@ export class SandboxRuntimeManager<TContext> {
     const agentId = getObjectId(agent);
     const existing = this.agentKeys.get(agentId);
     if (existing) {
+      this.agentsByKey.set(existing, agent);
       return existing;
     }
 
     const agentKey = this.allocateRuntimeAgentKey(agent.name);
     this.agentKeys.set(agentId, agentKey);
+    this.agentsByKey.set(agentKey, agent);
     return agentKey;
   }
 
@@ -995,6 +1045,16 @@ export class SandboxRuntimeManager<TContext> {
       passToCreate:
         baseManifest !== undefined || !isDefaultManifest(configuredManifest),
     };
+  }
+
+  private resolveTrustedManifestForAgentKey(
+    agentKey: string,
+  ): Manifest | undefined {
+    const agent = this.agentsByKey.get(agentKey);
+    if (!agent || !isSandboxAgent(agent)) {
+      return undefined;
+    }
+    return this.resolveConfiguredManifest(agent).manifest;
   }
 
   private async closeOwnedSessions(
