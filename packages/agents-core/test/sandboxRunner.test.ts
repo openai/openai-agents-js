@@ -519,16 +519,21 @@ class SerializedResumeFakeSandboxClient extends FakeSandboxClient {
 class RevalidatingLiveProcessFakeSandboxClient extends FakeSandboxClient {
   readonly reuseChecks: Manifest[] = [];
   readonly reuseEnvironments: Array<Record<string, string> | undefined> = [];
+  readonly reuseClientOptions: Array<SandboxClientOptions | undefined> = [];
 
   constructor(private readonly reuseResults: boolean[] = [true, true]) {
     super();
   }
 
-  canReusePreservedOwnedSession(state: FakeSandboxSessionState): boolean {
+  canReusePreservedOwnedSession(
+    state: FakeSandboxSessionState,
+    options: { clientOptions?: SandboxClientOptions } = {},
+  ): boolean {
     this.reuseChecks.push(state.manifest);
     this.reuseEnvironments.push(
       state.environment ? { ...state.environment } : undefined,
     );
+    this.reuseClientOptions.push(options.clientOptions);
     return this.reuseResults[this.reuseChecks.length - 1] ?? false;
   }
 
@@ -5458,6 +5463,10 @@ describe('sandbox runner integration', () => {
       sandboxConfig: {
         client,
         manifest,
+        options: {
+          image: 'trusted-image',
+          exposedPorts: [8080],
+        },
       },
       runState: state,
     });
@@ -5494,6 +5503,10 @@ describe('sandbox runner integration', () => {
       sandboxConfig: {
         client,
         manifest: refreshedManifest,
+        options: {
+          image: 'trusted-image',
+          exposedPorts: [8080],
+        },
       },
       runState: state,
     });
@@ -5508,6 +5521,16 @@ describe('sandbox runner integration', () => {
         SECRET_ENV: 'refreshed-secret',
         ADDED_ENV: 'added-value',
         PROVIDER_ENV: 'provider-value',
+      },
+    ]);
+    expect(client.reuseClientOptions).toEqual([
+      {
+        image: 'trusted-image',
+        exposedPorts: [8080],
+      },
+      {
+        image: 'trusted-image',
+        exposedPorts: [8080],
       },
     ]);
     expect(liveSession.state.environment).toEqual({

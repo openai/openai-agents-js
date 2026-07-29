@@ -2320,6 +2320,16 @@ describe('DockerSandboxClient unit behavior', () => {
     await expect(
       client.canReusePreservedOwnedSession(session.state),
     ).resolves.toBe(true);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        clientOptions: { image: 'different-image' },
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        clientOptions: { exposedPorts: [8080] },
+      }),
+    ).resolves.toBe(false);
     expect(activeChild.kill).not.toHaveBeenCalled();
     expect(runCount).toBe(1);
     expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
@@ -2329,6 +2339,59 @@ describe('DockerSandboxClient unit behavior', () => {
     );
 
     await session.close();
+  });
+
+  it('restarts when container account provisioning changes', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm' || args[0] === 'exec') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(new Manifest());
+
+    const resumed = await client.resume({
+      ...session.state,
+      manifest: new Manifest({
+        users: [{ name: 'sandbox-user' }],
+      }),
+    });
+
+    expect(resumed.state.containerId).toBe('container-2');
+    expect(runCount).toBe(2);
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['rm', '-f', 'container-1']),
+      expect.anything(),
+    );
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['exec', '-u', 'root', 'container-2']),
+      expect.anything(),
+    );
   });
 
   it('rejects a fully swapped running Docker session without deleting it', async () => {

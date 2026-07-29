@@ -42,6 +42,7 @@ import type {
   SandboxArchiveLimits,
   SandboxClientResumeOptions,
   SandboxConcurrencyLimits,
+  SandboxPreservedSessionReuseOptions,
   SandboxSessionSerializationOptions,
 } from '../client';
 import { normalizeSandboxClientCreateArgs } from '../client';
@@ -959,8 +960,22 @@ export class DockerSandboxClient implements SandboxClient<
 
   async canReusePreservedOwnedSession(
     state: DockerSandboxSessionState,
+    options: SandboxPreservedSessionReuseOptions<DockerSandboxClientOptions> = {},
   ): Promise<boolean> {
     if (isRunStateSessionState(state)) {
+      return false;
+    }
+    const resolvedOptions = {
+      ...this.options,
+      ...options.clientOptions,
+    };
+    if (
+      state.image !== (resolvedOptions.image ?? DEFAULT_DOCKER_IMAGE) ||
+      !dockerExposedPortSetsEqual(
+        state.configuredExposedPorts ?? [],
+        normalizeExposedPorts(resolvedOptions.exposedPorts),
+      )
+    ) {
       return false;
     }
     try {
@@ -1698,6 +1713,8 @@ function dockerMountAuthorityFingerprint(
         workspaceMount,
         mountedGrants,
         mountedManifestBinds,
+        users: manifest.users,
+        groups: manifest.groups,
         mountedManifestEntries: manifest
           .mountTargetsForMaterialization()
           .map(({ mountPath, entry }) => ({ mountPath, entry }))
@@ -1705,6 +1722,13 @@ function dockerMountAuthorityFingerprint(
       }),
     )
     .digest('hex');
+}
+
+function dockerExposedPortSetsEqual(left: number[], right: number[]): boolean {
+  return (
+    JSON.stringify([...left].sort((a, b) => a - b)) ===
+    JSON.stringify([...right].sort((a, b) => a - b))
+  );
 }
 
 function assertDockerManifestDeltaSupported(

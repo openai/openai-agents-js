@@ -1051,7 +1051,11 @@ export class SandboxRuntimeManager<TContext> {
         ...(await args.trustedManifest.resolveEnvironment()),
       };
     }
-    if (!(await canReuse.call(args.client, candidateState))) {
+    if (
+      !(await canReuse.call(args.client, candidateState, {
+        clientOptions: this.sandboxConfig?.options,
+      }))
+    ) {
       rejectLivePreservedOwnedSessionHandle({
         state: this.runState,
         session: liveEntry.session,
@@ -1103,6 +1107,7 @@ export class SandboxRuntimeManager<TContext> {
       sessionsByAgentKey: this.sessionsByAgentKey,
       sessionAgentNamesByKey: this.sessionAgentNamesByKey,
       ownedSessionAgentKeys: this.ownedSessionAgentKeys,
+      clientOptions: this.sandboxConfig?.options,
       includeOwnedSessions: args.includeOwnedSessions,
       preferredCurrentAgentKey,
     });
