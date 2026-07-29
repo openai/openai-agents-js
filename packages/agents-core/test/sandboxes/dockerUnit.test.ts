@@ -2692,6 +2692,70 @@ describe('DockerSandboxClient unit behavior', () => {
     );
   });
 
+  it('restarts when a path-granted session changes a non-bind mount', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm' || args[0] === 'volume') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const sharedPath = join(rootDir, 'shared-data');
+    await mkdir(sharedPath);
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          logs: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            mountPath: '/mnt/logs',
+            mountStrategy: dockerVolumeMountStrategy({
+              driver: 'rclone',
+            }),
+          },
+        },
+        extraPathGrants: [{ path: sharedPath, readOnly: true }],
+      }),
+    );
+
+    const resumed = await client.resume({
+      ...session.state,
+      manifest: new Manifest({
+        extraPathGrants: [{ path: sharedPath, readOnly: true }],
+      }),
+    });
+
+    expect(resumed.state.containerId).toBe('container-2');
+    expect(runCount).toBe(2);
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['rm', '-f', 'container-1']),
+      expect.anything(),
+    );
+  });
+
   it('restarts a running container when path grant mount policy changes', async () => {
     let runCount = 0;
     const inspections = new Map<string, DockerContainerInspection>();
@@ -3774,6 +3838,7 @@ describe('DockerSandboxClient unit behavior', () => {
 
   it('restores untrusted running RunState without touching its live resources', async () => {
     let runCount = 0;
+    let resolvedSecret = 'initial-secret';
     const inspections = new Map<string, DockerContainerInspection>();
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
@@ -3801,6 +3866,8 @@ describe('DockerSandboxClient unit behavior', () => {
     );
     const client = new DockerSandboxClient({
       workspaceBaseDir: rootDir,
+      image: 'client:image',
+      exposedPorts: [3000],
       snapshot: {
         type: 'local',
         baseDir: rootDir,
@@ -3808,6 +3875,13 @@ describe('DockerSandboxClient unit behavior', () => {
     });
     const session = await client.create(
       new Manifest({
+        environment: {
+          SECRET_ENV: {
+            value: '',
+            resolve: () => resolvedSecret,
+            ephemeral: true,
+          },
+        },
         entries: {
           'notes.txt': {
             type: 'file',
@@ -3818,6 +3892,13 @@ describe('DockerSandboxClient unit behavior', () => {
     );
 
     const serialized = await client.serializeSessionState(session.state);
+    serialized.image = 'untrusted:image';
+    serialized.environment = {
+      SECRET_ENV: 'stale-secret',
+      UNTRUSTED_ENV: 'untrusted-value',
+    };
+    serialized.defaultUser = 'root';
+    serialized.configuredExposedPorts = [9999];
     expect(serialized.snapshotFingerprint).toEqual(expect.any(String));
     expect(serialized.snapshotFingerprintVersion).toBe(
       'workspace_tree_sha256_v1',
@@ -3828,6 +3909,7 @@ describe('DockerSandboxClient unit behavior', () => {
       'drifted\n',
       'utf8',
     );
+    resolvedSecret = 'refreshed-secret';
 
     const persistedState = (await deserializeSandboxSessionStateEntry(
       client,
@@ -3842,6 +3924,17 @@ describe('DockerSandboxClient unit behavior', () => {
         ),
       },
       session.state.manifest,
+      {
+        clientOptions: {
+          image: 'run:image',
+          exposedPorts: [4000],
+          workspaceBaseDir: rootDir,
+        },
+        snapshot: {
+          type: 'local',
+          baseDir: rootDir,
+        },
+      },
     )) as DockerSandboxSessionState;
 
     const restored = await client.resume(persistedState);
@@ -3860,6 +3953,28 @@ describe('DockerSandboxClient unit behavior', () => {
         ([, args]) => args[0] === 'inspect',
       ),
     ).toBe(false);
+    expect(restored.state.image).toBe('run:image');
+    expect(restored.state.environment).toEqual({
+      SECRET_ENV: 'refreshed-secret',
+    });
+    expect(restored.state.defaultUser).not.toBe('root');
+    expect(restored.state.configuredExposedPorts).toEqual([4000]);
+    const restoredRunArgs = processMocks.runSandboxProcess.mock.calls.filter(
+      ([, args]) => args[0] === 'run',
+    )[1]?.[1];
+    expect(restoredRunArgs).toEqual(
+      expect.arrayContaining([
+        '-e',
+        'SECRET_ENV=refreshed-secret',
+        '-p',
+        '127.0.0.1::4000',
+        'run:image',
+      ]),
+    );
+    expect(restoredRunArgs).not.toContain('stale-secret');
+    expect(restoredRunArgs).not.toContain('UNTRUSTED_ENV=untrusted-value');
+    expect(restoredRunArgs).not.toContain('127.0.0.1::9999');
+    expect(restoredRunArgs).not.toContain('untrusted:image');
     await expect(
       readFile(join(session.state.workspaceRootPath, 'notes.txt'), 'utf8'),
     ).resolves.toBe('drifted\n');

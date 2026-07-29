@@ -518,6 +518,7 @@ class SerializedResumeFakeSandboxClient extends FakeSandboxClient {
 
 class RevalidatingLiveProcessFakeSandboxClient extends FakeSandboxClient {
   readonly reuseChecks: Manifest[] = [];
+  readonly reuseEnvironments: Array<Record<string, string> | undefined> = [];
 
   constructor(private readonly reuseResults: boolean[] = [true, true]) {
     super();
@@ -525,6 +526,9 @@ class RevalidatingLiveProcessFakeSandboxClient extends FakeSandboxClient {
 
   canReusePreservedOwnedSession(state: FakeSandboxSessionState): boolean {
     this.reuseChecks.push(state.manifest);
+    this.reuseEnvironments.push(
+      state.environment ? { ...state.environment } : undefined,
+    );
     return this.reuseResults[this.reuseChecks.length - 1] ?? false;
   }
 
@@ -2243,6 +2247,31 @@ describe('sandbox runner integration', () => {
     expect(result?.sessionState.providerState).not.toHaveProperty(
       'sessionIdentity',
     );
+  });
+
+  it('requires a trusted manifest before deserializing Docker RunState', async () => {
+    const client = new FakeSandboxClient();
+    Object.defineProperty(client, 'backendId', { value: 'docker' });
+    const deserializeSessionState = vi.spyOn(client, 'deserializeSessionState');
+
+    await expect(
+      deserializeSandboxSessionStateEntry(client, {
+        backendId: 'docker',
+        currentAgentKey: 'SandboxWorker',
+        currentAgentName: 'SandboxWorker',
+        sessionState: fakeSandboxSessionStateEnvelope(
+          {
+            sessionId: 'persisted',
+          },
+          {
+            backendId: 'docker',
+          },
+        ),
+      }),
+    ).rejects.toThrow(
+      'Docker RunState resume requires a current trusted manifest for the sandbox agent.',
+    );
+    expect(deserializeSessionState).not.toHaveBeenCalled();
   });
 
   it('resets required tool choice after a sandbox agent uses a tool', async () => {
@@ -5292,6 +5321,82 @@ describe('sandbox runner integration', () => {
       },
     ]);
     expect(client.closeCalls).toEqual([liveSession?.state.sessionId]);
+  });
+
+  it('refreshes trusted environment values before reusing a live Docker session', async () => {
+    let resolvedSecret = 'initial-secret';
+    const client = new DockerRevalidatingLiveProcessFakeSandboxClient();
+    const manifest = new Manifest({
+      environment: {
+        SECRET_ENV: {
+          value: '',
+          resolve: () => resolvedSecret,
+          ephemeral: true,
+        },
+      },
+      extraPathGrants: [
+        {
+          path: '/mnt/shared-data',
+          readOnly: true,
+        },
+      ],
+    });
+    const sandboxAgent = new SandboxAgent({
+      name: 'SandboxWorker',
+      model: new RecordingFakeModel([]),
+    });
+    const state = new RunState<unknown, Agent<unknown, any>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent as Agent<unknown, any>,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: {
+        client,
+        manifest,
+      },
+      runState: state,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: sandboxAgent as Agent<unknown, any>,
+      turnInput: [],
+    });
+    const liveSession = client.createdSessions[0]!;
+    liveSession.state.environment = {
+      SECRET_ENV: 'initial-secret',
+      PROVIDER_ENV: 'provider-value',
+    };
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+    resolvedSecret = 'refreshed-secret';
+
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: {
+        client,
+        manifest,
+      },
+      runState: state,
+    });
+    await secondManager.adoptPreservedOwnedSessions();
+
+    expect(client.reuseEnvironments).toEqual([
+      {
+        SECRET_ENV: 'initial-secret',
+        PROVIDER_ENV: 'provider-value',
+      },
+      {
+        SECRET_ENV: 'refreshed-secret',
+        PROVIDER_ENV: 'provider-value',
+      },
+    ]);
+    expect(liveSession.state.environment).toEqual({
+      SECRET_ENV: 'refreshed-secret',
+      PROVIDER_ENV: 'provider-value',
+    });
+
+    await secondManager.cleanup(state);
   });
 
   it('revalidates preserved live sessions before reusing their handles', async () => {

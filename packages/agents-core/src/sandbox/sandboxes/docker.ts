@@ -110,7 +110,11 @@ import {
 } from '../shared/typeGuards';
 import { validateCredentialPair as validateSandboxCredentialPair } from '../shared/credentials';
 import { sandboxPathGrantHostPath } from '../shared/hostPath';
-import { isRunStateSessionState } from '../internal/sessionStateTrust';
+import {
+  getRunStateSessionTrustedConfig,
+  isRunStateSessionState,
+} from '../internal/sessionStateTrust';
+import { stableJsonStringify } from '../shared/stableJson';
 
 const DEFAULT_DOCKER_IMAGE = 'python:3.14-slim';
 const DEFAULT_CONTAINER_COMMAND =
@@ -1036,12 +1040,39 @@ export class DockerSandboxClient implements SandboxClient<
   ): Promise<DockerSandboxSessionState> {
     attachDockerSnapshotExcludedPaths(state);
     if (isRunStateSessionState(state)) {
-      if (!(await localSnapshotIsRestorable(state))) {
+      const trustedConfig = getRunStateSessionTrustedConfig(state);
+      const resolvedOptions: DockerSandboxClientOptions = {
+        ...this.options,
+        ...(trustedConfig?.clientOptions as
+          DockerSandboxClientOptions | undefined),
+      };
+      const trustedState: DockerSandboxSessionState = {
+        ...state,
+        sessionIdentity: undefined,
+        image: resolvedOptions.image ?? DEFAULT_DOCKER_IMAGE,
+        environment: await state.manifest.resolveEnvironment(),
+        snapshotSpec:
+          (trustedConfig?.snapshot as LocalSandboxSnapshotSpec | undefined) ??
+          resolvedOptions.snapshot ??
+          null,
+        defaultUser: getHostDockerUser(),
+        configuredExposedPorts: normalizeExposedPorts(
+          resolvedOptions.exposedPorts,
+        ),
+        dockerVolumeNames: [],
+        exposedPorts: undefined,
+      };
+      attachDockerSnapshotExcludedPaths(trustedState);
+      if (!(await localSnapshotIsRestorable(trustedState))) {
         throw new UserError(
           'Docker sandbox resources are unavailable and no local snapshot could be restored.',
         );
       }
-      return await this.restoreSnapshotIntoNewWorkspace(state, archiveLimits);
+      return await this.restoreSnapshotIntoNewWorkspace(
+        trustedState,
+        archiveLimits,
+        resolvedOptions.workspaceBaseDir,
+      );
     }
     const containerRunning = await inspectContainerRunning(state.containerId);
     const workspaceExists = await pathExists(state.workspaceRootPath);
@@ -1111,12 +1142,10 @@ export class DockerSandboxClient implements SandboxClient<
   private async restoreSnapshotIntoNewWorkspace(
     state: DockerSandboxSessionState,
     archiveLimits?: SandboxArchiveLimits | null,
+    workspaceBaseDir = this.options.workspaceBaseDir,
   ): Promise<DockerSandboxSessionState> {
     const workspaceRootPath = await mkdtemp(
-      join(
-        this.options.workspaceBaseDir ?? tmpdir(),
-        'openai-agents-docker-sandbox-',
-      ),
+      join(workspaceBaseDir ?? tmpdir(), 'openai-agents-docker-sandbox-'),
     );
     try {
       const restoredState = await restoreLocalSnapshotToWorkspace(
@@ -1312,12 +1341,14 @@ async function inspectRunningDockerContainerForReuse(
     workspaceMountBeforeInspect,
     pathGrantMountsBeforeInspect,
     manifestBindMountsBeforeInspect,
+    state.manifest,
   );
   const fingerprintAfterInspect = dockerMountAuthorityFingerprint(
     sessionIdentity,
     workspaceMountAfterInspect,
     pathGrantMountsAfterInspect,
     manifestBindMountsAfterInspect,
+    state.manifest,
   );
   return {
     ownershipVerified: true,
@@ -1652,6 +1683,7 @@ function dockerMountAuthorityFingerprint(
   workspaceMount: DockerMountAuthority,
   pathGrantMounts: DockerPathGrantMount[],
   manifestBindMounts: DockerMountAuthority[],
+  manifest: Manifest,
 ): string {
   const mountedGrants = [...pathGrantMounts].sort((left, right) =>
     left.target < right.target ? -1 : left.target > right.target ? 1 : 0,
@@ -1661,11 +1693,15 @@ function dockerMountAuthorityFingerprint(
   );
   return createHash('sha256')
     .update(
-      JSON.stringify({
+      stableJsonStringify({
         sessionIdentity,
         workspaceMount,
         mountedGrants,
         mountedManifestBinds,
+        mountedManifestEntries: manifest
+          .mountTargetsForMaterialization()
+          .map(({ mountPath, entry }) => ({ mountPath, entry }))
+          .sort((left, right) => left.mountPath.localeCompare(right.mountPath)),
       }),
     )
     .digest('hex');
@@ -1963,7 +1999,7 @@ async function startDockerContainer(args: {
       '--label',
       `${DOCKER_SESSION_IDENTITY_LABEL}=${args.sessionIdentity}`,
       '--label',
-      `${DOCKER_MOUNT_AUTHORITY_FINGERPRINT_LABEL}=${dockerMountAuthorityFingerprint(args.sessionIdentity, workspaceMount, pathGrantMounts, manifestBindMounts)}`,
+      `${DOCKER_MOUNT_AUTHORITY_FINGERPRINT_LABEL}=${dockerMountAuthorityFingerprint(args.sessionIdentity, workspaceMount, pathGrantMounts, manifestBindMounts, args.manifest)}`,
       '-v',
       `${workspaceMount.source}:${args.manifestRoot}`,
       ...dockerExtraPathGrantMountArgs(pathGrantMounts),

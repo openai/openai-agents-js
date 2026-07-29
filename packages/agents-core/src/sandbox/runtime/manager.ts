@@ -59,6 +59,7 @@ import {
   runSandboxSessionPreStopHooks,
 } from './sessionLifecycle';
 import {
+  assertTrustedManifestForDockerRunState,
   deserializeSandboxSessionStateEntry,
   getPreviousSerializedSessionsByAgent,
   getSerializedSandboxState,
@@ -636,6 +637,10 @@ export class SandboxRuntimeManager<TContext> {
         client,
         entry,
         this.resolveTrustedManifestForAgentKey(agentKey),
+        {
+          clientOptions: this.sandboxConfig?.options,
+          snapshot: this.sandboxConfig?.snapshot,
+        },
       );
       if (!serializedState) {
         continue;
@@ -940,6 +945,10 @@ export class SandboxRuntimeManager<TContext> {
       client,
       serializedEntry,
       trustedManifest,
+      {
+        clientOptions: this.sandboxConfig?.options,
+        snapshot: this.sandboxConfig?.snapshot,
+      },
     );
     if (!serializedState) {
       return undefined;
@@ -975,6 +984,8 @@ export class SandboxRuntimeManager<TContext> {
       return undefined;
     }
 
+    assertTrustedManifestForDockerRunState(args.client, args.trustedManifest);
+
     if (liveEntry.reuseRejected) {
       await cleanupSandboxSession(liveEntry.session);
       forgetLivePreservedOwnedSessionHandle({
@@ -998,6 +1009,12 @@ export class SandboxRuntimeManager<TContext> {
           },
         )
       : liveEntry.session.state;
+    if (args.client.backendId === 'docker' && args.trustedManifest) {
+      candidateState.environment = {
+        ...(liveEntry.session.state.environment ?? {}),
+        ...(await args.trustedManifest.resolveEnvironment()),
+      };
+    }
     if (!(await canReuse.call(args.client, candidateState))) {
       rejectLivePreservedOwnedSessionHandle({
         state: this.runState,
@@ -1023,6 +1040,9 @@ export class SandboxRuntimeManager<TContext> {
             },
           ).manifest
         : candidateState.manifest;
+    if (args.client.backendId === 'docker') {
+      liveEntry.session.state.environment = candidateState.environment;
+    }
     return liveEntry;
   }
 
