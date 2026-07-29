@@ -1056,15 +1056,17 @@ function getToolSearchOutputReplacementKey(
 
 /**
  * Returns whether the provider can still resume a deferred server tool_search
- * call at `callIndex`: the call must remain in the final assistant turn,
- * followed only by that turn's client tool calls and their results.
+ * call at `callIndex` as of `endIndex` (exclusive): the call must remain in
+ * the latest assistant turn, followed only by that turn's client tool calls
+ * and their results.
  */
 function isAwaitingDeferredToolSearchResume(
   items: protocol.ModelItem[],
   callIndex: number,
+  endIndex: number,
 ): boolean {
   let sawClientToolResult = false;
-  for (let index = callIndex + 1; index < items.length; index += 1) {
+  for (let index = callIndex + 1; index < endIndex; index += 1) {
     const item = items[index];
     if (item.type === 'function_call_result') {
       sawClientToolResult = true;
@@ -1110,13 +1112,25 @@ function isAwaitingDeferredToolSearchResume(
 function dropAbandonedServerToolSearchCalls(
   items: protocol.ModelItem[],
 ): protocol.ModelItem[] {
-  const unresolvedCalls: Array<{ index: number; key: string | undefined }> =
-    [];
+  // A call leaves this queue either resolved (kept) or abandoned (dropped);
+  // only membership in abandonedCallIndexes removes an item from the history.
+  const pendingCalls: Array<{ index: number; key: string | undefined }> = [];
+  const abandonedCallIndexes = new Set<number>();
+  const purgeAbandonedCalls = (endIndex: number) => {
+    for (let i = pendingCalls.length - 1; i >= 0; i -= 1) {
+      const { index } = pendingCalls[i];
+      if (!isAwaitingDeferredToolSearchResume(items, index, endIndex)) {
+        // Past its resume window: mark the item for removal and stop tracking it.
+        abandonedCallIndexes.add(index);
+        pendingCalls.splice(i, 1);
+      }
+    }
+  };
 
   items.forEach((item, index) => {
     if (item.type === 'tool_search_call') {
       if (getToolSearchExecution(item) === 'server') {
-        unresolvedCalls.push({ index, key: getToolSearchMatchKey(item) });
+        pendingCalls.push({ index, key: getToolSearchMatchKey(item) });
       }
       return;
     }
@@ -1132,23 +1146,26 @@ function dropAbandonedServerToolSearchCalls(
     // the matching call; otherwise the result resolves the oldest pending one.
     const explicitCallId = getToolSearchProviderCallId(item);
     if (explicitCallId) {
-      const matchIndex = unresolvedCalls.findIndex(
+      const matchIndex = pendingCalls.findIndex(
         (call) => call.key === explicitCallId,
       );
       if (matchIndex >= 0) {
-        unresolvedCalls.splice(matchIndex, 1);
+        // Resolved by id: keep the call's item, stop tracking it.
+        pendingCalls.splice(matchIndex, 1);
       }
       return;
     }
 
-    unresolvedCalls.shift();
+    // An id-less output can only resolve a call whose resume window was still
+    // open when the output appeared; purge stale calls first so they cannot
+    // starve the live turn's call.
+    purgeAbandonedCalls(index);
+    // Resolved positionally: keep the oldest surviving call, stop tracking it.
+    pendingCalls.shift();
   });
 
-  const abandonedCallIndexes = new Set(
-    unresolvedCalls
-      .filter(({ index }) => !isAwaitingDeferredToolSearchResume(items, index))
-      .map(({ index }) => index),
-  );
+  // Calls still pending here survive only if their resume window is open.
+  purgeAbandonedCalls(items.length);
   if (abandonedCallIndexes.size === 0) {
     return items;
   }

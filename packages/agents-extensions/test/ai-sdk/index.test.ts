@@ -1511,6 +1511,119 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('does not let id-less server outputs resolve stale searches instead of the live call', () => {
+    // A server tool_search output without call_id pairs positionally. A stale
+    // abandoned call must be dropped before the output is consumed, so the
+    // output resolves the live turn's call rather than the stale one.
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        callId: 'ui_1',
+        name: 'ui_status',
+        arguments: '{"status":"searching"}',
+        status: 'completed',
+      },
+      {
+        type: 'tool_search_call',
+        id: 'srvtoolu_stale',
+        execution: 'server',
+        arguments: { query: 'billing tools' },
+        status: 'completed',
+      },
+      {
+        type: 'function_call_result',
+        callId: 'ui_1',
+        name: 'ui_status',
+        status: 'completed',
+        output: 'ok',
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Retrying the search.' }],
+        status: 'completed',
+      },
+      {
+        type: 'tool_search_call',
+        id: 'srvtoolu_new',
+        execution: 'server',
+        arguments: { query: 'billing tools again' },
+        status: 'completed',
+      },
+      {
+        type: 'tool_search_output',
+        execution: 'server',
+        status: 'completed',
+        tools: [{ type: 'tool_reference', toolName: 'lookup_invoice' }],
+      } as any,
+    ];
+
+    const messages = itemsToLanguageV2Messages(stubModel({}), items);
+    const toolSearchParts = messages.flatMap((message) =>
+      Array.isArray(message.content)
+        ? (message.content as any[]).filter(
+            (part) => part.toolName === 'tool_search',
+          )
+        : [],
+    );
+    expect(toolSearchParts.map((part) => [part.type, part.toolCallId])).toEqual(
+      [
+        ['tool-call', 'srvtoolu_new'],
+        ['tool-result', 'srvtoolu_new'],
+      ],
+    );
+  });
+
+  test('pairs an id-less deferred output with a call whose resume window is still open', () => {
+    // The purge must evaluate the resume window at the output's position:
+    // a deferred call followed only by client results is still resumable, so
+    // an id-less output arriving next belongs to it.
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        callId: 'ui_1',
+        name: 'ui_status',
+        arguments: '{"status":"searching"}',
+        status: 'completed',
+      },
+      {
+        type: 'tool_search_call',
+        id: 'srvtoolu_1',
+        execution: 'server',
+        arguments: { query: 'billing tools' },
+        status: 'completed',
+      },
+      {
+        type: 'function_call_result',
+        callId: 'ui_1',
+        name: 'ui_status',
+        status: 'completed',
+        output: 'ok',
+      },
+      {
+        type: 'tool_search_output',
+        execution: 'server',
+        status: 'completed',
+        tools: [{ type: 'tool_reference', toolName: 'lookup_invoice' }],
+      } as any,
+    ];
+
+    const messages = itemsToLanguageV2Messages(stubModel({}), items);
+    const toolSearchParts = messages.flatMap((message) =>
+      Array.isArray(message.content)
+        ? (message.content as any[]).filter(
+            (part) => part.toolName === 'tool_search',
+          )
+        : [],
+    );
+    expect(toolSearchParts.map((part) => [part.type, part.toolCallId])).toEqual(
+      [
+        ['tool-call', 'srvtoolu_1'],
+        ['tool-result', 'srvtoolu_1'],
+      ],
+    );
+  });
+
   test('keeps unresolved client tool_search calls even after the conversation continues', () => {
     // Only provider-executed (server) tool_search calls are subject to the
     // deferral cleanup; client calls are resolved by the runner and must be
@@ -1535,7 +1648,8 @@ describe('itemsToLanguageV2Messages', () => {
     const toolSearchCalls = messages.flatMap((message) =>
       Array.isArray(message.content)
         ? message.content.filter(
-            (part) => part.type === 'tool-call' && part.toolName === 'tool_search',
+            (part) =>
+              part.type === 'tool-call' && part.toolName === 'tool_search',
           )
         : [],
     );
