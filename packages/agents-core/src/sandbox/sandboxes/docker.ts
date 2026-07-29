@@ -435,8 +435,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   }
 
   protected override resolveCommandWorkdir(path?: string): string {
-    const logicalPath = this.resolveLogicalPath(path);
-    return joinSandboxLogicalPath(this.state.manifest.root, logicalPath);
+    return this.resolveContainerFilesystemPath(path);
   }
 
   protected override async spawnShellCommand(
