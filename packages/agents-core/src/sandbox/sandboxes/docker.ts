@@ -137,6 +137,18 @@ export interface DockerSandboxSessionState extends UnixLocalSandboxSessionState 
 
 export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxSessionState> {
   private containerClosed = false;
+  private readonly mountedPathGrants: Manifest['extraPathGrants'];
+
+  constructor(args: {
+    state: DockerSandboxSessionState;
+    defaultShell?: string;
+    archiveLimits?: SandboxArchiveLimits | null;
+  }) {
+    super(args);
+    this.mountedPathGrants = args.state.manifest.extraPathGrants.map(
+      (grant) => ({ ...grant }),
+    );
+  }
 
   override async resolveFilesystemRunAs(runAs?: string): Promise<undefined> {
     if (runAs && runAs.trim().length > 0) {
@@ -435,6 +447,13 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   }
 
   protected override resolveCommandWorkdir(path?: string): string {
+    const resolvedPath = new WorkspacePathPolicy({
+      root: this.state.manifest.root,
+      extraPathGrants: this.mountedPathGrants,
+    }).resolve(path);
+    if (resolvedPath.grant) {
+      return resolvedPath.path;
+    }
     const logicalPath = this.resolveLogicalPath(path);
     return joinSandboxLogicalPath(this.state.manifest.root, logicalPath);
   }

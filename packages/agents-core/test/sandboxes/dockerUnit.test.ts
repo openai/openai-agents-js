@@ -1895,6 +1895,87 @@ describe('DockerSandboxClient unit behavior', () => {
     );
   });
 
+  it('uses create-time path grants as command workdirs', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation(() =>
+      dockerSpawnResult({ stdout: '/mnt/shared-data\n', status: 0 }),
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        extraPathGrants: [
+          {
+            path: rootDir,
+            readOnly: true,
+          },
+          {
+            path: '/mnt/shared-data',
+            hostPath: rootDir,
+            readOnly: true,
+          },
+        ],
+      }),
+    );
+
+    await session.execCommand({
+      cmd: 'pwd',
+      workdir: rootDir,
+      yieldTimeMs: 0,
+    });
+    expect(childProcessMocks.spawn).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining([
+        'exec',
+        '-i',
+        '-w',
+        rootDir,
+        'container-123',
+        'pwd',
+      ]),
+      { stdio: 'pipe' },
+    );
+
+    childProcessMocks.spawn.mockClear();
+    await session.execCommand({
+      cmd: 'pwd',
+      workdir: '/mnt/shared-data',
+      yieldTimeMs: 0,
+    });
+    expect(childProcessMocks.spawn).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining([
+        'exec',
+        '-i',
+        '-w',
+        '/mnt/shared-data',
+        'container-123',
+        'pwd',
+      ]),
+      { stdio: 'pipe' },
+    );
+
+    childProcessMocks.spawn.mockClear();
+    await expect(
+      session.execCommand({
+        cmd: 'pwd',
+        workdir: '/mnt/not-granted',
+      }),
+    ).rejects.toThrow(/escapes the workspace root/);
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+  });
+
   it('uses the container filesystem for split path grants', async () => {
     const pngBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
     processMocks.runSandboxProcess.mockImplementation(
@@ -2213,7 +2294,7 @@ describe('DockerSandboxClient unit behavior', () => {
     );
   });
 
-  it('allows extra path grants during docker manifest application for host filesystem helpers', async () => {
+  it('limits dynamically applied path grants to host filesystem helpers', async () => {
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
         if (args[0] === 'version') {
@@ -2237,6 +2318,13 @@ describe('DockerSandboxClient unit behavior', () => {
     );
 
     await expect(session.pathExists(rootDir)).resolves.toBe(true);
+    await expect(
+      session.execCommand({
+        cmd: 'pwd',
+        workdir: rootDir,
+      }),
+    ).rejects.toThrow();
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
   });
 
   it('rejects applying in-container mounts that need missing Docker privileges', async () => {
