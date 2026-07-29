@@ -4,9 +4,12 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  realpath,
+  rename,
   rm,
   stat,
   symlink,
+  unlink,
   writeFile,
 } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
@@ -15,8 +18,16 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SandboxProcessResult } from '../../src/sandbox/sandboxes/shared/runProcess';
+import { rebindPersistedPathGrants } from '../../src/sandbox/sandboxes/shared/manifestPersistence';
+import {
+  deserializeSandboxSessionStateEntry,
+  toSessionStateEnvelope,
+} from '../../src/sandbox/runtime/sessionState';
 
 const dockerStdinWrites: Array<string | Uint8Array> = [];
+const dockerMountAuthorityFingerprintLabel =
+  'openai-agents-sandbox.mount-authority-fingerprint';
+const dockerSessionIdentityLabel = 'openai-agents-sandbox.session-identity';
 const processMocks = vi.hoisted(() => ({
   runSandboxProcess: vi.fn(),
 }));
@@ -40,6 +51,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 import {
   dockerVolumeMountStrategy,
   DockerSandboxClient,
+  type DockerSandboxSessionState,
   inContainerMountStrategy,
   Manifest,
   NoopSnapshotSpec,
@@ -62,15 +74,101 @@ const failure = (stderr: string): SandboxProcessResult => ({
   timedOut: false,
 });
 
+function dockerRunLabels(args: string[]): Record<string, string> {
+  return Object.fromEntries(
+    args.flatMap((arg, index) => {
+      if (arg !== '--label') {
+        return [];
+      }
+      const value = args[index + 1];
+      const separatorIndex = value?.indexOf('=') ?? -1;
+      return separatorIndex > 0
+        ? [[value!.slice(0, separatorIndex), value!.slice(separatorIndex + 1)]]
+        : [];
+    }),
+  );
+}
+
+function dockerWorkspaceMount(source: string, target = '/workspace') {
+  return [
+    {
+      Type: 'bind',
+      Source: source,
+      Destination: target,
+      RW: true,
+    },
+  ];
+}
+
+type DockerContainerInspection = {
+  labels: Record<string, string>;
+  mounts: ReturnType<typeof dockerWorkspaceMount>;
+};
+
+function dockerRunInspection(args: string[]): DockerContainerInspection {
+  const workspaceMountIndex = args.indexOf('-v');
+  const workspaceMount = args[workspaceMountIndex + 1] ?? '';
+  const separatorIndex = workspaceMount.indexOf(':');
+  const mounts = dockerWorkspaceMount(
+    workspaceMount.slice(0, separatorIndex),
+    workspaceMount.slice(separatorIndex + 1),
+  );
+  for (let index = 0; index < args.length - 1; index += 1) {
+    if (args[index] !== '--mount') {
+      continue;
+    }
+    const options = Object.fromEntries(
+      (args[index + 1] ?? '').split(',').map((option) => {
+        const optionSeparatorIndex = option.indexOf('=');
+        return optionSeparatorIndex === -1
+          ? [option, true]
+          : [
+              option.slice(0, optionSeparatorIndex),
+              option.slice(optionSeparatorIndex + 1),
+            ];
+      }),
+    );
+    if (options.type !== 'bind') {
+      continue;
+    }
+    mounts.push({
+      Type: 'bind',
+      Source: String(options.source),
+      Destination: String(options.target),
+      RW: options.readonly !== true,
+    });
+  }
+  return {
+    labels: dockerRunLabels(args),
+    mounts,
+  };
+}
+
+function dockerInspectionResult(
+  inspections: Map<string, DockerContainerInspection>,
+  args: string[],
+): SandboxProcessResult | undefined {
+  const inspection = inspections.get(args[5]!);
+  if (args[4] === '{{json .Config.Labels}}') {
+    return success(JSON.stringify(inspection?.labels ?? {}));
+  }
+  if (args[4] === '{{json .Mounts}}') {
+    return success(JSON.stringify(inspection?.mounts ?? []));
+  }
+  return undefined;
+}
+
 function dockerSpawnResult(args: {
   stdout?: string;
   stderr?: string;
   status?: number;
+  remainActive?: boolean;
 }) {
   const child = new EventEmitter() as EventEmitter & {
     stdout: PassThrough;
     stderr: PassThrough;
     stdin: { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> };
+    kill: ReturnType<typeof vi.fn>;
   };
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
@@ -80,17 +178,28 @@ function dockerSpawnResult(args: {
     }),
     end: vi.fn(),
   };
-  queueMicrotask(() => {
-    if (args.stdout) {
-      child.stdout.write(args.stdout);
-    }
-    if (args.stderr) {
-      child.stderr.write(args.stderr);
-    }
+  const close = (status: number | null, signal: NodeJS.Signals | null) => {
     child.stdout.end();
     child.stderr.end();
-    child.emit('close', args.status ?? 0);
+    child.emit('close', status, signal);
+  };
+  child.kill = vi.fn(() => {
+    queueMicrotask(() => {
+      close(null, 'SIGTERM');
+    });
+    return true;
   });
+  if (!args.remainActive) {
+    queueMicrotask(() => {
+      if (args.stdout) {
+        child.stdout.write(args.stdout);
+      }
+      if (args.stderr) {
+        child.stderr.write(args.stderr);
+      }
+      close(args.status ?? 0, null);
+    });
+  }
   return child;
 }
 
@@ -322,10 +431,11 @@ describe('DockerSandboxClient unit behavior', () => {
       ([, args]) => args[0] === 'run',
     );
     const runArgs: string[] = runCall?.[1] ?? [];
+    const resolvedHostDataDir = await realpath(hostDataDir);
     expect(runArgs).toEqual(
       expect.arrayContaining([
         '--mount',
-        `type=bind,source=${hostDataDir},target=/workspace/mounted/host,readonly`,
+        `type=bind,source=${resolvedHostDataDir},target=/workspace/mounted/host,readonly`,
       ]),
     );
     expect(
@@ -1848,10 +1958,11 @@ describe('DockerSandboxClient unit behavior', () => {
     const runCall = processMocks.runSandboxProcess.mock.calls.find(
       ([, args]) => args[0] === 'run',
     );
+    const resolvedRootDir = await realpath(rootDir);
     expect(runCall?.[1]).toEqual(
       expect.arrayContaining([
         '--mount',
-        `type=bind,source=${rootDir},target=${rootDir},readonly`,
+        `type=bind,source=${resolvedRootDir},target=${rootDir},readonly`,
       ]),
     );
   });
@@ -1887,10 +1998,11 @@ describe('DockerSandboxClient unit behavior', () => {
     const runCall = processMocks.runSandboxProcess.mock.calls.find(
       ([, args]) => args[0] === 'run',
     );
+    const resolvedRootDir = await realpath(rootDir);
     expect(runCall?.[1]).toEqual(
       expect.arrayContaining([
         '--mount',
-        `type=bind,source=${rootDir},target=/mnt/shared-data,readonly`,
+        `type=bind,source=${resolvedRootDir},target=/mnt/shared-data,readonly`,
       ]),
     );
   });
@@ -2155,8 +2267,420 @@ describe('DockerSandboxClient unit behavior', () => {
     ]);
   });
 
-  it('restarts a running container before using rebound path grants', async () => {
+  it('allows live-session reuse with unchanged ordinary path grants', async () => {
     let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    const activeChild = dockerSpawnResult({ remainActive: true });
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockReturnValue(activeChild);
+    const sharedPath = join(rootDir, 'shared-data');
+    await mkdir(sharedPath, { recursive: true });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        extraPathGrants: [
+          {
+            path: sharedPath,
+            readOnly: true,
+          },
+        ],
+      }),
+    );
+    const activeProcess = await session.exec({
+      cmd: 'sleep 60',
+      yieldTimeMs: 0,
+    });
+
+    expect(activeProcess.sessionId).toBe(1);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state),
+    ).resolves.toBe(true);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        clientOptions: { image: 'different-image' },
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        clientOptions: { exposedPorts: [8080] },
+      }),
+    ).resolves.toBe(false);
+    expect(activeChild.kill).not.toHaveBeenCalled();
+    expect(runCount).toBe(1);
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['rm', '-f', 'container-1']),
+      expect.anything(),
+    );
+
+    await session.close();
+  });
+
+  it('preserves live reuse after runtime files are materialized', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(new Manifest());
+    await session.applyManifest(
+      new Manifest({
+        entries: {
+          'runtime.txt': {
+            type: 'file',
+            content: 'runtime',
+          },
+        },
+      }),
+    );
+
+    await expect(
+      client.canReusePreservedOwnedSession(session.state),
+    ).resolves.toBe(true);
+    expect(runCount).toBe(1);
+
+    await session.close();
+  });
+
+  it('restarts when container account provisioning changes', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm' || args[0] === 'exec') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(new Manifest());
+
+    const resumed = await client.resume({
+      ...session.state,
+      manifest: new Manifest({
+        users: [{ name: 'sandbox-user' }],
+      }),
+    });
+
+    expect(resumed.state.containerId).toBe('container-2');
+    expect(runCount).toBe(2);
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['rm', '-f', 'container-1']),
+      expect.anything(),
+    );
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['exec', '-u', 'root', 'container-2']),
+      expect.anything(),
+    );
+  });
+
+  it.each([
+    ['replaced persistent', 'old', 'new', false],
+    ['replaced ephemeral', 'old', 'new', true],
+    ['added', undefined, 'new', false],
+    ['removed', 'old', undefined, false],
+  ])(
+    'rejects changed %s non-mount entries without removing the container',
+    async (_kind, initialContent, currentContent, ephemeral) => {
+      let runCount = 0;
+      const inspections = new Map<string, DockerContainerInspection>();
+      processMocks.runSandboxProcess.mockImplementation(
+        async (_command: string, args: string[]) => {
+          if (args[0] === 'version') {
+            return success('Docker version test');
+          }
+          if (args[0] === 'run') {
+            runCount += 1;
+            const containerId = `container-${runCount}`;
+            inspections.set(containerId, dockerRunInspection(args));
+            return success(`${containerId}\n`);
+          }
+          if (args[0] === 'inspect') {
+            const inspection = dockerInspectionResult(inspections, args);
+            if (inspection) {
+              return inspection;
+            }
+            return success('true\n');
+          }
+          if (args[0] === 'rm') {
+            return success();
+          }
+          return failure('unexpected docker command');
+        },
+      );
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+      });
+      const session = await client.create(
+        new Manifest({
+          entries:
+            initialContent === undefined
+              ? {}
+              : {
+                  'config.txt': {
+                    type: 'file',
+                    content: initialContent,
+                    ephemeral,
+                  },
+                },
+        }),
+      );
+
+      const changedState = {
+        ...session.state,
+        manifest: new Manifest({
+          entries:
+            currentContent === undefined
+              ? {}
+              : {
+                  'config.txt': {
+                    type: 'file' as const,
+                    content: currentContent,
+                    ephemeral,
+                  },
+                },
+        }),
+      };
+
+      await expect(
+        client.canReusePreservedOwnedSession(changedState, {
+          revalidateManifestEntries: true,
+        }),
+      ).rejects.toThrow(
+        'Docker sandbox resume cannot apply changes to non-mount manifest entries',
+      );
+      expect(runCount).toBe(1);
+      expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+        'docker',
+        expect.arrayContaining(['rm', '-f', 'container-1']),
+        expect.anything(),
+      );
+
+      await session.close();
+    },
+  );
+
+  it('rejects a fully swapped running Docker session without deleting it', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const sharedPath = join(rootDir, 'shared-data');
+    await mkdir(sharedPath);
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: new NoopSnapshotSpec(),
+    });
+    const manifest = new Manifest({
+      extraPathGrants: [{ path: sharedPath, readOnly: true }],
+    });
+    const firstSession = await client.create(manifest);
+    const secondSession = await client.create(manifest);
+    const firstProviderState = await client.serializeSessionState(
+      firstSession.state,
+    );
+    const secondProviderState = await client.serializeSessionState(
+      secondSession.state,
+    );
+    const swappedEnvelope = toSessionStateEnvelope(
+      client.backendId,
+      firstSession.state,
+      firstProviderState,
+    );
+    swappedEnvelope.providerState = {
+      ...secondProviderState,
+    };
+    (swappedEnvelope as unknown as Record<string, unknown>).sessionIdentity =
+      secondSession.state.sessionIdentity;
+    const swappedState = (await deserializeSandboxSessionStateEntry(
+      client,
+      {
+        backendId: client.backendId,
+        currentAgentKey: 'SandboxWorker',
+        currentAgentName: 'SandboxWorker',
+        sessionState: swappedEnvelope,
+      },
+      manifest,
+    )) as DockerSandboxSessionState;
+
+    await expect(
+      client.canReusePreservedOwnedSession(swappedState),
+    ).resolves.toBe(false);
+    expect(swappedState).not.toHaveProperty('sessionIdentity');
+
+    await expect(client.resume(swappedState)).rejects.toThrow(
+      'Docker sandbox resources are unavailable and no local snapshot could be restored.',
+    );
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['rm', '-f', 'container-2']),
+      expect.anything(),
+    );
+    expect(runCount).toBe(2);
+
+    await firstSession.close();
+    await secondSession.close();
+  });
+
+  it('reuses a legacy zero-grant container with exact declared bind mounts', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const declaredSource = join(rootDir, 'declared');
+    await mkdir(declaredSource);
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          declared: {
+            type: 'mount',
+            source: declaredSource,
+            mountPath: 'mounted/declared',
+            mountStrategy: { type: 'local_bind' },
+          },
+        },
+      }),
+    );
+    const inspection = inspections.get(session.state.containerId)!;
+    delete inspection.labels[dockerSessionIdentityLabel];
+    delete inspection.labels[dockerMountAuthorityFingerprintLabel];
+    delete session.state.sessionIdentity;
+
+    const resumed = await client.resume(session.state);
+
+    expect(resumed.state.containerId).toBe('container-1');
+    expect(runCount).toBe(1);
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['rm', '-f', 'container-1']),
+      expect.anything(),
+    );
+
+    await resumed.close();
+  });
+
+  it('rejects a container that lost its current session identity label', async () => {
+    let runCount = 0;
+    let workspaceSource = '';
+    const declaredSource = join(rootDir, 'declared');
+    await mkdir(declaredSource);
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
         if (args[0] === 'version') {
@@ -2167,6 +2691,702 @@ describe('DockerSandboxClient unit behavior', () => {
           return success(`container-${runCount}\n`);
         }
         if (args[0] === 'inspect') {
+          if (args[4] === '{{json .Config.Labels}}') {
+            return success(JSON.stringify({ 'openai-agents-sandbox': 'true' }));
+          }
+          if (args[4] === '{{json .Mounts}}') {
+            return success(
+              JSON.stringify([
+                {
+                  Type: 'bind',
+                  Source: workspaceSource,
+                  Destination: '/workspace',
+                  RW: true,
+                },
+                {
+                  Type: 'bind',
+                  Source: declaredSource,
+                  Destination: '/workspace/mounted/declared',
+                  RW: false,
+                },
+              ]),
+            );
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          declared: {
+            type: 'mount',
+            source: declaredSource,
+            mountPath: 'mounted/declared',
+            mountStrategy: { type: 'local_bind' },
+          },
+        },
+      }),
+    );
+    workspaceSource = session.state.workspaceRootPath;
+
+    await expect(client.resume(session.state)).rejects.toThrow(
+      'Docker sandbox container identity could not be verified',
+    );
+    expect(runCount).toBe(1);
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['rm', '-f', 'container-1']),
+      expect.anything(),
+    );
+
+    await session.close();
+  });
+
+  it('restarts an identity-verified container without a mount fingerprint', async () => {
+    let runCount = 0;
+    let workspaceSource = '';
+    const undeclaredSource = join(rootDir, 'undeclared');
+    await mkdir(undeclaredSource);
+    const labelsByContainer = new Map<string, Record<string, string>>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          labelsByContainer.set(containerId, dockerRunLabels(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          if (args[4] === '{{json .Config.Labels}}') {
+            return success(
+              JSON.stringify(labelsByContainer.get(args[5]!) ?? {}),
+            );
+          }
+          if (args[4] === '{{json .Mounts}}') {
+            return success(
+              JSON.stringify([
+                {
+                  Type: 'bind',
+                  Source: workspaceSource,
+                  Destination: '/workspace',
+                  RW: true,
+                },
+                {
+                  Type: 'bind',
+                  Source: undeclaredSource,
+                  Destination: '/mnt/undeclared',
+                  RW: true,
+                },
+              ]),
+            );
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(new Manifest());
+    workspaceSource = session.state.workspaceRootPath;
+    delete labelsByContainer.get(session.state.containerId)?.[
+      dockerMountAuthorityFingerprintLabel
+    ];
+    expect(
+      labelsByContainer.get(session.state.containerId)?.[
+        dockerSessionIdentityLabel
+      ],
+    ).toBe(session.state.sessionIdentity);
+
+    const resumed = await client.resume(session.state);
+
+    expect(resumed.state.containerId).toBe('container-2');
+    expect(runCount).toBe(2);
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['rm', '-f', 'container-1']),
+      expect.anything(),
+    );
+  });
+
+  it('restarts when persisted state omits a manifest bind mount', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const declaredSource = join(rootDir, 'declared');
+    await mkdir(declaredSource);
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          declared: {
+            type: 'mount',
+            source: declaredSource,
+            mountPath: 'mounted/declared',
+            mountStrategy: { type: 'local_bind' },
+          },
+        },
+      }),
+    );
+
+    const unchanged = await client.resume(session.state);
+    const resumed = await client.resume({
+      ...unchanged.state,
+      manifest: new Manifest(),
+    });
+
+    expect(unchanged.state.containerId).toBe('container-1');
+    expect(resumed.state.containerId).toBe('container-2');
+    expect(runCount).toBe(2);
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['rm', '-f', 'container-1']),
+      expect.anything(),
+    );
+    const secondRunArgs = processMocks.runSandboxProcess.mock.calls.filter(
+      ([, args]) => args[0] === 'run',
+    )[1]?.[1];
+    expect(secondRunArgs).not.toContain(
+      `type=bind,source=${await realpath(declaredSource)},target=/workspace/mounted/declared,readonly`,
+    );
+  });
+
+  it('restarts when a path-granted session changes a non-bind mount', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm' || args[0] === 'volume') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const sharedPath = join(rootDir, 'shared-data');
+    await mkdir(sharedPath);
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          logs: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            mountPath: '/mnt/logs',
+            mountStrategy: dockerVolumeMountStrategy({
+              driver: 'rclone',
+            }),
+          },
+        },
+        extraPathGrants: [{ path: sharedPath, readOnly: true }],
+      }),
+    );
+
+    const resumed = await client.resume({
+      ...session.state,
+      manifest: new Manifest({
+        extraPathGrants: [{ path: sharedPath, readOnly: true }],
+      }),
+    });
+
+    expect(resumed.state.containerId).toBe('container-2');
+    expect(runCount).toBe(2);
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['rm', '-f', 'container-1']),
+      expect.anything(),
+    );
+  });
+
+  it('restarts a running container when path grant mount policy changes', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const sharedPath = join(rootDir, 'shared-data');
+    await mkdir(sharedPath, { recursive: true });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        extraPathGrants: [
+          {
+            path: sharedPath,
+            readOnly: false,
+          },
+        ],
+      }),
+    );
+    const reboundState = rebindPersistedPathGrants(
+      session.state,
+      new Manifest({
+        extraPathGrants: [
+          {
+            path: sharedPath,
+            readOnly: true,
+          },
+        ],
+      }),
+    );
+
+    const resumed = await client.resume(reboundState);
+    const resumedAgain = await client.resume(resumed.state);
+
+    expect(resumed.state.containerId).toBe('container-2');
+    expect(resumedAgain.state.containerId).toBe('container-2');
+    expect(runCount).toBe(2);
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['rm', '-f', 'container-1']),
+      expect.anything(),
+    );
+  });
+
+  it('restarts when persisted state omits a container-mounted path grant', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const retainedPath = join(rootDir, 'retained-data');
+    const omittedPath = join(rootDir, 'omitted-data');
+    await mkdir(retainedPath, { recursive: true });
+    await mkdir(omittedPath, { recursive: true });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        extraPathGrants: [
+          { path: retainedPath, readOnly: true },
+          { path: omittedPath, readOnly: true },
+        ],
+      }),
+    );
+
+    const resumed = await client.resume({
+      ...session.state,
+      manifest: new Manifest({
+        extraPathGrants: [{ path: retainedPath, readOnly: true }],
+      }),
+    });
+
+    expect(resumed.state.containerId).toBe('container-2');
+    expect(runCount).toBe(2);
+    const secondRunArgs = processMocks.runSandboxProcess.mock.calls.filter(
+      ([, args]) => args[0] === 'run',
+    )[1]?.[1];
+    const resolvedRetainedPath = await realpath(retainedPath);
+    const resolvedOmittedPath = await realpath(omittedPath);
+    expect(secondRunArgs).toEqual(
+      expect.arrayContaining([
+        '--mount',
+        `type=bind,source=${resolvedRetainedPath},target=${retainedPath},readonly`,
+      ]),
+    );
+    expect(secondRunArgs).not.toContain(
+      `type=bind,source=${resolvedOmittedPath},target=${omittedPath},readonly`,
+    );
+  });
+
+  it('restarts a running container before using rebound path grants', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const originalHostPath = join(rootDir, 'original-source');
+    const reboundHostPath = join(rootDir, 'rebound-source');
+    await mkdir(originalHostPath);
+    await mkdir(reboundHostPath);
+    const session = await client.create(
+      new Manifest({
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath: originalHostPath,
+            readOnly: false,
+          },
+        ],
+      }),
+    );
+
+    const resumed = await client.resume({
+      ...session.state,
+      manifest: new Manifest({
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath: reboundHostPath,
+            readOnly: true,
+          },
+        ],
+      }),
+    });
+
+    expect(resumed.state.containerId).toBe('container-2');
+    await expect(
+      client.canReusePreservedOwnedSession({
+        ...session.state,
+        manifest: new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/shared-data',
+              hostPath: reboundHostPath,
+              readOnly: true,
+            },
+          ],
+        }),
+      }),
+    ).resolves.toBe(false);
+    const calls = processMocks.runSandboxProcess.mock.calls;
+    const removeIndex = calls.findIndex(
+      ([, args]) => args[0] === 'rm' && args[2] === 'container-1',
+    );
+    const secondRunIndex = calls.findIndex(
+      ([, args], index) => index > removeIndex && args[0] === 'run',
+    );
+    expect(removeIndex).toBeGreaterThanOrEqual(0);
+    expect(secondRunIndex).toBeGreaterThan(removeIndex);
+    const resolvedReboundHostPath = await realpath(reboundHostPath);
+    expect(calls[secondRunIndex]?.[1]).toEqual(
+      expect.arrayContaining([
+        '--mount',
+        `type=bind,source=${resolvedReboundHostPath},target=/mnt/shared-data,readonly`,
+      ]),
+    );
+  });
+
+  it('restarts when a path grant host symlink is retargeted', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const firstSource = join(rootDir, 'first-source');
+    const secondSource = join(rootDir, 'second-source');
+    const hostPath = join(rootDir, 'current-source');
+    await mkdir(firstSource);
+    await mkdir(secondSource);
+    await symlink(firstSource, hostPath);
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath,
+            readOnly: true,
+          },
+        ],
+      }),
+    );
+    await unlink(hostPath);
+    await symlink(secondSource, hostPath);
+
+    const resumed = await client.resume(session.state);
+
+    expect(resumed.state.containerId).toBe('container-2');
+    expect(runCount).toBe(2);
+    const secondRunArgs = processMocks.runSandboxProcess.mock.calls.filter(
+      ([, args]) => args[0] === 'run',
+    )[1]?.[1];
+    expect(secondRunArgs).toEqual(
+      expect.arrayContaining([
+        '--mount',
+        `type=bind,source=${await realpath(secondSource)},target=/mnt/shared-data,readonly`,
+      ]),
+    );
+    expect(secondRunArgs).not.toContain(
+      `type=bind,source=${await realpath(firstSource)},target=/mnt/shared-data,readonly`,
+    );
+  });
+
+  it('restarts when a path grant source is replaced at the same real path', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const sharedPath = join(rootDir, 'shared-data');
+    const previousSharedPath = join(rootDir, 'previous-shared-data');
+    await mkdir(sharedPath);
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath: sharedPath,
+            readOnly: true,
+          },
+        ],
+      }),
+    );
+    await rename(sharedPath, previousSharedPath);
+    await mkdir(sharedPath);
+
+    const resumed = await client.resume(session.state);
+
+    expect(resumed.state.containerId).toBe('container-2');
+    expect(runCount).toBe(2);
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['rm', '-f', 'container-1']),
+      expect.anything(),
+    );
+  });
+
+  it('declines live reuse when a path grant source disappears', async () => {
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          inspections.set('container-1', dockerRunInspection(args));
+          return success('container-1\n');
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const sharedPath = join(rootDir, 'shared-data');
+    await mkdir(sharedPath);
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        extraPathGrants: [
+          {
+            path: '/mnt/shared-data',
+            hostPath: sharedPath,
+            readOnly: true,
+          },
+        ],
+      }),
+    );
+    await rm(sharedPath, { recursive: true });
+
+    await expect(
+      client.canReusePreservedOwnedSession(session.state),
+    ).resolves.toBe(false);
+
+    await session.close();
+  });
+
+  it('restarts when a path grant source changes during container inspection', async () => {
+    let runCount = 0;
+    let sourceReplaced = false;
+    const inspections = new Map<string, DockerContainerInspection>();
+    const sharedPath = join(rootDir, 'shared-data');
+    const previousSharedPath = join(rootDir, 'previous-shared-data');
+    await mkdir(sharedPath);
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          if (args[4] === '{{json .Config.Labels}}') {
+            if (!sourceReplaced) {
+              sourceReplaced = true;
+              await rename(sharedPath, previousSharedPath);
+              await mkdir(sharedPath);
+            }
+          }
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
           return success('true\n');
         }
         if (args[0] === 'rm') {
@@ -2183,43 +3403,21 @@ describe('DockerSandboxClient unit behavior', () => {
         extraPathGrants: [
           {
             path: '/mnt/shared-data',
-            hostPath: join(rootDir, 'original-source'),
-            readOnly: false,
-          },
-        ],
-      }),
-    );
-    const reboundHostPath = join(rootDir, 'rebound-source');
-
-    const resumed = await client.resume({
-      ...session.state,
-      manifest: new Manifest({
-        extraPathGrants: [
-          {
-            path: '/mnt/shared-data',
-            hostPath: reboundHostPath,
+            hostPath: sharedPath,
             readOnly: true,
           },
         ],
       }),
-    });
+    );
+
+    const resumed = await client.resume(session.state);
 
     expect(resumed.state.containerId).toBe('container-2');
-    expect(client.canReusePreservedOwnedSession(session.state)).toBe(false);
-    const calls = processMocks.runSandboxProcess.mock.calls;
-    const removeIndex = calls.findIndex(
-      ([, args]) => args[0] === 'rm' && args[2] === 'container-1',
-    );
-    const secondRunIndex = calls.findIndex(
-      ([, args], index) => index > removeIndex && args[0] === 'run',
-    );
-    expect(removeIndex).toBeGreaterThanOrEqual(0);
-    expect(secondRunIndex).toBeGreaterThan(removeIndex);
-    expect(calls[secondRunIndex]?.[1]).toEqual(
-      expect.arrayContaining([
-        '--mount',
-        `type=bind,source=${reboundHostPath},target=/mnt/shared-data,readonly`,
-      ]),
+    expect(runCount).toBe(2);
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['rm', '-f', 'container-1']),
+      expect.anything(),
     );
   });
 
@@ -2283,6 +3481,11 @@ describe('DockerSandboxClient unit behavior', () => {
     expect(serialized.__openaiAgentsRedactedHostPathGrantPaths).toEqual([
       '/mnt/shared-data',
     ]);
+    expect(serialized.sessionIdentity).toBe(session.state.sessionIdentity);
+    expect(session.state.materializedEntriesFingerprint).toBeDefined();
+    expect(serialized).not.toHaveProperty('materializedEntriesFingerprint');
+    expect(deserialized.sessionIdentity).toBe(session.state.sessionIdentity);
+    expect(deserialized.materializedEntriesFingerprint).toBeUndefined();
     expect(deserialized.manifest.extraPathGrants).toEqual([
       {
         path: '/mnt/shared-data',
@@ -2295,13 +3498,28 @@ describe('DockerSandboxClient unit behavior', () => {
   });
 
   it('limits dynamically applied path grants to host filesystem helpers', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
         if (args[0] === 'version') {
           return success('Docker version test');
         }
         if (args[0] === 'run') {
-          return success('container-123\n');
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
         }
         return failure('unexpected docker command');
       },
@@ -2325,6 +3543,21 @@ describe('DockerSandboxClient unit behavior', () => {
       }),
     ).rejects.toThrow();
     expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+
+    const resumed = await client.resume(session.state);
+
+    expect(resumed.state.containerId).toBe('container-2');
+    expect(runCount).toBe(2);
+    const secondRunCall = processMocks.runSandboxProcess.mock.calls.filter(
+      ([, args]) => args[0] === 'run',
+    )[1];
+    const resolvedRootDir = await realpath(rootDir);
+    expect(secondRunCall?.[1]).toEqual(
+      expect.arrayContaining([
+        '--mount',
+        `type=bind,source=${resolvedRootDir},target=${rootDir}`,
+      ]),
+    );
   });
 
   it('rejects applying in-container mounts that need missing Docker privileges', async () => {
@@ -2805,17 +4038,172 @@ describe('DockerSandboxClient unit behavior', () => {
     ).rejects.toThrow();
   });
 
-  it('does not restore a local snapshot over a drifted live workspace', async () => {
+  it('restores untrusted running RunState without touching its live resources', async () => {
+    let runCount = 0;
+    let resolvedSecret = 'initial-secret';
+    const inspections = new Map<string, DockerContainerInspection>();
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
         if (args[0] === 'version') {
           return success('Docker version test');
         }
         if (args[0] === 'run') {
-          return success('container-123\n');
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
         }
         if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
           return success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      image: 'client:image',
+      exposedPorts: [3000],
+      snapshot: {
+        type: 'local',
+        baseDir: rootDir,
+      },
+    });
+    const session = await client.create(
+      new Manifest({
+        environment: {
+          SECRET_ENV: {
+            value: '',
+            resolve: () => resolvedSecret,
+            ephemeral: true,
+          },
+        },
+        entries: {
+          'notes.txt': {
+            type: 'file',
+            content: 'snapshot\n',
+          },
+        },
+      }),
+    );
+
+    const serialized = await client.serializeSessionState(session.state);
+    serialized.image = 'untrusted:image';
+    serialized.environment = {
+      SECRET_ENV: 'stale-secret',
+      UNTRUSTED_ENV: 'untrusted-value',
+    };
+    serialized.defaultUser = 'root';
+    serialized.configuredExposedPorts = [9999];
+    expect(serialized.snapshotFingerprint).toEqual(expect.any(String));
+    expect(serialized.snapshotFingerprintVersion).toBe(
+      'workspace_tree_sha256_v1',
+    );
+
+    await writeFile(
+      join(session.state.workspaceRootPath, 'notes.txt'),
+      'drifted\n',
+      'utf8',
+    );
+    resolvedSecret = 'refreshed-secret';
+
+    const persistedState = (await deserializeSandboxSessionStateEntry(
+      client,
+      {
+        backendId: client.backendId,
+        currentAgentKey: 'SandboxWorker',
+        currentAgentName: 'SandboxWorker',
+        sessionState: toSessionStateEnvelope(
+          client.backendId,
+          session.state,
+          serialized,
+        ),
+      },
+      session.state.manifest,
+      {
+        clientOptions: {
+          image: 'run:image',
+          exposedPorts: [4000],
+          workspaceBaseDir: rootDir,
+        },
+        snapshot: {
+          type: 'local',
+          baseDir: rootDir,
+        },
+      },
+    )) as DockerSandboxSessionState;
+
+    const restored = await client.resume(persistedState);
+
+    expect(restored.state.containerId).toBe('container-2');
+    expect(restored.state.workspaceRootPath).not.toBe(
+      session.state.workspaceRootPath,
+    );
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['rm', '-f', 'container-1']),
+      expect.anything(),
+    );
+    expect(
+      processMocks.runSandboxProcess.mock.calls.some(
+        ([, args]) => args[0] === 'inspect',
+      ),
+    ).toBe(false);
+    expect(restored.state.image).toBe('run:image');
+    expect(restored.state.environment).toEqual({
+      SECRET_ENV: 'refreshed-secret',
+    });
+    expect(restored.state.defaultUser).not.toBe('root');
+    expect(restored.state.configuredExposedPorts).toEqual([4000]);
+    const restoredRunArgs = processMocks.runSandboxProcess.mock.calls.filter(
+      ([, args]) => args[0] === 'run',
+    )[1]?.[1];
+    expect(restoredRunArgs).toEqual(
+      expect.arrayContaining([
+        '-e',
+        'SECRET_ENV=refreshed-secret',
+        '-p',
+        '127.0.0.1::4000',
+        'run:image',
+      ]),
+    );
+    expect(restoredRunArgs).not.toContain('stale-secret');
+    expect(restoredRunArgs).not.toContain('UNTRUSTED_ENV=untrusted-value');
+    expect(restoredRunArgs).not.toContain('127.0.0.1::9999');
+    expect(restoredRunArgs).not.toContain('untrusted:image');
+    await expect(
+      readFile(join(session.state.workspaceRootPath, 'notes.txt'), 'utf8'),
+    ).resolves.toBe('drifted\n');
+    await expect(
+      readFile(join(restored.state.workspaceRootPath, 'notes.txt'), 'utf8'),
+    ).resolves.toBe('snapshot\n');
+
+    await restored.close();
+    await session.close();
+  });
+
+  it('restores untrusted stopped RunState into new Docker resources', async () => {
+    let runCount = 0;
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          return success(`container-${runCount}\n`);
+        }
+        if (args[0] === 'inspect') {
+          return success('false\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
         }
         return failure('unexpected docker command');
       },
@@ -2837,29 +4225,144 @@ describe('DockerSandboxClient unit behavior', () => {
         },
       }),
     );
-
+    const originalWorkspaceRootPath = session.state.workspaceRootPath;
     const serialized = await client.serializeSessionState(session.state);
-    expect(serialized.snapshotFingerprint).toEqual(expect.any(String));
-    expect(serialized.snapshotFingerprintVersion).toBe(
-      'workspace_tree_sha256_v1',
-    );
+    const persistedState = (await deserializeSandboxSessionStateEntry(
+      client,
+      {
+        backendId: client.backendId,
+        currentAgentKey: 'SandboxWorker',
+        currentAgentName: 'SandboxWorker',
+        sessionState: toSessionStateEnvelope(
+          client.backendId,
+          session.state,
+          serialized,
+        ),
+      },
+      session.state.manifest,
+    )) as DockerSandboxSessionState;
 
-    await writeFile(
-      join(session.state.workspaceRootPath, 'notes.txt'),
-      'drifted\n',
-      'utf8',
-    );
+    const restored = await client.resume(persistedState);
 
-    const restored = await client.resume(
-      await client.deserializeSessionState(serialized),
+    expect(restored.state.containerId).toBe('container-2');
+    expect(restored.state.workspaceRootPath).not.toBe(
+      originalWorkspaceRootPath,
     );
-
-    expect(restored.state.workspaceRootPath).toBe(
-      session.state.workspaceRootPath,
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['rm', '-f', 'container-1']),
+      expect.anything(),
     );
+    expect(
+      processMocks.runSandboxProcess.mock.calls.some(
+        ([, args]) => args[0] === 'inspect',
+      ),
+    ).toBe(false);
     await expect(
       readFile(join(restored.state.workspaceRootPath, 'notes.txt'), 'utf8'),
-    ).resolves.toBe('drifted\n');
+    ).resolves.toBe('snapshot\n');
+  });
+
+  it('removes a fresh RunState workspace when container restore fails', async () => {
+    let failRun = false;
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return failRun
+            ? failure('container restore failed')
+            : success('container-1\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: {
+        type: 'local',
+        baseDir: rootDir,
+      },
+    });
+    const session = await client.create(new Manifest());
+    const serialized = await client.serializeSessionState(session.state);
+    const persistedState = (await deserializeSandboxSessionStateEntry(
+      client,
+      {
+        backendId: client.backendId,
+        currentAgentKey: 'SandboxWorker',
+        currentAgentName: 'SandboxWorker',
+        sessionState: toSessionStateEnvelope(
+          client.backendId,
+          session.state,
+          serialized,
+        ),
+      },
+      session.state.manifest,
+    )) as DockerSandboxSessionState;
+    const entriesBeforeRestore = (await readdir(rootDir)).sort();
+    failRun = true;
+
+    await expect(client.resume(persistedState)).rejects.toThrow(
+      'container restore failed',
+    );
+
+    expect((await readdir(rootDir)).sort()).toEqual(entriesBeforeRestore);
+    failRun = false;
+    await session.close();
+  });
+
+  it('does not restore explicit state when container status cannot be inspected', async () => {
+    let runCount = 0;
+    let failInspection = false;
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          return success(`container-${runCount}\n`);
+        }
+        if (args[0] === 'inspect') {
+          return failInspection
+            ? failure('permission denied')
+            : success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: {
+        type: 'local',
+        baseDir: rootDir,
+      },
+    });
+    const session = await client.create(new Manifest());
+    const serialized = await client.serializeSessionState(session.state);
+    const persistedState = await client.deserializeSessionState(serialized);
+    failInspection = true;
+
+    await expect(client.resume(persistedState)).rejects.toThrow(
+      'Failed to inspect Docker sandbox container: permission denied',
+    );
+    expect(runCount).toBe(1);
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['rm', '-f', 'container-1']),
+      expect.anything(),
+    );
+
+    failInspection = false;
+    await session.close();
   });
 
   it('removes stopped containers and volumes before restarting from an existing workspace', async () => {
@@ -2947,6 +4450,7 @@ describe('DockerSandboxClient unit behavior', () => {
 
   it('removes a running container before restoring a missing workspace', async () => {
     let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
         if (args[0] === 'version') {
@@ -2954,9 +4458,15 @@ describe('DockerSandboxClient unit behavior', () => {
         }
         if (args[0] === 'run') {
           runCount += 1;
-          return success(`container-${runCount}\n`);
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
         }
         if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
           return success('true\n');
         }
         if (args[0] === 'rm') {
@@ -3132,6 +4642,15 @@ describe('DockerSandboxClient unit behavior', () => {
 
     expect(serialized.snapshotSpec).toEqual({ type: 'noop' });
     expect(serialized.snapshot).toBeNull();
+    await expect(
+      client.serializeSessionState(session.state, {
+        preserveOwnedSession: true,
+        reuseLiveSession: false,
+        willCloseAfterSerialize: true,
+      }),
+    ).rejects.toThrow(
+      'Docker sandbox session cannot be preserved after live reuse was rejected because no restorable snapshot is configured.',
+    );
   });
 
   it('persists live environment values when serializing state', async () => {

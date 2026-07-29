@@ -16,6 +16,10 @@ import {
   serializeManifest,
   serializeManifestRecord,
 } from '../sandboxes/shared/manifestPersistence';
+import {
+  markRunStateSessionState,
+  type RunStateSessionTrustedConfig,
+} from '../internal/sessionStateTrust';
 
 export type SerializedSandboxSessionEntry = {
   backendId: string;
@@ -64,7 +68,7 @@ export function toSessionStateEnvelope(
     // Keep provider-owned fields separate from the SDK envelope so version and backend
     // checks can run before deserializing provider-specific state.
     providerState: {
-      ...providerStateWithoutSdkEnvelopeFields(providerState),
+      ...providerStateWithoutSdkEnvelopeFields(providerState, backendId),
       ...serializeHostPathGrantRedactionMetadata(state),
     },
   };
@@ -72,9 +76,13 @@ export function toSessionStateEnvelope(
 
 function providerStateWithoutSdkEnvelopeFields(
   providerState: Record<string, unknown>,
+  backendId: string,
 ): Record<string, unknown> {
   const sanitized = { ...providerState };
   delete sanitized.manifest;
+  if (backendId === 'docker') {
+    delete sanitized.sessionIdentity;
+  }
   delete sanitized.snapshot;
   delete sanitized.snapshotFingerprint;
   delete sanitized.snapshotFingerprintVersion;
@@ -103,6 +111,7 @@ export async function deserializeSandboxSessionStateEntry(
   client: SandboxClient,
   serializedEntry: SerializedSandboxSessionEntry | undefined,
   trustedManifest?: Manifest,
+  trustedConfig: RunStateSessionTrustedConfig = {},
 ): Promise<SandboxSessionState | undefined> {
   if (!serializedEntry) {
     return undefined;
@@ -112,6 +121,7 @@ export async function deserializeSandboxSessionStateEntry(
       'RunState sandbox backend does not match the configured sandbox client.',
     );
   }
+  assertTrustedManifestForDockerRunState(client, trustedManifest);
   if (!client.deserializeSessionState) {
     throw new UserError(
       'Sandbox client must implement deserializeSessionState() to resume RunState sandbox state.',
@@ -122,22 +132,43 @@ export async function deserializeSandboxSessionStateEntry(
   const state = await client.deserializeSessionState(
     providerStateWithSdkEnvelopeFields(envelope),
   );
+  if (client.backendId === 'docker') {
+    delete state.sessionIdentity;
+  }
   const reboundState = rebindPersistedPathGrants(
     {
       ...state,
       ...deserializeHostPathGrantRedactionMetadata(envelope.providerState),
     },
     trustedManifest,
+    {
+      replaceWithTrustedManifest:
+        client.backendId === 'docker' && trustedManifest !== undefined,
+    },
   );
   assertHostPathGrantsRebound(reboundState);
-  return reboundState;
+  return markRunStateSessionState(reboundState, trustedConfig);
+}
+
+export function assertTrustedManifestForDockerRunState(
+  client: SandboxClient,
+  trustedManifest: Manifest | undefined,
+): void {
+  if (client.backendId === 'docker' && trustedManifest === undefined) {
+    throw new UserError(
+      'Docker RunState resume requires a current trusted manifest for the sandbox agent.',
+    );
+  }
 }
 
 function providerStateWithSdkEnvelopeFields(
   envelope: SandboxSessionStateEnvelope,
 ): Record<string, unknown> {
   return {
-    ...envelope.providerState,
+    ...providerStateWithoutSdkEnvelopeFields(
+      envelope.providerState,
+      envelope.backendId,
+    ),
     manifest: envelope.manifest,
     ...(envelope.snapshot !== undefined ? { snapshot: envelope.snapshot } : {}),
     ...(envelope.snapshotFingerprint !== undefined
