@@ -1,6 +1,6 @@
 import { isMount, type Entry } from '../../entries';
 import { UserError } from '../../../errors';
-import { Manifest, type EnvValue } from '../../manifest';
+import { cloneManifest, Manifest, type EnvValue } from '../../manifest';
 import type { SandboxSessionState } from '../../session';
 import {
   mergeNamedObjects,
@@ -50,27 +50,44 @@ export function deserializeHostPathGrantRedactionMetadata(
 export function rebindPersistedPathGrants<TState extends SandboxSessionState>(
   state: TState,
   trustedManifest: Manifest | undefined,
+  options: {
+    replaceWithTrustedManifest?: boolean;
+    replaceWithTrustedGrantSet?: boolean;
+  } = {},
 ): TState {
   // Native host paths are runtime authority. Only the current manifest may
   // reintroduce them after persisted session state has been deserialized.
   const reboundState: SandboxSessionState = { ...state };
+  if (options.replaceWithTrustedManifest && trustedManifest) {
+    reboundState.manifest = cloneManifest(trustedManifest);
+    delete reboundState[redactedHostPathGrantPathsKey];
+    return reboundState as TState;
+  }
+
   const trustedGrantsByPath = new Map(
     (trustedManifest?.extraPathGrants ?? []).map((grant) => [
       grant.path,
       grant,
     ]),
   );
-  const unmatchedGrantPaths = state.manifest.extraPathGrants
-    .filter((grant) => !trustedGrantsByPath.has(grant.path))
-    .map((grant) => grant.path);
-  if (unmatchedGrantPaths.length > 0) {
-    throw new UserError(
-      `Sandbox session state contains path grants that are not present in the current trusted manifest: ${unmatchedGrantPaths.join(', ')}. Define each grant in the current manifest before resuming.`,
+  let extraPathGrants: Manifest['extraPathGrants'];
+  if (options.replaceWithTrustedGrantSet && trustedManifest) {
+    extraPathGrants = trustedManifest.extraPathGrants.map((grant) =>
+      structuredClone(grant),
     );
+  } else {
+    const unmatchedGrantPaths = state.manifest.extraPathGrants
+      .filter((grant) => !trustedGrantsByPath.has(grant.path))
+      .map((grant) => grant.path);
+    if (unmatchedGrantPaths.length > 0) {
+      throw new UserError(
+        `Sandbox session state contains path grants that are not present in the current trusted manifest: ${unmatchedGrantPaths.join(', ')}. Define each grant in the current manifest before resuming.`,
+      );
+    }
+    extraPathGrants = state.manifest.extraPathGrants.map((grant) => {
+      return structuredClone(trustedGrantsByPath.get(grant.path)!);
+    });
   }
-  const extraPathGrants = state.manifest.extraPathGrants.map((grant) => {
-    return structuredClone(trustedGrantsByPath.get(grant.path)!);
-  });
 
   reboundState.manifest = new Manifest({
     version: state.manifest.version,
@@ -93,9 +110,11 @@ export function rebindPersistedPathGrants<TState extends SandboxSessionState>(
   const reboundGrantsByPath = new Map(
     reboundState.manifest.extraPathGrants.map((grant) => [grant.path, grant]),
   );
-  const unresolvedPaths = readRedactedHostPathGrantPaths(state).filter(
-    (path) => reboundGrantsByPath.get(path)?.hostPath === undefined,
-  );
+  const unresolvedPaths = options.replaceWithTrustedGrantSet
+    ? []
+    : readRedactedHostPathGrantPaths(state).filter(
+        (path) => reboundGrantsByPath.get(path)?.hostPath === undefined,
+      );
   if (unresolvedPaths.length > 0) {
     reboundState[redactedHostPathGrantPathsKey] = unresolvedPaths;
   } else {

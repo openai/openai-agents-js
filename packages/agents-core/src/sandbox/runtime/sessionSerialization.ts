@@ -63,7 +63,8 @@ export async function serializeSandboxRuntimeState(args: {
     const providerState = await client.serializeSessionState(session.state, {
       preserveOwnedSession: isOwnedSession && !!includeOwnedSessions,
       reuseLiveSession,
-      willCloseAfterSerialize: isOwnedSession && !includeOwnedSessions,
+      willCloseAfterSerialize:
+        isOwnedSession && (!includeOwnedSessions || !reuseLiveSession),
     });
     sessionsByAgent[currentAgentKey] = {
       backendId: client.backendId,
