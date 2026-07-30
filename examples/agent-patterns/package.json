@@ -23,6 +23,7 @@
     "start:llm-as-a-judge": "tsx llm-as-a-judge.ts",
     "start:output-guardrails": "tsx output-guardrails.ts",
     "start:parallelization": "tsx parallelization.ts",
+    "start:resumable-human-approval": "tsx resumable-human-approval.ts",
     "start:routing": "tsx routing.ts",
     "start:streamed": "tsx streamed.ts",
     "start:streaming-guardrails": "tsx streaming-guardrails.ts"

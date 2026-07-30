@@ -27,6 +27,11 @@ Run them with `pnpm` using the commands shown below.
   ```bash
   pnpm examples:human-in-the-loop
   ```
+- `resumable-human-approval.ts` – Persist an approval interruption, exit, then approve or reject in a later process and resume the run.
+  ```bash
+  pnpm examples:resumable-human-approval request 'Create and submit an expense report for a $480 client dinner with Acme Corp.'
+  pnpm examples:resumable-human-approval approve
+  ```
 - `human-in-the-loop-stream.ts` – Streaming version of human approval.
   ```bash
   pnpm examples:streamed:human-in-the-loop

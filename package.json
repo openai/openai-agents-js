@@ -35,6 +35,7 @@
     "examples:deterministic": "pnpm -F agent-patterns start:deterministic",
     "examples:parallelization": "pnpm -F agent-patterns start:parallelization",
     "examples:human-in-the-loop": "pnpm -F agent-patterns start:human-in-the-loop",
+    "examples:resumable-human-approval": "pnpm -F agent-patterns start:resumable-human-approval",
     "examples:input-guardrails": "pnpm -F agent-patterns start:input-guardrails",
     "examples:output-guardrails": "pnpm -F agent-patterns start:output-guardrails",
     "examples:streamed": "pnpm -F agent-patterns start:streamed",
