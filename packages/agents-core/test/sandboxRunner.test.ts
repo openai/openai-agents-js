@@ -5578,6 +5578,7 @@ describe('sandbox runner integration', () => {
   });
 
   it('refreshes environment references before reusing a live remote session', async () => {
+    const resolveCounts = new Map<string, number>();
     class LiveSecretReference extends EnvValueReference {
       static readonly type = 'test.live_remote_secret_reference';
 
@@ -5590,12 +5591,12 @@ describe('sandbox runner integration', () => {
       }
 
       override async resolve(): Promise<string> {
-        resolveCount += 1;
-        return `credential-${resolveCount}:${this.key}`;
+        const count = (resolveCounts.get(this.key) ?? 0) + 1;
+        resolveCounts.set(this.key, count);
+        return `credential-${count}:${this.key}`;
       }
     }
 
-    let resolveCount = 0;
     const unregister = registerEnvValueReference(
       LiveSecretReference,
       (payload) => {
@@ -5609,7 +5610,15 @@ describe('sandbox runner integration', () => {
       const client = new FakeSandboxClient();
       const manifest = new Manifest({
         environment: {
-          TOKEN: new LiveSecretReference('openai-key'),
+          ROTATING_TOKEN: new LiveSecretReference('rotating'),
+          REMOVED_TOKEN: new LiveSecretReference('removed'),
+          REPLACED_TOKEN: new LiveSecretReference('replaced'),
+        },
+      });
+      const trustedManifest = new Manifest({
+        environment: {
+          ROTATING_TOKEN: new LiveSecretReference('rotating'),
+          REPLACED_TOKEN: 'configured-value',
         },
       });
       const sandboxAgent = new SandboxAgent({
@@ -5635,24 +5644,52 @@ describe('sandbox runner integration', () => {
         turnInput: [],
       });
       const liveSession = client.createdSessions[0]!;
-      liveSession.state.environment = await manifest.resolveEnvironment();
-      expect(resolveCount).toBe(1);
+      liveSession.state.environment = {
+        RUNTIME_ONLY: 'preserved',
+        ...(await manifest.resolveEnvironment()),
+      };
+      expect(resolveCounts).toEqual(
+        new Map([
+          ['rotating', 1],
+          ['removed', 1],
+          ['replaced', 1],
+        ]),
+      );
       await firstManager.cleanup(state, { preserveOwnedSessions: true });
 
       const secondManager = new SandboxRuntimeManager({
         startingAgent: sandboxAgent as Agent<unknown, any>,
         sandboxConfig: {
           client,
-          manifest,
+          manifest: trustedManifest,
         },
         runState: state,
       });
       await secondManager.adoptPreservedOwnedSessions();
 
-      expect(resolveCount).toBe(2);
+      expect(resolveCounts).toEqual(
+        new Map([
+          ['rotating', 2],
+          ['removed', 1],
+          ['replaced', 1],
+        ]),
+      );
       expect(liveSession.state.environment).toEqual({
-        TOKEN: 'credential-2:openai-key',
+        RUNTIME_ONLY: 'preserved',
+        ROTATING_TOKEN: 'credential-2:rotating',
+        REPLACED_TOKEN: 'configured-value',
       });
+      expect(
+        isEnvValueReference(
+          liveSession.state.manifest.environment.ROTATING_TOKEN,
+        ),
+      ).toBe(true);
+      expect(liveSession.state.manifest.environment.REPLACED_TOKEN.value).toBe(
+        'configured-value',
+      );
+      expect(liveSession.state.manifest.environment.REMOVED_TOKEN).toBe(
+        undefined,
+      );
       expect(client.resumeCalls).toHaveLength(0);
       await secondManager.cleanup(state);
     } finally {
