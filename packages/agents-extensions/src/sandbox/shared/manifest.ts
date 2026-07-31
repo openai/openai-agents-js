@@ -59,8 +59,9 @@ export function manifestWithMaterializedEnvironmentReferences(
   for (const [key, value] of Object.entries(manifest.environment)) {
     if (isEnvValueReference(value) && typeof environment[key] === 'string') {
       materializedManifest.environment[key] = new Environment({
-        ...value.normalized(),
         value: environment[key],
+        ...(value.ephemeral ? { ephemeral: true } : {}),
+        ...(value.description ? { description: value.description } : {}),
       });
     }
   }

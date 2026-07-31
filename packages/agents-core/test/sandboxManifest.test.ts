@@ -269,6 +269,9 @@ describe('Manifest', () => {
         },
       });
 
+      expect(() => manifest.environment.TOKEN.normalized()).toThrow(
+        'EnvValueReference cannot be normalized to an EnvValue. Use serializeEnvValueReference() instead.',
+      );
       const serialized = JSON.stringify(manifest);
       const payload = JSON.parse(serialized);
 

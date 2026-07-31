@@ -377,6 +377,12 @@ export abstract class EnvValueReference extends Environment {
     return parseEnvValueReference(serializeEnvValueReference(this));
   }
 
+  override normalized(): never {
+    throw new TypeError(
+      'EnvValueReference cannot be normalized to an EnvValue. Use serializeEnvValueReference() instead.',
+    );
+  }
+
   toJSON(): SerializedEnvValueReference {
     return serializeEnvValueReference(this);
   }
