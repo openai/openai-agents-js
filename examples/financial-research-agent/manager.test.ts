@@ -19,6 +19,9 @@ const revisedReport: FinancialReportData = {
 };
 
 class TestFinancialResearchManager extends FinancialResearchManager {
+  searchResults = ['Primary source summary'];
+  writeReportSearchResults: string[] | undefined;
+  writeReportCalls = 0;
   verificationCalls = 0;
   revisionCalls = 0;
   verificationFailuresBeforePass = 0;
@@ -28,10 +31,15 @@ class TestFinancialResearchManager extends FinancialResearchManager {
   }
 
   async performSearches(): Promise<string[]> {
-    return ['Primary source summary'];
+    return this.searchResults;
   }
 
-  async writeReport(): Promise<FinancialReportData> {
+  async writeReport(
+    _query: string,
+    searchResults: string[],
+  ): Promise<FinancialReportData> {
+    this.writeReportCalls++;
+    this.writeReportSearchResults = searchResults;
     return initialReport;
   }
 
@@ -87,6 +95,47 @@ test('does not revise a report that passes verification', async () => {
 
   expect(manager.revisionCalls).toBe(0);
   expect(manager.verificationCalls).toBe(1);
+});
+
+test('fails before writing when no usable search summaries remain', async () => {
+  const manager = new TestFinancialResearchManager();
+  manager.searchResults = [];
+
+  await expect(manager.run('Research query')).rejects.toThrow(
+    'Financial research failed because no usable search summaries were returned.',
+  );
+
+  expect(manager.writeReportCalls).toBe(0);
+  expect(manager.verificationCalls).toBe(0);
+});
+
+test('fails before writing when the search summary is blank', async () => {
+  const manager = new TestFinancialResearchManager();
+  manager.searchResults = [''];
+
+  await expect(manager.run('Research query')).rejects.toThrow(
+    'Financial research failed because no usable search summaries were returned.',
+  );
+
+  expect(manager.writeReportCalls).toBe(0);
+  expect(manager.verificationCalls).toBe(0);
+});
+
+test('filters blank search summaries while preserving usable results', async () => {
+  const manager = new TestFinancialResearchManager();
+  manager.searchResults = [
+    '',
+    'Primary source summary',
+    ' \n',
+    'Secondary source summary',
+  ];
+
+  await manager.run('Research query');
+
+  expect(manager.writeReportSearchResults).toEqual([
+    'Primary source summary',
+    'Secondary source summary',
+  ]);
 });
 
 test('fails closed when the report remains unverified', async () => {

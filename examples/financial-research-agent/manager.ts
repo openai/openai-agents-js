@@ -44,7 +44,14 @@ export class FinancialResearchManager {
   async run(query: string): Promise<void> {
     console.log(`[start] Starting financial research...`);
     const searchPlan = await this.planSearches(query);
-    const searchResults = await this.performSearches(searchPlan);
+    const searchResults = (await this.performSearches(searchPlan)).filter(
+      (result) => result.trim().length > 0,
+    );
+    if (searchResults.length === 0) {
+      throw new Error(
+        'Financial research failed because no usable search summaries were returned.',
+      );
+    }
     let report = await this.writeReport(query, searchResults);
     let verification = await this.verifyReport(report, searchResults);
     let revisions = 0;
