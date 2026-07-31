@@ -4190,7 +4190,7 @@ describe('DockerSandboxClient unit behavior', () => {
     await session.close();
   });
 
-  it('resolves environment references once while restoring Docker RunState', async () => {
+  it('resolves environment values once while restoring Docker RunState', async () => {
     class DockerSecretReference extends EnvValueReference {
       static readonly type = 'test.docker_run_state_secret_reference';
 
@@ -4210,6 +4210,7 @@ describe('DockerSandboxClient unit behavior', () => {
 
     let runCount = 0;
     let resolveCount = 0;
+    let ordinaryResolveCount = 0;
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
         if (args[0] === 'version') {
@@ -4246,11 +4247,16 @@ describe('DockerSandboxClient unit behavior', () => {
         new Manifest({
           environment: {
             TOKEN: new DockerSecretReference('openai-key'),
+            ROTATING_TOKEN: async () => {
+              ordinaryResolveCount += 1;
+              return `rotating-credential-${ordinaryResolveCount}`;
+            },
           },
         }),
       );
       const serialized = await client.serializeSessionState(session.state);
       resolveCount = 0;
+      ordinaryResolveCount = 0;
 
       const persistedState = (await deserializeSandboxSessionStateEntry(
         client,
@@ -4267,12 +4273,15 @@ describe('DockerSandboxClient unit behavior', () => {
         session.state.manifest,
       )) as DockerSandboxSessionState;
       expect(resolveCount).toBe(1);
+      expect(ordinaryResolveCount).toBe(0);
 
       const restored = await client.resume(persistedState);
 
       expect(resolveCount).toBe(1);
+      expect(ordinaryResolveCount).toBe(1);
       expect(restored.state.environment).toEqual({
         TOKEN: 'credential-1:openai-key',
+        ROTATING_TOKEN: 'rotating-credential-1',
       });
       await restored.close();
       await session.close();

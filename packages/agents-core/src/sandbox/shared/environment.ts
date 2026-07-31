@@ -135,27 +135,22 @@ export async function rehydratePersistedEnvironmentForRuntime(
   environment: Record<string, string> | undefined,
   baseEnvironment: Record<string, string> = {},
 ): Promise<Record<string, string>> {
-  const manifestEnvironment = await manifest.resolveEnvironment();
-  const persistentManifestEnvironment = Object.fromEntries(
-    Object.entries(manifestEnvironment).filter(
-      ([key]) =>
-        !manifest.environment[key]?.ephemeral ||
-        isEnvValueReference(manifest.environment[key]),
-    ),
+  const runtimeEnvironment = deserializePersistedEnvironmentForRuntime(
+    manifest,
+    environment,
+    baseEnvironment,
   );
-  const persistedEnvironment = Object.fromEntries(
-    Object.entries(environment ?? {}).filter(
-      ([key]) =>
-        key in manifestEnvironment &&
-        !manifest.environment[key]?.ephemeral &&
-        !isEnvValueReference(manifest.environment[key]!),
+  const resolvedReferences = Object.fromEntries(
+    await Promise.all(
+      Object.entries(manifest.environment)
+        .filter(([, value]) => isEnvValueReference(value))
+        .map(async ([key, value]) => [key, await value.resolve()]),
     ),
   );
 
   return {
-    ...baseEnvironment,
-    ...persistentManifestEnvironment,
-    ...persistedEnvironment,
+    ...runtimeEnvironment,
+    ...resolvedReferences,
   };
 }
 
