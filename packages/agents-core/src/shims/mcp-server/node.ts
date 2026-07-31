@@ -26,6 +26,7 @@ import type {
   MCPServerSSEOptions,
 } from '../../mcp';
 import logger, {
+  getSafeErrorType,
   type Logger,
   logToolActionError,
   logToolActionWarning,
@@ -205,12 +206,23 @@ async function runMcpTransportOperation<T>(
   endpoint: string,
   operation: string,
   action: () => Promise<T>,
+  sourceSignal?: AbortSignal,
 ): Promise<T> {
   try {
     return await action();
   } catch (error) {
+    if (isCallerAbortReason(error, sourceSignal)) {
+      throw error;
+    }
     throw sanitizeMcpTransportError(error, endpoint, operation);
   }
+}
+
+function isCallerAbortReason(
+  error: unknown,
+  sourceSignal: AbortSignal | undefined,
+): boolean {
+  return sourceSignal?.aborted === true && error === sourceSignal.reason;
 }
 
 function logMcpTransportWarning(
@@ -220,10 +232,11 @@ function logMcpTransportWarning(
   message: string,
   error: unknown,
 ): void {
-  const logError = targetLogger.dontLogToolData
-    ? error
+  const redact = targetLogger.dontLogToolData;
+  const logError = redact
+    ? getSafeErrorType(error)
     : sanitizeMcpTransportError(error, endpoint, operation);
-  logToolActionWarning(targetLogger, message, logError);
+  targetLogger.warn(message, logError);
 }
 
 export class NodeMCPServerStdio extends BaseMCPServerStdio {
@@ -595,6 +608,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
             }),
           ),
         ),
+      options?.signal,
     );
     const parsed = CallToolResultSchema.parse(response);
     const result = attachParsedCallToolResultMetadata(parsed as CallToolResult);
@@ -1452,8 +1466,14 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         options,
       );
     } catch (error) {
-      const recoveryStrategy =
-        await this.shouldReconnectClosedStreamableHttpClient(error, client);
+      if (isCallerAbortReason(error, options?.signal)) {
+        throw error;
+      }
+      const recoveryStrategy = await runMcpTransportOperation(
+        this.params.url,
+        'streamable HTTP tool call recovery classification',
+        () => this.shouldReconnectClosedStreamableHttpClient(error, client),
+      );
       if (recoveryStrategy === 'none') {
         throw sanitizeMcpTransportError(
           error,
@@ -1495,6 +1515,9 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
           options,
         );
       } catch (retryError) {
+        if (isCallerAbortReason(retryError, options?.signal)) {
+          throw retryError;
+        }
         throw sanitizeMcpTransportError(
           attachCause(retryError, error),
           this.params.url,

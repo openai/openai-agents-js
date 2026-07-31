@@ -1,40 +1,17 @@
 const URL_DERIVED_NAME_PREFIXES = ['sse: ', 'streamable-http: '] as const;
 const MAX_PROTOTYPE_DEPTH = 8;
-const MIN_WEAK_SECRET_SUBSTRING_LENGTH = 8;
 const DOM_EXCEPTION_PROTOTYPE =
   typeof DOMException === 'undefined' ? undefined : DOMException.prototype;
 const DOM_EXCEPTION_NAME_GETTER = DOM_EXCEPTION_PROTOTYPE
   ? Object.getOwnPropertyDescriptor(DOM_EXCEPTION_PROTOTYPE, 'name')?.get
   : undefined;
-const DOM_EXCEPTION_MESSAGE_GETTER = DOM_EXCEPTION_PROTOTYPE
-  ? Object.getOwnPropertyDescriptor(DOM_EXCEPTION_PROTOTYPE, 'message')?.get
-  : undefined;
-const DOM_EXCEPTION_CODE_GETTER = DOM_EXCEPTION_PROTOTYPE
-  ? Object.getOwnPropertyDescriptor(DOM_EXCEPTION_PROTOTYPE, 'code')?.get
-  : undefined;
-
-type EndpointSecrets = {
-  strong: Set<string>;
-  weak: Set<string>;
-};
 
 type EndpointRedactionInfo = {
-  secrets: EndpointSecrets;
   url?: URL;
 };
 
-type SafeDiagnostics = {
-  name?: string;
-  message?: string;
-  code?: string | number;
-  status?: string | number;
-  statusCode?: string | number;
-};
-
-type ErrorGraphInspection = {
-  kind: 'safe' | 'secret' | 'opaque';
-  diagnostics: SafeDiagnostics;
-};
+type CancellationName = 'AbortError' | 'CanceledError' | 'CancelledError';
+type CancellationCode = 'ABORT_ERR' | 'ERR_ABORTED';
 
 function parseHttpUrl(candidate: string): URL | undefined {
   try {
@@ -45,41 +22,6 @@ function parseHttpUrl(candidate: string): URL | undefined {
   } catch {
     return undefined;
   }
-}
-
-function addStringVariants(target: Set<string>, value: string): void {
-  if (!value) {
-    return;
-  }
-  target.add(value);
-  try {
-    target.add(decodeURIComponent(value));
-  } catch {
-    // Keep the original encoded value.
-  }
-}
-
-function getEndpointSecrets(url: URL): EndpointSecrets | undefined {
-  if (!url.username && !url.password && !url.search && !url.hash) {
-    return undefined;
-  }
-
-  const strong = new Set<string>();
-  const weak = new Set<string>();
-  addStringVariants(strong, url.href);
-  addStringVariants(strong, url.search);
-  addStringVariants(strong, url.hash);
-  if (url.username || url.password) {
-    addStringVariants(strong, `${url.username}:${url.password}@`);
-  }
-  addStringVariants(weak, url.username);
-  addStringVariants(weak, url.password);
-  addStringVariants(weak, url.search.slice(1));
-  addStringVariants(weak, url.hash.slice(1));
-  for (const [key, value] of url.searchParams) {
-    addStringVariants(weak, value || key);
-  }
-  return { strong, weak };
 }
 
 function hasMalformedEndpointSecrets(endpoint: string): boolean {
@@ -109,105 +51,57 @@ function getEndpointRedactionInfo(
 ): EndpointRedactionInfo | undefined {
   const url = parseHttpUrl(endpoint);
   if (url) {
-    const secrets = getEndpointSecrets(url);
-    return secrets ? { secrets, url } : undefined;
+    return url.username || url.password || url.search || url.hash
+      ? { url }
+      : undefined;
   }
   if (!hasMalformedEndpointSecrets(endpoint)) {
     return undefined;
   }
-  const strong = new Set<string>();
-  addStringVariants(strong, endpoint);
-  return { secrets: { strong, weak: new Set() } };
+  return {};
 }
 
-function stringContainsEndpointSecret(
-  value: string,
-  secrets: EndpointSecrets,
-): boolean {
-  for (const secret of secrets.strong) {
-    if (value.includes(secret)) {
-      return true;
-    }
-  }
-  for (const secret of secrets.weak) {
-    if (
-      value === secret ||
-      (secret.length >= MIN_WEAK_SECRET_SUBSTRING_LENGTH &&
-        value.includes(secret)) ||
-      stringContainsDelimitedSecret(value, secret)
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function stringContainsDelimitedSecret(value: string, secret: string): boolean {
-  let index = value.indexOf(secret);
-  while (index >= 0) {
-    const before = index === 0 ? undefined : value[index - 1];
-    const afterIndex = index + secret.length;
-    const after = afterIndex === value.length ? undefined : value[afterIndex];
-    if (
-      (!isIdentifierCharacter(secret[0]) || !isIdentifierCharacter(before)) &&
-      (!isIdentifierCharacter(secret[secret.length - 1]) ||
-        !isIdentifierCharacter(after))
-    ) {
-      return true;
-    }
-    index = value.indexOf(secret, index + 1);
-  }
-  return false;
-}
-
-function isIdentifierCharacter(value: string | undefined): boolean {
-  return value !== undefined && /[A-Za-z0-9_]/.test(value);
-}
-
-function getIntrinsicPrimitive(
+function getIntrinsicString(
   value: unknown,
   getter: (() => unknown) | undefined,
-): string | number | undefined {
+): string | undefined {
   if (!getter) {
     return undefined;
   }
   try {
     const result = getter.call(value);
-    return typeof result === 'string' || typeof result === 'number'
-      ? result
-      : undefined;
+    return typeof result === 'string' ? result : undefined;
   } catch {
     return undefined;
   }
 }
 
-function getSafeDiagnostic(
-  value: unknown,
-  secrets: EndpointSecrets,
-): string | number | undefined {
-  return (typeof value === 'string' || typeof value === 'number') &&
-    !stringContainsEndpointSecret(String(value), secrets)
+function getCancellationName(value: unknown): CancellationName | undefined {
+  return value === 'AbortError' ||
+    value === 'CanceledError' ||
+    value === 'CancelledError'
     ? value
     : undefined;
 }
 
-function collectPrototypeName(
+function getCancellationCode(value: unknown): CancellationCode | undefined {
+  return value === 'ABORT_ERR' || value === 'ERR_ABORTED' ? value : undefined;
+}
+
+function collectDescriptorCancellationValue<T>(
   value: object,
-  secrets: EndpointSecrets,
-): string | undefined {
+  propertyName: 'name' | 'code',
+  getValue: (candidate: unknown) => T | undefined,
+): T | undefined {
   try {
-    let prototype = Object.getPrototypeOf(value);
+    let current: object | null = value;
     let depth = 0;
-    while (prototype !== null && depth < MAX_PROTOTYPE_DEPTH) {
-      const descriptor = Object.getOwnPropertyDescriptor(prototype, 'name');
+    while (current !== null && depth <= MAX_PROTOTYPE_DEPTH) {
+      const descriptor = Object.getOwnPropertyDescriptor(current, propertyName);
       if (descriptor) {
-        if ('value' in descriptor) {
-          const name = getSafeDiagnostic(descriptor.value, secrets);
-          return typeof name === 'string' ? name : undefined;
-        }
-        return undefined;
+        return 'value' in descriptor ? getValue(descriptor.value) : undefined;
       }
-      prototype = Object.getPrototypeOf(prototype);
+      current = Object.getPrototypeOf(current);
       depth += 1;
     }
   } catch {
@@ -216,94 +110,29 @@ function collectPrototypeName(
   return undefined;
 }
 
-function collectSafeDiagnostics(
-  value: object,
-  secrets: EndpointSecrets,
-): SafeDiagnostics {
-  const diagnostics: SafeDiagnostics = {};
-  const domExceptionMessage = getIntrinsicPrimitive(
-    value,
-    DOM_EXCEPTION_MESSAGE_GETTER,
+function collectCancellationName(value: object): CancellationName | undefined {
+  const domExceptionName = getCancellationName(
+    getIntrinsicString(value, DOM_EXCEPTION_NAME_GETTER),
   );
-  if (typeof domExceptionMessage === 'string') {
-    const message = getSafeDiagnostic(domExceptionMessage, secrets);
-    const name = getSafeDiagnostic(
-      getIntrinsicPrimitive(value, DOM_EXCEPTION_NAME_GETTER),
-      secrets,
-    );
-    const code = getSafeDiagnostic(
-      getIntrinsicPrimitive(value, DOM_EXCEPTION_CODE_GETTER),
-      secrets,
-    );
-    if (typeof message === 'string') {
-      diagnostics.message = message;
-    }
-    if (typeof name === 'string') {
-      diagnostics.name = name;
-    }
-    if (code !== undefined) {
-      diagnostics.code = code;
-    }
+  if (domExceptionName) {
+    return domExceptionName;
   }
 
-  let descriptors: PropertyDescriptorMap;
-  try {
-    descriptors = Object.getOwnPropertyDescriptors(value);
-  } catch {
-    return diagnostics;
-  }
-  for (const propertyName of [
+  const descriptorName = collectDescriptorCancellationValue(
+    value,
     'name',
-    'message',
-    'code',
-    'status',
-    'statusCode',
-  ] as const) {
-    const descriptor = descriptors[propertyName];
-    if (!descriptor || !('value' in descriptor)) {
-      continue;
-    }
-    const diagnostic = getSafeDiagnostic(descriptor.value, secrets);
-    if (diagnostic === undefined) {
-      continue;
-    }
-    if (propertyName === 'name' || propertyName === 'message') {
-      if (typeof diagnostic === 'string') {
-        diagnostics[propertyName] = diagnostic;
-      }
-    } else {
-      diagnostics[propertyName] = diagnostic;
-    }
+    getCancellationName,
+  );
+  if (descriptorName) {
+    return descriptorName;
   }
-  diagnostics.name ??= collectPrototypeName(value, secrets);
-  return diagnostics;
-}
 
-function inspectErrorGraph(
-  value: unknown,
-  secrets: EndpointSecrets,
-): ErrorGraphInspection {
-  if (typeof value === 'string') {
-    return {
-      kind: stringContainsEndpointSecret(value, secrets) ? 'secret' : 'safe',
-      diagnostics: {},
-    };
-  }
-  if (
-    value === null ||
-    (typeof value !== 'object' &&
-      typeof value !== 'function' &&
-      typeof value !== 'symbol')
-  ) {
-    return { kind: 'safe', diagnostics: {} };
-  }
-  if (typeof value === 'function' || typeof value === 'symbol') {
-    return { kind: 'opaque', diagnostics: {} };
-  }
-  return {
-    kind: 'opaque',
-    diagnostics: collectSafeDiagnostics(value, secrets),
-  };
+  const descriptorCode = collectDescriptorCancellationValue(
+    value,
+    'code',
+    getCancellationCode,
+  );
+  return descriptorCode ? 'AbortError' : undefined;
 }
 
 // Some transports use their full endpoint URL as the default server name.
@@ -337,35 +166,18 @@ export function sanitizeMcpTransportError(
   if (!redactionInfo) {
     return error;
   }
-  const inspection = inspectErrorGraph(error, redactionInfo.secrets);
-  if (inspection.kind === 'safe') {
-    return error;
-  }
+
+  const cancellationName =
+    error !== null && typeof error === 'object'
+      ? collectCancellationName(error)
+      : undefined;
 
   const safeEndpoint = redactionInfo.url
     ? ` for ${redactionInfo.url.protocol}//${redactionInfo.url.host}${redactionInfo.url.pathname}`
     : '';
   const sanitized = new Error(
-    inspection.diagnostics.message ??
-      `MCP ${operation} failed${safeEndpoint}; configured endpoint credentials were redacted.`,
+    `MCP ${operation} failed${safeEndpoint}; configured endpoint credentials were redacted.`,
   );
-  sanitized.name =
-    inspection.diagnostics.name === 'AbortError' ||
-    inspection.diagnostics.name === 'CanceledError' ||
-    inspection.diagnostics.name === 'CancelledError'
-      ? inspection.diagnostics.name
-      : 'MCPTransportError';
-
-  for (const propertyName of ['code', 'status', 'statusCode'] as const) {
-    const value = inspection.diagnostics[propertyName];
-    if (value !== undefined) {
-      Object.defineProperty(sanitized, propertyName, {
-        value,
-        configurable: true,
-        enumerable: true,
-        writable: true,
-      });
-    }
-  }
+  sanitized.name = cancellationName ?? 'MCPTransportError';
   return sanitized;
 }
