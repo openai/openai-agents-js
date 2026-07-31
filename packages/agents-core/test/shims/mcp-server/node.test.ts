@@ -805,9 +805,9 @@ describe('NodeMCPServerSSE', () => {
 
     const error = await server.connect().catch((caught) => caught);
 
+    expect(constructorReads).toBe(0);
     expect(error).not.toBe(unsafeError);
     expect(error).toMatchObject({ name: 'MCPTransportError' });
-    expect(constructorReads).toBe(0);
     expectNoCredentialMarkers(error);
     expectNoCredentialMarkers(logger.error.mock.calls);
   });
@@ -998,10 +998,16 @@ describe('NodeMCPServerStreamableHttp', () => {
 
     const error = await server.connect().catch((caught) => caught);
 
-    expect(error).toBe(safeError);
+    expect(error).not.toBe(safeError);
+    expect(error).toMatchObject({
+      name: 'MCPTransportError',
+      message:
+        'Streamable HTTP error: Server returned 401 after successful authentication',
+      code: 401,
+    });
     expect(logger.error).toHaveBeenCalledWith(
       'Error initializing MCP server:',
-      safeError,
+      error,
     );
   });
 

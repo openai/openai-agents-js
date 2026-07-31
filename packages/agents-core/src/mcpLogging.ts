@@ -1,10 +1,6 @@
 const URL_DERIVED_NAME_PREFIXES = ['sse: ', 'streamable-http: '] as const;
 const MAX_PROTOTYPE_DEPTH = 8;
 const MIN_WEAK_SECRET_SUBSTRING_LENGTH = 8;
-const NATIVE_ERROR_STACK_GETTER = Object.getOwnPropertyDescriptor(
-  new Error(),
-  'stack',
-)?.get;
 const DOM_EXCEPTION_PROTOTYPE =
   typeof DOMException === 'undefined' ? undefined : DOMException.prototype;
 const DOM_EXCEPTION_NAME_GETTER = DOM_EXCEPTION_PROTOTYPE
@@ -29,6 +25,7 @@ type EndpointRedactionInfo = {
 
 type SafeDiagnostics = {
   name?: string;
+  message?: string;
   code?: string | number;
   status?: string | number;
   statusCode?: string | number;
@@ -126,23 +123,20 @@ function getEndpointRedactionInfo(
 function stringContainsEndpointSecret(
   value: string,
   secrets: EndpointSecrets,
-  includeWeak: boolean,
 ): boolean {
   for (const secret of secrets.strong) {
     if (value.includes(secret)) {
       return true;
     }
   }
-  if (includeWeak) {
-    for (const secret of secrets.weak) {
-      if (
-        value === secret ||
-        (secret.length >= MIN_WEAK_SECRET_SUBSTRING_LENGTH &&
-          value.includes(secret)) ||
-        stringContainsDelimitedSecret(value, secret)
-      ) {
-        return true;
-      }
+  for (const secret of secrets.weak) {
+    if (
+      value === secret ||
+      (secret.length >= MIN_WEAK_SECRET_SUBSTRING_LENGTH &&
+        value.includes(secret)) ||
+      stringContainsDelimitedSecret(value, secret)
+    ) {
+      return true;
     }
   }
   return false;
@@ -187,64 +181,52 @@ function getIntrinsicPrimitive(
   }
 }
 
-function getPrototypeChain(value: object): object[] | undefined {
-  const prototypes: object[] = [];
-  try {
-    let prototype = Object.getPrototypeOf(value);
-    while (prototype !== null) {
-      if (prototypes.length >= MAX_PROTOTYPE_DEPTH) {
-        return undefined;
-      }
-      prototypes.push(prototype);
-      prototype = Object.getPrototypeOf(prototype);
-    }
-    return prototypes;
-  } catch {
-    return undefined;
-  }
-}
-
 function getSafeDiagnostic(
   value: unknown,
   secrets: EndpointSecrets,
 ): string | number | undefined {
   return (typeof value === 'string' || typeof value === 'number') &&
-    !stringContainsEndpointSecret(String(value), secrets, true)
+    !stringContainsEndpointSecret(String(value), secrets)
     ? value
     : undefined;
 }
 
-function inspectErrorGraph(
-  value: unknown,
+function collectPrototypeName(
+  value: object,
   secrets: EndpointSecrets,
-): ErrorGraphInspection {
-  const diagnostics: SafeDiagnostics = {};
-  if (typeof value === 'string') {
-    return {
-      kind: stringContainsEndpointSecret(value, secrets, true)
-        ? 'secret'
-        : 'safe',
-      diagnostics,
-    };
+): string | undefined {
+  try {
+    let prototype = Object.getPrototypeOf(value);
+    let depth = 0;
+    while (prototype !== null && depth < MAX_PROTOTYPE_DEPTH) {
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, 'name');
+      if (descriptor) {
+        if ('value' in descriptor) {
+          const name = getSafeDiagnostic(descriptor.value, secrets);
+          return typeof name === 'string' ? name : undefined;
+        }
+        return undefined;
+      }
+      prototype = Object.getPrototypeOf(prototype);
+      depth += 1;
+    }
+  } catch {
+    return undefined;
   }
-  if (
-    value === null ||
-    (typeof value !== 'object' &&
-      typeof value !== 'function' &&
-      typeof value !== 'symbol')
-  ) {
-    return { kind: 'safe', diagnostics };
-  }
-  if (typeof value === 'function' || typeof value === 'symbol') {
-    return { kind: 'opaque', diagnostics };
-  }
+  return undefined;
+}
 
+function collectSafeDiagnostics(
+  value: object,
+  secrets: EndpointSecrets,
+): SafeDiagnostics {
+  const diagnostics: SafeDiagnostics = {};
   const domExceptionMessage = getIntrinsicPrimitive(
     value,
     DOM_EXCEPTION_MESSAGE_GETTER,
   );
-  const isDomException = typeof domExceptionMessage === 'string';
-  if (isDomException) {
+  if (typeof domExceptionMessage === 'string') {
+    const message = getSafeDiagnostic(domExceptionMessage, secrets);
     const name = getSafeDiagnostic(
       getIntrinsicPrimitive(value, DOM_EXCEPTION_NAME_GETTER),
       secrets,
@@ -253,64 +235,14 @@ function inspectErrorGraph(
       getIntrinsicPrimitive(value, DOM_EXCEPTION_CODE_GETTER),
       secrets,
     );
+    if (typeof message === 'string') {
+      diagnostics.message = message;
+    }
     if (typeof name === 'string') {
       diagnostics.name = name;
     }
     if (code !== undefined) {
       diagnostics.code = code;
-    }
-    if (stringContainsEndpointSecret(domExceptionMessage, secrets, true)) {
-      return { kind: 'secret', diagnostics };
-    }
-  }
-
-  const prototypes = getPrototypeChain(value);
-  if (!prototypes) {
-    return { kind: 'opaque', diagnostics };
-  }
-  if (isDomException && prototypes[0] === DOM_EXCEPTION_PROTOTYPE) {
-    // Native DOMException fields are read through captured intrinsic getters.
-  } else if (prototypes.length === 0 || prototypes[0] === Object.prototype) {
-    // Descriptor-only plain objects are safe to inspect below.
-  } else {
-    const errorPrototypeIndex = prototypes.indexOf(Error.prototype);
-    if (errorPrototypeIndex < 0) {
-      return { kind: 'opaque', diagnostics };
-    }
-    let hasCustomConstructor = false;
-    for (const prototype of prototypes.slice(0, errorPrototypeIndex)) {
-      let descriptors: PropertyDescriptorMap;
-      try {
-        descriptors = Object.getOwnPropertyDescriptors(prototype);
-      } catch {
-        return { kind: 'opaque', diagnostics };
-      }
-      for (const name of Reflect.ownKeys(descriptors)) {
-        if (typeof name === 'symbol') {
-          return { kind: 'opaque', diagnostics };
-        }
-        if (name === 'constructor') {
-          hasCustomConstructor = true;
-          continue;
-        }
-        const descriptor = descriptors[name];
-        if (
-          (name !== 'name' && name !== 'message') ||
-          !('value' in descriptor) ||
-          typeof descriptor.value !== 'string'
-        ) {
-          return { kind: 'opaque', diagnostics };
-        }
-        if (stringContainsEndpointSecret(descriptor.value, secrets, true)) {
-          return { kind: 'secret', diagnostics };
-        }
-        if (name === 'name') {
-          diagnostics.name = descriptor.value;
-        }
-      }
-    }
-    if (hasCustomConstructor) {
-      return { kind: 'opaque', diagnostics };
     }
   }
 
@@ -318,58 +250,60 @@ function inspectErrorGraph(
   try {
     descriptors = Object.getOwnPropertyDescriptors(value);
   } catch {
-    return { kind: 'opaque', diagnostics };
+    return diagnostics;
   }
   for (const propertyName of [
     'name',
+    'message',
     'code',
     'status',
     'statusCode',
   ] as const) {
     const descriptor = descriptors[propertyName];
-    if (descriptor && 'value' in descriptor) {
-      const diagnostic = getSafeDiagnostic(descriptor.value, secrets);
-      if (diagnostic !== undefined) {
-        if (propertyName === 'name') {
-          if (typeof diagnostic === 'string') {
-            diagnostics.name = diagnostic;
-          }
-        } else {
-          diagnostics[propertyName] = diagnostic;
-        }
+    if (!descriptor || !('value' in descriptor)) {
+      continue;
+    }
+    const diagnostic = getSafeDiagnostic(descriptor.value, secrets);
+    if (diagnostic === undefined) {
+      continue;
+    }
+    if (propertyName === 'name' || propertyName === 'message') {
+      if (typeof diagnostic === 'string') {
+        diagnostics[propertyName] = diagnostic;
       }
+    } else {
+      diagnostics[propertyName] = diagnostic;
     }
   }
-  for (const name of Reflect.ownKeys(descriptors)) {
-    if (typeof name === 'symbol') {
-      return { kind: 'opaque', diagnostics };
-    }
-    if (stringContainsEndpointSecret(name, secrets, true)) {
-      return { kind: 'secret', diagnostics };
-    }
-    const descriptor = descriptors[name];
-    if (!('value' in descriptor)) {
-      if (name === 'stack' && descriptor.get === NATIVE_ERROR_STACK_GETTER) {
-        continue;
-      }
-      return { kind: 'opaque', diagnostics };
-    }
-    if (
-      descriptor.value !== null &&
-      (typeof descriptor.value === 'object' ||
-        typeof descriptor.value === 'function' ||
-        typeof descriptor.value === 'symbol')
-    ) {
-      return { kind: 'opaque', diagnostics };
-    }
-    if (
-      typeof descriptor.value === 'string' &&
-      stringContainsEndpointSecret(descriptor.value, secrets, true)
-    ) {
-      return { kind: 'secret', diagnostics };
-    }
+  diagnostics.name ??= collectPrototypeName(value, secrets);
+  return diagnostics;
+}
+
+function inspectErrorGraph(
+  value: unknown,
+  secrets: EndpointSecrets,
+): ErrorGraphInspection {
+  if (typeof value === 'string') {
+    return {
+      kind: stringContainsEndpointSecret(value, secrets) ? 'secret' : 'safe',
+      diagnostics: {},
+    };
   }
-  return { kind: 'safe', diagnostics };
+  if (
+    value === null ||
+    (typeof value !== 'object' &&
+      typeof value !== 'function' &&
+      typeof value !== 'symbol')
+  ) {
+    return { kind: 'safe', diagnostics: {} };
+  }
+  if (typeof value === 'function' || typeof value === 'symbol') {
+    return { kind: 'opaque', diagnostics: {} };
+  }
+  return {
+    kind: 'opaque',
+    diagnostics: collectSafeDiagnostics(value, secrets),
+  };
 }
 
 // Some transports use their full endpoint URL as the default server name.
@@ -412,7 +346,8 @@ export function sanitizeMcpTransportError(
     ? ` for ${redactionInfo.url.protocol}//${redactionInfo.url.host}${redactionInfo.url.pathname}`
     : '';
   const sanitized = new Error(
-    `MCP ${operation} failed${safeEndpoint}; configured endpoint credentials were redacted.`,
+    inspection.diagnostics.message ??
+      `MCP ${operation} failed${safeEndpoint}; configured endpoint credentials were redacted.`,
   );
   sanitized.name =
     inspection.diagnostics.name === 'AbortError' ||
