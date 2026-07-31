@@ -32,6 +32,7 @@ import {
   rehydrateRemoteSandboxSessionStateValues,
   encodeNativeSnapshotRef,
   materializeEnvironment,
+  manifestWithMaterializedEnvironmentReferences,
   providerErrorMessage,
   serializeRemoteSandboxSessionState,
   shellQuote,
@@ -1583,7 +1584,16 @@ export class RunloopSandboxClient implements SandboxClient<
         createTimeoutMs: resumeState.createTimeoutMs,
         timeouts: resumeState.timeouts,
       };
-      return await this.create(resumeState.manifest, recreateOptions);
+      const manifest = resumeState.manifest;
+      const session = await this.create(
+        manifestWithMaterializedEnvironmentReferences(
+          manifest,
+          resumeState.environment,
+        ),
+        recreateOptions,
+      );
+      session.state.manifest = manifest;
+      return session;
     }
   }
 }

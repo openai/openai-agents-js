@@ -140,18 +140,24 @@ export async function rehydratePersistedEnvironmentForRuntime(
     environment,
     baseEnvironment,
   );
-  const resolvedReferences = Object.fromEntries(
+  const resolvedReferences = await resolveEnvironmentReferences(manifest);
+
+  return {
+    ...runtimeEnvironment,
+    ...resolvedReferences,
+  };
+}
+
+export async function resolveEnvironmentReferences(
+  manifest: Manifest,
+): Promise<Record<string, string>> {
+  return Object.fromEntries(
     await Promise.all(
       Object.entries(manifest.environment)
         .filter(([, value]) => isEnvValueReference(value))
         .map(async ([key, value]) => [key, await value.resolve()]),
     ),
   );
-
-  return {
-    ...runtimeEnvironment,
-    ...resolvedReferences,
-  };
 }
 
 export function assertShellEnvironmentName(name: string): void {

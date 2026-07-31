@@ -1,5 +1,7 @@
 import {
+  EnvValueReference,
   Manifest,
+  registerEnvValueReference,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
 } from '@openai/agents-core/sandbox';
@@ -733,6 +735,72 @@ describe('E2BSandboxClient', () => {
     expect(connectMock).toHaveBeenCalledWith('sbx_test', undefined);
     expect(createMock).toHaveBeenCalledWith('base', {});
     expect(recreated.state.sandboxId).toBe('sbx_test');
+  });
+
+  test('reuses refreshed environment references when recreating a missing sandbox', async () => {
+    let resolveCount = 0;
+    class E2BSecretReference extends EnvValueReference {
+      static readonly type = 'test.e2b_secret_reference';
+
+      constructor(readonly key: string) {
+        super();
+      }
+
+      override serialize(): Record<string, unknown> {
+        return { key: this.key };
+      }
+
+      override async resolve(): Promise<string> {
+        resolveCount += 1;
+        return `credential-${resolveCount}:${this.key}`;
+      }
+    }
+
+    const unregister = registerEnvValueReference(
+      E2BSecretReference,
+      (payload) => {
+        if (typeof payload.key !== 'string') {
+          throw new TypeError('E2B secret reference key must be a string.');
+        }
+        return new E2BSecretReference(payload.key);
+      },
+    );
+    try {
+      const client = new E2BSandboxClient({
+        pauseOnExit: true,
+        template: 'base',
+      });
+      const session = await client.create(
+        new Manifest({
+          environment: {
+            TOKEN: new E2BSecretReference('openai-key'),
+          },
+        }),
+      );
+      const serialized = await client.serializeSessionState(session.state);
+      resolveCount = 0;
+      const restored = await client.deserializeSessionState(serialized);
+      expect(resolveCount).toBe(1);
+      expect(restored.environment).toEqual({
+        TOKEN: 'credential-1:openai-key',
+      });
+      createMock.mockClear();
+      connectMock.mockRejectedValueOnce(new Error('not found'));
+
+      const recreated = await client.resume(restored);
+
+      expect(resolveCount).toBe(1);
+      expect(createMock).toHaveBeenCalledWith('base', {
+        envs: {
+          TOKEN: 'credential-1:openai-key',
+        },
+      });
+      expect(recreated.state.manifest.environment.TOKEN).toBeInstanceOf(
+        E2BSecretReference,
+      );
+    } finally {
+      unregister();
+    }
   });
 
   test('fails fast when reconnect fails with a provider error', async () => {

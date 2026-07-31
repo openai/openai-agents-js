@@ -39,6 +39,7 @@ export {
   mergeMaterializedEnvironment,
   mergeStaticMaterializedEnvironment,
   rehydratePersistedEnvironmentForRuntime,
+  resolveEnvironmentReferences,
   serializeManifestEnvironment,
   serializeRuntimeEnvironmentForPersistence,
 } from './shared/environment';

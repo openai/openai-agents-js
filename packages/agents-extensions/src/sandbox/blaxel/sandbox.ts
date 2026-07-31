@@ -35,6 +35,7 @@ import {
   rehydrateRemoteSandboxSessionStateValues,
   formatPtyExecUpdate,
   materializeEnvironment,
+  manifestWithMaterializedEnvironmentReferences,
   openPtyWebSocket,
   parseExposedPortEndpoint,
   posixDirname,
@@ -1025,8 +1026,12 @@ export class BlaxelSandboxClient implements SandboxClient<
   private async recreateFromState(
     state: BlaxelSandboxSessionState,
   ): Promise<BlaxelSandboxSession> {
+    const manifest = state.manifest;
     const session = await this.create(
-      state.manifest,
+      manifestWithMaterializedEnvironmentReferences(
+        manifest,
+        state.environment,
+      ),
       {
         image: state.image,
         memory: state.memory,
@@ -1048,6 +1053,7 @@ export class BlaxelSandboxClient implements SandboxClient<
         allowExistingNamedSandbox: !state.ownsSandbox,
       },
     );
+    session.state.manifest = manifest;
     return session;
   }
 }

@@ -34,6 +34,7 @@ import {
   decodeNativeSnapshotRef,
   encodeNativeSnapshotRef,
   materializeEnvironment,
+  manifestWithMaterializedEnvironmentReferences,
   parseExposedPortEndpoint,
   providerErrorMessage,
   shellQuote,
@@ -1001,10 +1002,19 @@ export class E2BSandboxClient implements SandboxClient<
       }
     }
 
-    return await this.create(state.manifest, {
-      ...stateToCreateOptions(state),
-      env: state.environment,
-    });
+    const manifest = state.manifest;
+    const session = await this.create(
+      manifestWithMaterializedEnvironmentReferences(
+        manifest,
+        state.environment,
+      ),
+      {
+        ...stateToCreateOptions(state),
+        env: state.environment,
+      },
+    );
+    session.state.manifest = manifest;
+    return session;
   }
 }
 

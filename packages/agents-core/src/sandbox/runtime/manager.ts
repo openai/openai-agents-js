@@ -16,7 +16,10 @@ import { SandboxLifecycleError } from '../errors';
 import { cloneManifest, Manifest } from '../manifest';
 import { type SandboxSessionLike, type SandboxSessionState } from '../session';
 import { isDefaultRemoteMountCommandAllowlist } from '../shared/remoteMountCommandAllowlist';
-import { serializeManifestEnvironment } from '../shared/environment';
+import {
+  resolveEnvironmentReferences,
+  serializeManifestEnvironment,
+} from '../shared/environment';
 import { stableJsonStringify } from '../shared/stableJson';
 import type { SnapshotSpec } from '../snapshot';
 import {
@@ -1028,6 +1031,10 @@ export class SandboxRuntimeManager<TContext> {
 
     const canReuse = args.client.canReusePreservedOwnedSession;
     if (!canReuse) {
+      await refreshLiveEnvironmentReferences(
+        liveEntry.session.state,
+        args.trustedManifest,
+      );
       return { entry: liveEntry, reusable: true };
     }
 
@@ -1072,6 +1079,13 @@ export class SandboxRuntimeManager<TContext> {
         session: liveEntry.session,
       });
       return { entry: liveEntry, reusable: false };
+    }
+
+    if (args.client.backendId !== 'docker') {
+      await refreshLiveEnvironmentReferences(
+        liveEntry.session.state,
+        args.trustedManifest,
+      );
     }
 
     // Rebind only after the backend has verified that its live authority still
@@ -1375,6 +1389,24 @@ function manifestWithTrustedRuntimePolicies(
       ...trustedManifest.remoteMountCommandAllowlist,
     ],
   });
+}
+
+async function refreshLiveEnvironmentReferences(
+  state: SandboxSessionState,
+  trustedManifest: Manifest | undefined,
+): Promise<void> {
+  if (!trustedManifest) {
+    return;
+  }
+  const resolvedReferences =
+    await resolveEnvironmentReferences(trustedManifest);
+  if (Object.keys(resolvedReferences).length === 0) {
+    return;
+  }
+  state.environment = {
+    ...(state.environment ?? {}),
+    ...resolvedReferences,
+  };
 }
 
 function removeClosedPreservedOwnedSessions(

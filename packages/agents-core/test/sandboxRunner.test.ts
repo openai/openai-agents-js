@@ -5577,6 +5577,89 @@ describe('sandbox runner integration', () => {
     expect(client.closeCalls).toEqual([liveSession?.state.sessionId]);
   });
 
+  it('refreshes environment references before reusing a live remote session', async () => {
+    class LiveSecretReference extends EnvValueReference {
+      static readonly type = 'test.live_remote_secret_reference';
+
+      constructor(readonly key: string) {
+        super();
+      }
+
+      override serialize(): Record<string, unknown> {
+        return { key: this.key };
+      }
+
+      override async resolve(): Promise<string> {
+        resolveCount += 1;
+        return `credential-${resolveCount}:${this.key}`;
+      }
+    }
+
+    let resolveCount = 0;
+    const unregister = registerEnvValueReference(
+      LiveSecretReference,
+      (payload) => {
+        if (typeof payload.key !== 'string') {
+          throw new TypeError('Live secret reference key must be a string.');
+        }
+        return new LiveSecretReference(payload.key);
+      },
+    );
+    try {
+      const client = new FakeSandboxClient();
+      const manifest = new Manifest({
+        environment: {
+          TOKEN: new LiveSecretReference('openai-key'),
+        },
+      });
+      const sandboxAgent = new SandboxAgent({
+        name: 'SandboxWorker',
+        model: new RecordingFakeModel([]),
+      });
+      const state = new RunState<unknown, Agent<unknown, any>>(
+        new RunContext(),
+        'Hello',
+        sandboxAgent as Agent<unknown, any>,
+        1,
+      );
+      const firstManager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent as Agent<unknown, any>,
+        sandboxConfig: {
+          client,
+          manifest,
+        },
+        runState: state,
+      });
+      await firstManager.prepareAgent({
+        currentAgent: sandboxAgent as Agent<unknown, any>,
+        turnInput: [],
+      });
+      const liveSession = client.createdSessions[0]!;
+      liveSession.state.environment = await manifest.resolveEnvironment();
+      expect(resolveCount).toBe(1);
+      await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+      const secondManager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent as Agent<unknown, any>,
+        sandboxConfig: {
+          client,
+          manifest,
+        },
+        runState: state,
+      });
+      await secondManager.adoptPreservedOwnedSessions();
+
+      expect(resolveCount).toBe(2);
+      expect(liveSession.state.environment).toEqual({
+        TOKEN: 'credential-2:openai-key',
+      });
+      expect(client.resumeCalls).toHaveLength(0);
+      await secondManager.cleanup(state);
+    } finally {
+      unregister();
+    }
+  });
+
   it('refreshes trusted environment values before reusing a live Docker session', async () => {
     let resolvedSecret = 'initial-secret';
     const client = new DockerRevalidatingLiveProcessFakeSandboxClient();
