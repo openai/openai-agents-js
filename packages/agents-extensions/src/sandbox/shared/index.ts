@@ -107,6 +107,7 @@ export {
 export {
   assertRemoteSandboxSessionStateCanResume,
   deserializeRemoteSandboxSessionStateValues,
+  rehydrateRemoteSandboxSessionStateValues,
   serializeRemoteSandboxSessionState,
 } from './sessionState';
 export {

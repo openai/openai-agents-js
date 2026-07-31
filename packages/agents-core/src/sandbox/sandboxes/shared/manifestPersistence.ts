@@ -1,6 +1,11 @@
 import { isMount, type Entry } from '../../entries';
 import { UserError } from '../../../errors';
-import { cloneManifest, Manifest, type EnvValue } from '../../manifest';
+import {
+  cloneManifest,
+  isEnvValueReference,
+  Manifest,
+  type EnvValue,
+} from '../../manifest';
 import type { SandboxSessionState } from '../../session';
 import {
   mergeNamedObjects,
@@ -178,13 +183,13 @@ export function sanitizeEnvironmentForPersistence(
 
 export function serializeEnvironmentForPersistence(
   state: ManifestPersistenceState,
-): SerializedManifestEnvironment {
+): Record<string, EnvValue> {
   const runtimeEnvironment = state.environment ?? {};
   const ephemeralKeys = new Set<string>();
-  const serialized: SerializedManifestEnvironment = {};
+  const serialized: Record<string, EnvValue> = {};
 
   for (const [key, value] of Object.entries(state.manifest.environment)) {
-    if (value.ephemeral) {
+    if (value.ephemeral || isEnvValueReference(value)) {
       ephemeralKeys.add(key);
       continue;
     }

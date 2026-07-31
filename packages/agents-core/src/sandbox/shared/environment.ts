@@ -1,11 +1,17 @@
 import { UserError } from '../../errors';
-import type { Manifest } from '../manifest';
+import {
+  isEnvValueReference,
+  serializeEnvValueReference,
+  type Manifest,
+  type SerializedEnvValueReference,
+} from '../manifest';
 
 const SHELL_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export type SerializedManifestEnvironment = Record<
   string,
-  { value: string; ephemeral?: boolean; description?: string }
+  | { value: string; ephemeral?: boolean; description?: string }
+  | SerializedEnvValueReference
 >;
 
 export async function materializeEnvironment(
@@ -68,7 +74,9 @@ export function serializeManifestEnvironment(
   return Object.fromEntries(
     Object.entries(manifest.environment).map(([key, value]) => [
       key,
-      value.normalized(),
+      isEnvValueReference(value)
+        ? serializeEnvValueReference(value)
+        : value.normalized(),
     ]),
   );
 }
@@ -82,6 +90,7 @@ export function serializeRuntimeEnvironmentForPersistence(
       .filter(
         ([key, value]) =>
           !value.ephemeral &&
+          !isEnvValueReference(value) &&
           key in environment &&
           typeof environment[key] === 'string',
       )
@@ -100,13 +109,46 @@ export function deserializePersistedEnvironmentForRuntime(
   const manifestEnvironment = materializeStaticEnvironment(manifest);
   const persistentManifestEnvironment = Object.fromEntries(
     Object.entries(manifestEnvironment).filter(
-      ([key]) => !manifest.environment[key]?.ephemeral,
+      ([key]) =>
+        !manifest.environment[key]?.ephemeral &&
+        !isEnvValueReference(manifest.environment[key]!),
     ),
   );
   const persistedEnvironment = Object.fromEntries(
     Object.entries(environment ?? {}).filter(
       ([key]) =>
-        key in manifestEnvironment && !manifest.environment[key]?.ephemeral,
+        key in manifestEnvironment &&
+        !manifest.environment[key]?.ephemeral &&
+        !isEnvValueReference(manifest.environment[key]!),
+    ),
+  );
+
+  return {
+    ...baseEnvironment,
+    ...persistentManifestEnvironment,
+    ...persistedEnvironment,
+  };
+}
+
+export async function rehydratePersistedEnvironmentForRuntime(
+  manifest: Manifest,
+  environment: Record<string, string> | undefined,
+  baseEnvironment: Record<string, string> = {},
+): Promise<Record<string, string>> {
+  const manifestEnvironment = await manifest.resolveEnvironment();
+  const persistentManifestEnvironment = Object.fromEntries(
+    Object.entries(manifestEnvironment).filter(
+      ([key]) =>
+        !manifest.environment[key]?.ephemeral ||
+        isEnvValueReference(manifest.environment[key]),
+    ),
+  );
+  const persistedEnvironment = Object.fromEntries(
+    Object.entries(environment ?? {}).filter(
+      ([key]) =>
+        key in manifestEnvironment &&
+        !manifest.environment[key]?.ephemeral &&
+        !isEnvValueReference(manifest.environment[key]!),
     ),
   );
 

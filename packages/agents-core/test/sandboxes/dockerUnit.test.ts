@@ -52,9 +52,11 @@ import {
   dockerVolumeMountStrategy,
   DockerSandboxClient,
   type DockerSandboxSessionState,
+  EnvValueReference,
   inContainerMountStrategy,
   Manifest,
   NoopSnapshotSpec,
+  registerEnvValueReference,
   skills,
 } from '../../src/sandbox/local';
 
@@ -4186,6 +4188,97 @@ describe('DockerSandboxClient unit behavior', () => {
 
     await restored.close();
     await session.close();
+  });
+
+  it('resolves environment references once while restoring Docker RunState', async () => {
+    class DockerSecretReference extends EnvValueReference {
+      static readonly type = 'test.docker_run_state_secret_reference';
+
+      constructor(readonly key: string) {
+        super({ ephemeral: true });
+      }
+
+      override serialize(): Record<string, unknown> {
+        return { key: this.key };
+      }
+
+      override async resolve(): Promise<string> {
+        resolveCount += 1;
+        return `credential-${resolveCount}:${this.key}`;
+      }
+    }
+
+    let runCount = 0;
+    let resolveCount = 0;
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          return success(`container-${runCount}\n`);
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const unregister = registerEnvValueReference(
+      DockerSecretReference,
+      (payload) => {
+        if (typeof payload.key !== 'string') {
+          throw new TypeError('Docker secret reference key must be a string.');
+        }
+        return new DockerSecretReference(payload.key);
+      },
+    );
+    try {
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        snapshot: {
+          type: 'local',
+          baseDir: rootDir,
+        },
+      });
+      const session = await client.create(
+        new Manifest({
+          environment: {
+            TOKEN: new DockerSecretReference('openai-key'),
+          },
+        }),
+      );
+      const serialized = await client.serializeSessionState(session.state);
+      resolveCount = 0;
+
+      const persistedState = (await deserializeSandboxSessionStateEntry(
+        client,
+        {
+          backendId: client.backendId,
+          currentAgentKey: 'SandboxWorker',
+          currentAgentName: 'SandboxWorker',
+          sessionState: toSessionStateEnvelope(
+            client.backendId,
+            session.state,
+            serialized,
+          ),
+        },
+        session.state.manifest,
+      )) as DockerSandboxSessionState;
+      expect(resolveCount).toBe(1);
+
+      const restored = await client.resume(persistedState);
+
+      expect(resolveCount).toBe(1);
+      expect(restored.state.environment).toEqual({
+        TOKEN: 'credential-1:openai-key',
+      });
+      await restored.close();
+      await session.close();
+    } finally {
+      unregister();
+    }
   });
 
   it('restores untrusted stopped RunState into new Docker resources', async () => {

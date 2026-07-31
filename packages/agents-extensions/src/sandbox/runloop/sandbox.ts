@@ -29,7 +29,7 @@ import {
   cloneManifestWithRoot,
   decodeNativeSnapshotRef,
   assertShellEnvironmentName,
-  deserializeRemoteSandboxSessionStateValues,
+  rehydrateRemoteSandboxSessionStateValues,
   encodeNativeSnapshotRef,
   materializeEnvironment,
   providerErrorMessage,
@@ -1480,7 +1480,7 @@ export class RunloopSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<RunloopSandboxSessionState> {
-    const baseState = deserializeRemoteSandboxSessionStateValues(
+    const baseState = await rehydrateRemoteSandboxSessionStateValues(
       state,
       this.options.env,
     );

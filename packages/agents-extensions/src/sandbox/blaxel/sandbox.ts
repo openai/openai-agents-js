@@ -32,7 +32,7 @@ import {
   assertRunAsUnsupported,
   closeRemoteSessionOnManifestError,
   assertShellEnvironmentName,
-  deserializeRemoteSandboxSessionStateValues,
+  rehydrateRemoteSandboxSessionStateValues,
   formatPtyExecUpdate,
   materializeEnvironment,
   openPtyWebSocket,
@@ -948,7 +948,7 @@ export class BlaxelSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<BlaxelSandboxSessionState> {
-    const baseState = deserializeRemoteSandboxSessionStateValues(
+    const baseState = await rehydrateRemoteSandboxSessionStateValues(
       state,
       this.options.env,
     );

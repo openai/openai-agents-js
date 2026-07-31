@@ -26,7 +26,7 @@ import {
   assertResumeRecreateAllowed,
   assertTarWorkspacePersistence,
   createPtyProcessEntry,
-  deserializeRemoteSandboxSessionStateValues,
+  rehydrateRemoteSandboxSessionStateValues,
   formatPtyExecUpdate,
   assertSandboxManifestMetadataSupported,
   SANDBOX_MANIFEST_METADATA_SUPPORT,
@@ -934,7 +934,7 @@ export class E2BSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<E2BSandboxSessionState> {
-    const baseState = deserializeRemoteSandboxSessionStateValues(
+    const baseState = await rehydrateRemoteSandboxSessionStateValues(
       state,
       this.options.env,
     );

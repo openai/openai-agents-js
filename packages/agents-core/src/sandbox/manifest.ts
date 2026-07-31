@@ -42,7 +42,13 @@ export type EnvValue = {
   description?: string;
 };
 
-export type EnvEntry = string | EnvResolver | EnvValue | Environment;
+export type SerializedEnvValueReference = {
+  type: string;
+  [key: string]: unknown;
+};
+
+export type EnvEntry =
+  string | EnvResolver | EnvValue | Environment | SerializedEnvValueReference;
 
 export type RenderManifestDescriptionOptions = {
   depth?: number | null;
@@ -59,12 +65,20 @@ type ManifestEnvironmentValues<TEnvironment extends ManifestEnvironment> = {
 };
 
 export class Environment {
-  readonly value: string;
+  readonly value!: string;
   readonly resolver?: EnvResolver;
-  readonly ephemeral: boolean;
+  readonly ephemeral!: boolean;
   readonly description?: string;
 
   constructor(entry: EnvEntry) {
+    if (entry instanceof EnvValueReference) {
+      return entry;
+    }
+
+    if (isSerializedEnvValueReference(entry)) {
+      return parseEnvValueReference(entry);
+    }
+
     if (entry instanceof Environment) {
       this.value = entry.value;
       this.resolver = entry.resolver;
@@ -306,6 +320,187 @@ export class Manifest<
   }
 }
 
+export type EnvValueReferenceClass<
+  TReference extends EnvValueReference = EnvValueReference,
+> = {
+  readonly type: string;
+  readonly prototype: TReference;
+};
+
+export type EnvValueReferenceParser<
+  TReference extends EnvValueReference = EnvValueReference,
+> = (payload: Readonly<Record<string, unknown>>) => TReference;
+
+type EnvValueReferenceRegistration<
+  TReference extends EnvValueReference = EnvValueReference,
+> = {
+  referenceClass: EnvValueReferenceClass<TReference>;
+  parse: EnvValueReferenceParser<TReference>;
+};
+
+const envValueReferenceRegistry = new Map<
+  string,
+  EnvValueReferenceRegistration
+>();
+
+/**
+ * A JSON-serializable reference to a runtime sandbox environment value.
+ *
+ * Subclasses must serialize only non-secret lookup metadata. Register each
+ * subclass in every process that reconstructs manifests before parsing JSON.
+ */
+export abstract class EnvValueReference extends Environment {
+  static readonly type: string = '';
+
+  protected constructor(
+    options: {
+      ephemeral?: boolean;
+      description?: string;
+    } = {},
+  ) {
+    super({
+      value: '',
+      ...(options.ephemeral ? { ephemeral: true } : {}),
+      ...(options.description ? { description: options.description } : {}),
+    });
+  }
+
+  get type(): string {
+    return (this.constructor as typeof EnvValueReference).type;
+  }
+
+  abstract serialize(): Record<string, unknown>;
+
+  abstract override resolve(): Promise<string>;
+
+  override init(): EnvValueReference {
+    return parseEnvValueReference(serializeEnvValueReference(this));
+  }
+
+  toJSON(): SerializedEnvValueReference {
+    return serializeEnvValueReference(this);
+  }
+}
+
+/**
+ * Registers one environment reference subtype for JSON reconstruction.
+ *
+ * The parser receives persisted data and must validate it before constructing
+ * a reference, including allowlisting any secret-store lookup keys.
+ *
+ * Returns an unregister callback for test isolation and controlled module
+ * lifecycle cleanup. Conflicting registrations fail instead of replacing the
+ * active parser.
+ */
+export function registerEnvValueReference<TReference extends EnvValueReference>(
+  referenceClass: EnvValueReferenceClass<TReference>,
+  parse: EnvValueReferenceParser<TReference>,
+): () => void {
+  if (typeof (referenceClass as unknown) !== 'function') {
+    throw new TypeError('EnvValueReference registration requires a class.');
+  }
+  if (!Object.prototype.hasOwnProperty.call(referenceClass, 'type')) {
+    throw new TypeError(
+      `${envValueReferenceClassName(referenceClass)} must declare its own static type.`,
+    );
+  }
+  const type = referenceClass.type;
+  if (typeof type !== 'string' || type.trim() === '') {
+    throw new TypeError('EnvValueReference type must be a non-empty string.');
+  }
+  const existing = envValueReferenceRegistry.get(type);
+  if (existing) {
+    throw new TypeError(
+      `Environment value reference type "${type}" is already registered by ${envValueReferenceClassName(existing.referenceClass)}.`,
+    );
+  }
+
+  const registration: EnvValueReferenceRegistration<TReference> = {
+    referenceClass,
+    parse,
+  };
+  envValueReferenceRegistry.set(type, registration);
+  return () => {
+    if (envValueReferenceRegistry.get(type) === registration) {
+      envValueReferenceRegistry.delete(type);
+    }
+  };
+}
+
+export function serializeEnvValueReference(
+  reference: EnvValueReference,
+): SerializedEnvValueReference {
+  const registration = envValueReferenceRegistry.get(reference.type);
+  if (
+    !registration ||
+    reference.constructor !== (registration.referenceClass as unknown)
+  ) {
+    throw new TypeError(
+      `${reference.constructor.name || 'EnvValueReference subclass'} must be registered with its own static type before serialization.`,
+    );
+  }
+  const serialized = reference.serialize();
+  if (!isRecord(serialized)) {
+    throw new TypeError(
+      `${reference.constructor.name || 'EnvValueReference subclass'}.serialize() must return a record.`,
+    );
+  }
+  if ('value' in serialized) {
+    throw new TypeError(
+      `${reference.constructor.name || 'EnvValueReference subclass'}.serialize() must not return the reserved "value" field.`,
+    );
+  }
+  return {
+    ...serialized,
+    type: reference.type,
+  };
+}
+
+export function isEnvValueReference(
+  value: unknown,
+): value is EnvValueReference {
+  return value instanceof EnvValueReference;
+}
+
+export function isSerializedEnvValueReference(
+  value: unknown,
+): value is SerializedEnvValueReference {
+  return (
+    isRecord(value) && typeof value.type === 'string' && !('value' in value)
+  );
+}
+
+function parseEnvValueReference(
+  serialized: SerializedEnvValueReference,
+): EnvValueReference {
+  const registration = envValueReferenceRegistry.get(serialized.type);
+  if (!registration) {
+    const knownTypes = [...envValueReferenceRegistry.keys()].sort().join(', ');
+    throw new TypeError(
+      `Unknown environment value reference type "${serialized.type}". Registered types: ${knownTypes || '<none>'}.`,
+    );
+  }
+  const { type: _type, ...payload } = serialized;
+  const reference = registration.parse(payload);
+  if (
+    !(reference instanceof EnvValueReference) ||
+    reference.constructor !== (registration.referenceClass as unknown) ||
+    reference.type !== serialized.type
+  ) {
+    throw new TypeError(
+      `Parser for environment value reference type "${serialized.type}" must return an instance of ${envValueReferenceClassName(registration.referenceClass)}.`,
+    );
+  }
+  return reference;
+}
+
+function envValueReferenceClassName(
+  referenceClass: EnvValueReferenceClass,
+): string {
+  const name = (referenceClass as { readonly name?: unknown }).name;
+  return typeof name === 'string' && name ? name : 'EnvValueReference subclass';
+}
+
 export type ManifestInput<
   TEntries extends ManifestEntries = ManifestEntries,
   TEnvironment extends ManifestEnvironment = ManifestEnvironment,
@@ -356,11 +551,7 @@ export function normalizeRelativePath(path: string): string {
 function normalizeGitRepoSubpath(repo: string, subpath: string): string {
   const trimmed = subpath.trim();
   let reason:
-    | 'absolute'
-    | 'empty'
-    | 'parent_traversal'
-    | 'windows_path'
-    | undefined;
+    'absolute' | 'empty' | 'parent_traversal' | 'windows_path' | undefined;
 
   if (subpath === '' || normalizePosixPath(trimmed) === '.') {
     return '';
