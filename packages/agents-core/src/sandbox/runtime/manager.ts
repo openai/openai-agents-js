@@ -1341,9 +1341,7 @@ function getManifestSignature(manifest: Manifest): string {
     version: manifest.version,
     root: manifest.root,
     entries: manifest.entries,
-    environment: serializeManifestEnvironment(manifest, {
-      allowResolverPlaceholders: true,
-    }),
+    environment: serializeManifestEnvironment(manifest),
     users: manifest.users,
     groups: manifest.groups,
     extraPathGrants: manifest.extraPathGrants,

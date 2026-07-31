@@ -68,12 +68,8 @@ function validateProvidedSessionManifestUpdate(
 }
 
 function validateNoEnvironmentDelta(current: Manifest, target: Manifest): void {
-  const currentEnvironment = serializeManifestEnvironment(current, {
-    allowResolverPlaceholders: true,
-  });
-  const targetEnvironment = serializeManifestEnvironment(target, {
-    allowResolverPlaceholders: true,
-  });
+  const currentEnvironment = serializeManifestEnvironment(current);
+  const targetEnvironment = serializeManifestEnvironment(target);
   const hasDelta = Object.entries(targetEnvironment).some(
     ([key, value]) => !jsonEqual(currentEnvironment[key], value),
   );

@@ -4081,7 +4081,8 @@ describe('DockerSandboxClient unit behavior', () => {
       new Manifest({
         environment: {
           SECRET_ENV: {
-            value: 'initial-secret',
+            value: '',
+            resolve: () => resolvedSecret,
             ephemeral: true,
           },
         },
@@ -4113,15 +4114,6 @@ describe('DockerSandboxClient unit behavior', () => {
       'utf8',
     );
     resolvedSecret = 'refreshed-secret';
-    const trustedManifest = new Manifest({
-      environment: {
-        SECRET_ENV: {
-          value: '',
-          resolve: () => resolvedSecret,
-          ephemeral: true,
-        },
-      },
-    });
 
     const persistedState = (await deserializeSandboxSessionStateEntry(
       client,
@@ -4135,7 +4127,7 @@ describe('DockerSandboxClient unit behavior', () => {
           serialized,
         ),
       },
-      trustedManifest,
+      session.state.manifest,
       {
         clientOptions: {
           image: 'run:image',
@@ -4255,22 +4247,16 @@ describe('DockerSandboxClient unit behavior', () => {
         new Manifest({
           environment: {
             TOKEN: new DockerSecretReference('openai-key'),
-            ROTATING_TOKEN: 'persisted-placeholder',
+            ROTATING_TOKEN: async () => {
+              ordinaryResolveCount += 1;
+              return `rotating-credential-${ordinaryResolveCount}`;
+            },
           },
         }),
       );
       const serialized = await client.serializeSessionState(session.state);
       resolveCount = 0;
       ordinaryResolveCount = 0;
-      const trustedManifest = new Manifest({
-        environment: {
-          TOKEN: new DockerSecretReference('openai-key'),
-          ROTATING_TOKEN: async () => {
-            ordinaryResolveCount += 1;
-            return `rotating-credential-${ordinaryResolveCount}`;
-          },
-        },
-      });
 
       const persistedState = (await deserializeSandboxSessionStateEntry(
         client,
@@ -4284,7 +4270,7 @@ describe('DockerSandboxClient unit behavior', () => {
             serialized,
           ),
         },
-        trustedManifest,
+        session.state.manifest,
       )) as DockerSandboxSessionState;
       expect(resolveCount).toBe(1);
       expect(ordinaryResolveCount).toBe(0);

@@ -1852,7 +1852,8 @@ describe('sandbox runner integration', () => {
       defaultManifest: new Manifest({
         environment: {
           SECRET_ENV: {
-            value: 'refreshed-secret',
+            value: '',
+            resolve: () => 'refreshed-secret',
             ephemeral: true,
           },
         },
@@ -5697,11 +5698,13 @@ describe('sandbox runner integration', () => {
   });
 
   it('refreshes trusted environment values before reusing a live Docker session', async () => {
+    let resolvedSecret = 'initial-secret';
     const client = new DockerRevalidatingLiveProcessFakeSandboxClient();
     const manifest = new Manifest({
       environment: {
         SECRET_ENV: {
-          value: 'initial-secret',
+          value: '',
+          resolve: () => resolvedSecret,
           ephemeral: true,
         },
       },
@@ -5745,10 +5748,12 @@ describe('sandbox runner integration', () => {
       PROVIDER_ENV: 'provider-value',
     };
     await firstManager.cleanup(state, { preserveOwnedSessions: true });
+    resolvedSecret = 'refreshed-secret';
     const refreshedManifest = new Manifest({
       environment: {
         SECRET_ENV: {
-          value: 'refreshed-secret',
+          value: '',
+          resolve: () => resolvedSecret,
           ephemeral: true,
         },
         ADDED_ENV: 'added-value',
