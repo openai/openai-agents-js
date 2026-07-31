@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Agent, RunState, run, tool } from '@openai/agents';
 import { z } from 'zod';
@@ -11,6 +12,7 @@ type PendingApprovalFile = {
   agentName: string;
   toolName: string | undefined;
   arguments: string | undefined;
+  runStateHash: string;
   instructions: string;
 };
 
@@ -31,6 +33,23 @@ const expenseReportSchema = z.object({
   businessPurpose: z.string(),
   policyNote: z.string(),
 });
+
+type ExpenseReport = z.infer<typeof expenseReportSchema>;
+
+function hashString(value: string) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function getSubmissionKey(report: ExpenseReport) {
+  return hashString(
+    JSON.stringify({
+      merchant: report.merchant,
+      amountUsd: report.amountUsd,
+      category: report.category,
+      businessPurpose: report.businessPurpose,
+    }),
+  ).slice(0, 12);
+}
 
 const prepareExpenseReport = tool({
   name: 'prepare_expense_report',
@@ -65,11 +84,12 @@ const submitExpenseReport = tool({
     status: z.literal('submitted'),
     submittedAmountUsd: z.number(),
   }),
-  execute: async ({ amountUsd }) => {
+  execute: async (report) => {
+    const submissionKey = getSubmissionKey(report);
     return {
-      confirmationId: 'exp_demo_001',
+      confirmationId: `exp_demo_${submissionKey}`,
       status: 'submitted' as const,
-      submittedAmountUsd: amountUsd,
+      submittedAmountUsd: report.amountUsd,
     };
   },
 });
@@ -120,17 +140,19 @@ async function writePendingApproval(state: RunState<any, any>) {
   }
 
   const [interruption] = interruptions;
+  const serializedState = JSON.stringify(state, null, 2);
   const pendingApproval: PendingApprovalFile = {
     createdAt: new Date().toISOString(),
     agentName: interruption.agent.name,
     toolName: interruption.name,
     arguments: interruption.arguments,
+    runStateHash: hashString(serializedState),
     instructions:
       'Review the pending tool call, then run approve or reject to resume the serialized run.',
   };
 
   await fs.mkdir(stateDir, { recursive: true });
-  await fs.writeFile(runStatePath, JSON.stringify(state, null, 2), 'utf-8');
+  await fs.writeFile(runStatePath, serializedState, 'utf-8');
   await fs.writeFile(
     pendingApprovalPath,
     `${JSON.stringify(pendingApproval, null, 2)}\n`,
@@ -154,11 +176,24 @@ async function readPendingApproval(): Promise<PendingApprovalFile> {
   }
 }
 
-async function loadPendingState(): Promise<RunState<unknown, typeof agent>> {
+async function loadPendingState(
+  expectedHash: string,
+): Promise<RunState<unknown, typeof agent>> {
   try {
     const serializedState = await fs.readFile(runStatePath, 'utf-8');
+    if (hashString(serializedState) !== expectedHash) {
+      throw new Error(
+        'Saved approval metadata does not match the saved run state. Run cleanup before starting a new request.',
+      );
+    }
     return RunState.fromString(agent, serializedState);
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith('Saved approval metadata')
+    ) {
+      throw error;
+    }
     throw new Error(
       'No saved run state found. Run request to start a resumable approval.',
     );
@@ -198,6 +233,17 @@ async function showStatus() {
   const pendingApproval = await readPendingApproval();
   console.log('Pending approval:');
   console.log(JSON.stringify(pendingApproval, null, 2));
+  const savedStateMatches = await fs
+    .readFile(runStatePath, 'utf-8')
+    .then(
+      (savedState) => hashString(savedState) === pendingApproval.runStateHash,
+    )
+    .catch(() => false);
+  if (!savedStateMatches) {
+    console.log(
+      'Warning: saved approval metadata does not match the run state file. Run cleanup before starting a new request.',
+    );
+  }
   if (!(await fileExists(runStatePath))) {
     console.log(
       'Warning: saved approval metadata exists, but the run state file is missing. Run cleanup before starting a new request.',
@@ -207,7 +253,7 @@ async function showStatus() {
 
 async function resumeWithDecision(decision: 'approve' | 'reject') {
   const pendingApproval = await readPendingApproval();
-  const state = await loadPendingState();
+  const state = await loadPendingState(pendingApproval.runStateHash);
   const interruptions = state.getInterruptions();
 
   if (interruptions.length !== 1) {
