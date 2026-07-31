@@ -6,17 +6,16 @@ import { FinancialResearchManager } from './manager';
 // "Write up an analysis of Apple Inc.'s most recent quarter."
 
 async function main() {
-  const readline = await import('readline');
+  const readline = await import('node:readline/promises');
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
   });
-  rl.question('Enter a financial research query: ', async (query: string) => {
-    rl.close();
-    await withTrace('Financial research workflow', async () => {
-      const manager = new FinancialResearchManager();
-      await manager.run(query);
-    });
+  const query = await rl.question('Enter a financial research query: ');
+  rl.close();
+  await withTrace('Financial research workflow', async () => {
+    const manager = new FinancialResearchManager();
+    await manager.run(query);
   });
 }
 
