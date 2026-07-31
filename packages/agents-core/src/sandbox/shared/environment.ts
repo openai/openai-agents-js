@@ -70,14 +70,20 @@ export function mergeStaticMaterializedEnvironment(
 
 export function serializeManifestEnvironment(
   manifest: Manifest,
+  options: { allowResolverPlaceholders?: boolean } = {},
 ): SerializedManifestEnvironment {
   return Object.fromEntries(
-    Object.entries(manifest.environment).map(([key, value]) => [
-      key,
-      isEnvValueReference(value)
-        ? serializeEnvValueReference(value)
-        : value.normalized(),
-    ]),
+    Object.entries(manifest.environment).map(([key, value]) => {
+      if (isEnvValueReference(value)) {
+        return [key, serializeEnvValueReference(value)];
+      }
+      if (value.resolver && !options.allowResolverPlaceholders) {
+        throw new TypeError(
+          `Environment variable "${key}" uses a resolver function and cannot be serialized. Use a static value or EnvValueReference for persisted manifests.`,
+        );
+      }
+      return [key, value.normalized()];
+    }),
   );
 }
 

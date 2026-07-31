@@ -269,10 +269,12 @@ describe('UnixLocalSandboxClient', () => {
       login: false,
       yieldTimeMs: 1_000,
     });
-    const serialized = await client.serializeSessionState(session.state);
 
     expect(output).toContain('runtime-value');
-    expect(serialized.environment).not.toHaveProperty('RESOLVED_ENV');
+    await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+      'Environment variable "RESOLVED_ENV" uses a resolver function and cannot be serialized. Use a static value or EnvValueReference for persisted manifests.',
+    );
+    await session.close();
   });
 
   it('rejects symbolic links inside local_dir entries', async () => {

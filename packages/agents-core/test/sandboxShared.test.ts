@@ -424,19 +424,9 @@ describe('sandbox shared helpers', () => {
       },
     });
 
-    expect(serializeManifestEnvironment(manifest)).toEqual({
-      KEEP: {
-        value: 'manifest',
-        description: 'stored',
-      },
-      TOKEN: {
-        value: 'placeholder',
-      },
-      SECRET: {
-        value: 'secret',
-        ephemeral: true,
-      },
-    });
+    expect(() => serializeManifestEnvironment(manifest)).toThrow(
+      'Environment variable "TOKEN" uses a resolver function and cannot be serialized. Use a static value or EnvValueReference for persisted manifests.',
+    );
     await expect(materializeEnvironment(manifest)).resolves.toMatchObject({
       TOKEN: 'resolved-token',
     });
