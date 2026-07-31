@@ -18,6 +18,7 @@ import { RunContext } from '../../../src/runContext';
 import { TransportSendOptions } from '@modelcontextprotocol/sdk/shared/transport';
 import { JSONRPCMessage } from '@modelcontextprotocol/sdk/types';
 import { DEFAULT_REQUEST_TIMEOUT_MSEC } from '@modelcontextprotocol/sdk/shared/protocol';
+import type { Logger } from '../../../src/logger';
 
 let lastConnectOptions: any;
 let lastListToolsOptions: any;
@@ -31,7 +32,84 @@ let lastReadResourceOptions: any;
 let lastReadResourceParams: any;
 let callToolImplementation:
   ((params: any, resultSchema: any, options: any) => Promise<any>) | undefined;
+let connectImplementation:
+  ((transport: any, options: any) => Promise<void>) | undefined;
+let listResourcesImplementation:
+  ((params: any, options: any) => Promise<any>) | undefined;
+let terminateSessionImplementation: (() => Promise<void>) | undefined;
 let retainCallToolSignalListener = false;
+
+const credentialEndpoint = new URL('https://example.test/mcp');
+credentialEndpoint.username = 'user_marker';
+credentialEndpoint.password = 'password_marker';
+credentialEndpoint.searchParams.set('token', 'query_marker');
+credentialEndpoint.hash = 'fragment_marker';
+const CREDENTIAL_ENDPOINT = credentialEndpoint.toString();
+const CREDENTIAL_MARKERS = [
+  'user_marker',
+  'password_marker',
+  'query_marker',
+  'fragment_marker',
+] as const;
+
+function createUnsafeTransportError(): Error {
+  const cause = new Error(`Nested failure for ${CREDENTIAL_ENDPOINT}`);
+  const error = new Error(
+    `Transport failed for ${CREDENTIAL_ENDPOINT}`,
+  ) as Error & { event: { message: string }; status: number };
+  Object.defineProperty(error, 'cause', {
+    value: cause,
+    configurable: true,
+    writable: true,
+  });
+  error.event = { message: `Event failed for ${CREDENTIAL_ENDPOINT}` };
+  error.status = 502;
+  return error;
+}
+
+function getErrorGraphText(value: unknown, seen = new Set<object>()): string {
+  if (
+    value === null ||
+    (typeof value !== 'object' && typeof value !== 'function')
+  ) {
+    return typeof value === 'string' ? value : '';
+  }
+  if (seen.has(value)) {
+    return '';
+  }
+  seen.add(value);
+
+  const values: string[] = [];
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor) {
+      continue;
+    }
+    if ('value' in descriptor) {
+      values.push(getErrorGraphText(descriptor.value, seen));
+    }
+  }
+  return values.join('\n');
+}
+
+function expectNoCredentialMarkers(value: unknown): void {
+  const graph = getErrorGraphText(value);
+  for (const marker of CREDENTIAL_MARKERS) {
+    expect(graph).not.toContain(marker);
+  }
+}
+
+function createCapturingLogger() {
+  return {
+    namespace: 'openai-agents:test:mcp-transport-redaction',
+    debug: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    dontLogModelData: false as boolean,
+    dontLogToolData: false as boolean,
+  } satisfies Logger;
+}
 
 beforeEach(() => {
   lastConnectOptions = undefined;
@@ -45,6 +123,9 @@ beforeEach(() => {
   lastReadResourceOptions = undefined;
   lastReadResourceParams = undefined;
   callToolImplementation = undefined;
+  connectImplementation = undefined;
+  listResourcesImplementation = undefined;
+  terminateSessionImplementation = undefined;
   retainCallToolSignalListener = false;
 });
 
@@ -310,6 +391,9 @@ class MockClient {
   }
   connect(_transport: any, options?: any): Promise<void> {
     lastConnectOptions = options;
+    if (connectImplementation) {
+      return connectImplementation(_transport, options);
+    }
     return Promise.resolve();
   }
   listTools(_params?: any, options?: any): Promise<any> {
@@ -345,6 +429,9 @@ class MockClient {
   listResources(params?: any, options?: any): Promise<any> {
     lastListResourcesParams = params;
     lastListResourcesOptions = options;
+    if (listResourcesImplementation) {
+      return listResourcesImplementation(params, options);
+    }
     return Promise.resolve({
       resources: [
         {
@@ -482,6 +569,249 @@ describe('NodeMCPServerSSE', () => {
     await server.close();
   });
 
+  test('should remove endpoint credentials from SSE connect errors and logs', async () => {
+    const logger = createCapturingLogger();
+    const unsafeError = createUnsafeTransportError();
+    connectImplementation = async () => {
+      throw unsafeError;
+    };
+    const server = new NodeMCPServerSSE({
+      url: CREDENTIAL_ENDPOINT,
+      logger,
+    });
+
+    const error = await server.connect().catch((caught) => caught);
+
+    expect(error).not.toBe(unsafeError);
+    expect(error).toMatchObject({
+      name: 'MCPTransportError',
+      status: 502,
+    });
+    expect((error as Error & { cause?: unknown }).cause).toBeUndefined();
+    expectNoCredentialMarkers(error);
+    expectNoCredentialMarkers(logger.error.mock.calls);
+  });
+
+  test('should remove credentials from malformed SSE endpoint errors and logs', async () => {
+    const logger = createCapturingLogger();
+    const malformedEndpoint = `https://${[
+      'user_marker',
+      'password_marker',
+    ].join(':')}@`;
+    const server = new NodeMCPServerSSE({
+      url: malformedEndpoint,
+      logger,
+    });
+
+    const error = await server.connect().catch((caught) => caught);
+
+    expect(error).toMatchObject({ name: 'MCPTransportError' });
+    expect((error as Error).message).not.toContain(malformedEndpoint);
+    expectNoCredentialMarkers(error);
+    expectNoCredentialMarkers(logger.error.mock.calls);
+  });
+
+  test.each([
+    [
+      'symbol field',
+      () => {
+        const error = new Error('opaque transport failure');
+        Object.defineProperty(error, Symbol('details'), {
+          value: CREDENTIAL_ENDPOINT,
+        });
+        return error;
+      },
+    ],
+    [
+      'custom prototype',
+      () =>
+        Object.assign(Object.create({ details: CREDENTIAL_ENDPOINT }), {
+          message: 'opaque transport failure',
+        }),
+    ],
+    [
+      'Map field',
+      () =>
+        Object.assign(new Error('opaque transport failure'), {
+          details: new Map([['endpoint', CREDENTIAL_ENDPOINT]]),
+        }),
+    ],
+  ])('should replace SSE errors with an opaque %s', async (_label, factory) => {
+    const logger = createCapturingLogger();
+    const opaqueError = factory();
+    connectImplementation = async () => {
+      throw opaqueError;
+    };
+    const server = new NodeMCPServerSSE({
+      url: CREDENTIAL_ENDPOINT,
+      logger,
+    });
+
+    const error = await server.connect().catch((caught) => caught);
+
+    expect(error).not.toBe(opaqueError);
+    expect(error).toMatchObject({ name: 'MCPTransportError' });
+    expectNoCredentialMarkers(error);
+    expectNoCredentialMarkers(logger.error.mock.calls);
+  });
+
+  test('should not inspect accessor-backed SSE error fields', async () => {
+    const logger = createCapturingLogger();
+    const errorWithAccessor = new Error('opaque transport failure');
+    let accessorReads = 0;
+    Object.defineProperty(errorWithAccessor, 'details', {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        accessorReads += 1;
+        return CREDENTIAL_ENDPOINT;
+      },
+    });
+    connectImplementation = async () => {
+      throw errorWithAccessor;
+    };
+    const server = new NodeMCPServerSSE({
+      url: CREDENTIAL_ENDPOINT,
+      logger,
+    });
+
+    const error = await server.connect().catch((caught) => caught);
+
+    expect(error).toMatchObject({ name: 'MCPTransportError' });
+    expect(accessorReads).toBe(0);
+    expectNoCredentialMarkers(error);
+    expectNoCredentialMarkers(logger.error.mock.calls);
+  });
+
+  test('should replace opaque revoked proxy errors without inspecting them', async () => {
+    const logger = createCapturingLogger();
+    const { proxy, revoke } = Proxy.revocable(createUnsafeTransportError(), {});
+    revoke();
+    connectImplementation = async () => {
+      throw proxy;
+    };
+    const server = new NodeMCPServerSSE({
+      url: CREDENTIAL_ENDPOINT,
+      logger,
+    });
+
+    const error = await server.connect().catch((caught) => caught);
+
+    expect(error).toMatchObject({ name: 'MCPTransportError' });
+    expectNoCredentialMarkers(error);
+    expectNoCredentialMarkers(logger.error.mock.calls);
+  });
+
+  test('should redact DOMException details while preserving abort semantics', async () => {
+    const logger = createCapturingLogger();
+    const unsafeAbort = new DOMException(CREDENTIAL_ENDPOINT, 'AbortError');
+    connectImplementation = async () => {
+      throw unsafeAbort;
+    };
+    const server = new NodeMCPServerSSE({
+      url: CREDENTIAL_ENDPOINT,
+      logger,
+    });
+
+    const error = await server.connect().catch((caught) => caught);
+
+    expect(error).toMatchObject({ name: 'AbortError', code: 20 });
+    expectNoCredentialMarkers(error);
+    expectNoCredentialMarkers(logger.error.mock.calls);
+  });
+
+  test('should preserve prototype-backed abort semantics', async () => {
+    class PrototypeAbortError extends Error {}
+    Object.defineProperty(PrototypeAbortError.prototype, 'name', {
+      value: 'AbortError',
+    });
+    const logger = createCapturingLogger();
+    const unsafeAbort = new PrototypeAbortError(CREDENTIAL_ENDPOINT);
+    connectImplementation = async () => {
+      throw unsafeAbort;
+    };
+    const server = new NodeMCPServerSSE({
+      url: CREDENTIAL_ENDPOINT,
+      logger,
+    });
+
+    const error = await server.connect().catch((caught) => caught);
+
+    expect(error).toMatchObject({ name: 'AbortError' });
+    expectNoCredentialMarkers(error);
+    expectNoCredentialMarkers(logger.error.mock.calls);
+  });
+
+  test('should remove short query credentials embedded in error messages', async () => {
+    const logger = createCapturingLogger();
+    const endpoint = new URL('https://example.test/mcp');
+    endpoint.searchParams.set('token', 'abc');
+    const unsafeError = new Error('token abc was rejected');
+    connectImplementation = async () => {
+      throw unsafeError;
+    };
+    const server = new NodeMCPServerSSE({
+      url: endpoint.toString(),
+      logger,
+    });
+
+    const error = await server.connect().catch((caught) => caught);
+
+    expect(error).not.toBe(unsafeError);
+    expect(error).toMatchObject({ name: 'MCPTransportError' });
+    expect((error as Error).message).not.toContain('abc');
+    expectNoCredentialMarkers(logger.error.mock.calls);
+  });
+
+  test('should remove endpoint credentials stored only in a custom stack', async () => {
+    const logger = createCapturingLogger();
+    const unsafeError = new Error('safe transport failure');
+    unsafeError.stack = 'password_marker';
+    connectImplementation = async () => {
+      throw unsafeError;
+    };
+    const server = new NodeMCPServerSSE({
+      url: CREDENTIAL_ENDPOINT,
+      logger,
+    });
+
+    const error = await server.connect().catch((caught) => caught);
+
+    expect(error).not.toBe(unsafeError);
+    expect(error).toMatchObject({ name: 'MCPTransportError' });
+    expectNoCredentialMarkers(error);
+    expectNoCredentialMarkers(logger.error.mock.calls);
+  });
+
+  test('should replace Error subclasses with custom constructors', async () => {
+    class CustomConstructorError extends Error {}
+    let constructorReads = 0;
+    Object.defineProperty(CustomConstructorError.prototype, 'constructor', {
+      configurable: true,
+      get: () => {
+        constructorReads += 1;
+        return CREDENTIAL_ENDPOINT;
+      },
+    });
+    const logger = createCapturingLogger();
+    const unsafeError = new CustomConstructorError('safe transport failure');
+    connectImplementation = async () => {
+      throw unsafeError;
+    };
+    const server = new NodeMCPServerSSE({
+      url: CREDENTIAL_ENDPOINT,
+      logger,
+    });
+
+    const error = await server.connect().catch((caught) => caught);
+
+    expect(error).not.toBe(unsafeError);
+    expect(error).toMatchObject({ name: 'MCPTransportError' });
+    expect(constructorReads).toBe(0);
+    expectNoCredentialMarkers(error);
+    expectNoCredentialMarkers(logger.error.mock.calls);
+  });
+
   test('should pass request options to session calls', async () => {
     const server = new NodeMCPServerSSE({
       url: 'https://example.com/sse',
@@ -603,6 +933,9 @@ class MockStreamableHTTPClientTransport {
   }
 
   terminateSession(): Promise<void> {
+    if (terminateSessionImplementation) {
+      return terminateSessionImplementation();
+    }
     return this.terminateSessionMock();
   }
 }
@@ -645,6 +978,130 @@ describe('NodeMCPServerStreamableHttp', () => {
     expect(lastConnectOptions?.timeout).toBe(8000);
 
     await server.close();
+  });
+
+  test('should preserve safe streamable HTTP status errors', async () => {
+    const logger = createCapturingLogger();
+    const safeError = Object.assign(
+      new Error(
+        'Streamable HTTP error: Server returned 401 after successful authentication',
+      ),
+      { code: 401 },
+    );
+    connectImplementation = async () => {
+      throw safeError;
+    };
+    const server = new NodeMCPServerStreamableHttp({
+      url: 'https://example.test/mcp?version=1',
+      logger,
+    });
+
+    const error = await server.connect().catch((caught) => caught);
+
+    expect(error).toBe(safeError);
+    expect(logger.error).toHaveBeenCalledWith(
+      'Error initializing MCP server:',
+      safeError,
+    );
+  });
+
+  test('should remove endpoint credentials from resource errors', async () => {
+    const logger = createCapturingLogger();
+    const unsafeError = createUnsafeTransportError();
+    const server = new NodeMCPServerStreamableHttp({
+      url: CREDENTIAL_ENDPOINT,
+      logger,
+    });
+    await server.connect();
+    listResourcesImplementation = async () => {
+      throw unsafeError;
+    };
+
+    const error = await server.listResources().catch((caught) => caught);
+
+    expect(error).not.toBe(unsafeError);
+    expect(error).toMatchObject({
+      name: 'MCPTransportError',
+      status: 502,
+    });
+    expectNoCredentialMarkers(error);
+    await server.close();
+  });
+
+  test('should remove endpoint credentials from tool-call error graphs', async () => {
+    const logger = createCapturingLogger();
+    const unsafeError = createUnsafeTransportError();
+    const server = new NodeMCPServerStreamableHttp({
+      url: CREDENTIAL_ENDPOINT,
+      logger,
+    });
+    await server.connect();
+    callToolImplementation = async () => {
+      throw unsafeError;
+    };
+
+    const error = await server
+      .callTool('unsafe-tool', {})
+      .catch((caught) => caught);
+
+    expect(error).not.toBe(unsafeError);
+    expect(error).toMatchObject({
+      name: 'MCPTransportError',
+      status: 502,
+    });
+    expectNoCredentialMarkers(error);
+    await server.close();
+  });
+
+  test('should remove endpoint credentials from cleanup warnings', async () => {
+    const logger = createCapturingLogger();
+    const server = new NodeMCPServerStreamableHttp({
+      url: CREDENTIAL_ENDPOINT,
+      logger,
+    });
+    await server.connect();
+    terminateSessionImplementation = async () => {
+      throw createUnsafeTransportError();
+    };
+
+    await server.close();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Failed to terminate MCP session:',
+      expect.objectContaining({
+        name: 'MCPTransportError',
+        status: 502,
+      }),
+    );
+    expectNoCredentialMarkers(logger.warn.mock.calls);
+  });
+
+  test('should not inspect cleanup errors when tool logging is disabled', async () => {
+    const logger = createCapturingLogger();
+    logger.dontLogToolData = true;
+    const server = new NodeMCPServerStreamableHttp({
+      url: CREDENTIAL_ENDPOINT,
+      logger,
+    });
+    await server.connect();
+    let ownKeysReads = 0;
+    const error = new Proxy(new Error('opaque cleanup failure'), {
+      ownKeys(target) {
+        ownKeysReads += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+    terminateSessionImplementation = async () => {
+      throw error;
+    };
+
+    await server.close();
+
+    expect(ownKeysReads).toBe(0);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Failed to terminate MCP session:',
+      'object',
+    );
   });
 
   test('should forward request options to session methods', async () => {

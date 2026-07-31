@@ -25,7 +25,12 @@ import type {
   MCPServerStreamableHttpOptions,
   MCPServerSSEOptions,
 } from '../../mcp';
-import logger, { logToolActionError, logToolActionWarning } from '../../logger';
+import logger, {
+  type Logger,
+  logToolActionError,
+  logToolActionWarning,
+} from '../../logger';
+import { sanitizeMcpTransportError } from '../../mcpLogging';
 import { combineAbortSignals } from '../../utils/abortSignals';
 
 export interface SessionMessage {
@@ -194,6 +199,31 @@ function withTimeout<T>(
       },
     );
   });
+}
+
+async function runMcpTransportOperation<T>(
+  endpoint: string,
+  operation: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await action();
+  } catch (error) {
+    throw sanitizeMcpTransportError(error, endpoint, operation);
+  }
+}
+
+function logMcpTransportWarning(
+  targetLogger: Logger,
+  endpoint: string,
+  operation: string,
+  message: string,
+  error: unknown,
+): void {
+  const logError = targetLogger.dontLogToolData
+    ? error
+    : sanitizeMcpTransportError(error, endpoint, operation);
+  logToolActionWarning(targetLogger, message, logError);
 }
 
 export class NodeMCPServerStdio extends BaseMCPServerStdio {
@@ -480,9 +510,14 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
         serverInfo: { name: this._name, version: '1.0.0' },
       } as InitializeResult;
     } catch (e) {
-      logToolActionError(this.logger, 'Error initializing MCP server:', e);
+      const error = sanitizeMcpTransportError(
+        e,
+        this.params.url,
+        'SSE connect',
+      );
+      logToolActionError(this.logger, 'Error initializing MCP server:', error);
       await this.close();
-      throw e;
+      throw error;
     }
     this.debugLog(() => `Connected to MCP server: ${this._name}`);
   }
@@ -508,7 +543,11 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     const requestOptions = buildRequestOptions(
       this.clientSessionTimeoutSeconds,
     );
-    const response = await this.session.listTools(undefined, requestOptions);
+    const response = await runMcpTransportOperation(
+      this.params.url,
+      'SSE list tools',
+      () => this.session!.listTools(undefined, requestOptions),
+    );
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     this._toolsList = ListToolsResultSchema.parse(response).tools;
     return this._toolsList;
@@ -542,16 +581,19 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
       arguments: args ?? {},
       ...(meta != null ? { _meta: meta } : {}),
     };
-    const response = await callWithMCPRequestSignal(
-      options?.signal,
-      (requestSignal) =>
-        session.callTool(
-          params,
-          undefined,
-          buildRequestOptions(this.clientSessionTimeoutSeconds, {
-            timeout: this.timeout,
-            signal: requestSignal,
-          }),
+    const response = await runMcpTransportOperation(
+      this.params.url,
+      'SSE tool call',
+      () =>
+        callWithMCPRequestSignal(options?.signal, (requestSignal) =>
+          session.callTool(
+            params,
+            undefined,
+            buildRequestOptions(this.clientSessionTimeoutSeconds, {
+              timeout: this.timeout,
+              signal: requestSignal,
+            }),
+          ),
         ),
     );
     const parsed = CallToolResultSchema.parse(response);
@@ -576,7 +618,11 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     const requestOptions = buildRequestOptions(
       this.clientSessionTimeoutSeconds,
     );
-    const response = await this.session.listResources(params, requestOptions);
+    const response = await runMcpTransportOperation(
+      this.params.url,
+      'SSE list resources',
+      () => this.session!.listResources(params, requestOptions),
+    );
     this.debugLog(() => `Listed resources: ${JSON.stringify(response)}`);
     return ListResourcesResultSchema.parse(response) as MCPListResourcesResult;
   }
@@ -594,9 +640,10 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     const requestOptions = buildRequestOptions(
       this.clientSessionTimeoutSeconds,
     );
-    const response = await this.session.listResourceTemplates(
-      params,
-      requestOptions,
+    const response = await runMcpTransportOperation(
+      this.params.url,
+      'SSE list resource templates',
+      () => this.session!.listResourceTemplates(params, requestOptions),
     );
     this.debugLog(
       () => `Listed resource templates: ${JSON.stringify(response)}`,
@@ -617,7 +664,11 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     const requestOptions = buildRequestOptions(
       this.clientSessionTimeoutSeconds,
     );
-    const response = await this.session.readResource({ uri }, requestOptions);
+    const response = await runMcpTransportOperation(
+      this.params.url,
+      'SSE read resource',
+      () => this.session!.readResource({ uri }, requestOptions),
+    );
     this.debugLog(() => `Read resource ${uri}: ${JSON.stringify(response)}`);
     return ReadResourceResultSchema.parse(response) as MCPReadResourceResult;
   }
@@ -627,34 +678,38 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   }
 
   async close(): Promise<void> {
-    const transport = this.transport;
+    await runMcpTransportOperation(this.params.url, 'SSE cleanup', async () => {
+      const transport = this.transport;
 
-    if (hasSessionTransport(transport)) {
-      const sessionId = transport.sessionId;
+      if (hasSessionTransport(transport)) {
+        const sessionId = transport.sessionId;
 
-      if (sessionId && typeof transport.terminateSession === 'function') {
-        try {
-          // Best-effort cleanup: we do not actively manage session lifecycles,
-          // but if the server supports sessions we terminate to avoid leaks.
-          await transport.terminateSession();
-        } catch (error) {
-          logToolActionWarning(
-            this.logger,
-            'Failed to terminate MCP session:',
-            error,
-          );
+        if (sessionId && typeof transport.terminateSession === 'function') {
+          try {
+            // Best-effort cleanup: we do not actively manage session lifecycles,
+            // but if the server supports sessions we terminate to avoid leaks.
+            await transport.terminateSession();
+          } catch (error) {
+            logMcpTransportWarning(
+              this.logger,
+              this.params.url,
+              'SSE session termination',
+              'Failed to terminate MCP session:',
+              error,
+            );
+          }
         }
       }
-    }
 
-    if (transport) {
-      await transport.close();
-      this.transport = null;
-    }
-    if (this.session) {
-      await this.session.close();
-      this.session = null;
-    }
+      if (transport) {
+        await transport.close();
+        this.transport = null;
+      }
+      if (this.session) {
+        await this.session.close();
+        this.session = null;
+      }
+    });
   }
 }
 
@@ -876,7 +931,13 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         await detachedTransport.close().catch(() => {});
       }
     } catch (error) {
-      logToolActionWarning(this.logger, warningMessage, error);
+      logMcpTransportWarning(
+        this.logger,
+        this.params.url,
+        'streamable HTTP session termination',
+        warningMessage,
+        error,
+      );
     }
   }
 
@@ -909,11 +970,23 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       );
     } else if (transport) {
       await transport.close().catch((error) => {
-        logToolActionWarning(this.logger, closeWarningMessage, error);
+        logMcpTransportWarning(
+          this.logger,
+          this.params.url,
+          'streamable HTTP cleanup',
+          closeWarningMessage,
+          error,
+        );
       });
     } else if (client) {
       await client.close().catch((error) => {
-        logToolActionWarning(this.logger, closeWarningMessage, error);
+        logMcpTransportWarning(
+          this.logger,
+          this.params.url,
+          'streamable HTTP cleanup',
+          closeWarningMessage,
+          error,
+        );
       });
     }
 
@@ -984,16 +1057,34 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
 
     if (client.transport === transport) {
       await client.close().catch((error) => {
-        logToolActionWarning(this.logger, options.closeWarningMessage, error);
+        logMcpTransportWarning(
+          this.logger,
+          this.params.url,
+          'streamable HTTP cleanup',
+          options.closeWarningMessage,
+          error,
+        );
       });
       return;
     }
 
     await transport.close().catch((error) => {
-      logToolActionWarning(this.logger, options.closeWarningMessage, error);
+      logMcpTransportWarning(
+        this.logger,
+        this.params.url,
+        'streamable HTTP cleanup',
+        options.closeWarningMessage,
+        error,
+      );
     });
     await client.close().catch((error) => {
-      logToolActionWarning(this.logger, options.closeWarningMessage, error);
+      logMcpTransportWarning(
+        this.logger,
+        this.params.url,
+        'streamable HTTP cleanup',
+        options.closeWarningMessage,
+        error,
+      );
     });
   }
 
@@ -1286,8 +1377,13 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     } catch (e) {
       // A losing concurrent connect can fail after another connect already
       // published a healthy shared session, so avoid closing shared state here.
-      logToolActionError(this.logger, 'Error initializing MCP server:', e);
-      throw e;
+      const error = sanitizeMcpTransportError(
+        e,
+        this.params.url,
+        'streamable HTTP connect',
+      );
+      logToolActionError(this.logger, 'Error initializing MCP server:', error);
+      throw error;
     }
     this.debugLog(() => `Connected to MCP server: ${this._name}`);
   }
@@ -1313,7 +1409,11 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     const requestOptions = buildRequestOptions(
       this.clientSessionTimeoutSeconds,
     );
-    const response = await this.session.listTools(undefined, requestOptions);
+    const response = await runMcpTransportOperation(
+      this.params.url,
+      'streamable HTTP list tools',
+      () => this.session!.listTools(undefined, requestOptions),
+    );
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     this._toolsList = ListToolsResultSchema.parse(response).tools;
     return this._toolsList;
@@ -1355,7 +1455,11 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       const recoveryStrategy =
         await this.shouldReconnectClosedStreamableHttpClient(error, client);
       if (recoveryStrategy === 'none') {
-        throw error;
+        throw sanitizeMcpTransportError(
+          error,
+          this.params.url,
+          'streamable HTTP tool call',
+        );
       }
 
       this.debugLog(
@@ -1363,14 +1467,23 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
           `Reconnecting closed streamable HTTP MCP session for ${toolName}.`,
       );
 
-      const recoveredClient = await this.reconnectClosedStreamableHttpClient({
-        cause: error,
-        failedClient: client,
-        failedStateVersion: callToolStateVersion,
-      });
+      const recoveredClient = await runMcpTransportOperation(
+        this.params.url,
+        'streamable HTTP reconnect',
+        () =>
+          this.reconnectClosedStreamableHttpClient({
+            cause: error,
+            failedClient: client,
+            failedStateVersion: callToolStateVersion,
+          }),
+      );
 
       if (recoveryStrategy === 'reconnect-only') {
-        throw error;
+        throw sanitizeMcpTransportError(
+          error,
+          this.params.url,
+          'streamable HTTP tool call',
+        );
       }
 
       try {
@@ -1382,7 +1495,11 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
           options,
         );
       } catch (retryError) {
-        throw attachCause(retryError, error);
+        throw sanitizeMcpTransportError(
+          attachCause(retryError, error),
+          this.params.url,
+          'streamable HTTP tool call retry',
+        );
       }
     }
 
@@ -1406,7 +1523,11 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     const requestOptions = buildRequestOptions(
       this.clientSessionTimeoutSeconds,
     );
-    const response = await this.session.listResources(params, requestOptions);
+    const response = await runMcpTransportOperation(
+      this.params.url,
+      'streamable HTTP list resources',
+      () => this.session!.listResources(params, requestOptions),
+    );
     this.debugLog(() => `Listed resources: ${JSON.stringify(response)}`);
     return ListResourcesResultSchema.parse(response) as MCPListResourcesResult;
   }
@@ -1424,9 +1545,10 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     const requestOptions = buildRequestOptions(
       this.clientSessionTimeoutSeconds,
     );
-    const response = await this.session.listResourceTemplates(
-      params,
-      requestOptions,
+    const response = await runMcpTransportOperation(
+      this.params.url,
+      'streamable HTTP list resource templates',
+      () => this.session!.listResourceTemplates(params, requestOptions),
     );
     this.debugLog(
       () => `Listed resource templates: ${JSON.stringify(response)}`,
@@ -1447,7 +1569,11 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     const requestOptions = buildRequestOptions(
       this.clientSessionTimeoutSeconds,
     );
-    const response = await this.session.readResource({ uri }, requestOptions);
+    const response = await runMcpTransportOperation(
+      this.params.url,
+      'streamable HTTP read resource',
+      () => this.session!.readResource({ uri }, requestOptions),
+    );
     this.debugLog(() => `Read resource ${uri}: ${JSON.stringify(response)}`);
     return ReadResourceResultSchema.parse(response) as MCPReadResourceResult;
   }
