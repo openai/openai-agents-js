@@ -47,6 +47,7 @@ import {
   encodeNativeSnapshotRef,
   deserializeRemoteSandboxSessionStateValues,
   getCachedExposedPortEndpoint,
+  rehydrateRemoteSandboxSessionStateValues,
   requireNativeSnapshotRef,
   recordResolvedExposedPortEndpoint,
   readRunAsRemoteFile,
@@ -87,6 +88,7 @@ import {
 } from '../../src/sandbox/shared/inContainerMounts';
 import { makePaxRecord, makeTarArchive } from './tarFixture';
 import {
+  EnvValueReference,
   Manifest,
   SandboxArchiveError,
   SandboxConfigurationError,
@@ -101,6 +103,7 @@ import {
   localDir,
   localFile,
   mount,
+  registerEnvValueReference,
   type SandboxSessionState,
   type AzureBlobMount,
   type GCSMount,
@@ -1254,6 +1257,73 @@ describe('remote sandbox path helpers', () => {
       FEATURE_FLAG: 'enabled',
       KEEP: 'manifest',
     });
+  });
+
+  test('round-trips remote environment references without resolved secrets', async () => {
+    let currentSecret = 'activity-secret';
+    class RemoteSecretReference extends EnvValueReference {
+      static readonly type = 'test.remote_secret_reference';
+
+      constructor(readonly key: string) {
+        super();
+      }
+
+      serialize(): Record<string, unknown> {
+        return { key: this.key };
+      }
+
+      async resolve(): Promise<string> {
+        return `${currentSecret}:${this.key}`;
+      }
+    }
+    const unregister = registerEnvValueReference(
+      RemoteSecretReference,
+      (payload) => {
+        if (typeof payload.key !== 'string') {
+          throw new TypeError('Remote secret reference key must be a string.');
+        }
+        return new RemoteSecretReference(payload.key);
+      },
+    );
+    try {
+      const manifest = new Manifest({
+        environment: {
+          TOKEN: new RemoteSecretReference('openai-key'),
+        },
+      });
+      const serialized = serializeRemoteSandboxSessionState({
+        manifest,
+        environment: {
+          TOKEN: 'activity-secret:openai-key',
+          PROVIDER_VALUE: 'persisted',
+        },
+      });
+      const serializedJson = JSON.stringify(serialized);
+
+      expect(serializedJson).not.toContain('activity-secret');
+      expect(serialized.manifest).toMatchObject({
+        environment: {
+          TOKEN: {
+            type: RemoteSecretReference.type,
+            key: 'openai-key',
+          },
+        },
+      });
+
+      currentSecret = 'worker-secret';
+      const restored = await rehydrateRemoteSandboxSessionStateValues(
+        JSON.parse(serializedJson),
+      );
+      expect(restored.manifest.environment.TOKEN).toBeInstanceOf(
+        RemoteSecretReference,
+      );
+      expect(restored.environment).toEqual({
+        TOKEN: 'worker-secret:openai-key',
+        PROVIDER_VALUE: 'persisted',
+      });
+    } finally {
+      unregister();
+    }
   });
 
   test('materializes and merges environment values', async () => {

@@ -31,7 +31,10 @@ import logger from './logger';
 import { handoff } from './handoff';
 import * as protocol from './types/protocol';
 import { AgentInputItem, UnknownContext } from './types';
-import { SANDBOX_SESSION_STATE_VERSION } from './sandbox/session';
+import {
+  SANDBOX_SESSION_STATE_VERSION,
+  SUPPORTED_SANDBOX_SESSION_STATE_VERSIONS,
+} from './sandbox/session';
 import type { InputGuardrailResult, OutputGuardrailResult } from './guardrail';
 import type {
   ToolInputGuardrailResult,
@@ -96,8 +99,10 @@ import {
  * - 1.13: Adds optional SDK-only customData on tool output run items.
  * - 1.14: Adds Programmatic Tool Calling program items, outputs, caller linkage,
  *   and optional assistant message phases.
+ * - 1.15: Adds reconstructable sandbox environment value references and sandbox
+ *   session-state envelope version 2.
  */
-export const CURRENT_SCHEMA_VERSION = '1.14' as const;
+export const CURRENT_SCHEMA_VERSION = '1.15' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -113,6 +118,7 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.11',
   '1.12',
   '1.13',
+  '1.14',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -254,7 +260,11 @@ const serializedTraceSchema = z.object({
 });
 
 const sandboxSessionStateEnvelopeSchema = z.object({
-  version: z.literal(SANDBOX_SESSION_STATE_VERSION),
+  version: z.union(
+    SUPPORTED_SANDBOX_SESSION_STATE_VERSIONS.map((version) =>
+      z.literal(version),
+    ) as [z.ZodLiteral<1>, z.ZodLiteral<typeof SANDBOX_SESSION_STATE_VERSION>],
+  ),
   backendId: z.string(),
   manifest: z.record(z.string(), z.any()),
   snapshot: z.record(z.string(), z.any()).nullable().optional(),
@@ -1077,6 +1087,10 @@ async function buildRunStateFromString<
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
   );
+  assertSchemaVersionSupportsSandboxSessionEnvelope(
+    currentSchemaVersion as SupportedSchemaVersion,
+    stateJson,
+  );
   return buildRunStateFromJson(initialAgent, stateJson, options);
 }
 
@@ -1091,6 +1105,7 @@ function assertSchemaVersionSupportsToolSearch(
     schemaVersion === '1.11' ||
     schemaVersion === '1.12' ||
     schemaVersion === '1.13' ||
+    schemaVersion === '1.14' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   ) {
     return;
@@ -1109,7 +1124,11 @@ function assertSchemaVersionSupportsCustomData(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
-  if (schemaVersion === '1.13' || schemaVersion === CURRENT_SCHEMA_VERSION) {
+  if (
+    schemaVersion === '1.13' ||
+    schemaVersion === '1.14' ||
+    schemaVersion === CURRENT_SCHEMA_VERSION
+  ) {
     return;
   }
 
@@ -1130,6 +1149,7 @@ function schemaVersionSupportsAgentIdentity(
     schemaVersion === '1.11' ||
     schemaVersion === '1.12' ||
     schemaVersion === '1.13' ||
+    schemaVersion === '1.14' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   );
 }
@@ -1138,7 +1158,7 @@ function assertSchemaVersionSupportsProgrammaticToolCalling(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
-  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+  if (schemaVersion === '1.14' || schemaVersion === CURRENT_SCHEMA_VERSION) {
     return;
   }
 
@@ -1148,6 +1168,33 @@ function assertSchemaVersionSupportsProgrammaticToolCalling(
 
   throw new UserError(
     `Run state schema version ${schemaVersion} does not support Programmatic Tool Calling items. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+  );
+}
+
+function assertSchemaVersionSupportsSandboxSessionEnvelope(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: z.infer<typeof SerializedRunState>,
+): void {
+  if (schemaVersion === CURRENT_SCHEMA_VERSION || !stateJson.sandbox) {
+    return;
+  }
+
+  const envelopes = [
+    stateJson.sandbox.sessionState,
+    ...Object.values(stateJson.sandbox.sessionsByAgent).map(
+      (entry) => entry.sessionState,
+    ),
+  ];
+  if (
+    envelopes.every(
+      (envelope) => envelope.version !== SANDBOX_SESSION_STATE_VERSION,
+    )
+  ) {
+    return;
+  }
+
+  throw new UserError(
+    `Run state schema version ${schemaVersion} does not support sandbox session state version ${SANDBOX_SESSION_STATE_VERSION}. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
   );
 }
 

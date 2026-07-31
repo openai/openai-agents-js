@@ -193,7 +193,7 @@ describe('RunState', () => {
       expect(restored.history[1]).toMatchObject({ phase });
       expect(restored._generatedItems[0]?.rawItem).toMatchObject({ phase });
       expect(restored._modelResponses[0]?.output[0]).toMatchObject({ phase });
-      expect(restored.toJSON().$schemaVersion).toBe('1.14');
+      expect(restored.toJSON().$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     },
   );
 
@@ -458,6 +458,52 @@ describe('RunState', () => {
 
     expect(restored._sandbox).toBeUndefined();
     expect(restored._currentAgent.name).toBe('LegacySandboxStateAgent');
+  });
+
+  it('keeps reading schema 1.14 payloads with sandbox session state version 1', async () => {
+    const agent = new Agent({ name: 'LegacySandboxEnvelopeAgent' });
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+    state._sandbox = {
+      backendId: 'unix-local',
+      currentAgentKey: 'LegacySandboxEnvelopeAgent',
+      currentAgentName: 'LegacySandboxEnvelopeAgent',
+      sessionState: sandboxSessionStateEnvelope(
+        { workspaceId: 'ws_legacy' },
+        { version: 1 },
+      ),
+      sessionsByAgent: {},
+    };
+    const serialized = state.toJSON();
+    serialized.$schemaVersion = '1.14';
+
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(serialized),
+    );
+
+    expect(restored._sandbox?.sessionState.version).toBe(1);
+  });
+
+  it('rejects sandbox session state version 2 under schema 1.14', async () => {
+    const agent = new Agent({ name: 'InvalidLegacySandboxEnvelopeAgent' });
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+    state._sandbox = {
+      backendId: 'unix-local',
+      currentAgentKey: 'InvalidLegacySandboxEnvelopeAgent',
+      currentAgentName: 'InvalidLegacySandboxEnvelopeAgent',
+      sessionState: sandboxSessionStateEnvelope({
+        workspaceId: 'ws_current',
+      }),
+      sessionsByAgent: {},
+    };
+    const serialized = state.toJSON();
+    serialized.$schemaVersion = '1.14';
+
+    await expect(
+      RunState.fromString(agent, JSON.stringify(serialized)),
+    ).rejects.toThrow(
+      `Run state schema version 1.14 does not support sandbox session state version ${SANDBOX_SESSION_STATE_VERSION}.`,
+    );
   });
 
   it('does not serialize runtime-only agent-tool metadata', async () => {
@@ -1065,7 +1111,7 @@ describe('RunState', () => {
     );
 
     const serialized = state.toJSON();
-    expect(serialized.$schemaVersion).toBe('1.14');
+    expect(serialized.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     const restored = await RunState.fromString(
       agent,
       JSON.stringify(serialized),

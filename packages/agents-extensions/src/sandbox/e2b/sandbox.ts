@@ -26,7 +26,7 @@ import {
   assertResumeRecreateAllowed,
   assertTarWorkspacePersistence,
   createPtyProcessEntry,
-  deserializeRemoteSandboxSessionStateValues,
+  rehydrateRemoteSandboxSessionStateValues,
   formatPtyExecUpdate,
   assertSandboxManifestMetadataSupported,
   SANDBOX_MANIFEST_METADATA_SUPPORT,
@@ -34,6 +34,7 @@ import {
   decodeNativeSnapshotRef,
   encodeNativeSnapshotRef,
   materializeEnvironment,
+  manifestWithMaterializedEnvironmentReferences,
   parseExposedPortEndpoint,
   providerErrorMessage,
   shellQuote,
@@ -934,7 +935,7 @@ export class E2BSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<E2BSandboxSessionState> {
-    const baseState = deserializeRemoteSandboxSessionStateValues(
+    const baseState = await rehydrateRemoteSandboxSessionStateValues(
       state,
       this.options.env,
     );
@@ -1001,10 +1002,19 @@ export class E2BSandboxClient implements SandboxClient<
       }
     }
 
-    return await this.create(state.manifest, {
-      ...stateToCreateOptions(state),
-      env: state.environment,
-    });
+    const manifest = state.manifest;
+    const session = await this.create(
+      manifestWithMaterializedEnvironmentReferences(
+        manifest,
+        state.environment,
+      ),
+      {
+        ...stateToCreateOptions(state),
+        env: state.environment,
+      },
+    );
+    session.state.manifest = manifest;
+    return session;
   }
 }
 

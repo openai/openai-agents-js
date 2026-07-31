@@ -9,6 +9,7 @@ import {
 } from '@openai/agents-core/sandbox/internal';
 import {
   deserializePersistedEnvironmentForRuntime,
+  rehydratePersistedEnvironmentForRuntime,
   serializeRuntimeEnvironmentForPersistence,
 } from './environment';
 import { deserializeManifest, serializeManifestRecord } from './manifest';
@@ -41,6 +42,24 @@ export function deserializeRemoteSandboxSessionStateValues(
   return {
     manifest,
     environment: deserializeRemotePersistedEnvironmentForRuntime(
+      manifest,
+      state.environment as Record<string, string> | undefined,
+      configuredEnvironment,
+    ),
+    ...deserializeHostPathGrantRedactionMetadata(state),
+  };
+}
+
+export async function rehydrateRemoteSandboxSessionStateValues(
+  state: Record<string, unknown>,
+  configuredEnvironment?: Record<string, string>,
+): Promise<RemoteSandboxSessionStateValues> {
+  const manifest = deserializeManifest(
+    state.manifest as Record<string, unknown> | undefined,
+  );
+  return {
+    manifest,
+    environment: await rehydrateRemotePersistedEnvironmentForRuntime(
       manifest,
       state.environment as Record<string, string> | undefined,
       configuredEnvironment,
@@ -91,5 +110,27 @@ function deserializeRemotePersistedEnvironmentForRuntime(
       environment,
       configuredEnvironment,
     ),
+  };
+}
+
+async function rehydrateRemotePersistedEnvironmentForRuntime(
+  manifest: Manifest,
+  environment: Record<string, string> | undefined,
+  configuredEnvironment: Record<string, string> = {},
+): Promise<Record<string, string>> {
+  const runtimeEnvironment = Object.fromEntries(
+    Object.entries(environment ?? {}).filter(
+      ([key, value]) =>
+        !(key in manifest.environment) && typeof value === 'string',
+    ),
+  );
+
+  return {
+    ...runtimeEnvironment,
+    ...(await rehydratePersistedEnvironmentForRuntime(
+      manifest,
+      environment,
+      configuredEnvironment,
+    )),
   };
 }

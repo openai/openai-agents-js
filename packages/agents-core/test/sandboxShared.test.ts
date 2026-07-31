@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Manifest, dir, file, mount } from '../src/sandbox';
+import {
+  EnvValueReference,
+  Manifest,
+  dir,
+  file,
+  mount,
+  registerEnvValueReference,
+} from '../src/sandbox';
 import {
   deserializeManifest,
   deserializePersistedEnvironmentForRuntime,
@@ -11,6 +18,7 @@ import {
   mergeManifestEntryDelta,
   mergeMaterializedEnvironment,
   mergeStaticMaterializedEnvironment,
+  rehydratePersistedEnvironmentForRuntime,
   serializeManifestEnvironment,
   serializeManifestRecord,
   serializeRuntimeEnvironmentForPersistence,
@@ -461,6 +469,74 @@ describe('sandbox shared helpers', () => {
       KEEP: 'persisted',
       TOKEN: 'persisted-token',
     });
+  });
+
+  it('persists environment references without their resolved runtime values', async () => {
+    let currentSecret = 'first-secret';
+    class SessionSecretReference extends EnvValueReference {
+      static readonly type = 'test.session_secret_reference';
+
+      constructor(readonly key: string) {
+        super();
+      }
+
+      serialize(): Record<string, unknown> {
+        return { key: this.key };
+      }
+
+      async resolve(): Promise<string> {
+        return `${currentSecret}:${this.key}`;
+      }
+    }
+    const unregister = registerEnvValueReference(
+      SessionSecretReference,
+      (payload) => {
+        if (typeof payload.key !== 'string') {
+          throw new TypeError('Session secret reference key must be a string.');
+        }
+        return new SessionSecretReference(payload.key);
+      },
+    );
+    try {
+      const manifest = new Manifest({
+        environment: {
+          TOKEN: new SessionSecretReference('openai-key'),
+          STATIC: 'enabled',
+        },
+      });
+
+      expect(serializeManifestRecord(manifest).environment).toEqual({
+        TOKEN: {
+          type: SessionSecretReference.type,
+          key: 'openai-key',
+        },
+        STATIC: { value: 'enabled' },
+      });
+      expect(
+        serializeRuntimeEnvironmentForPersistence(manifest, {
+          TOKEN: 'first-secret:openai-key',
+          STATIC: 'runtime-override',
+        }),
+      ).toEqual({
+        STATIC: 'enabled',
+      });
+
+      const restored = deserializeManifest(
+        JSON.parse(JSON.stringify(serializeManifestRecord(manifest))),
+      );
+      currentSecret = 'replayed-secret';
+      await expect(
+        rehydratePersistedEnvironmentForRuntime(restored, {
+          TOKEN: 'persisted-plaintext-must-not-win',
+          STATIC: 'enabled',
+        }),
+      ).resolves.toEqual({
+        TOKEN: 'replayed-secret:openai-key',
+        STATIC: 'enabled',
+      });
+    } finally {
+      unregister();
+    }
   });
 
   it('materializes static manifest environment without invoking resolvers', () => {

@@ -13,9 +13,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  EnvValueReference,
   Manifest,
   InMemoryRemoteSnapshotStore,
   NoopSnapshotSpec,
+  registerEnvValueReference,
   skills,
   UnixLocalSandboxClient,
   urlForExposedPort,
@@ -267,6 +269,7 @@ describe('UnixLocalSandboxClient', () => {
       login: false,
       yieldTimeMs: 1_000,
     });
+
     const serialized = await client.serializeSessionState(session.state);
 
     expect(output).toContain('runtime-value');
@@ -1466,6 +1469,85 @@ describe('UnixLocalSandboxClient', () => {
     await expect(stat(join(snapshot.path, 'keep.txt'))).resolves.toBeTruthy();
     await expect(stat(join(snapshot.path, 'tmp.txt'))).rejects.toThrow();
     await expect(stat(join(snapshot.path, 'dir/nested.tmp'))).rejects.toThrow();
+  });
+
+  it('re-resolves registered environment references without persisting secrets', async () => {
+    let currentSecret = 'activity-secret';
+    class LocalSecretReference extends EnvValueReference {
+      static readonly type = 'test.local_secret_reference';
+
+      constructor(readonly key: string) {
+        super();
+      }
+
+      serialize(): Record<string, unknown> {
+        return { key: this.key };
+      }
+
+      async resolve(): Promise<string> {
+        return `${currentSecret}:${this.key}`;
+      }
+    }
+    const unregister = registerEnvValueReference(
+      LocalSecretReference,
+      (payload) => {
+        if (typeof payload.key !== 'string') {
+          throw new TypeError('Local secret reference key must be a string.');
+        }
+        return new LocalSecretReference(payload.key);
+      },
+    );
+    try {
+      const client = new UnixLocalSandboxClient({
+        workspaceBaseDir: rootDir,
+        snapshot: {
+          type: 'local',
+          baseDir: rootDir,
+        },
+      });
+      const session = await client.create(
+        new Manifest({
+          environment: {
+            TOKEN: new LocalSecretReference('openai-key'),
+          },
+        }),
+      );
+
+      const serialized = await client.serializeSessionState(session.state);
+      const serializedJson = JSON.stringify(serialized);
+      expect(serializedJson).not.toContain('activity-secret');
+      expect(serialized.manifest).toMatchObject({
+        environment: {
+          TOKEN: {
+            type: LocalSecretReference.type,
+            key: 'openai-key',
+          },
+        },
+      });
+      expect(serialized.environment).toEqual({});
+
+      currentSecret = 'worker-secret';
+      const restoredState = await client.deserializeSessionState(
+        JSON.parse(serializedJson),
+      );
+      expect(restoredState.manifest.environment.TOKEN).toBeInstanceOf(
+        LocalSecretReference,
+      );
+      expect(restoredState.environment).toEqual({
+        TOKEN: 'worker-secret:openai-key',
+      });
+
+      const restored = await client.resume(restoredState);
+      const output = await restored.execCommand({
+        cmd: 'printf "%s\\n" "$TOKEN"',
+        shell: '/bin/sh',
+        login: false,
+        yieldTimeMs: 500,
+      });
+      expect(output).toContain('worker-secret:openai-key');
+    } finally {
+      unregister();
+    }
   });
 
   it('excludes an ephemeral root entry from local snapshots', async () => {

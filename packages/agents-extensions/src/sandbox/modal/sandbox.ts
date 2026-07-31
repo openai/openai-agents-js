@@ -43,7 +43,7 @@ import {
   closeRemoteSessionOnManifestError,
   createRunAsRemoteEditor,
   decodeNativeSnapshotRef,
-  deserializeRemoteSandboxSessionStateValues,
+  rehydrateRemoteSandboxSessionStateValues,
   elapsedSeconds,
   encodeNativeSnapshotRef,
   formatExecResponse,
@@ -1455,7 +1455,7 @@ export class ModalSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<ModalSandboxSessionState> {
-    const baseState = deserializeRemoteSandboxSessionStateValues(
+    const baseState = await rehydrateRemoteSandboxSessionStateValues(
       state,
       this.options.env,
     );

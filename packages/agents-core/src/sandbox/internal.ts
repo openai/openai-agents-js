@@ -38,6 +38,8 @@ export {
   materializeStaticEnvironment,
   mergeMaterializedEnvironment,
   mergeStaticMaterializedEnvironment,
+  rehydratePersistedEnvironmentForRuntime,
+  resolveEnvironmentReferences,
   serializeManifestEnvironment,
   serializeRuntimeEnvironmentForPersistence,
 } from './shared/environment';

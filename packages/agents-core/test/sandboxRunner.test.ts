@@ -52,11 +52,14 @@ import {
 import {
   Capability,
   Entry,
+  EnvValueReference,
   filesystem,
+  isEnvValueReference,
   Manifest,
   memory,
   type MemoryStore,
   SANDBOX_SESSION_STATE_VERSION,
+  registerEnvValueReference,
   shell,
   skills,
   SandboxAgent,
@@ -2241,7 +2244,7 @@ describe('sandbox runner integration', () => {
         },
       }),
     ).rejects.toThrow(
-      'Sandbox session state version 999 is not supported. Please use version 1.',
+      `Sandbox session state version 999 is not supported. Please use version ${SANDBOX_SESSION_STATE_VERSION}.`,
     );
     expect(client.createCalls).toHaveLength(0);
     expect(client.resumeCalls).toHaveLength(0);
@@ -2351,6 +2354,117 @@ describe('sandbox runner integration', () => {
         readOnly: true,
       },
     ]);
+  });
+
+  it('binds persisted environment references to the current trusted manifest before deserialization', async () => {
+    class TestSecretReference extends EnvValueReference {
+      static readonly type = 'test.runner_secret_ref';
+
+      constructor(
+        readonly key: string,
+        private readonly resolveKey: (key: string) => string,
+      ) {
+        super();
+      }
+
+      override serialize(): Record<string, unknown> {
+        return { key: this.key };
+      }
+
+      override async resolve(): Promise<string> {
+        return this.resolveKey(this.key);
+      }
+    }
+
+    const resolvedKeys: string[] = [];
+    const resolveKey = (key: string) => {
+      resolvedKeys.push(key);
+      return `secret:${key}`;
+    };
+    const unregister = registerEnvValueReference(
+      TestSecretReference,
+      (payload) => new TestSecretReference(String(payload.key), resolveKey),
+    );
+    try {
+      const client = new FakeSandboxClient();
+      client.deserializeSessionState = async (providerState) => {
+        const manifest = new Manifest(providerState.manifest as any);
+        return {
+          manifest,
+          environment: await manifest.resolveEnvironment(),
+          sessionId: String(providerState.sessionId),
+        };
+      };
+      const trustedManifest = new Manifest({
+        environment: {
+          TOKEN: new TestSecretReference('trusted-key', resolveKey),
+        },
+      });
+
+      const state = await deserializeSandboxSessionStateEntry(
+        client,
+        {
+          backendId: 'fake-sandbox',
+          currentAgentKey: 'SandboxWorker',
+          currentAgentName: 'SandboxWorker',
+          sessionState: fakeSandboxSessionStateEnvelope(
+            { sessionId: 'persisted' },
+            {
+              manifest: {
+                version: 1,
+                root: '/workspace',
+                entries: {},
+                environment: {
+                  TOKEN: {
+                    type: TestSecretReference.type,
+                    key: 'tampered-key',
+                  },
+                },
+              },
+            },
+          ),
+        },
+        trustedManifest,
+      );
+
+      expect(resolvedKeys).toEqual(['trusted-key']);
+      expect(state?.environment).toEqual({ TOKEN: 'secret:trusted-key' });
+      expect(isEnvValueReference(state!.manifest.environment.TOKEN)).toBe(true);
+    } finally {
+      unregister();
+    }
+  });
+
+  it('rejects persisted environment references without a current trusted manifest', async () => {
+    const client = new FakeSandboxClient();
+    const deserializeSessionState = vi.spyOn(client, 'deserializeSessionState');
+
+    await expect(
+      deserializeSandboxSessionStateEntry(client, {
+        backendId: 'fake-sandbox',
+        currentAgentKey: 'SandboxWorker',
+        currentAgentName: 'SandboxWorker',
+        sessionState: fakeSandboxSessionStateEnvelope(
+          { sessionId: 'persisted' },
+          {
+            manifest: {
+              version: 1,
+              root: '/workspace',
+              entries: {},
+              environment: {
+                TOKEN: {
+                  type: 'test.runner_secret_ref',
+                  key: 'persisted-key',
+                },
+              },
+            },
+          },
+        ),
+      }),
+    ).rejects.toThrow(
+      'RunState sandbox session state with environment value references requires a current trusted manifest for the sandbox agent.',
+    );
+    expect(deserializeSessionState).not.toHaveBeenCalled();
   });
 
   it('redacts Docker session identity without changing other provider state', async () => {
@@ -5461,6 +5575,126 @@ describe('sandbox runner integration', () => {
       },
     ]);
     expect(client.closeCalls).toEqual([liveSession?.state.sessionId]);
+  });
+
+  it('refreshes environment references before reusing a live remote session', async () => {
+    const resolveCounts = new Map<string, number>();
+    class LiveSecretReference extends EnvValueReference {
+      static readonly type = 'test.live_remote_secret_reference';
+
+      constructor(readonly key: string) {
+        super();
+      }
+
+      override serialize(): Record<string, unknown> {
+        return { key: this.key };
+      }
+
+      override async resolve(): Promise<string> {
+        const count = (resolveCounts.get(this.key) ?? 0) + 1;
+        resolveCounts.set(this.key, count);
+        return `credential-${count}:${this.key}`;
+      }
+    }
+
+    const unregister = registerEnvValueReference(
+      LiveSecretReference,
+      (payload) => {
+        if (typeof payload.key !== 'string') {
+          throw new TypeError('Live secret reference key must be a string.');
+        }
+        return new LiveSecretReference(payload.key);
+      },
+    );
+    try {
+      const client = new FakeSandboxClient();
+      const manifest = new Manifest({
+        environment: {
+          ROTATING_TOKEN: new LiveSecretReference('rotating'),
+          REMOVED_TOKEN: new LiveSecretReference('removed'),
+          REPLACED_TOKEN: new LiveSecretReference('replaced'),
+        },
+      });
+      const trustedManifest = new Manifest({
+        environment: {
+          ROTATING_TOKEN: new LiveSecretReference('rotating'),
+          REPLACED_TOKEN: 'configured-value',
+        },
+      });
+      const sandboxAgent = new SandboxAgent({
+        name: 'SandboxWorker',
+        model: new RecordingFakeModel([]),
+      });
+      const state = new RunState<unknown, Agent<unknown, any>>(
+        new RunContext(),
+        'Hello',
+        sandboxAgent as Agent<unknown, any>,
+        1,
+      );
+      const firstManager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent as Agent<unknown, any>,
+        sandboxConfig: {
+          client,
+          manifest,
+        },
+        runState: state,
+      });
+      await firstManager.prepareAgent({
+        currentAgent: sandboxAgent as Agent<unknown, any>,
+        turnInput: [],
+      });
+      const liveSession = client.createdSessions[0]!;
+      liveSession.state.environment = {
+        RUNTIME_ONLY: 'preserved',
+        ...(await manifest.resolveEnvironment()),
+      };
+      expect(resolveCounts).toEqual(
+        new Map([
+          ['rotating', 1],
+          ['removed', 1],
+          ['replaced', 1],
+        ]),
+      );
+      await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+      const secondManager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent as Agent<unknown, any>,
+        sandboxConfig: {
+          client,
+          manifest: trustedManifest,
+        },
+        runState: state,
+      });
+      await secondManager.adoptPreservedOwnedSessions();
+
+      expect(resolveCounts).toEqual(
+        new Map([
+          ['rotating', 2],
+          ['removed', 1],
+          ['replaced', 1],
+        ]),
+      );
+      expect(liveSession.state.environment).toEqual({
+        RUNTIME_ONLY: 'preserved',
+        ROTATING_TOKEN: 'credential-2:rotating',
+        REPLACED_TOKEN: 'configured-value',
+      });
+      expect(
+        isEnvValueReference(
+          liveSession.state.manifest.environment.ROTATING_TOKEN,
+        ),
+      ).toBe(true);
+      expect(liveSession.state.manifest.environment.REPLACED_TOKEN.value).toBe(
+        'configured-value',
+      );
+      expect(liveSession.state.manifest.environment.REMOVED_TOKEN).toBe(
+        undefined,
+      );
+      expect(client.resumeCalls).toHaveLength(0);
+      await secondManager.cleanup(state);
+    } finally {
+      unregister();
+    }
   });
 
   it('refreshes trusted environment values before reusing a live Docker session', async () => {

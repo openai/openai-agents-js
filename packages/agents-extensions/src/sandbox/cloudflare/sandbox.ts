@@ -90,7 +90,7 @@ import {
 } from '../shared/runAs';
 import {
   assertRemoteSandboxSessionStateCanResume,
-  deserializeRemoteSandboxSessionStateValues,
+  rehydrateRemoteSandboxSessionStateValues,
   serializeRemoteSandboxSessionState,
 } from '../shared/sessionState';
 import {
@@ -1184,7 +1184,7 @@ export class CloudflareSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<CloudflareSandboxSessionState> {
-    const baseState = deserializeRemoteSandboxSessionStateValues(state);
+    const baseState = await rehydrateRemoteSandboxSessionStateValues(state);
     return {
       ...state,
       ...baseState,

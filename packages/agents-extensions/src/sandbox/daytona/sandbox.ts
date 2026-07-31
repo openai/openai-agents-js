@@ -37,7 +37,7 @@ import {
   closeRemoteSessionOnManifestError,
   cloneManifestWithRoot,
   createRunAsRemoteEditor,
-  deserializeRemoteSandboxSessionStateValues,
+  rehydrateRemoteSandboxSessionStateValues,
   elapsedSeconds,
   formatExecResponse,
   formatPtyExecUpdate,
@@ -1155,7 +1155,7 @@ export class DaytonaSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<DaytonaSandboxSessionState> {
-    const baseState = deserializeRemoteSandboxSessionStateValues(
+    const baseState = await rehydrateRemoteSandboxSessionStateValues(
       state,
       this.options.env,
     );

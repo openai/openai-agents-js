@@ -29,7 +29,7 @@ import {
   assertRunAsUnsupported,
   cloneManifestWithoutMountEntries,
   cloneManifestWithRoot,
-  deserializeRemoteSandboxSessionStateValues,
+  rehydrateRemoteSandboxSessionStateValues,
   decodeNativeSnapshotRef,
   encodeNativeSnapshotRef,
   hydrateRemoteWorkspaceTar,
@@ -1476,7 +1476,7 @@ export class VercelSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<VercelSandboxSessionState> {
-    const baseState = deserializeRemoteSandboxSessionStateValues(
+    const baseState = await rehydrateRemoteSandboxSessionStateValues(
       state,
       this.options.env,
     );

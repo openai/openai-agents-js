@@ -25,6 +25,7 @@ export {
   entryContainsLocalSource,
   materializeInlineManifestEntry,
   materializeInlineManifest,
+  manifestWithMaterializedEnvironmentReferences,
   manifestContainsLocalSource,
   mergeManifestDelta,
   mergeManifestEntryDelta,
@@ -107,6 +108,7 @@ export {
 export {
   assertRemoteSandboxSessionStateCanResume,
   deserializeRemoteSandboxSessionStateValues,
+  rehydrateRemoteSandboxSessionStateValues,
   serializeRemoteSandboxSessionState,
 } from './sessionState';
 export {

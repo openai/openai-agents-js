@@ -13,7 +13,7 @@ import type {
   SandboxRunConfig,
 } from '../client';
 import { SandboxLifecycleError } from '../errors';
-import { cloneManifest, Manifest } from '../manifest';
+import { cloneManifest, isEnvValueReference, Manifest } from '../manifest';
 import { type SandboxSessionLike, type SandboxSessionState } from '../session';
 import { isDefaultRemoteMountCommandAllowlist } from '../shared/remoteMountCommandAllowlist';
 import { serializeManifestEnvironment } from '../shared/environment';
@@ -1028,6 +1028,10 @@ export class SandboxRuntimeManager<TContext> {
 
     const canReuse = args.client.canReusePreservedOwnedSession;
     if (!canReuse) {
+      await refreshLiveEnvironmentReferences(
+        liveEntry.session.state,
+        args.trustedManifest,
+      );
       return { entry: liveEntry, reusable: true };
     }
 
@@ -1074,6 +1078,13 @@ export class SandboxRuntimeManager<TContext> {
       return { entry: liveEntry, reusable: false };
     }
 
+    if (args.client.backendId !== 'docker') {
+      await refreshLiveEnvironmentReferences(
+        candidateState,
+        args.trustedManifest,
+      );
+    }
+
     // Rebind only after the backend has verified that its live authority still
     // matches the current trusted manifest.
     liveEntry.session.state.manifest =
@@ -1089,9 +1100,7 @@ export class SandboxRuntimeManager<TContext> {
             args.trustedManifest,
           )
         : candidateState.manifest;
-    if (args.client.backendId === 'docker') {
-      liveEntry.session.state.environment = candidateState.environment;
-    }
+    liveEntry.session.state.environment = candidateState.environment;
     return { entry: liveEntry, reusable: true };
   }
 
@@ -1375,6 +1384,66 @@ function manifestWithTrustedRuntimePolicies(
       ...trustedManifest.remoteMountCommandAllowlist,
     ],
   });
+}
+
+async function refreshLiveEnvironmentReferences(
+  state: SandboxSessionState,
+  trustedManifest: Manifest | undefined,
+): Promise<void> {
+  if (!trustedManifest) {
+    return;
+  }
+  const referenceKeys = new Set([
+    ...Object.entries(state.manifest.environment)
+      .filter(([, value]) => isEnvValueReference(value))
+      .map(([key]) => key),
+    ...Object.entries(trustedManifest.environment)
+      .filter(([, value]) => isEnvValueReference(value))
+      .map(([key]) => key),
+  ]);
+  if (referenceKeys.size === 0) {
+    return;
+  }
+  const resolvedEnvironment = Object.fromEntries(
+    (
+      await Promise.all(
+        [...referenceKeys].map(async (key) => {
+          const value = trustedManifest.environment[key];
+          return value ? ([key, await value.resolve()] as const) : undefined;
+        }),
+      )
+    ).filter((entry) => entry !== undefined),
+  );
+  const environment = { ...(state.environment ?? {}) };
+  const manifestEnvironment = Object.fromEntries(
+    Object.entries(state.manifest.environment)
+      .filter(([key]) => !referenceKeys.has(key))
+      .map(([key, value]) => [key, value.init()]),
+  );
+  for (const key of referenceKeys) {
+    delete environment[key];
+    const value = trustedManifest.environment[key];
+    if (value) {
+      manifestEnvironment[key] = value.init();
+    }
+  }
+  const manifest = new Manifest({
+    version: state.manifest.version,
+    root: state.manifest.root,
+    entries: structuredClone(state.manifest.entries),
+    environment: manifestEnvironment,
+    users: structuredClone(state.manifest.users),
+    groups: structuredClone(state.manifest.groups),
+    extraPathGrants: structuredClone(state.manifest.extraPathGrants),
+    remoteMountCommandAllowlist: [
+      ...state.manifest.remoteMountCommandAllowlist,
+    ],
+  });
+  state.environment = {
+    ...environment,
+    ...resolvedEnvironment,
+  };
+  state.manifest = manifest;
 }
 
 function removeClosedPreservedOwnedSessions(

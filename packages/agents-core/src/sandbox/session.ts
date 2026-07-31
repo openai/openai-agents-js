@@ -6,7 +6,13 @@ import type { Entry } from './entries';
 import type { Manifest } from './manifest';
 import type { Snapshot } from './snapshot';
 
-export const SANDBOX_SESSION_STATE_VERSION = 1 as const;
+export const SANDBOX_SESSION_STATE_VERSION = 2 as const;
+export const SUPPORTED_SANDBOX_SESSION_STATE_VERSIONS = [
+  1,
+  SANDBOX_SESSION_STATE_VERSION,
+] as const;
+export type SandboxSessionStateVersion =
+  (typeof SUPPORTED_SANDBOX_SESSION_STATE_VERSIONS)[number];
 
 export type ExposedPortScheme = 'http' | 'ws';
 
@@ -21,7 +27,7 @@ export type ExposedPortEndpoint = {
 };
 
 export type SandboxSessionStateEnvelope = {
-  version: typeof SANDBOX_SESSION_STATE_VERSION;
+  version: SandboxSessionStateVersion;
   backendId: string;
   manifest: Record<string, unknown>;
   snapshot?: Snapshot | null;

@@ -46,7 +46,7 @@ import type {
   SandboxSessionSerializationOptions,
 } from '../client';
 import { normalizeSandboxClientCreateArgs } from '../client';
-import { Manifest } from '../manifest';
+import { isEnvValueReference, Manifest } from '../manifest';
 import {
   WorkspacePathPolicy,
   type ResolveSandboxPathOptions,
@@ -1057,7 +1057,7 @@ export class DockerSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<DockerSandboxSessionState> {
-    const baseState = deserializeLocalSandboxSessionStateValues(
+    const baseState = await deserializeLocalSandboxSessionStateValues(
       state,
       this.options.snapshot,
     );
@@ -1089,7 +1089,7 @@ export class DockerSandboxClient implements SandboxClient<
         sessionIdentity: undefined,
         materializedEntriesFingerprint: undefined,
         image: resolvedOptions.image ?? DEFAULT_DOCKER_IMAGE,
-        environment: await state.manifest.resolveEnvironment(),
+        environment: await resolveDockerRunStateEnvironment(state),
         snapshotSpec:
           (trustedConfig?.snapshot as LocalSandboxSnapshotSpec | undefined) ??
           resolvedOptions.snapshot ??
@@ -1296,6 +1296,21 @@ async function cleanupStartedDockerContainer(args: {
       () => undefined,
     );
   }
+}
+
+async function resolveDockerRunStateEnvironment(
+  state: DockerSandboxSessionState,
+): Promise<Record<string, string>> {
+  return Object.fromEntries(
+    await Promise.all(
+      Object.entries(state.manifest.environment).map(async ([key, value]) => [
+        key,
+        isEnvValueReference(value) && typeof state.environment[key] === 'string'
+          ? state.environment[key]
+          : await value.resolve(),
+      ]),
+    ),
+  );
 }
 
 function assertDockerManifestSupported(manifest: Manifest): void {
