@@ -600,21 +600,24 @@ export type RealtimeClientEvent = z.infer<typeof realtimeClientEventSchema> &
 type ParseResult =
   | {
       data: RealtimeServerEvent;
+      raw: RealtimeServerGenericEvent;
       isGeneric: false;
     }
   | {
       data: RealtimeServerGenericEvent;
+      raw: RealtimeServerGenericEvent;
       isGeneric: true;
     }
   | {
       data: null;
+      raw: null;
       isGeneric: true;
     };
 
 /**
  * Parses a realtime event from the server. If the event is unknown to the client, it will be treated as a generic event.
  * @param event - The event to parse.
- * @returns The parsed event or null if the event is unknown to the client.
+ * @returns The validated event and original JSON payload, or null values if the payload is not a valid event object.
  */
 export function parseRealtimeEvent(
   event: MessageEvent | WebSocketMessageEvent,
@@ -623,15 +626,23 @@ export function parseRealtimeEvent(
   try {
     raw = JSON.parse(event.data.toString());
   } catch {
-    return { data: null, isGeneric: true };
+    return { data: null, raw: null, isGeneric: true };
   }
   const parsed = realtimeServerEventSchema.safeParse(raw);
   if (!parsed.success) {
     const genericParsed = genericEventSchema.safeParse(raw);
     if (genericParsed.success) {
-      return { data: genericParsed.data, isGeneric: true };
+      return {
+        data: genericParsed.data,
+        raw: raw as RealtimeServerGenericEvent,
+        isGeneric: true,
+      };
     }
-    return { data: null, isGeneric: true };
+    return { data: null, raw: null, isGeneric: true };
   }
-  return { data: parsed.data, isGeneric: false };
+  return {
+    data: parsed.data,
+    raw: raw as RealtimeServerGenericEvent,
+    isGeneric: false,
+  };
 }

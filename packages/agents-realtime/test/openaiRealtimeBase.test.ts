@@ -83,6 +83,41 @@ describe('OpenAIRealtimeBase helpers', () => {
     expectTypeOf(transport).toMatchTypeOf<OpenAIRealtimeBase>();
   });
 
+  it('isolates typed events from mutations to raw wildcard events', () => {
+    const base = new TestBase();
+    const typedEvents: any[] = [];
+    const payload = {
+      type: 'conversation.created',
+      event_id: 'evt_1',
+      conversation: {
+        id: 'conv_1',
+        object: 'realtime.conversation',
+        provider_nested: { value: true },
+      },
+      provider_top_level: 123,
+    };
+    const rawListener = vi.fn((event: any) => {
+      expect(event).toEqual(payload);
+      event.conversation.id = 'mutated_by_raw_listener';
+    });
+    base.on('*', rawListener);
+    base.on('conversation.created', (event) => typedEvents.push(event));
+
+    (base as any)._onMessage({ data: JSON.stringify(payload) });
+
+    expect(rawListener).toHaveBeenCalledOnce();
+    expect(typedEvents).toEqual([
+      {
+        type: 'conversation.created',
+        event_id: 'evt_1',
+        conversation: {
+          id: 'conv_1',
+          object: 'realtime.conversation',
+        },
+      },
+    ]);
+  });
+
   it('merges session config defaults', () => {
     const base = new TestBase();
     const config = (base as any)._getMergedSessionConfig({
