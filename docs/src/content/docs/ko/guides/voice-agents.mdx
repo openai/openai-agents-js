@@ -1,65 +1,65 @@
 ---
 title: 음성 에이전트 개요
-description: Build realtime voice assistants using RealtimeAgent and RealtimeSession
+description: Build realtime assistants using RealtimeAgent and RealtimeSession
 ---
 
 import { Aside, LinkCard } from '@astrojs/starlight/components';
 
-## 개요
+## 음성 에이전트 개요
 
 ![실시간 에이전트](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
 
-음성 에이전트를 사용하면 OpenAI speech-to-speech 모델 위에 지연 시간이 짧은 음성 인터페이스를 구축할 수 있습니다. SDK는 Realtime API의 사고 모델을 그대로 유지하면서, 원문 이벤트 흐름을 `RealtimeAgent`, `RealtimeSession`, 전송 헬퍼로 감싸 도구, 가드레일, 핸드오프, 세션 기록을 더 쉽게 다룰 수 있게 합니다.
+실시간 에이전트를 사용하면 OpenAI 음성-음성 모델을 기반으로 지연 시간이 짧은 음성 인터페이스를 구축할 수 있습니다. SDK는 Realtime API의 멘탈 모델을 그대로 유지하면서 원문 이벤트 흐름을 `RealtimeAgent`, `RealtimeSession` 및 전송 헬퍼로 래핑하여 도구, 가드레일, 핸드오프 및 세션 기록을 더 쉽게 다룰 수 있도록 합니다.
 
-내부적으로는 공식 [WebRTC 기반 Realtime API](https://developers.openai.com/api/docs/guides/realtime-webrtc/), [Realtime 대화](https://developers.openai.com/api/docs/guides/realtime-conversations/), [음성 활동 감지](https://developers.openai.com/api/docs/guides/realtime-vad/) 가이드의 동일한 Realtime 개념이 계속 적용됩니다. Voice Agents SDK는 이 API 위에 TypeScript 우선 계층을 추가하므로, 전송 방식과 이벤트 처리를 처음부터 다시 만들지 않고 제품 로직에 집중할 수 있습니다.
+내부적으로는 공식 [WebRTC를 사용하는 Realtime API](https://developers.openai.com/api/docs/guides/realtime-webrtc/), [Realtime 대화](https://developers.openai.com/api/docs/guides/realtime-conversations/) 및 [음성 활동 감지](https://developers.openai.com/api/docs/guides/realtime-vad/) 가이드에서 설명하는 동일한 Realtime 개념이 그대로 적용됩니다. 실시간 에이전트 SDK는 이 API 위에 TypeScript 우선 계층을 추가하므로 전송 및 이벤트 처리를 처음부터 다시 구축하는 대신 제품 로직에 집중할 수 있습니다.
 
 <Aside type="note">
   WebRTC로 브라우저 클라이언트를 연결하는 경우 빠른 시작부터 시작하세요. WebRTC,
-  WebSocket, SIP, Twilio, Cloudflare Workers 중에서 선택하는 중이라면 먼저 전송
-  방식 가이드로 이동하세요.
+  WebSocket, SIP, Twilio 또는 Cloudflare Workers 중에서 선택하려는 경우 먼저
+  전송 방식 가이드를 살펴보세요.
 </Aside>
 
-## 시작 지점
+## 시작 안내
 
 <LinkCard
   title="빠른 시작"
   href="/openai-agents-js/ko/guides/voice-agents/quickstart"
-  description="OpenAI Agents SDK를 사용해 단 몇 분 만에 첫 실시간 음성 어시스턴트를 구축합니다."
+  description="OpenAI Agents SDK를 사용하여 단 몇 분 만에 첫 실시간 음성 어시스턴트를 구축합니다."
 />
 
 <LinkCard
   title="음성 에이전트 구축"
   href="/openai-agents-js/ko/guides/voice-agents/build"
-  description="SDK에서 세션 수명 주기, VAD, 인터럽션(중단 처리), 멀티모달 입력, 도구, 기록이 어떻게 작동하는지 알아봅니다."
+  description="SDK에서 세션 수명 주기, VAD, 인터럽션(중단 처리), 멀티모달 입력, 도구 및 기록이 작동하는 방식을 알아봅니다."
 />
 
 <LinkCard
   title="전송 방식"
   href="/openai-agents-js/ko/guides/voice-agents/transport"
-  description="WebRTC, WebSocket, SIP 또는 사용자 지정 전송 방식 중에서 선택하고, 언제 원문 이벤트 수준으로 내려가야 하는지 이해합니다."
+  description="WebRTC, WebSocket, SIP 또는 사용자 지정 전송 방식 중 하나를 선택하고 원문 이벤트를 직접 사용해야 하는 경우를 알아봅니다."
 />
 
 ## SDK 추가 기능
 
 - 임시 클라이언트 토큰을 사용하는 브라우저 우선 WebRTC 설정
 - 서버 측 WebSocket 및 SIP 전송 옵션
-- 자동 인터럽션(중단 처리) 및 로컬 대화 기록 업데이트
-- Realtime 핸드오프를 통한 멀티 에이전트 오케스트레이션
-- 함수 도구, 호스티드 MCP 도구, 승인, 위임 패턴
+- 자동 인터럽션(중단 처리) 처리 및 로컬 대화 기록 업데이트
+- 실시간 핸드오프를 통한 다중 에이전트 오케스트레이션
+- 함수 도구, 호스티드 MCP 도구, 승인 및 위임 패턴
 - 실시간 음성 상호작용을 위한 출력 가드레일 및 트레이싱 지원
 
 ## 다음 페이지 선택
 
-| 필요한 작업 | 이동할 위치 |
+| 필요한 작업 | 이동할 페이지 |
 | --- | --- |
-| WebRTC와 임시 토큰으로 브라우저 클라이언트를 안전하게 연결 | [빠른 시작](/openai-agents-js/ko/guides/voice-agents/quickstart) |
-| 세션 수명 주기, VAD, 인터럽션(중단 처리), 이미지 입력, 도구, 기록 이해 | [음성 에이전트 구축](/openai-agents-js/ko/guides/voice-agents/build) |
-| WebRTC, WebSocket, SIP, 사용자 지정 전송 방식 중 선택 | [전송 방식](/openai-agents-js/ko/guides/voice-agents/transport) |
-| Twilio에서 전화 또는 텔레포니 경험 실행 | [Twilio용 Realtime 에이전트](/openai-agents-js/ko/extensions/twilio) |
+| WebRTC와 임시 토큰을 사용하여 브라우저 클라이언트를 안전하게 연결 | [빠른 시작](/openai-agents-js/ko/guides/voice-agents/quickstart) |
+| 세션 수명 주기, VAD, 인터럽션(중단 처리), 이미지 입력, 도구 및 기록 이해 | [음성 에이전트 구축](/openai-agents-js/ko/guides/voice-agents/build) |
+| WebRTC, WebSocket, SIP 및 사용자 지정 전송 방식 중에서 선택 | [전송 방식](/openai-agents-js/ko/guides/voice-agents/transport) |
+| Twilio에서 전화 또는 텔레포니 환경 실행 | [Twilio용 Realtime 에이전트](/openai-agents-js/ko/extensions/twilio) |
 | Cloudflare Workers 또는 기타 workerd 런타임에서 연결 | [Cloudflare용 Realtime 에이전트](/openai-agents-js/ko/extensions/cloudflare) |
 
-## speech-to-speech를 사용하는 이유
+## 음성-음성 방식의 이점
 
-speech-to-speech 모델은 사용자 오디오를 직접 처리하므로, 매 턴마다 별도의 speech-to-text, 텍스트 추론, text-to-speech 체인을 구축할 필요가 없습니다. 이를 통해 지연 시간을 낮게 유지하고, 실시간 애플리케이션에서 인터럽션(중단 처리), 텍스트와 음성 입력의 혼합, 도구 호출이 훨씬 더 자연스럽게 느껴지도록 할 수 있습니다.
+음성-음성 모델은 사용자 오디오를 직접 처리하므로 매 턴마다 별도의 음성-텍스트 변환, 텍스트 추론 및 텍스트-음성 변환 체인을 구축할 필요가 없습니다. 이를 통해 지연 시간을 줄이고 실시간 애플리케이션에서 인터럽션(중단 처리), 텍스트와 음성의 혼합 입력 및 도구 호출이 훨씬 자연스럽게 느껴지도록 할 수 있습니다.
 
-![Speech-to-speech 모델](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)
+![음성-음성 모델](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)
