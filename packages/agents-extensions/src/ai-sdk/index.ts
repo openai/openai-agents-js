@@ -308,7 +308,12 @@ function isLikelyOpenAIFileId(value: string): boolean {
 
 function parsePublicUrlFileInput(value: string): URL {
   try {
-    return new URL(value);
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new UserError(FILE_INPUT_URL_ERROR);
+    }
+
+    return url;
   } catch {
     throw new UserError(FILE_INPUT_URL_ERROR);
   }

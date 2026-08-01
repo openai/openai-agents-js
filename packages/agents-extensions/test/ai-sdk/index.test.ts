@@ -2258,6 +2258,46 @@ describe('itemsToLanguageV2Messages', () => {
     );
   });
 
+  test.each([
+    'file:///etc/passwd',
+    'javascript:alert(1)',
+    'data:text/plain,hi',
+  ])('rejects non-public input_file URL scheme: %s', (file) => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file,
+          },
+        ],
+      } as any,
+    ];
+
+    expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow(
+      /Only public URLs, base64 data URLs, and raw base64 file data are supported/,
+    );
+  });
+
+  test('rejects non-public input_file object URL scheme', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: { url: 'file:///etc/passwd' },
+          },
+        ],
+      } as any,
+    ];
+
+    expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow(
+      /Only public URLs, base64 data URLs, and raw base64 file data are supported/,
+    );
+  });
+
   test('passes through unknown items via providerData', () => {
     const custom = { role: 'system', content: 'x', providerOptions: { a: 1 } };
     const items: protocol.ModelItem[] = [
