@@ -145,7 +145,7 @@ const sidebar = [
           zh: '沙盒智能体',
           ko: '샌드박스 에이전트',
         },
-        collapsed: false,
+        collapsed: true,
         items: [
           {
             label: 'Quickstart',
@@ -188,19 +188,19 @@ const sidebar = [
       {
         label: 'Realtime agents',
         translations: {
-          ja: '音声エージェント',
-          zh: '语音智能体',
-          ko: '음성 에이전트',
+          ja: 'リアルタイムエージェント',
+          zh: '实时智能体',
+          ko: '실시간 에이전트',
         },
-        collapsed: false,
+        collapsed: true,
         items: [
           {
             label: 'Overview',
             link: '/guides/voice-agents',
             translations: {
-              ja: '音声エージェントの概要',
-              zh: '语音智能体概述',
-              ko: '음성 에이전트 개요',
+              ja: 'リアルタイムエージェントの概要',
+              zh: '实时智能体概述',
+              ko: '실시간 에이전트 개요',
             },
           },
           {
@@ -216,9 +216,9 @@ const sidebar = [
             label: 'Building Realtime Agents',
             link: '/guides/voice-agents/build',
             translations: {
-              ja: '音声エージェントの構築',
-              zh: '构建语音智能体',
-              ko: '음성 에이전트 구축',
+              ja: 'リアルタイムエージェントの構築',
+              zh: '构建实时智能体',
+              ko: '실시간 에이전트 구축',
             },
           },
           {
@@ -356,7 +356,7 @@ const sidebar = [
           zh: '扩展',
           ko: '확장 기능',
         },
-        collapsed: false,
+        collapsed: true,
         items: [
           {
             label: 'AI SDK Integration',

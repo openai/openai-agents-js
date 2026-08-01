@@ -7,7 +7,7 @@ import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import twilioBasicExample from '../../../../../../examples/docs/extensions/twilio-basic.ts?raw';
 import twilioServerExample from '../../../../../../examples/realtime-twilio/index.ts?raw';
 
-Twilio は、通話の元の音声を WebSocket サーバーに送信する [Media Streams API](https://www.twilio.com/docs/voice/media-streams) を提供しています。この構成を使用して、[音声エージェントの概要](/openai-agents-js/ja/guides/voice-agents)の realtime agents を Twilio に接続できます。`websocket` モードのデフォルトの Realtime Session トランスポートを使用して、Twilio から届くイベントを Realtime Session に接続できます。ただし、通話では Web ベースの会話よりも遅延が大きくなるため、適切な音声形式を設定し、割り込みのタイミングを調整する必要があります。
+Twilio は、通話の元の音声を WebSocket サーバーに送信する [Media Streams API](https://www.twilio.com/docs/voice/media-streams) を提供しています。この構成を使用して、[リアルタイムエージェントの概要](/openai-agents-js/ja/guides/voice-agents)の realtime agents を Twilio に接続できます。`websocket` モードのデフォルトの Realtime Session トランスポートを使用して、Twilio から届くイベントを Realtime Session に接続できます。ただし、通話では Web ベースの会話よりも遅延が大きくなるため、適切な音声形式を設定し、割り込みのタイミングを調整する必要があります。
 
 セットアップを容易にするため、割り込み処理や音声転送を含む Twilio への接続を処理する専用のトランスポートレイヤーを作成しました。
 
@@ -52,7 +52,7 @@ Twilio は、通話の元の音声を WebSocket サーバーに送信する [Med
 
 </Steps>
 
-ツール呼び出しやガードレールなど、`RealtimeSession` に期待されるすべてのイベントと動作が通常どおり機能します。realtime agents で `RealtimeSession` を使用する方法の詳細については、[音声エージェントの概要](/openai-agents-js/ja/guides/voice-agents)を参照してください。
+ツール呼び出しやガードレールなど、`RealtimeSession` に期待されるすべてのイベントと動作が通常どおり機能します。realtime agents で `RealtimeSession` を使用する方法の詳細については、[リアルタイムエージェントの概要](/openai-agents-js/ja/guides/voice-agents)を参照してください。
 
 ## ヒントと考慮事項
 

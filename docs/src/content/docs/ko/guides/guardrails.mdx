@@ -48,7 +48,7 @@ import toolGuardrailsExample from '../../../../../../examples/docs/guardrails/to
 2. 가드레일 함수가 실행되고 [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult)로 래핑된 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)을 반환합니다.
 3. `tripwireTriggered`가 `true`이면 [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) 오류가 발생합니다.
 
-> **참고** 출력 가드레일은 에이전트가 워크플로의 _마지막_ 에이전트일 때만 실행됩니다. 실시간 음성 상호작용에 대해서는 [음성 에이전트 구축](/openai-agents-js/ko/guides/voice-agents/build#guardrails)을 참고하세요.
+> **참고** 출력 가드레일은 에이전트가 워크플로의 _마지막_ 에이전트일 때만 실행됩니다. 실시간 음성 상호작용에 대해서는 [실시간 에이전트 구축](/openai-agents-js/ko/guides/voice-agents/build#guardrails)을 참고하세요.
 
 출력 가드레일 함수는 해당 턴의 기반 `modelResponse`와 생성된 출력 항목을 포함하는 선택적 `details` 객체도 받습니다. 최종 출력만으로 응답의 통과 여부를 결정하기에 충분하지 않을 때 사용하세요. 예를 들어 가드레일을 트리거하기 전에 생성된 전체 항목 목록이나 제공자 응답 메타데이터를 검사하려는 경우에 사용할 수 있습니다.
 

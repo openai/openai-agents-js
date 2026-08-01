@@ -7,7 +7,7 @@ import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import twilioBasicExample from '../../../../../../examples/docs/extensions/twilio-basic.ts?raw';
 import twilioServerExample from '../../../../../../examples/realtime-twilio/index.ts?raw';
 
-Twilio는 전화 통화의 원문 오디오를 WebSocket 서버로 전송하는 [Media Streams API](https://www.twilio.com/docs/voice/media-streams)를 제공합니다. 이 구성을 사용하면 [음성 에이전트 개요](/openai-agents-js/ko/guides/voice-agents)의 실시간 에이전트를 Twilio에 연결할 수 있습니다. `websocket` 모드의 기본 Realtime Session 전송 방식을 사용하여 Twilio에서 수신되는 이벤트를 Realtime Session에 연결할 수 있습니다. 하지만 전화 통화는 웹 기반 대화보다 자연스럽게 지연 시간이 길어지므로, 올바른 오디오 형식을 설정하고 인터럽션(중단 처리) 타이밍을 직접 조정해야 합니다.
+Twilio는 전화 통화의 원문 오디오를 WebSocket 서버로 전송하는 [Media Streams API](https://www.twilio.com/docs/voice/media-streams)를 제공합니다. 이 구성을 사용하면 [실시간 에이전트 개요](/openai-agents-js/ko/guides/voice-agents)의 실시간 에이전트를 Twilio에 연결할 수 있습니다. `websocket` 모드의 기본 Realtime Session 전송 방식을 사용하여 Twilio에서 수신되는 이벤트를 Realtime Session에 연결할 수 있습니다. 하지만 전화 통화는 웹 기반 대화보다 자연스럽게 지연 시간이 길어지므로, 올바른 오디오 형식을 설정하고 인터럽션(중단 처리) 타이밍을 직접 조정해야 합니다.
 
 설정 환경을 개선하기 위해 인터럽션(중단 처리)과 오디오 전달을 비롯한 Twilio 연결을 처리하는 전용 전송 계층을 만들었습니다.
 
@@ -52,7 +52,7 @@ Twilio는 전화 통화의 원문 오디오를 WebSocket 서버로 전송하는 
 
 </Steps>
 
-도구 호출, 가드레일 등을 포함하여 `RealtimeSession`에서 기대하는 모든 이벤트와 동작이 예상대로 작동합니다. 실시간 에이전트와 함께 `RealtimeSession`을 사용하는 방법에 관한 자세한 내용은 [음성 에이전트 개요](/openai-agents-js/ko/guides/voice-agents)를 참조하세요.
+도구 호출, 가드레일 등을 포함하여 `RealtimeSession`에서 기대하는 모든 이벤트와 동작이 예상대로 작동합니다. 실시간 에이전트와 함께 `RealtimeSession`을 사용하는 방법에 관한 자세한 내용은 [실시간 에이전트 개요](/openai-agents-js/ko/guides/voice-agents)를 참조하세요.
 
 ## 팁 및 고려 사항
 
