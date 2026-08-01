@@ -83,6 +83,44 @@ describe('OpenAIRealtimeBase helpers', () => {
     expectTypeOf(transport).toMatchTypeOf<OpenAIRealtimeBase>();
   });
 
+  it('isolates typed events from mutations to raw wildcard events', () => {
+    const base = new TestBase();
+    const typedEvents: any[] = [];
+    const payload = {
+      type: 'session.updated',
+      event_id: 'evt_1',
+      session: {
+        id: 'session_1',
+        instructions: 'original instructions',
+        provider_nested: { value: 'original value' },
+      },
+      provider_top_level: 123,
+    };
+    const rawListener = vi.fn((event: any) => {
+      expect(event).toEqual(payload);
+      event.session.instructions = 'mutated by raw listener';
+      event.session.provider_nested.value = 'mutated by raw listener';
+    });
+    base.on('*', rawListener);
+    base.on('session.updated', (event) => typedEvents.push(event));
+
+    (base as any)._onMessage({ data: JSON.stringify(payload) });
+
+    expect(rawListener).toHaveBeenCalledOnce();
+    expect(typedEvents).toEqual([
+      {
+        type: 'session.updated',
+        event_id: 'evt_1',
+        session: {
+          id: 'session_1',
+          instructions: 'original instructions',
+          provider_nested: { value: 'original value' },
+        },
+      },
+    ]);
+    expect((base as any)._rawSessionConfig).toEqual(payload.session);
+  });
+
   it('merges session config defaults', () => {
     const base = new TestBase();
     const config = (base as any)._getMergedSessionConfig({

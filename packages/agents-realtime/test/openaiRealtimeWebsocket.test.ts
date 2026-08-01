@@ -108,6 +108,28 @@ describe('OpenAIRealtimeWebSocket', () => {
     expect(events).toEqual([payload]);
   });
 
+  it('preserves known server payloads on wildcard events', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const events: any[] = [];
+    ws.on('*', (event) => events.push(event));
+    const p = ws.connect({ apiKey: 'ek_test', model: 'm' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    const payload = {
+      type: 'conversation.created',
+      event_id: 'evt_known',
+      conversation: {
+        id: 'conv_1',
+        provider_nested: { value: true },
+      },
+      provider_top_level: 123,
+    };
+    lastFakeSocket!.emit('message', { data: JSON.stringify(payload) });
+
+    expect(events).toEqual([payload]);
+  });
+
   it('handles audio delta, speech started and created/done events', async () => {
     const ws = new OpenAIRealtimeWebSocket();
     const audioSpy = vi.fn();

@@ -462,6 +462,26 @@ describe('RealtimeSession', () => {
     expect(transport.closeCalls).toBe(1);
   });
 
+  it('forwards raw transport payloads unchanged', async () => {
+    const payload = {
+      type: 'conversation.created',
+      event_id: 'evt_known',
+      conversation: {
+        id: 'conv_1',
+        provider_nested: { value: true },
+      },
+      provider_top_level: 123,
+    };
+    const forwardedEvent = waitForEvent<[typeof payload]>(
+      session,
+      'transport_event',
+    );
+
+    transport.emit('*', payload);
+
+    await expect(forwardedEvent).resolves.toEqual([payload]);
+  });
+
   it('selects transport based on environment and options', () => {
     const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
 

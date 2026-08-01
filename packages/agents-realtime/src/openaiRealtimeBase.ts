@@ -220,12 +220,13 @@ export abstract class OpenAIRealtimeBase
   }
 
   protected _onMessage(event: MessageEvent | WebSocketMessageEvent): void {
-    const { data: parsed, isGeneric } = parseRealtimeEvent(event);
-    if (parsed === null) {
+    const result = parseRealtimeEvent(event);
+    if (result.data === null) {
       return;
     }
+    const { data: parsed, raw, isGeneric } = result;
 
-    this.emit('*', parsed);
+    this.emit('*', structuredClone(raw));
     if (isGeneric) {
       return;
     }
