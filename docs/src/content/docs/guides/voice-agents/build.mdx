@@ -1,6 +1,6 @@
 ---
-title: Building Voice Agents
-description: Learn how to build voice agents using the OpenAI Agents SDK, how session behavior works, and which realtime features are available.
+title: Building Realtime Agents
+description: Learn how to build realtime agents using the OpenAI Agents SDK, how session behavior works, and which realtime features are available.
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';
@@ -233,7 +233,7 @@ By default, function-tool input guardrails run after approval, immediately befor
 <Code lang="typescript" code={toolApprovalEventExample} />
 
 <Aside type="note">
-  While the voice agent is waiting for approval for the tool call, the agent
+  While the realtime agent is waiting for approval for the tool call, the agent
   will not be able to process new requests from the user.
 </Aside>
 

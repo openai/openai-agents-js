@@ -1,13 +1,13 @@
 ---
 title: Realtime Agents on Twilio
-description: Run Agents SDK voice agents over Twilio phone calls
+description: Run Agents SDK realtime agents over Twilio phone calls
 ---
 
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import twilioBasicExample from '../../../../../examples/docs/extensions/twilio-basic.ts?raw';
 import twilioServerExample from '../../../../../examples/realtime-twilio/index.ts?raw';
 
-Twilio offers a [Media Streams API](https://www.twilio.com/docs/voice/media-streams) that sends the raw audio from a phone call to a WebSocket server. This setup can be used to connect your [voice agents](/openai-agents-js/guides/voice-agents) to Twilio. You can use the default Realtime Session transport in `websocket` mode to connect the events coming from Twilio to your Realtime Session. However, this requires you to set the right audio format and adjust your own interruption timing as phone calls will naturally introduce more latency than a web-based conversation.
+Twilio offers a [Media Streams API](https://www.twilio.com/docs/voice/media-streams) that sends the raw audio from a phone call to a WebSocket server. This setup can be used to connect your [realtime agents](/openai-agents-js/guides/voice-agents) to Twilio. You can use the default Realtime Session transport in `websocket` mode to connect the events coming from Twilio to your Realtime Session. However, this requires you to set the right audio format and adjust your own interruption timing as phone calls will naturally introduce more latency than a web-based conversation.
 
 To improve the setup experience, we've created a dedicated transport layer that handles the connection to Twilio, including interruption handling and audio forwarding.
 
@@ -52,7 +52,7 @@ To improve the setup experience, we've created a dedicated transport layer that 
 
 </Steps>
 
-Any event and behavior that you would expect from a `RealtimeSession` will work as expected including tool calls, guardrails, and more. Read the [voice agents guide](/openai-agents-js/guides/voice-agents) for more information on how to use the `RealtimeSession` with voice agents.
+Any event and behavior that you would expect from a `RealtimeSession` will work as expected including tool calls, guardrails, and more. Read the [Realtime agents guide](/openai-agents-js/guides/voice-agents) for more information on how to use the `RealtimeSession` with realtime agents.
 
 ## Tips and considerations
 

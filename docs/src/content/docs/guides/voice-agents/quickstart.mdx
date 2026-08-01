@@ -1,5 +1,5 @@
 ---
-title: Voice Agents Quickstart
+title: Realtime Agents Quickstart
 description: Build your first realtime voice assistant using the OpenAI Agents SDK in minutes.
 ---
 
@@ -19,7 +19,7 @@ import helloWorldExample from '../../../../../../examples/docs/voice-agents/hell
 
 1. **Create a project**
 
-   In this quickstart we will create a voice agent you can use in the browser. If you want to scaffold a new project, you can start with [`Next.js`](https://nextjs.org/docs/getting-started/installation) or [`Vite`](https://vite.dev/guide/installation.html).
+   In this quickstart we will create a realtime agent you can use in the browser. If you want to scaffold a new project, you can start with [`Next.js`](https://nextjs.org/docs/getting-started/installation) or [`Vite`](https://vite.dev/guide/installation.html).
 
    ```bash
    npm create vite@latest my-project -- --template vanilla-ts
@@ -59,7 +59,7 @@ import helloWorldExample from '../../../../../../examples/docs/voice-agents/hell
   `session.connect(...)`.
 </Aside>
 
-## Create and connect the voice agent
+## Create and connect the realtime agent
 
 <Steps>
 
@@ -78,7 +78,7 @@ import helloWorldExample from '../../../../../../examples/docs/voice-agents/hell
 
 2. **Create a session**
 
-   Unlike a regular agent, a voice agent is continuously running inside a `RealtimeSession` that handles the conversation and connection to the model over time. This session also manages audio processing, interruptions, and the broader conversation lifecycle that you will configure later on.
+   Unlike a regular agent, a realtime agent is continuously running inside a `RealtimeSession` that handles the conversation and connection to the model over time. This session also manages audio processing, interruptions, and the broader conversation lifecycle that you will configure later on.
 
    ```typescript
    import { RealtimeSession } from '@openai/agents/realtime';
@@ -128,7 +128,7 @@ import helloWorldExample from '../../../../../../examples/docs/voice-agents/hell
 
 ## Next Steps
 
-From here you can start designing and building your own voice agent:
+From here you can start designing and building your own realtime agent:
 
 - Add [tools](/openai-agents-js/guides/voice-agents/build#tools), [handoffs](/openai-agents-js/guides/voice-agents/build#handoffs), and [guardrails](/openai-agents-js/guides/voice-agents/build#guardrails).
 - Learn how [turn detection and voice activity detection](/openai-agents-js/guides/voice-agents/build#turn-detection-and-voice-activity-detection), [interruptions](/openai-agents-js/guides/voice-agents/build#interruptions), and [manual response control](/openai-agents-js/guides/voice-agents/build#manual-response-control) affect the conversation loop.

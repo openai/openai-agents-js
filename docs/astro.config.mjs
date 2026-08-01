@@ -186,6 +186,53 @@ const sidebar = [
         ],
       },
       {
+        label: 'Realtime agents',
+        translations: {
+          ja: '音声エージェント',
+          zh: '语音智能体',
+          ko: '음성 에이전트',
+        },
+        collapsed: false,
+        items: [
+          {
+            label: 'Overview',
+            link: '/guides/voice-agents',
+            translations: {
+              ja: '音声エージェントの概要',
+              zh: '语音智能体概述',
+              ko: '음성 에이전트 개요',
+            },
+          },
+          {
+            label: 'Quickstart',
+            link: '/guides/voice-agents/quickstart',
+            translations: {
+              ja: 'クイックスタート',
+              zh: '快速开始',
+              ko: '빠른 시작',
+            },
+          },
+          {
+            label: 'Building Realtime Agents',
+            link: '/guides/voice-agents/build',
+            translations: {
+              ja: '音声エージェントの構築',
+              zh: '构建语音智能体',
+              ko: '음성 에이전트 구축',
+            },
+          },
+          {
+            label: 'Transport Mechanisms',
+            link: '/guides/voice-agents/transport',
+            translations: {
+              ja: 'リアルタイムトランスポート',
+              zh: '传输机制',
+              ko: '전송 방식',
+            },
+          },
+        ],
+      },
+      {
         label: 'Models',
         link: '/guides/models',
         translations: {
@@ -301,53 +348,6 @@ const sidebar = [
           zh: '追踪',
           ko: '트레이싱',
         },
-      },
-      {
-        label: 'Voice Agents',
-        translations: {
-          ja: '音声エージェント',
-          zh: '语音智能体',
-          ko: '음성 에이전트',
-        },
-        collapsed: false,
-        items: [
-          {
-            label: 'Overview',
-            link: '/guides/voice-agents',
-            translations: {
-              ja: '音声エージェントの概要',
-              zh: '语音智能体概述',
-              ko: '음성 에이전트 개요',
-            },
-          },
-          {
-            label: 'Quickstart',
-            link: '/guides/voice-agents/quickstart',
-            translations: {
-              ja: 'クイックスタート',
-              zh: '快速开始',
-              ko: '빠른 시작',
-            },
-          },
-          {
-            label: 'Building Voice Agents',
-            link: '/guides/voice-agents/build',
-            translations: {
-              ja: '音声エージェントの構築',
-              zh: '构建语音智能体',
-              ko: '음성 에이전트 구축',
-            },
-          },
-          {
-            label: 'Transport Mechanisms',
-            link: '/guides/voice-agents/transport',
-            translations: {
-              ja: 'リアルタイムトランスポート',
-              zh: '传输机制',
-              ko: '전송 방식',
-            },
-          },
-        ],
       },
       {
         label: 'Extensions',
