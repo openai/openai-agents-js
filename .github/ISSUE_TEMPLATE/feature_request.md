@@ -13,4 +13,4 @@ assignees: ''
 
 ### Describe the feature
 
-What is the feature you're requesting? How would it work? Please provide examples and details if possible.
+<!-- What feature are you requesting? How would it work? Please provide examples and details if possible. -->
