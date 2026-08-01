@@ -2628,6 +2628,55 @@ describe('remote sandbox path helpers', () => {
     expect(runCommand).not.toHaveBeenCalled();
   });
 
+  test('rejects NUL-bearing PAX paths before hydration side effects', async () => {
+    const archive = makeTarArchive([
+      {
+        name: 'local-pax',
+        type: 'x',
+        content: makePaxRecord('path', 'secret.txt\0ignored'),
+      },
+      { name: 'safe.txt', content: 'persisted secret' },
+    ]);
+    const writeFile = vi.fn();
+    const runCommand = vi.fn(async (command: string) => ({
+      status: 0,
+      stdout: command.includes('resolve-workspace-path.sh')
+        ? '/custom/workspace\n'
+        : '',
+      stderr: '',
+    }));
+
+    await expect(
+      hydrateRemoteWorkspaceTar({
+        providerName: 'FakeProvider',
+        manifest: new Manifest({
+          root: '/custom/workspace',
+          entries: {
+            'secret.txt': {
+              type: 'file',
+              content: 'runtime-only',
+              ephemeral: true,
+            },
+          },
+        }),
+        data: archive,
+        io: {
+          mkdir: vi.fn(),
+          readFile: vi.fn(),
+          writeFile,
+          runCommand,
+        },
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'NUL byte in PAX record',
+      },
+    });
+
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
   test('rejects PAX size overrides before hydration side effects', async () => {
     const embeddedHeader = makeTarArchive([
       { name: 'logs/events.jsonl', content: '' },

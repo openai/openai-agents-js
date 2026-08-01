@@ -736,14 +736,19 @@ function parsePaxPayload(payload: Uint8Array): Record<string, string> {
       throw tarError('<pax>', 'invalid PAX record framing');
     }
 
+    let key: string;
+    let value: string;
     try {
       const decoder = new TextDecoder('utf-8', { fatal: true });
-      const key = decoder.decode(payload.subarray(space + 1, equals));
-      const value = decoder.decode(payload.subarray(equals + 1, recordEnd - 1));
-      values[key] = value;
+      key = decoder.decode(payload.subarray(space + 1, equals));
+      value = decoder.decode(payload.subarray(equals + 1, recordEnd - 1));
     } catch {
       throw tarError('<pax>', 'invalid UTF-8 in PAX record');
     }
+    if (key.includes('\0') || value.includes('\0')) {
+      throw tarError('<pax>', 'NUL byte in PAX record');
+    }
+    values[key] = value;
 
     offset = recordEnd;
   }
