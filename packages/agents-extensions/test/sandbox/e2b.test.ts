@@ -1035,27 +1035,7 @@ describe('E2BSandboxClient', () => {
     expect(createSnapshotMock).not.toHaveBeenCalled();
   });
 
-  test('falls back to tar snapshots when the workspace root is ephemeral', async () => {
-    const archive = makeTarArchive([{ name: 'keep.txt', content: 'keep' }]);
-    runMock.mockImplementation(async (command: string) => {
-      const resolvedPath = resolvedRemotePathFromValidationCommand(command);
-      if (resolvedPath) {
-        return {
-          stdout: `${resolvedPath}\n`,
-          stderr: '',
-          exitCode: 0,
-        };
-      }
-      const archivePath = command.match(/-cf '([^']+)'/)?.[1];
-      if (archivePath) {
-        files.set(archivePath, archive);
-      }
-      return {
-        stdout: '',
-        stderr: '',
-        exitCode: 0,
-      };
-    });
+  test('persists an empty tar when the workspace root is ephemeral', async () => {
     const client = new E2BSandboxClient({
       workspacePersistence: 'snapshot',
     });
@@ -1069,9 +1049,13 @@ describe('E2BSandboxClient', () => {
         },
       }),
     );
+    runMock.mockClear();
 
-    await expect(session.persistWorkspace()).resolves.toEqual(archive);
+    await expect(session.persistWorkspace()).resolves.toEqual(
+      makeTarArchive([]),
+    );
     expect(createSnapshotMock).not.toHaveBeenCalled();
+    expect(runMock).not.toHaveBeenCalled();
   });
 
   test('resolves configured exposed ports through E2B hosts', async () => {

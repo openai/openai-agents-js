@@ -2177,7 +2177,7 @@ describe('remote sandbox path helpers', () => {
       {
         name: 'global-pax',
         type: 'g',
-        content: makePaxRecord('path', 'workspace/not-used.txt'),
+        content: makePaxRecord('comment', 'harmless metadata'),
       },
       {
         name: 'long-name',
@@ -2212,6 +2212,47 @@ describe('remote sandbox path helpers', () => {
         rejectSymlinkRelPaths: ['workspace/keep/link'],
       }),
     ).toThrow(/symlink member not allowed: workspace\/keep\/link/);
+  });
+
+  test.each(['path', 'linkpath'])('rejects global PAX %s overrides', (key) => {
+    const archive = makeTarArchive([
+      {
+        name: 'global-pax',
+        type: 'g',
+        content: makePaxRecord(key, 'logs/events.jsonl'),
+      },
+      { name: 'safe.txt', content: 'unsafe destination' },
+    ]);
+
+    expect(() => validateWorkspaceTarArchive(archive)).toThrow(
+      new RegExp(`global PAX ${key} override not allowed`),
+    );
+  });
+
+  test('rejects malformed PAX byte framing and encoding', () => {
+    const archive = makeTarArchive([
+      {
+        name: 'local-pax',
+        type: 'x',
+        content: '999 path=logs/events.jsonl\n',
+      },
+      { name: 'safe.txt', content: 'unsafe destination' },
+    ]);
+
+    expect(() => validateWorkspaceTarArchive(archive)).toThrow(
+      /PAX record exceeds payload/,
+    );
+
+    const invalidUtf8 = makeTarArchive([
+      {
+        name: 'local-pax',
+        type: 'x',
+        content: new Uint8Array([0x37, 0x20, 0x78, 0x3d, 0xc3, 0x28, 0x0a]),
+      },
+    ]);
+    expect(() => validateWorkspaceTarArchive(invalidUtf8)).toThrow(
+      /invalid UTF-8 in PAX record/,
+    );
   });
 
   test('rejects malformed tar headers and unsupported member types', () => {
@@ -2367,6 +2408,459 @@ describe('remote sandbox path helpers', () => {
       }),
     ).rejects.toBeInstanceOf(SandboxArchiveError);
     expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    {
+      name: 'an exact ephemeral file',
+      manifest: new Manifest({
+        root: '/custom/workspace',
+        entries: {
+          'secret.txt': {
+            type: 'file',
+            content: 'runtime-only',
+            ephemeral: true,
+          },
+        },
+      }),
+      archive: makeTarArchive([
+        { name: 'secret.txt', content: 'persisted secret' },
+      ]),
+      protectedPath: 'secret.txt',
+    },
+    {
+      name: 'a descendant of an ephemeral directory',
+      manifest: new Manifest({
+        root: '/custom/workspace',
+        entries: {
+          logs: { type: 'dir', ephemeral: true },
+        },
+      }),
+      archive: makeTarArchive([
+        { name: 'logs/events.jsonl', content: 'persisted log' },
+      ]),
+      protectedPath: 'logs',
+    },
+    {
+      name: 'a file that blocks an ephemeral descendant',
+      manifest: new Manifest({
+        root: '/custom/workspace',
+        entries: {
+          cache: {
+            type: 'dir',
+            children: {
+              'session.json': {
+                type: 'file',
+                content: 'runtime-only',
+                ephemeral: true,
+              },
+            },
+          },
+        },
+      }),
+      archive: makeTarArchive([{ name: 'cache', content: 'blocking file' }]),
+      protectedPath: 'cache/session.json',
+    },
+    {
+      name: 'a descendant of an ephemeral mount target',
+      manifest: new Manifest({
+        root: '/custom/workspace',
+        entries: {
+          remote: mount({
+            source: 's3://bucket/data',
+            mountPath: 'mounted/cache',
+            ephemeral: true,
+            mountStrategy: { type: 'in_container' },
+          }),
+        },
+      }),
+      archive: makeTarArchive([
+        { name: 'mounted/cache/data.json', content: 'persisted mount data' },
+      ]),
+      protectedPath: 'mounted/cache',
+    },
+  ])(
+    'rejects $name before hydrating tar archives',
+    async ({ manifest, archive, protectedPath }) => {
+      const writeFile = vi.fn();
+      const runCommand = vi.fn(async (command: string) => ({
+        status: 0,
+        stdout: command.includes('resolve-workspace-path.sh')
+          ? `${manifest.root}\n`
+          : '',
+        stderr: '',
+      }));
+
+      await expect(
+        hydrateRemoteWorkspaceTar({
+          providerName: 'FakeProvider',
+          manifest,
+          data: archive,
+          io: {
+            mkdir: vi.fn(),
+            readFile: vi.fn(),
+            writeFile,
+            runCommand,
+          },
+        }),
+      ).rejects.toMatchObject({
+        details: {
+          reason: `archive member overlaps protected path: ${protectedPath}`,
+        },
+      });
+      expect(writeFile).not.toHaveBeenCalled();
+      expect(runCommand).not.toHaveBeenCalled();
+    },
+  );
+
+  test('hydrates tar archives without ephemeral manifest paths', async () => {
+    const archive = makeTarArchive([
+      { name: 'src/index.ts', content: 'export {};' },
+    ]);
+    const writeFile = vi.fn();
+    const runCommand = vi.fn(async (command: string) => ({
+      status: 0,
+      stdout: command.includes('resolve-workspace-path.sh')
+        ? '/custom/workspace\n'
+        : '',
+      stderr: '',
+    }));
+
+    await hydrateRemoteWorkspaceTar({
+      providerName: 'FakeProvider',
+      manifest: new Manifest({
+        root: '/custom/workspace',
+        entries: {
+          logs: { type: 'dir', ephemeral: true },
+        },
+      }),
+      data: archive,
+      io: {
+        mkdir: vi.fn(),
+        readFile: vi.fn(),
+        writeFile,
+        runCommand,
+      },
+    });
+
+    expect(writeFile).toHaveBeenCalledWith(expect.any(String), archive);
+    expect(runCommand).toHaveBeenCalled();
+  });
+
+  test('rejects global PAX path overrides before hydration side effects', async () => {
+    const archive = makeTarArchive([
+      {
+        name: 'global-pax',
+        type: 'g',
+        content: makePaxRecord('path', 'logs/events.jsonl'),
+      },
+      { name: 'safe.txt', content: 'unsafe destination' },
+    ]);
+    const writeFile = vi.fn();
+    const runCommand = vi.fn();
+
+    await expect(
+      hydrateRemoteWorkspaceTar({
+        providerName: 'FakeProvider',
+        manifest: new Manifest({
+          root: '/custom/workspace',
+          entries: {
+            logs: { type: 'dir', ephemeral: true },
+          },
+        }),
+        data: archive,
+        io: {
+          mkdir: vi.fn(),
+          readFile: vi.fn(),
+          writeFile,
+          runCommand,
+        },
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'global PAX path override not allowed',
+      },
+    });
+
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  test('parses multibyte PAX records before protected paths', async () => {
+    const archive = makeTarArchive([
+      {
+        name: 'local-pax',
+        type: 'x',
+        content: `${makePaxRecord('comment', 'é')}${makePaxRecord(
+          'path',
+          'logs/events.jsonl',
+        )}`,
+      },
+      { name: 'safe.txt', content: 'unsafe destination' },
+    ]);
+    const writeFile = vi.fn();
+    const runCommand = vi.fn();
+
+    await expect(
+      hydrateRemoteWorkspaceTar({
+        providerName: 'FakeProvider',
+        manifest: new Manifest({
+          root: '/custom/workspace',
+          entries: {
+            logs: { type: 'dir', ephemeral: true },
+          },
+        }),
+        data: archive,
+        io: {
+          mkdir: vi.fn(),
+          readFile: vi.fn(),
+          writeFile,
+          runCommand,
+        },
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'archive member overlaps protected path: logs',
+      },
+    });
+
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  test('rejects NUL-bearing PAX paths before hydration side effects', async () => {
+    const archive = makeTarArchive([
+      {
+        name: 'local-pax',
+        type: 'x',
+        content: makePaxRecord('path', 'secret.txt\0ignored'),
+      },
+      { name: 'safe.txt', content: 'persisted secret' },
+    ]);
+    const writeFile = vi.fn();
+    const runCommand = vi.fn(async (command: string) => ({
+      status: 0,
+      stdout: command.includes('resolve-workspace-path.sh')
+        ? '/custom/workspace\n'
+        : '',
+      stderr: '',
+    }));
+
+    await expect(
+      hydrateRemoteWorkspaceTar({
+        providerName: 'FakeProvider',
+        manifest: new Manifest({
+          root: '/custom/workspace',
+          entries: {
+            'secret.txt': {
+              type: 'file',
+              content: 'runtime-only',
+              ephemeral: true,
+            },
+          },
+        }),
+        data: archive,
+        io: {
+          mkdir: vi.fn(),
+          readFile: vi.fn(),
+          writeFile,
+          runCommand,
+        },
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'NUL byte in PAX record',
+      },
+    });
+
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  test('rejects PAX size overrides before hydration side effects', async () => {
+    const embeddedHeader = makeTarArchive([
+      { name: 'logs/events.jsonl', content: '' },
+    ]).subarray(0, 512);
+    const archive = makeTarArchive([
+      {
+        name: 'local-pax',
+        type: 'x',
+        content: makePaxRecord('size', '0'),
+      },
+      { name: 'safe.txt', content: embeddedHeader },
+    ]);
+    const writeFile = vi.fn();
+    const runCommand = vi.fn(async (command: string) => ({
+      status: 0,
+      stdout: command.includes('resolve-workspace-path.sh')
+        ? '/custom/workspace\n'
+        : '',
+      stderr: '',
+    }));
+
+    await expect(
+      hydrateRemoteWorkspaceTar({
+        providerName: 'FakeProvider',
+        manifest: new Manifest({
+          root: '/custom/workspace',
+          entries: {
+            logs: { type: 'dir', ephemeral: true },
+          },
+        }),
+        data: archive,
+        io: {
+          mkdir: vi.fn(),
+          readFile: vi.fn(),
+          writeFile,
+          runCommand,
+        },
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'PAX size override not allowed',
+      },
+    });
+
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  test('rejects GNU sparse PAX destinations before hydration side effects', async () => {
+    const archive = makeTarArchive([
+      {
+        name: 'local-pax',
+        type: 'x',
+        content: makePaxRecord('GNU.sparse.name', 'logs/events.jsonl'),
+      },
+      { name: 'safe.txt', content: 'unsafe destination' },
+    ]);
+    const writeFile = vi.fn();
+    const runCommand = vi.fn();
+
+    await expect(
+      hydrateRemoteWorkspaceTar({
+        providerName: 'FakeProvider',
+        manifest: new Manifest({
+          root: '/custom/workspace',
+          entries: {
+            logs: { type: 'dir', ephemeral: true },
+          },
+        }),
+        data: archive,
+        io: {
+          mkdir: vi.fn(),
+          readFile: vi.fn(),
+          writeFile,
+          runCommand,
+        },
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'PAX GNU.sparse.name override not allowed',
+      },
+    });
+
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  test('rejects populated tar archives when the workspace root is ephemeral', async () => {
+    const archive = makeTarArchive([
+      { name: 'src/index.ts', content: 'export {};' },
+    ]);
+    const writeFile = vi.fn();
+    const runCommand = vi.fn(async (command: string) => ({
+      status: 0,
+      stdout: command.includes('resolve-workspace-path.sh')
+        ? '/custom/workspace\n'
+        : '',
+      stderr: '',
+    }));
+
+    await expect(
+      hydrateRemoteWorkspaceTar({
+        providerName: 'FakeProvider',
+        manifest: new Manifest({
+          root: '/custom/workspace',
+          entries: {
+            '': { type: 'dir', ephemeral: true },
+          },
+        }),
+        data: archive,
+        io: {
+          mkdir: vi.fn(),
+          readFile: vi.fn(),
+          writeFile,
+          runCommand,
+        },
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'archive member overlaps protected path: ',
+      },
+    });
+
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  test('round-trips an ephemeral workspace root as an empty tar archive', async () => {
+    const manifest = new Manifest({
+      root: '/custom/workspace',
+      entries: {
+        '': { type: 'dir', ephemeral: true },
+      },
+    });
+    const persistedContent = makeTarArchive([
+      { name: 'secret.txt', content: 'must not persist' },
+    ]);
+    const persistRunCommand = vi.fn(async (command: string) => ({
+      status: 0,
+      stdout: command.includes('resolve-workspace-path.sh')
+        ? '/custom/workspace\n'
+        : '',
+      stderr: '',
+    }));
+    const persistReadFile = vi.fn(async () => persistedContent);
+
+    const archive = await persistRemoteWorkspaceTar({
+      providerName: 'FakeProvider',
+      manifest,
+      io: {
+        mkdir: vi.fn(),
+        readFile: persistReadFile,
+        writeFile: vi.fn(),
+        runCommand: persistRunCommand,
+      },
+    });
+
+    expect(archive).toEqual(makeTarArchive([]));
+    expect(persistReadFile).not.toHaveBeenCalled();
+    expect(persistRunCommand).not.toHaveBeenCalled();
+
+    const hydrateWriteFile = vi.fn();
+    const hydrateRunCommand = vi.fn(async (command: string) => ({
+      status: 0,
+      stdout: command.includes('resolve-workspace-path.sh')
+        ? '/custom/workspace\n'
+        : '',
+      stderr: '',
+    }));
+
+    await hydrateRemoteWorkspaceTar({
+      providerName: 'FakeProvider',
+      manifest,
+      data: archive,
+      io: {
+        mkdir: vi.fn(),
+        readFile: vi.fn(),
+        writeFile: hydrateWriteFile,
+        runCommand: hydrateRunCommand,
+      },
+    });
+
+    expect(hydrateWriteFile).toHaveBeenCalledWith(expect.any(String), archive);
+    expect(hydrateRunCommand).toHaveBeenCalled();
   });
 
   test('clears remote workspace root before hydrating tar archives', async () => {
