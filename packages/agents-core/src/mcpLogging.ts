@@ -119,14 +119,18 @@ export function getMcpServerExternalName(name: string): string {
     name.startsWith(candidate),
   );
   const candidate = prefix ? name.slice(prefix.length) : name;
-  const url = parseHttpUrl(candidate);
-  if (url) {
+  const redactionInfo = getEndpointRedactionInfo(candidate);
+  if (!redactionInfo) {
+    return name;
+  }
+  if (redactionInfo.kind === 'sensitive') {
+    const url = redactionInfo.url;
     return `${prefix ?? ''}${url.protocol}//${url.host}${url.pathname}`;
   }
   if (prefix) {
     return `${prefix}${INVALID_URL_DERIVED_NAME}`;
   }
-  if (/^https?:\/\//i.test(candidate)) {
+  if (/^https?:\/\//i.test(candidate.trimStart())) {
     return INVALID_URL_DERIVED_NAME;
   }
   return name;

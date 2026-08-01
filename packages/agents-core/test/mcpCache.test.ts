@@ -475,6 +475,30 @@ describe('MCP tools uniqueness', () => {
     expect(server.name).toBe(rawServerName);
   });
 
+  it('preserves credential-free URL spelling in prefixed tool names', async () => {
+    const server = new StubServer(
+      'streamable-http: https://EXAMPLE.test:443/mcp',
+      [
+        {
+          name: 'search',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ],
+    );
+    server.cacheToolsList = false;
+
+    const tools = await getAllMcpTools({
+      mcpServers: [server],
+      includeServerInToolNames: true,
+    });
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0].name).toBe(
+      'mcp_streamable_http__https___EXAMPLE_test_443_mcp__search',
+    );
+  });
+
   it('rejects URL-derived server names that collide after redaction', async () => {
     const endpointA = new URL(
       'https://example.test/mcp?token=QUERY_A#FRAGMENT_A',

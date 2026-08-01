@@ -27,12 +27,29 @@ describe('getMcpServerExternalName', () => {
     );
   });
 
+  it('preserves the exact spelling of credential-free HTTP URLs', () => {
+    const prefixedName = 'streamable-http: https://EXAMPLE.test:443/mcp';
+    const directName = 'https://EXAMPLE.test:443/mcp';
+
+    expect(getMcpServerExternalName(prefixedName)).toBe(prefixedName);
+    expect(getMcpServerExternalName(directName)).toBe(directName);
+  });
+
   it('fails closed for invalid URL-derived server names', () => {
     expect(getMcpServerExternalName('sse: not an absolute URL')).toBe(
       'sse: <redacted endpoint>',
     );
     const invalidCredentialedUrl = ['https://', 'user:password', '@'].join('');
     expect(getMcpServerExternalName(invalidCredentialedUrl)).toBe(
+      '<redacted endpoint>',
+    );
+    const whitespacePrefixedInvalidUrl = [
+      ' ',
+      'https://',
+      'user:password',
+      '@',
+    ].join('');
+    expect(getMcpServerExternalName(whitespacePrefixedInvalidUrl)).toBe(
       '<redacted endpoint>',
     );
   });
