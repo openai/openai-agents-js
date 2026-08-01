@@ -2189,6 +2189,50 @@ describe('itemsToLanguageV2Messages', () => {
     });
   });
 
+  test.each([
+    {
+      label: 'v3',
+      model: stubModel({}, { specificationVersion: 'v3' }),
+    },
+    {
+      label: 'v4',
+      model: stubModel(
+        {},
+        { provider: 'openai.responses', specificationVersion: 'v4' },
+      ),
+    },
+  ])(
+    'keeps non-public $label structured tool output input_file URLs as text',
+    ({ model }) => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'function_call',
+          callId: 'tool-1',
+          name: 'describe_file',
+          arguments: '{}',
+        } as any,
+        {
+          type: 'function_call_result',
+          callId: 'tool-1',
+          name: 'describe_file',
+          output: [
+            { type: 'input_file', file: 'file:///etc/passwd' },
+            { type: 'input_file', file: { url: 'javascript:alert(1)' } },
+            { type: 'input_file', file: 'data:text/plain,hi' },
+          ],
+        } as any,
+      ];
+
+      const messages = itemsToLanguageV2Messages(model, items);
+      const output = (messages[1] as any).content[0].output;
+
+      expect(output).toEqual({
+        type: 'text',
+        value: 'file:///etc/passwdjavascript:alert(1)data:text/plain,hi',
+      });
+    },
+  );
+
   test('handles undefined providerData without throwing', () => {
     const items: protocol.ModelItem[] = [
       {

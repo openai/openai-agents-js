@@ -1524,7 +1524,7 @@ function convertStructuredOutputsToAiSdkOutput(
         }
 
         try {
-          const url = new URL(fileValue);
+          const url = parsePublicUrlFileInput(fileValue);
           if (isV4) {
             contentParts.push({
               type: 'file',
@@ -1548,7 +1548,7 @@ function convertStructuredOutputsToAiSdkOutput(
         const fileUrl = getStringProviderField(fileObject, 'url');
         if (fileUrl) {
           try {
-            const url = new URL(fileUrl);
+            const url = parsePublicUrlFileInput(fileUrl);
             if (isV4) {
               contentParts.push({
                 type: 'file',
