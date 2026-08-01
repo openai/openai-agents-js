@@ -1,6 +1,6 @@
 import { getLogger, logToolActionDebug, logToolActionError } from './logger';
 import type { MCPServer } from './mcp';
-import { getMcpServerDiagnosticName } from './mcpLogging';
+import { getMcpServerExternalName } from './mcpLogging';
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 10_000;
@@ -11,7 +11,7 @@ function getMcpServerLogLabel(server: MCPServer): string {
   if (logger.dontLogToolData) {
     return 'MCP server';
   }
-  return `MCP server '${getMcpServerDiagnosticName(server.name)}'`;
+  return `MCP server '${getMcpServerExternalName(server.name)}'`;
 }
 
 type ServerAction = 'connect' | 'close';
@@ -457,7 +457,7 @@ export class MCPServers {
           throw error;
         }
         throw new Error(
-          `Failed to connect MCP server '${getMcpServerDiagnosticName(firstFailure.name)}'.`,
+          `Failed to connect MCP server '${getMcpServerExternalName(firstFailure.name)}'.`,
         );
       }
     }
@@ -507,7 +507,7 @@ function createTimeoutError(
     return new Error(`MCP server ${action} timed out.`);
   }
   const error = new Error(
-    `MCP server ${action} timed out after ${timeoutMs}ms for '${getMcpServerDiagnosticName(server.name)}'.`,
+    `MCP server ${action} timed out after ${timeoutMs}ms for '${getMcpServerExternalName(server.name)}'.`,
   );
   error.name = 'TimeoutError';
   return error;
@@ -515,7 +515,7 @@ function createTimeoutError(
 
 function createClosedError(server: MCPServer): Error {
   const error = new Error(
-    `MCP server '${getMcpServerDiagnosticName(server.name)}' is closed.`,
+    `MCP server '${getMcpServerExternalName(server.name)}' is closed.`,
   );
   error.name = 'ClosedError';
   return error;
@@ -523,7 +523,7 @@ function createClosedError(server: MCPServer): Error {
 
 function createClosingError(server: MCPServer): Error {
   const error = new Error(
-    `MCP server '${getMcpServerDiagnosticName(server.name)}' is closing.`,
+    `MCP server '${getMcpServerExternalName(server.name)}' is closing.`,
   );
   error.name = 'ClosingError';
   return error;

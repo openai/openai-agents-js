@@ -430,6 +430,115 @@ describe('MCP tools uniqueness', () => {
     });
   });
 
+  it('redacts URL credentials from prefixed tool names while dispatching the original tool name', async () => {
+    const endpoint = new URL(
+      'https://example.test:8443/mcp?token=URL_QUERY#URL_FRAGMENT',
+    );
+    endpoint.username = 'URL_USER';
+    endpoint.password = 'URL_PASSWORD';
+    const rawServerName = `streamable-http: ${endpoint.toString()}`;
+    const server = new StubServer(rawServerName, [
+      {
+        name: 'search',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: { query: { type: 'string' } },
+        },
+      },
+    ]);
+    server.cacheToolsList = false;
+    const callTool = vi.fn(async () => [{ type: 'text', text: 'ok' }]);
+    server.callTool = callTool;
+
+    const tools = (await getAllMcpTools({
+      mcpServers: [server],
+      includeServerInToolNames: true,
+    })) as FunctionTool[];
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0].name).toContain('example_test_8443_mcp');
+    for (const secret of [
+      'URL_USER',
+      'URL_PASSWORD',
+      'URL_QUERY',
+      'URL_FRAGMENT',
+    ]) {
+      expect(tools[0].name).not.toContain(secret);
+    }
+
+    await tools[0].invoke(
+      new RunContext({}),
+      JSON.stringify({ query: 'agents' }),
+    );
+    expect(callTool).toHaveBeenCalledWith('search', { query: 'agents' });
+    expect(server.name).toBe(rawServerName);
+  });
+
+  it('allocates sanitized URL-derived tool name collisions deterministically', async () => {
+    async function getNames(): Promise<string[]> {
+      const endpointA = new URL(
+        'https://example.test/mcp?token=QUERY_A#FRAGMENT_A',
+      );
+      endpointA.username = 'USER_A';
+      endpointA.password = 'PASSWORD_A';
+      const endpointB = new URL(
+        'https://example.test/mcp?token=QUERY_B#FRAGMENT_B',
+      );
+      endpointB.username = 'USER_B';
+      endpointB.password = 'PASSWORD_B';
+      const serverA = new StubServer(
+        `streamable-http: ${endpointA.toString()}`,
+        [
+          {
+            name: 'search',
+            description: '',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ],
+      );
+      const serverB = new StubServer(
+        `streamable-http: ${endpointB.toString()}`,
+        [
+          {
+            name: 'search',
+            description: '',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ],
+      );
+      serverA.cacheToolsList = false;
+      serverB.cacheToolsList = false;
+
+      const tools = await getAllMcpTools({
+        mcpServers: [serverA, serverB],
+        includeServerInToolNames: true,
+      });
+      return tools.map((candidate) => candidate.name);
+    }
+
+    const first = await getNames();
+    const second = await getNames();
+
+    expect(first).toEqual(second);
+    expect(new Set(first).size).toBe(2);
+    expect(first.every((name) => name.startsWith('mcp_streamable_http'))).toBe(
+      true,
+    );
+    for (const secret of [
+      'USER_A',
+      'PASSWORD_A',
+      'QUERY_A',
+      'FRAGMENT_A',
+      'USER_B',
+      'PASSWORD_B',
+      'QUERY_B',
+      'FRAGMENT_B',
+    ]) {
+      expect(JSON.stringify(first)).not.toContain(secret);
+    }
+  });
+
   it('sanitizes non-ASCII MCP server and tool names before prefixing', async () => {
     await withTrace('test', async () => {
       const server = new StubServer('天気サーバー', [

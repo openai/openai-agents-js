@@ -1,4 +1,5 @@
 const URL_DERIVED_NAME_PREFIXES = ['sse: ', 'streamable-http: '] as const;
+const INVALID_URL_DERIVED_NAME = '<redacted endpoint>';
 const MAX_PROTOTYPE_DEPTH = 8;
 const DOM_EXCEPTION_PROTOTYPE =
   typeof DOMException === 'undefined' ? undefined : DOMException.prototype;
@@ -110,10 +111,10 @@ function collectCancellationName(value: object): CancellationName | undefined {
 }
 
 // Some transports use their full endpoint URL as the default server name.
-// In diagnostic mode, preserve ordinary names while removing URL credentials,
-// query parameters, and fragments. Redacted logging must use a fixed label
-// without reading the server name at all.
-export function getMcpServerDiagnosticName(name: string): string {
+// Preserve ordinary names while removing URL credentials, query parameters,
+// and fragments from external surfaces. Redacted logging must use a fixed
+// label without reading the server name at all.
+export function getMcpServerExternalName(name: string): string {
   const prefix = URL_DERIVED_NAME_PREFIXES.find((candidate) =>
     name.startsWith(candidate),
   );
@@ -123,7 +124,10 @@ export function getMcpServerDiagnosticName(name: string): string {
     return `${prefix ?? ''}${url.protocol}//${url.host}${url.pathname}`;
   }
   if (prefix) {
-    return `${prefix ?? ''}<redacted endpoint>`;
+    return `${prefix}${INVALID_URL_DERIVED_NAME}`;
+  }
+  if (/^https?:\/\//i.test(candidate)) {
+    return INVALID_URL_DERIVED_NAME;
   }
   return name;
 }

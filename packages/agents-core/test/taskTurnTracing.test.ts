@@ -13,6 +13,7 @@ import {
   Usage,
   createAgentSpan,
   createGenerationSpan,
+  getAllMcpTools,
   getGlobalTraceProvider,
   handoff,
   retryPolicies,
@@ -1253,6 +1254,85 @@ describe('runner task and turn tracing', () => {
       });
     }
   });
+
+  it.each([true, false])(
+    'redacts MCP URL credentials from spans and RunState when traceIncludeSensitiveData=%s',
+    async (traceIncludeSensitiveData) => {
+      const endpoint = new URL(
+        'https://example.test:8443/mcp?token=TRACE_QUERY#TRACE_FRAGMENT',
+      );
+      endpoint.username = 'TRACE_USER';
+      endpoint.password = 'TRACE_PASSWORD';
+      const rawServerName = `streamable-http: ${endpoint.toString()}`;
+      const safeServerName = 'streamable-http: https://example.test:8443/mcp';
+      const server: MCPServer = {
+        name: rawServerName,
+        cacheToolsList: false,
+        connect: async () => {},
+        close: async () => {},
+        invalidateToolsCache: async () => {},
+        listTools: async () => [
+          {
+            name: 'search',
+            description: 'Search documentation.',
+            inputSchema: {
+              type: 'object',
+              properties: { input: { type: 'string' } },
+              required: ['input'],
+              additionalProperties: false,
+            },
+          } as MCPTool,
+        ],
+        callTool: async () => [{ type: 'text', text: 'ok' }],
+      };
+      const [preparedTool] = await getAllMcpTools({
+        mcpServers: [server],
+        includeServerInToolNames: true,
+      });
+      expect(preparedTool).toBeDefined();
+      const agent = new Agent({
+        name: 'MCP URL redaction agent',
+        model: new FakeModel([
+          agentToolCallResponse(preparedTool!.name),
+          responseWithoutUsage(),
+        ]),
+        mcpServers: [server],
+        mcpConfig: { includeServerInToolNames: true },
+      });
+
+      const result = await new Runner({ traceIncludeSensitiveData }).run(
+        agent,
+        'hello',
+      );
+
+      const mcpSpan = processor.spansEnded.find(
+        (span) => span.spanData.type === 'mcp_tools',
+      );
+      const functionSpan = processor.spansEnded.find(
+        (span) => span.spanData.type === 'function',
+      );
+      expect(mcpSpan?.spanData.server).toBe(safeServerName);
+      expect(functionSpan?.spanData).toMatchObject({
+        mcp_data: { server: safeServerName },
+      });
+      expect(server.name).toBe(rawServerName);
+
+      const serializedExternalData = JSON.stringify({
+        spans: processor.spansEnded.map((span) => span.toJSON()),
+        state: result.state.toJSON(),
+        toolName: preparedTool!.name,
+      });
+      expect(serializedExternalData).toContain('example.test:8443');
+      for (const secret of [
+        'TRACE_USER',
+        'TRACE_PASSWORD',
+        'TRACE_QUERY',
+        'TRACE_FRAGMENT',
+      ]) {
+        expect(serializedExternalData).not.toContain(secret);
+      }
+    },
+  );
 
   it('captures distinct external trace parents for concurrent runs on a shared runner', async () => {
     setTracingContextStorage(new BrowserAsyncLocalStorage());
