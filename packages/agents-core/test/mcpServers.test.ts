@@ -93,6 +93,27 @@ class FailingConnectServer extends BaseTestServer {
   }
 }
 
+class FixedErrorConnectServer extends BaseTestServer {
+  constructor(
+    name: string,
+    readonly error: Error,
+  ) {
+    super(name);
+  }
+
+  async connect(): Promise<void> {
+    await super.connect();
+    throw this.error;
+  }
+}
+
+class HangingConnectServer extends BaseTestServer {
+  async connect(): Promise<void> {
+    await super.connect();
+    await new Promise<void>(() => {});
+  }
+}
+
 class AbortConnectServer extends BaseTestServer {
   async connect(): Promise<void> {
     await super.connect();
@@ -294,6 +315,61 @@ describe('MCPServers', () => {
       `Failed to connect MCP server '${serverName}':`,
       expect.any(Error),
     );
+  });
+
+  it('preserves arbitrary errors from custom MCP servers', async () => {
+    const error = new Error('custom server password_marker detail');
+    const server = new FixedErrorConnectServer('custom-server', error);
+
+    const session = await connectMcpServers([server], {
+      connectTimeoutMs: null,
+      closeTimeoutMs: null,
+    });
+
+    expect(session.errors.get(server)).toBe(error);
+  });
+
+  it('removes credentials from URL-derived lifecycle timeout errors', async () => {
+    const endpoint = new URL('https://example.test/mcp');
+    endpoint.username = 'user_marker';
+    endpoint.password = 'password_marker';
+    endpoint.searchParams.set('token', 'query_marker');
+    endpoint.hash = 'fragment_marker';
+    const server = new HangingConnectServer(
+      `streamable-http: ${endpoint.toString()}`,
+    );
+
+    const session = await connectMcpServers([server], {
+      connectTimeoutMs: 1,
+      closeTimeoutMs: null,
+    });
+
+    const error = session.errors.get(server);
+    expect(error?.message).toContain('https://example.test/mcp');
+    expect(error?.message).not.toContain('user_marker');
+    expect(error?.message).not.toContain('password_marker');
+    expect(error?.message).not.toContain('query_marker');
+    expect(error?.message).not.toContain('fragment_marker');
+    await session.close();
+  });
+
+  it('removes credentials from malformed URL-derived lifecycle errors', async () => {
+    const server = new HangingConnectServer(
+      `streamable-http: https://${['user_marker', 'password_marker'].join(
+        ':',
+      )}@`,
+    );
+
+    const session = await connectMcpServers([server], {
+      connectTimeoutMs: 1,
+      closeTimeoutMs: null,
+    });
+
+    const error = session.errors.get(server);
+    expect(error?.message).toContain('streamable-http: <redacted endpoint>');
+    expect(error?.message).not.toContain('user_marker');
+    expect(error?.message).not.toContain('password_marker');
+    await session.close();
   });
 
   it('reconnects failed servers only by default', async () => {

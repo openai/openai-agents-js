@@ -456,7 +456,9 @@ export class MCPServers {
         if (error) {
           throw error;
         }
-        throw new Error(`Failed to connect MCP server '${firstFailure.name}'.`);
+        throw new Error(
+          `Failed to connect MCP server '${getMcpServerDiagnosticName(firstFailure.name)}'.`,
+        );
       }
     }
   }
@@ -505,20 +507,24 @@ function createTimeoutError(
     return new Error(`MCP server ${action} timed out.`);
   }
   const error = new Error(
-    `MCP server ${action} timed out after ${timeoutMs}ms for '${server.name}'.`,
+    `MCP server ${action} timed out after ${timeoutMs}ms for '${getMcpServerDiagnosticName(server.name)}'.`,
   );
   error.name = 'TimeoutError';
   return error;
 }
 
 function createClosedError(server: MCPServer): Error {
-  const error = new Error(`MCP server '${server.name}' is closed.`);
+  const error = new Error(
+    `MCP server '${getMcpServerDiagnosticName(server.name)}' is closed.`,
+  );
   error.name = 'ClosedError';
   return error;
 }
 
 function createClosingError(server: MCPServer): Error {
-  const error = new Error(`MCP server '${server.name}' is closing.`);
+  const error = new Error(
+    `MCP server '${getMcpServerDiagnosticName(server.name)}' is closing.`,
+  );
   error.name = 'ClosingError';
   return error;
 }

@@ -26,4 +26,10 @@ describe('getMcpServerDiagnosticName', () => {
       'diagnostic-server',
     );
   });
+
+  it('fails closed for invalid URL-derived server names', () => {
+    expect(getMcpServerDiagnosticName('sse: not an absolute URL')).toBe(
+      'sse: <redacted endpoint>',
+    );
+  });
 });
