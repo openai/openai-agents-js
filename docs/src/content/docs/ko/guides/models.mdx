@@ -17,12 +17,12 @@ import retryExample from '../../../../../../examples/docs/models/retry.ts?raw';
 import hostedMultiAgentExample from '../../../../../../examples/docs/models/hostedMultiAgent.ts?raw';
 import gpt56RequestControlsExample from '../../../../../../examples/docs/models/gpt56RequestControls.ts?raw';
 
-모든 에이전트는 궁극적으로 LLM을 호출합니다. SDK는 두 가지 경량 인터페이스로 모델을 추상화합니다.
+모든 에이전트는 궁극적으로 LLM을 호출합니다. SDK는 다음 두 가지 경량 인터페이스로 모델을 추상화합니다.
 
 - [`Model`](/openai-agents-js/openai/agents/interfaces/model) – 특정 API에 대해 _한 번의_ 요청을 수행하는 방법을 알고 있습니다.
 - [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – 사람이 읽을 수 있는 모델 **이름**(예: `'gpt-5.6-sol'`)을 `Model` 인스턴스로 해석합니다.
 
-일상적인 작업에서는 일반적으로 모델 **이름**만 다루며, 경우에 따라 `ModelSettings`를 사용합니다.
+일상적인 작업에서는 일반적으로 모델 **이름**만 사용하며, 경우에 따라 `ModelSettings`도 사용합니다.
 
 <Code
   lang="typescript"
@@ -34,18 +34,18 @@ import gpt56RequestControlsExample from '../../../../../../examples/docs/models/
 
 ### 기본 모델
 
-`Agent`를 초기화할 때 모델을 지정하지 않으면 기본 모델이 사용됩니다. 현재 기본값은 품질과 지연 시간의 균형을 위해 `reasoning.effort: "none"` 및 `text.verbosity: "low"`가 적용된 [`gpt-5.4-mini`](https://developers.openai.com/api/docs/models/gpt-5.4-mini)입니다.
+`Agent`를 초기화할 때 모델을 지정하지 않으면 기본 모델이 사용됩니다. 현재 기본값은 품질과 지연 시간의 균형을 위해 `reasoning.effort: "none"` 및 `text.verbosity: "low"`가 설정된 [`gpt-5.4-mini`](https://developers.openai.com/api/docs/models/gpt-5.4-mini)입니다.
 
 `gpt-5.6-sol`과 같은 다른 모델로 전환하려면 두 가지 방법으로 에이전트를 설정할 수 있습니다.
 
-먼저 사용자 지정 모델이 설정되지 않은 모든 에이전트에 특정 모델을 일관되게 사용하려면 에이전트를 실행하기 전에 `OPENAI_DEFAULT_MODEL` 환경 변수를 설정합니다.
+먼저, 사용자 지정 모델을 설정하지 않은 모든 에이전트에 특정 모델을 일관되게 사용하려면 에이전트를 실행하기 전에 `OPENAI_DEFAULT_MODEL` 환경 변수를 설정합니다.
 
 ```bash
 export OPENAI_DEFAULT_MODEL=gpt-5.6-sol
 node my-awesome-agent.js
 ```
 
-두 번째로 `Runner` 인스턴스의 기본 모델을 설정할 수 있습니다. 에이전트에 모델을 설정하지 않으면 이 `Runner`의 기본 모델이 사용됩니다.
+둘째, `Runner` 인스턴스의 기본 모델을 설정할 수 있습니다. 에이전트에 모델을 설정하지 않으면 이 `Runner`의 기본 모델이 사용됩니다.
 
 <Code
   lang="typescript"
@@ -55,7 +55,7 @@ node my-awesome-agent.js
 
 #### GPT-5.x 모델
 
-이 방식으로 [`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol)과 같은 GPT-5.x 모델을 사용하면 SDK가 기본 `modelSettings`를 적용합니다. 대부분의 사용 사례에 가장 적합한 설정이 지정됩니다. 기본 모델의 추론 노력을 조정하려면 자체 `modelSettings`를 전달합니다.
+이 방식으로 [`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol)과 같은 GPT-5.x 모델을 사용하면 SDK가 기본 `modelSettings`를 적용합니다. 대부분의 사용 사례에 가장 적합한 설정이 적용됩니다. 기본 모델의 추론 수준을 조정하려면 자체 `modelSettings`를 전달합니다.
 
 <Code
   lang="typescript"
@@ -63,23 +63,23 @@ node my-awesome-agent.js
   title="GPT-5 기본 설정 사용자 지정"
 />
 
-지연 시간이 중요하다면 기본 `gpt-5.4-mini` 설정으로 시작하거나 다른 GPT-5.x 모델에서 `reasoning.effort: "none"`을 사용한 다음, 작업에 더 신중한 추론이 필요한 경우에만 추론 노력을 높이세요.
+지연 시간이 중요하다면 기본 `gpt-5.4-mini` 구성으로 시작하거나 다른 GPT-5.x 모델에서 `reasoning.effort: "none"`을 사용한 다음, 작업에 더 신중한 추론이 필요한 경우에만 추론 수준을 높이세요.
 
 #### GPT-5 이외의 모델
 
-사용자 지정 `modelSettings` 없이 GPT-5가 아닌 모델 이름을 전달하면 SDK는 모든 모델과 호환되는 일반 `modelSettings`로 되돌아갑니다.
+사용자 지정 `modelSettings` 없이 GPT-5 이외의 모델 이름을 전달하면 SDK는 모든 모델과 호환되는 일반 `modelSettings`로 되돌아갑니다.
 
 ---
 
-## OpenAI 공급자 설정
+## OpenAI 프로바이더 설정
 
-### OpenAI 공급자
+### OpenAI 프로바이더
 
-기본 `ModelProvider`는 OpenAI API를 사용해 이름을 해석합니다. 서로 다른 두 엔드포인트를 지원합니다.
+기본 `ModelProvider`는 OpenAI API를 사용해 이름을 해석합니다. 다음과 같은 두 엔드포인트를 지원합니다.
 
 | API | 용도 | `setOpenAIAPI()` 호출 |
 | --- | --- | --- |
-| Chat Completions | 표준 채팅 및 함수 호출 | `setOpenAIAPI('chat_completions')` |
+| Chat Completions | 일반 채팅 및 함수 호출 | `setOpenAIAPI('chat_completions')` |
 | Responses | 새로운 스트리밍 우선 생성형 API(도구 호출, 유연한 출력) | `setOpenAIAPI('responses')` _(기본값)_ |
 
 #### 인증
@@ -92,82 +92,84 @@ node my-awesome-agent.js
 
 사용자 지정 네트워크 설정이 필요한 경우 `setDefaultOpenAIClient(client)`를 통해 자체 `OpenAI` 클라이언트를 연결할 수도 있습니다.
 
-#### 공급자 옵션 레퍼런스
+#### 프로바이더 옵션 레퍼런스
 
 `OpenAIProvider`를 직접 인스턴스화할 때 다음 옵션으로 클라이언트 생성, 엔드포인트 선택 및 기능 검증을 제어할 수 있습니다.
 
 | 옵션 | 목적 |
 | --- | --- |
-| `apiKey` | 공급자가 자체 OpenAI 클라이언트를 생성할 때 사용하는 API 키입니다. 기본값은 SDK 전체에 적용되는 OpenAI 키입니다. |
+| `apiKey` | 프로바이더가 자체 OpenAI 클라이언트를 생성할 때 사용하는 API 키입니다. 기본값은 SDK 전역 OpenAI 키입니다. |
 | `baseURL` | OpenAI 호환 엔드포인트의 HTTP 기본 URL입니다. `openAIClient`와 함께 사용할 수 없습니다. |
 | `websocketBaseURL` | Responses WebSocket 전송의 WebSocket 기본 URL입니다. `openAIClient`와 함께 사용할 수 없습니다. |
-| `openAIClient` | 미리 설정된 OpenAI 클라이언트 인스턴스입니다. `apiKey`, `baseURL` 또는 `websocketBaseURL`과 함께 사용할 수 없습니다. |
-| `organization` / `project` | 공급자가 자체 OpenAI 클라이언트를 생성할 때 전달되는 조직 및 프로젝트 값입니다. |
-| `useResponses` | 이 공급자가 해석하는 문자열 모델 이름에 Responses API(`true`) 또는 Chat Completions API(`false`)를 선택합니다. 기본값은 프로세스 전체의 `setOpenAIAPI(...)` 설정입니다. |
-| `useResponsesWebSocket` | 이 공급자가 해석하는 Responses 모델에 WebSocket 전송을 사용합니다. 기본값은 프로세스 전체의 `setOpenAIResponsesTransport(...)` 설정입니다. |
-| `cacheResponsesWebSocketModels` | 연결 재사용을 위해 WebSocket 기반 Responses 모델 래퍼를 재사용합니다. 기본값은 `true`이며, 종료 시 `provider.close()`를 호출하여 캐시된 래퍼를 닫아야 합니다. |
-| `responsesWebSocketOptions` | WebSocket 기반 Responses 모델 래퍼에 전달되는 고급 옵션입니다. |
-| `strictFeatureValidation` | Chat Completions 모델에서 `previousResponseId`, `conversationId`, `prompt`, 어시스턴트 메시지 단계와 같은 Responses 전용 기능에 대해 `UserError`를 발생시킵니다. 기본적으로 이러한 기능에는 경고가 표시되고 무시됩니다. |
+| `openAIClient` | 미리 구성된 OpenAI 클라이언트 인스턴스입니다. `apiKey`, `baseURL` 또는 `websocketBaseURL`과 함께 사용할 수 없습니다. |
+| `organization` / `project` | 프로바이더가 자체 OpenAI 클라이언트를 생성할 때 전달되는 조직 및 프로젝트 값입니다. |
+| `useResponses` | 이 프로바이더가 해석하는 문자열 모델 이름에 Responses API(`true`) 또는 Chat Completions API(`false`)를 선택합니다. 기본값은 프로세스 전역 `setOpenAIAPI(...)` 설정입니다. |
+| `useResponsesWebSocket` | 이 프로바이더가 해석하는 Responses 모델에 WebSocket 전송을 사용합니다. 기본값은 프로세스 전역 `setOpenAIResponsesTransport(...)` 설정입니다. |
+| `cacheResponsesWebSocketModels` | 연결을 재사용할 수 있도록 websocket 기반 Responses 모델 래퍼를 재사용합니다. 기본값은 `true`입니다. 종료할 때 `provider.close()`를 호출해 캐시된 래퍼를 닫으세요. |
+| `responsesWebSocketOptions` | `pingIntervalMs` 및 `pingTimeoutMs`로 클라이언트 연결 유지를 구성합니다. |
+| `strictFeatureValidation` | Chat Completions 모델에서 `previousResponseId`, `conversationId`, `prompt`, 어시스턴트 메시지 단계와 같은 Responses 전용 기능에 대해 `UserError`를 발생시킵니다. 기본적으로 이러한 기능은 경고 후 무시됩니다. |
 
-Responses 어시스턴트 메시지에 `commentary` 또는 `final_answer`의 `phase`가 포함된 경우 SDK는 이를 기록 항목의 최상위 필드로 보존합니다. 해당 단계는 `OpenAIConversationsSession`을 통한 세션 재생과 직렬화된 `RunState`에서도 유지됩니다. Chat Completions에는 이에 해당하는 필드가 없으므로 기본적으로 경고를 표시하고 단계를 삭제합니다. 대신 해당 변환을 거부하려면 `strictFeatureValidation: true`를 설정하세요.
+Responses 어시스턴트 메시지에 `commentary` 또는 `final_answer`라는 `phase`가 포함되면 SDK는 이를 기록 항목의 최상위 필드로 보존합니다. 해당 단계는 `OpenAIConversationsSession` 및 직렬화된 `RunState`를 통한 세션 재생에서도 유지됩니다. Chat Completions에는 동등한 필드가 없으므로 기본적으로 경고 후 해당 단계를 삭제합니다. 대신 변환을 거부하려면 `strictFeatureValidation: true`를 설정하세요.
 
 #### Responses WebSocket 전송
 
-Responses API와 함께 OpenAI 공급자를 사용할 때 기본 HTTP 전송 대신 WebSocket 전송을 통해 요청을 보낼 수 있습니다.
+OpenAI 프로바이더에서 Responses API를 사용할 때 기본 HTTP 전송 대신 WebSocket 전송으로 요청을 보낼 수 있습니다.
 
-`setOpenAIResponsesTransport('websocket')`으로 전역에서 활성화하거나 `new OpenAIProvider({ useResponses: true, useResponsesWebSocket: true })`로 공급자별로 활성화합니다.
+전역으로 활성화하려면 `setOpenAIResponsesTransport('websocket')`을 사용하고, 프로바이더별로 활성화하려면 `new OpenAIProvider({ useResponses: true, useResponsesWebSocket: true })`를 사용합니다.
 
-WebSocket 전송을 사용하기 위해 `withResponsesWebSocketSession(...)`이나 사용자 지정 `OpenAIProvider`가 반드시 필요한 것은 아닙니다. 각 실행 또는 요청마다 다시 연결해도 괜찮다면 `setOpenAIResponsesTransport('websocket')`을 활성화한 후에도 기존 `run()` / `Runner.run()` 사용 방식이 계속 작동합니다.
+WebSocket 전송만 사용하려는 경우에는 `withResponsesWebSocketSession(...)`이나 사용자 지정 `OpenAIProvider`가 필요하지 않습니다. 각 실행/요청마다 다시 연결해도 괜찮다면 `setOpenAIResponsesTransport('websocket')`을 활성화한 후에도 기존 `run()` / `Runner.run()` 사용 방식이 계속 작동합니다.
 
-전송 방식은 모델 해석 방식에 따라 선택됩니다.
+전송 방식은 모델 해석에 따라 선택됩니다.
 
-- `setOpenAIResponsesTransport('websocket')`은 Responses API를 사용하는 동안 이후 OpenAI 공급자를 통해 해석되는 문자열 모델 이름에만 영향을 줍니다.
-- 구체적인 `Model` 인스턴스를 `Agent` 또는 `Runner`에 전달하면 해당 인스턴스가 그대로 사용됩니다. `OpenAIResponsesWSModel`은 WebSocket을, `OpenAIResponsesModel`은 HTTP를, `OpenAIChatCompletionsModel`은 Chat Completions를 계속 사용합니다.
-- 자체 `modelProvider`를 제공하면 해당 공급자가 모델 해석을 제어합니다. 전역 설정자에 의존하지 말고 해당 공급자에서 WebSocket을 활성화하세요.
-- 프록시, 게이트웨이 또는 기타 OpenAI 호환 엔드포인트를 통해 라우팅하는 경우 대상이 WebSocket `/responses` 엔드포인트를 지원해야 합니다. `websocketBaseURL`을 명시적으로 설정해야 할 수도 있습니다.
+- `setOpenAIResponsesTransport('websocket')`은 Responses API를 사용하면서 이후 OpenAI 프로바이더를 통해 해석되는 문자열 모델 이름에만 영향을 줍니다.
+- 구체적인 `Model` 인스턴스를 `Agent` 또는 `Runner`에 전달하면 해당 인스턴스가 그대로 사용됩니다. `OpenAIResponsesWSModel`은 WebSocket을 계속 사용하고, `OpenAIResponsesModel`은 HTTP를 계속 사용하며, `OpenAIChatCompletionsModel`은 Chat Completions를 계속 사용합니다.
+- 자체 `modelProvider`를 제공하면 해당 프로바이더가 모델 해석을 제어합니다. 전역 설정 함수에 의존하지 말고 해당 프로바이더에서 WebSocket을 활성화하세요.
+- 프록시, 게이트웨이 또는 기타 OpenAI 호환 엔드포인트를 통해 라우팅한다면 대상이 WebSocket `/responses` 엔드포인트를 지원해야 합니다. `websocketBaseURL`을 명시적으로 설정해야 할 수도 있습니다.
 
-연결 재사용을 최적화하고 WebSocket 공급자의 수명 주기를 더 명시적으로 관리하려는 경우에만 `withResponsesWebSocketSession(...)` 또는 사용자 지정 `OpenAIProvider` / `Runner`를 사용하세요.
+연결 재사용을 최적화하고 websocket 프로바이더의 수명 주기를 더 명시적으로 관리하려는 경우에만 `withResponsesWebSocketSession(...)` 또는 사용자 지정 `OpenAIProvider` / `Runner`를 사용하세요.
 
-- `withResponsesWebSocketSession(...)`: 콜백 후 자동 정리를 제공하는 편리한 범위 지정 수명 주기
-- 사용자 지정 `OpenAIProvider` / `Runner`: 자체 애플리케이션 아키텍처에서 종료 정리를 포함한 명시적인 수명 주기 제어
+- `withResponsesWebSocketSession(...)`: 콜백 이후 자동 정리를 제공하는 편리한 범위 지정 수명 주기
+- 사용자 지정 `OpenAIProvider` / `Runner`: 자체 애플리케이션 아키텍처에서 종료 정리를 포함한 명시적 수명 주기 제어
 
-이름과 달리 `withResponsesWebSocketSession(...)`은 전송 수명 주기 헬퍼이며 [세션 가이드](/openai-agents-js/ko/guides/sessions)에 설명된 메모리 `Session` 인터페이스와는 관련이 없습니다.
+이름과 달리 `withResponsesWebSocketSession(...)`은 전송 수명 주기 헬퍼이며 [세션](/openai-agents-js/ko/guides/sessions)에 설명된 메모리 `Session` 인터페이스와는 관련이 없습니다.
 
-WebSocket 프록시 또는 게이트웨이를 사용하는 경우 `OpenAIProvider`에서 `websocketBaseURL`을 설정하거나 `OPENAI_WEBSOCKET_BASE_URL`을 설정하세요.
+websocket 프록시 또는 게이트웨이를 사용하는 경우 `OpenAIProvider`에서 `websocketBaseURL`을 구성하거나 `OPENAI_WEBSOCKET_BASE_URL`을 설정하세요.
 
-`OpenAIProvider`를 직접 인스턴스화하는 경우 WebSocket 기반 Responses 모델 래퍼가 연결 재사용을 위해 기본적으로 캐시된다는 점에 유의하세요. 종료 시 `await provider.close()`를 호출하여 캐시된 연결을 해제하세요. `withResponsesWebSocketSession(...)`은 주로 이 수명 주기를 대신 관리하기 위해 제공됩니다. WebSocket이 활성화된 공급자와 러너를 생성하여 콜백에 전달하고, 이후 항상 공급자를 닫습니다. 임시 공급자에는 `providerOptions`를 사용하고 콜백 범위의 러너 기본값에는 `runnerConfig`를 사용하세요.
+`responsesWebSocketOptions`에서 `pingIntervalMs`는 클라이언트 ping 사이의 간격을 설정합니다. ping을 비활성화하려면 생략하거나 `null`로 설정하세요. `pingTimeoutMs`는 소켓을 종료하거나 닫기 전에 pong을 기다릴 시간을 설정합니다. ping은 활성화된 상태로 하트비트 시간 초과만 비활성화하려면 생략하거나 `null`로 설정하세요. 연결 유지에는 ping 및 pong 지원을 노출하는 WebSocket 구현이 필요합니다.
 
-Responses WebSocket 전송을 사용하는 전체 스트리밍 + HITL 예제는 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts)를 참조하세요.
+`OpenAIProvider`를 직접 인스턴스화하면 연결 재사용을 위해 websocket 기반 Responses 모델 래퍼가 기본적으로 캐시된다는 점에 유의하세요. 종료할 때 `await provider.close()`를 호출해 캐시된 연결을 해제하세요. `withResponsesWebSocketSession(...)`은 주로 이 수명 주기를 대신 관리하기 위해 존재합니다. websocket이 활성화된 프로바이더와 runner를 생성하고 콜백에 전달한 후 항상 프로바이더를 닫습니다. 임시 프로바이더에는 `providerOptions`를 사용하고, 콜백 범위의 runner 기본값에는 `runnerConfig`를 사용하세요.
+
+Responses WebSocket 전송을 사용하는 전체 스트리밍 + HITL 예제는 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts)를 참고하세요.
 
 #### Responses 전용 지연 도구 로딩
 
-`toolSearchTool()`, `toolNamespace()` 및 `deferLoading: true`를 설정한 함수 도구나 호스티드 MCP 도구에는 OpenAI Responses API가 필요합니다. Chat Completions 공급자는 네임스페이스가 지정되거나 로딩이 지연된 함수 도구를 거부하며, AI SDK 어댑터는 Responses의 지연 도구 로딩 흐름을 지원하지 않습니다. 도구 검색이 필요한 경우 Responses 모델을 직접 사용하세요.
+`toolSearchTool()`, `toolNamespace()`, 그리고 `deferLoading: true`를 설정하는 함수 도구 또는 호스티드 MCP 도구에는 OpenAI Responses API가 필요합니다. Chat Completions 프로바이더는 네임스페이스가 지정되었거나 지연된 함수 도구를 거부하며, AI SDK 어댑터는 지연된 Responses 도구 로딩 흐름을 지원하지 않습니다. 도구 검색이 필요한 경우 Responses 모델을 직접 사용하세요.
 
-도구 검색은 GPT-5.6 Sol 및 Responses API에서 이를 지원하는 이후 모델 릴리스에서만 지원됩니다.
+도구 검색은 Responses API에서 이를 지원하는 GPT-5.6 Sol 및 이후 모델 릴리스에서만 지원됩니다.
 
-실행에 지연 도구가 포함된 경우 동일한 에이전트에 `toolSearchTool()`을 추가하고 `modelSettings.toolChoice`를 `'auto'`로 유지하세요. 모델이 해당 정의를 언제 로드할지 결정해야 하므로 SDK에서는 내장 `tool_search` 도구 또는 지연 함수 도구를 이름으로 강제할 수 없습니다. 전체 설정은 [도구](/openai-agents-js/ko/guides/tools#deferred-tool-loading-with-tool-search)와 공식 [OpenAI 도구 검색 가이드](https://developers.openai.com/api/docs/guides/tools-tool-search)를 참조하세요.
+실행에 지연된 도구가 포함되면 동일한 에이전트에 `toolSearchTool()`을 추가하고 `modelSettings.toolChoice`를 `'auto'`로 유지하세요. 모델이 이러한 정의를 언제 로드할지 결정해야 하므로 SDK에서는 기본 제공 `tool_search` 도구 또는 지연된 함수 도구를 이름으로 강제 지정할 수 없습니다. 전체 설정은 [도구](/openai-agents-js/ko/guides/tools#deferred-tool-loading-with-tool-search)와 공식 [OpenAI 도구 검색 가이드](https://developers.openai.com/api/docs/guides/tools-tool-search)를 참고하세요.
 
 ### 호스티드 멀티 에이전트(실험적)
 
 <Aside type="caution" title="실험적 베타">
   호스티드 멀티 에이전트는 베타 Responses API 항목 스키마를 사용하며 실험적
-  `@openai/agents-openai/experimental/hosted-multi-agent` 내보내기를 통해서만
+  `@openai/agents-openai/experimental/hosted-multi-agent` export를 통해서만
   사용할 수 있습니다. API 및 SDK 인터페이스는 변경될 수 있습니다.
 </Aside>
 
-예제에서 두 패키지를 직접 가져오므로 공급자 패키지와 OpenAI 클라이언트를 직접 종속성으로 설치하세요.
+예제에서 두 패키지를 모두 직접 가져오므로 프로바이더 패키지와 OpenAI 클라이언트를 직접 종속성으로 설치하세요.
 
 ```bash
 npm install @openai/agents-openai openai
 ```
 
-호스티드 멀티 에이전트를 사용하면 GPT-5.6 모델이 Responses API를 통해 하위 에이전트 트리를 생성하고 조율할 수 있습니다. 이는 [SDK 핸드오프](/openai-agents-js/ko/guides/handoffs/) 및 agents-as-tools와 다릅니다. 애플리케이션은 호스티드 하위 에이전트의 로컬 `Agent` 객체를 생성하거나 해당 작업을 예약하지 않습니다. 호스티드 루트 에이전트가 작업을 위임하고, 서비스가 하위 에이전트를 조율하며, `/root`가 최종 답변을 종합합니다. 베타 API 동작 및 지원 모델은 공식 [멀티 에이전트 가이드](https://developers.openai.com/api/docs/guides/tools-multi-agent)를 참조하세요.
+호스티드 멀티 에이전트를 사용하면 GPT-5.6 모델이 Responses API를 통해 하위 에이전트 트리를 생성하고 조정할 수 있습니다. 이는 [핸드오프](/openai-agents-js/ko/guides/handoffs/) 및 agents-as-tools와 다릅니다. 애플리케이션은 호스티드 하위 에이전트를 위한 로컬 `Agent` 객체를 생성하거나 작업을 예약하지 않습니다. 호스티드 루트 에이전트가 작업을 위임하고 서비스가 하위 에이전트를 조정하며 `/root`가 최종 답변을 종합합니다. 베타 API 동작 및 지원 모델은 공식 [멀티 에이전트 가이드](https://developers.openai.com/api/docs/guides/tools-multi-agent)를 참고하세요.
 
 #### 실험적 모델 설정
 
-`OpenAIHostedMultiAgentModel`을 명시적으로 생성하여 SDK `Agent`에 전달하세요. 모델 생성 자체가 옵트인이며 별도의 활성화 플래그는 없습니다.
+`OpenAIHostedMultiAgentModel`을 명시적으로 생성하여 SDK `Agent`에 전달하세요. 모델 생성 자체가 옵트인 방식이며 별도의 활성화 플래그는 없습니다.
 
-실험적 모델은 영구 Responses WebSocket을 사용합니다. 로컬 함수 출력은 `response.inject`를 통해 활성 호스티드 응답에 주입되므로 전체 실행에서 동일한 모델 인스턴스를 유지하고 더 이상 필요하지 않을 때 닫으세요.
+실험적 모델은 영구적인 Responses WebSocket을 사용합니다. 로컬 함수 출력은 `response.inject`를 통해 활성 호스티드 응답에 삽입되므로 전체 실행에서 동일한 모델 인스턴스를 유지하고 더 이상 필요하지 않을 때 닫으세요.
 
 <Code
   lang="typescript"
@@ -175,35 +177,35 @@ npm install @openai/agents-openai openai
   title="호스티드 멀티 에이전트 워크플로 실행"
 />
 
-호스티드 협업 레코드와 하위 에이전트 메시지를 포함한 스트리밍 관측 가능성은 [전체 예제](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/hosted-multi-agent-beta.ts)를 참조하세요.
+호스티드 협업 레코드와 하위 에이전트 메시지를 포함한 스트리밍 관측 가능성은 [전체 예제](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/hosted-multi-agent-beta.ts)를 참고하세요.
 
-서비스 기본값인 현재 3개를 유지하려면 `maxConcurrentSubagents`를 생략하세요. 값을 제공하는 경우 양의 정수여야 합니다.
+서비스 기본값인 현재 세 개를 유지하려면 `maxConcurrentSubagents`를 생략하세요. 값을 제공한다면 양의 정수여야 합니다.
 
 #### 도구 실행 및 귀속
 
-모든 호스티드 에이전트는 요청의 모델을 사용하며 동일한 로컬 도구 정의를 확인합니다. 호스티드 에이전트가 일반 `function_call`을 생성하면 기존 Agents SDK 러너가 애플리케이션 도구를 실행합니다. Responses API의 호출 ID가 라우팅 토큰 역할을 합니다. SDK는 이를 요청한 호출자의 활성 호스티드 응답에 일치하는 `function_call_output`을 주입합니다.
+모든 호스티드 에이전트는 요청의 모델을 사용하고 동일한 로컬 도구 정의를 확인합니다. 호스티드 에이전트가 일반 `function_call`을 내보내면 기존 Agents SDK runner가 애플리케이션 도구를 실행합니다. Responses API의 호출 ID는 라우팅 토큰입니다. SDK는 이를 요청한 호출자의 활성 호스티드 응답에 일치하는 `function_call_output`을 삽입합니다.
 
-`getHostedAgentMetadata(details)`는 도구 콜백의 세 번째 인수에서 호스티드 에이전트 이름을 읽습니다. 이 메타데이터는 로그와 애플리케이션 권한 부여에 유용하지만 라우팅을 제어하지는 않습니다. 함수 결과를 에이전트 이름으로 디스패치하지 말고 호출 ID를 보존하여 사용하세요.
+`getHostedAgentMetadata(details)`는 도구 콜백의 세 번째 인수에서 호스티드 에이전트 이름을 읽습니다. 이 메타데이터는 로그와 애플리케이션 권한 부여에 유용하지만 라우팅을 제어하지는 않습니다. 에이전트 이름으로 함수 결과를 디스패치하지 말고 호출 ID를 보존하여 사용하세요.
 
-도구 인수는 WebSocket을 통해 서비스에서 전달되며, 도구 출력은 활성 호스티드 응답에 다시 주입됩니다. 민감한 데이터 정책, 도구 권한 부여 및 승인 검사는 애플리케이션에서 유지하세요. 도구에 부작용이 있다면 인터럽션(중단 처리)된 연속 실행에서 효과가 반복되지 않도록 호출 ID를 기준으로 멱등성을 갖게 하세요.
+도구 인수는 WebSocket을 통해 서비스에서 전달되고 도구 출력은 활성 호스티드 응답에 다시 삽입됩니다. 민감한 데이터 정책, 도구 권한 부여 및 승인 검사를 애플리케이션에 유지하세요. 도구에 부작용이 있다면 인터럽션(중단 처리)된 연속 실행에서 효과가 반복되지 않도록 호출 ID를 기준으로 멱등성을 보장하세요.
 
 #### 출력 및 스트리밍 동작
 
-단계가 `final_answer`인 `/root` 메시지만 일반 어시스턴트 출력이 되어 `finalOutput`에 반영됩니다. 러너가 실행할 수 있도록 함수 호출은 일반 SDK 도구 호출로 유지되며, 추론 및 호스티드 도구 호출과 같은 안정적인 Responses 항목은 기존 SDK 표현을 유지합니다. 하위 에이전트 메시지, 루트 해설 및 호스티드 협업 레코드는 활성 WebSocket 응답에 남으며 SDK 기록에는 추가되지 않습니다.
+`phase`가 `final_answer`인 `/root` 메시지만 일반 어시스턴트 출력이 되어 `finalOutput`에 포함됩니다. 함수 호출은 runner가 실행할 수 있도록 일반 SDK 도구 호출로 유지되며, 추론 및 호스티드 툴 호출과 같은 안정적인 Responses 항목은 기존 SDK 표현을 유지합니다. 하위 에이전트 메시지, 루트 해설 및 호스티드 협업 레코드는 활성 WebSocket 응답에 남으며 SDK 기록에는 추가되지 않습니다.
 
-호스티드 레코드와 하위 에이전트 메시지를 포함한 원문 스트리밍 이벤트는 `raw_model_stream_event`를 통해 계속 사용할 수 있습니다. 고수준 항목 스트리밍은 안정적인 Responses 항목을 유지하면서 베타 전용 협업 레코드를 필터링하며, 고수준 텍스트 스트리밍에는 루트의 최종 답변만 포함됩니다. 이를 통해 RunState 및 세션 기록을 공급자 중립적으로 유지하면서 관측 가능성을 위한 전체 호스티드 이벤트 스트림을 보존할 수 있습니다.
+호스티드 레코드와 하위 에이전트 메시지를 포함한 원문 스트리밍 이벤트는 `raw_model_stream_event`를 통해 계속 사용할 수 있습니다. 상위 수준 항목 스트리밍은 베타 전용 협업 레코드를 필터링하면서 안정적인 Responses 항목을 유지하며, 상위 수준 텍스트 스트리밍에는 루트의 최종 답변만 포함됩니다. 이를 통해 RunState와 세션 기록은 프로바이더 중립적으로 유지하면서 관측 가능성을 위한 전체 호스티드 이벤트 스트림을 보존합니다.
 
-스트리밍 실행은 종료 이벤트까지 소비하세요. 스트림 소비자가 조기에 중단되면 SDK가 WebSocket을 닫고 활성 호스티드 응답을 폐기합니다. 이후 실행에서는 폐기된 응답을 재개하는 대신 새로운 호스티드 응답을 시작합니다.
+스트리밍된 실행은 터미널 이벤트까지 소비하세요. 스트림 소비자가 일찍 중지하면 SDK는 WebSocket을 닫고 활성 호스티드 응답을 폐기합니다. 이후 실행은 폐기된 응답을 재개하는 대신 새 호스티드 응답을 시작합니다.
 
 #### 현재 제한 사항
 
-실험적 SDK 모델은 Responses WebSocket 전송만 지원합니다. 베타 Responses API는 HTTP를 통한 호스티드 멀티 에이전트도 지원하지만, `OpenAIHostedMultiAgentModel`은 SDK 러너가 계속 진행하기 전에 각 로컬 함수 출력을 활성 응답에 주입할 수 있도록 하나의 WebSocket을 열린 상태로 유지합니다.
+실험적 SDK 모델은 Responses WebSocket 전송만 지원합니다. 베타 Responses API는 HTTP를 통한 호스티드 멀티 에이전트도 지원하지만, `OpenAIHostedMultiAgentModel`은 SDK runner가 계속하기 전에 각 로컬 함수 출력을 활성 응답에 삽입할 수 있도록 하나의 WebSocket을 열린 상태로 유지합니다.
 
-진행 중인 호스티드 응답의 연속 실행 상태는 `OpenAIHostedMultiAgentModel` 인스턴스에 보관됩니다. 모델은 대기 중인 함수 출력을 주입하기 전에 닫힌 WebSocket에 다시 연결할 수 있지만, 승인 및 인터럽션(중단 처리)된 도구는 여전히 동일한 모델 인스턴스와 동일한 WebSocket 전송 헤더 및 쿼리를 사용해 재개해야 합니다. 모델을 다시 생성하면 연속 실행 상태가 손실됩니다. 또한 하나의 모델 인스턴스는 한 번에 하나의 활성 실행만 지원합니다.
+진행 중인 호스티드 응답의 연속 실행 상태는 `OpenAIHostedMultiAgentModel` 인스턴스에 보관됩니다. 모델은 대기 중인 함수 출력을 삽입하기 전에 닫힌 WebSocket에 다시 연결할 수 있지만, 승인 및 인터럽션(중단 처리)된 도구는 여전히 동일한 모델 인스턴스와 동일한 WebSocket 전송 헤더 및 쿼리로 재개해야 합니다. 모델을 다시 생성하면 연속 실행 상태가 손실됩니다. 또한 하나의 모델 인스턴스는 한 번에 하나의 활성 실행만 지원합니다.
 
-전송 실패는 SDK가 요청 프레임이 전송되지 않았음을 알고 있는 경우에만 안전하게 재생할 수 있습니다. 서버가 프레임을 수신했을 가능성이 생기면 SDK는 오류를 재생하기에 안전하지 않은 것으로 표시하고 호스티드 턴을 자동으로 반복하지 않습니다. 일반적인 재시도 정책은 [모델 재시도](#model-retries)를 참조하세요.
+전송 실패는 SDK가 요청 프레임이 전송되지 않았음을 아는 경우에만 안전하게 재실행할 수 있습니다. 서버가 프레임을 수신했을 가능성이 생기면 SDK는 해당 오류를 재실행하기에 안전하지 않은 것으로 표시하고 호스티드 턴을 자동으로 반복하지 않습니다. 일반적인 재시도 정책은 [모델 재시도](#model-retries)를 참고하세요.
 
-이 모델을 SDK 핸드오프, `reasoning.summary` 또는 `max_tool_calls`와 함께 사용하지 마세요. 이러한 조합은 요청을 보내기 전에 실패합니다. `modelSettings.contextManagement`로 설정된 서버 측 압축 임계값은 계속 지원되지만 Responses 압축 엔드포인트에 대한 명시적 호출은 이 모델의 수명 주기에 포함되지 않습니다. 안정적인 `OpenAIResponsesModel`에서는 SDK 핸드오프와 agents-as-tools를 계속 사용할 수 있습니다.
+이 모델을 SDK 핸드오프, `reasoning.summary` 또는 `max_tool_calls`와 함께 사용하지 마세요. 이러한 조합은 요청이 전송되기 전에 실패합니다. `modelSettings.contextManagement`로 구성된 서버 측 압축 임계값은 계속 지원되지만 Responses 압축 엔드포인트에 대한 명시적 호출은 이 모델의 수명 주기 범위에 포함되지 않습니다. 안정적인 `OpenAIResponsesModel`에서는 SDK 핸드오프와 agents-as-tools를 계속 사용할 수 있습니다.
 
 ---
 
@@ -211,124 +213,124 @@ npm install @openai/agents-openai openai
 
 ### ModelSettings
 
-`ModelSettings`는 OpenAI 매개변수를 반영하지만 공급자에 종속되지 않습니다.
+`ModelSettings`는 OpenAI 매개변수를 반영하지만 프로바이더에 종속되지 않습니다.
 
-| 필드 | 타입 | 참고 |
+| 필드 | 유형 | 참고 |
 | --- | --- | --- |
-| `temperature` | `number` | 창의성과 결정성 간의 균형입니다. |
+| `temperature` | `number` | 창의성과 결정론 간의 균형입니다. |
 | `topP` | `number` | 핵 샘플링입니다. |
-| `frequencyPenalty` | `number` | 반복되는 토큰에 페널티를 적용합니다. |
+| `frequencyPenalty` | `number` | 반복되는 토큰에 페널티를 부여합니다. |
 | `presencePenalty` | `number` | 새로운 토큰을 장려합니다. |
-| `toolChoice` | `'auto' \| 'required' \| 'none' \| string` | [도구 사용 강제](/openai-agents-js/ko/guides/agents#forcing-tool-use)를 참조하세요. OpenAI Responses에서 `toolChoice: 'computer'`는 사용 가능한 경우 정식 출시된 내장 컴퓨터 도구를 강제합니다. |
+| `toolChoice` | `'auto' \| 'required' \| 'none' \| string` | [도구 사용 강제](/openai-agents-js/ko/guides/agents#forcing-tool-use)를 참고하세요. OpenAI Responses에서 `toolChoice: 'computer'`는 사용 가능한 경우 GA 기본 제공 컴퓨터 도구를 강제합니다. |
 | `parallelToolCalls` | `boolean` | 지원되는 경우 병렬 함수 호출을 허용합니다. |
-| `truncation` | `'auto' \| 'disabled'` | 토큰 잘림 전략입니다. |
+| `truncation` | `'auto' \| 'disabled'` | 토큰 절단 전략입니다. |
 | `maxTokens` | `number` | 응답의 최대 토큰 수입니다. |
-| `store` | `boolean` | 검색/RAG 워크플로를 위해 응답을 유지합니다. |
+| `store` | `boolean` | 검색/RAG 워크플로를 위해 응답을 영구 저장합니다. |
 | `promptCacheRetention` | `'in-memory' \| '24h' \| null` | 지원되는 경우 레거시 최대 프롬프트 캐시 보존 정책을 제어합니다. 이는 `promptCacheOptions.ttl`과 독립적입니다. |
-| `promptCacheOptions` | `{ mode?: 'implicit' \| 'explicit'; ttl?: '30m' }` | GPT-5.6 이상 모델의 암시적 또는 명시적 프롬프트 캐시 중단점을 제어합니다. |
-| `contextManagement` | `ModelSettingsContextManagement` | 서버 측 압축과 같은 공급자 컨텍스트 관리를 제어합니다. |
-| `reasoning.effort` | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh' \| 'max'` | 지원되는 gpt-5.x 모델의 추론 노력입니다. `max`는 GPT-5.6에서 지원됩니다. |
+| `promptCacheOptions` | `{ mode?: 'implicit' \| 'explicit'; ttl?: '30m' }` | GPT-5.6 및 이후 모델의 암시적 또는 명시적 프롬프트 캐시 브레이크포인트를 제어합니다. |
+| `contextManagement` | `ModelSettingsContextManagement` | 서버 측 압축과 같은 프로바이더 컨텍스트 관리를 제어합니다. |
+| `reasoning.effort` | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh' \| 'max'` | 지원되는 gpt-5.x 모델의 추론 수준입니다. `max`는 GPT-5.6에서 지원됩니다. |
 | `reasoning.mode` | `'standard' \| 'pro' \| string` | 추론 실행 모드를 선택합니다. 이 설정에는 Responses API가 필요합니다. |
 | `reasoning.context` | `'auto' \| 'current_turn' \| 'all_turns' \| null` | 이후 턴에서 모델에 다시 렌더링할 추론 항목을 제어합니다. 이 설정에는 Responses API가 필요합니다. |
 | `reasoning.summary` | `'auto' \| 'concise' \| 'detailed'` | 모델이 반환하는 추론 요약의 상세도를 제어합니다. |
 | `text.verbosity` | `'low' \| 'medium' \| 'high'` | gpt-5.x 등의 텍스트 상세도입니다. |
-| `providerData` | `Record<string, any>` | 기본 모델에 전달되는 공급자별 패스스루 옵션입니다. |
-| `retry` | `ModelRetrySettings` | 런타임 전용 옵트인 재시도 설정입니다. [모델 재시도](#model-retries)를 참조하세요. |
+| `providerData` | `Record<string, any>` | 기본 모델로 전달되는 프로바이더별 패스스루 옵션입니다. |
+| `retry` | `ModelRetrySettings` | 런타임 전용 옵트인 재시도 구성입니다. [모델 재시도](#model-retries)를 참고하세요. |
 
 다음 두 수준 중 하나에 설정을 연결할 수 있습니다.
 
 <Code lang="typescript" code={modelSettingsExample} title="모델 설정" />
 
-`Runner` 수준 설정은 충돌하는 에이전트별 설정보다 우선합니다. `reasoning`, `text`, `promptCacheOptions` 및 `retry`의 중첩 필드는 러너와 에이전트 설정 간에 병합됩니다. 상속된 값을 명시적으로 제거하려면 `undefined`를 사용하세요.
+`Runner` 수준 설정은 충돌하는 에이전트별 설정을 재정의합니다. `reasoning`, `text`, `promptCacheOptions` 및 `retry`의 중첩 필드는 runner와 에이전트 설정 간에 병합됩니다. 상속된 값을 명시적으로 제거하려면 `undefined`를 사용하세요.
 
 #### GPT-5.6 추론 및 프롬프트 캐시 제어
 
-GPT-5.6에는 요청 수준 추론 모드와 명시적 프롬프트 캐시 중단점이 추가되었습니다. `reasoning.mode`와 `reasoning.context`는 Responses 전용 설정입니다. `OpenAIChatCompletionsModel`은 한 번 경고한 후 이를 무시하며, 엄격한 기능 검증이 활성화된 경우 요청 전에 `UserError`를 발생시킵니다. `reasoning.effort`는 지원되는 Chat Completions 모델에서 계속 사용할 수 있습니다.
+GPT-5.6에는 요청 수준 추론 모드와 명시적 프롬프트 캐시 브레이크포인트가 추가되었습니다. `reasoning.mode` 및 `reasoning.context`는 Responses 전용 설정입니다. `OpenAIChatCompletionsModel`은 한 번 경고한 후 이를 무시하며, 엄격한 기능 검증이 활성화된 경우 요청 전에 `UserError`를 발생시킵니다. `reasoning.effort`는 지원되는 Chat Completions 모델에서 계속 사용할 수 있습니다.
 
-`promptCacheOptions`는 Responses 및 Chat Completions 모델 경로 모두에서 전달됩니다. 기본 `implicit` 모드에서는 명시적 중단점 외에 OpenAI가 자동 중단점을 선택할 수 있습니다. `promptCacheBreakpoint: { mode: 'explicit' }`로 표시된 콘텐츠 부분만 사용하려면 `mode: 'explicit'`를 설정하세요. 현재 지원되는 최소 캐시 유지 시간은 `30m`입니다.
+`promptCacheOptions`는 Responses 및 Chat Completions 모델 경로 모두에서 전달됩니다. 기본 `implicit` 모드에서는 명시적 브레이크포인트 외에도 OpenAI가 자동 브레이크포인트를 선택할 수 있습니다. `promptCacheBreakpoint: { mode: 'explicit' }`로 표시된 콘텐츠 부분만 사용하려면 `mode: 'explicit'`를 설정하세요. 현재 지원되는 최소 캐시 수명은 `30m`입니다.
 
 <Code
   lang="typescript"
   code={gpt56RequestControlsExample}
-  title="GPT-5.6 요청 제어 설정"
+  title="GPT-5.6 요청 제어 구성"
 />
 
-명시적 중단점은 GPT-5.6 이상 모델에서 지원됩니다. 지원되는 콘텐츠 부분 타입과 중단점 제한은 API마다 다릅니다. 최신 세부 정보는 공식 [프롬프트 캐시 중단점 가이드](https://developers.openai.com/api/docs/guides/prompt-caching#prompt-cache-breakpoints)를 참조하세요.
+명시적 브레이크포인트는 GPT-5.6 및 이후 모델에서 지원됩니다. 지원되는 콘텐츠 부분 유형과 브레이크포인트 제한은 API에 따라 다릅니다. 최신 세부 정보는 공식 [프롬프트 캐시 브레이크포인트 가이드](https://developers.openai.com/api/docs/guides/prompt-caching#prompt-cache-breakpoints)를 참고하세요.
 
 ### 모델 재시도
 
-재시도는 런타임 전용이며 옵트인 방식입니다. `modelSettings.retry`를 설정하고 정책이 재시도 결정을 반환하지 않는 한 SDK는 모델 요청을 재시도하지 않습니다.
+재시도는 런타임 전용이며 옵트인 방식입니다. `modelSettings.retry`를 구성하고 정책이 재시도 결정을 반환하지 않는 한 SDK는 모델 요청을 재시도하지 않습니다.
 
-<Code lang="typescript" code={retryExample} title="모델 재시도 활성화" />
+<Code lang="typescript" code={retryExample} title="모델 재시도 옵트인" />
 
-`ModelRetrySettings`에는 세 가지 필드가 있습니다.
+`ModelRetrySettings`에는 다음 세 가지 필드가 있습니다.
 
-| 필드 | 타입 | 참고 |
+| 필드 | 유형 | 참고 |
 | --- | --- | --- |
-| `maxRetries` | `number` | 최초 요청 후 허용되는 재시도 횟수입니다. |
-| `backoff` | `{ initialDelayMs?, maxDelayMs?, multiplier?, jitter? }` | 정책이 `delayMs`를 반환하지 않고 재시도할 때 사용하는 기본 지연 전략입니다. `backoff.maxDelayMs`는 계산된 백오프 지연에만 상한을 적용하며, 정책이 반환하는 명시적 `delayMs` 값이나 retry-after 힌트에는 상한을 적용하지 않습니다. |
-| `policy` | `RetryPolicy` | 재시도 여부를 결정하는 콜백입니다. 이 함수는 런타임 전용이며 유지된 실행 상태에 직렬화되지 않습니다. |
+| `maxRetries` | `number` | 최초 요청 이후 허용되는 재시도 횟수입니다. |
+| `backoff` | `{ initialDelayMs?, maxDelayMs?, multiplier?, jitter? }` | 정책이 `delayMs`를 반환하지 않고 재시도할 때의 기본 지연 전략입니다. `backoff.maxDelayMs`는 계산된 백오프 지연에만 상한을 적용하며, 정책이 반환한 명시적 `delayMs` 값이나 retry-after 힌트에는 상한을 적용하지 않습니다. |
+| `policy` | `RetryPolicy` | 재시도 여부를 결정하는 콜백입니다. 이 함수는 런타임 전용이며 영구 저장된 실행 상태로 직렬화되지 않습니다. |
 
-재시도 정책은 다음 항목을 포함하는 `RetryPolicyContext`를 받습니다.
+재시도 정책은 다음 항목이 포함된 `RetryPolicyContext`를 받습니다.
 
-- 시도 횟수를 고려한 결정을 내리는 데 사용할 수 있는 `attempt` 및 `maxRetries`
-- 스트리밍 동작과 비스트리밍 동작을 분기하는 데 사용할 수 있는 `stream`
+- 시도 횟수를 고려해 결정할 수 있도록 제공되는 `attempt` 및 `maxRetries`
+- 스트리밍 및 비스트리밍 동작을 분기할 수 있도록 제공되는 `stream`
 - 원문 검사를 위한 `error`
 - `statusCode`, `retryAfterMs`, `errorCode`, `isNetworkError`, `isAbort`와 같은 정규화된 정보를 포함하는 `normalized`
-- 기본 모델 또는 공급자가 재시도 지침을 제공할 수 있을 때 사용하는 `providerAdvice`
+- 기본 모델/프로바이더가 재시도 지침을 제공할 수 있을 때 전달되는 `providerAdvice`
 
 정책은 다음 중 하나를 반환할 수 있습니다.
 
-- 간단한 재시도 결정을 위한 `true` / `false`
+- 단순한 재시도 결정을 위한 `true` / `false`
 - 지연을 재정의하거나 로깅을 위한 진단 사유를 첨부하려는 경우 `{ retry, delayMs?, reason? }`
 
-SDK는 `retryPolicies`에 바로 사용할 수 있는 헬퍼를 내보냅니다.
+SDK는 `retryPolicies`에 기본 제공 헬퍼를 내보냅니다.
 
 | 헬퍼 | 동작 |
 | --- | --- |
-| `retryPolicies.never()` | 항상 재시도하지 않습니다. |
-| `retryPolicies.providerSuggested()` | 사용 가능한 경우 공급자의 재시도 지침을 따릅니다. |
-| `retryPolicies.networkError()` | 일시적인 전송 또는 연결 실패와 일치합니다. |
+| `retryPolicies.never()` | 항상 재시도를 거부합니다. |
+| `retryPolicies.providerSuggested()` | 사용 가능한 경우 프로바이더의 재시도 지침을 따릅니다. |
+| `retryPolicies.networkError()` | 일시적인 전송/연결 실패와 일치합니다. |
 | `retryPolicies.httpStatus([..])` | 선택한 HTTP 상태 코드와 일치합니다. |
-| `retryPolicies.retryAfter()` | retry-after 힌트가 있는 경우에만 재시도하며, 해당 힌트를 `backoff.maxDelayMs`의 상한이 적용되지 않는 명시적 지연으로 사용합니다. |
-| `retryPolicies.any(...)` | 중첩 정책 중 하나라도 재시도를 선택하면 재시도합니다. |
+| `retryPolicies.retryAfter()` | retry-after 힌트를 사용할 수 있을 때만 재시도하며, 해당 힌트를 `backoff.maxDelayMs`의 상한이 적용되지 않는 명시적 지연으로 사용합니다. |
+| `retryPolicies.any(...)` | 중첩된 정책 중 하나라도 재시도를 선택하면 재시도합니다. |
 | `retryPolicies.all(...)` | 모든 중첩 정책이 재시도를 선택한 경우에만 재시도합니다. |
 
-정책을 조합할 때 `providerSuggested()`가 가장 안전한 첫 번째 구성 요소입니다. 공급자가 이를 구분할 수 있는 경우 공급자의 거부 결정과 재생 안전성 승인을 유지하기 때문입니다.
+정책을 조합할 때 `providerSuggested()`는 가장 안전한 첫 번째 기본 구성 요소입니다. 프로바이더가 이를 구분할 수 있을 때 프로바이더의 거부 결정과 재실행 안전 승인을 보존하기 때문입니다.
 
-#### 안전성 경계
+#### 안전 경계
 
 일부 실패는 자동으로 재시도되지 않습니다.
 
 - 중단 오류
-- 표시 가능한 이벤트 또는 원문 모델 이벤트가 이미 하나라도 발생한 스트리밍 실행
-- 재생이 안전하지 않다고 표시하는 공급자 지침
+- 확인 가능한 이벤트 또는 원문 모델 이벤트가 이미 발생한 이후의 스트리밍 실행
+- 재실행이 안전하지 않다고 표시하는 프로바이더 지침
 
-`previousResponseId` 또는 `conversationId`를 사용하는 상태 기반 후속 요청도 더 보수적으로 처리됩니다. 이러한 요청에서는 `networkError()` 또는 `httpStatus([500])` 같은 공급자 외 조건자만으로는 충분하지 않습니다. 재시도 정책에는 일반적으로 `retryPolicies.providerSuggested()`를 통한 공급자의 재생 안전 승인이 포함되어야 합니다.
+`previousResponseId` 또는 `conversationId`를 사용하는 상태 저장 후속 요청도 더 보수적으로 처리됩니다. 이러한 요청에서는 `networkError()` 또는 `httpStatus([500])` 같은 비프로바이더 조건만으로는 충분하지 않습니다. 재시도 정책에는 일반적으로 `retryPolicies.providerSuggested()`를 통한 프로바이더의 재실행 안전 승인이 포함되어야 합니다.
 
-#### 러너 및 에이전트 병합 동작
+#### Runner 및 에이전트 병합 동작
 
-`retry`는 러너 수준과 에이전트 수준의 `modelSettings` 간에 깊은 병합이 적용됩니다.
+`retry`는 runner 수준과 에이전트 수준의 `modelSettings` 사이에서 깊은 병합됩니다.
 
-- 에이전트는 `retry.maxRetries`만 재정의하면서 러너의 `policy`를 계속 상속할 수 있습니다.
-- 에이전트는 `retry.backoff`의 일부만 재정의하면서 러너의 다른 백오프 필드를 유지할 수 있습니다.
+- 에이전트는 `retry.maxRetries`만 재정의하면서 runner의 `policy`를 계속 상속할 수 있습니다.
+- 에이전트는 `retry.backoff`의 일부만 재정의하면서 runner의 다른 백오프 필드를 유지할 수 있습니다.
 - 상속된 `policy` 또는 `backoff`를 제거해야 하는 경우 해당 필드를 명시적으로 `undefined`로 설정하세요.
 
-로깅이 포함된 더 자세한 코드 예제는 [`examples/basic/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/retry.ts)와 [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts)를 참조하세요.
+로깅이 포함된 더 자세한 예제는 [`examples/basic/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/retry.ts) 및 [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts)를 참고하세요.
 
 ---
 
 ### 프롬프트
 
-에이전트의 동작을 제어하는 데 사용할 서버 저장 프롬프트 설정을 나타내는 `prompt` 매개변수로 에이전트를 설정할 수 있습니다. 현재 이 옵션은 OpenAI [Responses API](https://platform.openai.com/docs/api-reference/responses)를 사용할 때만 지원됩니다.
+에이전트의 동작을 제어하는 데 사용할 서버 저장 프롬프트 구성을 나타내는 `prompt` 매개변수로 에이전트를 구성할 수 있습니다. 현재 이 옵션은 OpenAI [Responses API](https://platform.openai.com/docs/api-reference/responses)를 사용할 때만 지원됩니다.
 
-`prompt`는 정적 객체이거나 런타임에 객체를 반환하는 함수일 수 있습니다. 콜백 형식은 [동적 프롬프트](/openai-agents-js/ko/guides/agents#dynamic-prompts)를 참조하세요.
+`prompt`는 정적 객체이거나 런타임에 객체를 반환하는 함수일 수 있습니다. 콜백 형식은 [동적 프롬프트](/openai-agents-js/ko/guides/agents#dynamic-prompts)를 참고하세요.
 
-| 필드 | 타입 | 참고 |
+| 필드 | 유형 | 참고 |
 | --- | --- | --- |
 | `promptId` | `string` | 프롬프트의 고유 식별자입니다. |
-| `version` | `string` | 사용하려는 프롬프트 버전입니다. |
-| `variables` | `object` | 프롬프트에 대입할 변수의 키/값 쌍입니다. 값은 문자열이거나 텍스트, 이미지 또는 파일과 같은 콘텐츠 입력 타입일 수 있습니다. |
+| `version` | `string` | 사용하려는 프롬프트의 버전입니다. |
+| `variables` | `object` | 프롬프트에 대입할 변수의 키/값 쌍입니다. 값은 문자열이거나 텍스트, 이미지 또는 파일과 같은 콘텐츠 입력 유형일 수 있습니다. |
 
 <Code
   lang="typescript"
@@ -336,43 +338,43 @@ SDK는 `retryPolicies`에 바로 사용할 수 있는 헬퍼를 내보냅니다.
   title="프롬프트가 있는 에이전트"
 />
 
-tools 또는 instructions와 같은 추가 에이전트 설정은 저장된 프롬프트에 설정한 값을 재정의합니다.
+tools 또는 instructions와 같은 추가 에이전트 구성은 저장된 프롬프트에서 구성한 값을 재정의합니다.
 
-저장된 프롬프트에 모델이 이미 정의되어 있으면 SDK는 명시적으로 재정의하지 않는 한 에이전트의 기본 모델을 보내지 않습니다. 이는 `computerTool()`에서 중요합니다. 프롬프트가 관리하는 실행은 호환성을 위해 기본적으로 레거시 프리뷰 전송 형식을 유지합니다. 프롬프트가 관리하는 실행에서 정식 출시된 Responses 컴퓨터 도구를 사용하려면 `modelSettings.toolChoice: 'computer'`를 명시적으로 설정하거나 [`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol)과 같은 명시적 모델을 전송하세요. 관련 컴퓨터 사용 세부 정보는 [도구](/openai-agents-js/ko/guides/tools#computer-tool-specifics)를 참조하세요.
+저장된 프롬프트에 모델이 이미 정의되어 있으면 명시적으로 재정의하지 않는 한 SDK는 에이전트의 기본 모델을 전송하지 않습니다. 이는 `computerTool()`에서 중요합니다. 프롬프트로 관리되는 실행은 호환성을 위해 기본적으로 레거시 프리뷰 와이어 형식을 유지합니다. 프롬프트로 관리되는 실행에서 GA Responses 컴퓨터 도구를 사용하려면 `modelSettings.toolChoice: 'computer'`를 명시적으로 설정하거나 [`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol)과 같은 모델을 명시적으로 전송하세요. 관련 컴퓨터 사용 세부 정보는 [도구](/openai-agents-js/ko/guides/tools#computer-tool-specifics)를 참고하세요.
 
 ---
 
-## 고급 공급자 및 관측 가능성
+## 고급 프로바이더 및 관측 가능성
 
-### 사용자 지정 모델 공급자
+### 사용자 지정 모델 프로바이더
 
-자체 공급자를 구현하는 방법은 간단합니다. `ModelProvider`와 `Model`을 구현하고 공급자를 `Runner` 생성자에 전달하세요.
+자체 프로바이더 구현은 간단합니다. `ModelProvider`와 `Model`을 구현하고 프로바이더를 `Runner` 생성자에 전달하면 됩니다.
 
 <Code
   lang="typescript"
   code={modelCustomProviderExample}
-  title="최소 사용자 지정 공급자"
+  title="최소 사용자 지정 프로바이더"
 />
 
-모든 `run()` 호출과 새로 생성되는 모든 `Runner`가 기본적으로 동일한 공급자를 사용하도록 하려면 애플리케이션 시작 시 한 번 설정하세요.
+모든 `run()` 호출과 새로 생성되는 모든 `Runner`가 기본적으로 동일한 프로바이더를 사용하도록 하려면 애플리케이션 시작 시 한 번 설정하세요.
 
 <Code
   lang="typescript"
   code={setDefaultModelProviderExample}
-  title="기본 모델 공급자 설정"
+  title="기본 모델 프로바이더 설정"
 />
 
-애플리케이션에서 OpenAI가 아닌 공급자를 표준으로 사용하며 모든 위치에 사용자 지정 `Runner`를 전달하고 싶지 않을 때 유용합니다.
+애플리케이션에서 OpenAI 이외의 프로바이더를 표준으로 사용하고 모든 위치에 사용자 지정 `Runner`를 전달하고 싶지 않을 때 유용합니다.
 
 #### AI SDK 연동
 
-`ModelProvider`를 직접 구현하지 않고 OpenAI가 아닌 모델을 사용하려면 [Vercel AI SDK로 모든 모델 사용](/openai-agents-js/ko/extensions/ai-sdk)을 참조하세요. 이 어댑터를 사용하면 AI SDK 모델을 에이전트 런타임에 직접 연결할 수 있습니다. 애플리케이션에서 이미 AI SDK 공급자를 표준으로 사용하거나 더 폭넓은 공급자 생태계에 접근하려는 경우 유용합니다. 또한 Agents SDK `providerData`가 AI SDK `providerMetadata`에 매핑되는 방식과 AI SDK UI 경로에서 사용할 수 있는 스트림 헬퍼도 설명합니다.
+`ModelProvider`를 직접 구현하지 않고 OpenAI 이외의 모델을 사용하려면 [AI SDK 연동](/openai-agents-js/ko/extensions/ai-sdk)을 참고하세요. 이 어댑터를 사용하면 AI SDK 모델을 Agents 런타임에 직접 연결할 수 있습니다. 애플리케이션에서 이미 AI SDK 프로바이더를 표준으로 사용하거나 더 폭넓은 프로바이더 생태계에 접근하려는 경우 유용합니다. 또한 Agents SDK `providerData`가 AI SDK `providerMetadata`에 매핑되는 방식과 AI SDK UI 경로에서 사용할 수 있는 스트림 헬퍼도 설명합니다.
 
 ---
 
 ### 트레이싱 자격 증명
 
-지원되는 서버 런타임에서는 트레이싱이 이미 기본적으로 활성화되어 있습니다. 트레이스 내보내기에 기본 OpenAI API 키와 다른 자격 증명을 사용해야 하는 경우에만 `setTracingExportApiKey()`를 사용하세요.
+지원되는 서버 런타임에서는 트레이싱이 기본적으로 이미 활성화되어 있습니다. 트레이스 내보내기에 기본 OpenAI API 키와 다른 자격 증명을 사용해야 하는 경우에만 `setTracingExportApiKey()`를 사용하세요.
 
 <Code
   lang="typescript"
@@ -380,12 +382,12 @@ tools 또는 instructions와 같은 추가 에이전트 설정은 저장된 프�
   title="트레이싱 내보내기 API 키 설정"
 />
 
-이 자격 증명을 사용하여 [OpenAI 대시보드](https://platform.openai.com/traces)로 트레이스를 전송합니다. 사용자 지정 수집 엔드포인트 또는 재시도 조정과 같은 내보내기 도구 사용자 지정은 [트레이싱](/openai-agents-js/ko/guides/tracing#openai-tracing-exporter)을 참조하세요.
+이 자격 증명을 사용해 트레이스를 [OpenAI 대시보드](https://platform.openai.com/traces)로 전송합니다. 사용자 지정 수집 엔드포인트 또는 재시도 조정과 같은 exporter 사용자 지정은 [트레이싱](/openai-agents-js/ko/guides/tracing#openai-tracing-exporter)을 참고하세요.
 
 ---
 
 ## 다음 단계
 
-- [에이전트 실행](/openai-agents-js/ko/guides/running-agents) 살펴보기
-- [도구](/openai-agents-js/ko/guides/tools)로 모델에 강력한 기능 추가
-- 필요에 따라 [가드레일](/openai-agents-js/ko/guides/guardrails) 또는 [트레이싱](/openai-agents-js/ko/guides/tracing) 추가
+- [에이전트 실행](/openai-agents-js/ko/guides/running-agents)을 살펴보세요.
+- [도구](/openai-agents-js/ko/guides/tools)로 모델에 강력한 기능을 추가하세요.
+- 필요에 따라 [가드레일](/openai-agents-js/ko/guides/guardrails) 또는 [트레이싱](/openai-agents-js/ko/guides/tracing)을 추가하세요.
