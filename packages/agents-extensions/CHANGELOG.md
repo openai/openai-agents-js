@@ -1,5 +1,17 @@
 # @openai/agents-extensions
 
+## 0.14.2
+
+### Patch Changes
+
+- 0134edc: fix: reject ephemeral manifest paths during sandbox archive hydration
+- 25e1cf0: feat: preserve sandbox environment secret references
+- Updated dependencies [e8de524]
+- Updated dependencies [b4b8b21]
+- Updated dependencies [7255289]
+- Updated dependencies [25e1cf0]
+  - @openai/agents-core@0.14.2
+
 ## 0.14.1
 
 ### Patch Changes
