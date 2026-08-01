@@ -475,56 +475,56 @@ describe('MCP tools uniqueness', () => {
     expect(server.name).toBe(rawServerName);
   });
 
-  it('allocates sanitized URL-derived tool name collisions deterministically', async () => {
-    async function getNames(): Promise<string[]> {
-      const endpointA = new URL(
-        'https://example.test/mcp?token=QUERY_A#FRAGMENT_A',
-      );
-      endpointA.username = 'USER_A';
-      endpointA.password = 'PASSWORD_A';
-      const endpointB = new URL(
-        'https://example.test/mcp?token=QUERY_B#FRAGMENT_B',
-      );
-      endpointB.username = 'USER_B';
-      endpointB.password = 'PASSWORD_B';
-      const serverA = new StubServer(
-        `streamable-http: ${endpointA.toString()}`,
-        [
-          {
-            name: 'search',
-            description: '',
-            inputSchema: { type: 'object', properties: {} },
-          },
-        ],
-      );
-      const serverB = new StubServer(
-        `streamable-http: ${endpointB.toString()}`,
-        [
-          {
-            name: 'search',
-            description: '',
-            inputSchema: { type: 'object', properties: {} },
-          },
-        ],
-      );
-      serverA.cacheToolsList = false;
-      serverB.cacheToolsList = false;
+  it('rejects URL-derived server names that collide after redaction', async () => {
+    const endpointA = new URL(
+      'https://example.test/mcp?token=QUERY_A#FRAGMENT_A',
+    );
+    endpointA.username = 'USER_A';
+    endpointA.password = 'PASSWORD_A';
+    const endpointB = new URL(
+      'https://example.test/mcp?token=QUERY_B#FRAGMENT_B',
+    );
+    endpointB.username = 'USER_B';
+    endpointB.password = 'PASSWORD_B';
+    const rawServerNames = [
+      `streamable-http: ${endpointA.toString()}`,
+      `streamable-http: ${endpointB.toString()}`,
+    ];
 
-      const tools = await getAllMcpTools({
-        mcpServers: [serverA, serverB],
-        includeServerInToolNames: true,
+    async function getCollisionError(serverNames: string[]): Promise<Error> {
+      const servers = serverNames.map((name) => {
+        const server = new StubServer(name, [
+          {
+            name: 'search',
+            description: '',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ]);
+        server.cacheToolsList = false;
+        return server;
       });
-      return tools.map((candidate) => candidate.name);
+
+      try {
+        await getAllMcpTools({
+          mcpServers: servers,
+          includeServerInToolNames: true,
+        });
+      } catch (error) {
+        expect(error).toBeInstanceOf(UserError);
+        return error as Error;
+      }
+      throw new Error('Expected sanitized MCP server name collision.');
     }
 
-    const first = await getNames();
-    const second = await getNames();
-
-    expect(first).toEqual(second);
-    expect(new Set(first).size).toBe(2);
-    expect(first.every((name) => name.startsWith('mcp_streamable_http'))).toBe(
-      true,
+    const forwardError = await getCollisionError(rawServerNames);
+    const reversedError = await getCollisionError(
+      [...rawServerNames].reverse(),
     );
+    const expectedMessage =
+      "MCP server names are indistinguishable after URL redaction for tool 'search': 'streamable-http: https://example.test/mcp'. Configure unique safe server names when includeServerInToolNames is enabled.";
+
+    expect(forwardError.message).toBe(expectedMessage);
+    expect(reversedError.message).toBe(expectedMessage);
     for (const secret of [
       'USER_A',
       'PASSWORD_A',
@@ -535,7 +535,8 @@ describe('MCP tools uniqueness', () => {
       'QUERY_B',
       'FRAGMENT_B',
     ]) {
-      expect(JSON.stringify(first)).not.toContain(secret);
+      expect(forwardError.message).not.toContain(secret);
+      expect(reversedError.message).not.toContain(secret);
     }
   });
 

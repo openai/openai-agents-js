@@ -1317,9 +1317,14 @@ describe('runner task and turn tracing', () => {
       });
       expect(server.name).toBe(rawServerName);
 
+      const restoredState = await RunState.fromString(
+        agent,
+        result.state.toString(),
+      );
       const serializedExternalData = JSON.stringify({
         spans: processor.spansEnded.map((span) => span.toJSON()),
         state: result.state.toJSON(),
+        restoredState: restoredState.toJSON(),
         toolName: preparedTool!.name,
       });
       expect(serializedExternalData).toContain('example.test:8443');

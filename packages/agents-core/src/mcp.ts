@@ -922,11 +922,22 @@ function buildPrefixedToolNameOverrides(
   }
 
   const candidates: PrefixedToolNameCandidate[] = [];
+  const rawServerNamesBySeed = new Map<string, string>();
   for (const { server, serverIndex, mcpTools } of serverToolBatches) {
     const serverName = getMcpServerExternalName(server.name);
     mcpTools.forEach((mcpTool, toolIndex) => {
       const baseName = buildPrefixedToolBaseName(serverName, mcpTool.name);
       const seed = `${serverName}\0${mcpTool.name}`;
+      const previousRawServerName = rawServerNamesBySeed.get(seed);
+      if (
+        previousRawServerName !== undefined &&
+        previousRawServerName !== server.name
+      ) {
+        throw new UserError(
+          `MCP server names are indistinguishable after URL redaction for tool '${mcpTool.name}': '${serverName}'. Configure unique safe server names when includeServerInToolNames is enabled.`,
+        );
+      }
+      rawServerNamesBySeed.set(seed, server.name);
       const forceHash =
         (baseNameCounts.get(baseName) ?? 0) > 1 || reservedNames.has(baseName);
       candidates.push({
