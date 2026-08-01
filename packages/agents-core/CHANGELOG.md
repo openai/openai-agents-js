@@ -1,5 +1,14 @@
 # @openai/agents-core
 
+## 0.14.2
+
+### Patch Changes
+
+- e8de524: fix: clean MCP servers before reconnecting
+- b4b8b21: fix: redact MCP URL credentials from external metadata
+- 7255289: fix: redact endpoint credentials from MCP transport errors
+- 25e1cf0: feat: preserve sandbox environment secret references
+
 ## 0.14.1
 
 ### Patch Changes

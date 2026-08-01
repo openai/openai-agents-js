@@ -1,5 +1,19 @@
 # @openai/agents
 
+## 0.14.2
+
+### Patch Changes
+
+- 525417d: docs: align text, sandbox, and realtime agent documentation
+- Updated dependencies [a835a59]
+- Updated dependencies [e8de524]
+- Updated dependencies [b4b8b21]
+- Updated dependencies [7255289]
+- Updated dependencies [25e1cf0]
+  - @openai/agents-realtime@0.14.2
+  - @openai/agents-core@0.14.2
+  - @openai/agents-openai@0.14.2
+
 ## 0.14.1
 
 ### Patch Changes
