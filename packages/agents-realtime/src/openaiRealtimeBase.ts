@@ -226,7 +226,7 @@ export abstract class OpenAIRealtimeBase
     }
     const { data: parsed, raw, isGeneric } = result;
 
-    this.emit('*', raw);
+    this.emit('*', structuredClone(raw));
     if (isGeneric) {
       return;
     }
