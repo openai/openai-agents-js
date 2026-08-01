@@ -592,24 +592,31 @@ describe('NodeMCPServerSSE', () => {
     expectNoCredentialMarkers(logger.error.mock.calls);
   });
 
-  test('should remove credentials from malformed SSE endpoint errors and logs', async () => {
-    const logger = createCapturingLogger();
-    const malformedEndpoint = `https://${[
-      'user_marker',
-      'password_marker',
-    ].join(':')}@`;
-    const server = new NodeMCPServerSSE({
-      url: malformedEndpoint,
-      logger,
-    });
+  test.each([
+    ['without slashes', ''],
+    ['with one slash', '/'],
+    ['with two slashes', '//'],
+  ])(
+    'should remove credentials from malformed SSE endpoint errors and logs %s',
+    async (_label, slashPrefix) => {
+      const logger = createCapturingLogger();
+      const malformedEndpoint = `https:${slashPrefix}${[
+        'user_marker',
+        'password_marker',
+      ].join(':')}@`;
+      const server = new NodeMCPServerSSE({
+        url: malformedEndpoint,
+        logger,
+      });
 
-    const error = await server.connect().catch((caught) => caught);
+      const error = await server.connect().catch((caught) => caught);
 
-    expect(error).toMatchObject({ name: 'MCPTransportError' });
-    expect((error as Error).message).not.toContain(malformedEndpoint);
-    expectNoCredentialMarkers(error);
-    expectNoCredentialMarkers(logger.error.mock.calls);
-  });
+      expect(error).toMatchObject({ name: 'MCPTransportError' });
+      expect((error as Error).message).not.toContain(malformedEndpoint);
+      expectNoCredentialMarkers(error);
+      expectNoCredentialMarkers(logger.error.mock.calls);
+    },
+  );
 
   test.each([
     [

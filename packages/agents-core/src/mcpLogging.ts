@@ -1,4 +1,5 @@
 const URL_DERIVED_NAME_PREFIXES = ['sse: ', 'streamable-http: '] as const;
+const HTTP_SCHEME_PATTERN = /^https?:/i;
 const MAX_PROTOTYPE_DEPTH = 8;
 const DOM_EXCEPTION_PROTOTYPE =
   typeof DOMException === 'undefined' ? undefined : DOMException.prototype;
@@ -26,6 +27,9 @@ function parseHttpUrl(candidate: string): URL | undefined {
 
 function hasMalformedEndpointSecrets(endpoint: string): boolean {
   if (endpoint.includes('?') || endpoint.includes('#')) {
+    return true;
+  }
+  if (HTTP_SCHEME_PATTERN.test(endpoint) && endpoint.includes('@')) {
     return true;
   }
   const schemeIndex = endpoint.indexOf('://');
@@ -149,7 +153,9 @@ export function getMcpServerDiagnosticName(name: string): string {
     return `${prefix ?? ''}${url.protocol}//${url.host}${url.pathname}`;
   }
   if (
-    (prefix || candidate.includes('://')) &&
+    (prefix ||
+      candidate.includes('://') ||
+      HTTP_SCHEME_PATTERN.test(candidate)) &&
     hasMalformedEndpointSecrets(candidate)
   ) {
     return `${prefix ?? ''}<redacted endpoint>`;

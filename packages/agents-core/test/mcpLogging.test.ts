@@ -26,4 +26,18 @@ describe('getMcpServerDiagnosticName', () => {
       'diagnostic-server',
     );
   });
+
+  it.each(['', '/'])(
+    'redacts malformed HTTP userinfo with %j after the scheme',
+    (slashPrefix) => {
+      const malformedEndpoint = `https:${slashPrefix}${[
+        'user_marker',
+        'password_marker',
+      ].join(':')}@`;
+
+      expect(getMcpServerDiagnosticName(malformedEndpoint)).toBe(
+        '<redacted endpoint>',
+      );
+    },
+  );
 });
