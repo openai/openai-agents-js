@@ -24,13 +24,15 @@ export function makeTarArchive(entries: TarFixtureEntry[]): Uint8Array {
 }
 
 export function makePaxRecord(key: string, value: string): string {
-  let length = `${key}=${value}\n`.length + 2;
+  const encoder = new TextEncoder();
+  let length = encoder.encode(`${key}=${value}\n`).byteLength + 2;
   while (true) {
     const record = `${length} ${key}=${value}\n`;
-    if (record.length === length) {
+    const byteLength = encoder.encode(record).byteLength;
+    if (byteLength === length) {
       return record;
     }
-    length = record.length;
+    length = byteLength;
   }
 }
 

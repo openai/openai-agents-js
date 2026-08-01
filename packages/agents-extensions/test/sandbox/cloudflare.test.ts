@@ -1822,6 +1822,60 @@ describe('CloudflareSandboxClient', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  test('rejects ephemeral paths before hydrating workspace archives', async () => {
+    const client = new CloudflareSandboxClient({
+      workerUrl: 'https://worker.example.com',
+    });
+    const session = await client.resume({
+      manifest: new Manifest({
+        entries: {
+          logs: { type: 'dir', ephemeral: true },
+        },
+      }),
+      workerUrl: 'https://worker.example.com',
+      sandboxId: 'cf_test',
+      environment: {},
+    });
+    vi.mocked(global.fetch).mockClear();
+
+    await expect(
+      session.hydrateWorkspace(
+        makeTarArchive([
+          { name: 'logs/events.jsonl', content: 'persisted log' },
+        ]),
+      ),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'archive member overlaps protected path: logs',
+      },
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('persists an empty tar when the workspace root is ephemeral', async () => {
+    const client = new CloudflareSandboxClient({
+      workerUrl: 'https://worker.example.com',
+    });
+    const session = await client.resume({
+      manifest: new Manifest({
+        entries: {
+          '': { type: 'dir', ephemeral: true },
+        },
+      }),
+      workerUrl: 'https://worker.example.com',
+      sandboxId: 'cf_test',
+      environment: {},
+    });
+    vi.mocked(global.fetch).mockClear();
+
+    await expect(session.persistWorkspace()).resolves.toEqual(
+      makeTarArchive([]),
+    );
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   test('rejects unsupported manifest metadata during resume', async () => {
     const client = new CloudflareSandboxClient({
       workerUrl: 'https://worker.example.com',

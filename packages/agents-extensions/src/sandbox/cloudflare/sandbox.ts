@@ -29,8 +29,10 @@ import {
 } from '@openai/agents-core/sandbox';
 import {
   assertTarWorkspacePersistence,
+  createEmptyWorkspaceTarArchive,
   toWorkspaceArchiveBytes,
   validateWorkspaceTarArchive,
+  workspaceTarProtectedPaths,
 } from '../shared/archive';
 import { RemoteSandboxEditor } from '../shared/editor';
 import {
@@ -567,10 +569,11 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
 
   async persistWorkspace(): Promise<Uint8Array> {
     assertTarWorkspacePersistence('CloudflareSandboxClient', 'tar');
-    const excludes = [...this.state.manifest.ephemeralPersistencePaths()]
-      .filter((path) => path.length > 0)
-      .sort((left, right) => left.localeCompare(right))
-      .join(',');
+    const protectedPaths = workspaceTarProtectedPaths(this.state.manifest);
+    if (protectedPaths.includes('')) {
+      return createEmptyWorkspaceTarArchive();
+    }
+    const excludes = protectedPaths.join(',');
     const response = await this.fetch(
       `/v1/sandbox/${this.state.sandboxId}/persist${
         excludes ? `?excludes=${encodeURIComponent(excludes)}` : ''
@@ -605,6 +608,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     const archive = toWorkspaceArchiveBytes(data);
     validateWorkspaceTarArchive(archive, {
       allowExternalSymlinkTargets: false,
+      rejectRelPaths: workspaceTarProtectedPaths(this.state.manifest),
       archiveLimits:
         options.archiveLimits === undefined
           ? this.archiveLimits
