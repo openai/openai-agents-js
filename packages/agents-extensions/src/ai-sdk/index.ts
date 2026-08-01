@@ -505,7 +505,7 @@ export function itemsToLanguageV2Messages(
                       if (inlineFile) {
                         return {
                           type: 'file',
-                          data: inlineFile.data,
+                          data: toAiSdkFileData(model, inlineFile.data),
                           mediaType: inlineFile.mediaType,
                           ...(filename ? { filename } : {}),
                           providerOptions: toProviderOptions(
@@ -522,7 +522,7 @@ export function itemsToLanguageV2Messages(
                       if (isRawBase64FileData(fileValue)) {
                         return {
                           type: 'file',
-                          data: fileValue,
+                          data: toAiSdkFileData(model, fileValue),
                           mediaType,
                           ...(filename ? { filename } : {}),
                           providerOptions: toProviderOptions(
@@ -535,7 +535,7 @@ export function itemsToLanguageV2Messages(
                       const url = parsePublicUrlFileInput(fileValue);
                       return {
                         type: 'file',
-                        data: url,
+                        data: toAiSdkFileData(model, url),
                         mediaType,
                         ...(filename ? { filename } : {}),
                         providerOptions: toProviderOptions(
@@ -555,7 +555,7 @@ export function itemsToLanguageV2Messages(
                           filename;
                         return {
                           type: 'file',
-                          data: url,
+                          data: toAiSdkFileData(model, url),
                           mediaType,
                           ...(fileFilename ? { filename: fileFilename } : {}),
                           providerOptions: toProviderOptions(

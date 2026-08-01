@@ -1727,6 +1727,81 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('converts v4 user input_file content to tagged file data', () => {
+    const rawBase64 = Buffer.from('inline file').toString('base64');
+    const stringUrl = 'https://example.com/string-report.pdf';
+    const objectUrl = 'https://example.com/object-report.pdf';
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: 'data:application/pdf;base64,JVBERi0=',
+            filename: 'inline.pdf',
+          },
+          {
+            type: 'input_file',
+            file: rawBase64,
+            filename: 'raw.txt',
+            providerData: { mediaType: 'text/plain' },
+          },
+          {
+            type: 'input_file',
+            file: stringUrl,
+            providerData: { mediaType: 'application/pdf' },
+          },
+          {
+            type: 'input_file',
+            file: { url: objectUrl, filename: 'object-report.pdf' },
+            providerData: { mediaType: 'application/pdf' },
+          },
+        ],
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(
+      stubModel({}, { specificationVersion: 'v4' }),
+      items,
+    );
+
+    expect(msgs).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: { type: 'data', data: 'JVBERi0=' },
+            mediaType: 'application/pdf',
+            filename: 'inline.pdf',
+            providerOptions: {},
+          },
+          {
+            type: 'file',
+            data: { type: 'data', data: rawBase64 },
+            mediaType: 'text/plain',
+            filename: 'raw.txt',
+            providerOptions: { mediaType: 'text/plain' },
+          },
+          {
+            type: 'file',
+            data: { type: 'url', url: new URL(stringUrl) },
+            mediaType: 'application/pdf',
+            providerOptions: { mediaType: 'application/pdf' },
+          },
+          {
+            type: 'file',
+            data: { type: 'url', url: new URL(objectUrl) },
+            mediaType: 'application/pdf',
+            filename: 'object-report.pdf',
+            providerOptions: { mediaType: 'application/pdf' },
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
   test('converts structured tool output lists', () => {
     const rawBase64 = Buffer.from('tool file').toString('base64');
     const items: protocol.ModelItem[] = [
