@@ -1795,7 +1795,7 @@ describe('itemsToLanguageV2Messages', () => {
               value: [
                 {
                   type: 'text',
-                  text: 'A scenic view.[file url=https://example.com/report.pdf]',
+                  text: 'A scenic view.',
                 },
                 {
                   type: 'media',
@@ -1813,6 +1813,10 @@ describe('itemsToLanguageV2Messages', () => {
                   mediaType: 'application/pdf',
                 },
                 {
+                  type: 'text',
+                  text: '[file url=https://example.com/report.pdf]',
+                },
+                {
                   type: 'media',
                   data: rawBase64,
                   mediaType: 'text/plain',
@@ -1826,6 +1830,67 @@ describe('itemsToLanguageV2Messages', () => {
       },
     ]);
   });
+
+  test.each([
+    {
+      label: 'v2',
+      model: stubModel({}),
+      expectedTypes: ['media', 'text', 'media'],
+    },
+    {
+      label: 'v3',
+      model: stubModel({}, { specificationVersion: 'v3' }),
+      expectedTypes: ['file-data', 'text', 'image-data'],
+    },
+    {
+      label: 'v4',
+      model: stubModel(
+        {},
+        { provider: 'openai.responses', specificationVersion: 'v4' },
+      ),
+      expectedTypes: ['file', 'text', 'file'],
+    },
+  ])(
+    'preserves $label structured tool output ordering',
+    ({ model, expectedTypes }) => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'function_call',
+          callId: 'tool-1',
+          name: 'describe_file',
+          arguments: '{}',
+        } as any,
+        {
+          type: 'function_call_result',
+          callId: 'tool-1',
+          name: 'describe_file',
+          output: [
+            {
+              type: 'input_file',
+              file: 'data:application/pdf;base64,JVBERi0=',
+            },
+            { type: 'input_text', text: 'Quarterly report.' },
+            {
+              type: 'input_image',
+              image: 'data:image/png;base64,aGVsbG8=',
+            },
+          ],
+        } as any,
+      ];
+
+      const messages = itemsToLanguageV2Messages(model, items);
+      const toolOutput = (messages[1] as any).content[0].output;
+
+      expect(toolOutput.type).toBe('content');
+      expect(toolOutput.value.map((part: any) => part.type)).toEqual(
+        expectedTypes,
+      );
+      expect(toolOutput.value[1]).toEqual({
+        type: 'text',
+        text: 'Quarterly report.',
+      });
+    },
+  );
 
   test('converts V3 image tool outputs and preserves file IDs', () => {
     const imageUrl =

@@ -1331,16 +1331,25 @@ function convertStructuredOutputsToAiSdkOutput(
         mediaType: string;
         filename?: string;
       };
+  type StructuredOutputPart =
+    { type: 'text'; text: string } | StructuredContentPart;
 
   const specVersion = getSpecVersion(model);
   const isV3 = specVersion === 'v3';
   const isV4 = specVersion === 'v4';
-  const textParts: string[] = [];
-  const contentParts: StructuredContentPart[] = [];
+  const contentParts: StructuredOutputPart[] = [];
+  const appendText = (text: string): void => {
+    const previousPart = contentParts.at(-1);
+    if (previousPart?.type === 'text') {
+      previousPart.text += text;
+      return;
+    }
+    contentParts.push({ type: 'text', text });
+  };
 
   for (const item of outputs) {
     if (item.type === 'input_text') {
-      textParts.push(item.text);
+      appendText(item.text);
       continue;
     }
     if (item.type === 'input_image') {
@@ -1382,11 +1391,11 @@ function convertStructuredOutputsToAiSdkOutput(
               : undefined;
 
       if (!imageValue && legacyFileId) {
-        textParts.push(`[image file_id=${legacyFileId}]`);
+        appendText(`[image file_id=${legacyFileId}]`);
         continue;
       }
       if (!imageValue) {
-        textParts.push('[image]');
+        appendText('[image]');
         continue;
       }
       const inlineImage = parseBase64ImageDataUrl(imageValue);
@@ -1430,7 +1439,7 @@ function convertStructuredOutputsToAiSdkOutput(
                 },
         );
       } catch {
-        textParts.push(imageValue);
+        appendText(imageValue);
       }
       continue;
     }
@@ -1483,7 +1492,7 @@ function convertStructuredOutputsToAiSdkOutput(
           } else if (isV3) {
             contentParts.push({ type: 'file-id', fileId: fileValue });
           } else {
-            textParts.push(`[file id=${fileValue}]`);
+            appendText(`[file id=${fileValue}]`);
           }
           continue;
         }
@@ -1521,10 +1530,10 @@ function convertStructuredOutputsToAiSdkOutput(
           } else if (isV3) {
             contentParts.push({ type: 'file-url', url: url.toString() });
           } else {
-            textParts.push(`[file url=${url.toString()}]`);
+            appendText(`[file url=${url.toString()}]`);
           }
         } catch {
-          textParts.push(fileValue);
+          appendText(fileValue);
         }
         continue;
       }
@@ -1545,10 +1554,10 @@ function convertStructuredOutputsToAiSdkOutput(
             } else if (isV3) {
               contentParts.push({ type: 'file-url', url: url.toString() });
             } else {
-              textParts.push(`[file url=${url.toString()}]`);
+              appendText(`[file url=${url.toString()}]`);
             }
           } catch {
-            textParts.push(fileUrl);
+            appendText(fileUrl);
           }
           continue;
         }
@@ -1568,32 +1577,27 @@ function convertStructuredOutputsToAiSdkOutput(
           } else if (isV3) {
             contentParts.push({ type: 'file-id', fileId });
           } else {
-            textParts.push(`[file id=${fileId}]`);
+            appendText(`[file id=${fileId}]`);
           }
           continue;
         }
       }
 
-      textParts.push('[file]');
+      appendText('[file]');
       continue;
     }
   }
 
-  if (contentParts.length === 0) {
-    return { type: 'text', value: textParts.join('') };
+  if (contentParts.every((part) => part.type === 'text')) {
+    return {
+      type: 'text',
+      value: contentParts.map((part) => part.text).join(''),
+    };
   }
 
-  const value: Array<
-    { type: 'text'; text: string } | StructuredContentPart
-  > = [];
-
-  if (textParts.length > 0) {
-    value.push({ type: 'text', text: textParts.join('') });
-  }
-  value.push(...contentParts);
   return {
     type: 'content',
-    value,
+    value: contentParts,
   } as LanguageModelV2ToolResultPart['output'];
 }
 
