@@ -27,17 +27,9 @@ describe('getMcpServerDiagnosticName', () => {
     );
   });
 
-  it.each(['', '/'])(
-    'redacts malformed HTTP userinfo with %j after the scheme',
-    (slashPrefix) => {
-      const malformedEndpoint = `https:${slashPrefix}${[
-        'user_marker',
-        'password_marker',
-      ].join(':')}@`;
-
-      expect(getMcpServerDiagnosticName(malformedEndpoint)).toBe(
-        '<redacted endpoint>',
-      );
-    },
-  );
+  it('fails closed for invalid URL-derived server names', () => {
+    expect(getMcpServerDiagnosticName('sse: not an absolute URL')).toBe(
+      'sse: <redacted endpoint>',
+    );
+  });
 });

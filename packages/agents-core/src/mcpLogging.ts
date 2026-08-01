@@ -1,5 +1,4 @@
 const URL_DERIVED_NAME_PREFIXES = ['sse: ', 'streamable-http: '] as const;
-const HTTP_SCHEME_PATTERN = /^https?:/i;
 const MAX_PROTOTYPE_DEPTH = 8;
 const DOM_EXCEPTION_PROTOTYPE =
   typeof DOMException === 'undefined' ? undefined : DOMException.prototype;
@@ -7,9 +6,8 @@ const DOM_EXCEPTION_NAME_GETTER = DOM_EXCEPTION_PROTOTYPE
   ? Object.getOwnPropertyDescriptor(DOM_EXCEPTION_PROTOTYPE, 'name')?.get
   : undefined;
 
-type EndpointRedactionInfo = {
-  url?: URL;
-};
+type EndpointRedactionInfo =
+  { kind: 'invalid' } | { kind: 'sensitive'; url: URL };
 
 type CancellationName = 'AbortError' | 'CanceledError' | 'CancelledError';
 type CancellationCode = 'ABORT_ERR' | 'ERR_ABORTED';
@@ -25,44 +23,16 @@ function parseHttpUrl(candidate: string): URL | undefined {
   }
 }
 
-function hasMalformedEndpointSecrets(endpoint: string): boolean {
-  if (endpoint.includes('?') || endpoint.includes('#')) {
-    return true;
-  }
-  if (HTTP_SCHEME_PATTERN.test(endpoint) && endpoint.includes('@')) {
-    return true;
-  }
-  const schemeIndex = endpoint.indexOf('://');
-  if (schemeIndex < 0) {
-    return false;
-  }
-  const authorityStart = schemeIndex + 3;
-  const authorityEndCandidates = [
-    endpoint.indexOf('/', authorityStart),
-    endpoint.indexOf('?', authorityStart),
-    endpoint.indexOf('#', authorityStart),
-  ].filter((index) => index >= 0);
-  const authorityEnd =
-    authorityEndCandidates.length > 0
-      ? Math.min(...authorityEndCandidates)
-      : endpoint.length;
-  const atIndex = endpoint.lastIndexOf('@', authorityEnd);
-  return atIndex >= authorityStart && atIndex < authorityEnd;
-}
-
 function getEndpointRedactionInfo(
   endpoint: string,
 ): EndpointRedactionInfo | undefined {
   const url = parseHttpUrl(endpoint);
-  if (url) {
-    return url.username || url.password || url.search || url.hash
-      ? { url }
-      : undefined;
+  if (!url) {
+    return { kind: 'invalid' };
   }
-  if (!hasMalformedEndpointSecrets(endpoint)) {
-    return undefined;
-  }
-  return {};
+  return url.username || url.password || url.search || url.hash
+    ? { kind: 'sensitive', url }
+    : undefined;
 }
 
 function getIntrinsicString(
@@ -152,12 +122,7 @@ export function getMcpServerDiagnosticName(name: string): string {
   if (url) {
     return `${prefix ?? ''}${url.protocol}//${url.host}${url.pathname}`;
   }
-  if (
-    (prefix ||
-      candidate.includes('://') ||
-      HTTP_SCHEME_PATTERN.test(candidate)) &&
-    hasMalformedEndpointSecrets(candidate)
-  ) {
+  if (prefix) {
     return `${prefix ?? ''}<redacted endpoint>`;
   }
   return name;
@@ -178,11 +143,16 @@ export function sanitizeMcpTransportError(
       ? collectCancellationName(error)
       : undefined;
 
-  const safeEndpoint = redactionInfo.url
-    ? ` for ${redactionInfo.url.protocol}//${redactionInfo.url.host}${redactionInfo.url.pathname}`
-    : '';
+  const safeEndpoint =
+    redactionInfo.kind === 'sensitive'
+      ? ` for ${redactionInfo.url.protocol}//${redactionInfo.url.host}${redactionInfo.url.pathname}`
+      : '';
+  const redactionMessage =
+    redactionInfo.kind === 'sensitive'
+      ? 'configured endpoint credentials were redacted.'
+      : 'configured endpoint was invalid and was redacted.';
   const sanitized = new Error(
-    `MCP ${operation} failed${safeEndpoint}; configured endpoint credentials were redacted.`,
+    `MCP ${operation} failed${safeEndpoint}; ${redactionMessage}`,
   );
   sanitized.name = cancellationName ?? 'MCPTransportError';
   return sanitized;

@@ -592,31 +592,27 @@ describe('NodeMCPServerSSE', () => {
     expectNoCredentialMarkers(logger.error.mock.calls);
   });
 
-  test.each([
-    ['without slashes', ''],
-    ['with one slash', '/'],
-    ['with two slashes', '//'],
-  ])(
-    'should remove credentials from malformed SSE endpoint errors and logs %s',
-    async (_label, slashPrefix) => {
-      const logger = createCapturingLogger();
-      const malformedEndpoint = `https:${slashPrefix}${[
-        'user_marker',
-        'password_marker',
-      ].join(':')}@`;
-      const server = new NodeMCPServerSSE({
-        url: malformedEndpoint,
-        logger,
-      });
+  test('should fail closed for invalid SSE endpoint errors and logs', async () => {
+    const logger = createCapturingLogger();
+    const invalidEndpoint = `//${['user_marker', 'password_marker'].join(
+      ':',
+    )}@example.test/mcp`;
+    const server = new NodeMCPServerSSE({
+      url: invalidEndpoint,
+      logger,
+    });
 
-      const error = await server.connect().catch((caught) => caught);
+    const error = await server.connect().catch((caught) => caught);
 
-      expect(error).toMatchObject({ name: 'MCPTransportError' });
-      expect((error as Error).message).not.toContain(malformedEndpoint);
-      expectNoCredentialMarkers(error);
-      expectNoCredentialMarkers(logger.error.mock.calls);
-    },
-  );
+    expect(error).toMatchObject({
+      name: 'MCPTransportError',
+      message:
+        'MCP SSE connect failed; configured endpoint was invalid and was redacted.',
+    });
+    expect((error as Error & { input?: unknown }).input).toBeUndefined();
+    expectNoCredentialMarkers(error);
+    expectNoCredentialMarkers(logger.error.mock.calls);
+  });
 
   test.each([
     [
