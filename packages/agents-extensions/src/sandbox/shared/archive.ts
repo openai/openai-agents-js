@@ -255,6 +255,12 @@ export function validateWorkspaceTarArchive(
 
       if (rawType === 'x' || rawType === 'g') {
         const pax = parsePaxPayload(payload);
+        if (pax.size !== undefined) {
+          throw tarError(
+            readTarString(header, 0, 100),
+            'PAX size override not allowed',
+          );
+        }
         if (pax['GNU.sparse.name'] !== undefined) {
           throw tarError(
             readTarString(header, 0, 100),
