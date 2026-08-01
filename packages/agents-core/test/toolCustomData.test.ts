@@ -136,6 +136,13 @@ describe('tool output customData', () => {
   });
 
   it('maps local MCP result metadata to tool output customData', async () => {
+    const endpoint = new URL(
+      'https://example.test/mcp?token=CUSTOM_QUERY#CUSTOM_FRAGMENT',
+    );
+    endpoint.username = 'CUSTOM_USER';
+    endpoint.password = 'CUSTOM_PASSWORD';
+    const rawServerName = `streamable-http: ${endpoint.toString()}`;
+    let capturedServerName: string | undefined;
     const model = new RecordingModel([
       {
         output: [
@@ -155,14 +162,17 @@ describe('tool output customData', () => {
       },
     ]);
     const server: MCPServer = {
-      name: 'meta-server',
+      name: rawServerName,
       cacheToolsList: false,
-      customDataExtractor: (context) => ({
-        responseMeta: context.resultMeta,
-        structuredContent: context.structuredContent,
-        isError: context.isError,
-        output: context.toolOutput,
-      }),
+      customDataExtractor: (context) => {
+        capturedServerName = context.serverName;
+        return {
+          responseMeta: context.resultMeta,
+          structuredContent: context.structuredContent,
+          isError: context.isError,
+          output: context.toolOutput,
+        };
+      },
       connect: async () => {},
       close: async () => {},
       listTools: async () => [],
@@ -213,6 +223,16 @@ describe('tool output customData', () => {
     expect(modelInput).toContain('mcp result');
     expect(modelInput).not.toContain('rows');
     expect(modelInput).not.toContain('customData');
+    expect(capturedServerName).toBe(rawServerName);
+    const serializedState = result.state.toString();
+    for (const secret of [
+      'CUSTOM_USER',
+      'CUSTOM_PASSWORD',
+      'CUSTOM_QUERY',
+      'CUSTOM_FRAGMENT',
+    ]) {
+      expect(serializedState).not.toContain(secret);
+    }
   });
 
   it('attaches computer tool customData', async () => {

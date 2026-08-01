@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { mcpToFunctionTool, MCPServer } from '../src/mcp';
 import type { MCPToolMetaContext } from '../src/mcpUtil';
 import { RunContext } from '../src/runContext';
+import { sanitizeMcpTransportError } from '../src/mcpLogging';
 import { withTrace } from '../src/tracing';
 import { withCustomSpan } from '../src/tracing/createSpans';
 import { getCurrentSpan } from '../src/tracing';
@@ -401,6 +402,12 @@ describe('mcpToFunctionTool', () => {
   });
 
   it('resolves and passes MCP tool metadata', async () => {
+    const endpoint = new URL(
+      'https://example.test/mcp?token=META_QUERY#META_FRAGMENT',
+    );
+    endpoint.username = 'META_USER';
+    endpoint.password = 'META_PASSWORD';
+    const rawServerName = `streamable-http: ${endpoint.toString()}`;
     const callTool = vi.fn(
       async (
         _toolName: string,
@@ -418,7 +425,7 @@ describe('mcpToFunctionTool', () => {
     });
 
     const server: MCPServer = {
-      name: 'stub',
+      name: rawServerName,
       cacheToolsList: false,
       toolMetaResolver,
       connect: async () => {},
@@ -454,7 +461,7 @@ describe('mcpToFunctionTool', () => {
     expect(toolMetaResolver).toHaveBeenCalledTimes(1);
     const metaContext = toolMetaResolver.mock.calls[0][0];
     expect(metaContext.runContext).toBe(runContext);
-    expect(metaContext.serverName).toBe('stub');
+    expect(metaContext.serverName).toBe(rawServerName);
     expect(metaContext.toolName).toBe('meta');
     expect(metaContext.arguments).toEqual({ foo: 'bar' });
   });
@@ -602,6 +609,56 @@ describe('mcpToFunctionTool', () => {
     expect(callTool).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps URL credentials out of the default model-visible MCP error', async () => {
+    const endpointUrl = new URL(
+      'https://example.test:8443/mcp?token=ERROR_QUERY#ERROR_FRAGMENT',
+    );
+    endpointUrl.username = 'ERROR_USER';
+    endpointUrl.password = 'ERROR_PASSWORD';
+    const endpoint = endpointUrl.toString();
+    const server: MCPServer = {
+      name: `streamable-http: ${endpoint}`,
+      cacheToolsList: false,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool: async () => {
+        throw sanitizeMcpTransportError(
+          new Error(`request failed for ${endpoint}`),
+          endpoint,
+          'streamable HTTP tool call',
+        );
+      },
+      invalidateToolsCache: async () => {},
+    };
+    const tool = mcpToFunctionTool(
+      {
+        name: 'safe_error',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      } as any,
+      server,
+      false,
+    );
+
+    const result = await tool.invoke(new RunContext({}), '{}');
+
+    expect(result).toContain('https://example.test:8443/mcp');
+    for (const secret of [
+      'ERROR_USER',
+      'ERROR_PASSWORD',
+      'ERROR_QUERY',
+      'ERROR_FRAGMENT',
+    ]) {
+      expect(result).not.toContain(secret);
+    }
+  });
+
   it('rethrows tool failures when server errorFunction is null', async () => {
     const callTool = vi.fn(async () => {
       throw new Error('boom');
@@ -709,8 +766,14 @@ describe('mcpToFunctionTool', () => {
   });
 
   it('annotates the current span when invoking the tool', async () => {
+    const endpoint = new URL(
+      'https://example.test:8443/mcp?token=SPAN_QUERY#SPAN_FRAGMENT',
+    );
+    endpoint.username = 'SPAN_USER';
+    endpoint.password = 'SPAN_PASSWORD';
+    const rawServerName = `streamable-http: ${endpoint.toString()}`;
     const server: MCPServer = {
-      name: 'annotated',
+      name: rawServerName,
       cacheToolsList: false,
       connect: async () => {},
       close: async () => {},
@@ -746,8 +809,9 @@ describe('mcpToFunctionTool', () => {
           );
           expect(result).toEqual({ type: 'text', text: '{"foo":"bar"}' });
           expect(getCurrentSpan()?.spanData.mcp_data).toEqual({
-            server: 'annotated',
+            server: 'streamable-http: https://example.test:8443/mcp',
           });
+          expect(server.name).toBe(rawServerName);
         },
         { data: { name: 'span' } },
       );

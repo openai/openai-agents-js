@@ -31,7 +31,7 @@ import type {
   MCPToolMetaContext,
   MCPToolMetaResolver,
 } from './mcpUtil';
-import { getMcpServerDiagnosticName } from './mcpLogging';
+import { getMcpServerExternalName } from './mcpLogging';
 import type { RunContext } from './runContext';
 import type { Agent } from './agent';
 import { maybeExtractToolOutputCustomData } from './utils/customData';
@@ -521,7 +521,7 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
             if (!filtered) {
               logMcpToolFilterDebug(
                 () =>
-                  `MCP Tool (server: ${getMcpServerDiagnosticName(server.name)}, tool: ${tool.name}) is blocked by the callable filter.`,
+                  `MCP Tool (server: ${getMcpServerExternalName(server.name)}, tool: ${tool.name}) is blocked by the callable filter.`,
               );
               continue;
             }
@@ -541,12 +541,12 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
                 if (blocked) {
                   logMcpToolFilterDebug(
                     () =>
-                      `MCP Tool (server: ${getMcpServerDiagnosticName(server.name)}, tool: ${tool.name}) is blocked by the static filter.`,
+                      `MCP Tool (server: ${getMcpServerExternalName(server.name)}, tool: ${tool.name}) is blocked by the static filter.`,
                   );
                 } else if (!allowed) {
                   logMcpToolFilterDebug(
                     () =>
-                      `MCP Tool (server: ${getMcpServerDiagnosticName(server.name)}, tool: ${tool.name}) is not allowed by the static filter.`,
+                      `MCP Tool (server: ${getMcpServerExternalName(server.name)}, tool: ${tool.name}) is not allowed by the static filter.`,
                   );
                 }
                 continue;
@@ -580,7 +580,7 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
   return withMCPListToolsSpan(
     listToolsForServer,
     {
-      data: { server: server.name },
+      data: { server: getMcpServerExternalName(server.name) },
     },
     tracingParent,
   );
@@ -914,17 +914,30 @@ function buildPrefixedToolNameOverrides(
 ): Map<string, string> {
   const baseNameCounts = new Map<string, number>();
   for (const { server, mcpTools } of serverToolBatches) {
+    const serverName = getMcpServerExternalName(server.name);
     for (const mcpTool of mcpTools) {
-      const baseName = buildPrefixedToolBaseName(server.name, mcpTool.name);
+      const baseName = buildPrefixedToolBaseName(serverName, mcpTool.name);
       baseNameCounts.set(baseName, (baseNameCounts.get(baseName) ?? 0) + 1);
     }
   }
 
   const candidates: PrefixedToolNameCandidate[] = [];
+  const rawServerNamesBySeed = new Map<string, string>();
   for (const { server, serverIndex, mcpTools } of serverToolBatches) {
+    const serverName = getMcpServerExternalName(server.name);
     mcpTools.forEach((mcpTool, toolIndex) => {
-      const baseName = buildPrefixedToolBaseName(server.name, mcpTool.name);
-      const seed = `${server.name}\0${mcpTool.name}`;
+      const baseName = buildPrefixedToolBaseName(serverName, mcpTool.name);
+      const seed = `${serverName}\0${mcpTool.name}`;
+      const previousRawServerName = rawServerNamesBySeed.get(seed);
+      if (
+        previousRawServerName !== undefined &&
+        previousRawServerName !== server.name
+      ) {
+        throw new UserError(
+          `MCP server names are indistinguishable after URL redaction for tool '${mcpTool.name}': '${serverName}'. Configure unique safe server names when includeServerInToolNames is enabled.`,
+        );
+      }
+      rawServerNamesBySeed.set(seed, server.name);
       const forceHash =
         (baseNameCounts.get(baseName) ?? 0) > 1 || reservedNames.has(baseName);
       candidates.push({
@@ -1039,7 +1052,9 @@ export function mcpToFunctionTool(
     const currentSpan =
       getToolCallParentSpanFromDetails(details) ?? getCurrentSpan();
     if (currentSpan) {
-      currentSpan.spanData['mcp_data'] = { server: server.name };
+      currentSpan.spanData['mcp_data'] = {
+        server: getMcpServerExternalName(server.name),
+      };
     }
     const meta = runContext
       ? await resolveMcpToolMeta(server, runContext, mcpTool.name, args)

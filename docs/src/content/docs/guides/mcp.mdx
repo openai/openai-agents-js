@@ -154,6 +154,7 @@ Notes:
 - When `errorFunction` is unset, the SDK uses the default tool error formatter.
 - Server-level `errorFunction` values override `Agent.mcpConfig.errorFunction` for that server.
 - `includeServerInToolNames` is opt-in. When enabled, each local MCP tool is exposed to the model with a deterministic server-prefixed name, which helps avoid collisions when multiple MCP servers publish tools with the same name.
+- If distinct URL-derived server names become identical after credentials, query parameters, and fragments are removed and they publish the same tool name, configuration fails before the model request. Set explicit, unique, non-secret `name` values for those servers.
 
 ## 2. Streamable HTTP MCP servers
 
