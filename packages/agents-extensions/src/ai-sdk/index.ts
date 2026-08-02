@@ -1382,7 +1382,8 @@ function convertStructuredOutputsToAiSdkOutput(
       const imageFileId = imageObjectFileId ?? legacyFileId;
 
       if (
-        (isV3 || (isV4 && supportsOpenAIFileReferences(model))) &&
+        (isV3 || isV4) &&
+        supportsOpenAIFileReferences(model) &&
         imageFileId
       ) {
         contentParts.push(
@@ -1401,7 +1402,7 @@ function convertStructuredOutputsToAiSdkOutput(
         );
         continue;
       }
-      if (isV4 && imageFileId) {
+      if ((isV3 || isV4) && imageFileId) {
         appendText(`[image file_id=${imageFileId}]`);
         continue;
       }
@@ -1514,7 +1515,7 @@ function convertStructuredOutputsToAiSdkOutput(
               mediaType,
               ...(filename ? { filename } : {}),
             });
-          } else if (isV3) {
+          } else if (isV3 && supportsOpenAIFileReferences(model)) {
             contentParts.push({ type: 'file-id', fileId: fileValue });
           } else {
             appendText(`[file id=${fileValue}]`);
@@ -1599,7 +1600,7 @@ function convertStructuredOutputsToAiSdkOutput(
               mediaType,
               ...(filename ? { filename } : {}),
             });
-          } else if (isV3) {
+          } else if (isV3 && supportsOpenAIFileReferences(model)) {
             contentParts.push({ type: 'file-id', fileId });
           } else {
             appendText(`[file id=${fileId}]`);

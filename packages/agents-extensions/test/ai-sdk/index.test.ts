@@ -2127,7 +2127,10 @@ describe('itemsToLanguageV2Messages', () => {
     ];
 
     const msgs = itemsToLanguageV2Messages(
-      stubModel({}, { specificationVersion: 'v3' }),
+      stubModel(
+        {},
+        { provider: 'openai.responses', specificationVersion: 'v3' },
+      ),
       items,
     );
     expect(msgs).toEqual([
@@ -2303,48 +2306,48 @@ describe('itemsToLanguageV2Messages', () => {
     });
   });
 
-  test('keeps OpenAI file IDs in non-OpenAI v4 structured tool outputs as text', () => {
-    const items: protocol.ModelItem[] = [
-      {
-        type: 'function_call',
-        callId: 'tool-1',
-        name: 'describe_files',
-        arguments: '{}',
-      } as any,
-      {
-        type: 'function_call_result',
-        callId: 'tool-1',
-        name: 'describe_files',
-        output: [
-          { type: 'input_image', image: { id: 'file_image_123' } },
-          {
-            type: 'input_file',
-            file: 'file-document-string-123',
-          },
-          {
-            type: 'input_file',
-            file: { id: 'file_document_object_123' },
-          },
-        ],
-      } as any,
-    ];
+  test.each(['v3', 'v4'])(
+    'keeps OpenAI file IDs in non-OpenAI %s structured tool outputs as text',
+    (specificationVersion) => {
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'function_call',
+          callId: 'tool-1',
+          name: 'describe_files',
+          arguments: '{}',
+        } as any,
+        {
+          type: 'function_call_result',
+          callId: 'tool-1',
+          name: 'describe_files',
+          output: [
+            { type: 'input_image', image: { id: 'file_image_123' } },
+            {
+              type: 'input_file',
+              file: 'file-document-string-123',
+            },
+            {
+              type: 'input_file',
+              file: { id: 'file_document_object_123' },
+            },
+          ],
+        } as any,
+      ];
 
-    const msgs = itemsToLanguageV2Messages(
-      stubModel(
-        {},
-        { provider: 'anthropic.messages', specificationVersion: 'v4' },
-      ),
-      items,
-    );
+      const msgs = itemsToLanguageV2Messages(
+        stubModel({}, { provider: 'anthropic.messages', specificationVersion }),
+        items,
+      );
 
-    expect((msgs[1] as any).content[0].output).toEqual({
-      type: 'text',
-      value:
-        '[image file_id=file_image_123]' +
-        '[file id=file-document-string-123]' +
-        '[file id=file_document_object_123]',
-    });
-  });
+      expect((msgs[1] as any).content[0].output).toEqual({
+        type: 'text',
+        value:
+          '[image file_id=file_image_123]' +
+          '[file id=file-document-string-123]' +
+          '[file id=file_document_object_123]',
+      });
+    },
+  );
 
   test.each([
     {
