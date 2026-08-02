@@ -7,13 +7,24 @@ import {
   it,
   vi,
 } from 'vitest';
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types';
+import { SdkError, SdkErrorCode } from '@modelcontextprotocol/client';
 import { MCPServerStreamableHttp } from '../../../src/mcp';
 import type { Logger } from '../../../src/logger';
 import { NodeMCPServerStreamableHttp } from '../../../src/shims/mcp-server/node';
 
 const TEST_URL = 'https://example.invalid/mcp';
 const TEST_PROTOCOL_VERSION = '2025-06-18';
+const ErrorCode = {
+  ConnectionClosed: SdkErrorCode.ConnectionClosed,
+  InvalidParams: 'INVALID_PARAMS' as SdkErrorCode,
+  InvalidRequest: 'INVALID_REQUEST' as SdkErrorCode,
+  NotConnected: SdkErrorCode.NotConnected,
+  RequestTimeout: SdkErrorCode.RequestTimeout,
+};
+
+class McpError extends SdkError {
+  override name = 'McpError';
+}
 const silentLogger: Logger = {
   namespace: 'openai-agents:test:mcp-streamable-http-retry',
   debug: () => {},
@@ -105,7 +116,6 @@ class MockStreamableHTTPClientTransport {
 
 class MockClient {
   static instances: MockClient[] = [];
-  static toolMetadataCacheSupported = true;
   static connectHandlers: Array<
     ((this: MockClient) => Promise<void>) | undefined
   > = [];
@@ -134,6 +144,7 @@ class MockClient {
   > = [];
 
   readonly instanceIndex: number;
+  readonly clientOptions: unknown;
   transport: MockStreamableHTTPClientTransport | null = null;
   connectMock = vi.fn().mockResolvedValue(undefined);
   closeMock = vi.fn().mockResolvedValue(undefined);
@@ -144,14 +155,13 @@ class MockClient {
     NonNullable<MockTool['outputSchema']>
   >();
 
-  constructor(_options: { name: string; version: string }) {
+  constructor(
+    _options: { name: string; version: string },
+    clientOptions?: unknown,
+  ) {
     this.instanceIndex = MockClient.instances.length;
+    this.clientOptions = clientOptions;
     MockClient.instances.push(this);
-    if (!MockClient.toolMetadataCacheSupported) {
-      Object.defineProperty(this, 'cacheToolMetadata', {
-        value: undefined,
-      });
-    }
   }
 
   private get transportIndex(): number {
@@ -202,11 +212,17 @@ class MockClient {
     }
   }
 
-  async request(request: { method: string }): Promise<{ tools: MockTool[] }> {
-    if (request.method !== 'tools/list') {
-      throw new Error(`Unexpected request method: ${request.method}`);
-    }
+  getServerCapabilities(): Record<string, unknown> {
+    return { tools: {} };
+  }
+
+  getProtocolEra(): 'legacy' {
+    return 'legacy';
+  }
+
+  async listTools(): Promise<{ tools: MockTool[] }> {
     const tools = MockClient.listToolsResults[this.transportIndex] ?? [];
+    this.cacheToolMetadata(tools);
     return { tools };
   }
 
@@ -223,12 +239,19 @@ class MockClient {
     await this.notificationMock(notification);
   }
 
-  async callTool(params: {
-    name: string;
-    arguments: Record<string, unknown>;
-    _meta?: Record<string, unknown>;
-  }): Promise<any> {
-    if (this.cachedRequiredTaskTools.has(params.name)) {
+  async callTool(
+    params: {
+      name: string;
+      arguments: Record<string, unknown>;
+      _meta?: Record<string, unknown>;
+    },
+    options?: { toolDefinition?: MockTool },
+  ): Promise<any> {
+    if (
+      options?.toolDefinition?.execution?.taskSupport === 'required' ||
+      (options?.toolDefinition === undefined &&
+        this.cachedRequiredTaskTools.has(params.name))
+    ) {
       throw new McpError(
         ErrorCode.InvalidRequest,
         `Tool "${params.name}" requires task-based execution.`,
@@ -247,12 +270,21 @@ class MockClient {
           ],
         };
 
-    this.validateStructuredContent(params.name, result);
+    this.validateStructuredContent(
+      params.name,
+      result,
+      options?.toolDefinition?.outputSchema,
+    );
     return result;
   }
 
-  private validateStructuredContent(toolName: string, result: any): void {
-    const outputSchema = this.cachedToolOutputSchemas.get(toolName);
+  private validateStructuredContent(
+    toolName: string,
+    result: any,
+    overrideOutputSchema?: MockTool['outputSchema'],
+  ): void {
+    const outputSchema =
+      overrideOutputSchema ?? this.cachedToolOutputSchemas.get(toolName);
     if (!outputSchema) {
       return;
     }
@@ -311,6 +343,7 @@ class MockClient {
   }
 
   async close(): Promise<void> {
+    this.cacheToolMetadata([]);
     await this.closeMock();
     if (this.transport) {
       await this.transport.close();
@@ -319,22 +352,12 @@ class MockClient {
   }
 }
 
-vi.mock(
-  '@modelcontextprotocol/sdk/client/streamableHttp.js',
-  async (importOriginal) => ({
-    ...(await importOriginal()),
-    StreamableHTTPClientTransport: MockStreamableHTTPClientTransport,
-    StreamableHTTPError: MockStreamableHTTPError,
-  }),
-);
-
-vi.mock(
-  '@modelcontextprotocol/sdk/client/index.js',
-  async (importOriginal) => ({
-    ...(await importOriginal()),
-    Client: MockClient,
-  }),
-);
+vi.doMock('@modelcontextprotocol/client', async (importOriginal) => ({
+  ...(await importOriginal()),
+  StreamableHTTPClientTransport: MockStreamableHTTPClientTransport,
+  StreamableHTTPError: MockStreamableHTTPError,
+  Client: MockClient,
+}));
 
 function createServer(
   name: string,
@@ -378,7 +401,6 @@ function throwProtocolNotConnected(this: MockClient): never {
 describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
   beforeAll(() => {
     MockClient.instances = [];
-    MockClient.toolMetadataCacheSupported = true;
     MockClient.connectHandlers = [];
     MockClient.listToolsResults = [];
     MockClient.sessionIdAssignments = [];
@@ -389,7 +411,6 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
 
   beforeEach(() => {
     MockClient.instances = [];
-    MockClient.toolMetadataCacheSupported = true;
     MockClient.connectHandlers = [];
     MockClient.listToolsResults = [];
     MockClient.sessionIdAssignments = [];
@@ -398,25 +419,21 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
     MockStreamableHTTPClientTransport.instances = [];
   });
 
-  it('publishes connections without metadata caching and fails tool listing early', async () => {
-    MockClient.toolMetadataCacheSupported = false;
-    const server = createServer('missing-metadata-cache-server');
+  it('configures automatic modern-to-legacy protocol negotiation', async () => {
+    const server = createServer('auto-negotiation-server');
 
     await server.connect();
 
     const client = MockClient.instances[0];
-    const requestSpy = vi.spyOn(client, 'request');
-    await expect(server.listTools()).rejects.toThrow(
-      'The installed MCP SDK does not support tool metadata caching required for paginated tool listing.',
-    );
-
     expect(MockClient.instances).toHaveLength(1);
     expect(client.connectMock).toHaveBeenCalledOnce();
+    expect(client.clientOptions).toEqual({
+      versionNegotiation: { mode: 'auto' },
+    });
     expect((server as any).session).toBe(client);
     expect((server as any).transport).toBe(
       MockStreamableHTTPClientTransport.instances[0],
     );
-    expect(requestSpy).not.toHaveBeenCalled();
 
     await server.close();
   });
@@ -453,7 +470,7 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       expect(MockClient.instances[0].notificationMock).toHaveBeenCalledWith({
         method: 'notifications/initialized',
       });
-      expect(MockClient.instances[0].closeMock).toHaveBeenCalledTimes(1);
+      expect(MockClient.instances[0].closeMock).not.toHaveBeenCalled();
       expect(
         MockStreamableHTTPClientTransport.instances[0].closeMock,
       ).toHaveBeenCalledTimes(1);
@@ -469,7 +486,7 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
     }
   });
 
-  it('preserves tool metadata after healing the shared client', async () => {
+  it('preserves tool metadata while healing the shared client', async () => {
     MockClient.listToolsResults = [
       [
         {
@@ -545,8 +562,8 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       await expect(
         server.callTool('required-task-tool', null),
       ).rejects.toMatchObject({
-        name: 'McpError',
-        code: ErrorCode.InvalidRequest,
+        name: 'ProtocolError',
+        code: -32600,
       });
       await expect(server.callTool('schema-tool', null)).rejects.toMatchObject({
         name: 'McpError',
@@ -562,7 +579,7 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
     }
   });
 
-  it('restores committed metadata when a same-session refresh fails', async () => {
+  it('retains last known metadata when a same-session refresh fails', async () => {
     MockClient.sessionIdAssignments = ['shared-session'];
     MockClient.listToolsResults = [
       [
@@ -616,8 +633,8 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       await expect(
         server.callTool('previous-required-tool', null),
       ).rejects.toMatchObject({
-        name: 'McpError',
-        code: ErrorCode.InvalidRequest,
+        name: 'ProtocolError',
+        code: -32600,
       });
       expect(MockClient.instances).toHaveLength(1);
     } finally {

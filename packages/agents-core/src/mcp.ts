@@ -1295,14 +1295,14 @@ export interface MCPServerStreamableHttpOptions {
 
   // ----------------------------------------------------
   // OAuth
-  // import { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
+  // import { OAuthClientProvider } from '@modelcontextprotocol/client';
   authProvider?: any;
   // RequestInit
   requestInit?: any;
   // Custom fetch implementation used for all network requests.
-  // import { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js';
+  // import { FetchLike } from '@modelcontextprotocol/client';
   fetch?: any;
-  // import { StreamableHTTPReconnectionOptions } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+  // import { StreamableHTTPReconnectionOptions } from '@modelcontextprotocol/client';
   reconnectionOptions?: any;
   sessionId?: string;
   // ----------------------------------------------------
@@ -1337,14 +1337,14 @@ export interface MCPServerSSEOptions {
 
   // ----------------------------------------------------
   // OAuth
-  // import { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
+  // import { OAuthClientProvider } from '@modelcontextprotocol/client';
   authProvider?: any;
   // RequestInit
   requestInit?: any;
   // Custom fetch implementation used for all network requests.
-  // import { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js';
+  // import { FetchLike } from '@modelcontextprotocol/client';
   fetch?: any;
-  // import { SSEReconnectionOptions } from '@modelcontextprotocol/sdk/client/sse.js';
+  // import { SSEClientTransportOptions } from '@modelcontextprotocol/client';
   eventSourceInit?: any;
   // ----------------------------------------------------
 }

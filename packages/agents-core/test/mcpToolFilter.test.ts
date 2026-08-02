@@ -9,9 +9,8 @@ class StubServer extends NodeMCPServerStdio {
     super({ command: 'noop', name, toolFilter: filter, cacheToolsList: true });
     this.toolList = tools;
     this.session = {
-      cacheToolMetadata: () => {},
-      request: async () => ({ tools: this.toolList }),
-      callTool: async () => [],
+      listTools: async () => ({ tools: this.toolList }),
+      callTool: async () => ({ content: [] }),
       close: async () => {},
     } as any;
     this._cacheDirty = true;
@@ -401,7 +400,7 @@ describe('MCP tool filtering', () => {
 
       // swap out the underlying list, invalidate cache, then call again
       server.toolList = tools2 as any;
-      server.invalidateToolsCache();
+      await server.invalidateToolsCache();
 
       result = await server.listTools();
       expect(result.map((t) => t.name)).toEqual(['b']);
