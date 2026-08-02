@@ -661,8 +661,8 @@ describe('RealtimeSession', () => {
     vi.restoreAllMocks();
   });
 
-  it('applies output guardrails to text deltas without interrupting audio', async () => {
-    const runMock = vi.fn(async () => ({
+  it('derives text response ownership from deltas for generic start events', async () => {
+    const runMock = vi.fn(async (_args: any) => ({
       guardrail: { name: 'test', version: '1', policyHint: 'bad' },
       output: { tripwireTriggered: true, outputInfo: { r: 'bad' } },
     }));
@@ -670,8 +670,9 @@ describe('RealtimeSession', () => {
       run: runMock,
     } as any);
     const localTransport = new FakeTransport();
-    const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
-    const localSession = new RealtimeSession(agent, {
+    const sourceAgent = new RealtimeAgent({ name: 'Source', handoffs: [] });
+    const newerAgent = new RealtimeAgent({ name: 'Newer', handoffs: [] });
+    const localSession = new RealtimeSession(sourceAgent, {
       transport: localTransport,
       outputGuardrails: [
         {
@@ -685,8 +686,8 @@ describe('RealtimeSession', () => {
 
     localTransport.emit('turn_started', {
       type: 'response_started',
-      providerData: { response: { id: 'response-1' } },
     });
+    await localSession.updateAgent(newerAgent);
     const guardrailTripped = waitForEvent<any[]>(
       localSession,
       'guardrail_tripped',
@@ -699,9 +700,10 @@ describe('RealtimeSession', () => {
     });
 
     const [, eventAgent, , details] = await guardrailTripped;
-    expect(eventAgent).toBe(agent);
+    expect(eventAgent).toBe(sourceAgent);
     expect(details).toEqual({ itemId: 'item-1' });
     expect(runMock).toHaveBeenCalledTimes(1);
+    expect(runMock.mock.calls[0]?.[0].agent).toBe(sourceAgent);
     expect(localTransport.sendEventCalls).toContainEqual({
       type: 'response.cancel',
       response_id: 'response-1',

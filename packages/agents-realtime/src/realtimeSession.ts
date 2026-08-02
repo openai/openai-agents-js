@@ -320,6 +320,8 @@ export class RealtimeSession<
     string,
     RealtimeDispatchSnapshot<TBaseContext>
   >();
+  #pendingResponseDispatchSnapshot:
+    RealtimeDispatchSnapshot<TBaseContext> | undefined;
   #pendingFunctionCalls = new Map<
     string,
     PendingRealtimeFunctionCall<TBaseContext>
@@ -504,7 +506,9 @@ export class RealtimeSession<
       return existingSnapshot;
     }
 
-    const snapshot = this.#currentDispatchSnapshot;
+    const snapshot =
+      this.#pendingResponseDispatchSnapshot ?? this.#currentDispatchSnapshot;
+    this.#pendingResponseDispatchSnapshot = undefined;
     if (snapshot) {
       this.#responseDispatchSnapshots.set(responseId, snapshot);
     }
@@ -1051,6 +1055,10 @@ export class RealtimeSession<
     source: OutputGuardrailDeltaSource,
   ) {
     const { delta, itemId, responseId } = event;
+    if (this.#activeResponseId === undefined) {
+      this.#activeResponseId = responseId;
+      this.#captureResponseDispatchSnapshot(responseId);
+    }
     let responseState = this.#outputGuardrailDeltaState.get(responseId);
     if (!responseState) {
       responseState = new Map();
@@ -1130,9 +1138,10 @@ export class RealtimeSession<
     this.#transport.on('turn_started', (event) => {
       this.#audioStarted = false;
       const responseId = getStartedResponseId(event);
+      this.#activeResponseId = responseId;
+      this.#responseGeneration += 1;
+      this.#pendingResponseDispatchSnapshot = this.#currentDispatchSnapshot;
       if (responseId) {
-        this.#activeResponseId = responseId;
-        this.#responseGeneration += 1;
         this.#captureResponseDispatchSnapshot(responseId);
       }
       this.emit('agent_start', this.#context, this.#currentAgent);
@@ -1141,7 +1150,7 @@ export class RealtimeSession<
     this.#transport.on('turn_done', (event) => {
       const responseId = event.response.id;
       const sourceAgent =
-        this.#responseDispatchSnapshots.get(responseId)?.agent ??
+        this.#captureResponseDispatchSnapshot(responseId)?.agent ??
         this.#currentAgent;
       const responseGeneration = this.#responseGeneration;
       const connectionGeneration = this.#connectionGeneration;
@@ -1385,6 +1394,7 @@ export class RealtimeSession<
     this.#activeResponseId = undefined;
     this.#outputGuardrailDeltaState.clear();
     this.#interruptedByGuardrail = {};
+    this.#pendingResponseDispatchSnapshot = undefined;
     this.#responseDispatchSnapshots.clear();
     // makes sure the current agent is correctly set and loads the tools
     await this.#setCurrentAgent(this.initialAgent);
@@ -1464,6 +1474,7 @@ export class RealtimeSession<
     this.#activeResponseId = undefined;
     this.#outputGuardrailDeltaState.clear();
     this.#interruptedByGuardrail = {};
+    this.#pendingResponseDispatchSnapshot = undefined;
     this.#pendingFunctionCalls.clear();
     this.#responseDispatchSnapshots.clear();
     this.#transport.close();
