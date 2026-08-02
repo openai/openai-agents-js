@@ -2379,6 +2379,7 @@ describe('itemsToLanguageV2Messages', () => {
             { type: 'input_file', file: 'file:///etc/passwd' },
             { type: 'input_file', file: { url: 'javascript:alert(1)' } },
             { type: 'input_file', file: 'data:text/plain,hi' },
+            { type: 'input_file', file: 'data:application/pdf;base64,%%%' },
           ],
         } as any,
       ];
@@ -2388,7 +2389,9 @@ describe('itemsToLanguageV2Messages', () => {
 
       expect(output).toEqual({
         type: 'text',
-        value: 'file:///etc/passwdjavascript:alert(1)data:text/plain,hi',
+        value:
+          'file:///etc/passwdjavascript:alert(1)data:text/plain,hi' +
+          'data:application/pdf;base64,%%%',
       });
     },
   );
@@ -2474,6 +2477,24 @@ describe('itemsToLanguageV2Messages', () => {
           {
             type: 'input_file',
             file,
+          },
+        ],
+      } as any,
+    ];
+
+    expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow(
+      /Only public URLs, base64 data URLs, and raw base64 file data are supported/,
+    );
+  });
+
+  test('rejects malformed input_file base64 data URLs', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: 'data:application/pdf;base64,%%%',
           },
         ],
       } as any,

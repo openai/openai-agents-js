@@ -276,6 +276,9 @@ function parseBase64DataUrl(source: string): ParsedInlineData | undefined {
   } catch {
     data = rawData;
   }
+  if (!isRawBase64FileData(data)) {
+    return undefined;
+  }
 
   return {
     data,
