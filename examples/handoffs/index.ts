@@ -26,7 +26,7 @@ const randomNumberTool = tool({
 function spanishHandoffMessageFilter(handoffMessageData: HandoffInputData) {
   if (isGpt5Default()) {
     console.log(
-      'GPT-5 models do not work if you remove the toll call results, so this filter does nothing.',
+      'GPT-5 models do not work if you remove the tool call results, so this filter does nothing.',
     );
     return handoffMessageData;
   }
@@ -56,7 +56,7 @@ const secondAgent = new Agent({
 });
 
 async function main() {
-  withTrace('Handoffs example', async () => {
+  await withTrace('Handoffs example', async () => {
     // 1. Send a regular message to the first agent
     console.log('Step 1: Send a regular message to the first agent');
     let result = await run(firstAgent, 'Hi, my name is Sora.');

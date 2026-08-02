@@ -75,7 +75,7 @@ async function main() {
     }
 
     const compactedHistory = await session.getItems();
-    console.log('\nHitory including both compaction and newer items:');
+    console.log('\nHistory including both compaction and newer items:');
     for (const item of compactedHistory) {
       console.log(`- ${item.type}`);
     }

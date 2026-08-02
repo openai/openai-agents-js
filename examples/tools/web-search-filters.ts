@@ -12,7 +12,7 @@ async function main() {
         filters: {
           allowedDomains: [
             'openai.com',
-            'developer.openai.com',
+            'developers.openai.com',
             'platform.openai.com',
             'help.openai.com',
           ],

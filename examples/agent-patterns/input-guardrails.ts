@@ -1,8 +1,13 @@
-import { Agent, run, withTrace } from '@openai/agents';
+import {
+  Agent,
+  InputGuardrailTripwireTriggered,
+  run,
+  withTrace,
+} from '@openai/agents';
 import { z } from 'zod';
 
 async function main() {
-  withTrace('Input Guardrail Example', async () => {
+  await withTrace('Input Guardrail Example', async () => {
     const guardrailAgent = new Agent({
       name: 'Guardrail agent',
       instructions:
@@ -28,15 +33,30 @@ async function main() {
       ],
     });
 
-    const inputs = [
-      'What is the capital of California?',
-      'Can you help me solve for x: 2x + 5 = 11?',
+    const cases = [
+      {
+        input: 'What is the capital of California?',
+        shouldTrip: false,
+      },
+      {
+        input: 'Can you help me solve for x: 2x + 5 = 11?',
+        shouldTrip: true,
+      },
     ];
-    for (const input of inputs) {
+    for (const { input, shouldTrip } of cases) {
       try {
         const result = await run(agent, input);
+        if (shouldTrip) {
+          throw new Error(`Expected the guardrail to trip for: ${input}`);
+        }
         console.log(result.finalOutput);
       } catch (e: unknown) {
+        if (!(e instanceof InputGuardrailTripwireTriggered)) {
+          throw e;
+        }
+        if (!shouldTrip) {
+          throw new Error(`Guardrail unexpectedly tripped for: ${input}. ${e}`);
+        }
         console.log(
           `Sorry, I can't help you with your math homework. (error: ${e})`,
         );

@@ -13,17 +13,25 @@ export default function Home() {
   const [events, setEvents] = useState<TransportEvent[]>([]);
 
   useEffect(() => {
-    connection.current = new OpenAIRealtimeWebRTC({
+    const createdConnection = new OpenAIRealtimeWebRTC({
       useInsecureApiKey: true,
     });
-    connection.current.on('*', (event) => {
+    connection.current = createdConnection;
+    createdConnection.on('*', (event) => {
       setEvents((events) => [...events, event]);
     });
+
+    return () => {
+      createdConnection.close();
+      if (connection.current === createdConnection) {
+        connection.current = null;
+      }
+    };
   }, []);
 
   async function connect() {
     if (isConnected) {
-      await connection.current?.close();
+      connection.current?.close();
       setIsConnected(false);
     } else {
       const token = await getToken();

@@ -1,7 +1,7 @@
 import { Agent, run, hostedMcpTool, withTrace } from '@openai/agents';
 
 async function main(verbose: boolean, stream: boolean): Promise<void> {
-  withTrace('Hosted MCP Example', async () => {
+  await withTrace('Hosted MCP Example', async () => {
     const agent = new Agent({
       name: 'MCP Assistant',
       model: 'gpt-5.4',

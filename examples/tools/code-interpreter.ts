@@ -21,15 +21,20 @@ async function main() {
       'I need to solve the equation 3x + 11 = 14. Can you help me?',
       { stream: true },
     );
+    let sawCodeInterpreterCall = false;
     for await (const event of result) {
       if (
         isOpenAIResponsesRawModelStreamEvent(event) &&
         event.data.event.type === 'response.output_item.done' &&
         event.data.event.item.type === 'code_interpreter_call'
       ) {
+        sawCodeInterpreterCall = true;
         const code = event.data.event.item.code;
         console.log(`Code interpreter code:\n\`\`\`\n${code}\n\`\`\``);
       }
+    }
+    if (!sawCodeInterpreterCall) {
+      throw new Error('Expected the agent to call the code interpreter.');
     }
     console.log(`Final output: ${result.finalOutput}`);
   });

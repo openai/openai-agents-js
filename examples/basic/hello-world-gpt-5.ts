@@ -13,7 +13,7 @@ const output = z.object({
 });
 
 async function main() {
-  withTrace('GPT-5.4 Assistant', async () => {
+  await withTrace('GPT-5.4 Assistant', async () => {
     const prompt =
       'Tell me about recursion in programming in a few sentences. Quickly responding with a single answer is fine.';
 
