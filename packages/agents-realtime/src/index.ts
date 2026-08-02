@@ -17,6 +17,7 @@ export {
   TransportLayerAudio,
   TransportLayerResponseCompleted,
   TransportLayerResponseStarted,
+  TransportLayerOutputTextDelta,
   TransportLayerTranscriptDelta,
   TransportError,
   TransportToolCallEvent,

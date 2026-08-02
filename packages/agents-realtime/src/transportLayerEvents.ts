@@ -65,6 +65,13 @@ export type TransportLayerTranscriptDelta = {
   responseId: string;
 };
 
+export type TransportLayerOutputTextDelta = {
+  type: 'output_text_delta';
+  itemId: string;
+  delta: string;
+  responseId: string;
+};
+
 export type TransportLayerResponseCompleted =
   protocol.StreamEventResponseCompleted;
 export type TransportLayerResponseStarted = protocol.StreamEventResponseStarted;
@@ -113,6 +120,11 @@ export type RealtimeTransportEventTypes = {
    * Triggered when there is a new text delta of the transcript available.
    */
   audio_transcript_delta: [deltaEvent: TransportLayerTranscriptDelta];
+
+  /**
+   * Triggered when there is a new text output delta available.
+   */
+  output_text_delta: [deltaEvent: TransportLayerOutputTextDelta];
 
   /**
    * Triggered when the audio generation is done.

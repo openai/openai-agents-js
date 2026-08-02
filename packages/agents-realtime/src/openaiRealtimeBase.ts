@@ -332,6 +332,13 @@ export abstract class OpenAIRealtimeBase
           itemId: parsed.item_id,
           responseId: parsed.response_id,
         });
+      } else if (parsed.type === 'response.output_text.delta') {
+        this.emit('output_text_delta', {
+          type: 'output_text_delta',
+          delta: parsed.delta,
+          itemId: parsed.item_id,
+          responseId: parsed.response_id,
+        });
       }
       // no support for partial transcripts yet.
       return;
