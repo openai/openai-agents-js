@@ -186,6 +186,7 @@ describe('NodeMCPServerStdio', () => {
     await server.connect();
     expect(lastConnectOptions?.timeout).toBe(5000);
     expect(lastClientOptions?.versionNegotiation).toEqual({ mode: 'auto' });
+    expect(lastClientOptions?.listMaxPages).toBe(0);
     await server.close();
   });
 
@@ -231,7 +232,6 @@ describe('NodeMCPServerStdio', () => {
 
     expect(lastConnectOptions?.timeout).toBe(6000);
     expect(lastListToolsOptions?.timeout).toBe(6000);
-    expect(lastListToolsOptions?.cacheMode).toBe('bypass');
     expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
     expect(lastCallToolOptions?.signal).toBeDefined();
     expect(lastCallToolOptions?.signal).not.toBe(controller.signal);
@@ -476,28 +476,6 @@ describe('NodeMCPServerStdio', () => {
     await server.close();
   });
 
-  test('should use the v2 high-level list method without private metadata APIs', async () => {
-    const server = new NodeMCPServerStdio({
-      name: 'missing-metadata-cache',
-      fullCommand: 'test',
-    });
-
-    await server.connect();
-    const session = (server as any).session;
-    session.listTools = vi.fn(async () => ({
-      tools: [createMockTool('committed-tool')],
-    }));
-
-    const resources = await server.listResources();
-    expect(resources.resources[0].uri).toBe('file:///mock-resource.txt');
-    expect((await server.listTools()).map((tool) => tool.name)).toEqual([
-      'committed-tool',
-    ]);
-    expect(session.listTools).toHaveBeenCalledOnce();
-
-    await server.close();
-  });
-
   test('should forward resource requests to session methods', async () => {
     const server = new NodeMCPServerStdio({
       name: 'resource-test',
@@ -590,6 +568,9 @@ class MockClient {
   getServerCapabilities(): Record<string, unknown> {
     return { tools: {}, resources: {} };
   }
+  getProtocolEra(): 'legacy' {
+    return 'legacy';
+  }
   request(request: any, options?: any): Promise<any> {
     switch (request.method) {
       case 'resources/list':
@@ -597,32 +578,14 @@ class MockClient {
       case 'resources/templates/list':
         return this.listResourceTemplates(request.params, options);
       case 'tools/list':
-        return this.listTools(request.params, options);
+        lastListToolsOptions = options;
+        listToolsCalls.push({ params: request.params, options });
+        return listToolsImplementation
+          ? listToolsImplementation(request.params, options)
+          : Promise.resolve({ tools: [createMockTool('mock-tool')] });
       default:
         throw new Error(`Unexpected mock MCP request: ${request.method}`);
     }
-  }
-  async listTools(params?: any, options?: any): Promise<any> {
-    const tools: any[] = [];
-    const seenCursors = new Set<string>();
-    let cursor = params?.cursor;
-    do {
-      const pageParams = cursor === undefined ? undefined : { cursor };
-      lastListToolsOptions = options;
-      listToolsCalls.push({ params: pageParams, options });
-      const page = listToolsImplementation
-        ? await listToolsImplementation(pageParams, options)
-        : { tools: [createMockTool('mock-tool')] };
-      tools.push(...page.tools);
-      cursor = page.nextCursor;
-      if (cursor !== undefined) {
-        if (seenCursors.has(cursor)) {
-          break;
-        }
-        seenCursors.add(cursor);
-      }
-    } while (params?.cursor === undefined && cursor !== undefined);
-    return { tools };
   }
   callTool(_params: any, options?: any): Promise<any> {
     lastCallToolParams = _params;
@@ -1068,7 +1031,6 @@ describe('NodeMCPServerSSE', () => {
 
     expect(lastConnectOptions?.timeout).toBe(4000);
     expect(lastListToolsOptions?.timeout).toBe(4000);
-    expect(lastListToolsOptions?.cacheMode).toBe('bypass');
     expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
     expect(lastCallToolOptions?.signal).toBeDefined();
     expect(lastCallToolOptions?.signal).not.toBe(controller.signal);
@@ -1076,7 +1038,7 @@ describe('NodeMCPServerSSE', () => {
     await server.close();
   });
 
-  test('should stop repeated tool cursors and cache the aggregate', async () => {
+  test('should reject repeated tool cursors without caching partial results', async () => {
     listToolsImplementation = async (params) => {
       if (params === undefined) {
         return {
@@ -1097,11 +1059,9 @@ describe('NodeMCPServerSSE', () => {
 
     await server.connect();
 
-    const tools = await server.listTools();
-    expect(tools.map((tool) => tool.name)).toEqual([
-      'first-tool',
-      'second-tool',
-    ]);
+    await expect(server.listTools()).rejects.toThrow(
+      'MCP server returned a repeated cursor while listing tools.',
+    );
     expect(listToolsCalls.map((call) => call.params)).toEqual([
       undefined,
       { cursor: 'repeated-cursor' },
@@ -1111,8 +1071,10 @@ describe('NodeMCPServerSSE', () => {
       tools: [createMockTool('recovered-tool')],
     });
 
-    expect(await server.listTools()).toBe(tools);
-    expect(listToolsCalls).toEqual([]);
+    expect((await server.listTools()).map((tool) => tool.name)).toEqual([
+      'recovered-tool',
+    ]);
+    expect(listToolsCalls.map((call) => call.params)).toEqual([undefined]);
 
     await server.close();
   });
@@ -1452,7 +1414,6 @@ describe('NodeMCPServerStreamableHttp', () => {
 
     expect(lastConnectOptions?.timeout).toBe(9000);
     expect(lastListToolsOptions?.timeout).toBe(9000);
-    expect(lastListToolsOptions?.cacheMode).toBe('bypass');
     expect(lastCallToolOptions?.timeout).toBe(DEFAULT_REQUEST_TIMEOUT_MSEC);
     expect(lastCallToolOptions?.signal).toBeDefined();
     expect(lastCallToolOptions?.signal).not.toBe(controller.signal);
@@ -1460,7 +1421,7 @@ describe('NodeMCPServerStreamableHttp', () => {
     await server.close();
   });
 
-  test('should not cache a failed paginated tool listing', async () => {
+  test('should redact cursors from later tool page errors', async () => {
     const opaqueCursor = 'SECRET_OPAQUE_CURSOR';
     const unsafeError = new Error(`Continuation failed for ${opaqueCursor}`);
     listToolsImplementation = async (params) => {
@@ -1480,11 +1441,22 @@ describe('NodeMCPServerStreamableHttp', () => {
     await server.connect();
     const error = await server.listTools().catch((caught) => caught);
 
-    expect(error).toBe(unsafeError);
+    expect(error).not.toBe(unsafeError);
+    expect(error).toMatchObject({
+      name: 'Error',
+      message: 'MCP tool listing failed while fetching a continuation page.',
+    });
+    expect(getErrorGraphText(error)).not.toContain(opaqueCursor);
     expect(listToolsCalls.map((call) => call.params)).toEqual([
       undefined,
       { cursor: opaqueCursor },
     ]);
+
+    const firstPageError = new Error('First page failed');
+    listToolsImplementation = async () => {
+      throw firstPageError;
+    };
+    await expect(server.listTools()).rejects.toBe(firstPageError);
 
     listToolsImplementation = async () => ({
       tools: [createMockTool('recovered-tool')],

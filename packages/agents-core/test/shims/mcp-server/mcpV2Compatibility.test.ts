@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { NodeMCPServerStreamableHttp } from '../../../src/shims/mcp-server/node';
+import { allowConsole } from '../../../../../helpers/tests/console-guard';
 
 function createTool(name: string) {
   return {
@@ -80,8 +81,8 @@ describe('MCP SDK v2 compatibility', () => {
       fetch,
     });
 
-    await server.connect();
     try {
+      await server.connect();
       expect((await server.listTools()).map((tool) => tool.name)).toEqual([
         'first-tool',
         'second-tool',
@@ -109,8 +110,100 @@ describe('MCP SDK v2 compatibility', () => {
     }
   });
 
-  it('reconnects a modern same-session client without legacy initialized', async () => {
+  it('lists more than 64 tool pages for a pinned session', async () => {
+    const pageCount = 65;
+    const requestedCursors: Array<string | undefined> = [];
+    const fetch = async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        return new Response(null, { status: 200 });
+      }
+
+      const message = JSON.parse(String(init?.body)) as {
+        id: number;
+        method: string;
+        params?: { cursor?: string };
+      };
+      if (message.method !== 'tools/list') {
+        throw new Error(`Unexpected MCP request: ${message.method}`);
+      }
+
+      const cursor = message.params?.cursor;
+      requestedCursors.push(cursor);
+      const page = cursor === undefined ? 0 : Number(cursor);
+      return Response.json({
+        jsonrpc: '2.0',
+        id: message.id,
+        result: {
+          tools: [createTool(`tool-${page}`)],
+          ...(page + 1 < pageCount ? { nextCursor: String(page + 1) } : {}),
+        },
+      });
+    };
+    const server = new NodeMCPServerStreamableHttp({
+      name: 'large-pinned-tool-list',
+      url: 'https://example.test/mcp',
+      sessionId: 'existing-session',
+      fetch,
+    });
+
+    await server.connect();
+    try {
+      const tools = await server.listTools();
+      expect(tools).toHaveLength(pageCount);
+      expect(tools[0]?.name).toBe('tool-0');
+      expect(tools.at(-1)?.name).toBe('tool-64');
+      expect(requestedCursors).toHaveLength(pageCount);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('rejects repeated tool-list cursors for a pinned session', async () => {
+    let listRequests = 0;
+    const fetch = async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        return new Response(null, { status: 200 });
+      }
+
+      const message = JSON.parse(String(init?.body)) as {
+        id: number;
+        method: string;
+      };
+      if (message.method !== 'tools/list') {
+        throw new Error(`Unexpected MCP request: ${message.method}`);
+      }
+
+      listRequests += 1;
+      return Response.json({
+        jsonrpc: '2.0',
+        id: message.id,
+        result: {
+          tools: [createTool(`tool-${listRequests}`)],
+          nextCursor: 'repeated-cursor',
+        },
+      });
+    };
+    const server = new NodeMCPServerStreamableHttp({
+      name: 'repeated-pinned-tool-cursor',
+      url: 'https://example.test/mcp',
+      sessionId: 'existing-session',
+      fetch,
+    });
+
+    await server.connect();
+    try {
+      await expect(server.listTools()).rejects.toThrow(
+        'MCP server returned a repeated cursor while listing tools.',
+      );
+      expect(listRequests).toBe(2);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('preserves modern header filtering across a same-session reconnect', async () => {
     const requests: string[] = [];
+    let mirroredHeader: string | null = null;
     const fetch = async (_url: string | URL | Request, init?: RequestInit) => {
       if (init?.method === 'DELETE') {
         return new Response(null, { status: 200 });
@@ -146,11 +239,43 @@ describe('MCP SDK v2 compatibility', () => {
             resultType: 'complete',
             ttlMs: 0,
             cacheScope: 'private',
-            tools: [createTool('modern-tool')],
+            tools: [
+              {
+                ...createTool('modern-tool'),
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    token: {
+                      type: 'string',
+                      'x-mcp-header': 'X-Test-Token',
+                    },
+                  },
+                  required: ['token'],
+                  additionalProperties: false,
+                },
+              },
+              {
+                ...createTool('invalid-header-tool'),
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    token: {
+                      type: 'string',
+                      'x-mcp-header': 'Bad Header',
+                    },
+                  },
+                  required: ['token'],
+                  additionalProperties: false,
+                },
+              },
+            ],
           },
         });
       }
       if (message.method === 'tools/call') {
+        mirroredHeader = new Headers(init?.headers).get(
+          'Mcp-Param-X-Test-Token',
+        );
         return Response.json({
           jsonrpc: '2.0',
           id: message.id,
@@ -167,19 +292,77 @@ describe('MCP SDK v2 compatibility', () => {
       url: 'https://example.test/mcp',
       fetch,
     });
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await server.connect();
-    await server.listTools();
-    const originalTransport = (server as any).transport;
-    originalTransport._sessionId = 'modern-session';
-    await originalTransport.close();
-
     try {
-      await expect(server.callTool('modern-tool', {})).resolves.toEqual([
-        { type: 'text', text: 'recovered modern call' },
+      expect((await server.listTools()).map((tool) => tool.name)).toEqual([
+        'modern-tool',
       ]);
+      const originalTransport = (server as any).transport;
+      originalTransport._sessionId = 'modern-session';
+      await originalTransport.close();
+
+      await expect(
+        server.callTool('modern-tool', { token: 'header-value' }),
+      ).resolves.toEqual([{ type: 'text', text: 'recovered modern call' }]);
       expect(server.sessionId).toBe('modern-session');
+      expect(mirroredHeader).toBe('header-value');
+      expect(consoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining("excluding tool 'invalid-header-tool'"),
+      );
       expect(requests).toEqual(['server/discover', 'tools/list', 'tools/call']);
+    } finally {
+      consoleWarn.mockRestore();
+      await server.close();
+    }
+  });
+
+  it('does not request unadvertised lists from a modern server', async () => {
+    allowConsole(['debug']);
+    const requests: string[] = [];
+    const fetch = async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        return new Response(null, { status: 200 });
+      }
+
+      const message = JSON.parse(String(init?.body)) as {
+        id?: number;
+        method: string;
+      };
+      requests.push(message.method);
+      if (message.id === undefined) {
+        return new Response(null, { status: 202 });
+      }
+      if (message.method === 'server/discover') {
+        return Response.json({
+          jsonrpc: '2.0',
+          id: message.id,
+          result: {
+            resultType: 'complete',
+            ttlMs: 0,
+            cacheScope: 'private',
+            supportedVersions: ['2026-07-28'],
+            capabilities: {},
+          },
+        });
+      }
+      throw new Error(`Unexpected MCP request: ${message.method}`);
+    };
+    const server = new NodeMCPServerStreamableHttp({
+      name: 'modern-server-without-lists',
+      url: 'https://example.test/mcp',
+      fetch,
+    });
+
+    await server.connect();
+    try {
+      await expect(server.listTools()).resolves.toEqual([]);
+      await expect(server.listResources()).resolves.toEqual({ resources: [] });
+      await expect(server.listResourceTemplates()).resolves.toEqual({
+        resourceTemplates: [],
+      });
+      expect(requests).toEqual(['server/discover']);
     } finally {
       await server.close();
     }

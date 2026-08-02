@@ -220,10 +220,13 @@ class MockClient {
     return 'legacy';
   }
 
-  async listTools(): Promise<{ tools: MockTool[] }> {
-    const tools = MockClient.listToolsResults[this.transportIndex] ?? [];
-    this.cacheToolMetadata(tools);
-    return { tools };
+  async request(request: { method: string }): Promise<{ tools: MockTool[] }> {
+    if (request.method !== 'tools/list') {
+      throw new Error(`Unexpected MCP request: ${request.method}`);
+    }
+    return {
+      tools: MockClient.listToolsResults[this.transportIndex] ?? [],
+    };
   }
 
   async notification(notification: {
@@ -429,6 +432,7 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
     expect(client.connectMock).toHaveBeenCalledOnce();
     expect(client.clientOptions).toEqual({
       versionNegotiation: { mode: 'auto' },
+      listMaxPages: 0,
     });
     expect((server as any).session).toBe(client);
     expect((server as any).transport).toBe(
@@ -612,13 +616,15 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
     try {
       expect(await server.listTools()).toHaveLength(2);
       const client = MockClient.instances[0];
-      const cacheToolMetadata = client.cacheToolMetadata.bind(client);
-      client.cacheToolMetadata = (tools) => {
-        if (tools.some((tool) => tool.name === 'metadata-compile-failure')) {
-          cacheToolMetadata([]);
+      const request = client.request.bind(client);
+      client.request = async (params) => {
+        const result = await request(params);
+        if (
+          result.tools.some((tool) => tool.name === 'metadata-compile-failure')
+        ) {
           throw new Error('metadata compilation failed');
         }
-        cacheToolMetadata(tools);
+        return result;
       };
 
       await expect(server.callTool('regular-tool', null)).rejects.toMatchObject(

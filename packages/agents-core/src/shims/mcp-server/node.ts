@@ -89,43 +89,67 @@ function buildCacheableRequestOptions(
   };
 }
 
-const MCP_LIST_MAX_PAGES = 64;
-
-async function listToolsForResumedSession(
+async function listAllMcpTools(
   client: Client,
   requestOptions: RequestOptions | undefined,
 ): Promise<{ tools: MCPTool[] }> {
   const tools: MCPTool[] = [];
+  const seenCursors = new Set<string>();
   let cursor: string | undefined;
 
-  for (let page = 0; page < MCP_LIST_MAX_PAGES; page += 1) {
-    const response = await client.request(
-      {
-        method: 'tools/list',
-        ...(cursor === undefined ? {} : { params: { cursor } }),
-      },
-      requestOptions,
-    );
-    tools.push(...(response.tools as MCPTool[]));
-    cursor = response.nextCursor;
-    if (cursor === undefined) {
+  while (true) {
+    let response: { tools: MCPTool[]; nextCursor?: string };
+    try {
+      response = (await client.request(
+        {
+          method: 'tools/list',
+          ...(cursor === undefined ? {} : { params: { cursor } }),
+        },
+        requestOptions,
+      )) as { tools: MCPTool[]; nextCursor?: string };
+    } catch (error) {
+      if (cursor === undefined) {
+        throw error;
+      }
+      throw new Error(
+        'MCP tool listing failed while fetching a continuation page.',
+      );
+    }
+    tools.push(...response.tools);
+
+    const nextCursor = response.nextCursor;
+    if (nextCursor === undefined) {
       return { tools };
     }
+    if (seenCursors.has(nextCursor)) {
+      throw new Error(
+        'MCP server returned a repeated cursor while listing tools.',
+      );
+    }
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
   }
-
-  throw new Error(
-    `MCP tools/list pagination exceeded ${MCP_LIST_MAX_PAGES} pages.`,
-  );
 }
 
-function shouldListToolsForResumedSession(
+async function listMcpTools(
   client: Client,
-  transport: unknown,
-): boolean {
-  return (
-    client.getServerCapabilities() === undefined &&
-    getSessionId(transport) !== undefined
-  );
+  requestOptions: RequestOptions | undefined,
+): Promise<{ tools: MCPTool[] }> {
+  if (getNegotiatedModernCapabilities(client) !== undefined) {
+    const response = await client.listTools(undefined, {
+      ...requestOptions,
+      cacheMode: 'bypass',
+    });
+    return { tools: response.tools as MCPTool[] };
+  }
+  return listAllMcpTools(client, requestOptions);
+}
+
+function getNegotiatedModernCapabilities(client: Client) {
+  const capabilities = client.getServerCapabilities();
+  return client.getProtocolEra() === 'modern' && capabilities !== undefined
+    ? capabilities
+    : undefined;
 }
 
 function getListedToolForCall(tools: readonly MCPTool[], toolName: string) {
@@ -147,28 +171,36 @@ function listResourcesPage(
   client: Client,
   params: MCPListResourcesParams | undefined,
   requestOptions: RequestOptions | undefined,
-) {
+): Promise<MCPListResourcesResult> {
+  const capabilities = getNegotiatedModernCapabilities(client);
+  if (capabilities !== undefined && capabilities.resources === undefined) {
+    return Promise.resolve({ resources: [] });
+  }
   return client.request(
     {
       method: 'resources/list',
       ...(params === undefined ? {} : { params }),
     },
     requestOptions,
-  );
+  ) as Promise<MCPListResourcesResult>;
 }
 
 function listResourceTemplatesPage(
   client: Client,
   params: MCPListResourcesParams | undefined,
   requestOptions: RequestOptions | undefined,
-) {
+): Promise<MCPListResourceTemplatesResult> {
+  const capabilities = getNegotiatedModernCapabilities(client);
+  if (capabilities !== undefined && capabilities.resources === undefined) {
+    return Promise.resolve({ resourceTemplates: [] });
+  }
   return client.request(
     {
       method: 'resources/templates/list',
       ...(params === undefined ? {} : { params }),
     },
     requestOptions,
-  );
+  ) as Promise<MCPListResourceTemplatesResult>;
 }
 
 async function callWithMCPRequestSignal<T>(
@@ -393,7 +425,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
           name: this._name,
           version: '1.0.0', // You may want to make this configurable
         },
-        { versionNegotiation: { mode: 'auto' } },
+        { versionNegotiation: { mode: 'auto' }, listMaxPages: 0 },
       );
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
@@ -426,13 +458,12 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
       return this._toolsList;
     }
 
-    const requestOptions = buildCacheableRequestOptions(
+    const requestOptions = buildRequestOptions(
       this.clientSessionTimeoutSeconds,
-      'bypass',
     );
     const session = this.session;
     const cacheGeneration = this._toolsCacheGeneration;
-    const response = await session.listTools(undefined, requestOptions);
+    const response = await listMcpTools(session, requestOptions);
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     assertMcpToolListingIsCurrent({
       listedClient: session,
@@ -620,10 +651,13 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
         eventSourceInit: this.params.eventSourceInit,
         fetch: this.params.fetch,
       });
-      this.session = new Client({
-        name: this._name,
-        version: '1.0.0', // You may want to make this configurable
-      });
+      this.session = new Client(
+        {
+          name: this._name,
+          version: '1.0.0', // You may want to make this configurable
+        },
+        { listMaxPages: 0 },
+      );
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
@@ -660,16 +694,15 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
       return this._toolsList;
     }
 
-    const requestOptions = buildCacheableRequestOptions(
+    const requestOptions = buildRequestOptions(
       this.clientSessionTimeoutSeconds,
-      'bypass',
     );
     const session = this.session;
     const cacheGeneration = this._toolsCacheGeneration;
     const response = await runMcpTransportOperation(
       this.params.url,
       'SSE list tools',
-      () => session.listTools(undefined, requestOptions),
+      () => listMcpTools(session, requestOptions),
     );
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     assertMcpToolListingIsCurrent({
@@ -933,7 +966,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         name: this._name,
         version: '1.0.0',
       },
-      { versionNegotiation: { mode: 'auto' } },
+      { versionNegotiation: { mode: 'auto' }, listMaxPages: 0 },
     );
     try {
       const requestOptions = buildRequestOptions(
@@ -1540,21 +1573,15 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       return this._toolsList;
     }
 
-    const requestOptions = buildCacheableRequestOptions(
+    const requestOptions = buildRequestOptions(
       this.clientSessionTimeoutSeconds,
-      'bypass',
     );
     const session = this.session;
     const cacheGeneration = this._toolsCacheGeneration;
     const response = await runMcpTransportOperation(
       this.params.url,
       'streamable HTTP list tools',
-      () =>
-        shouldListToolsForResumedSession(session, this.transport)
-          ? listToolsForResumedSession(session, requestOptions)
-          : session
-              .listTools(undefined, requestOptions)
-              .then((response) => ({ tools: response.tools as MCPTool[] })),
+      () => listMcpTools(session, requestOptions),
     );
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     assertMcpToolListingIsCurrent({
