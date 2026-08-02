@@ -966,6 +966,7 @@ describe('OpenAIConversationsSession', () => {
   });
 
   it('clearSession is a no-op before a conversation is created', async () => {
+    const createConversation = vi.fn();
     const deleteConversation = vi.fn();
 
     const session = createSession({
@@ -976,7 +977,7 @@ describe('OpenAIConversationsSession', () => {
             create: vi.fn(),
             delete: vi.fn(),
           },
-          create: vi.fn(),
+          create: createConversation,
           delete: deleteConversation,
         },
       } as any,
@@ -984,7 +985,147 @@ describe('OpenAIConversationsSession', () => {
 
     await session.clearSession();
 
+    expect(createConversation).not.toHaveBeenCalled();
     expect(deleteConversation).not.toHaveBeenCalled();
+    expect(session.sessionId).toBeUndefined();
+  });
+
+  it('shares one lazy conversation across concurrent getSessionId calls', async () => {
+    let resolveCreate!: (value: { id: string }) => void;
+    const createConversation = vi.fn(
+      () =>
+        new Promise<{ id: string }>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list: vi.fn(),
+            create: vi.fn(),
+            delete: vi.fn(),
+          },
+          create: createConversation,
+          delete: vi.fn(),
+        },
+      } as any,
+    });
+
+    const firstId = session.getSessionId();
+    const secondId = session.getSessionId();
+
+    await vi.waitFor(() => expect(createConversation).toHaveBeenCalledTimes(1));
+    resolveCreate({ id: 'conv-shared' });
+
+    await expect(Promise.all([firstId, secondId])).resolves.toEqual([
+      'conv-shared',
+      'conv-shared',
+    ]);
+    expect(createConversation).toHaveBeenCalledTimes(1);
+    expect(session.sessionId).toBe('conv-shared');
+  });
+
+  it('retries lazy creation after a create failure', async () => {
+    const createConversation = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Create failed'))
+      .mockResolvedValueOnce({ id: 'conv-retry' });
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list: vi.fn(),
+            create: vi.fn(),
+            delete: vi.fn(),
+          },
+          create: createConversation,
+          delete: vi.fn(),
+        },
+      } as any,
+    });
+
+    await expect(session.getSessionId()).rejects.toThrow('Create failed');
+    expect(session.sessionId).toBeUndefined();
+
+    await expect(session.getSessionId()).resolves.toBe('conv-retry');
+    expect(createConversation).toHaveBeenCalledTimes(2);
+    expect(session.sessionId).toBe('conv-retry');
+  });
+
+  it('retains and retries the same conversation ID after delete failure', async () => {
+    const createConversation = vi.fn();
+    const deleteConversation = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Delete failed'))
+      .mockResolvedValueOnce({ deleted: true });
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list: vi.fn(),
+            create: vi.fn(),
+            delete: vi.fn(),
+          },
+          create: createConversation,
+          delete: deleteConversation,
+        },
+      } as any,
+      conversationId: 'conv-existing',
+    });
+
+    await expect(session.clearSession()).rejects.toThrow('Delete failed');
+    expect(session.sessionId).toBe('conv-existing');
+
+    await expect(session.clearSession()).resolves.toBeUndefined();
+    expect(deleteConversation).toHaveBeenCalledTimes(2);
+    expect(deleteConversation).toHaveBeenNthCalledWith(1, 'conv-existing');
+    expect(deleteConversation).toHaveBeenNthCalledWith(2, 'conv-existing');
+    expect(createConversation).not.toHaveBeenCalled();
+    expect(session.sessionId).toBeUndefined();
+  });
+
+  it('creates a new conversation after a concurrent clear completes', async () => {
+    let resolveDelete!: () => void;
+    const deleteConversation = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveDelete = resolve;
+        }),
+    );
+    const createConversation = vi.fn().mockResolvedValue({ id: 'conv-new' });
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list: vi.fn(),
+            create: vi.fn(),
+            delete: vi.fn(),
+          },
+          create: createConversation,
+          delete: deleteConversation,
+        },
+      } as any,
+      conversationId: 'conv-old',
+    });
+
+    const clear = session.clearSession();
+    await vi.waitFor(() =>
+      expect(deleteConversation).toHaveBeenCalledWith('conv-old'),
+    );
+
+    const getId = session.getSessionId();
+    expect(createConversation).not.toHaveBeenCalled();
+
+    resolveDelete();
+    await expect(clear).resolves.toBeUndefined();
+    await expect(getId).resolves.toBe('conv-new');
+    expect(createConversation).toHaveBeenCalledTimes(1);
+    expect(session.sessionId).toBe('conv-new');
   });
 
   it('treats input_* output arrays as raw items instead of response output arrays', async () => {

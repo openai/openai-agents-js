@@ -36,6 +36,7 @@ export class OpenAIConversationsSession
 
   #client: OpenAI;
   #conversationId?: string;
+  #conversationIdOperation: Promise<void> = Promise.resolve();
 
   constructor(options: OpenAIConversationsSessionOptions = {}) {
     this.#client = resolveClient(options);
@@ -47,13 +48,15 @@ export class OpenAIConversationsSession
   }
 
   async getSessionId(): Promise<string> {
-    if (!this.#conversationId) {
-      this.#conversationId = await startOpenAIConversationsSession(
-        this.#client,
-      );
-    }
+    return this.#runConversationIdOperation(async () => {
+      if (!this.#conversationId) {
+        this.#conversationId = await startOpenAIConversationsSession(
+          this.#client,
+        );
+      }
 
-    return this.#conversationId;
+      return this.#conversationId;
+    });
   }
 
   async getItems(limit?: number): Promise<AgentInputItem[]> {
@@ -231,12 +234,23 @@ export class OpenAIConversationsSession
   }
 
   async clearSession(): Promise<void> {
-    if (!this.#conversationId) {
-      return;
-    }
+    await this.#runConversationIdOperation(async () => {
+      if (!this.#conversationId) {
+        return;
+      }
 
-    await this.#client.conversations.delete(this.#conversationId);
-    this.#conversationId = undefined;
+      await this.#client.conversations.delete(this.#conversationId);
+      this.#conversationId = undefined;
+    });
+  }
+
+  #runConversationIdOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.#conversationIdOperation.then(operation);
+    this.#conversationIdOperation = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 }
 
