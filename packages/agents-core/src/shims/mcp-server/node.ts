@@ -103,9 +103,123 @@ type MaybeProtocolVersionTransport = MaybeSessionTransport & {
   protocolVersion?: string;
 };
 
-type ClientWithToolMetadataCacheReset = {
+type ClientWithToolMetadataCache = {
   cacheToolMetadata?: (tools: unknown[]) => void;
 };
+
+type MCPToolsPage = {
+  tools: MCPTool[];
+  nextCursor?: string;
+};
+
+type MCPToolsResultSchema = Parameters<Client['request']>[1];
+
+function getOptionalClientToolMetadataCache(
+  client: Client,
+): ClientWithToolMetadataCache['cacheToolMetadata'] {
+  const cacheToolMetadata = (client as unknown as ClientWithToolMetadataCache)
+    .cacheToolMetadata;
+  return typeof cacheToolMetadata === 'function'
+    ? cacheToolMetadata
+    : undefined;
+}
+
+function getClientToolMetadataCache(
+  client: Client,
+): NonNullable<ClientWithToolMetadataCache['cacheToolMetadata']> {
+  const cacheToolMetadata = getOptionalClientToolMetadataCache(client);
+  if (typeof cacheToolMetadata !== 'function') {
+    throw new Error(
+      'The installed MCP SDK does not support tool metadata caching required for paginated tool listing.',
+    );
+  }
+  return cacheToolMetadata;
+}
+
+async function requestMcpToolsPage(
+  client: Client,
+  resultSchema: MCPToolsResultSchema,
+  options: RequestOptions | undefined,
+  cursor: string | undefined,
+): Promise<MCPToolsPage> {
+  return (await client.request(
+    {
+      method: 'tools/list',
+      params: cursor === undefined ? undefined : { cursor },
+    },
+    resultSchema,
+    options,
+  )) as MCPToolsPage;
+}
+
+function cacheClientToolMetadata(client: Client, tools: MCPTool[]): void {
+  const cacheToolMetadata = getClientToolMetadataCache(client);
+  cacheToolMetadata.call(client, tools);
+}
+
+function replaceClientToolMetadata(
+  client: Client,
+  tools: MCPTool[],
+  fallbackTools: MCPTool[],
+): void {
+  try {
+    cacheClientToolMetadata(client, tools);
+  } catch (error) {
+    cacheClientToolMetadata(client, fallbackTools);
+    throw error;
+  }
+}
+
+function assertMcpToolListingIsCurrent(args: {
+  listedClient: Client;
+  currentClient: Client | null;
+  listedGeneration: number;
+  currentGeneration: number;
+}): void {
+  if (
+    args.currentClient !== args.listedClient ||
+    args.currentGeneration !== args.listedGeneration
+  ) {
+    throw new Error('MCP tool listing became stale before it completed.');
+  }
+}
+
+async function listAllMcpTools(args: {
+  fetchPage: (cursor: string | undefined) => Promise<MCPToolsPage>;
+  onPage: (response: MCPToolsPage) => void;
+}): Promise<MCPTool[]> {
+  const tools: MCPTool[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+
+  while (true) {
+    let page: MCPToolsPage;
+    try {
+      page = await args.fetchPage(cursor);
+      args.onPage(page);
+    } catch (error) {
+      if (cursor === undefined) {
+        throw error;
+      }
+      throw new Error(
+        'MCP tool listing failed while fetching a continuation page.',
+      );
+    }
+    tools.push(...page.tools);
+
+    const nextCursor = page.nextCursor;
+    if (nextCursor === undefined) {
+      return tools;
+    }
+    if (seenCursors.has(nextCursor)) {
+      throw new Error(
+        'MCP server returned a repeated cursor while listing tools.',
+      );
+    }
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
+  }
+}
 
 type StreamableHttpToolRecoveryStrategy =
   'none' | 'reconnect-only' | 'reconnect-and-retry';
@@ -243,6 +357,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   protected session: Client | null = null;
   protected _cacheDirty = true;
   protected _toolsList: any[] = [];
+  protected _toolsCacheGeneration = 0;
   protected serverInitializeResult: InitializeResult | null = null;
   protected clientSessionTimeoutSeconds?: number;
   protected timeout: number;
@@ -275,6 +390,9 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   }
 
   async connect(): Promise<void> {
+    this._toolsCacheGeneration += 1;
+    this._cacheDirty = true;
+    this._toolsList = [];
     try {
       const { StdioClientTransport } =
         await import('@modelcontextprotocol/sdk/client/stdio.js').catch(
@@ -310,6 +428,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   }
 
   async invalidateToolsCache(): Promise<void> {
+    this._toolsCacheGeneration += 1;
     await invalidateServerToolsCache(this.name);
     this._cacheDirty = true;
   }
@@ -326,14 +445,33 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
       return this._toolsList;
     }
 
-    this._cacheDirty = false;
     const requestOptions = buildRequestOptions(
       this.clientSessionTimeoutSeconds,
     );
-    const response = await this.session.listTools(undefined, requestOptions);
-    this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
-    this._toolsList = ListToolsResultSchema.parse(response).tools;
-    return this._toolsList;
+    const session = this.session;
+    getClientToolMetadataCache(session);
+    const cacheGeneration = this._toolsCacheGeneration;
+    const tools = await listAllMcpTools({
+      fetchPage: (cursor) =>
+        requestMcpToolsPage(
+          session,
+          ListToolsResultSchema,
+          requestOptions,
+          cursor,
+        ),
+      onPage: (response) =>
+        this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`),
+    });
+    assertMcpToolListingIsCurrent({
+      listedClient: session,
+      currentClient: this.session,
+      listedGeneration: cacheGeneration,
+      currentGeneration: this._toolsCacheGeneration,
+    });
+    replaceClientToolMetadata(session, tools, this._toolsList);
+    this._toolsList = tools;
+    this._cacheDirty = false;
+    return tools;
   }
 
   async callTool(
@@ -449,6 +587,9 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   }
 
   async close(): Promise<void> {
+    this._toolsCacheGeneration += 1;
+    this._cacheDirty = true;
+    this._toolsList = [];
     const transport: any = this.transport;
 
     if (transport && typeof transport.terminateSession === 'function') {
@@ -479,6 +620,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   protected session: Client | null = null;
   protected _cacheDirty = true;
   protected _toolsList: any[] = [];
+  protected _toolsCacheGeneration = 0;
   protected serverInitializeResult: InitializeResult | null = null;
   protected clientSessionTimeoutSeconds?: number;
   protected timeout: number;
@@ -496,6 +638,9 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   }
 
   async connect(): Promise<void> {
+    this._toolsCacheGeneration += 1;
+    this._cacheDirty = true;
+    this._toolsList = [];
     try {
       const { SSEClientTransport } =
         await import('@modelcontextprotocol/sdk/client/sse.js').catch(
@@ -536,6 +681,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   }
 
   async invalidateToolsCache(): Promise<void> {
+    this._toolsCacheGeneration += 1;
     await invalidateServerToolsCache(this.name);
     this._cacheDirty = true;
   }
@@ -552,18 +698,35 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
       return this._toolsList;
     }
 
-    this._cacheDirty = false;
     const requestOptions = buildRequestOptions(
       this.clientSessionTimeoutSeconds,
     );
-    const response = await runMcpTransportOperation(
-      this.params.url,
-      'SSE list tools',
-      () => this.session!.listTools(undefined, requestOptions),
-    );
-    this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
-    this._toolsList = ListToolsResultSchema.parse(response).tools;
-    return this._toolsList;
+    const session = this.session;
+    getClientToolMetadataCache(session);
+    const cacheGeneration = this._toolsCacheGeneration;
+    const tools = await listAllMcpTools({
+      fetchPage: (cursor) =>
+        runMcpTransportOperation(this.params.url, 'SSE list tools', () =>
+          requestMcpToolsPage(
+            session,
+            ListToolsResultSchema,
+            requestOptions,
+            cursor,
+          ),
+        ),
+      onPage: (response) =>
+        this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`),
+    });
+    assertMcpToolListingIsCurrent({
+      listedClient: session,
+      currentClient: this.session,
+      listedGeneration: cacheGeneration,
+      currentGeneration: this._toolsCacheGeneration,
+    });
+    replaceClientToolMetadata(session, tools, this._toolsList);
+    this._toolsList = tools;
+    this._cacheDirty = false;
+    return tools;
   }
 
   async callTool(
@@ -692,6 +855,9 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   }
 
   async close(): Promise<void> {
+    this._toolsCacheGeneration += 1;
+    this._cacheDirty = true;
+    this._toolsList = [];
     await runMcpTransportOperation(this.params.url, 'SSE cleanup', async () => {
       const transport = this.transport;
 
@@ -731,6 +897,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   protected session: Client | null = null;
   protected _cacheDirty = true;
   protected _toolsList: any[] = [];
+  protected _toolsCacheGeneration = 0;
   protected serverInitializeResult: InitializeResult | null = null;
   protected clientSessionTimeoutSeconds?: number;
   protected timeout: number;
@@ -829,7 +996,6 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       name: this._name,
       version: '1.0.0',
     });
-
     try {
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
@@ -858,9 +1024,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   }
 
   private resetClientToolMetadataCache(client: Client): void {
-    (client as unknown as ClientWithToolMetadataCacheReset).cacheToolMetadata?.(
-      [],
-    );
+    getOptionalClientToolMetadataCache(client)?.call(client, []);
   }
 
   private async publishConnectedStreamableHttpClient(args: {
@@ -868,20 +1032,25 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     transport: MaybeSessionTransport;
     previousTransport?: MaybeSessionTransport | null;
   }): Promise<void> {
+    const previousClient = this.session;
+    const previousSessionId = getSessionId(args.previousTransport);
+    const nextSessionId = getSessionId(args.transport);
+    const preservesCommittedToolState =
+      previousClient === args.client &&
+      previousSessionId !== undefined &&
+      previousSessionId === nextSessionId;
+
+    if (!preservesCommittedToolState) {
+      this.resetClientToolMetadataCache(args.client);
+    }
+
     this.transport = args.transport;
     this.session = args.client;
     this.connectionStateVersion += 1;
+    this._toolsCacheGeneration += 1;
     this._cacheDirty = true;
-    this._toolsList = [];
-
-    const previousSessionId = getSessionId(args.previousTransport);
-    const nextSessionId = getSessionId(args.transport);
-    if (
-      previousSessionId === undefined ||
-      nextSessionId === undefined ||
-      previousSessionId !== nextSessionId
-    ) {
-      this.resetClientToolMetadataCache(args.client);
+    if (!preservesCommittedToolState) {
+      this._toolsList = [];
     }
 
     await invalidateServerToolsCache(this.name);
@@ -1403,6 +1572,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   }
 
   async invalidateToolsCache(): Promise<void> {
+    this._toolsCacheGeneration += 1;
     await invalidateServerToolsCache(this.name);
     this._cacheDirty = true;
   }
@@ -1419,18 +1589,38 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       return this._toolsList;
     }
 
-    this._cacheDirty = false;
     const requestOptions = buildRequestOptions(
       this.clientSessionTimeoutSeconds,
     );
-    const response = await runMcpTransportOperation(
-      this.params.url,
-      'streamable HTTP list tools',
-      () => this.session!.listTools(undefined, requestOptions),
-    );
-    this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
-    this._toolsList = ListToolsResultSchema.parse(response).tools;
-    return this._toolsList;
+    const session = this.session;
+    getClientToolMetadataCache(session);
+    const cacheGeneration = this._toolsCacheGeneration;
+    const tools = await listAllMcpTools({
+      fetchPage: (cursor) =>
+        runMcpTransportOperation(
+          this.params.url,
+          'streamable HTTP list tools',
+          () =>
+            requestMcpToolsPage(
+              session,
+              ListToolsResultSchema,
+              requestOptions,
+              cursor,
+            ),
+        ),
+      onPage: (response) =>
+        this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`),
+    });
+    assertMcpToolListingIsCurrent({
+      listedClient: session,
+      currentClient: this.session,
+      listedGeneration: cacheGeneration,
+      currentGeneration: this._toolsCacheGeneration,
+    });
+    replaceClientToolMetadata(session, tools, this._toolsList);
+    this._toolsList = tools;
+    this._cacheDirty = false;
+    return tools;
   }
 
   async callTool(
@@ -1613,6 +1803,9 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   async close(): Promise<void> {
     this.isClosed = true;
     this.connectionStateVersion += 1;
+    this._toolsCacheGeneration += 1;
+    this._cacheDirty = true;
+    this._toolsList = [];
     const closeStateVersion = this.connectionStateVersion;
 
     const reconnectPromise = this.reconnectingClientPromise;
