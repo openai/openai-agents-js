@@ -239,7 +239,7 @@ By default, function-tool input guardrails run after approval, immediately befor
 
 ### Guardrails
 
-Guardrails offer a way to monitor whether what the agent has said violated a set of rules and immediately cut off the response. These checks run against the transcript stream of the agent's response. In audio sessions, the SDK uses output audio transcripts and transcript deltas, so the important prerequisite is transcript availability rather than a separate text output modality.
+Guardrails offer a way to monitor whether what the agent has said violated a set of rules and immediately cut off the response. These checks run against the output stream of the agent's response. In text-only sessions, the SDK evaluates output text deltas. In audio sessions, it uses output audio transcripts and transcript deltas, so the important prerequisite is transcript availability rather than a separate text output modality.
 
 The guardrails you provide run asynchronously as a model response is returned, allowing you to cut off the response based on a predefined classification trigger, for example "mentions a specific banned word".
 

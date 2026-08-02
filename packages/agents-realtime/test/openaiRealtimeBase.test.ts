@@ -869,6 +869,31 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
   });
 
+  it('emits output text delta events', () => {
+    const base = new TestBase();
+    const deltas: any[] = [];
+    base.on('output_text_delta', (delta) => deltas.push(delta));
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'response.output_text.delta',
+        event_id: 'd1',
+        item_id: 'item1',
+        content_index: 0,
+        delta: 'hi',
+        output_index: 0,
+        response_id: 'r1',
+      }),
+    });
+
+    expect(deltas[0]).toMatchObject({
+      type: 'output_text_delta',
+      delta: 'hi',
+      itemId: 'item1',
+      responseId: 'r1',
+    });
+  });
+
   it('emits mcp_tools_listed for completed list tools items', () => {
     const base = new TestBase();
     const listed: any[] = [];

@@ -50,7 +50,9 @@ import { RealtimeAgent } from './realtimeAgent';
 import { RealtimeSessionEventTypes } from './realtimeSessionEvents';
 import type { ApiKey, RealtimeTransportLayer } from './transportLayer';
 import type {
+  TransportLayerOutputTextDelta,
   TransportLayerResponseStarted,
+  TransportLayerTranscriptDelta,
   TransportToolCallEvent,
 } from './transportLayerEvents';
 import type { InputAudioTranscriptionCompletedEvent } from './transportLayerEvents';
@@ -245,6 +247,13 @@ type PendingRealtimeFunctionCall<TBaseContext> = {
   approvalItem: RunToolApprovalItem;
 };
 
+type OutputGuardrailDeltaSource = 'audio' | 'text';
+
+type OutputGuardrailDeltaState = {
+  text: string;
+  lastRunIndex: number;
+};
+
 function normalizeRealtimeFunctionCallId(
   toolCall: TransportToolCallEvent,
 ): TransportToolCallEvent {
@@ -311,6 +320,8 @@ export class RealtimeSession<
     string,
     RealtimeDispatchSnapshot<TBaseContext>
   >();
+  #pendingResponseDispatchSnapshot:
+    RealtimeDispatchSnapshot<TBaseContext> | undefined;
   #pendingFunctionCalls = new Map<
     string,
     PendingRealtimeFunctionCall<TBaseContext>
@@ -318,10 +329,16 @@ export class RealtimeSession<
   #context: RunContext<RealtimeContextData<TBaseContext>>;
   #outputGuardrails: RealtimeOutputGuardrailDefinition[] = [];
   #outputGuardrailSettings: RealtimeOutputGuardrailSettings;
-  #transcribedTextDeltas: Record<string, string> = {};
+  #outputGuardrailDeltaState = new Map<
+    string,
+    Map<string, OutputGuardrailDeltaState>
+  >();
   #history: RealtimeItem[] = [];
   #shouldIncludeAudioData: boolean;
   #interruptedByGuardrail: Record<string, boolean> = {};
+  #activeResponseId: string | undefined;
+  #responseGeneration = 0;
+  #connectionGeneration = 0;
   #audioStarted = false;
   // Tracks all MCP tools fetched per server label (from mcp_list_tools results).
   #allMcpToolsByServer: Map<string, RealtimeMcpToolInfo[]> = new Map();
@@ -489,7 +506,9 @@ export class RealtimeSession<
       return existingSnapshot;
     }
 
-    const snapshot = this.#currentDispatchSnapshot;
+    const snapshot =
+      this.#pendingResponseDispatchSnapshot ?? this.#currentDispatchSnapshot;
+    this.#pendingResponseDispatchSnapshot = undefined;
     if (snapshot) {
       this.#responseDispatchSnapshots.set(responseId, snapshot);
     }
@@ -945,13 +964,17 @@ export class RealtimeSession<
     output: string,
     responseId: string,
     itemId: string,
+    sourceAgent: SessionRealtimeAgent<TBaseContext>,
+    source: OutputGuardrailDeltaSource | 'final',
+    responseGeneration: number,
+    connectionGeneration: number,
   ) {
     if (this.#outputGuardrails.length === 0) {
       return;
     }
 
     const guardrailArgs: OutputGuardrailFunctionArgs<unknown, 'text'> = {
-      agent: this.#currentAgent as Agent<unknown, 'text'>,
+      agent: sourceAgent as Agent<unknown, 'text'>,
       agentOutput: output,
       context: this.#context,
     };
@@ -963,6 +986,9 @@ export class RealtimeSession<
       (result) => result.output.tripwireTriggered,
     );
     if (firstTripwireTriggered) {
+      if (connectionGeneration !== this.#connectionGeneration) {
+        return;
+      }
       // this ensures that if one guardrail already trips and we are in the middle of another
       // guardrail run, we don't trip again
       if (this.#interruptedByGuardrail[responseId]) {
@@ -973,10 +999,26 @@ export class RealtimeSession<
         `Output guardrail triggered: ${JSON.stringify(firstTripwireTriggered.output.outputInfo)}`,
         firstTripwireTriggered,
       );
-      this.emit('guardrail_tripped', this.#context, this.#currentAgent, error, {
+      this.emit('guardrail_tripped', this.#context, sourceAgent, error, {
         itemId,
       });
-      this.interrupt();
+
+      if (
+        responseGeneration !== this.#responseGeneration ||
+        (this.#activeResponseId !== undefined &&
+          this.#activeResponseId !== responseId)
+      ) {
+        return;
+      }
+
+      if (source === 'text' && this.#activeResponseId === responseId) {
+        this.#transport.sendEvent({
+          type: 'response.cancel',
+          response_id: responseId,
+        });
+      } else if (source !== 'text') {
+        this.interrupt();
+      }
 
       const feedbackText = getRealtimeGuardrailFeedbackMessage(
         firstTripwireTriggered,
@@ -984,6 +1026,74 @@ export class RealtimeSession<
       this.sendMessage(feedbackText);
       return;
     }
+  }
+
+  #scheduleOutputGuardrails(
+    output: string,
+    responseId: string,
+    itemId: string,
+    source: OutputGuardrailDeltaSource | 'final',
+    sourceAgent: SessionRealtimeAgent<TBaseContext>,
+    responseGeneration = this.#responseGeneration,
+    connectionGeneration = this.#connectionGeneration,
+  ) {
+    void this.#runOutputGuardrails(
+      output,
+      responseId,
+      itemId,
+      sourceAgent,
+      source,
+      responseGeneration,
+      connectionGeneration,
+    ).catch((error) => {
+      this.emit('error', { type: 'error', error });
+    });
+  }
+
+  #handleOutputGuardrailDelta(
+    event: TransportLayerTranscriptDelta | TransportLayerOutputTextDelta,
+    source: OutputGuardrailDeltaSource,
+  ) {
+    const { delta, itemId, responseId } = event;
+    if (this.#activeResponseId === undefined) {
+      this.#activeResponseId = responseId;
+      this.#captureResponseDispatchSnapshot(responseId);
+    }
+    let responseState = this.#outputGuardrailDeltaState.get(responseId);
+    if (!responseState) {
+      responseState = new Map();
+      this.#outputGuardrailDeltaState.set(responseId, responseState);
+    }
+
+    const state = responseState.get(itemId) ?? {
+      text: '',
+      lastRunIndex: 0,
+    };
+    state.text += delta;
+    responseState.set(itemId, state);
+
+    if (this.#outputGuardrailSettings.debounceTextLength < 0) {
+      return;
+    }
+
+    const newRunIndex = Math.floor(
+      state.text.length / this.#outputGuardrailSettings.debounceTextLength,
+    );
+    if (newRunIndex <= state.lastRunIndex) {
+      return;
+    }
+
+    state.lastRunIndex = newRunIndex;
+    const sourceAgent =
+      this.#responseDispatchSnapshots.get(responseId)?.agent ??
+      this.#currentAgent;
+    this.#scheduleOutputGuardrails(
+      state.text,
+      responseId,
+      itemId,
+      source,
+      sourceAgent,
+    );
   }
 
   #setEventListeners() {
@@ -1028,6 +1138,9 @@ export class RealtimeSession<
     this.#transport.on('turn_started', (event) => {
       this.#audioStarted = false;
       const responseId = getStartedResponseId(event);
+      this.#activeResponseId = responseId;
+      this.#responseGeneration += 1;
+      this.#pendingResponseDispatchSnapshot = this.#currentDispatchSnapshot;
       if (responseId) {
         this.#captureResponseDispatchSnapshot(responseId);
       }
@@ -1035,6 +1148,15 @@ export class RealtimeSession<
       this.#currentAgent.emit('agent_start', this.#context, this.#currentAgent);
     });
     this.#transport.on('turn_done', (event) => {
+      const responseId = event.response.id;
+      const sourceAgent =
+        this.#captureResponseDispatchSnapshot(responseId)?.agent ??
+        this.#currentAgent;
+      const responseGeneration = this.#responseGeneration;
+      const connectionGeneration = this.#connectionGeneration;
+      if (this.#activeResponseId === responseId) {
+        this.#activeResponseId = undefined;
+      }
       const outputItems = event.response.output ?? [];
       let textOutput = '';
       let itemId = '';
@@ -1059,8 +1181,17 @@ export class RealtimeSession<
       this.emit('agent_end', this.#context, this.#currentAgent, textOutput);
       this.#currentAgent.emit('agent_end', this.#context, textOutput);
 
-      this.#runOutputGuardrails(textOutput, event.response.id, itemId);
-      this.#responseDispatchSnapshots.delete(event.response.id);
+      this.#scheduleOutputGuardrails(
+        textOutput,
+        responseId,
+        itemId,
+        'final',
+        sourceAgent,
+        responseGeneration,
+        connectionGeneration,
+      );
+      this.#outputGuardrailDeltaState.delete(responseId);
+      this.#responseDispatchSnapshots.delete(responseId);
     });
 
     this.#transport.on('audio_done', () => {
@@ -1070,35 +1201,20 @@ export class RealtimeSession<
       this.emit('audio_stopped', this.#context, this.#currentAgent);
     });
 
-    let lastRunIndex = 0;
-    let lastItemId: string | undefined;
     this.#transport.on('audio_transcript_delta', (event) => {
       try {
-        const delta = event.delta;
-        const itemId = event.itemId;
-        const responseId = event.responseId;
-        if (lastItemId !== itemId) {
-          lastItemId = itemId;
-          lastRunIndex = 0;
-        }
-        const currentText = this.#transcribedTextDeltas[itemId] ?? '';
-        const newText = currentText + delta;
-        this.#transcribedTextDeltas[itemId] = newText;
+        this.#handleOutputGuardrailDelta(event, 'audio');
+      } catch (err) {
+        this.emit('error', {
+          type: 'error',
+          error: err,
+        });
+      }
+    });
 
-        if (this.#outputGuardrailSettings.debounceTextLength < 0) {
-          return;
-        }
-
-        const newRunIndex = Math.floor(
-          newText.length / this.#outputGuardrailSettings.debounceTextLength,
-        );
-        if (newRunIndex > lastRunIndex) {
-          lastRunIndex = newRunIndex;
-          // We don't cancel existing runs because we want the first one to fail to fail
-          // The transport layer should upon failure handle the interruption and stop the model
-          // from generating further
-          this.#runOutputGuardrails(newText, responseId, itemId);
-        }
+    this.#transport.on('output_text_delta', (event) => {
+      try {
+        this.#handleOutputGuardrailDelta(event, 'text');
       } catch (err) {
         this.emit('error', {
           type: 'error',
@@ -1273,6 +1389,12 @@ export class RealtimeSession<
    * @param options - The options for the connection.
    */
   async connect(options: RealtimeSessionConnectOptions) {
+    this.#connectionGeneration += 1;
+    this.#responseGeneration = 0;
+    this.#activeResponseId = undefined;
+    this.#outputGuardrailDeltaState.clear();
+    this.#interruptedByGuardrail = {};
+    this.#pendingResponseDispatchSnapshot = undefined;
     this.#responseDispatchSnapshots.clear();
     // makes sure the current agent is correctly set and loads the tools
     await this.#setCurrentAgent(this.initialAgent);
@@ -1347,7 +1469,12 @@ export class RealtimeSession<
    * Disconnect from the session.
    */
   close() {
+    this.#connectionGeneration += 1;
+    this.#responseGeneration = 0;
+    this.#activeResponseId = undefined;
+    this.#outputGuardrailDeltaState.clear();
     this.#interruptedByGuardrail = {};
+    this.#pendingResponseDispatchSnapshot = undefined;
     this.#pendingFunctionCalls.clear();
     this.#responseDispatchSnapshots.clear();
     this.#transport.close();

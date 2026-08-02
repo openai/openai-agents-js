@@ -661,6 +661,186 @@ describe('RealtimeSession', () => {
     vi.restoreAllMocks();
   });
 
+  it('derives text response ownership from deltas for generic start events', async () => {
+    const runMock = vi.fn(async (_args: any) => ({
+      guardrail: { name: 'test', version: '1', policyHint: 'bad' },
+      output: { tripwireTriggered: true, outputInfo: { r: 'bad' } },
+    }));
+    vi.spyOn(guardrailModule, 'defineRealtimeOutputGuardrail').mockReturnValue({
+      run: runMock,
+    } as any);
+    const localTransport = new FakeTransport();
+    const sourceAgent = new RealtimeAgent({ name: 'Source', handoffs: [] });
+    const newerAgent = new RealtimeAgent({ name: 'Newer', handoffs: [] });
+    const localSession = new RealtimeSession(sourceAgent, {
+      transport: localTransport,
+      outputGuardrails: [
+        {
+          name: 'test',
+          execute: async () => ({ tripwireTriggered: true }),
+        } as any,
+      ],
+      outputGuardrailSettings: { debounceTextLength: 3 },
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    localTransport.emit('turn_started', {
+      type: 'response_started',
+    });
+    await localSession.updateAgent(newerAgent);
+    const guardrailTripped = waitForEvent<any[]>(
+      localSession,
+      'guardrail_tripped',
+    );
+    localTransport.emit('output_text_delta', {
+      type: 'output_text_delta',
+      delta: 'bad',
+      itemId: 'item-1',
+      responseId: 'response-1',
+    });
+
+    const [, eventAgent, , details] = await guardrailTripped;
+    expect(eventAgent).toBe(sourceAgent);
+    expect(details).toEqual({ itemId: 'item-1' });
+    expect(runMock).toHaveBeenCalledTimes(1);
+    expect(runMock.mock.calls[0]?.[0].agent).toBe(sourceAgent);
+    expect(localTransport.sendEventCalls).toContainEqual({
+      type: 'response.cancel',
+      response_id: 'response-1',
+    });
+    expect(localTransport.interruptCalls).toBe(0);
+    expect(localTransport.sendMessageCalls.at(-1)?.[0]).toContain('blocked');
+    vi.restoreAllMocks();
+  });
+
+  it('does not let a stale text guardrail interrupt a newer response', async () => {
+    const resolvers = new Map<
+      string,
+      (result: {
+        guardrail: { name: string; version: string; policyHint: string };
+        output: { tripwireTriggered: boolean; outputInfo: { text: string } };
+      }) => void
+    >();
+    const runMock = vi.fn(
+      async ({ agentOutput }: { agentOutput: unknown }) =>
+        new Promise<any>((resolve) => {
+          resolvers.set(String(agentOutput), resolve);
+        }),
+    );
+    vi.spyOn(guardrailModule, 'defineRealtimeOutputGuardrail').mockReturnValue({
+      run: runMock,
+    } as any);
+    const localTransport = new FakeTransport();
+    const sourceAgent = new RealtimeAgent({ name: 'Source', handoffs: [] });
+    const newerAgent = new RealtimeAgent({ name: 'Newer', handoffs: [] });
+    const localSession = new RealtimeSession(sourceAgent, {
+      transport: localTransport,
+      outputGuardrails: [{ name: 'test', execute: async () => ({}) } as any],
+      outputGuardrailSettings: { debounceTextLength: 1 },
+    });
+    const trippedAgents: unknown[] = [];
+    localSession.on('guardrail_tripped', (_context, agent) => {
+      trippedAgents.push(agent);
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    localTransport.emit('turn_started', {
+      type: 'response_started',
+      providerData: { response: { id: 'response-a' } },
+    });
+    localTransport.emit('output_text_delta', {
+      type: 'output_text_delta',
+      delta: 'alpha',
+      itemId: 'item-a',
+      responseId: 'response-a',
+    });
+    await vi.waitFor(() => expect(resolvers.has('alpha')).toBe(true));
+
+    await localSession.updateAgent(newerAgent);
+    localTransport.emit('turn_started', {
+      type: 'response_started',
+      providerData: { response: { id: 'response-b' } },
+    });
+    localTransport.emit('output_text_delta', {
+      type: 'output_text_delta',
+      delta: 'bravo',
+      itemId: 'item-b',
+      responseId: 'response-b',
+    });
+    await vi.waitFor(() => expect(resolvers.has('bravo')).toBe(true));
+
+    resolvers.get('bravo')!({
+      guardrail: { name: 'test', version: '1', policyHint: 'bad' },
+      output: { tripwireTriggered: true, outputInfo: { text: 'bravo' } },
+    });
+    await vi.waitFor(() => expect(trippedAgents).toEqual([newerAgent]));
+    expect(localTransport.sendEventCalls).toEqual([
+      { type: 'response.cancel', response_id: 'response-b' },
+    ]);
+    expect(localTransport.sendMessageCalls).toHaveLength(1);
+
+    resolvers.get('alpha')!({
+      guardrail: { name: 'test', version: '1', policyHint: 'bad' },
+      output: { tripwireTriggered: true, outputInfo: { text: 'alpha' } },
+    });
+    await vi.waitFor(() =>
+      expect(trippedAgents).toEqual([newerAgent, sourceAgent]),
+    );
+    expect(localTransport.sendEventCalls).toEqual([
+      { type: 'response.cancel', response_id: 'response-b' },
+    ]);
+    expect(localTransport.sendMessageCalls).toHaveLength(1);
+    expect(localTransport.interruptCalls).toBe(0);
+    vi.restoreAllMocks();
+  });
+
+  it('ignores guardrail results from a closed connection', async () => {
+    let resolveGuardrail!: (result: any) => void;
+    const runMock = vi.fn(
+      async () =>
+        new Promise<any>((resolve) => {
+          resolveGuardrail = resolve;
+        }),
+    );
+    vi.spyOn(guardrailModule, 'defineRealtimeOutputGuardrail').mockReturnValue({
+      run: runMock,
+    } as any);
+    const localTransport = new FakeTransport();
+    const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+      outputGuardrails: [{ name: 'test', execute: async () => ({}) } as any],
+      outputGuardrailSettings: { debounceTextLength: 1 },
+    });
+    const guardrailTripped = vi.fn();
+    localSession.on('guardrail_tripped', guardrailTripped);
+    await localSession.connect({ apiKey: 'test' });
+    localTransport.emit('turn_started', {
+      type: 'response_started',
+      providerData: { response: { id: 'response-1' } },
+    });
+    localTransport.emit('output_text_delta', {
+      type: 'output_text_delta',
+      delta: 'bad',
+      itemId: 'item-1',
+      responseId: 'response-1',
+    });
+    await vi.waitFor(() => expect(runMock).toHaveBeenCalledTimes(1));
+
+    localSession.close();
+    resolveGuardrail({
+      guardrail: { name: 'test', version: '1', policyHint: 'bad' },
+      output: { tripwireTriggered: true, outputInfo: { text: 'bad' } },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(guardrailTripped).not.toHaveBeenCalled();
+    expect(localTransport.sendEventCalls).toHaveLength(0);
+    expect(localTransport.sendMessageCalls).toHaveLength(0);
+    expect(localTransport.interruptCalls).toBe(0);
+    vi.restoreAllMocks();
+  });
+
   it('runs tool calls end-to-end and emits lifecycle events', async () => {
     const transport = new FakeTransport();
     const echoTool = tool({
