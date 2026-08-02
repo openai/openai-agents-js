@@ -105,6 +105,7 @@ class MockStreamableHTTPClientTransport {
 
 class MockClient {
   static instances: MockClient[] = [];
+  static toolMetadataCacheSupported = true;
   static connectHandlers: Array<
     ((this: MockClient) => Promise<void>) | undefined
   > = [];
@@ -146,6 +147,11 @@ class MockClient {
   constructor(_options: { name: string; version: string }) {
     this.instanceIndex = MockClient.instances.length;
     MockClient.instances.push(this);
+    if (!MockClient.toolMetadataCacheSupported) {
+      Object.defineProperty(this, 'cacheToolMetadata', {
+        value: undefined,
+      });
+    }
   }
 
   private get transportIndex(): number {
@@ -196,9 +202,11 @@ class MockClient {
     }
   }
 
-  async listTools(): Promise<{ tools: MockTool[] }> {
+  async request(request: { method: string }): Promise<{ tools: MockTool[] }> {
+    if (request.method !== 'tools/list') {
+      throw new Error(`Unexpected request method: ${request.method}`);
+    }
     const tools = MockClient.listToolsResults[this.transportIndex] ?? [];
-    this.cacheToolMetadata(tools);
     return { tools };
   }
 
@@ -370,6 +378,7 @@ function throwProtocolNotConnected(this: MockClient): never {
 describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
   beforeAll(() => {
     MockClient.instances = [];
+    MockClient.toolMetadataCacheSupported = true;
     MockClient.connectHandlers = [];
     MockClient.listToolsResults = [];
     MockClient.sessionIdAssignments = [];
@@ -380,12 +389,36 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
 
   beforeEach(() => {
     MockClient.instances = [];
+    MockClient.toolMetadataCacheSupported = true;
     MockClient.connectHandlers = [];
     MockClient.listToolsResults = [];
     MockClient.sessionIdAssignments = [];
     MockClient.notificationHandlers = [];
     MockClient.callToolHandlers = [];
     MockStreamableHTTPClientTransport.instances = [];
+  });
+
+  it('publishes connections without metadata caching and fails tool listing early', async () => {
+    MockClient.toolMetadataCacheSupported = false;
+    const server = createServer('missing-metadata-cache-server');
+
+    await server.connect();
+
+    const client = MockClient.instances[0];
+    const requestSpy = vi.spyOn(client, 'request');
+    await expect(server.listTools()).rejects.toThrow(
+      'The installed MCP SDK does not support tool metadata caching required for paginated tool listing.',
+    );
+
+    expect(MockClient.instances).toHaveLength(1);
+    expect(client.connectMock).toHaveBeenCalledOnce();
+    expect((server as any).session).toBe(client);
+    expect((server as any).transport).toBe(
+      MockStreamableHTTPClientTransport.instances[0],
+    );
+    expect(requestSpy).not.toHaveBeenCalled();
+
+    await server.close();
   });
 
   it('heals closed streamable HTTP sessions for follow-up calls on the existing client', async () => {
@@ -524,6 +557,69 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
       ]);
       expect(MockClient.instances).toHaveLength(1);
       expect(MockStreamableHTTPClientTransport.instances).toHaveLength(2);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('restores committed metadata when a same-session refresh fails', async () => {
+    MockClient.sessionIdAssignments = ['shared-session'];
+    MockClient.listToolsResults = [
+      [
+        {
+          name: 'regular-tool',
+          inputSchema: { type: 'object' },
+        },
+        {
+          name: 'previous-required-tool',
+          execution: { taskSupport: 'required' },
+          inputSchema: { type: 'object' },
+        },
+      ],
+      [
+        {
+          name: 'metadata-compile-failure',
+          inputSchema: { type: 'object' },
+        },
+      ],
+    ];
+    MockClient.callToolHandlers = [
+      async () => {
+        throw new McpError(ErrorCode.ConnectionClosed, 'shared session closed');
+      },
+    ];
+
+    const server = createServer('metadata-rollback-server');
+    await server.connect();
+
+    try {
+      expect(await server.listTools()).toHaveLength(2);
+      const client = MockClient.instances[0];
+      const cacheToolMetadata = client.cacheToolMetadata.bind(client);
+      client.cacheToolMetadata = (tools) => {
+        if (tools.some((tool) => tool.name === 'metadata-compile-failure')) {
+          cacheToolMetadata([]);
+          throw new Error('metadata compilation failed');
+        }
+        cacheToolMetadata(tools);
+      };
+
+      await expect(server.callTool('regular-tool', null)).rejects.toMatchObject(
+        {
+          name: 'McpError',
+          code: ErrorCode.ConnectionClosed,
+        },
+      );
+      await expect(server.listTools()).rejects.toThrow(
+        'metadata compilation failed',
+      );
+      await expect(
+        server.callTool('previous-required-tool', null),
+      ).rejects.toMatchObject({
+        name: 'McpError',
+        code: ErrorCode.InvalidRequest,
+      });
+      expect(MockClient.instances).toHaveLength(1);
     } finally {
       await server.close();
     }

@@ -9,7 +9,8 @@ class StubServer extends NodeMCPServerStdio {
     super({ command: 'noop', name, toolFilter: filter, cacheToolsList: true });
     this.toolList = tools;
     this.session = {
-      listTools: async () => ({ tools: this.toolList }),
+      cacheToolMetadata: () => {},
+      request: async () => ({ tools: this.toolList }),
       callTool: async () => [],
       close: async () => {},
     } as any;
