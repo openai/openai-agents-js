@@ -15,6 +15,8 @@ This guide helps new contributors get started with the OpenAI Agents JS monorepo
 
 ### Mandatory Skill Usage
 
+Repository skills are stored under `.agents/skills/`. A reference such as `$<skill-name>` in this file is a repository instruction reference, not a request for manual user invocation. When a rule requires a skill, read `.agents/skills/<skill-name>/SKILL.md` completely before taking task actions, follow its instructions, and resolve referenced files relative to that skill directory.
+
 #### `$code-change-verification`
 
 Run `$code-change-verification` before marking work complete when changes affect runtime code, tests, or build/test behavior.
