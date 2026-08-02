@@ -125,13 +125,33 @@ function isSchemaNullable(schema: Record<string, unknown>): boolean {
       (entry) =>
         typeof entry === 'object' &&
         entry !== null &&
-        isSchemaNullable(entry as Record<string, unknown>),
+        allowsNull(entry as Record<string, unknown>),
     )
   ) {
     return true;
   }
 
   return false;
+}
+
+// Keywords that can rule null out. A branch carrying none of them (`{}`, or one
+// that only adds a description/title) constrains nothing, so it still admits null.
+const TYPE_CONSTRAINING_KEYWORDS = [
+  'type',
+  'enum',
+  'const',
+  '$ref',
+  'anyOf',
+  'oneOf',
+  'allOf',
+  'not',
+];
+
+function allowsNull(schema: Record<string, unknown>): boolean {
+  if (isSchemaNullable(schema)) {
+    return true;
+  }
+  return !TYPE_CONSTRAINING_KEYWORDS.some((keyword) => keyword in schema);
 }
 
 export function stripStrictNullsForJsonSchema(

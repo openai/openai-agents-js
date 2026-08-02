@@ -338,6 +338,50 @@ describe('utils/strictToolSchema', () => {
   });
 
   it.each([
+    ['annotation-only', { description: 'a note' }],
+    ['empty', {}],
+    ['title-only', { title: 'Value' }],
+    ['nested allOf', { allOf: [{ description: 'a note' }] }],
+  ])('keeps null across a %s allOf branch', (_name, sibling) => {
+    const schema = {
+      type: 'object',
+      properties: {
+        value: { $ref: '#/$defs/value' },
+      },
+      required: [],
+      $defs: {
+        value: {
+          allOf: [{ type: ['string', 'null'] }, sibling],
+        },
+      },
+    };
+
+    expect(stripStrictNullsForJsonSchema(schema, { value: null })).toEqual({
+      value: null,
+    });
+  });
+
+  it('still strips null when an allOf branch rejects it', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        value: { $ref: '#/$defs/value' },
+      },
+      required: [],
+      $defs: {
+        value: {
+          allOf: [
+            { type: ['string', 'null'] },
+            { description: 'a note', type: 'string' },
+          ],
+        },
+      },
+    };
+
+    expect(stripStrictNullsForJsonSchema(schema, { value: null })).toEqual({});
+  });
+
+  it.each([
     ['unresolved', '#/$defs/missing'],
     ['external', 'https://example.com/schema.json#/$defs/payload'],
   ])('leaves values behind %s references unchanged', (_name, $ref) => {
