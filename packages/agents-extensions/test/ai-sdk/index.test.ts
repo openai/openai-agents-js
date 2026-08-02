@@ -1671,6 +1671,52 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('decodes percent-escaped base64 data URL payloads', () => {
+    const base64 = '+/8=';
+    const percentEscapedBase64 = '%2B%2F8%3D';
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_image',
+            image: `data:image/png;base64,${percentEscapedBase64}`,
+          },
+          {
+            type: 'input_file',
+            file: `data:application/pdf;base64,${percentEscapedBase64}`,
+          },
+        ],
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(
+      stubModel({}, { specificationVersion: 'v4' }),
+      items,
+    );
+
+    expect(msgs).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: { type: 'data', data: base64 },
+            mediaType: 'image/png',
+            providerOptions: {},
+          },
+          {
+            type: 'file',
+            data: { type: 'data', data: base64 },
+            mediaType: 'application/pdf',
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
   test('converts user input_file URL, data URL, and raw base64 content', () => {
     const rawBase64 = Buffer.from('inline file').toString('base64');
     const items: protocol.ModelItem[] = [
