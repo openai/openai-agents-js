@@ -1684,6 +1684,11 @@ describe('itemsToLanguageV2Messages', () => {
           },
           {
             type: 'input_file',
+            file: 'data:;base64,SGVsbG8=',
+            filename: 'inline.txt',
+          },
+          {
+            type: 'input_file',
             file: { url: 'https://example.com/report.pdf' },
             providerData: { mediaType: 'application/pdf' },
           },
@@ -1706,6 +1711,13 @@ describe('itemsToLanguageV2Messages', () => {
             data: 'JVBERi0=',
             mediaType: 'application/pdf',
             filename: 'inline.pdf',
+            providerOptions: {},
+          },
+          {
+            type: 'file',
+            data: 'SGVsbG8=',
+            mediaType: 'text/plain',
+            filename: 'inline.txt',
             providerOptions: {},
           },
           {
@@ -1742,6 +1754,11 @@ describe('itemsToLanguageV2Messages', () => {
           },
           {
             type: 'input_file',
+            file: 'data:;base64,SGVsbG8=',
+            filename: 'inline.txt',
+          },
+          {
+            type: 'input_file',
             file: rawBase64,
             filename: 'raw.txt',
             providerData: { mediaType: 'text/plain' },
@@ -1774,6 +1791,13 @@ describe('itemsToLanguageV2Messages', () => {
             data: { type: 'data', data: 'JVBERi0=' },
             mediaType: 'application/pdf',
             filename: 'inline.pdf',
+            providerOptions: {},
+          },
+          {
+            type: 'file',
+            data: { type: 'data', data: 'SGVsbG8=' },
+            mediaType: 'text/plain',
+            filename: 'inline.txt',
             providerOptions: {},
           },
           {

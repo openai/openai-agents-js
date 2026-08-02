@@ -259,10 +259,7 @@ function parseBase64DataUrl(source: string): ParsedInlineData | undefined {
   }
 
   const [maybeMediaType] = metadata.split(';');
-  const mediaType = maybeMediaType?.trim();
-  if (!mediaType) {
-    return undefined;
-  }
+  const mediaType = maybeMediaType?.trim() || 'text/plain';
 
   return {
     data: source.slice(commaIndex + 1),
