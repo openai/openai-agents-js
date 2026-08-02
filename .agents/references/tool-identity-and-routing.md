@@ -9,6 +9,8 @@ Use this reference for tool names, namespaces, lookup, approvals, call IDs, coll
 - A normal namespaced function tool resolves by qualified name. A top-level deferred tool can be self-namespaced on the wire; preserve the special bare-name preference so it does not collide with a real namespace group.
 - Collision checks must use the same enabled tool and handoff set exposed to the model. Disabled handoffs do not reserve names; local functions and already allocated normalized MCP names do.
 
+Provider wire-name grammar and length limits remain provider-owned validation unless an SDK-owned routing invariant requires local enforcement. Follow [Model, Provider, and Conversion Boundaries](model-provider-and-conversion-boundaries.md#provider-validation-and-error-ownership) before adding name validation to shared tool types or canonical identity helpers.
+
 ## MCP and Handoffs
 
 - Prefixing local MCP tool names with a server name changes the model-visible collision-safe wrapper name, not the original name sent back to the MCP server.
