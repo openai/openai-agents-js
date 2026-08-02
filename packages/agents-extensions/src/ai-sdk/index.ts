@@ -300,6 +300,9 @@ function isRawBase64FileData(source: string): boolean {
   if (paddingIndex !== -1 && !/^=+$/.test(source.slice(paddingIndex))) {
     return false;
   }
+  if (paddingIndex !== -1 && source.length % 4 !== 0) {
+    return false;
+  }
 
   return source.length % 4 !== 1;
 }

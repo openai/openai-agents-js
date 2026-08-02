@@ -2380,6 +2380,8 @@ describe('itemsToLanguageV2Messages', () => {
             { type: 'input_file', file: { url: 'javascript:alert(1)' } },
             { type: 'input_file', file: 'data:text/plain,hi' },
             { type: 'input_file', file: 'data:application/pdf;base64,%%%' },
+            { type: 'input_file', file: 'A=' },
+            { type: 'input_file', file: 'AA=' },
           ],
         } as any,
       ];
@@ -2391,7 +2393,7 @@ describe('itemsToLanguageV2Messages', () => {
         type: 'text',
         value:
           'file:///etc/passwdjavascript:alert(1)data:text/plain,hi' +
-          'data:application/pdf;base64,%%%',
+          'data:application/pdf;base64,%%%A=AA=',
       });
     },
   );
@@ -2504,6 +2506,27 @@ describe('itemsToLanguageV2Messages', () => {
       /Only public URLs, base64 data URLs, and raw base64 file data are supported/,
     );
   });
+
+  test.each(['A=', 'AA='])(
+    'rejects malformed padded raw base64: %s',
+    (file) => {
+      const items: protocol.ModelItem[] = [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'input_file',
+              file,
+            },
+          ],
+        } as any,
+      ];
+
+      expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow(
+        /Only public URLs, base64 data URLs, and raw base64 file data are supported/,
+      );
+    },
+  );
 
   test('rejects non-public input_file object URL scheme', () => {
     const items: protocol.ModelItem[] = [
