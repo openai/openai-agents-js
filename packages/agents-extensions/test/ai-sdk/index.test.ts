@@ -1826,6 +1826,50 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('parses input_file data URL scheme and base64 token case-insensitively', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: 'DATA:application/pdf;base64,JVBERi0=',
+          },
+          {
+            type: 'input_file',
+            file: 'data:text/plain;BASE64,SGVsbG8=',
+          },
+        ],
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(
+      stubModel({}, { specificationVersion: 'v4' }),
+      items,
+    );
+
+    expect(msgs).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: { type: 'data', data: 'JVBERi0=' },
+            mediaType: 'application/pdf',
+            providerOptions: {},
+          },
+          {
+            type: 'file',
+            data: { type: 'data', data: 'SGVsbG8=' },
+            mediaType: 'text/plain',
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
   test('converts structured tool output lists', () => {
     const rawBase64 = Buffer.from('tool file').toString('base64');
     const items: protocol.ModelItem[] = [
@@ -2210,6 +2254,49 @@ describe('itemsToLanguageV2Messages', () => {
         },
       ],
       providerOptions: {},
+    });
+  });
+
+  test('keeps OpenAI file IDs in non-OpenAI v4 structured tool outputs as text', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        callId: 'tool-1',
+        name: 'describe_files',
+        arguments: '{}',
+      } as any,
+      {
+        type: 'function_call_result',
+        callId: 'tool-1',
+        name: 'describe_files',
+        output: [
+          { type: 'input_image', image: { id: 'file_image_123' } },
+          {
+            type: 'input_file',
+            file: 'file-document-string-123',
+          },
+          {
+            type: 'input_file',
+            file: { id: 'file_document_object_123' },
+          },
+        ],
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(
+      stubModel(
+        {},
+        { provider: 'anthropic.messages', specificationVersion: 'v4' },
+      ),
+      items,
+    );
+
+    expect((msgs[1] as any).content[0].output).toEqual({
+      type: 'text',
+      value:
+        '[image file_id=file_image_123]' +
+        '[file id=file-document-string-123]' +
+        '[file id=file_document_object_123]',
     });
   });
 

@@ -233,6 +233,10 @@ function getProviderReferenceKey(model: LanguageModelCompatible): string {
   return model.provider.split('.')[0] || model.provider;
 }
 
+function supportsOpenAIFileReferences(model: LanguageModelCompatible): boolean {
+  return getProviderReferenceKey(model).toLowerCase() === 'openai';
+}
+
 const OPENAI_FILE_ID_INPUT_ERROR =
   'OpenAI file IDs are not supported for AI SDK file inputs. Pass a public URL, base64 data URL, or raw base64 file data instead.';
 const FILE_INPUT_URL_ERROR =
@@ -244,7 +248,7 @@ type ParsedInlineData = {
 };
 
 function parseBase64DataUrl(source: string): ParsedInlineData | undefined {
-  if (!source.startsWith('data:')) {
+  if (source.slice(0, 'data:'.length).toLowerCase() !== 'data:') {
     return undefined;
   }
 
@@ -254,7 +258,11 @@ function parseBase64DataUrl(source: string): ParsedInlineData | undefined {
   }
 
   const metadata = source.slice('data:'.length, commaIndex);
-  if (!metadata.includes('base64')) {
+  if (
+    !metadata
+      .split(';')
+      .some((token) => token.trim().toLowerCase() === 'base64')
+  ) {
     return undefined;
   }
 
@@ -1365,7 +1373,10 @@ function convertStructuredOutputsToAiSdkOutput(
           : undefined;
       const imageFileId = imageObjectFileId ?? legacyFileId;
 
-      if ((isV3 || isV4) && imageFileId) {
+      if (
+        (isV3 || (isV4 && supportsOpenAIFileReferences(model))) &&
+        imageFileId
+      ) {
         contentParts.push(
           isV4
             ? {
@@ -1380,6 +1391,10 @@ function convertStructuredOutputsToAiSdkOutput(
               }
             : { type: 'image-file-id', fileId: imageFileId },
         );
+        continue;
+      }
+      if (isV4 && imageFileId) {
+        appendText(`[image file_id=${imageFileId}]`);
         continue;
       }
 
@@ -1481,7 +1496,7 @@ function convertStructuredOutputsToAiSdkOutput(
         }
 
         if (isLikelyOpenAIFileId(fileValue)) {
-          if (isV4) {
+          if (isV4 && supportsOpenAIFileReferences(model)) {
             contentParts.push({
               type: 'file',
               data: {
@@ -1566,7 +1581,7 @@ function convertStructuredOutputsToAiSdkOutput(
 
         const fileId = getStringProviderField(fileObject, 'id');
         if (fileId) {
-          if (isV4) {
+          if (isV4 && supportsOpenAIFileReferences(model)) {
             contentParts.push({
               type: 'file',
               data: {
