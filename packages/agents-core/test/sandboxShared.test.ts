@@ -165,14 +165,14 @@ describe('sandbox shared helpers', () => {
       '/Users/tester/Library/Application Support/openai-agents-js/sandbox-snapshots',
     );
 
-    vi.stubEnv('LOCALAPPDATA', '  /Users/tester/AppData/Local  ');
+    vi.stubEnv('LOCALAPPDATA', '  C:\\Users\\tester\\AppData\\Local  ');
     defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
       platform: 'win32',
-      home: '/Users/tester',
-      temp: '/tmp',
+      home: 'C:\\Users\\tester',
+      temp: 'C:\\Temp',
     });
     expect(defaultLocalSnapshotBaseDir()).toBe(
-      '/Users/tester/AppData/Local/openai-agents-js/sandbox-snapshots',
+      'C:\\Users\\tester\\AppData\\Local\\openai-agents-js\\sandbox-snapshots',
     );
 
     vi.stubEnv('LOCALAPPDATA', '');
@@ -184,6 +184,61 @@ describe('sandbox shared helpers', () => {
     });
     expect(defaultLocalSnapshotBaseDir()).toBe(
       '/state/openai-agents-js/sandbox-snapshots',
+    );
+  });
+
+  it('preserves explicit relative local snapshot directory overrides', async () => {
+    vi.stubEnv('OPENAI_AGENTS_SANDBOX_SNAPSHOT_DIR', '  relative/snapshots  ');
+    const defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'linux',
+      home: '/home/tester',
+      temp: '/tmp',
+    });
+
+    expect(defaultLocalSnapshotBaseDir()).toBe('relative/snapshots');
+  });
+
+  it('ignores relative XDG state directories', async () => {
+    vi.stubEnv('XDG_STATE_HOME', 'relative-state');
+    const defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'linux',
+      home: '/home/tester',
+      temp: '/tmp',
+    });
+
+    expect(defaultLocalSnapshotBaseDir()).toBe(
+      '/home/tester/.local/state/openai-agents-js/sandbox-snapshots',
+    );
+  });
+
+  it.each(['relative-local', '/tmp/localappdata'])(
+    'ignores invalid Windows app-data directories: %s',
+    async (localAppData) => {
+      vi.stubEnv('LOCALAPPDATA', localAppData);
+      const defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir(
+        {
+          platform: 'win32',
+          home: 'C:\\Users\\tester',
+          temp: 'C:\\Temp',
+        },
+      );
+
+      expect(defaultLocalSnapshotBaseDir()).toBe(
+        'C:\\Users\\tester\\AppData\\Local\\openai-agents-js\\sandbox-snapshots',
+      );
+    },
+  );
+
+  it('falls back to the temporary directory without a home directory', async () => {
+    vi.stubEnv('XDG_STATE_HOME', 'relative-state');
+    const defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'linux',
+      home: '',
+      temp: '/tmp',
+    });
+
+    expect(defaultLocalSnapshotBaseDir()).toBe(
+      '/tmp/openai-agents-js/sandbox-snapshots',
     );
   });
 
