@@ -1766,9 +1766,7 @@ describe('Runner.run (streaming)', () => {
     expect(resumed.finalOutput).toBe('cancelled');
     expect(guardrail.execute).toHaveBeenCalledTimes(1);
     expect(saveResultSpy).toHaveBeenCalledTimes(3);
-    expect(saveResultSpy.mock.calls[1]?.[2]).toEqual({
-      runCompaction: false,
-    });
+    expect(saveResultSpy.mock.calls[1]?.[2]).toBeUndefined();
     expect(saveResultSpy.mock.calls[2]?.[2]).toBeUndefined();
     expect(agentEnd).toHaveBeenCalledTimes(1);
     expect(

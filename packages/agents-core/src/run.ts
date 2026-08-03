@@ -1012,6 +1012,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       setRunStateUsageRecorder(state, recordUsage);
       let completedResult: RunResult<TContext, TAgent> | undefined;
       let persistenceCheckpoint: RunResult<TContext, TAgent> | undefined;
+      let approvedToolCheckpointCompacted = false;
+      let approvedToolCheckpointModelResponseCount = 0;
       const completeResult = (result: RunResult<TContext, TAgent>) => {
         completedResult = result;
         return result;
@@ -1055,9 +1057,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             });
             if (interruptedOutcome.approvedToolResumed && persistResult) {
               const approvedToolResult = new RunResult<TContext, TAgent>(state);
-              await persistResult(approvedToolResult, {
-                runCompaction: false,
-              });
+              await persistResult(approvedToolResult);
+              approvedToolCheckpointCompacted = true;
+              approvedToolCheckpointModelResponseCount =
+                approvedToolResult.rawResponses.length;
             }
             if (options.signal?.aborted) {
               persistenceCheckpoint = new RunResult<TContext, TAgent>(state);
@@ -1371,7 +1374,20 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const resultToPersist = completedResult ?? persistenceCheckpoint;
           if (resultToPersist) {
             try {
-              await persistResult?.(resultToPersist);
+              const hasUnpersistedItems =
+                resultToPersist.newItems.length >
+                state._currentTurnPersistedItemCount;
+              const modelResponseAdvanced =
+                resultToPersist.rawResponses.length >
+                approvedToolCheckpointModelResponseCount;
+              await persistResult?.(
+                resultToPersist,
+                approvedToolCheckpointCompacted &&
+                  !hasUnpersistedItems &&
+                  !modelResponseAdvanced
+                  ? { runCompaction: false }
+                  : undefined,
+              );
             } catch (error) {
               setRunnerSpanError(taskSpan, error);
               await Promise.reject(error);
@@ -1477,6 +1493,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
     let continuingInterruptedTurn = false;
     let runError: unknown;
+    let approvedToolCheckpointCompacted = false;
+    let approvedToolCheckpointModelResponseCount = 0;
     let currentTurnSpan: ReturnType<typeof startTurnSpan> | undefined;
     const parentUsageRecorder = getRunnerParentUsageRecorder(this);
     const recordUsage = (usage: Usage) => {
@@ -1485,6 +1503,21 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       parentUsageRecorder?.(usage);
     };
     setRunStateUsageRecorder(result.state, recordUsage);
+    const saveStreamResultWithCompactionOwnership = async () => {
+      const hasUnpersistedItems =
+        result.newItems.length > result.state._currentTurnPersistedItemCount;
+      const modelResponseAdvanced =
+        result.rawResponses.length > approvedToolCheckpointModelResponseCount;
+      await saveStreamResultToSession(
+        options.session,
+        result,
+        approvedToolCheckpointCompacted &&
+          !hasUnpersistedItems &&
+          !modelResponseAdvanced
+          ? { runCompaction: false }
+          : undefined,
+      );
+    };
 
     try {
       while (true) {
@@ -1539,9 +1572,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             !serverManagesConversation &&
             options.session
           ) {
-            await saveStreamResultToSession(options.session, result, {
-              runCompaction: false,
-            });
+            await saveStreamResultToSession(options.session, result);
+            approvedToolCheckpointCompacted = true;
+            approvedToolCheckpointModelResponseCount =
+              result.rawResponses.length;
           }
 
           // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
@@ -1916,7 +1950,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             await persistStreamInputIfNeeded();
             // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
             if (!serverManagesConversation) {
-              await saveStreamResultToSession(options.session, result);
+              await saveStreamResultWithCompactionOwnership();
             }
             this.emit(
               'agent_end',
@@ -1934,7 +1968,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             // We are done for now. Don't run any output guardrails.
             await persistStreamInputIfNeeded();
             if (!serverManagesConversation) {
-              await saveStreamResultToSession(options.session, result);
+              await saveStreamResultWithCompactionOwnership();
             }
             return;
           case 'next_step_handoff':
@@ -1989,7 +2023,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       if (handledResult) {
         await persistStreamInputIfNeeded();
         if (!serverManagesConversation) {
-          await saveStreamResultToSession(options.session, result);
+          await saveStreamResultWithCompactionOwnership();
         }
         return;
       }

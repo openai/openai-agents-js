@@ -76,31 +76,24 @@ export async function resumeInterruptedTurn<
     signal,
     onStepItems,
   } = options;
-  const approvedToolCallIds = new Set<string>();
-  for (const item of state.getInterruptions()) {
+  const approvedToolWillResume = state.getInterruptions().some((item) => {
     const rawItem = item.rawItem;
     if (rawItem.type === 'hosted_tool_call') {
-      continue;
+      return false;
     }
-    const toolName =
-      item.toolName ??
-      ('name' in rawItem && typeof rawItem.name === 'string'
-        ? rawItem.name
-        : undefined);
+    const toolName = item.name;
     const callId =
       'callId' in rawItem && typeof rawItem.callId === 'string'
         ? rawItem.callId
         : 'id' in rawItem && typeof rawItem.id === 'string'
           ? rawItem.id
           : undefined;
-    if (
+    return (
       toolName !== undefined &&
       callId !== undefined &&
       state._context.isToolApproved({ toolName, callId }) === true
-    ) {
-      approvedToolCallIds.add(callId);
-    }
-  }
+    );
+  });
   const turnResult = await resolveInterruptedTurn<TContext>(
     state._currentAgent,
     state._originalInput,
@@ -113,19 +106,9 @@ export async function resumeInterruptedTurn<
     agentToolParentRunConfig,
     signal,
   );
-  const approvedToolResumed = turnResult.newStepItems.some((item) => {
-    const rawItem = item.rawItem;
-    if (!rawItem || !('callId' in rawItem)) {
-      return false;
-    }
-    return (
-      (rawItem.type === 'function_call_result' ||
-        rawItem.type === 'computer_call_result' ||
-        rawItem.type === 'shell_call_output' ||
-        rawItem.type === 'apply_patch_call_output') &&
-      approvedToolCallIds.has(rawItem.callId)
-    );
-  });
+  const approvedToolResumed =
+    approvedToolWillResume &&
+    turnResult.generatedItems.length > state._currentTurnPersistedItemCount;
 
   applyTurnResult({
     state,
