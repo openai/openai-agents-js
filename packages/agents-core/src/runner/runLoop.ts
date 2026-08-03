@@ -8,6 +8,7 @@ import { resolveInterruptedTurn } from './turnResolution';
 export type InterruptedTurnOutcome = {
   nextStep: SingleStepResult['nextStep'];
   action: 'return_interruption' | 'rerun_turn' | 'advance_step';
+  approvedToolResumed: boolean;
 };
 
 export type InterruptedTurnControl = {
@@ -75,6 +76,31 @@ export async function resumeInterruptedTurn<
     signal,
     onStepItems,
   } = options;
+  const approvedToolCallIds = new Set<string>();
+  for (const item of state.getInterruptions()) {
+    const rawItem = item.rawItem;
+    if (rawItem.type === 'hosted_tool_call') {
+      continue;
+    }
+    const toolName =
+      item.toolName ??
+      ('name' in rawItem && typeof rawItem.name === 'string'
+        ? rawItem.name
+        : undefined);
+    const callId =
+      'callId' in rawItem && typeof rawItem.callId === 'string'
+        ? rawItem.callId
+        : 'id' in rawItem && typeof rawItem.id === 'string'
+          ? rawItem.id
+          : undefined;
+    if (
+      toolName !== undefined &&
+      callId !== undefined &&
+      state._context.isToolApproved({ toolName, callId }) === true
+    ) {
+      approvedToolCallIds.add(callId);
+    }
+  }
   const turnResult = await resolveInterruptedTurn<TContext>(
     state._currentAgent,
     state._originalInput,
@@ -87,6 +113,19 @@ export async function resumeInterruptedTurn<
     agentToolParentRunConfig,
     signal,
   );
+  const approvedToolResumed = turnResult.newStepItems.some((item) => {
+    const rawItem = item.rawItem;
+    if (!rawItem || !('callId' in rawItem)) {
+      return false;
+    }
+    return (
+      (rawItem.type === 'function_call_result' ||
+        rawItem.type === 'computer_call_result' ||
+        rawItem.type === 'shell_call_output' ||
+        rawItem.type === 'apply_patch_call_output') &&
+      approvedToolCallIds.has(rawItem.callId)
+    );
+  });
 
   applyTurnResult({
     state,
@@ -101,12 +140,24 @@ export async function resumeInterruptedTurn<
   // return_interruption: still waiting on approvals. rerun_turn: same turn rerun without increment.
   // advance_step: proceed without rerunning the same turn.
   if (turnResult.nextStep.type === 'next_step_interruption') {
-    return { nextStep: turnResult.nextStep, action: 'return_interruption' };
+    return {
+      nextStep: turnResult.nextStep,
+      action: 'return_interruption',
+      approvedToolResumed,
+    };
   }
   if (turnResult.nextStep.type === 'next_step_run_again') {
-    return { nextStep: turnResult.nextStep, action: 'rerun_turn' };
+    return {
+      nextStep: turnResult.nextStep,
+      action: 'rerun_turn',
+      approvedToolResumed,
+    };
   }
-  return { nextStep: turnResult.nextStep, action: 'advance_step' };
+  return {
+    nextStep: turnResult.nextStep,
+    action: 'advance_step',
+    approvedToolResumed,
+  };
 }
 
 export function handleInterruptedOutcome<

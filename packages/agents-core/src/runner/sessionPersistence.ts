@@ -268,6 +268,7 @@ export async function saveToSession(
   session: Session | undefined,
   sessionInputItems: AgentInputItem[] | undefined,
   result: RunResult<any, any>,
+  options: { runCompaction?: boolean } = {},
 ): Promise<void> {
   const state = result.state;
   const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
@@ -290,6 +291,7 @@ export async function saveToSession(
     extraInputItems: sessionInputItems,
     lastResponseId: result.lastResponseId,
     alreadyPersistedCount: alreadyPersisted,
+    runCompaction: options.runCompaction ?? true,
   });
 }
 
@@ -310,6 +312,7 @@ export async function saveStreamInputToSession(
 export async function saveStreamResultToSession(
   session: Session | undefined,
   result: StreamedRunResult<any, any>,
+  options: { runCompaction?: boolean } = {},
 ): Promise<void> {
   const state = result.state;
   const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
@@ -321,6 +324,7 @@ export async function saveStreamResultToSession(
     newRunItems,
     lastResponseId: result.lastResponseId,
     alreadyPersistedCount: alreadyPersisted,
+    runCompaction: options.runCompaction ?? true,
   });
 }
 
@@ -627,6 +631,7 @@ async function persistRunItemsToSession(options: {
   extraInputItems?: AgentInputItem[] | undefined;
   lastResponseId?: string;
   alreadyPersistedCount: number;
+  runCompaction: boolean;
 }): Promise<void> {
   const {
     session,
@@ -635,6 +640,7 @@ async function persistRunItemsToSession(options: {
     extraInputItems = [],
     lastResponseId,
     alreadyPersistedCount,
+    runCompaction,
   } = options;
 
   if (!session) {
@@ -654,13 +660,17 @@ async function persistRunItemsToSession(options: {
   if (itemsToSave.length === 0) {
     state._currentTurnPersistedItemCount =
       alreadyPersistedCount + newRunItems.length;
-    await runCompactionOnSession(session, lastResponseId, state);
+    if (runCompaction) {
+      await runCompactionOnSession(session, lastResponseId, state);
+    }
     return;
   }
 
   const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
   await session.addItems(sanitizedItems);
-  await runCompactionOnSession(session, lastResponseId, state);
+  if (runCompaction) {
+    await runCompactionOnSession(session, lastResponseId, state);
+  }
   state._currentTurnPersistedItemCount =
     alreadyPersistedCount + newRunItems.length;
 }

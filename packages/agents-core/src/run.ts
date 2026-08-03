@@ -691,11 +691,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         },
         effectiveInvocationSpanParent,
         sessionPersistence && !serverManagesConversation
-          ? async (result) => {
+          ? async (result, persistenceOptions) => {
               await saveToSession(
                 session,
                 sessionPersistence.getItemsForPersistence(),
                 result,
+                persistenceOptions,
               );
             }
           : undefined,
@@ -884,7 +885,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     preserveTurnPersistenceOnResume?: boolean,
     sandboxMemoryRunContext?: SandboxMemoryPersistenceContext,
     invocationSpanParent?: Span<any> | Trace,
-    persistResult?: (result: RunResult<TContext, TAgent>) => Promise<void>,
+    persistResult?: (
+      result: RunResult<TContext, TAgent>,
+      options?: { runCompaction?: boolean },
+    ) => Promise<void>,
   ): Promise<RunResult<TContext, TAgent>> {
     return withNewSpanContext(async () => {
       // if we have a saved state we use that one, otherwise we create a new one
@@ -1049,6 +1053,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               agentToolParentRunConfig,
               signal: options.signal,
             });
+            if (interruptedOutcome.approvedToolResumed && persistResult) {
+              const approvedToolResult = new RunResult<TContext, TAgent>(state);
+              await persistResult(approvedToolResult, {
+                runCompaction: false,
+              });
+            }
             if (options.signal?.aborted) {
               persistenceCheckpoint = new RunResult<TContext, TAgent>(state);
             }
@@ -1524,6 +1534,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               addStepToRunResult(result, turnResult);
             },
           });
+          if (
+            interruptedOutcome.approvedToolResumed &&
+            !serverManagesConversation &&
+            options.session
+          ) {
+            await saveStreamResultToSession(options.session, result, {
+              runCompaction: false,
+            });
+          }
 
           // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
           // The counter will be reset when _currentTurn is incremented (starting a new turn)
