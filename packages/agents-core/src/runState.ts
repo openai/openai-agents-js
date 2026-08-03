@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { Agent } from './agent';
+import type { Handoff } from './handoff';
 import { getAgentToolSourceAgent } from './agentToolSourceRegistry';
 import { buildAgentIdentityMap } from './runStateIdentity';
 export { buildAgentIdentityMap } from './runStateIdentity';
@@ -20,7 +21,7 @@ import { RunContext } from './runContext';
 import { getTurnInput, type ReasoningItemIdPolicy } from './runner/items';
 import { AgentToolUseTracker } from './runner/toolUseTracker';
 import { nextStepSchema, NextStep } from './runner/steps';
-import type { ProcessedResponse } from './runner/types';
+import { createToolRunFunction, type ProcessedResponse } from './runner/types';
 import type { AgentSpanData, Span } from './tracing/spans';
 import { SystemError, UserError } from './errors';
 import { getGlobalTraceProvider } from './tracing/provider';
@@ -28,7 +29,6 @@ import { Usage } from './usage';
 import { Trace } from './tracing/traces';
 import { getCurrentTrace } from './tracing';
 import logger from './logger';
-import { handoff } from './handoff';
 import * as protocol from './types/protocol';
 import { AgentInputItem, UnknownContext } from './types';
 import {
@@ -43,27 +43,41 @@ import type {
 import { safeExecute } from './utils/safeExecute';
 import {
   getClientToolSearchExecutor,
-  getToolSearchRuntimeToolKey,
+  getToolSearchRuntimeRoutingKey,
   HostedMCPTool,
+  FunctionTool,
   ShellTool,
   ApplyPatchTool,
   Tool,
 } from './tool';
 import type { AgentToolInvocation } from './agentToolInvocation';
 import {
+  buildFunctionToolLookupMap,
+  type FunctionToolLookupKey,
+  getFunctionToolLookupKey,
   getFunctionToolQualifiedName,
-  toolQualifiedName,
-  resolveFunctionToolCallName,
+  getFunctionToolStateKey,
+  getFunctionToolStateKeyForCall,
+  getFunctionToolStateKeyForResolvedCall,
+  getFunctionToolStateKeys,
+  getToolCallNamespace,
+  getToolCallDisplayName,
+  resolveFunctionToolCall,
 } from './toolIdentity';
 import {
   getToolSearchExecution,
   getToolSearchOutputReplacementKey,
+  getToolSearchProviderCallId,
   resolveToolSearchCallId,
 } from './utils/toolSearch';
 import {
   executeCustomClientToolSearch,
+  filterEnabledToolSearchRuntimeTools,
   getClientToolSearchHelper,
+  registerRuntimeToolSearchTools,
+  validateClientToolSearchSupport,
 } from './runner/toolSearch';
+import { resolveModelVisibleToolNameCollisions } from './runner/modelPreparation';
 import { ensureToolCallerAllowed } from './runner/toolCaller';
 import {
   getSerializedApplyPatchToolPlaceholder,
@@ -101,8 +115,10 @@ import {
  *   and optional assistant message phases.
  * - 1.15: Adds reconstructable sandbox environment value references and sandbox
  *   session-state envelope version 2.
+ * - 1.16: Adds category-aware function tool keys and agent-scoped function approvals,
+ *   including aliases for legacy pending-run accessors.
  */
-export const CURRENT_SCHEMA_VERSION = '1.15' as const;
+export const CURRENT_SCHEMA_VERSION = '1.16' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -119,6 +135,7 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.12',
   '1.13',
   '1.14',
+  '1.15',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -245,6 +262,7 @@ const itemSchema = z.discriminatedUnion('type', [
       .or(protocol.ApplyPatchCallItem),
     agent: serializedAgentSchema,
     toolName: z.string().optional(),
+    functionToolStateKey: z.string().optional(),
   }),
 ]);
 
@@ -299,6 +317,7 @@ const serializedProcessedResponseSchema = z.object({
     z.object({
       toolCall: z.any(),
       handoff: z.any(),
+      targetAgent: serializedAgentSchema.optional(),
     }),
   ),
   functions: z.array(
@@ -420,6 +439,25 @@ const toolOutputGuardrailResultSchema = z.object({
   output: toolGuardrailFunctionOutputSchema,
 });
 
+const approvalRecordSchema = z.object({
+  approved: z.array(z.string()).or(z.boolean()),
+  rejected: z.array(z.string()).or(z.boolean()),
+  messages: z.record(z.string(), z.string()).optional(),
+  stickyRejectMessage: z.string().optional(),
+});
+
+const functionApprovalsSchema = z.array(
+  z.object({
+    agentIdentity: z.string(),
+    approvals: z.record(z.string(), approvalRecordSchema),
+  }),
+);
+
+const functionApprovalContextSchema = z.object({
+  functionApprovals: functionApprovalsSchema.optional(),
+  legacyFunctionApprovalFallback: z.boolean().optional(),
+});
+
 export const SerializedRunState = z.object({
   $schemaVersion,
   currentTurn: z.number(),
@@ -428,15 +466,9 @@ export const SerializedRunState = z.object({
   modelResponses: z.array(modelResponseSchema),
   context: z.object({
     usage: usageSchema,
-    approvals: z.record(
-      z.string(),
-      z.object({
-        approved: z.array(z.string()).or(z.boolean()),
-        rejected: z.array(z.string()).or(z.boolean()),
-        messages: z.record(z.string(), z.string()).optional(),
-        stickyRejectMessage: z.string().optional(),
-      }),
-    ),
+    approvals: z.record(z.string(), approvalRecordSchema),
+    functionApprovals: functionApprovalsSchema.optional(),
+    legacyFunctionApprovalFallback: z.boolean().optional(),
     context: z.record(z.string(), z.any()),
     toolInput: z.any().optional(),
   }),
@@ -459,6 +491,10 @@ export const SerializedRunState = z.object({
   lastModelResponse: modelResponseSchema.optional(),
   generatedItems: z.array(itemSchema),
   pendingAgentToolRuns: z.record(z.string(), z.string()).optional().default({}),
+  pendingAgentToolRunAliases: z
+    .record(z.string(), z.string())
+    .optional()
+    .default({}),
   lastProcessedResponse: serializedProcessedResponseSchema.optional(),
   currentTurnPersistedItemCount: z.number().int().min(0).optional(),
   conversationId: z.string().optional(),
@@ -476,8 +512,15 @@ type ToolSearchRuntimeToolEntry<TContext = UnknownContext> = {
 };
 
 type ToolSearchRuntimeToolState<TContext = UnknownContext> = {
-  anonymousEntries: ToolSearchRuntimeToolEntry<TContext>[];
   keyedEntries: Map<string, ToolSearchRuntimeToolEntry<TContext>>;
+  routedOwners: Map<
+    string,
+    {
+      entry: ToolSearchRuntimeToolEntry<TContext>;
+      tool: Tool<TContext>;
+      toolIndex: number;
+    }
+  >;
   nextOrder: number;
 };
 
@@ -558,6 +601,10 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * Serialized pending nested agent runs keyed by tool name and call id.
    */
   public _pendingAgentToolRuns: Map<string, string>;
+  /**
+   * Legacy pending-run keys mapped to their canonical category-aware keys.
+   */
+  public _pendingAgentToolRunAliases: Map<string, string>;
   /**
    * Items generated by the agent during the run.
    */
@@ -648,6 +695,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     this._reasoningItemIdPolicy = undefined;
     this._toolUseTracker = new AgentToolUseTracker();
     this._pendingAgentToolRuns = new Map();
+    this._pendingAgentToolRunAliases = new Map();
     this._generatedItems = [];
     this._currentTurnPersistedItemCount = 0;
     this._maxTurns = maxTurns;
@@ -700,8 +748,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     let state = this._toolSearchRuntimeToolsByAgent.get(agent);
     if (!state) {
       state = {
-        anonymousEntries: [],
         keyedEntries: new Map(),
+        routedOwners: new Map(),
         nextOrder: 0,
       };
       this._toolSearchRuntimeToolsByAgent.set(agent, state);
@@ -721,11 +769,50 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     };
     const replacementKey = getToolSearchOutputReplacementKey(toolSearchOutput);
     if (replacementKey) {
+      const previousEntry = runtimeState.keyedEntries.get(replacementKey);
+      if (previousEntry) {
+        for (const [routingKey, owner] of runtimeState.routedOwners) {
+          if (owner.entry === previousEntry) {
+            runtimeState.routedOwners.delete(routingKey);
+          }
+        }
+      }
       runtimeState.keyedEntries.set(replacementKey, entry);
-      return;
     }
 
-    runtimeState.anonymousEntries.push(entry);
+    for (const [toolIndex, tool] of tools.entries()) {
+      const routingKey = getToolSearchRuntimeRoutingKey(tool);
+      if (!routingKey) {
+        continue;
+      }
+      runtimeState.routedOwners.set(routingKey, {
+        entry,
+        tool,
+        toolIndex,
+      });
+    }
+  }
+
+  public getToolSearchRuntimeToolsForOutput(
+    agent: Agent<any, any>,
+    toolSearchOutput: protocol.ToolSearchOutputItem,
+  ): Tool<TContext>[] {
+    const replacementKey = getToolSearchOutputReplacementKey(toolSearchOutput);
+    if (!replacementKey) {
+      return [];
+    }
+    const runtimeState = this._toolSearchRuntimeToolsByAgent.get(agent);
+    const entry = runtimeState?.keyedEntries.get(replacementKey);
+    if (!runtimeState || !entry) {
+      return [];
+    }
+    return entry.tools.filter((tool) => {
+      const routingKey = getToolSearchRuntimeRoutingKey(tool);
+      return (
+        typeof routingKey === 'string' &&
+        runtimeState.routedOwners.get(routingKey)?.entry === entry
+      );
+    });
   }
 
   public getToolSearchRuntimeTools(agent: Agent<any, any>): Tool<TContext>[] {
@@ -734,23 +821,13 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       return [];
     }
 
-    const dedupedTools = new Map<string, Tool<TContext>>();
-    const orderedEntries = [
-      ...runtimeState.keyedEntries.values(),
-      ...runtimeState.anonymousEntries,
-    ].sort((a, b) => a.order - b.order);
-    let anonymousCounter = 0;
-
-    for (const entry of orderedEntries) {
-      for (const tool of entry.tools) {
-        const key =
-          getToolSearchRuntimeToolKey(tool) ??
-          `anonymous:${entry.order}:${anonymousCounter++}`;
-        dedupedTools.set(key, tool);
-      }
-    }
-
-    return [...dedupedTools.values()];
+    return [...runtimeState.routedOwners.values()]
+      .sort(
+        (left, right) =>
+          left.entry.order - right.entry.order ||
+          left.toolIndex - right.toolIndex,
+      )
+      .map((owner) => owner.tool);
   }
 
   /**
@@ -817,15 +894,23 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     return `${toolName}:${callId}`;
   }
 
+  private resolvePendingAgentToolRunKey(
+    toolName: string,
+    callId: string,
+  ): string {
+    const key = this.getPendingAgentToolRunKey(toolName, callId);
+    return this._pendingAgentToolRunAliases.get(key) ?? key;
+  }
+
   getPendingAgentToolRun(toolName: string, callId: string): string | undefined {
     return this._pendingAgentToolRuns.get(
-      this.getPendingAgentToolRunKey(toolName, callId),
+      this.resolvePendingAgentToolRunKey(toolName, callId),
     );
   }
 
   hasPendingAgentToolRun(toolName: string, callId: string): boolean {
     return this._pendingAgentToolRuns.has(
-      this.getPendingAgentToolRunKey(toolName, callId),
+      this.resolvePendingAgentToolRunKey(toolName, callId),
     );
   }
 
@@ -833,17 +918,31 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     toolName: string,
     callId: string,
     serializedState: string,
+    aliases: readonly string[] = [],
   ) {
-    this._pendingAgentToolRuns.set(
-      this.getPendingAgentToolRunKey(toolName, callId),
-      serializedState,
-    );
+    const canonicalKey = this.resolvePendingAgentToolRunKey(toolName, callId);
+    this._pendingAgentToolRuns.set(canonicalKey, serializedState);
+    for (const alias of aliases) {
+      const aliasKey = this.getPendingAgentToolRunKey(alias, callId);
+      if (aliasKey === canonicalKey) {
+        continue;
+      }
+      this._pendingAgentToolRuns.delete(aliasKey);
+      this._pendingAgentToolRunAliases.set(aliasKey, canonicalKey);
+    }
   }
 
   clearPendingAgentToolRun(toolName: string, callId: string) {
-    this._pendingAgentToolRuns.delete(
-      this.getPendingAgentToolRunKey(toolName, callId),
-    );
+    const requestedKey = this.getPendingAgentToolRunKey(toolName, callId);
+    const canonicalKey = this.resolvePendingAgentToolRunKey(toolName, callId);
+    this._pendingAgentToolRuns.delete(canonicalKey);
+    this._pendingAgentToolRuns.delete(requestedKey);
+    for (const [aliasKey, targetKey] of this._pendingAgentToolRunAliases) {
+      if (aliasKey === requestedKey || targetKey === canonicalKey) {
+        this._pendingAgentToolRuns.delete(aliasKey);
+        this._pendingAgentToolRunAliases.delete(aliasKey);
+      }
+    }
   }
 
   /**
@@ -915,7 +1014,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     const agentIdentity = buildAgentIdentityMap(this.#startingAgent);
 
     const includeTracingApiKey = options.includeTracingApiKey === true;
-    const contextJson = this._context.toJSON();
+    const contextJson = this._context._toJSONForRunState(agentIdentity.byAgent);
     const output = {
       $schemaVersion: CURRENT_SCHEMA_VERSION,
       currentTurn: this._currentTurn,
@@ -980,6 +1079,9 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       ),
       pendingAgentToolRuns: Object.fromEntries(
         this._pendingAgentToolRuns.entries(),
+      ),
+      pendingAgentToolRunAliases: Object.fromEntries(
+        this._pendingAgentToolRunAliases.entries(),
       ),
       currentTurnPersistedItemCount: this._currentTurnPersistedItemCount,
       lastProcessedResponse: this._lastProcessedResponse
@@ -1074,6 +1176,10 @@ async function buildRunStateFromString<
       `Run state schema version ${currentSchemaVersion} is not supported. Please use version ${CURRENT_SCHEMA_VERSION}.`,
     );
   }
+  validateFunctionApprovalEnvelope(
+    currentSchemaVersion as SupportedSchemaVersion,
+    jsonResult,
+  );
   const stateJson = SerializedRunState.parse(jsonResult);
   assertSchemaVersionSupportsToolSearch(
     currentSchemaVersion as SupportedSchemaVersion,
@@ -1094,6 +1200,40 @@ async function buildRunStateFromString<
   return buildRunStateFromJson(initialAgent, stateJson, options);
 }
 
+function validateFunctionApprovalEnvelope(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: unknown,
+): void {
+  if (!stateJson || typeof stateJson !== 'object') {
+    return;
+  }
+  const context = (stateJson as { context?: unknown }).context;
+  if (!context || typeof context !== 'object') {
+    return;
+  }
+  const hasFunctionApprovals = Object.prototype.hasOwnProperty.call(
+    context,
+    'functionApprovals',
+  );
+  const hasLegacyFallback = Object.prototype.hasOwnProperty.call(
+    context,
+    'legacyFunctionApprovalFallback',
+  );
+  if (!hasFunctionApprovals && !hasLegacyFallback) {
+    return;
+  }
+  if (schemaVersion !== CURRENT_SCHEMA_VERSION) {
+    throw new UserError(
+      `Run state schema version ${schemaVersion} does not support owner-scoped function approvals. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+    );
+  }
+  if (!functionApprovalContextSchema.safeParse(context).success) {
+    throw new UserError(
+      'Failed to parse owner-scoped function approvals because their structure does not match the supported schema.',
+    );
+  }
+}
+
 function assertSchemaVersionSupportsToolSearch(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
@@ -1106,6 +1246,7 @@ function assertSchemaVersionSupportsToolSearch(
     schemaVersion === '1.12' ||
     schemaVersion === '1.13' ||
     schemaVersion === '1.14' ||
+    schemaVersion === '1.15' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   ) {
     return;
@@ -1127,6 +1268,7 @@ function assertSchemaVersionSupportsCustomData(
   if (
     schemaVersion === '1.13' ||
     schemaVersion === '1.14' ||
+    schemaVersion === '1.15' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   ) {
     return;
@@ -1150,6 +1292,7 @@ function schemaVersionSupportsAgentIdentity(
     schemaVersion === '1.12' ||
     schemaVersion === '1.13' ||
     schemaVersion === '1.14' ||
+    schemaVersion === '1.15' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   );
 }
@@ -1158,7 +1301,11 @@ function assertSchemaVersionSupportsProgrammaticToolCalling(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
-  if (schemaVersion === '1.14' || schemaVersion === CURRENT_SCHEMA_VERSION) {
+  if (
+    schemaVersion === '1.14' ||
+    schemaVersion === '1.15' ||
+    schemaVersion === CURRENT_SCHEMA_VERSION
+  ) {
     return;
   }
 
@@ -1175,7 +1322,11 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
-  if (schemaVersion === CURRENT_SCHEMA_VERSION || !stateJson.sandbox) {
+  if (
+    schemaVersion === '1.15' ||
+    schemaVersion === CURRENT_SCHEMA_VERSION ||
+    !stateJson.sandbox
+  ) {
     return;
   }
 
@@ -1376,10 +1527,23 @@ function isToolSearchProtocolType(type: unknown): boolean {
   return type === 'tool_search_call' || type === 'tool_search_output';
 }
 
+function addSerializedRuntimeToolKey(
+  runtimeToolKeys: Set<string>,
+  runtimeToolKey: string,
+): void {
+  if (runtimeToolKeys.has(runtimeToolKey)) {
+    throw new UserError(
+      'Serialized client tool_search output contains multiple tools with the same routed identity. Assign unique tool names or namespaces before resuming RunState.',
+    );
+  }
+  runtimeToolKeys.add(runtimeToolKey);
+}
+
 function collectSerializedRuntimeToolKeys(
   value: unknown,
   runtimeToolKeys: Set<string>,
   namespace?: string,
+  validateRecognizedShape = false,
 ): void {
   if (!value || typeof value !== 'object') {
     return;
@@ -1389,21 +1553,34 @@ function collectSerializedRuntimeToolKeys(
     type?: unknown;
     name?: unknown;
     namespace?: unknown;
+    deferLoading?: unknown;
+    defer_loading?: unknown;
     tools?: unknown;
     server_label?: unknown;
     providerData?: unknown;
   };
 
-  if (candidate.type === 'namespace' && Array.isArray(candidate.tools)) {
+  if (candidate.type === 'namespace') {
+    if (
+      typeof candidate.name !== 'string' ||
+      candidate.name.length === 0 ||
+      !Array.isArray(candidate.tools)
+    ) {
+      if (validateRecognizedShape) {
+        throw new UserError(
+          'Serialized client tool_search output contains a namespace without a valid routed identity.',
+        );
+      }
+      return;
+    }
     const nestedNamespace =
-      typeof candidate.name === 'string' && candidate.name.length > 0
-        ? candidate.name
-        : namespace;
+      typeof candidate.name === 'string' ? candidate.name : namespace;
     for (const nestedTool of candidate.tools) {
       collectSerializedRuntimeToolKeys(
         nestedTool,
         runtimeToolKeys,
         nestedNamespace,
+        true,
       );
     }
     return;
@@ -1415,21 +1592,52 @@ function collectSerializedRuntimeToolKeys(
       : namespace;
   if (candidate.type === 'function') {
     if (typeof candidate.name !== 'string' || candidate.name.length === 0) {
+      if (validateRecognizedShape) {
+        throw new UserError(
+          'Serialized client tool_search output contains a function without a valid routed identity.',
+        );
+      }
       return;
     }
+    const directNamespace =
+      typeof candidate.namespace === 'string' && candidate.namespace.length > 0
+        ? candidate.namespace
+        : undefined;
+    if (candidate.name === namespace || candidate.name === directNamespace) {
+      throw new UserError(
+        'Responses tool search reserves same-name namespaces for deferred top-level function tools. Rename the namespace or tool name to avoid ambiguous dispatch.',
+      );
+    }
 
-    runtimeToolKeys.add(
-      toolQualifiedName(candidate.name, explicitNamespace) ?? candidate.name,
+    const lookupKey = getFunctionToolLookupKey(
+      candidate.name,
+      explicitNamespace ??
+        (candidate.deferLoading === true || candidate.defer_loading === true
+          ? candidate.name
+          : undefined),
     );
+    if (lookupKey) {
+      addSerializedRuntimeToolKey(runtimeToolKeys, lookupKey);
+    }
     return;
   }
 
-  if (
-    candidate.type === 'mcp' &&
-    typeof candidate.server_label === 'string' &&
-    candidate.server_label.length > 0
-  ) {
-    runtimeToolKeys.add(`mcp:${candidate.server_label}`);
+  if (candidate.type === 'mcp') {
+    if (
+      typeof candidate.server_label !== 'string' ||
+      candidate.server_label.length === 0
+    ) {
+      if (validateRecognizedShape) {
+        throw new UserError(
+          'Serialized client tool_search output contains an MCP tool without a valid routed identity.',
+        );
+      }
+      return;
+    }
+    addSerializedRuntimeToolKey(
+      runtimeToolKeys,
+      `mcp:${candidate.server_label}`,
+    );
     return;
   }
 
@@ -1441,6 +1649,7 @@ function collectSerializedRuntimeToolKeys(
     candidate.providerData,
     runtimeToolKeys,
     explicitNamespace,
+    false,
   );
 }
 
@@ -1449,18 +1658,22 @@ function getSerializedRuntimeToolKeys(
 ): Set<string> {
   const runtimeToolKeys = new Set<string>();
   for (const tool of toolSearchOutput.tools) {
-    collectSerializedRuntimeToolKeys(tool, runtimeToolKeys);
+    collectSerializedRuntimeToolKeys(tool, runtimeToolKeys, undefined, true);
   }
   return runtimeToolKeys;
 }
 
 function getRuntimeToolKeys<TContext>(
   runtimeTools: Tool<TContext>[],
-  options: { allowUnsupported?: boolean } = {},
+  options: {
+    allowUnsupported?: boolean;
+    rejectDuplicateKeys?: boolean;
+  } = {},
 ): Set<string> {
   const runtimeToolKeys = new Set<string>();
+  const runtimeToolsByKey = new Map<string, Tool<TContext>>();
   for (const tool of runtimeTools) {
-    const runtimeToolKey = getToolSearchRuntimeToolKey(tool);
+    const runtimeToolKey = getToolSearchRuntimeRoutingKey(tool);
     if (!runtimeToolKey) {
       if (options.allowUnsupported) {
         continue;
@@ -1469,6 +1682,12 @@ function getRuntimeToolKeys<TContext>(
         'Client tool_search execute() returned an unsupported runtime tool during RunState rehydration.',
       );
     }
+    if (options.rejectDuplicateKeys && runtimeToolsByKey.has(runtimeToolKey)) {
+      throw new UserError(
+        'Client tool_search execute() returned multiple tools with the same routed identity during RunState rehydration.',
+      );
+    }
+    runtimeToolsByKey.set(runtimeToolKey, tool);
     runtimeToolKeys.add(runtimeToolKey);
   }
   return runtimeToolKeys;
@@ -1485,11 +1704,9 @@ function assertRuntimeToolKeysMatch<TContext>(args: {
   runtimeTools: Tool<TContext>[];
 }): void {
   const { agent, toolSearchCall, expectedRuntimeToolKeys, runtimeTools } = args;
-  if (expectedRuntimeToolKeys.size === 0) {
-    return;
-  }
-
-  const actualRuntimeToolKeys = getRuntimeToolKeys(runtimeTools);
+  const actualRuntimeToolKeys = getRuntimeToolKeys(runtimeTools, {
+    rejectDuplicateKeys: true,
+  });
   const hasExpectedKeys = [...expectedRuntimeToolKeys].every((runtimeToolKey) =>
     actualRuntimeToolKeys.has(runtimeToolKey),
   );
@@ -1498,6 +1715,12 @@ function assertRuntimeToolKeysMatch<TContext>(args: {
   );
   if (hasExpectedKeys && hasActualKeys) {
     return;
+  }
+
+  if (logger.dontLogToolData) {
+    throw new UserError(
+      'RunState cannot resume custom client tool_search because the registered execute callback returned different runtime tools than the serialized state.',
+    );
   }
 
   const callId = resolveToolSearchCallId(toolSearchCall);
@@ -1524,24 +1747,404 @@ async function getConfiguredAgentTools<TContext>(args: {
   return configuredTools;
 }
 
+type RunStateCapabilitySnapshot<TContext> = {
+  availableTools: Tool<TContext>[];
+  callbackTools: Tool<TContext>[];
+  handoffs: Handoff<any, any>[];
+  functionMap: Map<FunctionToolLookupKey, FunctionTool<TContext>>;
+  functionToolsByCallId: Map<string, FunctionTool<TContext>>;
+  runtimeFunctionTools: Set<FunctionTool<TContext>>;
+  handoffMap: Map<string, Handoff<any, any>>;
+  mcpToolMap: Map<string, HostedMCPTool>;
+  replaceableRuntimeToolKeys: Set<string>;
+};
+
+function throwAmbiguousFunctionCallId(
+  agent: Agent<any, any>,
+  callId: string,
+  routedToolKeys: Iterable<string>,
+): never {
+  if (logger.dontLogToolData) {
+    throw new UserError(
+      'RunState cannot resume because a function call ID is associated with multiple routed tool identities.',
+    );
+  }
+
+  throw new UserError(
+    `RunState cannot resume function call ${callId} for agent ${agent.name} because the call ID is reused across routed tool identities [${[
+      ...routedToolKeys,
+    ].join(', ')}]. Use a unique call ID for each function call.`,
+  );
+}
+
+type DeferredFunctionCallExpectation = {
+  agent: Agent<any, any>;
+  toolCall: protocol.FunctionCallItem;
+  resolvedRoutedToolKey: string;
+};
+
+function assertUnambiguousFunctionCallIds<
+  TContext,
+  TAgent extends Agent<any, any>,
+>(
+  state: RunState<TContext, TAgent>,
+  agentMap: Map<string, Agent<any, any>>,
+  serializedProcessedResponse?: z.infer<
+    typeof serializedProcessedResponseSchema
+  >,
+): DeferredFunctionCallExpectation[] {
+  const deferredFunctionCallExpectations: DeferredFunctionCallExpectation[] =
+    [];
+  const generatedCallsByAgent = new Map<Agent<any, any>, Map<string, string>>();
+  for (const item of state._generatedItems) {
+    if (
+      !(item instanceof RunToolCallItem) ||
+      item.rawItem.type !== 'function_call'
+    ) {
+      continue;
+    }
+    const agent = item.agent as Agent<any, any>;
+    const routedToolKey = getFunctionToolStateKeyForCall(item.rawItem);
+    if (!routedToolKey) {
+      continue;
+    }
+    const callsById = generatedCallsByAgent.get(agent) ?? new Map();
+    const previousRoutedToolKey = callsById.get(item.rawItem.callId);
+    if (previousRoutedToolKey && previousRoutedToolKey !== routedToolKey) {
+      throwAmbiguousFunctionCallId(agent, item.rawItem.callId, [
+        previousRoutedToolKey,
+        routedToolKey,
+      ]);
+    }
+    callsById.set(item.rawItem.callId, routedToolKey);
+    generatedCallsByAgent.set(agent, callsById);
+  }
+
+  type ProcessedFunctionCallIdentity = {
+    rawRoutedToolKey: string;
+    resolvedRoutedToolKey: string;
+  };
+  const processedCallsByAgent = new Map<
+    Agent<any, any>,
+    Map<string, ProcessedFunctionCallIdentity>
+  >();
+  if (serializedProcessedResponse) {
+    const agent = state._currentAgent as Agent<any, any>;
+    const processedCallsById = new Map<string, ProcessedFunctionCallIdentity>();
+    for (const functionCall of serializedProcessedResponse.functions) {
+      const toolCall = functionCall.toolCall as protocol.FunctionCallItem;
+      const rawRoutedToolKey = getFunctionToolStateKeyForCall(toolCall);
+      if (!rawRoutedToolKey) {
+        continue;
+      }
+      const serializedToolStateKey = getToolCallNamespace(toolCall)
+        ? rawRoutedToolKey
+        : getFunctionToolStateKey(functionCall.tool);
+      const resolvedRoutedToolKey = serializedToolStateKey
+        ? getFunctionToolStateKeyForResolvedCall(
+            toolCall,
+            functionCall.tool,
+            serializedToolStateKey,
+          )
+        : rawRoutedToolKey;
+      if (!resolvedRoutedToolKey) {
+        throwAmbiguousFunctionCallId(agent, toolCall.callId, [
+          rawRoutedToolKey,
+          serializedToolStateKey!,
+        ]);
+      }
+      if (resolvedRoutedToolKey !== rawRoutedToolKey) {
+        deferredFunctionCallExpectations.push({
+          agent,
+          toolCall,
+          resolvedRoutedToolKey,
+        });
+      }
+      const callId = toolCall.callId;
+      const previousProcessedIdentity = processedCallsById.get(callId);
+      if (
+        previousProcessedIdentity &&
+        previousProcessedIdentity.resolvedRoutedToolKey !==
+          resolvedRoutedToolKey
+      ) {
+        throwAmbiguousFunctionCallId(agent, callId, [
+          previousProcessedIdentity.resolvedRoutedToolKey,
+          resolvedRoutedToolKey,
+        ]);
+      }
+      const generatedRoutedToolKey = generatedCallsByAgent
+        .get(agent)
+        ?.get(callId);
+      if (
+        generatedRoutedToolKey &&
+        generatedRoutedToolKey !== rawRoutedToolKey
+      ) {
+        throwAmbiguousFunctionCallId(agent, callId, [
+          generatedRoutedToolKey,
+          rawRoutedToolKey,
+        ]);
+      }
+      processedCallsById.set(callId, {
+        rawRoutedToolKey,
+        resolvedRoutedToolKey,
+      });
+    }
+    processedCallsByAgent.set(agent, processedCallsById);
+  }
+
+  if (state._currentStep?.type !== 'next_step_interruption') {
+    return deferredFunctionCallExpectations;
+  }
+
+  for (const value of state._currentStep.data?.interruptions ?? []) {
+    if (!value || typeof value !== 'object') {
+      continue;
+    }
+    const interruption = value as {
+      rawItem?: unknown;
+      functionToolStateKey?: unknown;
+      agent?: unknown;
+    };
+    if (
+      !interruption.rawItem ||
+      typeof interruption.rawItem !== 'object' ||
+      (interruption.rawItem as { type?: unknown }).type !== 'function_call'
+    ) {
+      continue;
+    }
+    const rawItem = interruption.rawItem as protocol.FunctionCallItem;
+    const rawItemRoutedToolKey = getFunctionToolStateKeyForCall(rawItem);
+    if (!rawItemRoutedToolKey) {
+      continue;
+    }
+    const interruptionAgent =
+      interruption.agent && typeof interruption.agent === 'object'
+        ? resolveSerializedAgent(
+            interruption.agent as any,
+            agentMap,
+            state._currentAgent,
+          )
+        : (state._currentAgent as Agent<any, any>);
+    const generatedRoutedToolKey = generatedCallsByAgent
+      .get(interruptionAgent)
+      ?.get(rawItem.callId);
+    if (
+      generatedRoutedToolKey &&
+      generatedRoutedToolKey !== rawItemRoutedToolKey
+    ) {
+      throwAmbiguousFunctionCallId(interruptionAgent, rawItem.callId, [
+        generatedRoutedToolKey,
+        rawItemRoutedToolKey,
+      ]);
+    }
+    const processedIdentity = processedCallsByAgent
+      .get(interruptionAgent)
+      ?.get(rawItem.callId);
+    if (
+      processedIdentity &&
+      processedIdentity.rawRoutedToolKey !== rawItemRoutedToolKey
+    ) {
+      throwAmbiguousFunctionCallId(interruptionAgent, rawItem.callId, [
+        processedIdentity.rawRoutedToolKey,
+        rawItemRoutedToolKey,
+      ]);
+    }
+    const expectedRoutedToolKey =
+      processedIdentity?.resolvedRoutedToolKey ?? rawItemRoutedToolKey;
+    if (typeof interruption.functionToolStateKey === 'string') {
+      if (interruption.functionToolStateKey !== expectedRoutedToolKey) {
+        throwAmbiguousFunctionCallId(interruptionAgent, rawItem.callId, [
+          expectedRoutedToolKey,
+          interruption.functionToolStateKey,
+        ]);
+      }
+    }
+  }
+  return deferredFunctionCallExpectations;
+}
+
+function collectDeferredToolSearchProvenanceByCallId<TContext>(args: {
+  state: RunState<TContext, Agent<any, any>>;
+  effectiveToolSearchOutputs: RunToolSearchOutputItem[];
+  serializedRuntimeToolKeysByOutput: Map<RunToolSearchOutputItem, Set<string>>;
+}): Map<Agent<any, any>, Map<string, string>> {
+  const {
+    state,
+    effectiveToolSearchOutputs,
+    serializedRuntimeToolKeysByOutput,
+  } = args;
+  const effectiveOutputs = new Set(effectiveToolSearchOutputs);
+  const routedOwnersByAgent = new Map<
+    Agent<any, any>,
+    Map<string, RunToolSearchOutputItem>
+  >();
+  const entriesByReplacementKeyByAgent = new Map<
+    Agent<any, any>,
+    Map<string, RunToolSearchOutputItem>
+  >();
+  const deferredKeysByCallIdByAgent = new Map<
+    Agent<any, any>,
+    Map<string, string>
+  >();
+
+  for (const item of state._generatedItems) {
+    if (item instanceof RunToolSearchOutputItem && effectiveOutputs.has(item)) {
+      const agent = item.agent as Agent<any, any>;
+      const routedOwners = routedOwnersByAgent.get(agent) ?? new Map();
+      const entriesByReplacementKey =
+        entriesByReplacementKeyByAgent.get(agent) ?? new Map();
+      const replacementKey = getToolSearchOutputReplacementKey(item.rawItem);
+      if (replacementKey) {
+        const previousEntry = entriesByReplacementKey.get(replacementKey);
+        if (previousEntry) {
+          for (const [routedKey, owner] of routedOwners) {
+            if (owner === previousEntry) {
+              routedOwners.delete(routedKey);
+            }
+          }
+        }
+        entriesByReplacementKey.set(replacementKey, item);
+      }
+      for (const routedKey of serializedRuntimeToolKeysByOutput.get(item) ??
+        []) {
+        routedOwners.set(routedKey, item);
+      }
+      routedOwnersByAgent.set(agent, routedOwners);
+      entriesByReplacementKeyByAgent.set(agent, entriesByReplacementKey);
+      continue;
+    }
+
+    if (
+      !(item instanceof RunToolCallItem) ||
+      item.rawItem.type !== 'function_call' ||
+      getToolCallNamespace(item.rawItem)
+    ) {
+      continue;
+    }
+    const name = item.rawItem.name;
+    const bareKey = getFunctionToolLookupKey(name);
+    const deferredKey = getFunctionToolLookupKey(name, name);
+    const routedOwners = routedOwnersByAgent.get(item.agent);
+    if (
+      !bareKey ||
+      !deferredKey ||
+      routedOwners?.has(bareKey) ||
+      !routedOwners?.has(deferredKey)
+    ) {
+      continue;
+    }
+    const keysByCallId =
+      deferredKeysByCallIdByAgent.get(item.agent) ?? new Map();
+    keysByCallId.set(item.rawItem.callId, deferredKey);
+    deferredKeysByCallIdByAgent.set(item.agent, keysByCallId);
+  }
+
+  return deferredKeysByCallIdByAgent;
+}
+
+function assertDeferredFunctionCallProvenance<TContext>(args: {
+  expectations: DeferredFunctionCallExpectation[];
+  capabilitySnapshotsByAgent: Map<
+    Agent<TContext, any>,
+    RunStateCapabilitySnapshot<TContext>
+  >;
+  deferredToolSearchKeysByCallIdByAgent: Map<
+    Agent<any, any>,
+    Map<string, string>
+  >;
+}): void {
+  const {
+    expectations,
+    capabilitySnapshotsByAgent,
+    deferredToolSearchKeysByCallIdByAgent,
+  } = args;
+  for (const expectation of expectations) {
+    const snapshot = capabilitySnapshotsByAgent.get(expectation.agent);
+    if (snapshot?.handoffMap.has(expectation.toolCall.name)) {
+      throwAmbiguousFunctionCallId(
+        expectation.agent,
+        expectation.toolCall.callId,
+        [expectation.toolCall.name, expectation.resolvedRoutedToolKey],
+      );
+    }
+    const configuredOwner = snapshot
+      ? resolveFunctionToolCall(expectation.toolCall, snapshot.functionMap)
+      : undefined;
+    if (configuredOwner) {
+      if (
+        getFunctionToolStateKey(configuredOwner) ===
+        expectation.resolvedRoutedToolKey
+      ) {
+        continue;
+      }
+      throwAmbiguousFunctionCallId(
+        expectation.agent,
+        expectation.toolCall.callId,
+        [
+          getFunctionToolStateKey(configuredOwner) ?? configuredOwner.name,
+          expectation.resolvedRoutedToolKey,
+        ],
+      );
+    }
+    if (
+      deferredToolSearchKeysByCallIdByAgent
+        .get(expectation.agent)
+        ?.get(expectation.toolCall.callId) !== expectation.resolvedRoutedToolKey
+    ) {
+      throwAmbiguousFunctionCallId(
+        expectation.agent,
+        expectation.toolCall.callId,
+        [
+          getFunctionToolStateKeyForCall(expectation.toolCall) ??
+            expectation.toolCall.name,
+          expectation.resolvedRoutedToolKey,
+        ],
+      );
+    }
+  }
+}
+
 async function rehydrateToolSearchRuntimeTools<
   TContext,
   TAgent extends Agent<any, any>,
->(state: RunState<TContext, TAgent>): Promise<void> {
+>(
+  state: RunState<TContext, TAgent>,
+  options: {
+    agentMap: Map<string, Agent<any, any>>;
+    schemaVersion: SupportedSchemaVersion;
+    serializedProcessedResponse?: z.infer<
+      typeof serializedProcessedResponseSchema
+    >;
+  },
+): Promise<Map<Agent<TContext, any>, RunStateCapabilitySnapshot<TContext>>> {
+  const deferredFunctionCallExpectations = assertUnambiguousFunctionCallIds(
+    state,
+    options.agentMap,
+    options.serializedProcessedResponse,
+  );
   const configuredToolsByAgent = new Map<
     Agent<TContext, any>,
     Tool<TContext>[]
   >();
-  const pendingToolSearchCalls = new Map<
+  const capabilitySnapshotsByAgent = new Map<
     Agent<TContext, any>,
-    Map<
-      string,
-      {
-        agent: Agent<TContext, any>;
-        toolSearchCall: protocol.ToolSearchCallItem;
-        runtimeTools?: Tool<TContext>[];
-      }
-    >
+    RunStateCapabilitySnapshot<TContext>
+  >();
+  type ToolSearchCallOccurrence = {
+    pendingCall: {
+      agent: Agent<TContext, any>;
+      toolSearchCall: protocol.ToolSearchCallItem;
+    };
+    output?: RunToolSearchOutputItem;
+  };
+  const toolSearchCallOccurrences: ToolSearchCallOccurrence[] = [];
+  const latestOccurrenceByAgentAndCallId = new Map<
+    Agent<TContext, any>,
+    Map<string, ToolSearchCallOccurrence>
+  >();
+  const pendingOccurrencesByAgent = new Map<
+    Agent<TContext, any>,
+    ToolSearchCallOccurrence[]
   >();
 
   for (const item of state._generatedItems) {
@@ -1552,109 +2155,337 @@ async function rehydrateToolSearchRuntimeTools<
 
       const callId = resolveToolSearchCallId(item.rawItem);
       const agent = item.agent as Agent<TContext, any>;
-      const pendingCallsById =
-        pendingToolSearchCalls.get(agent) ??
-        new Map<
-          string,
-          {
-            agent: Agent<TContext, any>;
-            toolSearchCall: protocol.ToolSearchCallItem;
-            runtimeTools?: Tool<TContext>[];
-          }
-        >();
-      pendingCallsById.set(callId, {
-        agent: item.agent as Agent<TContext, any>,
-        toolSearchCall: item.rawItem,
-      });
-      pendingToolSearchCalls.set(agent, pendingCallsById);
+      const occurrence: ToolSearchCallOccurrence = {
+        pendingCall: {
+          agent,
+          toolSearchCall: item.rawItem,
+        },
+      };
+      toolSearchCallOccurrences.push(occurrence);
+      const pendingOccurrences = pendingOccurrencesByAgent.get(agent) ?? [];
+      pendingOccurrences.push(occurrence);
+      pendingOccurrencesByAgent.set(agent, pendingOccurrences);
+      const occurrencesByCallId =
+        latestOccurrenceByAgentAndCallId.get(agent) ?? new Map();
+      occurrencesByCallId.set(callId, occurrence);
+      latestOccurrenceByAgentAndCallId.set(agent, occurrencesByCallId);
       continue;
     }
 
-    if (!(item instanceof RunToolSearchOutputItem)) {
+    if (
+      !(item instanceof RunToolSearchOutputItem) ||
+      getToolSearchExecution(item.rawItem) === 'server'
+    ) {
       continue;
     }
 
-    if (getToolSearchExecution(item.rawItem) === 'server') {
-      continue;
+    const agent = item.agent as Agent<TContext, any>;
+    const explicitCallId = getToolSearchProviderCallId(item.rawItem);
+    const pendingOccurrences = pendingOccurrencesByAgent.get(agent) ?? [];
+    const occurrence = explicitCallId
+      ? latestOccurrenceByAgentAndCallId.get(agent)?.get(explicitCallId)
+      : pendingOccurrences.shift();
+    if (!occurrence) {
+      const callId = resolveToolSearchCallId(item.rawItem);
+      throw new UserError(
+        logger.dontLogToolData
+          ? 'RunState cannot resume custom client tool_search because the serialized state is missing the matching tool_search call item.'
+          : `RunState cannot resume custom client tool_search output ${callId} for agent ${item.agent.name} because the serialized state is missing the matching tool_search call item.`,
+      );
     }
+    if (explicitCallId) {
+      const pendingIndex = pendingOccurrences.indexOf(occurrence);
+      if (pendingIndex >= 0) {
+        pendingOccurrences.splice(pendingIndex, 1);
+      }
+    }
+    occurrence.output = item;
+  }
 
+  const effectiveToolSearchOutputs = toolSearchCallOccurrences
+    .map((occurrence) => occurrence.output)
+    .filter((item): item is RunToolSearchOutputItem => Boolean(item));
+  const occurrencesByOutput = new Map(
+    toolSearchCallOccurrences.flatMap((occurrence) =>
+      occurrence.output ? [[occurrence.output, occurrence] as const] : [],
+    ),
+  );
+  const serializedRuntimeToolKeysByOutput = new Map<
+    RunToolSearchOutputItem,
+    Set<string>
+  >();
+  for (const item of effectiveToolSearchOutputs) {
+    serializedRuntimeToolKeysByOutput.set(
+      item,
+      getSerializedRuntimeToolKeys(item.rawItem),
+    );
+  }
+
+  const agentsToPrepare = new Set(
+    effectiveToolSearchOutputs.map(
+      (item) => item.agent as Agent<TContext, any>,
+    ),
+  );
+  if (options.serializedProcessedResponse) {
+    agentsToPrepare.add(state._currentAgent as Agent<TContext, any>);
+  }
+
+  for (const agent of agentsToPrepare) {
     const configuredTools = await getConfiguredAgentTools({
-      agent: item.agent as Agent<TContext, any>,
+      agent,
       context: state._context,
       configuredToolsByAgent,
     });
-    const configuredToolKeys = getRuntimeToolKeys(configuredTools, {
-      allowUnsupported: true,
-    });
-    const expectedRuntimeToolKeys = new Set(
-      [...getSerializedRuntimeToolKeys(item.rawItem)].filter(
-        (runtimeToolKey) => !configuredToolKeys.has(runtimeToolKey),
+    const existingRuntimeTools = state.getToolSearchRuntimeTools(agent);
+    const enabledRuntimeTools = await getEnabledToolSearchRuntimeTools(
+      state,
+      agent,
+    );
+    const capabilities = resolveModelVisibleToolNameCollisions(
+      [...configuredTools, ...enabledRuntimeTools],
+      await agent.getEnabledHandoffs(state._context),
+      'warn',
+    );
+    const availableTools = [...capabilities.tools];
+    capabilitySnapshotsByAgent.set(agent, {
+      availableTools,
+      callbackTools: [...availableTools],
+      handoffs: capabilities.handoffs,
+      functionMap: buildFunctionToolLookupMap(
+        availableTools.filter((tool) => tool.type === 'function'),
       ),
+      functionToolsByCallId: new Map(),
+      runtimeFunctionTools: new Set(
+        existingRuntimeTools.filter(
+          (tool): tool is FunctionTool<TContext> => tool.type === 'function',
+        ),
+      ),
+      handoffMap: new Map(
+        capabilities.handoffs.map((handoff) => [handoff.toolName, handoff]),
+      ),
+      mcpToolMap: new Map(
+        availableTools
+          .filter(
+            (tool): tool is HostedMCPTool =>
+              tool.type === 'hosted_tool' && tool.providerData?.type === 'mcp',
+          )
+          .map((tool) => [tool.providerData.server_label, tool]),
+      ),
+      replaceableRuntimeToolKeys: new Set(
+        existingRuntimeTools
+          .map((tool) => getToolSearchRuntimeRoutingKey(tool))
+          .filter((key): key is string => typeof key === 'string'),
+      ),
+    });
+  }
+
+  assertDeferredFunctionCallProvenance({
+    expectations: deferredFunctionCallExpectations,
+    capabilitySnapshotsByAgent,
+    deferredToolSearchKeysByCallIdByAgent:
+      collectDeferredToolSearchProvenanceByCallId({
+        state: state as RunState<TContext, Agent<any, any>>,
+        effectiveToolSearchOutputs,
+        serializedRuntimeToolKeysByOutput,
+      }),
+  });
+
+  if (
+    options.schemaVersion === CURRENT_SCHEMA_VERSION &&
+    options.serializedProcessedResponse
+  ) {
+    const currentAgent = state._currentAgent as Agent<TContext, any>;
+    const currentSnapshot = capabilitySnapshotsByAgent.get(currentAgent)!;
+    for (const serializedHandoff of options.serializedProcessedResponse
+      .handoffs) {
+      if (!serializedHandoff.targetAgent) {
+        throw new UserError(
+          'Run state handoff is missing its required target agent identity.',
+        );
+      }
+      const targetAgent = resolveSerializedAgent(
+        serializedHandoff.targetAgent,
+        options.agentMap,
+      );
+      const handoff = currentSnapshot.handoffMap.get(
+        serializedHandoff.handoff.toolName,
+      );
+      if (!handoff || handoff.agent !== targetAgent) {
+        throw new UserError(
+          `Handoff ${serializedHandoff.handoff.toolName} not found`,
+        );
+      }
+    }
+  }
+
+  for (const agent of new Set(
+    effectiveToolSearchOutputs.map(
+      (item) => item.agent as Agent<TContext, any>,
+    ),
+  )) {
+    validateClientToolSearchSupport(
+      capabilitySnapshotsByAgent.get(agent)!.availableTools,
+    );
+  }
+
+  type ToolSearchRehydrationRecord = {
+    pendingCall: {
+      agent: Agent<TContext, any>;
+      toolSearchCall: protocol.ToolSearchCallItem;
+    };
+    expectedRuntimeToolKeys: Set<string>;
+    toolSearchTool?: Tool<TContext>;
+    runtimeTools?: Tool<TContext>[];
+  };
+  const rehydrationRecords = new Map<
+    RunToolSearchOutputItem,
+    ToolSearchRehydrationRecord
+  >();
+
+  for (const item of effectiveToolSearchOutputs) {
+    const callId = resolveToolSearchCallId(item.rawItem);
+    const agent = item.agent as Agent<TContext, any>;
+    const snapshot = capabilitySnapshotsByAgent.get(agent)!;
+    const expectedRuntimeToolKeys =
+      serializedRuntimeToolKeysByOutput.get(item)!;
+    const pendingCall = occurrencesByOutput.get(item)!.pendingCall;
+
+    const toolSearchTool = getClientToolSearchHelper(snapshot.availableTools);
+    const hasCustomExecutor = Boolean(
+      toolSearchTool && getClientToolSearchExecutor(toolSearchTool),
     );
     if (expectedRuntimeToolKeys.size === 0) {
+      rehydrationRecords.set(item, {
+        pendingCall,
+        expectedRuntimeToolKeys,
+        ...(hasCustomExecutor ? { toolSearchTool } : {}),
+      });
+      continue;
+    }
+    if (!hasCustomExecutor) {
+      const availableRuntimeToolKeys = getRuntimeToolKeys(
+        snapshot.availableTools,
+        { allowUnsupported: true },
+      );
+      if (
+        [...expectedRuntimeToolKeys].every((runtimeToolKey) =>
+          availableRuntimeToolKeys.has(runtimeToolKey),
+        )
+      ) {
+        rehydrationRecords.set(item, {
+          pendingCall,
+          expectedRuntimeToolKeys,
+        });
+        continue;
+      }
+      if (logger.dontLogToolData) {
+        throw new UserError(
+          'RunState cannot resume custom client tool_search because the agent no longer provides toolSearchTool({ execution: "client", execute }).',
+        );
+      }
+      throw new UserError(
+        `RunState cannot resume custom client tool_search call ${callId} for agent ${pendingCall.agent.name} because the agent no longer provides toolSearchTool({ execution: "client", execute }).`,
+      );
+    }
+    rehydrationRecords.set(item, {
+      pendingCall,
+      expectedRuntimeToolKeys,
+      toolSearchTool,
+    });
+  }
+
+  for (const generatedItem of state._generatedItems) {
+    if (!(generatedItem instanceof RunToolSearchOutputItem)) {
+      continue;
+    }
+    const record = rehydrationRecords.get(generatedItem);
+    if (!record?.toolSearchTool) {
+      continue;
+    }
+    const agent = record.pendingCall.agent;
+    const snapshot = capabilitySnapshotsByAgent.get(agent)!;
+    const { runtimeTools } = await executeCustomClientToolSearch({
+      agent,
+      runContext: state._context,
+      toolSearchCall: record.pendingCall.toolSearchCall,
+      toolSearchTool: record.toolSearchTool,
+      tools: snapshot.callbackTools,
+    });
+    assertRuntimeToolKeysMatch({
+      agent,
+      toolSearchCall: record.pendingCall.toolSearchCall,
+      expectedRuntimeToolKeys: record.expectedRuntimeToolKeys,
+      runtimeTools,
+    });
+    record.runtimeTools = runtimeTools;
+    snapshot.callbackTools.push(...runtimeTools);
+  }
+
+  for (const generatedItem of state._generatedItems) {
+    if (generatedItem instanceof RunToolSearchOutputItem) {
+      const record = rehydrationRecords.get(generatedItem);
+      if (!record?.runtimeTools) {
+        continue;
+      }
+      const agent = record.pendingCall.agent;
+      const snapshot = capabilitySnapshotsByAgent.get(agent)!;
+      const enabledRuntimeTools = await filterEnabledToolSearchRuntimeTools({
+        runtimeTools: record.runtimeTools,
+        runContext: state._context,
+        agent,
+      });
+      const replacedRuntimeTools = state.getToolSearchRuntimeToolsForOutput(
+        agent,
+        generatedItem.rawItem,
+      );
+      const registeredRuntimeTools = registerRuntimeToolSearchTools({
+        availableTools: snapshot.availableTools,
+        functionMap: snapshot.functionMap,
+        handoffMap: snapshot.handoffMap,
+        mcpToolMap: snapshot.mcpToolMap,
+        replaceableRuntimeToolKeys: snapshot.replaceableRuntimeToolKeys,
+        replacedRuntimeTools,
+        runtimeTools: enabledRuntimeTools,
+      });
+      for (const runtimeTool of registeredRuntimeTools) {
+        if (runtimeTool.type === 'function') {
+          snapshot.runtimeFunctionTools.add(runtimeTool);
+        }
+      }
+
+      state.recordToolSearchRuntimeTools(
+        agent,
+        generatedItem.rawItem,
+        registeredRuntimeTools,
+      );
       continue;
     }
 
-    const callId = resolveToolSearchCallId(item.rawItem);
-    const pendingCall = pendingToolSearchCalls
-      .get(item.agent as Agent<TContext, any>)
-      ?.get(callId);
-    if (!pendingCall) {
-      throw new UserError(
-        `RunState cannot resume custom client tool_search output ${callId} for agent ${item.agent.name} because the serialized state is missing the matching tool_search call item.`,
-      );
-    }
-
-    if (!pendingCall.runtimeTools) {
-      const availableTools = [
-        ...configuredTools,
-        ...state.getToolSearchRuntimeTools(pendingCall.agent),
-      ];
-      const toolSearchTool = getClientToolSearchHelper(configuredTools);
-      if (!toolSearchTool || !getClientToolSearchExecutor(toolSearchTool)) {
-        throw new UserError(
-          `RunState cannot resume custom client tool_search call ${callId} for agent ${pendingCall.agent.name} because the agent no longer provides toolSearchTool({ execution: "client", execute }).`,
-        );
+    if (
+      generatedItem instanceof RunToolCallItem &&
+      generatedItem.rawItem.type === 'function_call'
+    ) {
+      const agent = generatedItem.agent as Agent<TContext, any>;
+      const snapshot = capabilitySnapshotsByAgent.get(agent);
+      if (!snapshot) {
+        continue;
       }
-
-      const { runtimeTools } = await executeCustomClientToolSearch({
-        agent: pendingCall.agent,
-        runContext: state._context,
-        toolSearchCall: pendingCall.toolSearchCall,
-        toolSearchTool,
-        tools: availableTools,
-      });
-      const rehydratedRuntimeTools = runtimeTools.filter((tool) => {
-        const runtimeToolKey = getToolSearchRuntimeToolKey(tool);
-        if (!runtimeToolKey) {
-          throw new UserError(
-            'Client tool_search execute() returned an unsupported runtime tool during RunState rehydration.',
+      const functionTool = resolveFunctionToolCall(
+        generatedItem.rawItem,
+        snapshot.functionMap,
+      );
+      if (functionTool) {
+        if (snapshot.runtimeFunctionTools.has(functionTool)) {
+          snapshot.functionToolsByCallId.set(
+            generatedItem.rawItem.callId,
+            functionTool,
           );
         }
-        return !configuredToolKeys.has(runtimeToolKey);
-      });
-      assertRuntimeToolKeysMatch({
-        agent: pendingCall.agent,
-        toolSearchCall: pendingCall.toolSearchCall,
-        expectedRuntimeToolKeys,
-        runtimeTools: rehydratedRuntimeTools,
-      });
-      pendingCall.runtimeTools = rehydratedRuntimeTools;
+      }
     }
-
-    const runtimeTools = pendingCall.runtimeTools;
-    if (!runtimeTools) {
-      throw new UserError(
-        `RunState cannot resume custom client tool_search call ${callId} for agent ${pendingCall.agent.name} because no runtime tools were rehydrated.`,
-      );
-    }
-
-    state.recordToolSearchRuntimeTools(
-      pendingCall.agent,
-      item.rawItem,
-      runtimeTools,
-    );
   }
+
+  return capabilitySnapshotsByAgent;
 }
 
 async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
@@ -1669,6 +2500,8 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
     : buildAgentMap(initialAgent);
   const contextOverride = options.contextOverride;
   const contextStrategy = options.contextStrategy ?? 'merge';
+  const schemaVersion = stateJson.$schemaVersion as SupportedSchemaVersion;
+  let deferredLegacyApprovalContext: RunContext<TContext> | undefined;
 
   //
   // Rebuild the context
@@ -1676,17 +2509,48 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   const context =
     contextOverride ??
     new RunContext<TContext>(stateJson.context.context as TContext);
+  context._validateFunctionApprovalOwners(
+    stateJson.context.functionApprovals ?? [],
+    agentMap,
+  );
   if (contextOverride) {
     if (contextStrategy === 'merge') {
-      context._mergeApprovals(stateJson.context.approvals);
+      if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+        context._mergeApprovals(stateJson.context.approvals);
+        context._mergeFunctionApprovals(
+          stateJson.context.functionApprovals ?? [],
+          agentMap,
+        );
+        if (stateJson.context.legacyFunctionApprovalFallback === true) {
+          context._enableLegacyFunctionApprovalFallback();
+        }
+      } else {
+        deferredLegacyApprovalContext = new RunContext<TContext>(
+          stateJson.context.context as TContext,
+        );
+        deferredLegacyApprovalContext._rebuildApprovals(
+          stateJson.context.approvals,
+        );
+        deferredLegacyApprovalContext._enableLegacyFunctionApprovalFallback();
+      }
     }
   } else {
     context._rebuildApprovals(stateJson.context.approvals);
+    context._rebuildFunctionApprovals(
+      stateJson.context.functionApprovals ?? [],
+      agentMap,
+    );
+    if (
+      schemaVersion !== CURRENT_SCHEMA_VERSION ||
+      stateJson.context.legacyFunctionApprovalFallback === true
+    ) {
+      context._enableLegacyFunctionApprovalFallback();
+    }
   }
-  const shouldRestoreToolInput =
+  const shouldRestoreSerializedContext =
     !contextOverride || contextStrategy === 'merge';
   if (
-    shouldRestoreToolInput &&
+    shouldRestoreSerializedContext &&
     typeof stateJson.context.toolInput !== 'undefined' &&
     typeof context.toolInput === 'undefined'
   ) {
@@ -1741,6 +2605,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   state._pendingAgentToolRuns = new Map(
     Object.entries(stateJson.pendingAgentToolRuns ?? {}),
   );
+  state._pendingAgentToolRunAliases = new Map();
 
   // rebuild current agent span
   if (stateJson.currentAgentSpan) {
@@ -1791,14 +2656,47 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   state._currentTurnPersistedItemCount =
     stateJson.currentTurnPersistedItemCount ?? 0;
   state._sandbox = stateJson.sandbox ?? undefined;
-  await rehydrateToolSearchRuntimeTools(state);
+  const capabilitySnapshotsByAgent = await rehydrateToolSearchRuntimeTools(
+    state,
+    {
+      agentMap,
+      schemaVersion,
+      serializedProcessedResponse: stateJson.lastProcessedResponse,
+    },
+  );
+  const currentCapabilitySnapshot = capabilitySnapshotsByAgent.get(
+    state._currentAgent as Agent<TContext, any>,
+  );
   state._lastProcessedResponse = stateJson.lastProcessedResponse
     ? await deserializeProcessedResponse(
         agentMap,
         state,
         stateJson.lastProcessedResponse,
+        {
+          executionTools: currentCapabilitySnapshot!.availableTools,
+          executionHandoffs: currentCapabilitySnapshot!.handoffs,
+          executionFunctionToolsByCallId:
+            currentCapabilitySnapshot!.functionToolsByCallId,
+        },
       )
     : undefined;
+  restorePendingAgentToolRunAliases(
+    state,
+    stateJson.pendingAgentToolRunAliases ?? {},
+  );
+  const legacyFunctionApprovalKeys = migrateLegacyFunctionToolState(
+    state,
+    schemaVersion,
+    shouldRestoreSerializedContext,
+    deferredLegacyApprovalContext,
+  );
+  if (deferredLegacyApprovalContext) {
+    context._mergeApprovalsPreservingExactKeys(
+      deferredLegacyApprovalContext.toJSON().approvals,
+      legacyFunctionApprovalKeys,
+    );
+    context._enableLegacyFunctionApprovalFallback();
+  }
 
   if (stateJson.currentStep?.type === 'next_step_handoff') {
     state._currentStep = {
@@ -1809,15 +2707,21 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
       ) as TAgent,
     };
   } else if (stateJson.currentStep?.type === 'next_step_interruption') {
+    const interruptions = deserializeInterruptions(
+      stateJson.currentStep.data?.interruptions,
+      agentMap,
+      state._currentAgent,
+    );
+    rebindInterruptionFunctionToolStateKeys(
+      interruptions,
+      state._lastProcessedResponse,
+      state._currentAgent,
+    );
     state._currentStep = {
       type: 'next_step_interruption',
       data: {
         ...stateJson.currentStep.data,
-        interruptions: deserializeInterruptions(
-          stateJson.currentStep.data?.interruptions,
-          agentMap,
-          state._currentAgent,
-        ),
+        interruptions,
       },
     };
   }
@@ -1844,6 +2748,13 @@ export async function rehydrateProcessedResponseTools<
     state._lastProcessedResponse,
     agentIdentity.byAgent,
   );
+  const executionFunctionToolsByCallId = new Map(
+    state._lastProcessedResponse.functions.flatMap((functionCall) =>
+      functionCall.preserveToolOnExecutionRehydration
+        ? [[functionCall.toolCall.callId, functionCall.tool] as const]
+        : [],
+    ),
+  );
 
   state._lastProcessedResponse = await deserializeProcessedResponse(
     agentIdentity.byIdentity,
@@ -1851,6 +2762,7 @@ export async function rehydrateProcessedResponseTools<
     serializedProcessedResponse,
     {
       executionTools,
+      executionFunctionToolsByCallId,
       allowSerializedExecutionToolPlaceholder: false,
     },
   );
@@ -2002,6 +2914,20 @@ function serializeProcessedResponse<TContext>(
     newItems: processedResponse.newItems.map((item) =>
       serializeRunItem(item, agentIdentityKeys),
     ),
+    functions: processedResponse.functions.map(({ toolCall, tool }) => ({
+      toolCall,
+      tool,
+    })),
+    handoffs: processedResponse.handoffs.map(
+      ({ toolCall, handoff: processedHandoff }) => ({
+        toolCall,
+        handoff: processedHandoff,
+        targetAgent: serializeAgentReference(
+          processedHandoff.agent,
+          agentIdentityKeys,
+        ),
+      }),
+    ),
   } as z.infer<typeof serializedProcessedResponseSchema>;
 }
 
@@ -2108,6 +3034,7 @@ export function deserializeItem(
         serializedItem.rawItem,
         resolveSerializedAgent(serializedItem.agent, agentMap),
         serializedItem.toolName,
+        serializedItem.functionToolStateKey,
       );
   }
 }
@@ -2133,6 +3060,7 @@ function deserializeInterruptionItem(
         parsed.data.rawItem,
         mappedAgent,
         parsed.data.toolName,
+        parsed.data.functionToolStateKey,
       );
     }
 
@@ -2147,6 +3075,7 @@ function deserializeInterruptionItem(
   const value = serializedItem as {
     rawItem?: unknown;
     toolName?: unknown;
+    functionToolStateKey?: unknown;
     agent?: { name?: unknown; identity?: unknown };
   };
 
@@ -2190,11 +3119,16 @@ function deserializeInterruptionItem(
       : typeof rawItem.name === 'string'
         ? rawItem.name
         : undefined;
+  const functionToolStateKey =
+    typeof value.functionToolStateKey === 'string'
+      ? value.functionToolStateKey
+      : undefined;
 
   return new RunToolApprovalItem(
     value.rawItem as RunToolApprovalItem['rawItem'],
     mappedAgent,
     toolName,
+    functionToolStateKey,
   );
 }
 
@@ -2215,8 +3149,163 @@ function deserializeInterruptions(
     );
 }
 
+function rebindInterruptionFunctionToolStateKeys<TContext>(
+  interruptions: RunToolApprovalItem[],
+  processedResponse: ProcessedResponse<TContext> | undefined,
+  processedAgent: Agent<any, any>,
+): void {
+  if (!processedResponse) {
+    return;
+  }
+
+  const functionsByCallId = new Map(
+    processedResponse.functions.map((functionCall) => [
+      functionCall.toolCall.callId,
+      functionCall,
+    ]),
+  );
+  for (const interruption of interruptions) {
+    if (
+      interruption.agent !== processedAgent ||
+      interruption.rawItem.type !== 'function_call'
+    ) {
+      continue;
+    }
+    const functionCall = functionsByCallId.get(interruption.rawItem.callId);
+    const stateKey = functionCall
+      ? getFunctionToolStateKey(functionCall.tool)
+      : undefined;
+    if (stateKey) {
+      interruption.functionToolStateKey = stateKey;
+    }
+  }
+}
+
+function restorePendingAgentToolRunAliases<TContext>(
+  state: RunState<TContext, Agent<any, any>>,
+  serializedAliases: Record<string, string>,
+): void {
+  const aliasEntries = Object.entries(serializedAliases);
+  if (aliasEntries.length === 0) {
+    return;
+  }
+
+  const validAliases = new Map<string, string>();
+  for (const functionCall of state._lastProcessedResponse?.functions ?? []) {
+    const [canonicalToolName, ...aliases] = getFunctionToolStateKeys(
+      functionCall.tool,
+      functionCall.availableFunctionTools ?? [functionCall.tool],
+    );
+    if (!canonicalToolName) {
+      continue;
+    }
+    const callId = functionCall.toolCall.callId;
+    const canonicalKey = `${canonicalToolName}:${callId}`;
+    for (const alias of aliases) {
+      validAliases.set(`${alias}:${callId}`, canonicalKey);
+    }
+  }
+
+  for (const [aliasKey, canonicalKey] of aliasEntries) {
+    if (
+      validAliases.get(aliasKey) !== canonicalKey ||
+      !state._pendingAgentToolRuns.has(canonicalKey)
+    ) {
+      throw new UserError(
+        'Run state pending agent tool aliases do not match the reconstructed pending function calls.',
+      );
+    }
+  }
+
+  state._pendingAgentToolRunAliases = new Map(aliasEntries);
+}
+
+function migrateLegacyFunctionToolState<TContext>(
+  state: RunState<TContext, Agent<any, any>>,
+  schemaVersion: SupportedSchemaVersion,
+  migrateApprovals: boolean,
+  approvalContext: RunContext<TContext> = state._context,
+): Set<string> {
+  if (
+    schemaVersion === CURRENT_SCHEMA_VERSION ||
+    !state._lastProcessedResponse
+  ) {
+    return new Set();
+  }
+
+  const approvalCallsByLegacyKey = new Map<string, Map<string, string[]>>();
+  const approvalOwnersByLegacyKey = new Map<string, Set<string>>();
+  for (const functionCall of state._lastProcessedResponse.functions) {
+    for (const tool of functionCall.availableFunctionTools ?? [
+      functionCall.tool,
+    ]) {
+      const canonicalKey = getFunctionToolStateKey(tool);
+      const legacyKey = getFunctionToolQualifiedName(tool) ?? tool.name;
+      if (!canonicalKey || canonicalKey === legacyKey) {
+        continue;
+      }
+      const canonicalOwners =
+        approvalOwnersByLegacyKey.get(legacyKey) ?? new Set<string>();
+      canonicalOwners.add(canonicalKey);
+      approvalOwnersByLegacyKey.set(legacyKey, canonicalOwners);
+    }
+  }
+
+  for (const functionCall of state._lastProcessedResponse.functions) {
+    const canonicalKey = getFunctionToolStateKey(functionCall.tool);
+    const legacyKey =
+      getFunctionToolQualifiedName(functionCall.tool) ?? functionCall.tool.name;
+    if (!canonicalKey || canonicalKey === legacyKey) {
+      continue;
+    }
+    const callId = functionCall.toolCall.callId;
+    const pendingState = state.getPendingAgentToolRun(legacyKey, callId);
+    if (pendingState !== undefined) {
+      state.setPendingAgentToolRun(canonicalKey, callId, pendingState, [
+        legacyKey,
+      ]);
+    }
+    if (!migrateApprovals) {
+      continue;
+    }
+    const callsByCanonicalKey =
+      approvalCallsByLegacyKey.get(legacyKey) ?? new Map<string, string[]>();
+    const callIds = callsByCanonicalKey.get(canonicalKey) ?? [];
+    callIds.push(callId);
+    callsByCanonicalKey.set(canonicalKey, callIds);
+    approvalCallsByLegacyKey.set(legacyKey, callsByCanonicalKey);
+  }
+
+  if (migrateApprovals) {
+    for (const [legacyKey, canonicalOwners] of approvalOwnersByLegacyKey) {
+      if (canonicalOwners.size !== 1) {
+        continue;
+      }
+      const [canonicalKey] = canonicalOwners;
+      approvalContext._migrateToolApproval(legacyKey, canonicalKey!, [], true);
+    }
+  }
+
+  for (const [legacyKey, callsByCanonicalKey] of approvalCallsByLegacyKey) {
+    for (const [canonicalKey, callIds] of callsByCanonicalKey) {
+      const canonicalOwners = approvalOwnersByLegacyKey.get(legacyKey);
+      const migratePermanentDecision =
+        canonicalOwners?.size === 1 && canonicalOwners.has(canonicalKey);
+      approvalContext._migrateToolApproval(
+        legacyKey,
+        canonicalKey,
+        callIds,
+        migratePermanentDecision,
+      );
+    }
+  }
+  return new Set(approvalOwnersByLegacyKey.keys());
+}
+
 type DeserializeProcessedResponseOptions<TContext> = {
   executionTools?: Tool<TContext>[];
+  executionHandoffs?: Handoff<any, any>[];
+  executionFunctionToolsByCallId?: Map<string, FunctionTool<TContext>>;
   allowSerializedExecutionToolPlaceholder?: boolean;
 };
 
@@ -2232,19 +3321,19 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
   options: DeserializeProcessedResponseOptions<TContext> = {},
 ): Promise<ProcessedResponse<TContext>> {
   const currentAgent = state._currentAgent;
-  const configuredTools =
-    options.executionTools ?? (await currentAgent.getAllTools(state._context));
-  const allTools = [
-    ...(configuredTools as Tool<TContext>[]),
-    ...state.getToolSearchRuntimeTools(currentAgent),
-  ];
+  const allTools = options.executionTools
+    ? options.executionTools
+    : [
+        ...((await currentAgent.getAllTools(
+          state._context,
+        )) as Tool<TContext>[]),
+        ...(await getEnabledToolSearchRuntimeTools(state, currentAgent)),
+      ];
   const baseAgentTools = currentAgent.tools as Tool<TContext>[];
   const allowSerializedExecutionToolPlaceholder =
     options.allowSerializedExecutionToolPlaceholder ?? true;
-  const tools = new Map(
-    allTools
-      .filter((tool) => tool.type === 'function')
-      .map((tool) => [getFunctionToolQualifiedName(tool) ?? tool.name, tool]),
+  const tools = buildFunctionToolLookupMap(
+    allTools.filter((tool) => tool.type === 'function'),
   );
   const computerTools = new Map(
     allTools
@@ -2287,14 +3376,11 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
       )
       .map((tool) => [tool.providerData.server_label, tool]),
   );
+  const enabledHandoffs = options.executionHandoffs
+    ? options.executionHandoffs
+    : await currentAgent.getEnabledHandoffs(state._context);
   const handoffs = new Map(
-    currentAgent.handoffs.map((entry) => {
-      if (entry instanceof Agent) {
-        return [entry.name, handoff(entry)];
-      }
-
-      return [entry.toolName, entry];
-    }),
+    enabledHandoffs.map((entry) => [entry.toolName, entry]),
   );
 
   const result = {
@@ -2302,31 +3388,60 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
       deserializeItem(item, agentMap),
     ),
     toolsUsed: serializedProcessedResponse.toolsUsed,
-    handoffs: serializedProcessedResponse.handoffs.map((handoff) => {
-      if (!handoffs.has(handoff.handoff.toolName)) {
-        throw new UserError(`Handoff ${handoff.handoff.toolName} not found`);
+    handoffs: serializedProcessedResponse.handoffs.map((serializedHandoff) => {
+      const toolName = serializedHandoff.handoff.toolName;
+      const resolvedHandoff = handoffs.get(toolName);
+      const serializedTargetAgent = serializedHandoff.targetAgent
+        ? resolveSerializedAgent(serializedHandoff.targetAgent, agentMap)
+        : undefined;
+      const targetMatches = serializedTargetAgent
+        ? resolvedHandoff?.agent === serializedTargetAgent
+        : resolvedHandoff?.agentName === serializedHandoff.handoff.agentName;
+      if (!resolvedHandoff || !targetMatches) {
+        throw new UserError(`Handoff ${toolName} not found`);
       }
-
-      const resolvedHandoff = handoffs.get(handoff.handoff.toolName)!;
       ensureToolCallerAllowed(
-        handoff.toolCall as protocol.FunctionCallItem,
+        serializedHandoff.toolCall as protocol.FunctionCallItem,
         undefined,
         resolvedHandoff.toolName,
         currentAgent,
       );
 
       return {
-        toolCall: handoff.toolCall,
+        toolCall: serializedHandoff.toolCall,
         handoff: resolvedHandoff,
       };
     }),
     functions: await Promise.all(
       serializedProcessedResponse.functions.map(async (functionCall) => {
         const toolIdentity =
-          resolveFunctionToolCallName(functionCall.toolCall, tools) ??
+          getToolCallDisplayName(functionCall.toolCall) ??
           functionCall.tool.name;
+        const exactRuntimeTool = options.executionFunctionToolsByCallId?.get(
+          functionCall.toolCall.callId,
+        );
+        if (
+          exactRuntimeTool &&
+          !getFunctionToolStateKeyForResolvedCall(
+            functionCall.toolCall as protocol.FunctionCallItem,
+            exactRuntimeTool,
+          )
+        ) {
+          throwAmbiguousFunctionCallId(
+            currentAgent,
+            functionCall.toolCall.callId,
+            [
+              getFunctionToolStateKey(exactRuntimeTool) ??
+                exactRuntimeTool.name,
+              getFunctionToolStateKeyForCall(
+                functionCall.toolCall as protocol.FunctionCallItem,
+              ) ?? functionCall.tool.name,
+            ],
+          );
+        }
         const resolvedTool =
-          tools.get(toolIdentity) ??
+          exactRuntimeTool ??
+          resolveFunctionToolCall(functionCall.toolCall, tools) ??
           getSerializedFunctionToolPlaceholder({
             agent: currentAgent,
             baseAgentTools,
@@ -2346,10 +3461,14 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
           currentAgent,
         );
 
-        return {
+        return createToolRunFunction({
           toolCall: functionCall.toolCall,
           tool: resolvedTool,
-        };
+          availableFunctionTools: [
+            ...new Set([...tools.values(), resolvedTool]),
+          ],
+          preserveToolOnExecutionRehydration: Boolean(exactRuntimeTool),
+        });
       }),
     ),
     functionToolsNotFound:
@@ -2485,4 +3604,15 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
       );
     },
   };
+}
+
+async function getEnabledToolSearchRuntimeTools<TContext>(
+  state: RunState<TContext, Agent<any, any>>,
+  agent: Agent<any, any>,
+): Promise<Tool<TContext>[]> {
+  return filterEnabledToolSearchRuntimeTools({
+    runtimeTools: state.getToolSearchRuntimeTools(agent),
+    runContext: state._context,
+    agent,
+  });
 }

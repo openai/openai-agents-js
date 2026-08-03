@@ -2,6 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { RunContext } from '../src/runContext';
 import { RunToolApprovalItem as ToolApprovalItem } from '../src/items';
 import { Agent } from '../src/agent';
+import { tool } from '../src/tool';
+import {
+  getFunctionToolLookupKey,
+  getFunctionToolStateKeyForCall,
+} from '../src/toolIdentity';
+import { z } from 'zod';
 
 const agent = new Agent({ name: 'A' });
 const rawItem = {
@@ -44,6 +50,157 @@ function createRealtimeHostedApproval(
 }
 
 describe('RunContext', () => {
+  it.each(['shell', 'apply_patch', 'hosted_mcp'])(
+    'keeps %s approvals separate from same-name function aliases',
+    (toolName) => {
+      const functionKey = getFunctionToolLookupKey(toolName)!;
+      const permanentEntries = [
+        [functionKey, { approved: true, rejected: [] }],
+        [toolName, { approved: false, rejected: true }],
+      ] as const;
+      const perCallEntries = [
+        [
+          functionKey,
+          { approved: ['function-call'], rejected: [] as string[] },
+        ],
+        [
+          toolName,
+          { approved: [] as string[], rejected: ['non-function-call'] },
+        ],
+      ] as const;
+
+      for (const entries of [
+        permanentEntries,
+        [...permanentEntries].reverse(),
+      ]) {
+        const context = new RunContext();
+        context._rebuildApprovals(Object.fromEntries(entries));
+
+        expect(
+          context.isToolApproved({
+            toolName: functionKey,
+            callId: 'future-function-call',
+          }),
+        ).toBe(true);
+        expect(
+          context.isToolApproved({
+            toolName,
+            callId: 'future-non-function-call',
+            functionTool: false,
+          }),
+        ).toBe(false);
+      }
+
+      for (const entries of [perCallEntries, [...perCallEntries].reverse()]) {
+        const context = new RunContext();
+        context._rebuildApprovals(Object.fromEntries(entries));
+
+        expect(
+          context.isToolApproved({
+            toolName: functionKey,
+            callId: 'function-call',
+          }),
+        ).toBe(true);
+        expect(
+          context.isToolApproved({
+            toolName,
+            callId: 'function-call',
+            functionTool: false,
+          }),
+        ).toBeUndefined();
+        expect(
+          context.isToolApproved({
+            toolName,
+            callId: 'non-function-call',
+            functionTool: false,
+          }),
+        ).toBe(false);
+      }
+    },
+  );
+
+  it('keeps same-name bare and deferred approvals distinct', () => {
+    const bare = tool({
+      name: 'lookup',
+      description: 'Immediate lookup.',
+      parameters: z.object({}),
+      execute: async () => 'bare',
+    });
+    const deferred = tool({
+      name: 'lookup',
+      description: 'Deferred lookup.',
+      parameters: z.object({}),
+      deferLoading: true,
+      execute: async () => 'deferred',
+    });
+    const approvalAgent = new Agent({
+      name: 'Approval agent',
+      tools: [bare, deferred],
+    });
+    const deferredApproval = new ToolApprovalItem(
+      {
+        type: 'function_call',
+        name: 'lookup',
+        namespace: 'lookup',
+        callId: 'deferred-call',
+        arguments: '{}',
+      },
+      approvalAgent,
+    );
+    const ctx = new RunContext();
+
+    ctx.approveTool(deferredApproval, { alwaysApprove: true });
+
+    expect(
+      ctx.isToolApproved({
+        toolName: getFunctionToolStateKeyForCall(
+          deferredApproval.rawItem as { name?: string; namespace?: string },
+        )!,
+        callId: 'future-deferred-call',
+      }),
+    ).toBe(true);
+    expect(
+      ctx.isToolApproved({
+        toolName: 'lookup',
+        callId: 'future-bare-call',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('keeps dotted bare and explicit namespace approvals distinct', () => {
+    const namespacedApproval = new ToolApprovalItem(
+      {
+        type: 'function_call',
+        name: 'lookup',
+        namespace: 'crm',
+        callId: 'namespaced-call',
+        arguments: '{}',
+      },
+      agent,
+    );
+    const ctx = new RunContext();
+
+    ctx.approveTool(namespacedApproval, { alwaysApprove: true });
+
+    expect(
+      ctx.isToolApproved({
+        toolName: getFunctionToolStateKeyForCall(
+          namespacedApproval.rawItem as {
+            name?: string;
+            namespace?: string;
+          },
+        )!,
+        callId: 'future-namespaced-call',
+      }),
+    ).toBe(true);
+    expect(
+      ctx.isToolApproved({
+        toolName: 'crm.lookup',
+        callId: 'future-dotted-call',
+      }),
+    ).toBeUndefined();
+  });
+
   it('approves and rejects tool calls', () => {
     const ctx = new RunContext();
     const item = createApproval();
@@ -65,6 +222,53 @@ describe('RunContext', () => {
     );
   });
 
+  it('scopes function approval decisions to the owning agent', () => {
+    const otherAgent = new Agent({ name: 'B' });
+    const first = createApproval('shared-call');
+    const second = new ToolApprovalItem(
+      {
+        ...rawItem,
+        callId: 'shared-call',
+      } as any,
+      otherAgent,
+    );
+    const toolName = getFunctionToolStateKeyForCall(
+      first.rawItem as { name?: string; namespace?: string },
+    )!;
+    const ctx = new RunContext();
+
+    ctx.approveTool(first, { alwaysApprove: true });
+    ctx.rejectTool(second, { message: 'Rejected for B.' });
+
+    expect(
+      ctx.isToolApproved({
+        toolName,
+        callId: 'future-call',
+        functionTool: false,
+        agent,
+      }),
+    ).toBe(true);
+    expect(
+      ctx.isToolApproved({
+        toolName,
+        callId: 'shared-call',
+        functionTool: false,
+        agent: otherAgent,
+      }),
+    ).toBe(false);
+    expect(
+      ctx.isToolApproved({
+        toolName,
+        callId: 'future-call',
+        functionTool: false,
+        agent: otherAgent,
+      }),
+    ).toBeUndefined();
+    expect(
+      ctx._getFunctionRejectionMessage(toolName, 'shared-call', otherAgent),
+    ).toBe('Rejected for B.');
+  });
+
   it('reuses alwaysReject messages for future call ids', () => {
     const ctx = new RunContext();
     const item = createApproval();
@@ -76,10 +280,13 @@ describe('RunContext', () => {
 
     expect(ctx.getRejectionMessage('toolX', '123')).toBe('Blocked by policy.');
     expect(ctx.getRejectionMessage('toolX', '456')).toBe('Blocked by policy.');
-    expect(ctx.toJSON().approvals.toolX.messages).toEqual({
+    const approvalKey = getFunctionToolStateKeyForCall(
+      item.rawItem as { name?: string; namespace?: string },
+    )!;
+    expect(ctx.toJSON().approvals[approvalKey].messages).toEqual({
       '123': 'Blocked by policy.',
     });
-    expect(ctx.toJSON().approvals.toolX.stickyRejectMessage).toBe(
+    expect(ctx.toJSON().approvals[approvalKey].stickyRejectMessage).toBe(
       'Blocked by policy.',
     );
   });

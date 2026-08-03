@@ -314,6 +314,10 @@ export function getInheritedAgentToolRunConfig(
     inheritedRunConfig.toolNotFoundBehavior =
       parentRunConfig.toolNotFoundBehavior;
   }
+  if (typeof parentRunConfig.toolNameCollisionPolicy !== 'undefined') {
+    inheritedRunConfig.toolNameCollisionPolicy =
+      parentRunConfig.toolNameCollisionPolicy;
+  }
   if (typeof parentRunConfig.tracing !== 'undefined') {
     inheritedRunConfig.tracing = parentRunConfig.tracing;
   }

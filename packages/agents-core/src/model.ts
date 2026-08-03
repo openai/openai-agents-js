@@ -563,6 +563,7 @@ export type ModelRequest = {
     runnerManagedRetry?: boolean;
     reasoningEffortImplicit?: boolean;
     tracingParent?: Span<any> | Trace;
+    toolNameCollisionPolicy?: 'warn' | 'error';
   };
 };
 

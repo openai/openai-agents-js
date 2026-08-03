@@ -395,6 +395,123 @@ describe('approved tool output guardrail session persistence', () => {
     },
   );
 
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'scopes duplicate nested approval call IDs to the owning agent in $mode runs',
+    async (mode) => {
+      let firstExecutions = 0;
+      let secondExecutions = 0;
+      const createNestedAgent = (
+        name: string,
+        execute: () => Promise<string>,
+      ) => {
+        const approvalTool = tool({
+          name: 'shared_approval_tool',
+          description: 'Requires approval.',
+          parameters: z.object({}),
+          needsApproval: true,
+          execute,
+        });
+        return new Agent({
+          name,
+          model: new ApprovalSessionModel([
+            {
+              output: [
+                functionToolCall(
+                  'shared_approval_tool',
+                  'shared-provider-call-id',
+                ),
+              ],
+              usage: new Usage(),
+            },
+          ]),
+          tools: [approvalTool],
+          toolUseBehavior: 'stop_on_first_tool',
+        });
+      };
+      const firstNestedAgent = createNestedAgent(
+        'Duplicate approval agent',
+        async () => {
+          firstExecutions += 1;
+          return 'first-approved';
+        },
+      );
+      const secondNestedAgent = createNestedAgent(
+        'Duplicate approval agent',
+        async () => {
+          secondExecutions += 1;
+          return 'second-approved';
+        },
+      );
+      const firstNestedTool = firstNestedAgent.asTool({
+        toolName: 'first_nested_agent',
+        toolDescription: 'Runs the first nested agent.',
+      });
+      const secondNestedTool = secondNestedAgent.asTool({
+        toolName: 'second_nested_agent',
+        toolDescription: 'Runs the second nested agent.',
+      });
+      const outerAgent = new Agent({
+        name: 'Duplicate approval outer agent',
+        model: new ApprovalSessionModel([
+          {
+            output: [
+              functionToolCall(
+                firstNestedTool.name,
+                'first-outer-call',
+                JSON.stringify({ input: 'Run the first nested agent.' }),
+              ),
+              functionToolCall(
+                secondNestedTool.name,
+                'second-outer-call',
+                JSON.stringify({ input: 'Run the second nested agent.' }),
+              ),
+            ],
+            usage: new Usage(),
+          },
+        ]),
+        tools: [firstNestedTool, secondNestedTool],
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+
+      const runOnce = async (
+        input: string | RunState<unknown, typeof outerAgent>,
+      ) => {
+        if (mode === 'streamed') {
+          const result = await run(outerAgent, input, { stream: true });
+          await result.completed;
+          return result;
+        }
+        return run(outerAgent, input);
+      };
+
+      const first = await runOnce('Run both nested agents.');
+      expect(first.interruptions).toHaveLength(2);
+
+      const restored = await RunState.fromString(
+        outerAgent,
+        first.state.toString(),
+      );
+      const firstApproval = restored
+        .getInterruptions()
+        .find((item) => item.agent === firstNestedAgent)!;
+      const secondApproval = restored
+        .getInterruptions()
+        .find((item) => item.agent === secondNestedAgent)!;
+      restored.approve(firstApproval);
+      restored.reject(secondApproval, { message: 'Second call rejected.' });
+
+      const decidedState = await RunState.fromString(
+        outerAgent,
+        restored.toString(),
+      );
+      const resumed = await runOnce(decidedState);
+
+      expect(resumed.interruptions).toHaveLength(0);
+      expect(firstExecutions).toBe(1);
+      expect(secondExecutions).toBe(0);
+    },
+  );
+
   it('runs streaming compaction after a partially approved resume', async () => {
     const approvalTool = tool({
       name: 'partial_approval_tool',

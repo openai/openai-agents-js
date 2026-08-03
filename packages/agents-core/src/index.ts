@@ -198,6 +198,7 @@ export type {
   ToolErrorFormatter,
   ToolErrorFormatterArgs,
   ToolExecutionConfig,
+  ToolNameCollisionPolicy,
   ToolNotFoundBehavior,
   ToolErrorKind,
   ReasoningItemIdPolicy,

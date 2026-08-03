@@ -1056,6 +1056,7 @@ describe('Agent', () => {
       handoffInputFilter,
       traceIncludeSensitiveData: false,
       traceId: 'trace_parent_fixed',
+      toolNameCollisionPolicy: 'error',
     });
 
     await tool.invoke(
@@ -1076,6 +1077,7 @@ describe('Agent', () => {
     expect(nestedRunner.config.handoffInputFilter).toBeUndefined();
     expect(nestedRunner.config.traceId).toBeUndefined();
     expect(nestedRunner.config.traceIncludeSensitiveData).toBe(true);
+    expect(nestedRunner.config.toolNameCollisionPolicy).toBe('error');
   });
 
   it('does not inherit parent tool-selection modelSettings into nested agent tools', async () => {
