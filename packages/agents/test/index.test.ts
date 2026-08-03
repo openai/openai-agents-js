@@ -19,6 +19,7 @@ describe('Exports', () => {
     const agent = new Agents.Agent({ name: 'Test' });
     expect(agent.name).toBe('Test');
     expect(typeof Agents.setSensitiveDataLoggingEnabled).toBe('function');
+    expect(typeof Agents.RunCompactionItem).toBe('function');
   });
 
   test('lifecycle and agent tool types are out there', () => {

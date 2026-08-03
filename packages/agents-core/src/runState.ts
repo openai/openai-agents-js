@@ -12,6 +12,7 @@ import {
   RunToolSearchCallItem,
   RunToolSearchOutputItem,
   RunReasoningItem,
+  RunCompactionItem,
   RunHandoffCallItem,
   RunHandoffOutputItem,
 } from './items';
@@ -101,8 +102,9 @@ import {
  *   and optional assistant message phases.
  * - 1.15: Adds reconstructable sandbox environment value references and sandbox
  *   session-state envelope version 2.
+ * - 1.16: Adds compaction items to serialized run state payloads.
  */
-export const CURRENT_SCHEMA_VERSION = '1.15' as const;
+export const CURRENT_SCHEMA_VERSION = '1.16' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -119,6 +121,7 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.12',
   '1.13',
   '1.14',
+  '1.15',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -224,6 +227,11 @@ const itemSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('reasoning_item'),
     rawItem: protocol.ReasoningItem,
+    agent: serializedAgentSchema,
+  }),
+  z.object({
+    type: z.literal('compaction_item'),
+    rawItem: protocol.CompactionItem,
     agent: serializedAgentSchema,
   }),
   z.object({
@@ -1091,6 +1099,10 @@ async function buildRunStateFromString<
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
   );
+  assertSchemaVersionSupportsCompactionItems(
+    currentSchemaVersion as SupportedSchemaVersion,
+    stateJson,
+  );
   return buildRunStateFromJson(initialAgent, stateJson, options);
 }
 
@@ -1106,6 +1118,7 @@ function assertSchemaVersionSupportsToolSearch(
     schemaVersion === '1.12' ||
     schemaVersion === '1.13' ||
     schemaVersion === '1.14' ||
+    schemaVersion === '1.15' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   ) {
     return;
@@ -1127,6 +1140,7 @@ function assertSchemaVersionSupportsCustomData(
   if (
     schemaVersion === '1.13' ||
     schemaVersion === '1.14' ||
+    schemaVersion === '1.15' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   ) {
     return;
@@ -1150,6 +1164,7 @@ function schemaVersionSupportsAgentIdentity(
     schemaVersion === '1.12' ||
     schemaVersion === '1.13' ||
     schemaVersion === '1.14' ||
+    schemaVersion === '1.15' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   );
 }
@@ -1158,7 +1173,11 @@ function assertSchemaVersionSupportsProgrammaticToolCalling(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
-  if (schemaVersion === '1.14' || schemaVersion === CURRENT_SCHEMA_VERSION) {
+  if (
+    schemaVersion === '1.14' ||
+    schemaVersion === '1.15' ||
+    schemaVersion === CURRENT_SCHEMA_VERSION
+  ) {
     return;
   }
 
@@ -1175,7 +1194,11 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
-  if (schemaVersion === CURRENT_SCHEMA_VERSION || !stateJson.sandbox) {
+  if (
+    schemaVersion === '1.15' ||
+    schemaVersion === CURRENT_SCHEMA_VERSION ||
+    !stateJson.sandbox
+  ) {
     return;
   }
 
@@ -1196,6 +1219,43 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
   throw new UserError(
     `Run state schema version ${schemaVersion} does not support sandbox session state version ${SANDBOX_SESSION_STATE_VERSION}. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
   );
+}
+
+/**
+ * Rejects payloads declaring a pre-1.16 schema that carry a `compaction_item` run item. Inspects
+ * only that wrapper, never raw `compaction` output in `modelResponses`: earlier writers wrote the
+ * raw output without a wrapper, and those snapshots still resume correctly.
+ */
+function assertSchemaVersionSupportsCompactionItems(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: z.infer<typeof SerializedRunState>,
+): void {
+  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+    return;
+  }
+
+  if (!containsSerializedCompactionRunItems(stateJson)) {
+    return;
+  }
+
+  throw new UserError(
+    `Run state schema version ${schemaVersion} does not support compaction items. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+  );
+}
+
+function containsSerializedCompactionRunItems(
+  stateJson: z.infer<typeof SerializedRunState>,
+): boolean {
+  return (
+    containsCompactionRunItems(stateJson.generatedItems) ||
+    containsCompactionRunItems(stateJson.lastProcessedResponse?.newItems)
+  );
+}
+
+function containsCompactionRunItems(
+  items: z.infer<typeof itemSchema>[] | undefined,
+): boolean {
+  return Boolean(items?.some((item) => item.type === 'compaction_item'));
 }
 
 function containsProgrammaticToolCallingState(
@@ -2089,6 +2149,11 @@ export function deserializeItem(
       );
     case 'reasoning_item':
       return new RunReasoningItem(
+        serializedItem.rawItem,
+        resolveSerializedAgent(serializedItem.agent, agentMap),
+      );
+    case 'compaction_item':
+      return new RunCompactionItem(
         serializedItem.rawItem,
         resolveSerializedAgent(serializedItem.agent, agentMap),
       );

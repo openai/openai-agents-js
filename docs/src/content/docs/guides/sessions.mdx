@@ -202,3 +202,7 @@ Compaction clears and rewrites the underlying session, so the SDK waits for it b
 />
 
 You can call `runCompaction({ force: true })` at any time to shrink history before archiving or handoff. Enable debug logs with `DEBUG=openai-agents:openai:compaction` to trace compaction decisions.
+
+### Inline compaction is a different mechanism
+
+`modelSettings.contextManagement` asks the Responses API to compact context during an ordinary response, and that response can include a compaction marker among its output items. This does not involve `responses.compact` and does not rewrite anything: the runner keeps the marker in provider order and the session stores it like any other generated item, so nothing is removed from your stored history.

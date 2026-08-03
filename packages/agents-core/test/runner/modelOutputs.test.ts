@@ -5,6 +5,7 @@ import { Agent } from '../../src/agent';
 import { ModelBehaviorError, UserError } from '../../src/errors';
 import { handoff } from '../../src/handoff';
 import {
+  RunCompactionItem as CompactionItem,
   RunHandoffCallItem as HandoffCallItem,
   RunMessageOutputItem as MessageOutputItem,
   RunReasoningItem as ReasoningItem,
@@ -684,6 +685,111 @@ describe('processModelResponse', () => {
       TEST_MODEL_RESPONSE_WITH_FUNCTION.output[1],
     );
     expect(result.hasToolsOrApprovalsToRun()).toBe(true);
+  });
+
+  it('parses both OpenAI and provider-neutral compaction protocol items', () => {
+    expect(
+      protocol.CompactionItem.parse({
+        type: 'compaction',
+        id: 'cmp_1',
+        encrypted_content: 'ciphertext',
+        created_by: 'compaction_endpoint',
+      }),
+    ).toMatchObject({ type: 'compaction', encrypted_content: 'ciphertext' });
+
+    expect(
+      protocol.CompactionItem.parse({
+        type: 'compaction',
+        providerData: { provider: 'example', summary: 'earlier turns' },
+      }),
+    ).toEqual({
+      type: 'compaction',
+      providerData: { provider: 'example', summary: 'earlier turns' },
+    });
+  });
+
+  it('classifies compaction items as run items in provider order', () => {
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_1',
+      encrypted_content: 'ciphertext',
+    };
+    const modelResponse: ModelResponse = {
+      output: [compaction, TEST_MODEL_MESSAGE],
+      usage: new Usage(),
+    };
+
+    const result = processModelResponse(modelResponse, TEST_AGENT, [], []);
+
+    expect(result.newItems.map((item) => item.type)).toEqual([
+      'compaction_item',
+      'message_output_item',
+    ]);
+    expect(result.newItems[0]).toBeInstanceOf(CompactionItem);
+    expect(result.newItems[0].rawItem).toEqual(compaction);
+    expect(result.toolsUsed).toEqual([]);
+    expect(result.hasToolsOrApprovalsToRun()).toBe(false);
+  });
+
+  it('classifies compaction items on the custom client tool_search async path', async () => {
+    // processModelResponseAsync delegates to processModelResponse unless BOTH a custom
+    // client-side tool_search executor is configured AND the response actually contains a
+    // matching client tool_search call, so the fixture needs both to reach its own loop.
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+          parameters: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+      },
+      vi.fn().mockResolvedValue([]),
+    );
+    const toolSearchCall = {
+      type: 'tool_search_call',
+      id: 'ts_call_async',
+      status: 'completed',
+      arguments: {},
+      providerData: {
+        call_id: 'call_tool_search_async',
+        execution: 'client',
+      },
+    } as unknown as protocol.ToolSearchCallItem;
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_async',
+      encrypted_content: 'ciphertext',
+    };
+    const agent = new Agent({ name: 'CompactionAsyncAgent' });
+    const state = new RunState(new RunContext(), 'hello', agent, 3);
+
+    const result = await processModelResponseAsync(
+      {
+        output: [toolSearchCall, compaction, TEST_MODEL_MESSAGE],
+        usage: new Usage(),
+      },
+      agent,
+      [clientToolSearch],
+      [],
+      state,
+      [],
+    );
+
+    expect(result.newItems.map((item) => item.type)).toEqual([
+      'tool_search_call_item',
+      'tool_search_output_item',
+      'compaction_item',
+      'message_output_item',
+    ]);
+    const compactionRunItem = result.newItems[2];
+    expect(compactionRunItem).toBeInstanceOf(CompactionItem);
+    expect(compactionRunItem.rawItem).toEqual(compaction);
   });
 
   it('classifies tool search items as run items and records tool usage', () => {

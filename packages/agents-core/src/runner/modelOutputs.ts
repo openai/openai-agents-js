@@ -2,6 +2,7 @@ import { Agent } from '../agent';
 import { ModelBehaviorError } from '../errors';
 import { Handoff } from '../handoff';
 import {
+  RunCompactionItem,
   RunHandoffCallItem,
   RunItem,
   RunMessageOutputItem,
@@ -922,6 +923,8 @@ export function processModelResponse<TContext>(
       }
     } else if (output.type === 'reasoning') {
       items.push(new RunReasoningItem(output, agent));
+    } else if (output.type === 'compaction') {
+      items.push(new RunCompactionItem(output, agent));
     } else if (output.type === 'computer_call') {
       handleToolCallAction({
         output,
@@ -1281,6 +1284,8 @@ export async function processModelResponseAsync<TContext>(
       }
     } else if (output.type === 'reasoning') {
       items.push(new RunReasoningItem(output, agent));
+    } else if (output.type === 'compaction') {
+      items.push(new RunCompactionItem(output, agent));
     } else if (output.type === 'computer_call') {
       handleToolCallAction({
         output,

@@ -834,9 +834,11 @@ export type ReasoningItem = z.infer<typeof ReasoningItem>;
 export const CompactionItem = ItemBase.extend({
   type: z.literal('compaction'),
   /**
-   * Encrypted payload returned by the compaction endpoint.
+   * Encrypted payload used by providers that expose one, such as the OpenAI Responses
+   * compaction item. Providers that represent a compaction checkpoint differently keep
+   * their replay data in `providerData` instead.
    */
-  encrypted_content: z.string(),
+  encrypted_content: z.string().optional(),
   /**
    * Identifier for the compaction item.
    */

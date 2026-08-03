@@ -1,6 +1,7 @@
 import logger from '../logger';
 import { RunItemStreamEvent, RunItemStreamEventName } from '../events';
 import {
+  RunCompactionItem,
   RunHandoffCallItem,
   RunHandoffOutputItem,
   RunItem,
@@ -55,6 +56,11 @@ function enqueueRunItemStreamEvent(
   result: StreamedRunResult<any, any>,
   item: RunItem,
 ): void {
+  // Compaction is intentionally not a high-level run-item event; it stays observable through
+  // raw model events and the completed result.
+  if (item instanceof RunCompactionItem) {
+    return;
+  }
   const itemName = getRunItemStreamEventName(item);
   if (!itemName) {
     if (logger.dontLogModelData || logger.dontLogToolData) {

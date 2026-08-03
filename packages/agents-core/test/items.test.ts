@@ -6,6 +6,7 @@ import {
   RunHandoffCallItem as HandoffCallItem,
   RunHandoffOutputItem as HandoffOutputItem,
   RunMessageOutputItem as MessageOutputItem,
+  RunCompactionItem as CompactionItem,
   RunReasoningItem as ReasoningItem,
   RunToolApprovalItem as ToolApprovalItem,
   RunToolCallItem as ToolCallItem,
@@ -213,6 +214,27 @@ describe('items toJSON()', () => {
     it('returns the correct JSON', () => {
       expect(item.toJSON()).toEqual({
         type: 'reasoning_item',
+        rawItem: item.rawItem,
+        agent: item.agent.toJSON(),
+      });
+    });
+  });
+
+  describe('CompactionItem', () => {
+    const item = new CompactionItem(
+      {
+        id: 'cmp_1',
+        type: 'compaction',
+        encrypted_content: 'ciphertext',
+        created_by: 'compaction_endpoint',
+        providerData: { extra: 'value' },
+      },
+      new Agent({ name: 'TestAgent' }),
+    );
+
+    it('returns the correct JSON', () => {
+      expect(item.toJSON()).toEqual({
+        type: 'compaction_item',
         rawItem: item.rawItem,
         agent: item.agent.toJSON(),
       });

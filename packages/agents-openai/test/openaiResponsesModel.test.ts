@@ -4702,6 +4702,67 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  describe('compaction items', () => {
+    function fakeClientWithResponse(response: unknown) {
+      const createMock = vi.fn().mockResolvedValue(response);
+      return {
+        createMock,
+        client: {
+          responses: { create: createMock },
+        } as unknown as OpenAI,
+      };
+    }
+
+    const baseRequest = {
+      systemInstructions: undefined,
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    };
+
+    it('rejects a compaction input item without ciphertext before calling the client', async () => {
+      const { client, createMock } = fakeClientWithResponse({
+        id: 'unused',
+        usage: {},
+        output: [],
+      });
+      const model = new OpenAIResponsesModel(client, 'gpt-test');
+
+      await expect(
+        withTrace('test', () =>
+          model.getResponse({
+            ...baseRequest,
+            input: [
+              {
+                type: 'compaction',
+                providerData: { provider: 'example', summary: 'earlier turns' },
+              },
+            ],
+          } as any),
+        ),
+      ).rejects.toThrow('Compaction item missing encrypted_content');
+      expect(createMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed provider compaction output item', async () => {
+      const { client } = fakeClientWithResponse({
+        id: 'res-compaction-malformed',
+        usage: {},
+        output: [{ type: 'compaction', id: 'cmp_bad' }],
+      });
+      const model = new OpenAIResponsesModel(client, 'gpt-test');
+
+      await expect(
+        withTrace('test', () =>
+          model.getResponse({ ...baseRequest, input: 'hello' } as any),
+        ),
+      ).rejects.toThrow('Compaction item missing encrypted_content');
+    });
+  });
+
   it('getStreamedResponse records span errors and rethrows when streaming fails', async () => {
     setTracingDisabled(false);
     const createdEvent: OpenAIResponseStreamEvent = {

@@ -13,6 +13,7 @@ import { Agent } from '../src/agent';
 import { Usage } from '../src/usage';
 import {
   RunToolApprovalItem as ToolApprovalItem,
+  RunCompactionItem,
   RunMessageOutputItem,
   RunReasoningItem,
   RunToolCallItem,
@@ -1125,6 +1126,73 @@ describe('RunState', () => {
     await expect(
       RunState.fromString(agent, JSON.stringify(serialized)),
     ).rejects.toThrow('does not support Programmatic Tool Calling items');
+  });
+
+  describe('compaction items', () => {
+    const compactionItem: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_1',
+      encrypted_content: 'ciphertext',
+      created_by: 'compaction_endpoint',
+      providerData: { extra: 'value' },
+    };
+
+    function stateWithCompaction(agent: Agent<any, any>) {
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._generatedItems.push(new RunCompactionItem(compactionItem, agent));
+      state._modelResponses = [
+        {
+          usage: new Usage(),
+          output: [compactionItem],
+          responseId: 'response-compaction',
+        },
+      ];
+      return state;
+    }
+
+    it('round-trips a compaction run item at the current schema version', async () => {
+      const agent = new Agent({ name: 'CompactionStateAgent' });
+      const serialized = stateWithCompaction(agent).toJSON();
+      expect(serialized.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+      const restoredItem = restored._generatedItems[0] as RunCompactionItem;
+      expect(restoredItem).toBeInstanceOf(RunCompactionItem);
+      expect(restoredItem.rawItem).toEqual(compactionItem);
+      expect(restoredItem.agent.name).toBe('CompactionStateAgent');
+      expect(restored._modelResponses[0]?.output[0]).toEqual(compactionItem);
+    });
+
+    // A pre-1.16 writer recorded the raw compaction output but had no run item for it, so its
+    // snapshots have the marker in modelResponses and nothing in generatedItems. Resuming that
+    // is harmless while this release keeps the full transcript: the turn simply replays the
+    // untrimmed prefix and loses only the compaction savings. Do not reject it.
+    it('resumes a legacy snapshot whose compaction marker was never recorded as a run item', async () => {
+      const agent = new Agent({ name: 'LegacyCompactionAgent' });
+      const serialized = stateWithCompaction(agent).toJSON() as any;
+      serialized.generatedItems = [];
+      serialized.$schemaVersion = '1.15';
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+      expect(restored._generatedItems).toEqual([]);
+      expect(restored._modelResponses[0]?.output[0]).toEqual(compactionItem);
+    });
+
+    it('rejects a payload that declares an older schema but carries a compaction run item', async () => {
+      const agent = new Agent({ name: 'MislabeledCompactionAgent' });
+      const serialized = stateWithCompaction(agent).toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow('does not support compaction items');
+    });
   });
 
   it('rejects pre-1.14 state with program-owned hosted calls', async () => {

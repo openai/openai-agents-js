@@ -11,6 +11,7 @@ import { Agent, AgentOutputType } from '../../src/agent';
 import { saveAgentToolRunResult } from '../../src/agentToolRunResults';
 import { getAgentToolParentRunConfigFromDetails } from '../../src/agentToolRunConfig';
 import {
+  RunCompactionItem as CompactionItem,
   RunHandoffCallItem as HandoffCallItem,
   RunHandoffOutputItem as HandoffOutputItem,
   RunMessageOutputItem as MessageOutputItem,
@@ -764,6 +765,12 @@ describe('addStepToRunResult', () => {
       agent,
     );
 
+    // Compaction is deliberately silent: no event name and no unknown-item warning.
+    const compactionItem = new CompactionItem(
+      { type: 'compaction', id: 'cmp_1', encrypted_content: 'ciphertext' },
+      agent,
+    );
+
     const step: any = {
       newStepItems: [
         messageItem,
@@ -774,11 +781,13 @@ describe('addStepToRunResult', () => {
         toolCallItem,
         toolOutputItem,
         reasoningItem,
+        compactionItem,
       ],
     };
 
     const streamedResult = new StreamedRunResult();
     const captured: { name: string; item: any }[] = [];
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
 
     (streamedResult as any)._addItem = (evt: any) => captured.push(evt);
 
@@ -796,6 +805,8 @@ describe('addStepToRunResult', () => {
       'tool_output',
       'reasoning_item_created',
     ]);
+    expect(warnSpy).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
   });
 
   it('does not re-emit items that were already streamed', () => {

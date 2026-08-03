@@ -167,6 +167,24 @@ export class RunReasoningItem extends RunItemBase {
   }
 }
 
+export class RunCompactionItem extends RunItemBase {
+  public readonly type = 'compaction_item' as const;
+
+  constructor(
+    public rawItem: protocol.CompactionItem,
+    public agent: Agent,
+  ) {
+    super();
+  }
+
+  toJSON() {
+    return {
+      ...super.toJSON(),
+      agent: this.agent.toJSON(),
+    };
+  }
+}
+
 export class RunHandoffCallItem extends RunItemBase {
   public readonly type = 'handoff_call_item' as const;
 
@@ -294,6 +312,7 @@ export type RunItem =
   | RunToolSearchCallItem
   | RunToolSearchOutputItem
   | RunReasoningItem
+  | RunCompactionItem
   | RunHandoffCallItem
   | RunToolCallOutputItem
   | RunHandoffOutputItem
