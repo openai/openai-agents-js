@@ -51,6 +51,7 @@ import {
   RunToolSearchCallItem,
   RunToolSearchOutputItem,
 } from '../src/items';
+import { MemorySession as CoreMemorySession } from '../src/memory/memorySession';
 import { getTurnInput, selectModel } from '../src/run';
 import { RunContext } from '../src/runContext';
 import { RunState } from '../src/runState';
@@ -8363,6 +8364,110 @@ describe('Runner.run', () => {
         type: 'function_call_result',
         callId: 'call-1',
       });
+    });
+  });
+
+  describe('inline compaction items', () => {
+    class RecordingModel extends FakeModel {
+      readonly requests: ModelRequest[] = [];
+
+      override async getResponse(
+        request: ModelRequest,
+      ): Promise<ModelResponse> {
+        this.requests.push(request);
+        return super.getResponse(request);
+      }
+    }
+
+    const COMPACTION_ITEM: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_inline',
+      encrypted_content: 'ciphertext',
+      created_by: 'compaction_endpoint',
+      providerData: { extra: 'value' },
+    };
+
+    it('replays a compaction marker in provider order on the next request', async () => {
+      const lookup = tool({
+        name: 'lookup',
+        description: 'Look something up.',
+        parameters: z.object({}),
+        execute: async () => 'tool result payload',
+      });
+      const model = new RecordingModel([
+        {
+          output: [
+            COMPACTION_ITEM,
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: 'lookup',
+              callId: 'call_lookup',
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        { output: [fakeModelMessage('done')], usage: new Usage() },
+      ]);
+      const agent = new Agent({
+        name: 'CompactionAgent',
+        model,
+        tools: [lookup],
+      });
+
+      const result = await run(agent, [user('identifiable old user input')]);
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+      const secondInput = getRequestInputItems(model.requests[1]);
+      expect(secondInput).toHaveLength(4);
+      expect(getFirstTextContent(secondInput[0])).toBe(
+        'identifiable old user input',
+      );
+      expect(secondInput[1]).toEqual(COMPACTION_ITEM);
+      expect(secondInput[2]).toMatchObject({
+        type: 'function_call',
+        callId: 'call_lookup',
+      });
+      expect(secondInput[3]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call_lookup',
+      });
+      expect(result.output).toContainEqual(COMPACTION_ITEM);
+      expect(result.history).toContainEqual(COMPACTION_ITEM);
+    });
+
+    it('persists a compaction marker without rewriting ordinary session history', async () => {
+      const session = new CoreMemorySession({
+        initialItems: [user('earlier stored input')],
+      });
+      const clearSession = vi.spyOn(session, 'clearSession');
+      const model = new RecordingModel([
+        {
+          output: [COMPACTION_ITEM, fakeModelMessage('first turn done')],
+          usage: new Usage(),
+        },
+        { output: [fakeModelMessage('second turn done')], usage: new Usage() },
+      ]);
+      const agent = new Agent({
+        name: 'SessionCompactionAgent',
+        model,
+      });
+
+      await run(agent, 'new user input', { session });
+
+      expect(clearSession).not.toHaveBeenCalled();
+      const stored = await session.getItems();
+      expect(getFirstTextContent(stored[0])).toBe('earlier stored input');
+      expect(stored).toContainEqual(COMPACTION_ITEM);
+
+      await run(agent, 'later user input', { session });
+      const laterInput = getRequestInputItems(model.requests[1]);
+      expect(getFirstTextContent(laterInput[0])).toBe('earlier stored input');
+      expect(laterInput).toContainEqual(COMPACTION_ITEM);
+      expect(getFirstTextContent(laterInput[laterInput.length - 1])).toBe(
+        'later user input',
+      );
     });
   });
 

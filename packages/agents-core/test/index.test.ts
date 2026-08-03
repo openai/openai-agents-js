@@ -23,6 +23,7 @@ describe('index.ts', () => {
     expect(agent).toBeDefined();
     expect(agent.name).toEqual('TestAgent');
     expect(typeof AgentsCore.setSensitiveDataLoggingEnabled).toBe('function');
+    expect(typeof AgentsCore.RunCompactionItem).toBe('function');
   });
 
   test('exposes public lifecycle and agent tool types', () => {

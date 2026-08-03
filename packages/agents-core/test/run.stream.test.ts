@@ -295,6 +295,69 @@ describe('Runner.run (streaming)', () => {
     expect((result.error as Error).message).toBe('Not implemented');
   });
 
+  it('retains a streamed compaction item without a high-level run item event', async () => {
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_stream',
+      encrypted_content: 'ciphertext',
+    };
+
+    class CompactionStreamingModel implements Model {
+      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        throw new Error('Unexpected non-streaming model request');
+      }
+
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'model',
+          event: { type: 'response.output_item.added', item: compaction },
+        } as StreamEvent;
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-compaction-stream',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [compaction, fakeModelMessage('streamed done')],
+          },
+        } as StreamEvent;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'StreamingCompactionAgent',
+      model: new CompactionStreamingModel(),
+    });
+    const result = await run(agent, 'hi', { stream: true });
+
+    const events: RunStreamEvent[] = [];
+    for await (const event of result) {
+      events.push(event);
+    }
+    await result.completed;
+
+    expect(result.finalOutput).toBe('streamed done');
+    expect(result.newItems.map((item) => item.type)).toEqual([
+      'compaction_item',
+      'message_output_item',
+    ]);
+    expect(result.history).toContainEqual(compaction);
+    expect(
+      events.some((event) => event.type === 'raw_model_stream_event'),
+    ).toBe(true);
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'run_item_stream_event' &&
+          event.item.type === 'compaction_item',
+      ),
+    ).toBe(false);
+  });
+
   it('treats prior tool_search outputs in input history as loaded deferred tools', async () => {
     class QueueStreamingModel implements Model {
       constructor(private readonly responses: ModelResponse[]) {}
