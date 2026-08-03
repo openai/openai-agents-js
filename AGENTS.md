@@ -42,6 +42,10 @@ Before changing or reviewing runtime code, exported APIs, external configuration
 
 Repeat the skill before editing each new review-feedback batch; an earlier strategy decision is stale when a comment would widen the supported contract or add another compatibility branch, resolver condition, or test permutation. Judge breaking changes against the latest release tag, not unreleased branch-local churn. Interfaces introduced or changed after the latest release tag may be rewritten without compatibility shims unless they already have a released or otherwise supported durable-state consumer, or the user explicitly asks for a migration path.
 
+#### `$implementation-final-review`
+
+After implementing runtime code, tests, examples, build/test behavior, or behavior-impacting docs and completing focused tests, run `$implementation-final-review` before final `$changeset-validation`, `$code-change-verification`, and `$pr-draft-summary` work and before declaring the task complete. This repository instruction authorizes automatic invocation without a separate user mention. Do not invoke it for planning, investigation, review, or report-only tasks, repo-meta changes, or docs without behavior impact. The skill's clean-review gate does not replace any other mandatory repository skill or verification gate.
+
 #### `$pr-draft-summary`
 
 Before sending the final response for a task, inspect the actual task diff. If it includes runtime code, tests, examples, build/test configuration, or docs with behavior impact, invoke `$pr-draft-summary` to generate the required PR summary block, branch suggestion, title, and draft description. This is a mandatory close-out gate regardless of the perceived size of the change; do not classify an eligible runtime, test, example, or build/test configuration change as trivial. Run it after any required `$code-change-verification` and `$changeset-validation` work.
