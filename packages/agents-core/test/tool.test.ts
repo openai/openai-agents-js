@@ -17,8 +17,12 @@ import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
 import { serializeTool } from '../src/utils/serialize';
 import { FakeEditor, FakeShell } from './stubs';
-import { InvalidToolOutputError, ToolTimeoutError } from '../src/errors';
-import type { JsonObjectSchema } from '../src/types';
+import {
+  InvalidToolOutputError,
+  ToolTimeoutError,
+  UserError,
+} from '../src/errors';
+import type { JsonObjectSchema, JsonObjectSchemaNonStrict } from '../src/types';
 import logger from '../src/logger';
 
 interface Bar {
@@ -40,6 +44,101 @@ describe('Tool', () => {
     });
     expect(Object.keys(t.parameters.properties).length).toEqual(1);
     expect(t.parameters.required.length).toEqual(1);
+  });
+
+  it('normalizes typeless nested objects in strict JSON schemas', () => {
+    const parameters: JsonObjectSchema<any> = {
+      type: 'object',
+      properties: {
+        nested: {
+          properties: {
+            optional: { type: 'string' },
+          },
+          required: [],
+          additionalProperties: false,
+        },
+      },
+      required: ['nested'],
+      additionalProperties: false,
+    };
+    const t = tool({
+      name: 'typeless_nested_object',
+      description: 'Normalize a typeless nested object.',
+      parameters,
+      execute: async () => 'ok',
+    });
+
+    expect(serializeTool(t)).toMatchObject({
+      strict: true,
+      parameters: {
+        type: 'object',
+        properties: {
+          nested: {
+            type: 'object',
+            properties: {
+              optional: {
+                anyOf: [{ type: 'string' }, { type: 'null' }],
+              },
+            },
+            required: ['optional'],
+            additionalProperties: false,
+          },
+        },
+        required: ['nested'],
+        additionalProperties: false,
+      },
+    });
+    expect(parameters.properties.nested).not.toHaveProperty('type');
+  });
+
+  it('rejects typeless open objects when constructing strict tools', () => {
+    const parameters: JsonObjectSchema<any> = {
+      type: 'object',
+      properties: {
+        open: {
+          properties: {},
+          additionalProperties: true,
+        },
+      },
+      required: ['open'],
+      additionalProperties: false,
+    };
+
+    expect(() =>
+      tool({
+        name: 'typeless_open_object',
+        description: 'Reject a typeless open object.',
+        parameters,
+        execute: async () => 'ok',
+      }),
+    ).toThrow(UserError);
+    expect(parameters.properties.open).not.toHaveProperty('type');
+  });
+
+  it('preserves typeless open objects for non-strict tools', () => {
+    const parameters: JsonObjectSchemaNonStrict<any> = {
+      type: 'object',
+      properties: {
+        open: {
+          properties: {},
+          additionalProperties: true,
+        },
+      },
+      required: ['open'],
+      additionalProperties: true,
+    };
+    const t = tool({
+      name: 'non_strict_typeless_open_object',
+      description: 'Preserve a typeless open object.',
+      parameters,
+      strict: false,
+      execute: async () => 'ok',
+    });
+
+    expect(serializeTool(t)).toMatchObject({
+      strict: false,
+      parameters,
+    });
   });
 
   it('records deferLoading when requested', () => {

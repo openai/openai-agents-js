@@ -167,6 +167,91 @@ describe('utils/strictToolSchema', () => {
     });
   });
 
+  it('infers closed typeless nested objects without mutating the input', () => {
+    const input = {
+      type: 'object',
+      properties: {
+        nested: {
+          properties: {
+            value: { type: 'string', description: 'Nested value' },
+          },
+          required: [],
+          additionalProperties: false,
+        },
+        union: {
+          anyOf: [
+            {
+              properties: {
+                count: { type: 'number' },
+              },
+              required: ['count'],
+              additionalProperties: false,
+            },
+          ],
+        },
+      },
+      required: ['nested', 'union'],
+      additionalProperties: false,
+    } as const;
+
+    const result = toOpenAIStrictToolSchema(input as any);
+
+    expect(result).toEqual({
+      type: 'object',
+      properties: {
+        nested: {
+          type: 'object',
+          properties: {
+            value: {
+              description: 'Nested value',
+              anyOf: [
+                { type: 'string', description: 'Nested value' },
+                { type: 'null' },
+              ],
+            },
+          },
+          required: ['value'],
+          additionalProperties: false,
+        },
+        union: {
+          anyOf: [
+            {
+              type: 'object',
+              properties: {
+                count: { type: 'number' },
+              },
+              required: ['count'],
+              additionalProperties: false,
+            },
+          ],
+        },
+      },
+      required: ['nested', 'union'],
+      additionalProperties: false,
+    });
+    expect(input.properties.nested).not.toHaveProperty('type');
+    expect(input.properties.nested.required).toEqual([]);
+  });
+
+  it('rejects typeless open object schemas instead of narrowing them', () => {
+    const input = {
+      type: 'object',
+      properties: {
+        open: {
+          properties: {
+            value: { type: 'string' },
+          },
+        },
+      },
+      required: ['open'],
+      additionalProperties: false,
+    };
+
+    expect(() => toOpenAIStrictToolSchema(input as any)).toThrow(
+      'Cannot convert a typeless open JSON schema to strict mode.',
+    );
+  });
+
   it('strips strict nulls from optional JSON Schema object and array fields', () => {
     const schema = {
       type: 'object',
