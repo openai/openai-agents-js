@@ -72,6 +72,7 @@ import {
   saveStreamInputToSession,
   saveStreamResultToSession,
   saveToSession,
+  type SessionPersistenceOptions,
 } from './runner/sessionPersistence';
 import { resolveTurnAfterModelResponse } from './runner/turnResolution';
 import { prepareTurn } from './runner/turnPreparation';
@@ -133,6 +134,12 @@ import {
   type ToolExecutionConfig,
 } from './runner/runConfig';
 export type { ToolExecutionConfig } from './runner/runConfig';
+
+function hasPersistedToolOutput(state: RunState<any, any>): boolean {
+  return state._generatedItems
+    .slice(0, state._currentTurnPersistedItemCount)
+    .some((item) => item.type === 'tool_call_output_item');
+}
 
 export type {
   CallModelInputFilter,
@@ -691,11 +698,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         },
         effectiveInvocationSpanParent,
         sessionPersistence && !serverManagesConversation
-          ? async (result) => {
+          ? async (result, persistenceOptions) => {
               await saveToSession(
                 session,
                 sessionPersistence.getItemsForPersistence(),
                 result,
+                persistenceOptions,
               );
             }
           : undefined,
@@ -884,7 +892,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     preserveTurnPersistenceOnResume?: boolean,
     sandboxMemoryRunContext?: SandboxMemoryPersistenceContext,
     invocationSpanParent?: Span<any> | Trace,
-    persistResult?: (result: RunResult<TContext, TAgent>) => Promise<void>,
+    persistResult?: (
+      result: RunResult<TContext, TAgent>,
+      options?: SessionPersistenceOptions,
+    ) => Promise<void>,
   ): Promise<RunResult<TContext, TAgent>> {
     return withNewSpanContext(async () => {
       // if we have a saved state we use that one, otherwise we create a new one
@@ -1008,6 +1019,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       setRunStateUsageRecorder(state, recordUsage);
       let completedResult: RunResult<TContext, TAgent> | undefined;
       let persistenceCheckpoint: RunResult<TContext, TAgent> | undefined;
+      let approvedToolCheckpointCompacted = false;
+      let approvedToolCheckpointRequiresLocalInputCompaction =
+        isResumedState && hasPersistedToolOutput(state);
+      let approvedToolCheckpointModelResponseCount =
+        state._modelResponses.length;
       const completeResult = (result: RunResult<TContext, TAgent>) => {
         completedResult = result;
         return result;
@@ -1049,6 +1065,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               agentToolParentRunConfig,
               signal: options.signal,
             });
+            if (interruptedOutcome.approvedToolResumed && persistResult) {
+              const approvedToolResult = new RunResult<TContext, TAgent>(state);
+              approvedToolCheckpointRequiresLocalInputCompaction = true;
+              await persistResult(approvedToolResult, {
+                compactionMode: 'input',
+              });
+              approvedToolCheckpointCompacted = true;
+              approvedToolCheckpointModelResponseCount =
+                approvedToolResult.rawResponses.length;
+            }
             if (options.signal?.aborted) {
               persistenceCheckpoint = new RunResult<TContext, TAgent>(state);
             }
@@ -1361,7 +1387,21 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const resultToPersist = completedResult ?? persistenceCheckpoint;
           if (resultToPersist) {
             try {
-              await persistResult?.(resultToPersist);
+              const hasUnpersistedItems =
+                resultToPersist.newItems.length >
+                state._currentTurnPersistedItemCount;
+              const modelResponseAdvanced =
+                resultToPersist.rawResponses.length >
+                approvedToolCheckpointModelResponseCount;
+              const persistenceOptions =
+                approvedToolCheckpointRequiresLocalInputCompaction
+                  ? approvedToolCheckpointCompacted &&
+                    !hasUnpersistedItems &&
+                    !modelResponseAdvanced
+                    ? { runCompaction: false }
+                    : { compactionMode: 'input' as const }
+                  : undefined;
+              await persistResult?.(resultToPersist, persistenceOptions);
             } catch (error) {
               setRunnerSpanError(taskSpan, error);
               await Promise.reject(error);
@@ -1467,6 +1507,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
     let continuingInterruptedTurn = false;
     let runError: unknown;
+    let approvedToolCheckpointCompacted = false;
+    let approvedToolCheckpointRequiresLocalInputCompaction =
+      isResumedState && hasPersistedToolOutput(result.state);
+    let approvedToolCheckpointModelResponseCount = result.rawResponses.length;
     let currentTurnSpan: ReturnType<typeof startTurnSpan> | undefined;
     const parentUsageRecorder = getRunnerParentUsageRecorder(this);
     const recordUsage = (usage: Usage) => {
@@ -1475,6 +1519,25 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       parentUsageRecorder?.(usage);
     };
     setRunStateUsageRecorder(result.state, recordUsage);
+    const saveStreamResultWithCompactionOwnership = async () => {
+      const hasUnpersistedItems =
+        result.newItems.length > result.state._currentTurnPersistedItemCount;
+      const modelResponseAdvanced =
+        result.rawResponses.length > approvedToolCheckpointModelResponseCount;
+      const persistenceOptions =
+        approvedToolCheckpointRequiresLocalInputCompaction
+          ? approvedToolCheckpointCompacted &&
+            !hasUnpersistedItems &&
+            !modelResponseAdvanced
+            ? { runCompaction: false }
+            : { compactionMode: 'input' as const }
+          : undefined;
+      await saveStreamResultToSession(
+        options.session,
+        result,
+        persistenceOptions,
+      );
+    };
 
     try {
       while (true) {
@@ -1524,6 +1587,19 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               addStepToRunResult(result, turnResult);
             },
           });
+          if (
+            interruptedOutcome.approvedToolResumed &&
+            !serverManagesConversation &&
+            options.session
+          ) {
+            approvedToolCheckpointRequiresLocalInputCompaction = true;
+            await saveStreamResultToSession(options.session, result, {
+              compactionMode: 'input',
+            });
+            approvedToolCheckpointCompacted = true;
+            approvedToolCheckpointModelResponseCount =
+              result.rawResponses.length;
+          }
 
           // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
           // The counter will be reset when _currentTurn is incremented (starting a new turn)
@@ -1897,7 +1973,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             await persistStreamInputIfNeeded();
             // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
             if (!serverManagesConversation) {
-              await saveStreamResultToSession(options.session, result);
+              await saveStreamResultWithCompactionOwnership();
             }
             this.emit(
               'agent_end',
@@ -1915,7 +1991,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             // We are done for now. Don't run any output guardrails.
             await persistStreamInputIfNeeded();
             if (!serverManagesConversation) {
-              await saveStreamResultToSession(options.session, result);
+              await saveStreamResultWithCompactionOwnership();
             }
             return;
           case 'next_step_handoff':
@@ -1970,7 +2046,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       if (handledResult) {
         await persistStreamInputIfNeeded();
         if (!serverManagesConversation) {
-          await saveStreamResultToSession(options.session, result);
+          await saveStreamResultWithCompactionOwnership();
         }
         return;
       }
