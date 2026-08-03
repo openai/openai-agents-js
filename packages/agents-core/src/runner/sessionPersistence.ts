@@ -1,6 +1,7 @@
 import { UserError } from '../errors';
 import {
   isOpenAIResponsesCompactionAwareSession,
+  type OpenAIResponsesCompactionArgs,
   type Session,
   type SessionInputCallback,
 } from '../memory/session';
@@ -27,6 +28,11 @@ import { getRunStateUsageRecorder } from './usageTracking';
 export type PreparedInputWithSessionResult = {
   preparedInput: string | AgentInputItem[];
   sessionItems?: AgentInputItem[];
+};
+
+export type SessionPersistenceOptions = {
+  runCompaction?: boolean;
+  compactionMode?: OpenAIResponsesCompactionArgs['compactionMode'];
 };
 
 export type SessionPersistenceTracker = {
@@ -268,7 +274,7 @@ export async function saveToSession(
   session: Session | undefined,
   sessionInputItems: AgentInputItem[] | undefined,
   result: RunResult<any, any>,
-  options: { runCompaction?: boolean } = {},
+  options: SessionPersistenceOptions = {},
 ): Promise<void> {
   const state = result.state;
   const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
@@ -292,6 +298,7 @@ export async function saveToSession(
     lastResponseId: result.lastResponseId,
     alreadyPersistedCount: alreadyPersisted,
     runCompaction: options.runCompaction ?? true,
+    compactionMode: options.compactionMode,
   });
 }
 
@@ -312,7 +319,7 @@ export async function saveStreamInputToSession(
 export async function saveStreamResultToSession(
   session: Session | undefined,
   result: StreamedRunResult<any, any>,
-  options: { runCompaction?: boolean } = {},
+  options: SessionPersistenceOptions = {},
 ): Promise<void> {
   const state = result.state;
   const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
@@ -325,6 +332,7 @@ export async function saveStreamResultToSession(
     lastResponseId: result.lastResponseId,
     alreadyPersistedCount: alreadyPersisted,
     runCompaction: options.runCompaction ?? true,
+    compactionMode: options.compactionMode,
   });
 }
 
@@ -632,6 +640,7 @@ async function persistRunItemsToSession(options: {
   lastResponseId?: string;
   alreadyPersistedCount: number;
   runCompaction: boolean;
+  compactionMode?: OpenAIResponsesCompactionArgs['compactionMode'];
 }): Promise<void> {
   const {
     session,
@@ -641,6 +650,7 @@ async function persistRunItemsToSession(options: {
     lastResponseId,
     alreadyPersistedCount,
     runCompaction,
+    compactionMode,
   } = options;
 
   if (!session) {
@@ -661,24 +671,35 @@ async function persistRunItemsToSession(options: {
     state._currentTurnPersistedItemCount =
       alreadyPersistedCount + newRunItems.length;
     if (runCompaction) {
-      await runCompactionOnSession(session, lastResponseId, state);
+      await runCompactionOnSession(
+        session,
+        lastResponseId,
+        state,
+        compactionMode,
+      );
     }
     return;
   }
 
   const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
   await session.addItems(sanitizedItems);
-  if (runCompaction) {
-    await runCompactionOnSession(session, lastResponseId, state);
-  }
   state._currentTurnPersistedItemCount =
     alreadyPersistedCount + newRunItems.length;
+  if (runCompaction) {
+    await runCompactionOnSession(
+      session,
+      lastResponseId,
+      state,
+      compactionMode,
+    );
+  }
 }
 
 async function runCompactionOnSession(
   session: Session | undefined,
   responseId: string | undefined,
   state: RunState<any, any>,
+  compactionMode?: OpenAIResponsesCompactionArgs['compactionMode'],
 ): Promise<void> {
   if (!isOpenAIResponsesCompactionAwareSession(session)) {
     return;
@@ -686,11 +707,14 @@ async function runCompactionOnSession(
   const store =
     state._lastModelSettings?.store ?? state._currentAgent.modelSettings?.store;
   const compactionArgs =
-    typeof responseId === 'undefined' && typeof store === 'undefined'
+    typeof responseId === 'undefined' &&
+    typeof store === 'undefined' &&
+    typeof compactionMode === 'undefined'
       ? undefined
       : {
           ...(typeof responseId === 'undefined' ? {} : { responseId }),
           ...(typeof store === 'undefined' ? {} : { store }),
+          ...(typeof compactionMode === 'undefined' ? {} : { compactionMode }),
         };
   const compactionResult = await session.runCompaction(compactionArgs);
   if (!compactionResult) {

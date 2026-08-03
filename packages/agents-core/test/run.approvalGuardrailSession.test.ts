@@ -10,9 +10,11 @@ import {
   setTracingDisabled,
   tool,
   type AgentInputItem,
+  type CallModelInputFilterArgs,
   type Model,
   type ModelRequest,
   type ModelResponse,
+  type OpenAIResponsesCompactionArgs,
   type OpenAIResponsesCompactionResult,
   type StreamEvent,
 } from '../src';
@@ -23,10 +25,54 @@ type RunMode = 'non_streamed' | 'streamed';
 
 class CompactionTrackingSession extends MemorySession {
   readonly compactionSnapshots: AgentInputItem[][] = [];
+  readonly compactionArgs: (OpenAIResponsesCompactionArgs | undefined)[] = [];
 
-  async runCompaction(): Promise<OpenAIResponsesCompactionResult | null> {
-    this.compactionSnapshots.push(await this.getItems());
+  async runCompaction(
+    args?: OpenAIResponsesCompactionArgs,
+  ): Promise<OpenAIResponsesCompactionResult | null> {
+    const snapshot = await this.getItems();
+    this.compactionSnapshots.push(snapshot);
+    this.compactionArgs.push(args);
+    if (
+      this.compactionSnapshots.length > 1 &&
+      snapshot.some((item) => item.type === 'function_call_result') &&
+      args?.compactionMode !== 'input'
+    ) {
+      await this.clearSession();
+      await this.addItems(
+        snapshot.filter((item) => item.type !== 'function_call_result'),
+      );
+    }
     return null;
+  }
+}
+
+class FailingCheckpointCompactionSession extends CompactionTrackingSession {
+  private failedCheckpoint = false;
+
+  async runCompaction(
+    args?: OpenAIResponsesCompactionArgs,
+  ): Promise<OpenAIResponsesCompactionResult | null> {
+    const result = await super.runCompaction(args);
+    const snapshot = this.compactionSnapshots.at(-1) ?? [];
+    if (
+      !this.failedCheckpoint &&
+      snapshot.some((item) => item.type === 'function_call_result')
+    ) {
+      this.failedCheckpoint = true;
+      throw new Error('checkpoint compaction failed');
+    }
+    if (
+      this.failedCheckpoint &&
+      snapshot.some((item) => item.type === 'function_call_result') &&
+      args?.compactionMode !== 'input'
+    ) {
+      await this.clearSession();
+      await this.addItems(
+        snapshot.filter((item) => item.type !== 'function_call_result'),
+      );
+    }
+    return result;
   }
 }
 
@@ -177,6 +223,9 @@ describe('approved tool output guardrail session persistence', () => {
         output: { type: 'text', text: 'approved-result' },
       });
       expect(session.compactionSnapshots).toHaveLength(2);
+      expect(session.compactionArgs[1]).toMatchObject({
+        compactionMode: 'input',
+      });
       expect(
         getPersistedToolItems(session.compactionSnapshots[1]).map((item) => [
           item.type,
@@ -316,6 +365,9 @@ describe('approved tool output guardrail session persistence', () => {
         output: { type: 'text', text: 'nested-done' },
       });
       expect(session.compactionSnapshots).toHaveLength(2);
+      expect(session.compactionArgs[1]).toMatchObject({
+        compactionMode: 'input',
+      });
       expect(
         getPersistedToolItems(session.compactionSnapshots[1]).map((item) => [
           item.type,
@@ -509,6 +561,7 @@ describe('approved tool output guardrail session persistence', () => {
             ),
           ],
           usage: new Usage(),
+          responseId: 'response-before-tool',
         },
         {
           output: [],
@@ -518,6 +571,7 @@ describe('approved tool output guardrail session persistence', () => {
       const agent = new Agent({
         name: 'Empty post-resume response agent',
         model,
+        modelSettings: { store: false },
         tools: [approvalTool],
         toolUseBehavior: 'run_llm_again',
       });
@@ -528,6 +582,12 @@ describe('approved tool output guardrail session persistence', () => {
         const options = {
           session,
           maxTurns: 1,
+          callModelInputFilter: ({ modelData }: CallModelInputFilterArgs) => ({
+            ...modelData,
+            input: modelData.input.filter(
+              (item: AgentInputItem) => item.type !== 'function_call_result',
+            ),
+          }),
           errorHandlers: {
             maxTurns: () => ({
               finalOutput: 'handled-empty-response',
@@ -556,6 +616,10 @@ describe('approved tool output guardrail session persistence', () => {
         mode === 'streamed' ? 'stream-response' : undefined,
       );
       expect(session.compactionSnapshots).toHaveLength(3);
+      expect(session.compactionArgs[2]).toMatchObject({
+        compactionMode: 'input',
+        store: false,
+      });
       expect(
         getPersistedToolItems(await session.getItems()).map((item) => [
           item.type,
@@ -565,6 +629,70 @@ describe('approved tool output guardrail session persistence', () => {
         ['function_call', 'call-before-empty-response'],
         ['function_call_result', 'call-before-empty-response'],
       ]);
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'does not duplicate an approved result when $mode checkpoint compaction is retried',
+    async (mode) => {
+      const approvalTool = tool({
+        name: 'retry_compaction_tool',
+        description: 'Returns a result after approval.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'retry-compaction-result',
+      });
+      const model = new ApprovalSessionModel([
+        {
+          output: [
+            functionToolCall('retry_compaction_tool', 'call-retry-compaction'),
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'Retry checkpoint compaction agent',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const session = new FailingCheckpointCompactionSession();
+      const runOnce = async (
+        input: string | RunState<unknown, typeof agent>,
+      ) => {
+        if (mode === 'streamed') {
+          const result = await run(agent, input, { session, stream: true });
+          await result.completed;
+          return result;
+        }
+        return await run(agent, input, { session });
+      };
+
+      const first = await runOnce('Use retry_compaction_tool');
+      expect(first.interruptions).toHaveLength(1);
+      first.state.approve(first.interruptions[0]);
+
+      await expect(runOnce(first.state)).rejects.toThrow(
+        'checkpoint compaction failed',
+      );
+      const retried = await runOnce(first.state);
+
+      expect(retried.finalOutput).toBe('retry-compaction-result');
+      expect(
+        getPersistedToolItems(await session.getItems()).map((item) => [
+          item.type,
+          item.callId,
+        ]),
+      ).toEqual([
+        ['function_call', 'call-retry-compaction'],
+        ['function_call_result', 'call-retry-compaction'],
+      ]);
+      expect(session.compactionArgs[1]).toMatchObject({
+        compactionMode: 'input',
+      });
+      expect(session.compactionArgs[2]).toMatchObject({
+        compactionMode: 'input',
+      });
     },
   );
 });

@@ -1766,8 +1766,12 @@ describe('Runner.run (streaming)', () => {
     expect(resumed.finalOutput).toBe('cancelled');
     expect(guardrail.execute).toHaveBeenCalledTimes(1);
     expect(saveResultSpy).toHaveBeenCalledTimes(3);
-    expect(saveResultSpy.mock.calls[1]?.[2]).toBeUndefined();
-    expect(saveResultSpy.mock.calls[2]?.[2]).toBeUndefined();
+    expect(saveResultSpy.mock.calls[1]?.[2]).toEqual({
+      compactionMode: 'input',
+    });
+    expect(saveResultSpy.mock.calls[2]?.[2]).toEqual({
+      compactionMode: 'input',
+    });
     expect(agentEnd).toHaveBeenCalledTimes(1);
     expect(
       resumed.state._generatedItems.some(
