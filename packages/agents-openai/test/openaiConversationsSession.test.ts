@@ -16,6 +16,22 @@ import { OpenAIConversationsSession } from '../src';
 const createSession = (options: OpenAIConversationsSessionOptions) =>
   new OpenAIConversationsSession(options);
 
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+};
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve: Deferred<T>['resolve'];
+  let reject: Deferred<T>['reject'];
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve: resolve!, reject: reject! };
+}
+
 describe('OpenAIConversationsSession', () => {
   beforeEach(() => {
     convertToOutputItemMock.mockReset();
@@ -1126,6 +1142,112 @@ describe('OpenAIConversationsSession', () => {
     await expect(getId).resolves.toBe('conv-new');
     expect(createConversation).toHaveBeenCalledTimes(1);
     expect(session.sessionId).toBe('conv-new');
+  });
+
+  it.each(['getItems', 'addItems', 'popItem'] as const)(
+    'waits for an in-flight lazy %s operation before clearing',
+    async (operationName) => {
+      const createConversation = createDeferred<{ id: string }>();
+      const itemOperation = createDeferred<void>();
+      const itemOperationStarted = createDeferred<void>();
+      const deleteConversation = vi.fn();
+      const list = vi.fn(() => ({
+        [Symbol.asyncIterator]() {
+          return {
+            async next() {
+              itemOperationStarted.resolve(undefined);
+              await itemOperation.promise;
+              return { done: true, value: undefined };
+            },
+          };
+        },
+      }));
+      const createItems = vi.fn(async () => {
+        itemOperationStarted.resolve(undefined);
+        await itemOperation.promise;
+      });
+
+      getInputItemsMock.mockReturnValue([
+        { type: 'message', role: 'user', content: 'hello' },
+      ] as any);
+
+      const session = createSession({
+        client: {
+          conversations: {
+            items: {
+              list,
+              create: createItems,
+              delete: vi.fn(),
+            },
+            create: vi.fn(() => createConversation.promise),
+            delete: deleteConversation,
+          },
+        } as any,
+      });
+
+      const operation =
+        operationName === 'getItems'
+          ? session.getItems()
+          : operationName === 'addItems'
+            ? session.addItems([
+                { type: 'message', role: 'user', content: 'hello' },
+              ] as any)
+            : session.popItem();
+      const clear = session.clearSession();
+
+      createConversation.resolve({ id: 'conv-lazy' });
+      await itemOperationStarted.promise;
+      expect(deleteConversation).not.toHaveBeenCalled();
+
+      itemOperation.resolve(undefined);
+      await operation;
+      await clear;
+
+      expect(deleteConversation).toHaveBeenCalledOnce();
+      expect(deleteConversation).toHaveBeenCalledWith('conv-lazy');
+      expect(session.sessionId).toBeUndefined();
+    },
+  );
+
+  it('releases a queued clear when an active item operation fails', async () => {
+    const itemOperation = createDeferred<void>();
+    const createItems = vi.fn(() => itemOperation.promise);
+    const deleteConversation = vi.fn();
+
+    getInputItemsMock.mockReturnValue([
+      { type: 'message', role: 'user', content: 'hello' },
+    ] as any);
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list: vi.fn(),
+            create: createItems,
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: deleteConversation,
+        },
+      } as any,
+      conversationId: 'conv-existing',
+    });
+
+    const addItems = session.addItems([
+      { type: 'message', role: 'user', content: 'hello' },
+    ] as any);
+    const addItemsResult = expect(addItems).rejects.toThrow('Item failed');
+    await vi.waitFor(() => expect(createItems).toHaveBeenCalledOnce());
+
+    const clear = session.clearSession();
+    expect(deleteConversation).not.toHaveBeenCalled();
+
+    itemOperation.reject(new Error('Item failed'));
+    await addItemsResult;
+    await clear;
+
+    expect(deleteConversation).toHaveBeenCalledWith('conv-existing');
+    expect(session.sessionId).toBeUndefined();
   });
 
   it('treats input_* output arrays as raw items instead of response output arrays', async () => {
