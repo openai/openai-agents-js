@@ -219,6 +219,31 @@ describe('deduplicateAgentInputItemsPreferringLatest', () => {
     ).toEqual([newReasoning, call]);
   });
 
+  it('keeps latest compaction at its earliest causal position', () => {
+    const oldCompaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'compaction_ordered',
+      encrypted_content: 'old',
+    };
+    const message: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'next',
+    };
+    const newCompaction: protocol.CompactionItem = {
+      ...oldCompaction,
+      encrypted_content: 'new',
+    };
+
+    expect(
+      deduplicateAgentInputItemsPreferringLatest([
+        oldCompaction,
+        message,
+        newCompaction,
+      ]),
+    ).toEqual([newCompaction, message]);
+  });
+
   it('keeps latest MCP approval request before its response', () => {
     const oldRequest: protocol.HostedToolCallItem = {
       type: 'hosted_tool_call',
@@ -326,6 +351,20 @@ describe('deduplicateAgentInputItemsPreferringLatest', () => {
       output: 'new',
     };
     const items = [oldCall, oldOutput, newCall, newOutput];
+
+    expect(deduplicateAgentInputItemsPreferringLatest(items)).toEqual(items);
+  });
+
+  it('preserves duplicate compaction items without stable identity', () => {
+    const oldCompaction: protocol.CompactionItem = {
+      type: 'compaction',
+      encrypted_content: 'old',
+    };
+    const newCompaction: protocol.CompactionItem = {
+      type: 'compaction',
+      encrypted_content: 'new',
+    };
+    const items = [oldCompaction, newCompaction];
 
     expect(deduplicateAgentInputItemsPreferringLatest(items)).toEqual(items);
   });

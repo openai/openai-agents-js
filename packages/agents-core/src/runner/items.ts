@@ -159,6 +159,7 @@ function isCausalPrecursorItem(item: AgentInputItem): boolean {
     item.type === 'tool_search_call' ||
     (item.type === 'hosted_tool_call' &&
       getToolResultCorrelationForResult(item) === undefined) ||
+    item.type === 'compaction' ||
     item.type === 'reasoning' ||
     getToolResultCorrelationForCall(item) !== undefined
   );
@@ -167,10 +168,10 @@ function isCausalPrecursorItem(item: AgentInputItem): boolean {
 /**
  * Deduplicates provider-identified items while preserving causal ordering.
  *
- * The latest payload wins. Calls, reasoning, and approval requests stay at their earliest
- * occurrence so they cannot move behind a required follower; other identified items stay at
- * their latest occurrence so stale outputs are not moved earlier. Items without stable provider
- * identity, including ordinary messages, remain untouched.
+ * The latest payload wins. Calls, compaction, reasoning, and approval requests stay at their
+ * earliest occurrence so they cannot move behind a required follower; other identified items
+ * stay at their latest occurrence so stale outputs are not moved earlier. Items without stable
+ * provider identity, including ordinary messages, remain untouched.
  */
 export function deduplicateAgentInputItemsPreferringLatest(
   items: AgentInputItem[],
