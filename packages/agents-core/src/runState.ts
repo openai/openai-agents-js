@@ -1408,32 +1408,15 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
 }
 
 /**
- * Requires current snapshots to pair each raw compaction output with its canonical run-item
- * wrapper, and rejects older schemas that carry the new wrapper. Raw compaction output in older
- * `modelResponses` remains valid because earlier writers could record it without creating a run
- * item.
+ * Rejects older schemas that carry the new wrapper. Current snapshots treat generated items as
+ * the replay authority because a supported handoff input filter may remove or replace raw model
+ * output before it becomes history.
  */
 function assertSchemaVersionSupportsCompactionItems(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
   if (schemaVersion === CURRENT_SCHEMA_VERSION) {
-    const rawCompaction = findLatestCompactionSource(stateJson)?.item;
-    const serializedCompaction = stateJson.generatedItems
-      .slice()
-      .reverse()
-      .find((item) => item.type === 'compaction_item');
-    if (
-      Boolean(rawCompaction) !== Boolean(serializedCompaction) ||
-      (rawCompaction &&
-        serializedCompaction &&
-        getCanonicalLegacyCompactionKey(rawCompaction) !==
-          getCanonicalLegacyCompactionKey(serializedCompaction.rawItem))
-    ) {
-      throw new UserError(
-        `Run state schema version ${CURRENT_SCHEMA_VERSION} contains inconsistent compaction items.`,
-      );
-    }
     return;
   }
 

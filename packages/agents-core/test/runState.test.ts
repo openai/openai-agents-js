@@ -1379,14 +1379,120 @@ describe('RunState', () => {
       expect(restored._modelResponses[0]?.output[0]).toEqual(compactionItem);
     });
 
-    it('rejects current schema raw compaction without its run item wrapper', async () => {
-      const agent = new Agent({ name: 'IncompleteCompactionStateAgent' });
+    it('round-trips filtered current-schema history without the raw compaction wrapper', async () => {
+      const agent = new Agent({ name: 'FilteredCompactionStateAgent' });
       const serialized = stateWithCompaction(agent).toJSON() as any;
       serialized.generatedItems = [];
 
-      await expect(
-        RunState.fromString(agent, JSON.stringify(serialized)),
-      ).rejects.toThrow('contains inconsistent compaction items');
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(restored._generatedItems).toEqual([]);
+      expect(restored._modelResponses[0]?.output[0]).toEqual(compactionItem);
+    });
+
+    it('round-trips a filtered replacement compaction as authoritative history', async () => {
+      const agent = new Agent({ name: 'ReplacedCompactionStateAgent' });
+      const replacementCompaction = {
+        ...compactionItem,
+        id: 'cmp_replacement',
+        encrypted_content: 'replacement-ciphertext',
+      };
+      const serialized = stateWithCompaction(agent).toJSON() as any;
+      serialized.generatedItems = [
+        new RunCompactionItem(replacementCompaction, agent).toJSON(),
+      ];
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(restored._generatedItems).toHaveLength(1);
+      expect(restored._generatedItems[0]?.rawItem).toEqual(
+        replacementCompaction,
+      );
+      expect(restored._modelResponses[0]?.output[0]).toEqual(compactionItem);
+    });
+
+    it('resumes an approval after a handoff filter removes compaction history', async () => {
+      const approvalTool = tool({
+        name: 'filtered_compaction_approval',
+        description: 'Requires approval after a filtered handoff.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'approved',
+      });
+      const targetAgent = new Agent({
+        name: 'FilteredCompactionTarget',
+        tools: [approvalTool],
+      });
+      const transfer = handoff(targetAgent, {
+        inputFilter: (data) => ({
+          ...data,
+          newItems: data.newItems.filter(
+            (item) => !(item instanceof RunCompactionItem),
+          ),
+        }),
+      });
+      const sourceAgent = new Agent({
+        name: 'FilteredCompactionSource',
+        handoffs: [transfer],
+      });
+      const handoffCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: transfer.toolName,
+        callId: 'call_filtered_compaction_handoff',
+        arguments: '{}',
+        status: 'completed',
+      };
+      const approvalCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: approvalTool.name,
+        callId: 'call_after_filtered_compaction',
+        arguments: '{}',
+        status: 'completed',
+      };
+      const handoffResponse = {
+        usage: new Usage(),
+        output: [compactionItem, handoffCall],
+        responseId: 'response-filtered-compaction-handoff',
+      };
+      const approvalResponse = {
+        usage: new Usage(),
+        output: [approvalCall],
+        responseId: 'response-after-filtered-compaction',
+      };
+      const latestProcessed = processModelResponse(
+        approvalResponse,
+        targetAgent,
+        [approvalTool],
+        [],
+      );
+      const approvalItem = new ToolApprovalItem(approvalCall, targetAgent);
+      const state = new RunState(new RunContext(), 'input', sourceAgent, 2);
+      state._currentAgent = targetAgent;
+      state._modelResponses = [handoffResponse, approvalResponse];
+      state._lastTurnResponse = approvalResponse;
+      state._generatedItems = [...latestProcessed.newItems, approvalItem];
+      state._lastProcessedResponse = latestProcessed;
+      state._currentStep = {
+        type: 'next_step_interruption',
+        data: { interruptions: [approvalItem] },
+      };
+
+      const restored = await RunState.fromString(sourceAgent, state.toString());
+
+      expect(
+        restored._generatedItems.some(
+          (item) => item instanceof RunCompactionItem,
+        ),
+      ).toBe(false);
+      expect(restored._modelResponses[0]?.output[0]).toEqual(compactionItem);
+      expect(restored.getInterruptions()).toHaveLength(1);
+      expect(restored._currentAgent).toBe(targetAgent);
     });
 
     it('round-trips a migrated legacy state with multiple raw compactions', async () => {
