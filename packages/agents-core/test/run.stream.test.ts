@@ -295,7 +295,7 @@ describe('Runner.run (streaming)', () => {
     expect((result.error as Error).message).toBe('Not implemented');
   });
 
-  it('retains a streamed compaction item without a high-level run item event', async () => {
+  it('emits a high-level run item event for streamed compaction', async () => {
     const compaction: protocol.CompactionItem = {
       type: 'compaction',
       id: 'cmp_stream',
@@ -350,12 +350,19 @@ describe('Runner.run (streaming)', () => {
       events.some((event) => event.type === 'raw_model_stream_event'),
     ).toBe(true);
     expect(
-      events.some(
+      events.find(
         (event) =>
           event.type === 'run_item_stream_event' &&
-          event.item.type === 'compaction_item',
+          event.name === 'compaction_item_created',
       ),
-    ).toBe(false);
+    ).toMatchObject({
+      type: 'run_item_stream_event',
+      name: 'compaction_item_created',
+      item: {
+        type: 'compaction_item',
+        rawItem: compaction,
+      },
+    });
   });
 
   it('does not persist input for a malformed terminal compaction item', async () => {
@@ -403,12 +410,20 @@ describe('Runner.run (streaming)', () => {
       name: 'MalformedStreamingCompactionAgent',
       model: new MalformedCompactionStreamingModel(),
     });
+    const defaultErrorHandler = vi.fn(() => ({
+      finalOutput: 'not used',
+    }));
 
-    const result = await run(agent, 'hello', { stream: true, session });
+    const result = await run(agent, 'hello', {
+      stream: true,
+      session,
+      errorHandlers: { default: defaultErrorHandler },
+    });
 
     await expect(result.completed).rejects.toThrow(
       'Compaction item missing encrypted_content',
     );
+    expect(defaultErrorHandler).not.toHaveBeenCalled();
     expect(addItems).not.toHaveBeenCalled();
     expect(clearSession).not.toHaveBeenCalled();
     expect(replaceHistoryWithCompaction).not.toHaveBeenCalled();

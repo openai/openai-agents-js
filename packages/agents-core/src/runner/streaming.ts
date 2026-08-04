@@ -46,6 +46,9 @@ function getRunItemStreamEventName(
   if (item instanceof RunReasoningItem) {
     return 'reasoning_item_created';
   }
+  if (item instanceof RunCompactionItem) {
+    return 'compaction_item_created';
+  }
   if (item instanceof RunToolApprovalItem) {
     return 'tool_approval_requested';
   }
@@ -56,11 +59,6 @@ function enqueueRunItemStreamEvent(
   result: StreamedRunResult<any, any>,
   item: RunItem,
 ): void {
-  // Compaction remains observable through raw model events and the completed result. It does not
-  // have a separate high-level run-item event.
-  if (item instanceof RunCompactionItem) {
-    return;
-  }
   const itemName = getRunItemStreamEventName(item);
   if (!itemName) {
     if (logger.dontLogModelData || logger.dontLogToolData) {
