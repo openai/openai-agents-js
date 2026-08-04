@@ -20,6 +20,7 @@ import type * as protocol from '../types/protocol';
 import type { ModelInputData } from './conversation';
 import type { Span } from '../tracing/spans';
 import type { Trace } from '../tracing/traces';
+import type { ToolNameCollisionPolicy } from './runConfig';
 
 export type ToolRunHandoff = {
   toolCall: protocol.FunctionCallItem;
@@ -29,7 +30,35 @@ export type ToolRunHandoff = {
 export type ToolRunFunction<TContext = UnknownContext> = {
   toolCall: protocol.FunctionCallItem;
   tool: FunctionTool<TContext>;
+  /** @internal Exact prepared function-tool snapshot used to resolve this call. */
+  availableFunctionTools?: FunctionTool<TContext>[];
+  /** @internal Preserve a trusted runtime-loaded handler during sandbox tool rebinding. */
+  preserveToolOnExecutionRehydration?: boolean;
 };
+
+/** @internal */
+export function createToolRunFunction<TContext>(args: {
+  toolCall: protocol.FunctionCallItem;
+  tool: FunctionTool<TContext>;
+  availableFunctionTools: FunctionTool<TContext>[];
+  preserveToolOnExecutionRehydration?: boolean;
+}): ToolRunFunction<TContext> {
+  const toolRun: ToolRunFunction<TContext> = {
+    toolCall: args.toolCall,
+    tool: args.tool,
+  };
+  Object.defineProperty(toolRun, 'availableFunctionTools', {
+    value: args.availableFunctionTools,
+    enumerable: false,
+  });
+  if (args.preserveToolOnExecutionRehydration) {
+    Object.defineProperty(toolRun, 'preserveToolOnExecutionRehydration', {
+      value: true,
+      enumerable: false,
+    });
+  }
+  return toolRun;
+}
 
 export type ToolRunFunctionNotFound = {
   toolCall: protocol.FunctionCallItem;
@@ -84,6 +113,7 @@ export type PreparedModelCall<TContext = UnknownContext> =
     modelRequestInternal: {
       reasoningEffortImplicit: boolean;
       tracingParent?: Span<any> | Trace;
+      toolNameCollisionPolicy: ToolNameCollisionPolicy;
     };
     modelSettings: ModelSettings;
     modelInput: ModelInputData;

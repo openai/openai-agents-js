@@ -2,131 +2,183 @@ import { describe, expect, it } from 'vitest';
 
 import {
   FUNCTION_TOOL_NAMESPACE,
-  resolveFunctionToolCallName,
+  buildFunctionToolLookupMap,
+  getFunctionToolLegacyStateKeyFromStateKey,
+  getFunctionToolStateKeyForResolvedCall,
+  getFunctionToolStateKeys,
+  resolveFunctionToolCall,
 } from '../src/toolIdentity';
 
-function createToolLookup(
-  tools: Array<{ key: string; value?: Record<string, any> }>,
-): Map<string, Record<string, any>> {
-  return new Map(tools.map(({ key, value }) => [key, value ?? { name: key }]));
-}
+describe('category-aware function tool lookup', () => {
+  it('projects canonical state keys to released public approval names', () => {
+    expect(getFunctionToolLegacyStateKeyFromStateKey('["bare","lookup"]')).toBe(
+      'lookup',
+    );
+    expect(
+      getFunctionToolLegacyStateKeyFromStateKey(
+        '["deferred_top_level","lookup"]',
+      ),
+    ).toBe('lookup');
+    expect(
+      getFunctionToolLegacyStateKeyFromStateKey(
+        '["namespaced","crm","lookup"]',
+      ),
+    ).toBe('crm.lookup');
+    expect(getFunctionToolLegacyStateKeyFromStateKey('lookup')).toBeUndefined();
+  });
 
-describe('resolveFunctionToolCallName', () => {
-  it('prefers the bare name for self-namespaced top-level deferred calls', () => {
-    const availableToolNames = createToolLookup([
-      {
-        key: 'lookup_account',
-        value: {
-          type: 'function',
-          name: 'lookup_account',
-          deferLoading: true,
-        },
-      },
+  it('distinguishes bare and deferred top-level tools with the same name', () => {
+    const bare = { type: 'function', name: 'lookup', deferLoading: false };
+    const deferred = { type: 'function', name: 'lookup', deferLoading: true };
+    const tools = buildFunctionToolLookupMap([bare, deferred]);
+
+    expect(resolveFunctionToolCall({ name: 'lookup' }, tools)).toBe(bare);
+    expect(
+      resolveFunctionToolCall({ name: 'lookup', namespace: 'lookup' }, tools),
+    ).toBe(deferred);
+  });
+
+  it('distinguishes dotted bare names from explicit namespaces', () => {
+    const dotted = { type: 'function', name: 'crm.lookup' };
+    const namespaced = {
+      type: 'function',
+      name: 'lookup',
+      [FUNCTION_TOOL_NAMESPACE]: 'crm',
+    };
+    const tools = buildFunctionToolLookupMap([dotted, namespaced]);
+
+    expect(resolveFunctionToolCall({ name: 'crm.lookup' }, tools)).toBe(dotted);
+    expect(
+      resolveFunctionToolCall({ name: 'lookup', namespace: 'crm' }, tools),
+    ).toBe(namespaced);
+  });
+
+  it('resolves an unambiguous flattened qualified namespace call', () => {
+    const namespaced = {
+      type: 'function',
+      name: 'lookup',
+      [FUNCTION_TOOL_NAMESPACE]: 'crm',
+    };
+    const tools = buildFunctionToolLookupMap([namespaced]);
+
+    expect(resolveFunctionToolCall({ name: 'crm.lookup' }, tools)).toBe(
+      namespaced,
+    );
+  });
+
+  it('leaves ambiguous flattened namespace calls unresolved', () => {
+    const firstNamespaced = {
+      type: 'function',
+      name: 'lookup.detail',
+      [FUNCTION_TOOL_NAMESPACE]: 'crm',
+    };
+    const secondNamespaced = {
+      type: 'function',
+      name: 'detail',
+      [FUNCTION_TOOL_NAMESPACE]: 'crm.lookup',
+    };
+    const ambiguousTools = buildFunctionToolLookupMap([
+      firstNamespaced,
+      secondNamespaced,
     ]);
 
     expect(
-      resolveFunctionToolCallName(
-        {
-          name: 'lookup_account',
-          namespace: 'lookup_account',
-        },
-        availableToolNames,
-      ),
-    ).toBe('lookup_account');
-  });
+      resolveFunctionToolCall({ name: 'crm.lookup.detail' }, ambiguousTools),
+    ).toBeUndefined();
 
-  it('falls back to the qualified name when a self-namespaced bare tool is absent', () => {
-    const availableToolNames = new Set(['lookup_account.lookup_account']);
-
-    expect(
-      resolveFunctionToolCallName(
-        {
-          name: 'lookup_account',
-          namespace: 'lookup_account',
-        },
-        availableToolNames,
-      ),
-    ).toBe('lookup_account.lookup_account');
-  });
-
-  it('prefers the bare name when both self-namespaced candidates are present', () => {
-    const availableToolNames = createToolLookup([
-      {
-        key: 'lookup_account',
-        value: {
-          type: 'function',
-          name: 'lookup_account',
-          deferLoading: true,
-        },
-      },
-      {
-        key: 'lookup_account.lookup_account',
-        value: {
-          type: 'function',
-          name: 'lookup_account',
-          deferLoading: true,
-          [FUNCTION_TOOL_NAMESPACE]: 'lookup_account',
-        },
-      },
+    const deferred = {
+      type: 'function',
+      name: 'crm.lookup.detail',
+      deferLoading: true,
+    };
+    const toolsWithDeferred = buildFunctionToolLookupMap([
+      firstNamespaced,
+      secondNamespaced,
+      deferred,
     ]);
 
     expect(
-      resolveFunctionToolCallName(
-        {
-          name: 'lookup_account',
-          namespace: 'lookup_account',
-        },
-        availableToolNames,
-      ),
-    ).toBe('lookup_account');
+      resolveFunctionToolCall({ name: 'crm.lookup.detail' }, toolsWithDeferred),
+    ).toBe(deferred);
   });
 
-  it('prefers the qualified name when the bare tool is not deferred', () => {
-    const availableToolNames = createToolLookup([
-      {
-        key: 'lookup_account',
-        value: {
-          type: 'function',
-          name: 'lookup_account',
-          deferLoading: false,
-        },
-      },
-      {
-        key: 'lookup_account.lookup_account',
-        value: {
-          type: 'function',
-          name: 'lookup_account',
-          deferLoading: true,
-          [FUNCTION_TOOL_NAMESPACE]: 'lookup_account',
-        },
-      },
-    ]);
+  it('accepts legacy bare calls for deferred tools only when no bare tool exists', () => {
+    const deferred = { type: 'function', name: 'lookup', deferLoading: true };
+    const tools = buildFunctionToolLookupMap([deferred]);
 
-    expect(
-      resolveFunctionToolCallName(
-        {
-          name: 'lookup_account',
-          namespace: 'lookup_account',
-        },
-        availableToolNames,
-      ),
-    ).toBe('lookup_account.lookup_account');
+    expect(resolveFunctionToolCall({ name: 'lookup' }, tools)).toBe(deferred);
   });
 
-  it('keeps qualified matches for real namespace calls', () => {
-    const availableToolNames = new Set([
-      'lookup_account',
-      'crm.lookup_account',
-    ]);
+  it('does not route a bare call to a deferred tool when a bare tool exists', () => {
+    const bare = { type: 'function', name: 'lookup' };
+    const deferred = { type: 'function', name: 'lookup', deferLoading: true };
+    const tools = buildFunctionToolLookupMap([deferred, bare]);
+
+    expect(resolveFunctionToolCall({ name: 'lookup' }, tools)).toBe(bare);
+  });
+
+  it('normalizes a resolved deferred bare fallback to its canonical state key', () => {
+    const deferred = { type: 'function', name: 'lookup', deferLoading: true };
 
     expect(
-      resolveFunctionToolCallName(
-        {
-          name: 'lookup_account',
-          namespace: 'crm',
-        },
-        availableToolNames,
-      ),
-    ).toBe('crm.lookup_account');
+      getFunctionToolStateKeyForResolvedCall({ name: 'lookup' }, deferred),
+    ).toBe('["deferred_top_level","lookup"]');
+    expect(
+      getFunctionToolStateKeyForResolvedCall({ name: 'different' }, deferred),
+    ).toBeUndefined();
+  });
+
+  it('keeps released state-key fallbacks when they are unambiguous', () => {
+    const deferred = { type: 'function', name: 'lookup', deferLoading: true };
+    const namespaced = {
+      type: 'function',
+      name: 'lookup',
+      [FUNCTION_TOOL_NAMESPACE]: 'crm',
+    };
+
+    expect(getFunctionToolStateKeys(deferred, [deferred])).toEqual([
+      '["deferred_top_level","lookup"]',
+      'lookup',
+    ]);
+    expect(getFunctionToolStateKeys(namespaced, [namespaced])).toEqual([
+      '["namespaced","crm","lookup"]',
+      'crm.lookup',
+    ]);
+  });
+
+  it('omits released state-key fallbacks when another category owns them', () => {
+    const bare = { type: 'function', name: 'lookup' };
+    const deferred = { type: 'function', name: 'lookup', deferLoading: true };
+    const dotted = { type: 'function', name: 'crm.lookup' };
+    const namespaced = {
+      type: 'function',
+      name: 'lookup',
+      [FUNCTION_TOOL_NAMESPACE]: 'crm',
+    };
+
+    expect(getFunctionToolStateKeys(deferred, [bare, deferred])).toEqual([
+      '["deferred_top_level","lookup"]',
+    ]);
+    expect(getFunctionToolStateKeys(bare, [bare, deferred])).toEqual([
+      '["bare","lookup"]',
+    ]);
+    expect(getFunctionToolStateKeys(namespaced, [dotted, namespaced])).toEqual([
+      '["namespaced","crm","lookup"]',
+    ]);
+    expect(getFunctionToolStateKeys(dotted, [dotted, namespaced])).toEqual([
+      '["bare","crm.lookup"]',
+    ]);
+  });
+
+  it('rejects explicit namespaces reserved for deferred top-level tools', () => {
+    const namespaced = {
+      type: 'function',
+      name: 'lookup',
+      [FUNCTION_TOOL_NAMESPACE]: 'lookup',
+    };
+
+    expect(() => buildFunctionToolLookupMap([namespaced])).toThrow(
+      'Responses tool search reserves same-name namespaces for deferred top-level function tools.',
+    );
   });
 });

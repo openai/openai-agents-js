@@ -59,6 +59,8 @@ import type { AgentInputItem, UnknownContext } from '../types';
 import type { RunConfig, Runner, ToolErrorFormatter } from '../run';
 import {
   getFunctionToolQualifiedName,
+  getFunctionToolStateKey,
+  getFunctionToolStateKeys,
   matchesFunctionToolName,
 } from '../toolIdentity';
 import {
@@ -130,6 +132,21 @@ function getFunctionToolTraceName<TContext>(
   toolRun: ToolRunFunction<TContext>,
 ): string {
   return getFunctionToolIdentity(toolRun);
+}
+
+function getFunctionToolApprovalStateKey<TContext>(
+  toolRun: ToolRunFunction<TContext>,
+): string {
+  return (
+    getFunctionToolStateKey(toolRun.tool) ?? getFunctionToolIdentity(toolRun)
+  );
+}
+
+function getFunctionToolPendingStateKeys<TContext>(
+  toolRun: ToolRunFunction<TContext>,
+): string[] {
+  const availableTools = toolRun.availableFunctionTools ?? [toolRun.tool];
+  return getFunctionToolStateKeys(toolRun.tool, availableTools);
 }
 
 const COMPUTER_TRACE_NAME = 'computer';
@@ -417,6 +434,7 @@ function buildApprovalRequestResult<TContext>(
       toolRun.toolCall,
       deps.agent,
       getFunctionToolIdentity(toolRun),
+      getFunctionToolStateKey(toolRun.tool),
     ),
   };
 }
@@ -513,12 +531,15 @@ async function buildApprovalRejectionResult<TContext>(
 ): Promise<FunctionToolResult<TContext>> {
   const { runner, state, toolErrorFormatter } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
+  const approvalToolNames = [getFunctionToolApprovalStateKey(toolRun)];
   const traceToolName = getFunctionToolTraceName(toolRun);
   return withRunStateToolFunctionSpan(deps, traceToolName, async (span) => {
     const response = await resolveApprovalRejectionMessage({
       runContext: state._context,
       toolType: 'function',
       toolName,
+      approvalToolNames,
+      approvalAgent: deps.agent,
       callId: toolRun.toolCall.callId,
       toolErrorFormatter,
     });
@@ -554,14 +575,19 @@ async function handleFunctionApproval<TContext>(
   forceApproval: boolean = false,
 ): Promise<'approved' | FunctionToolResult<TContext>> {
   const { agent, state } = deps;
-  const toolName = getFunctionToolIdentity(toolRun);
+  const approvalStateKey = getFunctionToolApprovalStateKey(toolRun);
+  const pendingStateKeys = getFunctionToolPendingStateKeys(toolRun);
   const approval = state._context.isToolApproved({
-    toolName,
+    toolName: approvalStateKey,
     callId: toolRun.toolCall.callId,
+    functionTool: false,
+    agent,
   });
 
   if (approval === false) {
-    state.clearPendingAgentToolRun(toolName, toolRun.toolCall.callId);
+    for (const stateKey of pendingStateKeys) {
+      state.clearPendingAgentToolRun(stateKey, toolRun.toolCall.callId);
+    }
     return await buildApprovalRejectionResult(deps, toolRun);
   }
 
@@ -646,6 +672,7 @@ async function runApprovedFunctionTool<TContext>(
 ): Promise<FunctionToolResult<TContext>> {
   const { agent, runner, state, agentToolParentRunConfig, signal } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
+  const stateKeys = getFunctionToolPendingStateKeys(toolRun);
   const traceToolName = getFunctionToolTraceName(toolRun);
   return withRunStateToolFunctionSpan(deps, traceToolName, async (span) => {
     if (span && runner.config.traceIncludeSensitiveData) {
@@ -688,10 +715,11 @@ async function runApprovedFunctionTool<TContext>(
           inputGuardrailResult.message,
         );
       } else {
-        const resumeState = state.getPendingAgentToolRun(
-          toolName,
-          toolRun.toolCall.callId,
-        );
+        const resumeState = stateKeys
+          .map((stateKey) =>
+            state.getPendingAgentToolRun(stateKey, toolRun.toolCall.callId),
+          )
+          .find((pendingState) => typeof pendingState !== 'undefined');
         toolDetails = {
           toolCall: toolRun.toolCall,
           resumeState,
@@ -789,13 +817,18 @@ async function runApprovedFunctionTool<TContext>(
         if (nestedInterruptions.length > 0) {
           functionResult.interruptions = nestedInterruptions;
           const nestedRunStateJson = nestedRunResult.state.toJSON();
+          const [stateKey, ...aliases] =
+            stateKeys.length > 0 ? stateKeys : [toolName];
           state.setPendingAgentToolRun(
-            toolName,
+            stateKey,
             toolRun.toolCall.callId,
             JSON.stringify(nestedRunStateJson),
+            aliases,
           );
         } else {
-          state.clearPendingAgentToolRun(toolName, toolRun.toolCall.callId);
+          for (const stateKey of stateKeys) {
+            state.clearPendingAgentToolRun(stateKey, toolRun.toolCall.callId);
+          }
         }
       }
 
@@ -971,6 +1004,7 @@ async function resolveToolApproval(options: {
   const existingApproval = runContext.isToolApproved({
     toolName,
     callId,
+    functionTool: false,
   });
 
   if (existingApproval === true) {
@@ -1003,6 +1037,7 @@ async function resolveToolApproval(options: {
   const approval = runContext.isToolApproved({
     toolName,
     callId,
+    functionTool: false,
   });
 
   if (approval === true) {

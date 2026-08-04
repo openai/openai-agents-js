@@ -127,7 +127,11 @@ export function selectRunItemsForBlockedOutput(
 ): RunItem[] {
   const pairs = new Map<
     string,
-    { valid: boolean; callIndexes: number[]; resultIndexes: number[] }
+    {
+      valid: boolean;
+      callIndexes: number[];
+      results: Array<{ index: number; executed: boolean }>;
+    }
   >();
 
   for (const [index, item] of items.entries()) {
@@ -141,14 +145,12 @@ export function selectRunItemsForBlockedOutput(
     }
     let pair = pairs.get(record.key);
     if (!pair) {
-      pair = { valid: true, callIndexes: [], resultIndexes: [] };
+      pair = { valid: true, callIndexes: [], results: [] };
       pairs.set(record.key, pair);
     }
     const wrapperMatchesRole =
       (record.role === 'call' && item.type === 'tool_call_item') ||
-      (record.role === 'result' &&
-        item instanceof RunToolCallOutputItem &&
-        wasRunToolCallOutputItemExecuted(item));
+      (record.role === 'result' && item instanceof RunToolCallOutputItem);
     if (!record.terminal || !wrapperMatchesRole) {
       pair.valid = false;
       continue;
@@ -156,7 +158,12 @@ export function selectRunItemsForBlockedOutput(
     if (record.role === 'call') {
       pair.callIndexes.push(index);
     } else {
-      pair.resultIndexes.push(index);
+      pair.results.push({
+        index,
+        executed: wasRunToolCallOutputItemExecuted(
+          item as RunToolCallOutputItem,
+        ),
+      });
     }
   }
 
@@ -166,12 +173,13 @@ export function selectRunItemsForBlockedOutput(
     if (
       pair.valid &&
       pair.callIndexes.length === 1 &&
-      pair.resultIndexes.length === 1 &&
-      pair.callIndexes[0] < pair.resultIndexes[0]
+      pair.results.length === 1 &&
+      pair.callIndexes[0] < pair.results[0].index &&
+      (pair.results[0].executed || pair.callIndexes[0] < unpersistedStartIndex)
     ) {
       retainedCallIndexes.add(pair.callIndexes[0]);
       retainedIndexes.add(pair.callIndexes[0]);
-      retainedIndexes.add(pair.resultIndexes[0]);
+      retainedIndexes.add(pair.results[0].index);
     }
   }
 

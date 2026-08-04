@@ -265,6 +265,25 @@ describe('selectRunItemsForBlockedOutput', () => {
     ]);
   });
 
+  it('retains a terminal result that closes a previously persisted call', () => {
+    const { call, runItem } = runFunctionCall('call-rejected-after-checkpoint');
+    const output = new ToolCallOutputItem(
+      {
+        type: 'function_call_result',
+        callId: call.callId,
+        name: call.name,
+        status: 'completed',
+        output: 'rejected before execution',
+      },
+      TEST_AGENT,
+      'rejected before execution',
+    );
+
+    expect(selectRunItemsForBlockedOutput([runItem, output], 1)).toEqual([
+      output,
+    ]);
+  });
+
   it('drops incomplete tool results', () => {
     const { call, runItem } = runFunctionCall('call-incomplete');
     const output = new ToolCallOutputItem(

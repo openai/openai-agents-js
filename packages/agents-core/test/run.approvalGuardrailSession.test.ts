@@ -255,7 +255,7 @@ describe('committed tool output guardrail session persistence', () => {
   );
 
   it.each<RunMode>(['non_streamed', 'streamed'])(
-    'does not persist a $mode approved result rejected by an input guardrail before execution',
+    'persists a $mode input rejection that closes an approved call checkpoint',
     async (mode) => {
       const execute = vi.fn(async () => 'should-not-run');
       const approvalTool = tool({
@@ -324,7 +324,12 @@ describe('committed tool output guardrail session persistence', () => {
         getPersistedToolItems(await session.getItems()).filter(
           (item) => item.type === 'function_call_result',
         ),
-      ).toEqual([]);
+      ).toMatchObject([
+        {
+          type: 'function_call_result',
+          callId: 'call-approved-input-rejected',
+        },
+      ]);
       expect(session.compactionSnapshots).toHaveLength(2);
       expect(session.compactionArgs[1]).toMatchObject({
         compactionMode: 'input',
@@ -396,7 +401,7 @@ describe('committed tool output guardrail session persistence', () => {
   );
 
   it.each<RunMode>(['non_streamed', 'streamed'])(
-    'does not persist a $mode tool result rejected by approval before execution',
+    'persists a $mode user rejection that closes an approval call checkpoint',
     async (mode) => {
       const execute = vi.fn(async () => 'should-not-run');
       const approvalTool = tool({
@@ -456,7 +461,12 @@ describe('committed tool output guardrail session persistence', () => {
         getPersistedToolItems(await session.getItems()).filter(
           (item) => item.type === 'function_call_result',
         ),
-      ).toEqual([]);
+      ).toMatchObject([
+        {
+          type: 'function_call_result',
+          callId: 'call-approval-rejected',
+        },
+      ]);
     },
   );
 
@@ -584,7 +594,7 @@ describe('committed tool output guardrail session persistence', () => {
       [false, true].map((tripwire) => ({ mode, tripwire })),
     ),
   )(
-    'persists only executed results for a mixed $mode approval resume when guardrails trip=$tripwire',
+    'persists terminal results for a mixed $mode approval resume when guardrails trip=$tripwire',
     async ({ mode, tripwire }) => {
       const executions: string[] = [];
       const approvalTool = tool({
@@ -659,11 +669,10 @@ describe('committed tool output guardrail session persistence', () => {
       const persistedResultIds = getPersistedToolItems(await session.getItems())
         .filter((item) => item.type === 'function_call_result')
         .map((item) => item.callId);
-      expect(persistedResultIds).toEqual(
-        tripwire
-          ? ['call-mixed-approved']
-          : ['call-mixed-approved', 'call-mixed-rejected'],
-      );
+      expect(persistedResultIds).toEqual([
+        'call-mixed-approved',
+        'call-mixed-rejected',
+      ]);
     },
   );
 
@@ -1166,6 +1175,123 @@ describe('approved tool output guardrail session persistence', () => {
           ['function_call_result', 'outer-agent-tool-call'],
         ],
       );
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'scopes duplicate nested approval call IDs to the owning agent in $mode runs',
+    async (mode) => {
+      let firstExecutions = 0;
+      let secondExecutions = 0;
+      const createNestedAgent = (
+        name: string,
+        execute: () => Promise<string>,
+      ) => {
+        const approvalTool = tool({
+          name: 'shared_approval_tool',
+          description: 'Requires approval.',
+          parameters: z.object({}),
+          needsApproval: true,
+          execute,
+        });
+        return new Agent({
+          name,
+          model: new ApprovalSessionModel([
+            {
+              output: [
+                functionToolCall(
+                  'shared_approval_tool',
+                  'shared-provider-call-id',
+                ),
+              ],
+              usage: new Usage(),
+            },
+          ]),
+          tools: [approvalTool],
+          toolUseBehavior: 'stop_on_first_tool',
+        });
+      };
+      const firstNestedAgent = createNestedAgent(
+        'Duplicate approval agent',
+        async () => {
+          firstExecutions += 1;
+          return 'first-approved';
+        },
+      );
+      const secondNestedAgent = createNestedAgent(
+        'Duplicate approval agent',
+        async () => {
+          secondExecutions += 1;
+          return 'second-approved';
+        },
+      );
+      const firstNestedTool = firstNestedAgent.asTool({
+        toolName: 'first_nested_agent',
+        toolDescription: 'Runs the first nested agent.',
+      });
+      const secondNestedTool = secondNestedAgent.asTool({
+        toolName: 'second_nested_agent',
+        toolDescription: 'Runs the second nested agent.',
+      });
+      const outerAgent = new Agent({
+        name: 'Duplicate approval outer agent',
+        model: new ApprovalSessionModel([
+          {
+            output: [
+              functionToolCall(
+                firstNestedTool.name,
+                'first-outer-call',
+                JSON.stringify({ input: 'Run the first nested agent.' }),
+              ),
+              functionToolCall(
+                secondNestedTool.name,
+                'second-outer-call',
+                JSON.stringify({ input: 'Run the second nested agent.' }),
+              ),
+            ],
+            usage: new Usage(),
+          },
+        ]),
+        tools: [firstNestedTool, secondNestedTool],
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+
+      const runOnce = async (
+        input: string | RunState<unknown, typeof outerAgent>,
+      ) => {
+        if (mode === 'streamed') {
+          const result = await run(outerAgent, input, { stream: true });
+          await result.completed;
+          return result;
+        }
+        return run(outerAgent, input);
+      };
+
+      const first = await runOnce('Run both nested agents.');
+      expect(first.interruptions).toHaveLength(2);
+
+      const restored = await RunState.fromString(
+        outerAgent,
+        first.state.toString(),
+      );
+      const firstApproval = restored
+        .getInterruptions()
+        .find((item) => item.agent === firstNestedAgent)!;
+      const secondApproval = restored
+        .getInterruptions()
+        .find((item) => item.agent === secondNestedAgent)!;
+      restored.approve(firstApproval);
+      restored.reject(secondApproval, { message: 'Second call rejected.' });
+
+      const decidedState = await RunState.fromString(
+        outerAgent,
+        restored.toString(),
+      );
+      const resumed = await runOnce(decidedState);
+
+      expect(resumed.interruptions).toHaveLength(0);
+      expect(firstExecutions).toBe(1);
+      expect(secondExecutions).toBe(0);
     },
   );
 

@@ -1,6 +1,7 @@
 import type { Agent, AgentOutputType } from '../agent';
 import type { RunState } from '../runState';
 import type { RunConfig, Runner, ToolErrorFormatter } from '../run';
+import { getFunctionToolStateKeyForCall } from '../toolIdentity';
 import type { SingleStepResult } from './steps';
 import type { ProcessedResponse } from './types';
 import { resolveInterruptedTurn } from './turnResolution';
@@ -81,7 +82,11 @@ export async function resumeInterruptedTurn<
     if (rawItem.type === 'hosted_tool_call') {
       return false;
     }
-    const toolName = item.name;
+    const toolName =
+      rawItem.type === 'function_call'
+        ? (item.functionToolStateKey ??
+          getFunctionToolStateKeyForCall(rawItem, item.name))
+        : item.name;
     const callId =
       'callId' in rawItem && typeof rawItem.callId === 'string'
         ? rawItem.callId
@@ -91,7 +96,12 @@ export async function resumeInterruptedTurn<
     return (
       toolName !== undefined &&
       callId !== undefined &&
-      state._context.isToolApproved({ toolName, callId }) === true
+      state._context.isToolApproved({
+        toolName,
+        callId,
+        functionTool: false,
+        ...(rawItem.type === 'function_call' ? { agent: item.agent } : {}),
+      }) === true
     );
   });
   const turnResult = await resolveInterruptedTurn<TContext>(

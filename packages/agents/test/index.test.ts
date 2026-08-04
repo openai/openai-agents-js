@@ -6,6 +6,7 @@ import type {
   AgentToolOptionsWithDefault,
   AgentToolOptionsWithParameters,
   RunHookEvents,
+  ToolNameCollisionPolicy,
 } from '../src/index';
 import * as Sandbox from '../src/sandbox';
 import * as LocalSandbox from '../src/sandbox/local';
@@ -31,6 +32,7 @@ describe('Exports', () => {
       AgentToolOptionsWithDefault<undefined, TestAgent>,
       AgentToolOptionsWithParameters<undefined, TestAgent, typeof _parameters>,
       AgentTool<undefined, TestAgent, typeof _parameters>,
+      ToolNameCollisionPolicy,
     ];
 
     expectTypeOf<PublicTypes>().not.toBeNever();

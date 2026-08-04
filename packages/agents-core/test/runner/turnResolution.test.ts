@@ -29,6 +29,7 @@ import {
   applyPatchTool,
   shellTool,
   tool,
+  toolNamespace,
   hostedMcpTool,
 } from '../../src/tool';
 import { Usage } from '../../src/usage';
@@ -907,6 +908,82 @@ describe('resolveTurnAfterModelResponse', () => {
 });
 
 describe('resolveInterruptedTurn', () => {
+  it('removes a resolved namespaced approval and rewinds persistence', async () => {
+    const execute = vi.fn(async () => 'account');
+    const [lookupAccount] = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup_account',
+          description: 'Look up an account.',
+          parameters: z.object({}),
+          needsApproval: true,
+          execute,
+        }),
+      ],
+    });
+    const agent = new Agent({
+      name: 'Namespaced approval agent',
+      tools: [lookupAccount!],
+    });
+    const toolCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      name: 'lookup_account',
+      namespace: 'crm',
+      callId: 'call_lookup_account',
+      arguments: '{}',
+      status: 'completed',
+    };
+    const approvalItem = new ToolApprovalItem(toolCall, agent);
+    const state = new RunState(new RunContext(), 'hello', agent, 2);
+    state._currentTurnPersistedItemCount = 1;
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: { interruptions: [approvalItem] },
+    };
+    state._context.approveTool(approvalItem);
+    const processedResponse: ProcessedResponse = {
+      newItems: [approvalItem],
+      handoffs: [],
+      functions: [
+        {
+          toolCall,
+          tool: lookupAccount! as any,
+          availableFunctionTools: [lookupAccount! as any],
+        },
+      ],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['crm.lookup_account'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    const result = await resolveInterruptedTurn(
+      agent,
+      'hello',
+      [approvalItem],
+      TEST_MODEL_RESPONSE_BASIC,
+      processedResponse,
+      new Runner({ tracingDisabled: true }),
+      state,
+    );
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(result.preStepItems).not.toContain(approvalItem);
+    expect(state._currentTurnPersistedItemCount).toBe(0);
+    expect(result.newStepItems).toContainEqual(
+      expect.objectContaining({
+        rawItem: expect.objectContaining({
+          type: 'function_call_result',
+          callId: 'call_lookup_account',
+        }),
+      }),
+    );
+  });
+
   it('ignores already-completed approvals when resuming', async () => {
     const agent = new Agent({ name: 'rewind-agent2' });
     const state = new RunState(new RunContext(), 'hello', agent, 1);
@@ -1863,6 +1940,91 @@ describe('resolveInterruptedTurn', () => {
     expect(editor.operations).toHaveLength(1);
     expect(executedFunctionCallIds).toEqual(['call-func-1', 'call-func-2']);
     expect(result.nextStep.type).toBe('next_step_run_again');
+  });
+
+  it('keeps same-call-id approvals independent across agents', async () => {
+    const rootExecute = vi.fn(async () => 'root');
+    const childExecute = vi.fn(async () => 'child');
+    const rootTool = tool({
+      name: 'root_tool',
+      description: 'Root tool.',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute: rootExecute,
+    });
+    const childTool = tool({
+      name: 'child_tool',
+      description: 'Child tool.',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute: childExecute,
+    });
+    const child = new Agent({ name: 'Approval child', tools: [childTool] });
+    const root = new Agent({
+      name: 'Approval root',
+      tools: [rootTool],
+      handoffs: [child],
+    });
+    const sharedCallId = 'shared_agent_call_id';
+    const rootCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_root_shared',
+      callId: sharedCallId,
+      name: 'root_tool',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const childCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_child_shared',
+      callId: sharedCallId,
+      name: 'child_tool',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const rootApproval = new ToolApprovalItem(rootCall, root);
+    const childApproval = new ToolApprovalItem(childCall, child);
+    const originalItems = [
+      new ToolCallItem(rootCall, root),
+      rootApproval,
+      new ToolCallItem(childCall, child),
+      childApproval,
+    ];
+    const processedResponse: ProcessedResponse<UnknownContext> = {
+      newItems: [],
+      handoffs: [],
+      functions: [{ toolCall: rootCall, tool: rootTool as any }],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+    const state = new RunState(new RunContext(), 'hello', root, 5);
+    state._generatedItems = originalItems;
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: { interruptions: [rootApproval, childApproval] },
+    };
+    state._context.approveTool(rootApproval);
+
+    const result = await withTrace('test', () =>
+      resolveInterruptedTurn(
+        root,
+        'hello',
+        originalItems,
+        { output: [], usage: new Usage() },
+        processedResponse,
+        new Runner({ tracingDisabled: true }),
+        state,
+      ),
+    );
+
+    expect(rootExecute).toHaveBeenCalledOnce();
+    expect(childExecute).not.toHaveBeenCalled();
+    expect(result.preStepItems).toContain(childApproval);
+    expect(result.preStepItems).not.toContain(rootApproval);
   });
 
   it('removes resolved hosted MCP approvals but keeps unresolved ones', async () => {

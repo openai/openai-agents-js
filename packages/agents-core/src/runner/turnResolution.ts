@@ -42,7 +42,11 @@ import * as ProviderData from '../types/providerData';
 import * as protocol from '../types/protocol';
 import { AgentInputItem } from '../types';
 import type { FunctionToolResult } from '../tool';
-import { getFunctionToolQualifiedName } from '../toolIdentity';
+import {
+  getFunctionToolStateKey,
+  getFunctionToolStateKeyForCall,
+  getFunctionToolStateKeys,
+} from '../toolIdentity';
 import type { RunErrorData, RunErrorHandlers } from './errorHandlers';
 import {
   createRunErrorFinalOutputItem,
@@ -150,6 +154,7 @@ type ApprovalResolution = 'approved' | 'rejected' | 'pending';
 function resolveApprovalState(
   item: RunToolApprovalItem,
   state: RunState<any, any>,
+  processedResponse: ProcessedResponse<any>,
 ): ApprovalResolution {
   if (isHostedMcpApprovalItem(item)) {
     return 'pending';
@@ -172,7 +177,35 @@ function resolveApprovalState(
     return 'pending';
   }
 
-  const approval = state._context.isToolApproved({ toolName, callId });
+  let toolNames = [toolName];
+  if (rawItem.type === 'function_call') {
+    const functionRun =
+      item.agent === state._currentAgent
+        ? processedResponse.functions.find(
+            (run) => run.toolCall.callId === callId,
+          )
+        : undefined;
+    if (functionRun) {
+      const stateKey = getFunctionToolStateKey(functionRun.tool);
+      toolNames = stateKey ? [stateKey] : toolNames;
+    } else {
+      const stateKey =
+        item.functionToolStateKey ??
+        getFunctionToolStateKeyForCall(rawItem, toolName);
+      toolNames = stateKey ? [stateKey] : toolNames;
+    }
+  }
+
+  const approval = toolNames
+    .map((candidate) =>
+      state._context.isToolApproved({
+        toolName: candidate,
+        callId,
+        functionTool: false,
+        ...(rawItem.type === 'function_call' ? { agent: item.agent } : {}),
+      }),
+    )
+    .find((decision) => typeof decision !== 'undefined');
   if (approval === true) {
     return 'approved';
   }
@@ -202,23 +235,32 @@ function isApprovalItemLike(value: unknown): value is ApprovalItemLike {
   );
 }
 
-function getApprovalIdentity(approval: ApprovalItemLike): string | undefined {
+type ApprovalIdentity = {
+  agent: Agent<any, any> | undefined;
+  value: string;
+};
+
+function getApprovalIdentity(
+  approval: ApprovalItemLike,
+): ApprovalIdentity | undefined {
   const rawItem = approval.rawItem;
   if (!rawItem) {
     return undefined;
   }
 
+  const agent = 'agent' in approval ? approval.agent : undefined;
+
   if (rawItem.type === 'function_call' && rawItem.callId) {
-    return `function_call:${rawItem.callId}`;
+    return { agent, value: `function_call:${rawItem.callId}` };
   }
 
   if ('callId' in rawItem && rawItem.callId) {
-    return `${rawItem.type}:${rawItem.callId}`;
+    return { agent, value: `${rawItem.type}:${rawItem.callId}` };
   }
 
   const id = 'id' in rawItem ? rawItem.id : undefined;
   if (id) {
-    return `${rawItem.type}:${id}`;
+    return { agent, value: `${rawItem.type}:${id}` };
   }
 
   const providerData =
@@ -226,32 +268,53 @@ function getApprovalIdentity(approval: ApprovalItemLike): string | undefined {
       ? (rawItem.providerData as { id?: string })
       : undefined;
   if (providerData?.id) {
-    return `${rawItem.type}:provider:${providerData.id}`;
+    return { agent, value: `${rawItem.type}:provider:${providerData.id}` };
   }
 
   const agentName =
     'agent' in approval && approval.agent ? approval.agent.name : '';
 
   try {
-    return `${agentName}:${rawItem.type}:${JSON.stringify(rawItem)}`;
+    return {
+      agent,
+      value: `${agentName}:${rawItem.type}:${JSON.stringify(rawItem)}`,
+    };
   } catch {
-    return `${agentName}:${rawItem.type}`;
+    return { agent, value: `${agentName}:${rawItem.type}` };
   }
+}
+
+type ApprovalIdentityMap = Map<Agent<any, any> | undefined, Set<string>>;
+
+function hasApprovalIdentity(
+  identities: ApprovalIdentityMap,
+  identity: ApprovalIdentity,
+): boolean {
+  return identities.get(identity.agent)?.has(identity.value) ?? false;
+}
+
+function addApprovalIdentity(
+  identities: ApprovalIdentityMap,
+  identity: ApprovalIdentity,
+): void {
+  const values = identities.get(identity.agent) ?? new Set<string>();
+  values.add(identity.value);
+  identities.set(identity.agent, values);
 }
 
 type AppendContext = {
   seenItems: Set<RunItem>;
-  seenApprovalIdentities: Set<string>;
+  seenApprovalIdentities: ApprovalIdentityMap;
 };
 
 function buildAppendContext(existingItems: RunItem[]): AppendContext {
   const seenItems = new Set<RunItem>(existingItems);
-  const seenApprovalIdentities = new Set<string>();
+  const seenApprovalIdentities: ApprovalIdentityMap = new Map();
   for (const item of existingItems) {
     if (item instanceof RunToolApprovalItem) {
       const identity = getApprovalIdentity(item);
       if (identity) {
-        seenApprovalIdentities.add(identity);
+        addApprovalIdentity(seenApprovalIdentities, identity);
       }
     }
   }
@@ -269,10 +332,10 @@ function appendRunItemIfNew(
   if (item instanceof RunToolApprovalItem) {
     const identity = getApprovalIdentity(item);
     if (identity) {
-      if (context.seenApprovalIdentities.has(identity)) {
+      if (hasApprovalIdentity(context.seenApprovalIdentities, identity)) {
         return;
       }
-      context.seenApprovalIdentities.add(identity);
+      addApprovalIdentity(context.seenApprovalIdentities, identity);
     }
   }
   context.seenItems.add(item);
@@ -300,7 +363,11 @@ function buildApprovedCallIdSet(
   return callIds;
 }
 
-function collectCompletedCallIds(items: RunItem[], type: string): Set<string> {
+function collectCompletedCallIds(
+  items: RunItem[],
+  type: string,
+  agent?: Agent<any, any>,
+): Set<string> {
   const completed = new Set<string>();
   for (const item of items) {
     const rawItem = item.rawItem;
@@ -308,6 +375,9 @@ function collectCompletedCallIds(items: RunItem[], type: string): Set<string> {
       continue;
     }
     if ((rawItem as { type?: string }).type !== type) {
+      continue;
+    }
+    if (agent && (!('agent' in item) || item.agent !== agent)) {
       continue;
     }
     const callId = (rawItem as { callId?: unknown }).callId;
@@ -651,6 +721,7 @@ export async function resolveInterruptedTurn<TContext>(
     .filter(
       (item) =>
         item instanceof RunToolApprovalItem &&
+        item.agent === agent &&
         'callId' in item.rawItem &&
         item.rawItem.type === 'function_call',
     )
@@ -659,6 +730,7 @@ export async function resolveInterruptedTurn<TContext>(
   const completedFunctionCallIds = collectCompletedCallIds(
     originalPreStepItems,
     'function_call_result',
+    agent,
   );
   const completedComputerCallIds = collectCompletedCallIds(
     originalPreStepItems,
@@ -680,7 +752,7 @@ export async function resolveInterruptedTurn<TContext>(
     .getInterruptions()
     .filter(isApprovalItemLike);
 
-  const pendingApprovalIdentities = new Set<string>();
+  const pendingApprovalIdentities: ApprovalIdentityMap = new Map();
   for (const approval of pendingApprovalItems) {
     if (!(approval instanceof RunToolApprovalItem)) {
       continue;
@@ -691,6 +763,7 @@ export async function resolveInterruptedTurn<TContext>(
     const rawItem = approval.rawItem;
     if (
       rawItem.type === 'function_call' &&
+      approval.agent === agent &&
       rawItem.callId &&
       completedFunctionCallIds.has(rawItem.callId)
     ) {
@@ -719,8 +792,10 @@ export async function resolveInterruptedTurn<TContext>(
     }
     const identity = getApprovalIdentity(approval);
     if (identity) {
-      if (resolveApprovalState(approval, state) === 'pending') {
-        pendingApprovalIdentities.add(identity);
+      if (
+        resolveApprovalState(approval, state, processedResponse) === 'pending'
+      ) {
+        addApprovalIdentity(pendingApprovalIdentities, identity);
       }
     }
   }
@@ -731,10 +806,10 @@ export async function resolveInterruptedTurn<TContext>(
       return false;
     }
     const isApprovedCall = functionCallIds.includes(callId);
-    const isPendingNested = state.hasPendingAgentToolRun(
-      getFunctionToolQualifiedName(run.tool) ?? run.tool.name,
-      callId,
-    );
+    const isPendingNested = getFunctionToolStateKeys(
+      run.tool,
+      run.availableFunctionTools ?? [run.tool],
+    ).some((stateKey) => state.hasPendingAgentToolRun(stateKey, callId));
     if (!isApprovedCall && !isPendingNested) {
       return false;
     }
@@ -873,6 +948,7 @@ export async function resolveInterruptedTurn<TContext>(
       return state._context.isToolApproved({
         toolName: rawItem.name,
         callId: approvalRequestId,
+        functionTool: false,
       });
     },
   });
@@ -908,7 +984,7 @@ export async function resolveInterruptedTurn<TContext>(
     if (!identity) {
       return true;
     }
-    return pendingApprovalIdentities.has(identity);
+    return hasApprovalIdentity(pendingApprovalIdentities, identity);
   });
 
   const keptApprovalItems = new Set<RunToolApprovalItem>();
@@ -1073,6 +1149,7 @@ export async function resolveTurnAfterModelResponse<
         return state._context.isToolApproved({
           toolName: rawItem.name,
           callId: approvalRequestId,
+          functionTool: false,
         });
       },
     });
