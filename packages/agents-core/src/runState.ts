@@ -117,7 +117,8 @@ import {
  * - 1.15: Adds reconstructable sandbox environment value references and sandbox
  *   session-state envelope version 2.
  * - 1.16: Adds category-aware function tool keys and agent-scoped function approvals,
- *   including aliases for legacy pending-run accessors.
+ *   including aliases for legacy pending-run accessors, and tracks generated items
+ *   temporarily withheld from session persistence by output guardrails.
  */
 export const CURRENT_SCHEMA_VERSION = '1.16' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
@@ -512,6 +513,9 @@ export const SerializedRunState = z.object({
     .default({}),
   lastProcessedResponse: serializedProcessedResponseSchema.optional(),
   currentTurnPersistedItemCount: z.number().int().min(0).optional(),
+  currentTurnDeferredSessionItemIndexes: z
+    .array(z.number().int().min(0))
+    .optional(),
   conversationId: z.string().optional(),
   previousResponseId: z.string().optional(),
   reasoningItemIdPolicy: z.enum(['preserve', 'omit']).optional(),
@@ -625,16 +629,19 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public _generatedItems: RunItem[];
   /**
-   * Number of `_generatedItems` already flushed to session storage for the current turn.
+   * Number of `_generatedItems` already processed for session storage in the current turn.
    *
    * Persisting the entire turn on every save would duplicate responses and tool outputs.
-   * Instead, `saveToSession` appends only the delta since the previous write. This counter
-   * tracks how many generated run items from *this turn* were already written so the next
-   * save can slice off only the new entries. When a turn is interrupted (e.g., awaiting tool
-   * approval) and later resumed, we rewind the counter before continuing so the pending tool
-   * output still gets stored.
+   * Instead, `saveToSession` appends only the delta since the previous write. Items that an
+   * output guardrail temporarily withholds are tracked separately so a successful resume can
+   * still append them without replaying committed tool effects.
    */
   public _currentTurnPersistedItemCount: number;
+  /**
+   * Generated item indexes withheld from a blocked session write and eligible for a later
+   * successful resume when they form an append-safe suffix.
+   */
+  public _currentTurnDeferredSessionItemIndexes: Set<number>;
   /**
    * Maximum allowed turns before forcing termination.
    */
@@ -713,6 +720,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     this._pendingAgentToolRunAliases = new Map();
     this._generatedItems = [];
     this._currentTurnPersistedItemCount = 0;
+    this._currentTurnDeferredSessionItemIndexes = new Set();
     this._maxTurns = maxTurns;
     this._inputGuardrailResults = [];
     this._outputGuardrailResults = [];
@@ -864,6 +872,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public resetTurnPersistence(): void {
     this._currentTurnPersistedItemCount = 0;
+    this._currentTurnDeferredSessionItemIndexes.clear();
   }
 
   /**
@@ -1099,6 +1108,12 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
         this._pendingAgentToolRunAliases.entries(),
       ),
       currentTurnPersistedItemCount: this._currentTurnPersistedItemCount,
+      currentTurnDeferredSessionItemIndexes:
+        this._currentTurnDeferredSessionItemIndexes.size > 0
+          ? [...this._currentTurnDeferredSessionItemIndexes].sort(
+              (left, right) => left - right,
+            )
+          : undefined,
       lastProcessedResponse: this._lastProcessedResponse
         ? (serializeProcessedResponse(
             this._lastProcessedResponse,
@@ -2686,6 +2701,11 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   );
   state._currentTurnPersistedItemCount =
     stateJson.currentTurnPersistedItemCount ?? 0;
+  state._currentTurnDeferredSessionItemIndexes = new Set(
+    (stateJson.currentTurnDeferredSessionItemIndexes ?? []).filter(
+      (index) => index < state._generatedItems.length,
+    ),
+  );
   state._sandbox = stateJson.sandbox ?? undefined;
   const capabilitySnapshotsByAgent = await rehydrateToolSearchRuntimeTools(
     state,

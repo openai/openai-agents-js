@@ -121,10 +121,10 @@ function classifyBlockedToolRecord(
  * classified. Reasoning items are retained only when the next non-reasoning item is a retained
  * tool call.
  */
-export function selectRunItemsForBlockedOutput(
+function selectRunItemIndexesForBlockedOutput(
   items: RunItem[],
   unpersistedStartIndex = 0,
-): RunItem[] {
+): number[] {
   const pairs = new Map<
     string,
     {
@@ -202,10 +202,89 @@ export function selectRunItemsForBlockedOutput(
     }
   }
 
-  return items.filter(
-    (_item, index) =>
-      index >= unpersistedStartIndex && retainedIndexes.has(index),
+  return [...retainedIndexes]
+    .filter((index) => index >= unpersistedStartIndex)
+    .sort((left, right) => left - right);
+}
+
+export function selectRunItemsForBlockedOutput(
+  items: RunItem[],
+  unpersistedStartIndex = 0,
+): RunItem[] {
+  return selectRunItemIndexesForBlockedOutput(items, unpersistedStartIndex).map(
+    (index) => items[index]!,
   );
+}
+
+function buildRunItemPersistencePlan(
+  state: RunState<any, any>,
+  items: RunItem[],
+  outputBlocked: boolean,
+  deferBlockedItemsForResume: boolean,
+): {
+  alreadyPersistedCount: number;
+  runItemsToPersist: RunItem[];
+  processedRunItemCount: number;
+  deferredRunItemIndexes: number[];
+  clearDeferredRunItemIndexes: boolean;
+} {
+  const alreadyPersistedCount = state._currentTurnPersistedItemCount ?? 0;
+  const newRunItemIndexes = Array.from(
+    { length: Math.max(0, items.length - alreadyPersistedCount) },
+    (_value, offset) => alreadyPersistedCount + offset,
+  );
+
+  if (outputBlocked) {
+    const retainedIndexes = selectRunItemIndexesForBlockedOutput(
+      items,
+      alreadyPersistedCount,
+    );
+    const retainedIndexSet = new Set(retainedIndexes);
+    return {
+      alreadyPersistedCount,
+      runItemsToPersist: retainedIndexes.map((index) => items[index]!),
+      processedRunItemCount: newRunItemIndexes.length,
+      deferredRunItemIndexes: deferBlockedItemsForResume
+        ? newRunItemIndexes.filter((index) => !retainedIndexSet.has(index))
+        : [],
+      clearDeferredRunItemIndexes: !deferBlockedItemsForResume,
+    };
+  }
+
+  const deferredIndexes = [...state._currentTurnDeferredSessionItemIndexes]
+    .filter((index) => index < items.length)
+    .sort((left, right) => left - right);
+  if (deferredIndexes.length > 0) {
+    const deferredIndexSet = new Set(deferredIndexes);
+    const processedEndIndex = Math.min(alreadyPersistedCount, items.length);
+    const firstDeferredIndex = deferredIndexes[0]!;
+    for (
+      let index = firstDeferredIndex;
+      index < processedEndIndex;
+      index += 1
+    ) {
+      if (!deferredIndexSet.has(index)) {
+        throw new UserError(
+          'Cannot persist accepted output from this resumed RunState without reordering session history because blocked output preceded committed tool records. Start a new run with the existing session instead of resuming this state.',
+        );
+      }
+    }
+  }
+
+  const indexesToPersist = new Set(deferredIndexes);
+  for (const index of newRunItemIndexes) {
+    indexesToPersist.add(index);
+  }
+
+  return {
+    alreadyPersistedCount,
+    runItemsToPersist: [...indexesToPersist]
+      .sort((left, right) => left - right)
+      .map((index) => items[index]!),
+    processedRunItemCount: newRunItemIndexes.length,
+    deferredRunItemIndexes: [],
+    clearDeferredRunItemIndexes: true,
+  };
 }
 
 export type SessionPersistenceTracker = {
@@ -450,11 +529,14 @@ export async function saveToSession(
   options: SessionPersistenceOptions = {},
 ): Promise<void> {
   const state = result.state;
-  const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
-  const newRunItems = result.newItems.slice(alreadyPersisted);
-  const runItemsToPersist = options.outputBlocked
-    ? selectRunItemsForBlockedOutput(result.newItems, alreadyPersisted)
-    : newRunItems;
+  const persistencePlan = buildRunItemPersistencePlan(
+    state,
+    result.newItems,
+    options.outputBlocked === true,
+    // Non-streamed tripwires retain the final step, so the same RunState can later
+    // accept and persist the withheld output without rerunning committed tools.
+    true,
+  );
 
   if (
     typeof process !== 'undefined' &&
@@ -462,18 +544,20 @@ export async function saveToSession(
   ) {
     console.debug(
       'saveToSession:newRunItems',
-      newRunItems.map((item) => item.type),
+      persistencePlan.runItemsToPersist.map((item) => item.type),
     );
   }
 
   await persistRunItemsToSession({
     session,
     state,
-    newRunItems: runItemsToPersist,
-    processedRunItemCount: newRunItems.length,
+    newRunItems: persistencePlan.runItemsToPersist,
+    processedRunItemCount: persistencePlan.processedRunItemCount,
+    deferredRunItemIndexes: persistencePlan.deferredRunItemIndexes,
+    clearDeferredRunItemIndexes: persistencePlan.clearDeferredRunItemIndexes,
     extraInputItems: sessionInputItems,
     lastResponseId: options.outputBlocked ? undefined : result.lastResponseId,
-    alreadyPersistedCount: alreadyPersisted,
+    alreadyPersistedCount: persistencePlan.alreadyPersistedCount,
     runCompaction: options.runCompaction ?? true,
     compactionMode: options.outputBlocked ? 'input' : options.compactionMode,
   });
@@ -499,19 +583,24 @@ export async function saveStreamResultToSession(
   options: SessionPersistenceOptions = {},
 ): Promise<void> {
   const state = result.state;
-  const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
-  const newRunItems = result.newItems.slice(alreadyPersisted);
-  const runItemsToPersist = options.outputBlocked
-    ? selectRunItemsForBlockedOutput(result.newItems, alreadyPersisted)
-    : newRunItems;
+  const persistencePlan = buildRunItemPersistencePlan(
+    state,
+    result.newItems,
+    options.outputBlocked === true,
+    // Streaming tripwires clear the final step, so their rejected output must not
+    // become eligible if the state is later resumed into a new model turn.
+    false,
+  );
 
   await persistRunItemsToSession({
     session,
     state,
-    newRunItems: runItemsToPersist,
-    processedRunItemCount: newRunItems.length,
+    newRunItems: persistencePlan.runItemsToPersist,
+    processedRunItemCount: persistencePlan.processedRunItemCount,
+    deferredRunItemIndexes: persistencePlan.deferredRunItemIndexes,
+    clearDeferredRunItemIndexes: persistencePlan.clearDeferredRunItemIndexes,
     lastResponseId: options.outputBlocked ? undefined : result.lastResponseId,
-    alreadyPersistedCount: alreadyPersisted,
+    alreadyPersistedCount: persistencePlan.alreadyPersistedCount,
     runCompaction: options.runCompaction ?? true,
     compactionMode: options.outputBlocked ? 'input' : options.compactionMode,
   });
@@ -818,6 +907,8 @@ async function persistRunItemsToSession(options: {
   state: RunState<any, any>;
   newRunItems: RunItem[];
   processedRunItemCount: number;
+  deferredRunItemIndexes: number[];
+  clearDeferredRunItemIndexes: boolean;
   extraInputItems?: AgentInputItem[] | undefined;
   lastResponseId?: string;
   alreadyPersistedCount: number;
@@ -829,6 +920,8 @@ async function persistRunItemsToSession(options: {
     state,
     newRunItems,
     processedRunItemCount,
+    deferredRunItemIndexes,
+    clearDeferredRunItemIndexes,
     extraInputItems = [],
     lastResponseId,
     alreadyPersistedCount,
@@ -850,9 +943,19 @@ async function persistRunItemsToSession(options: {
     ),
   ];
 
-  if (itemsToSave.length === 0) {
+  const commitPersistenceState = () => {
+    if (clearDeferredRunItemIndexes) {
+      state._currentTurnDeferredSessionItemIndexes.clear();
+    }
+    for (const index of deferredRunItemIndexes) {
+      state._currentTurnDeferredSessionItemIndexes.add(index);
+    }
     state._currentTurnPersistedItemCount =
       alreadyPersistedCount + processedRunItemCount;
+  };
+
+  if (itemsToSave.length === 0) {
+    commitPersistenceState();
     if (runCompaction) {
       await runCompactionOnSession(
         session,
@@ -866,8 +969,7 @@ async function persistRunItemsToSession(options: {
 
   const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
   await session.addItems(sanitizedItems);
-  state._currentTurnPersistedItemCount =
-    alreadyPersistedCount + processedRunItemCount;
+  commitPersistenceState();
   if (runCompaction) {
     await runCompactionOnSession(
       session,

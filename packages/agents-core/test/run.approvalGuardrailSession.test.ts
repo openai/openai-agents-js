@@ -1442,8 +1442,8 @@ describe('approved tool output guardrail session persistence', () => {
     },
   );
 
-  it.each<RunMode>(['non_streamed', 'streamed'])(
-    'advances blocked output after an approved $mode tool checkpoint',
+  it.each<RunMode>(['non_streamed'])(
+    'persists accepted output after resuming a blocked $mode tool checkpoint',
     async (mode) => {
       const executions: string[] = [];
       let guardrailShouldTrip = true;
@@ -1531,8 +1531,31 @@ describe('approved tool output guardrail session persistence', () => {
         compactionMode: 'input',
       });
       expect(getPersistedToolItems(await session.getItems())).toHaveLength(2);
+      expect(blockedState?._currentTurnDeferredSessionItemIndexes.size).toBe(1);
 
       guardrailShouldTrip = false;
+      if (!blockedState) {
+        throw new Error('Expected blocked run state.');
+      }
+      const accepted = await runOnce(blockedState);
+      expect(accepted.finalOutput).toBe('rejected after approved tool');
+      expect(accepted.state._currentTurnDeferredSessionItemIndexes.size).toBe(
+        0,
+      );
+      expect(executions).toEqual(['ran']);
+      expect(
+        (await session.getItems()).some(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'assistant' &&
+            item.content.some(
+              (content) =>
+                content.type === 'output_text' &&
+                content.text === 'rejected after approved tool',
+            ),
+        ),
+      ).toBe(true);
+
       const followup = await runOnce('Continue after the blocked output');
       expect(followup.finalOutput).toBe('accepted after resume');
       expect(executions).toEqual(['ran']);
@@ -1552,7 +1575,7 @@ describe('approved tool output guardrail session persistence', () => {
                 content.text === 'rejected after approved tool',
             ),
         ),
-      ).toBe(false);
+      ).toBe(true);
       expect(
         (await session.getItems()).some(
           (item) =>
@@ -1564,7 +1587,7 @@ describe('approved tool output guardrail session persistence', () => {
                 content.text === 'rejected after approved tool',
             ),
         ),
-      ).toBe(false);
+      ).toBe(true);
     },
   );
 

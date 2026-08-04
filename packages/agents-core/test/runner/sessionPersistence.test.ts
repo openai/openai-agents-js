@@ -972,41 +972,41 @@ describe('saveStreamResultToSession', () => {
 });
 
 describe('blocked output compaction', () => {
+  class TrackingSession implements Session {
+    items: AgentInputItem[] = [];
+    compactionArgs: (OpenAIResponsesCompactionArgs | undefined)[] = [];
+
+    async getSessionId(): Promise<string> {
+      return 'blocked-output-session';
+    }
+
+    async getItems(): Promise<AgentInputItem[]> {
+      return [...this.items];
+    }
+
+    async addItems(items: AgentInputItem[]): Promise<void> {
+      this.items.push(...items);
+    }
+
+    async popItem(): Promise<AgentInputItem | undefined> {
+      return this.items.pop();
+    }
+
+    async clearSession(): Promise<void> {
+      this.items = [];
+    }
+
+    async runCompaction(
+      args?: OpenAIResponsesCompactionArgs,
+    ): Promise<OpenAIResponsesCompactionResult | null> {
+      this.compactionArgs.push(args);
+      return null;
+    }
+  }
+
   it.each(['non_streamed', 'streamed'] as const)(
     'does not pass the rejected $mode response ID to compaction',
     async (mode) => {
-      class TrackingSession implements Session {
-        items: AgentInputItem[] = [];
-        compactionArgs: (OpenAIResponsesCompactionArgs | undefined)[] = [];
-
-        async getSessionId(): Promise<string> {
-          return 'blocked-output-session';
-        }
-
-        async getItems(): Promise<AgentInputItem[]> {
-          return [...this.items];
-        }
-
-        async addItems(items: AgentInputItem[]): Promise<void> {
-          this.items.push(...items);
-        }
-
-        async popItem(): Promise<AgentInputItem | undefined> {
-          return undefined;
-        }
-
-        async clearSession(): Promise<void> {
-          this.items = [];
-        }
-
-        async runCompaction(
-          args?: OpenAIResponsesCompactionArgs,
-        ): Promise<OpenAIResponsesCompactionResult | null> {
-          this.compactionArgs.push(args);
-          return null;
-        }
-      }
-
       const textAgent = new Agent<UnknownContext, 'text'>({
         name: 'Blocked output compaction',
         outputType: 'text',
@@ -1033,7 +1033,19 @@ describe('blocked output compaction', () => {
       });
       state._generatedItems = [
         new ToolCallItem(call, textAgent),
-        functionResult(call, 'committed'),
+        markRunToolCallOutputItemAsExecuted(
+          new ToolCallOutputItem(
+            {
+              type: 'function_call_result',
+              callId: call.callId,
+              name: call.name,
+              status: 'completed',
+              output: 'committed',
+            },
+            textAgent,
+            'committed',
+          ),
+        ),
         new MessageOutputItem(
           {
             type: 'message',
@@ -1064,8 +1076,103 @@ describe('blocked output compaction', () => {
         'function_call',
         'function_call_result',
       ]);
+      expect([...state._currentTurnDeferredSessionItemIndexes]).toEqual(
+        mode === 'non_streamed' ? [2] : [],
+      );
+
+      if (mode === 'streamed') {
+        return;
+      }
+
+      const resumedState = await RunState.fromString(agent, state.toString());
+      expect([...resumedState._currentTurnDeferredSessionItemIndexes]).toEqual([
+        2,
+      ]);
+
+      await saveToSession(session, [], new RunResult(resumedState));
+
+      expect(session.items.map((item) => item.type)).toEqual([
+        'function_call',
+        'function_call_result',
+        'message',
+      ]);
+      expect(resumedState._currentTurnDeferredSessionItemIndexes.size).toBe(0);
+      expect(resumedState._currentTurnPersistedItemCount).toBe(
+        resumedState._generatedItems.length,
+      );
+      expect(session.compactionArgs.at(-1)).toEqual({
+        responseId: `resp-blocked-${mode}`,
+      });
     },
   );
+
+  it('rejects a resumed accepted batch that cannot be appended in model order', async () => {
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'Blocked output ordering',
+      outputType: 'text',
+      instructions: 'test blocked output ordering',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const session = new TrackingSession();
+    const state = new RunState(
+      new RunContext<UnknownContext>(undefined as UnknownContext),
+      'hello',
+      agent,
+      10,
+    );
+    const call = functionCall('call-blocked-ordering');
+    state._generatedItems = [
+      new MessageOutputItem(
+        {
+          type: 'message',
+          role: 'assistant',
+          id: 'msg-before-tool',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'before tool' }],
+          providerData: {},
+        },
+        textAgent,
+      ),
+      new ToolCallItem(call, textAgent),
+      markRunToolCallOutputItemAsExecuted(
+        new ToolCallOutputItem(
+          {
+            type: 'function_call_result',
+            callId: call.callId,
+            name: call.name,
+            status: 'completed',
+            output: 'committed',
+          },
+          textAgent,
+          'committed',
+        ),
+      ),
+    ];
+
+    await saveToSession(session, [], new RunResult(state), {
+      outputBlocked: true,
+    });
+
+    expect(session.items.map((item) => item.type)).toEqual([
+      'function_call',
+      'function_call_result',
+    ]);
+    expect([...state._currentTurnDeferredSessionItemIndexes]).toEqual([0]);
+
+    await expect(
+      saveToSession(session, [], new RunResult(state)),
+    ).rejects.toThrow(
+      'Cannot persist accepted output from this resumed RunState without reordering session history',
+    );
+    expect(session.items.map((item) => item.type)).toEqual([
+      'function_call',
+      'function_call_result',
+    ]);
+    expect([...state._currentTurnDeferredSessionItemIndexes]).toEqual([0]);
+  });
 });
 
 describe('ServerConversationTracker', () => {
