@@ -971,6 +971,103 @@ describe('saveStreamResultToSession', () => {
   });
 });
 
+describe('blocked output compaction', () => {
+  it.each(['non_streamed', 'streamed'] as const)(
+    'does not pass the rejected $mode response ID to compaction',
+    async (mode) => {
+      class TrackingSession implements Session {
+        items: AgentInputItem[] = [];
+        compactionArgs: (OpenAIResponsesCompactionArgs | undefined)[] = [];
+
+        async getSessionId(): Promise<string> {
+          return 'blocked-output-session';
+        }
+
+        async getItems(): Promise<AgentInputItem[]> {
+          return [...this.items];
+        }
+
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          this.items.push(...items);
+        }
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          return undefined;
+        }
+
+        async clearSession(): Promise<void> {
+          this.items = [];
+        }
+
+        async runCompaction(
+          args?: OpenAIResponsesCompactionArgs,
+        ): Promise<OpenAIResponsesCompactionResult | null> {
+          this.compactionArgs.push(args);
+          return null;
+        }
+      }
+
+      const textAgent = new Agent<UnknownContext, 'text'>({
+        name: 'Blocked output compaction',
+        outputType: 'text',
+        instructions: 'test blocked output compaction',
+      });
+      const agent = textAgent as unknown as Agent<
+        UnknownContext,
+        AgentOutputType
+      >;
+      const session = new TrackingSession();
+      const context = new RunContext<UnknownContext>(
+        undefined as UnknownContext,
+      );
+      const state = new RunState<
+        UnknownContext,
+        Agent<UnknownContext, AgentOutputType>
+      >(context, 'hello', agent, 10);
+      const call = functionCall(`call-blocked-${mode}`);
+
+      state._modelResponses.push({
+        output: [],
+        usage: new Usage(),
+        responseId: `resp-blocked-${mode}`,
+      });
+      state._generatedItems = [
+        new ToolCallItem(call, textAgent),
+        functionResult(call, 'committed'),
+        new MessageOutputItem(
+          {
+            type: 'message',
+            role: 'assistant',
+            id: `msg-blocked-${mode}`,
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'blocked response' }],
+            providerData: {},
+          },
+          textAgent,
+        ),
+      ];
+
+      if (mode === 'streamed') {
+        await saveStreamResultToSession(
+          session,
+          new StreamedRunResult({ state }),
+          { outputBlocked: true },
+        );
+      } else {
+        await saveToSession(session, [], new RunResult(state), {
+          outputBlocked: true,
+        });
+      }
+
+      expect(session.compactionArgs).toEqual([{ compactionMode: 'input' }]);
+      expect(session.items.map((item) => item.type)).toEqual([
+        'function_call',
+        'function_call_result',
+      ]);
+    },
+  );
+});
+
 describe('ServerConversationTracker', () => {
   it('marks filtered-out inputs as sent when the callModelInputFilter drops them', () => {
     const tracker = new ServerConversationTracker({
