@@ -209,7 +209,7 @@ describe('sessionPersistence tracker (extended)', () => {
     tracker.setPreparedItems([current], preparedInput);
     const turnInput = structuredClone(preparedInput);
     const processedInput = structuredClone(turnInput.slice(0, 1));
-    tracker.setPreparedTurnItems(turnInput, processedInput, [0]);
+    tracker.setPreparedTurnItems(turnInput, processedInput);
 
     tracker.recordTurnItems(processedInput, [
       { ...current, content: 'current-filtered' },

@@ -142,7 +142,7 @@ describe('deduplicateAgentInputItemsPreferringLatest', () => {
     ).toEqual([newCall, output]);
   });
 
-  it('uses the core item type for hosted-tool provider ids', () => {
+  it('keeps hosted tool calls at their earliest causal position', () => {
     const oldCall: protocol.HostedToolCallItem = {
       type: 'hosted_tool_call',
       id: 'hosted_shared',
@@ -163,7 +163,7 @@ describe('deduplicateAgentInputItemsPreferringLatest', () => {
 
     expect(
       deduplicateAgentInputItemsPreferringLatest([oldCall, message, newCall]),
-    ).toEqual([message, newCall]);
+    ).toEqual([newCall, message]);
   });
 
   it('keeps the latest duplicate output at its latest position', () => {
@@ -253,6 +253,37 @@ describe('deduplicateAgentInputItemsPreferringLatest', () => {
         newRequest,
       ]),
     ).toEqual([newRequest, response]);
+  });
+
+  it('keeps the latest MCP approval response at its latest position', () => {
+    const oldResponse: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      name: 'mcp_approval_response',
+      status: 'in_progress',
+      providerData: {
+        type: 'mcp_approval_response',
+        approval_request_id: 'approval_response_ordered',
+        approve: false,
+      },
+    };
+    const message: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'approval processed',
+    };
+    const newResponse: protocol.HostedToolCallItem = {
+      ...oldResponse,
+      status: 'completed',
+      providerData: { ...oldResponse.providerData, approve: true },
+    };
+
+    expect(
+      deduplicateAgentInputItemsPreferringLatest([
+        oldResponse,
+        message,
+        newResponse,
+      ]),
+    ).toEqual([message, newResponse]);
   });
 
   it('preserves unique items and duplicate messages without stable identity', () => {

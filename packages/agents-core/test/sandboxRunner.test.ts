@@ -242,35 +242,20 @@ class CloningContextCapability extends Capability {
 
 class CloningPrefixContextCapability extends Capability {
   readonly type = 'cloning_prefix_context';
+  readonly seenContexts?: AgentInputItem[][];
+
+  constructor(seenContexts?: AgentInputItem[][]) {
+    super();
+    this.seenContexts = seenContexts;
+  }
+
+  override clone(): this {
+    return new CloningPrefixContextCapability(this.seenContexts) as this;
+  }
 
   override processContext(context: AgentInputItem[]): AgentInputItem[] {
+    this.seenContexts?.push(structuredClone(context));
     return structuredClone(context.slice(0, 1));
-  }
-}
-
-class FrozenCloningContextCapability extends Capability {
-  readonly type = 'frozen_cloning_context';
-
-  override processContext(context: AgentInputItem[]): AgentInputItem[] {
-    return structuredClone(context).map((item) => Object.freeze(item));
-  }
-}
-
-class FrozenCloningPrefixContextCapability extends Capability {
-  readonly type = 'frozen_cloning_prefix_context';
-
-  override processContext(context: AgentInputItem[]): AgentInputItem[] {
-    return structuredClone(context.slice(0, 1)).map((item) =>
-      Object.freeze(item),
-    );
-  }
-}
-
-class ThrowingContextCapability extends Capability {
-  readonly type = 'throwing_context';
-
-  override processContext(_context: AgentInputItem[]): AgentInputItem[] {
-    throw new Error('capability context failed');
   }
 }
 
@@ -1047,6 +1032,7 @@ describe('sandbox runner integration', () => {
     'does not persist equal-content history as current when cloned sandbox context keeps a prefix (stream=%s)',
     async (stream) => {
       const client = new FakeSandboxClient();
+      const seenContexts: AgentInputItem[][] = [];
       const response = {
         output: [fakeModelMessage('done')],
         usage: new Usage(),
@@ -1057,7 +1043,7 @@ describe('sandbox runner integration', () => {
       const agent = new SandboxAgent({
         name: 'CloningHistoryPrefixPersistenceAgent',
         model,
-        capabilities: [new CloningPrefixContextCapability()],
+        capabilities: [new CloningPrefixContextCapability(seenContexts)],
       });
       const session = new MemorySession({
         initialItems: [user('same input')],
@@ -1095,147 +1081,12 @@ describe('sandbox runner integration', () => {
       const persisted = JSON.stringify(await session.getItems());
       expect(persisted).not.toContain('history-filtered');
       expect(persisted.match(/same input/g)).toHaveLength(1);
-      expect(JSON.stringify(model.requests)).not.toContain(
+      expect(seenContexts).toHaveLength(1);
+      expect(JSON.stringify(seenContexts)).not.toContain(
         '__openai_agents_internal_context_provenance_',
       );
     },
   );
-
-  it.each([false, true])(
-    'preserves provenance when frozen cloned sandbox context keeps a prefix (stream=%s)',
-    async (stream) => {
-      const client = new FakeSandboxClient();
-      const response = {
-        output: [fakeModelMessage('done')],
-        usage: new Usage(),
-      };
-      const model = stream
-        ? new RecordingStreamingModel([response])
-        : new RecordingFakeModel([response]);
-      const agent = new SandboxAgent({
-        name: 'FrozenCloningHistoryPrefixPersistenceAgent',
-        model,
-        capabilities: [new FrozenCloningPrefixContextCapability()],
-      });
-      const session = new MemorySession({
-        initialItems: [user('same input')],
-      });
-      const options = {
-        session,
-        sandbox: { client },
-        sessionInputCallback: (
-          history: AgentInputItem[],
-          newItems: AgentInputItem[],
-        ) => history.concat(newItems),
-        callModelInputFilter: ({ modelData }: CallModelInputFilterArgs) => ({
-          ...modelData,
-          input: modelData.input.map((item) =>
-            item.type === 'message' && item.role === 'user'
-              ? user('history-filtered')
-              : item,
-          ),
-        }),
-      };
-
-      if (stream) {
-        const result = await run(agent, [user('same input')], {
-          ...options,
-          stream: true,
-        });
-        await result.completed;
-      } else {
-        await run(agent, [user('same input')], {
-          ...options,
-          stream: false,
-        });
-      }
-
-      const persisted = JSON.stringify(await session.getItems());
-      expect(persisted).not.toContain('history-filtered');
-      expect(persisted.match(/same input/g)).toHaveLength(1);
-      expect(JSON.stringify(model.requests)).not.toContain(
-        '__openai_agents_internal_context_provenance_',
-      );
-    },
-  );
-
-  it.each([false, true])(
-    'preserves provenance through an intermediate frozen sandbox context (stream=%s)',
-    async (stream) => {
-      const client = new FakeSandboxClient();
-      const response = {
-        output: [fakeModelMessage('done')],
-        usage: new Usage(),
-      };
-      const model = stream
-        ? new RecordingStreamingModel([response])
-        : new RecordingFakeModel([response]);
-      const agent = new SandboxAgent({
-        name: 'IntermediateFrozenContextPersistenceAgent',
-        model,
-        capabilities: [
-          new FrozenCloningContextCapability(),
-          new CloningPrefixContextCapability(),
-        ],
-      });
-      const session = new MemorySession({
-        initialItems: [user('same input')],
-      });
-      const options = {
-        session,
-        sandbox: { client },
-        sessionInputCallback: (
-          history: AgentInputItem[],
-          newItems: AgentInputItem[],
-        ) => newItems.concat(history),
-        callModelInputFilter: ({ modelData }: CallModelInputFilterArgs) => ({
-          ...modelData,
-          input: modelData.input.map((item) =>
-            item.type === 'message' && item.role === 'user'
-              ? user('current-filtered')
-              : item,
-          ),
-        }),
-      };
-
-      if (stream) {
-        const result = await run(agent, [user('same input')], {
-          ...options,
-          stream: true,
-        });
-        await result.completed;
-      } else {
-        await run(agent, [user('same input')], {
-          ...options,
-          stream: false,
-        });
-      }
-
-      expect(JSON.stringify(await session.getItems())).toContain(
-        'current-filtered',
-      );
-      expect(JSON.stringify(model.requests)).not.toContain(
-        '__openai_agents_internal_context_provenance_',
-      );
-    },
-  );
-
-  it('does not mask a capability error after an intermediate frozen context', async () => {
-    const agent = new SandboxAgent({
-      name: 'ThrowingAfterFrozenContextAgent',
-      model: new RecordingFakeModel([]),
-      capabilities: [
-        new FrozenCloningContextCapability(),
-        new ThrowingContextCapability(),
-      ],
-    });
-
-    await expect(
-      run(agent, [user('input')], {
-        sandbox: { client: new FakeSandboxClient() },
-      }),
-    ).rejects.toThrow('capability context failed');
-  });
 
   it.each([false, true])(
     'persists session input introduced on a later cloned sandbox turn (stream=%s)',

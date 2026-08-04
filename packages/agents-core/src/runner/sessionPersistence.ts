@@ -71,7 +71,6 @@ export type SessionPersistenceTracker = {
   setPreparedTurnItems: (
     preparedItems: AgentInputItem[],
     processedItems: AgentInputItem[],
-    processedSourceIndexes?: (number | undefined)[],
   ) => void;
   recordTurnItems: (
     sourceItems: (AgentInputItem | undefined)[],
@@ -144,7 +143,6 @@ export function createSessionPersistenceTracker(options: {
     setPreparedTurnItems = (
       preparedItems: AgentInputItem[],
       processedItems: AgentInputItem[],
-      processedSourceIndexes?: (number | undefined)[],
     ) => {
       if (!this.preparedSourceIndexes) {
         return;
@@ -153,7 +151,6 @@ export function createSessionPersistenceTracker(options: {
         preparedItems,
         processedItems,
         this.preparedSourceIndexes,
-        processedSourceIndexes,
       );
     };
 
@@ -257,7 +254,6 @@ function mapPreparedSourcesAfterContextProcessing(
   preparedItems: AgentInputItem[],
   processedItems: AgentInputItem[],
   preparedSourceIndexes: number[],
-  processedSourceIndexes?: (number | undefined)[],
 ): PreparedOwnedSource[] {
   const ownerIndexByPreparedIndex = new Map(
     preparedSourceIndexes.map((preparedIndex, ownerIndex) => [
@@ -283,22 +279,6 @@ function mapPreparedSourcesAfterContextProcessing(
   );
   const usedPreparedIndexes = new Set<number>();
 
-  for (const [processedIndex, preparedIndex] of (
-    processedSourceIndexes ?? []
-  ).entries()) {
-    if (
-      processedIndex >= processedItems.length ||
-      preparedIndex === undefined ||
-      preparedIndex < 0 ||
-      preparedIndex >= preparedItems.length ||
-      usedPreparedIndexes.has(preparedIndex)
-    ) {
-      continue;
-    }
-    mappedPreparedIndexes[processedIndex] = preparedIndex;
-    usedPreparedIndexes.add(preparedIndex);
-  }
-
   const mapOccurrences = <T>(
     processedIndexesByIdentity: Map<T, number[]>,
     preparedIndexesByIdentity: Map<T, number[]>,
@@ -310,12 +290,6 @@ function mapPreparedSourcesAfterContextProcessing(
       const availableProcessedIndexes = processedIndexes.filter(
         (index) => mappedPreparedIndexes[index] === undefined,
       );
-
-      // If provenance was discarded and only an indistinguishable subset remains, do not guess
-      // which prepared occurrence survived. Guessing can persist history as new Session input.
-      if (availableProcessedIndexes.length < availablePreparedIndexes.length) {
-        continue;
-      }
 
       for (
         let index = 0;
