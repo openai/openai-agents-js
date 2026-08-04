@@ -1076,9 +1076,7 @@ describe('blocked output compaction', () => {
         'function_call',
         'function_call_result',
       ]);
-      expect([...state._currentTurnDeferredSessionItemIndexes]).toEqual(
-        mode === 'non_streamed' ? [2] : [],
-      );
+      expect([...state._currentTurnDeferredSessionItemIndexes]).toEqual([2]);
 
       if (mode === 'streamed') {
         return;

@@ -2118,10 +2118,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               setRunStateTurnSpanParent(result.state, undefined);
               currentTurnSpan = undefined;
             } catch (error) {
-              // Do not leave blocked output visible through StreamedRunResult.finalOutput while
-              // session persistence is in flight or if persistence itself fails.
-              result.state._currentStep = undefined;
-              result.state._finalOutputSource = undefined;
+              // Keep the final step durable for RunState resume while ensuring the rejected
+              // output never becomes visible through this streamed result.
+              result._hideFinalOutput();
               const failurePersistenceOptions =
                 getGuardrailFailurePersistenceOptions(
                   error,

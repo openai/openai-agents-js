@@ -23,6 +23,8 @@ import {
   RunHandoffOutputItem,
   RunToolSearchCallItem,
   RunToolSearchOutputItem,
+  markRunToolCallOutputItemAsExecuted,
+  wasRunToolCallOutputItemExecuted,
 } from '../src/items';
 import {
   attachClientToolSearchExecutor,
@@ -1291,6 +1293,96 @@ describe('RunState', () => {
     expect((restoredItem as RunToolCallOutputItem).rawItem).toEqual(
       rawShellOutput,
     );
+    expect(
+      wasRunToolCallOutputItemExecuted(restoredItem as RunToolCallOutputItem),
+    ).toBe(false);
+  });
+
+  it('round-trips tool execution provenance', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'ExecutedOutputAgent' });
+    const rawOutput: protocol.FunctionCallResultItem = {
+      type: 'function_call_result',
+      callId: 'call-executed',
+      name: 'executed_tool',
+      status: 'completed',
+      output: 'done',
+    };
+    const state = new RunState(context, 'input', agent, 1);
+    state._generatedItems.push(
+      markRunToolCallOutputItemAsExecuted(
+        new RunToolCallOutputItem(rawOutput, agent, rawOutput.output),
+      ),
+    );
+
+    expect(state.toJSON().generatedItems[0]).toMatchObject({
+      type: 'tool_call_output_item',
+      toolExecutionStarted: true,
+    });
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(
+      wasRunToolCallOutputItemExecuted(
+        restored._generatedItems[0] as RunToolCallOutputItem,
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects output guardrail session state in pre-1.16 payloads', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'LegacyGuardrailStateAgent' });
+    const rawOutput: protocol.FunctionCallResultItem = {
+      type: 'function_call_result',
+      callId: 'call-legacy-guardrail-state',
+      name: 'legacy_tool',
+      status: 'completed',
+      output: 'done',
+    };
+    const state = new RunState(context, 'input', agent, 1);
+    state._generatedItems.push(
+      new RunToolCallOutputItem(rawOutput, agent, rawOutput.output),
+    );
+    const createLegacyPayload = () => {
+      const payload = structuredClone(state.toJSON()) as any;
+      payload.$schemaVersion = '1.15';
+      return payload;
+    };
+
+    await expect(
+      RunState.fromString(agent, JSON.stringify(createLegacyPayload())),
+    ).resolves.toBeInstanceOf(RunState);
+
+    const generatedItemPayload = createLegacyPayload();
+    generatedItemPayload.generatedItems[0].toolExecutionStarted = true;
+
+    const processedItemPayload = createLegacyPayload();
+    processedItemPayload.lastProcessedResponse = {
+      newItems: [
+        {
+          ...processedItemPayload.generatedItems[0],
+          toolExecutionStarted: true,
+        },
+      ],
+      toolsUsed: [],
+      handoffs: [],
+      functions: [],
+      computerActions: [],
+    };
+
+    const deferredIndexesPayload = createLegacyPayload();
+    deferredIndexesPayload.currentTurnDeferredSessionItemIndexes = [0];
+
+    for (const payload of [
+      generatedItemPayload,
+      processedItemPayload,
+      deferredIndexesPayload,
+    ]) {
+      await expect(
+        RunState.fromString(agent, JSON.stringify(payload)),
+      ).rejects.toThrow(
+        'Run state schema version 1.15 does not support output guardrail session persistence state.',
+      );
+    }
   });
 
   it('round-trips Programmatic Tool Calling items in schema 1.14', async () => {

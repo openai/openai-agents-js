@@ -255,6 +255,88 @@ describe('committed tool output guardrail session persistence', () => {
   );
 
   it.each<RunMode>(['non_streamed', 'streamed'])(
+    'persists a $mode committed tool after a blocked RunState is serialized before attaching a session',
+    async (mode) => {
+      const execute = vi.fn(async () => 'committed-result');
+      const commitTool = tool({
+        name: 'serialized_commit_tool',
+        description: 'Commits a side effect before RunState serialization.',
+        parameters: z.object({}),
+        execute,
+      });
+      const model = new ApprovalSessionModel([
+        {
+          output: [
+            functionToolCall('serialized_commit_tool', 'call-serialized'),
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'Serialized committed tool agent',
+        model,
+        tools: [commitTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'keep blocking serialized committed result',
+            execute: async () => ({
+              outputInfo: null,
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+
+      let blockedState: RunState<undefined, typeof agent> | undefined;
+      if (mode === 'streamed') {
+        const result = await run(agent, 'Use serialized_commit_tool', {
+          stream: true,
+        });
+        await expect(result.completed).rejects.toBeInstanceOf(
+          OutputGuardrailTripwireTriggered,
+        );
+        blockedState = result.state;
+      } else {
+        try {
+          await run(agent, 'Use serialized_commit_tool');
+        } catch (error) {
+          expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+          blockedState = (
+            error as { state?: RunState<undefined, typeof agent> }
+          ).state;
+        }
+      }
+      expect(blockedState).toBeDefined();
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(model.requests).toHaveLength(1);
+
+      const restored = await RunState.fromString(
+        agent,
+        blockedState!.toString(),
+      );
+      const session = new MemorySession();
+      if (mode === 'streamed') {
+        const resumed = await run(agent, restored, { session, stream: true });
+        await expect(resumed.completed).rejects.toBeInstanceOf(
+          OutputGuardrailTripwireTriggered,
+        );
+      } else {
+        await expect(run(agent, restored, { session })).rejects.toBeInstanceOf(
+          OutputGuardrailTripwireTriggered,
+        );
+      }
+
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(model.requests).toHaveLength(1);
+      expect(getPersistedToolItems(await session.getItems())).toMatchObject([
+        { type: 'function_call', callId: 'call-serialized' },
+        { type: 'function_call_result', callId: 'call-serialized' },
+      ]);
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
     'persists a $mode input rejection that closes an approved call checkpoint',
     async (mode) => {
       const execute = vi.fn(async () => 'should-not-run');
@@ -1442,7 +1524,7 @@ describe('approved tool output guardrail session persistence', () => {
     },
   );
 
-  it.each<RunMode>(['non_streamed'])(
+  it.each<RunMode>(['non_streamed', 'streamed'])(
     'persists accepted output after resuming a blocked $mode tool checkpoint',
     async (mode) => {
       const executions: string[] = [];

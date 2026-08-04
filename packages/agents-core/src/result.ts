@@ -331,6 +331,7 @@ export class StreamedRunResult<
   #abortHandler: (() => void) | undefined;
   #abortHandlerRef: AbortHandlerRef<() => void> | undefined;
   #combinedSignalCleanup: () => void = () => {};
+  #finalOutputHidden = false;
 
   constructor(
     result: {
@@ -431,6 +432,19 @@ export class StreamedRunResult<
       logModelAndToolActionDebug(logger, 'Resulted in an error:', e);
     });
     this.#detachAbortHandler();
+  }
+
+  /** @internal */
+  _hideFinalOutput() {
+    this.#finalOutputHidden = true;
+  }
+
+  override get finalOutput() {
+    if (this.#finalOutputHidden) {
+      logger.warn('Accessed finalOutput before agent run is completed.');
+      return undefined;
+    }
+    return super.finalOutput;
   }
 
   /**

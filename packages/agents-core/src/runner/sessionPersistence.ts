@@ -587,9 +587,9 @@ export async function saveStreamResultToSession(
     state,
     result.newItems,
     options.outputBlocked === true,
-    // Streaming tripwires clear the final step, so their rejected output must not
-    // become eligible if the state is later resumed into a new model turn.
-    false,
+    // Streaming tripwires retain a durable final checkpoint for RunState resume,
+    // while StreamedRunResult keeps the rejected output hidden from callers.
+    true,
   );
 
   await persistRunItemsToSession({

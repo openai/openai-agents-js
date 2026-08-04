@@ -15,6 +15,8 @@ import {
   RunReasoningItem,
   RunHandoffCallItem,
   RunHandoffOutputItem,
+  markRunToolCallOutputItemAsExecuted,
+  wasRunToolCallOutputItemExecuted,
 } from './items';
 import type { ModelResponse, ModelSettings } from './model';
 import { RunContext } from './runContext';
@@ -117,8 +119,9 @@ import {
  * - 1.15: Adds reconstructable sandbox environment value references and sandbox
  *   session-state envelope version 2.
  * - 1.16: Adds category-aware function tool keys and agent-scoped function approvals,
- *   including aliases for legacy pending-run accessors, and tracks generated items
- *   temporarily withheld from session persistence by output guardrails.
+ *   including aliases for legacy pending-run accessors, tracks generated items
+ *   temporarily withheld from session persistence by output guardrails, and preserves
+ *   whether a tool output came from an execution that had already started.
  */
 export const CURRENT_SCHEMA_VERSION = '1.16' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
@@ -239,6 +242,7 @@ const itemSchema = z.discriminatedUnion('type', [
     agent: serializedAgentSchema,
     output: z.string(),
     customData: z.record(z.string(), z.any()).optional(),
+    toolExecutionStarted: z.boolean().optional(),
   }),
   z.object({
     type: z.literal('reasoning_item'),
@@ -1211,6 +1215,10 @@ async function buildRunStateFromString<
     jsonResult,
   );
   const stateJson = SerializedRunState.parse(jsonResult);
+  assertSchemaVersionSupportsOutputGuardrailSessionState(
+    currentSchemaVersion as SupportedSchemaVersion,
+    stateJson,
+  );
   assertSchemaVersionSupportsToolSearch(
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
@@ -1228,6 +1236,37 @@ async function buildRunStateFromString<
     stateJson,
   );
   return buildRunStateFromJson(initialAgent, stateJson, options);
+}
+
+function assertSchemaVersionSupportsOutputGuardrailSessionState(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: z.infer<typeof SerializedRunState>,
+): void {
+  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+    return;
+  }
+
+  const hasDeferredIndexes = Object.prototype.hasOwnProperty.call(
+    stateJson,
+    'currentTurnDeferredSessionItemIndexes',
+  );
+  const hasExecutionProvenance = [
+    stateJson.generatedItems,
+    stateJson.lastProcessedResponse?.newItems,
+  ].some((items) =>
+    items?.some(
+      (item) =>
+        item.type === 'tool_call_output_item' &&
+        Object.prototype.hasOwnProperty.call(item, 'toolExecutionStarted'),
+    ),
+  );
+  if (!hasDeferredIndexes && !hasExecutionProvenance) {
+    return;
+  }
+
+  throw new UserError(
+    `Run state schema version ${schemaVersion} does not support output guardrail session persistence state. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+  );
 }
 
 function validateFunctionApprovalEnvelope(
@@ -2949,6 +2988,12 @@ function serializeRunItem(
         agentIdentityKeys,
       );
       return serialized;
+    case 'tool_call_output_item':
+      serialized.agent = serializeAgentReference(item.agent, agentIdentityKeys);
+      if (wasRunToolCallOutputItemExecuted(item)) {
+        serialized.toolExecutionStarted = true;
+      }
+      return serialized;
     default:
       serialized.agent = serializeAgentReference(
         (item as RunItem & { agent: Agent<any, any> }).agent,
@@ -3095,13 +3140,17 @@ export function deserializeItem(
         serializedItem.rawItem,
         resolveSerializedAgent(serializedItem.agent, agentMap),
       );
-    case 'tool_call_output_item':
-      return new RunToolCallOutputItem(
+    case 'tool_call_output_item': {
+      const item = new RunToolCallOutputItem(
         serializedItem.rawItem,
         resolveSerializedAgent(serializedItem.agent, agentMap),
         serializedItem.output,
         serializedItem.customData,
       );
+      return serializedItem.toolExecutionStarted
+        ? markRunToolCallOutputItemAsExecuted(item)
+        : item;
+    }
     case 'reasoning_item':
       return new RunReasoningItem(
         serializedItem.rawItem,

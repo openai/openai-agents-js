@@ -4028,7 +4028,7 @@ describe('Runner.run (streaming)', () => {
     expect(saveInputSpy).toHaveBeenCalledTimes(1);
     expect(saveResultSpy).not.toHaveBeenCalled();
     expect(guardrail.execute).toHaveBeenCalledTimes(1);
-    expect(result.state._currentStep?.type).not.toBe('next_step_final_output');
+    expect(result.state._currentStep?.type).toBe('next_step_final_output');
     expect(result.finalOutput).toBeUndefined();
     expect(warnSpy).toHaveBeenCalledWith(
       'Accessed finalOutput before agent run is completed.',
