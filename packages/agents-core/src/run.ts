@@ -69,6 +69,7 @@ import {
 import {
   createSessionPersistenceTracker,
   prepareInputItemsWithSession,
+  reconcileLegacyCompactionSessionBeforeResume,
   saveStreamInputToSession,
   saveStreamResultToSession,
   saveToSession,
@@ -107,7 +108,11 @@ import {
 import type { Span, TaskSpanData } from './tracing/spans';
 import { NoopTrace, type Trace } from './tracing/traces';
 import { NOOP_TRACE_OR_SPAN_ID } from './tracing/utils';
-import type { ReasoningItemIdPolicy } from './runner/items';
+import {
+  assertValidCompactionItems,
+  CompactionItemValidationError,
+  type ReasoningItemIdPolicy,
+} from './runner/items';
 import type {
   AgentArtifacts,
   CallModelInputFilter,
@@ -653,6 +658,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // When the server tracks conversation history we defer to it for previous turns so local session
     // persistence can focus solely on the new delta being generated in this process.
     const session = effectiveOptions.session;
+    if (resumingFromState) {
+      await reconcileLegacyCompactionSessionBeforeResume(
+        session,
+        input as RunState<TContext, TAgent>,
+      );
+    }
     const sessionPersistence = createSessionPersistenceTracker({
       session,
       hasCallModelInputFilter,
@@ -1562,6 +1573,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
     let continuingInterruptedTurn = false;
     let runError: unknown;
+    let suppressStreamInputPersistence = false;
     let approvedToolCheckpointCompacted = false;
     let approvedToolCheckpointRequiresLocalInputCompaction =
       isResumedState && hasPersistedToolOutput(result.state);
@@ -1735,8 +1747,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const { turnInput } = preparedTurn;
           parallelGuardrailPromise = preparedTurn.parallelGuardrailPromise;
           guardrailTracker.setPromise(parallelGuardrailPromise);
-          // If guardrails are still running, defer input persistence until they finish.
-          const delayStreamInputPersistence = guardrailTracker.pending;
           const preparedSandboxAgent = await sandboxRuntime.prepareAgent({
             currentAgent: result.state._currentAgent,
             turnInput,
@@ -1856,9 +1866,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           };
 
           sentInputToModel = true;
-          if (!delayStreamInputPersistence) {
-            await persistStreamInputIfNeeded();
-          }
 
           try {
             for await (const event of getStreamedResponseWithRetry(
@@ -1895,6 +1902,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 event,
               );
               if (event.type === 'response_done') {
+                assertValidCompactionItems(event.response.output);
                 const parsed = StreamEventResponseCompleted.parse(event);
                 finalResponse = {
                   usage: new Usage(parsed.response.usage),
@@ -2079,13 +2087,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       }
     } catch (error) {
       result.state._currentTurnInProgress = false;
+      suppressStreamInputPersistence =
+        error instanceof CompactionItemValidationError;
       if (guardrailTracker.pending) {
         await guardrailTracker.awaitCompletion({ suppressErrors: true });
       }
       if (
         sentInputToModel &&
         !streamInputPersisted &&
-        !guardrailTracker.failed
+        !guardrailTracker.failed &&
+        !suppressStreamInputPersistence
       ) {
         await persistStreamInputIfNeeded();
       }
@@ -2101,7 +2112,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         streamResult: result,
       });
       if (handledResult) {
-        await persistStreamInputIfNeeded();
+        if (!suppressStreamInputPersistence) {
+          await persistStreamInputIfNeeded();
+        }
         if (!serverManagesConversation) {
           await saveStreamResultWithCompactionOwnership();
         }
@@ -2139,7 +2152,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       if (
         sentInputToModel &&
         !streamInputPersisted &&
-        !guardrailTracker.failed
+        !guardrailTracker.failed &&
+        !suppressStreamInputPersistence
       ) {
         await persistStreamInputIfNeeded();
       }

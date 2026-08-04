@@ -10,6 +10,8 @@ import {
   Agent,
   retryPolicies,
   Runner,
+  type AgentInputItem,
+  type Session,
   setDefaultModelProvider,
   setTracingDisabled,
   withTrace,
@@ -4699,6 +4701,133 @@ describe('OpenAIResponsesModel', () => {
       expect(responseDone).toBeDefined();
       expect((responseDone as any).response.id).toBe('res-stream-request-id');
       expect((responseDone as any).response.requestId).toBe('req_stream_123');
+    });
+  });
+
+  describe('compaction items', () => {
+    function fakeClientWithResponse(response: unknown) {
+      const createMock = vi.fn().mockResolvedValue(response);
+      return {
+        createMock,
+        client: {
+          responses: { create: createMock },
+        } as unknown as OpenAI,
+      };
+    }
+
+    const baseRequest = {
+      systemInstructions: undefined,
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    };
+
+    it('rejects a compaction input item without ciphertext before calling the client', async () => {
+      const { client, createMock } = fakeClientWithResponse({
+        id: 'unused',
+        usage: {},
+        output: [],
+      });
+      const model = new OpenAIResponsesModel(client, 'gpt-test');
+
+      await expect(
+        withTrace('test', () =>
+          model.getResponse({
+            ...baseRequest,
+            input: [
+              {
+                type: 'compaction',
+                providerData: { provider: 'example' },
+              },
+            ],
+          } as any),
+        ),
+      ).rejects.toThrow('Compaction item missing encrypted_content');
+      expect(createMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed provider compaction output item', async () => {
+      const { client } = fakeClientWithResponse({
+        id: 'res-compaction-malformed',
+        usage: {},
+        output: [{ type: 'compaction', id: 'cmp_bad' }],
+      });
+      const model = new OpenAIResponsesModel(client, 'gpt-test');
+
+      await expect(
+        withTrace('test', () =>
+          model.getResponse({ ...baseRequest, input: 'hello' } as any),
+        ),
+      ).rejects.toThrow('Compaction item missing encrypted_content');
+    });
+
+    it('rejects a provider compaction output item with a malformed id', async () => {
+      const { client } = fakeClientWithResponse({
+        id: 'res-compaction-malformed-id',
+        usage: {},
+        output: [
+          { type: 'compaction', id: 7, encrypted_content: 'ciphertext' },
+        ],
+      });
+      const model = new OpenAIResponsesModel(client, 'gpt-test');
+
+      await expect(
+        withTrace('test', () =>
+          model.getResponse({ ...baseRequest, input: 'hello' } as any),
+        ),
+      ).rejects.toThrow('Compaction item missing encrypted_content');
+    });
+
+    it('does not persist session input when streamed provider compaction is malformed', async () => {
+      const completedEvent: OpenAIResponseStreamEvent = {
+        type: 'response.completed',
+        response: {
+          id: 'res-stream-compaction-malformed',
+          output: [{ type: 'compaction', id: 'cmp_bad' }],
+          usage: {},
+        } as any,
+        sequence_number: 0,
+      };
+      async function* fakeStream() {
+        yield completedEvent;
+      }
+      const createMock = vi.fn().mockResolvedValue(fakeStream());
+      const model = new OpenAIResponsesModel(
+        { responses: { create: createMock } } as unknown as OpenAI,
+        'gpt-test',
+      );
+      const addItems = vi.fn(async (_items: AgentInputItem[]) => {});
+      const clearSession = vi.fn(async () => {});
+      const replaceHistoryWithCompaction = vi.fn(
+        async (_items: AgentInputItem[]) => {},
+      );
+      const session: Session = {
+        getSessionId: vi.fn().mockResolvedValue('provider-stream-session'),
+        getItems: vi.fn().mockResolvedValue([]),
+        addItems,
+        popItem: vi.fn().mockResolvedValue(undefined),
+        clearSession,
+        replaceHistoryWithCompaction,
+      };
+      const agent = new Agent({
+        name: 'MalformedProviderStreamingCompactionAgent',
+        model,
+      });
+
+      const result = await new Runner().run(agent, 'persist-me', {
+        stream: true,
+        session,
+      });
+
+      await expect(result.completed).rejects.toThrow(
+        'Compaction item missing encrypted_content',
+      );
+      expect(addItems).not.toHaveBeenCalled();
+      expect(clearSession).not.toHaveBeenCalled();
+      expect(replaceHistoryWithCompaction).not.toHaveBeenCalled();
     });
   });
 

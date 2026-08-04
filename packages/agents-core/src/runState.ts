@@ -13,12 +13,17 @@ import {
   RunToolSearchCallItem,
   RunToolSearchOutputItem,
   RunReasoningItem,
+  RunCompactionItem,
   RunHandoffCallItem,
   RunHandoffOutputItem,
 } from './items';
 import type { ModelResponse, ModelSettings } from './model';
 import { RunContext } from './runContext';
-import { getTurnInput, type ReasoningItemIdPolicy } from './runner/items';
+import {
+  extractOutputItemsFromRunItems,
+  getTurnInput,
+  type ReasoningItemIdPolicy,
+} from './runner/items';
 import { AgentToolUseTracker } from './runner/toolUseTracker';
 import { nextStepSchema, NextStep } from './runner/steps';
 import { createToolRunFunction, type ProcessedResponse } from './runner/types';
@@ -116,8 +121,8 @@ import {
  *   and optional assistant message phases.
  * - 1.15: Adds reconstructable sandbox environment value references and sandbox
  *   session-state envelope version 2.
- * - 1.16: Adds category-aware function tool keys and agent-scoped function approvals,
- *   including aliases for legacy pending-run accessors.
+ * - 1.16: Adds compaction items, category-aware function tool keys, and agent-scoped
+ *   function approvals, including aliases for legacy pending-run accessors.
  */
 export const CURRENT_SCHEMA_VERSION = '1.16' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
@@ -242,6 +247,11 @@ const itemSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('reasoning_item'),
     rawItem: protocol.ReasoningItem,
+    agent: serializedAgentSchema,
+  }),
+  z.object({
+    type: z.literal('compaction_item'),
+    rawItem: protocol.CompactionItem,
     agent: serializedAgentSchema,
   }),
   z.object({
@@ -512,6 +522,7 @@ export const SerializedRunState = z.object({
     .default({}),
   lastProcessedResponse: serializedProcessedResponseSchema.optional(),
   currentTurnPersistedItemCount: z.number().int().min(0).optional(),
+  pendingLegacyCompactionSessionItems: z.array(protocol.ModelItem).optional(),
   conversationId: z.string().optional(),
   previousResponseId: z.string().optional(),
   reasoningItemIdPolicy: z.enum(['preserve', 'omit']).optional(),
@@ -636,6 +647,11 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public _currentTurnPersistedItemCount: number;
   /**
+   * Compaction marker and persisted suffix that an ordinary session must reconcile once after a
+   * pre-1.16 snapshot is restored. The field remains serialized until reconciliation succeeds.
+   */
+  public _pendingLegacyCompactionSessionItems: AgentInputItem[] | undefined;
+  /**
    * Maximum allowed turns before forcing termination.
    */
   public _maxTurns: number | null;
@@ -713,6 +729,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     this._pendingAgentToolRunAliases = new Map();
     this._generatedItems = [];
     this._currentTurnPersistedItemCount = 0;
+    this._pendingLegacyCompactionSessionItems = undefined;
     this._maxTurns = maxTurns;
     this._inputGuardrailResults = [];
     this._outputGuardrailResults = [];
@@ -1099,6 +1116,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
         this._pendingAgentToolRunAliases.entries(),
       ),
       currentTurnPersistedItemCount: this._currentTurnPersistedItemCount,
+      pendingLegacyCompactionSessionItems:
+        this._pendingLegacyCompactionSessionItems,
       lastProcessedResponse: this._lastProcessedResponse
         ? (serializeProcessedResponse(
             this._lastProcessedResponse,
@@ -1212,7 +1231,31 @@ async function buildRunStateFromString<
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
   );
-  return buildRunStateFromJson(initialAgent, stateJson, options);
+  assertSchemaVersionSupportsCompactionItems(
+    currentSchemaVersion as SupportedSchemaVersion,
+    stateJson,
+  );
+  const normalizedState = rehydrateLegacyCompactionRunItems(
+    currentSchemaVersion as SupportedSchemaVersion,
+    stateJson,
+  );
+  const state = await buildRunStateFromJson(
+    initialAgent,
+    normalizedState.stateJson,
+    options,
+  );
+  if (normalizedState.sessionReconciliation) {
+    const { generatedInsertionIndex, previousPersistedItemCount } =
+      normalizedState.sessionReconciliation;
+    state._pendingLegacyCompactionSessionItems = extractOutputItemsFromRunItems(
+      state._generatedItems.slice(
+        generatedInsertionIndex,
+        previousPersistedItemCount + 1,
+      ),
+    );
+    state._currentTurnPersistedItemCount = previousPersistedItemCount + 1;
+  }
+  return state;
 }
 
 function validateFunctionApprovalEnvelope(
@@ -1361,6 +1404,772 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
 
   throw new UserError(
     `Run state schema version ${schemaVersion} does not support sandbox session state version ${SANDBOX_SESSION_STATE_VERSION}. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+  );
+}
+
+/**
+ * Rejects older schemas that carry the new wrapper. Current snapshots treat generated items as
+ * the replay authority because a supported handoff input filter may remove or replace raw model
+ * output before it becomes history.
+ */
+function assertSchemaVersionSupportsCompactionItems(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: z.infer<typeof SerializedRunState>,
+): void {
+  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+    return;
+  }
+
+  if (
+    !containsSerializedCompactionRunItems(stateJson) &&
+    stateJson.pendingLegacyCompactionSessionItems === undefined
+  ) {
+    return;
+  }
+
+  throw new UserError(
+    `Run state schema version ${schemaVersion} does not support compaction items. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+  );
+}
+
+function containsSerializedCompactionRunItems(
+  stateJson: z.infer<typeof SerializedRunState>,
+): boolean {
+  return (
+    containsCompactionRunItems(stateJson.generatedItems) ||
+    containsCompactionRunItems(stateJson.lastProcessedResponse?.newItems)
+  );
+}
+
+function containsCompactionRunItems(
+  items: z.infer<typeof itemSchema>[] | undefined,
+): boolean {
+  return Boolean(items?.some((item) => item.type === 'compaction_item'));
+}
+
+function getCompactionSourceResponses(
+  stateJson: z.infer<typeof SerializedRunState>,
+): z.infer<typeof modelResponseSchema>[] {
+  return stateJson.modelResponses.length > 0
+    ? stateJson.modelResponses
+    : stateJson.lastModelResponse
+      ? [stateJson.lastModelResponse]
+      : [];
+}
+
+function findLatestCompactionSource(
+  stateJson: z.infer<typeof SerializedRunState>,
+):
+  | {
+      sourceResponses: z.infer<typeof modelResponseSchema>[];
+      responseIndex: number;
+      itemIndex: number;
+      item: protocol.CompactionItem;
+    }
+  | undefined {
+  const sourceResponses = getCompactionSourceResponses(stateJson);
+  for (
+    let responseIndex = sourceResponses.length - 1;
+    responseIndex >= 0;
+    responseIndex -= 1
+  ) {
+    const output = sourceResponses[responseIndex].output;
+    for (let itemIndex = output.length - 1; itemIndex >= 0; itemIndex -= 1) {
+      const item = output[itemIndex];
+      if (item.type === 'compaction') {
+        return { sourceResponses, responseIndex, itemIndex, item };
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Older writers kept raw compaction output but dropped its RunItem wrapper. Restore the latest
+ * marker before resuming because it carries the context required for the next model window.
+ */
+type LegacyCompactionRehydration = {
+  stateJson: z.infer<typeof SerializedRunState>;
+  sessionReconciliation?: {
+    generatedInsertionIndex: number;
+    previousPersistedItemCount: number;
+  };
+};
+
+function rehydrateLegacyCompactionRunItems(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: z.infer<typeof SerializedRunState>,
+): LegacyCompactionRehydration {
+  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+    return { stateJson };
+  }
+
+  const latestCompaction = findLatestCompactionSource(stateJson);
+  if (!latestCompaction) {
+    return { stateJson };
+  }
+
+  const {
+    sourceResponses,
+    responseIndex: sourceResponseIndex,
+    itemIndex: compactionIndex,
+    item: compactionItem,
+  } = latestCompaction;
+  const sourceResponse = sourceResponses[sourceResponseIndex];
+  const isLatestSourceResponse =
+    sourceResponseIndex === sourceResponses.length - 1;
+  const processedItems = isLatestSourceResponse
+    ? stateJson.lastProcessedResponse?.newItems
+    : undefined;
+  const optionalLatestFunctionCallIndices =
+    getOmittedLegacyHandoffFunctionCallIndices(
+      sourceResponses.at(-1)?.output ?? [],
+      stateJson.lastProcessedResponse,
+    );
+  const processedInsertion = processedItems
+    ? findLegacyCompactionInsertionIndex(
+        processedItems,
+        sourceResponse.output,
+        compactionIndex,
+        optionalLatestFunctionCallIndices,
+      )
+    : undefined;
+  let generatedInsertionAgent: SerializedAgentReference | undefined;
+  let generatedInsertionIndex: number;
+  if (!isLatestSourceResponse) {
+    const followingResponseBoundary = stateJson.lastProcessedResponse
+      ? findFollowingLegacyResponsesBoundary(
+          stateJson.generatedItems,
+          stateJson.lastProcessedResponse.newItems,
+          sourceResponses
+            .slice(sourceResponseIndex + 1)
+            .map((response) => response.output),
+          optionalLatestFunctionCallIndices,
+        )
+      : undefined;
+    if (!followingResponseBoundary) {
+      throwLegacyCompactionOrderingError();
+    }
+    const historicalInsertion = findHistoricalLegacyCompactionInsertion(
+      stateJson.generatedItems.slice(0, followingResponseBoundary.itemIndex),
+      sourceResponse.output,
+      compactionIndex,
+      followingResponseBoundary,
+      sourceResponseIndex > 0,
+    );
+    generatedInsertionIndex = historicalInsertion.itemIndex;
+    generatedInsertionAgent = historicalInsertion.agent;
+  } else if (processedItems !== undefined) {
+    const segmentStart = findTrailingProcessedSegmentStart(
+      stateJson.generatedItems,
+      processedItems,
+    );
+    if (segmentStart === undefined) {
+      throwLegacyCompactionOrderingError();
+    }
+    const generatedInsertion = findLegacyCompactionInsertionIndex(
+      stateJson.generatedItems.slice(segmentStart),
+      sourceResponse.output,
+      compactionIndex,
+      optionalLatestFunctionCallIndices,
+    );
+    generatedInsertionIndex = segmentStart + generatedInsertion.itemIndex;
+    generatedInsertionAgent = generatedInsertion.agent;
+  } else {
+    const generatedInsertion = findLegacyCompactionInsertionIndex(
+      stateJson.generatedItems,
+      sourceResponse.output,
+      compactionIndex,
+    );
+    generatedInsertionIndex = generatedInsertion.itemIndex;
+    generatedInsertionAgent = generatedInsertion.agent;
+  }
+
+  const serializedCompactionAgent =
+    processedInsertion?.agent ??
+    generatedInsertionAgent ??
+    stateJson.currentAgent;
+  if (
+    processedInsertion?.agent &&
+    generatedInsertionAgent &&
+    getCanonicalLegacyCompactionKey(processedInsertion.agent) !==
+      getCanonicalLegacyCompactionKey(generatedInsertionAgent)
+  ) {
+    throwLegacyCompactionOrderingError();
+  }
+
+  const serializedCompactionItem = {
+    type: 'compaction_item' as const,
+    rawItem: compactionItem,
+    agent: serializedCompactionAgent,
+  };
+
+  const previousPersistedItemCount =
+    stateJson.currentTurnPersistedItemCount ?? 0;
+  return {
+    stateJson: {
+      ...stateJson,
+      generatedItems: [
+        ...stateJson.generatedItems.slice(0, generatedInsertionIndex),
+        serializedCompactionItem,
+        ...stateJson.generatedItems.slice(generatedInsertionIndex),
+      ],
+      ...(processedItems
+        ? {
+            lastProcessedResponse: {
+              ...stateJson.lastProcessedResponse!,
+              newItems: [
+                ...processedItems.slice(0, processedInsertion!.itemIndex),
+                serializedCompactionItem,
+                ...processedItems.slice(processedInsertion!.itemIndex),
+              ],
+            },
+          }
+        : {}),
+    },
+    ...(generatedInsertionIndex < previousPersistedItemCount
+      ? {
+          sessionReconciliation: {
+            generatedInsertionIndex,
+            previousPersistedItemCount,
+          },
+        }
+      : {}),
+  };
+}
+
+function findHistoricalLegacyCompactionInsertion(
+  items: z.infer<typeof itemSchema>[],
+  sourceOutput: protocol.OutputModelItem[],
+  compactionIndex: number,
+  followingResponseBoundary: {
+    itemIndex: number;
+    agent: SerializedAgentReference;
+  },
+  allowEarlierResponseAnchors: boolean,
+): { itemIndex: number; agent: SerializedAgentReference } {
+  const providerAnchors = getLegacyProviderOutputAnchors(items, sourceOutput);
+  const representedSourceItems = getRepresentedLegacySourceItems(
+    sourceOutput,
+    compactionIndex,
+    providerAnchors,
+  );
+  const requiredSourceItems = getRequiredLegacySourceItems(
+    sourceOutput,
+    compactionIndex,
+  );
+  assertRequiredLegacySourceItemsRepresented(
+    requiredSourceItems,
+    representedSourceItems,
+  );
+  if (representedSourceItems.length === 0) {
+    if (!allowEarlierResponseAnchors && providerAnchors.length > 0) {
+      throwLegacyCompactionOrderingError();
+    }
+    return followingResponseBoundary;
+  }
+
+  const matchingStarts: number[] = [];
+  for (
+    let start = 0;
+    start <= providerAnchors.length - representedSourceItems.length;
+    start += 1
+  ) {
+    if (
+      representedSourceItems.every(
+        (sourceItem, offset) =>
+          providerAnchors[start + offset]?.key === sourceItem.key,
+      )
+    ) {
+      matchingStarts.push(start);
+    }
+  }
+  if (matchingStarts.length !== 1) {
+    throwLegacyCompactionOrderingError();
+  }
+
+  const matchedAnchors = providerAnchors.slice(
+    matchingStarts[0],
+    matchingStarts[0] + representedSourceItems.length,
+  );
+  const agent = matchedAnchors[0].agent;
+  const agentKey = getCanonicalLegacyCompactionKey(agent);
+  if (
+    matchedAnchors.some(
+      (anchor) => getCanonicalLegacyCompactionKey(anchor.agent) !== agentKey,
+    )
+  ) {
+    throwLegacyCompactionOrderingError();
+  }
+
+  const followingSourceIndex = representedSourceItems.findIndex(
+    (item) => item.sourceIndex > compactionIndex,
+  );
+  if (followingSourceIndex >= 0) {
+    return {
+      itemIndex: matchedAnchors[followingSourceIndex].itemIndex,
+      agent,
+    };
+  }
+
+  const previousAnchor = matchedAnchors[matchedAnchors.length - 1];
+  let itemIndex = previousAnchor.itemIndex + 1;
+  while (
+    items[itemIndex]?.type === 'tool_approval_item' &&
+    getCanonicalLegacyCompactionKey(items[itemIndex].rawItem) ===
+      previousAnchor.key
+  ) {
+    itemIndex += 1;
+  }
+  return { itemIndex, agent };
+}
+
+function findFollowingLegacyResponseBoundary(
+  generatedItems: z.infer<typeof itemSchema>[],
+  processedItems: z.infer<typeof itemSchema>[],
+  sourceOutput: protocol.OutputModelItem[],
+  optionalFunctionCallIndices: ReadonlySet<number> = new Set(),
+): { itemIndex: number; agent: SerializedAgentReference } | undefined {
+  const itemIndex = findTrailingProcessedSegmentStart(
+    generatedItems,
+    processedItems,
+  );
+  if (itemIndex === undefined) {
+    throwLegacyCompactionOrderingError();
+  }
+  if (
+    getLegacyProviderOutputAnchors(
+      generatedItems.slice(itemIndex + processedItems.length),
+      sourceOutput,
+    ).length > 0
+  ) {
+    throwLegacyCompactionOrderingError();
+  }
+
+  const providerAnchors = getLegacyProviderOutputAnchors(
+    processedItems,
+    sourceOutput,
+  );
+  const representedSourceItems = getRepresentedLegacySourceItems(
+    sourceOutput,
+    -1,
+    providerAnchors,
+    optionalFunctionCallIndices,
+  );
+  assertRequiredLegacySourceItemsRepresented(
+    getRequiredLegacySourceItems(sourceOutput, -1, optionalFunctionCallIndices),
+    representedSourceItems,
+  );
+  if (
+    providerAnchors.length === 0 ||
+    providerAnchors.length !== representedSourceItems.length ||
+    providerAnchors.some(
+      (anchor, index) => anchor.key !== representedSourceItems[index]?.key,
+    )
+  ) {
+    return undefined;
+  }
+
+  const agent = providerAnchors[0].agent;
+  const agentKey = getCanonicalLegacyCompactionKey(agent);
+  if (
+    providerAnchors.some(
+      (anchor) => getCanonicalLegacyCompactionKey(anchor.agent) !== agentKey,
+    )
+  ) {
+    throwLegacyCompactionOrderingError();
+  }
+  return { itemIndex, agent };
+}
+
+function findFollowingLegacyResponsesBoundary(
+  generatedItems: z.infer<typeof itemSchema>[],
+  processedItems: z.infer<typeof itemSchema>[],
+  sourceOutputs: protocol.OutputModelItem[][],
+  optionalLatestFunctionCallIndices: ReadonlySet<number>,
+): { itemIndex: number; agent: SerializedAgentReference } | undefined {
+  const latestSourceOutput = sourceOutputs.at(-1);
+  if (!latestSourceOutput) {
+    return undefined;
+  }
+
+  let boundary = findFollowingLegacyResponseBoundary(
+    generatedItems,
+    processedItems,
+    latestSourceOutput,
+    optionalLatestFunctionCallIndices,
+  );
+  if (!boundary) {
+    return undefined;
+  }
+
+  for (let index = sourceOutputs.length - 2; index >= 0; index -= 1) {
+    boundary = findPrecedingLegacyResponseBoundary(
+      generatedItems,
+      boundary.itemIndex,
+      sourceOutputs[index],
+    );
+  }
+  return boundary;
+}
+
+function findPrecedingLegacyResponseBoundary(
+  generatedItems: z.infer<typeof itemSchema>[],
+  followingBoundaryIndex: number,
+  sourceOutput: protocol.OutputModelItem[],
+): { itemIndex: number; agent: SerializedAgentReference } {
+  const precedingItems = generatedItems.slice(0, followingBoundaryIndex);
+  const providerAnchors = getLegacyProviderOutputAnchors(
+    precedingItems,
+    sourceOutput,
+  );
+  const representedSourceItems = getRepresentedLegacySourceItems(
+    sourceOutput,
+    -1,
+    providerAnchors,
+  );
+  assertRequiredLegacySourceItemsRepresented(
+    getRequiredLegacySourceItems(sourceOutput, -1),
+    representedSourceItems,
+  );
+  if (representedSourceItems.length === 0) {
+    throwLegacyCompactionOrderingError();
+  }
+
+  const matchingStarts: number[] = [];
+  for (
+    let start = 0;
+    start <= providerAnchors.length - representedSourceItems.length;
+    start += 1
+  ) {
+    if (
+      representedSourceItems.every(
+        (sourceItem, offset) =>
+          providerAnchors[start + offset]?.key === sourceItem.key,
+      )
+    ) {
+      matchingStarts.push(start);
+    }
+  }
+  if (matchingStarts.length !== 1) {
+    throwLegacyCompactionOrderingError();
+  }
+
+  const matchingStart = matchingStarts[0];
+  const matchedAnchors = providerAnchors.slice(
+    matchingStart,
+    matchingStart + representedSourceItems.length,
+  );
+  const trailingAnchors = providerAnchors.slice(
+    matchingStart + representedSourceItems.length,
+  );
+  if (
+    trailingAnchors.some(
+      (anchor) =>
+        precedingItems[anchor.itemIndex]?.type !== 'tool_call_output_item',
+    )
+  ) {
+    throwLegacyCompactionOrderingError();
+  }
+
+  const agent = matchedAnchors[0].agent;
+  const agentKey = getCanonicalLegacyCompactionKey(agent);
+  if (
+    matchedAnchors.some(
+      (anchor) => getCanonicalLegacyCompactionKey(anchor.agent) !== agentKey,
+    )
+  ) {
+    throwLegacyCompactionOrderingError();
+  }
+  return { itemIndex: matchedAnchors[0].itemIndex, agent };
+}
+
+function isLegacyProviderOutputRunItem(
+  item: z.infer<typeof itemSchema>,
+): item is z.infer<typeof itemSchema> & { agent: SerializedAgentReference } {
+  return (
+    item.type === 'message_output_item' ||
+    item.type === 'tool_search_call_item' ||
+    item.type === 'tool_search_output_item' ||
+    item.type === 'tool_call_item' ||
+    (item.type === 'tool_call_output_item' &&
+      (item.rawItem.type === 'program_output' ||
+        item.rawItem.type === 'shell_call_output')) ||
+    item.type === 'reasoning_item' ||
+    item.type === 'handoff_call_item'
+  );
+}
+
+function getLegacyProviderOutputAnchors(
+  items: z.infer<typeof itemSchema>[],
+  sourceOutput: protocol.OutputModelItem[],
+): Array<{
+  key: string;
+  itemIndex: number;
+  agent: SerializedAgentReference;
+}> {
+  const sourceOutputKeys = new Set(
+    sourceOutput.map((item) => getLegacyProviderOutputKey(item)),
+  );
+  return items.flatMap((item, itemIndex) => {
+    if (!isLegacyProviderOutputRunItem(item)) {
+      return [];
+    }
+    const key = getLegacyProviderOutputKey(item.rawItem);
+    if (
+      (item.type === 'tool_search_output_item' ||
+        (item.type === 'tool_call_output_item' &&
+          (item.rawItem.type === 'program_output' ||
+            item.rawItem.type === 'shell_call_output'))) &&
+      !sourceOutputKeys.has(key)
+    ) {
+      return [];
+    }
+    return [{ key, itemIndex, agent: item.agent }];
+  });
+}
+
+function getRepresentedLegacySourceItems(
+  sourceOutput: protocol.OutputModelItem[],
+  compactionIndex: number,
+  providerAnchors: Array<{ key: string }>,
+  optionalFunctionCallIndices: ReadonlySet<number> = new Set(),
+): Array<{ key: string; sourceIndex: number }> {
+  if (optionalFunctionCallIndices.size > 0) {
+    let providerAnchorIndex = 0;
+    return sourceOutput.flatMap((item, sourceIndex) => {
+      if (
+        sourceIndex === compactionIndex ||
+        optionalFunctionCallIndices.has(sourceIndex)
+      ) {
+        return [];
+      }
+      const key = getLegacyProviderOutputKey(item);
+      if (providerAnchors[providerAnchorIndex]?.key !== key) {
+        return [];
+      }
+      providerAnchorIndex += 1;
+      return [{ key, sourceIndex }];
+    });
+  }
+
+  const providerKeys = new Set(providerAnchors.map((anchor) => anchor.key));
+  return sourceOutput.flatMap((item, sourceIndex) => {
+    if (sourceIndex === compactionIndex) {
+      return [];
+    }
+    const key = getLegacyProviderOutputKey(item);
+    return providerKeys.has(key) ? [{ key, sourceIndex }] : [];
+  });
+}
+
+function getRequiredLegacySourceItems(
+  sourceOutput: protocol.OutputModelItem[],
+  compactionIndex: number,
+  optionalFunctionCallIndices: ReadonlySet<number> = new Set(),
+): Array<{ key: string; sourceIndex: number }> {
+  return sourceOutput.flatMap((item, sourceIndex) => {
+    const isOmittedHandoff =
+      item.type === 'function_call' &&
+      optionalFunctionCallIndices.has(sourceIndex);
+    if (
+      sourceIndex === compactionIndex ||
+      item.type === 'compaction' ||
+      isOmittedHandoff ||
+      item.type === 'function_call_result' ||
+      item.type === 'apply_patch_call_output' ||
+      item.type === 'unknown'
+    ) {
+      return [];
+    }
+    return [{ key: getLegacyProviderOutputKey(item), sourceIndex }];
+  });
+}
+
+function getOmittedLegacyHandoffFunctionCallIndices(
+  sourceOutput: protocol.OutputModelItem[],
+  processedResponse:
+    z.infer<typeof serializedProcessedResponseSchema> | undefined,
+): ReadonlySet<number> {
+  const matchedIndices: number[] = [];
+  let sourceStartIndex = 0;
+  for (const serializedHandoff of processedResponse?.handoffs ?? []) {
+    const parsedToolCall = protocol.FunctionCallItem.safeParse(
+      serializedHandoff.toolCall,
+    );
+    if (!parsedToolCall.success) {
+      return new Set();
+    }
+    const key = getLegacyProviderOutputKey(parsedToolCall.data);
+    const sourceIndex = sourceOutput.findIndex(
+      (item, index) =>
+        index >= sourceStartIndex &&
+        item.type === 'function_call' &&
+        getLegacyProviderOutputKey(item) === key,
+    );
+    if (sourceIndex < 0) {
+      return new Set();
+    }
+    matchedIndices.push(sourceIndex);
+    sourceStartIndex = sourceIndex + 1;
+  }
+  return new Set(matchedIndices.slice(1));
+}
+
+function assertRequiredLegacySourceItemsRepresented(
+  requiredItems: Array<{ key: string; sourceIndex: number }>,
+  representedItems: Array<{ key: string; sourceIndex: number }>,
+): void {
+  if (!isLegacySourceSubsequenceRepresented(requiredItems, representedItems)) {
+    throwLegacyCompactionOrderingError();
+  }
+}
+
+function isLegacySourceSubsequenceRepresented(
+  requiredItems: Array<{ key: string; sourceIndex: number }>,
+  representedItems: Array<{ key: string; sourceIndex: number }>,
+): boolean {
+  let representedIndex = 0;
+  for (const requiredItem of requiredItems) {
+    while (
+      representedIndex < representedItems.length &&
+      representedItems[representedIndex].sourceIndex < requiredItem.sourceIndex
+    ) {
+      representedIndex += 1;
+    }
+    if (
+      representedItems[representedIndex]?.sourceIndex !==
+        requiredItem.sourceIndex ||
+      representedItems[representedIndex]?.key !== requiredItem.key
+    ) {
+      return false;
+    }
+    representedIndex += 1;
+  }
+  return true;
+}
+
+function getLegacyProviderOutputKey(item: protocol.ModelItem): string {
+  if (item.type !== 'function_call') {
+    return getCanonicalLegacyCompactionKey(item);
+  }
+
+  const namespace = getToolCallNamespace(item);
+  if (!namespace) {
+    return getCanonicalLegacyCompactionKey(item);
+  }
+
+  const normalizedItem = { ...item, name: `${namespace}.${item.name}` };
+  delete normalizedItem.namespace;
+  return getCanonicalLegacyCompactionKey(normalizedItem);
+}
+
+function findLegacyCompactionInsertionIndex(
+  items: z.infer<typeof itemSchema>[],
+  sourceOutput: protocol.OutputModelItem[],
+  compactionIndex: number,
+  optionalFunctionCallIndices: ReadonlySet<number> = new Set(),
+): { itemIndex: number; agent?: SerializedAgentReference } {
+  const providerAnchors = getLegacyProviderOutputAnchors(items, sourceOutput);
+  const representedSourceItems = getRepresentedLegacySourceItems(
+    sourceOutput,
+    compactionIndex,
+    providerAnchors,
+    optionalFunctionCallIndices,
+  );
+  assertRequiredLegacySourceItemsRepresented(
+    getRequiredLegacySourceItems(
+      sourceOutput,
+      compactionIndex,
+      optionalFunctionCallIndices,
+    ),
+    representedSourceItems,
+  );
+
+  if (
+    providerAnchors.length !== representedSourceItems.length ||
+    providerAnchors.some(
+      (anchor, index) => anchor.key !== representedSourceItems[index]?.key,
+    )
+  ) {
+    throwLegacyCompactionOrderingError();
+  }
+
+  if (representedSourceItems.length === 0) {
+    if (items.length !== 0) {
+      throwLegacyCompactionOrderingError();
+    }
+    return { itemIndex: 0 };
+  }
+
+  const agent = providerAnchors[0].agent;
+  const agentKey = getCanonicalLegacyCompactionKey(agent);
+  if (
+    providerAnchors.some(
+      (anchor) => getCanonicalLegacyCompactionKey(anchor.agent) !== agentKey,
+    )
+  ) {
+    throwLegacyCompactionOrderingError();
+  }
+
+  const retainedBeforeCompaction = representedSourceItems.filter(
+    (item) => item.sourceIndex < compactionIndex,
+  ).length;
+  const followingAnchor = providerAnchors[retainedBeforeCompaction];
+  if (followingAnchor) {
+    if (retainedBeforeCompaction === 0 && followingAnchor.itemIndex !== 0) {
+      throwLegacyCompactionOrderingError();
+    }
+    return { itemIndex: followingAnchor.itemIndex, agent };
+  }
+  return { itemIndex: items.length, agent };
+}
+
+function findTrailingProcessedSegmentStart(
+  generatedItems: z.infer<typeof itemSchema>[],
+  processedItems: z.infer<typeof itemSchema>[],
+): number | undefined {
+  for (
+    let start = generatedItems.length - processedItems.length;
+    start >= 0;
+    start -= 1
+  ) {
+    const matches = processedItems.every((processedItem, offset) => {
+      const generatedItem = generatedItems[start + offset];
+      return (
+        getCanonicalLegacyCompactionKey(generatedItem) ===
+        getCanonicalLegacyCompactionKey(processedItem)
+      );
+    });
+    if (matches) {
+      return start;
+    }
+  }
+  return undefined;
+}
+
+function throwLegacyCompactionOrderingError(): never {
+  throw new UserError(
+    'Run state cannot safely restore a legacy compaction item because its provider order is ambiguous.',
+  );
+}
+
+function getCanonicalLegacyCompactionKey(value: unknown): string {
+  return JSON.stringify(sortLegacyCompactionValue(value));
+}
+
+function sortLegacyCompactionValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortLegacyCompactionValue);
+  }
+  if (typeof value !== 'object' || value === null) {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.keys(record)
+      .sort()
+      .map((key) => [key, sortLegacyCompactionValue(record[key])]),
   );
 }
 
@@ -2686,6 +3495,8 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   );
   state._currentTurnPersistedItemCount =
     stateJson.currentTurnPersistedItemCount ?? 0;
+  state._pendingLegacyCompactionSessionItems =
+    stateJson.pendingLegacyCompactionSessionItems;
   state._sandbox = stateJson.sandbox ?? undefined;
   const capabilitySnapshotsByAgent = await rehydrateToolSearchRuntimeTools(
     state,
@@ -3084,6 +3895,11 @@ export function deserializeItem(
       );
     case 'reasoning_item':
       return new RunReasoningItem(
+        serializedItem.rawItem,
+        resolveSerializedAgent(serializedItem.agent, agentMap),
+      );
+    case 'compaction_item':
+      return new RunCompactionItem(
         serializedItem.rawItem,
         resolveSerializedAgent(serializedItem.agent, agentMap),
       );

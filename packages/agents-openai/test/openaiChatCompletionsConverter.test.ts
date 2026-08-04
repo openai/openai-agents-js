@@ -21,6 +21,20 @@ import logger from '../src/logger';
  * shapes expected by OpenAI's Chat Completions API.
  */
 describe('itemsToMessages', () => {
+  test('rejects Responses compaction history before conversion', () => {
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_1',
+      encrypted_content: 'ciphertext',
+    };
+
+    expect(() => itemsToMessages([compaction])).toThrowError(
+      new UserError(
+        'Compaction items are not supported for chat completions. Please use the Responses API when working with compaction.',
+      ),
+    );
+  });
+
   test('converts built-in file_search_call without throwing', () => {
     const items: protocol.ModelItem[] = [
       {

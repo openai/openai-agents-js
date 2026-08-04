@@ -29,6 +29,7 @@ import {
   ToolGuardrailFunctionOutputFactory,
   withTrace,
   tool,
+  user,
   type Span,
   type Trace,
   type TracingProcessor,
@@ -52,6 +53,7 @@ import {
 import {
   Capability,
   Entry,
+  compaction,
   EnvValueReference,
   filesystem,
   isEnvValueReference,
@@ -59,6 +61,7 @@ import {
   memory,
   type MemoryStore,
   SANDBOX_SESSION_STATE_VERSION,
+  StaticCompactionPolicy,
   registerEnvValueReference,
   shell,
   skills,
@@ -1060,6 +1063,54 @@ describe('sandbox runner integration', () => {
       (normalizedInit.manifest.entries['init.txt'] as { content: string })
         .content,
     ).toBe('init');
+  });
+
+  it('trims context before a model-produced compaction marker on the next turn', async () => {
+    const client = new FakeSandboxClient();
+    const lookup = tool({
+      name: 'lookup',
+      description: 'Look something up.',
+      parameters: z.object({}),
+      execute: async () => 'tool result',
+    });
+    const model = new RecordingFakeModel([
+      {
+        output: [
+          {
+            type: 'compaction',
+            encrypted_content: 'compacted-up-to-here',
+          } as protocol.CompactionItem,
+          {
+            type: 'function_call',
+            id: 'fc_lookup',
+            callId: 'call_lookup',
+            name: 'lookup',
+            status: 'completed',
+            arguments: '{}',
+          } as protocol.FunctionCallItem,
+        ],
+        usage: new Usage(),
+      },
+      { output: [fakeModelMessage('sandbox done')], usage: new Usage() },
+    ]);
+    const sandboxAgent = new SandboxAgent({
+      name: 'SandboxWorker',
+      model,
+      tools: [lookup],
+      capabilities: [compaction({ policy: new StaticCompactionPolicy(123) })],
+    });
+
+    const runner = new Runner({ sandbox: { client } });
+    const result = await runner.run(sandboxAgent, [user('old-user')]);
+
+    expect(result.finalOutput).toBe('sandbox done');
+    expect(model.requests[0].input).toEqual([user('old-user')]);
+    const secondInput = model.requests[1].input as protocol.ModelItem[];
+    expect(secondInput[0]).toMatchObject({ type: 'compaction' });
+    expect(secondInput.some((item) => item.type === 'message')).toBe(false);
+    expect(model.requests[1].modelSettings.providerData).toMatchObject({
+      context_management: [{ type: 'compaction', compact_threshold: 123 }],
+    });
   });
 
   it('passes object RunConfig model overrides into sandbox capability sampling', async () => {

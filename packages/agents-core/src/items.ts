@@ -167,6 +167,27 @@ export class RunReasoningItem extends RunItemBase {
   }
 }
 
+/**
+ * A compaction marker returned by a model.
+ */
+export class RunCompactionItem extends RunItemBase {
+  public readonly type = 'compaction_item' as const;
+
+  constructor(
+    public rawItem: protocol.CompactionItem,
+    public agent: Agent,
+  ) {
+    super();
+  }
+
+  toJSON() {
+    return {
+      ...super.toJSON(),
+      agent: this.agent.toJSON(),
+    };
+  }
+}
+
 export class RunHandoffCallItem extends RunItemBase {
   public readonly type = 'handoff_call_item' as const;
 
@@ -292,6 +313,7 @@ export type RunItem =
   | RunToolSearchCallItem
   | RunToolSearchOutputItem
   | RunReasoningItem
+  | RunCompactionItem
   | RunHandoffCallItem
   | RunToolCallOutputItem
   | RunHandoffOutputItem

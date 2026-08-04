@@ -47,6 +47,17 @@ export interface Session {
   prepareHistoryItemForModelInput?(item: AgentInputItem): AgentInputItem;
 
   /**
+   * Optionally normalize stored and expected history before persistence reconciliation compares
+   * them.
+   *
+   * Session implementations can use this to remove backend-assigned metadata while preserving
+   * their public `getItems()` shape.
+   */
+  prepareHistoryItemsForPersistenceComparison?(
+    items: AgentInputItem[],
+  ): AgentInputItem[];
+
+  /**
    * Optionally preserve reasoning item IDs when persisting generated output.
    *
    * Some remote session stores require provider-assigned reasoning identities to accept stored
@@ -60,6 +71,16 @@ export interface Session {
    * @param items - Items to add to the session history.
    */
   addItems(items: AgentInputItem[]): Promise<void>;
+
+  /**
+   * Optionally replace the logical session history with a compaction marker and its retained
+   * suffix without resetting the session identity.
+   *
+   * Implementations may append the replacement when their backend treats the leading compaction
+   * item as the authoritative replay boundary. If this method is absent, the runner falls back to
+   * clearing and rebuilding the session with rollback protection.
+   */
+  replaceHistoryWithCompaction?(items: AgentInputItem[]): Promise<void>;
 
   /**
    * Remove and return the most recent item from the conversation history if it

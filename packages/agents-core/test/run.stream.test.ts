@@ -295,6 +295,140 @@ describe('Runner.run (streaming)', () => {
     expect((result.error as Error).message).toBe('Not implemented');
   });
 
+  it('emits a high-level run item event for streamed compaction', async () => {
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_stream',
+      encrypted_content: 'ciphertext',
+    };
+
+    class CompactionStreamingModel implements Model {
+      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        throw new Error('Unexpected non-streaming model request');
+      }
+
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'model',
+          event: { type: 'response.output_item.added', item: compaction },
+        } as StreamEvent;
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-compaction-stream',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [compaction, fakeModelMessage('streamed done')],
+          },
+        } as StreamEvent;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'StreamingCompactionAgent',
+      model: new CompactionStreamingModel(),
+    });
+    const result = await run(agent, 'hi', { stream: true });
+
+    const events: RunStreamEvent[] = [];
+    for await (const event of result) {
+      events.push(event);
+    }
+    await result.completed;
+
+    expect(result.finalOutput).toBe('streamed done');
+    expect(result.newItems.map((item) => item.type)).toEqual([
+      'compaction_item',
+      'message_output_item',
+    ]);
+    expect(result.history).toContainEqual(compaction);
+    expect(
+      events.some((event) => event.type === 'raw_model_stream_event'),
+    ).toBe(true);
+    expect(
+      events.find(
+        (event) =>
+          event.type === 'run_item_stream_event' &&
+          event.name === 'compaction_item_created',
+      ),
+    ).toMatchObject({
+      type: 'run_item_stream_event',
+      name: 'compaction_item_created',
+      item: {
+        type: 'compaction_item',
+        rawItem: compaction,
+      },
+    });
+  });
+
+  it('does not persist input for a malformed terminal compaction item', async () => {
+    class MalformedCompactionStreamingModel implements Model {
+      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        throw new Error('Unexpected non-streaming model request');
+      }
+
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-malformed-compaction-stream',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [
+              {
+                type: 'compaction',
+                id: 'cmp_malformed_stream',
+              },
+            ],
+          },
+        } as StreamEvent;
+      }
+    }
+
+    const addItems = vi.fn(async (_items: AgentInputItem[]) => {});
+    const clearSession = vi.fn(async () => {});
+    const replaceHistoryWithCompaction = vi.fn(
+      async (_items: AgentInputItem[]) => {},
+    );
+    const session: Session = {
+      getSessionId: vi.fn().mockResolvedValue('malformed-stream-session'),
+      getItems: vi.fn().mockResolvedValue([]),
+      addItems,
+      popItem: vi.fn().mockResolvedValue(undefined),
+      clearSession,
+      replaceHistoryWithCompaction,
+    };
+    const agent = new Agent({
+      name: 'MalformedStreamingCompactionAgent',
+      model: new MalformedCompactionStreamingModel(),
+    });
+    const defaultErrorHandler = vi.fn(() => ({
+      finalOutput: 'not used',
+    }));
+
+    const result = await run(agent, 'hello', {
+      stream: true,
+      session,
+      errorHandlers: { default: defaultErrorHandler },
+    });
+
+    await expect(result.completed).rejects.toThrow(
+      'Compaction item missing encrypted_content',
+    );
+    expect(defaultErrorHandler).not.toHaveBeenCalled();
+    expect(addItems).not.toHaveBeenCalled();
+    expect(clearSession).not.toHaveBeenCalled();
+    expect(replaceHistoryWithCompaction).not.toHaveBeenCalled();
+  });
+
   it('treats prior tool_search outputs in input history as loaded deferred tools', async () => {
     class QueueStreamingModel implements Model {
       constructor(private readonly responses: ModelResponse[]) {}
@@ -3717,6 +3851,55 @@ describe('Runner.run (streaming)', () => {
       role: 'user',
       content: 'save me please',
     });
+  });
+
+  it('replaces session history from explicit compaction input when streaming fails', async () => {
+    const previousSessionItem = user('previous session');
+    const discardedInput = user('discarded input');
+    const retainedInput = user('retained input');
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_stream_input_failure',
+      encrypted_content: 'ciphertext',
+    };
+    const sessionItems: AgentInputItem[] = [previousSessionItem];
+    const session: Session = {
+      getSessionId: vi.fn().mockResolvedValue('compacted-stream-session'),
+      getItems: vi.fn(async () => structuredClone(sessionItems)),
+      addItems: vi.fn(async (items: AgentInputItem[]) => {
+        sessionItems.push(...structuredClone(items));
+      }),
+      popItem: vi.fn(async () => sessionItems.pop()),
+      clearSession: vi.fn(async () => {
+        sessionItems.splice(0);
+      }),
+    };
+    const streamError = new Error('model stream failed after compaction');
+    let capturedRequest: ModelRequest | undefined;
+    const model: Model = {
+      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        throw streamError;
+      },
+      getStreamedResponse(request: ModelRequest): AsyncIterable<StreamEvent> {
+        capturedRequest = request;
+        return new RejectingStreamingModel(streamError).getStreamedResponse(
+          request,
+        );
+      },
+    };
+    const agent = new Agent({ name: 'StreamCompactedInputFailure', model });
+    const result = await new Runner().run(
+      agent,
+      [discardedInput, compaction, retainedInput],
+      { stream: true, session },
+    );
+
+    await expect(result.completed).rejects.toThrow(
+      'model stream failed after compaction',
+    );
+
+    expect(capturedRequest?.input).toEqual([compaction, retainedInput]);
+    expect(sessionItems).toEqual([compaction, retainedInput]);
   });
 
   it('persists filtered streaming input instead of the raw turn payload', async () => {

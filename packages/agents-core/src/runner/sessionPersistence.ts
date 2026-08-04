@@ -13,6 +13,7 @@ import { Usage } from '../usage';
 import { encodeUint8ArrayToBase64 } from '../utils/base64';
 import { toUint8ArrayFromBinary } from '../utils/binary';
 import {
+  assertValidCompactionItems,
   buildAgentInputPool,
   dropOrphanToolCalls,
   extractOutputItemsFromRunItems,
@@ -20,9 +21,10 @@ import {
   getAgentInputItemKey,
   removeAgentInputFromPool,
   stripReasoningItemIdForPolicy,
+  trimToLatestCompaction,
   type ReasoningItemIdPolicy,
 } from './items';
-import logger from '../logger';
+import logger, { logModelAndToolActionWarning } from '../logger';
 import { getRunStateUsageRecorder } from './usageTracking';
 
 export type PreparedInputWithSessionResult = {
@@ -34,6 +36,23 @@ export type SessionPersistenceOptions = {
   runCompaction?: boolean;
   compactionMode?: OpenAIResponsesCompactionArgs['compactionMode'];
 };
+
+class SessionReconciliationRecoveryError extends Error {
+  readonly errors: readonly [unknown, unknown];
+  readonly cause: unknown;
+
+  constructor(
+    readonly primaryError: unknown,
+    readonly rollbackError: unknown,
+  ) {
+    super(
+      'Failed to reconcile legacy compaction session history and restore the previous session contents.',
+    );
+    this.name = 'SessionReconciliationRecoveryError';
+    this.errors = [primaryError, rollbackError];
+    this.cause = primaryError;
+  }
+}
 
 export type SessionPersistenceTracker = {
   setPreparedItems: (items?: AgentInputItem[]) => void;
@@ -313,6 +332,17 @@ export async function saveStreamInputToSession(
     return;
   }
   const sanitizedInput = normalizeItemsForSessionPersistence(sessionInputItems);
+  const compactedInput = trimToLatestCompaction(sanitizedInput);
+  assertPersistableCompactionBoundary(compactedInput);
+  if (compactedInput[0]?.type === 'compaction') {
+    const previousItems = await session.getItems();
+    await replaceSessionItemsWithRecovery(
+      session,
+      previousItems,
+      compactedInput,
+    );
+    return;
+  }
   await session.addItems(sanitizedInput);
 }
 
@@ -336,6 +366,87 @@ export async function saveStreamResultToSession(
   });
 }
 
+export async function reconcileLegacyCompactionSessionBeforeResume(
+  session: Session | undefined,
+  state: RunState<any, any>,
+): Promise<void> {
+  const pendingLegacyItems = state._pendingLegacyCompactionSessionItems;
+  if (pendingLegacyItems === undefined) {
+    return;
+  }
+  const normalizedPendingItems =
+    normalizeItemsForSessionPersistence(pendingLegacyItems);
+  assertPersistableCompactionBoundary(normalizedPendingItems);
+  assertPendingLegacyCompactionItemsMatchState(
+    state,
+    normalizedPendingItems,
+    undefined,
+  );
+  if (!session) {
+    throwLegacyCompactionReconciliationError();
+  }
+
+  const reasoningItemIdPolicy =
+    session.preserveReasoningItemIdsForPersistence?.() === true
+      ? undefined
+      : state._reasoningItemIdPolicy;
+  const sanitizedPendingItems = normalizeItemsForSessionPersistence(
+    pendingLegacyItems.map((item) =>
+      stripReasoningItemIdForPolicy(item, reasoningItemIdPolicy),
+    ),
+  );
+  assertPendingLegacyCompactionItemsMatchState(
+    state,
+    sanitizedPendingItems,
+    reasoningItemIdPolicy,
+  );
+  await reconcileLegacyCompactionSessionItems(session, sanitizedPendingItems);
+  state._pendingLegacyCompactionSessionItems = undefined;
+}
+
+function assertPendingLegacyCompactionItemsMatchState(
+  state: RunState<any, any>,
+  pendingItems: AgentInputItem[],
+  reasoningItemIdPolicy: ReasoningItemIdPolicy | undefined,
+): void {
+  if (pendingItems.length < 2 || pendingItems[0]?.type !== 'compaction') {
+    throwLegacyCompactionReconciliationError();
+  }
+
+  const persistedItemCount = state._currentTurnPersistedItemCount;
+  if (
+    !Number.isInteger(persistedItemCount) ||
+    persistedItemCount < 1 ||
+    persistedItemCount > state._generatedItems.length
+  ) {
+    throwLegacyCompactionReconciliationError();
+  }
+
+  let matchingCandidates = 0;
+  for (let index = 0; index < persistedItemCount; index += 1) {
+    if (state._generatedItems[index]?.type !== 'compaction_item') {
+      continue;
+    }
+    const candidateItems = normalizeItemsForSessionPersistence(
+      extractOutputItemsFromRunItems(
+        state._generatedItems.slice(index, persistedItemCount),
+        reasoningItemIdPolicy,
+      ),
+    );
+    if (
+      candidateItems.length > 1 &&
+      agentItemRangeMatches(candidateItems, pendingItems, 0) &&
+      candidateItems.length === pendingItems.length
+    ) {
+      matchingCandidates += 1;
+    }
+  }
+
+  if (matchingCandidates !== 1) {
+    throwLegacyCompactionReconciliationError();
+  }
+}
+
 export async function prepareInputItemsWithSession(
   input: string | AgentInputItem[],
   session?: Session,
@@ -346,6 +457,8 @@ export async function prepareInputItemsWithSession(
     reasoningItemIdPolicy?: ReasoningItemIdPolicy;
   },
 ): Promise<PreparedInputWithSessionResult> {
+  const newInputItems = toAgentInputList(input);
+  assertValidCompactionItems(newInputItems);
   if (!session) {
     return {
       preparedInput: input,
@@ -358,9 +471,8 @@ export async function prepareInputItemsWithSession(
   const preserveDroppedNewItems = options?.preserveDroppedNewItems ?? false;
   const reasoningItemIdPolicy = options?.reasoningItemIdPolicy;
 
-  const history = await session.getItems();
-  const newInputItems = toAgentInputList(input);
-
+  const history = trimToLatestCompaction(await session.getItems());
+  assertPersistableCompactionBoundary(history);
   if (!sessionInputCallback) {
     const historyForModelInput = history.map((item) =>
       prepareHistoryItemForModelInput(session, item, reasoningItemIdPolicy),
@@ -385,6 +497,7 @@ export async function prepareInputItemsWithSession(
       'Session input callback must return an array of AgentInputItem objects.',
     );
   }
+  assertValidCompactionItems(combined);
 
   const historyCounts = buildItemFrequencyMap(historySnapshot, {
     session,
@@ -657,14 +770,15 @@ async function persistRunItemsToSession(options: {
     return;
   }
 
+  await reconcileLegacyCompactionSessionBeforeResume(session, state);
+
+  const reasoningItemIdPolicy =
+    session.preserveReasoningItemIdsForPersistence?.() === true
+      ? undefined
+      : state._reasoningItemIdPolicy;
   const itemsToSave = [
     ...extraInputItems,
-    ...extractOutputItemsFromRunItems(
-      newRunItems,
-      session.preserveReasoningItemIdsForPersistence?.() === true
-        ? undefined
-        : state._reasoningItemIdPolicy,
-    ),
+    ...extractOutputItemsFromRunItems(newRunItems, reasoningItemIdPolicy),
   ];
 
   if (itemsToSave.length === 0) {
@@ -682,7 +796,18 @@ async function persistRunItemsToSession(options: {
   }
 
   const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
-  await session.addItems(sanitizedItems);
+  const compactedItems = trimToLatestCompaction(sanitizedItems);
+  assertPersistableCompactionBoundary(compactedItems);
+  if (compactedItems[0]?.type === 'compaction') {
+    const previousItems = await session.getItems();
+    await replaceSessionItemsWithRecovery(
+      session,
+      previousItems,
+      compactedItems,
+    );
+  } else {
+    await session.addItems(sanitizedItems);
+  }
   state._currentTurnPersistedItemCount =
     alreadyPersistedCount + newRunItems.length;
   if (runCompaction) {
@@ -693,6 +818,188 @@ async function persistRunItemsToSession(options: {
       compactionMode,
     );
   }
+}
+
+async function reconcileLegacyCompactionSessionItems(
+  session: Session,
+  pendingItems: AgentInputItem[],
+): Promise<void> {
+  if (pendingItems.length === 0 || pendingItems[0]?.type !== 'compaction') {
+    throwLegacyCompactionReconciliationError();
+  }
+  assertPersistableCompactionBoundary(pendingItems);
+
+  const previousItems = await session.getItems();
+  assertValidCompactionItems(trimToLatestCompaction(previousItems));
+  const comparablePreviousItems =
+    session.prepareHistoryItemsForPersistenceComparison?.(previousItems) ??
+    previousItems;
+  const comparablePendingItems =
+    session.prepareHistoryItemsForPersistenceComparison?.(pendingItems) ??
+    pendingItems;
+  const compactedComparablePreviousItems = trimToLatestCompaction(
+    comparablePreviousItems,
+  );
+  if (
+    compactedComparablePreviousItems.length === comparablePendingItems.length &&
+    agentItemRangeMatches(
+      compactedComparablePreviousItems,
+      comparablePendingItems,
+      0,
+    )
+  ) {
+    return;
+  }
+
+  const previouslyPersistedSuffix = comparablePendingItems.slice(1);
+  if (
+    !agentItemRangeMatches(
+      comparablePreviousItems,
+      previouslyPersistedSuffix,
+      comparablePreviousItems.length - previouslyPersistedSuffix.length,
+    )
+  ) {
+    throwLegacyCompactionReconciliationError();
+  }
+
+  await replaceSessionItemsWithRecovery(session, previousItems, pendingItems);
+}
+
+function assertPersistableCompactionBoundary(items: AgentInputItem[]): void {
+  assertValidCompactionItems(items);
+}
+
+function agentItemRangeMatches(
+  items: AgentInputItem[],
+  expected: AgentInputItem[],
+  start: number,
+): boolean {
+  if (start < 0 || start + expected.length > items.length) {
+    return false;
+  }
+  return expected.every(
+    (item, offset) =>
+      getSessionReconciliationItemKey(items[start + offset]) ===
+      getSessionReconciliationItemKey(item),
+  );
+}
+
+function getSessionReconciliationItemKey(item: AgentInputItem): string {
+  return JSON.stringify(sortSessionReconciliationValue(item));
+}
+
+function sortSessionReconciliationValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortSessionReconciliationValue);
+  }
+  if (!isPlainObject(value)) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, sortSessionReconciliationValue(value[key])]),
+  );
+}
+
+function throwLegacyCompactionReconciliationError(): never {
+  throw new UserError(
+    'Run state cannot safely reconcile its restored compaction item with session history.',
+  );
+}
+
+async function replaceSessionItemsWithRecovery(
+  session: Session,
+  previousItems: AgentInputItem[],
+  replacementItems: AgentInputItem[],
+): Promise<void> {
+  assertValidCompactionItems(trimToLatestCompaction(previousItems));
+  assertValidCompactionItems(trimToLatestCompaction(replacementItems));
+  if (
+    replacementItems[0]?.type === 'compaction' &&
+    session.replaceHistoryWithCompaction
+  ) {
+    const comparablePreviousItems =
+      session.prepareHistoryItemsForPersistenceComparison?.(previousItems) ??
+      previousItems;
+    const comparableReplacementItems =
+      session.prepareHistoryItemsForPersistenceComparison?.(replacementItems) ??
+      replacementItems;
+    const compactedPreviousItems = trimToLatestCompaction(
+      comparablePreviousItems,
+    );
+    if (
+      compactedPreviousItems.length === comparableReplacementItems.length &&
+      agentItemRangeMatches(
+        compactedPreviousItems,
+        comparableReplacementItems,
+        0,
+      )
+    ) {
+      return;
+    }
+    await session.replaceHistoryWithCompaction(replacementItems);
+    return;
+  }
+
+  try {
+    await session.clearSession();
+    if (replacementItems.length > 0) {
+      await session.addItems(replacementItems);
+    }
+  } catch (error) {
+    await restoreSessionItemsAfterFailedReplacement(
+      session,
+      previousItems,
+      error,
+    );
+    throw error;
+  }
+}
+
+async function restoreSessionItemsAfterFailedReplacement(
+  session: Session,
+  previousItems: AgentInputItem[],
+  replacementError: unknown,
+): Promise<void> {
+  try {
+    const currentItems = await session.getItems();
+    if (
+      currentItems.length === previousItems.length &&
+      agentItemRangeMatches(currentItems, previousItems, 0)
+    ) {
+      return;
+    }
+  } catch (inspectionError) {
+    logModelAndToolActionWarning(
+      logger,
+      'Failed to inspect session history after compaction replacement failed.',
+      inspectionError,
+    );
+  }
+
+  try {
+    await session.clearSession();
+    if (previousItems.length > 0) {
+      await session.addItems(previousItems);
+    }
+  } catch (restoreError) {
+    logModelAndToolActionWarning(
+      logger,
+      'Failed to restore session history after compaction replacement failed.',
+      restoreError,
+    );
+    throw new SessionReconciliationRecoveryError(
+      replacementError,
+      restoreError,
+    );
+  }
+
+  logModelAndToolActionWarning(
+    logger,
+    'Restored session history after compaction replacement failed.',
+    replacementError,
+  );
 }
 
 async function runCompactionOnSession(

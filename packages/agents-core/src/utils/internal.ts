@@ -1,5 +1,9 @@
 export { formatInlineData, getInlineMediaType } from './inlineData';
 export { recordToolUsage } from '../runner/usageTracking';
+export {
+  assertValidCompactionItems,
+  CompactionItemValidationError,
+} from '../runner/items';
 export { normalizeToolAllowedCallers } from './toolCallers';
 export {
   hasDynamicFunctionToolApprovalPolicy,

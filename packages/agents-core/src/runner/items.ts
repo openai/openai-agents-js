@@ -1,5 +1,7 @@
 import { RunItem } from '../items';
+import { UserError } from '../errors';
 import { AgentInputItem } from '../types';
+import * as protocol from '../types/protocol';
 import { serializeBinary } from '../utils/binary';
 import {
   getToolResultCorrelationForCall,
@@ -12,6 +14,8 @@ import {
 
 export type AgentInputItemPool = Map<string, AgentInputItem[]>;
 
+export class CompactionItemValidationError extends UserError {}
+
 // Normalizes user-provided input into the structure the model expects. Strings become user messages,
 // arrays are kept as-is so downstream loops can treat both scenarios uniformly.
 export function toAgentInputList(
@@ -22,6 +26,21 @@ export function toAgentInputList(
   }
 
   return [...originalInput];
+}
+
+export function assertValidCompactionItems(
+  items: readonly AgentInputItem[],
+): void {
+  for (const item of items) {
+    if (
+      item.type === 'compaction' &&
+      !protocol.CompactionItem.safeParse(item).success
+    ) {
+      throw new CompactionItemValidationError(
+        'Compaction item missing encrypted_content',
+      );
+    }
+  }
 }
 
 export function getAgentInputItemKey(item: AgentInputItem): string {
@@ -434,16 +453,15 @@ export function prepareModelInputItems(
     generatedItems,
     reasoningItemIdPolicy,
   );
-  return [...callerItems, ...preparedGeneratedItems];
+  return trimToLatestCompaction([...callerItems, ...preparedGeneratedItems]);
 }
 
 function getContinuationOutputItems(
   generatedItems: RunItem[],
   reasoningItemIdPolicy?: ReasoningItemIdPolicy,
 ): AgentInputItem[] {
-  const generatedOutputItems = extractOutputItemsFromRunItems(
-    generatedItems,
-    reasoningItemIdPolicy,
+  const generatedOutputItems = trimToLatestCompaction(
+    extractOutputItemsFromRunItems(generatedItems, reasoningItemIdPolicy),
   );
   return dropOrphanToolCalls(generatedOutputItems);
 }
@@ -464,5 +482,19 @@ export function getTurnInput(
     generatedItems,
     reasoningItemIdPolicy,
   );
-  return [...toAgentInputList(originalInput), ...outputItems];
+  return trimToLatestCompaction([
+    ...toAgentInputList(originalInput),
+    ...outputItems,
+  ]);
+}
+
+export function trimToLatestCompaction(
+  items: AgentInputItem[],
+): AgentInputItem[] {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.type === 'compaction') {
+      return items.slice(index);
+    }
+  }
+  return items;
 }

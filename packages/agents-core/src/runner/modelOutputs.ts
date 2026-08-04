@@ -2,6 +2,7 @@ import { Agent } from '../agent';
 import { ModelBehaviorError } from '../errors';
 import { Handoff } from '../handoff';
 import {
+  RunCompactionItem,
   RunHandoffCallItem,
   RunItem,
   RunMessageOutputItem,
@@ -65,6 +66,7 @@ import {
   registerRuntimeToolSearchTools,
 } from './toolSearch';
 import { ensureToolCallerAllowed } from './toolCaller';
+import { assertValidCompactionItems } from './items';
 
 function ensureToolAvailable<T>(
   tool: T | undefined,
@@ -691,6 +693,7 @@ export function processModelResponse<TContext>(
   toolNotFoundBehavior: ToolNotFoundBehavior = 'raise_error',
   processingOptions: ModelResponseProcessingOptions = {},
 ): ProcessedResponse<TContext> {
+  assertValidCompactionItems(modelResponse.output);
   const items: RunItem[] = [];
   const runHandoffs: ToolRunHandoff[] = [];
   const runFunctions: ToolRunFunction<TContext>[] = [];
@@ -832,6 +835,8 @@ export function processModelResponse<TContext>(
       }
     } else if (output.type === 'reasoning') {
       items.push(new RunReasoningItem(output, agent));
+    } else if (output.type === 'compaction') {
+      items.push(new RunCompactionItem(output, agent));
     } else if (output.type === 'computer_call') {
       handleToolCallAction({
         output,
@@ -1011,6 +1016,7 @@ export async function processModelResponseAsync<TContext>(
   toolNotFoundBehavior: ToolNotFoundBehavior = 'raise_error',
   processingOptions: ModelResponseProcessingOptions = {},
 ): Promise<ProcessedResponse<TContext>> {
+  assertValidCompactionItems(modelResponse.output);
   const clientToolSearchTool = getClientToolSearchHelper(tools);
   const hasCustomClientToolSearchExecutor = Boolean(
     clientToolSearchTool && getClientToolSearchExecutor(clientToolSearchTool),
@@ -1197,6 +1203,8 @@ export async function processModelResponseAsync<TContext>(
       }
     } else if (output.type === 'reasoning') {
       items.push(new RunReasoningItem(output, agent));
+    } else if (output.type === 'compaction') {
+      items.push(new RunCompactionItem(output, agent));
     } else if (output.type === 'computer_call') {
       handleToolCallAction({
         output,

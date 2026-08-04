@@ -51,6 +51,7 @@ import {
   RunToolSearchCallItem,
   RunToolSearchOutputItem,
 } from '../src/items';
+import { MemorySession as CoreMemorySession } from '../src/memory/memorySession';
 import { getTurnInput, selectModel } from '../src/run';
 import { RunContext } from '../src/runContext';
 import { RunState } from '../src/runState';
@@ -8363,6 +8364,114 @@ describe('Runner.run', () => {
         type: 'function_call_result',
         callId: 'call-1',
       });
+    });
+  });
+
+  describe('inline compaction items', () => {
+    class RecordingModel extends FakeModel {
+      readonly requests: ModelRequest[] = [];
+
+      override async getResponse(
+        request: ModelRequest,
+      ): Promise<ModelResponse> {
+        this.requests.push(request);
+        return super.getResponse(request);
+      }
+    }
+
+    const COMPACTION_ITEM: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_inline',
+      encrypted_content: 'ciphertext',
+      created_by: 'compaction_endpoint',
+      providerData: { extra: 'value' },
+    };
+
+    it('replays a compaction marker in provider order on the next request', async () => {
+      const lookup = tool({
+        name: 'lookup',
+        description: 'Look something up.',
+        parameters: z.object({}),
+        execute: async () => 'tool result payload',
+      });
+      const model = new RecordingModel([
+        {
+          output: [
+            COMPACTION_ITEM,
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: 'lookup',
+              callId: 'call_lookup',
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        { output: [fakeModelMessage('done')], usage: new Usage() },
+      ]);
+      const agent = new Agent({
+        name: 'CompactionAgent',
+        model,
+        tools: [lookup],
+      });
+
+      const result = await run(agent, [user('identifiable old user input')]);
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+      const secondInput = getRequestInputItems(model.requests[1]);
+      expect(secondInput).toHaveLength(3);
+      expect(secondInput[0]).toEqual(COMPACTION_ITEM);
+      expect(secondInput[1]).toMatchObject({
+        type: 'function_call',
+        callId: 'call_lookup',
+      });
+      expect(secondInput[2]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call_lookup',
+      });
+      expect(secondInput).not.toContainEqual(
+        expect.objectContaining({
+          content: 'identifiable old user input',
+        }),
+      );
+      expect(result.output).toContainEqual(COMPACTION_ITEM);
+      expect(result.history[0]).toEqual(COMPACTION_ITEM);
+    });
+
+    it('rewrites ordinary session history from the latest compaction marker', async () => {
+      const session = new CoreMemorySession({
+        initialItems: [user('earlier stored input')],
+      });
+      const clearSession = vi.spyOn(session, 'clearSession');
+      const model = new RecordingModel([
+        {
+          output: [COMPACTION_ITEM, fakeModelMessage('first turn done')],
+          usage: new Usage(),
+        },
+        { output: [fakeModelMessage('second turn done')], usage: new Usage() },
+      ]);
+      const agent = new Agent({
+        name: 'SessionCompactionAgent',
+        model,
+      });
+
+      await run(agent, 'new user input', { session });
+
+      expect(clearSession).toHaveBeenCalledOnce();
+      const stored = await session.getItems();
+      expect(stored[0]).toEqual(COMPACTION_ITEM);
+      expect(stored).toHaveLength(2);
+
+      await run(agent, 'later user input', { session });
+      const laterInput = getRequestInputItems(model.requests[1]);
+      expect(laterInput[0]).toEqual(COMPACTION_ITEM);
+      expect(laterInput).not.toContainEqual(
+        expect.objectContaining({ content: 'earlier stored input' }),
+      );
+      expect(getFirstTextContent(laterInput[laterInput.length - 1])).toBe(
+        'later user input',
+      );
     });
   });
 
