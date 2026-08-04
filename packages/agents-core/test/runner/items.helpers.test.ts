@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { Agent } from '../../src/agent';
 import {
+  RunCompactionItem,
   RunMessageOutputItem,
   RunReasoningItem,
   RunToolCallItem,
@@ -37,6 +38,45 @@ describe('prepareModelInputItems', () => {
         content: 'hello',
       },
     ]);
+  });
+
+  it('drops orphan calls before considering pre-compaction results', () => {
+    const agent = new Agent({ name: 'HelperAgent' });
+    const callId = 'call_reused_after_compaction';
+    const oldResult = new RunToolCallOutputItem(
+      {
+        type: 'function_call_result',
+        name: 'reused_tool',
+        callId,
+        output: 'old result',
+        status: 'completed',
+      },
+      agent,
+      'old result',
+    );
+    const compaction = {
+      type: 'compaction',
+      id: 'cmp_reused_call',
+      encrypted_content: 'ciphertext',
+    } satisfies protocol.CompactionItem;
+    const newCall = new RunToolCallItem(
+      {
+        type: 'function_call',
+        name: 'reused_tool',
+        callId,
+        arguments: '{}',
+        status: 'completed',
+      },
+      agent,
+    );
+
+    const prepared = prepareModelInputItems('old input', [
+      oldResult,
+      new RunCompactionItem(compaction, agent),
+      newCall,
+    ]);
+
+    expect(prepared).toEqual([compaction]);
   });
 
   it('drops orphan generated programs and keeps completed programs', () => {

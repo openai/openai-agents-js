@@ -20,6 +20,7 @@ import {
   getAgentInputItemKey,
   removeAgentInputFromPool,
   stripReasoningItemIdForPolicy,
+  trimToLatestCompaction,
   type ReasoningItemIdPolicy,
 } from './items';
 import logger, { logModelAndToolActionWarning } from '../logger';
@@ -361,6 +362,13 @@ export async function reconcileLegacyCompactionSessionBeforeResume(
   if (pendingLegacyItems === undefined) {
     return;
   }
+  const normalizedPendingItems =
+    normalizeItemsForSessionPersistence(pendingLegacyItems);
+  assertPendingLegacyCompactionItemsMatchState(
+    state,
+    normalizedPendingItems,
+    undefined,
+  );
   if (!session) {
     throwLegacyCompactionReconciliationError();
   }
@@ -448,7 +456,7 @@ export async function prepareInputItemsWithSession(
   const preserveDroppedNewItems = options?.preserveDroppedNewItems ?? false;
   const reasoningItemIdPolicy = options?.reasoningItemIdPolicy;
 
-  const history = await session.getItems();
+  const history = trimToLatestCompaction(await session.getItems());
   const newInputItems = toAgentInputList(input);
 
   if (!sessionInputCallback) {
@@ -747,6 +755,8 @@ async function persistRunItemsToSession(options: {
     return;
   }
 
+  await reconcileLegacyCompactionSessionBeforeResume(session, state);
+
   const reasoningItemIdPolicy =
     session.preserveReasoningItemIdsForPersistence?.() === true
       ? undefined
@@ -755,8 +765,6 @@ async function persistRunItemsToSession(options: {
     ...extraInputItems,
     ...extractOutputItemsFromRunItems(newRunItems, reasoningItemIdPolicy),
   ];
-
-  await reconcileLegacyCompactionSessionBeforeResume(session, state);
 
   if (itemsToSave.length === 0) {
     state._currentTurnPersistedItemCount =
@@ -773,7 +781,17 @@ async function persistRunItemsToSession(options: {
   }
 
   const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
-  await session.addItems(sanitizedItems);
+  const compactedItems = trimToLatestCompaction(sanitizedItems);
+  if (compactedItems[0]?.type === 'compaction') {
+    const previousItems = await session.getItems();
+    await replaceSessionItemsWithRecovery(
+      session,
+      previousItems,
+      compactedItems,
+    );
+  } else {
+    await session.addItems(sanitizedItems);
+  }
   state._currentTurnPersistedItemCount =
     alreadyPersistedCount + newRunItems.length;
   if (runCompaction) {
@@ -796,20 +814,13 @@ async function reconcileLegacyCompactionSessionItems(
 
   const previousItems = await session.getItems();
   if (
-    agentItemRangeMatches(
-      previousItems,
-      pendingItems,
-      previousItems.length - pendingItems.length,
-    )
+    previousItems.length === pendingItems.length &&
+    agentItemRangeMatches(previousItems, pendingItems, 0)
   ) {
     return;
   }
 
   const previouslyPersistedSuffix = pendingItems.slice(1);
-  if (previouslyPersistedSuffix.length === 0) {
-    await session.addItems(pendingItems);
-    return;
-  }
   if (
     !agentItemRangeMatches(
       previousItems,
@@ -820,15 +831,7 @@ async function reconcileLegacyCompactionSessionItems(
     throwLegacyCompactionReconciliationError();
   }
 
-  const replacementItems = [
-    ...previousItems.slice(0, -previouslyPersistedSuffix.length),
-    ...pendingItems,
-  ];
-  await replaceSessionItemsWithRecovery(
-    session,
-    previousItems,
-    replacementItems,
-  );
+  await replaceSessionItemsWithRecovery(session, previousItems, pendingItems);
 }
 
 function agentItemRangeMatches(
@@ -906,7 +909,7 @@ async function restoreSessionItemsAfterFailedReplacement(
   } catch (inspectionError) {
     logModelAndToolActionWarning(
       logger,
-      'Failed to inspect session history after legacy compaction reconciliation failed.',
+      'Failed to inspect session history after compaction replacement failed.',
       inspectionError,
     );
   }
@@ -919,7 +922,7 @@ async function restoreSessionItemsAfterFailedReplacement(
   } catch (restoreError) {
     logModelAndToolActionWarning(
       logger,
-      'Failed to restore session history after legacy compaction reconciliation failed.',
+      'Failed to restore session history after compaction replacement failed.',
       restoreError,
     );
     throw new SessionReconciliationRecoveryError(
@@ -930,7 +933,7 @@ async function restoreSessionItemsAfterFailedReplacement(
 
   logModelAndToolActionWarning(
     logger,
-    'Restored session history after legacy compaction reconciliation failed.',
+    'Restored session history after compaction replacement failed.',
     replacementError,
   );
 }

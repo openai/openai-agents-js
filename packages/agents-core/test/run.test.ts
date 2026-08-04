@@ -8420,24 +8420,26 @@ describe('Runner.run', () => {
       expect(result.finalOutput).toBe('done');
       expect(model.requests).toHaveLength(2);
       const secondInput = getRequestInputItems(model.requests[1]);
-      expect(secondInput).toHaveLength(4);
-      expect(getFirstTextContent(secondInput[0])).toBe(
-        'identifiable old user input',
-      );
-      expect(secondInput[1]).toEqual(COMPACTION_ITEM);
-      expect(secondInput[2]).toMatchObject({
+      expect(secondInput).toHaveLength(3);
+      expect(secondInput[0]).toEqual(COMPACTION_ITEM);
+      expect(secondInput[1]).toMatchObject({
         type: 'function_call',
         callId: 'call_lookup',
       });
-      expect(secondInput[3]).toMatchObject({
+      expect(secondInput[2]).toMatchObject({
         type: 'function_call_result',
         callId: 'call_lookup',
       });
+      expect(secondInput).not.toContainEqual(
+        expect.objectContaining({
+          content: 'identifiable old user input',
+        }),
+      );
       expect(result.output).toContainEqual(COMPACTION_ITEM);
-      expect(result.history).toContainEqual(COMPACTION_ITEM);
+      expect(result.history[0]).toEqual(COMPACTION_ITEM);
     });
 
-    it('persists a compaction marker without rewriting ordinary session history', async () => {
+    it('rewrites ordinary session history from the latest compaction marker', async () => {
       const session = new CoreMemorySession({
         initialItems: [user('earlier stored input')],
       });
@@ -8456,15 +8458,17 @@ describe('Runner.run', () => {
 
       await run(agent, 'new user input', { session });
 
-      expect(clearSession).not.toHaveBeenCalled();
+      expect(clearSession).toHaveBeenCalledOnce();
       const stored = await session.getItems();
-      expect(getFirstTextContent(stored[0])).toBe('earlier stored input');
-      expect(stored).toContainEqual(COMPACTION_ITEM);
+      expect(stored[0]).toEqual(COMPACTION_ITEM);
+      expect(stored).toHaveLength(2);
 
       await run(agent, 'later user input', { session });
       const laterInput = getRequestInputItems(model.requests[1]);
-      expect(getFirstTextContent(laterInput[0])).toBe('earlier stored input');
-      expect(laterInput).toContainEqual(COMPACTION_ITEM);
+      expect(laterInput[0]).toEqual(COMPACTION_ITEM);
+      expect(laterInput).not.toContainEqual(
+        expect.objectContaining({ content: 'earlier stored input' }),
+      );
       expect(getFirstTextContent(laterInput[laterInput.length - 1])).toBe(
         'later user input',
       );

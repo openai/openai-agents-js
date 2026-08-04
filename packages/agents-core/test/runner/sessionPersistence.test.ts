@@ -1320,6 +1320,69 @@ describe('prepareInputItemsWithSession', () => {
     expect(sessionItems[1]).toBe(newItems[1]);
   });
 
+  it('uses only session history at and after the latest compaction', async () => {
+    const oldHistory: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'old history',
+    };
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_session_input',
+      encrypted_content: 'ciphertext',
+    };
+    const retainedHistory: AgentInputItem = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'retained history' }],
+    };
+    const session = new StubSession([oldHistory, compaction, retainedHistory]);
+
+    const result = await prepareInputItemsWithSession('new', session);
+
+    expect(result.preparedInput).toEqual([
+      compaction,
+      retainedHistory,
+      ...toAgentInputList('new'),
+    ]);
+  });
+
+  it('passes only compacted session history to the input callback', async () => {
+    const oldHistory: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'old history',
+    };
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_session_callback',
+      encrypted_content: 'ciphertext',
+    };
+    const retainedHistory: AgentInputItem = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'retained history' }],
+    };
+    const session = new StubSession([oldHistory, compaction, retainedHistory]);
+
+    const result = await prepareInputItemsWithSession(
+      'new',
+      session,
+      (history, newItems) => {
+        expect(history).toEqual([compaction, retainedHistory]);
+        return [...history, ...newItems];
+      },
+    );
+
+    expect(result.preparedInput).toEqual([
+      compaction,
+      retainedHistory,
+      ...toAgentInputList('new'),
+    ]);
+  });
+
   it('sanitizes assistant history items before model input when the session requests it', async () => {
     const userHistoryItem: AgentInputItem = {
       id: 'conv-user',
@@ -2479,6 +2542,38 @@ describe('saveToSession', () => {
     expect(state._currentTurnPersistedItemCount).toBe(2);
   });
 
+  it('replaces the full legacy session prefix and remains idempotent', async () => {
+    const oldHistory = fakeModelMessage('old history');
+    const call = functionCall('call_legacy_prefix_reconciliation');
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_legacy_prefix_reconciliation',
+      encrypted_content: 'ciphertext',
+    };
+    const state = new RunState(new RunContext(), 'input', TEST_AGENT, 1);
+    state._generatedItems = [
+      new CompactionItem(compaction, TEST_AGENT),
+      new ToolCallItem(call, TEST_AGENT),
+    ];
+    state._pendingLegacyCompactionSessionItems = [compaction, call];
+    state._currentTurnPersistedItemCount = 2;
+    const session = new MemorySession();
+    session.items = [oldHistory, call];
+
+    await saveToSession(session, [], new RunResult(state as any), {
+      runCompaction: false,
+    });
+    expect(session.items).toEqual([compaction, call]);
+    expect(state._pendingLegacyCompactionSessionItems).toBeUndefined();
+
+    state._pendingLegacyCompactionSessionItems = [compaction, call];
+    await saveToSession(session, [], new RunResult(state as any), {
+      runCompaction: false,
+    });
+    expect(session.items).toEqual([compaction, call]);
+    expect(state._pendingLegacyCompactionSessionItems).toBeUndefined();
+  });
+
   it('rejects mismatched session history before legacy compaction reconciliation', async () => {
     const call = functionCall('call_expected_legacy_reconciliation');
     const compaction: protocol.CompactionItem = {
@@ -2596,7 +2691,14 @@ describe('saveToSession', () => {
     state._pendingLegacyCompactionSessionItems = [compaction];
     state._currentTurnPersistedItemCount = 1;
     const message = fakeModelMessage('existing history');
-    const session = new MemorySession();
+    let policyReads = 0;
+    class PolicyThrowingSession extends MemorySession {
+      preserveReasoningItemIdsForPersistence(): boolean {
+        policyReads += 1;
+        throw new Error('session policy should not be read');
+      }
+    }
+    const session = new PolicyThrowingSession();
     session.items = [message];
 
     await expect(
@@ -2604,6 +2706,7 @@ describe('saveToSession', () => {
         runCompaction: false,
       }),
     ).rejects.toThrow('cannot safely reconcile');
+    expect(policyReads).toBe(0);
     expect(session.items).toEqual([message]);
   });
 

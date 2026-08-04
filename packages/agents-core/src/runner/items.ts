@@ -434,16 +434,15 @@ export function prepareModelInputItems(
     generatedItems,
     reasoningItemIdPolicy,
   );
-  return [...callerItems, ...preparedGeneratedItems];
+  return trimToLatestCompaction([...callerItems, ...preparedGeneratedItems]);
 }
 
 function getContinuationOutputItems(
   generatedItems: RunItem[],
   reasoningItemIdPolicy?: ReasoningItemIdPolicy,
 ): AgentInputItem[] {
-  const generatedOutputItems = extractOutputItemsFromRunItems(
-    generatedItems,
-    reasoningItemIdPolicy,
+  const generatedOutputItems = trimToLatestCompaction(
+    extractOutputItemsFromRunItems(generatedItems, reasoningItemIdPolicy),
   );
   return dropOrphanToolCalls(generatedOutputItems);
 }
@@ -464,5 +463,19 @@ export function getTurnInput(
     generatedItems,
     reasoningItemIdPolicy,
   );
-  return [...toAgentInputList(originalInput), ...outputItems];
+  return trimToLatestCompaction([
+    ...toAgentInputList(originalInput),
+    ...outputItems,
+  ]);
+}
+
+export function trimToLatestCompaction(
+  items: AgentInputItem[],
+): AgentInputItem[] {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.type === 'compaction') {
+      return items.slice(index);
+    }
+  }
+  return items;
 }
