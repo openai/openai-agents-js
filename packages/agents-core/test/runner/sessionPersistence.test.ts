@@ -159,12 +159,12 @@ describe('selectRunItemsForBlockedOutput', () => {
     ).toEqual([runItem, output]);
   });
 
-  it('retains valid computer, shell, and apply-patch pairs', () => {
+  it('retains executed pairs whose calls remain in progress', () => {
     const computerCall = new ToolCallItem(
       {
         type: 'computer_call',
         callId: 'computer-valid',
-        status: 'completed',
+        status: 'in_progress',
         action: { type: 'screenshot' },
       },
       TEST_AGENT,
@@ -187,6 +187,7 @@ describe('selectRunItemsForBlockedOutput', () => {
       {
         type: 'shell_call',
         callId: 'shell-valid',
+        status: 'in_progress',
         action: { commands: ['pwd'] },
       },
       TEST_AGENT,
@@ -212,7 +213,7 @@ describe('selectRunItemsForBlockedOutput', () => {
       {
         type: 'apply_patch_call',
         callId: 'apply-patch-valid',
-        status: 'completed',
+        status: 'in_progress',
         operation: { type: 'delete_file', path: 'old.txt' },
       },
       TEST_AGENT,
@@ -302,13 +303,16 @@ describe('selectRunItemsForBlockedOutput', () => {
   });
 
   it.each(['in_progress', 'incomplete'] as const)(
-    'drops %s tool calls',
+    'retains executed results for %s tool calls',
     (status) => {
       const call = { ...functionCall(`call-${status}`), status };
       const runItem = new ToolCallItem(call, TEST_AGENT);
       const output = functionResult(call, 'done');
 
-      expect(selectRunItemsForBlockedOutput([runItem, output])).toEqual([]);
+      expect(selectRunItemsForBlockedOutput([runItem, output])).toEqual([
+        runItem,
+        output,
+      ]);
     },
   );
 
@@ -397,16 +401,18 @@ describe('selectRunItemsForBlockedOutput', () => {
     ]);
   });
 
-  it('drops unknown statuses on otherwise supported tool items', () => {
+  it('uses execution provenance for supported calls with unknown statuses', () => {
     const call = {
       ...functionCall('call-unknown-status'),
       status: 'unknown',
     } as unknown as protocol.FunctionCallItem;
     const runItem = new ToolCallItem(call, TEST_AGENT);
 
-    expect(
-      selectRunItemsForBlockedOutput([runItem, functionResult(call, 'done')]),
-    ).toEqual([]);
+    const output = functionResult(call, 'done');
+    expect(selectRunItemsForBlockedOutput([runItem, output])).toEqual([
+      runItem,
+      output,
+    ]);
   });
 
   it('drops reasoning that precedes a retained tool result', () => {

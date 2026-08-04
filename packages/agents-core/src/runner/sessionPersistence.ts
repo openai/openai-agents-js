@@ -61,18 +61,15 @@ function classifyBlockedToolRecord(
 
   switch (type) {
     case 'program':
-      role = 'call';
-      terminal = true;
-      break;
     case 'function_call':
     case 'shell_call':
-      role = 'call';
-      terminal = status === undefined || status === 'completed';
-      break;
     case 'computer_call':
     case 'apply_patch_call':
       role = 'call';
-      terminal = status === 'completed';
+      // Client-executed calls can retain the provider's in-progress status even
+      // after the runner has produced their result. The matching result's
+      // execution provenance is the authoritative side-effect boundary.
+      terminal = true;
       break;
     case 'function_call_result':
     case 'program_output':
