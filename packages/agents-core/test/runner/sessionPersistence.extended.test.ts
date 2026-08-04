@@ -54,25 +54,179 @@ describe('sessionPersistence tracker (extended)', () => {
     expect(tracker.getItemsForPersistence()).toEqual(filtered);
   });
 
-  it('deduplicates multiple references to the same source item when filtering', () => {
+  it.each([false, true])(
+    'persists repeated source occurrences with filter configured as %s',
+    (hasCallModelInputFilter) => {
+      const session = makeSession();
+      const tracker = createSessionPersistenceTracker({
+        session,
+        hasCallModelInputFilter,
+      })!;
+
+      const shared = {
+        type: 'message',
+        role: 'user',
+        content: 'shared',
+      } as const;
+      tracker.setPreparedItems([shared, shared]);
+
+      const filtered = [{ ...shared }, { ...shared }];
+      tracker.recordTurnItems([shared, shared], filtered);
+
+      expect(tracker.getItemsForPersistence()).toEqual(filtered);
+    },
+  );
+
+  it('uses exact source ownership for equal-content items', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({
       session,
-      hasCallModelInputFilter: false,
+      hasCallModelInputFilter: true,
     })!;
-
-    const shared = {
+    const first = {
       type: 'message',
       role: 'user',
-      content: 'shared',
+      content: 'same',
     } as const;
-    tracker.setPreparedItems([shared, shared]);
+    const second = { ...first };
+    const preparedInput = [first, second];
+    tracker.setPreparedItems([second], preparedInput);
+    const turnInput = structuredClone(preparedInput);
+    tracker.setPreparedTurnItems(turnInput);
 
-    const filtered = toAgentInputList('shared');
-    tracker.recordTurnItems([shared, shared], filtered);
+    tracker.recordTurnItems(
+      [turnInput[1], turnInput[0]],
+      [
+        { ...second, content: 'current' },
+        { ...first, content: 'history' },
+      ],
+    );
 
-    const resolved = tracker.getItemsForPersistence();
-    expect(resolved).toEqual([]);
+    expect(tracker.getItemsForPersistence()).toEqual([
+      { ...second, content: 'current' },
+    ]);
+  });
+
+  it('keeps current input ownership when context processing removes a prefix', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const history = {
+      type: 'message',
+      role: 'user',
+      content: 'history',
+    } as const;
+    const compacted = {
+      type: 'compaction',
+      encrypted_content: 'summary',
+    } as const;
+    const current = {
+      type: 'message',
+      role: 'user',
+      content: 'current',
+    } as const;
+    const preparedInput = [history, compacted, current];
+    tracker.setPreparedItems([current], preparedInput);
+    const turnInput = structuredClone(preparedInput);
+    tracker.setPreparedTurnItems(turnInput);
+    const processedInput = turnInput.slice(1);
+
+    tracker.recordTurnItems(processedInput, processedInput);
+
+    expect(tracker.getItemsForPersistence()).toEqual([current]);
+  });
+
+  it('retains captured owned input when a later model call omits it', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const current = {
+      type: 'message',
+      role: 'user',
+      content: 'current',
+    } as const;
+    const preparedInput = [current];
+    tracker.setPreparedItems([current], preparedInput);
+    const turnInput = structuredClone(preparedInput);
+    tracker.setPreparedTurnItems(turnInput);
+    tracker.recordTurnItems([turnInput[0]], [{ ...current }]);
+
+    const laterCompaction = {
+      type: 'compaction',
+      encrypted_content: 'later',
+    } as const;
+    tracker.recordTurnItems([laterCompaction], [laterCompaction]);
+
+    expect(tracker.getItemsForPersistence()).toEqual([current]);
+  });
+
+  it('adds later injected items without removing captured owned input', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const current = {
+      type: 'message',
+      role: 'user',
+      content: 'current',
+    } as const;
+    tracker.setPreparedItems([current], [current]);
+    const turnInput = structuredClone([current]);
+    tracker.setPreparedTurnItems(turnInput);
+    tracker.recordTurnItems([turnInput[0]], [{ ...current }]);
+
+    const injected = {
+      type: 'message',
+      role: 'user',
+      content: 'injected later',
+    } as const;
+    tracker.recordTurnItems([undefined], [injected]);
+
+    expect(tracker.getItemsForPersistence()).toEqual([current, injected]);
+  });
+
+  it('keeps normalized prepared input when a later model call injects an item', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const oldCall = {
+      type: 'function_call',
+      callId: 'call_later_injection',
+      name: 'lookup',
+      arguments: '{"value":"old"}',
+    } as const;
+    const newCall = {
+      ...oldCall,
+      arguments: '{"value":"new"}',
+    };
+    const generated = {
+      type: 'function_call_result',
+      callId: oldCall.callId,
+      name: oldCall.name,
+      status: 'completed',
+      output: 'done',
+    } as const;
+    const injected = {
+      type: 'message',
+      role: 'user',
+      content: 'injected',
+    } as const;
+    tracker.setPreparedItems([oldCall, newCall]);
+
+    tracker.recordTurnItems([newCall], [newCall]);
+    tracker.recordTurnItems(
+      [undefined, newCall, generated],
+      [injected, newCall, generated],
+    );
+
+    expect(tracker.getItemsForPersistence()).toEqual([injected, newCall]);
   });
 
   it('persists injected filtered items alongside mapped originals', () => {
@@ -121,8 +275,9 @@ describe('sessionPersistence tracker (extended)', () => {
     await ensure?.();
     expect(persist).not.toHaveBeenCalled();
 
-    tracker.setPreparedItems(toAgentInputList('stream me'));
-    tracker.recordTurnItems(toAgentInputList('stream me'));
+    const preparedItems = toAgentInputList('stream me');
+    tracker.setPreparedItems(preparedItems);
+    tracker.recordTurnItems(preparedItems);
 
     await ensure?.();
     expect(persist).toHaveBeenCalledTimes(1);

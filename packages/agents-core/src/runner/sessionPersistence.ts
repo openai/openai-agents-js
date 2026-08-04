@@ -15,6 +15,7 @@ import { toUint8ArrayFromBinary } from '../utils/binary';
 import {
   assertValidCompactionItems,
   buildAgentInputPool,
+  deduplicateAgentInputItemsPreferringLatest,
   dropOrphanToolCalls,
   extractOutputItemsFromRunItems,
   toAgentInputList,
@@ -54,8 +55,15 @@ class SessionReconciliationRecoveryError extends Error {
   }
 }
 
+type PersistedInputOccurrence =
+  { type: 'owned'; index: number } | { type: 'injected'; item: AgentInputItem };
+
 export type SessionPersistenceTracker = {
-  setPreparedItems: (items?: AgentInputItem[]) => void;
+  setPreparedItems: (
+    items?: AgentInputItem[],
+    preparedInput?: string | AgentInputItem[],
+  ) => void;
+  setPreparedTurnItems: (items: AgentInputItem[]) => void;
   recordTurnItems: (
     sourceItems: (AgentInputItem | undefined)[],
     filteredItems?: AgentInputItem[],
@@ -83,7 +91,10 @@ export function createSessionPersistenceTracker(options: {
     private readonly persistInput?: typeof saveStreamInputToSession;
     private originalSnapshot: AgentInputItem[] | undefined;
     private filteredSnapshot: AgentInputItem[] | undefined;
-    private pendingWriteCounts: Map<string, number> | undefined;
+    private preparedSources: AgentInputItem[] | undefined;
+    private preparedSourceIndexes: number[] | undefined;
+    private ownedFilteredItems = new Map<number, AgentInputItem>();
+    private persistedInputOrder: PersistedInputOccurrence[] = [];
     private persistedInput = false;
 
     constructor() {
@@ -92,48 +103,68 @@ export function createSessionPersistenceTracker(options: {
       this.persistInput = options.persistInput;
       this.originalSnapshot = options.resumingFromState ? [] : undefined;
       this.filteredSnapshot = undefined;
-      this.pendingWriteCounts = options.resumingFromState
-        ? new Map()
-        : undefined;
+      this.preparedSources = options.resumingFromState ? [] : undefined;
+      this.preparedSourceIndexes = options.resumingFromState ? [] : undefined;
     }
 
-    setPreparedItems = (items?: AgentInputItem[]) => {
+    setPreparedItems = (
+      items?: AgentInputItem[],
+      preparedInput?: string | AgentInputItem[],
+    ) => {
       const sessionItems = items ?? [];
-      this.originalSnapshot = sessionItems.map((item) => structuredClone(item));
-      this.pendingWriteCounts = new Map();
-      for (const item of sessionItems) {
-        const key = getAgentInputItemKey(item);
-        this.pendingWriteCounts.set(
-          key,
-          (this.pendingWriteCounts.get(key) ?? 0) + 1,
+      this.originalSnapshot = cloneItems(
+        deduplicateAgentInputItemsPreferringLatest(sessionItems),
+      );
+      if (Array.isArray(preparedInput)) {
+        this.preparedSources = undefined;
+        this.preparedSourceIndexes = findOwnedItemIndexes(
+          preparedInput,
+          sessionItems,
         );
+      } else {
+        this.preparedSources = sessionItems;
+        this.preparedSourceIndexes = undefined;
       }
+      this.ownedFilteredItems.clear();
+      this.persistedInputOrder = [];
+    };
+
+    setPreparedTurnItems = (items: AgentInputItem[]) => {
+      if (!this.preparedSourceIndexes) {
+        return;
+      }
+      this.preparedSources = this.preparedSourceIndexes
+        .map((index) => items[index])
+        .filter((item): item is AgentInputItem => item !== undefined);
+      this.preparedSourceIndexes = undefined;
     };
 
     recordTurnItems = (
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => {
-      const pendingCounts = this.pendingWriteCounts;
       if (filteredItems !== undefined) {
-        if (!pendingCounts) {
+        if (!this.preparedSources) {
           this.filteredSnapshot = cloneItems(filteredItems);
           return;
         }
-        const nextSnapshot = collectPersistableFilteredItems({
-          pendingCounts,
+        const next = reconcilePersistableFilteredItems({
+          preparedSources: this.preparedSources,
           sourceItems,
           filteredItems,
-          existingSnapshot: this.filteredSnapshot,
+          ownedFilteredItems: this.ownedFilteredItems,
+          persistedInputOrder: this.persistedInputOrder,
         });
-        if (nextSnapshot !== undefined) {
-          this.filteredSnapshot = nextSnapshot;
-        }
+        this.ownedFilteredItems = next.ownedFilteredItems;
+        this.persistedInputOrder = next.persistedInputOrder;
+        this.filteredSnapshot = next.filteredSnapshot;
         return;
       }
 
       this.filteredSnapshot = buildSnapshotForUnfilteredItems({
-        pendingCounts,
+        preparedSourceCounts: this.preparedSources
+          ? countItemReferences(this.preparedSources)
+          : undefined,
         sourceItems,
         existingSnapshot: this.filteredSnapshot,
       });
@@ -175,91 +206,114 @@ function cloneItems(items: AgentInputItem[]): AgentInputItem[] {
   return items.map((item) => structuredClone(item));
 }
 
-function buildSourceOccurrenceCounts(
-  sourceItems: (AgentInputItem | undefined)[],
-) {
-  const sourceOccurrenceCounts = new WeakMap<AgentInputItem, number>();
-  for (const source of sourceItems) {
-    if (!source || typeof source !== 'object') {
-      continue;
-    }
-    const nextCount = (sourceOccurrenceCounts.get(source) ?? 0) + 1;
-    sourceOccurrenceCounts.set(source, nextCount);
+function countItemReferences(
+  items: AgentInputItem[],
+): Map<AgentInputItem, number> {
+  const counts = new Map<AgentInputItem, number>();
+  for (const item of items) {
+    counts.set(item, (counts.get(item) ?? 0) + 1);
   }
-  return sourceOccurrenceCounts;
+  return counts;
 }
 
-function collectPersistableFilteredItems(options: {
-  pendingCounts: Map<string, number>;
+function findOwnedItemIndexes(
+  preparedInput: AgentInputItem[],
+  ownedItems: AgentInputItem[],
+): number[] {
+  const remaining = countItemReferences(ownedItems);
+  const indexes: number[] = [];
+  for (const [index, item] of preparedInput.entries()) {
+    const count = remaining.get(item) ?? 0;
+    if (count <= 0) {
+      continue;
+    }
+    indexes.push(index);
+    remaining.set(item, count - 1);
+  }
+  return indexes;
+}
+
+function reconcilePersistableFilteredItems(options: {
+  preparedSources: AgentInputItem[];
   sourceItems: (AgentInputItem | undefined)[];
   filteredItems: AgentInputItem[];
-  existingSnapshot: AgentInputItem[] | undefined;
-}): AgentInputItem[] | undefined {
-  const { pendingCounts, sourceItems, filteredItems, existingSnapshot } =
-    options;
-  const persistableItems: AgentInputItem[] = [];
-  const sourceOccurrenceCounts = buildSourceOccurrenceCounts(sourceItems);
-  const consumeAnyPendingWriteSlot = () => {
-    for (const [key, remaining] of pendingCounts) {
-      if (remaining > 0) {
-        pendingCounts.set(key, remaining - 1);
-        return true;
-      }
-    }
-    return false;
-  };
+  ownedFilteredItems: Map<number, AgentInputItem>;
+  persistedInputOrder: PersistedInputOccurrence[];
+}): {
+  ownedFilteredItems: Map<number, AgentInputItem>;
+  persistedInputOrder: PersistedInputOccurrence[];
+  filteredSnapshot: AgentInputItem[];
+} {
+  const {
+    preparedSources,
+    sourceItems,
+    filteredItems,
+    ownedFilteredItems,
+    persistedInputOrder,
+  } = options;
+  const sourceIndexes = new Map<AgentInputItem, number[]>();
+  for (const [index, source] of preparedSources.entries()) {
+    const indexes = sourceIndexes.get(source) ?? [];
+    indexes.push(index);
+    sourceIndexes.set(source, indexes);
+  }
+  const sourceOccurrences = new Map<AgentInputItem, number>();
+  const representedOwnedIndexes = new Set<number>();
+  const currentOrder: PersistedInputOccurrence[] = [];
+  const nextOwnedFilteredItems = new Map(ownedFilteredItems);
 
   for (let i = 0; i < filteredItems.length; i++) {
     const filteredItem = filteredItems[i];
     if (!filteredItem) {
       continue;
     }
-    let allocated = false;
     const source = sourceItems[i];
     if (source && typeof source === 'object') {
-      const pendingOccurrences = (sourceOccurrenceCounts.get(source) ?? 0) - 1;
-      sourceOccurrenceCounts.set(source, pendingOccurrences);
-      if (pendingOccurrences > 0) {
-        continue;
+      const occurrence = sourceOccurrences.get(source) ?? 0;
+      sourceOccurrences.set(source, occurrence + 1);
+      const ownedIndex = sourceIndexes.get(source)?.[occurrence];
+      if (ownedIndex !== undefined) {
+        representedOwnedIndexes.add(ownedIndex);
+        nextOwnedFilteredItems.set(ownedIndex, structuredClone(filteredItem));
+        currentOrder.push({ type: 'owned', index: ownedIndex });
       }
-      const sourceKey = getAgentInputItemKey(source);
-      const remaining = pendingCounts.get(sourceKey) ?? 0;
-      if (remaining > 0) {
-        pendingCounts.set(sourceKey, remaining - 1);
-        persistableItems.push(structuredClone(filteredItem));
-        allocated = true;
-        continue;
-      }
-    }
-    const filteredKey = getAgentInputItemKey(filteredItem);
-    const filteredRemaining = pendingCounts.get(filteredKey) ?? 0;
-    if (filteredRemaining > 0) {
-      pendingCounts.set(filteredKey, filteredRemaining - 1);
-      persistableItems.push(structuredClone(filteredItem));
-      allocated = true;
       continue;
     }
-    if (!source && consumeAnyPendingWriteSlot()) {
-      persistableItems.push(structuredClone(filteredItem));
-      allocated = true;
-    }
-    if (!allocated && !source && existingSnapshot === undefined) {
-      persistableItems.push(structuredClone(filteredItem));
-    }
+    // Items without a source were injected by the callback. Preserve them without attempting
+    // content-based identity matching, which could collapse ordinary messages.
+    currentOrder.push({
+      type: 'injected',
+      item: structuredClone(filteredItem),
+    });
   }
-  if (persistableItems.length > 0 || existingSnapshot === undefined) {
-    return persistableItems;
-  }
-  return existingSnapshot;
+
+  const nextPersistedInputOrder = persistedInputOrder.filter(
+    (occurrence) =>
+      occurrence.type !== 'owned' ||
+      !representedOwnedIndexes.has(occurrence.index),
+  );
+  nextPersistedInputOrder.push(...currentOrder);
+
+  return {
+    ownedFilteredItems: nextOwnedFilteredItems,
+    persistedInputOrder: nextPersistedInputOrder,
+    filteredSnapshot: nextPersistedInputOrder.flatMap((occurrence) => {
+      if (occurrence.type === 'injected') {
+        return [structuredClone(occurrence.item)];
+      }
+      const item = nextOwnedFilteredItems.get(occurrence.index);
+      return item ? [structuredClone(item)] : [];
+    }),
+  };
 }
 
 function buildSnapshotForUnfilteredItems(options: {
-  pendingCounts: Map<string, number> | undefined;
+  preparedSourceCounts: Map<AgentInputItem, number> | undefined;
   sourceItems: (AgentInputItem | undefined)[];
   existingSnapshot: AgentInputItem[] | undefined;
 }): AgentInputItem[] {
-  const { pendingCounts, sourceItems, existingSnapshot } = options;
-  if (!pendingCounts) {
+  const { preparedSourceCounts, sourceItems, existingSnapshot } = options;
+  if (!preparedSourceCounts) {
     const filtered = sourceItems
       .filter((item): item is AgentInputItem => Boolean(item))
       .map((item) => structuredClone(item));
@@ -271,16 +325,17 @@ function buildSnapshotForUnfilteredItems(options: {
   }
 
   const filtered: AgentInputItem[] = [];
+  const includedSourceCounts = new Map<AgentInputItem, number>();
   for (const item of sourceItems) {
     if (!item) {
       continue;
     }
-    const key = getAgentInputItemKey(item);
-    const remaining = pendingCounts.get(key) ?? 0;
-    if (remaining <= 0) {
+    const preparedOccurrences = preparedSourceCounts.get(item) ?? 0;
+    const includedOccurrences = includedSourceCounts.get(item) ?? 0;
+    if (includedOccurrences >= preparedOccurrences) {
       continue;
     }
-    pendingCounts.set(key, remaining - 1);
+    includedSourceCounts.set(item, includedOccurrences + 1);
     filtered.push(structuredClone(item));
   }
   if (filtered.length > 0) {
@@ -350,6 +405,7 @@ export async function saveStreamResultToSession(
   session: Session | undefined,
   result: StreamedRunResult<any, any>,
   options: SessionPersistenceOptions = {},
+  sessionInputItems?: AgentInputItem[],
 ): Promise<void> {
   const state = result.state;
   const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
@@ -359,6 +415,7 @@ export async function saveStreamResultToSession(
     session,
     state,
     newRunItems,
+    extraInputItems: sessionInputItems,
     lastResponseId: result.lastResponseId,
     alreadyPersistedCount: alreadyPersisted,
     runCompaction: options.runCompaction ?? true,
@@ -621,8 +678,8 @@ function getHistoryItemModelInputKey(
 function normalizeItemsForSessionPersistence(
   items: AgentInputItem[],
 ): AgentInputItem[] {
-  return items.map((item) =>
-    sanitizeValueForSession(stripTransientCallIds(item)),
+  return deduplicateAgentInputItemsPreferringLatest(
+    items.map((item) => sanitizeValueForSession(stripTransientCallIds(item))),
   );
 }
 

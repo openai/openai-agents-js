@@ -321,7 +321,7 @@ describe('saveStreamResultToSession', () => {
     }
 
     async popItem(): Promise<AgentInputItem | undefined> {
-      return undefined;
+      return this.items.pop();
     }
 
     async clearSession(): Promise<void> {
@@ -388,6 +388,53 @@ describe('saveStreamResultToSession', () => {
 
     expect(session.events).toEqual(['addItems:1', 'runCompaction:resp_stream']);
     expect(session.items).toHaveLength(1);
+    expect(state._currentTurnPersistedItemCount).toBe(1);
+  });
+
+  it('persists streamed input and output as one normalized turn', async () => {
+    const textAgent = new Agent<UnknownContext, 'text'>({
+      name: 'StreamReconciliation',
+      outputType: 'text',
+      instructions: 'stream reconciliation test',
+    });
+    const agent = textAgent as unknown as Agent<
+      UnknownContext,
+      AgentOutputType
+    >;
+    const session = new TrackingSession();
+    const context = new RunContext<UnknownContext>(undefined as UnknownContext);
+    const state = new RunState<
+      UnknownContext,
+      Agent<UnknownContext, AgentOutputType>
+    >(context, 'hello', agent, 10);
+    const oldOutput: protocol.FunctionCallResultItem = {
+      type: 'function_call_result',
+      callId: 'call_stream_ordered',
+      name: 'lookup',
+      status: 'completed',
+      output: 'old',
+    };
+    const call: protocol.FunctionCallItem = {
+      type: 'function_call',
+      callId: 'call_stream_ordered',
+      name: 'lookup',
+      arguments: '{}',
+    };
+    const newOutput: protocol.FunctionCallResultItem = {
+      ...oldOutput,
+      output: 'new',
+    };
+    state._generatedItems = [
+      new ToolCallOutputItem(newOutput, textAgent, newOutput.output),
+    ];
+    const streamedResult = new StreamedRunResult({ state });
+
+    await saveStreamResultToSession(session, streamedResult, {}, [
+      oldOutput,
+      call,
+    ]);
+
+    expect(session.items).toEqual([call, newOutput]);
     expect(state._currentTurnPersistedItemCount).toBe(1);
   });
 
@@ -2398,6 +2445,105 @@ describe('saveToSession', () => {
         content: [{ type: 'input_text', text: 'thinking' }],
       },
     ]);
+  });
+
+  it('keeps the latest persisted tool output after its matching call', async () => {
+    const agent = new Agent<UnknownContext, 'text'>({
+      name: 'OrderedSessionAgent',
+      outputType: 'text',
+      instructions: 'test',
+    });
+    const session = new MemorySession();
+    const state = new RunState(new RunContext(), 'hello', agent as any, 10);
+    const oldOutput: protocol.FunctionCallResultItem = {
+      type: 'function_call_result',
+      callId: 'call_ordered',
+      name: 'lookup',
+      status: 'completed',
+      output: 'old',
+    };
+    const call: protocol.FunctionCallItem = {
+      type: 'function_call',
+      callId: 'call_ordered',
+      name: 'lookup',
+      arguments: '{}',
+    };
+    const newOutput: protocol.FunctionCallResultItem = {
+      ...oldOutput,
+      output: 'new',
+    };
+    state._generatedItems = [
+      new ToolCallOutputItem(newOutput, agent, newOutput.output),
+    ];
+
+    await saveToSession(session, [oldOutput, call], new RunResult(state));
+
+    expect(session.items).toEqual([call, newOutput]);
+  });
+
+  it('deduplicates replayed calls with mixed item and call identities', async () => {
+    const agent = new Agent<UnknownContext, 'text'>({
+      name: 'MixedIdentitySessionAgent',
+      outputType: 'text',
+      instructions: 'test',
+    });
+    const session = new MemorySession();
+    const state = new RunState(new RunContext(), 'hello', agent as any, 10);
+    const oldCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'item_old',
+      callId: 'call_mixed',
+      name: 'lookup',
+      arguments: '{"value":"old"}',
+    };
+    const output: protocol.FunctionCallResultItem = {
+      type: 'function_call_result',
+      callId: 'call_mixed',
+      name: 'lookup',
+      status: 'completed',
+      output: 'done',
+    };
+    const newCall: protocol.FunctionCallItem = {
+      ...oldCall,
+      id: undefined,
+      arguments: '{"value":"new"}',
+    };
+
+    await saveToSession(
+      session,
+      [oldCall, output, newCall],
+      new RunResult(state),
+    );
+
+    expect(session.items).toEqual([newCall, output]);
+  });
+
+  it('preserves persisted duplicates with empty correlations', async () => {
+    const agent = new Agent<UnknownContext, 'text'>({
+      name: 'EmptyCorrelationSessionAgent',
+      outputType: 'text',
+      instructions: 'test',
+    });
+    const session = new MemorySession();
+    const state = new RunState(new RunContext(), 'hello', agent as any, 10);
+    const oldOutput: protocol.FunctionCallResultItem = {
+      type: 'function_call_result',
+      callId: '',
+      name: 'lookup',
+      status: 'completed',
+      output: 'old',
+    };
+    const newOutput: protocol.FunctionCallResultItem = {
+      ...oldOutput,
+      output: 'new',
+    };
+    state._generatedItems = [
+      new ToolCallOutputItem(newOutput, agent, newOutput.output),
+    ];
+
+    await saveToSession(session, [oldOutput], new RunResult(state));
+
+    expect(session.items).toEqual([oldOutput, newOutput]);
   });
 
   it('keeps tool_search ids when persisting session history without call ids', async () => {

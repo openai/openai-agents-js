@@ -9,12 +9,295 @@ import {
   RunToolCallOutputItem,
 } from '../../src/items';
 import {
+  deduplicateAgentInputItemsPreferringLatest,
   dropOrphanToolCalls,
   extractOutputItemsFromRunItems,
   prepareModelInputItems,
 } from '../../src/runner/items';
 import type { AgentInputItem } from '../../src/types';
 import * as protocol from '../../src/types/protocol';
+
+describe('deduplicateAgentInputItemsPreferringLatest', () => {
+  it('keeps the latest duplicate call at the earliest causal position', () => {
+    const oldCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      callId: 'call_ordered',
+      name: 'lookup',
+      arguments: '{"version":"old"}',
+    };
+    const output: protocol.FunctionCallResultItem = {
+      type: 'function_call_result',
+      callId: 'call_ordered',
+      name: 'lookup',
+      status: 'completed',
+      output: 'done',
+    };
+    const newCall: protocol.FunctionCallItem = {
+      ...oldCall,
+      arguments: '{"version":"new"}',
+    };
+
+    expect(
+      deduplicateAgentInputItemsPreferringLatest([oldCall, output, newCall]),
+    ).toEqual([newCall, output]);
+  });
+
+  it('prefers call correlation over mixed item ids', () => {
+    const oldCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'item_old',
+      callId: 'call_mixed_identity',
+      name: 'lookup',
+      arguments: '{"version":"old"}',
+    };
+    const output: protocol.FunctionCallResultItem = {
+      type: 'function_call_result',
+      callId: 'call_mixed_identity',
+      name: 'lookup',
+      status: 'completed',
+      output: 'done',
+    };
+    const newCall: protocol.FunctionCallItem = {
+      ...oldCall,
+      id: undefined,
+      arguments: '{"version":"new"}',
+    };
+
+    expect(
+      deduplicateAgentInputItemsPreferringLatest([oldCall, output, newCall]),
+    ).toEqual([newCall, output]);
+  });
+
+  it('prefers tool-search call correlation over item ids', () => {
+    const oldOutput: protocol.ToolSearchOutputItem = {
+      type: 'tool_search_output',
+      id: 'item_old',
+      execution: 'client',
+      status: 'in_progress',
+      tools: [],
+      providerData: {
+        type: 'tool_search_output',
+        call_id: 'call_shared',
+        execution: 'client',
+      },
+    };
+    const newOutput: protocol.ToolSearchOutputItem = {
+      ...oldOutput,
+      id: 'item_new',
+      status: 'completed',
+    };
+
+    expect(
+      deduplicateAgentInputItemsPreferringLatest([oldOutput, newOutput]),
+    ).toEqual([newOutput]);
+  });
+
+  it('keeps client tool-search calls before their required output', () => {
+    const oldCall: protocol.ToolSearchCallItem = {
+      type: 'tool_search_call',
+      callId: 'call_client_search',
+      execution: 'client',
+      arguments: { query: 'old' },
+    };
+    const output: protocol.ToolSearchOutputItem = {
+      type: 'tool_search_output',
+      callId: 'call_client_search',
+      execution: 'client',
+      status: 'completed',
+      tools: [],
+    };
+    const newCall: protocol.ToolSearchCallItem = {
+      ...oldCall,
+      arguments: { query: 'new' },
+    };
+
+    expect(
+      deduplicateAgentInputItemsPreferringLatest([oldCall, output, newCall]),
+    ).toEqual([newCall, output]);
+  });
+
+  it('keeps server tool-search updates at their latest position', () => {
+    const oldCall: protocol.ToolSearchCallItem = {
+      type: 'tool_search_call',
+      callId: 'call_server_search',
+      execution: 'server',
+      arguments: { query: 'old' },
+      status: 'in_progress',
+    };
+    const message: AgentInputItem = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'searching' }],
+    };
+    const newCall: protocol.ToolSearchCallItem = {
+      ...oldCall,
+      arguments: { query: 'new' },
+      status: 'completed',
+    };
+
+    expect(
+      deduplicateAgentInputItemsPreferringLatest([oldCall, message, newCall]),
+    ).toEqual([message, newCall]);
+  });
+
+  it('uses the core item type for hosted-tool provider ids', () => {
+    const oldCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      id: 'hosted_shared',
+      name: 'web_search_call',
+      status: 'in_progress',
+      providerData: { type: 'web_search' },
+    };
+    const message: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'searching',
+    };
+    const newCall: protocol.HostedToolCallItem = {
+      ...oldCall,
+      status: 'completed',
+      providerData: { type: 'web_search_call' },
+    };
+
+    expect(
+      deduplicateAgentInputItemsPreferringLatest([oldCall, message, newCall]),
+    ).toEqual([message, newCall]);
+  });
+
+  it('keeps the latest duplicate output at its latest position', () => {
+    const oldOutput: protocol.FunctionCallResultItem = {
+      type: 'function_call_result',
+      callId: 'call_output',
+      name: 'lookup',
+      status: 'completed',
+      output: 'old',
+    };
+    const message: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'next',
+    };
+    const newOutput: protocol.FunctionCallResultItem = {
+      ...oldOutput,
+      output: 'new',
+    };
+
+    expect(
+      deduplicateAgentInputItemsPreferringLatest([
+        oldOutput,
+        message,
+        newOutput,
+      ]),
+    ).toEqual([message, newOutput]);
+  });
+
+  it('keeps latest reasoning before its required follower', () => {
+    const oldReasoning: protocol.ReasoningItem = {
+      type: 'reasoning',
+      id: 'rs_ordered',
+      content: [{ type: 'input_text', text: 'old' }],
+    };
+    const call: protocol.FunctionCallItem = {
+      type: 'function_call',
+      callId: 'call_after_reasoning',
+      name: 'lookup',
+      arguments: '{}',
+    };
+    const newReasoning: protocol.ReasoningItem = {
+      ...oldReasoning,
+      content: [{ type: 'input_text', text: 'new' }],
+    };
+
+    expect(
+      deduplicateAgentInputItemsPreferringLatest([
+        oldReasoning,
+        call,
+        newReasoning,
+      ]),
+    ).toEqual([newReasoning, call]);
+  });
+
+  it('keeps latest MCP approval request before its response', () => {
+    const oldRequest: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      id: 'approval_ordered',
+      name: 'mcp_approval_request',
+      status: 'in_progress',
+      providerData: {
+        type: 'mcp_approval_request',
+        id: 'approval_ordered',
+        arguments: 'old',
+      },
+    };
+    const response: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      name: 'mcp_approval_response',
+      status: 'completed',
+      providerData: {
+        type: 'mcp_approval_response',
+        approval_request_id: 'approval_ordered',
+        approve: true,
+      },
+    };
+    const newRequest: protocol.HostedToolCallItem = {
+      ...oldRequest,
+      providerData: { ...oldRequest.providerData, arguments: 'new' },
+    };
+
+    expect(
+      deduplicateAgentInputItemsPreferringLatest([
+        oldRequest,
+        response,
+        newRequest,
+      ]),
+    ).toEqual([newRequest, response]);
+  });
+
+  it('preserves unique items and duplicate messages without stable identity', () => {
+    const duplicateMessage: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'repeat me',
+    };
+    const uniqueCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      callId: 'call_unique',
+      name: 'lookup',
+      arguments: '{}',
+    };
+    const items = [duplicateMessage, uniqueCall, duplicateMessage];
+
+    expect(deduplicateAgentInputItemsPreferringLatest(items)).toEqual(items);
+  });
+
+  it('preserves duplicate calls and outputs with empty correlations', () => {
+    const oldCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      callId: '',
+      name: 'lookup',
+      arguments: '{"value":"old"}',
+    };
+    const newCall: protocol.FunctionCallItem = {
+      ...oldCall,
+      arguments: '{"value":"new"}',
+    };
+    const oldOutput: protocol.FunctionCallResultItem = {
+      type: 'function_call_result',
+      callId: '',
+      name: 'lookup',
+      status: 'completed',
+      output: 'old',
+    };
+    const newOutput: protocol.FunctionCallResultItem = {
+      ...oldOutput,
+      output: 'new',
+    };
+    const items = [oldCall, oldOutput, newCall, newOutput];
+
+    expect(deduplicateAgentInputItemsPreferringLatest(items)).toEqual(items);
+  });
+});
 
 describe('prepareModelInputItems', () => {
   it('drops orphan generated hosted shell calls', () => {

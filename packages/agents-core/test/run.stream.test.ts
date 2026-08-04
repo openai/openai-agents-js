@@ -3782,10 +3782,14 @@ describe('Runner.run (streaming)', () => {
     });
   });
 
-  it('persists streaming input only after the run completes successfully', async () => {
+  it('persists streaming input with the result after the run completes successfully', async () => {
     const saveInputSpy = vi
       .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
+    const saveResultSpy = vi.spyOn(
+      sessionPersistence,
+      'saveStreamResultToSession',
+    );
 
     const session = createSessionMock();
 
@@ -3806,8 +3810,9 @@ describe('Runner.run (streaming)', () => {
 
     await result.completed;
 
-    expect(saveInputSpy).toHaveBeenCalledTimes(1);
-    const [sessionArg, persistedItems] = saveInputSpy.mock.calls[0];
+    expect(saveInputSpy).not.toHaveBeenCalled();
+    expect(saveResultSpy).toHaveBeenCalledTimes(1);
+    const [sessionArg, , , persistedItems] = saveResultSpy.mock.calls[0];
     expect(sessionArg).toBe(session);
     if (!Array.isArray(persistedItems)) {
       throw new Error('Expected persisted session items to be an array.');
@@ -3902,10 +3907,46 @@ describe('Runner.run (streaming)', () => {
     expect(sessionItems).toEqual([compaction, retainedInput]);
   });
 
+  it('does not retry streamed input after combined persistence reaches compaction', async () => {
+    const compactionError = new Error('compaction failed');
+    const session = {
+      ...createSessionMock(),
+      runCompaction: vi.fn().mockRejectedValue(compactionError),
+    };
+    const agent = new Agent({
+      name: 'StreamCompactionFailure',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      }),
+    });
+
+    const result = await run(agent, 'persist once', {
+      stream: true,
+      session,
+    });
+
+    await expect(result.completed).rejects.toThrow('compaction failed');
+    expect(session.addItems).toHaveBeenCalledTimes(1);
+    const persistedItems = vi.mocked(session.addItems).mock.calls[0][0];
+    expect(
+      persistedItems.filter(
+        (item) =>
+          item.type === 'message' &&
+          item.role === 'user' &&
+          getFirstTextContent(item) === 'persist once',
+      ),
+    ).toHaveLength(1);
+  });
+
   it('persists filtered streaming input instead of the raw turn payload', async () => {
     const saveInputSpy = vi
       .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
+    const saveResultSpy = vi.spyOn(
+      sessionPersistence,
+      'saveStreamResultToSession',
+    );
 
     const session = createSessionMock();
 
@@ -3949,8 +3990,9 @@ describe('Runner.run (streaming)', () => {
 
     await result.completed;
 
-    expect(saveInputSpy).toHaveBeenCalledTimes(1);
-    const [, persistedItems] = saveInputSpy.mock.calls[0];
+    expect(saveInputSpy).not.toHaveBeenCalled();
+    expect(saveResultSpy).toHaveBeenCalledTimes(1);
+    const [, , , persistedItems] = saveResultSpy.mock.calls[0];
     if (!Array.isArray(persistedItems)) {
       throw new Error('Expected persisted session items to be an array.');
     }
@@ -4387,7 +4429,7 @@ describe('Runner.run (streaming)', () => {
     const result = await run(agent, 'hello', { stream: true, session });
     await result.completed;
 
-    expect(saveInputSpy).toHaveBeenCalledTimes(1);
+    expect(saveInputSpy).not.toHaveBeenCalled();
     expect(saveResultSpy).toHaveBeenCalledTimes(1);
   });
 

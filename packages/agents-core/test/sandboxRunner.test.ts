@@ -16,6 +16,7 @@ import {
 import { RunContext } from '../src/runContext';
 import {
   run,
+  MemorySession,
   RunItemStreamEvent,
   RunState,
   Runner,
@@ -52,6 +53,7 @@ import {
 } from '../src/sandbox/runtime/sessionLifecycle';
 import {
   Capability,
+  compaction,
   Entry,
   compaction,
   EnvValueReference,
@@ -834,6 +836,139 @@ function fakeSandboxSessionStateEnvelope(
 }
 
 describe('sandbox runner integration', () => {
+  it.each([false, true])(
+    'persists current session input after sandbox compaction (stream=%s)',
+    async (stream) => {
+      const client = new FakeSandboxClient();
+      const response = {
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      };
+      const model = stream
+        ? new RecordingStreamingModel([response])
+        : new RecordingFakeModel([response]);
+      const agent = new SandboxAgent({
+        name: 'CompactionPersistenceAgent',
+        model,
+        capabilities: [compaction()],
+      });
+      const current = user('current input');
+      const session = new MemorySession({
+        initialItems: [
+          user('old history'),
+          {
+            type: 'compaction',
+            encrypted_content: 'compacted history',
+          },
+        ],
+      });
+      if (stream) {
+        const result = await run(agent, [current], {
+          stream: true,
+          session,
+          sandbox: { client },
+        });
+        await result.completed;
+      } else {
+        await run(agent, [current], {
+          stream: false,
+          session,
+          sandbox: { client },
+        });
+      }
+
+      const persisted = await session.getItems();
+      expect(
+        persisted.filter(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'user' &&
+            Array.isArray(item.content) &&
+            item.content.some(
+              (content) =>
+                content.type === 'input_text' &&
+                content.text === 'current input',
+            ),
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each([false, true])(
+    'retains current session input when a later sandbox turn compacts it away (stream=%s)',
+    async (stream) => {
+      const client = new FakeSandboxClient();
+      const continueTool = tool({
+        name: 'continue_after_compaction',
+        description: 'Continues after a compaction item.',
+        parameters: z.object({}),
+        execute: async () => 'continued',
+      });
+      const responses: ModelResponse[] = [
+        {
+          output: [
+            {
+              type: 'compaction',
+              encrypted_content: 'later compacted history',
+            },
+            {
+              type: 'function_call',
+              callId: 'call_after_compaction',
+              name: continueTool.name,
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+      ];
+      const model = stream
+        ? new RecordingStreamingModel(responses)
+        : new RecordingFakeModel(responses);
+      const agent = new SandboxAgent({
+        name: 'LaterCompactionPersistenceAgent',
+        model,
+        tools: [continueTool],
+        capabilities: [compaction()],
+      });
+      const session = new MemorySession();
+      const current = user('current input');
+
+      if (stream) {
+        const result = await run(agent, [current], {
+          stream: true,
+          session,
+          sandbox: { client },
+        });
+        await result.completed;
+      } else {
+        await run(agent, [current], {
+          stream: false,
+          session,
+          sandbox: { client },
+        });
+      }
+
+      const persisted = await session.getItems();
+      expect(
+        persisted.filter(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'user' &&
+            Array.isArray(item.content) &&
+            item.content.some(
+              (content) =>
+                content.type === 'input_text' &&
+                content.text === 'current input',
+            ),
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
   beforeAll(() => {
     setTracingDisabled(true);
     setDefaultModelProvider(new FakeModelProvider());

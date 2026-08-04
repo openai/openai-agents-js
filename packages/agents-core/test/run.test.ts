@@ -5567,6 +5567,206 @@ describe('Runner.run', () => {
       expect(getFirstTextContent(sentInput[0])).toBe('Second input');
     });
 
+    it('keeps duplicate calls before their outputs in non-streaming runs', async () => {
+      const model = new FilterTrackingModel([
+        {
+          ...TEST_MODEL_RESPONSE_BASIC,
+          output: [fakeModelMessage('deduplicated result')],
+        },
+      ]);
+      const agent = new Agent({ name: 'DeduplicateCallAgent', model });
+      const oldCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        callId: 'call_deduplicated',
+        name: 'lookup',
+        arguments: '{"value":"old"}',
+      };
+      const output: protocol.FunctionCallResultItem = {
+        type: 'function_call_result',
+        callId: 'call_deduplicated',
+        name: 'lookup',
+        status: 'completed',
+        output: 'done',
+      };
+      const newCall: protocol.FunctionCallItem = {
+        ...oldCall,
+        arguments: '{"value":"new"}',
+      };
+      const runner = new Runner({
+        callModelInputFilter: () => ({
+          input: [oldCall, output, newCall],
+        }),
+      });
+
+      await runner.run(agent, 'start');
+
+      expect(model.lastRequest?.input).toEqual([newCall, output]);
+    });
+
+    it('persists normalized input plus items injected by a later model call', async () => {
+      const executeTool = tool({
+        name: 'execute_later_injection',
+        description: 'Executes a test call.',
+        parameters: z.object({}),
+        execute: async () => 'done',
+      });
+      const model = new FilterTrackingModel([
+        {
+          output: [
+            {
+              type: 'function_call',
+              callId: 'call_execute_later_injection',
+              name: executeTool.name,
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'LaterInjectionAgent',
+        model,
+        tools: [executeTool],
+      });
+      const oldCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        callId: 'call_input_duplicate',
+        name: 'lookup',
+        arguments: '{"value":"old"}',
+      };
+      const newCall: protocol.FunctionCallItem = {
+        ...oldCall,
+        arguments: '{"value":"new"}',
+      };
+      const injected = user('injected later');
+      const persisted: AgentInputItem[] = [];
+      const session: Session = {
+        getSessionId: async () => 'later-injection',
+        getItems: async () => [...persisted],
+        addItems: async (items) => {
+          persisted.push(...items);
+        },
+        popItem: async () => persisted.pop(),
+        clearSession: async () => {
+          persisted.length = 0;
+        },
+      };
+      let filterCalls = 0;
+      const runner = new Runner({
+        callModelInputFilter: ({ modelData }) => {
+          filterCalls++;
+          return {
+            ...modelData,
+            input:
+              filterCalls === 1
+                ? modelData.input
+                : [injected, ...modelData.input],
+          };
+        },
+      });
+
+      await runner.run(agent, [oldCall, newCall], { session });
+
+      expect(persisted.slice(0, 2)).toEqual([injected, newCall]);
+      expect(
+        persisted.filter(
+          (item) =>
+            item.type === 'function_call' && item.callId === oldCall.callId,
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('persists an earlier duplicate explicitly selected by the filter', async () => {
+      const model = new FilterTrackingModel([
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({ name: 'EarlierDuplicateAgent', model });
+      const oldCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        callId: 'call_earlier_duplicate',
+        name: 'lookup',
+        arguments: '{"value":"old"}',
+      };
+      const newCall: protocol.FunctionCallItem = {
+        ...oldCall,
+        arguments: '{"value":"new"}',
+      };
+      const persisted: AgentInputItem[] = [];
+      const session: Session = {
+        getSessionId: async () => 'earlier-duplicate',
+        getItems: async () => [...persisted],
+        addItems: async (items) => {
+          persisted.push(...items);
+        },
+        popItem: async () => persisted.pop(),
+        clearSession: async () => {
+          persisted.length = 0;
+        },
+      };
+      const runner = new Runner({
+        callModelInputFilter: ({ modelData }) => ({
+          ...modelData,
+          input: modelData.input.slice(0, 1),
+        }),
+      });
+
+      await runner.run(agent, [oldCall, newCall], { session });
+
+      expect(model.lastRequest?.input).toEqual([oldCall]);
+      expect(persisted[0]).toEqual(oldCall);
+    });
+
+    it('persists a repeated current clone separately from equal-content history', async () => {
+      const model = new FilterTrackingModel([
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({ name: 'RepeatedCurrentCloneAgent', model });
+      const sameMessage = user('same');
+      const persisted: AgentInputItem[] = [structuredClone(sameMessage)];
+      const session: Session = {
+        getSessionId: async () => 'repeated-current-clone',
+        getItems: async () => structuredClone(persisted),
+        addItems: async (items) => {
+          persisted.push(...structuredClone(items));
+        },
+        popItem: async () => persisted.pop(),
+        clearSession: async () => {
+          persisted.length = 0;
+        },
+      };
+      const runner = new Runner({
+        callModelInputFilter: ({ modelData }) => {
+          const current = modelData.input.at(-1);
+          if (!current) {
+            throw new Error('Expected current input.');
+          }
+          return { ...modelData, input: [current, current] };
+        },
+      });
+
+      await runner.run(agent, [sameMessage], { session });
+
+      expect(model.lastRequest?.input).toHaveLength(2);
+      expect(
+        persisted.filter(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'user' &&
+            getFirstTextContent(item) === 'same',
+        ),
+      ).toHaveLength(3);
+    });
+
     it('supports async filters for streaming runs', async () => {
       const streamingModel = new FilterStreamingModel({
         output: [fakeModelMessage('stream response')],
@@ -5610,6 +5810,44 @@ describe('Runner.run', () => {
           streamInput[0].role,
       ).toBe('user');
       expect(getFirstTextContent(streamInput[0])).toBe('Alpha');
+    });
+
+    it('keeps duplicate outputs at their latest position in streaming runs', async () => {
+      const model = new FilterStreamingModel({
+        output: [fakeModelMessage('stream response')],
+        usage: new Usage(),
+      });
+      const agent = new Agent({ name: 'StreamDeduplicateOutputAgent', model });
+      const oldOutput: protocol.FunctionCallResultItem = {
+        type: 'function_call_result',
+        callId: 'call_stream_output',
+        name: 'lookup',
+        status: 'completed',
+        output: 'old',
+      };
+      const call: protocol.FunctionCallItem = {
+        type: 'function_call',
+        callId: 'call_stream_output',
+        name: 'lookup',
+        arguments: '{}',
+      };
+      const newOutput: protocol.FunctionCallResultItem = {
+        ...oldOutput,
+        output: 'new',
+      };
+      const runner = new Runner({
+        callModelInputFilter: async () => ({
+          input: [oldOutput, call, newOutput],
+        }),
+      });
+
+      const result = await runner.run(agent, 'start', { stream: true });
+      for await (const _event of result.toStream()) {
+        // Drain the stream.
+      }
+      await result.completed;
+
+      expect(model.lastRequest?.input).toEqual([call, newOutput]);
     });
 
     it('does not mutate run history when filter mutates input items', async () => {
@@ -5991,7 +6229,7 @@ describe('Runner.run', () => {
       expect(texts).toContain('second turn');
     });
 
-    it('keeps original inputs when filters prepend new items', async () => {
+    it('keeps equal-content injected and original inputs', async () => {
       class RecordingSession implements Session {
         #history: AgentInputItem[] = [];
         added: AgentInputItem[][] = [];
@@ -6037,7 +6275,7 @@ describe('Runner.run', () => {
       const runner = new Runner({
         callModelInputFilter: ({ modelData }) => ({
           instructions: modelData.instructions,
-          input: [assistant('primer'), ...modelData.input],
+          input: [structuredClone(modelData.input[0]), ...modelData.input],
         }),
       });
 
@@ -6048,7 +6286,9 @@ describe('Runner.run', () => {
       const persistedTexts = persisted
         .map((item) => getFirstTextContent(item))
         .filter((text): text is string => typeof text === 'string');
-      expect(persistedTexts).toContain('Persist me');
+      expect(
+        persistedTexts.filter((text) => text === 'Persist me'),
+      ).toHaveLength(2);
     });
 
     it('throws when filter returns invalid data', async () => {
@@ -6637,10 +6877,10 @@ describe('Runner.run', () => {
       }
       await result.completed;
 
-      expect(session.added).toHaveLength(2);
-      const streamedItems = session.added[1];
-      expect(streamedItems).toHaveLength(1);
-      const savedAssistant = streamedItems[0] as protocol.AssistantMessageItem;
+      expect(session.added).toHaveLength(1);
+      const streamedItems = session.added[0];
+      expect(streamedItems).toHaveLength(2);
+      const savedAssistant = streamedItems[1] as protocol.AssistantMessageItem;
       expect(savedAssistant.providerData).toEqual({ annotations: ['keep-me'] });
       expect(getFirstTextContent(savedAssistant)).toBe(
         'assistant with metadata',
