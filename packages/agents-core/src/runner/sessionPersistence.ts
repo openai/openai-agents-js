@@ -320,6 +320,7 @@ function mapPreparedSourcesAfterContextProcessing(
     processedIndexesByReference.set(item, indexes);
   }
   mapOccurrences(processedIndexesByReference, preparedIndexesByReference);
+  const referenceMappedPreparedIndexes = new Set(usedPreparedIndexes);
   for (const [item, processedIndexes] of processedIndexesByReference) {
     const preparedIndexes = preparedIndexesByReference.get(item);
     if (preparedIndexes === undefined) {
@@ -424,6 +425,34 @@ function mapPreparedSourcesAfterContextProcessing(
       mappedPreparedIndexes[processedIndex] = preparedIndex;
       usedPreparedIndexes.add(preparedIndex);
     }
+  }
+
+  const hasUnmatchedProcessedItem = remainingProcessedIndexes.some(
+    (index) => mappedPreparedIndexes[index] === undefined,
+  );
+  const hasUnmatchedOwnedItem = remainingPreparedIndexes.some(
+    (index) =>
+      !usedPreparedIndexes.has(index) && ownerIndexByPreparedIndex.has(index),
+  );
+  const hasUnprovenOwnedClone = [...preparedIndexesByKey.values()].some(
+    (indexes) =>
+      indexes.some((index) => ownerIndexByPreparedIndex.has(index)) &&
+      indexes.some((index) => !ownerIndexByPreparedIndex.has(index)) &&
+      indexes.some(
+        (index) =>
+          ownerIndexByPreparedIndex.has(index) &&
+          usedPreparedIndexes.has(index) &&
+          !referenceMappedPreparedIndexes.has(index),
+      ) &&
+      indexes.some((index) => !usedPreparedIndexes.has(index)),
+  );
+  if (
+    hasUnmatchedProcessedItem &&
+    (hasUnmatchedOwnedItem || hasUnprovenOwnedClone)
+  ) {
+    throw new UserError(
+      'Capability.processContext() cannot replace Session-owned input without preserving its identity. Use callModelInputFilter for persistence-aware input replacement.',
+    );
   }
 
   return processedItems.flatMap((item, index) => {

@@ -269,7 +269,7 @@ describe('sessionPersistence tracker (extended)', () => {
     expect(tracker.getItemsForPersistence()).toEqual(processedInput);
   });
 
-  it('reserves an unchanged current clone before mapping an injected replacement', () => {
+  it('rejects an ambiguous current clone beside an injected replacement', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({
       session,
@@ -288,11 +288,11 @@ describe('sessionPersistence tracker (extended)', () => {
       { ...turnInput[0], content: 'injected context' },
       structuredClone(turnInput[1]),
     ];
-    tracker.setPreparedTurnItems(turnInput, processedInput);
-
-    tracker.recordTurnItems(processedInput, processedInput);
-
-    expect(tracker.getItemsForPersistence()).toEqual([processedInput[1]]);
+    expect(() =>
+      tracker.setPreparedTurnItems(turnInput, processedInput),
+    ).toThrowError(
+      'Capability.processContext() cannot replace Session-owned input without preserving its identity. Use callModelInputFilter for persistence-aware input replacement.',
+    );
   });
 
   it('uses forward occurrence order when injected context shifts equal-content clones', () => {
@@ -357,34 +357,35 @@ describe('sessionPersistence tracker (extended)', () => {
     expect(tracker.getItemsForPersistence()).toEqual([]);
   });
 
-  it('does not assign current ownership to a mixed replacement', () => {
+  it('rejects rewritten current input when cloned history surrounds it', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({
       session,
       hasCallModelInputFilter: true,
     })!;
-    const history = {
+    const current = {
       type: 'message',
       role: 'user',
       content: 'same',
     } as const;
-    const current = {
-      type: 'message',
-      role: 'user',
-      content: 'sensitive current input',
-    } as const;
-    const preparedInput = [history, current];
+    const history = { ...current };
+    const preparedInput = [current, history];
     tracker.setPreparedItems([current], preparedInput);
     const turnInput = structuredClone(preparedInput);
     const processedInput = [
-      turnInput[0],
-      { type: 'message', role: 'user', content: 'injected context' } as const,
+      structuredClone(turnInput[1]),
+      {
+        type: 'message',
+        role: 'user',
+        content: 'redacted current input',
+      } as const,
     ];
-    tracker.setPreparedTurnItems(turnInput, processedInput);
 
-    tracker.recordTurnItems(processedInput, processedInput);
-
-    expect(tracker.getItemsForPersistence()).toEqual([]);
+    expect(() =>
+      tracker.setPreparedTurnItems(turnInput, processedInput),
+    ).toThrowError(
+      'Capability.processContext() cannot replace Session-owned input without preserving its identity. Use callModelInputFilter for persistence-aware input replacement.',
+    );
   });
 
   it('does not assign current ownership to a surplus exact reference', () => {
@@ -413,7 +414,7 @@ describe('sessionPersistence tracker (extended)', () => {
     expect(tracker.getItemsForPersistence()).toEqual([]);
   });
 
-  it('does not guess transformed ownership when cardinality changes', () => {
+  it('rejects transformed ownership when cardinality changes', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({
       session,
@@ -431,11 +432,11 @@ describe('sessionPersistence tracker (extended)', () => {
       { ...turnInput[0], content: 'redacted current input' },
       { ...turnInput[0], content: 'injected context' },
     ];
-    tracker.setPreparedTurnItems(turnInput, processedInput);
-
-    tracker.recordTurnItems(processedInput, processedInput);
-
-    expect(tracker.getItemsForPersistence()).toEqual([]);
+    expect(() =>
+      tracker.setPreparedTurnItems(turnInput, processedInput),
+    ).toThrowError(
+      'Capability.processContext() cannot replace Session-owned input without preserving its identity. Use callModelInputFilter for persistence-aware input replacement.',
+    );
   });
 
   it('remaps cloned current input ownership on a later model call', () => {

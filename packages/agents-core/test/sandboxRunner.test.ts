@@ -288,6 +288,15 @@ class RedactingCloningContextCapability extends Capability {
   }
 }
 
+class RewritingCurrentCloningContextCapability extends Capability {
+  readonly type = 'rewriting_current_cloning_context';
+
+  override processContext(context: AgentInputItem[]): AgentInputItem[] {
+    const cloned = structuredClone(context);
+    return [cloned[1]!, user('redacted current input')];
+  }
+}
+
 class ReplacingHistoryCloningContextCapability extends Capability {
   readonly type = 'replacing_history_cloning_context';
 
@@ -1175,7 +1184,56 @@ describe('sandbox runner integration', () => {
   );
 
   it.each([false, true])(
-    'persists an unchanged current clone when sandbox context replaces equal history (stream=%s)',
+    'rejects a rewritten current input when cloned history surrounds it (stream=%s)',
+    async (stream) => {
+      const response = {
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      };
+      const model = stream
+        ? new RecordingStreamingModel([response])
+        : new RecordingFakeModel([response]);
+      const agent = new SandboxAgent({
+        name: 'RewritingCurrentCloningContextPersistenceAgent',
+        model,
+        capabilities: [new RewritingCurrentCloningContextCapability()],
+      });
+      const session = new MemorySession({
+        initialItems: [user('same input')],
+      });
+      const options = {
+        session,
+        sandbox: { client: new FakeSandboxClient() },
+        sessionInputCallback: (
+          history: AgentInputItem[],
+          newItems: AgentInputItem[],
+        ) => newItems.concat(history),
+      };
+      const expectedError =
+        'Capability.processContext() cannot replace Session-owned input without preserving its identity. Use callModelInputFilter for persistence-aware input replacement.';
+
+      if (stream) {
+        const result = await run(agent, [user('same input')], {
+          ...options,
+          stream: true,
+        });
+        await expect(result.completed).rejects.toThrowError(expectedError);
+      } else {
+        await expect(
+          run(agent, [user('same input')], {
+            ...options,
+            stream: false,
+          }),
+        ).rejects.toThrowError(expectedError);
+      }
+
+      expect(model.requests).toHaveLength(0);
+      expect(await session.getItems()).toEqual([user('same input')]);
+    },
+  );
+
+  it.each([false, true])(
+    'rejects an ambiguous current clone when sandbox context replaces equal history (stream=%s)',
     async (stream) => {
       const response = {
         output: [fakeModelMessage('done')],
@@ -1196,23 +1254,26 @@ describe('sandbox runner integration', () => {
         session,
         sandbox: { client: new FakeSandboxClient() },
       };
+      const expectedError =
+        'Capability.processContext() cannot replace Session-owned input without preserving its identity. Use callModelInputFilter for persistence-aware input replacement.';
 
       if (stream) {
         const result = await run(agent, [user('same input')], {
           ...options,
           stream: true,
         });
-        await result.completed;
+        await expect(result.completed).rejects.toThrowError(expectedError);
       } else {
-        await run(agent, [user('same input')], {
-          ...options,
-          stream: false,
-        });
+        await expect(
+          run(agent, [user('same input')], {
+            ...options,
+            stream: false,
+          }),
+        ).rejects.toThrowError(expectedError);
       }
 
-      const persisted = JSON.stringify(await session.getItems());
-      expect(persisted.match(/same input/g)).toHaveLength(2);
-      expect(persisted).not.toContain('injected sandbox context');
+      expect(model.requests).toHaveLength(0);
+      expect(await session.getItems()).toEqual([user('same input')]);
     },
   );
 
