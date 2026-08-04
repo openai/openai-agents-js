@@ -16,6 +16,20 @@ export type ToolExecutionConfig = {
   preApprovalInputGuardrails?: boolean;
 };
 
+export type ToolNameCollisionPolicy = 'warn' | 'error';
+
+export function validateToolNameCollisionPolicy(
+  policy: ToolNameCollisionPolicy | undefined,
+): ToolNameCollisionPolicy {
+  const resolvedPolicy = policy === undefined ? 'warn' : policy;
+  if (resolvedPolicy !== 'warn' && resolvedPolicy !== 'error') {
+    throw new UserError(
+      'toolNameCollisionPolicy must be either "warn" or "error".',
+    );
+  }
+  return resolvedPolicy;
+}
+
 export function getImplicitModelSettingsForResolvedModel(
   explicitlyModelSet: boolean,
   resolvedModelName?: string,

@@ -233,11 +233,24 @@ export function finishRunnerSpan(
 export function setRunnerSpanError(
   lifecycle: RunnerSpanLifecycle<TaskSpanData | TurnSpanData> | undefined,
   error: unknown,
+  traceIncludeSensitiveData: boolean,
 ): void {
   lifecycle?.span.setError({
     message: 'Error in agent run',
-    data: { error: String(error) },
+    data: {
+      error: getRunnerSpanErrorDetails(error, traceIncludeSensitiveData),
+    },
   });
+}
+
+export function getRunnerSpanErrorDetails(
+  error: unknown,
+  traceIncludeSensitiveData: boolean,
+): string {
+  if (traceIncludeSensitiveData) {
+    return String(error);
+  }
+  return error instanceof Error ? error.name : 'Error';
 }
 
 /**

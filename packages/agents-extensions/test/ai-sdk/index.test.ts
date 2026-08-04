@@ -9,7 +9,21 @@ import {
   toolChoiceToLanguageV2Format,
   toolToLanguageV2Tool,
 } from '../../src/ai-sdk/index';
-import { Agent, protocol, run, withTrace, UserError } from '@openai/agents';
+import {
+  Agent,
+  handoff,
+  protocol,
+  run,
+  tool,
+  toolNamespace,
+  withTrace,
+  UserError,
+  setTraceProcessors,
+  setTracingDisabled,
+  type Span,
+  type Trace,
+  type TracingProcessor,
+} from '@openai/agents';
 import { ReadableStream } from 'node:stream/web';
 import {
   APICallError,
@@ -65,6 +79,19 @@ function partsStream(parts: any[]): ReadableStream<any> {
       }
     })(),
   );
+}
+
+class RecordingTracingProcessor implements TracingProcessor {
+  readonly spansEnded: Span<any>[] = [];
+
+  async onTraceStart(_trace: Trace): Promise<void> {}
+  async onTraceEnd(_trace: Trace): Promise<void> {}
+  async onSpanStart(_span: Span<any>): Promise<void> {}
+  async onSpanEnd(span: Span<any>): Promise<void> {
+    this.spansEnded.push(span);
+  }
+  async shutdown(): Promise<void> {}
+  async forceFlush(): Promise<void> {}
 }
 
 const structuredOutputType: SerializedOutputType = {
@@ -186,6 +213,100 @@ describe('AiSdkModel end-to-end scenarios', () => {
     const result = await run(agent, 'hi');
     expect(result.finalOutput).toEqual({ content: 'structured' });
   });
+
+  test.each(['generate', 'stream'] as const)(
+    'executes namespaced function tools in %s runs',
+    async (mode) => {
+      let turn = 0;
+      const execute = vi.fn(async () => 'account');
+      const [lookupAccount] = toolNamespace({
+        name: 'crm',
+        description: 'CRM tools.',
+        tools: [
+          tool({
+            name: 'lookup_account',
+            description: 'Look up an account.',
+            parameters: z.object({}),
+            execute,
+          }),
+        ],
+      });
+      const languageModel = stubModel({
+        async doGenerate() {
+          turn += 1;
+          return turn === 1
+            ? ({
+                content: [
+                  {
+                    type: 'tool-call',
+                    toolCallId: 'call_lookup_account',
+                    toolName: 'crm.lookup_account',
+                    input: {},
+                  },
+                ],
+                usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                response: { id: 'response_1' },
+                finishReason: 'tool-calls',
+                warnings: [],
+              } as any)
+            : ({
+                content: [{ type: 'text', text: 'Done.' }],
+                usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                response: { id: 'response_2' },
+                finishReason: 'stop',
+                warnings: [],
+              } as any);
+        },
+        async doStream() {
+          turn += 1;
+          return {
+            stream: partsStream(
+              turn === 1
+                ? [
+                    {
+                      type: 'tool-call',
+                      toolCallId: 'call_lookup_account',
+                      toolName: 'crm.lookup_account',
+                      input: {},
+                    },
+                    {
+                      type: 'finish',
+                      finishReason: 'tool-calls',
+                      usage: { inputTokens: 1, outputTokens: 1 },
+                    },
+                  ]
+                : [
+                    { type: 'text-delta', id: 'text-1', delta: 'Done.' },
+                    {
+                      type: 'finish',
+                      finishReason: 'stop',
+                      usage: { inputTokens: 1, outputTokens: 1 },
+                    },
+                  ],
+            ),
+          } as any;
+        },
+      });
+      const agent = new Agent({
+        name: 'Namespaced tool agent',
+        model: new AiSdkModel(languageModel),
+        tools: [lookupAccount!],
+      });
+
+      let finalOutput: string | undefined;
+      if (mode === 'stream') {
+        const result = await run(agent, 'hi', { stream: true });
+        await result.completed;
+        finalOutput = result.finalOutput;
+      } else {
+        const result = await run(agent, 'hi');
+        finalOutput = result.finalOutput;
+      }
+
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(finalOutput).toBe('Done.');
+    },
+  );
 
   test('streams text blocks and tool calls with a stable message ID', async () => {
     const parts = [
@@ -2489,7 +2610,8 @@ describe('AiSdkModel.getResponse', () => {
     expect(res.output).toHaveLength(1);
     expect(res.output[0]).toMatchObject({
       type: 'function_call',
-      name: 'crm.lookup_account',
+      name: 'lookup_account',
+      namespace: 'crm',
       arguments: '{}',
     });
     expect(warnSpy).not.toHaveBeenCalled();
@@ -2845,50 +2967,115 @@ describe('AiSdkModel.getResponse', () => {
     expect(doGenerate).not.toHaveBeenCalled();
   });
 
-  test('keeps same-name namespace tool calls distinct from bare tools in doGenerate', async () => {
-    allowConsole(['warn']);
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  test('rejects flattened namespace and handoff name collisions in doGenerate', async () => {
+    const doGenerate = vi.fn();
     const model = new AiSdkModel(
       stubModel({
-        async doGenerate() {
-          return {
-            content: [
-              {
-                type: 'tool-call',
-                toolCallId: 'call-1',
-                toolName: 'lookup_account.lookup_account',
-                input: '',
-              },
-            ],
-            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-            providerMetadata: { meta: true },
-            response: { id: 'id' },
-            finishReason: 'tool-calls',
-            warnings: [],
-          } as any;
+        async doGenerate(...args: any[]) {
+          return doGenerate(...args);
         },
       }),
     );
 
-    const res = await withTrace('t', () =>
-      model.getResponse({
+    await expect(
+      withTrace('t', () =>
+        model.getResponse({
+          input: 'hi',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup',
+              namespace: 'crm',
+              description: 'Look up a CRM record.',
+              parameters: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+              },
+            } as any,
+          ],
+          handoffs: [
+            {
+              toolName: 'crm.lookup',
+              toolDescription: 'Handoff with the same flattened name.',
+              inputJsonSchema: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+              },
+              strictJsonSchema: true,
+            },
+          ],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: false,
+          _internal: { toolNameCollisionPolicy: 'error' },
+        } as any),
+      ),
+    ).rejects.toThrow(
+      'AiSdkModel cannot disambiguate function tools and handoffs with the same flattened name.',
+    );
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  test('rejects flattened deferred and handoff name collisions in doGenerate', async () => {
+    const doGenerate = vi.fn();
+    const model = new AiSdkModel(stubModel({ doGenerate }));
+
+    await expect(
+      withTrace('t', () =>
+        model.getResponse({
+          input: 'hi',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup',
+              description: 'Deferred lookup.',
+              parameters: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+              },
+              deferLoading: true,
+            } as any,
+          ],
+          handoffs: [
+            {
+              toolName: 'lookup',
+              toolDescription: 'Handoff with the same flattened name.',
+              inputJsonSchema: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+              },
+              strictJsonSchema: true,
+            },
+          ],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: false,
+        } as any),
+      ),
+    ).rejects.toThrow(
+      'AiSdkModel cannot disambiguate function tools and handoffs with the same flattened name.',
+    );
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  test.each([false, true])(
+    'redacts flattened collision names from AI SDK span errors (stream: %s)',
+    async (stream) => {
+      const secretNamespace = 'SECRET_AI_SDK_TRACE';
+      const processor = new RecordingTracingProcessor();
+      const model = new AiSdkModel(stubModel({}));
+      const request = {
         input: 'hi',
         tools: [
           {
             type: 'function',
-            name: 'lookup_account',
-            description: 'Top-level lookup tool.',
-            parameters: {
-              type: 'object',
-              properties: {},
-              additionalProperties: false,
-            },
-          } as any,
-          {
-            type: 'function',
-            name: 'lookup_account',
-            namespace: 'lookup_account',
-            description: 'Same-name namespace lookup tool.',
+            name: 'lookup',
+            namespace: secretNamespace,
+            description: 'Look up a record.',
             parameters: {
               type: 'object',
               properties: {},
@@ -2896,21 +3083,324 @@ describe('AiSdkModel.getResponse', () => {
             },
           } as any,
         ],
-        handoffs: [],
+        handoffs: [
+          {
+            toolName: `${secretNamespace}.lookup`,
+            toolDescription: 'Conflicting handoff.',
+            inputJsonSchema: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+            strictJsonSchema: true,
+          },
+        ],
         modelSettings: {},
         outputType: 'text',
-        tracing: false,
-      } as any),
-    );
+        tracing: 'enabled_without_data',
+      } as any;
+      vi.stubEnv('OPENAI_AGENTS_DONT_LOG_TOOL_DATA', '0');
+      vi.stubEnv('OPENAI_AGENTS_DONT_LOG_MODEL_DATA', '0');
+      setTraceProcessors([processor]);
+      setTracingDisabled(false);
 
-    expect(res.output).toHaveLength(1);
-    expect(res.output[0]).toMatchObject({
-      type: 'function_call',
-      name: 'lookup_account.lookup_account',
-      arguments: '{}',
+      try {
+        let callerError: unknown;
+        if (stream) {
+          try {
+            await withTrace('trace-redaction', async () => {
+              for await (const _event of model.getStreamedResponse(request)) {
+                void _event;
+              }
+            });
+          } catch (error) {
+            callerError = error;
+          }
+        } else {
+          try {
+            await withTrace('trace-redaction', () =>
+              model.getResponse(request),
+            );
+          } catch (error) {
+            callerError = error;
+          }
+        }
+
+        expect(callerError).toBeInstanceOf(UserError);
+        expect(String(callerError)).toContain(secretNamespace);
+        const spanErrors = processor.spansEnded
+          .map((span) => span.error)
+          .filter((error) => error !== null);
+        expect(spanErrors.length).toBeGreaterThan(0);
+        expect(JSON.stringify(spanErrors)).not.toContain(secretNamespace);
+      } finally {
+        vi.unstubAllEnvs();
+        setTraceProcessors([]);
+        setTracingDisabled(true);
+      }
+    },
+  );
+
+  test('rejects flattened function and provider tool collisions in doGenerate', async () => {
+    const doGenerate = vi.fn();
+    const model = new AiSdkModel(stubModel({ doGenerate }));
+
+    await expect(
+      withTrace('t', () =>
+        model.getResponse({
+          input: 'hi',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup',
+              namespace: 'crm',
+              description: 'Look up a CRM record.',
+              parameters: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+              },
+            } as any,
+            {
+              type: 'hosted_tool',
+              name: 'crm.lookup',
+              providerData: { type: 'web_search' },
+            } as any,
+          ],
+          handoffs: [],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: false,
+        } as any),
+      ),
+    ).rejects.toThrow(
+      /AiSdkModel cannot disambiguate (?:tools with the same flattened name|the flattened tool name 'crm\.lookup')/,
+    );
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  test('rejects duplicate provider tool names before doGenerate', async () => {
+    const doGenerate = vi.fn();
+    const model = new AiSdkModel(stubModel({ doGenerate }));
+    const providerTool = {
+      type: 'hosted_tool',
+      name: 'search',
+      providerData: { type: 'web_search' },
+    } as any;
+
+    await expect(
+      withTrace('t', () =>
+        model.getResponse({
+          input: 'hi',
+          tools: [providerTool, { ...providerTool }],
+          handoffs: [],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: false,
+        } as any),
+      ),
+    ).rejects.toThrow(
+      /AiSdkModel cannot disambiguate (?:provider tools with the same flattened name|the flattened provider tool name 'search')/,
+    );
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  test('redacts duplicate provider tool names before doGenerate', async () => {
+    const original = process.env.OPENAI_AGENTS_DONT_LOG_TOOL_DATA;
+    process.env.OPENAI_AGENTS_DONT_LOG_TOOL_DATA = '1';
+    const doGenerate = vi.fn();
+    const model = new AiSdkModel(stubModel({ doGenerate }));
+    const secret = 'SECRET_DUPLICATE_PROVIDER_TOOL';
+
+    try {
+      await expect(
+        withTrace('t', () =>
+          model.getResponse({
+            input: 'hi',
+            tools: [
+              {
+                type: 'hosted_tool',
+                name: secret,
+                providerData: { type: 'web_search' },
+              },
+              {
+                type: 'hosted_tool',
+                name: secret,
+                providerData: { type: 'web_search' },
+              },
+            ],
+            handoffs: [],
+            modelSettings: {},
+            outputType: 'text',
+            tracing: false,
+          } as any),
+        ),
+      ).rejects.toThrow(
+        'AiSdkModel cannot disambiguate provider tools with the same flattened name.',
+      );
+      expect(doGenerate).not.toHaveBeenCalled();
+    } finally {
+      if (original === undefined) {
+        delete process.env.OPENAI_AGENTS_DONT_LOG_TOOL_DATA;
+      } else {
+        process.env.OPENAI_AGENTS_DONT_LOG_TOOL_DATA = original;
+      }
+    }
+  });
+
+  test('rejects a default-policy flattened collision before doGenerate', async () => {
+    const doGenerate = vi.fn();
+    const model = new AiSdkModel(stubModel({ doGenerate }));
+    const [lookup] = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Look up a CRM record.',
+          parameters: z.object({}),
+          execute: async () => 'record',
+        }),
+      ],
     });
-    expect(warnSpy).not.toHaveBeenCalled();
-    warnSpy.mockRestore();
+    const lookupHandoff = handoff(new Agent({ name: 'CRM specialist' }), {
+      toolNameOverride: 'crm.lookup',
+    });
+    await expect(
+      run(
+        new Agent({
+          name: 'Routing agent',
+          model,
+          tools: [lookup!],
+          handoffs: [lookupHandoff],
+        }),
+        'hi',
+      ),
+    ).rejects.toThrow(
+      'AiSdkModel cannot disambiguate function tools and handoffs with the same flattened name.',
+    );
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  test('exposes one winner when the same function tool object is repeated in doGenerate', async () => {
+    allowConsole(['warn']);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const doGenerate = vi.fn(async (_options: any): Promise<any> => ({
+      content: [],
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      response: { id: 'id' },
+      providerMetadata: {},
+      finishReason: 'stop',
+      warnings: [],
+    }));
+    const model = new AiSdkModel(stubModel({ doGenerate }));
+    const duplicateTool = {
+      type: 'function',
+      name: 'duplicate',
+      description: 'Repeated tool object.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+    } as any;
+
+    try {
+      await withTrace('t', () =>
+        model.getResponse({
+          input: 'hi',
+          tools: [duplicateTool, duplicateTool],
+          handoffs: [],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: false,
+        } as any),
+      );
+
+      expect(doGenerate.mock.calls[0]![0].tools).toEqual([
+        expect.objectContaining({ name: 'duplicate' }),
+      ]);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test('rejects same-name namespaces before doGenerate', async () => {
+    const doGenerate = vi.fn();
+    const model = new AiSdkModel(stubModel({ doGenerate }));
+
+    await expect(
+      withTrace('t', () =>
+        model.getResponse({
+          input: 'hi',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup_account',
+              namespace: 'lookup_account',
+              description: 'Same-name namespace lookup tool.',
+              parameters: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+              },
+            } as any,
+          ],
+          handoffs: [],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: false,
+        } as any),
+      ),
+    ).rejects.toThrow(
+      /AiSdkModel cannot route (?:a function tool whose namespace matches its name|the function tool 'lookup_account' because its namespace matches its name)/,
+    );
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  test('redacts same-name namespaces before doGenerate', async () => {
+    const original = process.env.OPENAI_AGENTS_DONT_LOG_TOOL_DATA;
+    process.env.OPENAI_AGENTS_DONT_LOG_TOOL_DATA = '1';
+    const doGenerate = vi.fn();
+    const model = new AiSdkModel(stubModel({ doGenerate }));
+    const secret = 'SECRET_SAME_NAME_NAMESPACE';
+
+    try {
+      await expect(
+        withTrace('t', () =>
+          model.getResponse({
+            input: 'hi',
+            tools: [
+              {
+                type: 'function',
+                name: secret,
+                namespace: secret,
+                description: 'Same-name namespace tool.',
+                parameters: {
+                  type: 'object',
+                  properties: {},
+                  additionalProperties: false,
+                },
+              } as any,
+            ],
+            handoffs: [],
+            modelSettings: {},
+            outputType: 'text',
+            tracing: false,
+          } as any),
+        ),
+      ).rejects.toThrow(
+        'AiSdkModel cannot route a function tool whose namespace matches its name',
+      );
+      expect(doGenerate).not.toHaveBeenCalled();
+    } finally {
+      if (original === undefined) {
+        delete process.env.OPENAI_AGENTS_DONT_LOG_TOOL_DATA;
+      } else {
+        process.env.OPENAI_AGENTS_DONT_LOG_TOOL_DATA = original;
+      }
+    }
   });
 
   test('normalizes empty string tool input for handoff schemas', async () => {
@@ -4986,6 +5476,272 @@ describe('AiSdkModel', () => {
       /cannot disambiguate a hosted tool_search helper from a custom tool or handoff/,
     );
     expect(doStream).not.toHaveBeenCalled();
+  });
+
+  test('rejects flattened namespace and handoff name collisions in streaming mode', async () => {
+    const doStream = vi.fn();
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream(...args: any[]) {
+          return doStream(...args);
+        },
+      }),
+    );
+
+    await expect(async () => {
+      for await (const _event of model.getStreamedResponse({
+        input: 'hi',
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup',
+            namespace: 'crm',
+            description: 'Look up a CRM record.',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+          } as any,
+        ],
+        handoffs: [
+          {
+            toolName: 'crm.lookup',
+            toolDescription: 'Handoff with the same flattened name.',
+            inputJsonSchema: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+            strictJsonSchema: true,
+          },
+        ],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+        _internal: { toolNameCollisionPolicy: 'error' },
+      } as any)) {
+        void _event;
+      }
+    }).rejects.toThrow(
+      'AiSdkModel cannot disambiguate function tools and handoffs with the same flattened name.',
+    );
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  test('rejects flattened deferred and handoff name collisions in streaming mode', async () => {
+    const doStream = vi.fn();
+    const model = new AiSdkModel(stubModel({ doStream }));
+
+    await expect(async () => {
+      for await (const _event of model.getStreamedResponse({
+        input: 'hi',
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup',
+            description: 'Deferred lookup.',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+            deferLoading: true,
+          } as any,
+        ],
+        handoffs: [
+          {
+            toolName: 'lookup',
+            toolDescription: 'Handoff with the same flattened name.',
+            inputJsonSchema: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+            strictJsonSchema: true,
+          },
+        ],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any)) {
+        void _event;
+      }
+    }).rejects.toThrow(
+      'AiSdkModel cannot disambiguate function tools and handoffs with the same flattened name.',
+    );
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  test('rejects flattened function and provider tool collisions in streaming mode', async () => {
+    const doStream = vi.fn();
+    const model = new AiSdkModel(stubModel({ doStream }));
+
+    await expect(async () => {
+      for await (const _event of model.getStreamedResponse({
+        input: 'hi',
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup',
+            namespace: 'crm',
+            description: 'Look up a CRM record.',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+          } as any,
+          {
+            type: 'hosted_tool',
+            name: 'crm.lookup',
+            providerData: { type: 'web_search' },
+          } as any,
+        ],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any)) {
+        void _event;
+      }
+    }).rejects.toThrow(
+      /AiSdkModel cannot disambiguate (?:tools with the same flattened name|the flattened tool name 'crm\.lookup')/,
+    );
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  test('rejects duplicate provider tool names before streaming', async () => {
+    const doStream = vi.fn();
+    const model = new AiSdkModel(stubModel({ doStream }));
+    const providerTool = {
+      type: 'hosted_tool',
+      name: 'search',
+      providerData: { type: 'web_search' },
+    } as any;
+
+    await expect(async () => {
+      for await (const _event of model.getStreamedResponse({
+        input: 'hi',
+        tools: [providerTool, { ...providerTool }],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any)) {
+        void _event;
+      }
+    }).rejects.toThrow(
+      /AiSdkModel cannot disambiguate (?:provider tools with the same flattened name|the flattened provider tool name 'search')/,
+    );
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  test('rejects a default-policy flattened collision before streaming', async () => {
+    const doStream = vi.fn();
+    const model = new AiSdkModel(stubModel({ doStream }));
+    const [lookup] = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Look up a CRM record.',
+          parameters: z.object({}),
+          execute: async () => 'record',
+        }),
+      ],
+    });
+    const lookupHandoff = handoff(new Agent({ name: 'CRM specialist' }), {
+      toolNameOverride: 'crm.lookup',
+    });
+    const result = await run(
+      new Agent({
+        name: 'Routing agent',
+        model,
+        tools: [lookup!],
+        handoffs: [lookupHandoff],
+      }),
+      'hi',
+      { stream: true },
+    );
+
+    await expect(result.completed).rejects.toThrow(
+      'AiSdkModel cannot disambiguate function tools and handoffs with the same flattened name.',
+    );
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  test('rejects same-name namespaces before streaming', async () => {
+    const doStream = vi.fn();
+    const model = new AiSdkModel(stubModel({ doStream }));
+
+    await expect(async () => {
+      for await (const _event of model.getStreamedResponse({
+        input: 'hi',
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup_account',
+            namespace: 'lookup_account',
+            description: 'Same-name namespace lookup tool.',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+          } as any,
+        ],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any)) {
+        void _event;
+      }
+    }).rejects.toThrow(
+      /AiSdkModel cannot route (?:a function tool whose namespace matches its name|the function tool 'lookup_account' because its namespace matches its name)/,
+    );
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  test('exposes one winner when the same function tool object is repeated in streaming mode', async () => {
+    allowConsole(['warn']);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const doStream = vi.fn(async (_options: any): Promise<any> => ({
+      stream: partsStream([]),
+    }));
+    const model = new AiSdkModel(stubModel({ doStream }));
+    const duplicateTool = {
+      type: 'function',
+      name: 'duplicate',
+      description: 'Repeated tool object.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+    } as any;
+
+    try {
+      for await (const _event of model.getStreamedResponse({
+        input: 'hi',
+        tools: [duplicateTool, duplicateTool],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any)) {
+        void _event;
+      }
+
+      expect(doStream.mock.calls[0]![0].tools).toEqual([
+        expect.objectContaining({ name: 'duplicate' }),
+      ]);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   describe('parseArguments', () => {

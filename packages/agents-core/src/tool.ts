@@ -33,6 +33,7 @@ import type { ZodInfer, ZodObjectLike } from './utils/zodCompat';
 import {
   FUNCTION_TOOL_NAMESPACE,
   FUNCTION_TOOL_NAMESPACE_DESCRIPTION,
+  getFunctionToolLookupKeyForTool,
   getFunctionToolQualifiedName,
 } from './toolIdentity';
 import {
@@ -1323,6 +1324,16 @@ export function getToolSearchRuntimeToolKey<Context = UnknownContext>(
   }
 
   return undefined;
+}
+
+/** @internal */
+export function getToolSearchRuntimeRoutingKey<Context = UnknownContext>(
+  tool: Tool<Context>,
+): string | undefined {
+  if (tool.type === 'function') {
+    return getFunctionToolLookupKeyForTool(tool);
+  }
+  return getToolSearchRuntimeToolKey(tool);
 }
 
 /**

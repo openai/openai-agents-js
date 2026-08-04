@@ -36,6 +36,7 @@ import {
   user,
   assistant,
   type ToolExecutionConfig,
+  type ToolNameCollisionPolicy,
   type ToolNotFoundBehavior,
 } from '../src';
 import { RunStreamEvent } from '../src/events';
@@ -865,6 +866,70 @@ describe('Runner.run', () => {
       expect(runner.config.toolNotFoundBehavior).toBe('return_error_to_model');
     });
 
+    it('defaults the public tool name collision policy to warn', () => {
+      const runner = new Runner({ tracingDisabled: true });
+
+      expect(runner.config.toolNameCollisionPolicy).toBe('warn');
+    });
+
+    it('accepts the public tool name collision policy config', () => {
+      const toolNameCollisionPolicy = 'error' satisfies ToolNameCollisionPolicy;
+      const runner = new Runner({
+        tracingDisabled: true,
+        toolNameCollisionPolicy,
+      });
+
+      expect(runner.config.toolNameCollisionPolicy).toBe('error');
+    });
+
+    it('rejects an invalid tool name collision policy in Runner config', () => {
+      expect(
+        () =>
+          new Runner({
+            toolNameCollisionPolicy: 'invalid' as ToolNameCollisionPolicy,
+          }),
+      ).toThrow('toolNameCollisionPolicy must be either "warn" or "error".');
+    });
+
+    it('rejects a null tool name collision policy in Runner config', () => {
+      expect(
+        () =>
+          new Runner({
+            toolNameCollisionPolicy: null as any,
+          }),
+      ).toThrow('toolNameCollisionPolicy must be either "warn" or "error".');
+    });
+
+    it('rejects an invalid per-run tool name collision policy before model calls', async () => {
+      const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+      const getResponse = vi.spyOn(model, 'getResponse');
+      const agent = new Agent({ name: 'Invalid policy agent', model });
+
+      await expect(
+        new Runner().run(agent, 'hello', {
+          toolNameCollisionPolicy: 'invalid' as ToolNameCollisionPolicy,
+        }),
+      ).rejects.toThrow(
+        'toolNameCollisionPolicy must be either "warn" or "error".',
+      );
+      expect(getResponse).not.toHaveBeenCalled();
+    });
+
+    it('rejects a null per-run tool name collision policy before model calls', async () => {
+      const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+      const getResponse = vi.spyOn(model, 'getResponse');
+      const agent = new Agent({ name: 'Null policy agent', model });
+
+      await expect(
+        new Runner().run(agent, 'hello', {
+          toolNameCollisionPolicy: null as any,
+        }),
+      ).rejects.toThrow(
+        'toolNameCollisionPolicy must be either "warn" or "error".',
+      );
+      expect(getResponse).not.toHaveBeenCalled();
+    });
+
     it('keeps the default provider lazy until a string model needs it', async () => {
       const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
       const provider = {
@@ -1578,7 +1643,7 @@ describe('Runner.run', () => {
       await expect(() =>
         RunState.fromString(agent, state.toString()),
       ).rejects.toThrow(
-        /no longer provides toolSearchTool\(\{ execution: "client", execute \}\)/,
+        /require toolSearchTool\(\{ execution: "client", execute \}\) when custom client tool_search parameters are provided/,
       );
     });
 

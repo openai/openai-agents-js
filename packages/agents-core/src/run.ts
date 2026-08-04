@@ -87,6 +87,7 @@ import {
   ensureActiveAgentSpanForInterruptedResume,
   ensureTurnSpan,
   finishRunnerSpan,
+  getRunnerSpanErrorDetails,
   getTracing,
   setRunnerSpanError,
   startRunnerInvocationSpans,
@@ -131,9 +132,14 @@ import {
 import {
   getImplicitModelSettingsForResolvedModel,
   validateToolExecutionConfig,
+  validateToolNameCollisionPolicy,
   type ToolExecutionConfig,
+  type ToolNameCollisionPolicy,
 } from './runner/runConfig';
-export type { ToolExecutionConfig } from './runner/runConfig';
+export type {
+  ToolExecutionConfig,
+  ToolNameCollisionPolicy,
+} from './runner/runConfig';
 
 function hasPersistedToolOutput(state: RunState<any, any>): boolean {
   return state._generatedItems
@@ -303,6 +309,16 @@ export type RunConfig = {
   toolNotFoundBehavior?: ToolNotFoundBehavior;
 
   /**
+   * Controls collisions between enabled function tool and handoff names.
+   *
+   * - `warn` logs an actionable warning and exposes only the current dispatch winner.
+   * - `error` raises `UserError` before the model is called.
+   *
+   * Defaults to `warn`. Existing strict validation for namespaced and deferred tools is unchanged.
+   */
+  toolNameCollisionPolicy?: ToolNameCollisionPolicy;
+
+  /**
    * Customizes how session history is combined with the current turn's input.
    * When omitted, history items are appended before the new input.
    */
@@ -347,6 +363,7 @@ type SharedRunOptions<
   sandbox?: SandboxRunConfig;
   toolExecution?: ToolExecutionConfig;
   toolNotFoundBehavior?: ToolNotFoundBehavior;
+  toolNameCollisionPolicy?: ToolNameCollisionPolicy;
   /**
    * Error handlers keyed by error kind.
    */
@@ -479,6 +496,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sandbox: config.sandbox,
       toolExecution: validateToolExecutionConfig(config.toolExecution),
       toolNotFoundBehavior: config.toolNotFoundBehavior ?? 'raise_error',
+      toolNameCollisionPolicy: validateToolNameCollisionPolicy(
+        config.toolNameCollisionPolicy,
+      ),
       sessionInputCallback: config.sessionInputCallback,
       callModelInputFilter: config.callModelInputFilter,
       toolErrorFormatter: config.toolErrorFormatter,
@@ -585,6 +605,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     );
     const toolNotFoundBehavior =
       resolvedOptions.toolNotFoundBehavior ?? this.config.toolNotFoundBehavior;
+    const toolNameCollisionPolicy = validateToolNameCollisionPolicy(
+      resolvedOptions.toolNameCollisionPolicy === undefined
+        ? this.config.toolNameCollisionPolicy
+        : resolvedOptions.toolNameCollisionPolicy,
+    );
     const hasCallModelInputFilter = Boolean(callModelInputFilter);
     const tracingConfig = mergeTracingConfig(
       this.config.tracing,
@@ -604,6 +629,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       reasoningItemIdPolicy,
       toolExecution,
       toolNotFoundBehavior,
+      toolNameCollisionPolicy,
       tracing: tracingConfig,
     };
     const useTaskAndTurnSpans =
@@ -850,11 +876,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       typeof options.toolExecution !== 'undefined';
     const hasToolNotFoundBehaviorOverride =
       typeof options.toolNotFoundBehavior !== 'undefined';
+    const hasToolNameCollisionPolicyOverride =
+      typeof options.toolNameCollisionPolicy !== 'undefined';
     const hasTracingOverride = typeof options.tracing !== 'undefined';
     if (
       !hasSandboxOverride &&
       !hasToolExecutionOverride &&
       !hasToolNotFoundBehaviorOverride &&
+      !hasToolNameCollisionPolicyOverride &&
       !hasTracingOverride
     ) {
       return this.config;
@@ -867,6 +896,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         : {}),
       ...(hasToolNotFoundBehaviorOverride
         ? { toolNotFoundBehavior: options.toolNotFoundBehavior }
+        : {}),
+      ...(hasToolNameCollisionPolicyOverride
+        ? { toolNameCollisionPolicy: options.toolNameCollisionPolicy }
         : {}),
       ...(hasTracingOverride ? { tracing: options.tracing } : {}),
     };
@@ -1044,6 +1076,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               runConfigModel: await this.#resolveSandboxRuntimeModelForAgent(
                 state._currentAgent,
               ),
+              toolNameCollisionPolicy: options.toolNameCollisionPolicy,
               tracingParent:
                 getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
             });
@@ -1161,6 +1194,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             const artifacts = await prepareAgentArtifacts(
               state,
               preparedSandboxAgent.executionAgent,
+              options.toolNameCollisionPolicy,
             );
             const preparedCall = await this.#prepareModelCall(
               state,
@@ -1347,11 +1381,24 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         if (state._currentAgentSpan) {
           state._currentAgentSpan.setError({
             message: 'Error in agent run',
-            data: { error: String(err) },
+            data: {
+              error: getRunnerSpanErrorDetails(
+                err,
+                this.config.traceIncludeSensitiveData,
+              ),
+            },
           });
         }
-        setRunnerSpanError(currentTurnSpan, err);
-        setRunnerSpanError(taskSpan, err);
+        setRunnerSpanError(
+          currentTurnSpan,
+          err,
+          this.config.traceIncludeSensitiveData,
+        );
+        setRunnerSpanError(
+          taskSpan,
+          err,
+          this.config.traceIncludeSensitiveData,
+        );
         runError = err;
         throw err;
       } finally {
@@ -1381,7 +1428,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 invocationSpanParent,
             });
           } catch (error) {
-            setRunnerSpanError(taskSpan, error);
+            setRunnerSpanError(
+              taskSpan,
+              error,
+              this.config.traceIncludeSensitiveData,
+            );
             await Promise.reject(error);
           }
           const resultToPersist = completedResult ?? persistenceCheckpoint;
@@ -1403,7 +1454,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   : undefined;
               await persistResult?.(resultToPersist, persistenceOptions);
             } catch (error) {
-              setRunnerSpanError(taskSpan, error);
+              setRunnerSpanError(
+                taskSpan,
+                error,
+                this.config.traceIncludeSensitiveData,
+              );
               await Promise.reject(error);
             }
           }
@@ -1562,6 +1617,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             runConfigModel: await this.#resolveSandboxRuntimeModelForAgent(
               result.state._currentAgent,
             ),
+            toolNameCollisionPolicy: options.toolNameCollisionPolicy,
             tracingParent:
               getRunStateTurnSpanParent(result.state) ??
               result.state._currentAgentSpan,
@@ -1693,6 +1749,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const artifacts = await prepareAgentArtifacts(
             result.state,
             preparedSandboxAgent.executionAgent,
+            options.toolNameCollisionPolicy,
           );
 
           const preparedCall = await this.#prepareModelCall(
@@ -2053,11 +2110,24 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       if (result.state._currentAgentSpan) {
         result.state._currentAgentSpan.setError({
           message: 'Error in agent run',
-          data: { error: String(error) },
+          data: {
+            error: getRunnerSpanErrorDetails(
+              error,
+              this.config.traceIncludeSensitiveData,
+            ),
+          },
         });
       }
-      setRunnerSpanError(currentTurnSpan, error);
-      setRunnerSpanError(taskSpan, error);
+      setRunnerSpanError(
+        currentTurnSpan,
+        error,
+        this.config.traceIncludeSensitiveData,
+      );
+      setRunnerSpanError(
+        taskSpan,
+        error,
+        this.config.traceIncludeSensitiveData,
+      );
       runError = error;
       throw error;
     } finally {
@@ -2100,7 +2170,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               invocationSpanParent,
           });
         } catch (error) {
-          setRunnerSpanError(taskSpan, error);
+          setRunnerSpanError(
+            taskSpan,
+            error,
+            this.config.traceIncludeSensitiveData,
+          );
           await Promise.reject(error);
         }
       } finally {
@@ -2288,6 +2362,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         !hasExplicitTopLevelReasoningEffort(agentModelSettings),
       tracingParent:
         getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
+      toolNameCollisionPolicy: options.toolNameCollisionPolicy ?? 'warn',
     };
 
     let modelSettings = mergeModelSettings(

@@ -833,7 +833,7 @@ export class Agent<
               context &&
               resumeContext !== context
             ) {
-              resumeContext._mergeApprovals(context.toJSON().approvals);
+              resumeContext._mergeApprovalState(context);
             }
             runInput = await RunState.fromStringWithContext<TContext, TAgent>(
               this,

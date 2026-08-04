@@ -2,8 +2,8 @@ import { Agent } from './agent';
 import { toSmartString } from './utils/smartString';
 import * as protocol from './types/protocol';
 import {
-  getFunctionToolQualifiedName,
-  resolveFunctionToolCallName,
+  getFunctionToolStateKeyForCall,
+  getToolCallQualifiedName,
 } from './toolIdentity';
 import type { ToolOutputCustomData } from './utils/customData';
 
@@ -220,9 +220,13 @@ export class RunToolApprovalItem extends RunItemBase {
      * Explicit tool name to use for approval tracking when not present on the raw item.
      */
     public toolName?: string,
+    /** @internal Canonical function-tool key used by approval and resume state. */
+    public functionToolStateKey?: string,
   ) {
     super();
-    this.toolName = toolName ?? getDefaultApprovalToolName(rawItem, agent);
+    this.toolName = toolName ?? getDefaultApprovalToolName(rawItem);
+    this.functionToolStateKey =
+      functionToolStateKey ?? getDefaultApprovalFunctionToolStateKey(rawItem);
   }
 
   /**
@@ -245,42 +249,36 @@ export class RunToolApprovalItem extends RunItemBase {
       ...super.toJSON(),
       agent: this.agent.toJSON(),
       toolName: this.toolName,
+      functionToolStateKey: this.functionToolStateKey,
     };
   }
 }
 
+function getDefaultApprovalFunctionToolStateKey(
+  rawItem: RunToolApprovalItem['rawItem'],
+): string | undefined {
+  if (rawItem.type !== 'function_call') {
+    return undefined;
+  }
+  return getFunctionToolStateKeyForCall(rawItem);
+}
+
 function getDefaultApprovalToolName(
   rawItem: RunToolApprovalItem['rawItem'],
-  agent: Agent<any, any>,
 ): string | undefined {
   if (rawItem.type !== 'function_call') {
     return (rawItem as any).name;
   }
 
-  const availableFunctionTools = new Map(
-    agent.tools.flatMap((tool) => {
-      if (tool.type !== 'function' || typeof tool.name !== 'string') {
-        return [];
-      }
-      return [[getFunctionToolQualifiedName(tool) ?? tool.name, tool] as const];
-    }),
-  );
-
-  const resolvedToolName = resolveFunctionToolCallName(
-    rawItem,
-    availableFunctionTools,
-  );
-
   if (
     typeof rawItem.name === 'string' &&
     typeof rawItem.namespace === 'string' &&
-    rawItem.namespace === rawItem.name &&
-    !availableFunctionTools.has(`${rawItem.namespace}.${rawItem.name}`)
+    rawItem.namespace === rawItem.name
   ) {
     return rawItem.name;
   }
 
-  return resolvedToolName ?? rawItem.name;
+  return getToolCallQualifiedName(rawItem) ?? rawItem.name;
 }
 
 function getStringProperty(item: object, key: string): string | undefined {

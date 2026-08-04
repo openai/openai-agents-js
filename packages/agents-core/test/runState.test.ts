@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   RunState,
   buildAgentMap,
@@ -10,7 +10,10 @@ import {
 import { processedResponseRequiresExecutionToolRehydration } from '../src/sandbox/runtime/toolRehydration';
 import { RunContext } from '../src/runContext';
 import { Agent } from '../src/agent';
+import { handoff } from '../src/handoff';
 import { Usage } from '../src/usage';
+import type { ModelResponse } from '../src/model';
+import { processModelResponseAsync } from '../src/runner/modelOutputs';
 import {
   RunToolApprovalItem as ToolApprovalItem,
   RunMessageOutputItem,
@@ -29,6 +32,7 @@ import {
   shellTool,
   tool,
   toolNamespace,
+  type Tool,
 } from '../src/tool';
 import * as protocol from '../src/types/protocol';
 import {
@@ -38,11 +42,25 @@ import {
   FakeEditor,
 } from './stubs';
 import { RunResult } from '../src/result';
+import { UserError } from '../src/errors';
+import logger from '../src/logger';
 import { createAgentSpan } from '../src/tracing';
 import { getGlobalTraceProvider } from '../src/tracing/provider';
 import type { MCPServer, MCPTool } from '../src/mcp';
 import { SANDBOX_SESSION_STATE_VERSION, SandboxAgent } from '../src/sandbox';
-import { z } from 'zod';
+import {
+  getFunctionToolStateKey,
+  getFunctionToolStateKeyForCall,
+} from '../src/toolIdentity';
+import { z, ZodError } from 'zod';
+import { allowConsole } from '../../../helpers/tests/console-guard';
+
+type AliasTestKeys = {
+  crmAlias: string;
+  crmCanonical: string;
+  salesAlias: string;
+  salesCanonical: string;
+};
 
 function sandboxSessionStateEnvelope(
   providerState: Record<string, unknown>,
@@ -438,6 +456,12 @@ describe('RunState', () => {
       JSON.stringify(serialized),
     );
     expect(restored._sandbox).toEqual(state._sandbox);
+
+    const restoredFromSchema115 = await RunState.fromString(
+      agent,
+      JSON.stringify({ ...serialized, $schemaVersion: '1.15' }),
+    );
+    expect(restoredFromSchema115._sandbox).toEqual(state._sandbox);
   });
 
   it('keeps reading schema 1.8 payloads without sandbox state', async () => {
@@ -777,6 +801,188 @@ describe('RunState', () => {
     const restored = await RunState.fromString(agent, state.toString());
     expect(restored.getPendingAgentToolRun('toolA', 'call-1')).toBe('state-A');
     expect(restored.getPendingAgentToolRun('toolB', 'call-1')).toBe('state-B');
+  });
+
+  it('keeps pending agent tool aliases on one canonical state entry', async () => {
+    const context = new RunContext();
+    const namespacedLookup = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Look up a CRM record.',
+          parameters: z.object({}).strict(),
+          execute: async () => 'lookup',
+        }),
+      ],
+    })[0]!;
+    const agent = new Agent({
+      name: 'PendingAliasAgent',
+      tools: [namespacedLookup],
+    });
+    const state = new RunState(context, 'input', agent, 1);
+    const canonicalKey = getFunctionToolStateKey(namespacedLookup)!;
+    const toolCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc-pending-alias',
+      callId: 'call-1',
+      name: 'lookup',
+      namespace: 'crm',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [{ toolCall, tool: namespacedLookup as any }],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['crm.lookup'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    state.setPendingAgentToolRun(canonicalKey, 'call-1', 'initial-state', [
+      'crm.lookup',
+    ]);
+
+    expect(state._pendingAgentToolRuns.size).toBe(1);
+    expect(state.getPendingAgentToolRun('crm.lookup', 'call-1')).toBe(
+      'initial-state',
+    );
+
+    state.setPendingAgentToolRun('crm.lookup', 'call-1', 'updated-state');
+
+    expect(state._pendingAgentToolRuns.size).toBe(1);
+    expect(state.getPendingAgentToolRun(canonicalKey, 'call-1')).toBe(
+      'updated-state',
+    );
+
+    const restored = await RunState.fromString(agent, state.toString());
+    expect(restored._pendingAgentToolRuns.size).toBe(1);
+    expect(restored.getPendingAgentToolRun('crm.lookup', 'call-1')).toBe(
+      'updated-state',
+    );
+
+    restored.clearPendingAgentToolRun('crm.lookup', 'call-1');
+
+    expect(restored.hasPendingAgentToolRun(canonicalKey, 'call-1')).toBe(false);
+    expect(restored.hasPendingAgentToolRun('crm.lookup', 'call-1')).toBe(false);
+    expect(restored._pendingAgentToolRuns.size).toBe(0);
+    expect(restored._pendingAgentToolRunAliases.size).toBe(0);
+  });
+
+  it.each([
+    {
+      name: 'dangling target',
+      mutate: (aliases: Record<string, string>, keys: AliasTestKeys) => {
+        aliases[keys.crmAlias] = `${keys.crmCanonical}:missing-call`;
+      },
+    },
+    {
+      name: 'cross-call target',
+      mutate: (aliases: Record<string, string>, keys: AliasTestKeys) => {
+        aliases[keys.crmAlias] = `${keys.crmCanonical}:call-2`;
+      },
+    },
+    {
+      name: 'cross-tool target',
+      mutate: (aliases: Record<string, string>, keys: AliasTestKeys) => {
+        aliases[keys.crmAlias] = `${keys.salesCanonical}:call-3`;
+      },
+    },
+    {
+      name: 'alias chain',
+      mutate: (aliases: Record<string, string>, keys: AliasTestKeys) => {
+        aliases[keys.crmAlias] = keys.salesAlias;
+      },
+    },
+    {
+      name: 'alias cycle',
+      mutate: (aliases: Record<string, string>, keys: AliasTestKeys) => {
+        aliases[keys.crmAlias] = keys.salesAlias;
+        aliases[keys.salesAlias] = keys.crmAlias;
+      },
+    },
+  ])('rejects a pending agent tool alias with a $name', async ({ mutate }) => {
+    const [crmLookup, salesLookup] = ['crm', 'sales'].map(
+      (namespace) =>
+        toolNamespace({
+          name: namespace,
+          description: `${namespace} tools.`,
+          tools: [
+            tool({
+              name: 'lookup',
+              description: `Look up a ${namespace} record.`,
+              parameters: z.object({}).strict(),
+              execute: async () => namespace,
+            }),
+          ],
+        })[0]!,
+    );
+    const agent = new Agent({
+      name: 'Invalid pending alias agent',
+      tools: [crmLookup, salesLookup],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+    const crmCanonical = getFunctionToolStateKey(crmLookup)!;
+    const salesCanonical = getFunctionToolStateKey(salesLookup)!;
+    const createToolCall = (
+      namespace: string,
+      callId: string,
+    ): protocol.FunctionCallItem => ({
+      type: 'function_call',
+      id: `fc-${namespace}-${callId}`,
+      callId,
+      name: 'lookup',
+      namespace,
+      status: 'completed',
+      arguments: '{}',
+    });
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [
+        { toolCall: createToolCall('crm', 'call-1'), tool: crmLookup as any },
+        { toolCall: createToolCall('crm', 'call-2'), tool: crmLookup as any },
+        {
+          toolCall: createToolCall('sales', 'call-3'),
+          tool: salesLookup as any,
+        },
+      ],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['crm.lookup', 'sales.lookup'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+    state.setPendingAgentToolRun(crmCanonical, 'call-1', 'crm-state', [
+      'crm.lookup',
+    ]);
+    state.setPendingAgentToolRun(crmCanonical, 'call-2', 'crm-state-2', [
+      'crm.lookup',
+    ]);
+    state.setPendingAgentToolRun(salesCanonical, 'call-3', 'sales-state', [
+      'sales.lookup',
+    ]);
+
+    const serialized = state.toJSON();
+    const aliases = serialized.pendingAgentToolRunAliases!;
+    mutate(aliases, {
+      crmAlias: 'crm.lookup:call-1',
+      crmCanonical,
+      salesAlias: 'sales.lookup:call-3',
+      salesCanonical,
+    });
+
+    await expect(
+      RunState.fromString(agent, JSON.stringify(serialized)),
+    ).rejects.toThrow(
+      'Run state pending agent tool aliases do not match the reconstructed pending function calls.',
+    );
   });
 
   it('toJSON and toString produce valid JSON', () => {
@@ -1422,6 +1628,988 @@ describe('RunState', () => {
     );
   });
 
+  it('reads schema 1.15 approval keys and emits category-aware schema 1.16 state', async () => {
+    const context = new RunContext();
+    const agent = new Agent({ name: 'ApprovalKeyMigrationAgent' });
+    const state = new RunState(context, 'input', agent, 2);
+    const rawItem: protocol.FunctionCallItem = {
+      type: 'function_call',
+      name: 'lookup',
+      callId: 'legacy-call',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state.reject(new ToolApprovalItem(rawItem, agent));
+
+    const serialized = state.toJSON() as any;
+    const categoryKey = getFunctionToolStateKeyForCall(rawItem)!;
+    const ownerApprovals = serialized.context.functionApprovals.find(
+      (entry: any) => entry.agentIdentity === agent.name,
+    ).approvals;
+    serialized.$schemaVersion = '1.15';
+    serialized.context.approvals.lookup = ownerApprovals[categoryKey];
+    delete serialized.context.functionApprovals;
+    delete serialized.context.legacyFunctionApprovals;
+
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(serialized),
+    );
+
+    expect(
+      restored._context.isToolApproved({
+        toolName: 'lookup',
+        callId: 'legacy-call',
+      }),
+    ).toBe(false);
+    expect(restored.toJSON().$schemaVersion).toBe('1.16');
+  });
+
+  it('rehydrates schema 1.15 approval identity from enabled prepared tools', async () => {
+    const enabledLookup = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Look up a CRM record.',
+          parameters: z.object({}),
+          execute: async () => 'enabled',
+        }),
+      ],
+    })[0]!;
+    const disabledLookup = toolNamespace({
+      name: 'crm',
+      description: 'Disabled CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Disabled duplicate.',
+          parameters: z.object({}),
+          isEnabled: false,
+          execute: async () => 'disabled',
+        }),
+      ],
+    })[0]!;
+    const agent = new Agent({
+      name: 'LegacyApprovalAgent',
+      tools: [enabledLookup, disabledLookup],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const rawItem: protocol.FunctionCallItem = {
+      type: 'function_call',
+      name: 'lookup',
+      namespace: 'crm',
+      callId: 'legacy-approval-call',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [{ toolCall: rawItem, tool: enabledLookup as any }],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['crm.lookup'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [new ToolApprovalItem(rawItem, agent)],
+      },
+    };
+
+    const serialized = state.toJSON() as any;
+    serialized.$schemaVersion = '1.15';
+    delete serialized.currentStep.data.interruptions[0].functionToolStateKey;
+
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(serialized),
+    );
+    const [approvalItem] = restored.getInterruptions();
+
+    expect(approvalItem.functionToolStateKey).toBe(
+      getFunctionToolStateKey(enabledLookup),
+    );
+    restored.approve(approvalItem);
+    expect(
+      restored._context.isToolApproved({
+        toolName: getFunctionToolStateKey(enabledLookup)!,
+        callId: rawItem.callId,
+      }),
+    ).toBe(true);
+  });
+
+  it.each(['namespaced', 'dotted'] as const)(
+    'migrates schema 1.15 pending nested state for the exact %s tool category',
+    async (pendingCategory) => {
+      const dottedLookup = tool({
+        name: 'crm_lookup',
+        description: 'Look up a dotted CRM record.',
+        parameters: z.object({}),
+        execute: async () => 'dotted',
+      });
+      dottedLookup.name = 'crm.lookup';
+      const namespacedLookup = toolNamespace({
+        name: 'crm',
+        description: 'CRM tools.',
+        tools: [
+          tool({
+            name: 'lookup',
+            description: 'Look up a namespaced CRM record.',
+            parameters: z.object({}),
+            execute: async () => 'namespaced',
+          }),
+        ],
+      })[0]!;
+      const pendingTool =
+        pendingCategory === 'namespaced' ? namespacedLookup : dottedLookup;
+      const toolCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: pendingCategory === 'namespaced' ? 'lookup' : 'crm.lookup',
+        ...(pendingCategory === 'namespaced' ? { namespace: 'crm' } : {}),
+        callId: `legacy-${pendingCategory}-call`,
+        status: 'completed',
+        arguments: '{}',
+      };
+      const agent = new Agent({
+        name: `LegacyPending${pendingCategory}`,
+        tools: [dottedLookup, namespacedLookup],
+      });
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      state._lastProcessedResponse = {
+        newItems: [],
+        functions: [{ toolCall, tool: pendingTool as any }],
+        handoffs: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        mcpApprovalRequests: [],
+        toolsUsed: ['crm.lookup'],
+        hasToolsOrApprovalsToRun: () => true,
+      };
+      state.setPendingAgentToolRun(
+        'crm.lookup',
+        toolCall.callId,
+        `${pendingCategory}-state`,
+      );
+
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+      delete serialized.pendingAgentToolRunAliases;
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+      const canonicalKey = getFunctionToolStateKey(pendingTool)!;
+
+      expect(
+        restored.getPendingAgentToolRun(canonicalKey, toolCall.callId),
+      ).toBe(`${pendingCategory}-state`);
+      expect(
+        restored.getPendingAgentToolRun('crm.lookup', toolCall.callId),
+      ).toBe(`${pendingCategory}-state`);
+      expect(restored._pendingAgentToolRuns.size).toBe(1);
+    },
+  );
+
+  it('migrates pending schema 1.15 approvals while preserving ambiguous permanent owners', async () => {
+    const decisions = [
+      {
+        name: 'approved call',
+        record: (callId: string) => ({
+          approved: [callId],
+          rejected: [],
+        }),
+        expected: true,
+      },
+      {
+        name: 'rejected call',
+        record: (callId: string) => ({
+          approved: [],
+          rejected: [callId],
+          messages: { [callId]: 'Rejected once' },
+        }),
+        expected: false,
+        message: 'Rejected once',
+      },
+      {
+        name: 'permanent approval',
+        record: () => ({ approved: true, rejected: [] }),
+        expected: true,
+      },
+      {
+        name: 'permanent rejection',
+        record: (callId: string) => ({
+          approved: false,
+          rejected: true,
+          messages: { [callId]: 'Always rejected' },
+          stickyRejectMessage: 'Always rejected',
+        }),
+        expected: false,
+        message: 'Always rejected',
+      },
+    ];
+
+    for (const pair of ['bare-deferred', 'dotted-namespaced'] as const) {
+      for (const decision of decisions) {
+        const bareTool = tool({
+          name: pair === 'bare-deferred' ? 'lookup' : 'crm_lookup',
+          description: 'Bare lookup.',
+          parameters: z.object({}),
+          execute: async () => 'bare',
+        });
+        if (pair === 'dotted-namespaced') {
+          bareTool.name = 'crm.lookup';
+        }
+        const structuredTool =
+          pair === 'bare-deferred'
+            ? tool({
+                name: 'lookup',
+                description: 'Deferred lookup.',
+                parameters: z.object({}),
+                deferLoading: true,
+                execute: async () => 'deferred',
+              })
+            : toolNamespace({
+                name: 'crm',
+                description: 'CRM tools.',
+                tools: [
+                  tool({
+                    name: 'lookup',
+                    description: 'Namespaced lookup.',
+                    parameters: z.object({}),
+                    execute: async () => 'namespaced',
+                  }),
+                ],
+              })[0]!;
+        const callId = `${pair}-${decision.name.replace(/ /g, '-')}`;
+        const toolCall: protocol.FunctionCallItem = {
+          type: 'function_call',
+          name: 'lookup',
+          namespace: pair === 'bare-deferred' ? 'lookup' : 'crm',
+          callId,
+          status: 'completed',
+          arguments: '{}',
+        };
+        const legacyKey = pair === 'bare-deferred' ? 'lookup' : 'crm.lookup';
+        const agent = new Agent({
+          name: `LegacyApproval-${pair}-${decision.name}`,
+          tools: [bareTool, structuredTool],
+        });
+        const state = new RunState(new RunContext(), 'input', agent, 2);
+        state._lastProcessedResponse = {
+          newItems: [],
+          functions: [{ toolCall, tool: structuredTool as any }],
+          handoffs: [],
+          computerActions: [],
+          shellActions: [],
+          applyPatchActions: [],
+          mcpApprovalRequests: [],
+          toolsUsed: [legacyKey],
+          hasToolsOrApprovalsToRun: () => true,
+        };
+        state._currentStep = {
+          type: 'next_step_interruption',
+          data: {
+            interruptions: [new ToolApprovalItem(toolCall, agent)],
+          },
+        };
+
+        const serialized = state.toJSON() as any;
+        serialized.$schemaVersion = '1.15';
+        serialized.context.approvals = {
+          [legacyKey]: decision.record(callId),
+        };
+        delete serialized.currentStep.data.interruptions[0]
+          .functionToolStateKey;
+
+        const restored = await RunState.fromString(
+          agent,
+          JSON.stringify(serialized),
+        );
+        const canonicalKey = getFunctionToolStateKey(structuredTool)!;
+        const isPermanent = decision.name.startsWith('permanent');
+
+        expect(
+          restored._context.isToolApproved({
+            toolName: canonicalKey,
+            callId,
+          }),
+          `${pair}: ${decision.name}`,
+        ).toBe(decision.expected);
+        expect(
+          restored._context.getRejectionMessage(canonicalKey, callId),
+        ).toBe(decision.message);
+        expect(
+          restored._context.isToolApproved({
+            toolName: canonicalKey,
+            callId: `${callId}-future`,
+          }),
+        ).toBe(isPermanent ? decision.expected : undefined);
+        expect(
+          restored._context.isToolApproved({
+            toolName: legacyKey,
+            callId,
+          }),
+          `${pair}: ${decision.name} legacy owner`,
+        ).toBe(isPermanent ? decision.expected : undefined);
+        expect(
+          restored._context.isToolApproved({
+            toolName: legacyKey,
+            callId: `${callId}-future`,
+          }),
+          `${pair}: ${decision.name} future legacy owner`,
+        ).toBe(isPermanent ? decision.expected : undefined);
+      }
+    }
+  });
+
+  it.each([
+    ['permanent approval', { approved: true, rejected: [] }, true, undefined],
+    [
+      'permanent rejection',
+      {
+        approved: false,
+        rejected: true,
+        stickyRejectMessage: 'Always rejected',
+      },
+      false,
+      'Always rejected',
+    ],
+  ] as const)(
+    'migrates a schema 1.15 %s when the legacy function owner is unique',
+    async (_name, approvalRecord, expectedApproval, expectedMessage) => {
+      const namespacedLookup = toolNamespace({
+        name: 'crm',
+        description: 'CRM tools.',
+        tools: [
+          tool({
+            name: 'lookup',
+            description: 'Namespaced lookup.',
+            parameters: z.object({}),
+            execute: async () => 'namespaced',
+          }),
+        ],
+      })[0]!;
+      const callId = 'unique-owner-call';
+      const toolCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: 'lookup',
+        namespace: 'crm',
+        callId,
+        status: 'completed',
+        arguments: '{}',
+      };
+      const agent = new Agent({
+        name: 'UniqueLegacyApprovalOwner',
+        tools: [namespacedLookup],
+      });
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      state._lastProcessedResponse = {
+        newItems: [],
+        functions: [{ toolCall, tool: namespacedLookup as any }],
+        handoffs: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        mcpApprovalRequests: [],
+        toolsUsed: ['crm.lookup'],
+        hasToolsOrApprovalsToRun: () => true,
+      };
+
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+      serialized.context.approvals = {
+        'crm.lookup': approvalRecord,
+      };
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+      const canonicalKey = getFunctionToolStateKey(namespacedLookup)!;
+
+      expect(
+        restored._context.isToolApproved({
+          toolName: canonicalKey,
+          callId,
+        }),
+      ).toBe(expectedApproval);
+      expect(restored._context.getRejectionMessage(canonicalKey, callId)).toBe(
+        expectedMessage,
+      );
+      expect(
+        restored._context.isToolApproved({
+          toolName: 'crm.lookup',
+          callId,
+        }),
+      ).toBeUndefined();
+      const publicApproval = restored._context.toJSON().approvals['crm.lookup'];
+      expect(publicApproval).toBeDefined();
+      expect(publicApproval.approved === true).toBe(
+        approvalRecord.approved === true,
+      );
+      expect(publicApproval.rejected === true).toBe(
+        approvalRecord.rejected === true,
+      );
+      expect(
+        restored._context.toJSON().approvals[canonicalKey],
+      ).toBeUndefined();
+
+      const durable = restored.toJSON() as any;
+      expect(durable.context.approvals['crm.lookup']).toBeUndefined();
+      const durableApproval = durable.context.functionApprovals.find(
+        (entry: any) => entry.agentIdentity === agent.name,
+      ).approvals[canonicalKey];
+      expect(durableApproval.approved === true).toBe(
+        approvalRecord.approved === true,
+      );
+      expect(durableApproval.rejected === true).toBe(
+        approvalRecord.rejected === true,
+      );
+    },
+  );
+
+  it('migrates a unique schema 1.15 permanent owner without a current call', async () => {
+    const namespacedLookup = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Namespaced lookup.',
+          parameters: z.object({}),
+          execute: async () => 'namespaced',
+        }),
+      ],
+    })[0]!;
+    const agent = new Agent({
+      name: 'Unique inactive legacy approval owner',
+      tools: [namespacedLookup],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+
+    const serialized = state.toJSON() as any;
+    serialized.$schemaVersion = '1.15';
+    serialized.context.approvals = {
+      'crm.lookup': { approved: true, rejected: [] },
+    };
+
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(serialized),
+    );
+    const canonicalKey = getFunctionToolStateKey(namespacedLookup)!;
+
+    expect(
+      restored._context.isToolApproved({
+        toolName: canonicalKey,
+        callId: 'future_call',
+      }),
+    ).toBe(true);
+    expect(
+      restored._context.isToolApproved({
+        toolName: 'crm.lookup',
+        callId: 'future_call',
+      }),
+    ).toBeUndefined();
+    const durable = restored.toJSON() as any;
+    expect(durable.context.approvals['crm.lookup']).toBeUndefined();
+    expect(durable.context.legacyFunctionApprovals).toBeUndefined();
+    expect(
+      durable.context.functionApprovals[0].approvals[canonicalKey],
+    ).toMatchObject({ approved: true, rejected: [] });
+  });
+
+  it('migrates a unique schema 1.15 approval owned by an inactive child agent', async () => {
+    const childLookup = toolNamespace({
+      name: 'crm',
+      description: 'Child CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Child namespaced lookup.',
+          parameters: z.object({}),
+          execute: async () => 'child',
+        }),
+      ],
+    })[0]!;
+    const childAgent = new Agent({
+      name: 'Inactive legacy approval child',
+      tools: [childLookup],
+    });
+    const rootAgent = new Agent({
+      name: 'Inactive legacy approval root',
+      tools: [
+        childAgent.asTool({
+          toolName: 'run_child',
+          toolDescription: 'Runs the child agent.',
+        }),
+      ],
+    });
+    const state = new RunState(new RunContext(), 'input', rootAgent, 2);
+    const serialized = state.toJSON() as any;
+    serialized.$schemaVersion = '1.15';
+    serialized.context.approvals = {
+      'crm.lookup': { approved: true, rejected: [] },
+    };
+
+    const restored = await RunState.fromString(
+      rootAgent,
+      JSON.stringify(serialized),
+    );
+    const canonicalKey = getFunctionToolStateKey(childLookup)!;
+
+    expect(
+      restored._context.isToolApproved({
+        toolName: canonicalKey,
+        callId: 'future_child_call',
+        functionTool: false,
+        agent: childAgent,
+      }),
+    ).toBe(true);
+    const durable = restored.toJSON() as any;
+    expect(durable.context.approvals['crm.lookup']).toBeUndefined();
+    expect(durable.context.legacyFunctionApprovals).toBeUndefined();
+    expect(
+      durable.context.functionApprovals.find(
+        (entry: any) => entry.agentIdentity === childAgent.name,
+      ).approvals[canonicalKey],
+    ).toMatchObject({ approved: true, rejected: [] });
+  });
+
+  it('keeps an exact non-function override separate from an inactive schema 1.15 function owner', async () => {
+    const namespacedLookup = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Namespaced lookup.',
+          parameters: z.object({}),
+          execute: async () => 'namespaced',
+        }),
+      ],
+    })[0]!;
+    const otherTool = tool({
+      name: 'other_tool',
+      description: 'Other tool.',
+      parameters: z.object({}),
+      execute: async () => 'other',
+    });
+    const otherCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      name: 'other_tool',
+      callId: 'merge_other_call',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const agent = new Agent({
+      name: 'Inactive merge approval owner',
+      tools: [namespacedLookup, otherTool],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [
+        {
+          toolCall: otherCall,
+          tool: otherTool as any,
+          availableFunctionTools: [namespacedLookup, otherTool] as any,
+        },
+      ],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['other_tool'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+    const serialized = state.toJSON() as any;
+    serialized.$schemaVersion = '1.15';
+    serialized.context.approvals = {
+      'crm.lookup': { approved: true, rejected: [] },
+    };
+    const overrideContext = new RunContext();
+    overrideContext.rejectTool(
+      new ToolApprovalItem(
+        {
+          type: 'shell_call',
+          callId: 'shell_crm_lookup',
+          status: 'completed',
+          action: { commands: ['echo rejected'] },
+        },
+        agent,
+        'crm.lookup',
+      ),
+      { alwaysReject: true },
+    );
+
+    const restored = await RunState.fromStringWithContext(
+      agent,
+      JSON.stringify(serialized),
+      overrideContext,
+      { contextStrategy: 'merge' },
+    );
+    const canonicalKey = getFunctionToolStateKey(namespacedLookup)!;
+
+    expect(
+      restored._context.isToolApproved({
+        toolName: canonicalKey,
+        callId: 'future_function_call',
+      }),
+    ).toBe(true);
+    expect(
+      restored._context.isToolApproved({
+        toolName: 'crm.lookup',
+        callId: 'future_shell_call',
+        functionTool: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('keeps ambiguous legacy function fallback separate from an exact non-function override', async () => {
+    const dottedLookup = tool({
+      name: 'crm_lookup',
+      description: 'Dotted lookup.',
+      parameters: z.object({}),
+      execute: async () => 'dotted',
+    });
+    dottedLookup.name = 'crm.lookup';
+    const namespacedLookup = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Namespaced lookup.',
+          parameters: z.object({}),
+          execute: async () => 'namespaced',
+        }),
+      ],
+    })[0]!;
+    const callId = 'ambiguous_merge_call';
+    const toolCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      name: 'lookup',
+      namespace: 'crm',
+      callId,
+      status: 'completed',
+      arguments: '{}',
+    };
+    const agent = new Agent({
+      name: 'Ambiguous legacy fallback merge',
+      tools: [dottedLookup, namespacedLookup],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [{ toolCall, tool: namespacedLookup as any }],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['crm.lookup'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+    const serialized = state.toJSON() as any;
+    serialized.$schemaVersion = '1.15';
+    serialized.context.approvals = {
+      'crm.lookup': {
+        approved: false,
+        rejected: true,
+        stickyRejectMessage: 'Legacy rejection',
+      },
+    };
+
+    const overrideContext = new RunContext();
+    overrideContext.approveTool(
+      new ToolApprovalItem(
+        {
+          type: 'shell_call',
+          callId: 'shell_override_call',
+          status: 'completed',
+          action: { commands: ['echo approved'] },
+        },
+        agent,
+        'crm.lookup',
+      ),
+      { alwaysApprove: true },
+    );
+
+    const restored = await RunState.fromStringWithContext(
+      agent,
+      JSON.stringify(serialized),
+      overrideContext,
+      { contextStrategy: 'merge' },
+    );
+    const namespacedKey = getFunctionToolStateKey(namespacedLookup)!;
+    const dottedKey = getFunctionToolStateKey(dottedLookup)!;
+
+    for (const [toolName, checkedCallId] of [
+      [namespacedKey, callId],
+      [namespacedKey, 'future_namespaced_call'],
+      [dottedKey, 'future_dotted_call'],
+    ] as const) {
+      expect(
+        restored._context.isToolApproved({
+          toolName,
+          callId: checkedCallId,
+          functionTool: false,
+          agent,
+        }),
+      ).toBe(false);
+    }
+    expect(
+      restored._context.isToolApproved({
+        toolName: 'crm.lookup',
+        callId: 'future_shell_call',
+        functionTool: false,
+      }),
+    ).toBe(true);
+
+    const durable = restored.toJSON() as any;
+    expect(durable.context.approvals['crm.lookup'].approved).toBe(true);
+    expect(durable.context.legacyFunctionApprovals['crm.lookup'].rejected).toBe(
+      true,
+    );
+
+    const roundTripped = await RunState.fromString(agent, restored.toString());
+    expect(
+      roundTripped._context.isToolApproved({
+        toolName: dottedKey,
+        callId: 'round_trip_function_call',
+        functionTool: false,
+        agent,
+      }),
+    ).toBe(false);
+    expect(
+      roundTripped._context.isToolApproved({
+        toolName: 'crm.lookup',
+        callId: 'round_trip_shell_call',
+        functionTool: false,
+      }),
+    ).toBe(true);
+  });
+
+  it('keeps schema 1.15 approval ownership when merging a canonical override context', async () => {
+    const decisions = [
+      {
+        name: 'per-call approval',
+        record: (callId: string) => ({
+          approved: [callId],
+          rejected: [],
+        }),
+        expected: true,
+      },
+      {
+        name: 'permanent rejection',
+        record: (callId: string) => ({
+          approved: false,
+          rejected: true,
+          messages: { [callId]: 'Always rejected' },
+          stickyRejectMessage: 'Always rejected',
+        }),
+        expected: false,
+        message: 'Always rejected',
+      },
+    ];
+
+    for (const decision of decisions) {
+      const dottedLookup = tool({
+        name: 'crm_lookup',
+        description: 'Dotted lookup.',
+        parameters: z.object({}),
+        execute: async () => 'dotted',
+      });
+      dottedLookup.name = 'crm.lookup';
+      const namespacedLookup = toolNamespace({
+        name: 'crm',
+        description: 'CRM tools.',
+        tools: [
+          tool({
+            name: 'lookup',
+            description: 'Namespaced lookup.',
+            parameters: z.object({}),
+            execute: async () => 'namespaced',
+          }),
+        ],
+      })[0]!;
+      const agent = new Agent({
+        name: `MergeApproval-${decision.name}`,
+        tools: [dottedLookup, namespacedLookup],
+      });
+      const callId = `namespaced-${decision.name.replace(/ /g, '-')}`;
+      const namespacedCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: 'lookup',
+        namespace: 'crm',
+        callId,
+        status: 'completed',
+        arguments: '{}',
+      };
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      state._lastProcessedResponse = {
+        newItems: [],
+        functions: [
+          { toolCall: namespacedCall, tool: namespacedLookup as any },
+        ],
+        handoffs: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        mcpApprovalRequests: [],
+        toolsUsed: ['crm.lookup'],
+        hasToolsOrApprovalsToRun: () => true,
+      };
+      state._currentStep = {
+        type: 'next_step_interruption',
+        data: {
+          interruptions: [new ToolApprovalItem(namespacedCall, agent)],
+        },
+      };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+      serialized.context.approvals = {
+        'crm.lookup': decision.record(callId),
+        other: {
+          approved: ['serialized-other-call'],
+          rejected: [],
+        },
+      };
+      delete serialized.currentStep.data.interruptions[0].functionToolStateKey;
+
+      const overrideContext = new RunContext();
+      const existingBareCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: 'crm.lookup',
+        callId: 'existing-bare-call',
+        status: 'completed',
+        arguments: '{}',
+      };
+      overrideContext.approveTool(
+        new ToolApprovalItem(
+          existingBareCall,
+          agent,
+          undefined,
+          getFunctionToolStateKey(dottedLookup),
+        ),
+      );
+      overrideContext.approveTool(
+        new ToolApprovalItem(
+          {
+            type: 'function_call',
+            name: 'other',
+            callId: 'override-other-call',
+            status: 'completed',
+            arguments: '{}',
+          },
+          agent,
+        ),
+      );
+      overrideContext.approveTool(
+        new ToolApprovalItem(
+          {
+            type: 'shell_call',
+            callId: 'override-shell-call',
+            status: 'completed',
+            action: { commands: ['echo approved'] },
+          },
+          agent,
+          'crm.lookup',
+        ),
+        { alwaysApprove: true },
+      );
+
+      const restored = await RunState.fromStringWithContext(
+        agent,
+        JSON.stringify(serialized),
+        overrideContext,
+        { contextStrategy: 'merge' },
+      );
+      const namespacedKey = getFunctionToolStateKey(namespacedLookup)!;
+      const bareKey = getFunctionToolStateKey(dottedLookup)!;
+      const isPermanent = decision.name.startsWith('permanent');
+
+      expect(
+        restored._context.isToolApproved({
+          toolName: namespacedKey,
+          callId,
+        }),
+        decision.name,
+      ).toBe(decision.expected);
+      expect(restored._context.getRejectionMessage(namespacedKey, callId)).toBe(
+        decision.message,
+      );
+      expect(
+        restored._context.isToolApproved({
+          toolName: namespacedKey,
+          callId: `${callId}-future`,
+        }),
+      ).toBe(isPermanent ? decision.expected : undefined);
+      expect(
+        restored._context.isToolApproved({
+          toolName: 'crm.lookup',
+          callId,
+          functionTool: false,
+        }),
+      ).toBe(true);
+      expect(
+        restored._context.getRejectionMessage('crm.lookup', callId, {
+          functionTool: false,
+        }),
+      ).toBeUndefined();
+      expect(
+        restored._context.isToolApproved({
+          toolName: bareKey,
+          callId: 'existing-bare-call',
+          agent,
+        }),
+      ).toBe(true);
+      expect(
+        restored._context.isToolApproved({
+          toolName: bareKey,
+          callId: 'future-bare-call',
+          agent,
+        }),
+      ).toBe(isPermanent ? decision.expected : undefined);
+      expect(
+        restored._context.isToolApproved({
+          toolName: 'other',
+          callId: 'serialized-other-call',
+          functionTool: false,
+        }),
+      ).toBe(true);
+      expect(
+        restored._context.isToolApproved({
+          toolName: '["bare","other"]',
+          callId: 'override-other-call',
+        }),
+      ).toBe(true);
+      expect(
+        restored._context.isToolApproved({
+          toolName: '["bare","other"]',
+          callId: 'serialized-other-call',
+        }),
+      ).toBeUndefined();
+      expect(
+        restored._context.isToolApproved({
+          toolName: 'other',
+          callId: 'override-other-call',
+          functionTool: false,
+        }),
+      ).toBeUndefined();
+    }
+  });
+
   it('accepts schema version 1.6 payloads during deserialization', async () => {
     const context = new RunContext();
     const agent = new Agent({ name: 'Agent16' });
@@ -1589,6 +2777,74 @@ describe('RunState', () => {
       call_id: 'call_ts_raw',
       execution: 'server',
     });
+  });
+
+  it('rehydrates client tool_search outputs without explicit call_id by FIFO order', async () => {
+    const runtimeLookup = tool({
+      name: 'lookup_runtime',
+      description: 'Look up a runtime record.',
+      parameters: z.object({}),
+      execute: async () => 'runtime',
+    });
+    const execute = vi.fn(async () => runtimeLookup);
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      execute,
+    );
+    const agent = new Agent({
+      name: 'No call id tool-search restore agent',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_without_call_id',
+          execution: 'client',
+          status: 'completed',
+          arguments: {},
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_without_call_id',
+          execution: 'client',
+          status: 'completed',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup_runtime',
+              description: 'Look up a runtime record.',
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+            },
+          ],
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+    );
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(
+      await (restored.getToolSearchRuntimeTools(agent)[0] as any).invoke(
+        new RunContext(),
+        '{}',
+      ),
+    ).toBe('runtime');
   });
 
   it('skips rehydration for server tool_search outputs with concrete tool payloads', async () => {
@@ -1804,6 +3060,3368 @@ describe('RunState', () => {
     expect(restored.getToolSearchRuntimeTools(betaAgent)).toEqual([betaLookup]);
   });
 
+  it('uses the collision-filtered tool winner during tool-search rehydration', async () => {
+    const firstDuplicate = tool({
+      name: 'duplicate',
+      description: 'First duplicate.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'first',
+    });
+    const winningDuplicate = tool({
+      name: 'duplicate',
+      description: 'Winning duplicate.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'winner',
+    });
+    const losingRuntimeTool = tool({
+      name: 'losing_runtime',
+      description: 'Runtime tool selected from the unfiltered list.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'losing runtime',
+    });
+    const winningRuntimeTool = tool({
+      name: 'winning_runtime',
+      description: 'Runtime tool selected from the filtered list.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'winning runtime',
+    });
+    const execute = vi.fn(
+      async ({ availableTools }: { availableTools: Tool<any>[] }) => {
+        const selectedDuplicate = availableTools.find(
+          (candidate) =>
+            candidate.type === 'function' && candidate.name === 'duplicate',
+        );
+        return selectedDuplicate === winningDuplicate
+          ? winningRuntimeTool
+          : losingRuntimeTool;
+      },
+    );
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+        },
+      },
+      execute,
+    );
+    const agent = new Agent({
+      name: 'Collision-filtered restore agent',
+      tools: [firstDuplicate, winningDuplicate, clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const callId = 'call_collision_filtered_restore';
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_collision_filtered_restore',
+          status: 'completed',
+          arguments: { query: 'runtime' },
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_collision_filtered_restore',
+          status: 'completed',
+          tools: [
+            {
+              type: 'function',
+              name: 'winning_runtime',
+              description: 'Runtime tool selected from the filtered list.',
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+            },
+          ],
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+    );
+
+    allowConsole(['warn']);
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0]?.[0].availableTools).toEqual([
+      winningDuplicate,
+      clientToolSearch,
+    ]);
+    expect(restored.getToolSearchRuntimeTools(agent)).toEqual([
+      winningRuntimeTool,
+    ]);
+  });
+
+  it('freezes collision-filtered capabilities across tool-search rehydration callbacks', async () => {
+    type TestContext = {
+      functionEnabled: boolean;
+      handoffEnabled: boolean;
+    };
+
+    const transferFunction = tool({
+      name: 'transfer',
+      description: 'Function with the same name as a dynamic handoff.',
+      parameters: z.object({}).strict(),
+      isEnabled: ({ runContext }) =>
+        (runContext.context as TestContext).functionEnabled,
+      execute: async () => 'function',
+    });
+    const firstRuntimeTool = tool({
+      name: 'first_runtime',
+      description: 'First runtime tool.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'first runtime',
+    });
+    const secondRuntimeTool = tool({
+      name: 'second_runtime',
+      description: 'Second runtime tool.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'second runtime',
+    });
+    const availableToolSnapshots: Tool<any>[][] = [];
+    const execute = vi.fn(
+      async ({
+        availableTools,
+        runContext,
+      }: {
+        availableTools: Tool<TestContext>[];
+        runContext: RunContext<TestContext>;
+      }) => {
+        availableToolSnapshots.push(availableTools);
+        if (availableToolSnapshots.length === 1) {
+          runContext.context.functionEnabled = false;
+          runContext.context.handoffEnabled = true;
+          return firstRuntimeTool;
+        }
+        return secondRuntimeTool;
+      },
+    );
+    const clientToolSearch = attachClientToolSearchExecutor<TestContext>(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+        },
+      },
+      execute,
+    );
+    const target = new Agent<TestContext>({ name: 'Dynamic target' });
+    const agent = new Agent<TestContext>({
+      name: 'Frozen capability restore agent',
+      tools: [transferFunction, clientToolSearch],
+      handoffs: [
+        handoff(target, {
+          toolNameOverride: 'transfer',
+          isEnabled: ({ runContext }) => runContext.context.handoffEnabled,
+        }),
+      ],
+    });
+    const state = new RunState(
+      new RunContext({ functionEnabled: true, handoffEnabled: false }),
+      'input',
+      agent,
+      2,
+    );
+    const processedToolCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_frozen_capability_restore',
+      callId: 'call_frozen_capability_restore',
+      name: 'transfer',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [
+        { toolCall: processedToolCall, tool: transferFunction as any },
+      ],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['transfer'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+    const addSerializedToolSearchResult = (
+      callId: string,
+      runtimeToolName: string,
+    ) => {
+      state._generatedItems.push(
+        new RunToolSearchCallItem(
+          {
+            type: 'tool_search_call',
+            id: `ts_${callId}`,
+            status: 'completed',
+            arguments: { query: runtimeToolName },
+            providerData: { call_id: callId, execution: 'client' },
+          } as protocol.ToolSearchCallItem,
+          agent as Agent<any, any>,
+        ),
+        new RunToolSearchOutputItem(
+          {
+            type: 'tool_search_output',
+            id: `tso_${callId}`,
+            status: 'completed',
+            tools: [
+              {
+                type: 'function',
+                name: runtimeToolName,
+                description: `${runtimeToolName} description.`,
+                strict: true,
+                parameters: {
+                  type: 'object',
+                  properties: {},
+                  required: [],
+                  additionalProperties: false,
+                },
+              },
+            ],
+            providerData: { call_id: callId, execution: 'client' },
+          } as protocol.ToolSearchOutputItem,
+          agent as Agent<any, any>,
+        ),
+      );
+    };
+    addSerializedToolSearchResult('call_first', 'first_runtime');
+    addSerializedToolSearchResult('call_second', 'second_runtime');
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(availableToolSnapshots).toEqual([
+      [transferFunction, clientToolSearch],
+      [transferFunction, clientToolSearch, firstRuntimeTool],
+    ]);
+    expect(restored.getToolSearchRuntimeTools(agent)).toEqual([
+      firstRuntimeTool,
+      secondRuntimeTool,
+    ]);
+    expect(restored._lastProcessedResponse?.functions[0]?.tool).toBe(
+      transferFunction,
+    );
+  });
+
+  it.each(['bare', 'namespaced', 'deferred'] as const)(
+    'round-trips the final same-key %s runtime tool from distinct tool-search calls',
+    async (kind) => {
+      const availableToolNames: string[][] = [];
+      const execute = vi.fn(
+        async ({
+          availableTools,
+          toolCall,
+        }: {
+          availableTools: Tool<any>[];
+          toolCall: protocol.ToolSearchCallItem;
+        }) => {
+          availableToolNames.push(availableTools.map((entry) => entry.name));
+          const result = String(
+            (toolCall.arguments as { result?: string }).result,
+          );
+          const runtimeTool = tool({
+            name: 'lookup',
+            description: `${result} lookup result.`,
+            parameters: z.object({}).strict(),
+            ...(kind === 'deferred' ? { deferLoading: true } : {}),
+            execute: async () => result,
+          });
+          return kind === 'namespaced'
+            ? toolNamespace({
+                name: 'crm',
+                description: 'CRM tools.',
+                tools: [runtimeTool],
+              })[0]
+            : runtimeTool;
+        },
+      );
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: {
+            type: 'tool_search',
+            execution: 'client',
+          },
+        },
+        execute,
+      );
+      const agent = new Agent({
+        name: 'Same-key round-trip agent',
+        tools: [clientToolSearch],
+      });
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      const createToolSearchCall = (
+        id: string,
+        result: string,
+      ): protocol.ToolSearchCallItem =>
+        ({
+          type: 'tool_search_call',
+          id: `ts_${id}`,
+          status: 'completed',
+          arguments: { result },
+          providerData: { call_id: id, execution: 'client' },
+        }) as protocol.ToolSearchCallItem;
+      const response: ModelResponse = {
+        output: [
+          createToolSearchCall('call_first_lookup', 'first'),
+          createToolSearchCall('call_second_lookup', 'second'),
+        ],
+        usage: new Usage(),
+      };
+
+      const processed = await processModelResponseAsync(
+        response,
+        agent,
+        [clientToolSearch],
+        [],
+        state,
+        [],
+      );
+      state._generatedItems.push(...processed.newItems);
+      state._lastProcessedResponse = processed;
+
+      const liveTools = state.getToolSearchRuntimeTools(agent);
+      expect(liveTools).toHaveLength(1);
+      expect(await (liveTools[0] as any).invoke(new RunContext(), '{}')).toBe(
+        'second',
+      );
+
+      const restored = await RunState.fromString(agent, state.toString());
+      const restoredTools = restored.getToolSearchRuntimeTools(agent);
+
+      expect(availableToolNames).toEqual([
+        ['tool_search'],
+        ['tool_search', 'lookup'],
+        ['tool_search'],
+        ['tool_search', 'lookup'],
+      ]);
+      expect(restoredTools).toHaveLength(1);
+      expect(
+        await (restoredTools[0] as any).invoke(new RunContext(), '{}'),
+      ).toBe('second');
+    },
+  );
+
+  it('round-trips interleaved handlers and callback inputs for repeated client tool_search call ids', async () => {
+    const execute = vi.fn(
+      async ({
+        availableTools,
+        toolCall,
+      }: {
+        availableTools: Tool<any>[];
+        toolCall: protocol.ToolSearchCallItem;
+      }) => {
+        const phase = String((toolCall.arguments as { phase?: string }).phase);
+        const hasFirstResult = availableTools.some(
+          (availableTool) =>
+            availableTool.type === 'function' &&
+            availableTool.description === 'first lookup result.',
+        );
+        const result = phase === 'final' && !hasFirstResult ? 'wrong' : phase;
+        return tool({
+          name: result === 'wrong' ? 'wrong_lookup' : 'lookup',
+          description: `${result} lookup result.`,
+          parameters: z.object({}).strict(),
+          needsApproval: true,
+          execute: async () => result,
+        });
+      },
+    );
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      execute,
+    );
+    const agent = new Agent({
+      name: 'Repeated call id restore agent',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const sharedCallId = 'call_repeated_replacement';
+    const createToolSearchCall = (
+      id: string,
+      phase: string,
+    ): protocol.ToolSearchCallItem =>
+      ({
+        type: 'tool_search_call',
+        id,
+        status: 'completed',
+        arguments: { phase },
+        providerData: { call_id: sharedCallId, execution: 'client' },
+      }) as protocol.ToolSearchCallItem;
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_repeated_replacement',
+      callId: 'call_repeated_replacement_function',
+      name: 'lookup',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const processed = await processModelResponseAsync(
+      {
+        output: [
+          createToolSearchCall('ts_repeated_first', 'first'),
+          functionCall,
+          createToolSearchCall('ts_repeated_final', 'final'),
+        ],
+        usage: new Usage(),
+      },
+      agent,
+      [clientToolSearch],
+      [],
+      state,
+      [],
+    );
+    state._generatedItems.push(...processed.newItems);
+    state._lastProcessedResponse = processed;
+
+    expect(
+      await (processed.functions[0]!.tool as any).invoke(
+        new RunContext(),
+        '{}',
+      ),
+    ).toBe('first');
+    expect(state.getToolSearchRuntimeTools(agent)).toHaveLength(1);
+    expect(
+      await (state.getToolSearchRuntimeTools(agent)[0] as any).invoke(
+        new RunContext(),
+        '{}',
+      ),
+    ).toBe('final');
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(execute).toHaveBeenCalledTimes(4);
+    expect(restored.getToolSearchRuntimeTools(agent)).toHaveLength(1);
+    expect(
+      await (restored._lastProcessedResponse?.functions[0]!.tool as any).invoke(
+        new RunContext(),
+        '{}',
+      ),
+    ).toBe('first');
+    expect(
+      await (restored.getToolSearchRuntimeTools(agent)[0] as any).invoke(
+        new RunContext(),
+        '{}',
+      ),
+    ).toBe('final');
+
+    await rehydrateProcessedResponseTools(
+      agent,
+      restored,
+      restored.getToolSearchRuntimeTools(agent),
+    );
+
+    expect(
+      await (restored._lastProcessedResponse?.functions[0]!.tool as any).invoke(
+        new RunContext(),
+        '{}',
+      ),
+    ).toBe('first');
+  });
+
+  it.each(['empty', 'disabled', 'different'] as const)(
+    'does not resurrect an older routed owner after a later call is replaced with %s',
+    async (replacement) => {
+      const firstLookup = tool({
+        name: 'lookup',
+        description: 'First lookup owner.',
+        parameters: z.object({}).strict(),
+        execute: async () => 'first',
+      });
+      const secondLookup = tool({
+        name: 'lookup',
+        description: 'Second lookup owner.',
+        parameters: z.object({}).strict(),
+        execute: async () => 'second',
+      });
+      const disabledLookup = tool({
+        name: 'lookup',
+        description: 'Disabled final lookup.',
+        parameters: z.object({}).strict(),
+        isEnabled: false,
+        execute: async () => 'disabled',
+      });
+      const alternateLookup = tool({
+        name: 'alternate_lookup',
+        description: 'Different final lookup.',
+        parameters: z.object({}).strict(),
+        execute: async () => 'alternate',
+      });
+      const execute = vi.fn(
+        async ({ toolCall }: { toolCall: protocol.ToolSearchCallItem }) => {
+          const phase = String(
+            (toolCall.arguments as { phase?: string }).phase,
+          );
+          if (phase === 'first') {
+            return firstLookup;
+          }
+          if (phase === 'second') {
+            return secondLookup;
+          }
+          if (replacement === 'disabled') {
+            return disabledLookup;
+          }
+          if (replacement === 'different') {
+            return alternateLookup;
+          }
+          return [];
+        },
+      );
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search', execution: 'client' },
+        },
+        execute,
+      );
+      const agent = new Agent({
+        name: `Routed owner ${replacement} agent`,
+        tools: [clientToolSearch],
+      });
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      const createCall = (
+        id: string,
+        callId: string,
+        phase: string,
+      ): protocol.ToolSearchCallItem =>
+        ({
+          type: 'tool_search_call',
+          id,
+          status: 'completed',
+          arguments: { phase },
+          providerData: { call_id: callId, execution: 'client' },
+        }) as protocol.ToolSearchCallItem;
+      const processed = await processModelResponseAsync(
+        {
+          output: [
+            createCall('ts_owner_first', 'call_owner_first', 'first'),
+            createCall('ts_owner_second', 'call_owner_second', 'second'),
+            createCall('ts_owner_final', 'call_owner_second', 'final'),
+          ],
+          usage: new Usage(),
+        },
+        agent,
+        [clientToolSearch],
+        [],
+        state,
+        [],
+      );
+      state._generatedItems.push(...processed.newItems);
+      state._lastProcessedResponse = processed;
+
+      const expectedTools = replacement === 'different' ? 1 : 0;
+      expect(state.getToolSearchRuntimeTools(agent)).toHaveLength(
+        expectedTools,
+      );
+      if (replacement === 'different') {
+        expect(
+          await (state.getToolSearchRuntimeTools(agent)[0] as any).invoke(
+            new RunContext(),
+            '{}',
+          ),
+        ).toBe('alternate');
+      }
+
+      const restored = await RunState.fromString(agent, state.toString());
+
+      expect(restored.getToolSearchRuntimeTools(agent)).toHaveLength(
+        expectedTools,
+      );
+      if (replacement === 'different') {
+        expect(
+          await (restored.getToolSearchRuntimeTools(agent)[0] as any).invoke(
+            new RunContext(),
+            '{}',
+          ),
+        ).toBe('alternate');
+      }
+    },
+  );
+
+  it('keeps a later routed owner when an older call returned the same tool object', async () => {
+    const sharedLookup = tool({
+      name: 'lookup',
+      description: 'Shared lookup owner.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'shared',
+    });
+    const execute = vi.fn(
+      async ({ toolCall }: { toolCall: protocol.ToolSearchCallItem }) =>
+        (toolCall.arguments as { phase?: string }).phase === 'empty'
+          ? []
+          : sharedLookup,
+    );
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      execute,
+    );
+    const agent = new Agent({
+      name: 'Shared object routed owner',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const createSearchCall = (
+      id: string,
+      callId: string,
+      phase: string,
+    ): protocol.ToolSearchCallItem =>
+      ({
+        type: 'tool_search_call',
+        id,
+        status: 'completed',
+        arguments: { phase },
+        providerData: { call_id: callId, execution: 'client' },
+      }) as protocol.ToolSearchCallItem;
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_shared_object_owner',
+      callId: 'call_shared_object_owner',
+      name: 'lookup',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const processed = await processModelResponseAsync(
+      {
+        output: [
+          createSearchCall('ts_owner_a', 'owner_a', 'shared'),
+          createSearchCall('ts_owner_b', 'owner_b', 'shared'),
+          createSearchCall('ts_owner_a_empty', 'owner_a', 'empty'),
+          functionCall,
+        ],
+        usage: new Usage(),
+      },
+      agent,
+      [clientToolSearch],
+      [],
+      state,
+      [],
+    );
+    state._generatedItems.push(...processed.newItems);
+    state._lastProcessedResponse = processed;
+
+    expect(processed.functions[0]?.tool).toBe(sharedLookup);
+    expect(state.getToolSearchRuntimeTools(agent)).toEqual([sharedLookup]);
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(restored._lastProcessedResponse?.functions[0]?.tool).toBe(
+      sharedLookup,
+    );
+    expect(restored.getToolSearchRuntimeTools(agent)).toEqual([sharedLookup]);
+  });
+
+  it('restores the runtime handler bound before a later same-key replacement', async () => {
+    const execute = vi.fn(
+      async ({ toolCall }: { toolCall: protocol.ToolSearchCallItem }) => {
+        const result = String(
+          (toolCall.arguments as { result?: string }).result,
+        );
+        return tool({
+          name: 'lookup',
+          description: `${result} lookup result.`,
+          parameters: z.object({}).strict(),
+          needsApproval: true,
+          execute: async () => result,
+        });
+      },
+    );
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      execute,
+    );
+    const agent = new Agent({
+      name: 'Interleaved replacement restore agent',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const firstSearchCall = {
+      type: 'tool_search_call',
+      id: 'ts_call_first_interleaved',
+      status: 'completed',
+      arguments: { result: 'first' },
+      providerData: {
+        call_id: 'call_first_interleaved',
+        execution: 'client',
+      },
+    } as protocol.ToolSearchCallItem;
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_interleaved_lookup',
+      callId: 'call_interleaved_lookup',
+      name: 'lookup',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const secondSearchCall = {
+      type: 'tool_search_call',
+      id: 'ts_call_second_interleaved',
+      status: 'completed',
+      arguments: { result: 'second' },
+      providerData: {
+        call_id: 'call_second_interleaved',
+        execution: 'client',
+      },
+    } as protocol.ToolSearchCallItem;
+    const response: ModelResponse = {
+      output: [firstSearchCall, functionCall, secondSearchCall],
+      usage: new Usage(),
+    };
+
+    const processed = await processModelResponseAsync(
+      response,
+      agent,
+      [clientToolSearch],
+      [],
+      state,
+      [],
+    );
+    state._generatedItems.push(...processed.newItems);
+    state._lastProcessedResponse = processed;
+
+    expect(
+      await (processed.functions[0].tool as any).invoke(new RunContext(), '{}'),
+    ).toBe('first');
+    expect(
+      await (state.getToolSearchRuntimeTools(agent)[0] as any).invoke(
+        new RunContext(),
+        '{}',
+      ),
+    ).toBe('second');
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(
+      await (restored._lastProcessedResponse?.functions[0].tool as any).invoke(
+        new RunContext(),
+        '{}',
+      ),
+    ).toBe('first');
+    expect(
+      await (restored.getToolSearchRuntimeTools(agent)[0] as any).invoke(
+        new RunContext(),
+        '{}',
+      ),
+    ).toBe('second');
+  });
+
+  it('round trips a flattened configured namespace call with its canonical approval key', async () => {
+    const namespacedLookup = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Configured CRM lookup.',
+          parameters: z.object({}).strict(),
+          needsApproval: true,
+          execute: async () => 'configured',
+        }),
+      ],
+    })[0];
+    const agent = new Agent({
+      name: 'Flattened configured namespace restore agent',
+      tools: [namespacedLookup],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const flattenedCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_flattened_configured_namespace',
+      callId: 'call_flattened_configured_namespace',
+      name: 'crm.lookup',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const processed = await processModelResponseAsync(
+      { output: [flattenedCall], usage: new Usage() },
+      agent,
+      [namespacedLookup],
+      [],
+      state,
+      [],
+    );
+    const normalizedCall = processed.functions[0]!.toolCall;
+    const canonicalKey = getFunctionToolStateKey(namespacedLookup)!;
+    state._generatedItems.push(...processed.newItems);
+    state._lastProcessedResponse = processed;
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [
+          new ToolApprovalItem(normalizedCall, agent, undefined, canonicalKey),
+        ],
+      },
+    };
+
+    expect(normalizedCall).toMatchObject({
+      name: 'lookup',
+      namespace: 'crm',
+    });
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(
+      restored._lastProcessedResponse?.functions[0]?.toolCall,
+    ).toMatchObject({ name: 'lookup', namespace: 'crm' });
+    expect(restored.getInterruptions()[0]?.functionToolStateKey).toBe(
+      canonicalKey,
+    );
+    expect(restored.getInterruptions()[0]?.rawItem).toMatchObject({
+      name: 'lookup',
+      namespace: 'crm',
+    });
+    expect(
+      await (restored._lastProcessedResponse?.functions[0]?.tool as any).invoke(
+        new RunContext(),
+        '{}',
+      ),
+    ).toBe('configured');
+  });
+
+  it('round trips a flattened namespace call with its runtime tool-search handler', async () => {
+    const execute = vi.fn(async () =>
+      toolNamespace({
+        name: 'crm',
+        description: 'Runtime CRM tools.',
+        tools: [
+          tool({
+            name: 'lookup',
+            description: 'Runtime CRM lookup.',
+            parameters: z.object({}).strict(),
+            needsApproval: true,
+            execute: async () => 'runtime',
+          }),
+        ],
+      }),
+    );
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      execute,
+    );
+    const agent = new Agent({
+      name: 'Flattened runtime namespace restore agent',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const flattenedCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_flattened_runtime_namespace',
+      callId: 'call_flattened_runtime_namespace',
+      name: 'crm.lookup',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const processed = await processModelResponseAsync(
+      {
+        output: [
+          {
+            type: 'tool_search_call',
+            id: 'ts_flattened_runtime_namespace',
+            status: 'completed',
+            arguments: {},
+            providerData: {
+              call_id: 'search_flattened_runtime_namespace',
+              execution: 'client',
+            },
+          } as protocol.ToolSearchCallItem,
+          flattenedCall,
+        ],
+        usage: new Usage(),
+      },
+      agent,
+      [clientToolSearch],
+      [],
+      state,
+      [],
+    );
+    const normalizedCall = processed.functions[0]!.toolCall;
+    const runtimeTool = processed.functions[0]!.tool;
+    const canonicalKey = getFunctionToolStateKey(runtimeTool)!;
+    state._generatedItems.push(...processed.newItems);
+    state._lastProcessedResponse = processed;
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [
+          new ToolApprovalItem(normalizedCall, agent, undefined, canonicalKey),
+        ],
+      },
+    };
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(
+      restored._lastProcessedResponse?.functions[0]?.toolCall,
+    ).toMatchObject({ name: 'lookup', namespace: 'crm' });
+    expect(restored.getInterruptions()[0]?.functionToolStateKey).toBe(
+      canonicalKey,
+    );
+    expect(
+      await (restored._lastProcessedResponse?.functions[0]?.tool as any).invoke(
+        new RunContext(),
+        '{}',
+      ),
+    ).toBe('runtime');
+
+    const restoredProcessedTool =
+      restored._lastProcessedResponse?.functions[0]?.tool;
+
+    await rehydrateProcessedResponseTools(agent, restored, []);
+
+    expect(restored._lastProcessedResponse?.functions[0]?.tool).toBe(
+      restoredProcessedTool,
+    );
+    expect(
+      await (restored._lastProcessedResponse?.functions[0]?.tool as any).invoke(
+        new RunContext(),
+        '{}',
+      ),
+    ).toBe('runtime');
+  });
+
+  it.each([CURRENT_SCHEMA_VERSION, '1.15'] as const)(
+    'round trips a deferred runtime tool selected by a legacy bare call in schema %s',
+    async (schemaVersion) => {
+      const deferredLookup = tool({
+        name: 'lookup',
+        description: 'Deferred lookup.',
+        parameters: z.object({}).strict(),
+        deferLoading: true,
+        needsApproval: true,
+        execute: async () => 'deferred',
+      });
+      const execute = vi.fn(async () => deferredLookup);
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search', execution: 'client' },
+        },
+        execute,
+      );
+      const agent = new Agent({
+        name: `Deferred bare restore ${schemaVersion}`,
+        tools: [clientToolSearch],
+      });
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      const functionCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        id: `fc_deferred_bare_${schemaVersion}`,
+        callId: `call_deferred_bare_${schemaVersion}`,
+        name: 'lookup',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const processed = await processModelResponseAsync(
+        {
+          output: [
+            {
+              type: 'tool_search_call',
+              id: `ts_call_deferred_bare_${schemaVersion}`,
+              status: 'completed',
+              arguments: {},
+              providerData: {
+                call_id: `search_deferred_bare_${schemaVersion}`,
+                execution: 'client',
+              },
+            } as protocol.ToolSearchCallItem,
+            functionCall,
+          ],
+          usage: new Usage(),
+        },
+        agent,
+        [clientToolSearch],
+        [],
+        state,
+        [],
+      );
+      state._generatedItems.push(...processed.newItems);
+      state._lastProcessedResponse = processed;
+      state._currentStep = {
+        type: 'next_step_interruption',
+        data: {
+          interruptions: [
+            new ToolApprovalItem(
+              functionCall,
+              agent,
+              undefined,
+              getFunctionToolStateKey(deferredLookup),
+            ),
+          ],
+        },
+      };
+
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = schemaVersion;
+      if (schemaVersion === '1.15') {
+        delete serialized.currentStep.data.interruptions[0]
+          .functionToolStateKey;
+      }
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(restored.getInterruptions()[0]?.functionToolStateKey).toBe(
+        getFunctionToolStateKey(deferredLookup),
+      );
+      expect(
+        await (
+          restored._lastProcessedResponse?.functions[0].tool as any
+        ).invoke(new RunContext(), '{}'),
+      ).toBe('deferred');
+    },
+  );
+
+  it('rejects an unproven deferred bare fallback instead of rebinding a bare owner', async () => {
+    const bareLookup = tool({
+      name: 'lookup',
+      description: 'Bare lookup.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'bare',
+    });
+    const deferredLookup = tool({
+      name: 'lookup',
+      description: 'Unproven deferred lookup.',
+      parameters: z.object({}).strict(),
+      deferLoading: true,
+      execute: async () => 'deferred',
+    });
+    const agent = new Agent({
+      name: 'Unproven deferred fallback agent',
+      tools: [bareLookup],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_unproven_deferred_fallback',
+      callId: 'call_unproven_deferred_fallback',
+      name: 'lookup',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state._generatedItems.push(new RunToolCallItem(functionCall, agent));
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [{ toolCall: functionCall, tool: deferredLookup as any }],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['lookup'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [
+          new ToolApprovalItem(
+            functionCall,
+            agent,
+            undefined,
+            getFunctionToolStateKey(deferredLookup),
+          ),
+        ],
+      },
+    };
+
+    await expect(RunState.fromString(agent, state.toString())).rejects.toThrow(
+      'function call ID is associated with multiple routed tool identities',
+    );
+  });
+
+  it('round trips a legacy bare call resolved by a configured deferred owner', async () => {
+    const deferredLookup = tool({
+      name: 'lookup',
+      description: 'Configured deferred lookup.',
+      parameters: z.object({}).strict(),
+      deferLoading: true,
+      execute: async () => 'deferred',
+    });
+    const agent = new Agent({
+      name: 'Configured deferred fallback agent',
+      tools: [deferredLookup],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_configured_deferred_fallback',
+      callId: 'call_configured_deferred_fallback',
+      name: 'lookup',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state._generatedItems.push(new RunToolCallItem(functionCall, agent));
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [{ toolCall: functionCall, tool: deferredLookup as any }],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['lookup'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [
+          new ToolApprovalItem(
+            functionCall,
+            agent,
+            undefined,
+            getFunctionToolStateKey(deferredLookup),
+          ),
+        ],
+      },
+    };
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(restored.getInterruptions()[0]?.functionToolStateKey).toBe(
+      getFunctionToolStateKey(deferredLookup),
+    );
+    expect(
+      await (restored._lastProcessedResponse?.functions[0].tool as any).invoke(
+        new RunContext(),
+        '{}',
+      ),
+    ).toBe('deferred');
+  });
+
+  it.each([CURRENT_SCHEMA_VERSION, '1.15'] as const)(
+    'rejects a configured deferred bare fallback hidden by a handoff in schema %s',
+    async (schemaVersion) => {
+      const deferredLookup = tool({
+        name: 'lookup',
+        description: 'Configured deferred lookup.',
+        parameters: z.object({}).strict(),
+        deferLoading: true,
+        execute: async () => 'deferred',
+      });
+      const target = new Agent({ name: 'Deferred lookup target' });
+      const agent = new Agent({
+        name: `Configured deferred handoff collision ${schemaVersion}`,
+        tools: [deferredLookup],
+        handoffs: [handoff(target, { toolNameOverride: 'lookup' })],
+      });
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      const functionCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        id: `fc_configured_deferred_handoff_${schemaVersion}`,
+        callId: `call_configured_deferred_handoff_${schemaVersion}`,
+        name: 'lookup',
+        status: 'completed',
+        arguments: '{}',
+      };
+      state._generatedItems.push(new RunToolCallItem(functionCall, agent));
+      state._lastProcessedResponse = {
+        newItems: [],
+        functions: [{ toolCall: functionCall, tool: deferredLookup as any }],
+        handoffs: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        mcpApprovalRequests: [],
+        toolsUsed: ['lookup'],
+        hasToolsOrApprovalsToRun: () => true,
+      };
+      state._currentStep = {
+        type: 'next_step_interruption',
+        data: {
+          interruptions: [
+            new ToolApprovalItem(
+              functionCall,
+              agent,
+              undefined,
+              getFunctionToolStateKey(deferredLookup),
+            ),
+          ],
+        },
+      };
+
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = schemaVersion;
+      if (schemaVersion === '1.15') {
+        delete serialized.currentStep.data.interruptions[0]
+          .functionToolStateKey;
+      }
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow(
+        'function call ID is associated with multiple routed tool identities',
+      );
+    },
+  );
+
+  it('scopes repeated function call ids to each interruption agent', async () => {
+    const outerTool = tool({
+      name: 'outer_tool',
+      description: 'Outer tool.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'outer',
+    });
+    const childTool = tool({
+      name: 'child_tool',
+      description: 'Child tool.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'child',
+    });
+    const child = new Agent({ name: 'Call id child', tools: [childTool] });
+    const root = new Agent({
+      name: 'Call id root',
+      tools: [outerTool],
+      handoffs: [child],
+    });
+    const state = new RunState(new RunContext(), 'input', root, 2);
+    const sharedCallId = 'agent_scoped_call_id';
+    const outerCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_outer_agent_scoped',
+      callId: sharedCallId,
+      name: 'outer_tool',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const childCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_child_agent_scoped',
+      callId: sharedCallId,
+      name: 'child_tool',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state._generatedItems.push(
+      new RunToolCallItem(outerCall, root),
+      new RunToolCallItem(childCall, child),
+    );
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [{ toolCall: outerCall, tool: outerTool as any }],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['outer_tool'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [
+          new ToolApprovalItem(
+            childCall,
+            child,
+            undefined,
+            getFunctionToolStateKey(childTool),
+          ),
+        ],
+      },
+    };
+
+    const restored = await RunState.fromString(root, state.toString());
+
+    expect(restored.getInterruptions()[0]?.agent).toBe(child);
+    expect(restored.getInterruptions()[0]?.functionToolStateKey).toBe(
+      getFunctionToolStateKey(childTool),
+    );
+  });
+
+  it('preserves independent function approvals with the same identity across agents', async () => {
+    const rootTool = tool({
+      name: 'shared_tool',
+      description: 'Root shared tool.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'root',
+    });
+    const childTool = tool({
+      name: 'shared_tool',
+      description: 'Child shared tool.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'child',
+    });
+    const child = new Agent({
+      name: 'Shared approval agent',
+      tools: [childTool],
+    });
+    const root = new Agent({
+      name: 'Shared approval agent',
+      tools: [rootTool],
+      handoffs: [child],
+    });
+    const sharedCallId = 'shared_approval_call_id';
+    const rootCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_shared_approval_root',
+      callId: sharedCallId,
+      name: 'shared_tool',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const childCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_shared_approval_child',
+      callId: sharedCallId,
+      name: 'shared_tool',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const state = new RunState(new RunContext(), 'input', root, 2);
+    state._generatedItems.push(
+      new RunToolCallItem(rootCall, root),
+      new RunToolCallItem(childCall, child),
+    );
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [{ toolCall: rootCall, tool: rootTool as any }],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['shared_tool'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [
+          new ToolApprovalItem(
+            rootCall,
+            root,
+            undefined,
+            getFunctionToolStateKey(rootTool),
+          ),
+          new ToolApprovalItem(
+            childCall,
+            child,
+            undefined,
+            getFunctionToolStateKey(childTool),
+          ),
+        ],
+      },
+    };
+
+    const sharedStateKey = getFunctionToolStateKey(rootTool)!;
+    const legacySerialized = state.toJSON() as any;
+    legacySerialized.$schemaVersion = '1.15';
+    legacySerialized.context.approvals = {
+      shared_tool: { approved: [sharedCallId], rejected: [] },
+    };
+    delete legacySerialized.context.functionApprovals;
+    for (const interruption of legacySerialized.currentStep.data
+      .interruptions) {
+      delete interruption.functionToolStateKey;
+    }
+    const legacyRestored = await RunState.fromString(
+      root,
+      JSON.stringify(legacySerialized),
+    );
+    for (const owner of [root, child]) {
+      expect(
+        legacyRestored._context.isToolApproved({
+          toolName: sharedStateKey,
+          callId: sharedCallId,
+          functionTool: false,
+          agent: owner,
+        }),
+      ).toBe(true);
+    }
+    const legacyRoundTripped = await RunState.fromString(
+      root,
+      legacyRestored.toString(),
+    );
+    for (const owner of [root, child]) {
+      expect(
+        legacyRoundTripped._context.isToolApproved({
+          toolName: sharedStateKey,
+          callId: sharedCallId,
+          functionTool: false,
+          agent: owner,
+        }),
+      ).toBe(true);
+    }
+
+    const restored = await RunState.fromString(root, state.toString());
+    const [rootApproval, childApproval] = restored.getInterruptions();
+    restored.approve(rootApproval, { alwaysApprove: true });
+    restored.reject(childApproval, { message: 'Child call rejected.' });
+
+    const roundTripped = await RunState.fromString(root, restored.toString());
+    expect(
+      roundTripped._context.isToolApproved({
+        toolName: sharedStateKey,
+        callId: 'future-root-call',
+        functionTool: false,
+        agent: root,
+      }),
+    ).toBe(true);
+    expect(
+      roundTripped._context.isToolApproved({
+        toolName: sharedStateKey,
+        callId: sharedCallId,
+        functionTool: false,
+        agent: child,
+      }),
+    ).toBe(false);
+    expect(
+      roundTripped._context.isToolApproved({
+        toolName: sharedStateKey,
+        callId: 'future-child-call',
+        functionTool: false,
+        agent: child,
+      }),
+    ).toBeUndefined();
+    expect(
+      roundTripped._context._getFunctionRejectionMessage(
+        sharedStateKey,
+        sharedCallId,
+        child,
+      ),
+    ).toBe('Child call rejected.');
+    expect(
+      roundTripped._context._getFunctionRejectionMessage(
+        sharedStateKey,
+        sharedCallId,
+        root,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('round trips function approvals for reserved agent identity names', async () => {
+    const agent = new Agent({ name: '__proto__' });
+    const rawItem: protocol.FunctionCallItem = {
+      type: 'function_call',
+      name: 'reserved_identity_tool',
+      callId: 'reserved_identity_call',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+    state.reject(new ToolApprovalItem(rawItem, agent), {
+      message: 'Reserved identity rejected.',
+    });
+
+    const serialized = state.toJSON();
+    expect(serialized.context.functionApprovals).toEqual([
+      {
+        agentIdentity: '__proto__',
+        approvals: expect.any(Object),
+      },
+    ]);
+
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(serialized),
+    );
+    const stateKey = getFunctionToolStateKeyForCall(rawItem)!;
+    expect(
+      restored._context.isToolApproved({
+        toolName: stateKey,
+        callId: rawItem.callId,
+        functionTool: false,
+        agent,
+      }),
+    ).toBe(false);
+    expect(
+      restored._context._getFunctionRejectionMessage(
+        stateKey,
+        rawItem.callId,
+        agent,
+      ),
+    ).toBe('Reserved identity rejected.');
+  });
+
+  it('validates current function approval state before context replacement', async () => {
+    const agent = new Agent({ name: 'ApprovalOwnerValidationAgent' });
+    const rawItem: protocol.FunctionCallItem = {
+      type: 'function_call',
+      name: 'approval_owner_tool',
+      callId: 'approval_owner_call',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+    state.approve(new ToolApprovalItem(rawItem, agent));
+    const serialized = state.toJSON() as any;
+    serialized.context.functionApprovals[0].agentIdentity = 'unknown-agent';
+
+    await expect(
+      RunState.fromStringWithContext(
+        agent,
+        JSON.stringify(serialized),
+        new RunContext(),
+        { contextStrategy: 'replace' },
+      ),
+    ).rejects.toBeInstanceOf(UserError);
+  });
+
+  it('rejects duplicate function approval owners before tool execution', async () => {
+    const execute = vi.fn(async () => 'executed');
+    const approvalTool = tool({
+      name: 'duplicate_owner_tool',
+      description: 'Duplicate owner tool.',
+      parameters: z.object({}),
+      execute,
+    });
+    const agent = new Agent({
+      name: 'DuplicateApprovalOwnerAgent',
+      tools: [approvalTool],
+    });
+    const rawItem: protocol.FunctionCallItem = {
+      type: 'function_call',
+      name: approvalTool.name,
+      callId: 'duplicate_owner_call',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+    state.approve(new ToolApprovalItem(rawItem, agent));
+    const serialized = state.toJSON() as any;
+    serialized.context.functionApprovals.push({
+      ...serialized.context.functionApprovals[0],
+      approvals: {
+        ...serialized.context.functionApprovals[0].approvals,
+      },
+    });
+
+    await expect(
+      RunState.fromStringWithContext(
+        agent,
+        JSON.stringify(serialized),
+        new RunContext(),
+        { contextStrategy: 'replace' },
+      ),
+    ).rejects.toBeInstanceOf(UserError);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed current function approval state with UserError', async () => {
+    const agent = new Agent({ name: 'MalformedApprovalOwnerAgent' });
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+    const serialized = state.toJSON() as any;
+    serialized.context.functionApprovals = [
+      {
+        agentIdentity: agent.name,
+        approvals: {
+          malformed: { approved: 'yes', rejected: [] },
+        },
+      },
+    ];
+
+    await expect(
+      RunState.fromString(agent, JSON.stringify(serialized)),
+    ).rejects.toBeInstanceOf(UserError);
+  });
+
+  it('rejects noncanonical current function approval keys with UserError', async () => {
+    const agent = new Agent({ name: 'NoncanonicalApprovalKeyAgent' });
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+    const serialized = state.toJSON() as any;
+    serialized.context.functionApprovals = [
+      {
+        agentIdentity: agent.name,
+        approvals: {
+          lookup: { approved: true, rejected: [] },
+        },
+      },
+    ];
+
+    await expect(
+      RunState.fromString(agent, JSON.stringify(serialized)),
+    ).rejects.toBeInstanceOf(UserError);
+  });
+
+  it('preserves ZodError for unrelated malformed run state fields', async () => {
+    const agent = new Agent({ name: 'MalformedUnrelatedStateAgent' });
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+    const serialized = state.toJSON() as any;
+    serialized.currentTurn = 'not-a-number';
+
+    await expect(
+      RunState.fromString(agent, JSON.stringify(serialized)),
+    ).rejects.toBeInstanceOf(ZodError);
+  });
+
+  it('rejects owner-scoped approval fields in legacy schemas', async () => {
+    const agent = new Agent({ name: 'LegacyApprovalOwnerFieldAgent' });
+    const rawItem: protocol.FunctionCallItem = {
+      type: 'function_call',
+      name: 'legacy_owner_tool',
+      callId: 'legacy_owner_call',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+    state.approve(new ToolApprovalItem(rawItem, agent));
+    const serialized = state.toJSON() as any;
+    serialized.$schemaVersion = '1.15';
+
+    await expect(
+      RunState.fromString(agent, JSON.stringify(serialized)),
+    ).rejects.toThrow(
+      'Run state schema version 1.15 does not support owner-scoped function approvals.',
+    );
+  });
+
+  it('rejects interruption identity mismatches before callbacks without a processed response', async () => {
+    const dangerous = tool({
+      name: 'dangerous',
+      description: 'Dangerous action.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'dangerous',
+    });
+    const harmless = tool({
+      name: 'harmless',
+      description: 'Harmless action.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'harmless',
+    });
+    const runtimeLookup = tool({
+      name: 'runtime_lookup',
+      description: 'Runtime lookup.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'runtime',
+    });
+    const execute = vi.fn(async () => runtimeLookup);
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      execute,
+    );
+    const agent = new Agent({
+      name: 'No processed response interruption agent',
+      tools: [dangerous, harmless, clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const rawItem: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_no_processed_response',
+      callId: 'call_no_processed_response',
+      name: 'dangerous',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_no_processed_response',
+          status: 'completed',
+          arguments: {},
+          providerData: {
+            call_id: 'search_no_processed_response',
+            execution: 'client',
+          },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_no_processed_response',
+          status: 'completed',
+          tools: [
+            {
+              type: 'function',
+              name: 'runtime_lookup',
+              description: 'Runtime lookup.',
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+            },
+          ],
+          providerData: {
+            call_id: 'search_no_processed_response',
+            execution: 'client',
+          },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+      new RunToolCallItem(rawItem, agent),
+    );
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [
+          new ToolApprovalItem(
+            rawItem,
+            agent,
+            undefined,
+            getFunctionToolStateKey(harmless),
+          ),
+        ],
+      },
+    };
+
+    await expect(RunState.fromString(agent, state.toString())).rejects.toThrow(
+      'function call ID is associated with multiple routed tool identities',
+    );
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects reused function call ids before tool-search rehydration callbacks', async () => {
+    const runtimeLookup = tool({
+      name: 'runtime_lookup',
+      description: 'Runtime lookup.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'runtime',
+    });
+    const configuredLookup = tool({
+      name: 'configured_lookup',
+      description: 'Configured lookup.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'configured',
+    });
+    const execute = vi.fn(async () => runtimeLookup);
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      execute,
+    );
+    const agent = new Agent({
+      name: 'Reused function call id agent',
+      tools: [configuredLookup, clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const sharedCallId = 'reused_function_call_id';
+    const runtimeCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_runtime_lookup',
+      callId: sharedCallId,
+      name: 'runtime_lookup',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const configuredCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_configured_lookup',
+      callId: sharedCallId,
+      name: 'configured_lookup',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_reused_function_id',
+          status: 'completed',
+          arguments: {},
+          providerData: {
+            call_id: 'tool_search_reused_function_id',
+            execution: 'client',
+          },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_reused_function_id',
+          status: 'completed',
+          tools: [
+            {
+              type: 'function',
+              name: 'runtime_lookup',
+              description: 'Runtime lookup.',
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+            },
+          ],
+          providerData: {
+            call_id: 'tool_search_reused_function_id',
+            execution: 'client',
+          },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+      new RunToolCallItem(runtimeCall, agent),
+      new RunToolCallItem(configuredCall, agent),
+    );
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [{ toolCall: configuredCall, tool: configuredLookup as any }],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['configured_lookup'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    await expect(RunState.fromString(agent, state.toString())).rejects.toThrow(
+      'function call ID is associated with multiple routed tool identities',
+    );
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects reused function call ids before legacy state migration', async () => {
+    const bareLookup = tool({
+      name: 'lookup',
+      description: 'Bare lookup.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'bare',
+    });
+    const deferredLookup = tool({
+      name: 'lookup',
+      description: 'Deferred lookup.',
+      parameters: z.object({}).strict(),
+      deferLoading: true,
+      execute: async () => 'deferred',
+    });
+    const agent = new Agent({
+      name: 'Legacy reused function call id agent',
+      tools: [bareLookup, deferredLookup],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const sharedCallId = 'legacy_reused_function_call_id';
+    const bareCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_legacy_bare_lookup',
+      callId: sharedCallId,
+      name: 'lookup',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const deferredCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_legacy_deferred_lookup',
+      callId: sharedCallId,
+      name: 'lookup',
+      namespace: 'lookup',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [
+        { toolCall: bareCall, tool: bareLookup as any },
+        { toolCall: deferredCall, tool: deferredLookup as any },
+      ],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['lookup'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    const serialized = state.toJSON() as any;
+    serialized.$schemaVersion = '1.15';
+
+    await expect(
+      RunState.fromString(agent, JSON.stringify(serialized)),
+    ).rejects.toThrow(
+      'function call ID is associated with multiple routed tool identities',
+    );
+  });
+
+  it('rejects an interruption whose routed identity differs from its processed call', async () => {
+    const dangerous = tool({
+      name: 'dangerous',
+      description: 'Dangerous action.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'dangerous',
+    });
+    const harmless = tool({
+      name: 'harmless',
+      description: 'Harmless action.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'harmless',
+    });
+    const agent = new Agent({
+      name: 'Mismatched interruption identity agent',
+      tools: [dangerous, harmless],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const rawItem: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_dangerous',
+      callId: 'mismatched_interruption_identity',
+      name: 'dangerous',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [{ toolCall: rawItem, tool: dangerous as any }],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['dangerous'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: {
+        interruptions: [new ToolApprovalItem(rawItem, agent)],
+      },
+    };
+
+    const serialized = state.toJSON() as any;
+    serialized.currentStep.data.interruptions[0].rawItem.name = 'harmless';
+
+    await expect(
+      RunState.fromString(agent, JSON.stringify(serialized)),
+    ).rejects.toThrow(
+      'function call ID is associated with multiple routed tool identities',
+    );
+  });
+
+  it('validates every tool-search output before invoking a rehydration callback', async () => {
+    const runtimeTool = tool({
+      name: 'lookup',
+      description: 'Lookup result.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'lookup',
+    });
+    const execute = vi.fn(async () => runtimeTool);
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      execute,
+    );
+    const agent = new Agent({
+      name: 'Tool-search preflight agent',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_preflight_valid',
+          status: 'completed',
+          arguments: {},
+          providerData: {
+            call_id: 'call_preflight_valid',
+            execution: 'client',
+          },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_preflight_valid',
+          status: 'completed',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup',
+              description: 'Lookup result.',
+              strict: true,
+              parameters: { type: 'object', properties: {}, required: [] },
+            },
+          ],
+          providerData: {
+            call_id: 'call_preflight_valid',
+            execution: 'client',
+          },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_preflight_orphan',
+          status: 'completed',
+          tools: [
+            {
+              type: 'function',
+              name: 'orphan',
+              description: 'Orphan result.',
+              strict: true,
+              parameters: { type: 'object', properties: {}, required: [] },
+            },
+          ],
+          providerData: {
+            call_id: 'call_preflight_orphan',
+            execution: 'client',
+          },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+    );
+
+    await expect(RunState.fromString(agent, state.toString())).rejects.toThrow(
+      'serialized state is missing the matching tool_search call item',
+    );
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed serialized runtime identity before rehydration callbacks', async () => {
+    const execute = vi.fn();
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      execute,
+    );
+    const agent = new Agent({
+      name: 'Malformed tool-search identity agent',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const callId = 'call_malformed_identity';
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_malformed_identity',
+          status: 'completed',
+          arguments: {},
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_malformed_identity',
+          status: 'completed',
+          tools: [{ type: 'function' }],
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+    );
+
+    await expect(RunState.fromString(agent, state.toString())).rejects.toThrow(
+      'function without a valid routed identity',
+    );
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects a reserved serialized namespace before rehydration callbacks', async () => {
+    const execute = vi.fn(async () => []);
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      execute,
+    );
+    const agent = new Agent({
+      name: 'Reserved serialized namespace agent',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const callId = 'call_reserved_serialized_namespace';
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_reserved_serialized_namespace',
+          status: 'completed',
+          arguments: {},
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_reserved_serialized_namespace',
+          status: 'completed',
+          tools: [
+            {
+              type: 'namespace',
+              name: 'lookup',
+              description: 'Reserved lookup namespace.',
+              tools: [
+                {
+                  type: 'function',
+                  name: 'lookup',
+                  description: 'Nested lookup.',
+                  strict: true,
+                  parameters: {
+                    type: 'object',
+                    properties: {},
+                    required: [],
+                    additionalProperties: false,
+                  },
+                },
+              ],
+            },
+          ],
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+    );
+
+    await expect(RunState.fromString(agent, state.toString())).rejects.toThrow(
+      'Responses tool search reserves same-name namespaces for deferred top-level function tools.',
+    );
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects a direct serialized self-namespace before rehydration callbacks', async () => {
+    const runtimeLookup = tool({
+      name: 'lookup',
+      description: 'Deferred lookup.',
+      parameters: z.object({}).strict(),
+      deferLoading: true,
+      execute: async () => 'lookup',
+    });
+    const execute = vi.fn(async () => runtimeLookup);
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      execute,
+    );
+    const agent = new Agent({
+      name: 'Direct reserved serialized namespace agent',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const callId = 'call_direct_reserved_serialized_namespace';
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_direct_reserved_serialized_namespace',
+          status: 'completed',
+          arguments: {},
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_direct_reserved_serialized_namespace',
+          status: 'completed',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup',
+              namespace: 'lookup',
+              description: 'Reserved lookup namespace.',
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+            },
+          ],
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+    );
+
+    await expect(RunState.fromString(agent, state.toString())).rejects.toThrow(
+      'Responses tool search reserves same-name namespaces for deferred top-level function tools.',
+    );
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('replays an empty tool-search callback before later callbacks', async () => {
+    type TestContext = { ready: boolean };
+    const execute = vi.fn(
+      async ({
+        runContext,
+        toolCall,
+      }: {
+        runContext: RunContext<TestContext>;
+        toolCall: protocol.ToolSearchCallItem;
+      }) => {
+        const phase = (toolCall.arguments as { phase?: string }).phase;
+        if (phase === 'empty') {
+          runContext.context.ready = true;
+          return [];
+        }
+        const name = runContext.context.ready ? 'after_empty' : 'wrong';
+        return tool({
+          name,
+          description: 'Result after the empty callback.',
+          parameters: z.object({}).strict(),
+          execute: async () => name,
+        });
+      },
+    );
+    const clientToolSearch = attachClientToolSearchExecutor<TestContext>(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      execute,
+    );
+    const agent = new Agent<TestContext>({
+      name: 'Empty callback replay agent',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(
+      new RunContext({ ready: false }),
+      'input',
+      agent,
+      2,
+    );
+    const createCall = (
+      id: string,
+      phase: string,
+    ): protocol.ToolSearchCallItem =>
+      ({
+        type: 'tool_search_call',
+        id: `ts_${id}`,
+        status: 'completed',
+        arguments: { phase },
+        providerData: { call_id: id, execution: 'client' },
+      }) as protocol.ToolSearchCallItem;
+    const processed = await processModelResponseAsync(
+      {
+        output: [
+          createCall('call_empty_replay', 'empty'),
+          createCall('call_after_empty_replay', 'after'),
+        ],
+        usage: new Usage(),
+      },
+      agent,
+      [clientToolSearch],
+      [],
+      state,
+      [],
+    );
+    state._generatedItems.push(...processed.newItems);
+    state._lastProcessedResponse = processed;
+
+    const restored = await RunState.fromStringWithContext(
+      agent,
+      state.toString(),
+      new RunContext({ ready: false }),
+      { contextStrategy: 'replace' },
+    );
+
+    expect(execute).toHaveBeenCalledTimes(4);
+    expect(restored.getToolSearchRuntimeTools(agent)[0]?.name).toBe(
+      'after_empty',
+    );
+  });
+
+  it('rejects an empty custom tool-search output when its executor is unavailable', async () => {
+    type TestContext = { ready: boolean };
+    const execute = vi.fn(
+      async ({ runContext }: { runContext: RunContext<TestContext> }) => {
+        runContext.context.ready = true;
+        return [];
+      },
+    );
+    const customToolSearchProviderData = {
+      type: 'tool_search' as const,
+      execution: 'client' as const,
+      parameters: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+    };
+    const clientToolSearch = attachClientToolSearchExecutor<TestContext>(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: customToolSearchProviderData,
+      },
+      execute,
+    );
+    const agent = new Agent<TestContext>({
+      name: 'Empty custom callback restore agent',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(
+      new RunContext({ ready: false }),
+      'input',
+      agent,
+      2,
+    );
+    const processed = await processModelResponseAsync(
+      {
+        output: [
+          {
+            type: 'tool_search_call',
+            id: 'ts_call_empty_custom_restore',
+            status: 'completed',
+            arguments: {},
+            providerData: {
+              call_id: 'call_empty_custom_restore',
+              execution: 'client',
+            },
+          } as protocol.ToolSearchCallItem,
+        ],
+        usage: new Usage(),
+      },
+      agent,
+      [clientToolSearch],
+      [],
+      state,
+      [],
+    );
+    state._generatedItems.push(...processed.newItems);
+    state._lastProcessedResponse = processed;
+
+    const replacementAgent = new Agent<TestContext>({
+      name: agent.name,
+      tools: [
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: customToolSearchProviderData,
+        },
+      ],
+    });
+    const replacementContext = new RunContext({ ready: false });
+
+    await expect(
+      RunState.fromStringWithContext(
+        replacementAgent,
+        state.toString(),
+        replacementContext,
+        { contextStrategy: 'replace' },
+      ),
+    ).rejects.toThrow(
+      'require toolSearchTool({ execution: "client", execute }) when custom client tool_search parameters are provided',
+    );
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(replacementContext.context.ready).toBe(false);
+  });
+
+  it('restores an empty built-in tool-search output without an executor', async () => {
+    const clientToolSearch = {
+      type: 'hosted_tool' as const,
+      name: 'tool_search',
+      providerData: {
+        type: 'tool_search' as const,
+        execution: 'client' as const,
+      },
+    };
+    const agent = new Agent({
+      name: 'Empty built-in restore agent',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const callId = 'call_empty_builtin_restore';
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_empty_builtin_restore',
+          status: 'completed',
+          arguments: { paths: [] },
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_empty_builtin_restore',
+          status: 'completed',
+          tools: [],
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+    );
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(restored.getToolSearchRuntimeTools(agent)).toEqual([]);
+  });
+
+  it('keeps disabled callback results visible to later tool-search callbacks', async () => {
+    type TestContext = { enabled: boolean };
+    const availableToolNames: string[][] = [];
+    const execute = vi.fn(
+      async ({
+        availableTools,
+        toolCall,
+      }: {
+        availableTools: Tool<TestContext>[];
+        toolCall: protocol.ToolSearchCallItem;
+      }) => {
+        availableToolNames.push(availableTools.map((entry) => entry.name));
+        const phase = (toolCall.arguments as { phase?: string }).phase;
+        if (phase === 'disabled') {
+          return tool({
+            name: 'disabled_runtime',
+            description: 'Disabled runtime result.',
+            parameters: z.object({}).strict(),
+            isEnabled: ({ runContext }) =>
+              (runContext.context as TestContext).enabled,
+            execute: async () => 'disabled',
+          });
+        }
+        const sawDisabled = availableTools.some(
+          (entry) => entry.name === 'disabled_runtime',
+        );
+        const name = sawDisabled ? 'after_disabled' : 'wrong';
+        return tool({
+          name,
+          description: 'Result after the disabled callback.',
+          parameters: z.object({}).strict(),
+          execute: async () => name,
+        });
+      },
+    );
+    const clientToolSearch = attachClientToolSearchExecutor<TestContext>(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      execute,
+    );
+    const agent = new Agent<TestContext>({
+      name: 'Disabled callback replay agent',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(
+      new RunContext({ enabled: false }),
+      'input',
+      agent,
+      2,
+    );
+    const createCall = (
+      id: string,
+      phase: string,
+    ): protocol.ToolSearchCallItem =>
+      ({
+        type: 'tool_search_call',
+        id: `ts_${id}`,
+        status: 'completed',
+        arguments: { phase },
+        providerData: { call_id: id, execution: 'client' },
+      }) as protocol.ToolSearchCallItem;
+    const processed = await processModelResponseAsync(
+      {
+        output: [
+          createCall('call_disabled_replay', 'disabled'),
+          createCall('call_after_disabled_replay', 'after'),
+        ],
+        usage: new Usage(),
+      },
+      agent,
+      [clientToolSearch],
+      [],
+      state,
+      [],
+    );
+    state._generatedItems.push(...processed.newItems);
+    state._lastProcessedResponse = processed;
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(availableToolNames).toEqual([
+      ['tool_search'],
+      ['tool_search', 'disabled_runtime'],
+      ['tool_search'],
+      ['tool_search', 'disabled_runtime'],
+    ]);
+    expect(
+      restored.getToolSearchRuntimeTools(agent).map((entry) => entry.name),
+    ).toEqual(['after_disabled']);
+  });
+
+  it.each([
+    ['an enabled and a disabled result', true],
+    ['two disabled results', false],
+  ] as const)(
+    'rehydrates client tool-search output after filtering %s',
+    async (_description, includeEnabledResult) => {
+      const enabledLookup = tool({
+        name: 'lookup',
+        description: 'Enabled lookup.',
+        parameters: z.object({}).strict(),
+        execute: async () => 'enabled',
+      });
+      const disabledLookup = tool({
+        name: 'lookup',
+        description: 'Disabled lookup.',
+        parameters: z.object({}).strict(),
+        isEnabled: false,
+        execute: async () => 'disabled',
+      });
+      const otherDisabledLookup = tool({
+        name: 'lookup',
+        description: 'Other disabled lookup.',
+        parameters: z.object({}).strict(),
+        isEnabled: false,
+        execute: async () => 'other disabled',
+      });
+      const execute = vi.fn(async () => [
+        includeEnabledResult ? enabledLookup : otherDisabledLookup,
+        disabledLookup,
+      ]);
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search', execution: 'client' },
+        },
+        execute,
+      );
+      const agent = new Agent({
+        name: `Filtered duplicate restore ${includeEnabledResult}`,
+        tools: [clientToolSearch],
+      });
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      const processed = await processModelResponseAsync(
+        {
+          output: [
+            {
+              type: 'tool_search_call',
+              id: 'ts_call_filtered_duplicate_restore',
+              status: 'completed',
+              arguments: {},
+              providerData: {
+                call_id: 'call_filtered_duplicate_restore',
+                execution: 'client',
+              },
+            } as protocol.ToolSearchCallItem,
+          ],
+          usage: new Usage(),
+        },
+        agent,
+        [clientToolSearch],
+        [],
+        state,
+        [],
+      );
+      state._generatedItems.push(...processed.newItems);
+      state._lastProcessedResponse = processed;
+
+      const restored = await RunState.fromString(agent, state.toString());
+
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(restored.getToolSearchRuntimeTools(agent)).toEqual(
+        includeEnabledResult ? [enabledLookup] : [],
+      );
+    },
+  );
+
+  it.each([
+    ['one serialized tool', true],
+    ['an empty serialized result', false],
+  ] as const)(
+    'rejects extra enabled callback tools when rehydrating %s',
+    async (_description, includeSerializedLookup) => {
+      const lookup = tool({
+        name: 'lookup',
+        description: 'Serialized lookup.',
+        parameters: z.object({}).strict(),
+        execute: async () => 'lookup',
+      });
+      const extraLookup = tool({
+        name: 'extra_lookup',
+        description: 'Unexpected extra lookup.',
+        parameters: z.object({}).strict(),
+        execute: async () => 'extra',
+      });
+      const execute = vi.fn(async () => [lookup, extraLookup]);
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search', execution: 'client' },
+        },
+        execute,
+      );
+      const agent = new Agent({
+        name: `Extra enabled restore ${includeSerializedLookup}`,
+        tools: [clientToolSearch],
+      });
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      const callId = 'call_extra_enabled_restore';
+      state._generatedItems.push(
+        new RunToolSearchCallItem(
+          {
+            type: 'tool_search_call',
+            id: 'ts_call_extra_enabled_restore',
+            status: 'completed',
+            arguments: {},
+            providerData: { call_id: callId, execution: 'client' },
+          } as protocol.ToolSearchCallItem,
+          agent,
+        ),
+        new RunToolSearchOutputItem(
+          {
+            type: 'tool_search_output',
+            id: 'ts_output_extra_enabled_restore',
+            status: 'completed',
+            tools: includeSerializedLookup
+              ? [
+                  {
+                    type: 'function',
+                    name: 'lookup',
+                    description: 'Serialized lookup.',
+                    strict: true,
+                    parameters: {
+                      type: 'object',
+                      properties: {},
+                      required: [],
+                      additionalProperties: false,
+                    },
+                  },
+                ]
+              : [],
+            providerData: { call_id: callId, execution: 'client' },
+          } as protocol.ToolSearchOutputItem,
+          agent,
+        ),
+      );
+
+      await expect(
+        RunState.fromString(agent, state.toString()),
+      ).rejects.toThrow(
+        'registered execute callback returned different runtime tools than the serialized state',
+      );
+      expect(execute).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('rejects duplicate configured identities returned during tool-search rehydration', async () => {
+    const configuredTool = tool({
+      name: 'configured',
+      description: 'Configured tool.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'configured',
+    });
+    const runtimeTool = tool({
+      name: 'runtime',
+      description: 'Runtime tool.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'runtime',
+    });
+    const execute = vi.fn(async () => [
+      configuredTool,
+      configuredTool,
+      runtimeTool,
+    ]);
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      execute,
+    );
+    const agent = new Agent({
+      name: 'Configured duplicate restore agent',
+      tools: [configuredTool, clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const callId = 'call_configured_duplicate_restore';
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_configured_duplicate_restore',
+          status: 'completed',
+          arguments: { query: 'runtime' },
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_configured_duplicate_restore',
+          status: 'completed',
+          tools: [
+            {
+              type: 'function',
+              name: 'configured',
+              description: 'Configured tool.',
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+            },
+            {
+              type: 'function',
+              name: 'runtime',
+              description: 'Runtime tool.',
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+            },
+          ],
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+    );
+
+    await expect(RunState.fromString(agent, state.toString())).rejects.toThrow(
+      'Client tool_search execute() returned multiple tools with the same routed identity.',
+    );
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['accepts the final replacement', true],
+    ['rejects a stale first result', false],
+  ] as const)(
+    '%s when rehydrating repeated client tool_search outputs',
+    async (_description, returnFinalReplacement) => {
+      const firstLookup = tool({
+        name: 'first_lookup',
+        description: 'First lookup result.',
+        parameters: z.object({}).strict(),
+        execute: async () => 'first',
+      });
+      const latestLookup = tool({
+        name: 'latest_lookup',
+        description: 'Latest lookup result.',
+        parameters: z.object({}).strict(),
+        execute: async () => 'latest',
+      });
+      const execute = vi.fn(async () =>
+        returnFinalReplacement ? latestLookup : firstLookup,
+      );
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: {
+            type: 'tool_search',
+            execution: 'client',
+          },
+        },
+        execute,
+      );
+      const agent = new Agent({
+        name: 'Replacement restore agent',
+        tools: [clientToolSearch],
+      });
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      const callId = 'call_replacement_restore';
+      state._generatedItems.push(
+        new RunToolSearchCallItem(
+          {
+            type: 'tool_search_call',
+            id: 'ts_call_replacement_restore',
+            status: 'completed',
+            arguments: { paths: [] },
+            providerData: { call_id: callId, execution: 'client' },
+          } as protocol.ToolSearchCallItem,
+          agent,
+        ),
+        new RunToolSearchOutputItem(
+          {
+            type: 'tool_search_output',
+            id: 'ts_output_replacement_first',
+            status: 'completed',
+            tools: [
+              {
+                type: 'function',
+                name: 'first_lookup',
+                description: 'First lookup result.',
+                strict: true,
+                parameters: {
+                  type: 'object',
+                  properties: {},
+                  required: [],
+                  additionalProperties: false,
+                },
+              },
+            ],
+            providerData: { call_id: callId, execution: 'client' },
+          } as protocol.ToolSearchOutputItem,
+          agent,
+        ),
+        new RunToolSearchOutputItem(
+          {
+            type: 'tool_search_output',
+            id: 'ts_output_replacement_latest',
+            status: 'completed',
+            tools: [
+              {
+                type: 'function',
+                name: 'latest_lookup',
+                description: 'Latest lookup result.',
+                strict: true,
+                parameters: {
+                  type: 'object',
+                  properties: {},
+                  required: [],
+                  additionalProperties: false,
+                },
+              },
+            ],
+            providerData: { call_id: callId, execution: 'client' },
+          } as protocol.ToolSearchOutputItem,
+          agent,
+        ),
+      );
+
+      const restoredPromise = RunState.fromString(agent, state.toString());
+      if (returnFinalReplacement) {
+        const restored = await restoredPromise;
+        expect(restored.getToolSearchRuntimeTools(agent)).toEqual([
+          latestLookup,
+        ]);
+      } else {
+        await expect(restoredPromise).rejects.toThrow(
+          'RunState cannot resume custom client tool_search because the registered execute callback returned different runtime tools than the serialized state.',
+        );
+      }
+      expect(execute).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('redacts runtime tool identities from RunState callback mismatches', async () => {
+    const expectedName = 'secret_expected_lookup';
+    const actualName = 'secret_actual_lookup';
+    const actualLookup = tool({
+      name: actualName,
+      description: 'Actual lookup.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'actual',
+    });
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      async () => actualLookup,
+    );
+    const agent = new Agent({
+      name: 'Redacted mismatch agent',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const callId = 'call_redacted_mismatch';
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_redacted_mismatch',
+          status: 'completed',
+          arguments: {},
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_redacted_mismatch',
+          status: 'completed',
+          tools: [
+            {
+              type: 'function',
+              name: expectedName,
+              description: 'Expected lookup.',
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+            },
+          ],
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+    );
+    const redaction = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(true);
+
+    try {
+      const restored = RunState.fromString(agent, state.toString());
+      await expect(restored).rejects.toThrow(
+        'RunState cannot resume custom client tool_search because the registered execute callback returned different runtime tools than the serialized state.',
+      );
+      await expect(restored).rejects.not.toThrow(expectedName);
+      await expect(restored).rejects.not.toThrow(actualName);
+    } finally {
+      redaction.mockRestore();
+    }
+  });
+
+  it('redacts call and agent identities from missing tool-search executors', async () => {
+    const callId = 'secret_missing_executor_call';
+    const agent = new Agent({ name: 'Secret missing executor agent' });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_missing_executor',
+          status: 'completed',
+          arguments: {},
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_missing_executor',
+          status: 'completed',
+          tools: [
+            {
+              type: 'function',
+              name: 'secret_runtime_lookup',
+              description: 'Secret runtime lookup.',
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+            },
+          ],
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+    );
+    const redaction = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(true);
+
+    try {
+      const restored = RunState.fromString(agent, state.toString());
+      await expect(restored).rejects.toThrow(
+        'RunState cannot resume custom client tool_search because the agent no longer provides toolSearchTool({ execution: "client", execute }).',
+      );
+      await expect(restored).rejects.not.toThrow(callId);
+      await expect(restored).rejects.not.toThrow(agent.name);
+    } finally {
+      redaction.mockRestore();
+    }
+  });
+
+  it('rehydrates same-name runtime tools from distinct function categories', async () => {
+    const bareLookup = tool({
+      name: 'lookup',
+      description: 'Immediate lookup.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'bare',
+    });
+    const deferredLookup = tool({
+      name: 'lookup',
+      description: 'Deferred lookup.',
+      parameters: z.object({}).strict(),
+      deferLoading: true,
+      execute: async () => 'deferred',
+    });
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+        },
+      },
+      async () => [bareLookup, deferredLookup],
+    );
+    const agent = new Agent({
+      name: 'Category-aware restore agent',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const callId = 'call_tool_search_categories';
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_categories',
+          status: 'completed',
+          arguments: { paths: [] },
+          providerData: {
+            call_id: callId,
+            execution: 'client',
+          },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_categories',
+          status: 'completed',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup',
+              description: 'Immediate lookup.',
+              strict: true,
+              deferLoading: false,
+              parameters: {
+                type: 'object',
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+            },
+            {
+              type: 'function',
+              name: 'lookup',
+              description: 'Deferred lookup.',
+              strict: true,
+              deferLoading: true,
+              parameters: {
+                type: 'object',
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+            },
+          ],
+          providerData: {
+            call_id: callId,
+            execution: 'client',
+          },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+    );
+
+    const restored = await RunState.fromString(agent, state.toString());
+
+    expect(restored.getToolSearchRuntimeTools(agent)).toEqual([
+      bareLookup,
+      deferredLookup,
+    ]);
+  });
+
+  it('rejects a rehydrated bare runtime function that conflicts with an enabled handoff', async () => {
+    const runtimeLookup = tool({
+      name: 'lookup',
+      description: 'Look up a record.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'runtime',
+    });
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+        },
+      },
+      async () => runtimeLookup,
+    );
+    const target = new Agent({ name: 'LookupTarget' });
+    const agent = new Agent({
+      name: 'RuntimeHandoffCollision',
+      tools: [clientToolSearch],
+      handoffs: [handoff(target, { toolNameOverride: 'lookup' })],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const callId = 'call_runtime_handoff_collision';
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_runtime_handoff_collision',
+          status: 'completed',
+          arguments: { paths: [] },
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_runtime_handoff_collision',
+          status: 'completed',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup',
+              description: 'Look up a record.',
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+            },
+          ],
+          providerData: { call_id: callId, execution: 'client' },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+    );
+
+    await expect(RunState.fromString(agent, state.toString())).rejects.toThrow(
+      'Client tool_search execute() returned a bare function tool that conflicts with an available handoff. Assign a unique tool name or use a namespace.',
+    );
+  });
+
+  it.each([false, true])(
+    'rejects duplicate routed identities returned during tool-search rehydration (same object: %s)',
+    async (repeatSameObject) => {
+      const first = tool({
+        name: 'lookup',
+        description: 'First deferred lookup.',
+        parameters: z.object({}).strict(),
+        deferLoading: true,
+        execute: async () => 'first',
+      });
+      const second = tool({
+        name: 'lookup',
+        description: 'Second deferred lookup.',
+        parameters: z.object({}).strict(),
+        deferLoading: true,
+        execute: async () => 'second',
+      });
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: {
+            type: 'tool_search',
+            execution: 'client',
+          },
+        },
+        async () => (repeatSameObject ? [first, first] : [first, second]),
+      );
+      const agent = new Agent({
+        name: 'Duplicate restore agent',
+        tools: [clientToolSearch],
+      });
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      const callId = 'call_duplicate_restore';
+      state._generatedItems.push(
+        new RunToolSearchCallItem(
+          {
+            type: 'tool_search_call',
+            id: 'ts_call_duplicate_restore',
+            status: 'completed',
+            arguments: { paths: [] },
+            providerData: { call_id: callId, execution: 'client' },
+          } as protocol.ToolSearchCallItem,
+          agent,
+        ),
+        new RunToolSearchOutputItem(
+          {
+            type: 'tool_search_output',
+            id: 'ts_output_duplicate_restore',
+            status: 'completed',
+            tools: [
+              {
+                type: 'function',
+                name: 'lookup',
+                description: 'Deferred lookup.',
+                strict: true,
+                deferLoading: true,
+                parameters: {
+                  type: 'object',
+                  properties: {},
+                  required: [],
+                  additionalProperties: false,
+                },
+              },
+            ],
+            providerData: { call_id: callId, execution: 'client' },
+          } as protocol.ToolSearchOutputItem,
+          agent,
+        ),
+      );
+
+      await expect(
+        RunState.fromString(agent, state.toString()),
+      ).rejects.toThrow(
+        'Client tool_search execute() returned multiple tools with the same routed identity.',
+      );
+    },
+  );
+
+  it('rejects duplicate routed identities in serialized tool-search output before rehydration', async () => {
+    const validRuntimeLookup = tool({
+      name: 'valid_lookup',
+      description: 'Valid lookup.',
+      parameters: z.object({}).strict(),
+      execute: async () => 'valid',
+    });
+    const duplicateRuntimeLookup = tool({
+      name: 'lookup',
+      description: 'Deferred lookup.',
+      parameters: z.object({}).strict(),
+      deferLoading: true,
+      execute: async () => 'lookup',
+    });
+    const execute = vi.fn(async () => validRuntimeLookup);
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+        },
+      },
+      execute,
+    );
+    const agent = new Agent({
+      name: 'Duplicate serialized restore agent',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    const validCallId = 'call_valid_serialized_restore';
+    const duplicateCallId = 'call_duplicate_serialized_restore';
+    const validSerializedTool = {
+      type: 'function',
+      name: 'valid_lookup',
+      description: 'Valid lookup.',
+      strict: true,
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+    } as const;
+    const serializedTool = {
+      type: 'function',
+      name: duplicateRuntimeLookup.name,
+      description: duplicateRuntimeLookup.description,
+      strict: true,
+      deferLoading: true,
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+    } as const;
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_valid_serialized_restore',
+          status: 'completed',
+          arguments: { query: 'valid' },
+          providerData: { call_id: validCallId, execution: 'client' },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_valid_serialized_restore',
+          status: 'completed',
+          tools: [validSerializedTool],
+          providerData: { call_id: validCallId, execution: 'client' },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_duplicate_serialized_restore',
+          status: 'completed',
+          arguments: { query: 'duplicate' },
+          providerData: { call_id: duplicateCallId, execution: 'client' },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_duplicate_serialized_restore',
+          status: 'completed',
+          tools: [serializedTool, serializedTool],
+          providerData: { call_id: duplicateCallId, execution: 'client' },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+    );
+
+    await expect(RunState.fromString(agent, state.toString())).rejects.toThrow(
+      'Serialized client tool_search output contains multiple tools with the same routed identity. Assign unique tool names or namespaces before resuming RunState.',
+    );
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('accepts schema version 1.7 payloads when non-item context data mentions tool_search types', async () => {
     const context = new RunContext({
       custom: {
@@ -1940,6 +6558,12 @@ describe('RunState', () => {
 
     const serialized = JSON.parse(state.toString());
     serialized.$schemaVersion = '1.6';
+    const approvalKey = getFunctionToolStateKeyForCall(rawItem)!;
+    const ownerApprovals = serialized.context.functionApprovals.find(
+      (entry: any) => entry.agentIdentity === agent.name,
+    ).approvals;
+    serialized.context.approvals.toolLegacy = ownerApprovals[approvalKey];
+    delete serialized.context.functionApprovals;
     delete serialized.context.approvals.toolLegacy.messages;
 
     const restored = await RunState.fromString(
@@ -2029,8 +6653,8 @@ describe('RunState', () => {
       state._context.isToolApproved({ toolName: 'toolZ', callId: 'cid789' }),
     ).toBe(false);
     const approvals = state._context.toJSON().approvals;
-    expect(approvals['toolZ'].approved).toBe(false);
-    expect(approvals['toolZ'].rejected).toBe(true);
+    expect(approvals.toolZ.approved).toBe(false);
+    expect(approvals.toolZ.rejected).toBe(true);
   });
 
   it('alwaysReject with message stores call-specific and sticky rejection messages', () => {
@@ -2061,11 +6685,11 @@ describe('RunState', () => {
       'Blocked by policy',
     );
     const approvals = state._context.toJSON().approvals;
-    expect(approvals['toolAR'].rejected).toBe(true);
-    expect(approvals['toolAR'].messages).toEqual({
+    expect(approvals.toolAR.rejected).toBe(true);
+    expect(approvals.toolAR.messages).toEqual({
       'ar-1': 'Blocked by policy',
     });
-    expect(approvals['toolAR'].stickyRejectMessage).toBe('Blocked by policy');
+    expect(approvals.toolAR.stickyRejectMessage).toBe('Blocked by policy');
   });
 
   it('alwaysReject with empty message preserves the empty string', () => {
@@ -2136,10 +6760,11 @@ describe('RunState', () => {
     const approvalItem = new ToolApprovalItem(rawItem, agent);
 
     state.approve(approvalItem);
+    const approvalKey = getFunctionToolStateKeyForCall(rawItem)!;
 
     expect(
       state._context.isToolApproved({
-        toolName: 'crm.lookup_account',
+        toolName: approvalKey,
         callId: 'cid_namespace',
       }),
     ).toBe(true);
@@ -2170,16 +6795,17 @@ describe('RunState', () => {
     const restored = await RunState.fromString(agent, state.toString());
     const [approvalItem] = restored.getInterruptions();
     restored.approve(approvalItem);
+    const approvalKey = getFunctionToolStateKeyForCall(rawItem)!;
 
     expect(
       restored._context.isToolApproved({
-        toolName: 'get_shipping_eta',
+        toolName: approvalKey,
         callId: 'cid_shipping_eta',
       }),
     ).toBe(true);
     expect(
       restored._context.isToolApproved({
-        toolName: 'get_shipping_eta.get_shipping_eta',
+        toolName: 'get_shipping_eta',
         callId: 'cid_shipping_eta',
       }),
     ).toBeUndefined();
@@ -2220,16 +6846,17 @@ describe('RunState', () => {
     const restored = await RunState.fromString(agent, state.toString());
     const [approvalItem] = restored.getInterruptions();
     restored.approve(approvalItem);
+    const approvalKey = getFunctionToolStateKeyForCall(rawItem)!;
 
     expect(
       restored._context.isToolApproved({
-        toolName: 'get_shipping_eta',
+        toolName: approvalKey,
         callId: 'cid_shipping_eta',
       }),
     ).toBe(true);
     expect(
       restored._context.isToolApproved({
-        toolName: 'get_shipping_eta.get_shipping_eta',
+        toolName: 'get_shipping_eta',
         callId: 'cid_shipping_eta',
       }),
     ).toBeUndefined();
@@ -2627,6 +7254,220 @@ describe('deserialize helpers', () => {
         ],
       },
     ]);
+  });
+
+  it('restores the enabled handoff winner instead of a later disabled duplicate', async () => {
+    const enabledTarget = new Agent({
+      name: 'SharedTarget',
+      instructions: 'enabled target',
+    });
+    const disabledTarget = new Agent({
+      name: 'SharedTarget',
+      instructions: 'disabled target',
+    });
+    const enabledHandoff = handoff(enabledTarget, {
+      toolNameOverride: 'transfer',
+    });
+    const disabledHandoff = handoff(disabledTarget, {
+      toolNameOverride: 'transfer',
+      isEnabled: false,
+    });
+    const agent = new Agent({
+      name: 'HandoffWinnerRestore',
+      handoffs: [enabledHandoff, disabledHandoff],
+    });
+    const state = new RunState(new RunContext(), '', agent, 1);
+    const toolCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_handoff_winner',
+      callId: 'call_handoff_winner',
+      name: 'transfer',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [],
+      handoffs: [{ toolCall, handoff: enabledHandoff }],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['transfer'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    const serialized = state.toJSON() as any;
+    expect(
+      serialized.lastProcessedResponse.handoffs[0].targetAgent.identity,
+    ).toEqual(expect.any(String));
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(serialized),
+    );
+
+    expect(restored._lastProcessedResponse?.handoffs[0]?.handoff).toBe(
+      enabledHandoff,
+    );
+
+    delete serialized.lastProcessedResponse.handoffs[0].targetAgent;
+    await expect(
+      RunState.fromString(agent, JSON.stringify(serialized)),
+    ).rejects.toThrow(
+      'Run state handoff is missing its required target agent identity.',
+    );
+
+    serialized.$schemaVersion = '1.15';
+    const restoredLegacy = await RunState.fromString(
+      agent,
+      JSON.stringify(serialized),
+    );
+    expect(restoredLegacy._lastProcessedResponse?.handoffs[0]?.handoff).toBe(
+      enabledHandoff,
+    );
+  });
+
+  it('rejects a schema 1.16 handoff without exact identity instead of rebinding a same-name target', async () => {
+    const executeToolSearch = vi.fn(async () => []);
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      executeToolSearch,
+    );
+    const firstTarget = new Agent({ name: 'SharedTarget' });
+    const secondTarget = new Agent({ name: 'SharedTarget' });
+    const firstHandoff = handoff(firstTarget, {
+      toolNameOverride: 'transfer',
+    });
+    const secondHandoff = handoff(secondTarget, {
+      toolNameOverride: 'transfer',
+    });
+    const agent = new Agent({
+      name: 'AmbiguousHandoffRestore',
+      tools: [clientToolSearch],
+      handoffs: [firstHandoff, secondHandoff],
+    });
+    const state = new RunState(new RunContext(), '', agent, 1);
+    const toolSearchCallId = 'call_ambiguous_handoff_search';
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_ambiguous_handoff_search',
+          status: 'completed',
+          arguments: { paths: [] },
+          providerData: {
+            call_id: toolSearchCallId,
+            execution: 'client',
+          },
+        } as protocol.ToolSearchCallItem,
+        agent,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_ambiguous_handoff_search',
+          status: 'completed',
+          tools: [],
+          providerData: {
+            call_id: toolSearchCallId,
+            execution: 'client',
+          },
+        } as protocol.ToolSearchOutputItem,
+        agent,
+      ),
+    );
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [],
+      handoffs: [
+        {
+          toolCall: {
+            type: 'function_call',
+            id: 'fc_ambiguous_handoff',
+            callId: 'call_ambiguous_handoff',
+            name: 'transfer',
+            status: 'completed',
+            arguments: '{}',
+          },
+          handoff: firstHandoff,
+        },
+      ],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['transfer'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    const serialized = state.toJSON() as any;
+    allowConsole(['warn']);
+    await expect(
+      RunState.fromString(agent, JSON.stringify(serialized)),
+    ).rejects.toThrow('Handoff transfer not found');
+    expect(executeToolSearch).not.toHaveBeenCalled();
+
+    const missingTarget = JSON.parse(JSON.stringify(serialized));
+    delete missingTarget.lastProcessedResponse.handoffs[0].targetAgent;
+
+    await expect(
+      RunState.fromString(agent, JSON.stringify(missingTarget)),
+    ).rejects.toThrow(
+      'Run state handoff is missing its required target agent identity.',
+    );
+    expect(executeToolSearch).not.toHaveBeenCalled();
+
+    serialized.lastProcessedResponse.handoffs[0].targetAgent.identity =
+      'missing-target-identity';
+    await expect(
+      RunState.fromString(agent, JSON.stringify(serialized)),
+    ).rejects.toThrow('Agent identity missing-target-identity not found');
+    expect(executeToolSearch).not.toHaveBeenCalled();
+  });
+
+  it('rejects a handoff disabled by a replacement context during restore', async () => {
+    const target = new Agent<{ enabled: boolean }>({ name: 'DynamicTarget' });
+    const dynamicHandoff = handoff(target, {
+      toolNameOverride: 'transfer',
+      isEnabled: ({ runContext }) => runContext.context.enabled,
+    });
+    const agent = new Agent<{ enabled: boolean }>({
+      name: 'DynamicHandoffRestore',
+      handoffs: [dynamicHandoff],
+    });
+    const state = new RunState(new RunContext({ enabled: true }), '', agent, 1);
+    const toolCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_dynamic_handoff',
+      callId: 'call_dynamic_handoff',
+      name: 'transfer',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [],
+      handoffs: [{ toolCall, handoff: dynamicHandoff }],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['transfer'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    await expect(
+      RunState.fromStringWithContext(
+        agent,
+        state.toString(),
+        new RunContext({ enabled: false }),
+        { contextStrategy: 'replace' },
+      ),
+    ).rejects.toThrow('Handoff transfer not found');
   });
 
   it('deserializeProcessedResponse restores namespaced function tools', async () => {
@@ -3183,6 +8024,143 @@ describe('deserialize helpers', () => {
       type: 'program',
       callerId: 'prog_approval_1',
     });
+  });
+
+  it('uses an explicit prepared tool snapshot without adding stored runtime tools', async () => {
+    const runtimeLookup = tool({
+      name: 'lookup_runtime',
+      description: 'Look up a runtime record.',
+      parameters: z.object({}),
+      execute: async () => 'runtime',
+    });
+    const agent = new Agent({ name: 'ExplicitPreparedTools' });
+    const state = new RunState(new RunContext(), '', agent, 1);
+    const toolCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_runtime_explicit',
+      callId: 'call_runtime_explicit',
+      name: 'lookup_runtime',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state.recordToolSearchRuntimeTools(
+      agent,
+      {
+        type: 'tool_search_output',
+        id: 'ts_output_runtime_explicit',
+        status: 'completed',
+        tools: [],
+      } as protocol.ToolSearchOutputItem,
+      [runtimeLookup],
+    );
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [{ toolCall, tool: runtimeLookup as any }],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['lookup_runtime'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    await expect(
+      rehydrateProcessedResponseTools(agent, state, []),
+    ).rejects.toThrow('Tool lookup_runtime not found');
+  });
+
+  it('rejects resumed runtime function tools when isEnabled is false in replacement context', async () => {
+    const lookupParams = z.object({});
+    const runtimeLookup = tool<typeof lookupParams, { enabled: boolean }>({
+      name: 'lookup_runtime',
+      description: 'Look up a runtime record.',
+      parameters: lookupParams,
+      isEnabled: async ({ runContext }) => runContext.context.enabled,
+      execute: async () => 'runtime',
+    });
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+        },
+      },
+      async () => runtimeLookup,
+    );
+    const agent = new Agent<{ enabled: boolean }>({
+      name: 'RuntimeEnabledRestore',
+      tools: [clientToolSearch],
+    });
+    const state = new RunState(new RunContext({ enabled: true }), '', agent, 1);
+    const searchCallId = 'call_runtime_enabled_restore';
+    state._generatedItems.push(
+      new RunToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          id: 'ts_call_runtime_enabled_restore',
+          status: 'completed',
+          arguments: { paths: [] },
+          providerData: { call_id: searchCallId, execution: 'client' },
+        } as protocol.ToolSearchCallItem,
+        agent as any,
+      ),
+      new RunToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          id: 'ts_output_runtime_enabled_restore',
+          status: 'completed',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup_runtime',
+              description: 'Look up a runtime record.',
+              strict: true,
+              parameters: {
+                type: 'object',
+                properties: {},
+                required: [],
+                additionalProperties: false,
+              },
+            },
+          ],
+          providerData: { call_id: searchCallId, execution: 'client' },
+        } as protocol.ToolSearchOutputItem,
+        agent as any,
+      ),
+    );
+    const toolCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      id: 'fc_runtime_enabled_restore',
+      callId: 'call_lookup_runtime',
+      name: 'lookup_runtime',
+      status: 'completed',
+      arguments: '{}',
+    };
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [{ toolCall, tool: runtimeLookup as any }],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['lookup_runtime'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+
+    await expect(
+      RunState.fromStringWithContext(
+        agent,
+        state.toString(),
+        new RunContext({ enabled: false }),
+        { contextStrategy: 'replace' },
+      ),
+    ).rejects.toThrow(
+      'registered execute callback returned different runtime tools than the serialized state',
+    );
   });
 
   it('rejects resumed function tools when isEnabled is false in replacement context', async () => {

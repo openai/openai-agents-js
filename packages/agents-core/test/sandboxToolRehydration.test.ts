@@ -12,10 +12,11 @@ import {
 } from '../src/sandbox/runtime/toolRehydration';
 import { SandboxAgent } from '../src/sandbox';
 import {
+  buildFunctionToolLookupMap,
   getFunctionToolQualifiedName,
-  resolveFunctionToolCallName,
+  resolveFunctionToolCall,
 } from '../src/toolIdentity';
-import { shellTool, tool } from '../src/tool';
+import { shellTool, tool, toolNamespace } from '../src/tool';
 import type * as protocol from '../src/types/protocol';
 import { FakeShell } from './stubs';
 
@@ -57,11 +58,11 @@ describe('serialized sandbox execution tool placeholders', () => {
       'crm.lookup_customer',
     );
     expect(
-      resolveFunctionToolCallName(
+      resolveFunctionToolCall(
         functionCall,
-        new Map([['crm.lookup_customer', placeholder!]]),
+        buildFunctionToolLookupMap([placeholder!]),
       ),
-    ).toBe('crm.lookup_customer');
+    ).toBe(placeholder);
     await expect(placeholder!.invoke(new RunContext(), '{}')).rejects.toThrow(
       'Function tool crm.lookup_customer was restored from serialized execution-time metadata without an executable handler.',
     );
@@ -305,7 +306,7 @@ describe('serialized sandbox execution tool placeholders', () => {
         agent: sandboxAgent,
         baseAgentTools: [configuredFunction],
         serializedTool: { type: 'function' },
-        toolCall: { ...functionCall, namespace: 'lookup_customer' },
+        toolCall: { ...functionCall, namespace: undefined },
         toolIdentity: 'lookup_customer',
         allowSerializedExecutionToolPlaceholder: true,
       }),
@@ -349,5 +350,64 @@ describe('serialized sandbox execution tool placeholders', () => {
         allowSerializedExecutionToolPlaceholder: true,
       }),
     ).toBeUndefined();
+  });
+
+  it('checks configured identity without validating disabled duplicates', () => {
+    const [enabledLookup] = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup_customer',
+          description: 'Looks up a customer.',
+          parameters: z.object({}),
+          execute: async () => 'configured',
+        }),
+      ],
+    });
+    const [disabledLookup] = toolNamespace({
+      name: 'crm',
+      description: 'Disabled CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup_customer',
+          description: 'Disabled duplicate.',
+          parameters: z.object({}),
+          isEnabled: false,
+          execute: async () => 'disabled',
+        }),
+      ],
+    });
+
+    expect(
+      getSerializedFunctionToolPlaceholder({
+        agent: new SandboxAgent({ name: 'Sandbox' }),
+        baseAgentTools: [enabledLookup!, disabledLookup!],
+        serializedTool: { type: 'function' },
+        toolCall: functionCall,
+        toolIdentity: 'crm.lookup_customer',
+        allowSerializedExecutionToolPlaceholder: true,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('does not treat a bare configured function as a deferred self-namespaced function', () => {
+    const configuredFunction = tool({
+      name: 'lookup_customer',
+      description: 'Looks up a customer.',
+      parameters: z.object({}),
+      execute: async () => 'configured',
+    });
+
+    expect(
+      getSerializedFunctionToolPlaceholder({
+        agent: new SandboxAgent({ name: 'Sandbox' }),
+        baseAgentTools: [configuredFunction],
+        serializedTool: { type: 'function', deferLoading: true },
+        toolCall: { ...functionCall, namespace: 'lookup_customer' },
+        toolIdentity: 'lookup_customer',
+        allowSerializedExecutionToolPlaceholder: true,
+      }),
+    ).toBeDefined();
   });
 });

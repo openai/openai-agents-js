@@ -27,6 +27,7 @@ import {
 } from '../../src/runner/streaming';
 import {
   checkForFinalOutputFromTools,
+  collectInterruptions,
   executeApplyPatchOperations,
   executeComputerActions,
   executeFunctionToolCalls,
@@ -83,6 +84,7 @@ import {
 } from '../../src/tracing/processor';
 import type { Span } from '../../src/tracing/spans';
 import type { Trace } from '../../src/tracing/traces';
+import { getFunctionToolStateKey } from '../../src/toolIdentity';
 
 const createMockLogger = (): Logger => ({
   namespace: 'test',
@@ -388,6 +390,30 @@ describe('getToolCallOutputItem', () => {
 });
 
 describe('checkForFinalOutputFromTools', () => {
+  it('keeps the same function approval identity for separate agents', () => {
+    const root = new Agent({ name: 'Approval identity root' });
+    const child = new Agent({ name: 'Approval identity child' });
+    const createCall = (id: string): protocol.FunctionCallItem => ({
+      type: 'function_call',
+      id,
+      callId: 'shared_approval_call_id',
+      name: 'shared_tool',
+      status: 'completed',
+      arguments: '{}',
+    });
+
+    const interruptions = collectInterruptions(
+      [],
+      [
+        new ToolApprovalItem(createCall('root_call'), root),
+        new ToolApprovalItem(createCall('child_call'), child),
+      ],
+    );
+
+    expect(interruptions).toHaveLength(2);
+    expect(interruptions.map((item) => item.agent)).toEqual([root, child]);
+  });
+
   const state: RunState<any, any> = {} as any;
 
   const weatherTool = tool({
@@ -2722,6 +2748,156 @@ describe('executeShellActions', () => {
       expect(invokeSpy).not.toHaveBeenCalled();
     });
 
+    it('does not reuse a bare approval for a same-name deferred tool', async () => {
+      const deferredExecute = vi.fn(async () => 'deferred');
+      const bare = tool({
+        name: 'lookup',
+        description: 'Immediate lookup.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: vi.fn(async () => 'bare'),
+      }) as unknown as FunctionTool;
+      const deferred = tool({
+        name: 'lookup',
+        description: 'Deferred lookup.',
+        parameters: z.object({}),
+        deferLoading: true,
+        needsApproval: true,
+        execute: deferredExecute,
+      }) as unknown as FunctionTool;
+      state._context.approveTool(
+        new ToolApprovalItem(
+          {
+            type: 'function_call',
+            callId: 'approved-bare',
+            name: 'lookup',
+            arguments: '{}',
+          },
+          state._currentAgent,
+        ),
+        { alwaysApprove: true },
+      );
+
+      const [result] = await executeFunctionToolCalls(
+        state._currentAgent,
+        [
+          {
+            toolCall: {
+              type: 'function_call',
+              callId: 'deferred-call',
+              name: 'lookup',
+              namespace: 'lookup',
+              arguments: '{}',
+            },
+            tool: deferred,
+            availableFunctionTools: [bare, deferred],
+          },
+        ],
+        runner,
+        state,
+      );
+
+      expect(result.type).toBe('function_approval');
+      expect(deferredExecute).not.toHaveBeenCalled();
+    });
+
+    it('does not use a bare function approval for a deferred tool', async () => {
+      const deferredExecute = vi.fn(async () => 'deferred');
+      const deferred = tool({
+        name: 'lookup',
+        description: 'Deferred lookup.',
+        parameters: z.object({}),
+        deferLoading: true,
+        needsApproval: true,
+        execute: deferredExecute,
+      }) as unknown as FunctionTool;
+      state._context.approveTool(
+        new ToolApprovalItem(
+          {
+            type: 'function_call',
+            callId: 'legacy-approval',
+            name: 'lookup',
+            arguments: '{}',
+          },
+          state._currentAgent,
+        ),
+        { alwaysApprove: true },
+      );
+
+      const [result] = await executeFunctionToolCalls(
+        state._currentAgent,
+        [
+          {
+            toolCall: {
+              type: 'function_call',
+              callId: 'deferred-call',
+              name: 'lookup',
+              namespace: 'lookup',
+              arguments: '{}',
+            },
+            tool: deferred,
+            availableFunctionTools: [deferred],
+          },
+        ],
+        runner,
+        state,
+      );
+
+      expect(result.type).toBe('function_approval');
+      expect(deferredExecute).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['per-call', false],
+      ['permanent', true],
+    ] as const)(
+      'does not use a same-name shell %s approval for a function tool',
+      async (_decision, alwaysApprove) => {
+        const execute = vi.fn(async () => 'function');
+        const functionTool = tool({
+          name: 'shell',
+          description: 'Function named shell.',
+          parameters: z.object({}),
+          needsApproval: true,
+          execute,
+        }) as unknown as FunctionTool;
+        const sharedCallId = 'same-name-shell-function';
+        state._context.approveTool(
+          new ToolApprovalItem(
+            {
+              type: 'shell_call',
+              callId: sharedCallId,
+              status: 'completed',
+              action: { commands: ['echo approved'] },
+            },
+            state._currentAgent,
+            'shell',
+          ),
+          { alwaysApprove },
+        );
+
+        const [result] = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                type: 'function_call',
+                callId: sharedCallId,
+                name: 'shell',
+                arguments: '{}',
+              },
+              tool: functionTool,
+            },
+          ],
+          runner,
+          state,
+        );
+
+        expect(result.type).toBe('function_approval');
+        expect(execute).not.toHaveBeenCalled();
+      },
+    );
+
     it.each([
       ['malformed JSON', '{'],
       ['an array', '[]'],
@@ -3312,7 +3488,9 @@ describe('executeShellActions', () => {
       };
       const approvalSpy = vi
         .spyOn(state._context, 'isToolApproved')
-        .mockReturnValue(false as any);
+        .mockImplementation(({ toolName }) =>
+          toolName === getFunctionToolStateKey(t) ? false : undefined,
+        );
       const customRunner = new Runner({ tracingDisabled: false });
 
       await withRecordingTrace(async (processor) => {
@@ -3327,8 +3505,10 @@ describe('executeShellActions', () => {
 
         expect(res[0].type).toBe('function_output');
         expect(approvalSpy).toHaveBeenCalledWith({
-          toolName: 'get_shipping_eta',
+          toolName: getFunctionToolStateKey(t),
           callId: 'call_shipping_eta',
+          functionTool: false,
+          agent: state._currentAgent,
         });
         getEndedFunctionSpan(processor, 'get_shipping_eta');
         expect(
