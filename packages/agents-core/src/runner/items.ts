@@ -205,7 +205,8 @@ function isPendingHostedShellCall(item: AgentInputItem): boolean {
   return status === undefined || status === 'in_progress';
 }
 
-function getProgramCallerId(item: AgentInputItem): string | undefined {
+/** @internal */
+export function getProgramCallerId(item: AgentInputItem): string | undefined {
   if (!item || typeof item !== 'object' || !('caller' in item)) {
     return undefined;
   }
@@ -233,7 +234,7 @@ function collectProgramOwnedCallKeys(items: AgentInputItem[]): Set<string> {
 
   for (const item of items) {
     const programCallId = getProgramCallerId(item);
-    if (!programCallId) {
+    if (programCallId === undefined) {
       continue;
     }
     const key = getProgramOwnedCorrelationKey(
@@ -328,7 +329,7 @@ export function dropOrphanToolCalls(
       return true;
     }
     const programCallerId = getProgramCallerId(item);
-    if (programCallerId) {
+    if (programCallerId !== undefined) {
       if (
         !programCallIds.has(programCallerId) ||
         orphanProgramCallIds.has(programCallerId)

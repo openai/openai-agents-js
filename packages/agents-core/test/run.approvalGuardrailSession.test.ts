@@ -751,6 +751,130 @@ describe('committed tool output guardrail session persistence', () => {
     },
   );
 
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'retains a pending program owner for a committed child in $mode mode',
+    async (mode) => {
+      let guardrailShouldTrip = true;
+      const childExecute = vi.fn(async () => 'program-child-result');
+      const finalExecute = vi.fn(async () => 'direct-final-result');
+      const childTool = tool({
+        name: 'program_child_tool',
+        description: 'Commits a program-owned side effect.',
+        parameters: z.object({}),
+        allowedCallers: ['programmatic'],
+        execute: childExecute,
+      });
+      const finalTool = tool({
+        name: 'direct_final_tool',
+        description: 'Selects the final result for this turn.',
+        parameters: z.object({}),
+        execute: finalExecute,
+      });
+      const programCallId = 'call-pending-program-owner';
+      const childCallId = 'call-program-owned-child';
+      const finalCallId = 'call-direct-final';
+      const model = new ApprovalSessionModel([
+        {
+          output: [
+            {
+              type: 'program',
+              id: 'pending-program-owner',
+              callId: programCallId,
+              code: 'text(await tools.program_child_tool({}))',
+              fingerprint: 'pending-program-owner-fingerprint',
+            },
+            {
+              ...functionToolCall('program_child_tool', childCallId),
+              caller: { type: 'program' as const, callerId: programCallId },
+            },
+            functionToolCall('direct_final_tool', finalCallId),
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('continued without replaying tools')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'Pending program owner agent',
+        model,
+        tools: [
+          childTool,
+          finalTool,
+          {
+            type: 'hosted_tool',
+            name: 'programmatic_tool_calling',
+            providerData: { type: 'programmatic_tool_calling' },
+          },
+        ],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'block direct final result',
+            execute: async () => ({
+              outputInfo: null,
+              tripwireTriggered: guardrailShouldTrip,
+            }),
+          },
+        ],
+      });
+      const session = new MemorySession();
+      const runOnce = async (input: string) => {
+        if (mode === 'streamed') {
+          const result = await run(agent, input, { session, stream: true });
+          await result.completed;
+          return result;
+        }
+        return await run(agent, input, { session });
+      };
+
+      await expect(runOnce('Run both tools')).rejects.toBeInstanceOf(
+        OutputGuardrailTripwireTriggered,
+      );
+      expect(childExecute).toHaveBeenCalledTimes(1);
+      expect(finalExecute).toHaveBeenCalledTimes(1);
+      expect(
+        (await session.getItems())
+          .filter(
+            (item) =>
+              item.type === 'program' ||
+              item.type === 'function_call' ||
+              item.type === 'function_call_result',
+          )
+          .map((item) => [item.type, item.callId]),
+      ).toEqual([
+        ['program', programCallId],
+        ['function_call', childCallId],
+        ['function_call', finalCallId],
+        ['function_call_result', childCallId],
+        ['function_call_result', finalCallId],
+      ]);
+
+      guardrailShouldTrip = false;
+      const followup = await runOnce('Continue');
+      expect(followup.finalOutput).toBe('continued without replaying tools');
+      expect(childExecute).toHaveBeenCalledTimes(1);
+      expect(finalExecute).toHaveBeenCalledTimes(1);
+      expect(
+        (model.requests.at(-1)?.input as AgentInputItem[])
+          .filter(
+            (item) =>
+              item.type === 'program' ||
+              item.type === 'function_call' ||
+              item.type === 'function_call_result',
+          )
+          .map((item) => [item.type, item.callId]),
+      ).toEqual([
+        ['program', programCallId],
+        ['function_call', childCallId],
+        ['function_call', finalCallId],
+        ['function_call_result', childCallId],
+        ['function_call_result', finalCallId],
+      ]);
+    },
+  );
+
   it.each(
     (['non_streamed', 'streamed'] as const).flatMap((mode) =>
       [false, true].map((tripwire) => ({ mode, tripwire })),

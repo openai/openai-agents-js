@@ -528,6 +528,35 @@ describe('dropOrphanToolCalls', () => {
     ).toEqual([]);
   });
 
+  it('distinguishes an empty program caller ID from a missing owner', () => {
+    const program: protocol.ProgramCallItem = {
+      type: 'program',
+      callId: '',
+      code: 'return await tools.lookup({});',
+      fingerprint: 'fingerprint:empty-owner',
+    };
+    const functionCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      callId: 'owned_call',
+      name: 'lookup',
+      arguments: '{}',
+      caller: { type: 'program', callerId: '' },
+    };
+    const functionOutput: protocol.FunctionCallResultItem = {
+      type: 'function_call_result',
+      callId: 'owned_call',
+      name: 'lookup',
+      status: 'completed',
+      output: 'done',
+      caller: { type: 'program', callerId: '' },
+    };
+
+    expect(
+      dropOrphanToolCalls([program, functionCall, functionOutput]),
+    ).toEqual([program, functionCall, functionOutput]);
+    expect(dropOrphanToolCalls([functionCall, functionOutput])).toEqual([]);
+  });
+
   it('drops dangling owned results from completed programs', () => {
     const program: protocol.ProgramCallItem = {
       type: 'program',

@@ -189,6 +189,158 @@ describe('selectRunItemsForBlockedOutput', () => {
     ]);
   });
 
+  it('retains the pending program that owns a committed child pair', () => {
+    const program = new ToolCallItem(
+      {
+        type: 'program',
+        callId: 'program-owner',
+        code: 'return await tools.test({});',
+        fingerprint: 'program-owner-fingerprint',
+      },
+      TEST_AGENT,
+    );
+    const childCall = {
+      ...functionCall('program-child'),
+      caller: { type: 'program' as const, callerId: 'program-owner' },
+    };
+    const child = new ToolCallItem(childCall, TEST_AGENT);
+    const childResult = markRunToolCallOutputItemAsExecuted(
+      new ToolCallOutputItem(
+        {
+          type: 'function_call_result',
+          callId: childCall.callId,
+          name: childCall.name,
+          status: 'completed',
+          output: 'child-result',
+          caller: childCall.caller,
+        },
+        TEST_AGENT,
+        'child-result',
+      ),
+    );
+    const ownerReasoning = new ReasoningItem(
+      {
+        type: 'reasoning',
+        id: 'reasoning-program-owner',
+        content: [{ type: 'input_text', text: 'run the program' }],
+      },
+      TEST_AGENT,
+    );
+
+    expect(
+      selectRunItemsForBlockedOutput([
+        ownerReasoning,
+        program,
+        child,
+        childResult,
+      ]),
+    ).toEqual([ownerReasoning, program, child, childResult]);
+    expect(
+      selectRunItemsForBlockedOutput([program, child, childResult], 1),
+    ).toEqual([child, childResult]);
+  });
+
+  it('drops program-owned pairs without one matching earlier owner', () => {
+    const program = new ToolCallItem(
+      {
+        type: 'program',
+        callId: 'program-owner',
+        code: 'return await tools.test({});',
+        fingerprint: 'program-owner-fingerprint',
+      },
+      TEST_AGENT,
+    );
+    const childCall = {
+      ...functionCall('program-child-invalid'),
+      caller: { type: 'program' as const, callerId: 'program-owner' },
+    };
+    const child = new ToolCallItem(childCall, TEST_AGENT);
+    const childResult = markRunToolCallOutputItemAsExecuted(
+      new ToolCallOutputItem(
+        {
+          type: 'function_call_result',
+          callId: childCall.callId,
+          name: childCall.name,
+          status: 'completed',
+          output: 'child-result',
+          caller: childCall.caller,
+        },
+        TEST_AGENT,
+        'child-result',
+      ),
+    );
+    const mismatchedResult = markRunToolCallOutputItemAsExecuted(
+      new ToolCallOutputItem(
+        {
+          type: 'function_call_result',
+          callId: childCall.callId,
+          name: childCall.name,
+          status: 'completed',
+          output: 'child-result',
+          caller: { type: 'program', callerId: 'another-program' },
+        },
+        TEST_AGENT,
+        'child-result',
+      ),
+    );
+    const duplicateProgram = new ToolCallItem(
+      { ...program.rawItem },
+      TEST_AGENT,
+    );
+
+    expect(selectRunItemsForBlockedOutput([child, childResult])).toEqual([]);
+    expect(
+      selectRunItemsForBlockedOutput([
+        program,
+        duplicateProgram,
+        child,
+        childResult,
+      ]),
+    ).toEqual([]);
+    expect(
+      selectRunItemsForBlockedOutput([program, child, mismatchedResult]),
+    ).toEqual([]);
+    expect(
+      selectRunItemsForBlockedOutput([child, childResult, program]),
+    ).toEqual([]);
+  });
+
+  it('distinguishes an empty program caller ID from a missing owner', () => {
+    const program = new ToolCallItem(
+      {
+        type: 'program',
+        callId: '',
+        code: 'return await tools.test({});',
+        fingerprint: 'empty-program-owner-fingerprint',
+      },
+      TEST_AGENT,
+    );
+    const childCall = {
+      ...functionCall('program-child-empty-owner'),
+      caller: { type: 'program' as const, callerId: '' },
+    };
+    const child = new ToolCallItem(childCall, TEST_AGENT);
+    const childResult = markRunToolCallOutputItemAsExecuted(
+      new ToolCallOutputItem(
+        {
+          type: 'function_call_result',
+          callId: childCall.callId,
+          name: childCall.name,
+          status: 'completed',
+          output: 'child-result',
+          caller: childCall.caller,
+        },
+        TEST_AGENT,
+        'child-result',
+      ),
+    );
+
+    expect(
+      selectRunItemsForBlockedOutput([program, child, childResult]),
+    ).toEqual([program, child, childResult]);
+    expect(selectRunItemsForBlockedOutput([child, childResult])).toEqual([]);
+  });
+
   it('uses the tool result type as well as the call ID for correlation', () => {
     const { call, runItem } = runFunctionCall('shared-call-id');
     const computerCall = new ToolCallItem(

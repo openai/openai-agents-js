@@ -24,6 +24,7 @@ import {
   extractOutputItemsFromRunItems,
   toAgentInputList,
   getAgentInputItemKey,
+  getProgramCallerId,
   getShellCallOutputStatus,
   removeAgentInputFromPool,
   stripReasoningItemIdForPolicy,
@@ -54,6 +55,8 @@ type BlockedToolRecord = Readonly<{
   terminal: boolean;
   kind?: BlockedPairKind;
   committed: boolean;
+  programCallerId?: string;
+  programOwnerId?: string;
 }>;
 
 type BlockedPairKind = 'tool' | 'handoff';
@@ -151,16 +154,27 @@ function classifyBlockedToolRecord(
           (kind === 'tool' &&
             role === 'result' &&
             wasRunToolCallOutputItemExecuted(item as RunToolCallOutputItem)),
+        programCallerId: getProgramCallerId(rawItem),
+        programOwnerId:
+          type === 'program' &&
+          typeof (rawItem as { callId?: unknown }).callId === 'string'
+            ? (rawItem as { callId: string }).callId
+            : undefined,
       }
     : undefined;
 }
+
+type BlockedPairMember = Readonly<{
+  index: number;
+  programCallerId?: string;
+}>;
 
 /**
  * Selects the completed tool effects that remain replayable when final output is blocked.
  *
  * Unknown run item types are intentionally excluded until their persistence semantics are
- * classified. Reasoning items are retained only when the next non-reasoning item is a retained
- * tool call.
+ * classified. Pending programs are retained only as the unique owner of a retained child pair.
+ * Reasoning items are retained only when the next non-reasoning item is a retained tool call.
  */
 function selectRunItemIndexesForBlockedOutput(
   items: RunItem[],
@@ -171,10 +185,11 @@ function selectRunItemIndexesForBlockedOutput(
     {
       valid: boolean;
       kind?: BlockedPairKind;
-      callIndexes: number[];
-      results: Array<{ index: number; committed: boolean }>;
+      calls: BlockedPairMember[];
+      results: Array<BlockedPairMember & { committed: boolean }>;
     }
   >();
+  const programOwnerIndexes = new Map<string, number[]>();
 
   for (const [index, item] of items.entries()) {
     const record = classifyBlockedToolRecord(item);
@@ -183,7 +198,7 @@ function selectRunItemIndexesForBlockedOutput(
     }
     let pair = pairs.get(record.key);
     if (!pair) {
-      pair = { valid: true, callIndexes: [], results: [] };
+      pair = { valid: true, calls: [], results: [] };
       pairs.set(record.key, pair);
     }
     if (
@@ -195,12 +210,18 @@ function selectRunItemIndexesForBlockedOutput(
       continue;
     }
     pair.kind = record.kind;
+    if (record.programOwnerId !== undefined && record.kind === 'tool') {
+      const ownerIndexes = programOwnerIndexes.get(record.programOwnerId) ?? [];
+      ownerIndexes.push(index);
+      programOwnerIndexes.set(record.programOwnerId, ownerIndexes);
+    }
     if (record.role === 'call') {
-      pair.callIndexes.push(index);
+      pair.calls.push({ index, programCallerId: record.programCallerId });
     } else {
       pair.results.push({
         index,
         committed: record.committed,
+        programCallerId: record.programCallerId,
       });
     }
   }
@@ -208,17 +229,35 @@ function selectRunItemIndexesForBlockedOutput(
   const retainedIndexes = new Set<number>();
   const retainedCallIndexes = new Set<number>();
   for (const pair of pairs.values()) {
-    if (
-      pair.valid &&
-      pair.callIndexes.length === 1 &&
-      pair.results.length === 1 &&
-      pair.callIndexes[0] < pair.results[0].index &&
-      (pair.results[0].committed || pair.callIndexes[0] < unpersistedStartIndex)
-    ) {
-      retainedCallIndexes.add(pair.callIndexes[0]);
-      retainedIndexes.add(pair.callIndexes[0]);
-      retainedIndexes.add(pair.results[0].index);
+    if (!pair.valid || pair.calls.length !== 1 || pair.results.length !== 1) {
+      continue;
     }
+    const call = pair.calls[0];
+    const result = pair.results[0];
+    if (
+      call.index >= result.index ||
+      call.programCallerId !== result.programCallerId ||
+      (!result.committed && call.index >= unpersistedStartIndex)
+    ) {
+      continue;
+    }
+
+    let ownerIndex: number | undefined;
+    if (call.programCallerId !== undefined) {
+      const ownerIndexes = programOwnerIndexes.get(call.programCallerId) ?? [];
+      if (ownerIndexes.length !== 1 || ownerIndexes[0] >= call.index) {
+        continue;
+      }
+      ownerIndex = ownerIndexes[0];
+    }
+
+    if (ownerIndex !== undefined) {
+      retainedCallIndexes.add(ownerIndex);
+      retainedIndexes.add(ownerIndex);
+    }
+    retainedCallIndexes.add(call.index);
+    retainedIndexes.add(call.index);
+    retainedIndexes.add(result.index);
   }
 
   if (retainedIndexes.size === 0) {
