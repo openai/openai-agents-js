@@ -78,6 +78,7 @@ import {
   normalizeHostedMcpRequireApproval,
 } from '@openai/agents-core/utils';
 import {
+  assertValidCompactionItems,
   formatInlineData,
   getInlineMediaType,
 } from '@openai/agents-core/utils/internal';
@@ -2651,14 +2652,13 @@ function getInputItems(
     if (item.type === 'compaction') {
       const encryptedContent =
         (item as any).encrypted_content ?? (item as any).encryptedContent;
-      if (typeof encryptedContent !== 'string') {
-        throw new UserError('Compaction item missing encrypted_content');
-      }
-      return {
+      const compactionItem = {
         type: 'compaction',
         id: item.id ?? undefined,
         encrypted_content: encryptedContent,
-      } as OpenAI.Responses.ResponseInputItem;
+      } as protocol.CompactionItem;
+      assertValidCompactionItems([compactionItem]);
+      return compactionItem as OpenAI.Responses.ResponseInputItem;
     }
 
     if (item.type === 'unknown') {
@@ -3103,16 +3103,14 @@ function convertToOutputItem(
         created_by?: string;
         id?: string;
       };
-      if (typeof encrypted_content !== 'string') {
-        throw new UserError('Compaction item missing encrypted_content');
-      }
-      const output: protocol.CompactionItem = {
+      const output = {
         type: 'compaction',
         id: item.id ?? undefined,
         encrypted_content,
         created_by,
         providerData,
-      };
+      } as unknown as protocol.CompactionItem;
+      assertValidCompactionItems([output]);
       return output;
     }
 

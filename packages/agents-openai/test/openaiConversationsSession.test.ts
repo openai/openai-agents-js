@@ -657,6 +657,88 @@ describe('OpenAIConversationsSession', () => {
     });
   });
 
+  it('preserves the conversation ID when replacing history with compaction', async () => {
+    const createItems = vi.fn();
+    const deleteConversation = vi.fn();
+    const compaction = {
+      type: 'compaction',
+      id: 'cmp-preserve-conversation-id',
+      encrypted_content: 'ciphertext',
+    };
+    const retained = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'retained' }],
+    };
+    getInputItemsMock.mockReturnValue([compaction, retained] as any);
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list: vi.fn(),
+            create: createItems,
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: deleteConversation,
+        },
+      } as any,
+      conversationId: 'conv-preserved',
+    });
+
+    await session.replaceHistoryWithCompaction([compaction, retained] as any);
+
+    expect(createItems).toHaveBeenCalledWith('conv-preserved', {
+      items: [
+        {
+          type: 'compaction',
+          encrypted_content: 'ciphertext',
+        },
+        retained,
+      ],
+    });
+    expect(deleteConversation).not.toHaveBeenCalled();
+    await expect(session.getSessionId()).resolves.toBe('conv-preserved');
+  });
+
+  it('normalizes backend-assigned metadata for persistence comparison', () => {
+    getInputItemsMock.mockImplementation((items) => items);
+    const session = createSession({
+      client: {} as any,
+      conversationId: 'conv-persistence-comparison',
+    });
+    const expected = {
+      type: 'function_call',
+      id: 'response-function-call-id',
+      callId: 'call-persistence-comparison',
+      name: 'lookup',
+      arguments: '{}',
+      providerData: { model: 'gpt-5', source: 'response' },
+    };
+    const stored = {
+      ...expected,
+      id: 'backend-assigned-conversation-item-id',
+      providerData: { source: 'conversation' },
+    };
+
+    expect(
+      session.prepareHistoryItemsForPersistenceComparison([expected] as any),
+    ).toEqual(
+      session.prepareHistoryItemsForPersistenceComparison([stored] as any),
+    );
+    expect(
+      session.prepareHistoryItemsForPersistenceComparison([expected] as any),
+    ).toEqual([
+      {
+        type: 'function_call',
+        callId: 'call-persistence-comparison',
+        name: 'lookup',
+        arguments: '{}',
+      },
+    ]);
+  });
+
   it('preserves reasoning identity and encrypted content when adding items', async () => {
     const createMock = vi.fn();
     const inputItems = [

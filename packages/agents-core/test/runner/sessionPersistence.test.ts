@@ -20,6 +20,7 @@ import {
 import { ModelResponse } from '../../src/model';
 import {
   prepareInputItemsWithSession,
+  saveStreamInputToSession,
   saveStreamResultToSession,
   saveToSession,
 } from '../../src/runner/sessionPersistence';
@@ -1348,6 +1349,88 @@ describe('prepareInputItemsWithSession', () => {
     ]);
   });
 
+  it('rejects malformed compacted history before invoking the input callback', async () => {
+    const malformedCompaction = {
+      type: 'compaction',
+      id: 'cmp_malformed_stored_history',
+    } as AgentInputItem;
+    const session = new StubSession([malformedCompaction]);
+    const callback = vi.fn((history: AgentInputItem[]) => history);
+
+    await expect(
+      prepareInputItemsWithSession('new', session, callback),
+    ).rejects.toThrow('Compaction item missing encrypted_content');
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed explicit marker before a later valid marker', async () => {
+    const malformedCompaction = {
+      type: 'compaction',
+      id: 'cmp_malformed_explicit_input',
+    } as AgentInputItem;
+    const validCompaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_valid_explicit_input',
+      encrypted_content: 'ciphertext',
+    };
+
+    await expect(
+      prepareInputItemsWithSession([malformedCompaction, validCompaction]),
+    ).rejects.toThrow('Compaction item missing encrypted_content');
+  });
+
+  it('rejects an explicit compaction marker with a malformed id', async () => {
+    const malformedCompaction = {
+      type: 'compaction',
+      id: 7,
+      encrypted_content: 'ciphertext',
+    } as unknown as AgentInputItem;
+
+    await expect(
+      prepareInputItemsWithSession([malformedCompaction]),
+    ).rejects.toThrow('Compaction item missing encrypted_content');
+  });
+
+  it('rejects malformed explicit input before invoking the input callback', async () => {
+    const malformedCompaction = {
+      type: 'compaction',
+      id: 'cmp_malformed_explicit_callback_input',
+    } as AgentInputItem;
+    const callback = vi.fn(
+      (history: AgentInputItem[], newItems: AgentInputItem[]) => [
+        ...history,
+        ...newItems,
+      ],
+    );
+
+    await expect(
+      prepareInputItemsWithSession(
+        [malformedCompaction],
+        new StubSession([]),
+        callback,
+      ),
+    ).rejects.toThrow('Compaction item missing encrypted_content');
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed callback marker before a later valid marker', async () => {
+    const malformedCompaction = {
+      type: 'compaction',
+      id: 'cmp_malformed_callback_output',
+    } as AgentInputItem;
+    const validCompaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_valid_callback_output',
+      encrypted_content: 'ciphertext',
+    };
+    const callback = vi.fn(() => [malformedCompaction, validCompaction]);
+
+    await expect(
+      prepareInputItemsWithSession('new', new StubSession([]), callback),
+    ).rejects.toThrow('Compaction item missing encrypted_content');
+    expect(callback).toHaveBeenCalledTimes(1);
+  });
+
   it('passes only compacted session history to the input callback', async () => {
     const oldHistory: AgentInputItem = {
       type: 'message',
@@ -2117,6 +2200,126 @@ describe('saveToSession', () => {
     }
   }
 
+  it('uses a session compaction replacement capability without clearing identity', async () => {
+    const previousItem = fakeModelMessage('previous history');
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_identity_preserving_session',
+      encrypted_content: 'ciphertext',
+    };
+    const retainedItem = fakeModelMessage('retained history');
+    class IdentityPreservingSession extends MemorySession {
+      clearCount = 0;
+      replacementItems: AgentInputItem[] | undefined;
+
+      async replaceHistoryWithCompaction(
+        items: AgentInputItem[],
+      ): Promise<void> {
+        this.replacementItems = structuredClone(items);
+      }
+
+      async clearSession(): Promise<void> {
+        this.clearCount += 1;
+        await super.clearSession();
+      }
+    }
+    const session = new IdentityPreservingSession();
+    session.items = [previousItem];
+    const state = new RunState(new RunContext(), 'input', TEST_AGENT, 1);
+    state._generatedItems = [
+      new CompactionItem(compaction, TEST_AGENT),
+      new MessageOutputItem(retainedItem, TEST_AGENT),
+    ];
+
+    await saveToSession(session, [], new RunResult(state as any), {
+      runCompaction: false,
+    });
+
+    expect(session.replacementItems).toEqual([compaction, retainedItem]);
+    expect(session.clearCount).toBe(0);
+    expect(session.items).toEqual([previousItem]);
+  });
+
+  it('rejects malformed streaming compaction before mutating session history', async () => {
+    const previousItem = fakeModelMessage('previous history');
+    const session = new MemorySession();
+    session.items = [previousItem];
+    const malformedCompaction = {
+      type: 'compaction',
+      id: 'cmp_missing_ciphertext',
+    } as AgentInputItem;
+
+    await expect(
+      saveStreamInputToSession(session, [
+        malformedCompaction,
+        fakeModelMessage('new history'),
+      ]),
+    ).rejects.toThrow('Compaction item missing encrypted_content');
+    expect(session.items).toEqual([previousItem]);
+  });
+
+  it('rejects malformed result compaction before mutating session history', async () => {
+    const previousItem = fakeModelMessage('previous history');
+    const session = new MemorySession();
+    session.items = [previousItem];
+    const malformedCompaction = {
+      type: 'compaction',
+      id: 'cmp_missing_result_ciphertext',
+    } as protocol.CompactionItem;
+    const state = new RunState(new RunContext(), 'input', TEST_AGENT, 1);
+    state._generatedItems = [
+      new CompactionItem(malformedCompaction, TEST_AGENT),
+    ];
+
+    await expect(
+      saveToSession(session, [], new RunResult(state as any), {
+        runCompaction: false,
+      }),
+    ).rejects.toThrow('Compaction item missing encrypted_content');
+    expect(session.items).toEqual([previousItem]);
+  });
+
+  it('does not reappend an accepted compaction replacement on retry', async () => {
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_accepted_then_throw',
+      encrypted_content: 'ciphertext',
+    };
+    const retainedItem = fakeModelMessage('retained history');
+    class AcceptedThenThrowSession extends MemorySession {
+      replacementCount = 0;
+
+      async replaceHistoryWithCompaction(
+        items: AgentInputItem[],
+      ): Promise<void> {
+        this.replacementCount += 1;
+        this.items.push(...structuredClone(items));
+        throw new Error('write outcome unknown');
+      }
+    }
+    const session = new AcceptedThenThrowSession();
+    session.items = [fakeModelMessage('old history')];
+    const state = new RunState(new RunContext(), 'input', TEST_AGENT, 1);
+    state._generatedItems = [
+      new CompactionItem(compaction, TEST_AGENT),
+      new MessageOutputItem(retainedItem, TEST_AGENT),
+    ];
+    const result = new RunResult(state as any);
+
+    await expect(
+      saveToSession(session, [], result, { runCompaction: false }),
+    ).rejects.toThrow('write outcome unknown');
+    await expect(
+      saveToSession(session, [], result, { runCompaction: false }),
+    ).resolves.toBeUndefined();
+
+    expect(session.replacementCount).toBe(1);
+    expect(session.items.filter((item) => item.type === 'compaction')).toEqual([
+      compaction,
+    ]);
+    expect(state._currentTurnPersistedItemCount).toBe(2);
+  });
+
   it('does not require a process global for debug session logging', async () => {
     const processDescriptor = Object.getOwnPropertyDescriptor(
       globalThis,
@@ -2574,6 +2777,85 @@ describe('saveToSession', () => {
     expect(state._pendingLegacyCompactionSessionItems).toBeUndefined();
   });
 
+  it('uses session-owned persistence comparison and recognizes an appended compaction suffix', async () => {
+    const oldHistory = fakeModelMessage('old history');
+    const pendingMessage = fakeModelMessage('retained history');
+    const storedMessage = {
+      ...structuredClone(pendingMessage),
+      id: 'backend-assigned-message-id',
+      providerData: { backend: 'metadata' },
+    };
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_persistence_comparison',
+      encrypted_content: 'ciphertext',
+    };
+
+    class PersistenceNormalizingSession extends MemorySession {
+      replacementCount = 0;
+      clearCount = 0;
+
+      prepareHistoryItemsForPersistenceComparison(
+        items: AgentInputItem[],
+      ): AgentInputItem[] {
+        return items.map((item) => {
+          const normalized = structuredClone(item) as AgentInputItem & {
+            id?: string;
+            providerData?: unknown;
+          };
+          if (normalized.type !== 'reasoning') {
+            delete normalized.id;
+          }
+          delete normalized.providerData;
+          return normalized;
+        });
+      }
+
+      async replaceHistoryWithCompaction(
+        items: AgentInputItem[],
+      ): Promise<void> {
+        this.replacementCount += 1;
+        this.items.push(...structuredClone(items));
+      }
+
+      async clearSession(): Promise<void> {
+        this.clearCount += 1;
+        await super.clearSession();
+      }
+    }
+
+    const state = new RunState(new RunContext(), 'input', TEST_AGENT, 1);
+    state._generatedItems = [
+      new CompactionItem(compaction, TEST_AGENT),
+      new MessageOutputItem(pendingMessage, TEST_AGENT),
+    ];
+    state._pendingLegacyCompactionSessionItems = [compaction, pendingMessage];
+    state._currentTurnPersistedItemCount = 2;
+    const session = new PersistenceNormalizingSession();
+    session.items = [oldHistory, storedMessage];
+
+    await saveToSession(session, [], new RunResult(state as any), {
+      runCompaction: false,
+    });
+    expect(session.replacementCount).toBe(1);
+    expect(session.clearCount).toBe(0);
+    expect(session.items).toEqual([
+      oldHistory,
+      storedMessage,
+      compaction,
+      pendingMessage,
+    ]);
+    expect(state._pendingLegacyCompactionSessionItems).toBeUndefined();
+
+    state._pendingLegacyCompactionSessionItems = [compaction, pendingMessage];
+    await saveToSession(session, [], new RunResult(state as any), {
+      runCompaction: false,
+    });
+    expect(session.replacementCount).toBe(1);
+    expect(session.clearCount).toBe(0);
+    expect(state._pendingLegacyCompactionSessionItems).toBeUndefined();
+  });
+
   it('rejects mismatched session history before legacy compaction reconciliation', async () => {
     const call = functionCall('call_expected_legacy_reconciliation');
     const compaction: protocol.CompactionItem = {
@@ -2627,6 +2909,59 @@ describe('saveToSession', () => {
     expect(session.clearCount).toBe(0);
     expect(session.items).toEqual([
       functionCall('call_unexpected_legacy_reconciliation'),
+    ]);
+  });
+
+  it('rejects malformed stored reconciliation history before session policy hooks', async () => {
+    const call = functionCall('call_malformed_stored_reconciliation');
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_valid_pending_reconciliation',
+      encrypted_content: 'ciphertext',
+    };
+    const malformedStoredCompaction = {
+      type: 'compaction',
+      id: 'cmp_malformed_stored_reconciliation',
+    } as AgentInputItem;
+
+    class StoredValidationSession extends MemorySession {
+      comparisonCount = 0;
+      clearCount = 0;
+
+      prepareHistoryItemsForPersistenceComparison(
+        items: AgentInputItem[],
+      ): AgentInputItem[] {
+        this.comparisonCount += 1;
+        return items;
+      }
+
+      async clearSession(): Promise<void> {
+        this.clearCount += 1;
+        await super.clearSession();
+      }
+    }
+
+    const state = new RunState(new RunContext(), 'input', TEST_AGENT, 1);
+    state._generatedItems = [
+      new CompactionItem(compaction, TEST_AGENT),
+      new ToolCallItem(call, TEST_AGENT),
+    ];
+    state._pendingLegacyCompactionSessionItems = [compaction, call];
+    state._currentTurnPersistedItemCount = 2;
+    const session = new StoredValidationSession();
+    session.items = [malformedStoredCompaction, call];
+
+    await expect(
+      saveToSession(session, [], new RunResult(state as any), {
+        runCompaction: false,
+      }),
+    ).rejects.toThrow('Compaction item missing encrypted_content');
+    expect(session.comparisonCount).toBe(0);
+    expect(session.clearCount).toBe(0);
+    expect(session.items).toEqual([malformedStoredCompaction, call]);
+    expect(state._pendingLegacyCompactionSessionItems).toEqual([
+      compaction,
+      call,
     ]);
   });
 

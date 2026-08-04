@@ -195,6 +195,14 @@ export class OpenAIConversationsSession
     return stripAssistantReplayMetadata(item);
   }
 
+  prepareHistoryItemsForPersistenceComparison(
+    items: AgentInputItem[],
+  ): AgentInputItem[] {
+    return normalizeItemsForConversationPersistence(
+      items,
+    ) as unknown as AgentInputItem[];
+  }
+
   preserveReasoningItemIdsForPersistence(): boolean {
     return true;
   }
@@ -205,11 +213,7 @@ export class OpenAIConversationsSession
     }
 
     await this.#runItemOperation(async (conversationId) => {
-      const normalizedItems =
-        stripProviderModelForConversationPersistence(items);
-      const sanitizedItems = stripConversationPersistenceMetadata(
-        getInputItems(normalizedItems),
-      );
+      const sanitizedItems = normalizeItemsForConversationPersistence(items);
       if (!sanitizedItems.length) {
         return;
       }
@@ -217,6 +221,10 @@ export class OpenAIConversationsSession
         items: sanitizedItems,
       });
     });
+  }
+
+  async replaceHistoryWithCompaction(items: AgentInputItem[]): Promise<void> {
+    await this.addItems(items);
   }
 
   async popItem(): Promise<AgentInputItem | undefined> {
@@ -293,6 +301,13 @@ export class OpenAIConversationsSession
 // --------------------------------------------------------------
 //  Internals
 // --------------------------------------------------------------
+
+function normalizeItemsForConversationPersistence(
+  items: AgentInputItem[],
+): OpenAI.Responses.ResponseInputItem[] {
+  const normalizedItems = stripProviderModelForConversationPersistence(items);
+  return stripConversationPersistenceMetadata(getInputItems(normalizedItems));
+}
 
 function stripProviderModelForConversationPersistence(
   items: AgentInputItem[],

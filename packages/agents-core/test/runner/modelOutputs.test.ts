@@ -789,6 +789,45 @@ describe('processModelResponse', () => {
     expect(result.hasToolsOrApprovalsToRun()).toBe(false);
   });
 
+  it('rejects malformed compaction before synchronous output processing', () => {
+    const malformedCompaction = {
+      type: 'compaction',
+      id: 'cmp_malformed_sync_output',
+    } as protocol.CompactionItem;
+
+    expect(() =>
+      processModelResponse(
+        {
+          output: [malformedCompaction, TEST_MODEL_MESSAGE],
+          usage: new Usage(),
+        },
+        TEST_AGENT,
+        [],
+        [],
+      ),
+    ).toThrow('Compaction item missing encrypted_content');
+  });
+
+  it('rejects compaction with a malformed id before synchronous output processing', () => {
+    const malformedCompaction = {
+      type: 'compaction',
+      id: 7,
+      encrypted_content: 'ciphertext',
+    } as unknown as protocol.CompactionItem;
+
+    expect(() =>
+      processModelResponse(
+        {
+          output: [malformedCompaction, TEST_MODEL_MESSAGE],
+          usage: new Usage(),
+        },
+        TEST_AGENT,
+        [],
+        [],
+      ),
+    ).toThrow('Compaction item missing encrypted_content');
+  });
+
   it('classifies compaction items on the custom client tool_search async path', async () => {
     const clientToolSearch = attachClientToolSearchExecutor(
       {
@@ -844,6 +883,56 @@ describe('processModelResponse', () => {
     ]);
     expect(result.newItems[2]).toBeInstanceOf(CompactionItem);
     expect(result.newItems[2].rawItem).toEqual(compaction);
+  });
+
+  it('rejects malformed compaction before async client tool_search execution', async () => {
+    const execute = vi.fn().mockResolvedValue([]);
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: {
+          type: 'tool_search',
+          execution: 'client',
+          parameters: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+      },
+      execute,
+    );
+    const toolSearchCall = {
+      type: 'tool_search_call',
+      id: 'ts_call_malformed_compaction',
+      status: 'completed',
+      arguments: {},
+      providerData: {
+        call_id: 'call_malformed_compaction',
+        execution: 'client',
+      },
+    } as unknown as protocol.ToolSearchCallItem;
+    const malformedCompaction = {
+      type: 'compaction',
+      id: 'cmp_malformed_async_output',
+    } as protocol.CompactionItem;
+    const agent = new Agent({ name: 'MalformedCompactionAsyncAgent' });
+
+    await expect(
+      processModelResponseAsync(
+        {
+          output: [toolSearchCall, malformedCompaction],
+          usage: new Usage(),
+        },
+        agent,
+        [clientToolSearch],
+        [],
+        new RunState(new RunContext(), 'hello', agent, 3),
+        [],
+      ),
+    ).rejects.toThrow('Compaction item missing encrypted_content');
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it('classifies tool search items as run items and records tool usage', () => {

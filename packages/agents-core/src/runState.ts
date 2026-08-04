@@ -1538,30 +1538,41 @@ function rehydrateLegacyCompactionRunItems(
   const processedItems = isLatestSourceResponse
     ? stateJson.lastProcessedResponse?.newItems
     : undefined;
+  const optionalLatestFunctionCallIndices =
+    getOmittedLegacyHandoffFunctionCallIndices(
+      sourceResponses.at(-1)?.output ?? [],
+      stateJson.lastProcessedResponse,
+    );
   const processedInsertion = processedItems
     ? findLegacyCompactionInsertionIndex(
         processedItems,
         sourceResponse.output,
         compactionIndex,
+        optionalLatestFunctionCallIndices,
       )
     : undefined;
   let generatedInsertionAgent: SerializedAgentReference | undefined;
   let generatedInsertionIndex: number;
   if (!isLatestSourceResponse) {
-    const followingResponseBoundary =
-      sourceResponseIndex === sourceResponses.length - 2 &&
-      stateJson.lastProcessedResponse
-        ? findFollowingLegacyResponseBoundary(
-            stateJson.generatedItems,
-            stateJson.lastProcessedResponse.newItems,
-            sourceResponses[sourceResponseIndex + 1].output,
-          )
-        : undefined;
+    const followingResponseBoundary = stateJson.lastProcessedResponse
+      ? findFollowingLegacyResponsesBoundary(
+          stateJson.generatedItems,
+          stateJson.lastProcessedResponse.newItems,
+          sourceResponses
+            .slice(sourceResponseIndex + 1)
+            .map((response) => response.output),
+          optionalLatestFunctionCallIndices,
+        )
+      : undefined;
+    if (!followingResponseBoundary) {
+      throwLegacyCompactionOrderingError();
+    }
     const historicalInsertion = findHistoricalLegacyCompactionInsertion(
-      stateJson.generatedItems,
+      stateJson.generatedItems.slice(0, followingResponseBoundary.itemIndex),
       sourceResponse.output,
       compactionIndex,
       followingResponseBoundary,
+      sourceResponseIndex > 0,
     );
     generatedInsertionIndex = historicalInsertion.itemIndex;
     generatedInsertionAgent = historicalInsertion.agent;
@@ -1577,6 +1588,7 @@ function rehydrateLegacyCompactionRunItems(
       stateJson.generatedItems.slice(segmentStart),
       sourceResponse.output,
       compactionIndex,
+      optionalLatestFunctionCallIndices,
     );
     generatedInsertionIndex = segmentStart + generatedInsertion.itemIndex;
     generatedInsertionAgent = generatedInsertion.agent;
@@ -1647,10 +1659,11 @@ function findHistoricalLegacyCompactionInsertion(
   items: z.infer<typeof itemSchema>[],
   sourceOutput: protocol.OutputModelItem[],
   compactionIndex: number,
-  followingResponseBoundary?: {
+  followingResponseBoundary: {
     itemIndex: number;
     agent: SerializedAgentReference;
   },
+  allowEarlierResponseAnchors: boolean,
 ): { itemIndex: number; agent: SerializedAgentReference } {
   const providerAnchors = getLegacyProviderOutputAnchors(items, sourceOutput);
   const representedSourceItems = getRepresentedLegacySourceItems(
@@ -1658,11 +1671,19 @@ function findHistoricalLegacyCompactionInsertion(
     compactionIndex,
     providerAnchors,
   );
+  const requiredSourceItems = getRequiredLegacySourceItems(
+    sourceOutput,
+    compactionIndex,
+  );
+  assertRequiredLegacySourceItemsRepresented(
+    requiredSourceItems,
+    representedSourceItems,
+  );
   if (representedSourceItems.length === 0) {
-    if (followingResponseBoundary) {
-      return followingResponseBoundary;
+    if (!allowEarlierResponseAnchors && providerAnchors.length > 0) {
+      throwLegacyCompactionOrderingError();
     }
-    throwLegacyCompactionOrderingError();
+    return followingResponseBoundary;
   }
 
   const matchingStarts: number[] = [];
@@ -1724,6 +1745,7 @@ function findFollowingLegacyResponseBoundary(
   generatedItems: z.infer<typeof itemSchema>[],
   processedItems: z.infer<typeof itemSchema>[],
   sourceOutput: protocol.OutputModelItem[],
+  optionalFunctionCallIndices: ReadonlySet<number> = new Set(),
 ): { itemIndex: number; agent: SerializedAgentReference } | undefined {
   const itemIndex = findTrailingProcessedSegmentStart(
     generatedItems,
@@ -1732,7 +1754,12 @@ function findFollowingLegacyResponseBoundary(
   if (itemIndex === undefined) {
     throwLegacyCompactionOrderingError();
   }
-  if (itemIndex + processedItems.length !== generatedItems.length) {
+  if (
+    getLegacyProviderOutputAnchors(
+      generatedItems.slice(itemIndex + processedItems.length),
+      sourceOutput,
+    ).length > 0
+  ) {
     throwLegacyCompactionOrderingError();
   }
 
@@ -1744,6 +1771,11 @@ function findFollowingLegacyResponseBoundary(
     sourceOutput,
     -1,
     providerAnchors,
+    optionalFunctionCallIndices,
+  );
+  assertRequiredLegacySourceItemsRepresented(
+    getRequiredLegacySourceItems(sourceOutput, -1, optionalFunctionCallIndices),
+    representedSourceItems,
   );
   if (
     providerAnchors.length === 0 ||
@@ -1765,6 +1797,108 @@ function findFollowingLegacyResponseBoundary(
     throwLegacyCompactionOrderingError();
   }
   return { itemIndex, agent };
+}
+
+function findFollowingLegacyResponsesBoundary(
+  generatedItems: z.infer<typeof itemSchema>[],
+  processedItems: z.infer<typeof itemSchema>[],
+  sourceOutputs: protocol.OutputModelItem[][],
+  optionalLatestFunctionCallIndices: ReadonlySet<number>,
+): { itemIndex: number; agent: SerializedAgentReference } | undefined {
+  const latestSourceOutput = sourceOutputs.at(-1);
+  if (!latestSourceOutput) {
+    return undefined;
+  }
+
+  let boundary = findFollowingLegacyResponseBoundary(
+    generatedItems,
+    processedItems,
+    latestSourceOutput,
+    optionalLatestFunctionCallIndices,
+  );
+  if (!boundary) {
+    return undefined;
+  }
+
+  for (let index = sourceOutputs.length - 2; index >= 0; index -= 1) {
+    boundary = findPrecedingLegacyResponseBoundary(
+      generatedItems,
+      boundary.itemIndex,
+      sourceOutputs[index],
+    );
+  }
+  return boundary;
+}
+
+function findPrecedingLegacyResponseBoundary(
+  generatedItems: z.infer<typeof itemSchema>[],
+  followingBoundaryIndex: number,
+  sourceOutput: protocol.OutputModelItem[],
+): { itemIndex: number; agent: SerializedAgentReference } {
+  const precedingItems = generatedItems.slice(0, followingBoundaryIndex);
+  const providerAnchors = getLegacyProviderOutputAnchors(
+    precedingItems,
+    sourceOutput,
+  );
+  const representedSourceItems = getRepresentedLegacySourceItems(
+    sourceOutput,
+    -1,
+    providerAnchors,
+  );
+  assertRequiredLegacySourceItemsRepresented(
+    getRequiredLegacySourceItems(sourceOutput, -1),
+    representedSourceItems,
+  );
+  if (representedSourceItems.length === 0) {
+    throwLegacyCompactionOrderingError();
+  }
+
+  const matchingStarts: number[] = [];
+  for (
+    let start = 0;
+    start <= providerAnchors.length - representedSourceItems.length;
+    start += 1
+  ) {
+    if (
+      representedSourceItems.every(
+        (sourceItem, offset) =>
+          providerAnchors[start + offset]?.key === sourceItem.key,
+      )
+    ) {
+      matchingStarts.push(start);
+    }
+  }
+  if (matchingStarts.length !== 1) {
+    throwLegacyCompactionOrderingError();
+  }
+
+  const matchingStart = matchingStarts[0];
+  const matchedAnchors = providerAnchors.slice(
+    matchingStart,
+    matchingStart + representedSourceItems.length,
+  );
+  const trailingAnchors = providerAnchors.slice(
+    matchingStart + representedSourceItems.length,
+  );
+  if (
+    trailingAnchors.some(
+      (anchor) =>
+        precedingItems[anchor.itemIndex]?.type !== 'tool_call_output_item',
+    )
+  ) {
+    throwLegacyCompactionOrderingError();
+  }
+
+  const agent = matchedAnchors[0].agent;
+  const agentKey = getCanonicalLegacyCompactionKey(agent);
+  if (
+    matchedAnchors.some(
+      (anchor) => getCanonicalLegacyCompactionKey(anchor.agent) !== agentKey,
+    )
+  ) {
+    throwLegacyCompactionOrderingError();
+  }
+  return { itemIndex: matchedAnchors[0].itemIndex, agent };
 }
 
 function isLegacyProviderOutputRunItem(
@@ -1791,12 +1925,8 @@ function getLegacyProviderOutputAnchors(
   itemIndex: number;
   agent: SerializedAgentReference;
 }> {
-  const rawToolSearchOutputKeys = new Set(
-    sourceOutput.flatMap((item) =>
-      item.type === 'tool_search_output'
-        ? [getLegacyProviderOutputKey(item)]
-        : [],
-    ),
+  const sourceOutputKeys = new Set(
+    sourceOutput.map((item) => getLegacyProviderOutputKey(item)),
   );
   return items.flatMap((item, itemIndex) => {
     if (!isLegacyProviderOutputRunItem(item)) {
@@ -1804,8 +1934,11 @@ function getLegacyProviderOutputAnchors(
     }
     const key = getLegacyProviderOutputKey(item.rawItem);
     if (
-      item.type === 'tool_search_output_item' &&
-      !rawToolSearchOutputKeys.has(key)
+      (item.type === 'tool_search_output_item' ||
+        (item.type === 'tool_call_output_item' &&
+          (item.rawItem.type === 'program_output' ||
+            item.rawItem.type === 'shell_call_output'))) &&
+      !sourceOutputKeys.has(key)
     ) {
       return [];
     }
@@ -1817,7 +1950,26 @@ function getRepresentedLegacySourceItems(
   sourceOutput: protocol.OutputModelItem[],
   compactionIndex: number,
   providerAnchors: Array<{ key: string }>,
+  optionalFunctionCallIndices: ReadonlySet<number> = new Set(),
 ): Array<{ key: string; sourceIndex: number }> {
+  if (optionalFunctionCallIndices.size > 0) {
+    let providerAnchorIndex = 0;
+    return sourceOutput.flatMap((item, sourceIndex) => {
+      if (
+        sourceIndex === compactionIndex ||
+        optionalFunctionCallIndices.has(sourceIndex)
+      ) {
+        return [];
+      }
+      const key = getLegacyProviderOutputKey(item);
+      if (providerAnchors[providerAnchorIndex]?.key !== key) {
+        return [];
+      }
+      providerAnchorIndex += 1;
+      return [{ key, sourceIndex }];
+    });
+  }
+
   const providerKeys = new Set(providerAnchors.map((anchor) => anchor.key));
   return sourceOutput.flatMap((item, sourceIndex) => {
     if (sourceIndex === compactionIndex) {
@@ -1826,6 +1978,92 @@ function getRepresentedLegacySourceItems(
     const key = getLegacyProviderOutputKey(item);
     return providerKeys.has(key) ? [{ key, sourceIndex }] : [];
   });
+}
+
+function getRequiredLegacySourceItems(
+  sourceOutput: protocol.OutputModelItem[],
+  compactionIndex: number,
+  optionalFunctionCallIndices: ReadonlySet<number> = new Set(),
+): Array<{ key: string; sourceIndex: number }> {
+  return sourceOutput.flatMap((item, sourceIndex) => {
+    const isOmittedHandoff =
+      item.type === 'function_call' &&
+      optionalFunctionCallIndices.has(sourceIndex);
+    if (
+      sourceIndex === compactionIndex ||
+      item.type === 'compaction' ||
+      isOmittedHandoff ||
+      item.type === 'function_call_result' ||
+      item.type === 'apply_patch_call_output' ||
+      item.type === 'unknown'
+    ) {
+      return [];
+    }
+    return [{ key: getLegacyProviderOutputKey(item), sourceIndex }];
+  });
+}
+
+function getOmittedLegacyHandoffFunctionCallIndices(
+  sourceOutput: protocol.OutputModelItem[],
+  processedResponse:
+    z.infer<typeof serializedProcessedResponseSchema> | undefined,
+): ReadonlySet<number> {
+  const matchedIndices: number[] = [];
+  let sourceStartIndex = 0;
+  for (const serializedHandoff of processedResponse?.handoffs ?? []) {
+    const parsedToolCall = protocol.FunctionCallItem.safeParse(
+      serializedHandoff.toolCall,
+    );
+    if (!parsedToolCall.success) {
+      return new Set();
+    }
+    const key = getLegacyProviderOutputKey(parsedToolCall.data);
+    const sourceIndex = sourceOutput.findIndex(
+      (item, index) =>
+        index >= sourceStartIndex &&
+        item.type === 'function_call' &&
+        getLegacyProviderOutputKey(item) === key,
+    );
+    if (sourceIndex < 0) {
+      return new Set();
+    }
+    matchedIndices.push(sourceIndex);
+    sourceStartIndex = sourceIndex + 1;
+  }
+  return new Set(matchedIndices.slice(1));
+}
+
+function assertRequiredLegacySourceItemsRepresented(
+  requiredItems: Array<{ key: string; sourceIndex: number }>,
+  representedItems: Array<{ key: string; sourceIndex: number }>,
+): void {
+  if (!isLegacySourceSubsequenceRepresented(requiredItems, representedItems)) {
+    throwLegacyCompactionOrderingError();
+  }
+}
+
+function isLegacySourceSubsequenceRepresented(
+  requiredItems: Array<{ key: string; sourceIndex: number }>,
+  representedItems: Array<{ key: string; sourceIndex: number }>,
+): boolean {
+  let representedIndex = 0;
+  for (const requiredItem of requiredItems) {
+    while (
+      representedIndex < representedItems.length &&
+      representedItems[representedIndex].sourceIndex < requiredItem.sourceIndex
+    ) {
+      representedIndex += 1;
+    }
+    if (
+      representedItems[representedIndex]?.sourceIndex !==
+        requiredItem.sourceIndex ||
+      representedItems[representedIndex]?.key !== requiredItem.key
+    ) {
+      return false;
+    }
+    representedIndex += 1;
+  }
+  return true;
 }
 
 function getLegacyProviderOutputKey(item: protocol.ModelItem): string {
@@ -1847,12 +2085,22 @@ function findLegacyCompactionInsertionIndex(
   items: z.infer<typeof itemSchema>[],
   sourceOutput: protocol.OutputModelItem[],
   compactionIndex: number,
+  optionalFunctionCallIndices: ReadonlySet<number> = new Set(),
 ): { itemIndex: number; agent?: SerializedAgentReference } {
   const providerAnchors = getLegacyProviderOutputAnchors(items, sourceOutput);
   const representedSourceItems = getRepresentedLegacySourceItems(
     sourceOutput,
     compactionIndex,
     providerAnchors,
+    optionalFunctionCallIndices,
+  );
+  assertRequiredLegacySourceItemsRepresented(
+    getRequiredLegacySourceItems(
+      sourceOutput,
+      compactionIndex,
+      optionalFunctionCallIndices,
+    ),
+    representedSourceItems,
   );
 
   if (

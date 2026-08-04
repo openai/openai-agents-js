@@ -1675,7 +1675,165 @@ describe('RunState', () => {
       ]);
     });
 
-    it('ignores later handoffs when anchoring historical legacy compaction', async () => {
+    it('allocates identical omitted handoffs by occurrence', async () => {
+      const target = new Agent({ name: 'RepeatedLegacyHandoffTarget' });
+      const repeatedHandoff = handoff(target, {
+        toolNameOverride: 'transfer_repeated',
+      });
+      const agent = new Agent({
+        name: 'RepeatedLegacyHandoffCompactionAgent',
+        handoffs: [repeatedHandoff],
+      });
+      const repeatedCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: repeatedHandoff.toolName,
+        callId: 'call_repeated_legacy_handoff',
+        arguments: '{}',
+        status: 'completed',
+      };
+      const response = {
+        usage: new Usage(),
+        output: [repeatedCall, compactionItem, repeatedCall],
+        responseId: 'response-repeated-legacy-handoffs',
+      };
+      const processed = processModelResponse(
+        response,
+        agent,
+        [],
+        [repeatedHandoff],
+      );
+      const legacyItems = processed.newItems.filter(
+        (item) => !(item instanceof RunCompactionItem),
+      );
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      state._modelResponses = [response];
+      state._lastTurnResponse = response;
+      state._generatedItems = legacyItems;
+      state._lastProcessedResponse = { ...processed, newItems: legacyItems };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(restored._generatedItems.map((item) => item.type)).toEqual([
+        'handoff_call_item',
+        'compaction_item',
+      ]);
+    });
+
+    it('rejects a missing first wrapper for identical legacy handoffs', async () => {
+      const target = new Agent({ name: 'MissingRepeatedHandoffTarget' });
+      const repeatedHandoff = handoff(target, {
+        toolNameOverride: 'transfer_missing_repeated',
+      });
+      const agent = new Agent({
+        name: 'MissingRepeatedHandoffCompactionAgent',
+        handoffs: [repeatedHandoff],
+      });
+      const repeatedCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: repeatedHandoff.toolName,
+        callId: 'call_missing_repeated_handoff',
+        arguments: '{}',
+        status: 'completed',
+      };
+      const response = {
+        usage: new Usage(),
+        output: [compactionItem, repeatedCall, repeatedCall],
+        responseId: 'response-missing-repeated-handoffs',
+      };
+      const processed = processModelResponse(
+        response,
+        agent,
+        [],
+        [repeatedHandoff],
+      );
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      state._modelResponses = [response];
+      state._lastTurnResponse = response;
+      state._generatedItems = [];
+      state._lastProcessedResponse = { ...processed, newItems: [] };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow('provider order is ambiguous');
+    });
+
+    it('allocates normalized legacy handoff key collisions by occurrence', async () => {
+      const target = new Agent({ name: 'NormalizedLegacyHandoffTarget' });
+      const repeatedHandoff = handoff(target, {
+        toolNameOverride: 'transfer_normalized',
+      });
+      const agent = new Agent({
+        name: 'NormalizedLegacyHandoffCompactionAgent',
+        handoffs: [repeatedHandoff],
+      });
+      const originalCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: repeatedHandoff.toolName,
+        callId: 'call_normalized_legacy_handoff',
+        arguments: '{}',
+        status: 'completed',
+      };
+      const flattenedCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: 'transfer.normalized',
+        callId: 'call_normalized_legacy_handoff',
+        arguments: '{}',
+        status: 'completed',
+      };
+      const namespacedCall: protocol.FunctionCallItem = {
+        ...flattenedCall,
+        name: 'normalized',
+        namespace: 'transfer',
+      };
+      const response = {
+        usage: new Usage(),
+        output: [originalCall, compactionItem, originalCall],
+        responseId: 'response-normalized-legacy-handoffs',
+      };
+      const processed = processModelResponse(
+        response,
+        agent,
+        [],
+        [repeatedHandoff],
+      );
+      const legacyItems = processed.newItems.filter(
+        (item) => !(item instanceof RunCompactionItem),
+      );
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      state._modelResponses = [response];
+      state._lastTurnResponse = response;
+      state._generatedItems = legacyItems;
+      state._lastProcessedResponse = { ...processed, newItems: legacyItems };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+      serialized.modelResponses[0].output[0] = flattenedCall;
+      serialized.modelResponses[0].output[2] = namespacedCall;
+      serialized.lastModelResponse.output[0] = flattenedCall;
+      serialized.lastModelResponse.output[2] = namespacedCall;
+      serialized.generatedItems[0].rawItem = flattenedCall;
+      serialized.lastProcessedResponse.newItems[0].rawItem = flattenedCall;
+      serialized.lastProcessedResponse.handoffs[0].toolCall = flattenedCall;
+      serialized.lastProcessedResponse.handoffs[1].toolCall = namespacedCall;
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(restored._generatedItems.map((item) => item.type)).toEqual([
+        'handoff_call_item',
+        'compaction_item',
+      ]);
+    });
+
+    it('rejects historical omitted handoffs that cannot be proven from the latest processed response', async () => {
       const firstTarget = new Agent({ name: 'FirstHistoricalHandoffTarget' });
       const secondTarget = new Agent({ name: 'SecondHistoricalHandoffTarget' });
       const firstHandoff = handoff(firstTarget, {
@@ -1738,17 +1896,121 @@ describe('RunState', () => {
       const serialized = state.toJSON() as any;
       serialized.$schemaVersion = '1.15';
 
-      const restored = await RunState.fromString(
-        agent,
-        JSON.stringify(serialized),
-      );
-
-      expect(restored._generatedItems.map((item) => item.type)).toEqual([
-        'handoff_call_item',
-        'compaction_item',
-        'message_output_item',
-      ]);
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow('provider order is ambiguous');
     });
+
+    it.each(['latest', 'historical', 'intermediate'] as const)(
+      'rejects a missing second normal function wrapper in a %s response boundary',
+      async (position) => {
+        const agent = new Agent({ name: `MissingFunctionWrapper-${position}` });
+        const firstCall: protocol.FunctionCallItem = {
+          type: 'function_call',
+          name: 'first_normal_tool',
+          callId: `call_first_${position}`,
+          arguments: '{}',
+        };
+        const secondCall: protocol.FunctionCallItem = {
+          type: 'function_call',
+          name: 'second_normal_tool',
+          callId: `call_second_${position}`,
+          arguments: '{}',
+        };
+        const latestMessage: protocol.AssistantMessageItem = {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'latest response' }],
+        };
+        const firstCallItem = new RunToolCallItem(firstCall, agent);
+        const latestMessageItem = new RunMessageOutputItem(
+          latestMessage,
+          agent,
+        );
+        const responseWithMissingWrapper = {
+          usage: new Usage(),
+          output: [firstCall, compactionItem, secondCall],
+          responseId: `response-missing-function-${position}`,
+        };
+        const latestResponse = {
+          usage: new Usage(),
+          output: [latestMessage],
+          responseId: `response-latest-after-missing-function-${position}`,
+        };
+        const state = new RunState(new RunContext(), 'input', agent, 3);
+
+        if (position === 'latest') {
+          state._modelResponses = [responseWithMissingWrapper];
+          state._lastTurnResponse = responseWithMissingWrapper;
+          state._generatedItems = [firstCallItem];
+          state._lastProcessedResponse = {
+            newItems: [firstCallItem],
+            handoffs: [],
+            functions: [],
+            functionToolsNotFound: [],
+            computerActions: [],
+            shellActions: [],
+            applyPatchActions: [],
+            mcpApprovalRequests: [],
+            toolsUsed: [],
+            hasToolsOrApprovalsToRun: () => false,
+          };
+        } else if (position === 'historical') {
+          state._modelResponses = [responseWithMissingWrapper, latestResponse];
+          state._lastTurnResponse = latestResponse;
+          state._generatedItems = [firstCallItem, latestMessageItem];
+          state._lastProcessedResponse = {
+            newItems: [latestMessageItem],
+            handoffs: [],
+            functions: [],
+            functionToolsNotFound: [],
+            computerActions: [],
+            shellActions: [],
+            applyPatchActions: [],
+            mcpApprovalRequests: [],
+            toolsUsed: [],
+            hasToolsOrApprovalsToRun: () => false,
+          };
+        } else {
+          const compactionResponse = {
+            usage: new Usage(),
+            output: [compactionItem],
+            responseId: 'response-before-missing-function-boundary',
+          };
+          const intermediateResponse = {
+            ...responseWithMissingWrapper,
+            output: [firstCall, secondCall],
+          };
+          state._modelResponses = [
+            compactionResponse,
+            intermediateResponse,
+            latestResponse,
+          ];
+          state._lastTurnResponse = latestResponse;
+          state._generatedItems = [firstCallItem, latestMessageItem];
+          state._lastProcessedResponse = {
+            newItems: [latestMessageItem],
+            handoffs: [],
+            functions: [],
+            functionToolsNotFound: [],
+            computerActions: [],
+            shellActions: [],
+            applyPatchActions: [],
+            mcpApprovalRequests: [],
+            toolsUsed: [],
+            hasToolsOrApprovalsToRun: () => false,
+          };
+        }
+
+        const serialized = state.toJSON() as any;
+        serialized.$schemaVersion = '1.15';
+
+        await expect(
+          RunState.fromString(agent, JSON.stringify(serialized)),
+        ).rejects.toThrow('provider order is ambiguous');
+      },
+    );
 
     it('rehydrates a legacy interrupted response in provider order', async () => {
       const approvalTool = tool({
@@ -2168,6 +2430,360 @@ describe('RunState', () => {
         agent,
       );
     });
+
+    it('rehydrates a compaction-only response across multiple later responses', async () => {
+      const automaticTool = tool({
+        name: 'automatic_after_compaction_only',
+        description: 'Automatically executed after compaction.',
+        parameters: z.object({}),
+        execute: async () => 'automatic result',
+      });
+      const approvalTool = tool({
+        name: 'approval_after_multiple_responses',
+        description: 'Requires approval after the automatic turn.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'approved result',
+      });
+      const agent = new Agent({
+        name: 'MultipleResponsesAfterCompactionAgent',
+        tools: [automaticTool, approvalTool],
+      });
+      const automaticCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: automaticTool.name,
+        callId: 'call_after_compaction_only',
+        arguments: '{}',
+        status: 'completed',
+      };
+      const automaticResult: protocol.FunctionCallResultItem = {
+        type: 'function_call_result',
+        name: automaticTool.name,
+        callId: automaticCall.callId,
+        output: 'automatic result',
+        status: 'completed',
+      };
+      const approvalCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: approvalTool.name,
+        callId: 'call_approval_after_multiple_responses',
+        arguments: '{}',
+        status: 'completed',
+      };
+      const compactionResponse = {
+        usage: new Usage(),
+        output: [compactionItem],
+        responseId: 'response-compaction-only-before-multiple',
+      };
+      const automaticResponse = {
+        usage: new Usage(),
+        output: [automaticCall],
+        responseId: 'response-automatic-after-compaction-only',
+      };
+      const approvalResponse = {
+        usage: new Usage(),
+        output: [approvalCall],
+        responseId: 'response-approval-after-multiple',
+      };
+      const automaticCallItem = new RunToolCallItem(automaticCall, agent);
+      const automaticResultItem = new RunToolCallOutputItem(
+        automaticResult,
+        agent,
+        'automatic result',
+      );
+      const approvalCallItem = new RunToolCallItem(approvalCall, agent);
+      const approvalItem = new ToolApprovalItem(approvalCall, agent);
+      const latestProcessed = {
+        newItems: [approvalCallItem, approvalItem],
+        handoffs: [],
+        functions: [{ toolCall: approvalCall, tool: approvalTool as any }],
+        functionToolsNotFound: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        mcpApprovalRequests: [],
+        toolsUsed: [approvalTool.name],
+        hasToolsOrApprovalsToRun: () => true,
+      };
+      const state = new RunState(new RunContext(), 'old input', agent, 3);
+      state._modelResponses = [
+        compactionResponse,
+        automaticResponse,
+        approvalResponse,
+      ];
+      state._lastTurnResponse = approvalResponse;
+      state._generatedItems = [
+        automaticCallItem,
+        automaticResultItem,
+        ...latestProcessed.newItems,
+      ];
+      state._lastProcessedResponse = latestProcessed;
+      state._currentStep = {
+        type: 'next_step_interruption',
+        data: { interruptions: [approvalItem] },
+      };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(restored._generatedItems.map((item) => item.type)).toEqual([
+        'compaction_item',
+        'tool_call_item',
+        'tool_call_output_item',
+        'tool_call_item',
+        'tool_approval_item',
+      ]);
+      expect(restored.history[0]).toEqual(compactionItem);
+      expect(restored.getInterruptions()).toHaveLength(1);
+      expect((restored._generatedItems[0] as RunCompactionItem).agent).toBe(
+        agent,
+      );
+    });
+
+    it('rejects a later response wrapper reused as a historical compaction anchor', async () => {
+      const agent = new Agent({ name: 'ReusedHistoricalAnchorAgent' });
+      const duplicatedMessage: protocol.AssistantMessageItem = {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'duplicated response' }],
+      };
+      const compactionResponse = {
+        usage: new Usage(),
+        output: [compactionItem, duplicatedMessage],
+        responseId: 'response-compaction-with-missing-wrapper',
+      };
+      const laterResponse = {
+        usage: new Usage(),
+        output: [duplicatedMessage],
+        responseId: 'response-with-reused-wrapper',
+      };
+      const laterProcessed = processModelResponse(laterResponse, agent, [], []);
+      const state = new RunState(new RunContext(), 'old input', agent, 2);
+      state._modelResponses = [compactionResponse, laterResponse];
+      state._lastTurnResponse = laterResponse;
+      state._generatedItems = laterProcessed.newItems;
+      state._lastProcessedResponse = laterProcessed;
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow(
+        'Run state cannot safely restore a legacy compaction item because its provider order is ambiguous.',
+      );
+    });
+
+    it('rejects an intermediate response with a missing retained wrapper', async () => {
+      const agent = new Agent({ name: 'MissingIntermediateWrapperAgent' });
+      const message = (text: string): protocol.AssistantMessageItem => ({
+        ...TEST_MODEL_MESSAGE,
+        content: [{ type: 'output_text', text }],
+      });
+      const retainedMessage = message('retained intermediate');
+      const missingMessage = message('missing intermediate');
+      const latestMessage = message('latest response');
+      const compactionResponse = {
+        usage: new Usage(),
+        output: [compactionItem],
+      };
+      const intermediateResponse = {
+        usage: new Usage(),
+        output: [retainedMessage, missingMessage],
+      };
+      const latestResponse = {
+        usage: new Usage(),
+        output: [latestMessage],
+      };
+      const retainedProcessed = processModelResponse(
+        { usage: new Usage(), output: [retainedMessage] },
+        agent,
+        [],
+        [],
+      );
+      const latestProcessed = processModelResponse(
+        latestResponse,
+        agent,
+        [],
+        [],
+      );
+      const state = new RunState(new RunContext(), 'old input', agent, 3);
+      state._modelResponses = [
+        compactionResponse,
+        intermediateResponse,
+        latestResponse,
+      ];
+      state._lastTurnResponse = latestResponse;
+      state._generatedItems = [
+        ...retainedProcessed.newItems,
+        ...latestProcessed.newItems,
+      ];
+      state._lastProcessedResponse = latestProcessed;
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow(
+        'Run state cannot safely restore a legacy compaction item because its provider order is ambiguous.',
+      );
+    });
+
+    it('allows a trailing local result after the validated latest response segment', async () => {
+      const approvalTool = tool({
+        name: 'approval_with_trailing_result',
+        description: 'Requires approval.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'approved',
+      });
+      const automaticTool = tool({
+        name: 'automatic_with_trailing_result',
+        description: 'Runs automatically.',
+        parameters: z.object({}),
+        execute: async () => 'automatic',
+      });
+      const agent = new Agent({
+        name: 'TrailingLocalResultAgent',
+        tools: [approvalTool, automaticTool],
+      });
+      const approvalCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: approvalTool.name,
+        callId: 'call_trailing_approval',
+        arguments: '{}',
+      };
+      const automaticCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: automaticTool.name,
+        callId: 'call_trailing_automatic',
+        arguments: '{}',
+      };
+      const laterResponse = {
+        usage: new Usage(),
+        output: [approvalCall, automaticCall],
+      };
+      const laterProcessed = processModelResponse(
+        laterResponse,
+        agent,
+        [approvalTool, automaticTool],
+        [],
+      );
+      const automaticResult: protocol.FunctionCallResultItem = {
+        type: 'function_call_result',
+        name: automaticTool.name,
+        callId: automaticCall.callId,
+        status: 'completed',
+        output: 'automatic',
+      };
+      const localResult = new RunToolCallOutputItem(
+        automaticResult,
+        agent,
+        'automatic',
+      );
+      const state = new RunState(new RunContext(), 'old input', agent, 2);
+      state._modelResponses = [
+        { usage: new Usage(), output: [compactionItem] },
+        laterResponse,
+      ];
+      state._lastTurnResponse = laterResponse;
+      state._generatedItems = [...laterProcessed.newItems, localResult];
+      state._lastProcessedResponse = laterProcessed;
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(restored._generatedItems[0]).toBeInstanceOf(RunCompactionItem);
+      expect(restored._generatedItems.at(-1)?.type).toBe(
+        'tool_call_output_item',
+      );
+    });
+
+    it.each([
+      [
+        'shell',
+        {
+          type: 'shell_call_output',
+          callId: 'call_local_shell_result',
+          output: [
+            {
+              stdout: 'ok',
+              stderr: '',
+              outcome: { type: 'exit', exitCode: 0 },
+            },
+          ],
+        },
+      ],
+      [
+        'program',
+        {
+          type: 'program_output',
+          callId: 'call_local_program_result',
+          output: 'ok',
+          status: 'completed',
+        },
+      ],
+    ] as const)(
+      'allows a trailing local %s result after the validated latest response segment',
+      async (_kind, rawResult) => {
+        const agent = new Agent({ name: `TrailingLocalResult-${_kind}` });
+        const laterMessage: protocol.AssistantMessageItem = {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'later response' }],
+        };
+        const laterMessageItem = new RunMessageOutputItem(laterMessage, agent);
+        const localResult = new RunToolCallOutputItem(
+          rawResult as any,
+          agent,
+          rawResult.output,
+        );
+        const laterResponse = {
+          usage: new Usage(),
+          output: [laterMessage],
+        };
+        const state = new RunState(new RunContext(), 'old input', agent, 2);
+        state._modelResponses = [
+          { usage: new Usage(), output: [compactionItem] },
+          laterResponse,
+        ];
+        state._lastTurnResponse = laterResponse;
+        state._generatedItems = [laterMessageItem, localResult];
+        state._lastProcessedResponse = {
+          newItems: [laterMessageItem],
+          handoffs: [],
+          functions: [],
+          functionToolsNotFound: [],
+          computerActions: [],
+          shellActions: [],
+          applyPatchActions: [],
+          mcpApprovalRequests: [],
+          toolsUsed: [],
+          hasToolsOrApprovalsToRun: () => false,
+        };
+        const serialized = state.toJSON() as any;
+        serialized.$schemaVersion = '1.15';
+
+        const restored = await RunState.fromString(
+          agent,
+          JSON.stringify(serialized),
+        );
+
+        expect(restored._generatedItems[0]).toBeInstanceOf(RunCompactionItem);
+        expect(restored._generatedItems.at(-1)?.rawItem.type).toBe(
+          rawResult.type,
+        );
+      },
+    );
 
     it('rejects a stale duplicate as the following response boundary', async () => {
       const agent = new Agent({ name: 'StaleFollowingBoundaryAgent' });

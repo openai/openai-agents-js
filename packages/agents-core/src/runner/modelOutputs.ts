@@ -66,6 +66,7 @@ import {
   registerRuntimeToolSearchTools,
 } from './toolSearch';
 import { ensureToolCallerAllowed } from './toolCaller';
+import { assertValidCompactionItems } from './items';
 
 function ensureToolAvailable<T>(
   tool: T | undefined,
@@ -692,6 +693,7 @@ export function processModelResponse<TContext>(
   toolNotFoundBehavior: ToolNotFoundBehavior = 'raise_error',
   processingOptions: ModelResponseProcessingOptions = {},
 ): ProcessedResponse<TContext> {
+  assertValidCompactionItems(modelResponse.output);
   const items: RunItem[] = [];
   const runHandoffs: ToolRunHandoff[] = [];
   const runFunctions: ToolRunFunction<TContext>[] = [];
@@ -1014,6 +1016,7 @@ export async function processModelResponseAsync<TContext>(
   toolNotFoundBehavior: ToolNotFoundBehavior = 'raise_error',
   processingOptions: ModelResponseProcessingOptions = {},
 ): Promise<ProcessedResponse<TContext>> {
+  assertValidCompactionItems(modelResponse.output);
   const clientToolSearchTool = getClientToolSearchHelper(tools);
   const hasCustomClientToolSearchExecutor = Boolean(
     clientToolSearchTool && getClientToolSearchExecutor(clientToolSearchTool),

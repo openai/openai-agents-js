@@ -358,6 +358,62 @@ describe('Runner.run (streaming)', () => {
     ).toBe(false);
   });
 
+  it('does not persist input for a malformed terminal compaction item', async () => {
+    class MalformedCompactionStreamingModel implements Model {
+      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        throw new Error('Unexpected non-streaming model request');
+      }
+
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-malformed-compaction-stream',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [
+              {
+                type: 'compaction',
+                id: 'cmp_malformed_stream',
+              },
+            ],
+          },
+        } as StreamEvent;
+      }
+    }
+
+    const addItems = vi.fn(async (_items: AgentInputItem[]) => {});
+    const clearSession = vi.fn(async () => {});
+    const replaceHistoryWithCompaction = vi.fn(
+      async (_items: AgentInputItem[]) => {},
+    );
+    const session: Session = {
+      getSessionId: vi.fn().mockResolvedValue('malformed-stream-session'),
+      getItems: vi.fn().mockResolvedValue([]),
+      addItems,
+      popItem: vi.fn().mockResolvedValue(undefined),
+      clearSession,
+      replaceHistoryWithCompaction,
+    };
+    const agent = new Agent({
+      name: 'MalformedStreamingCompactionAgent',
+      model: new MalformedCompactionStreamingModel(),
+    });
+
+    const result = await run(agent, 'hello', { stream: true, session });
+
+    await expect(result.completed).rejects.toThrow(
+      'Compaction item missing encrypted_content',
+    );
+    expect(addItems).not.toHaveBeenCalled();
+    expect(clearSession).not.toHaveBeenCalled();
+    expect(replaceHistoryWithCompaction).not.toHaveBeenCalled();
+  });
+
   it('treats prior tool_search outputs in input history as loaded deferred tools', async () => {
     class QueueStreamingModel implements Model {
       constructor(private readonly responses: ModelResponse[]) {}
