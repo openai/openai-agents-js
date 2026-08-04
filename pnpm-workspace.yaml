@@ -22,8 +22,6 @@ overrides:
 publishBranch: main
 minimumReleaseAge: 10080
 minimumReleaseAgeExclude:
-  - '@modelcontextprotocol/client@2.0.0'
-  - '@modelcontextprotocol/core@2.0.0'
   - openai@6.46.0
 blockExoticSubdeps: true
 strictDepBuilds: true
