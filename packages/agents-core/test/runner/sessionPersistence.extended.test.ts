@@ -209,7 +209,7 @@ describe('sessionPersistence tracker (extended)', () => {
     tracker.setPreparedItems([current], preparedInput);
     const turnInput = structuredClone(preparedInput);
     const processedInput = structuredClone(turnInput.slice(0, 1));
-    tracker.setPreparedTurnItems(turnInput, processedInput);
+    tracker.setPreparedTurnItems(turnInput, processedInput, [0]);
 
     tracker.recordTurnItems(processedInput, [
       { ...current, content: 'current-filtered' },
@@ -218,6 +218,31 @@ describe('sessionPersistence tracker (extended)', () => {
     expect(tracker.getItemsForPersistence()).toEqual([
       { ...current, content: 'current-filtered' },
     ]);
+  });
+
+  it('does not guess ownership for an equal-content cloned subset without provenance', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const history = {
+      type: 'message',
+      role: 'user',
+      content: 'same',
+    } as const;
+    const current = { ...history };
+    const preparedInput = [history, current];
+    tracker.setPreparedItems([current], preparedInput);
+    const turnInput = structuredClone(preparedInput);
+    const processedInput = structuredClone(turnInput.slice(0, 1));
+    tracker.setPreparedTurnItems(turnInput, processedInput);
+
+    tracker.recordTurnItems(processedInput, [
+      { ...history, content: 'history-filtered' },
+    ]);
+
+    expect(tracker.getItemsForPersistence()).toEqual([]);
   });
 
   it('remaps cloned current input ownership on a later model call', () => {

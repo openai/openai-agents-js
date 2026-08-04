@@ -935,6 +935,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     sessionTurnInputUpdate?: (
       preparedInput: AgentInputItem[],
       processedInput: AgentInputItem[],
+      processedSourceIndexes?: (number | undefined)[],
     ) => void,
     // sessionInputUpdate lets the caller adjust queued session items after filters run so we
     // persist exactly what we send to the model (e.g., after redactions or truncation).
@@ -1212,7 +1213,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ),
               tracingParent: currentTurnSpan?.span ?? state._currentAgentSpan,
             });
-            sessionTurnInputUpdate?.(turnInput, preparedSandboxAgent.turnInput);
+            sessionTurnInputUpdate?.(
+              turnInput,
+              preparedSandboxAgent.turnInput,
+              preparedSandboxAgent.turnInputSourceIndexes,
+            );
             const artifacts = await prepareAgentArtifacts(
               state,
               preparedSandboxAgent.executionAgent,
@@ -1509,6 +1514,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     sessionTurnInputUpdate?: (
       preparedInput: AgentInputItem[],
       processedInput: AgentInputItem[],
+      processedSourceIndexes?: (number | undefined)[],
     ) => void,
     sessionInputUpdate?: (
       sourceItems: (AgentInputItem | undefined)[],
@@ -1775,7 +1781,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             tracingParent:
               currentTurnSpan?.span ?? result.state._currentAgentSpan,
           });
-          sessionTurnInputUpdate?.(turnInput, preparedSandboxAgent.turnInput);
+          sessionTurnInputUpdate?.(
+            turnInput,
+            preparedSandboxAgent.turnInput,
+            preparedSandboxAgent.turnInputSourceIndexes,
+          );
           const artifacts = await prepareAgentArtifacts(
             result.state,
             preparedSandboxAgent.executionAgent,
@@ -2219,6 +2229,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     sessionTurnInputUpdate?: (
       preparedInput: AgentInputItem[],
       processedInput: AgentInputItem[],
+      processedSourceIndexes?: (number | undefined)[],
     ) => void,
     sessionInputUpdate?: (
       sourceItems: (AgentInputItem | undefined)[],

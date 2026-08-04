@@ -71,6 +71,7 @@ export type SessionPersistenceTracker = {
   setPreparedTurnItems: (
     preparedItems: AgentInputItem[],
     processedItems: AgentInputItem[],
+    processedSourceIndexes?: (number | undefined)[],
   ) => void;
   recordTurnItems: (
     sourceItems: (AgentInputItem | undefined)[],
@@ -143,6 +144,7 @@ export function createSessionPersistenceTracker(options: {
     setPreparedTurnItems = (
       preparedItems: AgentInputItem[],
       processedItems: AgentInputItem[],
+      processedSourceIndexes?: (number | undefined)[],
     ) => {
       if (!this.preparedSourceIndexes) {
         return;
@@ -151,6 +153,7 @@ export function createSessionPersistenceTracker(options: {
         preparedItems,
         processedItems,
         this.preparedSourceIndexes,
+        processedSourceIndexes,
       );
     };
 
@@ -254,6 +257,7 @@ function mapPreparedSourcesAfterContextProcessing(
   preparedItems: AgentInputItem[],
   processedItems: AgentInputItem[],
   preparedSourceIndexes: number[],
+  processedSourceIndexes?: (number | undefined)[],
 ): PreparedOwnedSource[] {
   const ownerIndexByPreparedIndex = new Map(
     preparedSourceIndexes.map((preparedIndex, ownerIndex) => [
@@ -279,6 +283,22 @@ function mapPreparedSourcesAfterContextProcessing(
   );
   const usedPreparedIndexes = new Set<number>();
 
+  for (const [processedIndex, preparedIndex] of (
+    processedSourceIndexes ?? []
+  ).entries()) {
+    if (
+      processedIndex >= processedItems.length ||
+      preparedIndex === undefined ||
+      preparedIndex < 0 ||
+      preparedIndex >= preparedItems.length ||
+      usedPreparedIndexes.has(preparedIndex)
+    ) {
+      continue;
+    }
+    mappedPreparedIndexes[processedIndex] = preparedIndex;
+    usedPreparedIndexes.add(preparedIndex);
+  }
+
   const mapOccurrences = <T>(
     processedIndexesByIdentity: Map<T, number[]>,
     preparedIndexesByIdentity: Map<T, number[]>,
@@ -291,15 +311,10 @@ function mapPreparedSourcesAfterContextProcessing(
         (index) => mappedPreparedIndexes[index] === undefined,
       );
 
-      // When processing keeps every occurrence, preserve their relative order. If an
-      // indistinguishable cloned subset remains, prefer Session-owned occurrences because the
-      // transformation no longer contains enough information to identify which clone survived.
+      // If provenance was discarded and only an indistinguishable subset remains, do not guess
+      // which prepared occurrence survived. Guessing can persist history as new Session input.
       if (availableProcessedIndexes.length < availablePreparedIndexes.length) {
-        availablePreparedIndexes.sort((left, right) => {
-          const leftOwned = ownerIndexByPreparedIndex.has(left);
-          const rightOwned = ownerIndexByPreparedIndex.has(right);
-          return leftOwned === rightOwned ? left - right : leftOwned ? -1 : 1;
-        });
+        continue;
       }
 
       for (

@@ -7,6 +7,7 @@ import type { Span, Trace } from '../../tracing';
 import type { SandboxAgent } from '../agent';
 import type { Memory } from '../capabilities/memory';
 import { isMemoryCapability } from '../capabilities/memory';
+import type { Capability } from '../capabilities/base';
 import type {
   SandboxClient,
   SandboxClientCreateArgs,
@@ -73,7 +74,88 @@ import { manifestWithRunAsUser, sandboxRunAsName } from './runAsManifest';
 type SandboxPreparedAgent<TContext> = {
   executionAgent: Agent<TContext, AgentOutputType>;
   turnInput: AgentInputItem[];
+  turnInputSourceIndexes?: (number | undefined)[];
 };
+
+const CONTEXT_PROVENANCE_PREFIX =
+  '__openai_agents_internal_context_provenance_';
+let nextContextProvenanceId = 0;
+
+function processCapabilityContext(
+  turnInput: AgentInputItem[],
+  capabilities: Capability[],
+): {
+  turnInput: AgentInputItem[];
+  sourceIndexes: (number | undefined)[];
+} {
+  let provenanceKey: string;
+  do {
+    provenanceKey = `${CONTEXT_PROVENANCE_PREFIX}${nextContextProvenanceId++}`;
+  } while (
+    turnInput.some((item) =>
+      Object.prototype.hasOwnProperty.call(item, provenanceKey),
+    )
+  );
+
+  const taggedItems = new Set<Record<string, unknown>>();
+  const tagItem = (item: AgentInputItem, sourceIndex: number) => {
+    const taggedItem = { ...item } as Record<string, unknown>;
+    Object.defineProperty(taggedItem, provenanceKey, {
+      configurable: true,
+      enumerable: true,
+      value: sourceIndex,
+    });
+    taggedItems.add(taggedItem);
+    return taggedItem as unknown as AgentInputItem;
+  };
+  let processedInput = turnInput.map(tagItem);
+
+  try {
+    for (const capability of capabilities) {
+      processedInput = capability.processContext(processedInput);
+      for (const item of processedInput) {
+        taggedItems.add(item as unknown as Record<string, unknown>);
+      }
+    }
+
+    const sourceIndexes = processedInput.map((item) => {
+      const sourceIndex = (item as unknown as Record<string, unknown>)[
+        provenanceKey
+      ];
+      return Number.isInteger(sourceIndex) &&
+        (sourceIndex as number) >= 0 &&
+        (sourceIndex as number) < turnInput.length
+        ? (sourceIndex as number)
+        : undefined;
+    });
+    const cleanInput = processedInput.map((item) => {
+      if (!Object.prototype.hasOwnProperty.call(item, provenanceKey)) {
+        return item;
+      }
+      const cleanItem = {
+        ...(item as unknown as Record<string, unknown>),
+      };
+      delete cleanItem[provenanceKey];
+      return cleanItem as unknown as AgentInputItem;
+    });
+
+    return {
+      turnInput: cleanInput,
+      sourceIndexes,
+    };
+  } finally {
+    for (const item of taggedItems) {
+      try {
+        const descriptor = Object.getOwnPropertyDescriptor(item, provenanceKey);
+        if (descriptor?.configurable) {
+          Reflect.deleteProperty(item, provenanceKey);
+        }
+      } catch {
+        // Provenance cleanup must not mask a capability error.
+      }
+    }
+  }
+}
 
 type OwnedSessionCloseTarget = 'all' | ReadonlySet<string>;
 
@@ -217,12 +299,14 @@ export class SandboxRuntimeManager<TContext> {
           this.activeMemory = undefined;
         }
 
+        const processedContext = processCapabilityContext(
+          turnInput,
+          executionAgent.capabilities,
+        );
         return {
           executionAgent,
-          turnInput: executionAgent.capabilities.reduce(
-            (input, capability) => capability.processContext(input),
-            turnInput,
-          ),
+          turnInput: processedContext.turnInput,
+          turnInputSourceIndexes: processedContext.sourceIndexes,
         };
       },
       tracingParent,
