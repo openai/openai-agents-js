@@ -138,6 +138,42 @@ describe('sessionPersistence tracker (extended)', () => {
     expect(tracker.getItemsForPersistence()).toEqual([current]);
   });
 
+  it('remaps owned input after turn preparation trims a compaction prefix', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const history = {
+      type: 'message',
+      role: 'user',
+      content: 'history',
+    } as const;
+    const discarded = {
+      type: 'message',
+      role: 'user',
+      content: 'discarded',
+    } as const;
+    const compacted = {
+      type: 'compaction',
+      encrypted_content: 'summary',
+    } as const;
+    const current = {
+      type: 'message',
+      role: 'user',
+      content: 'current',
+    } as const;
+    tracker.setPreparedItems(
+      [discarded, compacted, current],
+      [history, discarded, compacted, current],
+    );
+    const preparedTurnInput = structuredClone([compacted, current]);
+    tracker.setPreparedTurnItems(preparedTurnInput, preparedTurnInput);
+    tracker.recordTurnItems(preparedTurnInput, preparedTurnInput);
+
+    expect(tracker.getItemsForPersistence()).toEqual([compacted, current]);
+  });
+
   it('keeps current input ownership when context processing clones items', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({

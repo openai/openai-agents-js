@@ -57,7 +57,6 @@ import {
   Capability,
   compaction,
   Entry,
-  compaction,
   EnvValueReference,
   filesystem,
   isEnvValueReference,
@@ -1747,7 +1746,7 @@ describe('sandbox runner integration', () => {
   );
 
   it.each([false, true])(
-    'retains current session input when a later sandbox turn compacts it away (stream=%s)',
+    'replaces current session input when a later sandbox turn compacts it away (stream=%s)',
     async (stream) => {
       const client = new FakeSandboxClient();
       const continueTool = tool({
@@ -1805,6 +1804,10 @@ describe('sandbox runner integration', () => {
       }
 
       const persisted = await session.getItems();
+      expect(persisted[0]).toMatchObject({
+        type: 'compaction',
+        encrypted_content: 'later compacted history',
+      });
       expect(
         persisted.filter(
           (item) =>
@@ -1817,7 +1820,7 @@ describe('sandbox runner integration', () => {
                 content.text === 'current input',
             ),
         ),
-      ).toHaveLength(1);
+      ).toHaveLength(0);
     },
   );
 

@@ -63,6 +63,11 @@ type PreparedOwnedSource = {
   ownerIndex: number;
 };
 
+type PreparedOwnedSourcePosition = {
+  preparedIndex: number;
+  ownerIndex: number;
+};
+
 export type SessionPersistenceTracker = {
   setPreparedItems: (
     items?: AgentInputItem[],
@@ -100,7 +105,8 @@ export function createSessionPersistenceTracker(options: {
     private originalSnapshot: AgentInputItem[] | undefined;
     private filteredSnapshot: AgentInputItem[] | undefined;
     private preparedSources: PreparedOwnedSource[] | undefined;
-    private preparedSourceIndexes: number[] | undefined;
+    private initialPreparedItems: AgentInputItem[] | undefined;
+    private initialSourcePositions: PreparedOwnedSourcePosition[] | undefined;
     private ownedFilteredItems = new Map<number, AgentInputItem>();
     private persistedInputOrder: PersistedInputOccurrence[] = [];
     private persistedInput = false;
@@ -112,7 +118,8 @@ export function createSessionPersistenceTracker(options: {
       this.originalSnapshot = options.resumingFromState ? [] : undefined;
       this.filteredSnapshot = undefined;
       this.preparedSources = options.resumingFromState ? [] : undefined;
-      this.preparedSourceIndexes = options.resumingFromState ? [] : undefined;
+      this.initialPreparedItems = options.resumingFromState ? [] : undefined;
+      this.initialSourcePositions = options.resumingFromState ? [] : undefined;
     }
 
     setPreparedItems = (
@@ -125,7 +132,8 @@ export function createSessionPersistenceTracker(options: {
       );
       if (Array.isArray(preparedInput)) {
         this.preparedSources = undefined;
-        this.preparedSourceIndexes = findOwnedItemIndexes(
+        this.initialPreparedItems = preparedInput;
+        this.initialSourcePositions = findOwnedItemIndexes(
           preparedInput,
           sessionItems,
         );
@@ -134,7 +142,8 @@ export function createSessionPersistenceTracker(options: {
           item,
           ownerIndex,
         }));
-        this.preparedSourceIndexes = undefined;
+        this.initialPreparedItems = undefined;
+        this.initialSourcePositions = undefined;
       }
       this.ownedFilteredItems.clear();
       this.persistedInputOrder = [];
@@ -144,13 +153,19 @@ export function createSessionPersistenceTracker(options: {
       preparedItems: AgentInputItem[],
       processedItems: AgentInputItem[],
     ) => {
-      if (!this.preparedSourceIndexes) {
+      if (!this.initialPreparedItems || !this.initialSourcePositions) {
         return;
       }
+      const preparedSources = mapPreparedSourcesAfterContextProcessing(
+        this.initialPreparedItems,
+        preparedItems,
+        this.initialSourcePositions,
+        { validateReplacements: false },
+      );
       this.preparedSources = mapPreparedSourcesAfterContextProcessing(
         preparedItems,
         processedItems,
-        this.preparedSourceIndexes,
+        findPreparedSourcePositions(preparedItems, preparedSources),
       );
     };
 
@@ -236,27 +251,52 @@ function countItemReferences(
 function findOwnedItemIndexes(
   preparedInput: AgentInputItem[],
   ownedItems: AgentInputItem[],
-): number[] {
-  const remaining = countItemReferences(ownedItems);
-  const indexes: number[] = [];
+): PreparedOwnedSourcePosition[] {
+  const remainingOwnerIndexes = new Map<AgentInputItem, number[]>();
+  for (const [ownerIndex, item] of ownedItems.entries()) {
+    const indexes = remainingOwnerIndexes.get(item) ?? [];
+    indexes.push(ownerIndex);
+    remainingOwnerIndexes.set(item, indexes);
+  }
+  const positions: PreparedOwnedSourcePosition[] = [];
   for (const [index, item] of preparedInput.entries()) {
-    const count = remaining.get(item) ?? 0;
-    if (count <= 0) {
+    const ownerIndex = remainingOwnerIndexes.get(item)?.shift();
+    if (ownerIndex === undefined) {
       continue;
     }
-    indexes.push(index);
-    remaining.set(item, count - 1);
+    positions.push({ preparedIndex: index, ownerIndex });
   }
-  return indexes;
+  return positions;
+}
+
+function findPreparedSourcePositions(
+  preparedItems: AgentInputItem[],
+  preparedSources: PreparedOwnedSource[],
+): PreparedOwnedSourcePosition[] {
+  const remainingOwnerIndexes = new Map<AgentInputItem, number[]>();
+  for (const source of preparedSources) {
+    const indexes = remainingOwnerIndexes.get(source.item) ?? [];
+    indexes.push(source.ownerIndex);
+    remainingOwnerIndexes.set(source.item, indexes);
+  }
+  const positions: PreparedOwnedSourcePosition[] = [];
+  for (const [preparedIndex, item] of preparedItems.entries()) {
+    const ownerIndex = remainingOwnerIndexes.get(item)?.shift();
+    if (ownerIndex !== undefined) {
+      positions.push({ preparedIndex, ownerIndex });
+    }
+  }
+  return positions;
 }
 
 function mapPreparedSourcesAfterContextProcessing(
   preparedItems: AgentInputItem[],
   processedItems: AgentInputItem[],
-  preparedSourceIndexes: number[],
+  preparedSourcePositions: PreparedOwnedSourcePosition[],
+  options: { validateReplacements?: boolean } = {},
 ): PreparedOwnedSource[] {
   const ownerIndexByPreparedIndex = new Map(
-    preparedSourceIndexes.map((preparedIndex, ownerIndex) => [
+    preparedSourcePositions.map(({ preparedIndex, ownerIndex }) => [
       preparedIndex,
       ownerIndex,
     ]),
@@ -414,6 +454,7 @@ function mapPreparedSourcesAfterContextProcessing(
   // occurrence exists, an unmatched item could instead be a deletion plus an injection, so leave
   // it unowned rather than assigning Session provenance from matching residual cardinality alone.
   if (
+    options.validateReplacements !== false &&
     preparedItems.length === 1 &&
     processedItems.length === 1 &&
     remainingProcessedIndexes.length === 1 &&
@@ -447,6 +488,7 @@ function mapPreparedSourcesAfterContextProcessing(
       indexes.some((index) => !usedPreparedIndexes.has(index)),
   );
   if (
+    options.validateReplacements !== false &&
     hasUnmatchedProcessedItem &&
     (hasUnmatchedOwnedItem || hasUnprovenOwnedClone)
   ) {
