@@ -4,6 +4,7 @@ import { RunToolApprovalItem } from './items';
 import logger from './logger';
 import {
   getFunctionToolLookupKey,
+  getFunctionToolLegacyStateKeyFromStateKey,
   getFunctionToolStateKeyForCall,
 } from './toolIdentity';
 import { UnknownContext } from './types';
@@ -23,7 +24,7 @@ type SerializedFunctionApprovals = Array<{
 
 type FunctionApprovalState = {
   approvalsByAgent: Map<Agent<any, any>, Map<string, ApprovalRecord>>;
-  legacyFallback: boolean;
+  legacyApprovals: Map<string, ApprovalRecord>;
 };
 
 const COMPUTER_APPROVAL_TOOL_NAMES = new Set([
@@ -126,7 +127,7 @@ type RunContextJson = {
 
 type SerializedRunContextJson = RunContextJson & {
   functionApprovals?: SerializedFunctionApprovals;
-  legacyFunctionApprovalFallback?: boolean;
+  legacyFunctionApprovals?: Record<string, ApprovalRecord>;
 };
 
 /**
@@ -164,7 +165,7 @@ export class RunContext<TContext = UnknownContext> {
     this.#approvals = new Map();
     this.#functionApprovalState = {
       approvalsByAgent: new Map(),
-      legacyFallback: false,
+      legacyApprovals: new Map(),
     };
   }
 
@@ -229,6 +230,56 @@ export class RunContext<TContext = UnknownContext> {
   }
 
   /**
+   * Rebuild legacy function-only approvals from serialized RunState data.
+   * @internal
+   */
+  _rebuildLegacyFunctionApprovals(
+    approvals: Record<string, ApprovalRecord>,
+  ): void {
+    this.#functionApprovalState.legacyApprovals = new Map();
+    this._mergeLegacyFunctionApprovals(approvals);
+  }
+
+  /**
+   * Merge legacy function-only approvals from serialized RunState data.
+   * @internal
+   */
+  _mergeLegacyFunctionApprovals(
+    approvals: Record<string, ApprovalRecord>,
+  ): void {
+    for (const [toolName, incoming] of Object.entries(approvals)) {
+      this.#setLegacyFunctionApprovalRecord(toolName, incoming);
+    }
+  }
+
+  /**
+   * Retain only legacy approvals proven to belong to enabled function tools.
+   * @internal
+   */
+  _retainLegacyFunctionApprovals(toolNames: ReadonlySet<string>): void {
+    for (const toolName of this.#functionApprovalState.legacyApprovals.keys()) {
+      if (!toolNames.has(toolName)) {
+        this.#functionApprovalState.legacyApprovals.delete(toolName);
+      }
+    }
+  }
+
+  /**
+   * Remove migrated function-only keys from the non-function aggregate map.
+   * @internal
+   */
+  _removeMigratedFunctionApprovalsFromAggregate(
+    functionToolNames: ReadonlySet<string>,
+    exactNonFunctionToolNames: ReadonlySet<string>,
+  ): void {
+    for (const toolName of functionToolNames) {
+      if (!exactNonFunctionToolNames.has(toolName)) {
+        this.#approvals.delete(toolName);
+      }
+    }
+  }
+
+  /**
    * Merge owner-scoped function approvals from serialized RunState data.
    * @internal
    */
@@ -281,17 +332,10 @@ export class RunContext<TContext = UnknownContext> {
         this.#setFunctionApprovalRecord(agent, toolName, incoming);
       }
     }
-    this.#functionApprovalState.legacyFallback ||=
-      source.#functionApprovalState.legacyFallback;
-  }
-
-  /**
-   * Allow released unscoped approval records to remain authoritative while
-   * resuming RunState schema versions that predate owner-scoped approvals.
-   * @internal
-   */
-  _enableLegacyFunctionApprovalFallback(): void {
-    this.#functionApprovalState.legacyFallback = true;
+    for (const [toolName, incoming] of source.#functionApprovalState
+      .legacyApprovals) {
+      this.#setLegacyFunctionApprovalRecord(toolName, incoming);
+    }
   }
 
   /**
@@ -299,15 +343,25 @@ export class RunContext<TContext = UnknownContext> {
    * non-function records that use the same legacy name.
    * @internal
    */
-  _mergeApprovalsPreservingExactKeys(
-    approvals: Record<string, ApprovalRecord>,
+  _mergeApprovalStatePreservingExactKeys(
+    source: RunContext<TContext>,
     exactToolNames: ReadonlySet<string>,
-  ) {
-    for (const [toolName, incoming] of Object.entries(approvals)) {
+  ): void {
+    for (const [toolName, incoming] of source.#approvals) {
       if (exactToolNames.has(toolName) && this.#approvals.has(toolName)) {
         continue;
       }
       this.#setApprovalRecord(toolName, incoming);
+    }
+    for (const [agent, approvalsByTool] of source.#functionApprovalState
+      .approvalsByAgent) {
+      for (const [toolName, incoming] of approvalsByTool) {
+        this.#setFunctionApprovalRecord(agent, toolName, incoming);
+      }
+    }
+    for (const [toolName, incoming] of source.#functionApprovalState
+      .legacyApprovals) {
+      this.#setLegacyFunctionApprovalRecord(toolName, incoming);
     }
   }
 
@@ -316,15 +370,18 @@ export class RunContext<TContext = UnknownContext> {
    * @internal
    */
   _migrateToolApproval(
+    agent: Agent<any, any>,
     legacyToolName: string,
     canonicalToolName: string,
     callIds: readonly string[],
     migratePermanentDecision: boolean,
+    preserveMovedCallDecisions = false,
   ): void {
     if (legacyToolName === canonicalToolName) {
       return;
     }
-    const legacy = this.#approvals.get(legacyToolName);
+    const legacy =
+      this.#functionApprovalState.legacyApprovals.get(legacyToolName);
     if (!legacy) {
       return;
     }
@@ -380,7 +437,7 @@ export class RunContext<TContext = UnknownContext> {
     if (!hasMovedDecision) {
       return;
     }
-    this.#setApprovalRecord(canonicalToolName, moved);
+    this.#setFunctionApprovalRecord(agent, canonicalToolName, moved);
 
     const remainingApproved =
       legacy.approved === true
@@ -388,7 +445,9 @@ export class RunContext<TContext = UnknownContext> {
           ? []
           : true
         : Array.isArray(legacy.approved)
-          ? legacy.approved.filter((callId) => !callIdSet.has(callId))
+          ? legacy.approved.filter(
+              (callId) => preserveMovedCallDecisions || !callIdSet.has(callId),
+            )
           : [];
     const remainingRejected =
       legacy.rejected === true
@@ -396,12 +455,14 @@ export class RunContext<TContext = UnknownContext> {
           ? []
           : true
         : Array.isArray(legacy.rejected)
-          ? legacy.rejected.filter((callId) => !callIdSet.has(callId))
+          ? legacy.rejected.filter(
+              (callId) => preserveMovedCallDecisions || !callIdSet.has(callId),
+            )
           : [];
     const remainingMessages = legacy.messages
       ? Object.fromEntries(
           Object.entries(legacy.messages).filter(
-            ([callId]) => !callIdSet.has(callId),
+            ([callId]) => preserveMovedCallDecisions || !callIdSet.has(callId),
           ),
         )
       : undefined;
@@ -421,9 +482,12 @@ export class RunContext<TContext = UnknownContext> {
       (Array.isArray(remaining.approved) && remaining.approved.length > 0) ||
       (Array.isArray(remaining.rejected) && remaining.rejected.length > 0);
     if (hasRemainingDecision) {
-      this.#approvals.set(legacyToolName, remaining);
+      this.#functionApprovalState.legacyApprovals.set(
+        legacyToolName,
+        remaining,
+      );
     } else {
-      this.#approvals.delete(legacyToolName);
+      this.#functionApprovalState.legacyApprovals.delete(legacyToolName);
     }
   }
 
@@ -440,10 +504,18 @@ export class RunContext<TContext = UnknownContext> {
     options: { functionTool?: boolean } = {},
   ): string | undefined {
     const functionTool = options.functionTool ?? true;
+    const includeFunctionState =
+      functionTool ||
+      getFunctionToolLegacyStateKeyFromStateKey(toolName) !== undefined;
     return this.#getRejectionMessageFromEntries(
       [
         ...this.#getApprovalEntries(toolName, functionTool),
-        ...this.#getFunctionApprovalEntries(toolName, functionTool),
+        ...(includeFunctionState
+          ? [
+              ...this.#getLegacyFunctionApprovalEntries(toolName),
+              ...this.#getFunctionApprovalEntries(toolName, functionTool),
+            ]
+          : []),
       ],
       callId,
     );
@@ -473,10 +545,10 @@ export class RunContext<TContext = UnknownContext> {
     }
     if (
       scopedDecision === undefined &&
-      this.#functionApprovalState.legacyFallback
+      this.#functionApprovalState.legacyApprovals.size > 0
     ) {
       return this.#getRejectionMessageFromEntries(
-        this.#getApprovalEntries(toolName, false),
+        this.#getLegacyFunctionApprovalEntries(toolName),
         callId,
       );
     }
@@ -505,11 +577,21 @@ export class RunContext<TContext = UnknownContext> {
   ): SerializedRunContextJson {
     const approvals = new Map(this.#approvals);
     if (!agentIdentityKeys) {
+      for (const [toolName, incoming] of this.#functionApprovalState
+        .legacyApprovals) {
+        const current = approvals.get(toolName);
+        approvals.set(
+          toolName,
+          current ? mergeApprovalRecords(current, incoming) : incoming,
+        );
+      }
       for (const approvalsByTool of this.#functionApprovalState.approvalsByAgent.values()) {
         for (const [toolName, incoming] of approvalsByTool) {
-          const current = approvals.get(toolName);
+          const publicToolName =
+            getFunctionToolLegacyStateKeyFromStateKey(toolName) ?? toolName;
+          const current = approvals.get(publicToolName);
           approvals.set(
-            toolName,
+            publicToolName,
             current ? mergeApprovalRecords(current, incoming) : incoming,
           );
         }
@@ -538,8 +620,10 @@ export class RunContext<TContext = UnknownContext> {
       if (functionApprovals.length > 0) {
         json.functionApprovals = functionApprovals;
       }
-      if (this.#functionApprovalState.legacyFallback) {
-        json.legacyFunctionApprovalFallback = true;
+      if (this.#functionApprovalState.legacyApprovals.size > 0) {
+        json.legacyFunctionApprovals = Object.fromEntries(
+          this.#functionApprovalState.legacyApprovals,
+        );
       }
     }
     if (typeof this.toolInput !== 'undefined') {
@@ -583,15 +667,25 @@ export class RunContext<TContext = UnknownContext> {
       if (scopedDecision !== undefined) {
         return scopedDecision;
       }
-      if (!this.#functionApprovalState.legacyFallback) {
+      if (this.#functionApprovalState.legacyApprovals.size === 0) {
         return undefined;
       }
+      return this.#resolveApprovalEntries(
+        this.#getLegacyFunctionApprovalEntries(toolName),
+        callId,
+      );
     }
 
+    const includeFunctionState =
+      functionTool ||
+      getFunctionToolLegacyStateKeyFromStateKey(toolName) !== undefined;
     return this.#resolveApprovalEntries(
       [
         ...this.#getApprovalEntries(toolName, functionTool),
-        ...(!agent
+        ...(includeFunctionState
+          ? this.#getLegacyFunctionApprovalEntries(toolName)
+          : []),
+        ...(!agent && includeFunctionState
           ? this.#getFunctionApprovalEntries(toolName, functionTool)
           : []),
       ],
@@ -814,6 +908,16 @@ export class RunContext<TContext = UnknownContext> {
     );
   }
 
+  #getLegacyFunctionApprovalEntries(toolName: string): ApprovalRecord[] {
+    const legacyToolName =
+      getFunctionToolLegacyStateKeyFromStateKey(toolName) ?? toolName;
+    return getApprovalToolNameCandidates(legacyToolName, true)
+      .map((candidate) =>
+        this.#functionApprovalState.legacyApprovals.get(candidate),
+      )
+      .filter((approval): approval is ApprovalRecord => approval !== undefined);
+  }
+
   #getFunctionApprovalMap(agent: Agent<any, any>): Map<string, ApprovalRecord> {
     const existing = this.#functionApprovalState.approvalsByAgent.get(agent);
     if (existing) {
@@ -857,6 +961,17 @@ export class RunContext<TContext = UnknownContext> {
     const approvalsByTool = this.#getFunctionApprovalMap(agent);
     const current = approvalsByTool.get(toolName);
     approvalsByTool.set(
+      toolName,
+      current ? mergeApprovalRecords(current, incoming) : incoming,
+    );
+  }
+
+  #setLegacyFunctionApprovalRecord(
+    toolName: string,
+    incoming: ApprovalRecord,
+  ): void {
+    const current = this.#functionApprovalState.legacyApprovals.get(toolName);
+    this.#functionApprovalState.legacyApprovals.set(
       toolName,
       current ? mergeApprovalRecords(current, incoming) : incoming,
     );

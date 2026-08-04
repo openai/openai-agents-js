@@ -720,6 +720,7 @@ export async function executeCustomClientToolSearch<TContext>(args: {
 }): Promise<{
   output: protocol.ToolSearchOutputItem;
   runtimeTools: Tool<TContext>[];
+  callbackRuntimeTools: Tool<TContext>[];
 }> {
   const { agent, runContext, toolSearchCall, toolSearchTool, tools } = args;
   const executor = getClientToolSearchExecutor(toolSearchTool);
@@ -729,7 +730,7 @@ export async function executeCustomClientToolSearch<TContext>(args: {
     );
   }
 
-  const runtimeTools = normalizeClientToolSearchExecutorResult(
+  const callbackRuntimeTools = normalizeClientToolSearchExecutorResult(
     await executor({
       agent,
       availableTools: [...tools],
@@ -738,11 +739,17 @@ export async function executeCustomClientToolSearch<TContext>(args: {
       toolCall: toolSearchCall,
     }),
   );
+  const runtimeTools = await filterEnabledToolSearchRuntimeTools({
+    agent,
+    runContext,
+    runtimeTools: callbackRuntimeTools,
+  });
   indexCustomClientToolSearchRuntimeTools(runtimeTools);
 
   return {
     output: createClientToolSearchOutputFromTools(toolSearchCall, runtimeTools),
     runtimeTools,
+    callbackRuntimeTools,
   };
 }
 

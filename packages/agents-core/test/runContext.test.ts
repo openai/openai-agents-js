@@ -280,13 +280,10 @@ describe('RunContext', () => {
 
     expect(ctx.getRejectionMessage('toolX', '123')).toBe('Blocked by policy.');
     expect(ctx.getRejectionMessage('toolX', '456')).toBe('Blocked by policy.');
-    const approvalKey = getFunctionToolStateKeyForCall(
-      item.rawItem as { name?: string; namespace?: string },
-    )!;
-    expect(ctx.toJSON().approvals[approvalKey].messages).toEqual({
+    expect(ctx.toJSON().approvals.toolX.messages).toEqual({
       '123': 'Blocked by policy.',
     });
-    expect(ctx.toJSON().approvals[approvalKey].stickyRejectMessage).toBe(
+    expect(ctx.toJSON().approvals.toolX.stickyRejectMessage).toBe(
       'Blocked by policy.',
     );
   });

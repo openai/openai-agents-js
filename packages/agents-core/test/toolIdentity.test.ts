@@ -3,12 +3,30 @@ import { describe, expect, it } from 'vitest';
 import {
   FUNCTION_TOOL_NAMESPACE,
   buildFunctionToolLookupMap,
+  getFunctionToolLegacyStateKeyFromStateKey,
   getFunctionToolStateKeyForResolvedCall,
   getFunctionToolStateKeys,
   resolveFunctionToolCall,
 } from '../src/toolIdentity';
 
 describe('category-aware function tool lookup', () => {
+  it('projects canonical state keys to released public approval names', () => {
+    expect(getFunctionToolLegacyStateKeyFromStateKey('["bare","lookup"]')).toBe(
+      'lookup',
+    );
+    expect(
+      getFunctionToolLegacyStateKeyFromStateKey(
+        '["deferred_top_level","lookup"]',
+      ),
+    ).toBe('lookup');
+    expect(
+      getFunctionToolLegacyStateKeyFromStateKey(
+        '["namespaced","crm","lookup"]',
+      ),
+    ).toBe('crm.lookup');
+    expect(getFunctionToolLegacyStateKeyFromStateKey('lookup')).toBeUndefined();
+  });
+
   it('distinguishes bare and deferred top-level tools with the same name', () => {
     const bare = { type: 'function', name: 'lookup', deferLoading: false };
     const deferred = { type: 'function', name: 'lookup', deferLoading: true };

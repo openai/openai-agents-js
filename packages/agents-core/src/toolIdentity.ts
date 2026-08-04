@@ -223,6 +223,37 @@ export function getFunctionToolStateKey(
 }
 
 /** @internal */
+export function getFunctionToolLegacyStateKeyFromStateKey(
+  stateKey: string,
+): string | undefined {
+  let parts: unknown;
+  try {
+    parts = JSON.parse(stateKey);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parts)) {
+    return undefined;
+  }
+  if (
+    (parts[0] === 'bare' || parts[0] === 'deferred_top_level') &&
+    parts.length === 2 &&
+    isNonEmptyString(parts[1])
+  ) {
+    return parts[1];
+  }
+  if (
+    parts[0] === 'namespaced' &&
+    parts.length === 3 &&
+    isNonEmptyString(parts[1]) &&
+    isNonEmptyString(parts[2])
+  ) {
+    return toolQualifiedName(parts[2], parts[1]);
+  }
+  return undefined;
+}
+
+/** @internal */
 export function getFunctionToolStateKeyForCall(
   toolCall: MaybeToolCallWithNamespace,
   fallbackName?: string,

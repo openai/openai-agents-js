@@ -61,7 +61,6 @@ import {
   addLoadedToolNamesFromToolSearchOutput,
   createBuiltInClientToolSearchOutput,
   executeCustomClientToolSearch,
-  filterEnabledToolSearchRuntimeTools,
   getClientToolSearchHelper,
   registerRuntimeToolSearchTools,
 } from './toolSearch';
@@ -454,6 +453,7 @@ function buildFunctionToolMap<TContext>(
 type GeneratedClientToolSearchOutput<TContext> = {
   output: protocol.ToolSearchOutputItem;
   runtimeTools: Tool<TContext>[];
+  callbackRuntimeTools: Tool<TContext>[];
 };
 
 function getUnresolvedClientToolSearchCalls(
@@ -596,7 +596,7 @@ async function buildGeneratedClientToolSearchOutputMapAsync<TContext>(args: {
         runtimeTools: generatedOutput.runtimeTools,
       });
       generatedOutputs.set(toolSearchCall, generatedOutput);
-      executionTools.push(...generatedOutput.runtimeTools);
+      executionTools.push(...generatedOutput.callbackRuntimeTools);
       continue;
     }
 
@@ -606,6 +606,7 @@ async function buildGeneratedClientToolSearchOutputMapAsync<TContext>(args: {
         executionTools,
       ),
       runtimeTools: [],
+      callbackRuntimeTools: [],
     });
   }
 
@@ -1109,11 +1110,6 @@ export async function processModelResponseAsync<TContext>(
             preserveExistingServerLabels: originalMcpServerLabels,
           },
         );
-        const enabledRuntimeTools = await filterEnabledToolSearchRuntimeTools({
-          agent,
-          runContext: state._context,
-          runtimeTools: generatedOutput.runtimeTools,
-        });
         const replacedRuntimeTools = state.getToolSearchRuntimeToolsForOutput(
           agent,
           generatedOutput.output,
@@ -1125,7 +1121,7 @@ export async function processModelResponseAsync<TContext>(
           mcpToolMap,
           replaceableRuntimeToolKeys,
           replacedRuntimeTools,
-          runtimeTools: enabledRuntimeTools,
+          runtimeTools: generatedOutput.runtimeTools,
         });
         state.recordToolSearchRuntimeTools(
           agent,

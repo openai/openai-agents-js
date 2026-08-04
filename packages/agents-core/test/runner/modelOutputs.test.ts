@@ -1542,6 +1542,130 @@ describe('processModelResponse', () => {
     expect(state.getToolSearchRuntimeTools(agent)).toEqual([]);
   });
 
+  it('omits disabled functions from generated client tool_search output', async () => {
+    const disabledLookup = tool({
+      name: 'disabled_lookup',
+      description: 'Disabled lookup result.',
+      parameters: z.object({}).strict(),
+      isEnabled: false,
+      execute: async () => 'disabled',
+    });
+    const clientToolSearch = attachClientToolSearchExecutor(
+      {
+        type: 'hosted_tool',
+        name: 'tool_search',
+        providerData: { type: 'tool_search', execution: 'client' },
+      },
+      async () => disabledLookup,
+    );
+    const agent = new Agent({
+      name: 'DisabledClientToolSearchOutputAgent',
+    });
+    const state = new RunState(new RunContext(), 'hello', agent, 3);
+
+    const result = await processModelResponseAsync(
+      {
+        output: [
+          {
+            type: 'tool_search_call',
+            id: 'ts_call_disabled_output',
+            status: 'completed',
+            arguments: {},
+            providerData: {
+              call_id: 'call_tool_search_disabled_output',
+              execution: 'client',
+            },
+          } as protocol.ToolSearchCallItem,
+        ],
+        usage: new Usage(),
+      },
+      agent,
+      [clientToolSearch],
+      [],
+      state,
+      [],
+    );
+
+    expect(result.newItems).toHaveLength(2);
+    expect((result.newItems[1] as ToolSearchOutputItem).rawItem).toMatchObject({
+      type: 'tool_search_output',
+      tools: [],
+      providerData: {
+        call_id: 'call_tool_search_disabled_output',
+        execution: 'client',
+      },
+    });
+    expect(state.getToolSearchRuntimeTools(agent)).toEqual([]);
+  });
+
+  it.each(['configured function', 'handoff'] as const)(
+    'ignores disabled client tool_search collisions with an enabled %s',
+    async (collisionOwner) => {
+      const disabledLookup = tool({
+        name: 'lookup',
+        description: 'Disabled lookup result.',
+        parameters: z.object({}).strict(),
+        isEnabled: false,
+        execute: async () => 'disabled',
+      });
+      const configuredLookup = tool({
+        name: 'lookup',
+        description: 'Configured lookup.',
+        parameters: z.object({}).strict(),
+        execute: async () => 'configured',
+      });
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search', execution: 'client' },
+        },
+        async () => disabledLookup,
+      );
+      const agent = new Agent({
+        name: `Disabled collision ${collisionOwner}`,
+      });
+      const lookupHandoff = handoff(
+        new Agent({ name: 'Disabled collision target' }),
+        { toolNameOverride: 'lookup' },
+      );
+      const state = new RunState(new RunContext(), 'hello', agent, 3);
+
+      const result = await processModelResponseAsync(
+        {
+          output: [
+            {
+              type: 'tool_search_call',
+              id: `ts_disabled_${collisionOwner}`,
+              status: 'completed',
+              arguments: {},
+              providerData: {
+                call_id: `call_disabled_${collisionOwner}`,
+                execution: 'client',
+              },
+            } as protocol.ToolSearchCallItem,
+          ],
+          usage: new Usage(),
+        },
+        agent,
+        collisionOwner === 'configured function'
+          ? [configuredLookup, clientToolSearch]
+          : [clientToolSearch],
+        collisionOwner === 'handoff' ? [lookupHandoff] : [],
+        state,
+        [],
+      );
+
+      expect(
+        (result.newItems[1] as ToolSearchOutputItem).rawItem,
+      ).toMatchObject({
+        type: 'tool_search_output',
+        tools: [],
+      });
+      expect(state.getToolSearchRuntimeTools(agent)).toEqual([]);
+    },
+  );
+
   it('does not dispatch a disabled function returned by client tool_search', async () => {
     const disabledLookup = tool({
       name: 'disabled_lookup',
@@ -1843,35 +1967,50 @@ describe('processModelResponse', () => {
     },
   );
 
-  it('rejects duplicate routed identities before enabled filtering', async () => {
-    const enabledLookup = tool({
-      name: 'lookup',
-      description: 'Enabled lookup.',
-      parameters: z.object({}),
-      deferLoading: true,
-      execute: async () => 'enabled',
-    });
-    const disabledLookup = tool({
-      name: 'lookup',
-      description: 'Disabled lookup.',
-      parameters: z.object({}),
-      deferLoading: true,
-      isEnabled: false,
-      execute: async () => 'disabled',
-    });
-    const clientToolSearch = attachClientToolSearchExecutor(
-      {
-        type: 'hosted_tool',
-        name: 'tool_search',
-        providerData: { type: 'tool_search', execution: 'client' },
-      },
-      async () => [enabledLookup, disabledLookup],
-    );
-    const agent = new Agent({ name: 'Raw duplicate validation agent' });
-    const state = new RunState(new RunContext(), 'hello', agent, 2);
+  it.each([
+    ['an enabled and a disabled result', true],
+    ['two disabled results', false],
+  ] as const)(
+    'filters disabled duplicate identities before validating %s',
+    async (_description, includeEnabledResult) => {
+      const enabledLookup = tool({
+        name: 'lookup',
+        description: 'Enabled lookup.',
+        parameters: z.object({}),
+        deferLoading: true,
+        execute: async () => 'enabled',
+      });
+      const disabledLookup = tool({
+        name: 'lookup',
+        description: 'Disabled lookup.',
+        parameters: z.object({}),
+        deferLoading: true,
+        isEnabled: false,
+        execute: async () => 'disabled',
+      });
+      const otherDisabledLookup = tool({
+        name: 'lookup',
+        description: 'Other disabled lookup.',
+        parameters: z.object({}),
+        deferLoading: true,
+        isEnabled: false,
+        execute: async () => 'other disabled',
+      });
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search', execution: 'client' },
+        },
+        async () => [
+          includeEnabledResult ? enabledLookup : otherDisabledLookup,
+          disabledLookup,
+        ],
+      );
+      const agent = new Agent({ name: 'Raw duplicate validation agent' });
+      const state = new RunState(new RunContext(), 'hello', agent, 2);
 
-    await expect(
-      processModelResponseAsync(
+      const result = await processModelResponseAsync(
         {
           output: [
             {
@@ -1892,14 +2031,17 @@ describe('processModelResponse', () => {
         [],
         state,
         [],
-      ),
-    ).rejects.toThrow(
-      'Client tool_search execute() returned multiple tools with the same routed identity.',
-    );
-    expect(state.getToolSearchRuntimeTools(agent)).toEqual([]);
-  });
+      );
+      expect(
+        (result.newItems[1] as ToolSearchOutputItem).rawItem.tools,
+      ).toHaveLength(includeEnabledResult ? 1 : 0);
+      expect(state.getToolSearchRuntimeTools(agent)).toEqual(
+        includeEnabledResult ? [enabledLookup] : [],
+      );
+    },
+  );
 
-  it('rejects same-name namespace results before enabled filtering', async () => {
+  it('filters disabled same-name namespace results before validation', async () => {
     const namespacedLookup = createLegacyNamespacedTool(
       tool({
         name: 'lookup',
@@ -1922,31 +2064,29 @@ describe('processModelResponse', () => {
     const agent = new Agent({ name: 'Reserved namespace result agent' });
     const state = new RunState(new RunContext(), 'hello', agent, 2);
 
-    await expect(
-      processModelResponseAsync(
-        {
-          output: [
-            {
-              type: 'tool_search_call',
-              id: 'ts_call_reserved_namespace',
-              status: 'completed',
-              arguments: {},
-              providerData: {
-                call_id: 'call_reserved_namespace',
-                execution: 'client',
-              },
-            } as protocol.ToolSearchCallItem,
-          ],
-          usage: new Usage(),
-        },
-        agent,
-        [clientToolSearch],
-        [],
-        state,
-        [],
-      ),
-    ).rejects.toThrow(
-      'Responses tool search reserves same-name namespaces for deferred top-level function tools.',
+    const result = await processModelResponseAsync(
+      {
+        output: [
+          {
+            type: 'tool_search_call',
+            id: 'ts_call_reserved_namespace',
+            status: 'completed',
+            arguments: {},
+            providerData: {
+              call_id: 'call_reserved_namespace',
+              execution: 'client',
+            },
+          } as protocol.ToolSearchCallItem,
+        ],
+        usage: new Usage(),
+      },
+      agent,
+      [clientToolSearch],
+      [],
+      state,
+    );
+    expect((result.newItems[1] as ToolSearchOutputItem).rawItem.tools).toEqual(
+      [],
     );
     expect(state.getToolSearchRuntimeTools(agent)).toEqual([]);
   });

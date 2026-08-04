@@ -55,6 +55,7 @@ import {
   buildFunctionToolLookupMap,
   type FunctionToolLookupKey,
   getFunctionToolLookupKey,
+  getFunctionToolLegacyStateKeyFromStateKey,
   getFunctionToolQualifiedName,
   getFunctionToolStateKey,
   getFunctionToolStateKeyForCall,
@@ -446,16 +447,28 @@ const approvalRecordSchema = z.object({
   stickyRejectMessage: z.string().optional(),
 });
 
+const canonicalFunctionToolStateKeySchema = z
+  .string()
+  .refine(
+    (value) => getFunctionToolLegacyStateKeyFromStateKey(value) !== undefined,
+    'Function approval keys must use a canonical category-aware identity.',
+  );
+
 const functionApprovalsSchema = z.array(
   z.object({
     agentIdentity: z.string(),
-    approvals: z.record(z.string(), approvalRecordSchema),
+    approvals: z.record(
+      canonicalFunctionToolStateKeySchema,
+      approvalRecordSchema,
+    ),
   }),
 );
 
 const functionApprovalContextSchema = z.object({
   functionApprovals: functionApprovalsSchema.optional(),
-  legacyFunctionApprovalFallback: z.boolean().optional(),
+  legacyFunctionApprovals: z
+    .record(z.string(), approvalRecordSchema)
+    .optional(),
 });
 
 export const SerializedRunState = z.object({
@@ -468,7 +481,9 @@ export const SerializedRunState = z.object({
     usage: usageSchema,
     approvals: z.record(z.string(), approvalRecordSchema),
     functionApprovals: functionApprovalsSchema.optional(),
-    legacyFunctionApprovalFallback: z.boolean().optional(),
+    legacyFunctionApprovals: z
+      .record(z.string(), approvalRecordSchema)
+      .optional(),
     context: z.record(z.string(), z.any()),
     toolInput: z.any().optional(),
   }),
@@ -1215,11 +1230,11 @@ function validateFunctionApprovalEnvelope(
     context,
     'functionApprovals',
   );
-  const hasLegacyFallback = Object.prototype.hasOwnProperty.call(
+  const hasLegacyFunctionApprovals = Object.prototype.hasOwnProperty.call(
     context,
-    'legacyFunctionApprovalFallback',
+    'legacyFunctionApprovals',
   );
-  if (!hasFunctionApprovals && !hasLegacyFallback) {
+  if (!hasFunctionApprovals && !hasLegacyFunctionApprovals) {
     return;
   }
   if (schemaVersion !== CURRENT_SCHEMA_VERSION) {
@@ -1697,14 +1712,19 @@ function formatRuntimeToolKeys(runtimeToolKeys: Set<string>): string {
   return [...runtimeToolKeys].sort().join(', ');
 }
 
-function assertRuntimeToolKeysMatch<TContext>(args: {
+function selectSerializedRuntimeTools<TContext>(args: {
   agent: Agent<any, any>;
   toolSearchCall: protocol.ToolSearchCallItem;
   expectedRuntimeToolKeys: Set<string>;
-  runtimeTools: Tool<TContext>[];
-}): void {
-  const { agent, toolSearchCall, expectedRuntimeToolKeys, runtimeTools } = args;
-  const actualRuntimeToolKeys = getRuntimeToolKeys(runtimeTools, {
+  enabledRuntimeTools: Tool<TContext>[];
+}): Tool<TContext>[] {
+  const {
+    agent,
+    toolSearchCall,
+    expectedRuntimeToolKeys,
+    enabledRuntimeTools,
+  } = args;
+  const actualRuntimeToolKeys = getRuntimeToolKeys(enabledRuntimeTools, {
     rejectDuplicateKeys: true,
   });
   const hasExpectedKeys = [...expectedRuntimeToolKeys].every((runtimeToolKey) =>
@@ -1714,7 +1734,12 @@ function assertRuntimeToolKeysMatch<TContext>(args: {
     expectedRuntimeToolKeys.has(runtimeToolKey),
   );
   if (hasExpectedKeys && hasActualKeys) {
-    return;
+    return enabledRuntimeTools.filter((runtimeTool) => {
+      const runtimeToolKey = getToolSearchRuntimeRoutingKey(runtimeTool);
+      return (
+        runtimeToolKey != null && expectedRuntimeToolKeys.has(runtimeToolKey)
+      );
+    });
   }
 
   if (logger.dontLogToolData) {
@@ -1952,7 +1977,12 @@ function assertUnambiguousFunctionCallIds<
     const expectedRoutedToolKey =
       processedIdentity?.resolvedRoutedToolKey ?? rawItemRoutedToolKey;
     if (typeof interruption.functionToolStateKey === 'string') {
-      if (interruption.functionToolStateKey !== expectedRoutedToolKey) {
+      const validationRequiresPendingNestedState =
+        interruptionAgent !== state._currentAgent && !processedIdentity;
+      if (
+        !validationRequiresPendingNestedState &&
+        interruption.functionToolStateKey !== expectedRoutedToolKey
+      ) {
         throwAmbiguousFunctionCallId(interruptionAgent, rawItem.callId, [
           expectedRoutedToolKey,
           interruption.functionToolStateKey,
@@ -2115,6 +2145,7 @@ async function rehydrateToolSearchRuntimeTools<
     serializedProcessedResponse?: z.infer<
       typeof serializedProcessedResponseSchema
     >;
+    prepareCurrentAgentForLegacyApprovals?: boolean;
   },
 ): Promise<Map<Agent<TContext, any>, RunStateCapabilitySnapshot<TContext>>> {
   const deferredFunctionCallExpectations = assertUnambiguousFunctionCallIds(
@@ -2227,6 +2258,9 @@ async function rehydrateToolSearchRuntimeTools<
     ),
   );
   if (options.serializedProcessedResponse) {
+    agentsToPrepare.add(state._currentAgent as Agent<TContext, any>);
+  }
+  if (options.prepareCurrentAgentForLegacyApprovals) {
     agentsToPrepare.add(state._currentAgent as Agent<TContext, any>);
   }
 
@@ -2404,21 +2438,22 @@ async function rehydrateToolSearchRuntimeTools<
     }
     const agent = record.pendingCall.agent;
     const snapshot = capabilitySnapshotsByAgent.get(agent)!;
-    const { runtimeTools } = await executeCustomClientToolSearch({
-      agent,
-      runContext: state._context,
-      toolSearchCall: record.pendingCall.toolSearchCall,
-      toolSearchTool: record.toolSearchTool,
-      tools: snapshot.callbackTools,
-    });
-    assertRuntimeToolKeysMatch({
+    const { runtimeTools, callbackRuntimeTools } =
+      await executeCustomClientToolSearch({
+        agent,
+        runContext: state._context,
+        toolSearchCall: record.pendingCall.toolSearchCall,
+        toolSearchTool: record.toolSearchTool,
+        tools: snapshot.callbackTools,
+      });
+    const serializedRuntimeTools = selectSerializedRuntimeTools({
       agent,
       toolSearchCall: record.pendingCall.toolSearchCall,
       expectedRuntimeToolKeys: record.expectedRuntimeToolKeys,
-      runtimeTools,
+      enabledRuntimeTools: runtimeTools,
     });
-    record.runtimeTools = runtimeTools;
-    snapshot.callbackTools.push(...runtimeTools);
+    record.runtimeTools = serializedRuntimeTools;
+    snapshot.callbackTools.push(...callbackRuntimeTools);
   }
 
   for (const generatedItem of state._generatedItems) {
@@ -2429,11 +2464,6 @@ async function rehydrateToolSearchRuntimeTools<
       }
       const agent = record.pendingCall.agent;
       const snapshot = capabilitySnapshotsByAgent.get(agent)!;
-      const enabledRuntimeTools = await filterEnabledToolSearchRuntimeTools({
-        runtimeTools: record.runtimeTools,
-        runContext: state._context,
-        agent,
-      });
       const replacedRuntimeTools = state.getToolSearchRuntimeToolsForOutput(
         agent,
         generatedItem.rawItem,
@@ -2445,7 +2475,7 @@ async function rehydrateToolSearchRuntimeTools<
         mcpToolMap: snapshot.mcpToolMap,
         replaceableRuntimeToolKeys: snapshot.replaceableRuntimeToolKeys,
         replacedRuntimeTools,
-        runtimeTools: enabledRuntimeTools,
+        runtimeTools: record.runtimeTools,
       });
       for (const runtimeTool of registeredRuntimeTools) {
         if (runtimeTool.type === 'function') {
@@ -2521,9 +2551,9 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
           stateJson.context.functionApprovals ?? [],
           agentMap,
         );
-        if (stateJson.context.legacyFunctionApprovalFallback === true) {
-          context._enableLegacyFunctionApprovalFallback();
-        }
+        context._mergeLegacyFunctionApprovals(
+          stateJson.context.legacyFunctionApprovals ?? {},
+        );
       } else {
         deferredLegacyApprovalContext = new RunContext<TContext>(
           stateJson.context.context as TContext,
@@ -2531,7 +2561,9 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
         deferredLegacyApprovalContext._rebuildApprovals(
           stateJson.context.approvals,
         );
-        deferredLegacyApprovalContext._enableLegacyFunctionApprovalFallback();
+        deferredLegacyApprovalContext._rebuildLegacyFunctionApprovals(
+          stateJson.context.approvals,
+        );
       }
     }
   } else {
@@ -2540,12 +2572,11 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
       stateJson.context.functionApprovals ?? [],
       agentMap,
     );
-    if (
-      schemaVersion !== CURRENT_SCHEMA_VERSION ||
-      stateJson.context.legacyFunctionApprovalFallback === true
-    ) {
-      context._enableLegacyFunctionApprovalFallback();
-    }
+    context._rebuildLegacyFunctionApprovals(
+      schemaVersion === CURRENT_SCHEMA_VERSION
+        ? (stateJson.context.legacyFunctionApprovals ?? {})
+        : stateJson.context.approvals,
+    );
   }
   const shouldRestoreSerializedContext =
     !contextOverride || contextStrategy === 'merge';
@@ -2662,6 +2693,10 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
       agentMap,
       schemaVersion,
       serializedProcessedResponse: stateJson.lastProcessedResponse,
+      prepareCurrentAgentForLegacyApprovals:
+        schemaVersion !== CURRENT_SCHEMA_VERSION &&
+        shouldRestoreSerializedContext &&
+        Object.keys(stateJson.context.approvals).length > 0,
     },
   );
   const currentCapabilitySnapshot = capabilitySnapshotsByAgent.get(
@@ -2684,20 +2719,6 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
     state,
     stateJson.pendingAgentToolRunAliases ?? {},
   );
-  const legacyFunctionApprovalKeys = migrateLegacyFunctionToolState(
-    state,
-    schemaVersion,
-    shouldRestoreSerializedContext,
-    deferredLegacyApprovalContext,
-  );
-  if (deferredLegacyApprovalContext) {
-    context._mergeApprovalsPreservingExactKeys(
-      deferredLegacyApprovalContext.toJSON().approvals,
-      legacyFunctionApprovalKeys,
-    );
-    context._enableLegacyFunctionApprovalFallback();
-  }
-
   if (stateJson.currentStep?.type === 'next_step_handoff') {
     state._currentStep = {
       type: 'next_step_handoff',
@@ -2716,6 +2737,8 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
       interruptions,
       state._lastProcessedResponse,
       state._currentAgent,
+      state,
+      schemaVersion,
     );
     state._currentStep = {
       type: 'next_step_interruption',
@@ -2724,6 +2747,52 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
         interruptions,
       },
     };
+  }
+  const legacyAvailableToolsByAgent = new Map<
+    Agent<any, any>,
+    Tool<TContext>[]
+  >();
+  for (const agent of new Set(agentMap.values())) {
+    legacyAvailableToolsByAgent.set(agent, [
+      ...(agent.tools as Tool<TContext>[]),
+    ]);
+  }
+  for (const [agent, snapshot] of capabilitySnapshotsByAgent) {
+    const configuredTools = legacyAvailableToolsByAgent.get(agent) ?? [];
+    legacyAvailableToolsByAgent.set(agent, [
+      ...new Set([...configuredTools, ...snapshot.availableTools]),
+    ]);
+  }
+  const legacyFunctionApprovalKeys = migrateLegacyFunctionToolState(
+    state,
+    schemaVersion,
+    shouldRestoreSerializedContext,
+    deferredLegacyApprovalContext,
+    legacyAvailableToolsByAgent,
+  );
+  const legacyApprovalContext = deferredLegacyApprovalContext ?? context;
+  if (schemaVersion !== CURRENT_SCHEMA_VERSION) {
+    legacyApprovalContext._retainLegacyFunctionApprovals(
+      legacyFunctionApprovalKeys,
+    );
+    legacyApprovalContext._removeMigratedFunctionApprovalsFromAggregate(
+      legacyFunctionApprovalKeys,
+      new Set(
+        [...legacyAvailableToolsByAgent.values()].flatMap((tools) =>
+          tools.flatMap((tool) =>
+            tool.type !== 'function' && typeof tool.name === 'string'
+              ? [tool.name]
+              : [],
+          ),
+        ),
+      ),
+    );
+  }
+  if (deferredLegacyApprovalContext) {
+    context._mergeApprovalStatePreservingExactKeys(
+      deferredLegacyApprovalContext,
+      legacyFunctionApprovalKeys,
+    );
   }
   return state;
 }
@@ -3153,8 +3222,26 @@ function rebindInterruptionFunctionToolStateKeys<TContext>(
   interruptions: RunToolApprovalItem[],
   processedResponse: ProcessedResponse<TContext> | undefined,
   processedAgent: Agent<any, any>,
+  state: RunState<TContext, Agent<any, any>>,
+  schemaVersion: SupportedSchemaVersion,
 ): void {
   if (!processedResponse) {
+    for (const interruption of interruptions) {
+      if (
+        interruption.rawItem.type !== 'function_call' ||
+        !interruption.functionToolStateKey
+      ) {
+        continue;
+      }
+      const rawStateKey = getFunctionToolStateKeyForCall(interruption.rawItem);
+      if (rawStateKey && interruption.functionToolStateKey !== rawStateKey) {
+        throwAmbiguousFunctionCallId(
+          interruption.agent,
+          interruption.rawItem.callId,
+          [rawStateKey, interruption.functionToolStateKey],
+        );
+      }
+    }
     return;
   }
 
@@ -3165,20 +3252,169 @@ function rebindInterruptionFunctionToolStateKeys<TContext>(
     ]),
   );
   for (const interruption of interruptions) {
-    if (
-      interruption.agent !== processedAgent ||
-      interruption.rawItem.type !== 'function_call'
-    ) {
+    if (interruption.rawItem.type !== 'function_call') {
       continue;
     }
-    const functionCall = functionsByCallId.get(interruption.rawItem.callId);
-    const stateKey = functionCall
-      ? getFunctionToolStateKey(functionCall.tool)
-      : undefined;
+    let stateKey: string | undefined;
+    if (interruption.agent === processedAgent) {
+      stateKey = getFunctionToolStateKey(
+        functionsByCallId.get(interruption.rawItem.callId)?.tool,
+      );
+    } else {
+      stateKey = findNestedInterruptionFunctionToolStateKey(
+        state,
+        interruption,
+      );
+      if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+        const rawStateKey = getFunctionToolStateKeyForCall(
+          interruption.rawItem,
+        );
+        const serializedStateKey = interruption.functionToolStateKey;
+        const expectedStateKey = stateKey ?? rawStateKey;
+        if (
+          serializedStateKey &&
+          expectedStateKey &&
+          serializedStateKey !== expectedStateKey
+        ) {
+          throwAmbiguousFunctionCallId(
+            interruption.agent,
+            interruption.rawItem.callId,
+            [expectedStateKey, serializedStateKey],
+          );
+        }
+      }
+    }
     if (stateKey) {
       interruption.functionToolStateKey = stateKey;
     }
   }
+}
+
+function findNestedInterruptionFunctionToolStateKey<TContext>(
+  state: RunState<TContext, Agent<any, any>>,
+  interruption: RunToolApprovalItem,
+): string | undefined {
+  if (interruption.rawItem.type !== 'function_call') {
+    return undefined;
+  }
+
+  const serializedPendingStates = new Set<string>();
+  for (const functionCall of state._lastProcessedResponse?.functions ?? []) {
+    if (getAgentToolSourceAgent(functionCall.tool) !== interruption.agent) {
+      continue;
+    }
+    const stateKeys = getFunctionToolStateKeys(
+      functionCall.tool,
+      functionCall.availableFunctionTools ?? [functionCall.tool],
+    );
+    for (const stateKey of stateKeys) {
+      const serializedState = state.getPendingAgentToolRun(
+        stateKey,
+        functionCall.toolCall.callId,
+      );
+      if (serializedState) {
+        serializedPendingStates.add(serializedState);
+      }
+    }
+  }
+
+  const resolvedStateKeys = new Set<string>();
+  for (const serializedState of serializedPendingStates) {
+    const resolvedStateKey =
+      getSerializedNestedInterruptionFunctionToolStateKey(
+        serializedState,
+        interruption.rawItem,
+      );
+    if (resolvedStateKey) {
+      resolvedStateKeys.add(resolvedStateKey);
+    }
+  }
+  if (resolvedStateKeys.size > 1) {
+    throwAmbiguousFunctionCallId(
+      interruption.agent,
+      interruption.rawItem.callId,
+      [...resolvedStateKeys],
+    );
+  }
+  return resolvedStateKeys.values().next().value;
+}
+
+function getSerializedNestedInterruptionFunctionToolStateKey(
+  serializedState: string,
+  interruptionRawItem: protocol.FunctionCallItem,
+): string | undefined {
+  let nestedState: unknown;
+  try {
+    nestedState = JSON.parse(serializedState);
+  } catch {
+    return undefined;
+  }
+  if (!nestedState || typeof nestedState !== 'object') {
+    return undefined;
+  }
+
+  const candidate = nestedState as {
+    currentStep?: {
+      type?: unknown;
+      data?: { interruptions?: unknown };
+    };
+    lastProcessedResponse?: {
+      functions?: unknown;
+    };
+  };
+  if (
+    candidate.currentStep?.type !== 'next_step_interruption' ||
+    !Array.isArray(candidate.currentStep.data?.interruptions) ||
+    !candidate.currentStep.data.interruptions.some((value) => {
+      if (!value || typeof value !== 'object') {
+        return false;
+      }
+      const rawItem = (value as { rawItem?: unknown }).rawItem;
+      return (
+        rawItem != null &&
+        typeof rawItem === 'object' &&
+        (rawItem as { type?: unknown }).type === 'function_call' &&
+        (rawItem as { callId?: unknown }).callId ===
+          interruptionRawItem.callId &&
+        getFunctionToolStateKeyForCall(rawItem as protocol.FunctionCallItem) ===
+          getFunctionToolStateKeyForCall(interruptionRawItem)
+      );
+    }) ||
+    !Array.isArray(candidate.lastProcessedResponse?.functions)
+  ) {
+    return undefined;
+  }
+
+  const stateKeys = new Set<string>();
+  for (const value of candidate.lastProcessedResponse.functions) {
+    if (!value || typeof value !== 'object') {
+      continue;
+    }
+    const functionCall = value as { toolCall?: unknown; tool?: unknown };
+    if (
+      !functionCall.toolCall ||
+      typeof functionCall.toolCall !== 'object' ||
+      (functionCall.toolCall as { callId?: unknown }).callId !==
+        interruptionRawItem.callId
+    ) {
+      continue;
+    }
+    const stateKey = getFunctionToolStateKey(functionCall.tool);
+    if (
+      stateKey &&
+      getFunctionToolStateKeyForResolvedCall(
+        interruptionRawItem,
+        functionCall.tool,
+        stateKey,
+      ) === stateKey
+    ) {
+      stateKeys.add(stateKey);
+    }
+  }
+  if (stateKeys.size !== 1) {
+    return undefined;
+  }
+  return stateKeys.values().next().value;
 }
 
 function restorePendingAgentToolRunAliases<TContext>(
@@ -3225,33 +3461,69 @@ function migrateLegacyFunctionToolState<TContext>(
   schemaVersion: SupportedSchemaVersion,
   migrateApprovals: boolean,
   approvalContext: RunContext<TContext> = state._context,
+  availableToolsByAgent: ReadonlyMap<
+    Agent<any, any>,
+    readonly Tool<TContext>[]
+  > = new Map(),
 ): Set<string> {
-  if (
-    schemaVersion === CURRENT_SCHEMA_VERSION ||
-    !state._lastProcessedResponse
-  ) {
+  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
     return new Set();
   }
 
-  const approvalCallsByLegacyKey = new Map<string, Map<string, string[]>>();
-  const approvalOwnersByLegacyKey = new Map<string, Set<string>>();
-  for (const functionCall of state._lastProcessedResponse.functions) {
-    for (const tool of functionCall.availableFunctionTools ?? [
-      functionCall.tool,
-    ]) {
+  const approvalCallsByLegacyKey = new Map<
+    string,
+    Map<Agent<any, any>, Map<string, Set<string>>>
+  >();
+  const approvalOwnersByLegacyKey = new Map<
+    string,
+    Map<Agent<any, any>, Set<string>>
+  >();
+  const addApprovalOwner = (
+    legacyKey: string,
+    agent: Agent<any, any>,
+    canonicalKey: string,
+  ) => {
+    const ownersByAgent =
+      approvalOwnersByLegacyKey.get(legacyKey) ??
+      new Map<Agent<any, any>, Set<string>>();
+    const ownerKeys = ownersByAgent.get(agent) ?? new Set<string>();
+    ownerKeys.add(canonicalKey);
+    ownersByAgent.set(agent, ownerKeys);
+    approvalOwnersByLegacyKey.set(legacyKey, ownersByAgent);
+  };
+  const addApprovalCall = (
+    legacyKey: string,
+    agent: Agent<any, any>,
+    canonicalKey: string,
+    callId: string,
+  ) => {
+    addApprovalOwner(legacyKey, agent, canonicalKey);
+    const callsByAgent =
+      approvalCallsByLegacyKey.get(legacyKey) ??
+      new Map<Agent<any, any>, Map<string, Set<string>>>();
+    const callsByCanonicalKey =
+      callsByAgent.get(agent) ?? new Map<string, Set<string>>();
+    const callIds = callsByCanonicalKey.get(canonicalKey) ?? new Set<string>();
+    callIds.add(callId);
+    callsByCanonicalKey.set(canonicalKey, callIds);
+    callsByAgent.set(agent, callsByCanonicalKey);
+    approvalCallsByLegacyKey.set(legacyKey, callsByAgent);
+  };
+  for (const [agent, availableTools] of availableToolsByAgent) {
+    for (const tool of availableTools) {
+      if (tool.type !== 'function') {
+        continue;
+      }
       const canonicalKey = getFunctionToolStateKey(tool);
       const legacyKey = getFunctionToolQualifiedName(tool) ?? tool.name;
       if (!canonicalKey || canonicalKey === legacyKey) {
         continue;
       }
-      const canonicalOwners =
-        approvalOwnersByLegacyKey.get(legacyKey) ?? new Set<string>();
-      canonicalOwners.add(canonicalKey);
-      approvalOwnersByLegacyKey.set(legacyKey, canonicalOwners);
+      addApprovalOwner(legacyKey, agent, canonicalKey);
     }
   }
 
-  for (const functionCall of state._lastProcessedResponse.functions) {
+  for (const functionCall of state._lastProcessedResponse?.functions ?? []) {
     const canonicalKey = getFunctionToolStateKey(functionCall.tool);
     const legacyKey =
       getFunctionToolQualifiedName(functionCall.tool) ?? functionCall.tool.name;
@@ -3268,35 +3540,76 @@ function migrateLegacyFunctionToolState<TContext>(
     if (!migrateApprovals) {
       continue;
     }
-    const callsByCanonicalKey =
-      approvalCallsByLegacyKey.get(legacyKey) ?? new Map<string, string[]>();
-    const callIds = callsByCanonicalKey.get(canonicalKey) ?? [];
-    callIds.push(callId);
-    callsByCanonicalKey.set(canonicalKey, callIds);
-    approvalCallsByLegacyKey.set(legacyKey, callsByCanonicalKey);
+    addApprovalCall(legacyKey, state._currentAgent, canonicalKey, callId);
   }
 
-  if (migrateApprovals) {
-    for (const [legacyKey, canonicalOwners] of approvalOwnersByLegacyKey) {
-      if (canonicalOwners.size !== 1) {
+  if (state._currentStep?.type === 'next_step_interruption') {
+    for (const interruption of state._currentStep.data.interruptions) {
+      if (
+        interruption.rawItem.type !== 'function_call' ||
+        !interruption.functionToolStateKey
+      ) {
         continue;
       }
-      const [canonicalKey] = canonicalOwners;
-      approvalContext._migrateToolApproval(legacyKey, canonicalKey!, [], true);
+      const legacyKey = getFunctionToolLegacyStateKeyFromStateKey(
+        interruption.functionToolStateKey,
+      );
+      if (!legacyKey) {
+        continue;
+      }
+      addApprovalCall(
+        legacyKey,
+        interruption.agent,
+        interruption.functionToolStateKey,
+        interruption.rawItem.callId,
+      );
     }
   }
 
-  for (const [legacyKey, callsByCanonicalKey] of approvalCallsByLegacyKey) {
-    for (const [canonicalKey, callIds] of callsByCanonicalKey) {
-      const canonicalOwners = approvalOwnersByLegacyKey.get(legacyKey);
-      const migratePermanentDecision =
-        canonicalOwners?.size === 1 && canonicalOwners.has(canonicalKey);
+  if (migrateApprovals) {
+    for (const [legacyKey, ownersByAgent] of approvalOwnersByLegacyKey) {
+      const ownerEntries = [...ownersByAgent].flatMap(
+        ([agent, canonicalKeys]) =>
+          [...canonicalKeys].map((canonicalKey) => ({ agent, canonicalKey })),
+      );
+      if (ownerEntries.length !== 1) {
+        continue;
+      }
+      const [{ agent, canonicalKey }] = ownerEntries;
       approvalContext._migrateToolApproval(
+        agent,
         legacyKey,
         canonicalKey,
-        callIds,
-        migratePermanentDecision,
+        [],
+        true,
       );
+    }
+  }
+
+  for (const [legacyKey, callsByAgent] of approvalCallsByLegacyKey) {
+    const callOwners = new Map<string, number>();
+    for (const callsByCanonicalKey of callsByAgent.values()) {
+      for (const callIds of callsByCanonicalKey.values()) {
+        for (const callId of callIds) {
+          callOwners.set(callId, (callOwners.get(callId) ?? 0) + 1);
+        }
+      }
+    }
+    for (const [agent, callsByCanonicalKey] of callsByAgent) {
+      for (const [canonicalKey, callIds] of callsByCanonicalKey) {
+        for (const callId of callIds) {
+          const remainingOwners = (callOwners.get(callId) ?? 1) - 1;
+          callOwners.set(callId, remainingOwners);
+          approvalContext._migrateToolApproval(
+            agent,
+            legacyKey,
+            canonicalKey,
+            [callId],
+            false,
+            remainingOwners > 0,
+          );
+        }
+      }
     }
   }
   return new Set(approvalOwnersByLegacyKey.keys());

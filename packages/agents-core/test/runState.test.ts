@@ -1649,7 +1649,7 @@ describe('RunState', () => {
     serialized.$schemaVersion = '1.15';
     serialized.context.approvals.lookup = ownerApprovals[categoryKey];
     delete serialized.context.functionApprovals;
-    delete serialized.context.legacyFunctionApprovalFallback;
+    delete serialized.context.legacyFunctionApprovals;
 
     const restored = await RunState.fromString(
       agent,
@@ -1951,7 +1951,7 @@ describe('RunState', () => {
             toolName: canonicalKey,
             callId: `${callId}-future`,
           }),
-        ).toBeUndefined();
+        ).toBe(isPermanent ? decision.expected : undefined);
         expect(
           restored._context.isToolApproved({
             toolName: legacyKey,
@@ -2050,6 +2050,29 @@ describe('RunState', () => {
           callId,
         }),
       ).toBeUndefined();
+      const publicApproval = restored._context.toJSON().approvals['crm.lookup'];
+      expect(publicApproval).toBeDefined();
+      expect(publicApproval.approved === true).toBe(
+        approvalRecord.approved === true,
+      );
+      expect(publicApproval.rejected === true).toBe(
+        approvalRecord.rejected === true,
+      );
+      expect(
+        restored._context.toJSON().approvals[canonicalKey],
+      ).toBeUndefined();
+
+      const durable = restored.toJSON() as any;
+      expect(durable.context.approvals['crm.lookup']).toBeUndefined();
+      const durableApproval = durable.context.functionApprovals.find(
+        (entry: any) => entry.agentIdentity === agent.name,
+      ).approvals[canonicalKey];
+      expect(durableApproval.approved === true).toBe(
+        approvalRecord.approved === true,
+      );
+      expect(durableApproval.rejected === true).toBe(
+        approvalRecord.rejected === true,
+      );
     },
   );
 
@@ -2066,41 +2089,11 @@ describe('RunState', () => {
         }),
       ],
     })[0]!;
-    const otherTool = tool({
-      name: 'other_tool',
-      description: 'Other tool.',
-      parameters: z.object({}),
-      execute: async () => 'other',
-    });
-    const otherCall: protocol.FunctionCallItem = {
-      type: 'function_call',
-      name: 'other_tool',
-      callId: 'other_call',
-      status: 'completed',
-      arguments: '{}',
-    };
     const agent = new Agent({
       name: 'Unique inactive legacy approval owner',
-      tools: [namespacedLookup, otherTool],
+      tools: [namespacedLookup],
     });
     const state = new RunState(new RunContext(), 'input', agent, 2);
-    state._lastProcessedResponse = {
-      newItems: [],
-      functions: [
-        {
-          toolCall: otherCall,
-          tool: otherTool as any,
-          availableFunctionTools: [namespacedLookup, otherTool] as any,
-        },
-      ],
-      handoffs: [],
-      computerActions: [],
-      shellActions: [],
-      applyPatchActions: [],
-      mcpApprovalRequests: [],
-      toolsUsed: ['other_tool'],
-      hasToolsOrApprovalsToRun: () => true,
-    };
 
     const serialized = state.toJSON() as any;
     serialized.$schemaVersion = '1.15';
@@ -2126,6 +2119,69 @@ describe('RunState', () => {
         callId: 'future_call',
       }),
     ).toBeUndefined();
+    const durable = restored.toJSON() as any;
+    expect(durable.context.approvals['crm.lookup']).toBeUndefined();
+    expect(durable.context.legacyFunctionApprovals).toBeUndefined();
+    expect(
+      durable.context.functionApprovals[0].approvals[canonicalKey],
+    ).toMatchObject({ approved: true, rejected: [] });
+  });
+
+  it('migrates a unique schema 1.15 approval owned by an inactive child agent', async () => {
+    const childLookup = toolNamespace({
+      name: 'crm',
+      description: 'Child CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Child namespaced lookup.',
+          parameters: z.object({}),
+          execute: async () => 'child',
+        }),
+      ],
+    })[0]!;
+    const childAgent = new Agent({
+      name: 'Inactive legacy approval child',
+      tools: [childLookup],
+    });
+    const rootAgent = new Agent({
+      name: 'Inactive legacy approval root',
+      tools: [
+        childAgent.asTool({
+          toolName: 'run_child',
+          toolDescription: 'Runs the child agent.',
+        }),
+      ],
+    });
+    const state = new RunState(new RunContext(), 'input', rootAgent, 2);
+    const serialized = state.toJSON() as any;
+    serialized.$schemaVersion = '1.15';
+    serialized.context.approvals = {
+      'crm.lookup': { approved: true, rejected: [] },
+    };
+
+    const restored = await RunState.fromString(
+      rootAgent,
+      JSON.stringify(serialized),
+    );
+    const canonicalKey = getFunctionToolStateKey(childLookup)!;
+
+    expect(
+      restored._context.isToolApproved({
+        toolName: canonicalKey,
+        callId: 'future_child_call',
+        functionTool: false,
+        agent: childAgent,
+      }),
+    ).toBe(true);
+    const durable = restored.toJSON() as any;
+    expect(durable.context.approvals['crm.lookup']).toBeUndefined();
+    expect(durable.context.legacyFunctionApprovals).toBeUndefined();
+    expect(
+      durable.context.functionApprovals.find(
+        (entry: any) => entry.agentIdentity === childAgent.name,
+      ).approvals[canonicalKey],
+    ).toMatchObject({ approved: true, rejected: [] });
   });
 
   it('keeps an exact non-function override separate from an inactive schema 1.15 function owner', async () => {
@@ -2217,6 +2273,131 @@ describe('RunState', () => {
         functionTool: false,
       }),
     ).toBe(false);
+  });
+
+  it('keeps ambiguous legacy function fallback separate from an exact non-function override', async () => {
+    const dottedLookup = tool({
+      name: 'crm_lookup',
+      description: 'Dotted lookup.',
+      parameters: z.object({}),
+      execute: async () => 'dotted',
+    });
+    dottedLookup.name = 'crm.lookup';
+    const namespacedLookup = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Namespaced lookup.',
+          parameters: z.object({}),
+          execute: async () => 'namespaced',
+        }),
+      ],
+    })[0]!;
+    const callId = 'ambiguous_merge_call';
+    const toolCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      name: 'lookup',
+      namespace: 'crm',
+      callId,
+      status: 'completed',
+      arguments: '{}',
+    };
+    const agent = new Agent({
+      name: 'Ambiguous legacy fallback merge',
+      tools: [dottedLookup, namespacedLookup],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    state._lastProcessedResponse = {
+      newItems: [],
+      functions: [{ toolCall, tool: namespacedLookup as any }],
+      handoffs: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: ['crm.lookup'],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+    const serialized = state.toJSON() as any;
+    serialized.$schemaVersion = '1.15';
+    serialized.context.approvals = {
+      'crm.lookup': {
+        approved: false,
+        rejected: true,
+        stickyRejectMessage: 'Legacy rejection',
+      },
+    };
+
+    const overrideContext = new RunContext();
+    overrideContext.approveTool(
+      new ToolApprovalItem(
+        {
+          type: 'shell_call',
+          callId: 'shell_override_call',
+          status: 'completed',
+          action: { commands: ['echo approved'] },
+        },
+        agent,
+        'crm.lookup',
+      ),
+      { alwaysApprove: true },
+    );
+
+    const restored = await RunState.fromStringWithContext(
+      agent,
+      JSON.stringify(serialized),
+      overrideContext,
+      { contextStrategy: 'merge' },
+    );
+    const namespacedKey = getFunctionToolStateKey(namespacedLookup)!;
+    const dottedKey = getFunctionToolStateKey(dottedLookup)!;
+
+    for (const [toolName, checkedCallId] of [
+      [namespacedKey, callId],
+      [namespacedKey, 'future_namespaced_call'],
+      [dottedKey, 'future_dotted_call'],
+    ] as const) {
+      expect(
+        restored._context.isToolApproved({
+          toolName,
+          callId: checkedCallId,
+          functionTool: false,
+          agent,
+        }),
+      ).toBe(false);
+    }
+    expect(
+      restored._context.isToolApproved({
+        toolName: 'crm.lookup',
+        callId: 'future_shell_call',
+        functionTool: false,
+      }),
+    ).toBe(true);
+
+    const durable = restored.toJSON() as any;
+    expect(durable.context.approvals['crm.lookup'].approved).toBe(true);
+    expect(durable.context.legacyFunctionApprovals['crm.lookup'].rejected).toBe(
+      true,
+    );
+
+    const roundTripped = await RunState.fromString(agent, restored.toString());
+    expect(
+      roundTripped._context.isToolApproved({
+        toolName: dottedKey,
+        callId: 'round_trip_function_call',
+        functionTool: false,
+        agent,
+      }),
+    ).toBe(false);
+    expect(
+      roundTripped._context.isToolApproved({
+        toolName: 'crm.lookup',
+        callId: 'round_trip_shell_call',
+        functionTool: false,
+      }),
+    ).toBe(true);
   });
 
   it('keeps schema 1.15 approval ownership when merging a canonical override context', async () => {
@@ -2356,6 +2537,7 @@ describe('RunState', () => {
       );
       const namespacedKey = getFunctionToolStateKey(namespacedLookup)!;
       const bareKey = getFunctionToolStateKey(dottedLookup)!;
+      const isPermanent = decision.name.startsWith('permanent');
 
       expect(
         restored._context.isToolApproved({
@@ -2372,7 +2554,7 @@ describe('RunState', () => {
           toolName: namespacedKey,
           callId: `${callId}-future`,
         }),
-      ).toBeUndefined();
+      ).toBe(isPermanent ? decision.expected : undefined);
       expect(
         restored._context.isToolApproved({
           toolName: 'crm.lookup',
@@ -2389,14 +2571,16 @@ describe('RunState', () => {
         restored._context.isToolApproved({
           toolName: bareKey,
           callId: 'existing-bare-call',
+          agent,
         }),
       ).toBe(true);
       expect(
         restored._context.isToolApproved({
           toolName: bareKey,
           callId: 'future-bare-call',
+          agent,
         }),
-      ).toBeUndefined();
+      ).toBe(isPermanent ? decision.expected : undefined);
       expect(
         restored._context.isToolApproved({
           toolName: 'other',
@@ -4465,6 +4649,24 @@ describe('RunState', () => {
     ).rejects.toBeInstanceOf(UserError);
   });
 
+  it('rejects noncanonical current function approval keys with UserError', async () => {
+    const agent = new Agent({ name: 'NoncanonicalApprovalKeyAgent' });
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+    const serialized = state.toJSON() as any;
+    serialized.context.functionApprovals = [
+      {
+        agentIdentity: agent.name,
+        approvals: {
+          lookup: { approved: true, rejected: [] },
+        },
+      },
+    ];
+
+    await expect(
+      RunState.fromString(agent, JSON.stringify(serialized)),
+    ).rejects.toBeInstanceOf(UserError);
+  });
+
   it('preserves ZodError for unrelated malformed run state fields', async () => {
     const agent = new Agent({ name: 'MalformedUnrelatedStateAgent' });
     const state = new RunState(new RunContext(), 'input', agent, 1);
@@ -5388,6 +5590,163 @@ describe('RunState', () => {
     ).toEqual(['after_disabled']);
   });
 
+  it.each([
+    ['an enabled and a disabled result', true],
+    ['two disabled results', false],
+  ] as const)(
+    'rehydrates client tool-search output after filtering %s',
+    async (_description, includeEnabledResult) => {
+      const enabledLookup = tool({
+        name: 'lookup',
+        description: 'Enabled lookup.',
+        parameters: z.object({}).strict(),
+        execute: async () => 'enabled',
+      });
+      const disabledLookup = tool({
+        name: 'lookup',
+        description: 'Disabled lookup.',
+        parameters: z.object({}).strict(),
+        isEnabled: false,
+        execute: async () => 'disabled',
+      });
+      const otherDisabledLookup = tool({
+        name: 'lookup',
+        description: 'Other disabled lookup.',
+        parameters: z.object({}).strict(),
+        isEnabled: false,
+        execute: async () => 'other disabled',
+      });
+      const execute = vi.fn(async () => [
+        includeEnabledResult ? enabledLookup : otherDisabledLookup,
+        disabledLookup,
+      ]);
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search', execution: 'client' },
+        },
+        execute,
+      );
+      const agent = new Agent({
+        name: `Filtered duplicate restore ${includeEnabledResult}`,
+        tools: [clientToolSearch],
+      });
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      const processed = await processModelResponseAsync(
+        {
+          output: [
+            {
+              type: 'tool_search_call',
+              id: 'ts_call_filtered_duplicate_restore',
+              status: 'completed',
+              arguments: {},
+              providerData: {
+                call_id: 'call_filtered_duplicate_restore',
+                execution: 'client',
+              },
+            } as protocol.ToolSearchCallItem,
+          ],
+          usage: new Usage(),
+        },
+        agent,
+        [clientToolSearch],
+        [],
+        state,
+        [],
+      );
+      state._generatedItems.push(...processed.newItems);
+      state._lastProcessedResponse = processed;
+
+      const restored = await RunState.fromString(agent, state.toString());
+
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(restored.getToolSearchRuntimeTools(agent)).toEqual(
+        includeEnabledResult ? [enabledLookup] : [],
+      );
+    },
+  );
+
+  it.each([
+    ['one serialized tool', true],
+    ['an empty serialized result', false],
+  ] as const)(
+    'rejects extra enabled callback tools when rehydrating %s',
+    async (_description, includeSerializedLookup) => {
+      const lookup = tool({
+        name: 'lookup',
+        description: 'Serialized lookup.',
+        parameters: z.object({}).strict(),
+        execute: async () => 'lookup',
+      });
+      const extraLookup = tool({
+        name: 'extra_lookup',
+        description: 'Unexpected extra lookup.',
+        parameters: z.object({}).strict(),
+        execute: async () => 'extra',
+      });
+      const execute = vi.fn(async () => [lookup, extraLookup]);
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search', execution: 'client' },
+        },
+        execute,
+      );
+      const agent = new Agent({
+        name: `Extra enabled restore ${includeSerializedLookup}`,
+        tools: [clientToolSearch],
+      });
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      const callId = 'call_extra_enabled_restore';
+      state._generatedItems.push(
+        new RunToolSearchCallItem(
+          {
+            type: 'tool_search_call',
+            id: 'ts_call_extra_enabled_restore',
+            status: 'completed',
+            arguments: {},
+            providerData: { call_id: callId, execution: 'client' },
+          } as protocol.ToolSearchCallItem,
+          agent,
+        ),
+        new RunToolSearchOutputItem(
+          {
+            type: 'tool_search_output',
+            id: 'ts_output_extra_enabled_restore',
+            status: 'completed',
+            tools: includeSerializedLookup
+              ? [
+                  {
+                    type: 'function',
+                    name: 'lookup',
+                    description: 'Serialized lookup.',
+                    strict: true,
+                    parameters: {
+                      type: 'object',
+                      properties: {},
+                      required: [],
+                      additionalProperties: false,
+                    },
+                  },
+                ]
+              : [],
+            providerData: { call_id: callId, execution: 'client' },
+          } as protocol.ToolSearchOutputItem,
+          agent,
+        ),
+      );
+
+      await expect(
+        RunState.fromString(agent, state.toString()),
+      ).rejects.toThrow(
+        'registered execute callback returned different runtime tools than the serialized state',
+      );
+      expect(execute).toHaveBeenCalledOnce();
+    },
+  );
+
   it('rejects duplicate configured identities returned during tool-search rehydration', async () => {
     const configuredTool = tool({
       name: 'configured',
@@ -6294,9 +6653,8 @@ describe('RunState', () => {
       state._context.isToolApproved({ toolName: 'toolZ', callId: 'cid789' }),
     ).toBe(false);
     const approvals = state._context.toJSON().approvals;
-    const approvalKey = getFunctionToolStateKeyForCall(rawItem)!;
-    expect(approvals[approvalKey].approved).toBe(false);
-    expect(approvals[approvalKey].rejected).toBe(true);
+    expect(approvals.toolZ.approved).toBe(false);
+    expect(approvals.toolZ.rejected).toBe(true);
   });
 
   it('alwaysReject with message stores call-specific and sticky rejection messages', () => {
@@ -6327,14 +6685,11 @@ describe('RunState', () => {
       'Blocked by policy',
     );
     const approvals = state._context.toJSON().approvals;
-    const approvalKey = getFunctionToolStateKeyForCall(rawItem)!;
-    expect(approvals[approvalKey].rejected).toBe(true);
-    expect(approvals[approvalKey].messages).toEqual({
+    expect(approvals.toolAR.rejected).toBe(true);
+    expect(approvals.toolAR.messages).toEqual({
       'ar-1': 'Blocked by policy',
     });
-    expect(approvals[approvalKey].stickyRejectMessage).toBe(
-      'Blocked by policy',
-    );
+    expect(approvals.toolAR.stickyRejectMessage).toBe('Blocked by policy');
   });
 
   it('alwaysReject with empty message preserves the empty string', () => {
@@ -7803,7 +8158,9 @@ describe('deserialize helpers', () => {
         new RunContext({ enabled: false }),
         { contextStrategy: 'replace' },
       ),
-    ).rejects.toThrow('Tool lookup_runtime not found');
+    ).rejects.toThrow(
+      'registered execute callback returned different runtime tools than the serialized state',
+    );
   });
 
   it('rejects resumed function tools when isEnabled is false in replacement context', async () => {
