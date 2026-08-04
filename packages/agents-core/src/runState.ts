@@ -1357,7 +1357,13 @@ function rehydrateLegacyCompactionRunItems(
     if (segmentStart === undefined) {
       throwLegacyCompactionOrderingError();
     }
-    generatedInsertionIndex = segmentStart + processedInsertionIndex!;
+    generatedInsertionIndex =
+      segmentStart +
+      findLegacyCompactionInsertionIndex(
+        stateJson.generatedItems.slice(segmentStart),
+        sourceResponse.output,
+        compactionIndex,
+      );
   } else {
     generatedInsertionIndex = findLegacyCompactionInsertionIndex(
       stateJson.generatedItems,
@@ -1405,37 +1411,40 @@ function findLegacyCompactionInsertionIndex(
   sourceOutput: protocol.OutputModelItem[],
   compactionIndex: number,
 ): number {
-  const expectedProviderIdentities = sourceOutput
-    .filter((_, index) => index !== compactionIndex)
-    .map(getProtocolItemIdentity);
-  const expectedIdentitySet = new Set(expectedProviderIdentities);
+  const representedSourceItems = sourceOutput.flatMap((item, index) =>
+    index === compactionIndex || item.type === 'unknown'
+      ? []
+      : [{ key: getCanonicalLegacyCompactionKey(item), sourceIndex: index }],
+  );
   const providerAnchors = items.flatMap((item, itemIndex) => {
     if (item.type === 'tool_approval_item') {
       return [];
     }
-    const identity = getProtocolItemIdentity(item.rawItem);
-    return expectedIdentitySet.has(identity) ? [{ identity, itemIndex }] : [];
+    return [{ key: getCanonicalLegacyCompactionKey(item.rawItem), itemIndex }];
   });
 
   if (
-    providerAnchors.length !== expectedProviderIdentities.length ||
+    providerAnchors.length !== representedSourceItems.length ||
     providerAnchors.some(
-      (anchor, index) => anchor.identity !== expectedProviderIdentities[index],
+      (anchor, index) => anchor.key !== representedSourceItems[index]?.key,
     )
   ) {
     throwLegacyCompactionOrderingError();
   }
 
-  if (expectedProviderIdentities.length === 0) {
+  if (representedSourceItems.length === 0) {
     if (items.length !== 0) {
       throwLegacyCompactionOrderingError();
     }
     return 0;
   }
 
-  const followingAnchor = providerAnchors[compactionIndex];
+  const retainedBeforeCompaction = representedSourceItems.filter(
+    (item) => item.sourceIndex < compactionIndex,
+  ).length;
+  const followingAnchor = providerAnchors[retainedBeforeCompaction];
   if (followingAnchor) {
-    if (compactionIndex === 0 && followingAnchor.itemIndex !== 0) {
+    if (retainedBeforeCompaction === 0 && followingAnchor.itemIndex !== 0) {
       throwLegacyCompactionOrderingError();
     }
     return followingAnchor.itemIndex;
@@ -1455,9 +1464,8 @@ function findTrailingProcessedSegmentStart(
     const matches = processedItems.every((processedItem, offset) => {
       const generatedItem = generatedItems[start + offset];
       return (
-        generatedItem.type === processedItem.type &&
-        getProtocolItemIdentity(generatedItem.rawItem) ===
-          getProtocolItemIdentity(processedItem.rawItem)
+        getCanonicalLegacyCompactionKey(generatedItem) ===
+        getCanonicalLegacyCompactionKey(processedItem)
       );
     });
     if (matches) {
@@ -1473,12 +1481,23 @@ function throwLegacyCompactionOrderingError(): never {
   );
 }
 
-function getProtocolItemIdentity(item: unknown): string {
-  const record = item as Record<string, unknown>;
-  const stableId = record.id ?? record.callId;
-  return typeof stableId === 'string'
-    ? `${String(record.type)}:${stableId}`
-    : JSON.stringify(record);
+function getCanonicalLegacyCompactionKey(value: unknown): string {
+  return JSON.stringify(sortLegacyCompactionValue(value));
+}
+
+function sortLegacyCompactionValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortLegacyCompactionValue);
+  }
+  if (typeof value !== 'object' || value === null) {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.keys(record)
+      .sort()
+      .map((key) => [key, sortLegacyCompactionValue(record[key])]),
+  );
 }
 
 function containsProgrammaticToolCallingState(

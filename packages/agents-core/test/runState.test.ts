@@ -1384,6 +1384,135 @@ describe('RunState', () => {
       ).toEqual(['compaction_item', 'message_output_item']);
     });
 
+    it('ignores dropped unknown output when anchoring legacy compaction', async () => {
+      const agent = new Agent({ name: 'UnknownLegacyCompactionAgent' });
+      const unknownItem: protocol.UnknownItem = {
+        type: 'unknown',
+        providerData: { type: 'future_output' },
+      };
+      const message: protocol.AssistantMessageItem = {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'retained output' }],
+      };
+      const response = {
+        usage: new Usage(),
+        output: [unknownItem, compactionItem, message],
+        responseId: 'response-unknown-with-compaction',
+      };
+      const messageItem = new RunMessageOutputItem(message, agent);
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      state._modelResponses = [response];
+      state._lastTurnResponse = response;
+      state._generatedItems = [messageItem];
+      state._lastProcessedResponse = {
+        newItems: [messageItem],
+        handoffs: [],
+        functions: [],
+        functionToolsNotFound: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        mcpApprovalRequests: [],
+        toolsUsed: [],
+        hasToolsOrApprovalsToRun: () => false,
+      };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(restored._generatedItems.map((item) => item.type)).toEqual([
+        'compaction_item',
+        'message_output_item',
+      ]);
+      expect(
+        restored._lastProcessedResponse?.newItems.map((item) => item.type),
+      ).toEqual(['compaction_item', 'message_output_item']);
+    });
+
+    it('keeps trailing legacy compaction after a function approval wrapper', async () => {
+      const approvalTool = tool({
+        name: 'legacy_trailing_compaction_tool',
+        description: 'Tool requiring approval.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'approved',
+      });
+      const agent = new Agent({
+        name: 'LegacyTrailingCompactionApprovalAgent',
+        tools: [approvalTool],
+      });
+      const functionCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: approvalTool.name,
+        callId: 'call_legacy_trailing_compaction',
+        arguments: '{}',
+        status: 'completed',
+      };
+      const response = {
+        usage: new Usage(),
+        output: [functionCall, compactionItem],
+        responseId: 'response-trailing-compaction-interruption',
+      };
+      const callItem = new RunToolCallItem(functionCall, agent);
+      const approvalItem = new ToolApprovalItem(functionCall, agent);
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      state._modelResponses = [response];
+      state._lastTurnResponse = response;
+      state._generatedItems = [callItem, approvalItem];
+      state._lastProcessedResponse = {
+        newItems: [callItem],
+        handoffs: [],
+        functions: [{ toolCall: functionCall, tool: approvalTool as any }],
+        functionToolsNotFound: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        mcpApprovalRequests: [],
+        toolsUsed: [approvalTool.name],
+        hasToolsOrApprovalsToRun: () => true,
+      };
+      state._currentStep = {
+        type: 'next_step_interruption',
+        data: { interruptions: [approvalItem] },
+      };
+      const session = new MemorySession();
+      await saveToSession(session, [], new RunResult(state as any), {
+        runCompaction: false,
+      });
+
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(restored._generatedItems.map((item) => item.type)).toEqual([
+        'tool_call_item',
+        'tool_approval_item',
+        'compaction_item',
+      ]);
+      expect(
+        restored._lastProcessedResponse?.newItems.map((item) => item.type),
+      ).toEqual(['tool_call_item', 'compaction_item']);
+      expect(restored._pendingLegacyCompactionSessionItems).toBeUndefined();
+      expect(restored._currentTurnPersistedItemCount).toBe(2);
+
+      await saveToSession(session, [], new RunResult(restored as any), {
+        runCompaction: false,
+      });
+      expect((await session.getItems()).map((item) => item.type)).toEqual([
+        'function_call',
+        'compaction',
+      ]);
+    });
+
     it('rehydrates legacy compaction with a hosted MCP approval', async () => {
       const mcpTool = hostedMcpTool({
         serverLabel: 'legacy_mcp',
@@ -1594,6 +1723,153 @@ describe('RunState', () => {
         mcpApprovalRequests: [],
         toolsUsed: [],
         hasToolsOrApprovalsToRun: () => false,
+      };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow('provider order is ambiguous');
+    });
+
+    it('rejects same-id provider output reordered across legacy compaction', async () => {
+      const agent = new Agent({ name: 'DuplicateIdLegacyCompactionAgent' });
+      const firstMessage: protocol.AssistantMessageItem = {
+        id: 'msg_duplicate_compaction',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'first' }],
+      };
+      const secondMessage: protocol.AssistantMessageItem = {
+        id: 'msg_duplicate_compaction',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'second' }],
+      };
+      const response = {
+        usage: new Usage(),
+        output: [firstMessage, compactionItem, secondMessage],
+        responseId: 'response-duplicate-id-compaction',
+      };
+      const reorderedItems = [
+        new RunMessageOutputItem(secondMessage, agent),
+        new RunMessageOutputItem(firstMessage, agent),
+      ];
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      state._modelResponses = [response];
+      state._lastTurnResponse = response;
+      state._generatedItems = reorderedItems;
+      state._lastProcessedResponse = {
+        newItems: reorderedItems,
+        handoffs: [],
+        functions: [],
+        functionToolsNotFound: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        mcpApprovalRequests: [],
+        toolsUsed: [],
+        hasToolsOrApprovalsToRun: () => false,
+      };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow('provider order is ambiguous');
+    });
+
+    it('rejects generated provider wrappers absent from the raw response', async () => {
+      const agent = new Agent({ name: 'ExtraWrapperLegacyCompactionAgent' });
+      const retainedMessage: protocol.AssistantMessageItem = {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'retained' }],
+      };
+      const extraMessage: protocol.AssistantMessageItem = {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'extra' }],
+      };
+      const response = {
+        usage: new Usage(),
+        output: [compactionItem, retainedMessage],
+        responseId: 'response-extra-wrapper-compaction',
+      };
+      const retainedItem = new RunMessageOutputItem(retainedMessage, agent);
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      state._modelResponses = [response];
+      state._lastTurnResponse = response;
+      state._generatedItems = [
+        retainedItem,
+        new RunMessageOutputItem(extraMessage, agent),
+      ];
+      state._lastProcessedResponse = {
+        newItems: [retainedItem],
+        handoffs: [],
+        functions: [],
+        functionToolsNotFound: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        mcpApprovalRequests: [],
+        toolsUsed: [],
+        hasToolsOrApprovalsToRun: () => false,
+      };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow('provider order is ambiguous');
+    });
+
+    it('rejects processed and generated wrappers with different payloads', async () => {
+      const approvalTool = tool({
+        name: 'legacy_payload_mismatch_tool',
+        description: 'Tool used to verify payload matching.',
+        parameters: z.object({ value: z.number() }),
+        execute: async () => 'done',
+      });
+      const agent = new Agent({
+        name: 'PayloadMismatchLegacyCompactionAgent',
+        tools: [approvalTool],
+      });
+      const rawCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: approvalTool.name,
+        callId: 'call_payload_mismatch',
+        arguments: '{"value":1}',
+        status: 'completed',
+      };
+      const changedCall: protocol.FunctionCallItem = {
+        ...rawCall,
+        arguments: '{"value":2}',
+      };
+      const response = {
+        usage: new Usage(),
+        output: [compactionItem, rawCall],
+        responseId: 'response-payload-mismatch-compaction',
+      };
+      const state = new RunState(new RunContext(), 'input', agent, 2);
+      state._modelResponses = [response];
+      state._lastTurnResponse = response;
+      state._generatedItems = [new RunToolCallItem(changedCall, agent)];
+      state._lastProcessedResponse = {
+        newItems: [new RunToolCallItem(rawCall, agent)],
+        handoffs: [],
+        functions: [{ toolCall: rawCall, tool: approvalTool as any }],
+        functionToolsNotFound: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        mcpApprovalRequests: [],
+        toolsUsed: [approvalTool.name],
+        hasToolsOrApprovalsToRun: () => true,
       };
       const serialized = state.toJSON() as any;
       serialized.$schemaVersion = '1.15';
