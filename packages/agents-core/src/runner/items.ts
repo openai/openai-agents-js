@@ -205,6 +205,44 @@ function isPendingHostedShellCall(item: AgentInputItem): boolean {
   return status === undefined || status === 'in_progress';
 }
 
+const TERMINAL_HOSTED_TOOL_STATUSES = new Set([
+  'completed',
+  'failed',
+  'incomplete',
+]);
+
+const HOSTED_MCP_APPROVAL_CONTROL_TYPES = new Set([
+  'mcp_approval_request',
+  'mcp_approval_response',
+]);
+
+/** @internal */
+export function isReplaySafeTerminalHostedToolCall(
+  item: AgentInputItem,
+): boolean {
+  if (!item || typeof item !== 'object' || item.type !== 'hosted_tool_call') {
+    return false;
+  }
+
+  const providerType = item.providerData?.type;
+  if (
+    HOSTED_MCP_APPROVAL_CONTROL_TYPES.has(item.name) ||
+    (typeof providerType === 'string' &&
+      HOSTED_MCP_APPROVAL_CONTROL_TYPES.has(providerType))
+  ) {
+    return false;
+  }
+
+  const providerStatus = item.providerData?.status;
+  const status =
+    (providerType === 'mcp_call' || item.name === 'mcp_call') &&
+    typeof providerStatus === 'string'
+      ? providerStatus
+      : item.status;
+
+  return TERMINAL_HOSTED_TOOL_STATUSES.has(status ?? '');
+}
+
 /** @internal */
 export function getProgramCallerId(item: AgentInputItem): string | undefined {
   if (!item || typeof item !== 'object' || !('caller' in item)) {
@@ -264,12 +302,13 @@ function hasRetainedProgramOwnedItem(
 
     const result = getToolResultCorrelationForResult(item);
     if (
-      !(pruningIndexes?.has(index) ?? false) &&
-      (isPendingHostedShellCall(item) ||
-        (item &&
-          typeof item === 'object' &&
-          item.type === 'hosted_tool_call' &&
-          !result))
+      isReplaySafeTerminalHostedToolCall(item) ||
+      (!(pruningIndexes?.has(index) ?? false) &&
+        (isPendingHostedShellCall(item) ||
+          (item &&
+            typeof item === 'object' &&
+            item.type === 'hosted_tool_call' &&
+            !result)))
     ) {
       return true;
     }

@@ -26,6 +26,7 @@ import {
   getAgentInputItemKey,
   getProgramCallerId,
   getShellCallOutputStatus,
+  isReplaySafeTerminalHostedToolCall,
   removeAgentInputFromPool,
   stripReasoningItemIdForPolicy,
   type ReasoningItemIdPolicy,
@@ -169,12 +170,28 @@ type BlockedPairMember = Readonly<{
   programCallerId?: string;
 }>;
 
+function classifyBlockedStandaloneTool(
+  item: RunItem,
+): Omit<BlockedPairMember, 'index'> | undefined {
+  const rawItem = (item as { rawItem?: AgentInputItem }).rawItem;
+  if (
+    item.type !== 'tool_call_item' ||
+    !rawItem ||
+    !isReplaySafeTerminalHostedToolCall(rawItem)
+  ) {
+    return undefined;
+  }
+
+  return { programCallerId: getProgramCallerId(rawItem) };
+}
+
 /**
  * Selects the completed tool effects that remain replayable when final output is blocked.
  *
  * Unknown run item types are intentionally excluded until their persistence semantics are
- * classified. Pending programs are retained only as the unique owner of a retained child pair.
- * Reasoning items are retained only when the next non-reasoning item is a retained tool call.
+ * classified. Terminal hosted tool calls are replay-safe single-item executions. Pending programs
+ * are retained only as the unique owner of a retained child execution. Reasoning items are
+ * retained only when the next non-reasoning item is a retained tool call.
  */
 function selectRunItemIndexesForBlockedOutput(
   items: RunItem[],
@@ -190,8 +207,14 @@ function selectRunItemIndexesForBlockedOutput(
     }
   >();
   const programOwnerIndexes = new Map<string, number[]>();
+  const standaloneCalls: BlockedPairMember[] = [];
 
   for (const [index, item] of items.entries()) {
+    const standaloneCall = classifyBlockedStandaloneTool(item);
+    if (standaloneCall) {
+      standaloneCalls.push({ index, ...standaloneCall });
+      continue;
+    }
     const record = classifyBlockedToolRecord(item);
     if (!record) {
       continue;
@@ -228,6 +251,25 @@ function selectRunItemIndexesForBlockedOutput(
 
   const retainedIndexes = new Set<number>();
   const retainedCallIndexes = new Set<number>();
+  const retainCallWithProgramOwner = (call: BlockedPairMember): boolean => {
+    let ownerIndex: number | undefined;
+    if (call.programCallerId !== undefined) {
+      const ownerIndexes = programOwnerIndexes.get(call.programCallerId) ?? [];
+      if (ownerIndexes.length !== 1 || ownerIndexes[0] >= call.index) {
+        return false;
+      }
+      ownerIndex = ownerIndexes[0];
+    }
+
+    if (ownerIndex !== undefined) {
+      retainedCallIndexes.add(ownerIndex);
+      retainedIndexes.add(ownerIndex);
+    }
+    retainedCallIndexes.add(call.index);
+    retainedIndexes.add(call.index);
+    return true;
+  };
+
   for (const pair of pairs.values()) {
     if (!pair.valid || pair.calls.length !== 1 || pair.results.length !== 1) {
       continue;
@@ -242,22 +284,14 @@ function selectRunItemIndexesForBlockedOutput(
       continue;
     }
 
-    let ownerIndex: number | undefined;
-    if (call.programCallerId !== undefined) {
-      const ownerIndexes = programOwnerIndexes.get(call.programCallerId) ?? [];
-      if (ownerIndexes.length !== 1 || ownerIndexes[0] >= call.index) {
-        continue;
-      }
-      ownerIndex = ownerIndexes[0];
+    if (!retainCallWithProgramOwner(call)) {
+      continue;
     }
-
-    if (ownerIndex !== undefined) {
-      retainedCallIndexes.add(ownerIndex);
-      retainedIndexes.add(ownerIndex);
-    }
-    retainedCallIndexes.add(call.index);
-    retainedIndexes.add(call.index);
     retainedIndexes.add(result.index);
+  }
+
+  for (const standaloneCall of standaloneCalls) {
+    retainCallWithProgramOwner(standaloneCall);
   }
 
   if (retainedIndexes.size === 0) {

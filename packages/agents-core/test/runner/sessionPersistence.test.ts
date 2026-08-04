@@ -141,6 +141,139 @@ describe('selectRunItemsForBlockedOutput', () => {
     ).toEqual([retainedReasoning, runItem, output]);
   });
 
+  it.each(['completed', 'failed', 'incomplete'])(
+    'retains a %s hosted tool call and its causal reasoning',
+    (status) => {
+      const rejectedReasoning = new ReasoningItem(
+        {
+          type: 'reasoning',
+          id: 'reasoning-rejected-hosted',
+          content: [{ type: 'input_text', text: 'draft message' }],
+        },
+        TEST_AGENT,
+      );
+      const rejectedMessage = new MessageOutputItem(
+        fakeModelMessage('blocked'),
+        TEST_AGENT,
+      );
+      const hostedReasoning = new ReasoningItem(
+        {
+          type: 'reasoning',
+          id: 'reasoning-hosted',
+          content: [{ type: 'input_text', text: 'search the web' }],
+        },
+        TEST_AGENT,
+      );
+      const hostedCall = new ToolCallItem(
+        {
+          type: 'hosted_tool_call',
+          id: `hosted-${status}`,
+          name: 'web_search_call',
+          status,
+          output: 'search result',
+          providerData: { type: 'web_search_call' },
+        },
+        TEST_AGENT,
+      );
+
+      expect(
+        selectRunItemsForBlockedOutput([
+          rejectedReasoning,
+          rejectedMessage,
+          hostedReasoning,
+          hostedCall,
+        ]),
+      ).toEqual([hostedReasoning, hostedCall]);
+    },
+  );
+
+  it.each([undefined, 'in_progress', 'searching', 'calling', 'generating'])(
+    'drops a nonterminal hosted tool call with status %s',
+    (status) => {
+      const hostedCall = new ToolCallItem(
+        {
+          type: 'hosted_tool_call',
+          id: 'hosted-pending',
+          name: 'web_search_call',
+          ...(status === undefined ? {} : { status }),
+          providerData: { type: 'web_search_call' },
+        },
+        TEST_AGENT,
+      );
+
+      expect(selectRunItemsForBlockedOutput([hostedCall])).toEqual([]);
+    },
+  );
+
+  it.each(['in_progress', 'calling'])(
+    'drops a legacy hosted MCP call with provider status %s',
+    (status) => {
+      const hostedCall = new ToolCallItem(
+        {
+          type: 'hosted_tool_call',
+          id: `legacy-mcp-${status}`,
+          name: 'mcp_call',
+          status: 'completed',
+          providerData: { type: 'mcp_call', status },
+        },
+        TEST_AGENT,
+      );
+
+      expect(selectRunItemsForBlockedOutput([hostedCall])).toEqual([]);
+    },
+  );
+
+  it.each(['completed', 'failed', 'incomplete'])(
+    'retains a legacy hosted MCP call with provider status %s',
+    (status) => {
+      const hostedCall = new ToolCallItem(
+        {
+          type: 'hosted_tool_call',
+          id: `legacy-mcp-${status}`,
+          name: 'mcp_call',
+          status: 'completed',
+          output: 'done',
+          providerData: { type: 'mcp_call', status },
+        },
+        TEST_AGENT,
+      );
+
+      expect(selectRunItemsForBlockedOutput([hostedCall])).toEqual([
+        hostedCall,
+      ]);
+    },
+  );
+
+  it('retains the pending program that owns a terminal hosted call', () => {
+    const program = new ToolCallItem(
+      {
+        type: 'program',
+        callId: 'hosted-program-owner',
+        code: 'return await tools.web_search({});',
+        fingerprint: 'hosted-program-owner-fingerprint',
+      },
+      TEST_AGENT,
+    );
+    const hostedCall = new ToolCallItem(
+      {
+        type: 'hosted_tool_call',
+        id: 'program-owned-hosted',
+        name: 'web_search_call',
+        status: 'completed',
+        output: 'search result',
+        caller: { type: 'program', callerId: 'hosted-program-owner' },
+        providerData: { type: 'web_search_call' },
+      },
+      TEST_AGENT,
+    );
+
+    expect(selectRunItemsForBlockedOutput([program, hostedCall])).toEqual([
+      program,
+      hostedCall,
+    ]);
+    expect(selectRunItemsForBlockedOutput([hostedCall])).toEqual([]);
+  });
+
   it('retains a completed handoff before a committed target-agent tool', () => {
     const handoffCall = functionCall('call-handoff');
     handoffCall.name = 'transfer_to_target';
@@ -769,6 +902,7 @@ describe('selectRunItemsForBlockedOutput', () => {
         type: 'hosted_tool_call',
         id: 'approval-item',
         name: 'mcp_approval_request',
+        status: 'completed',
         providerData: {
           type: 'mcp_approval_request',
           id: 'approval-id',
@@ -780,6 +914,7 @@ describe('selectRunItemsForBlockedOutput', () => {
       {
         type: 'hosted_tool_call',
         name: 'mcp_approval_response',
+        status: 'completed',
         providerData: {
           approve: true,
           approval_request_id: 'approval-id',
@@ -790,6 +925,32 @@ describe('selectRunItemsForBlockedOutput', () => {
 
     expect(selectRunItemsForBlockedOutput([request, response])).toEqual([]);
   });
+
+  it.each(['mcp_approval_request', 'mcp_approval_response'] as const)(
+    'drops malformed completed %s control records',
+    (approvalType) => {
+      const byName = new ToolCallItem(
+        {
+          type: 'hosted_tool_call',
+          name: approvalType,
+          status: 'completed',
+        },
+        TEST_AGENT,
+      );
+      const byProviderType = new ToolCallItem(
+        {
+          type: 'hosted_tool_call',
+          name: 'malformed-approval-control',
+          status: 'completed',
+          providerData: { type: approvalType },
+        },
+        TEST_AGENT,
+      );
+
+      expect(selectRunItemsForBlockedOutput([byName])).toEqual([]);
+      expect(selectRunItemsForBlockedOutput([byProviderType])).toEqual([]);
+    },
+  );
 });
 
 function shellCall(callId: string, command: string): protocol.ShellCallItem {

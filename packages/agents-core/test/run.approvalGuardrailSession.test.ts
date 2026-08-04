@@ -875,6 +875,111 @@ describe('committed tool output guardrail session persistence', () => {
     },
   );
 
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'retains a completed hosted tool call after a tripwire in $mode mode',
+    async (mode) => {
+      let guardrailShouldTrip = true;
+      const hostedCall: protocol.HostedToolCallItem = {
+        type: 'hosted_tool_call',
+        id: 'hosted-web-search',
+        name: 'web_search_call',
+        status: 'completed',
+        output: 'hosted search result',
+        providerData: {
+          type: 'web_search_call',
+          action: { type: 'search', query: 'Agents SDK' },
+        },
+      };
+      const programCallId = 'hosted-program-owner';
+      const programCall: protocol.ProgramCallItem = {
+        type: 'program',
+        id: 'hosted-program',
+        callId: programCallId,
+        code: 'return await tools.web_search({});',
+        fingerprint: 'hosted-program-fingerprint',
+      };
+      const programOwnedHostedCall: protocol.HostedToolCallItem = {
+        ...hostedCall,
+        id: 'program-owned-hosted-web-search',
+        caller: { type: 'program', callerId: programCallId },
+      };
+      const model = new ApprovalSessionModel([
+        {
+          output: [
+            programCall,
+            programOwnedHostedCall,
+            hostedCall,
+            fakeModelMessage('rejected hosted summary'),
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('continued with hosted history')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'Hosted tool persistence agent',
+        model,
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'programmatic_tool_calling',
+            providerData: { type: 'programmatic_tool_calling' },
+          },
+        ],
+        outputGuardrails: [
+          {
+            name: 'block hosted summary',
+            execute: async () => ({
+              outputInfo: null,
+              tripwireTriggered: guardrailShouldTrip,
+            }),
+          },
+        ],
+      });
+      const session = new MemorySession();
+      const runOnce = async (input: string) => {
+        if (mode === 'streamed') {
+          const result = await run(agent, input, { session, stream: true });
+          await result.completed;
+          return result;
+        }
+        return await run(agent, input, { session });
+      };
+
+      await expect(runOnce('Search before replying')).rejects.toBeInstanceOf(
+        OutputGuardrailTripwireTriggered,
+      );
+      expect(
+        (await session.getItems()).filter(
+          (item) => item.type === 'program' || item.type === 'hosted_tool_call',
+        ),
+      ).toEqual([programCall, programOwnedHostedCall, hostedCall]);
+      expect(
+        (await session.getItems()).some(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'assistant' &&
+            item.content.some(
+              (content) =>
+                content.type === 'output_text' &&
+                content.text === 'rejected hosted summary',
+            ),
+        ),
+      ).toBe(false);
+
+      guardrailShouldTrip = false;
+      const followup = await runOnce('Continue');
+      expect(followup.finalOutput).toBe('continued with hosted history');
+      expect(
+        (model.requests.at(-1)?.input as AgentInputItem[]).filter(
+          (item) => item.type === 'program' || item.type === 'hosted_tool_call',
+        ),
+      ).toEqual([programCall, programOwnedHostedCall, hostedCall]);
+    },
+  );
+
   it.each(
     (['non_streamed', 'streamed'] as const).flatMap((mode) =>
       [false, true].map((tripwire) => ({ mode, tripwire })),

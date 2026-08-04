@@ -2626,6 +2626,9 @@ function getInputItems(
         item.name === 'mcp_call'
       ) {
         const providerData = item.providerData as ProviderData.HostedMCPCall;
+        const legacyProviderStatus = (
+          providerData as ProviderData.HostedMCPCall & { status?: string }
+        ).status;
         const entry: OpenAI.Responses.ResponseInputItem.McpCall & {
           caller?: OpenAIToolCaller;
         } = {
@@ -2638,6 +2641,8 @@ function getInputItems(
           arguments: providerData.arguments,
           server_label: providerData.server_label,
           error: providerData.error,
+          status: (legacyProviderStatus ?? item.status) as
+            OpenAI.Responses.ResponseInputItem.McpCall['status'] | undefined,
           ...(hostedCaller ? { caller: toOpenAIToolCaller(hostedCaller) } : {}),
         };
         return entry;
@@ -3062,7 +3067,7 @@ function convertToOutputItem(
       return output;
     } else if (item.type === 'mcp_call') {
       // Avoiding to duplicate potentially large output data
-      const { output: outputData, ...providerData } = item;
+      const { output: outputData, status, ...providerData } = item;
       const caller = fromOpenAIToolCaller(
         (providerData as Record<string, unknown>).caller,
       );
@@ -3073,7 +3078,7 @@ function convertToOutputItem(
         type: 'hosted_tool_call',
         id: item.id!,
         name: item.type,
-        status: 'completed',
+        status,
         output: outputData || undefined,
         ...(caller ? { caller } : {}),
         providerData,

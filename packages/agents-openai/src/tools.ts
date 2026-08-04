@@ -23,7 +23,7 @@ export const FileSearchStatus = z
   .default('failed');
 
 export const CodeInterpreterStatus = z
-  .enum(['in_progress', 'completed', 'interpreting'])
+  .enum(['in_progress', 'completed', 'incomplete', 'interpreting', 'failed'])
   .default('in_progress');
 
 export const ImageGenerationStatus = z

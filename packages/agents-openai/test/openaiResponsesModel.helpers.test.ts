@@ -2294,6 +2294,32 @@ describe('getInputItems', () => {
     expect(items[0]).not.toHaveProperty('action');
   });
 
+  it.each(['failed', 'incomplete'] as const)(
+    'replays a code interpreter call with terminal status %s',
+    (status) => {
+      const items = getInputItems([
+        {
+          type: 'hosted_tool_call',
+          id: `code-interpreter-${status}`,
+          name: 'code_interpreter_call',
+          status,
+          providerData: {
+            type: 'code_interpreter_call',
+            code: 'print("done")',
+            container_id: 'container-1',
+            outputs: [],
+          },
+        },
+      ] as any);
+
+      expect(items[0]).toMatchObject({
+        type: 'code_interpreter_call',
+        id: `code-interpreter-${status}`,
+        status,
+      });
+    },
+  );
+
   it('errors when web search call action is malformed', () => {
     expect(() =>
       getInputItems([
@@ -2376,6 +2402,82 @@ describe('convertToOutputItem', () => {
       caller: { type: 'program', callerId: 'call_prog_1' },
     });
     expect(output.providerData).not.toHaveProperty('caller');
+  });
+
+  it.each([
+    ['in_progress', false],
+    ['calling', false],
+    ['completed', true],
+    ['incomplete', true],
+    ['failed', true],
+  ] as const)(
+    'preserves hosted MCP status %s across conversion and replay',
+    (status, terminal) => {
+      const [output] = convertToOutputItem([
+        {
+          type: 'mcp_call',
+          id: `mcp-${status}`,
+          name: 'lookup',
+          arguments: '{}',
+          server_label: 'server',
+          status,
+          output: terminal ? 'done' : undefined,
+        },
+      ] as any);
+
+      expect(output).toMatchObject({
+        type: 'hosted_tool_call',
+        id: `mcp-${status}`,
+        name: 'mcp_call',
+        status,
+      });
+      expect(output.providerData).not.toHaveProperty('status');
+      expect(getInputItems([output] as any)[0]).toMatchObject({
+        type: 'mcp_call',
+        id: `mcp-${status}`,
+        status,
+      });
+    },
+  );
+
+  it('fails closed for a hosted MCP call without a status', () => {
+    const [output] = convertToOutputItem([
+      {
+        type: 'mcp_call',
+        id: 'mcp-missing-status',
+        name: 'lookup',
+        arguments: '{}',
+        server_label: 'server',
+      },
+    ] as any);
+
+    expect(output).toHaveProperty('status', undefined);
+    expect(output.providerData).not.toHaveProperty('status');
+  });
+
+  it('replays the provider status from a legacy hosted MCP item', () => {
+    expect(
+      getInputItems([
+        {
+          type: 'hosted_tool_call',
+          id: 'legacy-mcp-active',
+          name: 'mcp_call',
+          status: 'completed',
+          providerData: {
+            type: 'mcp_call',
+            id: 'legacy-mcp-active',
+            name: 'lookup',
+            arguments: '{}',
+            server_label: 'server',
+            status: 'in_progress',
+          },
+        },
+      ] as any)[0],
+    ).toMatchObject({
+      type: 'mcp_call',
+      id: 'legacy-mcp-active',
+      status: 'in_progress',
+    });
   });
 
   it('converts Programmatic Tool Calling items and caller linkage', () => {

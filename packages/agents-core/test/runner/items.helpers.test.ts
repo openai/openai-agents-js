@@ -636,7 +636,7 @@ describe('dropOrphanToolCalls', () => {
     ]);
   });
 
-  it('drops program-owned hosted calls with an explicitly pruned owner', () => {
+  it('keeps terminal program-owned hosted calls at pruning indexes', () => {
     const program: protocol.ProgramCallItem = {
       type: 'program',
       callId: 'program_orphan',
@@ -656,7 +656,7 @@ describe('dropOrphanToolCalls', () => {
       dropOrphanToolCalls([program, hostedCall], {
         pruningIndexes: new Set([0, 1]),
       }),
-    ).toEqual([]);
+    ).toEqual([program, hostedCall]);
   });
 
   it('prunes only the indexes explicitly marked for pruning', () => {
