@@ -313,15 +313,12 @@ class PrependingEqualCloningContextCapability extends Capability {
   }
 }
 
-class SurplusHistoryAndRedactingCurrentCapability extends Capability {
-  readonly type = 'surplus_history_and_redacting_current';
+class ReplacingCurrentContextCapability extends Capability {
+  readonly type = 'replacing_current_context';
 
   override processContext(context: AgentInputItem[]): AgentInputItem[] {
-    return [
-      context[0],
-      structuredClone(context[0]),
-      user('redacted current input'),
-    ];
+    context[1] = context[0];
+    return context;
   }
 }
 
@@ -1337,7 +1334,7 @@ describe('sandbox runner integration', () => {
   );
 
   it.each([false, true])(
-    'persists a rewritten current input beside an ambiguous surplus clone group (stream=%s)',
+    'does not persist a repeated history reference that replaces current input (stream=%s)',
     async (stream) => {
       const response = {
         output: [fakeModelMessage('done')],
@@ -1347,9 +1344,9 @@ describe('sandbox runner integration', () => {
         ? new RecordingStreamingModel([response])
         : new RecordingFakeModel([response]);
       const agent = new SandboxAgent({
-        name: 'SurplusHistoryAndRedactingCurrentPersistenceAgent',
+        name: 'ReplacingCurrentContextPersistenceAgent',
         model,
-        capabilities: [new SurplusHistoryAndRedactingCurrentCapability()],
+        capabilities: [new ReplacingCurrentContextCapability()],
       });
       const session = new MemorySession({
         initialItems: [user('same input')],
@@ -1357,24 +1354,33 @@ describe('sandbox runner integration', () => {
       const options = {
         session,
         sandbox: { client: new FakeSandboxClient() },
+        callModelInputFilter: ({ modelData }: CallModelInputFilterArgs) => ({
+          ...modelData,
+          input: modelData.input.map((item, index) =>
+            item.type === 'message' && item.role === 'user'
+              ? user(index === 0 ? 'history-filtered' : 'current-filtered')
+              : item,
+          ),
+        }),
       };
 
       if (stream) {
-        const result = await run(agent, [user('sensitive current input')], {
+        const result = await run(agent, [user('same input')], {
           ...options,
           stream: true,
         });
         await result.completed;
       } else {
-        await run(agent, [user('sensitive current input')], {
+        await run(agent, [user('same input')], {
           ...options,
           stream: false,
         });
       }
 
       const persisted = JSON.stringify(await session.getItems());
-      expect(persisted).toContain('redacted current input');
-      expect(persisted).not.toContain('sensitive current input');
+      expect(persisted.match(/same input/g)).toHaveLength(1);
+      expect(persisted).not.toContain('history-filtered');
+      expect(persisted).not.toContain('current-filtered');
     },
   );
 

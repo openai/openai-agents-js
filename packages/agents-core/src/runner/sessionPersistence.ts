@@ -278,6 +278,8 @@ function mapPreparedSourcesAfterContextProcessing(
     processedItems.length,
   );
   const usedPreparedIndexes = new Set<number>();
+  const ambiguousKeys = new Set<string>();
+  const ambiguousProcessedIndexes = new Set<number>();
 
   const mapOccurrences = <T>(
     processedIndexesByIdentity: Map<T, number[]>,
@@ -318,10 +320,24 @@ function mapPreparedSourcesAfterContextProcessing(
     processedIndexesByReference.set(item, indexes);
   }
   mapOccurrences(processedIndexesByReference, preparedIndexesByReference);
+  for (const [item, processedIndexes] of processedIndexesByReference) {
+    const preparedIndexes = preparedIndexesByReference.get(item);
+    if (preparedIndexes === undefined) {
+      continue;
+    }
+    const preparedCount = preparedIndexes.length;
+    for (const processedIndex of processedIndexes.slice(preparedCount)) {
+      ambiguousKeys.add(getAgentInputItemKey(item));
+      ambiguousProcessedIndexes.add(processedIndex);
+    }
+  }
 
   const processedIndexesByKey = new Map<string, number[]>();
   for (const [index, item] of processedItems.entries()) {
-    if (mappedPreparedIndexes[index] !== undefined) {
+    if (
+      mappedPreparedIndexes[index] !== undefined ||
+      ambiguousProcessedIndexes.has(index)
+    ) {
       continue;
     }
     const key = getAgentInputItemKey(item);
@@ -336,8 +352,6 @@ function mapPreparedSourcesAfterContextProcessing(
       indexes.filter((index) => !usedPreparedIndexes.has(index)).length,
     );
   }
-  const ambiguousKeys = new Set<string>();
-  const ambiguousProcessedIndexes = new Set<number>();
   for (const [key, indexes] of processedIndexesByKey) {
     const availablePreparedCount = availablePreparedCountByKey.get(key) ?? 0;
     if (
@@ -395,15 +409,18 @@ function mapPreparedSourcesAfterContextProcessing(
         !ambiguousKeys.has(getAgentInputItemKey(preparedItems[index]!)),
     );
 
-  // Treat a one-to-one set of unmatched occurrences as ordered replacements. Public capabilities
-  // may rewrite cloned item content, so neither reference nor serialized-value matching applies.
-  // Different cardinalities remain unmatched because insertions and removals erase that lineage.
-  if (remainingProcessedIndexes.length === remainingPreparedIndexes.length) {
-    for (const [index, processedIndex] of remainingProcessedIndexes.entries()) {
-      const preparedIndex = remainingPreparedIndexes[index];
-      if (preparedIndex === undefined) {
-        continue;
-      }
+  // Preserve the explicitly supported whole-context single-item rewrite. Once any surrounding
+  // occurrence exists, an unmatched item could instead be a deletion plus an injection, so leave
+  // it unowned rather than assigning Session provenance from matching residual cardinality alone.
+  if (
+    preparedItems.length === 1 &&
+    processedItems.length === 1 &&
+    remainingProcessedIndexes.length === 1 &&
+    remainingPreparedIndexes.length === 1
+  ) {
+    const processedIndex = remainingProcessedIndexes[0];
+    const preparedIndex = remainingPreparedIndexes[0];
+    if (processedIndex !== undefined && preparedIndex !== undefined) {
       mappedPreparedIndexes[processedIndex] = preparedIndex;
       usedPreparedIndexes.add(preparedIndex);
     }

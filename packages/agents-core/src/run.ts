@@ -1204,6 +1204,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
 
             guardrailTracker.setPromise(parallelGuardrailPromise);
+            const sessionPreparedTurnInput = [...turnInput];
             const preparedSandboxAgent = await sandboxRuntime.prepareAgent({
               currentAgent: state._currentAgent,
               turnInput,
@@ -1212,7 +1213,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ),
               tracingParent: currentTurnSpan?.span ?? state._currentAgentSpan,
             });
-            sessionTurnInputUpdate?.(turnInput, preparedSandboxAgent.turnInput);
+            sessionTurnInputUpdate?.(
+              sessionPreparedTurnInput,
+              preparedSandboxAgent.turnInput,
+            );
             const artifacts = await prepareAgentArtifacts(
               state,
               preparedSandboxAgent.executionAgent,
@@ -1766,6 +1770,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           parallelGuardrailPromise = preparedTurn.parallelGuardrailPromise;
           guardrailTracker.setPromise(parallelGuardrailPromise);
           // If guardrails are still running, defer input persistence until they finish.
+          const sessionPreparedTurnInput = [...turnInput];
           const preparedSandboxAgent = await sandboxRuntime.prepareAgent({
             currentAgent: result.state._currentAgent,
             turnInput,
@@ -1775,7 +1780,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             tracingParent:
               currentTurnSpan?.span ?? result.state._currentAgentSpan,
           });
-          sessionTurnInputUpdate?.(turnInput, preparedSandboxAgent.turnInput);
+          sessionTurnInputUpdate?.(
+            sessionPreparedTurnInput,
+            preparedSandboxAgent.turnInput,
+          );
           const artifacts = await prepareAgentArtifacts(
             result.state,
             preparedSandboxAgent.executionAgent,

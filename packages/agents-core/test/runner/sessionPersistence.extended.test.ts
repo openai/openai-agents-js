@@ -357,7 +357,7 @@ describe('sessionPersistence tracker (extended)', () => {
     expect(tracker.getItemsForPersistence()).toEqual([]);
   });
 
-  it('keeps an unrelated rewrite outside an ambiguous surplus clone group', () => {
+  it('does not assign current ownership to a mixed replacement', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({
       session,
@@ -378,14 +378,39 @@ describe('sessionPersistence tracker (extended)', () => {
     const turnInput = structuredClone(preparedInput);
     const processedInput = [
       turnInput[0],
-      structuredClone(turnInput[0]),
-      { ...turnInput[1], content: 'redacted current input' },
+      { type: 'message', role: 'user', content: 'injected context' } as const,
     ];
     tracker.setPreparedTurnItems(turnInput, processedInput);
 
     tracker.recordTurnItems(processedInput, processedInput);
 
-    expect(tracker.getItemsForPersistence()).toEqual([processedInput[2]]);
+    expect(tracker.getItemsForPersistence()).toEqual([]);
+  });
+
+  it('does not assign current ownership to a surplus exact reference', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const history = {
+      type: 'message',
+      role: 'user',
+      content: 'same',
+    } as const;
+    const current = { ...history };
+    const preparedInput = [history, current];
+    tracker.setPreparedItems([current], preparedInput);
+    const turnInput = structuredClone(preparedInput);
+    const processedInput = [turnInput[0], turnInput[0]];
+    tracker.setPreparedTurnItems(turnInput, processedInput);
+
+    tracker.recordTurnItems(processedInput, [
+      { ...processedInput[0], content: 'history-filtered' },
+      { ...processedInput[1], content: 'current-filtered' },
+    ]);
+
+    expect(tracker.getItemsForPersistence()).toEqual([]);
   });
 
   it('does not guess transformed ownership when cardinality changes', () => {
