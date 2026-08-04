@@ -3782,6 +3782,55 @@ describe('Runner.run (streaming)', () => {
     });
   });
 
+  it('replaces session history from explicit compaction input when streaming fails', async () => {
+    const previousSessionItem = user('previous session');
+    const discardedInput = user('discarded input');
+    const retainedInput = user('retained input');
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_stream_input_failure',
+      encrypted_content: 'ciphertext',
+    };
+    const sessionItems: AgentInputItem[] = [previousSessionItem];
+    const session: Session = {
+      getSessionId: vi.fn().mockResolvedValue('compacted-stream-session'),
+      getItems: vi.fn(async () => structuredClone(sessionItems)),
+      addItems: vi.fn(async (items: AgentInputItem[]) => {
+        sessionItems.push(...structuredClone(items));
+      }),
+      popItem: vi.fn(async () => sessionItems.pop()),
+      clearSession: vi.fn(async () => {
+        sessionItems.splice(0);
+      }),
+    };
+    const streamError = new Error('model stream failed after compaction');
+    let capturedRequest: ModelRequest | undefined;
+    const model: Model = {
+      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        throw streamError;
+      },
+      getStreamedResponse(request: ModelRequest): AsyncIterable<StreamEvent> {
+        capturedRequest = request;
+        return new RejectingStreamingModel(streamError).getStreamedResponse(
+          request,
+        );
+      },
+    };
+    const agent = new Agent({ name: 'StreamCompactedInputFailure', model });
+    const result = await new Runner().run(
+      agent,
+      [discardedInput, compaction, retainedInput],
+      { stream: true, session },
+    );
+
+    await expect(result.completed).rejects.toThrow(
+      'model stream failed after compaction',
+    );
+
+    expect(capturedRequest?.input).toEqual([compaction, retainedInput]);
+    expect(sessionItems).toEqual([compaction, retainedInput]);
+  });
+
   it('persists filtered streaming input instead of the raw turn payload', async () => {
     const saveInputSpy = vi
       .spyOn(sessionPersistence, 'saveStreamInputToSession')

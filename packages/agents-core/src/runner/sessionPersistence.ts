@@ -331,6 +331,16 @@ export async function saveStreamInputToSession(
     return;
   }
   const sanitizedInput = normalizeItemsForSessionPersistence(sessionInputItems);
+  const compactedInput = trimToLatestCompaction(sanitizedInput);
+  if (compactedInput[0]?.type === 'compaction') {
+    const previousItems = await session.getItems();
+    await replaceSessionItemsWithRecovery(
+      session,
+      previousItems,
+      compactedInput,
+    );
+    return;
+  }
   await session.addItems(sanitizedInput);
 }
 

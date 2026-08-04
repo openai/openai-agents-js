@@ -1548,10 +1548,20 @@ function rehydrateLegacyCompactionRunItems(
   let generatedInsertionAgent: SerializedAgentReference | undefined;
   let generatedInsertionIndex: number;
   if (!isLatestSourceResponse) {
+    const followingResponseBoundary =
+      sourceResponseIndex === sourceResponses.length - 2 &&
+      stateJson.lastProcessedResponse
+        ? findFollowingLegacyResponseBoundary(
+            stateJson.generatedItems,
+            stateJson.lastProcessedResponse.newItems,
+            sourceResponses[sourceResponseIndex + 1].output,
+          )
+        : undefined;
     const historicalInsertion = findHistoricalLegacyCompactionInsertion(
       stateJson.generatedItems,
       sourceResponse.output,
       compactionIndex,
+      followingResponseBoundary,
     );
     generatedInsertionIndex = historicalInsertion.itemIndex;
     generatedInsertionAgent = historicalInsertion.agent;
@@ -1637,6 +1647,10 @@ function findHistoricalLegacyCompactionInsertion(
   items: z.infer<typeof itemSchema>[],
   sourceOutput: protocol.OutputModelItem[],
   compactionIndex: number,
+  followingResponseBoundary?: {
+    itemIndex: number;
+    agent: SerializedAgentReference;
+  },
 ): { itemIndex: number; agent: SerializedAgentReference } {
   const providerAnchors = getLegacyProviderOutputAnchors(items, sourceOutput);
   const representedSourceItems = getRepresentedLegacySourceItems(
@@ -1645,6 +1659,9 @@ function findHistoricalLegacyCompactionInsertion(
     providerAnchors,
   );
   if (representedSourceItems.length === 0) {
+    if (followingResponseBoundary) {
+      return followingResponseBoundary;
+    }
     throwLegacyCompactionOrderingError();
   }
 
@@ -1699,6 +1716,53 @@ function findHistoricalLegacyCompactionInsertion(
       previousAnchor.key
   ) {
     itemIndex += 1;
+  }
+  return { itemIndex, agent };
+}
+
+function findFollowingLegacyResponseBoundary(
+  generatedItems: z.infer<typeof itemSchema>[],
+  processedItems: z.infer<typeof itemSchema>[],
+  sourceOutput: protocol.OutputModelItem[],
+): { itemIndex: number; agent: SerializedAgentReference } | undefined {
+  const itemIndex = findTrailingProcessedSegmentStart(
+    generatedItems,
+    processedItems,
+  );
+  if (itemIndex === undefined) {
+    throwLegacyCompactionOrderingError();
+  }
+  if (itemIndex + processedItems.length !== generatedItems.length) {
+    throwLegacyCompactionOrderingError();
+  }
+
+  const providerAnchors = getLegacyProviderOutputAnchors(
+    processedItems,
+    sourceOutput,
+  );
+  const representedSourceItems = getRepresentedLegacySourceItems(
+    sourceOutput,
+    -1,
+    providerAnchors,
+  );
+  if (
+    providerAnchors.length === 0 ||
+    providerAnchors.length !== representedSourceItems.length ||
+    providerAnchors.some(
+      (anchor, index) => anchor.key !== representedSourceItems[index]?.key,
+    )
+  ) {
+    return undefined;
+  }
+
+  const agent = providerAnchors[0].agent;
+  const agentKey = getCanonicalLegacyCompactionKey(agent);
+  if (
+    providerAnchors.some(
+      (anchor) => getCanonicalLegacyCompactionKey(anchor.agent) !== agentKey,
+    )
+  ) {
+    throwLegacyCompactionOrderingError();
   }
   return { itemIndex, agent };
 }

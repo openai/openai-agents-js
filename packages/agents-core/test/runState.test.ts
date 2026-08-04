@@ -2097,6 +2097,130 @@ describe('RunState', () => {
       expect(restored.getInterruptions()).toHaveLength(1);
     });
 
+    it('rehydrates a historical compaction-only response before an approval', async () => {
+      const approvalTool = tool({
+        name: 'approval_after_compaction_only',
+        description: 'Tool requiring approval after compaction.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'approved result',
+      });
+      const agent = new Agent({
+        name: 'HistoricalCompactionOnlyAgent',
+        tools: [approvalTool],
+      });
+      const approvalCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: approvalTool.name,
+        callId: 'call_after_compaction_only',
+        arguments: '{}',
+        status: 'completed',
+      };
+      const compactionResponse = {
+        usage: new Usage(),
+        output: [compactionItem],
+        responseId: 'response-compaction-only',
+      };
+      const approvalResponse = {
+        usage: new Usage(),
+        output: [approvalCall],
+        responseId: 'response-approval-after-compaction-only',
+      };
+      const approvalCallItem = new RunToolCallItem(approvalCall, agent);
+      const approvalItem = new ToolApprovalItem(approvalCall, agent);
+      const latestProcessed = {
+        newItems: [approvalCallItem, approvalItem],
+        handoffs: [],
+        functions: [{ toolCall: approvalCall, tool: approvalTool as any }],
+        functionToolsNotFound: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        mcpApprovalRequests: [],
+        toolsUsed: [approvalTool.name],
+        hasToolsOrApprovalsToRun: () => true,
+      };
+      const state = new RunState(new RunContext(), 'old input', agent, 2);
+      state._modelResponses = [compactionResponse, approvalResponse];
+      state._lastTurnResponse = approvalResponse;
+      state._generatedItems = latestProcessed.newItems;
+      state._lastProcessedResponse = latestProcessed;
+      state._currentStep = {
+        type: 'next_step_interruption',
+        data: { interruptions: [approvalItem] },
+      };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(restored._generatedItems.map((item) => item.type)).toEqual([
+        'compaction_item',
+        'tool_call_item',
+        'tool_approval_item',
+      ]);
+      expect(restored.history[0]).toEqual(compactionItem);
+      expect(restored.getInterruptions()).toHaveLength(1);
+      expect((restored._generatedItems[0] as RunCompactionItem).agent).toBe(
+        agent,
+      );
+    });
+
+    it('rejects a stale duplicate as the following response boundary', async () => {
+      const agent = new Agent({ name: 'StaleFollowingBoundaryAgent' });
+      const duplicatedMessage: protocol.AssistantMessageItem = {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'duplicated response' }],
+      };
+      const unrelatedMessage: protocol.AssistantMessageItem = {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'unrelated later response' }],
+      };
+      const compactionResponse = {
+        usage: new Usage(),
+        output: [compactionItem],
+        responseId: 'response-stale-boundary-compaction',
+      };
+      const followingResponse = {
+        usage: new Usage(),
+        output: [duplicatedMessage],
+        responseId: 'response-stale-boundary-following',
+      };
+      const duplicatedItem = new RunMessageOutputItem(duplicatedMessage, agent);
+      const state = new RunState(new RunContext(), 'old input', agent, 2);
+      state._modelResponses = [compactionResponse, followingResponse];
+      state._lastTurnResponse = followingResponse;
+      state._generatedItems = [
+        duplicatedItem,
+        new RunMessageOutputItem(unrelatedMessage, agent),
+      ];
+      state._lastProcessedResponse = {
+        newItems: [duplicatedItem],
+        handoffs: [],
+        functions: [],
+        functionToolsNotFound: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        mcpApprovalRequests: [],
+        toolsUsed: [],
+        hasToolsOrApprovalsToRun: () => false,
+      };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow('provider order is ambiguous');
+    });
+
     it('ignores dropped unknown output when anchoring legacy compaction', async () => {
       const agent = new Agent({ name: 'UnknownLegacyCompactionAgent' });
       const unknownItem: protocol.UnknownItem = {
