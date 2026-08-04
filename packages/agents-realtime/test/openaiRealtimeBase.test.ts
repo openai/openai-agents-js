@@ -691,6 +691,53 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(approvals[0]?.serverLabel).toBe('s1');
   });
 
+  it('keeps items whose status the server omitted', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.added',
+        event_id: 'c1',
+        item: {
+          id: 'u1',
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'hello' }],
+        },
+        previous_item_id: null,
+      }),
+    });
+
+    expect(updates.map((u) => u.itemId)).toEqual(['u1']);
+    expect(updates[0].status).toBeUndefined();
+  });
+
+  it('keeps user items the server marked incomplete', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.done',
+        event_id: 'c2',
+        item: {
+          id: 'u2',
+          type: 'message',
+          role: 'user',
+          status: 'incomplete',
+          content: [{ type: 'input_text', text: 'partial' }],
+        },
+        previous_item_id: null,
+      }),
+    });
+
+    expect(updates.map((u) => u.itemId)).toEqual(['u2']);
+    expect(updates[0].status).toBe('incomplete');
+  });
+
   it('emits function_call and mcp call updates on output items', () => {
     const base = new TestBase();
     const funcs: any[] = [];
