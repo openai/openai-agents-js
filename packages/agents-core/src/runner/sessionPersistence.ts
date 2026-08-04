@@ -7,7 +7,11 @@ import {
 } from '../memory/session';
 import { RunResult, StreamedRunResult } from '../result';
 import { RunState } from '../runState';
-import { RunItem } from '../items';
+import {
+  RunItem,
+  RunToolCallOutputItem,
+  wasRunToolCallOutputItemExecuted,
+} from '../items';
 import { AgentInputItem } from '../types';
 import { Usage } from '../usage';
 import { encodeUint8ArrayToBase64 } from '../utils/base64';
@@ -22,6 +26,11 @@ import {
   stripReasoningItemIdForPolicy,
   type ReasoningItemIdPolicy,
 } from './items';
+import {
+  getToolResultCorrelationForCall,
+  getToolResultCorrelationForResult,
+  getToolResultCorrelationKey,
+} from './toolResultCorrelation';
 import logger from '../logger';
 import { getRunStateUsageRecorder } from './usageTracking';
 
@@ -33,7 +42,163 @@ export type PreparedInputWithSessionResult = {
 export type SessionPersistenceOptions = {
   runCompaction?: boolean;
   compactionMode?: OpenAIResponsesCompactionArgs['compactionMode'];
+  outputBlocked?: boolean;
 };
+
+type BlockedToolRecord = Readonly<{
+  key: string;
+  role: 'call' | 'result';
+  terminal: boolean;
+}>;
+
+function classifyBlockedToolRecord(
+  item: AgentInputItem,
+): BlockedToolRecord | undefined {
+  const type = (item as { type?: unknown }).type;
+  const status = (item as { status?: unknown }).status;
+  let role: BlockedToolRecord['role'];
+  let terminal: boolean;
+
+  switch (type) {
+    case 'program':
+      role = 'call';
+      terminal = true;
+      break;
+    case 'function_call':
+    case 'shell_call':
+      role = 'call';
+      terminal = status === undefined || status === 'completed';
+      break;
+    case 'computer_call':
+    case 'apply_patch_call':
+      role = 'call';
+      terminal = status === 'completed';
+      break;
+    case 'function_call_result':
+    case 'program_output':
+      role = 'result';
+      terminal = status === 'completed';
+      break;
+    case 'computer_call_result': {
+      role = 'result';
+      const providerData = (item as { providerData?: unknown }).providerData;
+      const providerStatus =
+        providerData && typeof providerData === 'object'
+          ? (providerData as { status?: unknown }).status
+          : undefined;
+      terminal = providerStatus === undefined || providerStatus === 'completed';
+      break;
+    }
+    case 'shell_call_output':
+      role = 'result';
+      terminal = status === undefined || status === 'completed';
+      break;
+    case 'apply_patch_call_output':
+      role = 'result';
+      terminal = status === 'completed' || status === 'failed';
+      break;
+    default:
+      return undefined;
+  }
+
+  const correlation =
+    role === 'call'
+      ? getToolResultCorrelationForCall(item)
+      : getToolResultCorrelationForResult(item);
+  return correlation
+    ? {
+        key: getToolResultCorrelationKey(correlation),
+        role,
+        terminal,
+      }
+    : undefined;
+}
+
+/**
+ * Selects the completed tool effects that remain replayable when final output is blocked.
+ *
+ * Unknown run item types are intentionally excluded until their persistence semantics are
+ * classified. Reasoning items are retained only when the next non-reasoning item is a retained
+ * tool call.
+ */
+export function selectRunItemsForBlockedOutput(
+  items: RunItem[],
+  unpersistedStartIndex = 0,
+): RunItem[] {
+  const pairs = new Map<
+    string,
+    { valid: boolean; callIndexes: number[]; resultIndexes: number[] }
+  >();
+
+  for (const [index, item] of items.entries()) {
+    const rawItem = (item as { rawItem?: AgentInputItem }).rawItem;
+    if (!rawItem) {
+      continue;
+    }
+    const record = classifyBlockedToolRecord(rawItem);
+    if (!record) {
+      continue;
+    }
+    let pair = pairs.get(record.key);
+    if (!pair) {
+      pair = { valid: true, callIndexes: [], resultIndexes: [] };
+      pairs.set(record.key, pair);
+    }
+    const wrapperMatchesRole =
+      (record.role === 'call' && item.type === 'tool_call_item') ||
+      (record.role === 'result' &&
+        item instanceof RunToolCallOutputItem &&
+        wasRunToolCallOutputItemExecuted(item));
+    if (!record.terminal || !wrapperMatchesRole) {
+      pair.valid = false;
+      continue;
+    }
+    if (record.role === 'call') {
+      pair.callIndexes.push(index);
+    } else {
+      pair.resultIndexes.push(index);
+    }
+  }
+
+  const retainedIndexes = new Set<number>();
+  const retainedCallIndexes = new Set<number>();
+  for (const pair of pairs.values()) {
+    if (
+      pair.valid &&
+      pair.callIndexes.length === 1 &&
+      pair.resultIndexes.length === 1 &&
+      pair.callIndexes[0] < pair.resultIndexes[0]
+    ) {
+      retainedCallIndexes.add(pair.callIndexes[0]);
+      retainedIndexes.add(pair.callIndexes[0]);
+      retainedIndexes.add(pair.resultIndexes[0]);
+    }
+  }
+
+  if (retainedIndexes.size === 0) {
+    return [];
+  }
+
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.type !== 'reasoning_item') {
+      continue;
+    }
+    for (let nextIndex = index + 1; nextIndex < items.length; nextIndex += 1) {
+      if (items[nextIndex]?.type === 'reasoning_item') {
+        continue;
+      }
+      if (retainedCallIndexes.has(nextIndex)) {
+        retainedIndexes.add(index);
+      }
+      break;
+    }
+  }
+
+  return items.filter(
+    (_item, index) =>
+      index >= unpersistedStartIndex && retainedIndexes.has(index),
+  );
+}
 
 export type SessionPersistenceTracker = {
   setPreparedItems: (items?: AgentInputItem[]) => void;
@@ -279,6 +444,9 @@ export async function saveToSession(
   const state = result.state;
   const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
   const newRunItems = result.newItems.slice(alreadyPersisted);
+  const runItemsToPersist = options.outputBlocked
+    ? selectRunItemsForBlockedOutput(result.newItems, alreadyPersisted)
+    : newRunItems;
 
   if (
     typeof process !== 'undefined' &&
@@ -293,12 +461,13 @@ export async function saveToSession(
   await persistRunItemsToSession({
     session,
     state,
-    newRunItems,
+    newRunItems: runItemsToPersist,
+    processedRunItemCount: newRunItems.length,
     extraInputItems: sessionInputItems,
     lastResponseId: result.lastResponseId,
     alreadyPersistedCount: alreadyPersisted,
     runCompaction: options.runCompaction ?? true,
-    compactionMode: options.compactionMode,
+    compactionMode: options.outputBlocked ? 'input' : options.compactionMode,
   });
 }
 
@@ -324,15 +493,19 @@ export async function saveStreamResultToSession(
   const state = result.state;
   const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
   const newRunItems = result.newItems.slice(alreadyPersisted);
+  const runItemsToPersist = options.outputBlocked
+    ? selectRunItemsForBlockedOutput(result.newItems, alreadyPersisted)
+    : newRunItems;
 
   await persistRunItemsToSession({
     session,
     state,
-    newRunItems,
+    newRunItems: runItemsToPersist,
+    processedRunItemCount: newRunItems.length,
     lastResponseId: result.lastResponseId,
     alreadyPersistedCount: alreadyPersisted,
     runCompaction: options.runCompaction ?? true,
-    compactionMode: options.compactionMode,
+    compactionMode: options.outputBlocked ? 'input' : options.compactionMode,
   });
 }
 
@@ -636,6 +809,7 @@ async function persistRunItemsToSession(options: {
   session?: Session;
   state: RunState<any, any>;
   newRunItems: RunItem[];
+  processedRunItemCount: number;
   extraInputItems?: AgentInputItem[] | undefined;
   lastResponseId?: string;
   alreadyPersistedCount: number;
@@ -646,6 +820,7 @@ async function persistRunItemsToSession(options: {
     session,
     state,
     newRunItems,
+    processedRunItemCount,
     extraInputItems = [],
     lastResponseId,
     alreadyPersistedCount,
@@ -669,7 +844,7 @@ async function persistRunItemsToSession(options: {
 
   if (itemsToSave.length === 0) {
     state._currentTurnPersistedItemCount =
-      alreadyPersistedCount + newRunItems.length;
+      alreadyPersistedCount + processedRunItemCount;
     if (runCompaction) {
       await runCompactionOnSession(
         session,
@@ -684,7 +859,7 @@ async function persistRunItemsToSession(options: {
   const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
   await session.addItems(sanitizedItems);
   state._currentTurnPersistedItemCount =
-    alreadyPersistedCount + newRunItems.length;
+    alreadyPersistedCount + processedRunItemCount;
   if (runCompaction) {
     await runCompactionOnSession(
       session,

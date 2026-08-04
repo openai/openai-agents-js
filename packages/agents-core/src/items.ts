@@ -149,6 +149,23 @@ export class RunToolCallOutputItem extends RunItemBase {
   }
 }
 
+const executedToolCallOutputItems = new WeakSet<RunToolCallOutputItem>();
+
+/** @internal */
+export function markRunToolCallOutputItemAsExecuted<
+  T extends RunToolCallOutputItem,
+>(item: T): T {
+  executedToolCallOutputItems.add(item);
+  return item;
+}
+
+/** @internal */
+export function wasRunToolCallOutputItemExecuted(
+  item: RunToolCallOutputItem,
+): boolean {
+  return executedToolCallOutputItems.has(item);
+}
+
 export class RunReasoningItem extends RunItemBase {
   public readonly type = 'reasoning_item' as const;
 

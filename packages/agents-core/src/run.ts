@@ -1,6 +1,10 @@
 import { Agent, AgentOutputType } from './agent';
 import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
-import { AgentsError, ModelBehaviorError } from './errors';
+import {
+  AgentsError,
+  ModelBehaviorError,
+  OutputGuardrailTripwireTriggered,
+} from './errors';
 import {
   defineInputGuardrail,
   defineOutputGuardrail,
@@ -72,6 +76,7 @@ import {
   saveStreamInputToSession,
   saveStreamResultToSession,
   saveToSession,
+  selectRunItemsForBlockedOutput,
   type SessionPersistenceOptions,
 } from './runner/sessionPersistence';
 import { resolveTurnAfterModelResponse } from './runner/turnResolution';
@@ -139,6 +144,32 @@ function hasPersistedToolOutput(state: RunState<any, any>): boolean {
   return state._generatedItems
     .slice(0, state._currentTurnPersistedItemCount)
     .some((item) => item.type === 'tool_call_output_item');
+}
+
+function shouldPersistBlockedOutput(state: RunState<any, any>): boolean {
+  if (hasPersistedToolOutput(state)) {
+    return true;
+  }
+  return (
+    selectRunItemsForBlockedOutput(
+      state._generatedItems,
+      state._currentTurnPersistedItemCount,
+    ).length > 0
+  );
+}
+
+function getGuardrailFailurePersistenceOptions(
+  error: unknown,
+  state: RunState<any, any>,
+  approvedToolCheckpointDeferredForGuardrails: boolean,
+): SessionPersistenceOptions | undefined {
+  if (error instanceof OutputGuardrailTripwireTriggered) {
+    return shouldPersistBlockedOutput(state) ||
+      approvedToolCheckpointDeferredForGuardrails
+      ? { outputBlocked: true }
+      : undefined;
+  }
+  return approvedToolCheckpointDeferredForGuardrails ? {} : undefined;
 }
 
 export type {
@@ -1019,7 +1050,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       setRunStateUsageRecorder(state, recordUsage);
       let completedResult: RunResult<TContext, TAgent> | undefined;
       let persistenceCheckpoint: RunResult<TContext, TAgent> | undefined;
+      let persistenceCheckpointOutputBlocked = false;
       let approvedToolCheckpointCompacted = false;
+      let approvedToolCheckpointDeferredForGuardrails = false;
       let approvedToolCheckpointRequiresLocalInputCompaction =
         isResumedState && hasPersistedToolOutput(state);
       let approvedToolCheckpointModelResponseCount =
@@ -1068,12 +1101,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             if (interruptedOutcome.approvedToolResumed && persistResult) {
               const approvedToolResult = new RunResult<TContext, TAgent>(state);
               approvedToolCheckpointRequiresLocalInputCompaction = true;
-              await persistResult(approvedToolResult, {
-                compactionMode: 'input',
-              });
-              approvedToolCheckpointCompacted = true;
-              approvedToolCheckpointModelResponseCount =
-                approvedToolResult.rawResponses.length;
+              if (
+                interruptedOutcome.nextStep.type === 'next_step_final_output'
+              ) {
+                approvedToolCheckpointDeferredForGuardrails = true;
+              } else {
+                await persistResult(approvedToolResult, {
+                  compactionMode: 'input',
+                });
+                approvedToolCheckpointCompacted = true;
+                approvedToolCheckpointModelResponseCount =
+                  approvedToolResult.rawResponses.length;
+              }
             }
             if (options.signal?.aborted) {
               persistenceCheckpoint = new RunResult<TContext, TAgent>(state);
@@ -1284,11 +1323,30 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           switch (currentStep.type) {
             case 'next_step_final_output':
-              await runOutputGuardrails(
-                state,
-                this.outputGuardrailDefs,
-                currentStep.output,
-              );
+              try {
+                await runOutputGuardrails(
+                  state,
+                  this.outputGuardrailDefs,
+                  currentStep.output,
+                );
+              } catch (error) {
+                const blockedResult = new RunResult<TContext, TAgent>(state);
+                const failurePersistenceOptions =
+                  getGuardrailFailurePersistenceOptions(
+                    error,
+                    state,
+                    approvedToolCheckpointDeferredForGuardrails,
+                  );
+                if (failurePersistenceOptions?.outputBlocked && persistResult) {
+                  persistenceCheckpoint = blockedResult;
+                  persistenceCheckpointOutputBlocked = true;
+                } else if (failurePersistenceOptions && persistResult) {
+                  await persistResult(blockedResult, {
+                    compactionMode: 'input',
+                  });
+                }
+                throw error;
+              }
               finishRunnerSpan(currentTurnSpan);
               setRunStateTurnSpanParent(state, undefined);
               currentTurnSpan = undefined;
@@ -1359,6 +1417,46 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         setRunStateTurnSpanParent(state, undefined);
         const preserveSandboxSessions =
           state._currentStep?.type === 'next_step_interruption';
+        const resultToPersist = completedResult ?? persistenceCheckpoint;
+        const persistFinalResult = async () => {
+          if (!resultToPersist) {
+            return;
+          }
+          const hasUnpersistedItems =
+            resultToPersist.newItems.length >
+            state._currentTurnPersistedItemCount;
+          const modelResponseAdvanced =
+            resultToPersist.rawResponses.length >
+            approvedToolCheckpointModelResponseCount;
+          const persistenceOptions =
+            approvedToolCheckpointRequiresLocalInputCompaction
+              ? approvedToolCheckpointCompacted &&
+                !hasUnpersistedItems &&
+                !modelResponseAdvanced
+                ? { runCompaction: false }
+                : { compactionMode: 'input' as const }
+              : undefined;
+          await persistResult?.(resultToPersist, {
+            ...persistenceOptions,
+            ...(resultToPersist === persistenceCheckpoint &&
+            persistenceCheckpointOutputBlocked
+              ? { outputBlocked: true }
+              : {}),
+          });
+        };
+        const persistBeforeSandboxFinalization =
+          resultToPersist === persistenceCheckpoint &&
+          persistenceCheckpointOutputBlocked;
+        let blockedPersistenceError: unknown;
+        let blockedPersistenceFailed = false;
+        if (persistBeforeSandboxFinalization) {
+          try {
+            await persistFinalResult();
+          } catch (error) {
+            blockedPersistenceError = error;
+            blockedPersistenceFailed = true;
+          }
+        }
         try {
           try {
             await finalizeSandboxRuntime({
@@ -1384,24 +1482,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             setRunnerSpanError(taskSpan, error);
             await Promise.reject(error);
           }
-          const resultToPersist = completedResult ?? persistenceCheckpoint;
-          if (resultToPersist) {
+          if (blockedPersistenceFailed) {
+            setRunnerSpanError(taskSpan, blockedPersistenceError);
+            await Promise.reject(blockedPersistenceError);
+          }
+          if (resultToPersist && !persistBeforeSandboxFinalization) {
             try {
-              const hasUnpersistedItems =
-                resultToPersist.newItems.length >
-                state._currentTurnPersistedItemCount;
-              const modelResponseAdvanced =
-                resultToPersist.rawResponses.length >
-                approvedToolCheckpointModelResponseCount;
-              const persistenceOptions =
-                approvedToolCheckpointRequiresLocalInputCompaction
-                  ? approvedToolCheckpointCompacted &&
-                    !hasUnpersistedItems &&
-                    !modelResponseAdvanced
-                    ? { runCompaction: false }
-                    : { compactionMode: 'input' as const }
-                  : undefined;
-              await persistResult?.(resultToPersist, persistenceOptions);
+              await persistFinalResult();
             } catch (error) {
               setRunnerSpanError(taskSpan, error);
               await Promise.reject(error);
@@ -1508,6 +1595,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     let continuingInterruptedTurn = false;
     let runError: unknown;
     let approvedToolCheckpointCompacted = false;
+    let approvedToolCheckpointDeferredForGuardrails = false;
     let approvedToolCheckpointRequiresLocalInputCompaction =
       isResumedState && hasPersistedToolOutput(result.state);
     let approvedToolCheckpointModelResponseCount = result.rawResponses.length;
@@ -1519,7 +1607,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       parentUsageRecorder?.(usage);
     };
     setRunStateUsageRecorder(result.state, recordUsage);
-    const saveStreamResultWithCompactionOwnership = async () => {
+    const saveStreamResultWithCompactionOwnership = async (
+      persistenceOverrides: SessionPersistenceOptions = {},
+    ) => {
       const hasUnpersistedItems =
         result.newItems.length > result.state._currentTurnPersistedItemCount;
       const modelResponseAdvanced =
@@ -1532,11 +1622,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             ? { runCompaction: false }
             : { compactionMode: 'input' as const }
           : undefined;
-      await saveStreamResultToSession(
-        options.session,
-        result,
-        persistenceOptions,
-      );
+      await saveStreamResultToSession(options.session, result, {
+        ...persistenceOptions,
+        ...persistenceOverrides,
+      });
     };
 
     try {
@@ -1593,12 +1682,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             options.session
           ) {
             approvedToolCheckpointRequiresLocalInputCompaction = true;
-            await saveStreamResultToSession(options.session, result, {
-              compactionMode: 'input',
-            });
-            approvedToolCheckpointCompacted = true;
-            approvedToolCheckpointModelResponseCount =
-              result.rawResponses.length;
+            if (interruptedOutcome.nextStep.type === 'next_step_final_output') {
+              approvedToolCheckpointDeferredForGuardrails = true;
+            } else {
+              await saveStreamResultToSession(options.session, result, {
+                compactionMode: 'input',
+              });
+              approvedToolCheckpointCompacted = true;
+              approvedToolCheckpointModelResponseCount =
+                result.rawResponses.length;
+            }
           }
 
           // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
@@ -1964,9 +2057,26 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               setRunStateTurnSpanParent(result.state, undefined);
               currentTurnSpan = undefined;
             } catch (error) {
-              // Do not leave blocked output visible through StreamedRunResult.finalOutput.
+              // Do not leave blocked output visible through StreamedRunResult.finalOutput while
+              // session persistence is in flight or if persistence itself fails.
               result.state._currentStep = undefined;
               result.state._finalOutputSource = undefined;
+              const failurePersistenceOptions =
+                getGuardrailFailurePersistenceOptions(
+                  error,
+                  result.state,
+                  approvedToolCheckpointDeferredForGuardrails,
+                );
+              if (
+                failurePersistenceOptions &&
+                !serverManagesConversation &&
+                options.session
+              ) {
+                await persistStreamInputIfNeeded();
+                await saveStreamResultWithCompactionOwnership(
+                  failurePersistenceOptions,
+                );
+              }
               throw error;
             }
             result.state._currentTurnInProgress = false;

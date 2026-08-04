@@ -8,6 +8,7 @@ import {
 import { Agent, AgentOutputType } from '../../src/agent';
 import {
   RunHandoffOutputItem as HandoffOutputItem,
+  RunHandoffCallItem as HandoffCallItem,
   RunMessageOutputItem as MessageOutputItem,
   RunReasoningItem as ReasoningItem,
   RunToolApprovalItem as ToolApprovalItem,
@@ -15,12 +16,14 @@ import {
   RunToolCallOutputItem as ToolCallOutputItem,
   RunToolSearchCallItem as ToolSearchCallItem,
   RunToolSearchOutputItem as ToolSearchOutputItem,
+  markRunToolCallOutputItemAsExecuted,
 } from '../../src/items';
 import { ModelResponse } from '../../src/model';
 import {
   prepareInputItemsWithSession,
   saveStreamResultToSession,
   saveToSession,
+  selectRunItemsForBlockedOutput,
 } from '../../src/runner/sessionPersistence';
 import { ServerConversationTracker } from '../../src/runner/conversation';
 import { getToolCallOutputItem } from '../../src/runner/toolExecution';
@@ -30,6 +33,7 @@ import { RunContext } from '../../src/runContext';
 import { RunResult, StreamedRunResult } from '../../src/result';
 import { RunState } from '../../src/runState';
 import { resolveInterruptedTurn } from '../../src/runner/turnResolution';
+import { buildComputerAbortResult } from '../../src/runner/streamReconciliation';
 import type { ProcessedResponse } from '../../src/runner/types';
 import type {
   OpenAIResponsesCompactionArgs,
@@ -78,18 +82,431 @@ function functionResult(
   call: protocol.FunctionCallItem,
   output: string,
 ): ToolCallOutputItem {
-  return new ToolCallOutputItem(
-    {
-      type: 'function_call_result',
-      callId: call.callId,
-      name: call.name,
-      status: 'completed',
+  return markRunToolCallOutputItemAsExecuted(
+    new ToolCallOutputItem(
+      {
+        type: 'function_call_result',
+        callId: call.callId,
+        name: call.name,
+        status: 'completed',
+        output,
+      },
+      TEST_AGENT,
       output,
-    },
-    TEST_AGENT,
-    output,
+    ),
   );
 }
+
+describe('selectRunItemsForBlockedOutput', () => {
+  const runFunctionCall = (callId: string) => {
+    const call = functionCall(callId);
+    return {
+      call,
+      runItem: new ToolCallItem(call, TEST_AGENT),
+    };
+  };
+
+  it('retains a completed pair and only reasoning tied to that pair', () => {
+    const { call, runItem } = runFunctionCall('call-retained');
+    const rejectedReasoning = new ReasoningItem(
+      {
+        type: 'reasoning',
+        id: 'reasoning-rejected',
+        content: [{ type: 'input_text', text: 'draft message' }],
+      },
+      TEST_AGENT,
+    );
+    const rejectedMessage = new MessageOutputItem(
+      fakeModelMessage('blocked'),
+      TEST_AGENT,
+    );
+    const retainedReasoning = new ReasoningItem(
+      {
+        type: 'reasoning',
+        id: 'reasoning-retained',
+        content: [{ type: 'input_text', text: 'call tool' }],
+      },
+      TEST_AGENT,
+    );
+    const output = functionResult(call, 'done');
+
+    expect(
+      selectRunItemsForBlockedOutput([
+        rejectedReasoning,
+        rejectedMessage,
+        retainedReasoning,
+        runItem,
+        output,
+      ]),
+    ).toEqual([retainedReasoning, runItem, output]);
+  });
+
+  it('uses the tool result type as well as the call ID for correlation', () => {
+    const { call, runItem } = runFunctionCall('shared-call-id');
+    const computerCall = new ToolCallItem(
+      {
+        type: 'computer_call',
+        callId: call.callId,
+        status: 'completed',
+        action: { type: 'screenshot' },
+      },
+      TEST_AGENT,
+    );
+    const output = functionResult(call, 'done');
+
+    expect(
+      selectRunItemsForBlockedOutput([runItem, computerCall, output]),
+    ).toEqual([runItem, output]);
+  });
+
+  it('retains valid computer, shell, and apply-patch pairs', () => {
+    const computerCall = new ToolCallItem(
+      {
+        type: 'computer_call',
+        callId: 'computer-valid',
+        status: 'completed',
+        action: { type: 'screenshot' },
+      },
+      TEST_AGENT,
+    );
+    const computerResult = markRunToolCallOutputItemAsExecuted(
+      new ToolCallOutputItem(
+        {
+          type: 'computer_call_result',
+          callId: 'computer-valid',
+          output: {
+            type: 'computer_screenshot',
+            data: 'data:image/png;base64,',
+          },
+        },
+        TEST_AGENT,
+        'done',
+      ),
+    );
+    const shellCall = new ToolCallItem(
+      {
+        type: 'shell_call',
+        callId: 'shell-valid',
+        action: { commands: ['pwd'] },
+      },
+      TEST_AGENT,
+    );
+    const shellResult = markRunToolCallOutputItemAsExecuted(
+      new ToolCallOutputItem(
+        {
+          type: 'shell_call_output',
+          callId: 'shell-valid',
+          output: [
+            {
+              stdout: '/workspace',
+              stderr: '',
+              outcome: { type: 'exit', exitCode: 0 },
+            },
+          ],
+        },
+        TEST_AGENT,
+        '/workspace',
+      ),
+    );
+    const applyPatchCall = new ToolCallItem(
+      {
+        type: 'apply_patch_call',
+        callId: 'apply-patch-valid',
+        status: 'completed',
+        operation: { type: 'delete_file', path: 'old.txt' },
+      },
+      TEST_AGENT,
+    );
+    const applyPatchResult = markRunToolCallOutputItemAsExecuted(
+      new ToolCallOutputItem(
+        {
+          type: 'apply_patch_call_output',
+          callId: 'apply-patch-valid',
+          status: 'failed',
+          output: 'already deleted',
+        },
+        TEST_AGENT,
+        'already deleted',
+      ),
+    );
+
+    for (const pair of [
+      [computerCall, computerResult],
+      [shellCall, shellResult],
+      [applyPatchCall, applyPatchResult],
+    ]) {
+      expect(selectRunItemsForBlockedOutput(pair)).toEqual(pair);
+    }
+  });
+
+  it('drops terminal results without confirmed execution provenance', () => {
+    const { call, runItem } = runFunctionCall('call-not-executed');
+    const output = new ToolCallOutputItem(
+      {
+        type: 'function_call_result',
+        callId: call.callId,
+        name: call.name,
+        status: 'completed',
+        output: 'rejected before execution',
+      },
+      TEST_AGENT,
+      'rejected before execution',
+    );
+
+    expect(selectRunItemsForBlockedOutput([runItem, output])).toEqual([]);
+  });
+
+  it('uses the persisted prefix for correlation without selecting it again', () => {
+    const { call, runItem } = runFunctionCall('call-split-checkpoint');
+    const output = functionResult(call, 'done after checkpoint');
+
+    expect(selectRunItemsForBlockedOutput([runItem, output], 1)).toEqual([
+      output,
+    ]);
+  });
+
+  it('drops incomplete tool results', () => {
+    const { call, runItem } = runFunctionCall('call-incomplete');
+    const output = new ToolCallOutputItem(
+      {
+        type: 'function_call_result',
+        callId: call.callId,
+        name: call.name,
+        status: 'incomplete',
+        output: 'partial',
+      },
+      TEST_AGENT,
+      'partial',
+    );
+
+    expect(selectRunItemsForBlockedOutput([runItem, output])).toEqual([]);
+  });
+
+  it.each(['in_progress', 'incomplete'] as const)(
+    'drops %s tool calls',
+    (status) => {
+      const call = { ...functionCall(`call-${status}`), status };
+      const runItem = new ToolCallItem(call, TEST_AGENT);
+      const output = functionResult(call, 'done');
+
+      expect(selectRunItemsForBlockedOutput([runItem, output])).toEqual([]);
+    },
+  );
+
+  it('drops computer abort results and missing required call statuses', () => {
+    const computerCall = {
+      type: 'computer_call',
+      callId: 'computer-incomplete',
+      status: 'completed',
+      action: { type: 'screenshot' },
+    } satisfies protocol.ComputerUseCallItem;
+    const runItem = new ToolCallItem(computerCall, TEST_AGENT);
+    const abortResult = new ToolCallOutputItem(
+      buildComputerAbortResult(computerCall),
+      TEST_AGENT,
+      'aborted',
+    );
+
+    expect(selectRunItemsForBlockedOutput([runItem, abortResult])).toEqual([]);
+
+    const missingStatusCall = new ToolCallItem(
+      {
+        ...computerCall,
+        status: undefined,
+        providerData: { status: 'completed' },
+      } as unknown as protocol.ComputerUseCallItem,
+      TEST_AGENT,
+    );
+    const completedResult = new ToolCallOutputItem(
+      {
+        type: 'computer_call_result',
+        callId: computerCall.callId,
+        output: { type: 'computer_screenshot', data: 'data:image/png;base64,' },
+      },
+      TEST_AGENT,
+      'done',
+    );
+    expect(
+      selectRunItemsForBlockedOutput([missingStatusCall, completedResult]),
+    ).toEqual([]);
+  });
+
+  it('uses type-specific status fields for required result statuses', () => {
+    const { call, runItem } = runFunctionCall('missing-result-status');
+    const missingStatusResult = new ToolCallOutputItem(
+      {
+        type: 'function_call_result',
+        callId: call.callId,
+        name: call.name,
+        output: 'done',
+        providerData: { status: 'completed' },
+      } as unknown as protocol.FunctionCallResultItem,
+      TEST_AGENT,
+      'done',
+    );
+
+    expect(
+      selectRunItemsForBlockedOutput([runItem, missingStatusResult]),
+    ).toEqual([]);
+  });
+
+  it('ignores unrelated provider status on no-status program calls', () => {
+    const call = {
+      type: 'program',
+      callId: 'program-provider-status',
+      code: 'return 1',
+      fingerprint: 'program-fingerprint',
+      providerData: { status: 'unknown' },
+    } satisfies protocol.ProgramCallItem;
+    const runItem = new ToolCallItem(call, TEST_AGENT);
+    const result = markRunToolCallOutputItemAsExecuted(
+      new ToolCallOutputItem(
+        {
+          type: 'program_output',
+          callId: call.callId,
+          output: '1',
+          status: 'completed',
+        },
+        TEST_AGENT,
+        '1',
+      ),
+    );
+
+    expect(selectRunItemsForBlockedOutput([runItem, result])).toEqual([
+      runItem,
+      result,
+    ]);
+  });
+
+  it('drops unknown statuses on otherwise supported tool items', () => {
+    const call = {
+      ...functionCall('call-unknown-status'),
+      status: 'unknown',
+    } as unknown as protocol.FunctionCallItem;
+    const runItem = new ToolCallItem(call, TEST_AGENT);
+
+    expect(
+      selectRunItemsForBlockedOutput([runItem, functionResult(call, 'done')]),
+    ).toEqual([]);
+  });
+
+  it('drops reasoning that precedes a retained tool result', () => {
+    const { call, runItem } = runFunctionCall('call-trailing-reasoning');
+    const trailingReasoning = new ReasoningItem(
+      {
+        type: 'reasoning',
+        id: 'reasoning-after-call',
+        content: [{ type: 'input_text', text: 'draft response' }],
+      },
+      TEST_AGENT,
+    );
+    const output = functionResult(call, 'done');
+
+    expect(
+      selectRunItemsForBlockedOutput([runItem, trailingReasoning, output]),
+    ).toEqual([runItem, output]);
+  });
+
+  it('drops orphan calls and results', () => {
+    const { call: callOnly, runItem } = runFunctionCall('call-only');
+    const resultOnlyCall = functionCall('result-only');
+
+    expect(
+      selectRunItemsForBlockedOutput([
+        runItem,
+        functionResult(resultOnlyCall, 'orphaned'),
+      ]),
+    ).toEqual([]);
+    expect(callOnly.callId).not.toBe(resultOnlyCall.callId);
+  });
+
+  it('drops ambiguous duplicate call IDs', () => {
+    const { call, runItem } = runFunctionCall('call-duplicate');
+    const duplicate = new ToolCallItem({ ...call }, TEST_AGENT);
+    const output = functionResult(call, 'done');
+
+    expect(
+      selectRunItemsForBlockedOutput([runItem, duplicate, output]),
+    ).toEqual([]);
+    expect(
+      selectRunItemsForBlockedOutput([
+        runItem,
+        output,
+        functionResult(call, 'done again'),
+      ]),
+    ).toEqual([]);
+
+    const incompleteDuplicate = new ToolCallItem(
+      { ...call, status: 'incomplete' },
+      TEST_AGENT,
+    );
+    expect(
+      selectRunItemsForBlockedOutput([runItem, incompleteDuplicate, output]),
+    ).toEqual([]);
+  });
+
+  it('drops result-before-call pairs', () => {
+    const { call, runItem } = runFunctionCall('call-reversed');
+    const output = functionResult(call, 'done');
+
+    expect(selectRunItemsForBlockedOutput([output, runItem])).toEqual([]);
+  });
+
+  it('drops pairs that collide with recognized records in other wrappers', () => {
+    const { call, runItem } = runFunctionCall('call-wrapper-mismatch');
+    const output = functionResult(call, 'done');
+    const mismatchedCall = new HandoffCallItem(call, TEST_AGENT);
+    const mismatchedResult = new HandoffOutputItem(
+      output.rawItem as protocol.FunctionCallResultItem,
+      TEST_AGENT,
+      TEST_AGENT,
+    );
+
+    expect(
+      selectRunItemsForBlockedOutput([mismatchedCall, runItem, output]),
+    ).toEqual([]);
+    expect(
+      selectRunItemsForBlockedOutput([runItem, mismatchedResult, output]),
+    ).toEqual([]);
+  });
+
+  it('drops unclassified item kinds by default', () => {
+    const futureItem = {
+      type: 'future_side_effect_item',
+      rawItem: fakeModelMessage('future item'),
+    } as unknown as import('../../src/items').RunItem;
+
+    expect(selectRunItemsForBlockedOutput([futureItem])).toEqual([]);
+  });
+
+  it('does not treat hosted approval records as executed tool effects', () => {
+    const request = new ToolCallItem(
+      {
+        type: 'hosted_tool_call',
+        id: 'approval-item',
+        name: 'mcp_approval_request',
+        providerData: {
+          type: 'mcp_approval_request',
+          id: 'approval-id',
+        },
+      },
+      TEST_AGENT,
+    );
+    const response = new ToolCallItem(
+      {
+        type: 'hosted_tool_call',
+        name: 'mcp_approval_response',
+        providerData: {
+          approve: true,
+          approval_request_id: 'approval-id',
+        },
+      },
+      TEST_AGENT,
+    );
+
+    expect(selectRunItemsForBlockedOutput([request, response])).toEqual([]);
+  });
+});
 
 function shellCall(callId: string, command: string): protocol.ShellCallItem {
   return {

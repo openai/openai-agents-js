@@ -20,6 +20,7 @@ import {
   RunMessageOutputItem,
   RunToolApprovalItem,
   RunToolCallOutputItem,
+  markRunToolCallOutputItemAsExecuted,
 } from '../items';
 import { assistant } from '../helpers/message';
 import logger, { Logger, logToolActionError } from '../logger';
@@ -675,6 +676,7 @@ async function runApprovedFunctionTool<TContext>(
       );
 
       let toolOutput: unknown;
+      let toolExecutionStarted = false;
       let executedInput = parsedInput;
       let toolDetails: ToolCallDetails = { toolCall: toolRun.toolCall };
       let shouldValidateToolOutput = false;
@@ -705,6 +707,7 @@ async function runApprovedFunctionTool<TContext>(
         );
         setToolCallParentSpanOnDetails(toolDetails, span);
         signal?.throwIfAborted();
+        toolExecutionStarted = true;
         const invokedToolOutput = await invokeFunctionTool({
           tool: toolRun.tool,
           runContext: state._context,
@@ -761,16 +764,21 @@ async function runApprovedFunctionTool<TContext>(
         span.spanData.output = stringResult;
       }
 
+      const runItem = new RunToolCallOutputItem(
+        rawItem,
+        agent,
+        toolOutput,
+        customData,
+      );
+      if (toolExecutionStarted) {
+        markRunToolCallOutputItemAsExecuted(runItem);
+      }
+
       const functionResult: FunctionToolResult<TContext> = {
         type: 'function_output' as const,
         tool: toolRun.tool,
         output: toolOutput,
-        runItem: new RunToolCallOutputItem(
-          rawItem,
-          agent,
-          toolOutput,
-          customData,
-        ),
+        runItem,
       };
 
       const nestedRunResult = consumeAgentToolRunResult(toolRun.toolCall) as
@@ -1167,7 +1175,9 @@ export async function executeShellActions(
         const providerMeta: Record<string, unknown> = {};
         let maxOutputLength: number | undefined;
 
+        let toolExecutionStarted = false;
         try {
+          toolExecutionStarted = true;
           const shellResult = await shellTool.shell.run(toolCall.action);
           shellOutputs = shellResult.output ?? [];
 
@@ -1224,7 +1234,15 @@ export async function executeShellActions(
           rawItem.providerData = providerMeta;
         }
 
-        return new RunToolCallOutputItem(rawItem, agent, rawItem.output);
+        const runItem = new RunToolCallOutputItem(
+          rawItem,
+          agent,
+          rawItem.output,
+        );
+        if (toolExecutionStarted) {
+          markRunToolCallOutputItemAsExecuted(runItem);
+        }
+        return runItem;
       },
     );
 
@@ -1307,22 +1325,26 @@ export async function executeApplyPatchOperations(
         let status: 'completed' | 'failed' = 'completed';
         let output = '';
 
+        let toolExecutionStarted = false;
         try {
           let result: ApplyPatchResult | void;
           switch (toolCall.operation.type) {
             case 'create_file':
+              toolExecutionStarted = true;
               result = await applyPatchTool.editor.createFile(
                 toolCall.operation,
                 editorContext,
               );
               break;
             case 'update_file':
+              toolExecutionStarted = true;
               result = await applyPatchTool.editor.updateFile(
                 toolCall.operation,
                 editorContext,
               );
               break;
             case 'delete_file':
+              toolExecutionStarted = true;
               result = await applyPatchTool.editor.deleteFile(
                 toolCall.operation,
                 editorContext,
@@ -1396,7 +1418,16 @@ export async function executeApplyPatchOperations(
           span.spanData.output = output;
         }
 
-        return new RunToolCallOutputItem(rawItem, agent, output, customData);
+        const runItem = new RunToolCallOutputItem(
+          rawItem,
+          agent,
+          output,
+          customData,
+        );
+        if (toolExecutionStarted) {
+          markRunToolCallOutputItemAsExecuted(runItem);
+        }
+        return runItem;
       },
     );
 
@@ -1538,11 +1569,13 @@ export async function executeComputerActions(
 
         // Run the action and get screenshot.
         let output: string;
+        let toolExecutionStarted = false;
         try {
           const computer = await resolveComputer({
             tool: computerTool,
             runContext,
           });
+          toolExecutionStarted = true;
           output = await _runComputerActionAndScreenshot(
             computer,
             toolCall,
@@ -1599,7 +1632,16 @@ export async function executeComputerActions(
           span.spanData.output = imageUrl;
         }
 
-        return new RunToolCallOutputItem(rawItem, agent, imageUrl, customData);
+        const runItem = new RunToolCallOutputItem(
+          rawItem,
+          agent,
+          imageUrl,
+          customData,
+        );
+        if (toolExecutionStarted) {
+          markRunToolCallOutputItemAsExecuted(runItem);
+        }
+        return runItem;
       },
     );
 

@@ -1,11 +1,14 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
+  GuardrailExecutionError,
   MemorySession,
   OutputGuardrailTripwireTriggered,
   RunState,
+  ToolGuardrailFunctionOutputFactory,
   Usage,
+  defineToolInputGuardrail,
   run,
   setTracingDisabled,
   tool,
@@ -17,8 +20,10 @@ import {
   type OpenAIResponsesCompactionArgs,
   type OpenAIResponsesCompactionResult,
   type StreamEvent,
+  type ToolUseBehavior,
 } from '../src';
 import * as protocol from '../src/types/protocol';
+import { SandboxRuntimeManager } from '../src/sandbox/runtime';
 import { fakeModelMessage } from './stubs';
 
 type RunMode = 'non_streamed' | 'streamed';
@@ -44,6 +49,12 @@ class CompactionTrackingSession extends MemorySession {
       );
     }
     return null;
+  }
+}
+
+class ReasoningPreservingSession extends CompactionTrackingSession {
+  preserveReasoningItemIdsForPersistence(): boolean {
+    return true;
   }
 }
 
@@ -129,6 +140,769 @@ function getPersistedToolItems(items: AgentInputItem[]) {
       item.type === 'function_call' || item.type === 'function_call_result',
   );
 }
+
+const finalToolBehaviors: Array<{
+  name: string;
+  value: ToolUseBehavior;
+}> = [
+  { name: 'stop_on_first_tool', value: 'stop_on_first_tool' },
+  {
+    name: 'stopAtToolNames',
+    value: { stopAtToolNames: ['commit_tool'] },
+  },
+  {
+    name: 'custom finalizer',
+    value: async (_context, results) => {
+      const result = results.find((item) => item.type === 'function_output');
+      return {
+        isFinalOutput: true,
+        isInterrupted: undefined,
+        finalOutput: String(result?.output),
+      };
+    },
+  },
+];
+
+function reasoningItem(id: string, text: string): protocol.ReasoningItem {
+  return {
+    type: 'reasoning',
+    id,
+    content: [{ type: 'input_text', text }],
+  };
+}
+
+describe('committed tool output guardrail session persistence', () => {
+  it.each(
+    finalToolBehaviors.flatMap(({ name, value }) =>
+      (['non_streamed', 'streamed'] as const).map((mode) => ({
+        behaviorName: name,
+        toolUseBehavior: value,
+        mode,
+      })),
+    ),
+  )(
+    'persists a direct final tool once for $behaviorName in $mode mode when guardrails trip',
+    async ({ toolUseBehavior, mode }) => {
+      const executions: string[] = [];
+      let guardrailShouldTrip = true;
+      const commitTool = tool({
+        name: 'commit_tool',
+        description: 'Commits a side effect.',
+        parameters: z.object({}),
+        execute: async () => {
+          executions.push('ran');
+          return 'committed-result';
+        },
+      });
+      const model = new ApprovalSessionModel([
+        {
+          output: [functionToolCall('commit_tool', 'call-committed')],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'Committed tool agent',
+        model,
+        tools: [commitTool],
+        toolUseBehavior,
+        outputGuardrails: [
+          {
+            name: 'block committed result',
+            execute: async () => ({
+              outputInfo: null,
+              tripwireTriggered: guardrailShouldTrip,
+            }),
+          },
+        ],
+      });
+      const session = new MemorySession();
+
+      const runOnce = async (input: string) => {
+        if (mode === 'streamed') {
+          const result = await run(agent, input, { session, stream: true });
+          await result.completed;
+          return result;
+        }
+        return await run(agent, input, { session });
+      };
+
+      await expect(runOnce('Use commit_tool')).rejects.toBeInstanceOf(
+        OutputGuardrailTripwireTriggered,
+      );
+      expect(executions).toEqual(['ran']);
+      expect(
+        (await session.getItems()).map((item) =>
+          item.type === 'message' ? `${item.type}:${item.role}` : item.type,
+        ),
+      ).toEqual(['message:user', 'function_call', 'function_call_result']);
+
+      guardrailShouldTrip = false;
+      const followup = await runOnce('Continue');
+      expect(followup.finalOutput).toBe('done');
+      expect(executions).toEqual(['ran']);
+      expect(
+        getPersistedToolItems(model.requests.at(-1)?.input as AgentInputItem[]),
+      ).toMatchObject([
+        { type: 'function_call', callId: 'call-committed' },
+        { type: 'function_call_result', callId: 'call-committed' },
+      ]);
+      expect(getPersistedToolItems(await session.getItems())).toHaveLength(2);
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'does not persist a $mode approved result rejected by an input guardrail before execution',
+    async (mode) => {
+      const execute = vi.fn(async () => 'should-not-run');
+      const approvalTool = tool({
+        name: 'approved_input_guarded_tool',
+        description: 'Rejects approved input before execution.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute,
+        inputGuardrails: [
+          defineToolInputGuardrail({
+            name: 'reject approved input',
+            run: async () =>
+              ToolGuardrailFunctionOutputFactory.rejectContent(
+                'approved-input-rejected',
+              ),
+          }),
+        ],
+      });
+      const model = new ApprovalSessionModel([
+        {
+          output: [
+            functionToolCall(
+              'approved_input_guarded_tool',
+              'call-approved-input-rejected',
+            ),
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'Approved input guardrail rejection agent',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'block approved input rejection',
+            execute: async () => ({
+              outputInfo: null,
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+      const session = new CompactionTrackingSession();
+      const runOnce = async (
+        input: string | RunState<unknown, typeof agent>,
+      ) => {
+        if (mode === 'streamed') {
+          const result = await run(agent, input, { session, stream: true });
+          await result.completed;
+          return result;
+        }
+        return await run(agent, input, { session });
+      };
+
+      const first = await runOnce('Use approved_input_guarded_tool');
+      expect(first.interruptions).toHaveLength(1);
+      first.state.approve(first.interruptions[0]);
+
+      await expect(runOnce(first.state)).rejects.toBeInstanceOf(
+        OutputGuardrailTripwireTriggered,
+      );
+      expect(execute).not.toHaveBeenCalled();
+      expect(
+        getPersistedToolItems(await session.getItems()).filter(
+          (item) => item.type === 'function_call_result',
+        ),
+      ).toEqual([]);
+      expect(session.compactionSnapshots).toHaveLength(2);
+      expect(session.compactionArgs[1]).toMatchObject({
+        compactionMode: 'input',
+      });
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'does not persist a $mode tool result rejected before execution by an input guardrail',
+    async (mode) => {
+      const execute = vi.fn(async () => 'should-not-run');
+      const guardedTool = tool({
+        name: 'input_guarded_tool',
+        description: 'Rejects before the tool executes.',
+        parameters: z.object({}),
+        execute,
+        inputGuardrails: [
+          defineToolInputGuardrail({
+            name: 'reject tool input',
+            run: async () =>
+              ToolGuardrailFunctionOutputFactory.rejectContent(
+                'input-rejected',
+              ),
+          }),
+        ],
+      });
+      const model = new ApprovalSessionModel([
+        {
+          output: [
+            functionToolCall('input_guarded_tool', 'call-input-rejected'),
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'Input guardrail rejection agent',
+        model,
+        tools: [guardedTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'block rejection output',
+            execute: async () => ({
+              outputInfo: null,
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+      const session = new MemorySession();
+
+      if (mode === 'streamed') {
+        const result = await run(agent, 'Use input_guarded_tool', {
+          session,
+          stream: true,
+        });
+        await expect(result.completed).rejects.toBeInstanceOf(
+          OutputGuardrailTripwireTriggered,
+        );
+      } else {
+        await expect(
+          run(agent, 'Use input_guarded_tool', { session }),
+        ).rejects.toBeInstanceOf(OutputGuardrailTripwireTriggered);
+      }
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(getPersistedToolItems(await session.getItems())).toEqual([]);
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'does not persist a $mode tool result rejected by approval before execution',
+    async (mode) => {
+      const execute = vi.fn(async () => 'should-not-run');
+      const approvalTool = tool({
+        name: 'rejected_approval_tool',
+        description: 'Requires approval before execution.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute,
+      });
+      const model = new ApprovalSessionModel([
+        {
+          output: [
+            functionToolCall(
+              'rejected_approval_tool',
+              'call-approval-rejected',
+            ),
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'Approval rejection agent',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'block approval rejection output',
+            execute: async () => ({
+              outputInfo: null,
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+      const session = new MemorySession();
+      const runOnce = async (
+        input: string | RunState<unknown, typeof agent>,
+      ) => {
+        if (mode === 'streamed') {
+          const result = await run(agent, input, { session, stream: true });
+          await result.completed;
+          return result;
+        }
+        return await run(agent, input, { session });
+      };
+
+      const first = await runOnce('Use rejected_approval_tool');
+      expect(first.interruptions).toHaveLength(1);
+      first.state.reject(first.interruptions[0]);
+
+      await expect(runOnce(first.state)).rejects.toBeInstanceOf(
+        OutputGuardrailTripwireTriggered,
+      );
+      expect(execute).not.toHaveBeenCalled();
+      expect(
+        getPersistedToolItems(await session.getItems()).filter(
+          (item) => item.type === 'function_call_result',
+        ),
+      ).toEqual([]);
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'persists a $mode provider result that completes a call saved before approval',
+    async (mode) => {
+      const executions: string[] = [];
+      const approvedProgramTool = tool({
+        name: 'approved_program_tool',
+        description: 'Returns a value to a provider-managed program.',
+        parameters: z.object({}),
+        allowedCallers: ['programmatic'],
+        needsApproval: true,
+        execute: async () => {
+          executions.push('ran');
+          return 'approved-program-result';
+        },
+      });
+      const programCallId = 'call-program-checkpoint';
+      const model = new ApprovalSessionModel([
+        {
+          output: [
+            {
+              type: 'program',
+              id: 'program-checkpoint',
+              callId: programCallId,
+              code: 'text(await tools.approved_program_tool({}))',
+              fingerprint: 'program-checkpoint-fingerprint',
+            },
+            {
+              ...functionToolCall(
+                'approved_program_tool',
+                'call-approved-program-tool',
+              ),
+              caller: { type: 'program' as const, callerId: programCallId },
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [
+            {
+              type: 'program_output',
+              id: 'program-checkpoint-output',
+              callId: programCallId,
+              output: 'approved-program-result',
+              status: 'completed',
+            },
+            fakeModelMessage('rejected program completion'),
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'Program checkpoint agent',
+        model,
+        tools: [
+          approvedProgramTool,
+          {
+            type: 'hosted_tool',
+            name: 'programmatic_tool_calling',
+            providerData: { type: 'programmatic_tool_calling' },
+          },
+        ],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'block program completion',
+            execute: async () => ({
+              outputInfo: null,
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+      const session = new MemorySession();
+      const runOnce = async (
+        input: string | RunState<unknown, typeof agent>,
+      ) => {
+        if (mode === 'streamed') {
+          const result = await run(agent, input, { session, stream: true });
+          await result.completed;
+          return result;
+        }
+        return await run(agent, input, { session });
+      };
+
+      const first = await runOnce('Run the approved program');
+      expect(first.interruptions).toHaveLength(1);
+      first.state.approve(first.interruptions[0]);
+
+      await expect(runOnce(first.state)).rejects.toBeInstanceOf(
+        OutputGuardrailTripwireTriggered,
+      );
+      expect(executions).toEqual(['ran']);
+      const persistedItems = await session.getItems();
+      expect(
+        persistedItems.filter(
+          (item) => item.type === 'program' || item.type === 'program_output',
+        ),
+      ).toMatchObject([
+        { type: 'program', callId: programCallId },
+        { type: 'program_output', callId: programCallId },
+      ]);
+      expect(
+        persistedItems.filter((item) => item.type === 'program_output'),
+      ).toHaveLength(1);
+      expect(
+        persistedItems.some(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'assistant' &&
+            item.content.some(
+              (content) =>
+                content.type === 'output_text' &&
+                content.text === 'rejected program completion',
+            ),
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it.each(
+    (['non_streamed', 'streamed'] as const).flatMap((mode) =>
+      [false, true].map((tripwire) => ({ mode, tripwire })),
+    ),
+  )(
+    'persists only executed results for a mixed $mode approval resume when guardrails trip=$tripwire',
+    async ({ mode, tripwire }) => {
+      const executions: string[] = [];
+      const approvalTool = tool({
+        name: 'mixed_approval_tool',
+        description: 'Records approved executions.',
+        parameters: z.object({ value: z.string() }),
+        needsApproval: true,
+        execute: async ({ value }) => {
+          executions.push(value);
+          return `executed-${value}`;
+        },
+      });
+      const model = new ApprovalSessionModel([
+        {
+          output: [
+            functionToolCall(
+              'mixed_approval_tool',
+              'call-mixed-approved',
+              JSON.stringify({ value: 'approved' }),
+            ),
+            functionToolCall(
+              'mixed_approval_tool',
+              'call-mixed-rejected',
+              JSON.stringify({ value: 'rejected' }),
+            ),
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'Mixed approval agent',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'mixed approval output guardrail',
+            execute: async () => ({
+              outputInfo: null,
+              tripwireTriggered: tripwire,
+            }),
+          },
+        ],
+      });
+      const session = new MemorySession();
+      const runOnce = async (
+        input: string | RunState<unknown, typeof agent>,
+      ) => {
+        if (mode === 'streamed') {
+          const result = await run(agent, input, { session, stream: true });
+          await result.completed;
+          return result;
+        }
+        return await run(agent, input, { session });
+      };
+
+      const first = await runOnce('Run both approval tools');
+      expect(first.interruptions).toHaveLength(2);
+      first.state.approve(first.interruptions[0]);
+      first.state.reject(first.interruptions[1]);
+
+      if (tripwire) {
+        await expect(runOnce(first.state)).rejects.toBeInstanceOf(
+          OutputGuardrailTripwireTriggered,
+        );
+      } else {
+        const resumed = await runOnce(first.state);
+        expect(resumed.finalOutput).toBe('executed-approved');
+      }
+
+      expect(executions).toEqual(['approved']);
+      const persistedResultIds = getPersistedToolItems(await session.getItems())
+        .filter((item) => item.type === 'function_call_result')
+        .map((item) => item.callId);
+      expect(persistedResultIds).toEqual(
+        tripwire
+          ? ['call-mixed-approved']
+          : ['call-mixed-approved', 'call-mixed-rejected'],
+      );
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'persists a committed $mode tool before sandbox cleanup fails',
+    async (mode) => {
+      const cleanupError = new Error('sandbox cleanup failed');
+      const cleanupSpy = vi
+        .spyOn(SandboxRuntimeManager.prototype, 'cleanup')
+        .mockRejectedValue(cleanupError);
+      const executions: string[] = [];
+      const commitTool = tool({
+        name: 'commit_before_cleanup',
+        description: 'Commits before sandbox cleanup.',
+        parameters: z.object({}),
+        execute: async () => {
+          executions.push('ran');
+          return 'committed-before-cleanup';
+        },
+      });
+      const model = new ApprovalSessionModel([
+        {
+          output: [
+            functionToolCall('commit_before_cleanup', 'call-before-cleanup'),
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'Cleanup failure agent',
+        model,
+        tools: [commitTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'block before cleanup',
+            execute: async () => ({
+              outputInfo: null,
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+      const session = new MemorySession();
+
+      try {
+        const runOnce = async () => {
+          if (mode === 'streamed') {
+            const result = await run(agent, 'Use commit_before_cleanup', {
+              session,
+              stream: true,
+            });
+            await result.completed;
+            return;
+          }
+          await run(agent, 'Use commit_before_cleanup', { session });
+        };
+        await expect(runOnce()).rejects.toBe(cleanupError);
+      } finally {
+        cleanupSpy.mockRestore();
+      }
+
+      expect(executions).toEqual(['ran']);
+      expect(
+        getPersistedToolItems(await session.getItems()).map((item) => [
+          item.type,
+          item.callId,
+        ]),
+      ).toEqual([
+        ['function_call', 'call-before-cleanup'],
+        ['function_call_result', 'call-before-cleanup'],
+      ]);
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'does not persist a final $mode tool when guardrail execution fails',
+    async (mode) => {
+      const commitTool = tool({
+        name: 'commit_before_guardrail_error',
+        description: 'Commits before the guardrail throws.',
+        parameters: z.object({}),
+        execute: async () => 'committed-before-guardrail-error',
+      });
+      const model = new ApprovalSessionModel([
+        {
+          output: [
+            functionToolCall(
+              'commit_before_guardrail_error',
+              'call-before-guardrail-error',
+            ),
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'Guardrail execution failure agent',
+        model,
+        tools: [commitTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'throw guardrail error',
+            execute: async () => {
+              throw new Error('guardrail failed');
+            },
+          },
+        ],
+      });
+      const session = new MemorySession();
+
+      const runOnce = async () => {
+        if (mode === 'streamed') {
+          const result = await run(agent, 'Use commit_before_guardrail_error', {
+            session,
+            stream: true,
+          });
+          await result.completed;
+          return;
+        }
+        await run(agent, 'Use commit_before_guardrail_error', { session });
+      };
+
+      await expect(runOnce()).rejects.toBeInstanceOf(GuardrailExecutionError);
+      const persistedItems = await session.getItems();
+      expect(getPersistedToolItems(persistedItems)).toEqual([]);
+      expect(
+        persistedItems.some(
+          (item) => item.type === 'message' && item.role === 'assistant',
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it.each<{
+    mode: RunMode;
+    tripwire: boolean;
+  }>([
+    { mode: 'non_streamed', tripwire: false },
+    { mode: 'non_streamed', tripwire: true },
+    { mode: 'streamed', tripwire: false },
+    { mode: 'streamed', tripwire: true },
+  ])(
+    'keeps the ordered final batch subset in $mode mode when guardrails trip=$tripwire',
+    async ({ mode, tripwire }) => {
+      const commitTool = tool({
+        name: 'commit_tool',
+        description: 'Commits a side effect.',
+        parameters: z.object({}),
+        execute: async () => 'committed-result',
+      });
+      const model = new ApprovalSessionModel([
+        {
+          output: [
+            reasoningItem('reasoning-message', 'draft the message'),
+            fakeModelMessage('rejected preamble'),
+            reasoningItem('reasoning-tool', 'call the tool'),
+            functionToolCall('commit_tool', 'call-mixed'),
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'Mixed final batch agent',
+        model,
+        tools: [commitTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'conditional output guardrail',
+            execute: async () => ({
+              outputInfo: null,
+              tripwireTriggered: tripwire,
+            }),
+          },
+        ],
+      });
+      const session = new ReasoningPreservingSession();
+
+      const runOnce = async () => {
+        if (mode === 'streamed') {
+          const result = await run(agent, 'Use commit_tool', {
+            session,
+            stream: true,
+          });
+          await result.completed;
+          return result;
+        }
+        return await run(agent, 'Use commit_tool', { session });
+      };
+
+      if (tripwire) {
+        await expect(runOnce()).rejects.toBeInstanceOf(
+          OutputGuardrailTripwireTriggered,
+        );
+      } else {
+        expect((await runOnce()).finalOutput).toBe('committed-result');
+      }
+
+      const persistedItems = await session.getItems();
+      expect(
+        persistedItems.map((item) =>
+          item.type === 'message' ? `${item.type}:${item.role}` : item.type,
+        ),
+      ).toEqual(
+        tripwire
+          ? [
+              'message:user',
+              'reasoning',
+              'function_call',
+              'function_call_result',
+            ]
+          : [
+              'message:user',
+              'reasoning',
+              'message:assistant',
+              'reasoning',
+              'function_call',
+              'function_call_result',
+            ],
+      );
+      expect(
+        persistedItems
+          .filter((item) => item.type === 'reasoning')
+          .map((item) => item.id),
+      ).toEqual(
+        tripwire ? ['reasoning-tool'] : ['reasoning-message', 'reasoning-tool'],
+      );
+      expect(session.compactionArgs).toHaveLength(1);
+      if (tripwire) {
+        expect(session.compactionArgs[0]).toMatchObject({
+          compactionMode: 'input',
+        });
+      } else {
+        expect(session.compactionArgs[0]?.compactionMode).toBeUndefined();
+      }
+    },
+  );
+});
 
 describe('approved tool output guardrail session persistence', () => {
   beforeAll(() => {
@@ -539,6 +1313,132 @@ describe('approved tool output guardrail session persistence', () => {
         ['function_call', 'call-cancelled-approved'],
         ['function_call_result', 'call-cancelled-approved'],
       ]);
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'advances blocked output after an approved $mode tool checkpoint',
+    async (mode) => {
+      const executions: string[] = [];
+      let guardrailShouldTrip = true;
+      const approvalTool = tool({
+        name: 'approved_then_blocked_tool',
+        description: 'Returns a result after approval.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => {
+          executions.push('ran');
+          return 'approved-result';
+        },
+      });
+      const model = new ApprovalSessionModel([
+        {
+          output: [
+            functionToolCall(
+              'approved_then_blocked_tool',
+              'call-approved-then-blocked',
+            ),
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('rejected after approved tool')],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('accepted after resume')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'Approved tool blocked output agent',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'run_llm_again',
+        outputGuardrails: [
+          {
+            name: 'block output after approved tool',
+            execute: async () => ({
+              outputInfo: null,
+              tripwireTriggered: guardrailShouldTrip,
+            }),
+          },
+        ],
+      });
+      const session = new CompactionTrackingSession();
+      const runOnce = async (
+        input: string | RunState<unknown, typeof agent>,
+      ) => {
+        if (mode === 'streamed') {
+          const result = await run(agent, input, { session, stream: true });
+          await result.completed;
+          return result;
+        }
+        return await run(agent, input, { session });
+      };
+
+      const first = await runOnce('Use approved_then_blocked_tool');
+      expect(first.interruptions).toHaveLength(1);
+      first.state.approve(first.interruptions[0]);
+
+      let blockedState: RunState<unknown, typeof agent> | undefined;
+      try {
+        await runOnce(first.state);
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+        if (!(error instanceof OutputGuardrailTripwireTriggered)) {
+          throw error;
+        }
+        blockedState = error.state as
+          RunState<unknown, typeof agent> | undefined;
+      }
+
+      expect(blockedState).toBeDefined();
+      expect(blockedState?._currentTurnPersistedItemCount).toBe(
+        blockedState?._generatedItems.length,
+      );
+      expect(executions).toEqual(['ran']);
+      expect(
+        (await session.getItems()).filter((item) => item.type === 'message'),
+      ).toMatchObject([{ role: 'user' }]);
+      expect(session.compactionArgs.at(-1)).toMatchObject({
+        compactionMode: 'input',
+      });
+      expect(getPersistedToolItems(await session.getItems())).toHaveLength(2);
+
+      guardrailShouldTrip = false;
+      const followup = await runOnce('Continue after the blocked output');
+      expect(followup.finalOutput).toBe('accepted after resume');
+      expect(executions).toEqual(['ran']);
+      const followupInput = model.requests.at(-1)?.input;
+      expect(Array.isArray(followupInput)).toBe(true);
+      if (!Array.isArray(followupInput)) {
+        throw new Error('Expected array model input.');
+      }
+      expect(
+        followupInput.some(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'assistant' &&
+            item.content.some(
+              (content) =>
+                content.type === 'output_text' &&
+                content.text === 'rejected after approved tool',
+            ),
+        ),
+      ).toBe(false);
+      expect(
+        (await session.getItems()).some(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'assistant' &&
+            item.content.some(
+              (content) =>
+                content.type === 'output_text' &&
+                content.text === 'rejected after approved tool',
+            ),
+        ),
+      ).toBe(false);
     },
   );
 

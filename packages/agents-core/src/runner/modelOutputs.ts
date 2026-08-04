@@ -9,6 +9,7 @@ import {
   RunToolApprovalItem,
   RunToolCallItem,
   RunToolCallOutputItem,
+  markRunToolCallOutputItemAsExecuted,
   RunToolSearchCallItem,
   RunToolSearchOutputItem,
 } from '../items';
@@ -865,7 +866,11 @@ export function processModelResponse<TContext>(
       items.push(new RunToolCallItem(output, agent));
       toolsUsed.push('programmatic_tool_calling');
     } else if (output.type === 'program_output') {
-      items.push(new RunToolCallOutputItem(output, agent, output.output));
+      items.push(
+        markRunToolCallOutputItemAsExecuted(
+          new RunToolCallOutputItem(output, agent, output.output),
+        ),
+      );
     } else if (output.type === 'hosted_tool_call') {
       ensureHostedToolCallAllowed(
         output,
@@ -977,7 +982,11 @@ export function processModelResponse<TContext>(
         shell: resolvedShellTool,
       });
     } else if (output.type === 'shell_call_output') {
-      items.push(new RunToolCallOutputItem(output, agent, output.output));
+      items.push(
+        markRunToolCallOutputItemAsExecuted(
+          new RunToolCallOutputItem(output, agent, output.output),
+        ),
+      );
       if (hasPendingShellOutputStatus(output)) {
         hasHostedShellCall = true;
       }
@@ -1230,7 +1239,11 @@ export async function processModelResponseAsync<TContext>(
       items.push(new RunToolCallItem(output, agent));
       toolsUsed.push('programmatic_tool_calling');
     } else if (output.type === 'program_output') {
-      items.push(new RunToolCallOutputItem(output, agent, output.output));
+      items.push(
+        markRunToolCallOutputItemAsExecuted(
+          new RunToolCallOutputItem(output, agent, output.output),
+        ),
+      );
     } else if (output.type === 'hosted_tool_call') {
       ensureHostedToolCallAllowed(
         output,
@@ -1335,7 +1348,11 @@ export async function processModelResponseAsync<TContext>(
         shell: resolvedShellTool,
       });
     } else if (output.type === 'shell_call_output') {
-      items.push(new RunToolCallOutputItem(output, agent, output.output));
+      items.push(
+        markRunToolCallOutputItemAsExecuted(
+          new RunToolCallOutputItem(output, agent, output.output),
+        ),
+      );
       if (hasPendingShellOutputStatus(output)) {
         hasHostedShellCall = true;
       }
