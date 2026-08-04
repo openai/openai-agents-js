@@ -141,6 +141,54 @@ describe('selectRunItemsForBlockedOutput', () => {
     ).toEqual([retainedReasoning, runItem, output]);
   });
 
+  it('retains a completed handoff before a committed target-agent tool', () => {
+    const handoffCall = functionCall('call-handoff');
+    handoffCall.name = 'transfer_to_target';
+    const handoffCallItem = new HandoffCallItem(handoffCall, TEST_AGENT);
+    const handoffOutputItem = new HandoffOutputItem(
+      {
+        type: 'function_call_result',
+        callId: handoffCall.callId,
+        name: handoffCall.name,
+        status: 'completed',
+        output: 'Transferred to target',
+      },
+      TEST_AGENT,
+      TEST_AGENT,
+    );
+    const handoffReasoning = new ReasoningItem(
+      {
+        type: 'reasoning',
+        id: 'reasoning-handoff',
+        content: [{ type: 'input_text', text: 'delegate first' }],
+      },
+      TEST_AGENT,
+    );
+    const { call, runItem } = runFunctionCall('call-after-handoff');
+    const output = functionResult(call, 'done after handoff');
+    const rejectedMessage = new MessageOutputItem(
+      fakeModelMessage('blocked'),
+      TEST_AGENT,
+    );
+
+    expect(
+      selectRunItemsForBlockedOutput([
+        handoffReasoning,
+        handoffCallItem,
+        handoffOutputItem,
+        runItem,
+        output,
+        rejectedMessage,
+      ]),
+    ).toEqual([
+      handoffReasoning,
+      handoffCallItem,
+      handoffOutputItem,
+      runItem,
+      output,
+    ]);
+  });
+
   it('uses the tool result type as well as the call ID for correlation', () => {
     const { call, runItem } = runFunctionCall('shared-call-id');
     const computerCall = new ToolCallItem(

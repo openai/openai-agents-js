@@ -9,6 +9,7 @@ import { RunResult, StreamedRunResult } from '../result';
 import { RunState } from '../runState';
 import {
   RunItem,
+  RunHandoffOutputItem,
   RunToolCallOutputItem,
   wasRunToolCallOutputItemExecuted,
 } from '../items';
@@ -51,13 +52,43 @@ type BlockedToolRecord = Readonly<{
   key: string;
   role: 'call' | 'result';
   terminal: boolean;
+  kind?: BlockedPairKind;
+  committed: boolean;
 }>;
 
+type BlockedPairKind = 'tool' | 'handoff';
+
+function getBlockedPairKind(
+  item: RunItem,
+  role: BlockedToolRecord['role'],
+): BlockedPairKind | undefined {
+  if (role === 'call') {
+    if (item.type === 'tool_call_item') {
+      return 'tool';
+    }
+    if (item.type === 'handoff_call_item') {
+      return 'handoff';
+    }
+    return undefined;
+  }
+  if (item instanceof RunToolCallOutputItem) {
+    return 'tool';
+  }
+  if (item instanceof RunHandoffOutputItem) {
+    return 'handoff';
+  }
+  return undefined;
+}
+
 function classifyBlockedToolRecord(
-  item: AgentInputItem,
+  item: RunItem,
 ): BlockedToolRecord | undefined {
-  const type = (item as { type?: unknown }).type;
-  const status = (item as { status?: unknown }).status;
+  const rawItem = (item as { rawItem?: AgentInputItem }).rawItem;
+  if (!rawItem) {
+    return undefined;
+  }
+  const type = (rawItem as { type?: unknown }).type;
+  const status = (rawItem as { status?: unknown }).status;
   let role: BlockedToolRecord['role'];
   let terminal: boolean;
 
@@ -80,7 +111,7 @@ function classifyBlockedToolRecord(
       break;
     case 'computer_call_result': {
       role = 'result';
-      const providerData = (item as { providerData?: unknown }).providerData;
+      const providerData = (rawItem as { providerData?: unknown }).providerData;
       const providerStatus =
         providerData && typeof providerData === 'object'
           ? (providerData as { status?: unknown }).status
@@ -91,7 +122,7 @@ function classifyBlockedToolRecord(
     case 'shell_call_output': {
       role = 'result';
       const outputStatus = getShellCallOutputStatus(
-        item as ShellCallResultItem,
+        rawItem as ShellCallResultItem,
       );
       terminal = outputStatus === undefined || outputStatus === 'completed';
       break;
@@ -106,13 +137,20 @@ function classifyBlockedToolRecord(
 
   const correlation =
     role === 'call'
-      ? getToolResultCorrelationForCall(item)
-      : getToolResultCorrelationForResult(item);
+      ? getToolResultCorrelationForCall(rawItem)
+      : getToolResultCorrelationForResult(rawItem);
+  const kind = getBlockedPairKind(item, role);
   return correlation
     ? {
         key: getToolResultCorrelationKey(correlation),
         role,
         terminal,
+        kind,
+        committed:
+          kind === 'handoff' ||
+          (kind === 'tool' &&
+            role === 'result' &&
+            wasRunToolCallOutputItemExecuted(item as RunToolCallOutputItem)),
       }
     : undefined;
 }
@@ -132,17 +170,14 @@ function selectRunItemIndexesForBlockedOutput(
     string,
     {
       valid: boolean;
+      kind?: BlockedPairKind;
       callIndexes: number[];
-      results: Array<{ index: number; executed: boolean }>;
+      results: Array<{ index: number; committed: boolean }>;
     }
   >();
 
   for (const [index, item] of items.entries()) {
-    const rawItem = (item as { rawItem?: AgentInputItem }).rawItem;
-    if (!rawItem) {
-      continue;
-    }
-    const record = classifyBlockedToolRecord(rawItem);
+    const record = classifyBlockedToolRecord(item);
     if (!record) {
       continue;
     }
@@ -151,21 +186,21 @@ function selectRunItemIndexesForBlockedOutput(
       pair = { valid: true, callIndexes: [], results: [] };
       pairs.set(record.key, pair);
     }
-    const wrapperMatchesRole =
-      (record.role === 'call' && item.type === 'tool_call_item') ||
-      (record.role === 'result' && item instanceof RunToolCallOutputItem);
-    if (!record.terminal || !wrapperMatchesRole) {
+    if (
+      !record.terminal ||
+      !record.kind ||
+      (pair.kind !== undefined && pair.kind !== record.kind)
+    ) {
       pair.valid = false;
       continue;
     }
+    pair.kind = record.kind;
     if (record.role === 'call') {
       pair.callIndexes.push(index);
     } else {
       pair.results.push({
         index,
-        executed: wasRunToolCallOutputItemExecuted(
-          item as RunToolCallOutputItem,
-        ),
+        committed: record.committed,
       });
     }
   }
@@ -178,7 +213,7 @@ function selectRunItemIndexesForBlockedOutput(
       pair.callIndexes.length === 1 &&
       pair.results.length === 1 &&
       pair.callIndexes[0] < pair.results[0].index &&
-      (pair.results[0].executed || pair.callIndexes[0] < unpersistedStartIndex)
+      (pair.results[0].committed || pair.callIndexes[0] < unpersistedStartIndex)
     ) {
       retainedCallIndexes.add(pair.callIndexes[0]);
       retainedIndexes.add(pair.callIndexes[0]);

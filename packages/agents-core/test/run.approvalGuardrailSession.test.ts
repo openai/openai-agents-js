@@ -9,6 +9,7 @@ import {
   ToolGuardrailFunctionOutputFactory,
   Usage,
   defineToolInputGuardrail,
+  handoff,
   run,
   setTracingDisabled,
   tool,
@@ -251,6 +252,85 @@ describe('committed tool output guardrail session persistence', () => {
         { type: 'function_call_result', callId: 'call-committed' },
       ]);
       expect(getPersistedToolItems(await session.getItems())).toHaveLength(2);
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'retains a completed handoff before a blocked $mode final tool',
+    async (mode) => {
+      const execute = vi.fn(async () => 'target-result');
+      const targetTool = tool({
+        name: 'target_tool',
+        description: 'Commits a side effect in the target agent.',
+        parameters: z.object({}),
+        execute,
+      });
+      const targetModel = new ApprovalSessionModel([
+        {
+          output: [functionToolCall('target_tool', 'call-target-tool')],
+          usage: new Usage(),
+        },
+      ]);
+      const targetAgent = new Agent({
+        name: 'Handoff target agent',
+        model: targetModel,
+        tools: [targetTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'block target result',
+            execute: async () => ({
+              outputInfo: null,
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+      const handoffToTarget = handoff(targetAgent);
+      const rootModel = new ApprovalSessionModel([
+        {
+          output: [
+            functionToolCall(
+              handoffToTarget.toolName,
+              'call-handoff-to-target',
+            ),
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const rootAgent = new Agent({
+        name: 'Handoff root agent',
+        model: rootModel,
+        handoffs: [handoffToTarget],
+      });
+      const session = new MemorySession();
+
+      if (mode === 'streamed') {
+        const result = await run(rootAgent, 'Delegate and use target_tool', {
+          session,
+          stream: true,
+        });
+        await expect(result.completed).rejects.toBeInstanceOf(
+          OutputGuardrailTripwireTriggered,
+        );
+      } else {
+        await expect(
+          run(rootAgent, 'Delegate and use target_tool', { session }),
+        ).rejects.toBeInstanceOf(OutputGuardrailTripwireTriggered);
+      }
+
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(
+        getPersistedToolItems(await session.getItems()).map((item) => [
+          item.type,
+          item.callId,
+        ]),
+      ).toEqual([
+        ['function_call', 'call-handoff-to-target'],
+        ['function_call_result', 'call-handoff-to-target'],
+        ['function_call', 'call-target-tool'],
+        ['function_call_result', 'call-target-tool'],
+      ]);
     },
   );
 
