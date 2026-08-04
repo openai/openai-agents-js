@@ -373,6 +373,65 @@ describe('selectRunItemsForBlockedOutput', () => {
     ).toEqual([]);
   });
 
+  it.each(['in_progress', 'incomplete'] as const)(
+    'drops shell results with provider status %s',
+    (status) => {
+      const call = new ToolCallItem(
+        {
+          type: 'shell_call',
+          callId: `shell-provider-${status}`,
+          status: 'completed',
+          action: { commands: ['pwd'] },
+        },
+        TEST_AGENT,
+      );
+      const output = markRunToolCallOutputItemAsExecuted(
+        new ToolCallOutputItem(
+          {
+            type: 'shell_call_output',
+            callId: `shell-provider-${status}`,
+            output: [],
+            providerData: { status },
+          },
+          TEST_AGENT,
+          '',
+        ),
+      );
+
+      expect(selectRunItemsForBlockedOutput([call, output])).toEqual([]);
+    },
+  );
+
+  it('prefers a top-level shell result status over provider data', () => {
+    const call = new ToolCallItem(
+      {
+        type: 'shell_call',
+        callId: 'shell-top-level-completed',
+        status: 'completed',
+        action: { commands: ['pwd'] },
+      },
+      TEST_AGENT,
+    );
+    const output = markRunToolCallOutputItemAsExecuted(
+      new ToolCallOutputItem(
+        {
+          type: 'shell_call_output',
+          callId: 'shell-top-level-completed',
+          status: 'completed',
+          output: [],
+          providerData: { status: 'incomplete' },
+        },
+        TEST_AGENT,
+        '',
+      ),
+    );
+
+    expect(selectRunItemsForBlockedOutput([call, output])).toEqual([
+      call,
+      output,
+    ]);
+  });
+
   it('ignores unrelated provider status on no-status program calls', () => {
     const call = {
       type: 'program',

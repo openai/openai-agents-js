@@ -66,6 +66,7 @@ import {
   registerRuntimeToolSearchTools,
 } from './toolSearch';
 import { ensureToolCallerAllowed } from './toolCaller';
+import { getShellCallOutputStatus } from './items';
 
 function ensureToolAvailable<T>(
   tool: T | undefined,
@@ -671,8 +672,7 @@ function isShellCallPendingStatus(status: unknown): boolean {
 function hasPendingShellOutputStatus(
   output: protocol.ShellCallResultItem,
 ): boolean {
-  const outputStatus =
-    (output as { status?: unknown }).status ?? output.providerData?.status;
+  const outputStatus = getShellCallOutputStatus(output);
   if (typeof outputStatus !== 'string') {
     return false;
   }

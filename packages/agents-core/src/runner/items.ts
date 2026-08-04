@@ -1,5 +1,6 @@
 import { RunItem } from '../items';
 import { AgentInputItem } from '../types';
+import type { ShellCallResultItem } from '../types/protocol';
 import { serializeBinary } from '../utils/binary';
 import {
   getToolResultCorrelationForCall,
@@ -11,6 +12,10 @@ import {
 } from './toolResultCorrelation';
 
 export type AgentInputItemPool = Map<string, AgentInputItem[]>;
+
+export function getShellCallOutputStatus(item: ShellCallResultItem): unknown {
+  return (item as { status?: unknown }).status ?? item.providerData?.status;
+}
 
 // Normalizes user-provided input into the structure the model expects. Strings become user messages,
 // arrays are kept as-is so downstream loops can treat both scenarios uniformly.

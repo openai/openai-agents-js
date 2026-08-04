@@ -13,6 +13,7 @@ import {
   wasRunToolCallOutputItemExecuted,
 } from '../items';
 import { AgentInputItem } from '../types';
+import type { ShellCallResultItem } from '../types/protocol';
 import { Usage } from '../usage';
 import { encodeUint8ArrayToBase64 } from '../utils/base64';
 import { toUint8ArrayFromBinary } from '../utils/binary';
@@ -22,6 +23,7 @@ import {
   extractOutputItemsFromRunItems,
   toAgentInputList,
   getAgentInputItemKey,
+  getShellCallOutputStatus,
   removeAgentInputFromPool,
   stripReasoningItemIdForPolicy,
   type ReasoningItemIdPolicy,
@@ -86,10 +88,14 @@ function classifyBlockedToolRecord(
       terminal = providerStatus === undefined || providerStatus === 'completed';
       break;
     }
-    case 'shell_call_output':
+    case 'shell_call_output': {
       role = 'result';
-      terminal = status === undefined || status === 'completed';
+      const outputStatus = getShellCallOutputStatus(
+        item as ShellCallResultItem,
+      );
+      terminal = outputStatus === undefined || outputStatus === 'completed';
       break;
+    }
     case 'apply_patch_call_output':
       role = 'result';
       terminal = status === 'completed' || status === 'failed';
