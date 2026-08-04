@@ -116,7 +116,7 @@ describe('deduplicateAgentInputItemsPreferringLatest', () => {
     ).toEqual([newCall, output]);
   });
 
-  it('keeps server tool-search updates at their latest position', () => {
+  it('keeps server tool-search calls before their output', () => {
     const oldCall: protocol.ToolSearchCallItem = {
       type: 'tool_search_call',
       callId: 'call_server_search',
@@ -124,11 +124,12 @@ describe('deduplicateAgentInputItemsPreferringLatest', () => {
       arguments: { query: 'old' },
       status: 'in_progress',
     };
-    const message: AgentInputItem = {
-      type: 'message',
-      role: 'assistant',
+    const output: protocol.ToolSearchOutputItem = {
+      type: 'tool_search_output',
+      callId: 'call_server_search',
+      execution: 'server',
       status: 'completed',
-      content: [{ type: 'output_text', text: 'searching' }],
+      tools: [],
     };
     const newCall: protocol.ToolSearchCallItem = {
       ...oldCall,
@@ -137,8 +138,8 @@ describe('deduplicateAgentInputItemsPreferringLatest', () => {
     };
 
     expect(
-      deduplicateAgentInputItemsPreferringLatest([oldCall, message, newCall]),
-    ).toEqual([message, newCall]);
+      deduplicateAgentInputItemsPreferringLatest([oldCall, output, newCall]),
+    ).toEqual([newCall, output]);
   });
 
   it('uses the core item type for hosted-tool provider ids', () => {

@@ -34,6 +34,8 @@ import {
   type Span,
   type Trace,
   type TracingProcessor,
+  type AgentInputItem,
+  type CallModelInputFilterArgs,
 } from '../src';
 import { SandboxRuntimeManager } from '../src/sandbox/runtime';
 import {
@@ -227,6 +229,31 @@ class SamplingRecorderCapability extends Capability {
   ): Record<string, unknown> {
     this.calls.push(samplingParams);
     return {};
+  }
+}
+
+class CloningContextCapability extends Capability {
+  readonly type = 'cloning_context';
+
+  override processContext(context: AgentInputItem[]): AgentInputItem[] {
+    return structuredClone(context);
+  }
+}
+
+class CloningSubsetContextCapability extends Capability {
+  readonly type = 'cloning_subset_context';
+
+  override processContext(context: AgentInputItem[]): AgentInputItem[] {
+    const cloned = structuredClone(context);
+    if (!cloned.some((item) => item.type === 'function_call_result')) {
+      return cloned;
+    }
+    return cloned.filter(
+      (item) =>
+        item.type !== 'message' ||
+        item.role !== 'user' ||
+        !JSON.stringify(item.content).includes('first input'),
+    );
   }
 }
 
@@ -836,6 +863,276 @@ function fakeSandboxSessionStateEnvelope(
 }
 
 describe('sandbox runner integration', () => {
+  it.each([false, true])(
+    'persists reordered equal-content session input when a sandbox capability clones context (stream=%s)',
+    async (stream) => {
+      const client = new FakeSandboxClient();
+      const response = {
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      };
+      const model = stream
+        ? new RecordingStreamingModel([response])
+        : new RecordingFakeModel([response]);
+      const agent = new SandboxAgent({
+        name: 'CloningContextPersistenceAgent',
+        model,
+        capabilities: [new CloningContextCapability()],
+      });
+      const session = new MemorySession({
+        initialItems: [user('same input')],
+      });
+      const options = {
+        session,
+        sandbox: { client },
+        sessionInputCallback: (
+          history: AgentInputItem[],
+          newItems: AgentInputItem[],
+        ) => newItems.concat(history),
+        callModelInputFilter: ({ modelData }: CallModelInputFilterArgs) => ({
+          ...modelData,
+          input: modelData.input.map((item, index) => {
+            if (item.type !== 'message' || item.role !== 'user') {
+              return item;
+            }
+            return user(index === 0 ? 'current-filtered' : 'history-filtered');
+          }),
+        }),
+      };
+
+      if (stream) {
+        const result = await run(agent, [user('same input')], {
+          ...options,
+          stream: true,
+        });
+        await result.completed;
+      } else {
+        await run(agent, [user('same input')], {
+          ...options,
+          stream: false,
+        });
+      }
+
+      const persisted = await session.getItems();
+      expect(
+        persisted.filter(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'user' &&
+            Array.isArray(item.content) &&
+            item.content.some(
+              (content) =>
+                content.type === 'input_text' &&
+                content.text === 'current-filtered',
+            ),
+        ),
+      ).toHaveLength(1);
+      expect(
+        persisted.filter(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'user' &&
+            Array.isArray(item.content) &&
+            item.content.some(
+              (content) =>
+                content.type === 'input_text' &&
+                content.text === 'history-filtered',
+            ),
+        ),
+      ).toHaveLength(0);
+      expect(
+        persisted.filter(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'assistant' &&
+            Array.isArray(item.content) &&
+            item.content.some(
+              (content) =>
+                content.type === 'output_text' && content.text === 'done',
+            ),
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each([false, true])(
+    'persists session input introduced on a later cloned sandbox turn (stream=%s)',
+    async (stream) => {
+      const client = new FakeSandboxClient();
+      const continueTool = tool({
+        name: 'continue_after_filter',
+        description: 'Continues after the first filtered model call.',
+        parameters: z.object({}),
+        execute: async () => 'continued',
+      });
+      const responses: ModelResponse[] = [
+        {
+          output: [
+            {
+              type: 'function_call',
+              callId: 'call_continue_after_filter',
+              name: continueTool.name,
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+      ];
+      const model = stream
+        ? new RecordingStreamingModel(responses)
+        : new RecordingFakeModel(responses);
+      const agent = new SandboxAgent({
+        name: 'LaterClonedContextPersistenceAgent',
+        model,
+        tools: [continueTool],
+        capabilities: [new CloningContextCapability()],
+      });
+      const session = new MemorySession();
+      let filterCall = 0;
+      const options = {
+        session,
+        sandbox: { client },
+        callModelInputFilter: ({ modelData }: CallModelInputFilterArgs) => {
+          filterCall += 1;
+          if (filterCall === 1) {
+            return {
+              ...modelData,
+              input: modelData.input.filter(
+                (item) => item.type !== 'message' || item.role !== 'user',
+              ),
+            };
+          }
+          return {
+            ...modelData,
+            input: modelData.input.map((item) =>
+              item.type === 'message' && item.role === 'user'
+                ? user('current-filtered')
+                : item,
+            ),
+          };
+        },
+      };
+
+      if (stream) {
+        const result = await run(agent, [user('current input')], {
+          ...options,
+          stream: true,
+        });
+        await result.completed;
+      } else {
+        await run(agent, [user('current input')], {
+          ...options,
+          stream: false,
+        });
+      }
+
+      const persisted = await session.getItems();
+      expect(
+        persisted.filter(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'user' &&
+            Array.isArray(item.content) &&
+            item.content.some(
+              (content) =>
+                content.type === 'input_text' &&
+                content.text === 'current-filtered',
+            ),
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each([false, true])(
+    'preserves session ownership when a later cloned sandbox turn retains a subset (stream=%s)',
+    async (stream) => {
+      const client = new FakeSandboxClient();
+      const continueTool = tool({
+        name: 'continue_after_subset',
+        description: 'Continues after the sandbox context is reduced.',
+        parameters: z.object({}),
+        execute: async () => 'continued',
+      });
+      const responses: ModelResponse[] = [
+        {
+          output: [
+            {
+              type: 'function_call',
+              callId: 'call_continue_after_subset',
+              name: continueTool.name,
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+      ];
+      const model = stream
+        ? new RecordingStreamingModel(responses)
+        : new RecordingFakeModel(responses);
+      const agent = new SandboxAgent({
+        name: 'SubsetClonedContextPersistenceAgent',
+        model,
+        tools: [continueTool],
+        capabilities: [new CloningSubsetContextCapability()],
+      });
+      const session = new MemorySession();
+      let filterCall = 0;
+      const options = {
+        session,
+        sandbox: { client },
+        callModelInputFilter: ({ modelData }: CallModelInputFilterArgs) => {
+          filterCall += 1;
+          return {
+            ...modelData,
+            input: modelData.input.map((item) => {
+              if (item.type !== 'message' || item.role !== 'user') {
+                return item;
+              }
+              const isFirst = JSON.stringify(item.content).includes(
+                'first input',
+              );
+              return user(
+                isFirst
+                  ? 'first-filtered'
+                  : filterCall === 1
+                    ? 'second-filtered'
+                    : 'second-refiltered',
+              );
+            }),
+          };
+        },
+      };
+
+      if (stream) {
+        const result = await run(
+          agent,
+          [user('first input'), user('second input')],
+          { ...options, stream: true },
+        );
+        await result.completed;
+      } else {
+        await run(agent, [user('first input'), user('second input')], {
+          ...options,
+          stream: false,
+        });
+      }
+
+      const persisted = await session.getItems();
+      const persistedText = JSON.stringify(persisted);
+      expect(persistedText).toContain('first-filtered');
+      expect(persistedText).toContain('second-refiltered');
+      expect(persistedText).not.toContain('second-filtered');
+    },
+  );
+
   it.each([false, true])(
     'persists current session input after sandbox compaction (stream=%s)',
     async (stream) => {

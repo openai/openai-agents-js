@@ -156,6 +156,7 @@ function isCausalPrecursorItem(item: AgentInputItem): boolean {
     return false;
   }
   return (
+    item.type === 'tool_search_call' ||
     item.type === 'reasoning' ||
     getToolResultCorrelationForCall(item) !== undefined
   );

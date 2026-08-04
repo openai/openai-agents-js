@@ -932,7 +932,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     startingAgent: TAgent,
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
     options: NonStreamRunOptions<TContext, TAgent>,
-    sessionTurnInputUpdate?: (turnInput: AgentInputItem[]) => void,
+    sessionTurnInputUpdate?: (
+      preparedInput: AgentInputItem[],
+      processedInput: AgentInputItem[],
+    ) => void,
     // sessionInputUpdate lets the caller adjust queued session items after filters run so we
     // persist exactly what we send to the model (e.g., after redactions or truncation).
     sessionInputUpdate?: (
@@ -1201,7 +1204,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
 
             guardrailTracker.setPromise(parallelGuardrailPromise);
-            sessionTurnInputUpdate?.(turnInput);
             const preparedSandboxAgent = await sandboxRuntime.prepareAgent({
               currentAgent: state._currentAgent,
               turnInput,
@@ -1210,6 +1212,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ),
               tracingParent: currentTurnSpan?.span ?? state._currentAgentSpan,
             });
+            sessionTurnInputUpdate?.(turnInput, preparedSandboxAgent.turnInput);
             const artifacts = await prepareAgentArtifacts(
               state,
               preparedSandboxAgent.executionAgent,
@@ -1503,7 +1506,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     options: StreamRunOptions<TContext, TAgent>,
     isResumedState: boolean,
     ensureStreamInputPersisted?: () => Promise<void>,
-    sessionTurnInputUpdate?: (turnInput: AgentInputItem[]) => void,
+    sessionTurnInputUpdate?: (
+      preparedInput: AgentInputItem[],
+      processedInput: AgentInputItem[],
+    ) => void,
     sessionInputUpdate?: (
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
@@ -1759,7 +1765,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const { turnInput } = preparedTurn;
           parallelGuardrailPromise = preparedTurn.parallelGuardrailPromise;
           guardrailTracker.setPromise(parallelGuardrailPromise);
-          sessionTurnInputUpdate?.(turnInput);
           // If guardrails are still running, defer input persistence until they finish.
           const preparedSandboxAgent = await sandboxRuntime.prepareAgent({
             currentAgent: result.state._currentAgent,
@@ -1770,6 +1775,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             tracingParent:
               currentTurnSpan?.span ?? result.state._currentAgentSpan,
           });
+          sessionTurnInputUpdate?.(turnInput, preparedSandboxAgent.turnInput);
           const artifacts = await prepareAgentArtifacts(
             result.state,
             preparedSandboxAgent.executionAgent,
@@ -2210,7 +2216,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
     options?: StreamRunOptions<TContext, TAgent>,
     ensureStreamInputPersisted?: () => Promise<void>,
-    sessionTurnInputUpdate?: (turnInput: AgentInputItem[]) => void,
+    sessionTurnInputUpdate?: (
+      preparedInput: AgentInputItem[],
+      processedInput: AgentInputItem[],
+    ) => void,
     sessionInputUpdate?: (
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],

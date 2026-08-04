@@ -92,7 +92,7 @@ describe('sessionPersistence tracker (extended)', () => {
     const preparedInput = [first, second];
     tracker.setPreparedItems([second], preparedInput);
     const turnInput = structuredClone(preparedInput);
-    tracker.setPreparedTurnItems(turnInput);
+    tracker.setPreparedTurnItems(turnInput, turnInput);
 
     tracker.recordTurnItems(
       [turnInput[1], turnInput[0]],
@@ -130,12 +130,136 @@ describe('sessionPersistence tracker (extended)', () => {
     const preparedInput = [history, compacted, current];
     tracker.setPreparedItems([current], preparedInput);
     const turnInput = structuredClone(preparedInput);
-    tracker.setPreparedTurnItems(turnInput);
     const processedInput = turnInput.slice(1);
+    tracker.setPreparedTurnItems(turnInput, processedInput);
 
     tracker.recordTurnItems(processedInput, processedInput);
 
     expect(tracker.getItemsForPersistence()).toEqual([current]);
+  });
+
+  it('keeps current input ownership when context processing clones items', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const history = {
+      type: 'message',
+      role: 'user',
+      content: 'history',
+    } as const;
+    const current = {
+      type: 'message',
+      role: 'user',
+      content: 'current',
+    } as const;
+    const preparedInput = [history, current];
+    tracker.setPreparedItems([current], preparedInput);
+    const turnInput = structuredClone(preparedInput);
+    const processedInput = structuredClone(turnInput);
+    tracker.setPreparedTurnItems(turnInput, processedInput);
+
+    tracker.recordTurnItems(processedInput, structuredClone(processedInput));
+
+    expect(tracker.getItemsForPersistence()).toEqual([current]);
+  });
+
+  it('keeps reordered equal-content current input ownership after context cloning', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const current = {
+      type: 'message',
+      role: 'user',
+      content: 'same',
+    } as const;
+    const history = { ...current };
+    const preparedInput = [current, history];
+    tracker.setPreparedItems([current], preparedInput);
+    const turnInput = structuredClone(preparedInput);
+    const processedInput = structuredClone(turnInput);
+    tracker.setPreparedTurnItems(turnInput, processedInput);
+
+    tracker.recordTurnItems(processedInput, [
+      { ...current, content: 'current-filtered' },
+      { ...history, content: 'history-filtered' },
+    ]);
+
+    expect(tracker.getItemsForPersistence()).toEqual([
+      { ...current, content: 'current-filtered' },
+    ]);
+  });
+
+  it('remaps cloned current input ownership on a later model call', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const current = {
+      type: 'message',
+      role: 'user',
+      content: 'current',
+    } as const;
+    tracker.setPreparedItems([current], [current]);
+
+    const firstTurnInput = structuredClone([current]);
+    const firstProcessedInput = structuredClone(firstTurnInput);
+    tracker.setPreparedTurnItems(firstTurnInput, firstProcessedInput);
+    tracker.recordTurnItems([], []);
+
+    const secondTurnInput = structuredClone([current]);
+    const secondProcessedInput = structuredClone(secondTurnInput);
+    tracker.setPreparedTurnItems(secondTurnInput, secondProcessedInput);
+    tracker.recordTurnItems(secondProcessedInput, [
+      { ...current, content: 'current-filtered' },
+    ]);
+
+    expect(tracker.getItemsForPersistence()).toEqual([
+      { ...current, content: 'current-filtered' },
+    ]);
+  });
+
+  it('keeps stable ownership when a later cloned turn retains only a subset', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const first = {
+      type: 'message',
+      role: 'user',
+      content: 'first',
+    } as const;
+    const second = {
+      type: 'message',
+      role: 'user',
+      content: 'second',
+    } as const;
+    tracker.setPreparedItems([first, second], [first, second]);
+
+    const firstTurnInput = structuredClone([first, second]);
+    const firstProcessedInput = structuredClone(firstTurnInput);
+    tracker.setPreparedTurnItems(firstTurnInput, firstProcessedInput);
+    tracker.recordTurnItems(firstProcessedInput, [
+      { ...first, content: 'first-filtered' },
+      { ...second, content: 'second-filtered' },
+    ]);
+
+    const secondTurnInput = structuredClone([first, second]);
+    const secondProcessedInput = structuredClone([secondTurnInput[1]!]);
+    tracker.setPreparedTurnItems(secondTurnInput, secondProcessedInput);
+    tracker.recordTurnItems(secondProcessedInput, [
+      { ...second, content: 'second-refiltered' },
+    ]);
+
+    expect(tracker.getItemsForPersistence()).toEqual([
+      { ...first, content: 'first-filtered' },
+      { ...second, content: 'second-refiltered' },
+    ]);
   });
 
   it('retains captured owned input when a later model call omits it', () => {
@@ -152,7 +276,7 @@ describe('sessionPersistence tracker (extended)', () => {
     const preparedInput = [current];
     tracker.setPreparedItems([current], preparedInput);
     const turnInput = structuredClone(preparedInput);
-    tracker.setPreparedTurnItems(turnInput);
+    tracker.setPreparedTurnItems(turnInput, turnInput);
     tracker.recordTurnItems([turnInput[0]], [{ ...current }]);
 
     const laterCompaction = {
@@ -177,7 +301,7 @@ describe('sessionPersistence tracker (extended)', () => {
     } as const;
     tracker.setPreparedItems([current], [current]);
     const turnInput = structuredClone([current]);
-    tracker.setPreparedTurnItems(turnInput);
+    tracker.setPreparedTurnItems(turnInput, turnInput);
     tracker.recordTurnItems([turnInput[0]], [{ ...current }]);
 
     const injected = {

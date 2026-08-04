@@ -58,12 +58,20 @@ class SessionReconciliationRecoveryError extends Error {
 type PersistedInputOccurrence =
   { type: 'owned'; index: number } | { type: 'injected'; item: AgentInputItem };
 
+type PreparedOwnedSource = {
+  item: AgentInputItem;
+  ownerIndex: number;
+};
+
 export type SessionPersistenceTracker = {
   setPreparedItems: (
     items?: AgentInputItem[],
     preparedInput?: string | AgentInputItem[],
   ) => void;
-  setPreparedTurnItems: (items: AgentInputItem[]) => void;
+  setPreparedTurnItems: (
+    preparedItems: AgentInputItem[],
+    processedItems: AgentInputItem[],
+  ) => void;
   recordTurnItems: (
     sourceItems: (AgentInputItem | undefined)[],
     filteredItems?: AgentInputItem[],
@@ -91,7 +99,7 @@ export function createSessionPersistenceTracker(options: {
     private readonly persistInput?: typeof saveStreamInputToSession;
     private originalSnapshot: AgentInputItem[] | undefined;
     private filteredSnapshot: AgentInputItem[] | undefined;
-    private preparedSources: AgentInputItem[] | undefined;
+    private preparedSources: PreparedOwnedSource[] | undefined;
     private preparedSourceIndexes: number[] | undefined;
     private ownedFilteredItems = new Map<number, AgentInputItem>();
     private persistedInputOrder: PersistedInputOccurrence[] = [];
@@ -122,21 +130,28 @@ export function createSessionPersistenceTracker(options: {
           sessionItems,
         );
       } else {
-        this.preparedSources = sessionItems;
+        this.preparedSources = sessionItems.map((item, ownerIndex) => ({
+          item,
+          ownerIndex,
+        }));
         this.preparedSourceIndexes = undefined;
       }
       this.ownedFilteredItems.clear();
       this.persistedInputOrder = [];
     };
 
-    setPreparedTurnItems = (items: AgentInputItem[]) => {
+    setPreparedTurnItems = (
+      preparedItems: AgentInputItem[],
+      processedItems: AgentInputItem[],
+    ) => {
       if (!this.preparedSourceIndexes) {
         return;
       }
-      this.preparedSources = this.preparedSourceIndexes
-        .map((index) => items[index])
-        .filter((item): item is AgentInputItem => item !== undefined);
-      this.preparedSourceIndexes = undefined;
+      this.preparedSources = mapPreparedSourcesAfterContextProcessing(
+        preparedItems,
+        processedItems,
+        this.preparedSourceIndexes,
+      );
     };
 
     recordTurnItems = (
@@ -163,7 +178,9 @@ export function createSessionPersistenceTracker(options: {
 
       this.filteredSnapshot = buildSnapshotForUnfilteredItems({
         preparedSourceCounts: this.preparedSources
-          ? countItemReferences(this.preparedSources)
+          ? countItemReferences(
+              this.preparedSources.map((source) => source.item),
+            )
           : undefined,
         sourceItems,
         existingSnapshot: this.filteredSnapshot,
@@ -233,8 +250,87 @@ function findOwnedItemIndexes(
   return indexes;
 }
 
+function mapPreparedSourcesAfterContextProcessing(
+  preparedItems: AgentInputItem[],
+  processedItems: AgentInputItem[],
+  preparedSourceIndexes: number[],
+): PreparedOwnedSource[] {
+  const preparedIndexesByReference = new Map<AgentInputItem, number[]>();
+  const preparedIndexesByKey = new Map<string, number[]>();
+  for (const [index, item] of preparedItems.entries()) {
+    const referenceIndexes = preparedIndexesByReference.get(item) ?? [];
+    referenceIndexes.push(index);
+    preparedIndexesByReference.set(item, referenceIndexes);
+
+    const key = getAgentInputItemKey(item);
+    const keyIndexes = preparedIndexesByKey.get(key) ?? [];
+    keyIndexes.push(index);
+    preparedIndexesByKey.set(key, keyIndexes);
+  }
+
+  const mappedPreparedIndexes = new Array<number | undefined>(
+    processedItems.length,
+  );
+  const usedPreparedIndexes = new Set<number>();
+
+  // Match from the end so prefix-removing context processors preserve occurrence positions.
+  for (let index = processedItems.length - 1; index >= 0; index--) {
+    const item = processedItems[index];
+    if (!item) {
+      continue;
+    }
+    const preparedIndex = preparedIndexesByReference.get(item)?.pop();
+    if (preparedIndex !== undefined) {
+      mappedPreparedIndexes[index] = preparedIndex;
+      usedPreparedIndexes.add(preparedIndex);
+    }
+  }
+
+  // Public capabilities may return clones. Resolve remaining occurrences against the complete
+  // prepared sequence so callback reordering and equal-content history retain their ownership.
+  for (let index = processedItems.length - 1; index >= 0; index--) {
+    if (mappedPreparedIndexes[index] !== undefined) {
+      continue;
+    }
+    const item = processedItems[index];
+    if (!item) {
+      continue;
+    }
+    const preparedIndexes = preparedIndexesByKey.get(
+      getAgentInputItemKey(item),
+    );
+    while (
+      preparedIndexes &&
+      preparedIndexes.length > 0 &&
+      usedPreparedIndexes.has(preparedIndexes[preparedIndexes.length - 1])
+    ) {
+      preparedIndexes.pop();
+    }
+    const preparedIndex = preparedIndexes?.pop();
+    if (preparedIndex !== undefined) {
+      mappedPreparedIndexes[index] = preparedIndex;
+      usedPreparedIndexes.add(preparedIndex);
+    }
+  }
+
+  const ownerIndexByPreparedIndex = new Map(
+    preparedSourceIndexes.map((preparedIndex, ownerIndex) => [
+      preparedIndex,
+      ownerIndex,
+    ]),
+  );
+  return processedItems.flatMap((item, index) => {
+    const preparedIndex = mappedPreparedIndexes[index];
+    const ownerIndex =
+      preparedIndex === undefined
+        ? undefined
+        : ownerIndexByPreparedIndex.get(preparedIndex);
+    return ownerIndex === undefined ? [] : [{ item, ownerIndex }];
+  });
+}
+
 function reconcilePersistableFilteredItems(options: {
-  preparedSources: AgentInputItem[];
+  preparedSources: PreparedOwnedSource[];
   sourceItems: (AgentInputItem | undefined)[];
   filteredItems: AgentInputItem[];
   ownedFilteredItems: Map<number, AgentInputItem>;
@@ -251,11 +347,11 @@ function reconcilePersistableFilteredItems(options: {
     ownedFilteredItems,
     persistedInputOrder,
   } = options;
-  const sourceIndexes = new Map<AgentInputItem, number[]>();
-  for (const [index, source] of preparedSources.entries()) {
-    const indexes = sourceIndexes.get(source) ?? [];
-    indexes.push(index);
-    sourceIndexes.set(source, indexes);
+  const sourceOwnerIndexes = new Map<AgentInputItem, number[]>();
+  for (const source of preparedSources) {
+    const ownerIndexes = sourceOwnerIndexes.get(source.item) ?? [];
+    ownerIndexes.push(source.ownerIndex);
+    sourceOwnerIndexes.set(source.item, ownerIndexes);
   }
   const sourceOccurrences = new Map<AgentInputItem, number>();
   const representedOwnedIndexes = new Set<number>();
@@ -271,7 +367,7 @@ function reconcilePersistableFilteredItems(options: {
     if (source && typeof source === 'object') {
       const occurrence = sourceOccurrences.get(source) ?? 0;
       sourceOccurrences.set(source, occurrence + 1);
-      const ownedIndex = sourceIndexes.get(source)?.[occurrence];
+      const ownedIndex = sourceOwnerIndexes.get(source)?.[occurrence];
       if (ownedIndex !== undefined) {
         representedOwnedIndexes.add(ownedIndex);
         nextOwnedFilteredItems.set(ownedIndex, structuredClone(filteredItem));
