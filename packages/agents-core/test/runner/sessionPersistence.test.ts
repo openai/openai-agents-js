@@ -47,12 +47,26 @@ import type { AgentInputItem, UnknownContext } from '../../src/types';
 import * as protocol from '../../src/types/protocol';
 import { FakeModelProvider, TEST_AGENT, fakeModelMessage } from '../stubs';
 import logger from '../../src/logger';
-import { allowConsole } from '../../../../helpers/tests/console-guard';
 
 beforeAll(() => {
   setTracingDisabled(true);
   setDefaultModelProvider(new FakeModelProvider());
 });
+
+async function expectLoggerWarnings<T>(
+  expectedCalls: unknown[][],
+  callback: () => Promise<T>,
+): Promise<T> {
+  const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+  try {
+    const result = await callback();
+    expect(warnSpy.mock.calls).toEqual(expectedCalls);
+    return result;
+  } finally {
+    warnSpy.mockRestore();
+  }
+}
 
 function modelResponse(
   output: ModelResponse['output'],
@@ -2829,7 +2843,6 @@ describe('saveToSession', () => {
   });
 
   it('restores session history when legacy compaction reconciliation fails', async () => {
-    allowConsole(['warn']);
     const call = functionCall('call_legacy_reconciliation');
     const compaction: protocol.CompactionItem = {
       type: 'compaction',
@@ -2878,11 +2891,21 @@ describe('saveToSession', () => {
     state._currentTurnPersistedItemCount = 2;
     const session = new FailingReplacementSession();
 
-    await expect(
-      saveToSession(session, [], new RunResult(state as any), {
-        runCompaction: false,
-      }),
-    ).rejects.toThrow('replacement failed');
+    await expectLoggerWarnings(
+      [
+        [
+          'Restored session history after compaction replacement failed.',
+          'object',
+        ],
+      ],
+      async () => {
+        await expect(
+          saveToSession(session, [], new RunResult(state as any), {
+            runCompaction: false,
+          }),
+        ).rejects.toThrow('replacement failed');
+      },
+    );
     expect(session.items).toEqual([call]);
     expect(state._pendingLegacyCompactionSessionItems).toEqual([
       compaction,
@@ -3192,7 +3215,6 @@ describe('saveToSession', () => {
   });
 
   it('reports both replacement and rollback failures', async () => {
-    allowConsole(['warn']);
     const call = functionCall('call_failed_rollback');
     const compaction: protocol.CompactionItem = {
       type: 'compaction',
@@ -3238,12 +3260,18 @@ describe('saveToSession', () => {
     state._currentTurnPersistedItemCount = 2;
     const session = new FailingRollbackSession();
 
-    const error = await saveToSession(
-      session,
-      [],
-      new RunResult(state as any),
-      { runCompaction: false },
-    ).catch((caught) => caught);
+    const error = await expectLoggerWarnings(
+      [
+        [
+          'Failed to restore session history after compaction replacement failed.',
+          'object',
+        ],
+      ],
+      () =>
+        saveToSession(session, [], new RunResult(state as any), {
+          runCompaction: false,
+        }).catch((caught) => caught),
+    );
 
     expect(error).toBeInstanceOf(Error);
     expect(error).toMatchObject({

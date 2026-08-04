@@ -20,7 +20,6 @@ import { JSONRPCMessage } from '@modelcontextprotocol/sdk/types';
 import { DEFAULT_REQUEST_TIMEOUT_MSEC } from '@modelcontextprotocol/sdk/shared/protocol';
 import type { Logger } from '../../../src/logger';
 import { connectMcpServers } from '../../../src/mcpServers';
-import { allowConsole } from '../../../../../helpers/tests/console-guard';
 
 let lastConnectOptions: any;
 let lastListToolsOptions: any;
@@ -134,6 +133,21 @@ function createCapturingLogger() {
     dontLogModelData: false as boolean,
     dontLogToolData: false as boolean,
   } satisfies Logger;
+}
+
+async function expectConsoleErrors<T>(
+  expectedCalls: unknown[][],
+  callback: () => Promise<T>,
+): Promise<T> {
+  const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+  try {
+    const result = await callback();
+    expect(errorSpy.mock.calls).toEqual(expectedCalls);
+    return result;
+  } finally {
+    errorSpy.mockRestore();
+  }
 }
 
 beforeEach(() => {
@@ -957,12 +971,15 @@ describe('NodeMCPServerSSE', () => {
         url: CREDENTIAL_ENDPOINT,
         logger,
       });
-      allowConsole(['error']);
 
-      const session = await connectMcpServers([server], {
-        strict: true,
-        suppressAbortError: true,
-      });
+      const session = await expectConsoleErrors(
+        [['Failed to connect MCP server:', 'object']],
+        () =>
+          connectMcpServers([server], {
+            strict: true,
+            suppressAbortError: true,
+          }),
+      );
 
       expect(session.errors.get(server)).toMatchObject({
         name: 'AbortError',
