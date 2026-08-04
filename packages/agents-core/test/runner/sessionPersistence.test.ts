@@ -8,6 +8,7 @@ import {
 import { Agent, AgentOutputType } from '../../src/agent';
 import {
   RunHandoffOutputItem as HandoffOutputItem,
+  RunCompactionItem as CompactionItem,
   RunMessageOutputItem as MessageOutputItem,
   RunReasoningItem as ReasoningItem,
   RunToolApprovalItem as ToolApprovalItem,
@@ -45,6 +46,7 @@ import type { AgentInputItem, UnknownContext } from '../../src/types';
 import * as protocol from '../../src/types/protocol';
 import { FakeModelProvider, TEST_AGENT, fakeModelMessage } from '../stubs';
 import logger from '../../src/logger';
+import { allowConsole } from '../../../../helpers/tests/console-guard';
 
 beforeAll(() => {
   setTracingDisabled(true);
@@ -2412,6 +2414,194 @@ describe('saveToSession', () => {
     ] as protocol.FunctionCallResultItem;
     expect(last.type).toBe('function_call_result');
     expect(last.callId).toBe(functionCall.callId);
+  });
+
+  it('restores session history when legacy compaction reconciliation fails', async () => {
+    allowConsole(['warn']);
+    const call = functionCall('call_legacy_reconciliation');
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_legacy_reconciliation',
+      encrypted_content: 'ciphertext',
+    };
+
+    class FailingReplacementSession implements Session {
+      items: AgentInputItem[] = [structuredClone(call)];
+      failNextAdd = true;
+
+      async getSessionId(): Promise<string> {
+        return 'failing-legacy-reconciliation';
+      }
+
+      async getItems(limit?: number): Promise<AgentInputItem[]> {
+        const items =
+          limit === undefined ? this.items : this.items.slice(-limit);
+        return structuredClone(items);
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        if (this.failNextAdd) {
+          this.failNextAdd = false;
+          this.items.push(structuredClone(items[0]));
+          throw new Error('replacement failed');
+        }
+        this.items.push(...structuredClone(items));
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return this.items.pop();
+      }
+
+      async clearSession(): Promise<void> {
+        this.items = [];
+      }
+    }
+
+    const state = new RunState(new RunContext(), 'input', TEST_AGENT, 1);
+    state._generatedItems = [
+      new CompactionItem(compaction, TEST_AGENT),
+      new ToolCallItem(call, TEST_AGENT),
+    ];
+    state._pendingLegacyCompactionSessionItems = [compaction, call];
+    state._currentTurnPersistedItemCount = 2;
+    const session = new FailingReplacementSession();
+
+    await expect(
+      saveToSession(session, [], new RunResult(state as any), {
+        runCompaction: false,
+      }),
+    ).rejects.toThrow('replacement failed');
+    expect(session.items).toEqual([call]);
+    expect(state._pendingLegacyCompactionSessionItems).toEqual([
+      compaction,
+      call,
+    ]);
+    expect(state._currentTurnPersistedItemCount).toBe(2);
+  });
+
+  it('rejects mismatched session history before legacy compaction reconciliation', async () => {
+    const call = functionCall('call_expected_legacy_reconciliation');
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_mismatched_reconciliation',
+      encrypted_content: 'ciphertext',
+    };
+
+    class MismatchedSession implements Session {
+      items: AgentInputItem[] = [
+        functionCall('call_unexpected_legacy_reconciliation'),
+      ];
+      clearCount = 0;
+
+      async getSessionId(): Promise<string> {
+        return 'mismatched-legacy-reconciliation';
+      }
+
+      async getItems(): Promise<AgentInputItem[]> {
+        return structuredClone(this.items);
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        this.items.push(...structuredClone(items));
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return this.items.pop();
+      }
+
+      async clearSession(): Promise<void> {
+        this.clearCount += 1;
+        this.items = [];
+      }
+    }
+
+    const state = new RunState(new RunContext(), 'input', TEST_AGENT, 1);
+    state._generatedItems = [
+      new CompactionItem(compaction, TEST_AGENT),
+      new ToolCallItem(call, TEST_AGENT),
+    ];
+    state._pendingLegacyCompactionSessionItems = [compaction, call];
+    state._currentTurnPersistedItemCount = 2;
+    const session = new MismatchedSession();
+
+    await expect(
+      saveToSession(session, [], new RunResult(state as any), {
+        runCompaction: false,
+      }),
+    ).rejects.toThrow('cannot safely reconcile');
+    expect(session.clearCount).toBe(0);
+    expect(session.items).toEqual([
+      functionCall('call_unexpected_legacy_reconciliation'),
+    ]);
+  });
+
+  it('reconciles legacy compaction before executing an approved tool', async () => {
+    let executions = 0;
+    const approvalTool = tool({
+      name: 'legacy_compaction_preflight',
+      description: 'Tool requiring approval.',
+      parameters: z.object({}),
+      needsApproval: true,
+      async execute() {
+        executions += 1;
+        return 'approved';
+      },
+    });
+    const agent = new Agent({
+      name: 'LegacyCompactionPreflightAgent',
+      tools: [approvalTool],
+    });
+    const call: protocol.FunctionCallItem = {
+      type: 'function_call',
+      name: approvalTool.name,
+      callId: 'call_legacy_compaction_preflight',
+      arguments: '{}',
+      status: 'completed',
+    };
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_legacy_compaction_preflight',
+      encrypted_content: 'ciphertext',
+    };
+    const callItem = new ToolCallItem(call, agent);
+    const approvalItem = new ToolApprovalItem(call, agent);
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    state._generatedItems = [
+      new CompactionItem(compaction, agent),
+      callItem,
+      approvalItem,
+    ];
+    state._lastProcessedResponse = {
+      newItems: [new CompactionItem(compaction, agent), callItem],
+      handoffs: [],
+      functions: [{ toolCall: call, tool: approvalTool as any }],
+      functionToolsNotFound: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [approvalTool.name],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: { interruptions: [approvalItem] },
+    };
+    state._pendingLegacyCompactionSessionItems = [compaction, call];
+    state._currentTurnPersistedItemCount = 3;
+    state.approve(approvalItem);
+    const session = new MemorySession();
+    session.items = [functionCall('call_mismatched_preflight')];
+
+    await expect(new Runner().run(agent, state, { session })).rejects.toThrow(
+      'cannot safely reconcile',
+    );
+    expect(executions).toBe(0);
+    expect(session.items).toEqual([functionCall('call_mismatched_preflight')]);
+    expect(state._pendingLegacyCompactionSessionItems).toEqual([
+      compaction,
+      call,
+    ]);
   });
 
   it('persists HITL tool outputs when approval items are not the last generated entries', async () => {

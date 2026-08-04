@@ -22,7 +22,7 @@ import {
   stripReasoningItemIdForPolicy,
   type ReasoningItemIdPolicy,
 } from './items';
-import logger from '../logger';
+import logger, { logModelAndToolActionWarning } from '../logger';
 import { getRunStateUsageRecorder } from './usageTracking';
 
 export type PreparedInputWithSessionResult = {
@@ -334,6 +334,28 @@ export async function saveStreamResultToSession(
     runCompaction: options.runCompaction ?? true,
     compactionMode: options.compactionMode,
   });
+}
+
+export async function reconcileLegacyCompactionSessionBeforeResume(
+  session: Session | undefined,
+  state: RunState<any, any>,
+): Promise<void> {
+  const pendingLegacyItems = state._pendingLegacyCompactionSessionItems;
+  if (!session || pendingLegacyItems === undefined) {
+    return;
+  }
+
+  const reasoningItemIdPolicy =
+    session.preserveReasoningItemIdsForPersistence?.() === true
+      ? undefined
+      : state._reasoningItemIdPolicy;
+  const sanitizedPendingItems = normalizeItemsForSessionPersistence(
+    pendingLegacyItems.map((item) =>
+      stripReasoningItemIdForPolicy(item, reasoningItemIdPolicy),
+    ),
+  );
+  await reconcileLegacyCompactionSessionItems(session, sanitizedPendingItems);
+  state._pendingLegacyCompactionSessionItems = undefined;
 }
 
 export async function prepareInputItemsWithSession(
@@ -657,15 +679,16 @@ async function persistRunItemsToSession(options: {
     return;
   }
 
+  const reasoningItemIdPolicy =
+    session.preserveReasoningItemIdsForPersistence?.() === true
+      ? undefined
+      : state._reasoningItemIdPolicy;
   const itemsToSave = [
     ...extraInputItems,
-    ...extractOutputItemsFromRunItems(
-      newRunItems,
-      session.preserveReasoningItemIdsForPersistence?.() === true
-        ? undefined
-        : state._reasoningItemIdPolicy,
-    ),
+    ...extractOutputItemsFromRunItems(newRunItems, reasoningItemIdPolicy),
   ];
+
+  await reconcileLegacyCompactionSessionBeforeResume(session, state);
 
   if (itemsToSave.length === 0) {
     state._currentTurnPersistedItemCount =
@@ -693,6 +716,143 @@ async function persistRunItemsToSession(options: {
       compactionMode,
     );
   }
+}
+
+async function reconcileLegacyCompactionSessionItems(
+  session: Session,
+  pendingItems: AgentInputItem[],
+): Promise<void> {
+  if (pendingItems.length === 0 || pendingItems[0]?.type !== 'compaction') {
+    throw new UserError(
+      'Run state cannot safely reconcile its restored compaction item with session history.',
+    );
+  }
+
+  const previousItems = await session.getItems();
+  if (
+    agentItemRangeMatches(
+      previousItems,
+      pendingItems,
+      previousItems.length - pendingItems.length,
+    )
+  ) {
+    return;
+  }
+
+  const previouslyPersistedSuffix = pendingItems.slice(1);
+  if (previouslyPersistedSuffix.length === 0) {
+    await session.addItems(pendingItems);
+    return;
+  }
+  if (
+    !agentItemRangeMatches(
+      previousItems,
+      previouslyPersistedSuffix,
+      previousItems.length - previouslyPersistedSuffix.length,
+    )
+  ) {
+    throw new UserError(
+      'Run state cannot safely reconcile its restored compaction item with session history.',
+    );
+  }
+
+  const replacementItems = [
+    ...previousItems.slice(0, -previouslyPersistedSuffix.length),
+    ...pendingItems,
+  ];
+  await replaceSessionItemsWithRecovery(
+    session,
+    previousItems,
+    replacementItems,
+  );
+}
+
+function agentItemRangeMatches(
+  items: AgentInputItem[],
+  expected: AgentInputItem[],
+  start: number,
+): boolean {
+  if (start < 0 || start + expected.length > items.length) {
+    return false;
+  }
+  return expected.every(
+    (item, offset) =>
+      getSessionReconciliationItemKey(items[start + offset]) ===
+      getSessionReconciliationItemKey(item),
+  );
+}
+
+function getSessionReconciliationItemKey(item: AgentInputItem): string {
+  if (item && typeof item === 'object') {
+    const record = item as Record<string, unknown>;
+    const stableId = record.callId ?? record.id;
+    if (typeof stableId === 'string' && stableId.length > 0) {
+      return `${String(record.type)}:${stableId}`;
+    }
+  }
+  return getAgentInputItemKey(item);
+}
+
+async function replaceSessionItemsWithRecovery(
+  session: Session,
+  previousItems: AgentInputItem[],
+  replacementItems: AgentInputItem[],
+): Promise<void> {
+  try {
+    await session.clearSession();
+    if (replacementItems.length > 0) {
+      await session.addItems(replacementItems);
+    }
+  } catch (error) {
+    await restoreSessionItemsAfterFailedReplacement(
+      session,
+      previousItems,
+      error,
+    );
+    throw error;
+  }
+}
+
+async function restoreSessionItemsAfterFailedReplacement(
+  session: Session,
+  previousItems: AgentInputItem[],
+  replacementError: unknown,
+): Promise<void> {
+  try {
+    const currentItems = await session.getItems();
+    if (
+      currentItems.length === previousItems.length &&
+      agentItemRangeMatches(currentItems, previousItems, 0)
+    ) {
+      return;
+    }
+  } catch (inspectionError) {
+    logModelAndToolActionWarning(
+      logger,
+      'Failed to inspect session history after legacy compaction reconciliation failed.',
+      inspectionError,
+    );
+  }
+
+  try {
+    await session.clearSession();
+    if (previousItems.length > 0) {
+      await session.addItems(previousItems);
+    }
+  } catch (restoreError) {
+    logModelAndToolActionWarning(
+      logger,
+      'Failed to restore session history after legacy compaction reconciliation failed.',
+      restoreError,
+    );
+    return;
+  }
+
+  logModelAndToolActionWarning(
+    logger,
+    'Restored session history after legacy compaction reconciliation failed.',
+    replacementError,
+  );
 }
 
 async function runCompactionOnSession(

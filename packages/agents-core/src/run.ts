@@ -69,6 +69,7 @@ import {
 import {
   createSessionPersistenceTracker,
   prepareInputItemsWithSession,
+  reconcileLegacyCompactionSessionBeforeResume,
   saveStreamInputToSession,
   saveStreamResultToSession,
   saveToSession,
@@ -653,6 +654,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // When the server tracks conversation history we defer to it for previous turns so local session
     // persistence can focus solely on the new delta being generated in this process.
     const session = effectiveOptions.session;
+    if (resumingFromState && !serverManagesConversation) {
+      await reconcileLegacyCompactionSessionBeforeResume(
+        session,
+        input as RunState<TContext, TAgent>,
+      );
+    }
     const sessionPersistence = createSessionPersistenceTracker({
       session,
       hasCallModelInputFilter,

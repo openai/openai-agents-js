@@ -18,7 +18,11 @@ import {
 } from './items';
 import type { ModelResponse, ModelSettings } from './model';
 import { RunContext } from './runContext';
-import { getTurnInput, type ReasoningItemIdPolicy } from './runner/items';
+import {
+  extractOutputItemsFromRunItems,
+  getTurnInput,
+  type ReasoningItemIdPolicy,
+} from './runner/items';
 import { AgentToolUseTracker } from './runner/toolUseTracker';
 import { nextStepSchema, NextStep } from './runner/steps';
 import type { ProcessedResponse } from './runner/types';
@@ -469,6 +473,7 @@ export const SerializedRunState = z.object({
   pendingAgentToolRuns: z.record(z.string(), z.string()).optional().default({}),
   lastProcessedResponse: serializedProcessedResponseSchema.optional(),
   currentTurnPersistedItemCount: z.number().int().min(0).optional(),
+  pendingLegacyCompactionSessionItems: z.array(protocol.ModelItem).optional(),
   conversationId: z.string().optional(),
   previousResponseId: z.string().optional(),
   reasoningItemIdPolicy: z.enum(['preserve', 'omit']).optional(),
@@ -582,6 +587,11 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public _currentTurnPersistedItemCount: number;
   /**
+   * Compaction marker and persisted suffix that an ordinary session must reconcile once after a
+   * pre-1.16 snapshot is restored. The field remains serialized until reconciliation succeeds.
+   */
+  public _pendingLegacyCompactionSessionItems: AgentInputItem[] | undefined;
+  /**
    * Maximum allowed turns before forcing termination.
    */
   public _maxTurns: number | null;
@@ -658,6 +668,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     this._pendingAgentToolRuns = new Map();
     this._generatedItems = [];
     this._currentTurnPersistedItemCount = 0;
+    this._pendingLegacyCompactionSessionItems = undefined;
     this._maxTurns = maxTurns;
     this._inputGuardrailResults = [];
     this._outputGuardrailResults = [];
@@ -990,6 +1001,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
         this._pendingAgentToolRuns.entries(),
       ),
       currentTurnPersistedItemCount: this._currentTurnPersistedItemCount,
+      pendingLegacyCompactionSessionItems:
+        this._pendingLegacyCompactionSessionItems,
       lastProcessedResponse: this._lastProcessedResponse
         ? (serializeProcessedResponse(
             this._lastProcessedResponse,
@@ -1103,7 +1116,27 @@ async function buildRunStateFromString<
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
   );
-  return buildRunStateFromJson(initialAgent, stateJson, options);
+  const normalizedState = rehydrateLegacyCompactionRunItems(
+    currentSchemaVersion as SupportedSchemaVersion,
+    stateJson,
+  );
+  const state = await buildRunStateFromJson(
+    initialAgent,
+    normalizedState.stateJson,
+    options,
+  );
+  if (normalizedState.sessionReconciliation) {
+    const { generatedInsertionIndex, previousPersistedItemCount } =
+      normalizedState.sessionReconciliation;
+    state._pendingLegacyCompactionSessionItems = extractOutputItemsFromRunItems(
+      state._generatedItems.slice(
+        generatedInsertionIndex,
+        previousPersistedItemCount + 1,
+      ),
+    );
+    state._currentTurnPersistedItemCount = previousPersistedItemCount + 1;
+  }
+  return state;
 }
 
 function assertSchemaVersionSupportsToolSearch(
@@ -1234,7 +1267,10 @@ function assertSchemaVersionSupportsCompactionItems(
     return;
   }
 
-  if (!containsSerializedCompactionRunItems(stateJson)) {
+  if (
+    !containsSerializedCompactionRunItems(stateJson) &&
+    stateJson.pendingLegacyCompactionSessionItems === undefined
+  ) {
     return;
   }
 
@@ -1256,6 +1292,193 @@ function containsCompactionRunItems(
   items: z.infer<typeof itemSchema>[] | undefined,
 ): boolean {
   return Boolean(items?.some((item) => item.type === 'compaction_item'));
+}
+
+/**
+ * Older writers kept raw compaction output but dropped its RunItem wrapper. Restore the latest
+ * marker before resuming because it carries the context required for the next model window.
+ */
+type LegacyCompactionRehydration = {
+  stateJson: z.infer<typeof SerializedRunState>;
+  sessionReconciliation?: {
+    generatedInsertionIndex: number;
+    previousPersistedItemCount: number;
+  };
+};
+
+function rehydrateLegacyCompactionRunItems(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: z.infer<typeof SerializedRunState>,
+): LegacyCompactionRehydration {
+  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+    return { stateJson };
+  }
+
+  const sourceResponse =
+    stateJson.lastModelResponse ?? stateJson.modelResponses.at(-1);
+  if (!sourceResponse) {
+    return { stateJson };
+  }
+
+  let compactionIndex = -1;
+  for (let index = sourceResponse.output.length - 1; index >= 0; index -= 1) {
+    if (sourceResponse.output[index].type === 'compaction') {
+      compactionIndex = index;
+      break;
+    }
+  }
+  if (compactionIndex < 0) {
+    return { stateJson };
+  }
+
+  const compactionItem = sourceResponse.output[
+    compactionIndex
+  ] as protocol.CompactionItem;
+  const serializedCompactionItem = {
+    type: 'compaction_item' as const,
+    rawItem: compactionItem,
+    agent: stateJson.currentAgent,
+  };
+
+  const processedItems = stateJson.lastProcessedResponse?.newItems;
+  const processedInsertionIndex = processedItems
+    ? findLegacyCompactionInsertionIndex(
+        processedItems,
+        sourceResponse.output,
+        compactionIndex,
+      )
+    : undefined;
+  let generatedInsertionIndex: number;
+  if (processedItems?.length) {
+    const segmentStart = findTrailingProcessedSegmentStart(
+      stateJson.generatedItems,
+      processedItems,
+    );
+    if (segmentStart === undefined) {
+      throwLegacyCompactionOrderingError();
+    }
+    generatedInsertionIndex = segmentStart + processedInsertionIndex!;
+  } else {
+    generatedInsertionIndex = findLegacyCompactionInsertionIndex(
+      stateJson.generatedItems,
+      sourceResponse.output,
+      compactionIndex,
+    );
+  }
+
+  const previousPersistedItemCount =
+    stateJson.currentTurnPersistedItemCount ?? 0;
+  return {
+    stateJson: {
+      ...stateJson,
+      generatedItems: [
+        ...stateJson.generatedItems.slice(0, generatedInsertionIndex),
+        serializedCompactionItem,
+        ...stateJson.generatedItems.slice(generatedInsertionIndex),
+      ],
+      ...(processedItems
+        ? {
+            lastProcessedResponse: {
+              ...stateJson.lastProcessedResponse!,
+              newItems: [
+                ...processedItems.slice(0, processedInsertionIndex),
+                serializedCompactionItem,
+                ...processedItems.slice(processedInsertionIndex),
+              ],
+            },
+          }
+        : {}),
+    },
+    ...(generatedInsertionIndex < previousPersistedItemCount
+      ? {
+          sessionReconciliation: {
+            generatedInsertionIndex,
+            previousPersistedItemCount,
+          },
+        }
+      : {}),
+  };
+}
+
+function findLegacyCompactionInsertionIndex(
+  items: z.infer<typeof itemSchema>[],
+  sourceOutput: protocol.OutputModelItem[],
+  compactionIndex: number,
+): number {
+  const expectedProviderIdentities = sourceOutput
+    .filter((_, index) => index !== compactionIndex)
+    .map(getProtocolItemIdentity);
+  const expectedIdentitySet = new Set(expectedProviderIdentities);
+  const providerAnchors = items.flatMap((item, itemIndex) => {
+    if (item.type === 'tool_approval_item') {
+      return [];
+    }
+    const identity = getProtocolItemIdentity(item.rawItem);
+    return expectedIdentitySet.has(identity) ? [{ identity, itemIndex }] : [];
+  });
+
+  if (
+    providerAnchors.length !== expectedProviderIdentities.length ||
+    providerAnchors.some(
+      (anchor, index) => anchor.identity !== expectedProviderIdentities[index],
+    )
+  ) {
+    throwLegacyCompactionOrderingError();
+  }
+
+  if (expectedProviderIdentities.length === 0) {
+    if (items.length !== 0) {
+      throwLegacyCompactionOrderingError();
+    }
+    return 0;
+  }
+
+  const followingAnchor = providerAnchors[compactionIndex];
+  if (followingAnchor) {
+    if (compactionIndex === 0 && followingAnchor.itemIndex !== 0) {
+      throwLegacyCompactionOrderingError();
+    }
+    return followingAnchor.itemIndex;
+  }
+  return items.length;
+}
+
+function findTrailingProcessedSegmentStart(
+  generatedItems: z.infer<typeof itemSchema>[],
+  processedItems: z.infer<typeof itemSchema>[],
+): number | undefined {
+  for (
+    let start = generatedItems.length - processedItems.length;
+    start >= 0;
+    start -= 1
+  ) {
+    const matches = processedItems.every((processedItem, offset) => {
+      const generatedItem = generatedItems[start + offset];
+      return (
+        generatedItem.type === processedItem.type &&
+        getProtocolItemIdentity(generatedItem.rawItem) ===
+          getProtocolItemIdentity(processedItem.rawItem)
+      );
+    });
+    if (matches) {
+      return start;
+    }
+  }
+  return undefined;
+}
+
+function throwLegacyCompactionOrderingError(): never {
+  throw new UserError(
+    'Run state cannot safely restore a legacy compaction item because its provider order is ambiguous.',
+  );
+}
+
+function getProtocolItemIdentity(item: unknown): string {
+  const record = item as Record<string, unknown>;
+  const stableId = record.id ?? record.callId;
+  return typeof stableId === 'string'
+    ? `${String(record.type)}:${stableId}`
+    : JSON.stringify(record);
 }
 
 function containsProgrammaticToolCallingState(
@@ -1850,6 +2073,8 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   );
   state._currentTurnPersistedItemCount =
     stateJson.currentTurnPersistedItemCount ?? 0;
+  state._pendingLegacyCompactionSessionItems =
+    stateJson.pendingLegacyCompactionSessionItems;
   state._sandbox = stateJson.sandbox ?? undefined;
   await rehydrateToolSearchRuntimeTools(state);
   state._lastProcessedResponse = stateJson.lastProcessedResponse
