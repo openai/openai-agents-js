@@ -255,6 +255,12 @@ function mapPreparedSourcesAfterContextProcessing(
   processedItems: AgentInputItem[],
   preparedSourceIndexes: number[],
 ): PreparedOwnedSource[] {
+  const ownerIndexByPreparedIndex = new Map(
+    preparedSourceIndexes.map((preparedIndex, ownerIndex) => [
+      preparedIndex,
+      ownerIndex,
+    ]),
+  );
   const preparedIndexesByReference = new Map<AgentInputItem, number[]>();
   const preparedIndexesByKey = new Map<string, number[]>();
   for (const [index, item] of preparedItems.entries()) {
@@ -273,52 +279,71 @@ function mapPreparedSourcesAfterContextProcessing(
   );
   const usedPreparedIndexes = new Set<number>();
 
-  // Match from the end so prefix-removing context processors preserve occurrence positions.
-  for (let index = processedItems.length - 1; index >= 0; index--) {
-    const item = processedItems[index];
-    if (!item) {
-      continue;
+  const mapOccurrences = <T>(
+    processedIndexesByIdentity: Map<T, number[]>,
+    preparedIndexesByIdentity: Map<T, number[]>,
+  ) => {
+    for (const [identity, processedIndexes] of processedIndexesByIdentity) {
+      const availablePreparedIndexes = (
+        preparedIndexesByIdentity.get(identity) ?? []
+      ).filter((index) => !usedPreparedIndexes.has(index));
+      const availableProcessedIndexes = processedIndexes.filter(
+        (index) => mappedPreparedIndexes[index] === undefined,
+      );
+
+      // When processing keeps every occurrence, preserve their relative order. If an
+      // indistinguishable cloned subset remains, prefer Session-owned occurrences because the
+      // transformation no longer contains enough information to identify which clone survived.
+      if (availableProcessedIndexes.length < availablePreparedIndexes.length) {
+        availablePreparedIndexes.sort((left, right) => {
+          const leftOwned = ownerIndexByPreparedIndex.has(left);
+          const rightOwned = ownerIndexByPreparedIndex.has(right);
+          return leftOwned === rightOwned ? left - right : leftOwned ? -1 : 1;
+        });
+      }
+
+      for (
+        let index = 0;
+        index <
+        Math.min(
+          availableProcessedIndexes.length,
+          availablePreparedIndexes.length,
+        );
+        index++
+      ) {
+        const processedIndex = availableProcessedIndexes[index];
+        const preparedIndex = availablePreparedIndexes[index];
+        if (processedIndex === undefined || preparedIndex === undefined) {
+          continue;
+        }
+        mappedPreparedIndexes[processedIndex] = preparedIndex;
+        usedPreparedIndexes.add(preparedIndex);
+      }
     }
-    const preparedIndex = preparedIndexesByReference.get(item)?.pop();
-    if (preparedIndex !== undefined) {
-      mappedPreparedIndexes[index] = preparedIndex;
-      usedPreparedIndexes.add(preparedIndex);
-    }
+  };
+
+  const processedIndexesByReference = new Map<AgentInputItem, number[]>();
+  for (const [index, item] of processedItems.entries()) {
+    const indexes = processedIndexesByReference.get(item) ?? [];
+    indexes.push(index);
+    processedIndexesByReference.set(item, indexes);
   }
+  mapOccurrences(processedIndexesByReference, preparedIndexesByReference);
 
   // Public capabilities may return clones. Resolve remaining occurrences against the complete
   // prepared sequence so callback reordering and equal-content history retain their ownership.
-  for (let index = processedItems.length - 1; index >= 0; index--) {
+  const processedIndexesByKey = new Map<string, number[]>();
+  for (const [index, item] of processedItems.entries()) {
     if (mappedPreparedIndexes[index] !== undefined) {
       continue;
     }
-    const item = processedItems[index];
-    if (!item) {
-      continue;
-    }
-    const preparedIndexes = preparedIndexesByKey.get(
-      getAgentInputItemKey(item),
-    );
-    while (
-      preparedIndexes &&
-      preparedIndexes.length > 0 &&
-      usedPreparedIndexes.has(preparedIndexes[preparedIndexes.length - 1])
-    ) {
-      preparedIndexes.pop();
-    }
-    const preparedIndex = preparedIndexes?.pop();
-    if (preparedIndex !== undefined) {
-      mappedPreparedIndexes[index] = preparedIndex;
-      usedPreparedIndexes.add(preparedIndex);
-    }
+    const key = getAgentInputItemKey(item);
+    const indexes = processedIndexesByKey.get(key) ?? [];
+    indexes.push(index);
+    processedIndexesByKey.set(key, indexes);
   }
+  mapOccurrences(processedIndexesByKey, preparedIndexesByKey);
 
-  const ownerIndexByPreparedIndex = new Map(
-    preparedSourceIndexes.map((preparedIndex, ownerIndex) => [
-      preparedIndex,
-      ownerIndex,
-    ]),
-  );
   return processedItems.flatMap((item, index) => {
     const preparedIndex = mappedPreparedIndexes[index];
     const ownerIndex =
@@ -385,7 +410,7 @@ function reconcilePersistableFilteredItems(options: {
 
   const nextPersistedInputOrder = persistedInputOrder.filter(
     (occurrence) =>
-      occurrence.type !== 'owned' ||
+      occurrence.type === 'owned' &&
       !representedOwnedIndexes.has(occurrence.index),
   );
   nextPersistedInputOrder.push(...currentOrder);

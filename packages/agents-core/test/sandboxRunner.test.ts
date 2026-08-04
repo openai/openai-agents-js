@@ -240,6 +240,14 @@ class CloningContextCapability extends Capability {
   }
 }
 
+class CloningPrefixContextCapability extends Capability {
+  readonly type = 'cloning_prefix_context';
+
+  override processContext(context: AgentInputItem[]): AgentInputItem[] {
+    return structuredClone(context.slice(0, 1));
+  }
+}
+
 class CloningSubsetContextCapability extends Capability {
   readonly type = 'cloning_subset_context';
 
@@ -956,6 +964,60 @@ describe('sandbox runner integration', () => {
   );
 
   it.each([false, true])(
+    'persists current equal-content input when cloned sandbox context removes a suffix (stream=%s)',
+    async (stream) => {
+      const client = new FakeSandboxClient();
+      const response = {
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      };
+      const model = stream
+        ? new RecordingStreamingModel([response])
+        : new RecordingFakeModel([response]);
+      const agent = new SandboxAgent({
+        name: 'CloningPrefixPersistenceAgent',
+        model,
+        capabilities: [new CloningPrefixContextCapability()],
+      });
+      const session = new MemorySession({
+        initialItems: [user('same input')],
+      });
+      const options = {
+        session,
+        sandbox: { client },
+        sessionInputCallback: (
+          history: AgentInputItem[],
+          newItems: AgentInputItem[],
+        ) => newItems.concat(history),
+        callModelInputFilter: ({ modelData }: CallModelInputFilterArgs) => ({
+          ...modelData,
+          input: modelData.input.map((item) =>
+            item.type === 'message' && item.role === 'user'
+              ? user('current-filtered')
+              : item,
+          ),
+        }),
+      };
+
+      if (stream) {
+        const result = await run(agent, [user('same input')], {
+          ...options,
+          stream: true,
+        });
+        await result.completed;
+      } else {
+        await run(agent, [user('same input')], {
+          ...options,
+          stream: false,
+        });
+      }
+
+      const persisted = JSON.stringify(await session.getItems());
+      expect(persisted).toContain('current-filtered');
+    },
+  );
+
+  it.each([false, true])(
     'persists session input introduced on a later cloned sandbox turn (stream=%s)',
     async (stream) => {
       const client = new FakeSandboxClient();
@@ -1130,6 +1192,71 @@ describe('sandbox runner integration', () => {
       expect(persistedText).toContain('first-filtered');
       expect(persistedText).toContain('second-refiltered');
       expect(persistedText).not.toContain('second-filtered');
+    },
+  );
+
+  it.each([false, true])(
+    'replaces repeated filter injections across model calls (stream=%s)',
+    async (stream) => {
+      const continueTool = tool({
+        name: 'continue_after_injection',
+        description: 'Continues after the first injected model call.',
+        parameters: z.object({}),
+        execute: async () => 'continued',
+      });
+      const responses: ModelResponse[] = [
+        {
+          output: [
+            {
+              type: 'function_call',
+              callId: 'call_continue_after_injection',
+              name: continueTool.name,
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+      ];
+      const model = stream
+        ? new RecordingStreamingModel(responses)
+        : new RecordingFakeModel(responses);
+      const agent = new Agent({
+        name: 'RepeatedFilterInjectionAgent',
+        model,
+        tools: [continueTool],
+      });
+      const session = new MemorySession();
+      const options = {
+        session,
+        callModelInputFilter: ({ modelData }: CallModelInputFilterArgs) => ({
+          ...modelData,
+          input: [
+            user('repeated guidance'),
+            user('repeated guidance'),
+            ...modelData.input,
+          ],
+        }),
+      };
+
+      if (stream) {
+        const result = await run(agent, [user('current input')], {
+          ...options,
+          stream: true,
+        });
+        await result.completed;
+      } else {
+        await run(agent, [user('current input')], {
+          ...options,
+          stream: false,
+        });
+      }
+
+      const persisted = JSON.stringify(await session.getItems());
+      expect(persisted.match(/repeated guidance/g)).toHaveLength(2);
     },
   );
 

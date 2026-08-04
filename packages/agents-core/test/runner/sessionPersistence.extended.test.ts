@@ -193,6 +193,33 @@ describe('sessionPersistence tracker (extended)', () => {
     ]);
   });
 
+  it('keeps current ownership when an equal-content cloned context removes a suffix', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const current = {
+      type: 'message',
+      role: 'user',
+      content: 'same',
+    } as const;
+    const history = { ...current };
+    const preparedInput = [current, history];
+    tracker.setPreparedItems([current], preparedInput);
+    const turnInput = structuredClone(preparedInput);
+    const processedInput = structuredClone(turnInput.slice(0, 1));
+    tracker.setPreparedTurnItems(turnInput, processedInput);
+
+    tracker.recordTurnItems(processedInput, [
+      { ...current, content: 'current-filtered' },
+    ]);
+
+    expect(tracker.getItemsForPersistence()).toEqual([
+      { ...current, content: 'current-filtered' },
+    ]);
+  });
+
   it('remaps cloned current input ownership on a later model call', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({
@@ -312,6 +339,42 @@ describe('sessionPersistence tracker (extended)', () => {
     tracker.recordTurnItems([undefined], [injected]);
 
     expect(tracker.getItemsForPersistence()).toEqual([current, injected]);
+  });
+
+  it('replaces prior filter injections while preserving current duplicates', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const current = {
+      type: 'message',
+      role: 'user',
+      content: 'current',
+    } as const;
+    const injected = {
+      type: 'message',
+      role: 'user',
+      content: 'guidance',
+    } as const;
+    tracker.setPreparedItems([current], [current]);
+    const turnInput = structuredClone([current]);
+    tracker.setPreparedTurnItems(turnInput, turnInput);
+
+    tracker.recordTurnItems(
+      [undefined, undefined, turnInput[0]],
+      [structuredClone(injected), structuredClone(injected), current],
+    );
+    tracker.recordTurnItems(
+      [undefined, undefined, turnInput[0]],
+      [structuredClone(injected), structuredClone(injected), current],
+    );
+
+    expect(tracker.getItemsForPersistence()).toEqual([
+      injected,
+      injected,
+      current,
+    ]);
   });
 
   it('keeps normalized prepared input when a later model call injects an item', () => {
