@@ -319,8 +319,6 @@ function mapPreparedSourcesAfterContextProcessing(
   }
   mapOccurrences(processedIndexesByReference, preparedIndexesByReference);
 
-  // Public capabilities may return clones. Resolve remaining occurrences against the complete
-  // prepared sequence so callback reordering and equal-content history retain their ownership.
   const processedIndexesByKey = new Map<string, number[]>();
   for (const [index, item] of processedItems.entries()) {
     if (mappedPreparedIndexes[index] !== undefined) {
@@ -331,7 +329,85 @@ function mapPreparedSourcesAfterContextProcessing(
     indexes.push(index);
     processedIndexesByKey.set(key, indexes);
   }
-  mapOccurrences(processedIndexesByKey, preparedIndexesByKey);
+  const availablePreparedCountByKey = new Map<string, number>();
+  for (const [key, indexes] of preparedIndexesByKey) {
+    availablePreparedCountByKey.set(
+      key,
+      indexes.filter((index) => !usedPreparedIndexes.has(index)).length,
+    );
+  }
+  const ambiguousKeys = new Set<string>();
+  const ambiguousProcessedIndexes = new Set<number>();
+  for (const [key, indexes] of processedIndexesByKey) {
+    const availablePreparedCount = availablePreparedCountByKey.get(key) ?? 0;
+    if (
+      preparedIndexesByKey.has(key) &&
+      indexes.length > availablePreparedCount
+    ) {
+      ambiguousKeys.add(key);
+      indexes.forEach((index) => ambiguousProcessedIndexes.add(index));
+    }
+  }
+
+  // Reserve unchanged positional clones before matching equal-content occurrences globally.
+  // Otherwise, an earlier removed occurrence can steal a later clone's prepared position and
+  // cause an injected replacement to inherit the clone's Session ownership. Equal-sized key
+  // groups retain forward occurrence matching because unrelated insertions may shift the group.
+  for (const [index, item] of processedItems.entries()) {
+    const preparedItem = preparedItems[index];
+    const key = getAgentInputItemKey(item);
+    if (
+      mappedPreparedIndexes[index] !== undefined ||
+      ambiguousProcessedIndexes.has(index) ||
+      preparedItem === undefined ||
+      usedPreparedIndexes.has(index) ||
+      key !== getAgentInputItemKey(preparedItem) ||
+      (processedIndexesByKey.get(key)?.length ?? 0) >=
+        (availablePreparedCountByKey.get(key) ?? 0)
+    ) {
+      continue;
+    }
+    mappedPreparedIndexes[index] = index;
+    usedPreparedIndexes.add(index);
+  }
+
+  // Public capabilities may return clones. Resolve remaining occurrences against the complete
+  // prepared sequence so callback reordering and equal-content history retain their ownership.
+  const matchableProcessedIndexesByKey = new Map(
+    [...processedIndexesByKey].filter(([, indexes]) =>
+      indexes.every((index) => !ambiguousProcessedIndexes.has(index)),
+    ),
+  );
+  mapOccurrences(matchableProcessedIndexesByKey, preparedIndexesByKey);
+
+  const remainingProcessedIndexes = processedItems
+    .map((_, index) => index)
+    .filter(
+      (index) =>
+        mappedPreparedIndexes[index] === undefined &&
+        !ambiguousProcessedIndexes.has(index),
+    );
+  const remainingPreparedIndexes = preparedItems
+    .map((_, index) => index)
+    .filter(
+      (index) =>
+        !usedPreparedIndexes.has(index) &&
+        !ambiguousKeys.has(getAgentInputItemKey(preparedItems[index]!)),
+    );
+
+  // Treat a one-to-one set of unmatched occurrences as ordered replacements. Public capabilities
+  // may rewrite cloned item content, so neither reference nor serialized-value matching applies.
+  // Different cardinalities remain unmatched because insertions and removals erase that lineage.
+  if (remainingProcessedIndexes.length === remainingPreparedIndexes.length) {
+    for (const [index, processedIndex] of remainingProcessedIndexes.entries()) {
+      const preparedIndex = remainingPreparedIndexes[index];
+      if (preparedIndex === undefined) {
+        continue;
+      }
+      mappedPreparedIndexes[processedIndex] = preparedIndex;
+      usedPreparedIndexes.add(preparedIndex);
+    }
+  }
 
   return processedItems.flatMap((item, index) => {
     const preparedIndex = mappedPreparedIndexes[index];

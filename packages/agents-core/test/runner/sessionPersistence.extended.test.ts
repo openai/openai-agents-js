@@ -245,6 +245,174 @@ describe('sessionPersistence tracker (extended)', () => {
     expect(tracker.getItemsForPersistence()).toEqual([]);
   });
 
+  it('retains current ownership for an ordered transformed clone', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const current = {
+      type: 'message',
+      role: 'user',
+      content: 'sensitive current input',
+    } as const;
+    const preparedInput = [current];
+    tracker.setPreparedItems([current], preparedInput);
+    const turnInput = structuredClone(preparedInput);
+    const processedInput = [
+      { ...turnInput[0], content: 'redacted current input' },
+    ];
+    tracker.setPreparedTurnItems(turnInput, processedInput);
+
+    tracker.recordTurnItems(processedInput, processedInput);
+
+    expect(tracker.getItemsForPersistence()).toEqual(processedInput);
+  });
+
+  it('reserves an unchanged current clone before mapping an injected replacement', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const history = {
+      type: 'message',
+      role: 'user',
+      content: 'same',
+    } as const;
+    const current = { ...history };
+    const preparedInput = [history, current];
+    tracker.setPreparedItems([current], preparedInput);
+    const turnInput = structuredClone(preparedInput);
+    const processedInput = [
+      { ...turnInput[0], content: 'injected context' },
+      structuredClone(turnInput[1]),
+    ];
+    tracker.setPreparedTurnItems(turnInput, processedInput);
+
+    tracker.recordTurnItems(processedInput, processedInput);
+
+    expect(tracker.getItemsForPersistence()).toEqual([processedInput[1]]);
+  });
+
+  it('uses forward occurrence order when injected context shifts equal-content clones', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const history = {
+      type: 'message',
+      role: 'user',
+      content: 'same',
+    } as const;
+    const current = { ...history };
+    const preparedInput = [history, current];
+    tracker.setPreparedItems([current], preparedInput);
+    const turnInput = structuredClone(preparedInput);
+    const processedInput = [
+      { ...turnInput[0], content: 'injected context' },
+      ...structuredClone(turnInput),
+    ];
+    tracker.setPreparedTurnItems(turnInput, processedInput);
+
+    tracker.recordTurnItems(processedInput, [
+      { ...processedInput[0], content: 'injected-filtered' },
+      { ...processedInput[1], content: 'history-filtered' },
+      { ...processedInput[2], content: 'current-filtered' },
+    ]);
+
+    expect(tracker.getItemsForPersistence()).toEqual([
+      { ...current, content: 'current-filtered' },
+    ]);
+  });
+
+  it('does not assign ownership within a surplus equal-content clone group', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const history = {
+      type: 'message',
+      role: 'user',
+      content: 'same',
+    } as const;
+    const current = { ...history };
+    const preparedInput = [history, current];
+    tracker.setPreparedItems([current], preparedInput);
+    const turnInput = structuredClone(preparedInput);
+    const processedInput = [
+      structuredClone(turnInput[0]),
+      ...structuredClone(turnInput),
+    ];
+    tracker.setPreparedTurnItems(turnInput, processedInput);
+
+    tracker.recordTurnItems(processedInput, [
+      { ...processedInput[0], content: 'injected-filtered' },
+      { ...processedInput[1], content: 'history-filtered' },
+      { ...processedInput[2], content: 'current-filtered' },
+    ]);
+
+    expect(tracker.getItemsForPersistence()).toEqual([]);
+  });
+
+  it('keeps an unrelated rewrite outside an ambiguous surplus clone group', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const history = {
+      type: 'message',
+      role: 'user',
+      content: 'same',
+    } as const;
+    const current = {
+      type: 'message',
+      role: 'user',
+      content: 'sensitive current input',
+    } as const;
+    const preparedInput = [history, current];
+    tracker.setPreparedItems([current], preparedInput);
+    const turnInput = structuredClone(preparedInput);
+    const processedInput = [
+      turnInput[0],
+      structuredClone(turnInput[0]),
+      { ...turnInput[1], content: 'redacted current input' },
+    ];
+    tracker.setPreparedTurnItems(turnInput, processedInput);
+
+    tracker.recordTurnItems(processedInput, processedInput);
+
+    expect(tracker.getItemsForPersistence()).toEqual([processedInput[2]]);
+  });
+
+  it('does not guess transformed ownership when cardinality changes', () => {
+    const session = makeSession();
+    const tracker = createSessionPersistenceTracker({
+      session,
+      hasCallModelInputFilter: true,
+    })!;
+    const current = {
+      type: 'message',
+      role: 'user',
+      content: 'sensitive current input',
+    } as const;
+    const preparedInput = [current];
+    tracker.setPreparedItems([current], preparedInput);
+    const turnInput = structuredClone(preparedInput);
+    const processedInput = [
+      { ...turnInput[0], content: 'redacted current input' },
+      { ...turnInput[0], content: 'injected context' },
+    ];
+    tracker.setPreparedTurnItems(turnInput, processedInput);
+
+    tracker.recordTurnItems(processedInput, processedInput);
+
+    expect(tracker.getItemsForPersistence()).toEqual([]);
+  });
+
   it('remaps cloned current input ownership on a later model call', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({
