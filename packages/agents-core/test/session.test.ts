@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   isOpenAIResponsesCompactionAwareSession,
   isSessionHistoryRewriteAwareSession,
+  isSessionHistoryTransactionAwareSession,
   type OpenAIResponsesCompactionAwareSession,
   type Session,
   type SessionHistoryRewriteAwareSession,
+  type SessionHistoryTransactionAwareSession,
 } from '../src/memory/session';
 
 function makeSession(overrides: Partial<Session> = {}): Session {
@@ -43,5 +45,18 @@ describe('session type guards', () => {
     expect(isSessionHistoryRewriteAwareSession(historyRewriteSession)).toBe(
       true,
     );
+  });
+
+  it('detects history transaction-aware sessions', () => {
+    const historyTransactionSession: SessionHistoryTransactionAwareSession = {
+      ...makeSession(),
+      applyHistoryTransaction: () => {},
+    };
+
+    expect(isSessionHistoryTransactionAwareSession(undefined)).toBe(false);
+    expect(isSessionHistoryTransactionAwareSession(makeSession())).toBe(false);
+    expect(
+      isSessionHistoryTransactionAwareSession(historyTransactionSession),
+    ).toBe(true);
   });
 });

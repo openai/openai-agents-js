@@ -98,6 +98,45 @@ export interface SessionHistoryRewriteAwareSession extends Session {
   applyHistoryMutations(args: SessionHistoryRewriteArgs): Promise<void> | void;
 }
 
+export type SessionHistoryAppendItemsTransaction = {
+  type: 'append_items';
+  items: AgentInputItem[];
+};
+
+export type SessionHistoryReplaceSuffixTransaction = {
+  type: 'replace_suffix';
+  expectedSuffix: AgentInputItem[];
+  replacement: AgentInputItem[];
+};
+
+export type SessionHistoryTransaction =
+  SessionHistoryAppendItemsTransaction | SessionHistoryReplaceSuffixTransaction;
+
+export type SessionHistoryTransactionArgs = {
+  /**
+   * A non-empty identifier that remains stable when this transaction is retried.
+   */
+  operationId: string;
+  transaction: SessionHistoryTransaction;
+};
+
+/**
+ * Optional session capability for atomic, idempotent history changes.
+ *
+ * Implementations must persist the operation identifier and history change atomically. Repeating
+ * an operation identifier with the same transaction must succeed without applying the transaction
+ * again. Reusing an operation identifier with a different transaction, or attempting to replace a
+ * suffix that does not match, must fail without changing history.
+ *
+ * Implementations may reject item metadata that cannot be snapshotted and compared deterministically,
+ * but must do so before changing history or recording the operation identifier.
+ */
+export interface SessionHistoryTransactionAwareSession extends Session {
+  applyHistoryTransaction(
+    args: SessionHistoryTransactionArgs,
+  ): Promise<void> | void;
+}
+
 /**
  * Session subtype that can run compaction logic after a completed turn is persisted.
  */
@@ -165,5 +204,15 @@ export function isSessionHistoryRewriteAwareSession(
     !!session &&
     typeof (session as SessionHistoryRewriteAwareSession)
       .applyHistoryMutations === 'function'
+  );
+}
+
+export function isSessionHistoryTransactionAwareSession(
+  session: Session | undefined,
+): session is SessionHistoryTransactionAwareSession {
+  return (
+    !!session &&
+    typeof (session as SessionHistoryTransactionAwareSession)
+      .applyHistoryTransaction === 'function'
   );
 }

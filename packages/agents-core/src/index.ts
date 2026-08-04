@@ -331,6 +331,11 @@ export type {
   SessionHistoryMutation,
   SessionHistoryRewriteArgs,
   SessionHistoryRewriteAwareSession,
+  SessionHistoryAppendItemsTransaction,
+  SessionHistoryReplaceSuffixTransaction,
+  SessionHistoryTransaction,
+  SessionHistoryTransactionArgs,
+  SessionHistoryTransactionAwareSession,
   OpenAIResponsesCompactionArgs,
   OpenAIResponsesCompactionAwareSession,
   OpenAIResponsesCompactionResult,
@@ -338,6 +343,7 @@ export type {
 export {
   isOpenAIResponsesCompactionAwareSession,
   isSessionHistoryRewriteAwareSession,
+  isSessionHistoryTransactionAwareSession,
 } from './memory/session';
 export { applySessionHistoryMutations } from './memory/historyMutations';
 export { MemorySession } from './memory/memorySession';
