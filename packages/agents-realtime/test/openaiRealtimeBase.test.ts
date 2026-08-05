@@ -691,6 +691,75 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(approvals[0]?.serverLabel).toBe('s1');
   });
 
+  it('reaches session history when the server omits status', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const historyEvents: any[][] = [];
+    session.on('history_updated', (history) =>
+      historyEvents.push([...history]),
+    );
+
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.added',
+        event_id: 'e1',
+        item: {
+          id: 'u1',
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'hello' }],
+        },
+        previous_item_id: null,
+      }),
+    });
+
+    expect(session.history.map((item) => item.itemId)).toEqual(['u1']);
+    expect(session.history[0]).toMatchObject({ status: 'in_progress' });
+    expect(historyEvents.at(-1)?.map((item) => item.itemId)).toEqual(['u1']);
+  });
+
+  it('normalizes missing statuses and preserves explicit statuses', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
+
+    const send = (type: string, id: string, status?: string) =>
+      (base as any)._onMessage({
+        data: JSON.stringify({
+          type,
+          event_id: `e_${id}`,
+          item: {
+            id,
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'hi' }],
+            ...(status ? { status } : {}),
+          },
+          previous_item_id: null,
+        }),
+      });
+
+    send('conversation.item.added', 'a1');
+    send('conversation.item.done', 'd1');
+    send('conversation.item.retrieved', 'r1');
+    send('conversation.item.done', 'p1', 'in_progress');
+    send('conversation.item.done', 'i1', 'incomplete');
+
+    expect(updates.map((update) => [update.itemId, update.status])).toEqual([
+      ['a1', 'in_progress'],
+      ['d1', 'completed'],
+      ['r1', 'completed'],
+      ['p1', 'in_progress'],
+      ['i1', 'incomplete'],
+    ]);
+  });
+
   it('emits function_call and mcp call updates on output items', () => {
     const base = new TestBase();
     const funcs: any[] = [];

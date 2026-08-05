@@ -387,7 +387,11 @@ export abstract class OpenAIRealtimeBase
             parsed.item.role,
             parsed.item.content,
           ),
-          status: parsed.item.status,
+          status:
+            parsed.item.status ??
+            (parsed.type === 'conversation.item.added'
+              ? 'in_progress'
+              : 'completed'),
         });
         this.emit('item_update', item);
         return;
