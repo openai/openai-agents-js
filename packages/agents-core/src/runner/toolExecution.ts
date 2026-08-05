@@ -6,12 +6,15 @@ import {
 } from '../agentToolRunConfig';
 import { consumeAgentToolRunResult } from '../agentToolRunResults';
 import {
-  InvalidToolInputError,
   InvalidToolOutputError,
   ToolCallError,
   ToolTimeoutError,
   UserError,
 } from '../errors';
+import {
+  createInvalidToolInputFailure,
+  isRedactedInvalidToolInputError,
+} from '../toolInputError';
 import { getTransferMessage, HandoffInputData } from '../handoff';
 import {
   RunHandoffCallItem,
@@ -108,7 +111,7 @@ const REDACTED_TOOL_ERROR_MESSAGE =
   'Tool execution failed. Error details are redacted.';
 
 type ParseToolArgumentsResult =
-  { success: true; args: any } | { success: false; error: Error };
+  { success: true; args: any } | { success: false; error: unknown };
 
 type ToolInputGuardrailCheckResult =
   { type: 'allow' } | { type: 'reject'; message: string };
@@ -330,7 +333,7 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     throw new ToolCallError(
       `Failed to run function tools: ${e}`,
       e as Error,
-      state,
+      isRedactedInvalidToolInputError(e) ? undefined : state,
     );
   }
 }
@@ -418,7 +421,7 @@ function parseToolArguments<TContext>(
     } else {
       logger.debug(`Failed to parse tool arguments for ${toolName}: ${error}`);
     }
-    return { success: false, error: error as Error };
+    return { success: false, error };
   }
 }
 
@@ -502,23 +505,27 @@ async function resolveFunctionFailureOutput<TContext>(
 async function buildParseErrorResult<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
-  error: Error,
+  error: unknown,
 ): Promise<FunctionToolResult<TContext>> {
-  const errorMessage = `An error occurred while parsing tool arguments. Please try again with valid JSON. Error: ${error.message}`;
-  const parseError = new InvalidToolInputError(
-    `Invalid input for function tool '${getFunctionToolIdentity(toolRun)}'.`,
-    deps.state,
-    error,
-    {
+  const failure = createInvalidToolInputFailure({
+    message: `Invalid input for function tool '${getFunctionToolIdentity(toolRun)}'.`,
+    state: deps.state,
+    originalError: error,
+    toolInvocation: {
       runContext: deps.state._context,
       input: toolRun.toolCall.arguments,
       details: { toolCall: toolRun.toolCall },
     },
-  );
+  });
+  const baseMessage =
+    'An error occurred while parsing tool arguments. Please try again with valid JSON.';
+  const errorMessage = failure.redacted
+    ? baseMessage
+    : `${baseMessage} Error: ${(error as Error).message}`;
   const output = await resolveFunctionFailureOutput(
     deps,
     toolRun,
-    parseError,
+    failure.error,
     errorMessage,
   );
   return buildFunctionFailureResult(deps, toolRun, output);

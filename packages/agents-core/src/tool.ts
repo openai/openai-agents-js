@@ -16,12 +16,8 @@ import { combineAbortSignals, isAbortError } from './utils/abortSignals';
 import { RunContext } from './runContext';
 import type { RunConfig } from './run';
 import type { RunResult } from './result';
-import {
-  InvalidToolInputError,
-  InvalidToolOutputError,
-  ToolTimeoutError,
-  UserError,
-} from './errors';
+import { InvalidToolOutputError, ToolTimeoutError, UserError } from './errors';
+import { createInvalidToolInputFailure } from './toolInputError';
 import logger, { logToolActionWarning } from './logger';
 import { getCurrentSpan } from './tracing';
 import { RunToolApprovalItem, RunToolCallOutputItem } from './items';
@@ -2231,12 +2227,11 @@ export function tool<
 
       // supply the same context as options.execute for consuming
       // downstream code to implement self-healing and/or tracing
-      throw new InvalidToolInputError(
-        'Invalid JSON input for tool',
-        undefined, // no RunState available in this context
-        error,
-        { runContext, input, details },
-      );
+      throw createInvalidToolInputFailure({
+        message: 'Invalid JSON input for tool',
+        originalError: error,
+        toolInvocation: { runContext, input, details },
+      }).error;
     }
 
     if (logger.dontLogToolData) {
