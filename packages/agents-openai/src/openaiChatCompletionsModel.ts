@@ -125,6 +125,21 @@ export class OpenAIChatCompletionsModel implements Model {
             }
           : { base_url: this.#client.baseURL };
         const response = await this.#fetchResponse(request, span, false);
+        const firstChoice = response.choices?.[0];
+        const message = firstChoice?.message;
+        // Some providers signal a filtered completion only through the finish reason.
+        // Normalize that terminal signal before tracing and protocol conversion.
+        if (
+          firstChoice?.finish_reason === 'content_filter' &&
+          message &&
+          !message.content &&
+          !message.refusal &&
+          !message.tool_calls?.length
+        ) {
+          message.content = null;
+          message.refusal =
+            "Response withheld by the provider's content filter.";
+        }
         if (span && request.tracing === true) {
           span.spanData.output = [response];
         }

@@ -1,9 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   Agent,
   Runner,
+  Span,
+  Trace,
+  setTraceProcessors,
   withTrace,
   setTracingDisabled,
+  type TracingProcessor,
 } from '@openai/agents-core';
 import { OpenAIChatCompletionsModel } from '../src/openaiChatCompletionsModel';
 import { HEADERS } from '../src/defaults';
@@ -34,10 +38,28 @@ class FakeClient {
   baseURL = 'base';
 }
 
+class RecordingProcessor implements TracingProcessor {
+  readonly spansEnded: Span<any>[] = [];
+
+  async onTraceStart(_trace: Trace): Promise<void> {}
+  async onTraceEnd(_trace: Trace): Promise<void> {}
+  async onSpanStart(_span: Span<any>): Promise<void> {}
+  async onSpanEnd(span: Span<any>): Promise<void> {
+    this.spansEnded.push(span);
+  }
+  async shutdown(): Promise<void> {}
+  async forceFlush(): Promise<void> {}
+}
+
 describe('OpenAIChatCompletionsModel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setTracingDisabled(true);
+  });
+
+  afterEach(() => {
+    setTracingDisabled(true);
+    setTraceProcessors([]);
   });
 
   it('handles text message output', async () => {
@@ -469,6 +491,210 @@ describe('OpenAIChatCompletionsModel', () => {
         status: 'completed',
         content: [{ type: 'output_text', text: '', providerData: {} }],
       },
+    ]);
+  });
+
+  it.each([null, ''])(
+    'surfaces an empty content-filtered message as a refusal (content: %j)',
+    async (content) => {
+      const client = new FakeClient();
+      const response = {
+        id: 'r',
+        choices: [
+          {
+            finish_reason: 'content_filter',
+            message: {
+              role: 'assistant',
+              content,
+              refusal: '',
+              tool_calls: [],
+            },
+          },
+        ],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      } as any;
+      client.chat.completions.create.mockResolvedValue(response);
+
+      const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+      const req: any = {
+        input: 'u',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      };
+
+      const result = await withTrace('t', () => model.getResponse(req));
+
+      expect(result.output).toEqual([
+        {
+          id: 'r',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [
+            {
+              type: 'refusal',
+              refusal: "Response withheld by the provider's content filter.",
+              providerData: {
+                role: 'assistant',
+                content: null,
+                tool_calls: [],
+              },
+            },
+          ],
+        },
+      ]);
+    },
+  );
+
+  it('preserves content, provider refusals, and tool calls from content-filtered messages', async () => {
+    const client = new FakeClient();
+    client.chat.completions.create
+      .mockResolvedValueOnce({
+        id: 'content-response',
+        choices: [
+          {
+            finish_reason: 'content_filter',
+            message: { content: 'partial' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        id: 'refusal-response',
+        choices: [
+          {
+            finish_reason: 'content_filter',
+            message: { content: null, refusal: 'provider refusal' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        id: 'tool-response',
+        choices: [
+          {
+            finish_reason: 'content_filter',
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: 'call-1',
+                  type: 'function',
+                  function: { name: 'lookup', arguments: '{}' },
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    const contentResult = await withTrace('content', () =>
+      model.getResponse(req),
+    );
+    const refusalResult = await withTrace('refusal', () =>
+      model.getResponse(req),
+    );
+    const toolResult = await withTrace('tool', () => model.getResponse(req));
+
+    expect(contentResult.output[0]).toMatchObject({
+      type: 'message',
+      content: [{ type: 'output_text', text: 'partial' }],
+    });
+    expect(refusalResult.output[0]).toMatchObject({
+      type: 'message',
+      content: [{ type: 'refusal', refusal: 'provider refusal' }],
+    });
+    expect(toolResult.output).toMatchObject([
+      {
+        id: 'tool-response',
+        type: 'function_call',
+        arguments: '{}',
+        name: 'lookup',
+        callId: 'call-1',
+        status: 'completed',
+      },
+    ]);
+  });
+
+  it('does not synthesize a refusal for other finish reasons', async () => {
+    const client = new FakeClient();
+    client.chat.completions.create.mockResolvedValue({
+      id: 'r',
+      choices: [
+        {
+          finish_reason: 'stop',
+          message: { content: null },
+        },
+      ],
+    });
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const result = await withTrace('t', () =>
+      model.getResponse({
+        input: 'u',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      }),
+    );
+
+    expect(result.output).toEqual([]);
+  });
+
+  it('traces the synthesized content-filter refusal', async () => {
+    const processor = new RecordingProcessor();
+    setTraceProcessors([processor]);
+    setTracingDisabled(false);
+
+    const client = new FakeClient();
+    client.chat.completions.create.mockResolvedValue({
+      id: 'r',
+      choices: [
+        {
+          finish_reason: 'content_filter',
+          message: { role: 'assistant', content: null },
+        },
+      ],
+    });
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+
+    await withTrace('content-filter-refusal', () =>
+      model.getResponse({
+        input: 'u',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: true,
+      }),
+    );
+
+    const generationSpan = processor.spansEnded.find(
+      (span) => span.spanData.type === 'generation',
+    );
+    expect(generationSpan?.spanData.output).toEqual([
+      expect.objectContaining({
+        choices: [
+          expect.objectContaining({
+            message: expect.objectContaining({
+              refusal: "Response withheld by the provider's content filter.",
+            }),
+          }),
+        ],
+      }),
     ]);
   });
 
