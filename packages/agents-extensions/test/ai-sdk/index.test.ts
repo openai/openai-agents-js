@@ -81,6 +81,40 @@ function partsStream(parts: any[]): ReadableStream<any> {
   );
 }
 
+async function collectStreamResponse(
+  parts: any[],
+  specificationVersion = 'v2',
+) {
+  const languageModel = stubModel(
+    {
+      async doStream() {
+        return { stream: partsStream(parts) } as any;
+      },
+    },
+    { specificationVersion },
+  );
+  const model = new AiSdkModel(languageModel);
+  let response: any;
+
+  for await (const event of model.getStreamedResponse({
+    input: 'test',
+    tools: [],
+    handoffs: [],
+    modelSettings: {},
+    outputType: 'text',
+    tracing: false,
+  } as any)) {
+    if (event.type === 'response_done') {
+      response = event.response;
+    }
+  }
+
+  if (!response) {
+    throw new Error('Expected a completed streaming response.');
+  }
+  return { languageModel, response };
+}
+
 class RecordingTracingProcessor implements TracingProcessor {
   readonly spansEnded: Span<any>[] = [];
 
@@ -4694,6 +4728,298 @@ describe('Extended thinking / Reasoning support', () => {
         name: 'search',
       });
     });
+
+    test('preserves Anthropic signatures from empty reasoning deltas', async () => {
+      const { response } = await collectStreamResponse([
+        { type: 'reasoning-start', id: '0' },
+        { type: 'reasoning-delta', id: '0', delta: 'Hidden thought.' },
+        {
+          type: 'reasoning-delta',
+          id: '0',
+          delta: '',
+          providerMetadata: {
+            anthropic: { signature: 'sig_from_signature_delta' },
+          },
+        },
+        { type: 'reasoning-end', id: '0' },
+        { type: 'response-metadata', id: 'resp-signature' },
+      ]);
+
+      expect(response.output).toEqual([
+        {
+          type: 'reasoning',
+          id: '0',
+          content: [{ type: 'input_text', text: 'Hidden thought.' }],
+          rawContent: [{ type: 'reasoning_text', text: 'Hidden thought.' }],
+          providerData: {
+            model: 'stub:m',
+            anthropic: { signature: 'sig_from_signature_delta' },
+            responseId: 'resp-signature',
+          },
+        },
+      ]);
+    });
+
+    test('preserves Anthropic redacted data from reasoning start', async () => {
+      const { response } = await collectStreamResponse([
+        {
+          type: 'reasoning-start',
+          id: '0',
+          providerMetadata: {
+            anthropic: { redactedData: 'redacted_thinking_data' },
+          },
+        },
+        { type: 'reasoning-end', id: '0' },
+      ]);
+
+      expect(response.output[0]).toMatchObject({
+        type: 'reasoning',
+        id: '0',
+        content: [{ type: 'input_text', text: '' }],
+        providerData: {
+          model: 'stub:m',
+          anthropic: { redactedData: 'redacted_thinking_data' },
+        },
+      });
+    });
+
+    test.each(['v2', 'v3', 'v4'])(
+      'merges reasoning metadata from start, delta, and end for %s',
+      async (specificationVersion) => {
+        const { response } = await collectStreamResponse(
+          [
+            {
+              type: 'reasoning-start',
+              id: '0',
+              providerMetadata: {
+                test: { start: true, conflict: 'start' },
+              },
+            },
+            {
+              type: 'reasoning-delta',
+              id: '0',
+              delta: '',
+              providerMetadata: {
+                test: { delta: true, conflict: 'delta' },
+              },
+            },
+            {
+              type: 'reasoning-delta',
+              id: '0',
+              delta: '',
+              providerMetadata: {
+                test: { secondDelta: true },
+              },
+            },
+            {
+              type: 'reasoning-end',
+              id: '0',
+              providerMetadata: {
+                test: { end: true, conflict: 'end' },
+              },
+            },
+          ],
+          specificationVersion,
+        );
+
+        expect(response.output[0].providerData).toEqual({
+          model: 'stub:m',
+          test: {
+            start: true,
+            delta: true,
+            secondDelta: true,
+            end: true,
+            conflict: 'end',
+          },
+        });
+      },
+    );
+
+    test('preserves empty provider metadata namespaces', async () => {
+      const { languageModel, response } = await collectStreamResponse([
+        {
+          type: 'reasoning-start',
+          id: '0',
+          providerMetadata: { vendor: {} },
+        },
+        {
+          type: 'reasoning-delta',
+          id: '0',
+          delta: '',
+          providerMetadata: { vendor: {} },
+        },
+        { type: 'reasoning-end', id: '0' },
+      ]);
+
+      expect(response.output[0].providerData).toEqual({
+        model: 'stub:m',
+        vendor: {},
+      });
+      expect(itemsToLanguageV2Messages(languageModel, response.output)).toEqual(
+        [
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'reasoning',
+                text: '',
+                providerOptions: { vendor: {} },
+              },
+            ],
+            providerOptions: { vendor: {} },
+          },
+        ],
+      );
+    });
+
+    test('preserves ordered metadata for multiple reasoning blocks', async () => {
+      const { response } = await collectStreamResponse([
+        {
+          type: 'reasoning-start',
+          id: '10',
+          providerMetadata: {
+            anthropic: { redactedData: 'redacted_block' },
+          },
+        },
+        { type: 'reasoning-end', id: '10' },
+        { type: 'reasoning-start', id: '2' },
+        { type: 'reasoning-delta', id: '2', delta: 'Visible thought.' },
+        {
+          type: 'reasoning-delta',
+          id: '2',
+          delta: '',
+          providerMetadata: { anthropic: { signature: 'signed_block' } },
+        },
+        { type: 'reasoning-end', id: '2' },
+      ]);
+
+      expect(response.output).toMatchObject([
+        {
+          type: 'reasoning',
+          id: '10',
+          content: [{ type: 'input_text', text: '' }],
+          providerData: {
+            anthropic: { redactedData: 'redacted_block' },
+          },
+        },
+        {
+          type: 'reasoning',
+          id: '2',
+          content: [{ type: 'input_text', text: 'Visible thought.' }],
+          providerData: {
+            anthropic: { signature: 'signed_block' },
+          },
+        },
+      ]);
+    });
+
+    test('replays merged reasoning metadata through AI SDK messages', async () => {
+      const { languageModel, response } = await collectStreamResponse([
+        {
+          type: 'reasoning-start',
+          id: '0',
+          providerMetadata: {
+            anthropic: { redactedData: 'redacted_thinking_data' },
+          },
+        },
+        { type: 'reasoning-end', id: '0' },
+        { type: 'reasoning-start', id: '1' },
+        { type: 'reasoning-delta', id: '1', delta: 'Hidden thought.' },
+        {
+          type: 'reasoning-delta',
+          id: '1',
+          delta: '',
+          providerMetadata: {
+            anthropic: { signature: 'sig_from_signature_delta' },
+          },
+        },
+        { type: 'reasoning-end', id: '1' },
+      ]);
+
+      const messages = itemsToLanguageV2Messages(
+        languageModel,
+        response.output,
+      );
+      expect(messages).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: '',
+              providerOptions: {
+                anthropic: {
+                  redactedData: 'redacted_thinking_data',
+                },
+              },
+            },
+          ],
+          providerOptions: {
+            anthropic: {
+              redactedData: 'redacted_thinking_data',
+            },
+          },
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Hidden thought.',
+              providerOptions: {
+                anthropic: { signature: 'sig_from_signature_delta' },
+              },
+            },
+          ],
+          providerOptions: {
+            anthropic: { signature: 'sig_from_signature_delta' },
+          },
+        },
+      ]);
+    });
+
+    test.each(['v3', 'v4'])(
+      'replays merged reasoning metadata through AI SDK %s messages',
+      async (specificationVersion) => {
+        const { languageModel, response } = await collectStreamResponse(
+          [
+            { type: 'reasoning-start', id: '0' },
+            {
+              type: 'reasoning-delta',
+              id: '0',
+              delta: '',
+              providerMetadata: {
+                anthropic: { signature: 'sig_from_signature_delta' },
+              },
+            },
+            { type: 'reasoning-end', id: '0' },
+          ],
+          specificationVersion,
+        );
+
+        const messages = itemsToLanguageV2Messages(
+          languageModel,
+          response.output,
+        );
+        expect(messages).toEqual([
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'reasoning',
+                text: '',
+                providerOptions: {
+                  anthropic: { signature: 'sig_from_signature_delta' },
+                },
+              },
+            ],
+            providerOptions: {
+              anthropic: { signature: 'sig_from_signature_delta' },
+            },
+          },
+        ]);
+      },
+    );
 
     test('handles multiple reasoning blocks in streaming', async () => {
       const parts = [
