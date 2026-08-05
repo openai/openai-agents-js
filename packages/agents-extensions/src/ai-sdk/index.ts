@@ -1626,6 +1626,26 @@ function mergeProviderData(
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
+function mergeProviderMetadata(
+  base: Record<string, any> | undefined,
+  source: Record<string, any> | undefined,
+): Record<string, any> | undefined {
+  const merged = mergeProviderData(base, source);
+  if (!merged || !isRecord(base) || !isRecord(source)) {
+    return merged;
+  }
+
+  for (const provider of Object.keys(source)) {
+    if (isRecord(base[provider]) && isRecord(source[provider])) {
+      merged[provider] = {
+        ...base[provider],
+        ...source[provider],
+      };
+    }
+  }
+  return merged;
+}
+
 function getHostedToolArgs(providerData: unknown): Record<string, any> {
   if (!isRecord(providerData)) {
     return {};
@@ -2275,13 +2295,27 @@ export class AiSdkModel implements Model {
 
       // State for tracking reasoning blocks (for Anthropic extended thinking):
       // Track reasoning deltas so we can preserve Anthropic signatures even when text is redacted.
-      const reasoningBlocks: Record<
+      const reasoningBlocks = new Map<
         string,
         {
           text: string;
           providerMetadata?: Record<string, any>;
         }
-      > = {};
+      >();
+      const getReasoningBlock = (
+        reasoningId: string,
+        providerMetadata: Record<string, any> | undefined,
+      ) => {
+        const reasoningBlock = reasoningBlocks.get(reasoningId) ?? {
+          text: '',
+        };
+        reasoningBlock.providerMetadata = mergeProviderMetadata(
+          reasoningBlock.providerMetadata,
+          providerMetadata,
+        );
+        reasoningBlocks.set(reasoningId, reasoningBlock);
+        return reasoningBlock;
+      };
 
       for await (const part of stream) {
         if (!started) {
@@ -2313,35 +2347,23 @@ export class AiSdkModel implements Model {
           case 'reasoning-start': {
             // Start tracking a new reasoning block
             const reasoningId = (part as any).id ?? 'default';
-            reasoningBlocks[reasoningId] = {
-              text: '',
-              providerMetadata: (part as any).providerMetadata,
-            };
+            getReasoningBlock(reasoningId, (part as any).providerMetadata);
             break;
           }
           case 'reasoning-delta': {
             // Accumulate reasoning text
             const reasoningId = (part as any).id ?? 'default';
-            if (!reasoningBlocks[reasoningId]) {
-              reasoningBlocks[reasoningId] = {
-                text: '',
-                providerMetadata: (part as any).providerMetadata,
-              };
-            }
-            reasoningBlocks[reasoningId].text += (part as any).delta ?? '';
+            const reasoningBlock = getReasoningBlock(
+              reasoningId,
+              (part as any).providerMetadata,
+            );
+            reasoningBlock.text += (part as any).delta ?? '';
             break;
           }
           case 'reasoning-end': {
             // Capture final provider metadata (may contain signature)
             const reasoningId = (part as any).id ?? 'default';
-            if (
-              reasoningBlocks[reasoningId] &&
-              (part as any).providerMetadata
-            ) {
-              reasoningBlocks[reasoningId].providerMetadata = (
-                part as any
-              ).providerMetadata;
-            }
+            getReasoningBlock(reasoningId, (part as any).providerMetadata);
             break;
           }
           case 'tool-call': {
@@ -2425,9 +2447,7 @@ export class AiSdkModel implements Model {
 
       // Add reasoning items FIRST (required by Anthropic: thinking blocks must precede tool_use blocks)
       // Emit reasoning item even when text is empty to preserve signature in providerData for redacted thinking streams
-      for (const [reasoningId, reasoningBlock] of Object.entries(
-        reasoningBlocks,
-      )) {
+      for (const [reasoningId, reasoningBlock] of reasoningBlocks) {
         if (reasoningBlock.text || reasoningBlock.providerMetadata) {
           outputs.push({
             type: 'reasoning',
