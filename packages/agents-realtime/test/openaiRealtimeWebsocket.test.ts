@@ -5,6 +5,15 @@ import { OpenAIRealtimeSIP } from '../src/openaiRealtimeSip';
 import { RealtimeAgent } from '../src/realtimeAgent';
 
 let lastFakeSocket: any;
+let fakeSockets: any[] = [];
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
 
 function sentPayloads() {
   return (lastFakeSocket?.sent ?? []).map((payload: string) =>
@@ -18,10 +27,15 @@ vi.mock('ws', () => {
       url: string;
       listeners: Record<string, ((ev: any) => void)[]> = {};
       sent: any[] = [];
+      closeCalls = 0;
+      closeError: Error | undefined;
+      emitCloseOnClose = true;
+      sendHook: (() => void) | undefined;
       constructor(url: string, _args?: any) {
         this.url = url;
         // eslint-disable-next-line @typescript-eslint/no-this-alias
         lastFakeSocket = this;
+        fakeSockets.push(this);
         setTimeout(() => this.emit('open', {}));
       }
       addEventListener(type: string, listener: (ev: any) => void) {
@@ -30,9 +44,16 @@ vi.mock('ws', () => {
       }
       send(data: any) {
         this.sent.push(data);
+        this.sendHook?.();
       }
       close() {
-        this.emit('close', {});
+        this.closeCalls += 1;
+        if (this.closeError) {
+          throw this.closeError;
+        }
+        if (this.emitCloseOnClose) {
+          this.emit('close', {});
+        }
       }
       emit(type: string, ev: any) {
         (this.listeners[type] || []).forEach((fn) => fn(ev));
@@ -46,6 +67,7 @@ describe('OpenAIRealtimeWebSocket', () => {
     vi.useFakeTimers();
     vi.restoreAllMocks();
     lastFakeSocket = undefined;
+    fakeSockets = [];
   });
 
   afterEach(() => {
@@ -65,6 +87,456 @@ describe('OpenAIRealtimeWebSocket', () => {
     await vi.runAllTimersAsync();
     await p;
     expect(statuses).toEqual(['connecting', 'connected']);
+  });
+
+  it('rejects and cleans up when a connected-state observer throws', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const observerError = new Error('connected-state observer failed');
+    let shouldThrow = true;
+    ws.on('connection_change', (status) => {
+      if (status === 'connected' && shouldThrow) {
+        shouldThrow = false;
+        throw observerError;
+      }
+    });
+
+    const failedConnect = expect(
+      ws.connect({ apiKey: 'ek_test', model: 'first-model' }),
+    ).rejects.toBe(observerError);
+    await vi.runAllTimersAsync();
+    await failedConnect;
+
+    expect(fakeSockets[0].closeCalls).toBe(1);
+    expect(ws.status).toBe('disconnected');
+
+    const retry = ws.connect({ apiKey: 'ek_retry', model: 'retry-model' });
+    await vi.runAllTimersAsync();
+    await retry;
+    expect(ws.status).toBe('connected');
+  });
+
+  it('rejects when a connected observer closes the active attempt', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    let shouldClose = true;
+    ws.on('connected', () => {
+      if (shouldClose) {
+        shouldClose = false;
+        ws.close();
+      }
+    });
+
+    const failedConnect = expect(
+      ws.connect({ apiKey: 'ek_test', model: 'first-model' }),
+    ).rejects.toThrow('closed before setup completed');
+    await vi.runAllTimersAsync();
+    await failedConnect;
+    expect(ws.status).toBe('disconnected');
+
+    const retry = ws.connect({ apiKey: 'ek_retry', model: 'retry-model' });
+    await vi.runAllTimersAsync();
+    await retry;
+    expect(ws.status).toBe('connected');
+  });
+
+  it('attempts both disconnection notifications when the first throws', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const notificationError = new Error('connection change failed');
+    const disconnected = vi.fn();
+    ws.on('disconnected', disconnected);
+    ws.on('connection_change', (status) => {
+      if (status === 'disconnected') {
+        throw notificationError;
+      }
+    });
+
+    const connect = ws.connect({ apiKey: 'ek_test', model: 'first-model' });
+    await vi.runAllTimersAsync();
+    await connect;
+
+    expect(() => ws.close()).toThrow(notificationError);
+    expect(disconnected).toHaveBeenCalledOnce();
+    expect(ws.status).toBe('disconnected');
+    expect(fakeSockets[0].closeCalls).toBe(1);
+  });
+
+  it('cleans up failed session setup and restores connection options for retry', async () => {
+    const ws = new OpenAIRealtimeWebSocket({ model: 'initial-model' });
+    const setupError = new Error('session setup failed');
+    vi.spyOn(ws, 'updateSessionConfig').mockImplementationOnce(() => {
+      throw setupError;
+    });
+
+    const failedConnect = expect(
+      ws.connect({
+        apiKey: 'ek_test',
+        model: 'failed-model',
+        url: 'ws://failed-attempt',
+      }),
+    ).rejects.toBe(setupError);
+    await vi.runAllTimersAsync();
+    await failedConnect;
+
+    const failedSocket = fakeSockets[0];
+    expect(failedSocket.closeCalls).toBe(1);
+    expect(ws.status).toBe('disconnected');
+    expect(ws.currentModel).toBe('initial-model');
+
+    const retry = ws.connect({ apiKey: 'ek_test' });
+    await vi.runAllTimersAsync();
+    await retry;
+
+    expect(fakeSockets).toHaveLength(2);
+    expect(lastFakeSocket.url).toBe(
+      'wss://api.openai.com/v1/realtime?model=initial-model',
+    );
+    expect(ws.status).toBe('connected');
+  });
+
+  it('preserves the setup error when failed connection cleanup throws', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const setupError = new Error('session setup failed');
+    const cleanupError = new Error('socket close failed');
+    const errors: unknown[] = [];
+    ws.on('error', (event) => errors.push(event.error));
+    ws.on('error', () => {
+      throw new Error('cleanup error listener failed');
+    });
+    vi.spyOn(ws, 'updateSessionConfig').mockImplementationOnce(() => {
+      lastFakeSocket.closeError = cleanupError;
+      throw setupError;
+    });
+
+    const failedConnect = expect(
+      ws.connect({ apiKey: 'ek_test', model: 'failed-model' }),
+    ).rejects.toBe(setupError);
+    await vi.runAllTimersAsync();
+    await failedConnect;
+
+    expect(fakeSockets[0].closeCalls).toBe(1);
+    expect(errors).toContain(cleanupError);
+    expect(ws.status).toBe('disconnected');
+
+    const retry = ws.connect({ apiKey: 'ek_test' });
+    await vi.runAllTimersAsync();
+    await retry;
+    expect(ws.status).toBe('connected');
+  });
+
+  it('preserves the setup error when cleanup observers close again', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const setupError = new Error('session setup failed');
+    let closeAgain = true;
+    ws.on('connection_change', (status) => {
+      if (status === 'disconnected' && closeAgain) {
+        closeAgain = false;
+        ws.close();
+      }
+    });
+    vi.spyOn(ws, 'updateSessionConfig').mockImplementationOnce(() => {
+      throw setupError;
+    });
+
+    const failedConnect = expect(
+      ws.connect({ apiKey: 'ek_test', model: 'failed-model' }),
+    ).rejects.toBe(setupError);
+    await vi.runAllTimersAsync();
+    await failedConnect;
+
+    expect(ws.status).toBe('disconnected');
+
+    const retry = ws.connect({ apiKey: 'ek_retry', model: 'retry-model' });
+    await vi.runAllTimersAsync();
+    await retry;
+    expect(ws.status).toBe('connected');
+  });
+
+  it.each([undefined, null])(
+    'preserves a %s setup failure when cleanup observers close again',
+    async (setupFailure) => {
+      const ws = new OpenAIRealtimeWebSocket();
+      let closeAgain = true;
+      ws.on('connection_change', (status) => {
+        if (status === 'disconnected' && closeAgain) {
+          closeAgain = false;
+          ws.close();
+        }
+      });
+      vi.spyOn(ws, 'updateSessionConfig').mockImplementationOnce(() => {
+        throw setupFailure;
+      });
+
+      const result = ws
+        .connect({ apiKey: 'ek_test', model: 'failed-model' })
+        .then(
+          () => ({ rejected: false, error: undefined }),
+          (error) => ({ rejected: true, error }),
+        );
+      await vi.runAllTimersAsync();
+
+      await expect(result).resolves.toEqual({
+        rejected: true,
+        error: setupFailure,
+      });
+      expect(ws.status).toBe('disconnected');
+    },
+  );
+
+  it('does not roll back a retry started by a cleanup observer', async () => {
+    const ws = new OpenAIRealtimeWebSocket({ model: 'initial-model' });
+    const setupError = new Error('session setup failed');
+    let retry: Promise<void> | undefined;
+    ws.on('connection_change', (status) => {
+      if (status === 'disconnected' && !retry) {
+        ws.close();
+        retry = ws.connect({
+          apiKey: 'ek_retry',
+          model: 'retry-model',
+        });
+      }
+    });
+    vi.spyOn(ws, 'updateSessionConfig').mockImplementationOnce(() => {
+      throw setupError;
+    });
+
+    const failedConnect = expect(
+      ws.connect({ apiKey: 'ek_test', model: 'failed-model' }),
+    ).rejects.toBe(setupError);
+    await vi.runAllTimersAsync();
+    await failedConnect;
+    await retry;
+
+    expect(fakeSockets).toHaveLength(2);
+    expect(fakeSockets[1].url).toBe(
+      'wss://api.openai.com/v1/realtime?model=retry-model',
+    );
+    expect(JSON.parse(fakeSockets[1].sent[0])).toMatchObject({
+      type: 'session.update',
+      session: { model: 'retry-model' },
+    });
+    expect(ws.currentModel).toBe('retry-model');
+    expect(ws.status).toBe('connected');
+  });
+
+  it('restores connection defaults before a cleanup observer retries', async () => {
+    const ws = new OpenAIRealtimeWebSocket({ model: 'initial-model' });
+    const setupError = new Error('session setup failed');
+    let retry: Promise<void> | undefined;
+    ws.on('connection_change', (status) => {
+      if (status === 'disconnected' && !retry) {
+        retry = ws.connect({ apiKey: 'ek_retry' });
+      }
+    });
+    vi.spyOn(ws, 'updateSessionConfig').mockImplementationOnce(() => {
+      throw setupError;
+    });
+
+    const failedConnect = expect(
+      ws.connect({
+        apiKey: 'ek_test',
+        model: 'failed-model',
+        url: 'ws://failed-attempt',
+      }),
+    ).rejects.toBe(setupError);
+    await vi.runAllTimersAsync();
+    await failedConnect;
+    await retry;
+
+    expect(fakeSockets).toHaveLength(2);
+    expect(fakeSockets[1].url).toBe(
+      'wss://api.openai.com/v1/realtime?model=initial-model',
+    );
+    expect(JSON.parse(fakeSockets[1].sent[0])).toMatchObject({
+      type: 'session.update',
+      session: { model: 'initial-model' },
+    });
+    expect(ws.currentModel).toBe('initial-model');
+    expect(ws.status).toBe('connected');
+  });
+
+  it('rejects overlapping connection attempts before opening another socket', async () => {
+    const apiKey = createDeferred<string>();
+    const ws = new OpenAIRealtimeWebSocket();
+    const firstConnect = ws.connect({
+      apiKey: () => apiKey.promise,
+      model: 'first-model',
+    });
+
+    await expect(
+      ws.connect({ apiKey: 'ek_second', model: 'second-model' }),
+    ).rejects.toThrow('already connected or connecting');
+    expect(fakeSockets).toHaveLength(0);
+
+    apiKey.resolve('ek_first');
+    await vi.runAllTimersAsync();
+    await firstConnect;
+
+    expect(fakeSockets).toHaveLength(1);
+    expect(ws.currentModel).toBe('first-model');
+  });
+
+  it('rejects and cleans up socket errors without an error listener', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const socketError = new Error('socket failed');
+    const connect = ws.connect({ apiKey: 'ek_test', model: 'first-model' });
+    const failedConnect = expect(connect).rejects.toBe(socketError);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    const socket = fakeSockets[0];
+    socket.emit('error', socketError);
+
+    await failedConnect;
+    await vi.runAllTimersAsync();
+    expect(socket.closeCalls).toBe(1);
+    expect(ws.status).toBe('disconnected');
+  });
+
+  it('preserves a socket error raised during initial session setup', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const socketError = new Error('socket failed during session setup');
+    const connect = ws.connect({ apiKey: 'ek_test', model: 'first-model' });
+    const failedConnect = expect(connect).rejects.toBe(socketError);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    const failedSocket = fakeSockets[0];
+    failedSocket.sendHook = () => failedSocket.emit('error', socketError);
+
+    await vi.runAllTimersAsync();
+    await failedConnect;
+    expect(failedSocket.closeCalls).toBe(1);
+    expect(ws.status).toBe('disconnected');
+
+    const retry = ws.connect({ apiKey: 'ek_retry', model: 'retry-model' });
+    await vi.runAllTimersAsync();
+    await retry;
+    expect(ws.status).toBe('connected');
+  });
+
+  it('preserves a socket error when its observer closes the transport', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const socketError = new Error('socket setup failed');
+    ws.on('error', () => ws.close());
+    const connect = ws.connect({ apiKey: 'ek_test', model: 'first-model' });
+    const failedConnect = expect(connect).rejects.toBe(socketError);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    fakeSockets[0].emit('error', socketError);
+
+    await failedConnect;
+    await vi.runAllTimersAsync();
+    expect(ws.status).toBe('disconnected');
+  });
+
+  it('preserves a pre-open close error when its observer closes again', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    ws.on('connection_change', (status) => {
+      if (status === 'disconnected') {
+        ws.close();
+      }
+    });
+    const connect = ws.connect({ apiKey: 'ek_test', model: 'first-model' });
+    const failedConnect = expect(connect).rejects.toThrow(
+      'WebSocket closed before the connection was ready.',
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+    fakeSockets[0].emit('close', {});
+
+    await failedConnect;
+    await vi.runAllTimersAsync();
+    expect(ws.status).toBe('disconnected');
+  });
+
+  it('close invalidates an attempt waiting for its API key', async () => {
+    const apiKey = createDeferred<string>();
+    const ws = new OpenAIRealtimeWebSocket({ model: 'initial-model' });
+    const connect = ws.connect({
+      apiKey: () => apiKey.promise,
+      model: 'failed-model',
+    });
+    const closedConnect = expect(connect).rejects.toThrow(
+      'closed before setup completed',
+    );
+
+    ws.close();
+    await closedConnect;
+    expect(ws.status).toBe('disconnected');
+    expect(ws.currentModel).toBe('initial-model');
+
+    apiKey.resolve('ek_stale');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fakeSockets).toHaveLength(0);
+
+    const retry = ws.connect({ apiKey: 'ek_retry' });
+    await vi.runAllTimersAsync();
+    await retry;
+    expect(ws.status).toBe('connected');
+  });
+
+  it('close rejects an attempt waiting for the socket to open', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const connect = ws.connect({ apiKey: 'ek_test', model: 'first-model' });
+    const closedConnect = expect(connect).rejects.toThrow(
+      'closed before setup completed',
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+    const socket = fakeSockets[0];
+    ws.close();
+
+    await closedConnect;
+    await vi.runAllTimersAsync();
+    expect(socket.closeCalls).toBe(1);
+    expect(ws.status).toBe('disconnected');
+
+    const retry = ws.connect({ apiKey: 'ek_retry' });
+    await vi.runAllTimersAsync();
+    await retry;
+    expect(ws.status).toBe('connected');
+  });
+
+  it('rejects connect while already connected', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const firstConnect = ws.connect({
+      apiKey: 'ek_test',
+      model: 'first-model',
+    });
+    await vi.runAllTimersAsync();
+    await firstConnect;
+
+    await expect(
+      ws.connect({ apiKey: 'ek_second', model: 'second-model' }),
+    ).rejects.toThrow('already connected or connecting');
+    expect(fakeSockets).toHaveLength(1);
+    expect(ws.currentModel).toBe('first-model');
+  });
+
+  it('stays disconnected when close does not emit and ignores a stale close event', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const firstConnect = ws.connect({
+      apiKey: 'ek_test',
+      model: 'first-model',
+    });
+    await vi.runAllTimersAsync();
+    await firstConnect;
+
+    const firstSocket = fakeSockets[0];
+    firstSocket.emitCloseOnClose = false;
+    ws.close();
+    expect(ws.status).toBe('disconnected');
+
+    const retry = ws.connect({ apiKey: 'ek_test', model: 'second-model' });
+    await vi.runAllTimersAsync();
+    await retry;
+    expect(ws.status).toBe('connected');
+
+    firstSocket.emit('close', {});
+    expect(ws.status).toBe('connected');
   });
 
   it('uses custom url from constructor', async () => {
