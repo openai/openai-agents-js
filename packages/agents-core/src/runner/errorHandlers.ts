@@ -3,6 +3,9 @@ import {
   MaxTurnsExceededError,
   ModelBehaviorError,
   ModelRefusalError,
+  ToolCallError,
+  ToolInputGuardrailTripwireTriggered,
+  ToolOutputGuardrailTripwireTriggered,
   UserError,
 } from '../errors';
 import { assistant } from '../helpers/message';
@@ -98,6 +101,25 @@ type ResolveRunErrorHandlerArgs<TContext, TAgent extends Agent<any, any>> = {
   errorHandlers?: RunErrorHandlers<TContext, TAgent>;
   context: RunContext<TContext>;
   runData: RunErrorData<TContext, TAgent>;
+};
+
+/**
+ * Attaches the active run state to nested tool guardrail tripwire errors without replacing them.
+ */
+export const attachRunStateToError = <TContext, TAgent extends Agent<any, any>>(
+  error: unknown,
+  state: RunState<TContext, TAgent>,
+): void => {
+  if (!(error instanceof ToolCallError)) {
+    return;
+  }
+
+  if (
+    error.error instanceof ToolInputGuardrailTripwireTriggered ||
+    error.error instanceof ToolOutputGuardrailTripwireTriggered
+  ) {
+    error.error.state ??= state;
+  }
 };
 
 const buildRunData = <TContext, TAgent extends Agent<any, any>>(
