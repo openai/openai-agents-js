@@ -635,6 +635,36 @@ describe('runner task and turn tracing', () => {
     });
   });
 
+  it.each([false, true])(
+    'uses the Runner workflow name for a task span inside an outer trace (stream=%s)',
+    async (stream) => {
+      const response = responseWithoutUsage();
+      const agent = new Agent({
+        name: 'Nested trace agent',
+        model: stream
+          ? new StreamingModel(response)
+          : new FakeModel([response]),
+      });
+      const runner = new Runner({ workflowName: 'Inner workflow' });
+      let outerTraceId: string | undefined;
+
+      await withTrace('Outer workflow', async (trace) => {
+        outerTraceId = trace.traceId;
+        if (stream) {
+          const result = await runner.run(agent, 'hello', { stream: true });
+          await result.completed;
+        } else {
+          await runner.run(agent, 'hello');
+        }
+      });
+
+      const taskSpan = spanOfType(processor, 'task');
+      expect(taskSpan.spanData.name).toBe('Inner workflow');
+      expect(taskSpan.traceId).toBe(outerTraceId);
+      expect(taskSpan.parentId).toBeNull();
+    },
+  );
+
   it('omits only task and turn spans when explicitly disabled', async () => {
     const agent = new Agent({
       name: 'Researcher',
