@@ -137,9 +137,12 @@ export class OpenAIChatCompletionsModel implements Model {
           message &&
           shouldSynthesizeContentFilterRefusal({
             finishReason: firstChoice?.finish_reason,
-            content: message.content,
-            refusal: message.refusal,
-            hasToolCalls: Boolean(message.tool_calls?.length),
+            hasOutput: Boolean(
+              message.content ||
+              message.refusal ||
+              message.tool_calls?.length ||
+              message.audio,
+            ),
           })
         ) {
           message.content = null;

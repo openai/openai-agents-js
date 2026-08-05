@@ -183,11 +183,12 @@ export async function* convertChatCompletionsStreamToResponses(
   if (
     shouldSynthesizeContentFilterRefusal({
       finishReason: state.finishReason,
-      content: state.text_content?.text,
-      refusal: state.refusal_content?.refusal,
-      hasToolCalls:
+      hasOutput: Boolean(
+        state.text_content?.text ||
+        state.refusal_content?.refusal ||
         Object.keys(state.function_calls).length > 0 ||
         state.ignored_tool_call_indexes.size > 0,
+      ),
     })
   ) {
     state.refusal_content = {

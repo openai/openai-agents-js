@@ -819,11 +819,21 @@ describe('OpenAIChatCompletionsModel', () => {
     ]);
   });
 
-  it('handles audio message', async () => {
+  it('preserves audio from a content-filtered message', async () => {
     const client = new FakeClient();
     const response = {
       id: 'r',
-      choices: [{ message: { audio: { data: 'zzz', format: 'mp3' } } }],
+      choices: [
+        {
+          finish_reason: 'content_filter',
+          message: {
+            content: null,
+            refusal: null,
+            tool_calls: [],
+            audio: { data: 'zzz', format: 'mp3' },
+          },
+        },
+      ],
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     } as any;
     client.chat.completions.create.mockResolvedValue(response);

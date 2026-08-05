@@ -6,18 +6,12 @@ export const CONTENT_FILTER_REFUSAL_MESSAGE =
 type ContentFilterState = {
   finishReason:
     ChatCompletion['choices'][number]['finish_reason'] | null | undefined;
-  content: string | null | undefined;
-  refusal: string | null | undefined;
-  hasToolCalls: boolean;
+  hasOutput: boolean;
 };
 
 export function shouldSynthesizeContentFilterRefusal({
   finishReason,
-  content,
-  refusal,
-  hasToolCalls,
+  hasOutput,
 }: ContentFilterState): boolean {
-  return (
-    finishReason === 'content_filter' && !content && !refusal && !hasToolCalls
-  );
+  return finishReason === 'content_filter' && !hasOutput;
 }
