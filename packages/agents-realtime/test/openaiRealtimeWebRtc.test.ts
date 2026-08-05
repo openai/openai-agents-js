@@ -481,6 +481,38 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     expect(rtc.status).toBe('connected');
   });
 
+  it('rejects close while API key resolution is pending', async () => {
+    const apiKey = createDeferred<string>();
+    let peerConnectionCount = 0;
+
+    class CountingPeerConnection extends FakeRTCPeerConnection {
+      constructor() {
+        super();
+        peerConnectionCount += 1;
+      }
+    }
+
+    (global as any).RTCPeerConnection = CountingPeerConnection as any;
+    const rtc = new OpenAIRealtimeWebRTC();
+    const connectPromise = rtc.connect({
+      apiKey: () => apiKey.promise,
+      model: 'failed-model',
+    });
+    const rejection = expect(connectPromise).rejects.toThrow(
+      'Connection closed before setup completed',
+    );
+
+    rtc.close();
+
+    await rejection;
+    const retry = rtc.connect({ apiKey: 'ek_retry' });
+    apiKey.resolve('ek_late');
+    await retry;
+
+    expect(peerConnectionCount).toBe(1);
+    expect(rtc.status).toBe('connected');
+  });
+
   it('rejects initial session config send failures and retries', async () => {
     const setupError = new Error('initial session config send failed');
     let instanceCount = 0;
@@ -724,6 +756,41 @@ describe('OpenAIRealtimeWebRTC.interrupt', () => {
     expect(changeCalls).toBe(2);
     expect(rtc.status).toBe('connected');
     expect(rtc.connectionState.dataChannel).not.toBe(failedChannel);
+  });
+
+  it('rejects close while peer replacement is pending', async () => {
+    const replacement = createDeferred<RTCPeerConnection>();
+    const changeStarted = createDeferred<void>();
+    let changeCalls = 0;
+    const rtc = new OpenAIRealtimeWebRTC({
+      changePeerConnection: async (peerConnection) => {
+        changeCalls += 1;
+        if (changeCalls === 1) {
+          changeStarted.resolve();
+          return replacement.promise;
+        }
+        return peerConnection;
+      },
+    });
+    const connectPromise = rtc.connect({ apiKey: 'ek_test' });
+    const rejection = expect(connectPromise).rejects.toThrow(
+      'Connection closed before setup completed',
+    );
+    await changeStarted.promise;
+    const failedChannel = lastChannel as FakeRTCDataChannel;
+
+    rtc.close();
+
+    await rejection;
+    expect(failedChannel.readyState).toBe('closed');
+    const retry = rtc.connect({ apiKey: 'ek_retry' });
+    replacement.resolve(
+      new FakeRTCPeerConnection() as unknown as RTCPeerConnection,
+    );
+    await retry;
+
+    expect(changeCalls).toBe(2);
+    expect(rtc.status).toBe('connected');
   });
 
   it('does not close a shared peer returned by abandoned preparation', async () => {

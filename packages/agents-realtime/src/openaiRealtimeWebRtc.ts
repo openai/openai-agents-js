@@ -231,6 +231,9 @@ export class OpenAIRealtimeWebRTC
         rejectConnection(error);
         return;
       }
+      if (!isActiveAttempt()) {
+        return;
+      }
 
       const isClientKey =
         typeof apiKey === 'string' && apiKey.startsWith('ek_');
@@ -580,6 +583,7 @@ export class OpenAIRealtimeWebRTC
     };
 
     this.#cancelConnectionAttempt = () => {
+      rejectConnection(new Error('Connection closed before setup completed'));
       releaseConnectionAttempt();
     };
     this.#connectPromise = connectionReady.finally(() => {
