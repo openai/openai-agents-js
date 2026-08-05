@@ -60,6 +60,7 @@ import {
   buildFunctionAbortResult,
   buildShellAbortResult,
 } from './streamReconciliation';
+import { runWithSiblingCancellation } from './siblingCancellation';
 
 const DEFAULT_TOOL_NOT_FOUND_MESSAGE = (toolName: string) =>
   `Tool '${toolName}' not found.`;
@@ -1066,7 +1067,10 @@ export async function resolveTurnAfterModelResponse<
 
   // Run function tools and computer actions in parallel; neither depends on the other's side effects.
   // Shell and apply_patch actions both mutate the sandbox filesystem, so preserve model order.
-  const [functionResults, computerResults] = await Promise.all([
+  const runFunctionTools = (
+    executionSignal = signal,
+    cancelSiblingCategories?: () => void,
+  ) =>
     executeFunctionToolCalls(
       agent,
       processedResponse.functions,
@@ -1074,8 +1078,13 @@ export async function resolveTurnAfterModelResponse<
       state,
       toolErrorFormatter,
       agentToolParentRunConfig,
-      signal,
-    ),
+      executionSignal,
+      cancelSiblingCategories,
+    );
+  const runComputerActions = (
+    executionSignal = signal,
+    cancelSiblingCategories?: (error?: unknown) => void,
+  ) =>
     executeComputerActions(
       agent,
       processedResponse.computerActions,
@@ -1083,9 +1092,17 @@ export async function resolveTurnAfterModelResponse<
       state._context,
       undefined,
       toolErrorFormatter,
-      signal,
-    ),
-  ]);
+      executionSignal,
+      cancelSiblingCategories,
+    );
+  const [functionResults, computerResults] =
+    processedResponse.functions.length > 0 &&
+    processedResponse.computerActions.length > 0
+      ? await runWithSiblingCancellation(
+          [runFunctionTools, runComputerActions],
+          signal,
+        )
+      : await Promise.all([runFunctionTools(), runComputerActions()]);
   const shellAndApplyPatchResults =
     processedResponse.shellActions.length > 0 ||
     processedResponse.applyPatchActions.length > 0
