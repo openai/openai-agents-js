@@ -580,6 +580,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         input.setCurrentAgentSpan(undefined);
       }
     }
+    const taskSpanName = this.#getTaskSpanName(
+      input instanceof RunState ? input._trace?.name : undefined,
+    );
     const capturedInvocationTraceContext = getCurrentTraceContext();
     const invocationTraceContext = isNoopTrace(
       capturedInvocationTraceContext?.trace,
@@ -714,6 +717,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         const streamResult = await this.#runIndividualStream(
           agent,
           preparedInput,
+          taskSpanName,
           effectiveOptions,
           ensureStreamInputPersisted,
           sessionPersistence?.setPreparedTurnItems,
@@ -732,6 +736,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         agent,
         preparedInput,
         effectiveOptions,
+        taskSpanName,
         sessionPersistence?.setPreparedTurnItems,
         sessionPersistence?.recordTurnItems,
         preserveTurnPersistenceOnResume,
@@ -830,9 +835,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   //  Internals
   // --------------------------------------------------------------
 
-  #getTaskSpanName(isResumedState: boolean): string {
+  #getTaskSpanName(restoredWorkflowName?: string): string {
     return (
-      (isResumedState ? getCurrentTrace()?.name : undefined) ??
+      this.traceOverrides.workflowName ??
+      restoredWorkflowName ??
       this.config.workflowName ??
       'Agent workflow'
     );
@@ -940,6 +946,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     startingAgent: TAgent,
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
     options: NonStreamRunOptions<TContext, TAgent>,
+    taskSpanName: string,
     sessionTurnInputUpdate?: (
       preparedInput: AgentInputItem[],
       processedInput: AgentInputItem[],
@@ -1038,7 +1045,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         isResumedState && state._currentStep?.type === 'next_step_interruption';
       const invocationSpans = useTaskAndTurnSpans
         ? startRunnerInvocationSpans({
-            name: this.#getTaskSpanName(isResumedState),
+            name: taskSpanName,
             agent: state._currentAgent,
             restoredAgentSpan: isResumedState
               ? state._currentAgentSpan
@@ -2227,6 +2234,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   >(
     agent: TAgent,
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
+    taskSpanName: string,
     options?: StreamRunOptions<TContext, TAgent>,
     ensureStreamInputPersisted?: () => Promise<void>,
     sessionTurnInputUpdate?: (
@@ -2271,7 +2279,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         isResumedState && state._currentStep?.type === 'next_step_interruption';
       const invocationSpans = useTaskAndTurnSpans
         ? startRunnerInvocationSpans({
-            name: this.#getTaskSpanName(isResumedState),
+            name: taskSpanName,
             agent: state._currentAgent,
             restoredAgentSpan: isResumedState
               ? state._currentAgentSpan
