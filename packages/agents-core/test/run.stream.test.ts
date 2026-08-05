@@ -27,6 +27,7 @@ import {
   Session,
   InputGuardrailTripwireTriggered,
   OutputGuardrailTripwireTriggered,
+  RunContext,
   RunState,
   shellTool,
 } from '../src';
@@ -2727,6 +2728,54 @@ describe('Runner.run (streaming)', () => {
     }
   });
 
+  it('keeps an error-handler final output hidden while its guardrail is pending', async () => {
+    let signalGuardrailStarted!: () => void;
+    const guardrailStarted = new Promise<void>((resolve) => {
+      signalGuardrailStarted = resolve;
+    });
+    let releaseGuardrail!: () => void;
+    const guardrailResult = new Promise<GuardrailFunctionOutput>((resolve) => {
+      releaseGuardrail = () =>
+        resolve({
+          tripwireTriggered: false,
+          outputInfo: null,
+        });
+    });
+    const agent = new Agent({
+      name: 'Pending error-handler guardrail stream',
+      model: new FakeModel([]),
+      outputGuardrails: [
+        {
+          name: 'suspend error-handler output',
+          execute: async () => {
+            signalGuardrailStarted();
+            return guardrailResult;
+          },
+        },
+      ],
+    });
+    const result = await run(agent, 'x', {
+      stream: true,
+      maxTurns: 0,
+      errorHandlers: {
+        maxTurns: () => ({ finalOutput: 'guarded fallback' }),
+      },
+    });
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    await guardrailStarted;
+    expect(result.finalOutput).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Accessed finalOutput before agent run is completed.',
+    );
+
+    releaseGuardrail();
+    await result.completed;
+    expect(result.finalOutput).toBe('guarded fallback');
+
+    warnSpy.mockRestore();
+  });
+
   it('handles model refusal errors with an error handler', async () => {
     class RefusalStreamingModel implements Model {
       async getResponse(_req: ModelRequest): Promise<ModelResponse> {
@@ -4363,7 +4412,7 @@ describe('Runner.run (streaming)', () => {
     expect(model.calls).toBe(0);
   });
 
-  it('persists streaming input but drops the result when an output guardrail trips', async () => {
+  it('persists streaming input through the blocked result save when an output guardrail trips', async () => {
     const saveInputSpy = vi
       .spyOn(sessionPersistence, 'saveStreamInputToSession')
       .mockResolvedValue();
@@ -4396,14 +4445,108 @@ describe('Runner.run (streaming)', () => {
       OutputGuardrailTripwireTriggered,
     );
 
-    expect(saveInputSpy).toHaveBeenCalledTimes(1);
-    expect(saveResultSpy).not.toHaveBeenCalled();
+    expect(saveInputSpy).not.toHaveBeenCalled();
+    expect(saveResultSpy).toHaveBeenCalledTimes(1);
+    expect(saveResultSpy).toHaveBeenCalledWith(
+      session,
+      result,
+      { outputBlocked: true },
+      expect.any(Array),
+    );
     expect(guardrail.execute).toHaveBeenCalledTimes(1);
-    expect(result.state._currentStep?.type).not.toBe('next_step_final_output');
+    expect(result.state._currentStep?.type).toBe('next_step_final_output');
     expect(result.finalOutput).toBeUndefined();
     expect(warnSpy).toHaveBeenCalledWith(
       'Accessed finalOutput before agent run is completed.',
     );
+  });
+
+  it('keeps streamed final output hidden while output guardrails are pending', async () => {
+    let signalGuardrailStarted!: () => void;
+    const guardrailStarted = new Promise<void>((resolve) => {
+      signalGuardrailStarted = resolve;
+    });
+    let releaseGuardrail!: () => void;
+    const guardrailResult = new Promise<GuardrailFunctionOutput>((resolve) => {
+      releaseGuardrail = () =>
+        resolve({
+          tripwireTriggered: false,
+          outputInfo: null,
+        });
+    });
+    const agent = new Agent({
+      name: 'Pending output guardrail',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('guarded candidate')],
+        usage: new Usage(),
+      }),
+      outputGuardrails: [
+        {
+          name: 'suspended output guardrail',
+          execute: async () => {
+            signalGuardrailStarted();
+            return guardrailResult;
+          },
+        },
+      ],
+    });
+    const result = await run(agent, 'hello', { stream: true });
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    await guardrailStarted;
+    expect(result.finalOutput).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Accessed finalOutput before agent run is completed.',
+    );
+
+    releaseGuardrail();
+    await result.completed;
+    expect(result.finalOutput).toBe('guarded candidate');
+
+    warnSpy.mockRestore();
+  });
+
+  it('keeps a serialized final output hidden when streamed resume is pre-aborted', async () => {
+    const guardrail = vi.fn().mockResolvedValue({
+      tripwireTriggered: false,
+      outputInfo: null,
+    });
+    const agent = new Agent({
+      name: 'Pre-aborted final output resume',
+      model: new FakeModel([]),
+      outputGuardrails: [
+        {
+          name: 'should not run after pre-abort',
+          execute: guardrail,
+        },
+      ],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 1);
+    state._currentTurn = 1;
+    state._currentTurnInProgress = true;
+    state._currentStep = {
+      type: 'next_step_final_output',
+      output: 'blocked secret',
+    };
+    const restored = await RunState.fromString(agent, state.toString());
+    const controller = new AbortController();
+    controller.abort('cancel before resume');
+    const result = await run(agent, restored, {
+      stream: true,
+      signal: controller.signal,
+    });
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    await result.completed;
+
+    expect(result.cancelled).toBe(true);
+    expect(result.finalOutput).toBeUndefined();
+    expect(guardrail).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Accessed finalOutput before agent run is completed.',
+    );
+
+    warnSpy.mockRestore();
   });
 
   it('does not persist streaming result when the consumer cancels early', async () => {

@@ -128,6 +128,7 @@ export class RunToolCallOutputItem extends RunItemBase {
     public agent: Agent<any, any>,
     public output: string | unknown,
     public customData?: ToolOutputCustomData,
+    public executionStatus?: 'executed',
   ) {
     super();
   }
@@ -138,6 +139,7 @@ export class RunToolCallOutputItem extends RunItemBase {
       agent: this.agent.toJSON(),
       output: toSmartString(this.output),
       customData: this.customData,
+      executionStatus: this.executionStatus,
     };
   }
 

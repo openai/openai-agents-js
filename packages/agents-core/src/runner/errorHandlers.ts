@@ -11,7 +11,7 @@ import {
 import { assistant } from '../helpers/message';
 import { RunItem, RunMessageOutputItem } from '../items';
 import { ModelResponse } from '../model';
-import { RunResult, StreamedRunResult } from '../result';
+import { StreamedRunResult } from '../result';
 import { RunContext } from '../runContext';
 import { RunState } from '../runState';
 import type {
@@ -19,11 +19,6 @@ import type {
   AgentOutputItem,
   ResolvedAgentOutput,
 } from '../types';
-import type {
-  OutputGuardrailDefinition,
-  OutputGuardrailMetadata,
-} from '../guardrail';
-import { runOutputGuardrails } from './guardrails';
 import { getTurnInput } from './items';
 import { streamStepItemsToRunResult } from './streaming';
 
@@ -83,15 +78,6 @@ type TryHandleRunErrorArgs<TContext, TAgent extends Agent<any, any>> = {
   error: unknown;
   state: RunState<TContext, TAgent>;
   errorHandlers?: RunErrorHandlers<TContext, TAgent>;
-  outputGuardrailDefs: OutputGuardrailDefinition<
-    OutputGuardrailMetadata,
-    AgentOutputType<unknown>
-  >[];
-  emitAgentEnd: (
-    context: RunContext<TContext>,
-    agent: TAgent,
-    outputText: string,
-  ) => void;
   streamResult?: StreamedRunResult<TContext, TAgent>;
 };
 
@@ -220,19 +206,15 @@ export const resolveRunErrorHandler = async <
   return handlerResult || undefined;
 };
 
-export const tryHandleRunError = async <
+export const prepareRunErrorFinalOutput = async <
   TContext,
   TAgent extends Agent<TContext, AgentOutputType>,
 >({
   error,
   state,
   errorHandlers,
-  outputGuardrailDefs,
-  emitAgentEnd,
   streamResult,
-}: TryHandleRunErrorArgs<TContext, TAgent>): Promise<
-  RunResult<TContext, TAgent> | undefined
-> => {
+}: TryHandleRunErrorArgs<TContext, TAgent>): Promise<boolean> => {
   const handlerResult = await resolveRunErrorHandler({
     error,
     errorHandlers,
@@ -240,7 +222,7 @@ export const tryHandleRunError = async <
     runData: buildRunData(state),
   });
   if (!handlerResult) {
-    return undefined;
+    return false;
   }
   const includeInHistory = handlerResult.includeInHistory !== false;
   const outputText = formatFinalOutput(
@@ -248,6 +230,7 @@ export const tryHandleRunError = async <
     handlerResult.finalOutput,
   );
   validateRunErrorFinalOutput(state._currentAgent, outputText);
+  streamResult?._hideFinalOutput();
   state._lastTurnResponse = undefined;
   state._lastProcessedResponse = undefined;
   const item = createFinalOutputItem(state._currentAgent, outputText);
@@ -262,8 +245,5 @@ export const tryHandleRunError = async <
     output: outputText,
   };
   state._finalOutputSource = 'error_handler';
-  await runOutputGuardrails(state, outputGuardrailDefs, outputText);
-  state._currentTurnInProgress = false;
-  emitAgentEnd(state._context, state._currentAgent, outputText);
-  return new RunResult<TContext, TAgent>(state);
+  return true;
 };
