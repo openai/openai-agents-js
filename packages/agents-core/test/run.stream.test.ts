@@ -43,6 +43,7 @@ import type { GuardrailFunctionOutput } from '../src/guardrail';
 import { ServerConversationTracker } from '../src/runner/conversation';
 import logger from '../src/logger';
 import { getEventListeners } from 'node:events';
+import { InvalidToolInputError, ToolCallError } from '../src/errors';
 
 function getFirstTextContent(item: AgentInputItem): string | undefined {
   if (item.type !== 'message') {
@@ -596,6 +597,148 @@ describe('Runner.run (streaming)', () => {
         text: "Tool 'missing_tool' not found.",
       },
     });
+  });
+
+  it('streams a redacted invalid-argument output back to the model', async () => {
+    class InvalidArgumentStreamingModel implements Model {
+      readonly requests: ModelRequest[] = [];
+
+      constructor(private readonly responses: ModelResponse[]) {}
+
+      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        throw new Error('Unexpected non-streaming model request');
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        this.requests.push(request);
+        const response = this.responses.shift();
+        if (!response) {
+          throw new Error('No response found');
+        }
+        yield {
+          type: 'response_done',
+          response: {
+            id: response.responseId ?? 'resp-stream-invalid-argument',
+            usage: {
+              requests: response.usage.requests,
+              inputTokens: response.usage.inputTokens,
+              outputTokens: response.usage.outputTokens,
+              totalTokens: response.usage.totalTokens,
+            },
+            output: response.output.map((item) =>
+              protocol.OutputModelItem.parse(item),
+            ),
+          },
+        } satisfies StreamEvent;
+      }
+    }
+
+    const secret = 'SECRET_STREAMING_MODEL_OUTPUT_123';
+    vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(true);
+    const model = new InvalidArgumentStreamingModel([
+      {
+        output: [
+          {
+            ...TEST_MODEL_FUNCTION_CALL,
+            arguments: secret,
+          },
+        ],
+        usage: new Usage(),
+      },
+      {
+        output: [fakeModelMessage('stream recovered')],
+        usage: new Usage(),
+      },
+    ]);
+    const agent = new Agent({
+      name: 'StreamingInvalidArgumentAgent',
+      model,
+      tools: [
+        tool({
+          name: 'test',
+          description: 'Validate input.',
+          parameters: z.object({ test: z.string() }),
+          execute: async () => 'unexpected',
+        }),
+      ],
+    });
+
+    const result = await run(agent, 'start', { stream: true });
+
+    await result.completed;
+    expect(result.finalOutput).toBe('stream recovered');
+    expect(model.requests).toHaveLength(2);
+    const toolOutput = getRequestInputItems(model.requests[1]).find(
+      (item) => item.type === 'function_call_result',
+    ) as protocol.FunctionCallResultItem | undefined;
+    expect(toolOutput?.output).toEqual({
+      type: 'text',
+      text: 'An error occurred while parsing tool arguments. Please try again with valid JSON.',
+    });
+    expect(JSON.stringify(toolOutput)).not.toContain(secret);
+  });
+
+  it('does not retain invalid arguments in streamed Runner errors', async () => {
+    class InvalidArgumentThrowingStreamModel implements Model {
+      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        throw new Error('Unexpected non-streaming model request');
+      }
+
+      async *getStreamedResponse(
+        _request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'resp-stream-invalid-argument-error',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [
+              protocol.OutputModelItem.parse({
+                ...TEST_MODEL_FUNCTION_CALL,
+                arguments: 'SECRET_STREAMED_RUN_STATE_123',
+              }),
+            ],
+          },
+        } satisfies StreamEvent;
+      }
+    }
+
+    const secret = 'SECRET_STREAMED_RUN_STATE_123';
+    vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(true);
+    const agent = new Agent({
+      name: 'StreamingInvalidArgumentStateAgent',
+      model: new InvalidArgumentThrowingStreamModel(),
+      tools: [
+        tool({
+          name: 'test',
+          description: 'Validate structured input.',
+          parameters: z.object({ test: z.string() }),
+          outputSchema: z.object({ status: z.string() }),
+          errorFunction: null,
+          execute: async () => ({ status: 'unexpected' }),
+        }),
+      ],
+    });
+
+    const result = await run(agent, 'start', { stream: true });
+    const error = await result.completed.catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(ToolCallError);
+    const toolCallError = error as ToolCallError;
+    expect(toolCallError.state).toBeUndefined();
+    expect(toolCallError.error).toBeInstanceOf(InvalidToolInputError);
+    const inputError = toolCallError.error as InvalidToolInputError;
+    expect(inputError.state).toBeUndefined();
+    expect(inputError.originalError).toBeUndefined();
+    expect(inputError.toolInvocation).toBeUndefined();
+    expect(JSON.stringify(toolCallError)).not.toContain(secret);
   });
 
   it('detaches abort listeners after streaming completion when signal is retained', async () => {

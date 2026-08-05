@@ -40,6 +40,7 @@ import {
   type ToolNotFoundBehavior,
 } from '../src';
 import { RunStreamEvent } from '../src/events';
+import { InvalidToolInputError, ToolCallError } from '../src/errors';
 import { ServerConversationTracker } from '../src/runner/conversation';
 import { removeAllTools } from '../src/extensions';
 import { handoff } from '../src/handoff';
@@ -134,6 +135,119 @@ describe('Runner.run', () => {
 
       expect(runner.config.toolExecution).toBe(toolExecution);
     });
+
+    it('returns a redacted invalid-argument output to the model', async () => {
+      const secret = 'SECRET_NON_STREAMING_MODEL_OUTPUT_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(true);
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              arguments: secret,
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('recovered')],
+          usage: new Usage(),
+        },
+      ]);
+      const getResponseSpy = vi.spyOn(model, 'getResponse');
+      const agent = new Agent({
+        name: 'InvalidArgumentAgent',
+        model,
+        tools: [TEST_TOOL],
+      });
+
+      try {
+        const result = await run(agent, 'start');
+
+        expect(result.finalOutput).toBe('recovered');
+        expect(getResponseSpy).toHaveBeenCalledTimes(2);
+        const secondRequest = getResponseSpy.mock.calls[1][0];
+        const toolOutput = getRequestInputItems(secondRequest).find(
+          (item) => item.type === 'function_call_result',
+        ) as protocol.FunctionCallResultItem | undefined;
+        expect(toolOutput?.output).toEqual({
+          type: 'text',
+          text: 'An error occurred while parsing tool arguments. Please try again with valid JSON.',
+        });
+        expect(JSON.stringify(toolOutput)).not.toContain(secret);
+      } finally {
+        getResponseSpy.mockRestore();
+        flagSpy.mockRestore();
+      }
+    });
+
+    it.each([
+      ['redacted', true],
+      ['diagnostic', false],
+    ] as const)(
+      '%s invalid-argument errors handle real Runner state safely',
+      async (_mode, dontLogToolData) => {
+        const secret = dontLogToolData
+          ? 'SECRET_REDACTED_RUN_STATE_123'
+          : 'SECRET_DIAGNOSTIC_RUN_STATE_123';
+        const flagSpy = vi
+          .spyOn(logger, 'dontLogToolData', 'get')
+          .mockReturnValue(dontLogToolData);
+        const model = new FakeModel([
+          {
+            output: [
+              {
+                ...TEST_MODEL_FUNCTION_CALL,
+                arguments: secret,
+              },
+            ],
+            usage: new Usage(),
+          },
+        ]);
+        const structuredTool = tool({
+          name: 'test',
+          description: 'Validate structured input.',
+          parameters: z.object({ test: z.string() }),
+          outputSchema: z.object({ status: z.string() }),
+          errorFunction: null,
+          execute: async () => ({ status: 'unexpected' }),
+        });
+        const agent = new Agent({
+          name: 'InvalidArgumentStateAgent',
+          model,
+          tools: [structuredTool],
+        });
+
+        try {
+          const error = await run(agent, 'start').catch((caught) => caught);
+
+          expect(error).toBeInstanceOf(ToolCallError);
+          const toolCallError = error as ToolCallError;
+          expect(toolCallError.error).toBeInstanceOf(InvalidToolInputError);
+          const inputError = toolCallError.error as InvalidToolInputError;
+          if (dontLogToolData) {
+            expect(toolCallError.state).toBeUndefined();
+            expect(inputError.state).toBeUndefined();
+            expect(inputError.originalError).toBeUndefined();
+            expect(inputError.toolInvocation).toBeUndefined();
+            expect(JSON.stringify(toolCallError)).not.toContain(secret);
+          } else {
+            expect(toolCallError.state).toBeDefined();
+            expect(inputError.state).toBe(toolCallError.state);
+            expect(inputError.originalError).toBeDefined();
+            expect(inputError.toolInvocation?.input).toBe(secret);
+            expect(
+              inputError.state?._lastProcessedResponse?.functions[0].toolCall
+                .arguments,
+            ).toBe(secret);
+          }
+        } finally {
+          flagSpy.mockRestore();
+        }
+      },
+    );
 
     it('propagates run cancellation to a direct function tool', async () => {
       const controller = new AbortController();

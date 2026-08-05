@@ -6,12 +6,18 @@ import {
 } from '../agentToolRunConfig';
 import { consumeAgentToolRunResult } from '../agentToolRunResults';
 import {
-  InvalidToolInputError,
+  clearToolErrorState,
   InvalidToolOutputError,
+  isToolTimeoutError,
   ToolCallError,
-  ToolTimeoutError,
   UserError,
 } from '../errors';
+import {
+  createInvalidToolInputFailure,
+  type InvalidToolInputFailure,
+  isRedactedInvalidToolInputError,
+  refreshInvalidToolInputFailure,
+} from '../toolInputError';
 import { getTransferMessage, HandoffInputData } from '../handoff';
 import {
   RunHandoffCallItem,
@@ -29,14 +35,17 @@ import {
   ComputerSafetyCheckResult,
   ComputerToolCustomDataContext,
   FunctionTool,
+  type FunctionToolPreparedInput,
   FunctionToolResult,
   FunctionToolCustomDataContext,
   ToolCallDetails,
   FUNCTION_TOOL_PARSED_INPUT_CALLBACK,
   ApplyPatchToolCustomDataContext,
   invokeFunctionTool,
+  prepareFunctionToolInput,
   hasDynamicFunctionToolApprovalPolicy,
   hasInspectableFunctionToolArguments,
+  setFunctionToolPreparedInput,
   validateFunctionToolOutput,
   resolveComputer,
   Tool,
@@ -45,8 +54,8 @@ import type { ShellResult } from '../shell';
 import { RunContext } from '../runContext';
 import type { RunResult } from '../result';
 import { isAbortError } from '../utils/abortSignals';
-import { toSmartString } from '../utils/smartString';
 import { isZodObject } from '../utils';
+import { toSmartString } from '../utils/smartString';
 import { withFunctionSpan, withHandoffSpan } from '../tracing/createSpans';
 import { getCurrentTrace } from '../tracing/context';
 import type { FunctionSpanData, Span } from '../tracing/spans';
@@ -70,7 +79,10 @@ import {
   runToolInputGuardrails,
   runToolOutputGuardrails,
 } from '../utils/toolGuardrails';
-import type { ToolInputGuardrailResult } from '../toolGuardrail';
+import type {
+  ToolInputGuardrailResult,
+  ToolOutputGuardrailResult,
+} from '../toolGuardrail';
 import { maybeExtractToolOutputCustomData } from '../utils/customData';
 import {
   resolveApprovalRejectionMessage,
@@ -108,10 +120,25 @@ const REDACTED_TOOL_ERROR_MESSAGE =
   'Tool execution failed. Error details are redacted.';
 
 type ParseToolArgumentsResult =
-  { success: true; args: any } | { success: false; error: Error };
+  | {
+      success: true;
+      approvalArgs: any;
+      preparedInput?: FunctionToolPreparedInput;
+    }
+  | {
+      success: false;
+      error: unknown;
+      approvalArgs?: any;
+      preparedInput?: FunctionToolPreparedInput;
+    };
 
 type ToolInputGuardrailCheckResult =
   { type: 'allow' } | { type: 'reject'; message: string };
+
+type InvalidToolInputRedactionBoundary = {
+  failure: InvalidToolInputFailure;
+  redactedLegacyOutput: string;
+};
 
 function getFunctionToolIdentity<TContext>(
   toolRun: ToolRunFunction<TContext>,
@@ -125,6 +152,25 @@ function cloneForCustomDataContext<T>(value: T): T {
   } catch {
     return value;
   }
+}
+
+function getFunctionToolCallbackToolCall(
+  toolCall: protocol.FunctionCallItem,
+  redactArguments: boolean,
+): protocol.FunctionCallItem {
+  if (!redactArguments) {
+    return toolCall;
+  }
+  return {
+    type: 'function_call',
+    callId: toolCall.callId,
+    name: toolCall.name,
+    arguments: '',
+    ...(toolCall.id ? { id: toolCall.id } : {}),
+    ...(toolCall.namespace ? { namespace: toolCall.namespace } : {}),
+    ...(toolCall.status ? { status: toolCall.status } : {}),
+    ...(toolCall.caller ? { caller: toolCall.caller } : {}),
+  };
 }
 
 function getFunctionToolTraceName<TContext>(
@@ -266,44 +312,94 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     signal,
   };
 
+  const startedInvalidInputFailures: InvalidToolInputFailure[] = [];
+
   const executeToolRun = async (toolRun: ToolRunFunction<TContext>) => {
     if (signal?.aborted) {
       return buildFunctionCancellationResult(deps, toolRun);
     }
-
     const parseResult = parseToolArguments(toolRun);
+    let failure: InvalidToolInputFailure | undefined;
+    if (!parseResult.success) {
+      failure = createInvalidToolInputFailure({
+        message: `Invalid input for function tool '${getFunctionToolIdentity(toolRun)}'.`,
+        state: deps.state,
+        originalError: parseResult.error,
+        toolInvocation: {
+          runContext: deps.state._context,
+          input: toolRun.toolCall.arguments,
+          details: { toolCall: toolRun.toolCall },
+        },
+        disposition: parseResult.preparedInput?.disposition,
+      });
+      startedInvalidInputFailures.push(failure);
+    }
+
     const dynamicApprovalPolicy = hasDynamicFunctionToolApprovalPolicy(
       toolRun.tool,
     );
-
     // Handle parse errors gracefully instead of crashing.
     if (!parseResult.success) {
-      if (dynamicApprovalPolicy) {
+      if (parseResult.preparedInput) {
+        const approvalOutcome = await handleFunctionApproval(
+          deps,
+          toolRun,
+          parseResult.approvalArgs,
+          false,
+          failure,
+        );
+        if (approvalOutcome !== 'approved') {
+          return approvalOutcome;
+        }
+        try {
+          return await runApprovedFunctionTool(
+            deps,
+            toolRun,
+            parseResult.approvalArgs,
+            parseResult.preparedInput,
+            failure,
+          );
+        } catch (error) {
+          if (
+            signal?.aborted &&
+            (error === signal.reason || isAbortError(error))
+          ) {
+            return buildFunctionCancellationResult(deps, toolRun);
+          }
+          throw error;
+        }
+      } else if (dynamicApprovalPolicy) {
         const approvalOutcome = await handleFunctionApproval(
           deps,
           toolRun,
           undefined,
           true,
+          failure,
         );
         if (approvalOutcome !== 'approved') {
           return approvalOutcome;
         }
       }
-      return buildParseErrorResult(deps, toolRun, parseResult.error);
+      return buildParseErrorResult(deps, toolRun, parseResult.error, failure!);
     }
 
     const approvalOutcome = await handleFunctionApproval(
       deps,
       toolRun,
-      parseResult.args,
+      parseResult.approvalArgs,
       dynamicApprovalPolicy &&
-        !hasInspectableFunctionToolArguments(parseResult.args),
+        !hasInspectableFunctionToolArguments(parseResult.approvalArgs),
     );
     if (approvalOutcome !== 'approved') {
       return approvalOutcome;
     }
     try {
-      return await runApprovedFunctionTool(deps, toolRun, parseResult.args);
+      return await runApprovedFunctionTool(
+        deps,
+        toolRun,
+        parseResult.approvalArgs,
+        parseResult.preparedInput,
+      );
     } catch (error) {
       if (signal?.aborted && (error === signal.reason || isAbortError(error))) {
         return buildFunctionCancellationResult(deps, toolRun);
@@ -322,15 +418,28 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     );
     return results;
   } catch (e: unknown) {
-    if (e instanceof ToolTimeoutError) {
-      e.state ??= state;
+    const redactInvalidInputFailure = startedInvalidInputFailures.some(
+      (failure) => refreshInvalidToolInputFailure(failure),
+    );
+    if (redactInvalidInputFailure) {
+      clearToolErrorState(e, state);
+    }
+    if (isToolTimeoutError(e)) {
+      if (redactInvalidInputFailure) {
+        e.state = undefined;
+      } else {
+        e.state ??= state;
+      }
       throw e;
     }
 
+    const surfacedError = e as Error;
     throw new ToolCallError(
-      `Failed to run function tools: ${e}`,
-      e as Error,
-      state,
+      `Failed to run function tools: ${surfacedError}`,
+      surfacedError,
+      redactInvalidInputFailure || isRedactedInvalidToolInputError(e)
+        ? undefined
+        : state,
     );
   }
 }
@@ -352,12 +461,10 @@ function shouldRunPreApprovalInputGuardrails<TContext>(
   );
 }
 
-async function executeToolRunsWithConcurrency<TContext>(
-  toolRuns: ToolRunFunction<TContext>[],
+async function executeToolRunsWithConcurrency<TContext, TToolRun>(
+  toolRuns: TToolRun[],
   maxConcurrency: number | undefined,
-  executeToolRun: (
-    toolRun: ToolRunFunction<TContext>,
-  ) => Promise<FunctionToolResult<TContext>>,
+  executeToolRun: (toolRun: TToolRun) => Promise<FunctionToolResult<TContext>>,
 ): Promise<FunctionToolResult<TContext>[]> {
   if (
     maxConcurrency === undefined ||
@@ -403,22 +510,34 @@ function parseToolArguments<TContext>(
 ): ParseToolArgumentsResult {
   const toolName = getFunctionToolIdentity(toolRun);
   try {
-    let parsedArgs: any = toolRun.toolCall.arguments;
+    let approvalArgs: any = toolRun.toolCall.arguments;
     if (toolRun.tool.parameters) {
       if (isZodObject(toolRun.tool.parameters)) {
-        parsedArgs = toolRun.tool.parameters.parse(parsedArgs);
+        approvalArgs = toolRun.tool.parameters.parse(approvalArgs);
       } else {
-        parsedArgs = JSON.parse(parsedArgs);
+        approvalArgs = JSON.parse(approvalArgs);
       }
     }
-    return { success: true, args: parsedArgs };
+    const preparedInput = prepareFunctionToolInput(
+      toolRun.tool,
+      toolRun.toolCall.arguments,
+    );
+    if (preparedInput && !preparedInput.result.success) {
+      return {
+        success: false,
+        error: preparedInput.result.error,
+        approvalArgs,
+        preparedInput,
+      };
+    }
+    return { success: true, approvalArgs, preparedInput };
   } catch (error) {
     if (logger.dontLogToolData) {
       logger.debug(`Failed to parse tool arguments for ${toolName}`);
     } else {
       logger.debug(`Failed to parse tool arguments for ${toolName}: ${error}`);
     }
-    return { success: false, error: error as Error };
+    return { success: false, error };
   }
 }
 
@@ -476,57 +595,122 @@ async function resolveFunctionFailureOutput<TContext>(
   toolRun: ToolRunFunction<TContext>,
   error: Error,
   legacyOutput: string,
+  redactionBoundary?: InvalidToolInputRedactionBoundary,
 ): Promise<unknown> {
+  const redactedBeforeCallback = redactionBoundary
+    ? refreshInvalidToolInputFailure(redactionBoundary.failure)
+    : isRedactedInvalidToolInputError(error);
+  const callbackError = redactedBeforeCallback
+    ? (redactionBoundary?.failure.error ?? error)
+    : error;
+  const effectiveLegacyOutput = redactedBeforeCallback
+    ? (redactionBoundary?.redactedLegacyOutput ?? legacyOutput)
+    : legacyOutput;
+
   if (!toolRun.tool.outputSchema) {
-    return legacyOutput;
+    return effectiveLegacyOutput;
   }
 
   if (!toolRun.tool.errorFunction) {
-    throw error;
+    throw callbackError;
   }
 
-  const details: ToolCallDetails = { toolCall: toolRun.toolCall };
-  const output = await toolRun.tool.errorFunction(
-    deps.state._context,
-    error,
-    details,
-  );
-  return validateFunctionToolOutput({
-    tool: toolRun.tool,
-    output,
-    runContext: deps.state._context,
-    details,
-  });
+  const details: ToolCallDetails | undefined = redactedBeforeCallback
+    ? undefined
+    : { toolCall: toolRun.toolCall };
+  try {
+    const output = await toolRun.tool.errorFunction(
+      deps.state._context,
+      callbackError,
+      details,
+    );
+    if (
+      redactionBoundary &&
+      !redactedBeforeCallback &&
+      refreshInvalidToolInputFailure(redactionBoundary.failure)
+    ) {
+      throw redactionBoundary.failure.error;
+    }
+    const validatedOutput = validateFunctionToolOutput({
+      tool: toolRun.tool,
+      output,
+      runContext: deps.state._context,
+      details,
+    });
+    if (
+      redactionBoundary &&
+      !redactedBeforeCallback &&
+      refreshInvalidToolInputFailure(redactionBoundary.failure)
+    ) {
+      throw redactionBoundary.failure.error;
+    }
+    return validatedOutput;
+  } catch (callbackFailure) {
+    if (
+      redactionBoundary &&
+      refreshInvalidToolInputFailure(redactionBoundary.failure)
+    ) {
+      throw redactionBoundary.failure.error;
+    }
+    throw callbackFailure;
+  }
 }
 
 async function buildParseErrorResult<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
-  error: Error,
+  error: unknown,
+  failure: InvalidToolInputFailure,
 ): Promise<FunctionToolResult<TContext>> {
-  const errorMessage = `An error occurred while parsing tool arguments. Please try again with valid JSON. Error: ${error.message}`;
-  const parseError = new InvalidToolInputError(
-    `Invalid input for function tool '${getFunctionToolIdentity(toolRun)}'.`,
-    deps.state,
-    error,
-    {
-      runContext: deps.state._context,
-      input: toolRun.toolCall.arguments,
-      details: { toolCall: toolRun.toolCall },
-    },
-  );
-  const output = await resolveFunctionFailureOutput(
-    deps,
-    toolRun,
-    parseError,
-    errorMessage,
-  );
-  return buildFunctionFailureResult(deps, toolRun, output);
+  const traceToolName = getFunctionToolTraceName(toolRun);
+  return withRunStateToolFunctionSpan(deps, traceToolName, async (span) => {
+    refreshInvalidToolInputFailure(failure);
+    if (
+      span &&
+      deps.runner.config.traceIncludeSensitiveData &&
+      !failure.redacted
+    ) {
+      span.spanData.input = toolRun.toolCall.arguments;
+    }
+    span?.setError({
+      message: 'Error running tool (non-fatal)',
+      data: {
+        tool_name: traceToolName,
+        error: failure.error.toString(),
+      },
+    });
+
+    const baseMessage =
+      'An error occurred while parsing tool arguments. Please try again with valid JSON.';
+    const errorMessage = failure.redacted
+      ? baseMessage
+      : `${baseMessage} Error: ${(error as Error).message}`;
+    let output: unknown;
+    try {
+      output = await resolveFunctionFailureOutput(
+        deps,
+        toolRun,
+        failure.error,
+        errorMessage,
+        { failure, redactedLegacyOutput: baseMessage },
+      );
+    } finally {
+      refreshInvalidToolInputFailure(failure);
+      if (failure.redacted && span) {
+        span.spanData.input = '';
+      }
+    }
+    if (span && deps.runner.config.traceIncludeSensitiveData) {
+      span.spanData.output = toSmartString(output);
+    }
+    return buildFunctionFailureResult(deps, toolRun, output);
+  });
 }
 
 async function buildApprovalRejectionResult<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
+  invalidInputFailure?: InvalidToolInputFailure,
 ): Promise<FunctionToolResult<TContext>> {
   const { runner, state, toolErrorFormatter } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
@@ -542,9 +726,13 @@ async function buildApprovalRejectionResult<TContext>(
       callId: toolRun.toolCall.callId,
       toolErrorFormatter,
     });
-    const traceErrorMessage = runner.config.traceIncludeSensitiveData
-      ? response
-      : TOOL_APPROVAL_REJECTION_MESSAGE;
+    const redactDetails = invalidInputFailure
+      ? refreshInvalidToolInputFailure(invalidInputFailure)
+      : false;
+    const traceErrorMessage =
+      runner.config.traceIncludeSensitiveData && !redactDetails
+        ? response
+        : TOOL_APPROVAL_REJECTION_MESSAGE;
 
     span?.setError({
       message: traceErrorMessage,
@@ -559,7 +747,20 @@ async function buildApprovalRejectionResult<TContext>(
       toolRun,
       new Error(response),
       response,
+      invalidInputFailure
+        ? {
+            failure: invalidInputFailure,
+            redactedLegacyOutput: TOOL_APPROVAL_REJECTION_MESSAGE,
+          }
+        : undefined,
     );
+    if (
+      invalidInputFailure &&
+      refreshInvalidToolInputFailure(invalidInputFailure) &&
+      span
+    ) {
+      span.spanData.input = '';
+    }
     if (span && runner.config.traceIncludeSensitiveData) {
       span.spanData.output = toSmartString(output);
     }
@@ -572,6 +773,7 @@ async function handleFunctionApproval<TContext>(
   toolRun: ToolRunFunction<TContext>,
   parsedArgs: any,
   forceApproval: boolean = false,
+  invalidInputFailure?: InvalidToolInputFailure,
 ): Promise<'approved' | FunctionToolResult<TContext>> {
   const { agent, state } = deps;
   const approvalStateKey = getFunctionToolApprovalStateKey(toolRun);
@@ -587,41 +789,91 @@ async function handleFunctionApproval<TContext>(
     for (const stateKey of pendingStateKeys) {
       state.clearPendingAgentToolRun(stateKey, toolRun.toolCall.callId);
     }
-    return await buildApprovalRejectionResult(deps, toolRun);
+    return await buildApprovalRejectionResult(
+      deps,
+      toolRun,
+      invalidInputFailure,
+    );
   }
 
   if (approval === true) {
     return 'approved';
   }
 
-  const needsApproval =
-    forceApproval ||
-    (await toolRun.tool.needsApproval(
-      state._context,
-      parsedArgs,
-      toolRun.toolCall.callId,
-    ));
+  let needsApproval = forceApproval;
+  if (!needsApproval) {
+    try {
+      needsApproval = await toolRun.tool.needsApproval(
+        state._context,
+        parsedArgs,
+        toolRun.toolCall.callId,
+      );
+    } catch (error) {
+      if (
+        invalidInputFailure &&
+        refreshInvalidToolInputFailure(invalidInputFailure)
+      ) {
+        throw invalidInputFailure.error;
+      }
+      throw error;
+    }
+  }
 
   if (!needsApproval) {
     return 'approved';
   }
 
   if (shouldRunPreApprovalInputGuardrails(deps)) {
-    const inputGuardrailResult = await runFunctionToolInputGuardrails({
-      guardrails: toolRun.tool.inputGuardrails,
-      context: state._context,
-      agent,
-      toolCall: toolRun.toolCall,
-      onResult: (result) => {
-        state._toolInputGuardrailResults.push(result);
-      },
-    });
+    const redactedBeforeGuardrails = invalidInputFailure
+      ? refreshInvalidToolInputFailure(invalidInputFailure)
+      : false;
+    const guardrailResults: ToolInputGuardrailResult[] = [];
+    let inputGuardrailResult: ToolInputGuardrailCheckResult = { type: 'allow' };
+    let guardrailFailed = false;
+    let guardrailError: unknown;
+    try {
+      inputGuardrailResult = await runFunctionToolInputGuardrails({
+        guardrails: toolRun.tool.inputGuardrails,
+        context: state._context,
+        agent,
+        toolCall: getFunctionToolCallbackToolCall(
+          toolRun.toolCall,
+          redactedBeforeGuardrails,
+        ),
+        onResult: (result) => {
+          guardrailResults.push(result);
+        },
+      });
+    } catch (error) {
+      guardrailFailed = true;
+      guardrailError = error;
+    }
+    const redactedAfterGuardrails = invalidInputFailure
+      ? refreshInvalidToolInputFailure(invalidInputFailure)
+      : false;
+    if (redactedBeforeGuardrails || !redactedAfterGuardrails) {
+      state._toolInputGuardrailResults.push(...guardrailResults);
+    }
+    if (guardrailFailed) {
+      const sdkTripwire = guardrailResults.some(
+        (result) => result.output.behavior?.type === 'throwException',
+      );
+      if (
+        invalidInputFailure &&
+        redactedAfterGuardrails &&
+        (!redactedBeforeGuardrails || !sdkTripwire)
+      ) {
+        throw invalidInputFailure.error;
+      }
+      throw guardrailError;
+    }
 
     if (inputGuardrailResult.type === 'reject') {
       return buildInputGuardrailRejectionResult(
         deps,
         toolRun,
         inputGuardrailResult.message,
+        invalidInputFailure,
       );
     }
   }
@@ -632,12 +884,19 @@ async function buildInputGuardrailRejectionResult<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
   message: string,
+  invalidInputFailure?: InvalidToolInputFailure,
 ): Promise<FunctionToolResult<TContext>> {
   const output = await resolveFunctionFailureOutput(
     deps,
     toolRun,
     new Error(message),
     message,
+    invalidInputFailure
+      ? {
+          failure: invalidInputFailure,
+          redactedLegacyOutput: REDACTED_TOOL_ERROR_MESSAGE,
+        }
+      : undefined,
   );
   return buildFunctionFailureResult(deps, toolRun, output);
 }
@@ -667,42 +926,113 @@ async function runFunctionToolInputGuardrails<TContext>({
 async function runApprovedFunctionTool<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
-  parsedInput: unknown,
+  approvalArgs: unknown,
+  preparedInput: FunctionToolPreparedInput | undefined,
+  invalidInputFailure?: InvalidToolInputFailure,
 ): Promise<FunctionToolResult<TContext>> {
   const { agent, runner, state, agentToolParentRunConfig, signal } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
   const stateKeys = getFunctionToolPendingStateKeys(toolRun);
   const traceToolName = getFunctionToolTraceName(toolRun);
   return withRunStateToolFunctionSpan(deps, traceToolName, async (span) => {
-    if (span && runner.config.traceIncludeSensitiveData) {
+    let preservedLifecycleError: unknown;
+    const refreshRedaction = () => {
+      const redacted = invalidInputFailure
+        ? refreshInvalidToolInputFailure(invalidInputFailure)
+        : false;
+      if (redacted && span) {
+        span.spanData.input = '';
+      }
+      return redacted;
+    };
+    const throwIfRedactionPromoted = (redactedBefore: boolean) => {
+      if (!redactedBefore && refreshRedaction() && invalidInputFailure) {
+        throw invalidInputFailure.error;
+      }
+    };
+    if (
+      span &&
+      runner.config.traceIncludeSensitiveData &&
+      !refreshRedaction()
+    ) {
       span.spanData.input = toolRun.toolCall.arguments;
     }
 
     try {
-      const inputGuardrailResult = await runFunctionToolInputGuardrails({
-        guardrails: toolRun.tool.inputGuardrails,
-        context: state._context,
-        agent,
-        toolCall: toolRun.toolCall,
-        onResult: (result) => {
-          state._toolInputGuardrailResults.push(result);
-        },
-      });
+      const redactedBeforeInputGuardrails = refreshRedaction();
+      const inputGuardrailResults: ToolInputGuardrailResult[] = [];
+      let inputGuardrailResult: ToolInputGuardrailCheckResult = {
+        type: 'allow',
+      };
+      let inputGuardrailFailed = false;
+      let inputGuardrailError: unknown;
+      try {
+        inputGuardrailResult = await runFunctionToolInputGuardrails({
+          guardrails: toolRun.tool.inputGuardrails,
+          context: state._context,
+          agent,
+          toolCall: getFunctionToolCallbackToolCall(
+            toolRun.toolCall,
+            redactedBeforeInputGuardrails,
+          ),
+          onResult: (result) => {
+            inputGuardrailResults.push(result);
+          },
+        });
+      } catch (error) {
+        inputGuardrailFailed = true;
+        inputGuardrailError = error;
+        if (
+          inputGuardrailResults.some(
+            (result) => result.output.behavior?.type === 'throwException',
+          )
+        ) {
+          preservedLifecycleError = error;
+        }
+      }
+      const redactedAfterInputGuardrails = refreshRedaction();
+      if (redactedBeforeInputGuardrails || !redactedAfterInputGuardrails) {
+        state._toolInputGuardrailResults.push(...inputGuardrailResults);
+      }
+      if (inputGuardrailFailed) {
+        if (
+          !redactedBeforeInputGuardrails &&
+          redactedAfterInputGuardrails &&
+          invalidInputFailure
+        ) {
+          throw invalidInputFailure.error;
+        }
+        throw inputGuardrailError;
+      }
 
       if (signal?.aborted) {
         return buildFunctionCancellationResult(deps, toolRun);
       }
 
-      emitToolStart(
-        runner,
-        state._context,
-        agent,
-        toolRun.tool,
-        toolRun.toolCall,
-      );
+      const redactedBeforeToolStart = refreshRedaction();
+      try {
+        emitFunctionToolStart(
+          runner,
+          state._context,
+          agent,
+          toolRun.tool,
+          toolRun.toolCall,
+          refreshRedaction,
+        );
+      } catch (hookError) {
+        if (
+          !redactedBeforeToolStart &&
+          refreshRedaction() &&
+          invalidInputFailure
+        ) {
+          throw invalidInputFailure.error;
+        }
+        throw hookError;
+      }
+      refreshRedaction();
 
       let toolOutput: unknown;
-      let executedInput = parsedInput;
+      let executedInput = approvalArgs;
       let toolDetails: ToolCallDetails = { toolCall: toolRun.toolCall };
       let shouldValidateToolOutput = false;
       if (inputGuardrailResult.type === 'reject') {
@@ -711,6 +1041,12 @@ async function runApprovedFunctionTool<TContext>(
           toolRun,
           new Error(inputGuardrailResult.message),
           inputGuardrailResult.message,
+          invalidInputFailure
+            ? {
+                failure: invalidInputFailure,
+                redactedLegacyOutput: REDACTED_TOOL_ERROR_MESSAGE,
+              }
+            : undefined,
         );
       } else {
         const resumeState = stateKeys
@@ -718,14 +1054,21 @@ async function runApprovedFunctionTool<TContext>(
             state.getPendingAgentToolRun(stateKey, toolRun.toolCall.callId),
           )
           .find((pendingState) => typeof pendingState !== 'undefined');
+        const redactedBeforeInvocation = refreshRedaction();
         toolDetails = {
-          toolCall: toolRun.toolCall,
+          toolCall: getFunctionToolCallbackToolCall(
+            toolRun.toolCall,
+            redactedBeforeInvocation,
+          ),
           resumeState,
           ...(signal ? { signal } : {}),
           [FUNCTION_TOOL_PARSED_INPUT_CALLBACK]: (input: unknown) => {
             executedInput = cloneForCustomDataContext(input);
           },
         };
+        if (preparedInput) {
+          setFunctionToolPreparedInput(toolDetails, preparedInput);
+        }
         setToolUsageRecorder(toolDetails, getRunStateUsageRecorder(state));
         setAgentToolParentRunConfigOnDetails(
           toolDetails,
@@ -739,51 +1082,97 @@ async function runApprovedFunctionTool<TContext>(
           input: toolRun.toolCall.arguments,
           details: toolDetails,
         });
-        toolOutput = await runToolOutputGuardrails({
-          guardrails: toolRun.tool.outputGuardrails,
-          context: state._context,
-          agent,
-          toolCall: toolRun.toolCall,
-          toolOutput: invokedToolOutput,
-          onResult: (result) => {
-            state._toolOutputGuardrailResults.push(result);
-          },
-        });
+        throwIfRedactionPromoted(redactedBeforeInvocation);
+        const redactedBeforeOutputGuardrails = refreshRedaction();
+        const outputGuardrailResults: ToolOutputGuardrailResult[] = [];
+        try {
+          toolOutput = await runToolOutputGuardrails({
+            guardrails: toolRun.tool.outputGuardrails,
+            context: state._context,
+            agent,
+            toolCall: getFunctionToolCallbackToolCall(
+              toolRun.toolCall,
+              redactedBeforeOutputGuardrails,
+            ),
+            toolOutput: invokedToolOutput,
+            onResult: (result) => {
+              outputGuardrailResults.push(result);
+            },
+          });
+        } catch (guardrailError) {
+          if (
+            outputGuardrailResults.some(
+              (result) => result.output.behavior?.type === 'throwException',
+            )
+          ) {
+            preservedLifecycleError = guardrailError;
+          }
+          throw guardrailError;
+        } finally {
+          throwIfRedactionPromoted(redactedBeforeOutputGuardrails);
+          state._toolOutputGuardrailResults.push(...outputGuardrailResults);
+        }
         shouldValidateToolOutput = toolOutput !== invokedToolOutput;
       }
       if (shouldValidateToolOutput) {
+        const redactedBeforeOutputValidation = refreshRedaction();
         toolOutput = validateFunctionToolOutput({
           tool: toolRun.tool,
           output: toolOutput,
           runContext: state._context,
           details: toolDetails,
         });
+        throwIfRedactionPromoted(redactedBeforeOutputValidation);
       }
       const stringResult = toSmartString(toolOutput);
 
       const rawItem = getToolCallOutputItem(toolRun.toolCall, toolOutput, {
         outputSchema: toolRun.tool.outputSchema,
       });
-      const customData = await maybeExtractToolOutputCustomData(
-        toolRun.tool.customDataExtractor,
-        {
-          runContext: state._context,
-          tool: toolRun.tool,
-          toolCall: cloneForCustomDataContext(toolRun.toolCall),
-          input: cloneForCustomDataContext(executedInput),
-          output: cloneForCustomDataContext(toolOutput),
-          rawItem: cloneForCustomDataContext(rawItem),
-        } satisfies FunctionToolCustomDataContext<TContext>,
-      );
+      if (refreshRedaction()) {
+        executedInput = undefined;
+      }
+      const redactedBeforeCustomData = refreshRedaction();
+      let customData: Awaited<
+        ReturnType<typeof maybeExtractToolOutputCustomData>
+      >;
+      try {
+        customData = await maybeExtractToolOutputCustomData(
+          toolRun.tool.customDataExtractor,
+          {
+            runContext: state._context,
+            tool: toolRun.tool,
+            toolCall: cloneForCustomDataContext(
+              getFunctionToolCallbackToolCall(
+                toolRun.toolCall,
+                redactedBeforeCustomData,
+              ),
+            ),
+            input: cloneForCustomDataContext(executedInput),
+            output: cloneForCustomDataContext(toolOutput),
+            rawItem: cloneForCustomDataContext(rawItem),
+          } satisfies FunctionToolCustomDataContext<TContext>,
+        );
+      } finally {
+        throwIfRedactionPromoted(redactedBeforeCustomData);
+      }
 
-      emitToolEnd(
-        runner,
-        state._context,
-        agent,
-        toolRun.tool,
-        stringResult,
-        toolRun.toolCall,
-      );
+      const redactedBeforeToolEnd = refreshRedaction();
+      try {
+        emitFunctionToolEnd(
+          runner,
+          state._context,
+          agent,
+          toolRun.tool,
+          stringResult,
+          toolRun.toolCall,
+          refreshRedaction,
+        );
+      } catch (hookError) {
+        throwIfRedactionPromoted(redactedBeforeToolEnd);
+        throw hookError;
+      }
+      throwIfRedactionPromoted(redactedBeforeToolEnd);
 
       if (span && runner.config.traceIncludeSensitiveData) {
         span.spanData.output = stringResult;
@@ -826,24 +1215,43 @@ async function runApprovedFunctionTool<TContext>(
 
       return functionResult;
     } catch (error) {
+      const redacted = refreshRedaction();
+      const errorResult = redacted
+        ? REDACTED_TOOL_ERROR_MESSAGE
+        : String(error);
       span?.setError({
         message: 'Error running tool',
         data: {
           tool_name: traceToolName,
-          error: String(error),
+          error: errorResult,
         },
       });
 
-      const errorResult = String(error);
-      emitToolEnd(
-        runner,
-        state._context,
-        agent,
-        toolRun.tool,
-        errorResult,
-        toolRun.toolCall,
-      );
+      try {
+        emitFunctionToolEnd(
+          runner,
+          state._context,
+          agent,
+          toolRun.tool,
+          errorResult,
+          toolRun.toolCall,
+          refreshRedaction,
+        );
+      } catch (hookError) {
+        if (refreshRedaction() && invalidInputFailure) {
+          throw invalidInputFailure.error;
+        }
+        throw hookError;
+      }
 
+      if (
+        refreshRedaction() &&
+        invalidInputFailure &&
+        !isToolTimeoutError(error) &&
+        error !== preservedLifecycleError
+      ) {
+        throw invalidInputFailure.error;
+      }
       throw error;
     }
   });
@@ -1110,6 +1518,59 @@ function emitToolEnd(
   runner.emit('agent_tool_end', runContext, agent, tool, output, { toolCall });
   if (typeof agent.emit === 'function') {
     agent.emit('agent_tool_end', runContext, tool, output, { toolCall });
+  }
+}
+
+function emitFunctionToolStart(
+  runner: Runner,
+  runContext: RunContext,
+  agent: Agent<any, any>,
+  tool: FunctionTool<any, any, any>,
+  toolCall: protocol.FunctionCallItem,
+  refreshRedaction: () => boolean,
+): void {
+  runner.emit('agent_tool_start', runContext, agent, tool, {
+    toolCall: getFunctionToolCallbackToolCall(toolCall, refreshRedaction()),
+  });
+  if (typeof agent.emit === 'function') {
+    agent.emit('agent_tool_start', runContext, tool, {
+      toolCall: getFunctionToolCallbackToolCall(toolCall, refreshRedaction()),
+    });
+  }
+}
+
+function emitFunctionToolEnd(
+  runner: Runner,
+  runContext: RunContext,
+  agent: Agent<any, any>,
+  tool: FunctionTool<any, any, any>,
+  output: string,
+  toolCall: protocol.FunctionCallItem,
+  refreshRedaction: () => boolean,
+): void {
+  const redactedBeforeRunnerHook = refreshRedaction();
+  runner.emit('agent_tool_end', runContext, agent, tool, output, {
+    toolCall: getFunctionToolCallbackToolCall(
+      toolCall,
+      redactedBeforeRunnerHook,
+    ),
+  });
+  if (typeof agent.emit === 'function') {
+    const redactedBeforeAgentHook = refreshRedaction();
+    agent.emit(
+      'agent_tool_end',
+      runContext,
+      tool,
+      !redactedBeforeRunnerHook && redactedBeforeAgentHook
+        ? REDACTED_TOOL_ERROR_MESSAGE
+        : output,
+      {
+        toolCall: getFunctionToolCallbackToolCall(
+          toolCall,
+          redactedBeforeAgentHook,
+        ),
+      },
+    );
   }
 }
 

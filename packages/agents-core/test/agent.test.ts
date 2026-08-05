@@ -704,6 +704,40 @@ describe('Agent', () => {
     expect(result2).toBe('Hello World');
   });
 
+  it.each([
+    ['redacted', true],
+    ['diagnostic', false],
+  ] as const)(
+    'applies %s tool argument diagnostics to Agent.asTool',
+    async (_mode, dontLogToolData) => {
+      const secret = 'SECRET_AGENT_TOOL_ARGUMENT_123';
+      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+      vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(
+        dontLogToolData,
+      );
+      const agent = new Agent({ name: 'Nested Agent' });
+      const agentTool = agent.asTool({
+        toolName: 'nested_agent',
+        toolDescription: 'Run the nested agent.',
+        parameters: z.object({ value: z.number() }),
+      });
+
+      const output = await agentTool.invoke(
+        new RunContext(),
+        JSON.stringify({ value: secret }),
+      );
+
+      expect(output).toBe(
+        'An error occurred while running the tool. Please try again. Error: InvalidToolInputError: Invalid JSON input for tool',
+      );
+      if (dontLogToolData) {
+        expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(secret);
+      } else {
+        expect(JSON.stringify(debugSpy.mock.calls)).toContain(secret);
+      }
+    },
+  );
+
   it('warns when using asTool with stopAtToolNames behavior without custom extractor', async () => {
     const warnSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
     const runSpy = vi.spyOn(Runner.prototype, 'run').mockResolvedValue({
