@@ -3049,6 +3049,161 @@ describe('executeShellActions', () => {
       );
     });
 
+    it('evaluates dynamic approval policies for schema-invalid objects', async () => {
+      const needsApproval = vi.fn(async () => false);
+      const execute = vi.fn(async () => 'unexpected');
+      const t = tool({
+        name: 'schema_invalid_dynamic_approval',
+        description: 'Return a fallback for schema-invalid input.',
+        parameters: z.object({ value: z.number() }),
+        needsApproval,
+        execute,
+      }) as unknown as FunctionTool;
+      const invalidArguments = { value: 'invalid' };
+
+      const [result] = await executeFunctionToolCalls(
+        state._currentAgent,
+        [
+          {
+            toolCall: {
+              ...toolCall,
+              name: 'schema_invalid_dynamic_approval',
+              arguments: JSON.stringify(invalidArguments),
+            },
+            tool: t,
+          },
+        ],
+        runner,
+        state,
+      );
+
+      expect(result).toMatchObject({
+        type: 'function_output',
+        output: expect.stringContaining('running the tool'),
+      });
+      expect(needsApproval).toHaveBeenCalledWith(
+        state._context,
+        invalidArguments,
+        toolCall.callId,
+      );
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['secure from start', true],
+      ['promoted by the callback', false],
+    ] as const)(
+      'redacts arbitrary schema-invalid approval failures when %s',
+      async (_mode, initiallyRedacted) => {
+        const secret = 'SECRET_SCHEMA_APPROVAL_FAILURE_123';
+        let redactToolData = initiallyRedacted;
+        const flagSpy = vi
+          .spyOn(logger, 'dontLogToolData', 'get')
+          .mockImplementation(() => redactToolData);
+        const debugSpy = vi.spyOn(logger, 'debug');
+        const invalidArguments = { value: secret };
+        const { proxy, revoke } = Proxy.revocable({ secret }, {});
+        revoke();
+        const thrownValues: unknown[] = [new Error(secret), secret, proxy];
+        let thrownValue: unknown;
+        const needsApproval = vi.fn(async (_context, args) => {
+          expect(args).toEqual(invalidArguments);
+          debugSpy.mockClear();
+          redactToolData = true;
+          throw thrownValue;
+        });
+        const t = tool({
+          name: 'schema_invalid_approval_failure',
+          description: 'Fail while deciding approval for invalid input.',
+          parameters: z.object({ value: z.number() }),
+          needsApproval,
+          execute: vi.fn(async () => 'unexpected'),
+        }) as unknown as FunctionTool;
+
+        try {
+          for (let index = 0; index < thrownValues.length; index += 1) {
+            redactToolData = initiallyRedacted;
+            thrownValue = thrownValues[index];
+            const error = await executeFunctionToolCalls(
+              state._currentAgent,
+              [
+                {
+                  toolCall: {
+                    ...toolCall,
+                    callId: `schema_invalid_approval_failure_${index}`,
+                    name: 'schema_invalid_approval_failure',
+                    arguments: JSON.stringify(invalidArguments),
+                  },
+                  tool: t,
+                },
+              ],
+              runner,
+              state,
+            ).catch((caught) => caught);
+
+            expect(error).toBeInstanceOf(ToolCallError);
+            expect((error as ToolCallError).state).toBeUndefined();
+            expect((error as ToolCallError).error).toBeInstanceOf(
+              InvalidToolInputError,
+            );
+            expect((error as ToolCallError).error).toMatchObject({
+              message:
+                "Invalid input for function tool 'schema_invalid_approval_failure'.",
+            });
+            expect((error as ToolCallError).message).not.toContain(secret);
+            expect(JSON.stringify(error)).not.toContain(secret);
+            expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(secret);
+          }
+        } finally {
+          debugSpy.mockRestore();
+          flagSpy.mockRestore();
+        }
+      },
+    );
+
+    it('preserves diagnostic schema-invalid approval failures', async () => {
+      const secret = 'SECRET_DIAGNOSTIC_SCHEMA_APPROVAL_FAILURE_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(false);
+      const approvalError = new Error(secret);
+      const needsApproval = vi.fn(async () => {
+        throw approvalError;
+      });
+      const t = tool({
+        name: 'diagnostic_schema_invalid_approval_failure',
+        description: 'Preserve diagnostic approval failures.',
+        parameters: z.object({ value: z.number() }),
+        needsApproval,
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+
+      try {
+        const error = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'diagnostic_schema_invalid_approval_failure',
+                arguments: JSON.stringify({ value: secret }),
+              },
+              tool: t,
+            },
+          ],
+          runner,
+          state,
+        ).catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).state).toBe(state);
+        expect((error as ToolCallError).error).toBe(approvalError);
+        expect((error as ToolCallError).message).toContain(secret);
+      } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
     it('rejects malformed arguments without invoking the approval policy', async () => {
       const needsApproval = vi.fn(async () => false);
       const t = tool({
@@ -6609,7 +6764,11 @@ describe('executeShellActions', () => {
           state,
         ).catch((caught) => caught);
 
-        expect(needsApproval).not.toHaveBeenCalled();
+        expect(needsApproval).toHaveBeenCalledWith(
+          state._context,
+          { value: secret },
+          toolCall.callId,
+        );
         expect(error).toBeInstanceOf(ToolCallError);
         expect((error as ToolCallError).state).toBeUndefined();
         expect(JSON.stringify(error)).not.toContain(secret);

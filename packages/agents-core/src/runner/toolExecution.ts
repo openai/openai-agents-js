@@ -345,7 +345,7 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
           deps,
           toolRun,
           parseResult.approvalArgs,
-          dynamicApprovalPolicy,
+          false,
           failure,
         );
         if (approvalOutcome !== 'approved') {
@@ -800,13 +800,24 @@ async function handleFunctionApproval<TContext>(
     return 'approved';
   }
 
-  const needsApproval =
-    forceApproval ||
-    (await toolRun.tool.needsApproval(
-      state._context,
-      parsedArgs,
-      toolRun.toolCall.callId,
-    ));
+  let needsApproval = forceApproval;
+  if (!needsApproval) {
+    try {
+      needsApproval = await toolRun.tool.needsApproval(
+        state._context,
+        parsedArgs,
+        toolRun.toolCall.callId,
+      );
+    } catch (error) {
+      if (
+        invalidInputFailure &&
+        refreshInvalidToolInputFailure(invalidInputFailure)
+      ) {
+        throw invalidInputFailure.error;
+      }
+      throw error;
+    }
+  }
 
   if (!needsApproval) {
     return 'approved';
