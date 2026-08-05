@@ -726,6 +726,15 @@ export class OpenAIRealtimeWebRTC
     this.#cancelConnectionAttempt?.();
     const { dataChannel, peerConnection } = this.#state;
     const shouldNotify = this.#state.status !== 'disconnected';
+
+    // `mute(true)` disables tracks in place, so a caller-supplied stream we keep alive would
+    // otherwise be handed back silent, and clearing the state below leaves a later `mute(false)`
+    // with no peer connection to act on. Undoing it through `mute(false)` runs the exact inverse
+    // of the call that disabled these tracks, while the peer connection is still in state.
+    if (this.#muted && this.options.mediaStream) {
+      this.mute(false);
+    }
+
     this.#state = {
       status: 'disconnected',
       peerConnection: undefined,
@@ -757,31 +766,7 @@ export class OpenAIRealtimeWebRTC
       // reconnect, so stopping it here would end the track permanently. This is deliberately
       // scoped to that one case rather than a per-track ownership rule, so senders added through
       // `changePeerConnection` are left to whoever added them.
-      if (this.options.mediaStream) {
-        // `mute(true)` disables the tracks in place rather than replacing them, so a stream we
-        // keep alive would be handed back permanently silent. Undo that here, because `close()`
-        // drops the peer connection and a later `mute(false)` would have nothing left to
-        // re-enable. Restoring only when this transport did the muting leaves a stream the
-        // application disabled itself untouched.
-        if (this.#muted) {
-          let senders: RTCRtpSender[] = [];
-          runCleanup(() => {
-            senders = peerConnection.getSenders();
-          });
-          let callerTracks: MediaStreamTrack[] = [];
-          runCleanup(() => {
-            callerTracks = this.options.mediaStream!.getAudioTracks();
-          });
-          for (const sender of senders) {
-            const track = sender.track;
-            if (track && callerTracks.includes(track)) {
-              runCleanup(() => {
-                track.enabled = true;
-              });
-            }
-          }
-        }
-      } else {
+      if (!this.options.mediaStream) {
         let senders: RTCRtpSender[] = [];
         runCleanup(() => {
           senders = peerConnection.getSenders();
