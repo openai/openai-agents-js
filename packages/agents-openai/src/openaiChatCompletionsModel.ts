@@ -40,6 +40,10 @@ import { protocol } from '@openai/agents-core';
 import { getOpenAIRetryAdvice } from './retryAdvice';
 import { normalizePromptCacheRetention } from './utils/modelSettings';
 import type { OpenAIClient } from './openaiClient';
+import {
+  CONTENT_FILTER_REFUSAL_MESSAGE,
+  shouldSynthesizeContentFilterRefusal,
+} from './openaiChatCompletionsContentFilter';
 
 type ModelTracingParent = Parameters<typeof createGenerationSpan>[1];
 
@@ -130,15 +134,16 @@ export class OpenAIChatCompletionsModel implements Model {
         // Some providers signal a filtered completion only through the finish reason.
         // Normalize that terminal signal before tracing and protocol conversion.
         if (
-          firstChoice?.finish_reason === 'content_filter' &&
           message &&
-          !message.content &&
-          !message.refusal &&
-          !message.tool_calls?.length
+          shouldSynthesizeContentFilterRefusal({
+            finishReason: firstChoice?.finish_reason,
+            content: message.content,
+            refusal: message.refusal,
+            hasToolCalls: Boolean(message.tool_calls?.length),
+          })
         ) {
           message.content = null;
-          message.refusal =
-            "Response withheld by the provider's content filter.";
+          message.refusal = CONTENT_FILTER_REFUSAL_MESSAGE;
         }
         if (span && request.tracing === true) {
           span.spanData.output = [response];
