@@ -19,7 +19,7 @@ export const realtimeMessageItemSchema = z.discriminatedUnion('role', [
     previousItemId: z.string().nullable().optional(),
     type: z.literal('message'),
     role: z.literal('user'),
-    status: z.enum(['in_progress', 'completed', 'incomplete']).optional(),
+    status: z.enum(['in_progress', 'completed']),
     content: z.array(
       z.object({ type: z.literal('input_text'), text: z.string() }).or(
         z.object({
@@ -35,7 +35,7 @@ export const realtimeMessageItemSchema = z.discriminatedUnion('role', [
     previousItemId: z.string().nullable().optional(),
     type: z.literal('message'),
     role: z.literal('assistant'),
-    status: z.enum(['in_progress', 'completed', 'incomplete']).optional(),
+    status: z.enum(['in_progress', 'completed', 'incomplete']),
     content: z.array(
       z.object({ type: z.literal('output_text'), text: z.string() }).or(
         z.object({

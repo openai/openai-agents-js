@@ -2,4 +2,4 @@
 '@openai/agents-realtime': patch
 ---
 
-fix: keep realtime conversation items whose status the server omitted or marked incomplete
+fix: normalize a missing realtime item status from the event phase so status-less items still reach history

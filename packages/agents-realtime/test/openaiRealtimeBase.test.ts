@@ -691,15 +691,22 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(approvals[0]?.serverLabel).toBe('s1');
   });
 
-  it('keeps items whose status the server omitted', () => {
-    const base = new TestBase();
-    const updates: any[] = [];
-    base.on('item_update', (item) => updates.push(item));
+  it('reaches session history when the server omits status', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
 
-    (base as any)._onMessage({
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const historyEvents: any[][] = [];
+    session.on('history_updated', (h) => historyEvents.push([...h]));
+
+    (transport as any)._onMessage({
       data: JSON.stringify({
         type: 'conversation.item.added',
-        event_id: 'c1',
+        event_id: 'e1',
         item: {
           id: 'u1',
           type: 'message',
@@ -710,32 +717,43 @@ describe('OpenAIRealtimeBase helpers', () => {
       }),
     });
 
-    expect(updates.map((u) => u.itemId)).toEqual(['u1']);
-    expect(updates[0].status).toBeUndefined();
+    expect(session.history.map((i: any) => i.itemId)).toEqual(['u1']);
+    expect((session.history[0] as any).status).toBe('in_progress');
+    expect(historyEvents.at(-1)?.map((i: any) => i.itemId)).toEqual(['u1']);
   });
 
-  it('keeps user items the server marked incomplete', () => {
+  it('normalizes a missing status from the event phase', () => {
     const base = new TestBase();
     const updates: any[] = [];
     base.on('item_update', (item) => updates.push(item));
 
-    (base as any)._onMessage({
-      data: JSON.stringify({
-        type: 'conversation.item.done',
-        event_id: 'c2',
-        item: {
-          id: 'u2',
-          type: 'message',
-          role: 'user',
-          status: 'incomplete',
-          content: [{ type: 'input_text', text: 'partial' }],
-        },
-        previous_item_id: null,
-      }),
-    });
+    const send = (type: string, id: string, status?: string) =>
+      (base as any)._onMessage({
+        data: JSON.stringify({
+          type,
+          event_id: `e_${id}`,
+          item: {
+            id,
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'hi' }],
+            ...(status ? { status } : {}),
+          },
+          previous_item_id: null,
+        }),
+      });
 
-    expect(updates.map((u) => u.itemId)).toEqual(['u2']);
-    expect(updates[0].status).toBe('incomplete');
+    send('conversation.item.added', 'a1');
+    send('conversation.item.done', 'd1');
+    send('conversation.item.retrieved', 'r1');
+    send('conversation.item.done', 'x1', 'in_progress');
+
+    expect(updates.map((u) => [u.itemId, u.status])).toEqual([
+      ['a1', 'in_progress'],
+      ['d1', 'completed'],
+      ['r1', 'completed'],
+      ['x1', 'in_progress'],
+    ]);
   });
 
   it('emits function_call and mcp call updates on output items', () => {
