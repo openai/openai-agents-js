@@ -18,19 +18,44 @@ export function truncateOutput(
 
   const originalTokenCount = approximateTokenCountFromBytes(outputBytes);
   const totalLines = countLines(output);
-  const marker = `...${approximateTokenCountFromBytes(outputBytes - maxBytes)} tokens truncated...`;
-  const preservedPrefix = getPreservedLeadingNotice(output);
-  const prefixBytes = byteLength(preservedPrefix);
-  const body = preservedPrefix ? output.slice(preservedPrefix.length) : output;
-  const bodyBudget = Math.max(0, maxBytes - prefixBytes);
-  const truncatedBody =
-    bodyBudget === 0
-      ? marker
-      : truncateWithByteBudget(body, bodyBudget, marker);
-  const truncated = `${preservedPrefix}${truncatedBody}`;
+  const fullMarker = formatTruncationMarker(originalTokenCount);
+  let lineCountPrefix = `Total output lines: ${totalLines}\n\n`;
+  let preservedNotice = getPreservedLeadingNotice(output);
+  const body = preservedNotice ? output.slice(preservedNotice.length) : output;
+
+  if (byteLength(preservedNotice) > maxBytes) {
+    preservedNotice = '';
+  }
+  if (
+    byteLength(lineCountPrefix) +
+      byteLength(preservedNotice) +
+      byteLength(fullMarker) >
+    maxBytes
+  ) {
+    lineCountPrefix = '';
+  }
+
+  const prefixBytes = byteLength(lineCountPrefix) + byteLength(preservedNotice);
+  if (prefixBytes + byteLength(fullMarker) > maxBytes) {
+    return {
+      text: `${lineCountPrefix}${preservedNotice}${truncateUtf8(
+        fullMarker,
+        maxBytes - prefixBytes,
+      )}`,
+      originalTokenCount,
+    };
+  }
+
+  const bodyBudget = maxBytes - prefixBytes - byteLength(fullMarker);
+  const truncatedBody = truncateWithByteBudget(body, bodyBudget);
+  const retainedBytes =
+    byteLength(preservedNotice) + truncatedBody.retainedBytes;
+  const marker = formatTruncationMarker(
+    approximateTokenCountFromBytes(outputBytes - retainedBytes),
+  );
 
   return {
-    text: `Total output lines: ${totalLines}\n\n${truncated}`,
+    text: `${lineCountPrefix}${preservedNotice}${truncatedBody.prefix}${marker}${truncatedBody.suffix}`,
     originalTokenCount,
   };
 }
@@ -69,8 +94,7 @@ export function elapsedSeconds(start: number): number {
 function truncateWithByteBudget(
   output: string,
   maxBytes: number,
-  marker: string,
-): string {
+): { prefix: string; suffix: string; retainedBytes: number } {
   const leftBudget = Math.floor(maxBytes / 2);
   const rightBudget = maxBytes - leftBudget;
   const totalBytes = byteLength(output);
@@ -108,7 +132,29 @@ function truncateWithByteBudget(
   const bytes = new TextEncoder().encode(output);
   const prefix = new TextDecoder().decode(bytes.slice(0, prefixEnd));
   const suffix = new TextDecoder().decode(bytes.slice(suffixStart));
-  return `${prefix}${marker}${suffix}`;
+  return {
+    prefix,
+    suffix,
+    retainedBytes: prefixEnd + totalBytes - suffixStart,
+  };
+}
+
+function formatTruncationMarker(tokens: number): string {
+  return `...${tokens} tokens truncated...`;
+}
+
+function truncateUtf8(output: string, maxBytes: number): string {
+  let byteIndex = 0;
+  let stringIndex = 0;
+  for (const character of output) {
+    const characterBytes = byteLength(character);
+    if (byteIndex + characterBytes > maxBytes) {
+      break;
+    }
+    byteIndex += characterBytes;
+    stringIndex += character.length;
+  }
+  return output.slice(0, stringIndex);
 }
 
 function getPreservedLeadingNotice(output: string): string {
