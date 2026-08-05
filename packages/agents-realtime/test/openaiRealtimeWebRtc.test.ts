@@ -1598,7 +1598,7 @@ describe('OpenAIRealtimeWebRTC microphone track ownership', () => {
     expect(microphoneTrack.stop).toHaveBeenCalled();
   });
 
-  it('re-enables a caller-supplied track it muted before close()', async () => {
+  it('preserves the mute state of a caller-supplied stream across close()', async () => {
     const callerTrack = createFakeTrack();
     installGlobals(createFakeTrack());
 
@@ -1610,16 +1610,18 @@ describe('OpenAIRealtimeWebRTC microphone track ownership', () => {
     await rtc.connect({ apiKey: 'ek_test' });
     rtc.mute(true);
     expect(callerTrack.enabled).toBe(false);
+    expect(rtc.muted).toBe(true);
 
     rtc.close();
 
-    // close() drops the peer connection, so mute(false) can no longer reach this track. Handing
-    // the stream back disabled would make it silent for any later use, including a reconnect.
-    expect(callerTrack.enabled).toBe(true);
+    // The stream stays owned by the application, so close() reports the session as muted and
+    // hands the track back exactly as it was rather than deciding to re-enable capture.
+    expect(callerTrack.enabled).toBe(false);
+    expect(rtc.muted).toBe(true);
     expect(callerTrack.stop).not.toHaveBeenCalled();
   });
 
-  it('leaves a caller-supplied track it never muted untouched on close()', async () => {
+  it('preserves a caller-supplied track the application disabled itself', async () => {
     const callerTrack = createFakeTrack();
     callerTrack.enabled = false;
     installGlobals(createFakeTrack());
@@ -1632,7 +1634,22 @@ describe('OpenAIRealtimeWebRTC microphone track ownership', () => {
     await rtc.connect({ apiKey: 'ek_test' });
     rtc.close();
 
-    // The application disabled this track itself, so restoring it would override its intent.
     expect(callerTrack.enabled).toBe(false);
+    expect(rtc.muted).toBe(false);
+  });
+
+  it('leaves the mute state alone on the transport-owned microphone path too', async () => {
+    const microphoneTrack = createFakeTrack();
+    installGlobals(microphoneTrack);
+
+    const rtc = new OpenAIRealtimeWebRTC();
+    await rtc.connect({ apiKey: 'ek_test' });
+    rtc.mute(true);
+
+    rtc.close();
+
+    // Both paths agree: close() stops the track it owns but does not rewrite `muted`.
+    expect(rtc.muted).toBe(true);
+    expect(microphoneTrack.stop).toHaveBeenCalled();
   });
 });

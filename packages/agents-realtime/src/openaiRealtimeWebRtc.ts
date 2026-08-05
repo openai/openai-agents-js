@@ -727,14 +727,6 @@ export class OpenAIRealtimeWebRTC
     const { dataChannel, peerConnection } = this.#state;
     const shouldNotify = this.#state.status !== 'disconnected';
 
-    // `mute(true)` disables tracks in place, so a caller-supplied stream we keep alive would
-    // otherwise be handed back silent, and clearing the state below leaves a later `mute(false)`
-    // with no peer connection to act on. Undoing it through `mute(false)` runs the exact inverse
-    // of the call that disabled these tracks, while the peer connection is still in state.
-    if (this.#muted && this.options.mediaStream) {
-      this.mute(false);
-    }
-
     this.#state = {
       status: 'disconnected',
       peerConnection: undefined,
