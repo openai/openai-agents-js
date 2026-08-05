@@ -1,5 +1,31 @@
 # @openai/agents-extensions
 
+## 0.14.3
+
+### Patch Changes
+
+- 6e32cdd: fix: preserve streamed reasoning provider metadata across events
+- 15ac711: fix: resolve ambiguous tool and handoff names consistently with a warning by default and an opt-in error policy, including owner-scoped approvals for nested agents
+- 92a0809: fix: enforce sandbox output budgets across core and extension providers
+- Updated dependencies [31bc820]
+- Updated dependencies [90781d8]
+- Updated dependencies [08169df]
+- Updated dependencies [1154aa0]
+- Updated dependencies [15ac711]
+- Updated dependencies [59fa3fc]
+- Updated dependencies [2d5d040]
+- Updated dependencies [427331f]
+- Updated dependencies [4bb80e4]
+- Updated dependencies [78f8581]
+- Updated dependencies [b4a90f9]
+- Updated dependencies [9416c96]
+- Updated dependencies [f431475]
+- Updated dependencies [9cbba54]
+- Updated dependencies [0f9b12e]
+- Updated dependencies [92a0809]
+- Updated dependencies [1eaa425]
+  - @openai/agents-core@0.14.3
+
 ## 0.14.2
 
 ### Patch Changes
