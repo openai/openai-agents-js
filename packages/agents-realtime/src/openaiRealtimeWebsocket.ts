@@ -41,6 +41,18 @@ export interface CreateWebSocketOptions {
   apiKey: string;
 }
 
+type WebSocketConnectionAttempt = {
+  previousModel: OpenAIRealtimeBase['currentModel'];
+  previousApiKey: string | undefined;
+  previousUrl: string | undefined;
+  previousDefaultUrl: string | undefined;
+  cancellationError: Error;
+  failureSelected: boolean;
+  selectedFailure?: unknown;
+  rejectCancellation: (reason?: unknown) => void;
+  rejectSetup?: (reason?: unknown) => void;
+};
+
 /**
  * The options for the OpenAI Realtime WebSocket transport layer.
  */
@@ -105,6 +117,7 @@ export class OpenAIRealtimeWebSocket
   protected _audioLengthMs: number = 0;
   #createWebSocket?: (options: CreateWebSocketOptions) => Promise<WebSocket>;
   #skipOpenEventListeners?: boolean;
+  #connectionAttempt: WebSocketConnectionAttempt | undefined;
   #responseCreateSequencer = new ResponseCreateSequencer(
     (event) => this.#sendEventNow(event),
     (error) => this._onError(error),
@@ -114,6 +127,91 @@ export class OpenAIRealtimeWebSocket
     this._firstAudioTimestamp = undefined;
     this._audioLengthMs = 0;
     this.#currentAudioContentIndex = undefined;
+  }
+
+  #transitionToDisconnected(websocket?: WebSocket) {
+    if (websocket && this.#state.websocket !== websocket) {
+      return;
+    }
+
+    this.#responseCreateSequencer.releaseWaiters();
+    this.#resetAudioPlaybackState();
+
+    if (this.#state.status === 'disconnected') {
+      return;
+    }
+
+    this.#state = {
+      status: 'disconnected',
+      websocket: undefined,
+    };
+
+    let notificationError: unknown;
+    try {
+      this.emit('connection_change', this.#state.status);
+    } catch (error) {
+      notificationError = error;
+    }
+    try {
+      this._onClose();
+    } catch (error) {
+      notificationError ??= error;
+    }
+
+    if (notificationError) {
+      throw notificationError;
+    }
+  }
+
+  #reportError(error: unknown) {
+    try {
+      this._onError(error);
+    } catch {
+      // Error observers must not interrupt connection state cleanup.
+    }
+  }
+
+  #restoreConnectionConfig(attempt: WebSocketConnectionAttempt) {
+    this.currentModel = attempt.previousModel;
+    this.#apiKey = attempt.previousApiKey;
+    this.#url = attempt.previousUrl;
+    this.#defaultUrl = attempt.previousDefaultUrl;
+  }
+
+  #selectConnectionFailure(
+    attempt: WebSocketConnectionAttempt,
+    failure: unknown,
+  ) {
+    if (!attempt.failureSelected) {
+      attempt.failureSelected = true;
+      attempt.selectedFailure = failure;
+    }
+  }
+
+  #getConnectionFailure(attempt: WebSocketConnectionAttempt) {
+    return attempt.failureSelected
+      ? attempt.selectedFailure
+      : attempt.cancellationError;
+  }
+
+  #closeWebSocket(websocket: WebSocket | undefined) {
+    let cleanupError: unknown;
+
+    try {
+      this.#transitionToDisconnected(websocket);
+    } catch (error) {
+      cleanupError = error;
+    }
+
+    try {
+      websocket?.close();
+    } catch (error) {
+      cleanupError ??= error;
+    }
+
+    if (cleanupError) {
+      throw cleanupError;
+    }
   }
 
   constructor(options: OpenAIRealtimeWebSocketOptions = {}) {
@@ -177,10 +275,10 @@ export class OpenAIRealtimeWebSocket
     resolve: (value: void) => void,
     reject: (reason?: any) => void,
     sessionConfig: Partial<RealtimeSessionConfig>,
+    attempt: WebSocketConnectionAttempt,
   ) {
     if (this.#state.websocket) {
-      resolve();
-      return;
+      throw new UserError('WebSocket is already connected or connecting.');
     }
 
     if (!this.#apiKey) {
@@ -225,6 +323,16 @@ export class OpenAIRealtimeWebSocket
 
       ws = new WebSocket(this.#url!, websocketArguments as any);
     }
+
+    if (this.#connectionAttempt !== attempt) {
+      try {
+        ws.close();
+      } catch (cleanupError) {
+        this.#reportError(cleanupError);
+      }
+      throw attempt.cancellationError;
+    }
+
     this.#state = {
       status: 'connecting',
       websocket: ws,
@@ -232,12 +340,32 @@ export class OpenAIRealtimeWebSocket
     this.emit('connection_change', this.#state.status);
 
     const onSocketOpenReady = () => {
+      const isActiveConnection = () =>
+        this.#connectionAttempt === attempt && this.#state.websocket === ws;
+      if (!isActiveConnection()) {
+        return;
+      }
+
       this.#state = {
         status: 'connected',
         websocket: ws,
       };
-      this.emit('connection_change', this.#state.status);
-      this._onOpen();
+
+      try {
+        this.emit('connection_change', this.#state.status);
+        if (!isActiveConnection()) {
+          reject(attempt.cancellationError);
+          return;
+        }
+        this._onOpen();
+        if (!isActiveConnection()) {
+          reject(attempt.cancellationError);
+          return;
+        }
+      } catch (error) {
+        reject(error);
+        return;
+      }
       resolve();
     };
 
@@ -248,17 +376,31 @@ export class OpenAIRealtimeWebSocket
     }
 
     ws.addEventListener('error', (error) => {
-      this._onError(error);
-      this.#state = {
-        status: 'disconnected',
-        websocket: undefined,
-      };
-      this.emit('connection_change', this.#state.status);
+      if (this.#state.websocket !== ws) {
+        return;
+      }
+
       reject(error);
+      if (this.#connectionAttempt === attempt) {
+        this.#restoreConnectionConfig(attempt);
+      }
+      this.#reportError(error);
+      try {
+        this.#closeWebSocket(ws);
+      } catch (cleanupError) {
+        this.#reportError(cleanupError);
+      }
     });
 
     ws.addEventListener('message', (message) => {
+      if (this.#state.websocket !== ws) {
+        return;
+      }
+
       this._onMessage(message);
+      if (this.#state.websocket !== ws) {
+        return;
+      }
       const { data: parsed, isGeneric } = parseRealtimeEvent(message);
       if (!parsed || isGeneric) {
         return;
@@ -335,44 +477,134 @@ export class OpenAIRealtimeWebSocket
     });
 
     ws.addEventListener('close', () => {
-      this.#state = {
-        status: 'disconnected',
-        websocket: undefined,
-      };
-      this.#responseCreateSequencer.releaseWaiters();
-      this.emit('connection_change', this.#state.status);
-      this._onClose();
+      if (this.#state.websocket !== ws) {
+        return;
+      }
+
+      const closedBeforeOpen = this.#state.status === 'connecting';
+      if (closedBeforeOpen) {
+        reject(new Error('WebSocket closed before the connection was ready.'));
+      }
+      if (this.#connectionAttempt === attempt) {
+        this.#restoreConnectionConfig(attempt);
+      }
+      try {
+        this.#transitionToDisconnected(ws);
+      } catch (cleanupError) {
+        this.#reportError(cleanupError);
+      }
     });
   }
 
   async connect(options: RealtimeTransportLayerConnectOptions) {
-    const model = options.model ?? this.currentModel;
-    this.currentModel = model;
-    this.#apiKey = await this._getApiKey(options);
-    const callId = options.callId;
-    let url: string;
-    if (options.url) {
-      url = options.url;
-      this.#defaultUrl = options.url;
-    } else if (callId) {
-      url = `wss://api.openai.com/v1/realtime?call_id=${callId}`;
-    } else if (this.#defaultUrl) {
-      url = this.#defaultUrl;
-    } else {
-      url = `wss://api.openai.com/v1/realtime?model=${this.currentModel}`;
+    if (this.#connectionAttempt || this.#state.status !== 'disconnected') {
+      throw new UserError('WebSocket is already connected or connecting.');
     }
-    this.#url = url;
 
-    const sessionConfig: Partial<RealtimeSessionConfig> = {
-      ...(options.initialSessionConfig || {}),
-      model: this.currentModel,
+    let rejectCancellation!: (reason?: unknown) => void;
+    const cancellation = new Promise<never>((_resolve, reject) => {
+      rejectCancellation = reject;
+    });
+    const attempt: WebSocketConnectionAttempt = {
+      previousModel: this.currentModel,
+      previousApiKey: this.#apiKey,
+      previousUrl: this.#url,
+      previousDefaultUrl: this.#defaultUrl,
+      cancellationError: new Error(
+        'WebSocket connection was closed before setup completed.',
+      ),
+      failureSelected: false,
+      rejectCancellation,
+    };
+    this.#connectionAttempt = attempt;
+
+    const prepareConnection = async () => {
+      try {
+        const model = options.model ?? this.currentModel;
+        this.currentModel = model;
+        const apiKey = await this._getApiKey(options);
+        if (this.#connectionAttempt !== attempt) {
+          throw this.#getConnectionFailure(attempt);
+        }
+        this.#apiKey = apiKey;
+
+        const callId = options.callId;
+        let url: string;
+        if (options.url) {
+          url = options.url;
+          this.#defaultUrl = options.url;
+        } else if (callId) {
+          url = `wss://api.openai.com/v1/realtime?call_id=${callId}`;
+        } else if (this.#defaultUrl) {
+          url = this.#defaultUrl;
+        } else {
+          url = `wss://api.openai.com/v1/realtime?model=${this.currentModel}`;
+        }
+        this.#url = url;
+
+        const sessionConfig: Partial<RealtimeSessionConfig> = {
+          ...(options.initialSessionConfig || {}),
+          model: this.currentModel,
+        };
+
+        await new Promise<void>((resolve, reject) => {
+          const resolveSetup = () => {
+            if (attempt.rejectSetup === rejectSetup) {
+              attempt.rejectSetup = undefined;
+            }
+            resolve();
+          };
+          const rejectSetup = (reason?: unknown) => {
+            this.#selectConnectionFailure(attempt, reason);
+            if (attempt.rejectSetup === rejectSetup) {
+              attempt.rejectSetup = undefined;
+            }
+            reject(reason);
+          };
+          attempt.rejectSetup = rejectSetup;
+          this.#setupWebSocket(
+            resolveSetup,
+            rejectSetup,
+            sessionConfig,
+            attempt,
+          ).catch(rejectSetup);
+        });
+
+        if (
+          this.#connectionAttempt !== attempt ||
+          this.#state.status !== 'connected'
+        ) {
+          throw this.#getConnectionFailure(attempt);
+        }
+        await this.updateSessionConfig(sessionConfig);
+        if (
+          this.#connectionAttempt !== attempt ||
+          this.#state.status !== 'connected'
+        ) {
+          throw this.#getConnectionFailure(attempt);
+        }
+      } catch (error) {
+        this.#selectConnectionFailure(attempt, error);
+        if (this.#connectionAttempt === attempt) {
+          const websocket = this.#state.websocket;
+          this.#restoreConnectionConfig(attempt);
+          try {
+            this.#closeWebSocket(websocket);
+          } catch (cleanupError) {
+            this.#reportError(cleanupError);
+          }
+        }
+        throw this.#getConnectionFailure(attempt);
+      }
     };
 
-    await new Promise<void>((resolve, reject) => {
-      this.#setupWebSocket(resolve, reject, sessionConfig).catch(reject);
-    });
-
-    await this.updateSessionConfig(sessionConfig);
+    try {
+      await Promise.race([prepareConnection(), cancellation]);
+    } finally {
+      if (this.#connectionAttempt === attempt) {
+        this.#connectionAttempt = undefined;
+      }
+    }
   }
 
   /**
@@ -415,12 +647,17 @@ export class OpenAIRealtimeWebSocket
    * This will also reset any internal connection tracking used for interruption handling.
    */
   close() {
-    this.#responseCreateSequencer.releaseWaiters();
-    this.#state.websocket?.close();
-    this.#currentItemId = undefined;
-    this._firstAudioTimestamp = undefined;
-    this._audioLengthMs = 0;
-    this.#currentAudioContentIndex = undefined;
+    const attempt = this.#connectionAttempt;
+    if (attempt) {
+      this.#connectionAttempt = undefined;
+      this.#restoreConnectionConfig(attempt);
+      const failure = this.#getConnectionFailure(attempt);
+      attempt.rejectSetup?.(failure);
+      attempt.rejectCancellation(failure);
+    }
+
+    const websocket = this.#state.websocket;
+    this.#closeWebSocket(websocket);
   }
 
   /**
