@@ -153,6 +153,9 @@ export class GuardrailExecutionError extends AgentsError {
 /**
  * Error thrown when a tool call fails.
  */
+const toolCallErrors = new WeakSet<ToolCallError>();
+const toolTimeoutErrors = new WeakSet<ToolTimeoutError>();
+
 export class ToolCallError extends AgentsError {
   error: Error;
   constructor(
@@ -162,6 +165,7 @@ export class ToolCallError extends AgentsError {
   ) {
     super(message, state);
     this.error = error;
+    toolCallErrors.add(this);
   }
 }
 
@@ -183,6 +187,38 @@ export class ToolTimeoutError extends AgentsError {
     super(`Tool '${toolName}' timed out after ${timeoutMs}ms.`, state);
     this.toolName = toolName;
     this.timeoutMs = timeoutMs;
+    toolTimeoutErrors.add(this);
+  }
+}
+
+/** @internal */
+export function isToolTimeoutError(error: unknown): error is ToolTimeoutError {
+  return toolTimeoutErrors.has(error as ToolTimeoutError);
+}
+
+/** @internal */
+export function clearToolErrorState(
+  error: unknown,
+  state: RunState<any, Agent<any, any>>,
+): void {
+  const visited = new WeakSet<object>();
+  let current = error;
+  while (toolCallErrors.has(current as ToolCallError)) {
+    const toolCallError = current as ToolCallError;
+    if (visited.has(toolCallError)) {
+      return;
+    }
+    visited.add(toolCallError);
+    if (toolCallError.state === state) {
+      toolCallError.state = undefined;
+    }
+    current = toolCallError.error;
+  }
+  if (toolTimeoutErrors.has(current as ToolTimeoutError)) {
+    const timeoutError = current as ToolTimeoutError;
+    if (timeoutError.state === state) {
+      timeoutError.state = undefined;
+    }
   }
 }
 

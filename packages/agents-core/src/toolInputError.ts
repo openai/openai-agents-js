@@ -11,14 +11,24 @@ type InvalidToolInputFailureOptions = {
   state?: RunState<any, Agent<any, any>>;
   originalError: unknown;
   toolInvocation?: ToolInvocationErrorContext;
+  disposition?: InvalidToolInputDisposition;
 };
 
 export type InvalidToolInputFailure = {
   error: InvalidToolInputError;
   redacted: boolean;
+  disposition: InvalidToolInputDisposition;
+};
+
+export type InvalidToolInputDisposition = {
+  redacted: boolean;
 };
 
 const redactedInvalidToolInputErrors = new WeakSet<InvalidToolInputError>();
+const invalidToolInputFailures = new WeakMap<
+  InvalidToolInputError,
+  InvalidToolInputFailure
+>();
 
 /**
  * Constructs invalid tool input errors without retaining model-produced input
@@ -31,8 +41,14 @@ export function createInvalidToolInputFailure({
   state,
   originalError,
   toolInvocation,
+  disposition: requestedDisposition,
 }: InvalidToolInputFailureOptions): InvalidToolInputFailure {
-  const redacted = logger.dontLogToolData;
+  const disposition =
+    requestedDisposition ?? createInvalidToolInputDisposition();
+  if (logger.dontLogToolData) {
+    disposition.redacted = true;
+  }
+  const redacted = disposition.redacted;
   const error = new InvalidToolInputError(
     message,
     redacted ? undefined : state,
@@ -42,10 +58,37 @@ export function createInvalidToolInputFailure({
   if (redacted) {
     redactedInvalidToolInputErrors.add(error);
   }
-  return {
+  const failure = {
     error,
     redacted,
+    disposition,
   };
+  invalidToolInputFailures.set(error, failure);
+  return failure;
+}
+
+/** @internal */
+export function createInvalidToolInputDisposition(): InvalidToolInputDisposition {
+  return { redacted: logger.dontLogToolData };
+}
+
+/** @internal */
+export function refreshInvalidToolInputFailure(
+  failure: InvalidToolInputFailure,
+): boolean {
+  if (logger.dontLogToolData) {
+    failure.disposition.redacted = true;
+  }
+  if (
+    failure.disposition.redacted &&
+    !redactedInvalidToolInputErrors.has(failure.error)
+  ) {
+    failure.error = new InvalidToolInputError(failure.error.message);
+    redactedInvalidToolInputErrors.add(failure.error);
+    invalidToolInputFailures.set(failure.error, failure);
+  }
+  failure.redacted = failure.disposition.redacted;
+  return failure.redacted;
 }
 
 /** @internal */
@@ -53,4 +96,11 @@ export function isRedactedInvalidToolInputError(
   error: unknown,
 ): error is InvalidToolInputError {
   return redactedInvalidToolInputErrors.has(error as InvalidToolInputError);
+}
+
+/** @internal */
+export function getInvalidToolInputFailure(
+  error: unknown,
+): InvalidToolInputFailure | undefined {
+  return invalidToolInputFailures.get(error as InvalidToolInputError);
 }

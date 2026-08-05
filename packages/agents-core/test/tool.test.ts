@@ -1215,38 +1215,136 @@ describe('tool.invoke', () => {
     },
   );
 
-  it('redacts parser context before invoking errorFunction', async () => {
-    const secret = 'SECRET_CUSTOM_ERROR_FUNCTION_123';
+  it.each([
+    ['redacted', true],
+    ['diagnostic', false],
+  ] as const)(
+    'applies %s parser context before invoking errorFunction',
+    async (_mode, dontLogToolData) => {
+      const secret = 'SECRET_CUSTOM_ERROR_FUNCTION_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(dontLogToolData);
+      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+      let capturedError: unknown;
+      let capturedDetails: unknown;
+      const t = tool({
+        name: 'test',
+        description: 'test',
+        parameters: z.object({ count: z.number() }),
+        execute: async () => 'ok',
+        errorFunction: (_ctx, error, details) => {
+          capturedError = error;
+          capturedDetails = details;
+          return details?.toolCall?.arguments ?? 'handled';
+        },
+      });
+      const ctx = new RunContext();
+      const invalidInput = JSON.stringify({ count: secret });
+      const details = {
+        toolCall: {
+          type: 'function_call' as const,
+          callId: 'call_custom_error_function',
+          name: 'test',
+          arguments: invalidInput,
+        },
+      };
+
+      try {
+        const res = await t.invoke(ctx, invalidInput, details);
+
+        if (dontLogToolData) {
+          expect(res).toBe('handled');
+          expect(capturedError).toMatchObject({
+            message: 'Invalid JSON input for tool',
+            originalError: undefined,
+            toolInvocation: undefined,
+          });
+          expect(capturedDetails).toBeUndefined();
+          expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(secret);
+        } else {
+          expect(res).toBe(invalidInput);
+          expect(capturedError).toMatchObject({
+            message: 'Invalid JSON input for tool',
+            toolInvocation: { runContext: ctx, input: invalidInput, details },
+          });
+          expect(capturedDetails).toBe(details);
+        }
+      } finally {
+        debugSpy.mockRestore();
+        flagSpy.mockRestore();
+      }
+    },
+  );
+
+  it('discards direct fallback output when secure mode is enabled during errorFunction', async () => {
+    const secret = 'SECRET_DIRECT_LATE_ERROR_FUNCTION_123';
+    let redactToolData = false;
     const flagSpy = vi
       .spyOn(logger, 'dontLogToolData', 'get')
-      .mockReturnValue(true);
-    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
-    let capturedError: unknown;
+      .mockImplementation(() => redactToolData);
     const t = tool({
-      name: 'test',
-      description: 'test',
-      parameters: z.object({ count: z.number() }),
-      execute: async () => 'ok',
-      errorFunction: (_ctx, error) => {
-        capturedError = error;
-        return 'handled';
+      name: 'late_direct_redaction',
+      description: 'Promote redaction while handling invalid input.',
+      parameters: z.object({ value: z.number() }),
+      execute: async () => 'unexpected',
+      errorFunction: (_context, _error, details) => {
+        redactToolData = true;
+        return details?.toolCall?.arguments ?? 'unexpected';
       },
     });
-    const ctx = new RunContext();
-    const invalidInput = JSON.stringify({ count: secret });
+    const input = JSON.stringify({ value: secret });
+    const details = {
+      toolCall: {
+        type: 'function_call' as const,
+        callId: 'call_late_direct_redaction',
+        name: 'late_direct_redaction',
+        arguments: input,
+      },
+    };
 
     try {
-      const res = await t.invoke(ctx, invalidInput);
+      const error = await t
+        .invoke(new RunContext(), input, details)
+        .catch((caught) => caught);
 
-      expect(res).toBe('handled');
-      expect(capturedError).toMatchObject({
+      expect(error).toBeInstanceOf(InvalidToolInputError);
+      expect(error).toMatchObject({
         message: 'Invalid JSON input for tool',
         originalError: undefined,
         toolInvocation: undefined,
       });
-      expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(secret);
+      expect(JSON.stringify(error)).not.toContain(secret);
     } finally {
-      debugSpy.mockRestore();
+      flagSpy.mockRestore();
+    }
+  });
+
+  it('preserves errorFunction details for execution errors in redacted mode', async () => {
+    const flagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(true);
+    const details = { resumeState: 'resume_execution_error' };
+    let capturedDetails: unknown;
+    const t = tool({
+      name: 'execution_error',
+      description: 'test',
+      parameters: z.object({}),
+      execute: async () => {
+        throw new Error('execution failed');
+      },
+      errorFunction: (_ctx, _error, callbackDetails) => {
+        capturedDetails = callbackDetails;
+        return 'handled';
+      },
+    });
+
+    try {
+      const result = await t.invoke(new RunContext(), '{}', details);
+
+      expect(result).toBe('handled');
+      expect(capturedDetails).toBe(details);
+    } finally {
       flagSpy.mockRestore();
     }
   });
@@ -1282,6 +1380,49 @@ describe('tool.invoke', () => {
       );
     } finally {
       debugSpy.mockRestore();
+      flagSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['number', 0],
+    ['boolean', false],
+    ['symbol', Symbol('parser failure')],
+  ])('redacts a %s parser-thrown value', async (_label, thrownValue) => {
+    const flagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(true);
+    const execute = vi.fn(async () => 'unexpected');
+    const t = tool({
+      name: 'arbitrary_parser_failure',
+      description: 'test',
+      parameters: z.object({
+        value: z.string().refine(() => {
+          throw thrownValue;
+        }),
+      }),
+      execute,
+      errorFunction: null,
+    });
+    let caught: unknown = 'not thrown';
+
+    try {
+      try {
+        await t.invoke(new RunContext(), '{"value":"trigger"}');
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(caught).toBeInstanceOf(InvalidToolInputError);
+      expect(caught).toMatchObject({
+        message: 'Invalid JSON input for tool',
+        originalError: undefined,
+        toolInvocation: undefined,
+      });
+    } finally {
       flagSpy.mockRestore();
     }
   });

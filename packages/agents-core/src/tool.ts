@@ -8,7 +8,6 @@ import {
   JsonObjectSchemaStrict,
   UnknownContext,
 } from './types';
-import { safeExecute } from './utils/safeExecute';
 import { toFunctionToolName } from './utils/tools';
 import { getSchemaAndParserFromInputType } from './utils/tools';
 import { isZodObject } from './utils/typeGuards';
@@ -17,7 +16,14 @@ import { RunContext } from './runContext';
 import type { RunConfig } from './run';
 import type { RunResult } from './result';
 import { InvalidToolOutputError, ToolTimeoutError, UserError } from './errors';
-import { createInvalidToolInputFailure } from './toolInputError';
+import {
+  createInvalidToolInputDisposition,
+  createInvalidToolInputFailure,
+  getInvalidToolInputFailure,
+  type InvalidToolInputDisposition,
+  isRedactedInvalidToolInputError,
+  refreshInvalidToolInputFailure,
+} from './toolInputError';
 import logger, { logToolActionWarning } from './logger';
 import { getCurrentSpan } from './tracing';
 import { RunToolApprovalItem, RunToolCallOutputItem } from './items';
@@ -84,6 +90,87 @@ const FUNCTION_TOOL_OUTPUT_VALIDATOR = Symbol(
 const STATIC_FUNCTION_TOOL_APPROVAL_POLICIES = new WeakSet<
   ToolApprovalFunction<any>
 >();
+type FunctionToolInputParserRegistration = {
+  parser: (input: string) => any;
+  token: object;
+};
+
+type FunctionToolInputParseResult =
+  { success: true; value: any } | { success: false; error: unknown };
+
+export type FunctionToolPreparedInput = {
+  consumed: boolean;
+  input: string;
+  token: object;
+  disposition?: InvalidToolInputDisposition;
+  result: { success: true; value: any } | { success: false; error: unknown };
+};
+
+const functionToolInputParsers = new WeakMap<
+  object,
+  FunctionToolInputParserRegistration
+>();
+const functionToolPreparedInputs = new WeakMap<
+  object,
+  FunctionToolPreparedInput
+>();
+
+function parseFunctionToolInput(
+  parser: (input: string) => any,
+  input: string,
+): FunctionToolInputParseResult {
+  try {
+    return { success: true, value: parser(input) };
+  } catch (error) {
+    return { success: false, error };
+  }
+}
+
+/** @internal */
+export function prepareFunctionToolInput(
+  tool: Pick<FunctionTool<any, any, any>, 'invoke'>,
+  input: string,
+): FunctionToolPreparedInput | undefined {
+  const registration = functionToolInputParsers.get(tool.invoke);
+  if (!registration) {
+    return undefined;
+  }
+  const result = parseFunctionToolInput(registration.parser, input);
+  const base = {
+    consumed: false,
+    input,
+    token: registration.token,
+  };
+  if (result.success) {
+    return { ...base, result };
+  }
+  return {
+    ...base,
+    result,
+    disposition: createInvalidToolInputDisposition(),
+  };
+}
+
+/** @internal */
+export function setFunctionToolPreparedInput(
+  details: object,
+  preparedInput: FunctionToolPreparedInput,
+): void {
+  functionToolPreparedInputs.set(details, preparedInput);
+}
+
+function copyFunctionToolPreparedInput(
+  source: object | undefined,
+  target: object | undefined,
+): void {
+  if (!source || !target) {
+    return;
+  }
+  const preparedInput = functionToolPreparedInputs.get(source);
+  if (preparedInput) {
+    functionToolPreparedInputs.set(target, preparedInput);
+  }
+}
 
 export function hasDynamicFunctionToolApprovalPolicy(
   tool: Pick<FunctionTool<any, any, any>, 'needsApproval'>,
@@ -1989,6 +2076,7 @@ async function invokeFunctionToolWithTimeout<
         })
       : { signal: invocationSignal }
     : details;
+  copyFunctionToolPreparedInput(details, invokeDetails);
   const timeoutError = new ToolTimeoutError({
     toolName,
     timeoutMs,
@@ -2076,6 +2164,7 @@ export async function invokeFunctionTool<
         : cloneObjectWithDescriptorsAndOverrides(invocationDetails, {
             [FUNCTION_TOOL_TIMEOUT_ALREADY_ENFORCED]: true as const,
           });
+    copyFunctionToolPreparedInput(invocationDetails, detailsWithFlag);
 
     return tool.invoke(invocationRunContext, invocationInput, detailsWithFlag);
   };
@@ -2166,6 +2255,7 @@ export function tool<
     name,
     { strict: strictMode },
   );
+  const inputParserToken = {};
   const zodOutputSchema = isZodObject(options.outputSchema)
     ? options.outputSchema
     : undefined;
@@ -2217,22 +2307,42 @@ export function tool<
     input: string,
     details?: ToolCallDetails,
   ): Promise<ToolExecuteResult<TOutputSchema, Result>> {
-    const [error, parsed] = await safeExecute(() => parser(input));
-    if (error !== null) {
-      if (logger.dontLogToolData) {
+    const preparedInput = details
+      ? functionToolPreparedInputs.get(details)
+      : undefined;
+    const canUsePreparedInput =
+      preparedInput !== undefined &&
+      !preparedInput.consumed &&
+      preparedInput.input === input &&
+      preparedInput.token === inputParserToken;
+    if (canUsePreparedInput) {
+      preparedInput.consumed = true;
+    }
+    const parseResult =
+      canUsePreparedInput && preparedInput
+        ? preparedInput.result
+        : parseFunctionToolInput(parser, input);
+    if (!parseResult.success) {
+      // supply the same context as options.execute for consuming
+      // downstream code to implement self-healing and/or tracing
+      const failure = createInvalidToolInputFailure({
+        message: 'Invalid JSON input for tool',
+        originalError: parseResult.error,
+        toolInvocation: { runContext, input, details },
+        disposition:
+          canUsePreparedInput && preparedInput
+            ? preparedInput.disposition
+            : undefined,
+      });
+      if (failure.redacted || logger.dontLogToolData) {
+        refreshInvalidToolInputFailure(failure);
         logger.debug(`Invalid JSON input for tool ${name}`);
       } else {
         logger.debug(`Invalid JSON input for tool ${name}: ${input}`);
       }
-
-      // supply the same context as options.execute for consuming
-      // downstream code to implement self-healing and/or tracing
-      throw createInvalidToolInputFailure({
-        message: 'Invalid JSON input for tool',
-        originalError: error,
-        toolInvocation: { runContext, input, details },
-      }).error;
+      throw failure.error;
     }
+    const parsed = parseResult.value;
 
     if (logger.dontLogToolData) {
       logger.debug(`Invoking tool ${name}`);
@@ -2272,24 +2382,63 @@ export function tool<
         throw error;
       }
 
-      if (toolErrorFunction) {
-        const currentSpan = getCurrentSpan();
-        currentSpan?.setError({
-          message: 'Error running tool (non-fatal)',
-          data: {
-            tool_name: name,
-            error: error.toString(),
-          },
-        });
-        return validateOutput(
-          await toolErrorFunction(runContext, error, details),
-          runContext,
-          details,
-        );
-      }
-
-      throw error;
+      return resolveToolFailure(runContext, error, details);
     });
+  }
+
+  async function resolveToolFailure(
+    runContext: RunContext<Context>,
+    error: any,
+    details?: ToolCallDetails,
+  ): Promise<ToolExecuteResult<TOutputSchema, Result>> {
+    if (!toolErrorFunction) {
+      throw error;
+    }
+    const invalidInputFailure = getInvalidToolInputFailure(error);
+    const redactedBeforeCallback = invalidInputFailure
+      ? refreshInvalidToolInputFailure(invalidInputFailure)
+      : isRedactedInvalidToolInputError(error);
+    const callbackError = invalidInputFailure?.error ?? error;
+    const errorDetails = redactedBeforeCallback ? undefined : details;
+    const currentSpan = getCurrentSpan();
+    currentSpan?.setError({
+      message: 'Error running tool (non-fatal)',
+      data: {
+        tool_name: name,
+        error: callbackError.toString(),
+      },
+    });
+    try {
+      const output = await toolErrorFunction(
+        runContext,
+        callbackError,
+        errorDetails,
+      );
+      if (
+        invalidInputFailure &&
+        !redactedBeforeCallback &&
+        refreshInvalidToolInputFailure(invalidInputFailure)
+      ) {
+        throw invalidInputFailure.error;
+      }
+      const validatedOutput = validateOutput(output, runContext, errorDetails);
+      if (
+        invalidInputFailure &&
+        !redactedBeforeCallback &&
+        refreshInvalidToolInputFailure(invalidInputFailure)
+      ) {
+        throw invalidInputFailure.error;
+      }
+      return validatedOutput;
+    } catch (callbackFailure) {
+      if (
+        invalidInputFailure &&
+        refreshInvalidToolInputFailure(invalidInputFailure)
+      ) {
+        throw invalidInputFailure.error;
+      }
+      throw callbackFailure;
+    }
   }
 
   async function invoke(
@@ -2328,6 +2477,10 @@ export function tool<
   if (typeof options.needsApproval !== 'function') {
     STATIC_FUNCTION_TOOL_APPROVAL_POLICIES.add(needsApproval);
   }
+  functionToolInputParsers.set(invoke, {
+    parser,
+    token: inputParserToken,
+  });
 
   const isEnabled: ToolEnabledFunction<Context> =
     typeof options.isEnabled === 'function'

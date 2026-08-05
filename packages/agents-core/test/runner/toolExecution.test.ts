@@ -58,7 +58,9 @@ import {
 } from '../../src/toolGuardrail';
 import {
   FunctionTool,
+  type FunctionToolCustomDataContext,
   FunctionToolResult,
+  type ToolCallDetails,
   applyPatchTool,
   computerTool,
   shellTool,
@@ -4197,6 +4199,121 @@ describe('executeShellActions', () => {
       expect(startedTools).toEqual(['failing_tool']);
     });
 
+    it('parses capped function calls when their scheduler slot starts', async () => {
+      const order: string[] = [];
+      let ready = false;
+      runner = new Runner({
+        tracingDisabled: true,
+        toolExecution: { maxFunctionToolConcurrency: 1 },
+      });
+      const firstTool = tool({
+        name: 'prepare_refinement_state',
+        description: 'Prepare state for the next parser.',
+        parameters: z.object({}),
+        execute: vi.fn(async () => {
+          order.push('execute-first');
+          ready = true;
+          return 'first-ok';
+        }),
+      }) as unknown as FunctionTool;
+      const secondTool = tool({
+        name: 'observe_refinement_state',
+        description: 'Observe state when parsing starts.',
+        parameters: z.object({
+          value: z.string().refine(() => {
+            order.push(`parse-second-ready-${ready}`);
+            return ready;
+          }),
+        }),
+        execute: vi.fn(async () => 'second-ok'),
+      }) as unknown as FunctionTool;
+
+      const results = await executeFunctionToolCalls(
+        state._currentAgent,
+        [
+          {
+            toolCall: {
+              ...toolCall,
+              name: 'prepare_refinement_state',
+              callId: 'c1',
+              arguments: '{}',
+            },
+            tool: firstTool,
+          },
+          {
+            toolCall: {
+              ...toolCall,
+              name: 'observe_refinement_state',
+              callId: 'c2',
+              arguments: JSON.stringify({ value: 'ok' }),
+            },
+            tool: secondTool,
+          },
+        ],
+        runner,
+        state,
+      );
+
+      expect(order).toEqual(['execute-first', 'parse-second-ready-true']);
+      expect(results).toMatchObject([
+        { type: 'function_output', output: 'first-ok' },
+        { type: 'function_output', output: 'second-ok' },
+      ]);
+    });
+
+    it('does not parse queued function calls after a capped failure', async () => {
+      const queuedRefinement = vi.fn(() => true);
+      runner = new Runner({
+        tracingDisabled: true,
+        toolExecution: { maxFunctionToolConcurrency: 1 },
+      });
+      const failingTool = tool({
+        name: 'fail_before_queued_parser',
+        description: 'Fail before the queued parser starts.',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: vi.fn(async () => {
+          throw new Error('boom');
+        }),
+      }) as unknown as FunctionTool;
+      const queuedTool = tool({
+        name: 'queued_parser',
+        description: 'Remain queued after the failure.',
+        parameters: z.object({ value: z.string().refine(queuedRefinement) }),
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+
+      await expect(
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'fail_before_queued_parser',
+                callId: 'c1',
+                arguments: '{}',
+              },
+              tool: failingTool,
+            },
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'queued_parser',
+                callId: 'c2',
+                arguments: JSON.stringify({ value: 'queued' }),
+              },
+              tool: queuedTool,
+            },
+          ],
+          runner,
+          state,
+        ),
+      ).rejects.toThrow(/Failed to run function tools/);
+
+      expect(queuedRefinement).not.toHaveBeenCalled();
+    });
+
     it('does not expose parentRunConfig on public tool callback details', async () => {
       const circularProvider: Record<string, unknown> = {};
       circularProvider.self = circularProvider;
@@ -4908,118 +5025,1872 @@ describe('executeShellActions', () => {
       }
     });
 
-    it('maps parse failures through a structured error fallback', async () => {
-      const secret = 'SECRET_STRUCTURED_PARSE_ARGUMENT_123';
+    it.each([
+      ['redacted', true],
+      ['diagnostic', false],
+    ] as const)(
+      'maps %s parse failures through a structured error fallback',
+      async (_mode, dontLogToolData) => {
+        const secret = 'SECRET_STRUCTURED_PARSE_ARGUMENT_123';
+        const flagSpy = vi
+          .spyOn(logger, 'dontLogToolData', 'get')
+          .mockReturnValue(dontLogToolData);
+        const errorFunction = vi.fn(
+          (
+            _context: RunContext,
+            _error: unknown,
+            details?: ToolCallDetails,
+          ) => ({
+            status: 'invalid_input' as const,
+            detail: details?.toolCall?.arguments ?? 'redacted',
+          }),
+        );
+        const t = tool({
+          name: 'structured_parser',
+          description: 'Parse structured input.',
+          parameters: z.object({ value: z.string() }),
+          outputSchema: z.object({
+            status: z.literal('invalid_input'),
+            detail: z.string(),
+          }),
+          errorFunction,
+          execute: vi.fn(async () => ({
+            status: 'invalid_input' as const,
+            detail: 'unexpected',
+          })),
+        }) as unknown as FunctionTool;
+        const invalidToolCall = {
+          ...toolCall,
+          name: 'structured_parser',
+          arguments: secret,
+        };
+
+        try {
+          const res = await withTrace('test', () =>
+            executeFunctionToolCalls(
+              state._currentAgent,
+              [{ toolCall: invalidToolCall, tool: t }],
+              runner,
+              state,
+            ),
+          );
+
+          expect(res[0]).toMatchObject({
+            type: 'function_output',
+            output: {
+              status: 'invalid_input',
+              detail: dontLogToolData ? 'redacted' : secret,
+            },
+            runItem: {
+              rawItem: {
+                output: {
+                  type: 'text',
+                  text: JSON.stringify({
+                    status: 'invalid_input',
+                    detail: dontLogToolData ? 'redacted' : secret,
+                  }),
+                },
+              },
+            },
+          });
+          expect(errorFunction).toHaveBeenCalledWith(
+            state._context,
+            expect.objectContaining({
+              name: 'InvalidToolInputError',
+              originalError: dontLogToolData ? undefined : expect.anything(),
+              toolInvocation: dontLogToolData
+                ? undefined
+                : expect.objectContaining({ input: secret }),
+            }),
+            dontLogToolData ? undefined : { toolCall: invalidToolCall },
+          );
+          const capturedError = errorFunction.mock.calls[0][1] as
+            InvalidToolInputError | undefined;
+          expect(capturedError).toBeDefined();
+          if (dontLogToolData) {
+            expect(capturedError?.toolInvocation).toBeUndefined();
+            expect(errorFunction.mock.calls[0][2]).toBeUndefined();
+            expect(JSON.stringify(res[0])).not.toContain(secret);
+          } else {
+            expect(capturedError?.toolInvocation).toMatchObject({
+              input: secret,
+            });
+            expect(errorFunction.mock.calls[0][2]).toEqual({
+              toolCall: invalidToolCall,
+            });
+          }
+        } finally {
+          flagSpy.mockRestore();
+        }
+      },
+    );
+
+    it('preserves errorFunction null for runner-detected schema failures', async () => {
+      const secret = 'SECRET_NULL_SCHEMA_ARGUMENT_123';
       const flagSpy = vi
         .spyOn(logger, 'dontLogToolData', 'get')
         .mockReturnValue(true);
-      const errorFunction = vi.fn(
-        (_context: RunContext, _error: unknown, _details?: unknown) => ({
-          status: 'invalid_input' as const,
-        }),
-      );
+      const execute = vi.fn(async () => 'unexpected');
       const t = tool({
-        name: 'structured_parser',
-        description: 'Parse structured input.',
-        parameters: z.object({ value: z.string() }),
-        outputSchema: z.object({ status: z.literal('invalid_input') }),
-        errorFunction,
-        execute: vi.fn(async () => ({ status: 'invalid_input' as const })),
+        name: 'null_schema_parser',
+        description: 'Reject schema input without a fallback.',
+        parameters: z.object({ value: z.number() }),
+        errorFunction: null,
+        execute,
       }) as unknown as FunctionTool;
-      const invalidToolCall = {
-        ...toolCall,
-        name: 'structured_parser',
-        arguments: secret,
-      };
 
       try {
-        const res = await withTrace('test', () =>
-          executeFunctionToolCalls(
-            state._currentAgent,
-            [{ toolCall: invalidToolCall, tool: t }],
-            runner,
-            state,
-          ),
-        );
-
-        expect(res[0]).toMatchObject({
-          type: 'function_output',
-          output: { status: 'invalid_input' },
-          runItem: {
-            rawItem: {
-              output: {
-                type: 'text',
-                text: JSON.stringify({ status: 'invalid_input' }),
+        const error = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'null_schema_parser',
+                arguments: JSON.stringify({ value: secret }),
               },
+              tool: t,
             },
-          },
-        });
-        expect(errorFunction).toHaveBeenCalledWith(
-          state._context,
-          expect.objectContaining({
-            name: 'InvalidToolInputError',
-            originalError: undefined,
-            toolInvocation: undefined,
-          }),
-          { toolCall: invalidToolCall },
+          ],
+          runner,
+          state,
+        ).catch((caught) => caught);
+
+        expect(execute).not.toHaveBeenCalled();
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).error).toBeInstanceOf(
+          InvalidToolInputError,
         );
-        const capturedError = errorFunction.mock.calls[0][1] as
-          InvalidToolInputError | undefined;
-        expect(capturedError).toBeDefined();
-        expect(capturedError?.toolInvocation).toBeUndefined();
+        expect((error as ToolCallError).state).toBeUndefined();
+        expect(JSON.stringify(error)).not.toContain(secret);
       } finally {
         flagSpy.mockRestore();
       }
     });
 
-    it('redacts schema validation failures from traces and logs', async () => {
-      const secret = 'SECRET_SCHEMA_TRACE_ARGUMENT_123';
+    it.each([
+      ['redacted', true],
+      ['diagnostic', false],
+    ] as const)(
+      'maps %s schema failures through an unstructured error fallback',
+      async (_mode, dontLogToolData) => {
+        const secret = 'SECRET_UNSTRUCTURED_SCHEMA_ARGUMENT_123';
+        const flagSpy = vi
+          .spyOn(logger, 'dontLogToolData', 'get')
+          .mockReturnValue(dontLogToolData);
+        const execute = vi.fn(async () => 'unexpected');
+        const errorFunction = vi.fn(
+          (_context: RunContext, _error: unknown, details?: ToolCallDetails) =>
+            `custom fallback: ${details?.toolCall?.arguments ?? 'redacted'}`,
+        );
+        const t = tool({
+          name: 'unstructured_schema_parser',
+          description: 'Parse schema input with an unstructured fallback.',
+          parameters: z.object({ value: z.number() }),
+          errorFunction,
+          execute,
+        }) as unknown as FunctionTool;
+        const invalidToolCall = {
+          ...toolCall,
+          name: 'unstructured_schema_parser',
+          arguments: JSON.stringify({ value: secret }),
+        };
+
+        try {
+          const [result] = await executeFunctionToolCalls(
+            state._currentAgent,
+            [{ toolCall: invalidToolCall, tool: t }],
+            runner,
+            state,
+          );
+
+          expect(execute).not.toHaveBeenCalled();
+          expect(result).toMatchObject({
+            type: 'function_output',
+            output: `custom fallback: ${
+              dontLogToolData ? 'redacted' : invalidToolCall.arguments
+            }`,
+          });
+          expect(errorFunction).toHaveBeenCalledWith(
+            state._context,
+            expect.objectContaining({
+              name: 'InvalidToolInputError',
+              message: 'Invalid JSON input for tool',
+              state: undefined,
+              originalError: dontLogToolData ? undefined : expect.anything(),
+              toolInvocation: dontLogToolData
+                ? undefined
+                : expect.objectContaining({
+                    input: invalidToolCall.arguments,
+                    details: expect.objectContaining({
+                      toolCall: invalidToolCall,
+                    }),
+                  }),
+            }),
+            dontLogToolData
+              ? undefined
+              : expect.objectContaining({ toolCall: invalidToolCall }),
+          );
+          if (dontLogToolData) {
+            expect(JSON.stringify(result)).not.toContain(secret);
+          }
+        } finally {
+          flagSpy.mockRestore();
+        }
+      },
+    );
+
+    it('preserves the default factory fallback for schema failures', async () => {
+      const [result] = await executeFunctionToolCalls(
+        state._currentAgent,
+        [
+          {
+            toolCall: {
+              ...toolCall,
+              name: 'default_schema_fallback',
+              arguments: JSON.stringify({ value: 'invalid' }),
+            },
+            tool: tool({
+              name: 'default_schema_fallback',
+              description: 'Use the default schema failure fallback.',
+              parameters: z.object({ value: z.number() }),
+              execute: vi.fn(async () => 'unexpected'),
+            }) as unknown as FunctionTool,
+          },
+        ],
+        runner,
+        state,
+      );
+
+      expect(result).toMatchObject({
+        type: 'function_output',
+        output:
+          'An error occurred while running the tool. Please try again. Error: InvalidToolInputError: Invalid JSON input for tool',
+      });
+    });
+
+    it('keeps schema failure fallbacks inside the tool lifecycle', async () => {
+      const secret = 'SECRET_SCHEMA_LIFECYCLE_ARGUMENT_123';
       const flagSpy = vi
         .spyOn(logger, 'dontLogToolData', 'get')
         .mockReturnValue(true);
-      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+      const start = vi.fn();
+      const end = vi.fn();
+      const outputGuardrail = vi.fn(async () =>
+        ToolGuardrailFunctionOutputFactory.allow(),
+      );
+      const customDataExtractor = vi.fn(
+        (context: FunctionToolCustomDataContext) => ({
+          inputRedacted: typeof context.input === 'undefined',
+        }),
+      );
       const t = tool({
-        name: 'schema_trace_parser',
-        description: 'Parse schema input.',
+        name: 'schema_failure_lifecycle',
+        description: 'Keep schema fallbacks in the normal lifecycle.',
         parameters: z.object({ value: z.number() }),
-        execute: vi.fn(async () => 'success'),
+        errorFunction: () => 'safe fallback',
+        outputGuardrails: [
+          {
+            name: 'observe_fallback',
+            run: outputGuardrail,
+          },
+        ],
+        customDataExtractor,
+        execute: vi.fn(async () => 'unexpected'),
       }) as unknown as FunctionTool;
       const invalidToolCall = {
         ...toolCall,
-        name: 'schema_trace_parser',
+        name: 'schema_failure_lifecycle',
+        arguments: JSON.stringify({ value: secret }),
+      };
+      runner.on('agent_tool_start', start);
+      runner.on('agent_tool_end', end);
+
+      try {
+        const [result] = await executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall: invalidToolCall, tool: t }],
+          runner,
+          state,
+        );
+
+        expect(result).toMatchObject({
+          type: 'function_output',
+          output: 'safe fallback',
+          runItem: { customData: { inputRedacted: true } },
+        });
+        expect(outputGuardrail).toHaveBeenCalledTimes(1);
+        expect(customDataExtractor).toHaveBeenCalledWith(
+          expect.objectContaining({
+            input: undefined,
+            output: 'safe fallback',
+          }),
+        );
+        expect(start).toHaveBeenCalledTimes(1);
+        expect(end).toHaveBeenCalledTimes(1);
+        expect(JSON.stringify(result)).not.toContain(secret);
+      } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('keeps the classification-time redaction policy across awaits', async () => {
+      const secret = 'SECRET_SCHEMA_POLICY_SNAPSHOT_123';
+      let redactToolData = true;
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockImplementation(() => redactToolData);
+      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+      const errorFunction = vi.fn(() => 'safe fallback');
+      const t = tool({
+        name: 'schema_policy_snapshot',
+        description: 'Keep the classification-time redaction policy.',
+        parameters: z.object({ value: z.number() }),
+        errorFunction,
+        inputGuardrails: [
+          {
+            name: 'change_policy_after_classification',
+            run: async () => {
+              redactToolData = false;
+              return ToolGuardrailFunctionOutputFactory.allow();
+            },
+          },
+        ],
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+
+      try {
+        const [result] = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'schema_policy_snapshot',
+                arguments: JSON.stringify({ value: secret }),
+              },
+              tool: t,
+            },
+          ],
+          runner,
+          state,
+        );
+
+        expect(result).toMatchObject({
+          type: 'function_output',
+          output: 'safe fallback',
+        });
+        expect(errorFunction).toHaveBeenCalledWith(
+          state._context,
+          expect.objectContaining({
+            message: 'Invalid JSON input for tool',
+            originalError: undefined,
+            toolInvocation: undefined,
+          }),
+          undefined,
+        );
+        expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(secret);
+        expect(JSON.stringify(result)).not.toContain(secret);
+      } finally {
+        debugSpy.mockRestore();
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('promotes prepared failure redaction when secure mode is enabled after classification', async () => {
+      const secret = 'SECRET_SCHEMA_POLICY_PROMOTION_123';
+      let redactToolData = false;
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockImplementation(() => redactToolData);
+      const errorFunction = vi.fn(() => 'safe fallback');
+      const customDataExtractor = vi.fn(
+        (context: FunctionToolCustomDataContext) => ({
+          inputRedacted: typeof context.input === 'undefined',
+        }),
+      );
+      const t = tool({
+        name: 'schema_policy_promotion',
+        description: 'Promote redaction after classification.',
+        parameters: z.object({ value: z.number() }),
+        errorFunction,
+        inputGuardrails: [
+          {
+            name: 'enable_secure_mode',
+            run: async () => {
+              redactToolData = true;
+              return ToolGuardrailFunctionOutputFactory.allow();
+            },
+          },
+        ],
+        customDataExtractor,
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+      const invalidToolCall = {
+        ...toolCall,
+        name: 'schema_policy_promotion',
         arguments: JSON.stringify({ value: secret }),
       };
 
       try {
+        const [result] = await executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall: invalidToolCall, tool: t }],
+          runner,
+          state,
+        );
+
+        expect(errorFunction).toHaveBeenCalledWith(
+          state._context,
+          expect.objectContaining({
+            message: 'Invalid JSON input for tool',
+            originalError: undefined,
+            toolInvocation: undefined,
+          }),
+          undefined,
+        );
+        expect(customDataExtractor).toHaveBeenCalledWith(
+          expect.objectContaining({
+            input: undefined,
+            output: 'safe fallback',
+          }),
+        );
+        expect(result).toMatchObject({
+          type: 'function_output',
+          runItem: { customData: { inputRedacted: true } },
+        });
+        expect(JSON.stringify(result)).not.toContain(secret);
+      } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
+    it.each([
+      ['malformed JSON', 'SECRET_LATE_MALFORMED_ERROR_FUNCTION_123'],
+      [
+        'schema validation',
+        JSON.stringify({ value: 'SECRET_LATE_SCHEMA_ERROR_FUNCTION_123' }),
+      ],
+    ])(
+      'discards %s fallback output when errorFunction enables secure mode',
+      async (_label, input) => {
+        let redactToolData = false;
+        const flagSpy = vi
+          .spyOn(logger, 'dontLogToolData', 'get')
+          .mockImplementation(() => redactToolData);
+        const errorFunction = vi.fn(
+          (
+            _context: RunContext,
+            _error: unknown,
+            details?: ToolCallDetails,
+          ) => {
+            redactToolData = true;
+            return {
+              status: details?.toolCall?.arguments ?? input,
+            };
+          },
+        );
+        const t = tool({
+          name: 'late_error_function_redaction',
+          description: 'Promote redaction while building a fallback.',
+          parameters: z.object({ value: z.number() }),
+          outputSchema: z.object({ status: z.string() }),
+          errorFunction,
+          execute: vi.fn(async () => ({ status: 'unexpected' })),
+        }) as unknown as FunctionTool;
+
+        try {
+          const error = await executeFunctionToolCalls(
+            state._currentAgent,
+            [
+              {
+                toolCall: {
+                  ...toolCall,
+                  name: 'late_error_function_redaction',
+                  arguments: input,
+                },
+                tool: t,
+              },
+            ],
+            runner,
+            state,
+          ).catch((caught) => caught);
+
+          expect(errorFunction).toHaveBeenCalledOnce();
+          expect(error).toBeInstanceOf(ToolCallError);
+          expect((error as ToolCallError).state).toBeUndefined();
+          expect(JSON.stringify(error)).not.toContain(input);
+        } finally {
+          flagSpy.mockRestore();
+        }
+      },
+    );
+
+    it('clears malformed-input trace data after errorFunction enables secure mode', async () => {
+      const secret = 'SECRET_LATE_MALFORMED_TRACE_123';
+      let redactToolData = false;
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockImplementation(() => redactToolData);
+      const t = tool({
+        name: 'late_malformed_trace_redaction',
+        description: 'Promote redaction while building a fallback.',
+        parameters: z.object({ value: z.number() }),
+        outputSchema: z.object({ status: z.string() }),
+        errorFunction: (_context, _error, details) => {
+          redactToolData = true;
+          return { status: details?.toolCall?.arguments ?? secret };
+        },
+        execute: vi.fn(async () => ({ status: 'unexpected' })),
+      }) as unknown as FunctionTool;
+
+      try {
         await withRecordingTrace(async (processor) => {
-          const [result] = await withTrace('test', () =>
+          const error = await withTrace('test', () =>
             executeFunctionToolCalls(
               state._currentAgent,
-              [{ toolCall: invalidToolCall, tool: t }],
+              [
+                {
+                  toolCall: {
+                    ...toolCall,
+                    name: 'late_malformed_trace_redaction',
+                    arguments: secret,
+                  },
+                  tool: t,
+                },
+              ],
               new Runner({
                 tracingDisabled: false,
-                traceIncludeSensitiveData: false,
+                traceIncludeSensitiveData: true,
               }),
               state,
-            ),
+            ).catch((caught) => caught),
           );
 
-          expect(result.type).toBe('function_output');
-          if (result.type === 'function_output') {
-            expect(String(result.output)).not.toContain(secret);
-          }
+          expect(error).toBeInstanceOf(ToolCallError);
           const functionSpan = getEndedFunctionSpan(
             processor,
-            'schema_trace_parser',
+            'late_malformed_trace_redaction',
           );
           expect(JSON.stringify(functionSpan.toJSON())).not.toContain(secret);
+          expect(JSON.stringify(error)).not.toContain(secret);
         });
+      } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('discards custom data when its extractor enables secure mode', async () => {
+      const secret = 'SECRET_LATE_CUSTOM_DATA_123';
+      let redactToolData = false;
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockImplementation(() => redactToolData);
+      const t = tool({
+        name: 'late_custom_data_redaction',
+        description: 'Promote redaction while extracting custom data.',
+        parameters: z.object({ value: z.number() }),
+        errorFunction: () => 'diagnostic fallback',
+        customDataExtractor: (context) => {
+          redactToolData = true;
+          return { captured: context.input };
+        },
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+
+      try {
+        const error = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'late_custom_data_redaction',
+                arguments: JSON.stringify({ value: secret }),
+              },
+              tool: t,
+            },
+          ],
+          runner,
+          state,
+        ).catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).state).toBeUndefined();
+        expect(JSON.stringify(error)).not.toContain(secret);
+      } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('discards output guardrail artifacts when secure mode is enabled', async () => {
+      const secret = 'SECRET_LATE_OUTPUT_GUARDRAIL_123';
+      let redactToolData = false;
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockImplementation(() => redactToolData);
+      const t = tool({
+        name: 'late_output_guardrail_redaction',
+        description: 'Promote redaction in an output guardrail.',
+        parameters: z.object({ value: z.number() }),
+        errorFunction: () => 'diagnostic fallback',
+        outputGuardrails: [
+          {
+            name: 'enable_secure_mode',
+            run: async ({ toolCall: callbackToolCall }) => {
+              redactToolData = true;
+              return ToolGuardrailFunctionOutputFactory.rejectContent(
+                callbackToolCall.arguments,
+              );
+            },
+          },
+        ],
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+
+      try {
+        const error = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'late_output_guardrail_redaction',
+                arguments: JSON.stringify({ value: secret }),
+              },
+              tool: t,
+            },
+          ],
+          runner,
+          state,
+        ).catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).state).toBeUndefined();
+        expect(state._toolOutputGuardrailResults).toHaveLength(0);
+        expect(JSON.stringify(error)).not.toContain(secret);
+      } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('preserves SDK guardrail tripwires for already-redacted invalid input', async () => {
+      const secret = 'SECRET_REDACTED_GUARDRAIL_TRIPWIRE_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(true);
+      const t = tool({
+        name: 'redacted_guardrail_tripwire',
+        description: 'Preserve the SDK guardrail failure type.',
+        parameters: z.object({ value: z.number() }),
+        inputGuardrails: [
+          {
+            name: 'tripwire',
+            run: async () =>
+              ToolGuardrailFunctionOutputFactory.throwException(),
+          },
+        ],
+        errorFunction: () => 'unexpected',
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+
+      try {
+        const error = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'redacted_guardrail_tripwire',
+                arguments: JSON.stringify({ value: secret }),
+              },
+              tool: t,
+            },
+          ],
+          runner,
+          state,
+        ).catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).state).toBeUndefined();
+        expect((error as ToolCallError).error).toBeInstanceOf(
+          ToolInputGuardrailTripwireTriggered,
+        );
+        expect(JSON.stringify(error)).not.toContain(secret);
+      } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
+    it.each([
+      ['secure from start', true],
+      ['promoted in hook', false],
+    ] as const)(
+      'redacts arbitrary end-hook failures when %s',
+      async (_mode, initiallyRedacted) => {
+        const secret = 'SECRET_END_HOOK_THROW_123';
+        let redactToolData = initiallyRedacted;
+        const flagSpy = vi
+          .spyOn(logger, 'dontLogToolData', 'get')
+          .mockImplementation(() => redactToolData);
+        const thrownValues = [
+          new Error(secret),
+          secret,
+          (() => {
+            const { proxy, revoke } = Proxy.revocable({}, {});
+            revoke();
+            return proxy;
+          })(),
+        ];
+        const t = tool({
+          name: 'redacted_end_hook_failure',
+          description: 'Redact arbitrary end-hook failures.',
+          parameters: z.object({ value: z.number() }),
+          errorFunction: () => 'safe fallback',
+          execute: vi.fn(async () => 'unexpected'),
+        }) as unknown as FunctionTool;
+        let currentThrown: unknown;
+        runner.on('agent_tool_end', () => {
+          redactToolData = true;
+          throw currentThrown;
+        });
+
+        try {
+          for (let index = 0; index < thrownValues.length; index += 1) {
+            redactToolData = initiallyRedacted;
+            currentThrown = thrownValues[index];
+            const error = await executeFunctionToolCalls(
+              state._currentAgent,
+              [
+                {
+                  toolCall: {
+                    ...toolCall,
+                    callId: `redacted_end_hook_${index}`,
+                    name: 'redacted_end_hook_failure',
+                    arguments: JSON.stringify({ value: secret }),
+                  },
+                  tool: t,
+                },
+              ],
+              runner,
+              state,
+            ).catch((caught) => caught);
+
+            expect(error).toBeInstanceOf(ToolCallError);
+            expect((error as ToolCallError).state).toBeUndefined();
+            expect((error as ToolCallError).error).toBeInstanceOf(
+              InvalidToolInputError,
+            );
+            expect(JSON.stringify(error)).not.toContain(secret);
+          }
+        } finally {
+          flagSpy.mockRestore();
+        }
+      },
+    );
+
+    it('redacts invalid arguments from later hooks after policy promotion', async () => {
+      const secret = 'SECRET_LATE_HOOK_ARGUMENT_123';
+      let redactToolData = false;
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockImplementation(() => redactToolData);
+      const agentHook = vi.fn();
+      const t = tool({
+        name: 'late_hook_redaction',
+        description: 'Promote redaction between tool hooks.',
+        parameters: z.object({ value: z.number() }),
+        errorFunction: () => 'safe fallback',
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+      runner.on('agent_tool_start', () => {
+        redactToolData = true;
+      });
+      state._currentAgent.on('agent_tool_start', agentHook);
+
+      try {
+        const [result] = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'late_hook_redaction',
+                arguments: JSON.stringify({ value: secret }),
+              },
+              tool: t,
+            },
+          ],
+          runner,
+          state,
+        );
+
+        expect(agentHook).toHaveBeenCalledWith(
+          state._context,
+          t,
+          expect.objectContaining({
+            toolCall: expect.objectContaining({ arguments: '' }),
+          }),
+        );
+        expect(result).toMatchObject({
+          type: 'function_output',
+          output: 'safe fallback',
+        });
+        expect(JSON.stringify(result)).not.toContain(secret);
+      } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('promotes redaction before a pre-approval guardrail fallback', async () => {
+      const secret = 'SECRET_PREAPPROVAL_POLICY_PROMOTION_123';
+      let redactToolData = false;
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockImplementation(() => redactToolData);
+      const errorFunction = vi.fn(() => ({ status: 'blocked' as const }));
+      const t = tool({
+        name: 'preapproval_policy_promotion',
+        description: 'Promote redaction before approval fallback.',
+        parameters: z.object({ value: z.number() }),
+        outputSchema: z.object({ status: z.literal('blocked') }),
+        needsApproval: async () => true,
+        inputGuardrails: [
+          {
+            name: 'enable_secure_mode_and_reject',
+            run: async () => {
+              redactToolData = true;
+              return ToolGuardrailFunctionOutputFactory.rejectContent(secret);
+            },
+          },
+        ],
+        errorFunction,
+        execute: vi.fn(async () => ({ status: 'blocked' as const })),
+      }) as unknown as FunctionTool;
+      const customRunner = new Runner({
+        tracingDisabled: true,
+        toolExecution: { preApprovalInputGuardrails: true },
+      });
+
+      try {
+        const [result] = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'preapproval_policy_promotion',
+                arguments: JSON.stringify({ value: secret }),
+              },
+              tool: t,
+            },
+          ],
+          customRunner,
+          state,
+        );
+
+        expect(errorFunction).toHaveBeenCalledWith(
+          state._context,
+          expect.objectContaining({
+            message:
+              "Invalid input for function tool 'preapproval_policy_promotion'.",
+          }),
+          undefined,
+        );
+        expect(result).toMatchObject({
+          type: 'function_output',
+          output: { status: 'blocked' },
+        });
+        expect(JSON.stringify(result)).not.toContain(secret);
+      } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('redacts a pre-approval guardrail tripwire after policy promotion', async () => {
+      const secret = 'SECRET_PREAPPROVAL_TRIPWIRE_PROMOTION_123';
+      let redactToolData = false;
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockImplementation(() => redactToolData);
+      const debugSpy = vi.spyOn(logger, 'debug');
+      const t = tool({
+        name: 'preapproval_tripwire_policy_promotion',
+        description: 'Promote redaction before a guardrail tripwire.',
+        parameters: z.object({ value: z.number() }),
+        needsApproval: async () => true,
+        inputGuardrails: [
+          {
+            name: 'enable_secure_mode_and_throw',
+            run: async ({ toolCall: callbackToolCall }) => {
+              redactToolData = true;
+              return ToolGuardrailFunctionOutputFactory.throwException({
+                captured: callbackToolCall.arguments,
+              });
+            },
+          },
+        ],
+        errorFunction: () => 'unexpected',
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+      const customRunner = new Runner({
+        tracingDisabled: true,
+        toolExecution: { preApprovalInputGuardrails: true },
+      });
+
+      try {
+        const error = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'preapproval_tripwire_policy_promotion',
+                arguments: JSON.stringify({ value: secret }),
+              },
+              tool: t,
+            },
+          ],
+          customRunner,
+          state,
+        ).catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).state).toBeUndefined();
+        expect((error as ToolCallError).error).toBeInstanceOf(
+          InvalidToolInputError,
+        );
+        expect((error as ToolCallError).error).toMatchObject({
+          message:
+            "Invalid input for function tool 'preapproval_tripwire_policy_promotion'.",
+        });
+        expect(state._toolInputGuardrailResults).toHaveLength(0);
+        expect(JSON.stringify(error)).not.toContain(secret);
         expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(secret);
       } finally {
         debugSpy.mockRestore();
         flagSpy.mockRestore();
       }
     });
+
+    it('promotes malformed-input redaction before a pre-approval fallback', async () => {
+      const secret = 'SECRET_MALFORMED_POLICY_PROMOTION_123';
+      let redactToolData = false;
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockImplementation(() => redactToolData);
+      const errorFunction = vi.fn(() => ({ status: 'blocked' as const }));
+      const t = tool({
+        name: 'malformed_policy_promotion',
+        description: 'Promote malformed-input redaction before fallback.',
+        parameters: z.object({ value: z.number() }),
+        outputSchema: z.object({ status: z.literal('blocked') }),
+        needsApproval: async () => true,
+        inputGuardrails: [
+          {
+            name: 'enable_secure_mode_and_reject',
+            run: async () => {
+              redactToolData = true;
+              return ToolGuardrailFunctionOutputFactory.rejectContent(secret);
+            },
+          },
+        ],
+        errorFunction,
+        execute: vi.fn(async () => ({ status: 'blocked' as const })),
+      }) as unknown as FunctionTool;
+      const customRunner = new Runner({
+        tracingDisabled: true,
+        toolExecution: { preApprovalInputGuardrails: true },
+      });
+
+      try {
+        const [result] = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'malformed_policy_promotion',
+                arguments: secret,
+              },
+              tool: t,
+            },
+          ],
+          customRunner,
+          state,
+        );
+
+        expect(errorFunction).toHaveBeenCalledWith(
+          state._context,
+          expect.objectContaining({
+            message:
+              "Invalid input for function tool 'malformed_policy_promotion'.",
+          }),
+          undefined,
+        );
+        expect(result).toMatchObject({
+          type: 'function_output',
+          output: { status: 'blocked' },
+        });
+        expect(JSON.stringify(result)).not.toContain(secret);
+      } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('rechecks redaction after an async approval error formatter', async () => {
+      const secret = 'SECRET_FORMATTER_POLICY_PROMOTION_123';
+      let redactToolData = false;
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockImplementation(() => redactToolData);
+      const errorFunction = vi.fn(() => ({ status: 'rejected' as const }));
+      const t = tool({
+        name: 'formatter_policy_promotion',
+        description: 'Promote redaction in the approval formatter.',
+        parameters: z.object({ value: z.number() }),
+        outputSchema: z.object({ status: z.literal('rejected') }),
+        errorFunction,
+        execute: vi.fn(async () => ({ status: 'rejected' as const })),
+      }) as unknown as FunctionTool;
+      const customRunner = new Runner({
+        tracingDisabled: true,
+        toolErrorFormatter: async () => {
+          redactToolData = true;
+          return secret;
+        },
+      });
+      vi.spyOn(state._context, 'isToolApproved').mockReturnValue(false as any);
+
+      try {
+        const [result] = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'formatter_policy_promotion',
+                arguments: JSON.stringify({ value: secret }),
+              },
+              tool: t,
+            },
+          ],
+          customRunner,
+          state,
+          customRunner.config.toolErrorFormatter,
+        );
+
+        expect(errorFunction).toHaveBeenCalledWith(
+          state._context,
+          expect.objectContaining({
+            message:
+              "Invalid input for function tool 'formatter_policy_promotion'.",
+          }),
+          undefined,
+        );
+        expect(result).toMatchObject({
+          type: 'function_output',
+          output: { status: 'rejected' },
+        });
+        expect(JSON.stringify(result)).not.toContain(secret);
+      } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('removes batch state after redaction is promoted during a sibling run', async () => {
+      const secret = 'SECRET_SIBLING_POLICY_PROMOTION_123';
+      let redactToolData = false;
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockImplementation(() => redactToolData);
+      let releaseSibling = () => {};
+      const policyPromoted = new Promise<void>((resolve) => {
+        releaseSibling = resolve;
+      });
+      const invalidInputTool = tool({
+        name: 'sibling_policy_promotion',
+        description: 'Promote redaction before a sibling failure.',
+        parameters: z.object({ value: z.number() }),
+        inputGuardrails: [
+          {
+            name: 'enable_secure_mode',
+            run: async () => {
+              redactToolData = true;
+              releaseSibling();
+              return ToolGuardrailFunctionOutputFactory.allow();
+            },
+          },
+        ],
+        errorFunction: () => 'safe fallback',
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+      const failingTool = tool({
+        name: 'promoted_policy_sibling_failure',
+        description: 'Fail after secure mode is enabled.',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: vi.fn(async () => {
+          await policyPromoted;
+          throw new Error('sibling failed');
+        }),
+      }) as unknown as FunctionTool;
+
+      try {
+        const error = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'sibling_policy_promotion',
+                arguments: JSON.stringify({ value: secret }),
+              },
+              tool: invalidInputTool,
+            },
+            {
+              toolCall: {
+                ...toolCall,
+                callId: 'c2',
+                name: 'promoted_policy_sibling_failure',
+                arguments: '{}',
+              },
+              tool: failingTool,
+            },
+          ],
+          runner,
+          state,
+        ).catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).state).toBeUndefined();
+        expect(JSON.stringify(error)).not.toContain(secret);
+      } finally {
+        releaseSibling();
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('applies tool timeouts to schema failure fallbacks', async () => {
+      let redactToolData = false;
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockImplementation(() => redactToolData);
+      const t = tool({
+        name: 'schema_failure_timeout',
+        description: 'Time out a schema failure fallback.',
+        parameters: z.object({ value: z.number() }),
+        inputGuardrails: [
+          {
+            name: 'enable_secure_mode',
+            run: async () => {
+              redactToolData = true;
+              return ToolGuardrailFunctionOutputFactory.allow();
+            },
+          },
+        ],
+        errorFunction: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          return 'late fallback';
+        },
+        timeoutMs: 5,
+        timeoutBehavior: 'raise_exception',
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+
+      try {
+        const error = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'schema_failure_timeout',
+                arguments: JSON.stringify({ value: 'invalid' }),
+              },
+              tool: t,
+            },
+          ],
+          runner,
+          state,
+        ).catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(ToolTimeoutError);
+        expect((error as ToolTimeoutError).state).toBeUndefined();
+      } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
+    it.each([
+      ['malformed JSON', 'throw', 'SECRET_CALLBACK_THROW_MALFORMED_123'],
+      [
+        'schema validation',
+        'throw',
+        JSON.stringify({ value: 'SECRET_CALLBACK_THROW_SCHEMA_123' }),
+      ],
+      ['malformed JSON', 'invalid', 'SECRET_INVALID_FALLBACK_MALFORMED_123'],
+      [
+        'schema validation',
+        'invalid',
+        JSON.stringify({ value: 'SECRET_INVALID_FALLBACK_SCHEMA_123' }),
+      ],
+    ] as const)(
+      'uses a fixed error when redacted %s uses a %s fallback',
+      async (_inputKind, failureMode, secret) => {
+        const flagSpy = vi
+          .spyOn(logger, 'dontLogToolData', 'get')
+          .mockReturnValue(true);
+        const errorFunction = vi.fn(
+          (
+            _context: RunContext,
+            _error: unknown,
+            details?: ToolCallDetails,
+          ) => {
+            expect(details).toBeUndefined();
+            if (failureMode === 'throw') {
+              throw new Error('fallback failed');
+            }
+            return { status: 'invalid' } as any;
+          },
+        );
+        const t = tool({
+          name: 'failing_structured_fallback',
+          description: 'Fail while handling invalid arguments.',
+          parameters: z.object({ value: z.number() }),
+          outputSchema: z.object({ status: z.literal('valid') }),
+          errorFunction,
+          timeoutMs: 1_000,
+          execute: vi.fn(async () => ({ status: 'valid' as const })),
+        }) as unknown as FunctionTool;
+        const invalidToolCall = {
+          ...toolCall,
+          name: 'failing_structured_fallback',
+          arguments: secret,
+        };
+
+        try {
+          const error = await executeFunctionToolCalls(
+            state._currentAgent,
+            [{ toolCall: invalidToolCall, tool: t }],
+            runner,
+            state,
+          ).catch((caught) => caught);
+
+          expect(error).toBeInstanceOf(ToolCallError);
+          expect((error as ToolCallError).state).toBeUndefined();
+          expect((error as ToolCallError).error).toBeInstanceOf(
+            InvalidToolInputError,
+          );
+          expect((error as ToolCallError).error).toMatchObject({
+            message:
+              "Invalid input for function tool 'failing_structured_fallback'.",
+            originalError: undefined,
+            toolInvocation: undefined,
+          });
+          expect(JSON.stringify(error)).not.toContain(secret);
+        } finally {
+          flagSpy.mockRestore();
+        }
+      },
+    );
+
+    it.each([
+      ['redacted', true, 'SECRET_REJECTED_MALFORMED_123'],
+      [
+        'redacted schema',
+        true,
+        JSON.stringify({ value: 'SECRET_REJECTED_SCHEMA_123' }),
+      ],
+      ['diagnostic', false, 'SECRET_REJECTED_DIAGNOSTIC_MALFORMED_123'],
+      [
+        'diagnostic schema',
+        false,
+        JSON.stringify({ value: 'SECRET_REJECTED_DIAGNOSTIC_SCHEMA_123' }),
+      ],
+    ] as const)(
+      'applies %s details policy to rejected invalid input',
+      async (_mode, dontLogToolData, input) => {
+        const flagSpy = vi
+          .spyOn(logger, 'dontLogToolData', 'get')
+          .mockReturnValue(dontLogToolData);
+        const approvalSpy = vi
+          .spyOn(state._context, 'isToolApproved')
+          .mockReturnValue(false as any);
+        const errorFunction = vi.fn(
+          (
+            _context: RunContext,
+            _error: unknown,
+            details?: ToolCallDetails,
+          ) => ({
+            status: 'rejected' as const,
+            detail: details?.toolCall?.arguments ?? 'redacted',
+          }),
+        );
+        const t = tool({
+          name: 'rejected_invalid_input',
+          description: 'Reject invalid input.',
+          parameters: z.object({ value: z.number() }),
+          outputSchema: z.object({
+            status: z.literal('rejected'),
+            detail: z.string(),
+          }),
+          needsApproval: async () => true,
+          errorFunction,
+          execute: vi.fn(async () => ({
+            status: 'rejected' as const,
+            detail: 'unexpected',
+          })),
+        }) as unknown as FunctionTool;
+        const invalidToolCall = {
+          ...toolCall,
+          name: 'rejected_invalid_input',
+          arguments: input,
+        };
+
+        try {
+          const [result] = await executeFunctionToolCalls(
+            state._currentAgent,
+            [{ toolCall: invalidToolCall, tool: t }],
+            runner,
+            state,
+          );
+
+          expect(errorFunction.mock.calls[0][2]).toEqual(
+            dontLogToolData ? undefined : { toolCall: invalidToolCall },
+          );
+          expect(result).toMatchObject({
+            type: 'function_output',
+            output: {
+              status: 'rejected',
+              detail: dontLogToolData ? 'redacted' : input,
+            },
+          });
+          if (dontLogToolData) {
+            expect(JSON.stringify(result)).not.toContain(input);
+          }
+        } finally {
+          approvalSpy.mockRestore();
+          flagSpy.mockRestore();
+        }
+      },
+    );
+
+    it.each([
+      ['throwing callback', 'throw'],
+      ['invalid fallback', 'invalid'],
+    ] as const)(
+      'preserves diagnostic state for a %s after a parse failure',
+      async (_label, failureMode) => {
+        const secret = `SECRET_DIAGNOSTIC_${failureMode.toUpperCase()}_123`;
+        const flagSpy = vi
+          .spyOn(logger, 'dontLogToolData', 'get')
+          .mockReturnValue(false);
+        const errorFunction = vi.fn(
+          (
+            _context: RunContext,
+            _error: unknown,
+            _details?: ToolCallDetails,
+          ) => {
+            if (failureMode === 'throw') {
+              throw new Error('diagnostic fallback failed');
+            }
+            return { status: 'invalid' } as any;
+          },
+        );
+        const t = tool({
+          name: 'diagnostic_failing_fallback',
+          description: 'Preserve diagnostic failure context.',
+          parameters: z.object({ value: z.number() }),
+          outputSchema: z.object({ status: z.literal('valid') }),
+          errorFunction,
+          execute: vi.fn(async () => ({ status: 'valid' as const })),
+        }) as unknown as FunctionTool;
+        const invalidToolCall = {
+          ...toolCall,
+          name: 'diagnostic_failing_fallback',
+          arguments: secret,
+        };
+
+        try {
+          const error = await executeFunctionToolCalls(
+            state._currentAgent,
+            [{ toolCall: invalidToolCall, tool: t }],
+            runner,
+            state,
+          ).catch((caught) => caught);
+
+          expect(error).toBeInstanceOf(ToolCallError);
+          expect((error as ToolCallError).state).toBe(state);
+          expect(errorFunction.mock.calls[0][2]).toEqual({
+            toolCall: invalidToolCall,
+          });
+        } finally {
+          flagSpy.mockRestore();
+        }
+      },
+    );
+
+    it('omits state when a sibling failure wins a batch with redacted invalid input', async () => {
+      const secret = 'SECRET_MIXED_PARSE_FAILURE_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(true);
+      const invalidInputTool = tool({
+        name: 'invalid_input',
+        description: 'Recover from invalid input.',
+        parameters: z.object({ value: z.number() }),
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+      const failingTool = tool({
+        name: 'sibling_failure',
+        description: 'Fail independently.',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: vi.fn(async () => {
+          throw new Error('sibling failed');
+        }),
+      }) as unknown as FunctionTool;
+
+      try {
+        const error = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'invalid_input',
+                arguments: secret,
+              },
+              tool: invalidInputTool,
+            },
+            {
+              toolCall: {
+                ...toolCall,
+                callId: 'c2',
+                name: 'sibling_failure',
+                arguments: '{}',
+              },
+              tool: failingTool,
+            },
+          ],
+          runner,
+          state,
+        ).catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).error).toMatchObject({
+          message: 'sibling failed',
+        });
+        expect((error as ToolCallError).state).toBeUndefined();
+        expect(JSON.stringify(error)).not.toContain(secret);
+      } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('clears matching state from a nested sibling ToolCallError', async () => {
+      const secret = 'SECRET_NESTED_TOOL_CALL_STATE_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(true);
+      const invalidInputTool = tool({
+        name: 'nested_state_invalid_input',
+        description: 'Reject invalid input.',
+        parameters: z.object({ value: z.number() }),
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+      const failingTool = tool({
+        name: 'nested_tool_call_failure',
+        description: 'Throw an SDK tool-call error.',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: vi.fn(async () => {
+          throw new ToolCallError(
+            'nested tool call failed',
+            new Error('nested failure'),
+            state,
+          );
+        }),
+      }) as unknown as FunctionTool;
+
+      try {
+        const error = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'nested_state_invalid_input',
+                arguments: secret,
+              },
+              tool: invalidInputTool,
+            },
+            {
+              toolCall: {
+                ...toolCall,
+                callId: 'c2',
+                name: 'nested_tool_call_failure',
+                arguments: '{}',
+              },
+              tool: failingTool,
+            },
+          ],
+          runner,
+          state,
+        ).catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).state).toBeUndefined();
+        expect((error as ToolCallError).error).toBeInstanceOf(ToolCallError);
+        expect(((error as ToolCallError).error as ToolCallError).state).toBe(
+          undefined,
+        );
+        expect(JSON.stringify(error)).not.toContain(secret);
+      } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('classifies schema-invalid input before dynamic approval and sibling failure', async () => {
+      const secret = 'SECRET_PREAPPROVAL_SCHEMA_FAILURE_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(true);
+      let releaseApproval = () => {};
+      const approvalGate = new Promise<void>((resolve) => {
+        releaseApproval = resolve;
+      });
+      const needsApproval = vi.fn(async () => {
+        await approvalGate;
+        return false;
+      });
+      const invalidInputTool = tool({
+        name: 'schema_invalid_input',
+        description: 'Reject schema-invalid input before approval.',
+        parameters: z.object({ value: z.number() }),
+        needsApproval,
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+      const failingTool = tool({
+        name: 'preapproval_sibling_failure',
+        description: 'Fail while a sibling awaits approval.',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: vi.fn(async () => {
+          releaseApproval();
+          throw new Error('preapproval sibling failed');
+        }),
+      }) as unknown as FunctionTool;
+
+      try {
+        const error = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'schema_invalid_input',
+                arguments: JSON.stringify({ value: secret }),
+              },
+              tool: invalidInputTool,
+            },
+            {
+              toolCall: {
+                ...toolCall,
+                callId: 'c2',
+                name: 'preapproval_sibling_failure',
+                arguments: '{}',
+              },
+              tool: failingTool,
+            },
+          ],
+          runner,
+          state,
+        ).catch((caught) => caught);
+
+        expect(needsApproval).not.toHaveBeenCalled();
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).state).toBeUndefined();
+        expect(JSON.stringify(error)).not.toContain(secret);
+      } finally {
+        releaseApproval();
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('reuses the pre-approval parsed input during invocation', async () => {
+      const refine = vi.fn((_value: string) => true);
+      const execute = vi.fn(async (input: { value: string }) => input.value);
+      const t = tool({
+        name: 'single_parse',
+        description: 'Parse input once.',
+        parameters: z.object({ value: z.string().refine(refine) }),
+        execute,
+      }) as unknown as FunctionTool;
+      const inputToolCall = {
+        ...toolCall,
+        name: 'single_parse',
+        arguments: JSON.stringify({ value: 'prepared' }),
+      };
+
+      const result = await executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall: inputToolCall, tool: t }],
+        runner,
+        state,
+      );
+
+      expect(refine).toHaveBeenCalledTimes(1);
+      expect(execute).toHaveBeenCalledWith(
+        { value: 'prepared' },
+        state._context,
+        expect.objectContaining({ toolCall: inputToolCall }),
+      );
+      expect(result[0]).toMatchObject({
+        type: 'function_output',
+        output: 'prepared',
+      });
+    });
+
+    it('does not trust prepared input across a forwarding invoke wrapper', async () => {
+      const execute = vi.fn(async () => 'unexpected');
+      const innerTool = tool({
+        name: 'wrapped_inner',
+        description: 'Validate wrapped input.',
+        parameters: z.object({ value: z.number() }),
+        execute,
+      });
+      const wrappedTool = {
+        ...innerTool,
+        name: 'wrapped_outer',
+        invoke: (
+          context: RunContext,
+          input: string,
+          details?: ToolCallDetails,
+        ) => innerTool.invoke(context, input, details),
+      } as unknown as FunctionTool;
+      const wrappedToolCall = {
+        ...toolCall,
+        name: 'wrapped_outer',
+        arguments: JSON.stringify({ value: 'SECRET_WRAPPED_SCHEMA_123' }),
+      };
+
+      const [result] = await executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall: wrappedToolCall, tool: wrappedTool }],
+        runner,
+        state,
+      );
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        type: 'function_output',
+        output:
+          'An error occurred while running the tool. Please try again. Error: InvalidToolInputError: Invalid JSON input for tool',
+      });
+    });
+
+    it('does not trust prepared input across tools sharing callback details', async () => {
+      const innerExecute = vi.fn(async () => 'unexpected');
+      const innerTool = tool({
+        name: 'details_inner',
+        description: 'Validate nested input.',
+        parameters: z.object({ value: z.number() }),
+        execute: innerExecute,
+      });
+      const outerTool = tool({
+        name: 'details_outer',
+        description: 'Forward callback details.',
+        parameters: z.object({ outer: z.string() }),
+        execute: async (_input, context, details) =>
+          innerTool.invoke(
+            context!,
+            JSON.stringify({ value: 'SECRET_CROSS_TOOL_SCHEMA_123' }),
+            details,
+          ),
+      }) as unknown as FunctionTool;
+
+      const [result] = await executeFunctionToolCalls(
+        state._currentAgent,
+        [
+          {
+            toolCall: {
+              ...toolCall,
+              name: 'details_outer',
+              arguments: JSON.stringify({ outer: 'ok' }),
+            },
+            tool: outerTool,
+          },
+        ],
+        runner,
+        state,
+      );
+
+      expect(innerExecute).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        type: 'function_output',
+        output:
+          'An error occurred while running the tool. Please try again. Error: InvalidToolInputError: Invalid JSON input for tool',
+      });
+    });
+
+    it('isolates execution input from dynamic approval mutation', async () => {
+      const execute = vi.fn(async (input: { value: string }) => input.value);
+      const needsApproval = vi.fn(
+        async (_context: RunContext, input: { value: string }) => {
+          input.value = 'mutated';
+          return false;
+        },
+      );
+      const t = tool({
+        name: 'approval_input_isolation',
+        description: 'Keep execution input authoritative.',
+        parameters: z.object({ value: z.string() }),
+        needsApproval,
+        execute,
+      }) as unknown as FunctionTool;
+
+      const [result] = await executeFunctionToolCalls(
+        state._currentAgent,
+        [
+          {
+            toolCall: {
+              ...toolCall,
+              name: 'approval_input_isolation',
+              arguments: JSON.stringify({ value: 'original' }),
+            },
+            tool: t,
+          },
+        ],
+        runner,
+        state,
+      );
+
+      expect(needsApproval).toHaveBeenCalledWith(
+        state._context,
+        { value: 'mutated' },
+        toolCall.callId,
+      );
+      expect(execute).toHaveBeenCalledWith(
+        { value: 'original' },
+        state._context,
+        expect.anything(),
+      );
+      expect(result).toMatchObject({
+        type: 'function_output',
+        output: 'original',
+      });
+    });
+
+    it('omits state when a timeout wins a batch with redacted invalid input', async () => {
+      const secret = 'SECRET_MIXED_PARSE_TIMEOUT_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(true);
+      const invalidInputTool = tool({
+        name: 'invalid_input',
+        description: 'Recover from invalid input.',
+        parameters: z.object({ value: z.number() }),
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+      const timeoutTool = tool({
+        name: 'timeout_failure',
+        description: 'Time out independently.',
+        parameters: z.object({}),
+        timeoutMs: 5,
+        timeoutBehavior: 'raise_exception',
+        execute: vi.fn(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          return 'late';
+        }),
+      }) as unknown as FunctionTool;
+
+      try {
+        const error = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'invalid_input',
+                arguments: secret,
+              },
+              tool: invalidInputTool,
+            },
+            {
+              toolCall: {
+                ...toolCall,
+                callId: 'c2',
+                name: 'timeout_failure',
+                arguments: '{}',
+              },
+              tool: timeoutTool,
+            },
+          ],
+          runner,
+          state,
+        ).catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(ToolTimeoutError);
+        expect((error as ToolTimeoutError).state).toBeUndefined();
+        expect(JSON.stringify(error)).not.toContain(secret);
+      } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
+    it.each([false, true])(
+      'redacts schema validation failures when traceIncludeSensitiveData is %s',
+      async (traceIncludeSensitiveData) => {
+        const secret = 'SECRET_SCHEMA_TRACE_ARGUMENT_123';
+        const flagSpy = vi
+          .spyOn(logger, 'dontLogToolData', 'get')
+          .mockReturnValue(true);
+        const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+        const t = tool({
+          name: 'schema_trace_parser',
+          description: 'Parse schema input.',
+          parameters: z.object({ value: z.number() }),
+          execute: vi.fn(async () => 'success'),
+        }) as unknown as FunctionTool;
+        const invalidToolCall = {
+          ...toolCall,
+          name: 'schema_trace_parser',
+          arguments: JSON.stringify({ value: secret }),
+        };
+
+        try {
+          await withRecordingTrace(async (processor) => {
+            const [result] = await withTrace('test', () =>
+              executeFunctionToolCalls(
+                state._currentAgent,
+                [{ toolCall: invalidToolCall, tool: t }],
+                new Runner({
+                  tracingDisabled: false,
+                  traceIncludeSensitiveData,
+                }),
+                state,
+              ),
+            );
+
+            expect(result.type).toBe('function_output');
+            if (result.type === 'function_output') {
+              expect(String(result.output)).not.toContain(secret);
+            }
+            const functionSpan = getEndedFunctionSpan(
+              processor,
+              'schema_trace_parser',
+            );
+            expect(JSON.stringify(functionSpan.toJSON())).not.toContain(secret);
+          });
+          expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(secret);
+        } finally {
+          debugSpy.mockRestore();
+          flagSpy.mockRestore();
+        }
+      },
+    );
 
     it('throws structured parse failures without an error fallback', async () => {
       const secret = 'SECRET_THROWN_PARSE_ARGUMENT_123';
