@@ -323,7 +323,6 @@ describe('OpenAIRealtimeWebSocket', () => {
     let retry: Promise<void> | undefined;
     ws.on('connection_change', (status) => {
       if (status === 'disconnected' && !retry) {
-        ws.close();
         retry = ws.connect({ apiKey: 'ek_retry' });
       }
     });

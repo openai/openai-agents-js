@@ -178,6 +178,16 @@ export class OpenAIRealtimeWebSocket
     this.#defaultUrl = attempt.previousDefaultUrl;
   }
 
+  #releaseConnectionAttempt(attempt: WebSocketConnectionAttempt) {
+    if (this.#connectionAttempt !== attempt) {
+      return false;
+    }
+
+    this.#restoreConnectionConfig(attempt);
+    this.#connectionAttempt = undefined;
+    return true;
+  }
+
   #selectConnectionFailure(
     attempt: WebSocketConnectionAttempt,
     failure: unknown,
@@ -381,9 +391,7 @@ export class OpenAIRealtimeWebSocket
       }
 
       reject(error);
-      if (this.#connectionAttempt === attempt) {
-        this.#restoreConnectionConfig(attempt);
-      }
+      this.#releaseConnectionAttempt(attempt);
       this.#reportError(error);
       try {
         this.#closeWebSocket(ws);
@@ -485,9 +493,7 @@ export class OpenAIRealtimeWebSocket
       if (closedBeforeOpen) {
         reject(new Error('WebSocket closed before the connection was ready.'));
       }
-      if (this.#connectionAttempt === attempt) {
-        this.#restoreConnectionConfig(attempt);
-      }
+      this.#releaseConnectionAttempt(attempt);
       try {
         this.#transitionToDisconnected(ws);
       } catch (cleanupError) {
@@ -587,7 +593,7 @@ export class OpenAIRealtimeWebSocket
         this.#selectConnectionFailure(attempt, error);
         if (this.#connectionAttempt === attempt) {
           const websocket = this.#state.websocket;
-          this.#restoreConnectionConfig(attempt);
+          this.#releaseConnectionAttempt(attempt);
           try {
             this.#closeWebSocket(websocket);
           } catch (cleanupError) {
@@ -649,9 +655,8 @@ export class OpenAIRealtimeWebSocket
   close() {
     const attempt = this.#connectionAttempt;
     if (attempt) {
-      this.#connectionAttempt = undefined;
-      this.#restoreConnectionConfig(attempt);
       const failure = this.#getConnectionFailure(attempt);
+      this.#releaseConnectionAttempt(attempt);
       attempt.rejectSetup?.(failure);
       attempt.rejectCancellation(failure);
     }

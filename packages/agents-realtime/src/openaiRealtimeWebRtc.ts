@@ -100,6 +100,7 @@ export class OpenAIRealtimeWebRTC
   #cancelOngoingResponse = false;
   #muted = false;
   #connectPromise: Promise<void> | undefined;
+  #cancelConnectionAttempt: (() => void) | undefined;
   #connectAttemptId = 0;
   #peerConnectionDisconnectedTimeout: ReturnType<typeof setTimeout> | undefined;
   #responseCreateSequencer = new ResponseCreateSequencer(
@@ -194,7 +195,8 @@ export class OpenAIRealtimeWebRTC
       return;
     }
 
-    const model = options.model ?? this.currentModel;
+    const previousModel = this.currentModel;
+    const model = options.model ?? previousModel;
     this.currentModel = model;
     const baseUrl = options.url ?? this.#url;
     const attemptId = ++this.#connectAttemptId;
@@ -204,12 +206,28 @@ export class OpenAIRealtimeWebRTC
       resolveConnection = resolve;
       rejectConnection = reject;
     });
+    let shouldRestoreModel = true;
+    const isActiveAttempt = () => this.#connectAttemptId === attemptId;
+    const releaseConnectionAttempt = () => {
+      if (!isActiveAttempt()) {
+        return false;
+      }
+
+      if (shouldRestoreModel) {
+        this.currentModel = previousModel;
+      }
+      this.#connectPromise = undefined;
+      this.#cancelConnectionAttempt = undefined;
+      this.#connectAttemptId += 1;
+      return true;
+    };
 
     const prepareConnection = async () => {
       let apiKey: string | undefined;
       try {
         apiKey = await this._getApiKey(options);
       } catch (error) {
+        releaseConnectionAttempt();
         rejectConnection(error);
         return;
       }
@@ -217,6 +235,7 @@ export class OpenAIRealtimeWebRTC
       const isClientKey =
         typeof apiKey === 'string' && apiKey.startsWith('ek_');
       if (isBrowserEnvironment() && !this.#useInsecureApiKey && !isClientKey) {
+        releaseConnectionAttempt();
         rejectConnection(
           new UserError(
             'Using the WebRTC connection in a browser environment requires an ephemeral client key. If you need to use a regular API key, use the WebSocket transport or set the `useInsecureApiKey` option to true.',
@@ -286,16 +305,29 @@ export class OpenAIRealtimeWebRTC
             dataChannel.removeEventListener('message', onConfigAck);
             dataChannel.removeEventListener('close', onClose);
           };
-          const fail = (error: unknown) => {
+          const fail = (error: unknown, cleanupTransport = true) => {
             if (settled) return;
             settled = true;
             removeConfigAckListeners();
             rejectConnection(error);
-            if (this.#state.dataChannel === dataChannel) {
+            const released = releaseConnectionAttempt();
+            if (
+              cleanupTransport &&
+              released &&
+              this.#state.dataChannel === dataChannel
+            ) {
               this.#cleanupFailedConnection(error);
-            } else {
+            } else if (cleanupTransport) {
               this.#reportError(error);
             }
+          };
+          this.#cancelConnectionAttempt = () => {
+            fail(
+              new Error(
+                'Connection closed before session config was acknowledged',
+              ),
+              false,
+            );
           };
           const isActiveConnection = () =>
             this.#connectAttemptId === attemptId &&
@@ -325,6 +357,9 @@ export class OpenAIRealtimeWebRTC
               dataChannel,
               callId,
             };
+            if (this.#connectAttemptId === attemptId) {
+              this.#connectPromise = undefined;
+            }
             try {
               this.emit('connection_change', this.#state.status);
               if (!isActiveConnection()) {
@@ -347,6 +382,10 @@ export class OpenAIRealtimeWebRTC
             } catch (error) {
               fail(error);
               return;
+            }
+            shouldRestoreModel = false;
+            if (isActiveAttempt()) {
+              this.#cancelConnectionAttempt = undefined;
             }
             settled = true;
             resolveConnection();
@@ -431,6 +470,7 @@ export class OpenAIRealtimeWebRTC
             return;
           }
           rejectConnection(event);
+          releaseConnectionAttempt();
           this.#cleanupFailedConnection(event);
         });
 
@@ -448,12 +488,28 @@ export class OpenAIRealtimeWebRTC
           (await navigator.mediaDevices.getUserMedia({
             audio: true,
           }));
+        if (!isActiveAttempt()) {
+          if (!this.options.mediaStream) {
+            for (const track of stream.getAudioTracks()) {
+              try {
+                track.stop();
+              } catch (error) {
+                this.#reportError(error);
+              }
+            }
+          }
+          return;
+        }
         peerConnection.addTrack(stream.getAudioTracks()[0]);
 
         if (this.options.changePeerConnection) {
           const originalPeerConnection = peerConnection;
-          peerConnection =
+          const changedPeerConnection =
             await this.options.changePeerConnection(peerConnection);
+          if (!isActiveAttempt()) {
+            return;
+          }
+          peerConnection = changedPeerConnection;
           if (originalPeerConnection !== peerConnection) {
             originalPeerConnection.onconnectionstatechange = null;
           }
@@ -462,7 +518,13 @@ export class OpenAIRealtimeWebRTC
         }
 
         const offer = await peerConnection.createOffer();
+        if (!isActiveAttempt()) {
+          return;
+        }
         await peerConnection.setLocalDescription(offer);
+        if (!isActiveAttempt()) {
+          return;
+        }
 
         if (!offer.sdp) {
           throw new Error('Failed to create offer');
@@ -477,12 +539,18 @@ export class OpenAIRealtimeWebRTC
             'X-OpenAI-Agents-SDK': HEADERS['X-OpenAI-Agents-SDK'],
           },
         });
+        if (!isActiveAttempt()) {
+          return;
+        }
 
         if (!sdpResponse.ok) {
           // Without this the error body is passed to setRemoteDescription and
           // surfaces as an opaque "Failed to parse SessionDescription", hiding
           // the real cause (e.g. insufficient_quota, invalid ephemeral key).
           const detail = await readSdpErrorDetail(sdpResponse);
+          if (!isActiveAttempt()) {
+            return;
+          }
           throw new Error(
             `Realtime call request failed with status ${sdpResponse.status}${detail}`,
           );
@@ -491,23 +559,35 @@ export class OpenAIRealtimeWebRTC
         callId = sdpResponse.headers?.get('Location')?.split('/').pop();
         this.#state = { ...this.#state, callId };
 
+        const answerSdp = await sdpResponse.text();
+        if (!isActiveAttempt()) {
+          return;
+        }
         const answer: RTCSessionDescriptionInit = {
           type: 'answer',
-          sdp: await sdpResponse.text(),
+          sdp: answerSdp,
         };
 
         await peerConnection.setRemoteDescription(answer);
       } catch (error) {
         rejectConnection(error);
-        this.#cleanupFailedConnection(error);
+        if (releaseConnectionAttempt()) {
+          this.#cleanupFailedConnection(error);
+        } else {
+          this.#reportError(error);
+        }
       }
     };
 
+    this.#cancelConnectionAttempt = () => {
+      releaseConnectionAttempt();
+    };
     this.#connectPromise = connectionReady.finally(() => {
       // Only clear if this is still the active connection attempt.
       // A newer connect() may have already replaced #connectPromise.
       if (this.#connectAttemptId === attemptId) {
         this.#connectPromise = undefined;
+        this.#cancelConnectionAttempt = undefined;
       }
     });
     void prepareConnection();
@@ -633,6 +713,7 @@ export class OpenAIRealtimeWebRTC
    */
   close() {
     this.#clearPeerConnectionDisconnectedTimeout();
+    this.#cancelConnectionAttempt?.();
     const { dataChannel, peerConnection } = this.#state;
     const shouldNotify = this.#state.status !== 'disconnected';
     this.#state = {
