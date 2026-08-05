@@ -5057,6 +5057,60 @@ describe('Runner.run', () => {
         expect(getFirstTextContent(persistedUsers[0])).toBe('Fresh input');
       });
 
+      it.each([
+        { name: 'run', stream: false },
+        { name: 'stream', stream: true },
+      ])(
+        'does not grow session history from repeated references across $name turns',
+        async ({ stream }) => {
+          const model = stream
+            ? new StreamingModel(fakeModelMessage('assistant'))
+            : new FakeModel(
+                Array.from({ length: 3 }, (_, turn) => ({
+                  ...TEST_MODEL_RESPONSE_BASIC,
+                  output: [fakeModelMessage(`assistant ${turn}`)],
+                })),
+              );
+          const agent = new Agent({ name: 'RepeatedHistorySession', model });
+          const session = new MemorySession();
+          const sessionInputCallback = (
+            history: AgentInputItem[],
+            newItems: AgentInputItem[],
+          ) => {
+            if (history.length === 0) {
+              return newItems;
+            }
+            return history.concat(history[0], newItems);
+          };
+
+          for (let turn = 0; turn < 3; turn += 1) {
+            if (stream) {
+              const result = await run(agent, `user ${turn}`, {
+                session,
+                sessionInputCallback,
+                stream: true,
+              });
+              await result.completed;
+            } else {
+              await run(agent, `user ${turn}`, {
+                session,
+                sessionInputCallback,
+              });
+            }
+          }
+
+          const storedItems = await session.getItems();
+          const storedUserMessages = storedItems.filter(
+            (item): item is protocol.UserMessageItem =>
+              item.type === 'message' && 'role' in item && item.role === 'user',
+          );
+          expect(
+            storedUserMessages.map((item) => getFirstTextContent(item)),
+          ).toEqual(['user 0', 'user 1', 'user 2']);
+          expect(storedItems).toHaveLength(6);
+        },
+      );
+
       it('persists reordered new items ahead of matching history', async () => {
         const model = new RecordingModel([
           {

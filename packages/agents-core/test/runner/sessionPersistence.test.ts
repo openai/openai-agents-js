@@ -1827,6 +1827,168 @@ describe('prepareInputItemsWithSession', () => {
     expect(sessionItems[0]).toBe(newItem);
   });
 
+  it('does not persist a repeated original history reference', async () => {
+    const historyItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'history',
+    };
+    const newItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'new',
+    };
+    const session = new StubSession([historyItem]);
+
+    const result = await prepareInputItemsWithSession(
+      [newItem],
+      session,
+      (history, newItems) => [history[0], history[0], newItems[0]],
+    );
+
+    expect(result.preparedInput).toEqual([historyItem, historyItem, newItem]);
+    expect(result.sessionItems).toEqual([newItem]);
+  });
+
+  it('keeps equal-content new input when history is repeated', async () => {
+    const historyItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'same',
+    };
+    const newItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'same',
+    };
+    const session = new StubSession([historyItem]);
+
+    const result = await prepareInputItemsWithSession(
+      [newItem],
+      session,
+      (history, newItems) => [history[0], history[0], newItems[0]],
+    );
+
+    expect(result.preparedInput).toEqual([historyItem, historyItem, newItem]);
+    expect(result.sessionItems).toEqual([newItem]);
+    expect(result.sessionItems?.[0]).toBe(newItem);
+  });
+
+  it('persists a clone after shared history and new-input identity is consumed', async () => {
+    const sharedItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'shared',
+    };
+    const session = new StubSession([sharedItem]);
+    let reconstructed: AgentInputItem | undefined;
+
+    const result = await prepareInputItemsWithSession(
+      [sharedItem],
+      session,
+      (history) => {
+        reconstructed = structuredClone(history[0]);
+        return [history[0], history[0], reconstructed];
+      },
+    );
+
+    expect(result.preparedInput).toEqual([
+      sharedItem,
+      sharedItem,
+      reconstructed,
+    ]);
+    expect(result.sessionItems).toEqual([reconstructed]);
+  });
+
+  it('preserves history provenance after async pop, move, and repeat', async () => {
+    const historyItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'history',
+    };
+    const newItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'new',
+    };
+    const session = new StubSession([historyItem]);
+
+    const result = await prepareInputItemsWithSession(
+      [newItem],
+      session,
+      async (history, newItems) => {
+        await Promise.resolve();
+        const moved = history.pop();
+        if (!moved) {
+          throw new Error('Expected history item.');
+        }
+        newItems.unshift(moved);
+        return [...newItems, moved];
+      },
+    );
+
+    expect(result.preparedInput).toEqual([historyItem, newItem, historyItem]);
+    expect(result.sessionItems).toEqual([newItem]);
+  });
+
+  it('persists a replacement history object as injected input', async () => {
+    const historyItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'history',
+    };
+    const replacement: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'summary',
+    };
+    const newItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'new',
+    };
+    const session = new StubSession([historyItem]);
+
+    const result = await prepareInputItemsWithSession(
+      [newItem],
+      session,
+      (history, newItems) => {
+        history[0] = replacement;
+        return history.concat(newItems);
+      },
+    );
+
+    expect(result.preparedInput).toEqual([replacement, newItem]);
+    expect(result.sessionItems).toEqual([replacement, newItem]);
+  });
+
+  it('persists an extra reconstructed history copy as injected input', async () => {
+    const historyItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'history',
+    };
+    const newItem: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'new',
+    };
+    const session = new StubSession([historyItem]);
+    let reconstructed: AgentInputItem | undefined;
+
+    const result = await prepareInputItemsWithSession(
+      [newItem],
+      session,
+      (history, newItems) => {
+        reconstructed = structuredClone(history[0]);
+        return [history[0], reconstructed, newItems[0]];
+      },
+    );
+
+    expect(result.preparedInput).toEqual([historyItem, reconstructed, newItem]);
+    expect(result.sessionItems).toEqual([reconstructed, newItem]);
+  });
+
   it('respects callbacks that intentionally drop new inputs', async () => {
     const historyItem: AgentInputItem = {
       type: 'message',
