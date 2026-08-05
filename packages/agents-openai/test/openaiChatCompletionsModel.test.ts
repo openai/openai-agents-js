@@ -654,13 +654,13 @@ describe('OpenAIChatCompletionsModel', () => {
     expect(result.output).toEqual([]);
   });
 
-  it('traces the synthesized content-filter refusal', async () => {
+  it('traces the synthesized refusal without mutating raw provider data', async () => {
     const processor = new RecordingProcessor();
     setTraceProcessors([processor]);
     setTracingDisabled(false);
 
     const client = new FakeClient();
-    client.chat.completions.create.mockResolvedValue({
+    const rawResponse = {
       id: 'r',
       choices: [
         {
@@ -668,10 +668,11 @@ describe('OpenAIChatCompletionsModel', () => {
           message: { role: 'assistant', content: null },
         },
       ],
-    });
+    };
+    client.chat.completions.create.mockResolvedValue(rawResponse);
     const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
 
-    await withTrace('content-filter-refusal', () =>
+    const result = await withTrace('content-filter-refusal', () =>
       model.getResponse({
         input: 'u',
         modelSettings: {},
@@ -681,6 +682,12 @@ describe('OpenAIChatCompletionsModel', () => {
         tracing: true,
       }),
     );
+
+    expect(result.providerData).toBe(rawResponse);
+    expect(rawResponse.choices[0].message).toEqual({
+      role: 'assistant',
+      content: null,
+    });
 
     const generationSpan = processor.spansEnded.find(
       (span) => span.spanData.type === 'generation',

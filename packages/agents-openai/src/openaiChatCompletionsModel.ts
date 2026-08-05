@@ -115,7 +115,7 @@ export class OpenAIChatCompletionsModel implements Model {
     this.#handleUnsupportedPrompt(request);
     this.#handleUnsupportedReasoningSettings(request);
 
-    const response = await withGenerationSpan(
+    const { response, rawResponse } = await withGenerationSpan(
       async (span) => {
         span.spanData.model = this.#model;
         span.spanData.model_config = request.modelSettings
@@ -128,15 +128,17 @@ export class OpenAIChatCompletionsModel implements Model {
               verbosity: request.modelSettings.text?.verbosity,
             }
           : { base_url: this.#client.baseURL };
-        const response = await this.#fetchResponse(request, span, false);
-        const firstChoice = response.choices?.[0];
+        const rawResponse = await this.#fetchResponse(request, span, false);
+        let response = rawResponse;
+        const firstChoice = rawResponse.choices?.[0];
         const message = firstChoice?.message;
         // Some providers signal a filtered completion only through the finish reason.
         // Normalize that terminal signal before tracing and protocol conversion.
         if (
+          firstChoice &&
           message &&
           shouldSynthesizeContentFilterRefusal({
-            finishReason: firstChoice?.finish_reason,
+            finishReason: firstChoice.finish_reason,
             hasOutput: Boolean(
               message.content ||
               message.refusal ||
@@ -145,13 +147,25 @@ export class OpenAIChatCompletionsModel implements Model {
             ),
           })
         ) {
-          message.content = null;
-          message.refusal = CONTENT_FILTER_REFUSAL_MESSAGE;
+          response = {
+            ...rawResponse,
+            choices: [
+              {
+                ...firstChoice,
+                message: {
+                  ...message,
+                  content: null,
+                  refusal: CONTENT_FILTER_REFUSAL_MESSAGE,
+                },
+              },
+              ...rawResponse.choices.slice(1),
+            ],
+          };
         }
         if (span && request.tracing === true) {
           span.spanData.output = [response];
         }
-        return response;
+        return { response, rawResponse };
       },
       undefined,
       getModelTracingParent(request),
@@ -264,7 +278,7 @@ export class OpenAIChatCompletionsModel implements Model {
         : new Usage(),
       output,
       responseId: response.id,
-      providerData: response,
+      providerData: rawResponse,
     };
 
     return modelResponse;
