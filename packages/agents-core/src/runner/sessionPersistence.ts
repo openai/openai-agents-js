@@ -1,6 +1,7 @@
 import { UserError } from '../errors';
 import {
   isOpenAIResponsesCompactionAwareSession,
+  isRunContextAwareSession,
   isSessionHistoryTransactionAwareSession,
   type OpenAIResponsesCompactionArgs,
   type Session,
@@ -9,6 +10,7 @@ import {
 } from '../memory/session';
 import { RunResult, StreamedRunResult } from '../result';
 import { RunState } from '../runState';
+import type { RunContext } from '../runContext';
 import { RunItem } from '../items';
 import { AgentInputItem } from '../types';
 import { ModelItem } from '../types/protocol';
@@ -48,6 +50,47 @@ export type SessionPersistenceOptions = {
   compactionMode?: OpenAIResponsesCompactionArgs['compactionMode'];
   outputBlocked?: boolean;
 };
+
+const SESSION_LIMIT_UNSET = Symbol('sessionLimitUnset');
+
+async function getSessionItems(
+  session: Session,
+  runContext: RunContext<any> | undefined,
+  limit: number | typeof SESSION_LIMIT_UNSET = SESSION_LIMIT_UNSET,
+): Promise<AgentInputItem[]> {
+  if (runContext && isRunContextAwareSession(session)) {
+    return session.getItems(
+      limit === SESSION_LIMIT_UNSET ? undefined : limit,
+      runContext,
+    );
+  }
+  return limit === SESSION_LIMIT_UNSET
+    ? session.getItems()
+    : session.getItems(limit);
+}
+
+async function addSessionItems(
+  session: Session,
+  items: AgentInputItem[],
+  runContext: RunContext<any> | undefined,
+): Promise<void> {
+  if (runContext && isRunContextAwareSession(session)) {
+    await session.addItems(items, runContext);
+    return;
+  }
+  await session.addItems(items);
+}
+
+async function clearSession(
+  session: Session,
+  runContext: RunContext<any> | undefined,
+): Promise<void> {
+  if (runContext && isRunContextAwareSession(session)) {
+    await session.clearSession(runContext);
+    return;
+  }
+  await session.clearSession();
+}
 
 function canonicalizeSessionHistoryTransaction(
   transaction: SessionHistoryTransaction,
@@ -365,7 +408,7 @@ async function assertBlockedSessionSuffixMatches(
   const expectedSuffix = normalizeItemsForSessionPersistence(
     extractOutputItemsFromRunItems(suffixRunItems, reasoningItemIdPolicy),
   );
-  const currentItems = await session.getItems();
+  const currentItems = await getSessionItems(session, state._context);
   const comparableCurrentItems =
     session.prepareHistoryItemsForPersistenceComparison?.(currentItems) ??
     currentItems;
@@ -452,6 +495,7 @@ export type SessionPersistenceTracker = {
 
 export function createSessionPersistenceTracker(options: {
   session?: Session;
+  runContext?: RunContext<any>;
   hasCallModelInputFilter: boolean;
   persistInput?: typeof saveStreamInputToSession;
   resumingFromState?: boolean;
@@ -459,6 +503,7 @@ export function createSessionPersistenceTracker(options: {
 }): SessionPersistenceTracker | undefined {
   class SessionPersistenceTrackerImpl implements SessionPersistenceTracker {
     private readonly session?: Session;
+    private readonly runContext?: RunContext<any>;
     private readonly hasCallModelInputFilter: boolean;
     private readonly persistInput?: typeof saveStreamInputToSession;
     private originalSnapshot: AgentInputItem[] | undefined;
@@ -472,6 +517,7 @@ export function createSessionPersistenceTracker(options: {
 
     constructor() {
       this.session = options.session;
+      this.runContext = options.runContext;
       this.hasCallModelInputFilter = options.hasCallModelInputFilter;
       this.persistInput = options.persistInput;
       this.originalSnapshot = options.resumingFromState
@@ -600,7 +646,7 @@ export function createSessionPersistenceTracker(options: {
           return;
         }
         this.persistedInput = true;
-        await persistInput(this.session, itemsToPersist);
+        await persistInput(this.session, itemsToPersist, this.runContext);
       };
     };
   }
@@ -1023,7 +1069,7 @@ export async function saveToSession(
     options.outputBlocked === true &&
     !persistencePlan.useHistoryTransaction
   ) {
-    await saveStreamInputToSession(session, sessionInputItems);
+    await saveStreamInputToSession(session, sessionInputItems, state._context);
     return;
   }
 
@@ -1048,6 +1094,7 @@ export async function saveToSession(
 export async function saveStreamInputToSession(
   session: Session | undefined,
   sessionInputItems: AgentInputItem[] | undefined,
+  runContext?: RunContext<any>,
 ): Promise<void> {
   if (!session) {
     return;
@@ -1059,15 +1106,16 @@ export async function saveStreamInputToSession(
   const compactedInput = trimToLatestCompaction(sanitizedInput);
   assertPersistableCompactionBoundary(compactedInput);
   if (compactedInput[0]?.type === 'compaction') {
-    const previousItems = await session.getItems();
+    const previousItems = await getSessionItems(session, runContext);
     await replaceSessionItemsWithRecovery(
       session,
       previousItems,
       compactedInput,
+      runContext,
     );
     return;
   }
-  await session.addItems(sanitizedInput);
+  await addSessionItems(session, sanitizedInput, runContext);
 }
 
 export async function saveStreamResultToSession(
@@ -1091,7 +1139,7 @@ export async function saveStreamResultToSession(
     options.outputBlocked === true &&
     !persistencePlan.useHistoryTransaction
   ) {
-    await saveStreamInputToSession(session, sessionInputItems);
+    await saveStreamInputToSession(session, sessionInputItems, state._context);
     return;
   }
 
@@ -1147,7 +1195,11 @@ export async function reconcileLegacyCompactionSessionBeforeResume(
     sanitizedPendingItems,
     reasoningItemIdPolicy,
   );
-  await reconcileLegacyCompactionSessionItems(session, sanitizedPendingItems);
+  await reconcileLegacyCompactionSessionItems(
+    session,
+    sanitizedPendingItems,
+    state._context,
+  );
   state._pendingLegacyCompactionSessionItems = undefined;
 }
 
@@ -1203,6 +1255,7 @@ export async function prepareInputItemsWithSession(
     preserveDroppedNewItems?: boolean;
     reasoningItemIdPolicy?: ReasoningItemIdPolicy;
   },
+  runContext?: RunContext<any>,
 ): Promise<PreparedInputWithSessionResult> {
   const newInputItems = toAgentInputList(input);
   assertValidCompactionItems(newInputItems);
@@ -1218,7 +1271,9 @@ export async function prepareInputItemsWithSession(
   const preserveDroppedNewItems = options?.preserveDroppedNewItems ?? false;
   const reasoningItemIdPolicy = options?.reasoningItemIdPolicy;
 
-  const history = trimToLatestCompaction(await session.getItems());
+  const history = trimToLatestCompaction(
+    await getSessionItems(session, runContext),
+  );
   assertPersistableCompactionBoundary(history);
   if (!sessionInputCallback) {
     const historyForModelInput = history.map((item) =>
@@ -1657,14 +1712,15 @@ async function persistRunItemsToSession(options: {
   const compactedItems = trimToLatestCompaction(sanitizedItems);
   assertPersistableCompactionBoundary(compactedItems);
   if (compactedItems[0]?.type === 'compaction') {
-    const previousItems = await session.getItems();
+    const previousItems = await getSessionItems(session, state._context);
     await replaceSessionItemsWithRecovery(
       session,
       previousItems,
       compactedItems,
+      state._context,
     );
   } else {
-    await session.addItems(sanitizedItems);
+    await addSessionItems(session, sanitizedItems, state._context);
   }
   commitPersistenceState();
   if (runCompaction) {
@@ -1711,10 +1767,15 @@ async function flushPendingSessionHistoryTransaction(
       'A pending session history transaction is missing its accepted-output replacement authority.',
     );
   }
-  await session.applyHistoryTransaction({
+  const transactionArgs = {
     operationId: pending.operationId,
     transaction: buildPendingSessionHistoryTransaction(state),
-  });
+  };
+  if (isRunContextAwareSession(session)) {
+    await session.applyHistoryTransaction(transactionArgs, state._context);
+  } else {
+    await session.applyHistoryTransaction(transactionArgs);
+  }
   state._currentTurnPersistedItemCount = pending.persistedItemCount;
   state._currentTurnDeferredSessionItemIndexes = new Set(
     pending.deferredItemIndexes,
@@ -1734,13 +1795,14 @@ async function flushPendingSessionHistoryTransaction(
 async function reconcileLegacyCompactionSessionItems(
   session: Session,
   pendingItems: AgentInputItem[],
+  runContext: RunContext<any>,
 ): Promise<void> {
   if (pendingItems.length === 0 || pendingItems[0]?.type !== 'compaction') {
     throwLegacyCompactionReconciliationError();
   }
   assertPersistableCompactionBoundary(pendingItems);
 
-  const previousItems = await session.getItems();
+  const previousItems = await getSessionItems(session, runContext);
   assertValidCompactionItems(trimToLatestCompaction(previousItems));
   const comparablePreviousItems =
     session.prepareHistoryItemsForPersistenceComparison?.(previousItems) ??
@@ -1773,7 +1835,12 @@ async function reconcileLegacyCompactionSessionItems(
     throwLegacyCompactionReconciliationError();
   }
 
-  await replaceSessionItemsWithRecovery(session, previousItems, pendingItems);
+  await replaceSessionItemsWithRecovery(
+    session,
+    previousItems,
+    pendingItems,
+    runContext,
+  );
 }
 
 function assertPersistableCompactionBoundary(items: AgentInputItem[]): void {
@@ -1823,6 +1890,7 @@ async function replaceSessionItemsWithRecovery(
   session: Session,
   previousItems: AgentInputItem[],
   replacementItems: AgentInputItem[],
+  runContext?: RunContext<any>,
 ): Promise<void> {
   assertValidCompactionItems(trimToLatestCompaction(previousItems));
   assertValidCompactionItems(trimToLatestCompaction(replacementItems));
@@ -1849,20 +1917,25 @@ async function replaceSessionItemsWithRecovery(
     ) {
       return;
     }
-    await session.replaceHistoryWithCompaction(replacementItems);
+    if (runContext && isRunContextAwareSession(session)) {
+      await session.replaceHistoryWithCompaction(replacementItems, runContext);
+    } else {
+      await session.replaceHistoryWithCompaction(replacementItems);
+    }
     return;
   }
 
   try {
-    await session.clearSession();
+    await clearSession(session, runContext);
     if (replacementItems.length > 0) {
-      await session.addItems(replacementItems);
+      await addSessionItems(session, replacementItems, runContext);
     }
   } catch (error) {
     await restoreSessionItemsAfterFailedReplacement(
       session,
       previousItems,
       error,
+      runContext,
     );
     throw error;
   }
@@ -1872,9 +1945,10 @@ async function restoreSessionItemsAfterFailedReplacement(
   session: Session,
   previousItems: AgentInputItem[],
   replacementError: unknown,
+  runContext?: RunContext<any>,
 ): Promise<void> {
   try {
-    const currentItems = await session.getItems();
+    const currentItems = await getSessionItems(session, runContext);
     if (
       currentItems.length === previousItems.length &&
       agentItemRangeMatches(currentItems, previousItems, 0)
@@ -1890,9 +1964,9 @@ async function restoreSessionItemsAfterFailedReplacement(
   }
 
   try {
-    await session.clearSession();
+    await clearSession(session, runContext);
     if (previousItems.length > 0) {
-      await session.addItems(previousItems);
+      await addSessionItems(session, previousItems, runContext);
     }
   } catch (restoreError) {
     logModelAndToolActionWarning(
@@ -1934,7 +2008,9 @@ async function runCompactionOnSession(
           ...(typeof store === 'undefined' ? {} : { store }),
           ...(typeof compactionMode === 'undefined' ? {} : { compactionMode }),
         };
-  const compactionResult = await session.runCompaction(compactionArgs);
+  const compactionResult = isRunContextAwareSession(session)
+    ? await session.runCompaction(compactionArgs, state._context)
+    : await session.runCompaction(compactionArgs);
   if (!compactionResult) {
     return;
   }

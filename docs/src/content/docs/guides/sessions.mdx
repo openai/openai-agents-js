@@ -7,6 +7,7 @@ import { Code } from '@astrojs/starlight/components';
 import sessionsQuickstart from '../../../../../examples/docs/sessions/basicSession.ts?raw';
 import manageHistory from '../../../../../examples/docs/sessions/manageHistory.ts?raw';
 import customSession from '../../../../../examples/docs/sessions/customSession.ts?raw';
+import contextAwareSession from '../../../../../examples/docs/sessions/contextAwareSession.ts?raw';
 import sessionInputCallback from '../../../../../examples/docs/sessions/sessionInputCallback.ts?raw';
 import responsesCompactionSession from '../../../../../examples/docs/sessions/responsesCompactionSession.ts?raw';
 import manualCompactionSession from '../../../../../examples/docs/sessions/responsesCompactionManualSession.ts?raw';
@@ -116,6 +117,18 @@ Implement the `Session` interface to back memory with Redis, DynamoDB, SQLite, o
 />
 
 Custom sessions let you enforce retention policies, add encryption, or attach metadata to each conversation turn before persisting it.
+
+### Scope custom sessions with the run context
+
+Implement `RunContextAwareSession<TContext>` and set `acceptsRunContext` to `true` when a custom session needs the active `RunContext` for storage routing or metadata. The runner passes the same context instance to all history operations during a run, including streamed persistence and resumed runs. Sessions that only implement `Session` keep the existing method signatures and are called without the additional argument.
+
+<Code
+  lang="typescript"
+  code={contextAwareSession}
+  title="Partition session history with the run context"
+/>
+
+`OpenAIResponsesCompactionSession` does not forward a run context to its underlying session. Keep one compaction-session instance per context scope if you combine these capabilities.
 
 ---
 

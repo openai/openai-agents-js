@@ -1,4 +1,5 @@
 import type { AgentInputItem } from '../types';
+import type { RunContext } from '../runContext';
 import type { RequestUsage } from '../usage';
 
 /**
@@ -94,6 +95,37 @@ export interface Session {
   clearSession(): Promise<void>;
 }
 
+/**
+ * Optional session capability for receiving the active run context.
+ *
+ * Sessions opt in explicitly so existing implementations keep their legacy method call shapes.
+ * The runner passes the same {@link RunContext} instance to every history operation in a run.
+ */
+export interface RunContextAwareSession<TContext = unknown> extends Session {
+  readonly acceptsRunContext: true;
+
+  getItems(
+    limit?: number,
+    runContext?: RunContext<TContext>,
+  ): Promise<AgentInputItem[]>;
+
+  addItems(
+    items: AgentInputItem[],
+    runContext?: RunContext<TContext>,
+  ): Promise<void>;
+
+  replaceHistoryWithCompaction?(
+    items: AgentInputItem[],
+    runContext?: RunContext<TContext>,
+  ): Promise<void>;
+
+  popItem(
+    runContext?: RunContext<TContext>,
+  ): Promise<AgentInputItem | undefined>;
+
+  clearSession(runContext?: RunContext<TContext>): Promise<void>;
+}
+
 export interface SessionHistoryRewriteAwareSession extends Session {
   applyHistoryMutations(args: SessionHistoryRewriteArgs): Promise<void> | void;
 }
@@ -134,6 +166,7 @@ export type SessionHistoryTransactionArgs = {
 export interface SessionHistoryTransactionAwareSession extends Session {
   applyHistoryTransaction(
     args: SessionHistoryTransactionArgs,
+    runContext?: RunContext<any>,
   ): Promise<void> | void;
 }
 
@@ -181,6 +214,7 @@ export interface OpenAIResponsesCompactionAwareSession extends Session {
    */
   runCompaction(
     args?: OpenAIResponsesCompactionArgs,
+    runContext?: RunContext<any>,
   ):
     | Promise<OpenAIResponsesCompactionResult | null>
     | OpenAIResponsesCompactionResult
@@ -194,6 +228,16 @@ export function isOpenAIResponsesCompactionAwareSession(
     !!session &&
     typeof (session as OpenAIResponsesCompactionAwareSession).runCompaction ===
       'function'
+  );
+}
+
+export function isRunContextAwareSession(
+  session: Session | undefined,
+): session is RunContextAwareSession<unknown> {
+  return (
+    !!session &&
+    (session as Partial<RunContextAwareSession<unknown>>).acceptsRunContext ===
+      true
   );
 }
 
