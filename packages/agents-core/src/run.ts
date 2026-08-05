@@ -830,8 +830,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   //  Internals
   // --------------------------------------------------------------
 
-  #getTaskSpanName(): string {
-    return this.config.workflowName ?? 'Agent workflow';
+  #getTaskSpanName(isResumedState: boolean): string {
+    return (
+      (isResumedState ? getCurrentTrace()?.name : undefined) ??
+      this.config.workflowName ??
+      'Agent workflow'
+    );
   }
 
   private readonly inputGuardrailDefs: InputGuardrailDefinition[];
@@ -1034,7 +1038,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         isResumedState && state._currentStep?.type === 'next_step_interruption';
       const invocationSpans = useTaskAndTurnSpans
         ? startRunnerInvocationSpans({
-            name: this.#getTaskSpanName(),
+            name: this.#getTaskSpanName(isResumedState),
             agent: state._currentAgent,
             restoredAgentSpan: isResumedState
               ? state._currentAgentSpan
@@ -2267,7 +2271,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         isResumedState && state._currentStep?.type === 'next_step_interruption';
       const invocationSpans = useTaskAndTurnSpans
         ? startRunnerInvocationSpans({
-            name: this.#getTaskSpanName(),
+            name: this.#getTaskSpanName(isResumedState),
             agent: state._currentAgent,
             restoredAgentSpan: isResumedState
               ? state._currentAgentSpan
