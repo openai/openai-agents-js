@@ -18,6 +18,7 @@ import {
   MaxTurnsExceededError,
   ModelBehaviorError,
   ModelRefusalError,
+  ToolCallError,
   ModelResponse,
   OutputGuardrailTripwireTriggered,
   Session,
@@ -586,6 +587,332 @@ describe('Runner.run', () => {
           (item) => item.rawItem.type === 'computer_call_result',
         ),
       ).toHaveLength(1);
+    });
+
+    it('cancels and drains function work after a computer category failure', async () => {
+      const primaryError = new Error('computer category failed');
+      let markFunctionStarted: (() => void) | undefined;
+      const functionStarted = new Promise<void>((resolve) => {
+        markFunctionStarted = resolve;
+      });
+      let functionCancelled = false;
+      let functionDrained = false;
+      let lateSideEffect = false;
+
+      const abortableTool = tool({
+        name: 'abortable_tool',
+        description: 'waits for sibling category cancellation',
+        parameters: z.object({ test: z.string() }),
+        errorFunction: null,
+        execute: async (_input, _context, details) => {
+          markFunctionStarted?.();
+          if (!details?.signal) {
+            throw new Error('Expected an internal cancellation signal');
+          }
+          try {
+            await setTimeoutPromise(60_000, undefined, {
+              signal: details.signal,
+            });
+            lateSideEffect = true;
+            return 'unexpected tool output';
+          } catch (error) {
+            functionCancelled = true;
+            await Promise.resolve();
+            functionDrained = true;
+            throw error;
+          }
+        },
+      });
+      const computer = new FakeComputer();
+      const computerCall: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        id: 'computer-call',
+        callId: 'computer-call',
+        status: 'completed',
+        action: { type: 'screenshot' },
+        providerData: {
+          pending_safety_checks: [
+            {
+              id: 'safety-check',
+              code: 'malicious_instructions',
+            },
+          ],
+        },
+      };
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'abortable-call',
+              callId: 'abortable-call',
+              name: 'abortable_tool',
+            },
+            computerCall,
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'SiblingCategoryFailureAgent',
+        model,
+        tools: [
+          abortableTool,
+          computerTool({
+            computer,
+            onSafetyCheck: async () => {
+              await functionStarted;
+              throw primaryError;
+            },
+          }),
+        ],
+      });
+
+      const error = await run(agent, 'start').catch((caught) => caught);
+
+      expect(error).toBe(primaryError);
+      expect(functionCancelled).toBe(true);
+      expect(functionDrained).toBe(true);
+      expect(lateSideEffect).toBe(false);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(lateSideEffect).toBe(false);
+    });
+
+    it('drains function post-invocation work after a category failure', async () => {
+      const primaryError = new Error('computer category failed');
+      let markPostInvocationStarted: (() => void) | undefined;
+      const postInvocationStarted = new Promise<void>((resolve) => {
+        markPostInvocationStarted = resolve;
+      });
+      let releasePostInvocation: (() => void) | undefined;
+      const postInvocationCanFinish = new Promise<void>((resolve) => {
+        releasePostInvocation = resolve;
+      });
+      let postInvocationFinished = false;
+
+      const quickTool = tool({
+        name: 'quick_tool',
+        description: 'finishes before sibling category failure',
+        parameters: z.object({ test: z.string() }),
+        execute: async () => 'tool output',
+        customDataExtractor: async () => {
+          markPostInvocationStarted?.();
+          await postInvocationCanFinish;
+          postInvocationFinished = true;
+          return { lifecycle: 'complete' };
+        },
+      });
+      const computerCall: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        id: 'computer-call',
+        callId: 'computer-call',
+        status: 'completed',
+        action: { type: 'screenshot' },
+        providerData: {
+          pending_safety_checks: [
+            {
+              id: 'safety-check',
+              code: 'malicious_instructions',
+            },
+          ],
+        },
+      };
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'quick-call',
+              callId: 'quick-call',
+              name: 'quick_tool',
+            },
+            computerCall,
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'PostInvocationDrainAgent',
+        model,
+        tools: [
+          quickTool,
+          computerTool({
+            computer: new FakeComputer(),
+            onSafetyCheck: async () => {
+              await postInvocationStarted;
+              throw primaryError;
+            },
+          }),
+        ],
+      });
+
+      let runSettled = false;
+      const runOutcome = run(agent, 'start').then(
+        () => {
+          runSettled = true;
+          return undefined;
+        },
+        (error: unknown) => {
+          runSettled = true;
+          return error;
+        },
+      );
+      await postInvocationStarted;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      expect(runSettled).toBe(false);
+      releasePostInvocation?.();
+      const error = await runOutcome;
+      expect(error).toBe(primaryError);
+      expect(postInvocationFinished).toBe(true);
+    });
+
+    it('stops computer actions while failed function work drains', async () => {
+      const primaryError = new Error('function category failed');
+      let markSlowFunctionStarted: (() => void) | undefined;
+      const slowFunctionStarted = new Promise<void>((resolve) => {
+        markSlowFunctionStarted = resolve;
+      });
+      let markComputerPreparationStarted: (() => void) | undefined;
+      const computerPreparationStarted = new Promise<void>((resolve) => {
+        markComputerPreparationStarted = resolve;
+      });
+      let releaseComputerPreparation: (() => void) | undefined;
+      const computerPreparationCanFinish = new Promise<void>((resolve) => {
+        releaseComputerPreparation = resolve;
+      });
+      let markFunctionCleanupStarted: (() => void) | undefined;
+      const functionCleanupStarted = new Promise<void>((resolve) => {
+        markFunctionCleanupStarted = resolve;
+      });
+      let releaseFunctionCleanup: (() => void) | undefined;
+      const functionCleanupCanFinish = new Promise<void>((resolve) => {
+        releaseFunctionCleanup = resolve;
+      });
+      let functionCleanupFinished = false;
+
+      const failingTool = tool({
+        name: 'failing_tool',
+        description: 'fails after sibling categories start',
+        parameters: z.object({ test: z.string() }),
+        errorFunction: null,
+        execute: async () => {
+          await Promise.all([slowFunctionStarted, computerPreparationStarted]);
+          throw primaryError;
+        },
+      });
+      const slowTool = tool({
+        name: 'slow_tool',
+        description: 'blocks cleanup after cancellation',
+        parameters: z.object({ test: z.string() }),
+        errorFunction: null,
+        execute: async (_input, _context, details) => {
+          markSlowFunctionStarted?.();
+          if (!details?.signal) {
+            throw new Error('Expected an internal cancellation signal');
+          }
+          try {
+            await setTimeoutPromise(60_000, undefined, {
+              signal: details.signal,
+            });
+            return 'unexpected tool output';
+          } catch (error) {
+            markFunctionCleanupStarted?.();
+            await functionCleanupCanFinish;
+            functionCleanupFinished = true;
+            throw error;
+          }
+        },
+      });
+      const computer = new FakeComputer();
+      const screenshot = vi.fn(async () => 'img');
+      computer.screenshot = screenshot;
+      const firstComputerCall: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        id: 'computer-call-1',
+        callId: 'computer-call-1',
+        status: 'completed',
+        action: { type: 'screenshot' },
+        providerData: {
+          pending_safety_checks: [
+            {
+              id: 'safety-check',
+              code: 'malicious_instructions',
+            },
+          ],
+        },
+      };
+      const secondComputerCall: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        id: 'computer-call-2',
+        callId: 'computer-call-2',
+        status: 'completed',
+        action: { type: 'screenshot' },
+      };
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'failing-call',
+              callId: 'failing-call',
+              name: 'failing_tool',
+            },
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'slow-call',
+              callId: 'slow-call',
+              name: 'slow_tool',
+            },
+            firstComputerCall,
+            secondComputerCall,
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'FunctionFailureStopsComputerAgent',
+        model,
+        tools: [
+          failingTool,
+          slowTool,
+          computerTool({
+            computer,
+            onSafetyCheck: async () => {
+              markComputerPreparationStarted?.();
+              await computerPreparationCanFinish;
+              return true;
+            },
+          }),
+        ],
+      });
+
+      let runSettled = false;
+      const runOutcome = run(agent, 'start').then(
+        () => {
+          runSettled = true;
+          return undefined;
+        },
+        (error: unknown) => {
+          runSettled = true;
+          return error;
+        },
+      );
+      await functionCleanupStarted;
+
+      releaseComputerPreparation?.();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(screenshot).not.toHaveBeenCalled();
+      expect(runSettled).toBe(false);
+
+      releaseFunctionCleanup?.();
+      const error = await runOutcome;
+      expect(error).toBeInstanceOf(ToolCallError);
+      expect((error as ToolCallError).error).toBe(primaryError);
+      expect(functionCleanupFinished).toBe(true);
+      expect(screenshot).not.toHaveBeenCalled();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(screenshot).not.toHaveBeenCalled();
     });
 
     it('reconciles later actions without starting them after cancellation', async () => {

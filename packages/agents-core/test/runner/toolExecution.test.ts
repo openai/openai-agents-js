@@ -79,6 +79,7 @@ import {
 } from '../stubs';
 import * as protocol from '../../src/types/protocol';
 import { AgentToolUseTracker } from '../../src/runner/toolUseTracker';
+import { runWithSiblingCancellation } from '../../src/runner/siblingCancellation';
 import { z } from 'zod';
 import {
   defaultProcessor,
@@ -1382,6 +1383,67 @@ describe('executeComputerActions', () => {
     expect(invocations).toEqual(['move', 'click', 'screenshot']);
     expect(items).toHaveLength(1);
     expect((items[0] as any).output).toBe('data:image/png;base64,img');
+  });
+
+  it('does not start later batched computer actions after cancellation', async () => {
+    const controller = new AbortController();
+    let markClickStarted: (() => void) | undefined;
+    const clickStarted = new Promise<void>((resolve) => {
+      markClickStarted = resolve;
+    });
+    let releaseClick: (() => void) | undefined;
+    const clickCanFinish = new Promise<void>((resolve) => {
+      releaseClick = resolve;
+    });
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn().mockImplementation(async () => {
+        markClickStarted?.();
+        await clickCanFinish;
+      }),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const computer = computerTool({ computer: fakeComputer });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'cancelled-batch',
+      status: 'completed',
+      actions: [
+        { type: 'click', x: 1, y: 2, button: 'left' },
+        { type: 'move', x: 3, y: 4 },
+      ],
+    };
+
+    const resultPromise = executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall: call, computer }],
+      new Runner(),
+      new RunContext(),
+      undefined,
+      undefined,
+      controller.signal,
+    );
+    await clickStarted;
+    controller.abort(new Error('stop batched actions'));
+    releaseClick?.();
+
+    const [item] = await resultPromise;
+    expect(fakeComputer.click).toHaveBeenCalledTimes(1);
+    expect(fakeComputer.move).not.toHaveBeenCalled();
+    expect(fakeComputer.screenshot).not.toHaveBeenCalled();
+    expect(item.rawItem).toMatchObject({
+      type: 'computer_call_result',
+      callId: call.callId,
+      providerData: { status: 'incomplete' },
+    });
   });
 
   it('checks approval against each batched computer action', async () => {
@@ -4156,15 +4218,15 @@ describe('executeShellActions', () => {
       ).toEqual(['ok-1', 'ok-2', 'ok-3']);
     });
 
-    it('surfaces an uncapped tool failure without waiting for a pending sibling', async () => {
+    it('cancels and drains an uncapped sibling after a tool failure', async () => {
       let markSiblingStarted: (() => void) | undefined;
       const siblingStarted = new Promise<void>((resolve) => {
         markSiblingStarted = resolve;
       });
-      let releaseSibling: (() => void) | undefined;
-      const siblingCanFinish = new Promise<void>((resolve) => {
-        releaseSibling = resolve;
-      });
+      const primaryError = new Error('boom');
+      let siblingCancelled = false;
+      let siblingDrained = false;
+      let lateSideEffect = false;
       const failingTool = tool({
         name: 'failing_tool',
         description: 'fails while a sibling remains pending',
@@ -4172,17 +4234,34 @@ describe('executeShellActions', () => {
         errorFunction: null,
         execute: vi.fn(async () => {
           await siblingStarted;
-          throw new Error('boom');
+          throw primaryError;
         }),
       }) as unknown as FunctionTool;
       const pendingTool = tool({
         name: 'pending_tool',
         description: 'remains pending until released',
         parameters: z.object({}),
-        execute: vi.fn(async () => {
+        execute: vi.fn(async (_input, _context, details) => {
           markSiblingStarted?.();
-          await siblingCanFinish;
-          return 'done';
+          if (!details?.signal) {
+            throw new Error('Expected an internal cancellation signal');
+          }
+          try {
+            await new Promise<void>((_resolve, reject) => {
+              details.signal?.addEventListener(
+                'abort',
+                () => reject(details.signal?.reason),
+                { once: true },
+              );
+            });
+            lateSideEffect = true;
+            return 'unexpected';
+          } catch (error) {
+            siblingCancelled = true;
+            await Promise.resolve();
+            siblingDrained = true;
+            throw error;
+          }
         }),
       }) as unknown as FunctionTool;
 
@@ -4211,13 +4290,74 @@ describe('executeShellActions', () => {
       );
       await siblingStarted;
 
-      try {
-        await expect(resultPromise).rejects.toThrow(
-          /Failed to run function tools/,
-        );
-      } finally {
-        releaseSibling?.();
-      }
+      const error = await resultPromise.catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(ToolCallError);
+      expect((error as ToolCallError).error).toBe(primaryError);
+      expect(siblingCancelled).toBe(true);
+      expect(siblingDrained).toBe(true);
+      expect(lateSideEffect).toBe(false);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(lateSideEffect).toBe(false);
+    });
+
+    it('reserves nested failure ownership while cleanup drains', async () => {
+      const primaryError = new Error('primary function failure');
+      const wrappedPrimaryError = new ToolCallError(
+        'Failed to run function tools',
+        primaryError,
+      );
+      const secondaryError = new Error('secondary category failure');
+      let markCleanupStarted: (() => void) | undefined;
+      const cleanupStarted = new Promise<void>((resolve) => {
+        markCleanupStarted = resolve;
+      });
+      let releaseCleanup: (() => void) | undefined;
+      const cleanupCanFinish = new Promise<void>((resolve) => {
+        releaseCleanup = resolve;
+      });
+
+      const resultPromise = runWithSiblingCancellation([
+        async (signal, reserveFailure) => {
+          try {
+            await runWithSiblingCancellation(
+              [
+                async () => {
+                  throw primaryError;
+                },
+                async (innerSignal) => {
+                  try {
+                    await new Promise<void>((_resolve, reject) => {
+                      innerSignal?.addEventListener(
+                        'abort',
+                        () => reject(innerSignal.reason),
+                        { once: true },
+                      );
+                    });
+                  } catch {
+                    markCleanupStarted?.();
+                    await cleanupCanFinish;
+                  }
+                },
+              ],
+              signal,
+              reserveFailure,
+            );
+          } catch {
+            throw wrappedPrimaryError;
+          }
+        },
+        async (signal) => {
+          await new Promise<void>((resolve) => {
+            signal?.addEventListener('abort', () => resolve(), { once: true });
+          });
+          throw secondaryError;
+        },
+      ]);
+      await cleanupStarted;
+      releaseCleanup?.();
+
+      await expect(resultPromise).rejects.toBe(wrappedPrimaryError);
     });
 
     it('preserves undefined rejections in uncapped tools', async () => {
