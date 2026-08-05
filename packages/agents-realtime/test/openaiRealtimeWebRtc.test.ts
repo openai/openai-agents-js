@@ -1597,4 +1597,42 @@ describe('OpenAIRealtimeWebRTC microphone track ownership', () => {
 
     expect(microphoneTrack.stop).toHaveBeenCalled();
   });
+
+  it('re-enables a caller-supplied track it muted before close()', async () => {
+    const callerTrack = createFakeTrack();
+    installGlobals(createFakeTrack());
+
+    const rtc = new OpenAIRealtimeWebRTC({
+      mediaStream: {
+        getAudioTracks: () => [callerTrack],
+      } as unknown as MediaStream,
+    });
+    await rtc.connect({ apiKey: 'ek_test' });
+    rtc.mute(true);
+    expect(callerTrack.enabled).toBe(false);
+
+    rtc.close();
+
+    // close() drops the peer connection, so mute(false) can no longer reach this track. Handing
+    // the stream back disabled would make it silent for any later use, including a reconnect.
+    expect(callerTrack.enabled).toBe(true);
+    expect(callerTrack.stop).not.toHaveBeenCalled();
+  });
+
+  it('leaves a caller-supplied track it never muted untouched on close()', async () => {
+    const callerTrack = createFakeTrack();
+    callerTrack.enabled = false;
+    installGlobals(createFakeTrack());
+
+    const rtc = new OpenAIRealtimeWebRTC({
+      mediaStream: {
+        getAudioTracks: () => [callerTrack],
+      } as unknown as MediaStream,
+    });
+    await rtc.connect({ apiKey: 'ek_test' });
+    rtc.close();
+
+    // The application disabled this track itself, so restoring it would override its intent.
+    expect(callerTrack.enabled).toBe(false);
+  });
 });
