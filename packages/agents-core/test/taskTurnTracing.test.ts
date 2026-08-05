@@ -635,6 +635,144 @@ describe('runner task and turn tracing', () => {
     });
   });
 
+  it.each([false, true])(
+    'uses the Runner workflow name for a task span inside an outer trace (stream=%s)',
+    async (stream) => {
+      const response = responseWithoutUsage();
+      const agent = new Agent({
+        name: 'Nested trace agent',
+        model: stream
+          ? new StreamingModel(response)
+          : new FakeModel([response]),
+      });
+      const runner = new Runner({ workflowName: 'Inner workflow' });
+      let outerTraceId: string | undefined;
+
+      await withTrace('Outer workflow', async (trace) => {
+        outerTraceId = trace.traceId;
+        if (stream) {
+          const result = await runner.run(agent, 'hello', { stream: true });
+          await result.completed;
+        } else {
+          await runner.run(agent, 'hello');
+        }
+      });
+
+      const taskSpan = spanOfType(processor, 'task');
+      expect(taskSpan.spanData.name).toBe('Inner workflow');
+      expect(taskSpan.traceId).toBe(outerTraceId);
+      expect(taskSpan.parentId).toBeNull();
+    },
+  );
+
+  it.each([false, true])(
+    'preserves a restored workflow name for resumed task spans (stream=%s)',
+    async (stream) => {
+      const approvalTool = tool({
+        name: 'restore_workflow_name_tool',
+        description: 'Requires approval.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'approved',
+      });
+      const responses = [
+        approvalResponse(approvalTool.name),
+        responseWithoutUsage(),
+      ];
+      const agent = new Agent({
+        name: 'Restored workflow agent',
+        model: stream
+          ? new StreamingModel(responses)
+          : new FakeModel(responses),
+        tools: [approvalTool],
+      });
+      const firstRunner = new Runner({ workflowName: 'Stored workflow' });
+      const first = stream
+        ? await firstRunner.run(agent, 'hello', { stream: true })
+        : await firstRunner.run(agent, 'hello');
+      if ('completed' in first) {
+        await first.completed;
+      }
+
+      const restoredState = await RunState.fromString(
+        agent,
+        first.state.toString(),
+      );
+      restoredState.approve(restoredState.getInterruptions()[0]);
+      const endedBeforeResume = processor.spansEnded.length;
+      const resumed = stream
+        ? await new Runner().run(agent, restoredState, { stream: true })
+        : await new Runner().run(agent, restoredState);
+      if ('completed' in resumed) {
+        await resumed.completed;
+      }
+
+      const taskSpan = processor.spansEnded
+        .slice(endedBeforeResume)
+        .find((span) => span.spanData.type === 'task');
+      expect(taskSpan?.spanData.name).toBe('Stored workflow');
+      expect(taskSpan?.traceId).toBe(restoredState._trace?.traceId);
+      expect(taskSpan?.parentId).toBeNull();
+    },
+  );
+
+  it.each([false, true])(
+    'uses the Runner workflow name when resumed state has no trace (stream=%s)',
+    async (stream) => {
+      const approvalTool = tool({
+        name: 'resume_without_trace_tool',
+        description: 'Requires approval.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'approved',
+      });
+      const responses = [
+        approvalResponse(approvalTool.name),
+        responseWithoutUsage(),
+      ];
+      const agent = new Agent({
+        name: 'Resume without trace agent',
+        model: stream
+          ? new StreamingModel(responses)
+          : new FakeModel(responses),
+        tools: [approvalTool],
+      });
+      const firstRunner = new Runner({ tracingDisabled: true });
+      const first = stream
+        ? await firstRunner.run(agent, 'hello', { stream: true })
+        : await firstRunner.run(agent, 'hello');
+      if ('completed' in first) {
+        await first.completed;
+      }
+
+      const restoredState = await RunState.fromString(
+        agent,
+        first.state.toString(),
+      );
+      restoredState.approve(restoredState.getInterruptions()[0]);
+      const endedBeforeResume = processor.spansEnded.length;
+      let outerTraceId: string | undefined;
+
+      await withTrace('Outer workflow', async (trace) => {
+        outerTraceId = trace.traceId;
+        const runner = new Runner({ workflowName: 'Inner workflow' });
+        const resumed = stream
+          ? await runner.run(agent, restoredState, { stream: true })
+          : await runner.run(agent, restoredState);
+        if ('completed' in resumed) {
+          await resumed.completed;
+        }
+      });
+
+      const taskSpan = processor.spansEnded
+        .slice(endedBeforeResume)
+        .find((span) => span.spanData.type === 'task');
+      expect(taskSpan?.spanData.name).toBe('Inner workflow');
+      expect(taskSpan?.traceId).toBe(outerTraceId);
+      expect(taskSpan?.parentId).toBeNull();
+    },
+  );
+
   it('omits only task and turn spans when explicitly disabled', async () => {
     const agent = new Agent({
       name: 'Researcher',
