@@ -7,6 +7,20 @@ type CombineAbortSignalsOptions = {
   onAbortSignalAnyError?: (error: unknown) => void;
 };
 
+class SiblingCancellationError extends Error {}
+
+export function createSiblingCancellationError(): Error {
+  return new SiblingCancellationError(
+    'Cancelled because a sibling task failed.',
+  );
+}
+
+export function isSiblingCancellationSignal(
+  signal: AbortSignal | undefined,
+): boolean {
+  return signal?.reason instanceof SiblingCancellationError;
+}
+
 export function isAbortError(error: unknown): boolean {
   if (!error) {
     return false;

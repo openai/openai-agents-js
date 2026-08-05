@@ -1,16 +1,12 @@
-import { combineAbortSignals, isAbortError } from '../utils/abortSignals';
-
-class SiblingCancellationError extends Error {}
-
-export function isSiblingCancellationSignal(
-  signal: AbortSignal | undefined,
-): boolean {
-  return signal?.reason instanceof SiblingCancellationError;
-}
+import {
+  combineAbortSignals,
+  createSiblingCancellationError,
+  isAbortError,
+} from '../utils/abortSignals';
 
 type ConcurrentTask<T> = (
   signal?: AbortSignal,
-  cancelSiblings?: () => void,
+  reserveFailure?: (error?: unknown) => void,
 ) => Promise<T>;
 
 export async function runWithSiblingCancellation<TFirst, TSecond>(
@@ -38,18 +34,38 @@ export async function runWithSiblingCancellation(
     siblingController.signal,
   );
   let firstFailureOwner: number | undefined;
+  let firstFailureParentWasAborted = false;
   let firstFailure: { value: unknown } | undefined;
-  const siblingFailureReason = new SiblingCancellationError(
-    'Cancelled because a sibling task failed.',
-  );
+  const siblingFailureReason = createSiblingCancellationError();
   const cancelSiblings = () => {
     if (!siblingController.signal.aborted) {
       siblingController.abort(siblingFailureReason);
     }
   };
-  const reserveFailure = (owner: number) => {
+  const reserveFailure = (
+    owner: number,
+    hasFailure: boolean,
+    error?: unknown,
+  ) => {
+    const newlyReserved = firstFailureOwner === undefined;
     if (firstFailureOwner === undefined) {
       firstFailureOwner = owner;
+      firstFailureParentWasAborted = parentSignal?.aborted ?? false;
+    }
+    if (
+      firstFailureOwner === owner &&
+      hasFailure &&
+      firstFailure === undefined
+    ) {
+      const parentReason = parentSignal?.reason;
+      const failure =
+        firstFailureParentWasAborted &&
+        (error === parentReason || isAbortError(error))
+          ? parentReason
+          : error;
+      firstFailure = { value: failure };
+    }
+    if (newlyReserved) {
       try {
         onFirstFailure?.();
       } finally {
@@ -60,18 +76,11 @@ export async function runWithSiblingCancellation(
 
   const pendingTasks = tasks.map(async (task, index) => {
     try {
-      return await task(signal, () => reserveFailure(index));
+      return await task(signal, (...errors: [error?: unknown]) =>
+        reserveFailure(index, errors.length > 0, errors[0]),
+      );
     } catch (error) {
-      const parentWasAborted = parentSignal?.aborted;
-      reserveFailure(index);
-      if (firstFailureOwner === index && firstFailure === undefined) {
-        const failure =
-          parentWasAborted &&
-          (error === parentSignal.reason || isAbortError(error))
-            ? parentSignal.reason
-            : error;
-        firstFailure = { value: failure };
-      }
+      reserveFailure(index, true, error);
       throw error;
     }
   });

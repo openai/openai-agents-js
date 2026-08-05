@@ -1012,6 +1012,220 @@ describe('executeComputerActions', () => {
     });
   });
 
+  it.each(['fulfills', 'rejects'] as const)(
+    'reconciles computer approval that %s after sibling cancellation',
+    async (settlement) => {
+      const primaryError = new Error('sibling category failed');
+      const approvalError = new Error('approval failed after cancellation');
+      let markApprovalStarted: (() => void) | undefined;
+      const approvalStarted = new Promise<void>((resolve) => {
+        markApprovalStarted = resolve;
+      });
+      let releaseApproval: (() => void) | undefined;
+      const approvalCanFinish = new Promise<void>((resolve) => {
+        releaseApproval = resolve;
+      });
+      let markFatalFailure: (() => void) | undefined;
+      const fatalFailure = new Promise<void>((resolve) => {
+        markFatalFailure = resolve;
+      });
+      const fakeComputer = {
+        environment: 'mac',
+        dimensions: [1, 1] as [number, number],
+        screenshot: vi.fn().mockResolvedValue('img'),
+      } as any;
+      const needsApproval = vi.fn(async () => {
+        markApprovalStarted?.();
+        await approvalCanFinish;
+        if (settlement === 'rejects') {
+          throw approvalError;
+        }
+        return true;
+      });
+      const computer = computerTool({ computer: fakeComputer, needsApproval });
+      const call: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        callId: 'cancelled-computer-approval',
+        status: 'completed',
+        action: { type: 'screenshot' } as any,
+      };
+      const runner = new Runner();
+      const agent = new Agent({ name: 'CancelledComputerApproval' });
+      const start = vi.fn();
+      const end = vi.fn();
+      const formatter = vi.fn(() => 'should not format cancellation');
+      runner.on('agent_tool_start', start);
+      runner.on('agent_tool_end', end);
+      let computerItems: Awaited<
+        ReturnType<typeof executeComputerActions>
+      > | null = null;
+
+      let settled = false;
+      const resultPromise = runWithSiblingCancellation([
+        async (signal) => {
+          computerItems = await executeComputerActions(
+            agent,
+            [{ toolCall: call, computer }],
+            runner,
+            new RunContext(),
+            undefined,
+            formatter,
+            signal,
+          );
+        },
+        async (_signal, reserveFailure) => {
+          await approvalStarted;
+          reserveFailure?.();
+          markFatalFailure?.();
+          throw primaryError;
+        },
+      ]).finally(() => {
+        settled = true;
+      });
+      await fatalFailure;
+
+      expect(settled).toBe(false);
+      releaseApproval?.();
+
+      await expect(resultPromise).rejects.toBe(primaryError);
+      expect(needsApproval).toHaveBeenCalledTimes(1);
+      expect(formatter).not.toHaveBeenCalled();
+      expect(fakeComputer.screenshot).not.toHaveBeenCalled();
+      expect(start).not.toHaveBeenCalled();
+      expect(end).not.toHaveBeenCalled();
+      expect(computerItems).toHaveLength(1);
+      expect(computerItems?.[0]).toMatchObject({
+        rawItem: {
+          type: 'computer_call_result',
+          callId: call.callId,
+          providerData: { status: 'incomplete' },
+        },
+      });
+    },
+  );
+
+  it('does not format a rejected computer approval after sibling cancellation', async () => {
+    const primaryError = new Error('sibling category failed');
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+    } as any;
+    const computer = computerTool({ computer: fakeComputer });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'rejected-computer-approval',
+      status: 'completed',
+      action: { type: 'screenshot' } as any,
+    };
+    const agent = new Agent({ name: 'RejectedComputerApproval' });
+    const runContext = new RunContext();
+    runContext.rejectTool(new ToolApprovalItem(call, agent, computer.name));
+    const formatter = vi.fn(() => 'should not format cancellation');
+    let computerItems: Awaited<
+      ReturnType<typeof executeComputerActions>
+    > | null = null;
+
+    const resultPromise = runWithSiblingCancellation([
+      async (signal) => {
+        computerItems = await executeComputerActions(
+          agent,
+          [{ toolCall: call, computer }],
+          new Runner(),
+          runContext,
+          undefined,
+          formatter,
+          signal,
+        );
+      },
+      async (_signal, reserveFailure) => {
+        reserveFailure?.();
+        throw primaryError;
+      },
+    ]);
+
+    await expect(resultPromise).rejects.toBe(primaryError);
+    expect(formatter).not.toHaveBeenCalled();
+    expect(fakeComputer.screenshot).not.toHaveBeenCalled();
+    expect(computerItems).toHaveLength(1);
+    expect(computerItems?.[0]).toMatchObject({
+      rawItem: {
+        type: 'computer_call_result',
+        callId: call.callId,
+        providerData: { status: 'incomplete' },
+      },
+    });
+  });
+
+  it('drains started batched computer approval callbacks before rejecting', async () => {
+    const primaryError = new Error('computer approval failed');
+    let startedApprovals = 0;
+    let markApprovalsStarted: (() => void) | undefined;
+    const approvalsStarted = new Promise<void>((resolve) => {
+      markApprovalsStarted = resolve;
+    });
+    let markApprovalRejected: (() => void) | undefined;
+    const approvalRejected = new Promise<void>((resolve) => {
+      markApprovalRejected = resolve;
+    });
+    let releaseBlockedApproval: (() => void) | undefined;
+    const blockedApprovalCanFinish = new Promise<void>((resolve) => {
+      releaseBlockedApproval = resolve;
+    });
+    let settled = false;
+    let sideEffectAfterRejection = false;
+    const needsApproval = vi.fn(
+      async (_runContext: RunContext, action: protocol.ComputerAction) => {
+        startedApprovals += 1;
+        if (startedApprovals === 2) {
+          markApprovalsStarted?.();
+        }
+        await approvalsStarted;
+        if (action.type === 'click') {
+          markApprovalRejected?.();
+          throw primaryError;
+        }
+        await blockedApprovalCanFinish;
+        sideEffectAfterRejection = settled;
+        return false;
+      },
+    );
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+    } as any;
+    const computer = computerTool({ computer: fakeComputer, needsApproval });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'batched-computer-approval',
+      status: 'completed',
+      actions: [
+        { type: 'click', x: 1, y: 2, button: 'left' },
+        { type: 'move', x: 3, y: 4 },
+      ],
+    };
+
+    const resultPromise = executeComputerActions(
+      new Agent({ name: 'BatchedComputerApproval' }),
+      [{ toolCall: call, computer }],
+      new Runner(),
+      new RunContext(),
+    ).finally(() => {
+      settled = true;
+    });
+    await approvalRejected;
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    releaseBlockedApproval?.();
+
+    await expect(resultPromise).rejects.toBe(primaryError);
+    expect(needsApproval).toHaveBeenCalledTimes(2);
+    expect(sideEffectAfterRejection).toBe(false);
+    expect(fakeComputer.screenshot).not.toHaveBeenCalled();
+  });
+
   it('does not emit a success end event when computer customDataExtractor fails', async () => {
     const fakeComputer = {
       environment: 'mac',
@@ -1051,6 +1265,85 @@ describe('executeComputerActions', () => {
 
     expect(end).not.toHaveBeenCalled();
   });
+
+  it.each(['fulfills', 'rejects'] as const)(
+    'reports cancellation when computer custom data extraction %s as aborted',
+    async (settlement) => {
+      const primaryError = new Error('primary category failure');
+      const customDataError = new Error(
+        'custom data failed after cancellation',
+      );
+      let markCustomDataStarted: (() => void) | undefined;
+      const customDataStarted = new Promise<void>((resolve) => {
+        markCustomDataStarted = resolve;
+      });
+      let releaseCustomData: (() => void) | undefined;
+      const customDataCanFinish = new Promise<void>((resolve) => {
+        releaseCustomData = resolve;
+      });
+      let customDataFinished = false;
+      const fakeComputer = {
+        environment: 'mac',
+        dimensions: [1, 1] as [number, number],
+        screenshot: vi.fn().mockResolvedValue('img'),
+      } as any;
+      const computer = computerTool({
+        computer: fakeComputer,
+        customDataExtractor: async () => {
+          markCustomDataStarted?.();
+          await customDataCanFinish;
+          customDataFinished = true;
+          if (settlement === 'rejects') {
+            throw customDataError;
+          }
+          return { extracted: true };
+        },
+      });
+      const call: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        callId: `computer-custom-data-${settlement}`,
+        status: 'completed',
+        action: { type: 'screenshot' },
+      };
+      const runner = new Runner();
+      const end = vi.fn();
+      runner.on('agent_tool_end', end);
+
+      let settled = false;
+      const resultPromise = runWithSiblingCancellation([
+        (signal) =>
+          executeComputerActions(
+            new Agent({ name: 'ComputerCustomDataCancellation' }),
+            [{ toolCall: call, computer }],
+            runner,
+            new RunContext(),
+            undefined,
+            undefined,
+            signal,
+          ),
+        async (_signal, reserveFailure) => {
+          await customDataStarted;
+          reserveFailure?.(primaryError);
+          throw primaryError;
+        },
+      ]).finally(() => {
+        settled = true;
+      });
+      await customDataStarted;
+      await Promise.resolve();
+
+      expect(settled).toBe(false);
+      releaseCustomData?.();
+
+      await expect(resultPromise).rejects.toBe(primaryError);
+      const computerEndCalls = end.mock.calls.filter(
+        ([, , endedTool]) => endedTool === computer,
+      );
+      expect(customDataFinished).toBe(true);
+      expect(computerEndCalls).toHaveLength(1);
+      expect(computerEndCalls[0]?.[3]).toBe('aborted');
+    },
+  );
 
   it('passes a cloned computer tool call to customDataExtractor', async () => {
     const fakeComputer = {
@@ -1465,6 +1758,68 @@ describe('executeComputerActions', () => {
       });
     },
   );
+
+  it('rechecks cancellation after the final screenshot helper returns', async () => {
+    const controller = new AbortController();
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn(async () => {
+        queueMicrotask(() => {
+          queueMicrotask(() => {
+            controller.abort(new Error('stop after screenshot helper'));
+          });
+        });
+        return 'img';
+      }),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const customDataExtractor = vi.fn(() => ({ shouldNotRun: true }));
+    const computer = computerTool({
+      computer: fakeComputer,
+      customDataExtractor,
+    });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'cancelled-after-screenshot-helper',
+      status: 'completed',
+      action: { type: 'screenshot' },
+    };
+    const runner = new Runner();
+    const agent = new Agent({ name: 'Comp' });
+    const runContext = new RunContext();
+    const endHookError = new Error('computer end hook failed');
+    const end = vi.fn(() => {
+      throw endHookError;
+    });
+    runner.on('agent_tool_end', end);
+
+    await expect(
+      executeComputerActions(
+        agent,
+        [{ toolCall: call, computer }],
+        runner,
+        runContext,
+        undefined,
+        undefined,
+        controller.signal,
+      ),
+    ).rejects.toBe(endHookError);
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(customDataExtractor).not.toHaveBeenCalled();
+    expect(end).toHaveBeenCalledTimes(1);
+    expect(end).toHaveBeenCalledWith(runContext, agent, computer, 'aborted', {
+      toolCall: call,
+    });
+  });
 
   it.each(['fulfills', 'rejects'] as const)(
     'treats cancellation when the final screenshot %s as incomplete',
@@ -3752,6 +4107,222 @@ describe('executeShellActions', () => {
       );
     });
 
+    it.each(['formatter', 'fallback', 'fallback-rejection'] as const)(
+      'skips approval rejection processing when cancellation arrives during %s',
+      async (phase) => {
+        const primaryError = new Error('primary tool failure');
+        const fallbackError = new Error('secondary rejection fallback failure');
+        let markPhaseStarted: (() => void) | undefined;
+        const phaseStarted = new Promise<void>((resolve) => {
+          markPhaseStarted = resolve;
+        });
+        let releasePhase: (() => void) | undefined;
+        const phaseCanFinish = new Promise<void>((resolve) => {
+          releasePhase = resolve;
+        });
+        let markFatalFailure: (() => void) | undefined;
+        const fatalFailure = new Promise<void>((resolve) => {
+          markFatalFailure = resolve;
+        });
+        const errorFunction = vi.fn(async () => {
+          if (phase !== 'formatter') {
+            markPhaseStarted?.();
+            await phaseCanFinish;
+          }
+          if (phase === 'fallback-rejection') {
+            throw fallbackError;
+          }
+          return { status: 'rejected' as const };
+        });
+        const rejectedToolExecute = vi.fn(async () => ({
+          status: 'rejected' as const,
+        }));
+        const rejectedTool = tool({
+          name: 'rejected_tool',
+          description: 'waits while processing an approval rejection',
+          parameters: z.object({}),
+          outputSchema: z.object({ status: z.literal('rejected') }),
+          needsApproval: true,
+          errorFunction,
+          execute: rejectedToolExecute,
+        }) as unknown as FunctionTool;
+        const failingTool = tool({
+          name: 'failing_tool',
+          description: 'fails while its sibling processes a rejection',
+          parameters: z.object({}),
+          errorFunction: null,
+          execute: async () => {
+            await phaseStarted;
+            throw primaryError;
+          },
+        }) as unknown as FunctionTool;
+        const toolErrorFormatter = vi.fn(async () => {
+          if (phase === 'formatter') {
+            markPhaseStarted?.();
+            await phaseCanFinish;
+          }
+          return 'formatted rejection';
+        });
+        const customRunner = new Runner({
+          tracingDisabled: false,
+          toolErrorFormatter,
+        });
+        vi.spyOn(state._context, 'isToolApproved').mockImplementation(
+          ({ callId }) =>
+            (callId === 'rejected-call' ? false : undefined) as any,
+        );
+
+        let rejectedToolSpan: Span<any> | undefined;
+        let settled = false;
+        const resultPromise = withRecordingTrace(async (processor) => {
+          const error = await withTrace('test', () =>
+            executeFunctionToolCalls(
+              state._currentAgent,
+              [
+                {
+                  toolCall: {
+                    ...toolCall,
+                    callId: 'rejected-call',
+                    name: 'rejected_tool',
+                  },
+                  tool: rejectedTool,
+                },
+                {
+                  toolCall: {
+                    ...toolCall,
+                    callId: 'failing-call',
+                    name: 'failing_tool',
+                  },
+                  tool: failingTool,
+                },
+              ],
+              customRunner,
+              state,
+              customRunner.config.toolErrorFormatter,
+              undefined,
+              undefined,
+              () => markFatalFailure?.(),
+            ),
+          ).catch((caught) => caught);
+          rejectedToolSpan = getEndedFunctionSpan(processor, 'rejected_tool');
+          return error;
+        }).finally(() => {
+          settled = true;
+        });
+        await fatalFailure;
+
+        expect(settled).toBe(false);
+        releasePhase?.();
+
+        const error = await resultPromise;
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).error).toBe(primaryError);
+        expect(toolErrorFormatter).toHaveBeenCalledTimes(1);
+        expect(errorFunction).toHaveBeenCalledTimes(
+          phase === 'formatter' ? 0 : 1,
+        );
+        expect(rejectedToolExecute).not.toHaveBeenCalled();
+        expect(rejectedToolSpan?.error).toBeNull();
+        expect(rejectedToolSpan?.spanData.output).toBe('');
+      },
+    );
+
+    it.each(['formatter', 'fallback', 'fallback-rejection'] as const)(
+      'preserves approval rejection processing when parent cancellation arrives during %s',
+      async (phase) => {
+        const parentCancellation = new Error('parent cancellation');
+        const fallbackError = new Error('rejection fallback failure');
+        let markPhaseStarted: (() => void) | undefined;
+        const phaseStarted = new Promise<void>((resolve) => {
+          markPhaseStarted = resolve;
+        });
+        let releasePhase: (() => void) | undefined;
+        const phaseCanFinish = new Promise<void>((resolve) => {
+          releasePhase = resolve;
+        });
+        const errorFunction = vi.fn(async () => {
+          if (phase !== 'formatter') {
+            markPhaseStarted?.();
+            await phaseCanFinish;
+          }
+          if (phase === 'fallback-rejection') {
+            throw fallbackError;
+          }
+          return { status: 'rejected' as const };
+        });
+        const rejectedToolExecute = vi.fn(async () => ({
+          status: 'rejected' as const,
+        }));
+        const rejectedTool = tool({
+          name: 'rejected_tool',
+          description: 'waits while processing an approval rejection',
+          parameters: z.object({}),
+          outputSchema: z.object({ status: z.literal('rejected') }),
+          needsApproval: true,
+          errorFunction,
+          execute: rejectedToolExecute,
+        }) as unknown as FunctionTool;
+        const toolErrorFormatter = vi.fn(async () => {
+          if (phase === 'formatter') {
+            markPhaseStarted?.();
+            await phaseCanFinish;
+          }
+          return 'formatted rejection';
+        });
+        const customRunner = new Runner({
+          tracingDisabled: false,
+          toolErrorFormatter,
+        });
+        const controller = new AbortController();
+        vi.spyOn(state._context, 'isToolApproved').mockReturnValue(
+          false as any,
+        );
+
+        let rejectedToolSpan: Span<any> | undefined;
+        let settled = false;
+        const resultPromise = withRecordingTrace(async (processor) => {
+          const result = await withTrace('test', () =>
+            executeFunctionToolCalls(
+              state._currentAgent,
+              [{ toolCall, tool: rejectedTool }],
+              customRunner,
+              state,
+              customRunner.config.toolErrorFormatter,
+              undefined,
+              controller.signal,
+            ),
+          ).catch((caught) => caught);
+          rejectedToolSpan = getEndedFunctionSpan(processor, 'rejected_tool');
+          return result;
+        }).finally(() => {
+          settled = true;
+        });
+        await phaseStarted;
+
+        controller.abort(parentCancellation);
+        expect(settled).toBe(false);
+        releasePhase?.();
+
+        const result = await resultPromise;
+        if (phase === 'fallback-rejection') {
+          expect(result).toBeInstanceOf(ToolCallError);
+          expect((result as ToolCallError).error).toBe(fallbackError);
+          expect(rejectedToolSpan?.spanData.output).toBe('');
+        } else {
+          expect(result).toMatchObject([
+            {
+              type: 'function_output',
+              output: { status: 'rejected' },
+            },
+          ]);
+        }
+        expect(toolErrorFormatter).toHaveBeenCalledTimes(1);
+        expect(errorFunction).toHaveBeenCalledTimes(1);
+        expect(rejectedToolExecute).not.toHaveBeenCalled();
+        expect(rejectedToolSpan?.error?.message).toBe('formatted rejection');
+      },
+    );
+
     it('uses toolErrorFormatter message when approval is false', async () => {
       const t = makeTool(true);
       vi.spyOn(state._context, 'isToolApproved').mockReturnValue(false as any);
@@ -4403,50 +4974,530 @@ describe('executeShellActions', () => {
       expect(lateSideEffect).toBe(false);
     });
 
-    it('skips post-invocation work when an uncapped sibling ignores cancellation', async () => {
+    it('skips approved tool setup when a sibling fails during async approval', async () => {
       const primaryError = new Error('primary tool failure');
-      let markSlowToolStarted: (() => void) | undefined;
-      const slowToolStarted = new Promise<void>((resolve) => {
-        markSlowToolStarted = resolve;
+      let markApprovalStarted: (() => void) | undefined;
+      const approvalStarted = new Promise<void>((resolve) => {
+        markApprovalStarted = resolve;
       });
-      let markCancellationObserved: (() => void) | undefined;
-      const cancellationObserved = new Promise<void>((resolve) => {
-        markCancellationObserved = resolve;
+      let releaseApproval: (() => void) | undefined;
+      const approvalCanFinish = new Promise<void>((resolve) => {
+        releaseApproval = resolve;
       });
-      let releaseSlowTool: (() => void) | undefined;
-      const slowToolCanFinish = new Promise<void>((resolve) => {
-        releaseSlowTool = resolve;
+      let markFatalFailure: (() => void) | undefined;
+      const fatalFailure = new Promise<void>((resolve) => {
+        markFatalFailure = resolve;
       });
-      const outputGuardrail = defineToolOutputGuardrail({
+      const inputGuardrail = defineToolInputGuardrail({
         name: 'should_not_run',
         run: vi.fn(async () => ToolGuardrailFunctionOutputFactory.allow()),
       });
-      const customDataExtractor = vi.fn(() => ({ shouldNotRun: true }));
+      const approvedToolExecute = vi.fn(async () => 'unexpected');
+      const approvalTool = tool({
+        name: 'approval_tool',
+        description: 'waits for an async approval decision',
+        parameters: z.object({}),
+        needsApproval: async () => {
+          markApprovalStarted?.();
+          await approvalCanFinish;
+          return true;
+        },
+        inputGuardrails: [inputGuardrail],
+        execute: approvedToolExecute,
+      }) as unknown as FunctionTool;
+      runner = new Runner({
+        tracingDisabled: true,
+        toolExecution: { preApprovalInputGuardrails: true },
+      });
       const failingTool = tool({
         name: 'failing_tool',
-        description: 'fails after its sibling starts',
+        description: 'fails while its sibling awaits approval',
         parameters: z.object({}),
         errorFunction: null,
         execute: async () => {
-          await slowToolStarted;
+          await approvalStarted;
           throw primaryError;
         },
       }) as unknown as FunctionTool;
-      const slowTool = tool({
-        name: 'slow_tool',
-        description: 'ignores cancellation and resolves later',
+
+      let settled = false;
+      const resultPromise = executeFunctionToolCalls(
+        state._currentAgent,
+        [
+          {
+            toolCall: {
+              ...toolCall,
+              callId: 'approval-call',
+              name: 'approval_tool',
+            },
+            tool: approvalTool,
+          },
+          {
+            toolCall: {
+              ...toolCall,
+              callId: 'failing-call',
+              name: 'failing_tool',
+            },
+            tool: failingTool,
+          },
+        ],
+        runner,
+        state,
+        undefined,
+        undefined,
+        undefined,
+        () => markFatalFailure?.(),
+      ).finally(() => {
+        settled = true;
+      });
+      await fatalFailure;
+
+      expect(settled).toBe(false);
+      releaseApproval?.();
+
+      const error = await resultPromise.catch((caught) => caught);
+      expect(error).toBeInstanceOf(ToolCallError);
+      expect((error as ToolCallError).error).toBe(primaryError);
+      expect(inputGuardrail.run).not.toHaveBeenCalled();
+      expect(approvedToolExecute).not.toHaveBeenCalled();
+      expect(state._toolInputGuardrailResults).toHaveLength(0);
+    });
+
+    it('skips pre-approval rejection fallback after sibling cancellation', async () => {
+      const primaryError = new Error('primary tool failure');
+      let markGuardrailStarted: (() => void) | undefined;
+      const guardrailStarted = new Promise<void>((resolve) => {
+        markGuardrailStarted = resolve;
+      });
+      let releaseGuardrail: (() => void) | undefined;
+      const guardrailCanFinish = new Promise<void>((resolve) => {
+        releaseGuardrail = resolve;
+      });
+      let markFatalFailure: (() => void) | undefined;
+      const fatalFailure = new Promise<void>((resolve) => {
+        markFatalFailure = resolve;
+      });
+      const inputGuardrail = defineToolInputGuardrail({
+        name: 'blocking_pre_approval_guardrail',
+        run: vi.fn(async () => {
+          markGuardrailStarted?.();
+          await guardrailCanFinish;
+          return ToolGuardrailFunctionOutputFactory.rejectContent('blocked');
+        }),
+      });
+      const errorFunction = vi.fn(() => ({ status: 'blocked' as const }));
+      const guardedToolExecute = vi.fn(async () => ({
+        status: 'blocked' as const,
+      }));
+      const guardedTool = tool({
+        name: 'guarded_tool',
+        description: 'waits in a pre-approval guardrail',
         parameters: z.object({}),
+        outputSchema: z.object({ status: z.literal('blocked') }),
+        needsApproval: true,
+        inputGuardrails: [inputGuardrail],
+        errorFunction,
+        execute: guardedToolExecute,
+      }) as unknown as FunctionTool;
+      const failingTool = tool({
+        name: 'failing_tool',
+        description: 'fails while its sibling guardrail remains active',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: async () => {
+          await guardrailStarted;
+          throw primaryError;
+        },
+      }) as unknown as FunctionTool;
+      runner = new Runner({
+        tracingDisabled: true,
+        toolExecution: { preApprovalInputGuardrails: true },
+      });
+
+      let settled = false;
+      const resultPromise = executeFunctionToolCalls(
+        state._currentAgent,
+        [
+          {
+            toolCall: {
+              ...toolCall,
+              callId: 'guarded-call',
+              name: 'guarded_tool',
+            },
+            tool: guardedTool,
+          },
+          {
+            toolCall: {
+              ...toolCall,
+              callId: 'failing-call',
+              name: 'failing_tool',
+            },
+            tool: failingTool,
+          },
+        ],
+        runner,
+        state,
+        undefined,
+        undefined,
+        undefined,
+        () => markFatalFailure?.(),
+      ).finally(() => {
+        settled = true;
+      });
+      await fatalFailure;
+
+      expect(settled).toBe(false);
+      releaseGuardrail?.();
+
+      const error = await resultPromise.catch((caught) => caught);
+      expect(error).toBeInstanceOf(ToolCallError);
+      expect((error as ToolCallError).error).toBe(primaryError);
+      expect(inputGuardrail.run).toHaveBeenCalledTimes(1);
+      expect(state._toolInputGuardrailResults).toHaveLength(1);
+      expect(errorFunction).not.toHaveBeenCalled();
+      expect(guardedToolExecute).not.toHaveBeenCalled();
+    });
+
+    it('does not wait past timeout for a cancelled sibling invocation', async () => {
+      vi.useFakeTimers();
+      try {
+        const primaryError = new Error('primary tool failure');
+        let markTimedToolStarted: (() => void) | undefined;
+        const timedToolStarted = new Promise<void>((resolve) => {
+          markTimedToolStarted = resolve;
+        });
+        let releaseTimedTool: (() => void) | undefined;
+        const timedToolCanFinish = new Promise<void>((resolve) => {
+          releaseTimedTool = resolve;
+        });
+        let markFatalFailure: (() => void) | undefined;
+        const fatalFailure = new Promise<void>((resolve) => {
+          markFatalFailure = resolve;
+        });
+        let runRejected = false;
+        let sideEffectAfterRejection = false;
+        let markTimedToolFinished: (() => void) | undefined;
+        const timedToolFinished = new Promise<void>((resolve) => {
+          markTimedToolFinished = resolve;
+        });
+        const timedTool = tool({
+          name: 'timed_tool',
+          description: 'ignores sibling cancellation until after its timeout',
+          parameters: z.object({}),
+          timeoutMs: 1_000,
+          execute: async () => {
+            markTimedToolStarted?.();
+            await timedToolCanFinish;
+            sideEffectAfterRejection = runRejected;
+            markTimedToolFinished?.();
+            return 'late tool output';
+          },
+        }) as unknown as FunctionTool;
+        const failingTool = tool({
+          name: 'failing_tool',
+          description: 'fails while its timed sibling remains active',
+          parameters: z.object({}),
+          errorFunction: null,
+          execute: async () => {
+            await timedToolStarted;
+            throw primaryError;
+          },
+        }) as unknown as FunctionTool;
+
+        const resultPromise = executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                callId: 'timed-call',
+                name: 'timed_tool',
+              },
+              tool: timedTool,
+            },
+            {
+              toolCall: {
+                ...toolCall,
+                callId: 'failing-call',
+                name: 'failing_tool',
+              },
+              tool: failingTool,
+            },
+          ],
+          runner,
+          state,
+          undefined,
+          undefined,
+          undefined,
+          () => markFatalFailure?.(),
+        ).catch((caught) => {
+          runRejected = true;
+          return caught;
+        });
+        await fatalFailure;
+
+        await vi.advanceTimersByTimeAsync(1_000);
+        const error = await resultPromise;
+        expect(runRejected).toBe(true);
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).error).toBe(primaryError);
+        expect(sideEffectAfterRejection).toBe(false);
+
+        releaseTimedTool?.();
+        await timedToolFinished;
+        expect(sideEffectAfterRejection).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not drain the timed-out owner before raising its failure', async () => {
+      vi.useFakeTimers();
+      let releaseTimedTool: (() => void) | undefined;
+      let resultPromise: Promise<unknown> | undefined;
+      try {
+        let markTimedToolStarted: (() => void) | undefined;
+        const timedToolStarted = new Promise<void>((resolve) => {
+          markTimedToolStarted = resolve;
+        });
+        const timedToolCanFinish = new Promise<void>((resolve) => {
+          releaseTimedTool = resolve;
+        });
+        let markSiblingStarted: (() => void) | undefined;
+        const siblingStarted = new Promise<void>((resolve) => {
+          markSiblingStarted = resolve;
+        });
+        const timedTool = tool({
+          name: 'timed_tool',
+          description: 'owns the first fatal timeout',
+          parameters: z.object({}),
+          timeoutMs: 1_000,
+          timeoutBehavior: 'raise_exception',
+          execute: async () => {
+            markTimedToolStarted?.();
+            await timedToolCanFinish;
+            return 'late tool output';
+          },
+        }) as unknown as FunctionTool;
+        const siblingTool = tool({
+          name: 'sibling_tool',
+          description: 'settles when its timed sibling cancels it',
+          parameters: z.object({}),
+          execute: async (_input, _context, details) => {
+            markSiblingStarted?.();
+            await new Promise<void>((resolve) => {
+              details?.signal?.addEventListener('abort', () => resolve(), {
+                once: true,
+              });
+            });
+            return 'cancelled sibling output';
+          },
+        }) as unknown as FunctionTool;
+
+        let settled = false;
+        let resultError: unknown;
+        resultPromise = executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                callId: 'timed-call',
+                name: 'timed_tool',
+              },
+              tool: timedTool,
+            },
+            {
+              toolCall: {
+                ...toolCall,
+                callId: 'sibling-call',
+                name: 'sibling_tool',
+              },
+              tool: siblingTool,
+            },
+          ],
+          runner,
+          state,
+        )
+          .catch((caught) => {
+            resultError = caught;
+          })
+          .finally(() => {
+            settled = true;
+          });
+        await Promise.all([timedToolStarted, siblingStarted]);
+        await vi.advanceTimersByTimeAsync(1_000);
+
+        expect(settled).toBe(true);
+        expect(resultError).toBeInstanceOf(ToolTimeoutError);
+      } finally {
+        releaseTimedTool?.();
+        await resultPromise;
+        vi.useRealTimers();
+      }
+    });
+
+    it.each(['resolves', 'rejects'] as const)(
+      'reports an uncapped sibling that %s after cancellation as aborted',
+      async (settlement) => {
+        const primaryError = new Error('primary tool failure');
+        let markSlowToolStarted: (() => void) | undefined;
+        const slowToolStarted = new Promise<void>((resolve) => {
+          markSlowToolStarted = resolve;
+        });
+        let markCancellationObserved: (() => void) | undefined;
+        const cancellationObserved = new Promise<void>((resolve) => {
+          markCancellationObserved = resolve;
+        });
+        let releaseSlowTool: (() => void) | undefined;
+        const slowToolCanFinish = new Promise<void>((resolve) => {
+          releaseSlowTool = resolve;
+        });
+        const outputGuardrail = defineToolOutputGuardrail({
+          name: 'should_not_run',
+          run: vi.fn(async () => ToolGuardrailFunctionOutputFactory.allow()),
+        });
+        const customDataExtractor = vi.fn(() => ({ shouldNotRun: true }));
+        const failingTool = tool({
+          name: 'failing_tool',
+          description: 'fails after its sibling starts',
+          parameters: z.object({}),
+          errorFunction: null,
+          execute: async () => {
+            await slowToolStarted;
+            throw primaryError;
+          },
+        }) as unknown as FunctionTool;
+        const slowTool = tool({
+          name: 'slow_tool',
+          description: 'ignores cancellation and resolves later',
+          parameters: z.object({}),
+          outputGuardrails: [outputGuardrail],
+          customDataExtractor,
+          execute: async (_input, _context, details) => {
+            markSlowToolStarted?.();
+            details?.signal?.addEventListener(
+              'abort',
+              () => markCancellationObserved?.(),
+              { once: true },
+            );
+            await slowToolCanFinish;
+            if (settlement === 'rejects') {
+              throw new Error('late invocation rejection');
+            }
+            return 'late tool output';
+          },
+        }) as unknown as FunctionTool;
+        const endHookError = new Error('function end hook failed');
+        const end = vi.fn((...args: unknown[]) => {
+          if (settlement === 'rejects' && args[2] === slowTool) {
+            throw endHookError;
+          }
+        });
+        runner = new Runner({ tracingDisabled: false });
+        runner.on('agent_tool_end', end);
+
+        let settled = false;
+        let slowToolSpan: Span<any> | undefined;
+        const resultPromise = withRecordingTrace(async (processor) => {
+          const error = await withTrace('test', () =>
+            executeFunctionToolCalls(
+              state._currentAgent,
+              [
+                {
+                  toolCall: {
+                    ...toolCall,
+                    callId: 'failing-call',
+                    name: 'failing_tool',
+                  },
+                  tool: failingTool,
+                },
+                {
+                  toolCall: {
+                    ...toolCall,
+                    callId: 'slow-call',
+                    name: 'slow_tool',
+                  },
+                  tool: slowTool,
+                },
+              ],
+              runner,
+              state,
+            ),
+          ).catch((caught) => caught);
+          slowToolSpan = getEndedFunctionSpan(processor, 'slow_tool');
+          return error;
+        }).finally(() => {
+          settled = true;
+        });
+        await cancellationObserved;
+
+        expect(settled).toBe(false);
+        releaseSlowTool?.();
+
+        const error = await resultPromise;
+        const slowToolEndCalls = end.mock.calls.filter(
+          ([, , endedTool]) => endedTool === slowTool,
+        );
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).error).toBe(primaryError);
+        expect(outputGuardrail.run).not.toHaveBeenCalled();
+        expect(customDataExtractor).not.toHaveBeenCalled();
+        expect(slowToolEndCalls).toHaveLength(1);
+        expect(slowToolEndCalls[0]?.[3]).toBe('aborted');
+        if (settlement === 'rejects') {
+          expect(slowToolSpan?.error).toMatchObject({
+            message: endHookError.message,
+          });
+        } else {
+          expect(slowToolSpan?.error).toBeNull();
+        }
+        expect(slowToolSpan?.spanData.output).toBe('aborted');
+      },
+    );
+
+    it('stops success post-processing after cancellation during output guardrails', async () => {
+      const primaryError = new Error('primary tool failure');
+      let markGuardrailStarted: (() => void) | undefined;
+      const guardrailStarted = new Promise<void>((resolve) => {
+        markGuardrailStarted = resolve;
+      });
+      let releaseGuardrail: (() => void) | undefined;
+      const guardrailCanFinish = new Promise<void>((resolve) => {
+        releaseGuardrail = resolve;
+      });
+      let markFatalFailure: (() => void) | undefined;
+      const fatalFailure = new Promise<void>((resolve) => {
+        markFatalFailure = resolve;
+      });
+      const outputGuardrail = defineToolOutputGuardrail({
+        name: 'blocking_output_guardrail',
+        run: vi.fn(async () => {
+          markGuardrailStarted?.();
+          await guardrailCanFinish;
+          return ToolGuardrailFunctionOutputFactory.rejectContent(
+            'invalid replacement',
+          );
+        }),
+      });
+      const customDataExtractor = vi.fn(() => ({ shouldNotRun: true }));
+      const guardedTool = tool({
+        name: 'guarded_tool',
+        description: 'waits in an output guardrail',
+        parameters: z.object({}),
+        outputSchema: z.object({ status: z.literal('ok') }),
         outputGuardrails: [outputGuardrail],
         customDataExtractor,
-        execute: async (_input, _context, details) => {
-          markSlowToolStarted?.();
-          details?.signal?.addEventListener(
-            'abort',
-            () => markCancellationObserved?.(),
-            { once: true },
-          );
-          await slowToolCanFinish;
-          return 'late tool output';
+        execute: async () => ({ status: 'ok' as const }),
+      }) as unknown as FunctionTool;
+      const failingTool = tool({
+        name: 'failing_tool',
+        description: 'fails while its sibling output guardrail remains active',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: async () => {
+          await guardrailStarted;
+          throw primaryError;
         },
       }) as unknown as FunctionTool;
       const end = vi.fn();
@@ -4459,40 +5510,493 @@ describe('executeShellActions', () => {
           {
             toolCall: {
               ...toolCall,
+              callId: 'guarded-call',
+              name: 'guarded_tool',
+            },
+            tool: guardedTool,
+          },
+          {
+            toolCall: {
+              ...toolCall,
               callId: 'failing-call',
               name: 'failing_tool',
             },
             tool: failingTool,
           },
-          {
-            toolCall: {
-              ...toolCall,
-              callId: 'slow-call',
-              name: 'slow_tool',
-            },
-            tool: slowTool,
-          },
         ],
         runner,
         state,
+        undefined,
+        undefined,
+        undefined,
+        () => markFatalFailure?.(),
       ).finally(() => {
         settled = true;
       });
-      await cancellationObserved;
-
+      await guardrailStarted;
+      await fatalFailure;
       expect(settled).toBe(false);
-      releaseSlowTool?.();
+      releaseGuardrail?.();
 
       const error = await resultPromise.catch((caught) => caught);
-      const slowToolEndCalls = end.mock.calls.filter(
-        ([, , endedTool]) => endedTool === slowTool,
+      const guardedToolEndCalls = end.mock.calls.filter(
+        ([, , endedTool]) => endedTool === guardedTool,
       );
       expect(error).toBeInstanceOf(ToolCallError);
       expect((error as ToolCallError).error).toBe(primaryError);
-      expect(outputGuardrail.run).not.toHaveBeenCalled();
+      expect(outputGuardrail.run).toHaveBeenCalledTimes(1);
+      expect(state._toolOutputGuardrailResults).toHaveLength(1);
       expect(customDataExtractor).not.toHaveBeenCalled();
-      expect(slowToolEndCalls).toHaveLength(1);
-      expect(slowToolEndCalls[0]?.[3]).not.toBe('late tool output');
+      expect(guardedToolEndCalls).toHaveLength(1);
+      expect(guardedToolEndCalls[0]?.[3]).toBe('aborted');
+    });
+
+    it.each(['fulfills', 'rejects'] as const)(
+      'reports cancellation when function custom data extraction %s as aborted',
+      async (settlement) => {
+        const primaryError = new Error('primary tool failure');
+        const customDataError = new Error(
+          'custom data failed after cancellation',
+        );
+        let markCustomDataStarted: (() => void) | undefined;
+        const customDataStarted = new Promise<void>((resolve) => {
+          markCustomDataStarted = resolve;
+        });
+        let releaseCustomData: (() => void) | undefined;
+        const customDataCanFinish = new Promise<void>((resolve) => {
+          releaseCustomData = resolve;
+        });
+        let markFatalFailure: (() => void) | undefined;
+        const fatalFailure = new Promise<void>((resolve) => {
+          markFatalFailure = resolve;
+        });
+        let customDataFinished = false;
+        const extractingTool = tool({
+          name: 'extracting_tool',
+          description: 'waits while extracting custom data',
+          parameters: z.object({}),
+          execute: async () => 'tool output',
+          customDataExtractor: async () => {
+            markCustomDataStarted?.();
+            await customDataCanFinish;
+            customDataFinished = true;
+            if (settlement === 'rejects') {
+              throw customDataError;
+            }
+            return { extracted: true };
+          },
+        }) as unknown as FunctionTool;
+        const failingTool = tool({
+          name: 'failing_tool',
+          description: 'fails while its sibling extracts custom data',
+          parameters: z.object({}),
+          errorFunction: null,
+          execute: async () => {
+            await customDataStarted;
+            throw primaryError;
+          },
+        }) as unknown as FunctionTool;
+        const end = vi.fn();
+        runner.on('agent_tool_end', end);
+
+        let settled = false;
+        const resultPromise = executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                callId: 'extracting-call',
+                name: 'extracting_tool',
+              },
+              tool: extractingTool,
+            },
+            {
+              toolCall: {
+                ...toolCall,
+                callId: 'failing-call',
+                name: 'failing_tool',
+              },
+              tool: failingTool,
+            },
+          ],
+          runner,
+          state,
+          undefined,
+          undefined,
+          undefined,
+          () => markFatalFailure?.(),
+        ).finally(() => {
+          settled = true;
+        });
+        await fatalFailure;
+
+        expect(settled).toBe(false);
+        releaseCustomData?.();
+
+        const error = await resultPromise.catch((caught) => caught);
+        const extractingToolEndCalls = end.mock.calls.filter(
+          ([, , endedTool]) => endedTool === extractingTool,
+        );
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).error).toBe(primaryError);
+        expect(customDataFinished).toBe(true);
+        expect(extractingToolEndCalls).toHaveLength(1);
+        expect(extractingToolEndCalls[0]?.[3]).toBe('aborted');
+      },
+    );
+
+    it('prioritizes cancellation after custom data promotes redaction', async () => {
+      const secret = 'SECRET_CANCELLED_CUSTOM_DATA_REDACTION_123';
+      const primaryError = new Error('primary tool failure');
+      let redactToolData = false;
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockImplementation(() => redactToolData);
+      let markCustomDataStarted: (() => void) | undefined;
+      const customDataStarted = new Promise<void>((resolve) => {
+        markCustomDataStarted = resolve;
+      });
+      let releaseCustomData: (() => void) | undefined;
+      const customDataCanFinish = new Promise<void>((resolve) => {
+        releaseCustomData = resolve;
+      });
+      let markFatalFailure: (() => void) | undefined;
+      const fatalFailure = new Promise<void>((resolve) => {
+        markFatalFailure = resolve;
+      });
+      const invalidInputTool = tool({
+        name: 'invalid_input_custom_data',
+        description: 'promotes redaction while extracting custom data',
+        parameters: z.object({ value: z.number() }),
+        errorFunction: () => 'diagnostic fallback',
+        customDataExtractor: async (context) => {
+          markCustomDataStarted?.();
+          await customDataCanFinish;
+          redactToolData = true;
+          return { captured: context.input };
+        },
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+      const failingTool = tool({
+        name: 'failing_tool',
+        description: 'fails while its sibling extracts custom data',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: async () => {
+          await customDataStarted;
+          throw primaryError;
+        },
+      }) as unknown as FunctionTool;
+      const invalidToolCall = {
+        ...toolCall,
+        callId: 'invalid-custom-data-call',
+        name: 'invalid_input_custom_data',
+        arguments: JSON.stringify({ value: secret }),
+      };
+      const end = vi.fn();
+      runner = new Runner({
+        tracingDisabled: false,
+        traceIncludeSensitiveData: true,
+      });
+      runner.on('agent_tool_end', end);
+
+      try {
+        let invalidToolSpan: Span<any> | undefined;
+        let settled = false;
+        const resultPromise = withRecordingTrace(async (processor) => {
+          const error = await withTrace('test', () =>
+            executeFunctionToolCalls(
+              state._currentAgent,
+              [
+                { toolCall: invalidToolCall, tool: invalidInputTool },
+                {
+                  toolCall: {
+                    ...toolCall,
+                    callId: 'failing-call',
+                    name: 'failing_tool',
+                  },
+                  tool: failingTool,
+                },
+              ],
+              runner,
+              state,
+              undefined,
+              undefined,
+              undefined,
+              () => markFatalFailure?.(),
+            ),
+          ).catch((caught) => caught);
+          invalidToolSpan = getEndedFunctionSpan(
+            processor,
+            'invalid_input_custom_data',
+          );
+          return error;
+        }).finally(() => {
+          settled = true;
+        });
+        await fatalFailure;
+
+        expect(settled).toBe(false);
+        releaseCustomData?.();
+
+        const error = await resultPromise;
+        const invalidToolEndCalls = end.mock.calls.filter(
+          ([, , endedTool]) => endedTool === invalidInputTool,
+        );
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).error).toBe(primaryError);
+        expect(invalidToolEndCalls).toHaveLength(1);
+        expect(invalidToolEndCalls[0]?.[3]).toBe('aborted');
+        expect(invalidToolSpan?.error).toMatchObject({
+          message: 'Error running tool (non-fatal)',
+        });
+        expect(invalidToolSpan?.spanData.output).toBe('aborted');
+        expect(JSON.stringify(error)).not.toContain(secret);
+      } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
+    it.each(['fulfills', 'rejects'] as const)(
+      'stops success post-processing when an input guardrail fallback %s after cancellation',
+      async (settlement) => {
+        const primaryError = new Error('primary tool failure');
+        const fallbackError = new Error('fallback failed after cancellation');
+        let markFallbackStarted: (() => void) | undefined;
+        const fallbackStarted = new Promise<void>((resolve) => {
+          markFallbackStarted = resolve;
+        });
+        let releaseFallback: (() => void) | undefined;
+        const fallbackCanFinish = new Promise<void>((resolve) => {
+          releaseFallback = resolve;
+        });
+        let markFatalFailure: (() => void) | undefined;
+        const fatalFailure = new Promise<void>((resolve) => {
+          markFatalFailure = resolve;
+        });
+        let fallbackDrained = false;
+        const inputGuardrail = defineToolInputGuardrail({
+          name: 'rejecting_input_guardrail',
+          run: vi.fn(async () =>
+            ToolGuardrailFunctionOutputFactory.rejectContent('blocked'),
+          ),
+        });
+        const guardedToolExecute = vi.fn(async () => ({
+          status: 'unexpected' as const,
+        }));
+        const customDataExtractor = vi.fn(() => ({ shouldNotRun: true }));
+        const guardedTool = tool({
+          name: 'guarded_tool',
+          description: 'waits in an input guardrail fallback',
+          parameters: z.object({}),
+          outputSchema: z.object({ status: z.string() }),
+          inputGuardrails: [inputGuardrail],
+          errorFunction: async () => {
+            markFallbackStarted?.();
+            await fallbackCanFinish;
+            fallbackDrained = true;
+            if (settlement === 'rejects') {
+              throw fallbackError;
+            }
+            return { status: 'blocked' };
+          },
+          customDataExtractor,
+          execute: guardedToolExecute,
+        }) as unknown as FunctionTool;
+        const failingTool = tool({
+          name: 'failing_tool',
+          description: 'fails while its sibling fallback remains active',
+          parameters: z.object({}),
+          errorFunction: null,
+          execute: async () => {
+            await fallbackStarted;
+            throw primaryError;
+          },
+        }) as unknown as FunctionTool;
+        const end = vi.fn();
+        runner = new Runner({ tracingDisabled: false });
+        runner.on('agent_tool_end', end);
+
+        let settled = false;
+        let guardedToolSpan: Span<any> | undefined;
+        const resultPromise = withRecordingTrace(async (processor) => {
+          const error = await withTrace('test', () =>
+            executeFunctionToolCalls(
+              state._currentAgent,
+              [
+                {
+                  toolCall: {
+                    ...toolCall,
+                    callId: 'guarded-call',
+                    name: 'guarded_tool',
+                  },
+                  tool: guardedTool,
+                },
+                {
+                  toolCall: {
+                    ...toolCall,
+                    callId: 'failing-call',
+                    name: 'failing_tool',
+                  },
+                  tool: failingTool,
+                },
+              ],
+              runner,
+              state,
+              undefined,
+              undefined,
+              undefined,
+              () => markFatalFailure?.(),
+            ),
+          ).catch((caught) => caught);
+          guardedToolSpan = getEndedFunctionSpan(processor, 'guarded_tool');
+          return error;
+        }).finally(() => {
+          settled = true;
+        });
+        await fallbackStarted;
+        await fatalFailure;
+
+        expect(settled).toBe(false);
+        releaseFallback?.();
+
+        const error = await resultPromise;
+        const guardedToolEndCalls = end.mock.calls.filter(
+          ([, , endedTool]) => endedTool === guardedTool,
+        );
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).error).toBe(primaryError);
+        expect(inputGuardrail.run).toHaveBeenCalledTimes(1);
+        expect(fallbackDrained).toBe(true);
+        expect(guardedToolExecute).not.toHaveBeenCalled();
+        expect(customDataExtractor).not.toHaveBeenCalled();
+        expect(guardedToolEndCalls).toHaveLength(1);
+        expect(guardedToolEndCalls[0]?.[3]).toBe('aborted');
+        expect(guardedToolSpan?.error).toBeNull();
+        expect(guardedToolSpan?.spanData.output).toBe('aborted');
+      },
+    );
+
+    it('preserves aborted lifecycle output when an end hook promotes redaction', async () => {
+      const secret = 'SECRET_CANCELLED_INVALID_INPUT_123';
+      const primaryError = new Error('primary tool failure');
+      let redactToolData = false;
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockImplementation(() => redactToolData);
+      let markFallbackStarted: (() => void) | undefined;
+      const fallbackStarted = new Promise<void>((resolve) => {
+        markFallbackStarted = resolve;
+      });
+      let markCancellationObserved: (() => void) | undefined;
+      const cancellationObserved = new Promise<void>((resolve) => {
+        markCancellationObserved = resolve;
+      });
+      let releaseFallback: (() => void) | undefined;
+      const fallbackCanFinish = new Promise<void>((resolve) => {
+        releaseFallback = resolve;
+      });
+      const invalidInputTool = tool({
+        name: 'cancelled_invalid_input',
+        description: 'Wait in an invalid-input fallback until cancelled.',
+        parameters: z.object({ value: z.number() }),
+        errorFunction: async (_context, _error, details) => {
+          markFallbackStarted?.();
+          details?.signal?.addEventListener(
+            'abort',
+            () => markCancellationObserved?.(),
+            { once: true },
+          );
+          await fallbackCanFinish;
+          return 'late fallback';
+        },
+        execute: vi.fn(async () => 'unexpected'),
+      }) as unknown as FunctionTool;
+      const failingTool = tool({
+        name: 'redaction_triggering_sibling_failure',
+        description: 'Fail after the invalid-input fallback starts.',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: async () => {
+          await fallbackStarted;
+          throw primaryError;
+        },
+      }) as unknown as FunctionTool;
+      const runnerEnd = vi.fn((...args: unknown[]) => {
+        if (args[2] === invalidInputTool) {
+          redactToolData = true;
+        }
+      });
+      const agentEnd = vi.fn();
+      runner = new Runner({ tracingDisabled: false });
+      runner.on('agent_tool_end', runnerEnd);
+      state._currentAgent.on('agent_tool_end', agentEnd);
+
+      try {
+        let cancelledToolSpan: Span<any> | undefined;
+        const resultPromise = withRecordingTrace(async (processor) => {
+          const error = await withTrace('test', () =>
+            executeFunctionToolCalls(
+              state._currentAgent,
+              [
+                {
+                  toolCall: {
+                    ...toolCall,
+                    callId: 'invalid-call',
+                    name: 'cancelled_invalid_input',
+                    arguments: JSON.stringify({ value: secret }),
+                  },
+                  tool: invalidInputTool,
+                },
+                {
+                  toolCall: {
+                    ...toolCall,
+                    callId: 'failing-call',
+                    name: 'redaction_triggering_sibling_failure',
+                    arguments: '{}',
+                  },
+                  tool: failingTool,
+                },
+              ],
+              runner,
+              state,
+            ),
+          ).catch((caught) => caught);
+          cancelledToolSpan = getEndedFunctionSpan(
+            processor,
+            'cancelled_invalid_input',
+          );
+          return error;
+        });
+        await cancellationObserved;
+        releaseFallback?.();
+
+        const error = await resultPromise;
+        const runnerCalls = runnerEnd.mock.calls.filter(
+          ([, , endedTool]) => endedTool === invalidInputTool,
+        );
+        const agentCalls = agentEnd.mock.calls.filter(
+          ([, endedTool]) => endedTool === invalidInputTool,
+        );
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).error).toBe(primaryError);
+        expect(runnerCalls).toHaveLength(1);
+        expect(runnerCalls[0]?.[3]).toBe('aborted');
+        expect(agentCalls).toHaveLength(1);
+        expect(agentCalls[0]?.[2]).toBe('aborted');
+        expect(agentCalls[0]?.[3]).toEqual({
+          toolCall: expect.objectContaining({ arguments: '' }),
+        });
+        expect(cancelledToolSpan?.error).toMatchObject({
+          message: 'Error running tool (non-fatal)',
+        });
+        expect(cancelledToolSpan?.spanData.input).toBe('');
+        expect(cancelledToolSpan?.spanData.output).toBe('aborted');
+      } finally {
+        releaseFallback?.();
+        flagSpy.mockRestore();
+      }
     });
 
     it('reserves abort-shaped nested failure ownership while cleanup drains', async () => {
@@ -4562,6 +6066,43 @@ describe('executeShellActions', () => {
       );
       expect(rejection).toBe(wrappedPrimaryError);
       expect(wrappedPrimaryError?.error).toBe(primaryError);
+    });
+
+    it('preserves a reserved abort-shaped failure when cancellation aborts the parent', async () => {
+      const primaryError = new Error('primary function failure');
+      primaryError.name = 'AbortError';
+      const parentReason = new Error('parent aborted during cancellation');
+      const parentController = new AbortController();
+      let markSiblingStarted: (() => void) | undefined;
+      const siblingStarted = new Promise<void>((resolve) => {
+        markSiblingStarted = resolve;
+      });
+
+      const resultPromise = runWithSiblingCancellation(
+        [
+          async (_signal, reserveFailure) => {
+            await siblingStarted;
+            reserveFailure?.();
+            throw primaryError;
+          },
+          async (signal) => {
+            markSiblingStarted?.();
+            await new Promise<void>((_resolve, reject) => {
+              signal?.addEventListener(
+                'abort',
+                () => {
+                  parentController.abort(parentReason);
+                  reject(signal.reason);
+                },
+                { once: true },
+              );
+            });
+          },
+        ],
+        parentController.signal,
+      );
+
+      await expect(resultPromise).rejects.toBe(primaryError);
     });
 
     it('preserves undefined rejections in uncapped tools', async () => {
@@ -4696,6 +6237,118 @@ describe('executeShellActions', () => {
       ).rejects.toThrow(/Failed to run function tools/);
 
       expect(startedTools).toEqual(['failing_tool']);
+    });
+
+    it('reserves a capped worker failure before another worker takes queued work', async () => {
+      const startedTools: string[] = [];
+      let activeTools = 0;
+      let markActiveToolsStarted: (() => void) | undefined;
+      const activeToolsStarted = new Promise<void>((resolve) => {
+        markActiveToolsStarted = resolve;
+      });
+      let rejectFailingTool: ((error: Error) => void) | undefined;
+      const failingToolResult = new Promise<string>((_resolve, reject) => {
+        rejectFailingTool = reject;
+      });
+      let resolveCompletingCustomData: (() => void) | undefined;
+      const completingCustomDataCanFinish = new Promise<void>((resolve) => {
+        resolveCompletingCustomData = resolve;
+      });
+      runner = new Runner({
+        tracingDisabled: true,
+        toolExecution: { maxFunctionToolConcurrency: 2 },
+      });
+      const failingTool = {
+        ...tool({
+          name: 'failing_tool',
+          description: 'Fail after the other worker starts.',
+          parameters: z.object({}),
+          errorFunction: null,
+          execute: vi.fn(async () => 'unused'),
+        }),
+        invoke: vi.fn(() => {
+          startedTools.push('failing_tool');
+          activeTools += 1;
+          if (activeTools === 2) {
+            markActiveToolsStarted?.();
+          }
+          return failingToolResult;
+        }),
+      } as unknown as FunctionTool;
+      const completingTool = {
+        ...tool({
+          name: 'completing_tool',
+          description: 'Complete while the failure propagates.',
+          parameters: z.object({}),
+          customDataExtractor: async () => {
+            activeTools += 1;
+            if (activeTools === 2) {
+              markActiveToolsStarted?.();
+            }
+            await completingCustomDataCanFinish;
+            return undefined;
+          },
+          execute: vi.fn(async () => 'unused'),
+        }),
+        invoke: vi.fn(() => {
+          startedTools.push('completing_tool');
+          return Promise.resolve('completed');
+        }),
+      } as unknown as FunctionTool;
+      const queuedParser = vi.fn(() => true);
+      const queuedTool = tool({
+        name: 'queued_tool',
+        description: 'Must remain queued after the active failure.',
+        parameters: z.object({ value: z.string().refine(queuedParser) }),
+        execute: vi.fn(async () => {
+          startedTools.push('queued_tool');
+          return 'should-not-run';
+        }),
+      }) as unknown as FunctionTool;
+
+      const resultPromise = executeFunctionToolCalls(
+        state._currentAgent,
+        [
+          {
+            toolCall: {
+              ...toolCall,
+              name: 'failing_tool',
+              callId: 'c1',
+              arguments: '{}',
+            },
+            tool: failingTool,
+          },
+          {
+            toolCall: {
+              ...toolCall,
+              name: 'completing_tool',
+              callId: 'c2',
+              arguments: '{}',
+            },
+            tool: completingTool,
+          },
+          {
+            toolCall: {
+              ...toolCall,
+              name: 'queued_tool',
+              callId: 'c3',
+              arguments: JSON.stringify({ value: 'queued' }),
+            },
+            tool: queuedTool,
+          },
+        ],
+        runner,
+        state,
+      );
+      await activeToolsStarted;
+      rejectFailingTool?.(new Error('boom'));
+      resolveCompletingCustomData?.();
+
+      await expect(resultPromise).rejects.toThrow(
+        /Failed to run function tools/,
+      );
+      expect(startedTools).toEqual(['failing_tool', 'completing_tool']);
+      expect(queuedParser).not.toHaveBeenCalled();
     });
 
     it('parses capped function calls when their scheduler slot starts', async () => {
@@ -5040,6 +6693,99 @@ describe('executeShellActions', () => {
       });
     });
 
+    it('does not report a rejected input guardrail after sibling cancellation', async () => {
+      const primaryError = new Error('primary tool failure');
+      const secondaryError = new Error('secondary input guardrail failure');
+      let markGuardrailStarted: (() => void) | undefined;
+      const guardrailStarted = new Promise<void>((resolve) => {
+        markGuardrailStarted = resolve;
+      });
+      let releaseGuardrail: (() => void) | undefined;
+      const guardrailCanFinish = new Promise<void>((resolve) => {
+        releaseGuardrail = resolve;
+      });
+      let markFatalFailure: (() => void) | undefined;
+      const fatalFailure = new Promise<void>((resolve) => {
+        markFatalFailure = resolve;
+      });
+      const rejectingGuardrail = defineToolInputGuardrail({
+        name: 'reject_after_cancellation',
+        run: async () => {
+          markGuardrailStarted?.();
+          await guardrailCanFinish;
+          throw secondaryError;
+        },
+      });
+      const guardedExecute = vi.fn(async () => 'should-not-run');
+      const guardedTool = tool({
+        name: 'guarded_tool',
+        description: 'rejects its input guardrail after cancellation',
+        parameters: z.object({}),
+        execute: guardedExecute,
+        inputGuardrails: [rejectingGuardrail],
+      }) as unknown as FunctionTool;
+      const failingTool = tool({
+        name: 'failing_tool',
+        description: 'fails while its sibling input guardrail is pending',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: async () => {
+          await guardrailStarted;
+          throw primaryError;
+        },
+      }) as unknown as FunctionTool;
+      const end = vi.fn();
+      runner = new Runner({ tracingDisabled: false });
+      runner.on('agent_tool_end', end);
+
+      let guardedToolSpan: Span<any> | undefined;
+      const resultPromise = withRecordingTrace(async (processor) => {
+        const error = await withTrace('test', () =>
+          executeFunctionToolCalls(
+            state._currentAgent,
+            [
+              {
+                toolCall: {
+                  ...toolCall,
+                  callId: 'guarded-call',
+                  name: 'guarded_tool',
+                },
+                tool: guardedTool,
+              },
+              {
+                toolCall: {
+                  ...toolCall,
+                  callId: 'failing-call',
+                  name: 'failing_tool',
+                },
+                tool: failingTool,
+              },
+            ],
+            runner,
+            state,
+            undefined,
+            undefined,
+            undefined,
+            () => markFatalFailure?.(),
+          ),
+        ).catch((caught) => caught);
+        guardedToolSpan = getEndedFunctionSpan(processor, 'guarded_tool');
+        return error;
+      });
+      await fatalFailure;
+      releaseGuardrail?.();
+
+      const error = await resultPromise;
+      const guardedToolEndCalls = end.mock.calls.filter(
+        ([, , endedTool]) => endedTool === guardedTool,
+      );
+      expect(error).toBeInstanceOf(ToolCallError);
+      expect((error as ToolCallError).error).toBe(primaryError);
+      expect(guardedExecute).not.toHaveBeenCalled();
+      expect(guardedToolEndCalls).toHaveLength(0);
+      expect(guardedToolSpan?.error).toBeNull();
+    });
+
     it('rejects input guardrail messages for Zod output schemas without a fallback', async () => {
       const inputGuardrail = defineToolInputGuardrail({
         name: 'block_structured_tool',
@@ -5296,6 +7042,63 @@ describe('executeShellActions', () => {
       }
       expect(secondRun).not.toHaveBeenCalled();
       expect(state._toolInputGuardrailResults).toHaveLength(1);
+    });
+
+    it('does not start prepared-input guardrails after approval aborts', async () => {
+      const controller = new AbortController();
+      const abortReason = new Error('approval aborted');
+      const inputGuardrail = defineToolInputGuardrail({
+        name: 'should_not_run',
+        run: vi.fn(async () => ToolGuardrailFunctionOutputFactory.allow()),
+      });
+      const execute = vi.fn(async () => 'unexpected');
+      const preparedInputTool = tool({
+        name: 'prepared_input_tool',
+        description: 'has schema-invalid prepared input',
+        parameters: z.object({ value: z.number() }),
+        inputGuardrails: [inputGuardrail],
+        execute,
+      }) as unknown as FunctionTool;
+      const approvalSpy = vi
+        .spyOn(state._context, 'isToolApproved')
+        .mockImplementation(({ callId }) => {
+          if (callId === 'prepared-input-call') {
+            controller.abort(abortReason);
+          }
+          return true;
+        });
+
+      try {
+        const [result] = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                callId: 'prepared-input-call',
+                name: 'prepared_input_tool',
+                arguments: JSON.stringify({ value: 'invalid' }),
+              },
+              tool: preparedInputTool,
+            },
+          ],
+          runner,
+          state,
+          undefined,
+          undefined,
+          controller.signal,
+        );
+
+        expect(controller.signal.reason).toBe(abortReason);
+        expect(result).toMatchObject({
+          type: 'function_output',
+          output: 'aborted',
+        });
+        expect(inputGuardrail.run).not.toHaveBeenCalled();
+        expect(execute).not.toHaveBeenCalled();
+      } finally {
+        approvalSpy.mockRestore();
+      }
     });
 
     it('stops evaluating further output guardrails after rejectContent and returns replacement', async () => {

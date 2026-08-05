@@ -1081,7 +1081,10 @@ export async function resolveTurnAfterModelResponse<
       executionSignal,
       cancelSiblingCategories,
     );
-  const runComputerActions = (executionSignal = signal) =>
+  const runComputerActions = (
+    executionSignal = signal,
+    cancelSiblingCategories?: (error?: unknown) => void,
+  ) =>
     executeComputerActions(
       agent,
       processedResponse.computerActions,
@@ -1090,6 +1093,7 @@ export async function resolveTurnAfterModelResponse<
       undefined,
       toolErrorFormatter,
       executionSignal,
+      cancelSiblingCategories,
     );
   const [functionResults, computerResults] =
     processedResponse.functions.length > 0 &&

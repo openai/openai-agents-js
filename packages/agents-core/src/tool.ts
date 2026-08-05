@@ -11,7 +11,11 @@ import {
 import { toFunctionToolName } from './utils/tools';
 import { getSchemaAndParserFromInputType } from './utils/tools';
 import { isZodObject } from './utils/typeGuards';
-import { combineAbortSignals, isAbortError } from './utils/abortSignals';
+import {
+  combineAbortSignals,
+  isAbortError,
+  isSiblingCancellationSignal,
+} from './utils/abortSignals';
 import { RunContext } from './runContext';
 import type { RunConfig } from './run';
 import type { RunResult } from './result';
@@ -2082,9 +2086,13 @@ async function invokeFunctionToolWithTimeout<
     timeoutMs,
   });
 
+  let invocationPromise: Promise<string | Result> | undefined;
   try {
-    return await Promise.race([
+    invocationPromise = Promise.resolve(
       invoke(runContext, input, invokeDetails),
+    );
+    return await Promise.race([
+      invocationPromise,
       new Promise<never>((_, reject) => {
         timeoutId = setTimeout(() => {
           timeoutTriggered = true;
@@ -2099,6 +2107,14 @@ async function invokeFunctionToolWithTimeout<
       (timeoutTriggered && timeoutController.signal.reason === timeoutError);
     if (!isTimeoutError) {
       throw error;
+    }
+
+    const siblingCancellationSignal = details?.signal;
+    if (
+      siblingCancellationSignal &&
+      isSiblingCancellationSignal(siblingCancellationSignal)
+    ) {
+      throw siblingCancellationSignal.reason;
     }
 
     if (timeoutBehavior === 'raise_exception') {
@@ -2375,7 +2391,8 @@ export function tool<
     return _invoke(runContext, input, details).catch(async (error) => {
       if (
         details?.signal?.aborted &&
-        (error === details.signal.reason ||
+        (isSiblingCancellationSignal(details.signal) ||
+          error === details.signal.reason ||
           isAbortError(error) ||
           details.signal.reason instanceof ToolTimeoutError)
       ) {
