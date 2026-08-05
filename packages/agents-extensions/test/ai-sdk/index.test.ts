@@ -2086,21 +2086,310 @@ describe('itemsToLanguageV2Messages', () => {
     );
   });
 
-  test('rejects input_file content', () => {
+  test('converts PDF data URL input_file content and preserves ordering', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'before' },
+          {
+            type: 'input_file',
+            file: 'data:application/pdf;base64,JVBERi0xLjQ=',
+            filename: 'document.pdf',
+          },
+          { type: 'input_text', text: 'after' },
+        ],
+      } as any,
+    ];
+
+    expect(itemsToLanguageV2Messages(stubModel({}), items)).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'before', providerOptions: {} },
+          {
+            type: 'file',
+            data: 'JVBERi0xLjQ=',
+            mediaType: 'application/pdf',
+            filename: 'document.pdf',
+            providerOptions: {},
+          },
+          { type: 'text', text: 'after', providerOptions: {} },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('converts a PDF data URL with a case-variant scheme', () => {
     const items: protocol.ModelItem[] = [
       {
         role: 'user',
         content: [
           {
             type: 'input_file',
-            file: 'file_123',
+            file: 'DATA:application/pdf;base64,JVBERi0xLjQ=',
+          },
+        ],
+      } as any,
+    ];
+
+    expect(itemsToLanguageV2Messages(stubModel({}), items)).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: 'JVBERi0xLjQ=',
+            mediaType: 'application/pdf',
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('converts public PDF URL input_file content for AI SDK v4', () => {
+    const url = 'https://example.com/document.pdf';
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [{ type: 'input_file', file: { url }, filename: 'download' }],
+      } as any,
+    ];
+
+    expect(
+      itemsToLanguageV2Messages(
+        stubModel({}, { specificationVersion: 'v4' }),
+        items,
+      ),
+    ).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: { type: 'url', url: new URL(url) },
+            mediaType: 'application/pdf',
+            filename: 'download',
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('infers PDF media type from a string URL before its filename', () => {
+    const url = 'https://example.com/document.pdf';
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [{ type: 'input_file', file: url, filename: 'download' }],
+      } as any,
+    ];
+
+    expect(itemsToLanguageV2Messages(stubModel({}), items)).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: new URL(url),
+            mediaType: 'application/pdf',
+            filename: 'download',
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('converts raw base64 input_file content with an explicit media type', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: 'JVBERi0xLjQ=',
+            filename: 'document.bin',
+            providerData: { mediaType: 'application/pdf' },
+          },
+        ],
+      } as any,
+    ];
+
+    expect(
+      itemsToLanguageV2Messages(
+        stubModel({}, { specificationVersion: 'v3' }),
+        items,
+      ),
+    ).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: 'JVBERi0xLjQ=',
+            mediaType: 'application/pdf',
+            filename: 'document.bin',
+            providerOptions: { mediaType: 'application/pdf' },
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('infers PDF media type for raw base64 from its filename', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: 'JVBERi0xLjQ=',
+            filename: 'document.pdf',
+          },
+        ],
+      } as any,
+    ];
+
+    expect(itemsToLanguageV2Messages(stubModel({}), items)).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: 'JVBERi0xLjQ=',
+            mediaType: 'application/pdf',
+            filename: 'document.pdf',
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('does not use media type metadata scoped to a different model', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: 'JVBERi0xLjQ=',
+            providerData: {
+              model: 'other:model',
+              mediaType: 'application/pdf',
+            },
           },
         ],
       } as any,
     ];
 
     expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow(
-      /File inputs are not supported/,
+      /providerData\.mediaType/,
+    );
+  });
+
+  test.each([
+    {
+      name: 'local path',
+      file: './document.pdf',
+      filename: 'document.pdf',
+    },
+    {
+      name: 'typoed URL',
+      file: 'https//example.com/document.pdf',
+      providerData: { mediaType: 'application/pdf' },
+    },
+    {
+      name: 'string file ID',
+      file: 'file_123',
+      filename: 'document.pdf',
+    },
+    {
+      name: 'empty data',
+      file: '',
+      providerData: { mediaType: 'application/pdf' },
+    },
+    {
+      name: 'invalid base64 length',
+      file: 'abcde',
+      filename: 'document.pdf',
+    },
+  ])(
+    'rejects invalid raw base64 input_file content: $name',
+    ({ file, filename, providerData }) => {
+      const items: protocol.ModelItem[] = [
+        {
+          role: 'user',
+          content: [{ type: 'input_file', file, filename, providerData }],
+        } as any,
+      ];
+
+      expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow(
+        /valid non-empty raw base64 data/,
+      );
+    },
+  );
+
+  test.each([
+    {
+      name: 'OpenAI file ID',
+      file: { id: 'file_123' },
+      error: /OpenAI file IDs are not supported/,
+    },
+    {
+      name: 'private URL scheme',
+      file: 'file:///tmp/document.pdf',
+      error: /public HTTP\(S\) URL/,
+    },
+    {
+      name: 'raw data without media type',
+      file: 'JVBERi0xLjQ=',
+      error: /providerData\.mediaType/,
+    },
+    {
+      name: 'non-base64 data URL',
+      file: 'data:application/pdf,document',
+      error: /base64 data URL/,
+    },
+    {
+      name: 'data URL with a misleading base64 parameter',
+      file: 'data:application/pdf;notbase64,document',
+      error: /base64 data URL/,
+    },
+    {
+      name: 'base64 data URL with invalid characters',
+      file: 'data:application/pdf;base64,@@@@',
+      error: /valid non-empty raw base64 data/,
+    },
+    {
+      name: 'base64 data URL with invalid length',
+      file: 'data:application/pdf;base64,abcde',
+      error: /valid non-empty raw base64 data/,
+    },
+    {
+      name: 'base64 data URL with empty data',
+      file: 'data:application/pdf;base64,',
+      error: /valid non-empty raw base64 data/,
+    },
+  ])('rejects unsupported input_file content: $name', ({ file, error }) => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [{ type: 'input_file', file }],
+      } as any,
+    ];
+
+    expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow(
+      error,
     );
   });
 

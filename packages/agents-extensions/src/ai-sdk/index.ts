@@ -2,6 +2,7 @@ import type {
   JSONSchema7,
   LanguageModelV2 as LanguageModelV2Base,
   LanguageModelV2CallOptions,
+  LanguageModelV2FilePart,
   LanguageModelV2FunctionTool,
   LanguageModelV2Message,
   LanguageModelV2Prompt,
@@ -238,6 +239,11 @@ type ParsedInlineImageData = {
   mediaType: string;
 };
 
+const AI_SDK_FILE_INPUT_ERROR =
+  'AI SDK file inputs require a base64 data URL, valid non-empty raw base64 data with a PDF filename or providerData.mediaType, or a public HTTP(S) URL with a PDF filename or providerData.mediaType.';
+const AI_SDK_FILE_ID_ERROR =
+  'OpenAI file IDs are not supported by the AI SDK adapter. Use an OpenAI Responses model directly, or pass file data or a public HTTP(S) URL.';
+
 function parseBase64ImageDataUrl(
   imageSource: string,
 ): ParsedInlineImageData | undefined {
@@ -265,6 +271,167 @@ function parseBase64ImageDataUrl(
     data: imageSource.slice(commaIndex + 1),
     mediaType,
   };
+}
+
+function parseBase64FileDataUrl(
+  fileSource: string,
+): ParsedInlineImageData | undefined {
+  if (!/^data:/i.test(fileSource)) {
+    return undefined;
+  }
+
+  const commaIndex = fileSource.indexOf(',');
+  if (commaIndex === -1) {
+    return undefined;
+  }
+
+  const metadata = fileSource.slice('data:'.length, commaIndex);
+  const [maybeMediaType, ...parameters] = metadata.split(';');
+  const mediaType = maybeMediaType?.trim();
+  const isBase64 = parameters.some(
+    (parameter) => parameter.trim().toLowerCase() === 'base64',
+  );
+  if (!mediaType || !isBase64) {
+    return undefined;
+  }
+
+  return {
+    data: fileSource.slice(commaIndex + 1),
+    mediaType,
+  };
+}
+
+function isValidBase64Data(value: string): boolean {
+  const normalized = value.replace(/[\t\n\f\r ]/g, '');
+  if (
+    normalized.length === 0 ||
+    normalized.length % 4 === 1 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)
+  ) {
+    return false;
+  }
+
+  const paddingLength = normalized.endsWith('==')
+    ? 2
+    : normalized.endsWith('=')
+      ? 1
+      : 0;
+  if (paddingLength === 0) {
+    return true;
+  }
+
+  const dataLength = normalized.length - paddingLength;
+  return (
+    normalized.length % 4 === 0 &&
+    ((paddingLength === 1 && dataLength % 4 === 3) ||
+      (paddingLength === 2 && dataLength % 4 === 2))
+  );
+}
+
+function getProviderDataString(
+  providerData: Record<string, any> | undefined,
+  key: string,
+): string | undefined {
+  const value = providerData?.[key];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function parsePublicFileUrl(source: string): URL | undefined {
+  let url: URL;
+  try {
+    url = new URL(source);
+  } catch {
+    return undefined;
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new UserError(AI_SDK_FILE_INPUT_ERROR);
+  }
+  return url;
+}
+
+function getFileMediaType(
+  providerData: Record<string, any> | undefined,
+  filename: string | undefined,
+  url?: URL,
+): string {
+  const explicitMediaType = getProviderDataString(providerData, 'mediaType');
+  if (explicitMediaType) {
+    return explicitMediaType;
+  }
+
+  if (
+    [filename, url?.pathname].some((name) =>
+      name?.toLowerCase().endsWith('.pdf'),
+    )
+  ) {
+    return 'application/pdf';
+  }
+
+  throw new UserError(AI_SDK_FILE_INPUT_ERROR);
+}
+
+function toAiSdkFilePart(
+  model: LanguageModelCompatible,
+  input: protocol.InputFile,
+): LanguageModelV2FilePart {
+  const { file, filename, providerData } = input;
+  const providerOptions = toProviderOptions(providerData, model);
+
+  if (typeof file === 'string') {
+    const inlineFile = parseBase64FileDataUrl(file);
+    if (inlineFile) {
+      if (!isValidBase64Data(inlineFile.data)) {
+        throw new UserError(AI_SDK_FILE_INPUT_ERROR);
+      }
+      return {
+        type: 'file',
+        data: toAiSdkFileData(model, inlineFile.data),
+        mediaType: inlineFile.mediaType,
+        ...(filename ? { filename } : {}),
+        providerOptions,
+      };
+    }
+
+    if (file.startsWith('data:')) {
+      throw new UserError(AI_SDK_FILE_INPUT_ERROR);
+    }
+
+    const url = parsePublicFileUrl(file);
+    if (!url && !isValidBase64Data(file)) {
+      throw new UserError(AI_SDK_FILE_INPUT_ERROR);
+    }
+    const mediaType = getFileMediaType(providerOptions, filename, url);
+    return {
+      type: 'file',
+      data: toAiSdkFileData(model, url ?? file),
+      mediaType,
+      ...(filename ? { filename } : {}),
+      providerOptions,
+    };
+  }
+
+  if (isRecord(file)) {
+    const fileRecord: Record<string, unknown> = file;
+    if (typeof fileRecord.id === 'string') {
+      throw new UserError(AI_SDK_FILE_ID_ERROR);
+    }
+    if (typeof fileRecord.url === 'string') {
+      const url = parsePublicFileUrl(fileRecord.url);
+      if (!url) {
+        throw new UserError(AI_SDK_FILE_INPUT_ERROR);
+      }
+      return {
+        type: 'file',
+        data: toAiSdkFileData(model, url),
+        mediaType: getFileMediaType(providerOptions, filename, url),
+        ...(filename ? { filename } : {}),
+        providerOptions,
+      };
+    }
+  }
+
+  throw new UserError(AI_SDK_FILE_INPUT_ERROR);
 }
 
 /**
@@ -443,7 +610,7 @@ export function itemsToLanguageV2Messages(
                     };
                   }
                   if (c.type === 'input_file') {
-                    throw new UserError('File inputs are not supported.');
+                    return toAiSdkFilePart(model, c);
                   }
                   throw new UserError(`Unknown content type: ${c.type}`);
                 }),
