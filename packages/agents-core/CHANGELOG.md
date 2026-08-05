@@ -1,5 +1,27 @@
 # @openai/agents-core
 
+## 0.14.3
+
+### Patch Changes
+
+- 31bc820: feat: add idempotent session history transactions
+- 90781d8: fix: preserve committed tool effects when output guardrails block final output
+- 08169df: fix: cancel and drain sibling tool work after a concurrent failure
+- 1154aa0: fix: include every paginated MCP tool in agent tool discovery
+- 15ac711: fix: resolve ambiguous tool and handoff names consistently with a warning by default and an opt-in error policy, including owner-scoped approvals for nested agents
+- 59fa3fc: fix: preserve completed tool guardrail results on run errors
+- 2d5d040: fix: deduplicate provider-identified model inputs without breaking causal item order
+- 427331f: fix: preserve repeated session history provenance
+- 4bb80e4: fix: name Runner task spans after their configured or restored workflow
+- 78f8581: fix: preserve inline compaction items across turns
+- b4a90f9: test: capture expected MCP and session recovery logs without stderr noise
+- 9416c96: test: split RunState coverage into parallel suites and silence collision warnings
+- f431475: fix: redact invalid tool argument errors by default
+- 9cbba54: fix: preserve approved tool results when output guardrails trip
+- 0f9b12e: fix: normalize closed typeless object schemas in strict tools
+- 92a0809: fix: enforce sandbox output budgets across core and extension providers
+- 1eaa425: fix: ignore invalid environment paths for default sandbox snapshots
+
 ## 0.14.2
 
 ### Patch Changes

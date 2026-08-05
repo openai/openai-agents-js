@@ -1,5 +1,31 @@
 # @openai/agents-openai
 
+## 0.14.3
+
+### Patch Changes
+
+- 78f8581: fix: preserve inline compaction items across turns
+- c727ef3: fix: serialize OpenAI conversation session ID lifecycle operations
+- eb59cd6: fix: surface empty content-filter responses as refusals in streaming and non-streaming runs
+- Updated dependencies [31bc820]
+- Updated dependencies [90781d8]
+- Updated dependencies [08169df]
+- Updated dependencies [1154aa0]
+- Updated dependencies [15ac711]
+- Updated dependencies [59fa3fc]
+- Updated dependencies [2d5d040]
+- Updated dependencies [427331f]
+- Updated dependencies [4bb80e4]
+- Updated dependencies [78f8581]
+- Updated dependencies [b4a90f9]
+- Updated dependencies [9416c96]
+- Updated dependencies [f431475]
+- Updated dependencies [9cbba54]
+- Updated dependencies [0f9b12e]
+- Updated dependencies [92a0809]
+- Updated dependencies [1eaa425]
+  - @openai/agents-core@0.14.3
+
 ## 0.14.2
 
 ### Patch Changes
