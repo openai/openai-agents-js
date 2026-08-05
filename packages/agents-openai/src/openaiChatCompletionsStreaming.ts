@@ -5,6 +5,10 @@ import { ChatCompletion, ChatCompletionChunk } from 'openai/resources/chat';
 import { FAKE_ID } from './openaiChatCompletionsModel';
 import { OPENAI_CHAT_COMPLETIONS_RAW_MODEL_EVENT_SOURCE } from './rawModelEvents';
 import logger from './logger';
+import {
+  CONTENT_FILTER_REFUSAL_MESSAGE,
+  shouldSynthesizeContentFilterRefusal,
+} from './openaiChatCompletionsContentFilter';
 
 type StreamingState = {
   started: boolean;
@@ -175,6 +179,23 @@ export async function* convertChatCompletionsStreamToResponses(
   // Final output message
   const outputs: protocol.OutputModelItem[] = [];
   const outputItemId = response.id || FAKE_ID;
+
+  if (
+    shouldSynthesizeContentFilterRefusal({
+      finishReason: state.finishReason,
+      hasOutput: Boolean(
+        state.text_content?.text ||
+        state.refusal_content?.refusal ||
+        Object.keys(state.function_calls).length > 0 ||
+        state.ignored_tool_call_indexes.size > 0,
+      ),
+    })
+  ) {
+    state.refusal_content = {
+      type: 'refusal',
+      refusal: CONTENT_FILTER_REFUSAL_MESSAGE,
+    };
+  }
 
   if (state.reasoning) {
     outputs.push({
