@@ -1385,66 +1385,168 @@ describe('executeComputerActions', () => {
     expect((items[0] as any).output).toBe('data:image/png;base64,img');
   });
 
-  it('does not start later batched computer actions after cancellation', async () => {
-    const controller = new AbortController();
-    let markClickStarted: (() => void) | undefined;
-    const clickStarted = new Promise<void>((resolve) => {
-      markClickStarted = resolve;
-    });
-    let releaseClick: (() => void) | undefined;
-    const clickCanFinish = new Promise<void>((resolve) => {
-      releaseClick = resolve;
-    });
-    const fakeComputer = {
-      environment: 'mac',
-      dimensions: [1, 1] as [number, number],
-      screenshot: vi.fn().mockResolvedValue('img'),
-      click: vi.fn().mockImplementation(async () => {
-        markClickStarted?.();
-        await clickCanFinish;
-      }),
-      doubleClick: vi.fn(),
-      drag: vi.fn(),
-      keypress: vi.fn(),
-      move: vi.fn(),
-      scroll: vi.fn(),
-      type: vi.fn(),
-      wait: vi.fn(),
-    } as any;
-    const computer = computerTool({ computer: fakeComputer });
-    const call: protocol.ComputerUseCallItem = {
-      type: 'computer_call',
-      callId: 'cancelled-batch',
-      status: 'completed',
-      actions: [
-        { type: 'click', x: 1, y: 2, button: 'left' },
-        { type: 'move', x: 3, y: 4 },
-      ],
-    };
+  it.each(['fulfills', 'rejects'] as const)(
+    'does not start later batched computer actions when the active action %s after cancellation',
+    async (settlement) => {
+      const controller = new AbortController();
+      let markClickStarted: (() => void) | undefined;
+      const clickStarted = new Promise<void>((resolve) => {
+        markClickStarted = resolve;
+      });
+      let releaseClick: (() => void) | undefined;
+      const clickCanFinish = new Promise<void>((resolve) => {
+        releaseClick = resolve;
+      });
+      const fakeComputer = {
+        environment: 'mac',
+        dimensions: [1, 1] as [number, number],
+        screenshot: vi.fn().mockResolvedValue('img'),
+        click: vi.fn().mockImplementation(async () => {
+          markClickStarted?.();
+          await clickCanFinish;
+          if (settlement === 'rejects') {
+            throw new Error('computer action failed after cancellation');
+          }
+        }),
+        doubleClick: vi.fn(),
+        drag: vi.fn(),
+        keypress: vi.fn(),
+        move: vi.fn(),
+        scroll: vi.fn(),
+        type: vi.fn(),
+        wait: vi.fn(),
+      } as any;
+      const customDataExtractor = vi.fn(() => ({ shouldNotRun: true }));
+      const computer = computerTool({
+        computer: fakeComputer,
+        customDataExtractor,
+      });
+      const call: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        callId: 'cancelled-batch',
+        status: 'completed',
+        actions: [
+          { type: 'click', x: 1, y: 2, button: 'left' },
+          { type: 'move', x: 3, y: 4 },
+        ],
+      };
 
-    const resultPromise = executeComputerActions(
-      new Agent({ name: 'Comp' }),
-      [{ toolCall: call, computer }],
-      new Runner(),
-      new RunContext(),
-      undefined,
-      undefined,
-      controller.signal,
-    );
-    await clickStarted;
-    controller.abort(new Error('stop batched actions'));
-    releaseClick?.();
+      const runner = new Runner();
+      const agent = new Agent({ name: 'Comp' });
+      const runContext = new RunContext();
+      const end = vi.fn();
+      runner.on('agent_tool_end', end);
+      const resultPromise = executeComputerActions(
+        agent,
+        [{ toolCall: call, computer }],
+        runner,
+        runContext,
+        undefined,
+        undefined,
+        controller.signal,
+      );
+      await clickStarted;
+      controller.abort(new Error('stop batched actions'));
+      releaseClick?.();
 
-    const [item] = await resultPromise;
-    expect(fakeComputer.click).toHaveBeenCalledTimes(1);
-    expect(fakeComputer.move).not.toHaveBeenCalled();
-    expect(fakeComputer.screenshot).not.toHaveBeenCalled();
-    expect(item.rawItem).toMatchObject({
-      type: 'computer_call_result',
-      callId: call.callId,
-      providerData: { status: 'incomplete' },
-    });
-  });
+      const [item] = await resultPromise;
+      expect(fakeComputer.click).toHaveBeenCalledTimes(1);
+      expect(fakeComputer.move).not.toHaveBeenCalled();
+      expect(fakeComputer.screenshot).not.toHaveBeenCalled();
+      expect(customDataExtractor).not.toHaveBeenCalled();
+      expect(end).toHaveBeenCalledTimes(1);
+      expect(end).toHaveBeenCalledWith(runContext, agent, computer, 'aborted', {
+        toolCall: call,
+      });
+      expect(item.rawItem).toMatchObject({
+        type: 'computer_call_result',
+        callId: call.callId,
+        providerData: { status: 'incomplete' },
+      });
+    },
+  );
+
+  it.each(['fulfills', 'rejects'] as const)(
+    'treats cancellation when the final screenshot %s as incomplete',
+    async (settlement) => {
+      const controller = new AbortController();
+      let markScreenshotStarted: (() => void) | undefined;
+      const screenshotStarted = new Promise<void>((resolve) => {
+        markScreenshotStarted = resolve;
+      });
+      let releaseScreenshot: (() => void) | undefined;
+      const screenshotCanFinish = new Promise<void>((resolve) => {
+        releaseScreenshot = resolve;
+      });
+      const fakeComputer = {
+        environment: 'mac',
+        dimensions: [1, 1] as [number, number],
+        screenshot: vi.fn().mockImplementation(async () => {
+          markScreenshotStarted?.();
+          await screenshotCanFinish;
+          if (settlement === 'rejects') {
+            throw new Error('final screenshot failed after cancellation');
+          }
+          return 'img';
+        }),
+        click: vi.fn(),
+        doubleClick: vi.fn(),
+        drag: vi.fn(),
+        keypress: vi.fn(),
+        move: vi.fn(),
+        scroll: vi.fn(),
+        type: vi.fn(),
+        wait: vi.fn(),
+      } as any;
+      const customDataExtractor = vi.fn(() => ({ shouldNotRun: true }));
+      const computer = computerTool({
+        computer: fakeComputer,
+        customDataExtractor,
+      });
+      const call: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        callId: 'cancelled-final-screenshot',
+        status: 'completed',
+        actions: [{ type: 'move', x: 1, y: 2 }],
+      };
+      const runner = new Runner();
+      const agent = new Agent({ name: 'Comp' });
+      const runContext = new RunContext();
+      const end = vi.fn();
+      runner.on('agent_tool_end', end);
+      let settled = false;
+
+      const resultPromise = executeComputerActions(
+        agent,
+        [{ toolCall: call, computer }],
+        runner,
+        runContext,
+        undefined,
+        undefined,
+        controller.signal,
+      ).finally(() => {
+        settled = true;
+      });
+      await screenshotStarted;
+      controller.abort(new Error('stop final screenshot'));
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      expect(settled).toBe(false);
+      releaseScreenshot?.();
+
+      const [item] = await resultPromise;
+      expect(customDataExtractor).not.toHaveBeenCalled();
+      expect(end).toHaveBeenCalledTimes(1);
+      expect(end).toHaveBeenCalledWith(runContext, agent, computer, 'aborted', {
+        toolCall: call,
+      });
+      expect(item.rawItem).toMatchObject({
+        type: 'computer_call_result',
+        callId: call.callId,
+        providerData: { status: 'incomplete' },
+      });
+    },
+  );
 
   it('checks approval against each batched computer action', async () => {
     const fakeComputer = {
@@ -4301,12 +4403,10 @@ describe('executeShellActions', () => {
       expect(lateSideEffect).toBe(false);
     });
 
-    it('reserves nested failure ownership while cleanup drains', async () => {
+    it('reserves abort-shaped nested failure ownership while cleanup drains', async () => {
       const primaryError = new Error('primary function failure');
-      const wrappedPrimaryError = new ToolCallError(
-        'Failed to run function tools',
-        primaryError,
-      );
+      primaryError.name = 'AbortError';
+      let wrappedPrimaryError: ToolCallError | undefined;
       const secondaryError = new Error('secondary category failure');
       let markCleanupStarted: (() => void) | undefined;
       const cleanupStarted = new Promise<void>((resolve) => {
@@ -4343,7 +4443,14 @@ describe('executeShellActions', () => {
               signal,
               reserveFailure,
             );
-          } catch {
+          } catch (error) {
+            if (!(error instanceof Error)) {
+              throw error;
+            }
+            wrappedPrimaryError = new ToolCallError(
+              'Failed to run function tools',
+              error,
+            );
             throw wrappedPrimaryError;
           }
         },
@@ -4357,7 +4464,12 @@ describe('executeShellActions', () => {
       await cleanupStarted;
       releaseCleanup?.();
 
-      await expect(resultPromise).rejects.toBe(wrappedPrimaryError);
+      const rejection = await resultPromise.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(rejection).toBe(wrappedPrimaryError);
+      expect(wrappedPrimaryError?.error).toBe(primaryError);
     });
 
     it('preserves undefined rejections in uncapped tools', async () => {

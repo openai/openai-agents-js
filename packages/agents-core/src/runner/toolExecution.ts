@@ -1353,6 +1353,9 @@ async function _runComputerActionAndScreenshot(
   }
   if (typeof computer.screenshot === 'function') {
     const screenshot = await computer.screenshot(runContext);
+    if (signal?.aborted) {
+      return { type: 'cancelled' };
+    }
     if (typeof screenshot !== 'undefined') {
       return { type: 'completed', output: screenshot };
     }
@@ -2128,6 +2131,9 @@ export async function executeComputerActions(
           }
           output = actionResult.output;
         } catch (err) {
+          if (signal?.aborted) {
+            return buildStartedCancellationItem();
+          }
           logToolActionError(
             _logger,
             'Failed to execute computer action:',

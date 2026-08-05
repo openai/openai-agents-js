@@ -54,10 +54,11 @@ export async function runWithSiblingCancellation(
     try {
       return await task(signal, () => reserveFailure(index));
     } catch (error) {
+      const parentWasAborted = parentSignal?.aborted;
       reserveFailure(index);
       if (firstFailureOwner === index && firstFailure === undefined) {
         const failure =
-          parentSignal?.aborted &&
+          parentWasAborted &&
           (error === parentSignal.reason || isAbortError(error))
             ? parentSignal.reason
             : error;
