@@ -3796,7 +3796,7 @@ describe('remote sandbox path helpers', () => {
 
   test('formats command output and truncates token output', () => {
     expect(truncateOutput('0123456789abcdef', 1)).toEqual({
-      text: 'Total output lines: 1\n\n01...3 tokens truncated...ef',
+      text: '...4',
       originalTokenCount: 4,
     });
     expect(truncateOutput('one two', 3)).toEqual({ text: 'one two' });

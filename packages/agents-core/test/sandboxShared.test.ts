@@ -74,23 +74,75 @@ async function loadDefaultLocalSnapshotBaseDir(args: {
 }
 
 describe('sandbox shared helpers', () => {
-  it('truncates output with a byte budget and keeps head and tail context', () => {
+  it('includes truncation metadata within the output byte budget', () => {
     const result = truncateOutput('0123456789abcdef', 2);
 
     expect(result).toEqual({
-      text: 'Total output lines: 1\n\n0123...2 tokens truncated...cdef',
+      text: '...4 tok',
       originalTokenCount: 4,
     });
+    expect(new TextEncoder().encode(result.text)).toHaveLength(8);
+  });
+
+  it.each([
+    { maxOutputTokens: 0, expected: '' },
+    { maxOutputTokens: 1, expected: '...4' },
+  ])(
+    'does not exceed a $maxOutputTokens-token tiny output budget',
+    ({ maxOutputTokens, expected }) => {
+      const result = truncateOutput('0123456789abcdef', maxOutputTokens);
+
+      expect(result).toEqual({
+        text: expected,
+        originalTokenCount: 4,
+      });
+      expect(
+        new TextEncoder().encode(result.text).byteLength,
+      ).toBeLessThanOrEqual(maxOutputTokens * 4);
+    },
+  );
+
+  it('keeps line metadata plus head and tail context when space permits', () => {
+    const output = '0123456789'.repeat(20);
+    const result = truncateOutput(output, 32);
+
+    expect(result.text).toMatch(/^Total output lines: 1\n\n012345/u);
+    expect(result.text).toContain('tokens truncated');
+    expect(result.text).toMatch(/456789$/u);
+    expect(
+      new TextEncoder().encode(result.text).byteLength,
+    ).toBeLessThanOrEqual(128);
+  });
+
+  it('keeps multibyte output valid and within the byte budget', () => {
+    const result = truncateOutput('🙂漢字'.repeat(20), 32);
+
+    expect(result.text).not.toContain('\uFFFD');
+    expect(result.text).toContain('tokens truncated');
+    expect(
+      new TextEncoder().encode(result.text).byteLength,
+    ).toBeLessThanOrEqual(128);
   });
 
   it('preserves active process truncation notices when applying output budgets', () => {
     const result = truncateOutput(
-      '[...1200 characters truncated from process output...]\n0123456789abcdef',
-      2,
+      `[...1200 characters truncated from process output...]\n${'0123456789'.repeat(1000)}`,
+      20,
     );
 
     expect(result.text).toContain('characters truncated from process output');
-    expect(result.text).toContain('tokens truncated');
+    expect(
+      new TextEncoder().encode(result.text).byteLength,
+    ).toBeLessThanOrEqual(80);
+  });
+
+  it('leaves unlimited and already-fitting output unchanged', () => {
+    expect(truncateOutput('short\noutput')).toEqual({
+      text: 'short\noutput',
+    });
+    expect(truncateOutput('short\noutput', 4)).toEqual({
+      text: 'short\noutput',
+    });
   });
 
   it('sniffs image media types from bytes and falls back to path extensions', () => {
