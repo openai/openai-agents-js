@@ -1499,3 +1499,102 @@ describe('OpenAIRealtimeWebRTC session.updated ack', () => {
     expect(rtc.status).toBe('connected');
   });
 });
+
+describe('OpenAIRealtimeWebRTC microphone track ownership', () => {
+  const originals: Record<string, any> = {};
+
+  class TrackTrackingPeerConnection extends FakeRTCPeerConnection {
+    tracks: any[] = [];
+    override addTrack(track?: any) {
+      this.tracks.push(track);
+    }
+    override getSenders() {
+      return this.tracks.map((track) => ({ track })) as any;
+    }
+  }
+
+  function createFakeTrack() {
+    return { enabled: true, readyState: 'live', stop: vi.fn() };
+  }
+
+  function installGlobals(microphoneTrack: any) {
+    (global as any).RTCPeerConnection = TrackTrackingPeerConnection as any;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {
+        mediaDevices: {
+          getUserMedia: async () => ({
+            getAudioTracks: () => [microphoneTrack],
+          }),
+        },
+      },
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'document', {
+      value: { createElement: () => ({ autoplay: true }) },
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      value: async () => ({
+        ok: true,
+        status: 200,
+        text: async () => 'answer',
+        headers: {
+          get: (headerKey: string) =>
+            headerKey === 'Location'
+              ? 'https://api.openai.com/v1/calls/rtc_u1_1234567890'
+              : null,
+        },
+      }),
+      configurable: true,
+      writable: true,
+    });
+  }
+
+  beforeEach(() => {
+    originals.RTCPeerConnection = (global as any).RTCPeerConnection;
+    originals.navigator = (global as any).navigator;
+    originals.document = (global as any).document;
+    originals.fetch = (global as any).fetch;
+  });
+
+  afterEach(() => {
+    (global as any).RTCPeerConnection = originals.RTCPeerConnection;
+    for (const key of ['navigator', 'document', 'fetch']) {
+      Object.defineProperty(globalThis, key, {
+        value: originals[key],
+        configurable: true,
+        writable: true,
+      });
+    }
+    lastChannel = null;
+  });
+
+  it('keeps a caller-supplied media stream alive after close()', async () => {
+    const callerTrack = createFakeTrack();
+    installGlobals(createFakeTrack());
+
+    const rtc = new OpenAIRealtimeWebRTC({
+      mediaStream: {
+        getAudioTracks: () => [callerTrack],
+      } as unknown as MediaStream,
+    });
+    await rtc.connect({ apiKey: 'ek_test' });
+    rtc.close();
+
+    // The application still owns this stream and may reuse it, so the transport must not end it.
+    expect(callerTrack.stop).not.toHaveBeenCalled();
+  });
+
+  it('stops the microphone track it opened itself on close()', async () => {
+    const microphoneTrack = createFakeTrack();
+    installGlobals(microphoneTrack);
+
+    const rtc = new OpenAIRealtimeWebRTC();
+    await rtc.connect({ apiKey: 'ek_test' });
+    rtc.close();
+
+    expect(microphoneTrack.stop).toHaveBeenCalled();
+  });
+});

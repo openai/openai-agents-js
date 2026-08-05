@@ -746,12 +746,17 @@ export class OpenAIRealtimeWebRTC
       runCleanup(() => {
         peerConnection.onconnectionstatechange = null;
       });
-      let senders: RTCRtpSender[] = [];
-      runCleanup(() => {
-        senders = peerConnection.getSenders();
-      });
-      for (const sender of senders) {
-        runCleanup(() => sender.track?.stop());
+      // Only stop tracks this transport created. A caller-supplied `mediaStream` belongs to the
+      // application, which may still be using it for a level meter, a recorder, or a later
+      // reconnect, so stopping it here would end the track permanently.
+      if (!this.options.mediaStream) {
+        let senders: RTCRtpSender[] = [];
+        runCleanup(() => {
+          senders = peerConnection.getSenders();
+        });
+        for (const sender of senders) {
+          runCleanup(() => sender.track?.stop());
+        }
       }
       runCleanup(() => peerConnection.close());
     }
