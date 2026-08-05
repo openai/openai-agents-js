@@ -327,6 +327,7 @@ export { RequestUsage, Usage } from './usage';
 export type { RequestUsageInput, UsageInput } from './usage';
 export type {
   Session,
+  RunContextAwareSession,
   SessionInputCallback,
   SessionHistoryMutation,
   SessionHistoryRewriteArgs,
@@ -342,6 +343,7 @@ export type {
 } from './memory/session';
 export {
   isOpenAIResponsesCompactionAwareSession,
+  isRunContextAwareSession,
   isSessionHistoryRewriteAwareSession,
   isSessionHistoryTransactionAwareSession,
 } from './memory/session';

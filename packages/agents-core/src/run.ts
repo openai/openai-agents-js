@@ -644,6 +644,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       this.config.tracing,
       resolvedOptions.tracing,
     );
+    const runContext =
+      input instanceof RunState
+        ? input._context
+        : resolvedOptions.context instanceof RunContext
+          ? resolvedOptions.context
+          : new RunContext(resolvedOptions.context);
     const traceOverrides = {
       ...this.traceOverrides,
       ...(resolvedOptions.tracing?.apiKey !== undefined
@@ -652,6 +658,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     };
     const effectiveOptions = {
       ...resolvedOptions,
+      context: runContext,
       sessionInputCallback,
       callModelInputFilter,
       toolErrorFormatter,
@@ -704,6 +711,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     }
     const sessionPersistence = createSessionPersistenceTracker({
       session,
+      runContext,
       hasCallModelInputFilter,
       persistInput: saveStreamInputToSession,
       resumingFromState,
@@ -726,6 +734,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           preserveDroppedNewItems: serverManagesConversation,
           reasoningItemIdPolicy,
         },
+        runContext,
       );
       if (serverManagesConversation && session) {
         // When the server manages memory we only persist the new turn inputs locally so the
