@@ -821,6 +821,9 @@ export async function prepareInputItemsWithSession(
 
   const historySnapshot = history.slice();
   const newInputSnapshot = newInputItems.slice();
+  // Keep the original history objects alive so their identities remain valid even if the
+  // callback removes them from the list it receives.
+  const originalHistoryItems = new Set(historySnapshot);
 
   const combined = await sessionInputCallback(history, newInputItems);
   if (!Array.isArray(combined)) {
@@ -848,6 +851,17 @@ export async function prepareInputItemsWithSession(
       reasoningItemIdPolicy,
     );
     const newInputKey = getAgentInputItemKey(item);
+    if (originalHistoryItems.has(item)) {
+      if (removeAgentInputFromPool(historyRefs, item)) {
+        decrementCount(historyCounts, historyKey);
+      }
+      if (removeAgentInputFromPool(newInputRefs, item)) {
+        decrementCount(newInputCounts, newInputKey);
+      }
+      historyIndexes.add(index);
+      continue;
+    }
+
     if (removeAgentInputFromPool(newInputRefs, item)) {
       decrementCount(newInputCounts, newInputKey);
       appended.push(item);
