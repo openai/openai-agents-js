@@ -1,14 +1,17 @@
 import { UserError } from '../errors';
 import {
   isOpenAIResponsesCompactionAwareSession,
+  isSessionHistoryTransactionAwareSession,
   type OpenAIResponsesCompactionArgs,
   type Session,
+  type SessionHistoryTransaction,
   type SessionInputCallback,
 } from '../memory/session';
 import { RunResult, StreamedRunResult } from '../result';
 import { RunState } from '../runState';
 import { RunItem } from '../items';
 import { AgentInputItem } from '../types';
+import { ModelItem } from '../types/protocol';
 import { Usage } from '../usage';
 import { encodeUint8ArrayToBase64 } from '../utils/base64';
 import { toUint8ArrayFromBinary } from '../utils/binary';
@@ -27,6 +30,13 @@ import {
 } from './items';
 import logger, { logModelAndToolActionWarning } from '../logger';
 import { getRunStateUsageRecorder } from './usageTracking';
+import {
+  buildRunItemPersistencePlan as buildCanonicalRunItemPersistencePlan,
+  hasBlockedOutputExecutionEffect,
+  selectRunItemIndexesForBlockedOutput,
+} from './blockedOutputPersistence';
+
+export { selectRunItemIndexesForBlockedOutput } from './blockedOutputPersistence';
 
 export type PreparedInputWithSessionResult = {
   preparedInput: string | AgentInputItem[];
@@ -36,7 +46,360 @@ export type PreparedInputWithSessionResult = {
 export type SessionPersistenceOptions = {
   runCompaction?: boolean;
   compactionMode?: OpenAIResponsesCompactionArgs['compactionMode'];
+  outputBlocked?: boolean;
 };
+
+function canonicalizeSessionHistoryTransaction(
+  transaction: SessionHistoryTransaction,
+): SessionHistoryTransaction {
+  let decoded: unknown;
+  try {
+    const encoded = JSON.stringify(transaction);
+    if (encoded === undefined) {
+      throw new Error('Missing JSON transaction.');
+    }
+    decoded = JSON.parse(encoded);
+  } catch {
+    throw new UserError(
+      'Session history transaction cannot be represented in durable RunState JSON.',
+    );
+  }
+  if (!decoded || typeof decoded !== 'object') {
+    throw new UserError('Session history transaction is invalid.');
+  }
+  const record = decoded as Record<string, unknown>;
+  const parseItems = (value: unknown): AgentInputItem[] => {
+    if (!Array.isArray(value)) {
+      throw new UserError('Session history transaction items are invalid.');
+    }
+    return value.map((item) => ModelItem.parse(item) as AgentInputItem);
+  };
+  if (record.type === 'append_items') {
+    return {
+      type: record.type,
+      items: parseItems(record.items),
+    };
+  }
+  if (record.type === 'replace_suffix') {
+    return {
+      type: record.type,
+      expectedSuffix: parseItems(record.expectedSuffix),
+      replacement: parseItems(record.replacement),
+    };
+  }
+  throw new UserError('Session history transaction is invalid.');
+}
+
+function getRunItemIndexesForPendingTransaction(
+  state: RunState<any, any>,
+  runItems: RunItem[],
+): number[] {
+  const indexes = runItems.map((item) => state._generatedItems.indexOf(item));
+  if (
+    indexes.some((index) => index < 0) ||
+    new Set(indexes).size !== indexes.length
+  ) {
+    throw new UserError(
+      'Session history transaction run items do not belong to the current RunState.',
+    );
+  }
+  return indexes;
+}
+
+function getSessionHistoryTransactionOperationId(
+  state: RunState<any, any>,
+  transactionKind: 'blocked_append' | 'accepted_replace',
+  alreadyPersistedCount: number,
+  persistedItemCount: number,
+): string {
+  return [
+    state._sessionHistoryTransactionId,
+    state._currentTurn,
+    transactionKind,
+    alreadyPersistedCount,
+    persistedItemCount,
+  ].join(':');
+}
+
+function buildPendingSessionHistoryTransaction(
+  state: RunState<any, any>,
+): SessionHistoryTransaction {
+  const pending = state._pendingSessionHistoryTransaction;
+  if (!pending) {
+    throw new UserError('Session history transaction state is missing.');
+  }
+  const reasoningItemIdPolicy = state._currentTurnSessionReasoningItemIdPolicy;
+  if (reasoningItemIdPolicy === undefined) {
+    throw new UserError(
+      'Session history transaction reasoning-item policy is missing.',
+    );
+  }
+  const runItems = pending.runItemIndexes.map(
+    (index) => state._generatedItems[index]!,
+  );
+  const replacementItems = pending.replaceRunItemIndexes.map(
+    (index) => state._generatedItems[index]!,
+  );
+  const items = normalizeItemsForSessionPersistence([
+    ...(state._currentTurnSessionHistoryTransactionInputItems ?? []),
+    ...extractOutputItemsFromRunItems(runItems, reasoningItemIdPolicy),
+  ]);
+  if (pending.transactionKind === 'blocked_append') {
+    if (items.length === 0) {
+      throw new UserError(
+        'Pending blocked session history transaction cannot be empty.',
+      );
+    }
+    return canonicalizeSessionHistoryTransaction({
+      type: 'append_items',
+      items,
+    });
+  }
+
+  const expectedSuffix = normalizeItemsForSessionPersistence(
+    extractOutputItemsFromRunItems(replacementItems, reasoningItemIdPolicy),
+  );
+  if (expectedSuffix.length === 0 || items.length === 0) {
+    throw new UserError(
+      'Pending accepted session history transaction requires a non-empty suffix and replacement.',
+    );
+  }
+  return canonicalizeSessionHistoryTransaction({
+    type: 'replace_suffix',
+    expectedSuffix,
+    replacement: items,
+  });
+}
+
+function getEffectiveSessionReasoningItemIdPolicy(
+  session: Session,
+  state: RunState<any, any>,
+): ReasoningItemIdPolicy {
+  return session.preserveReasoningItemIdsForPersistence?.() === true
+    ? 'preserve'
+    : (state._reasoningItemIdPolicy ?? 'preserve');
+}
+
+export function selectRunItemsForBlockedOutput(
+  items: RunItem[],
+  unpersistedStartIndex = 0,
+): RunItem[] {
+  return selectRunItemIndexesForBlockedOutput(items, unpersistedStartIndex).map(
+    (index) => items[index]!,
+  );
+}
+
+export function canPersistBlockedOutputToSession(
+  session: Session | undefined,
+  state: RunState<any, any>,
+): boolean {
+  return (
+    isSessionHistoryTransactionAwareSession(session) &&
+    selectRunItemIndexesForBlockedOutput(
+      state._generatedItems,
+      state._currentTurnPersistedItemCount,
+    ).length > 0
+  );
+}
+
+export async function prepareSessionHistoryTransactionsForRun(
+  session: Session | undefined,
+  state: RunState<any, any>,
+  options: { serverManagesConversation: boolean },
+): Promise<void> {
+  const boundSessionId = state._currentTurnSessionHistoryTransactionSessionId;
+  const hasTransactionAuthority =
+    boundSessionId !== undefined ||
+    state._pendingSessionHistoryTransaction !== undefined ||
+    state._currentTurnDeferredSessionItemIndexes.size > 0;
+
+  if (
+    hasTransactionAuthority &&
+    state._pendingLegacyCompactionSessionItems !== undefined
+  ) {
+    throw new UserError(
+      'RunState cannot combine legacy compaction reconciliation with output guardrail transaction authority.',
+    );
+  }
+  if (!hasTransactionAuthority) {
+    await reconcileLegacyCompactionSessionBeforeResume(session, state);
+  }
+
+  if (
+    options.serverManagesConversation ||
+    !isSessionHistoryTransactionAwareSession(session)
+  ) {
+    if (hasTransactionAuthority) {
+      throw new UserError(
+        'Output guardrail session persistence must resume with the same transaction-aware local session.',
+      );
+    }
+    return;
+  }
+
+  const sessionId = await session.getSessionId();
+  if (boundSessionId !== undefined && boundSessionId !== sessionId) {
+    throw new UserError(
+      'Output guardrail session persistence belongs to a different session and cannot be resumed safely.',
+    );
+  }
+  state._currentTurnSessionHistoryTransactionSessionId = sessionId;
+  state._currentTurnSessionReasoningItemIdPolicy ??=
+    getEffectiveSessionReasoningItemIdPolicy(session, state);
+  state._currentTurnSessionHistoryTransactionInputItems ??= [];
+  await flushPendingSessionHistoryTransaction(session, state);
+  await assertBlockedSessionSuffixMatches(session, state);
+}
+
+export function captureSessionHistoryTransactionInputItems(
+  session: Session | undefined,
+  state: RunState<any, any>,
+  items: AgentInputItem[] | undefined,
+): void {
+  if (session === undefined) {
+    state._currentTurnSessionHistoryTransactionInputItems =
+      normalizeItemsForSessionPersistence(items ?? []);
+    return;
+  }
+  if (!isSessionHistoryTransactionAwareSession(session)) {
+    return;
+  }
+  if (state._currentTurnSessionHistoryTransactionSessionId === undefined) {
+    return;
+  }
+  state._currentTurnSessionHistoryTransactionInputItems =
+    normalizeItemsForSessionPersistence(items ?? []);
+}
+
+export function markSessionHistoryTransactionInputPersisted(
+  state: RunState<any, any>,
+): void {
+  if (state._currentTurnSessionHistoryTransactionInputItems !== undefined) {
+    state._currentTurnSessionHistoryTransactionInputItems = [];
+  }
+}
+
+export function releaseUnusedSessionHistoryTransactionBinding(
+  state: RunState<any, any>,
+): void {
+  if (
+    state._pendingSessionHistoryTransaction !== undefined ||
+    state._currentTurnBlockedSessionStartIndex !== undefined ||
+    state._currentTurnDeferredSessionItemIndexes.size > 0 ||
+    hasBlockedOutputExecutionEffect(
+      state._generatedItems,
+      state._currentTurnPersistedItemCount,
+    )
+  ) {
+    return;
+  }
+  clearSessionHistoryTransactionBinding(state);
+}
+
+export function releaseProvisionalSessionHistoryTransactionBinding(
+  state: RunState<any, any>,
+  provisionalSessionId: string | undefined,
+  portableInputItems: AgentInputItem[] | undefined,
+): void {
+  if (
+    provisionalSessionId === undefined ||
+    state._currentTurnSessionHistoryTransactionSessionId !==
+      provisionalSessionId ||
+    state._pendingSessionHistoryTransaction !== undefined ||
+    state._currentTurnBlockedSessionStartIndex !== undefined ||
+    state._currentTurnDeferredSessionItemIndexes.size > 0
+  ) {
+    return;
+  }
+  clearSessionHistoryTransactionBinding(state);
+  state._currentTurnSessionHistoryTransactionInputItems = portableInputItems;
+}
+
+function clearSessionHistoryTransactionBinding(
+  state: RunState<any, any>,
+): void {
+  state._currentTurnSessionHistoryTransactionSessionId = undefined;
+  state._currentTurnSessionReasoningItemIdPolicy = undefined;
+  state._currentTurnSessionHistoryTransactionInputItems = undefined;
+  state._currentTurnSessionHistoryTransactionCanReplaceAcceptedOutput =
+    undefined;
+}
+
+async function assertBlockedSessionSuffixMatches(
+  session: Session,
+  state: RunState<any, any>,
+): Promise<void> {
+  const blockedStartIndex = state._currentTurnBlockedSessionStartIndex;
+  if (blockedStartIndex === undefined) {
+    return;
+  }
+  const canReplaceAcceptedOutput =
+    state._currentTurnSessionHistoryTransactionCanReplaceAcceptedOutput;
+  if (canReplaceAcceptedOutput !== true) {
+    throw new UserError(
+      'Accepted output cannot replace a sparse session suffix created from a serialized final step. Start a new run from the persisted session history.',
+    );
+  }
+  const reasoningItemIdPolicy = state._currentTurnSessionReasoningItemIdPolicy;
+  if (reasoningItemIdPolicy === undefined) {
+    throw new UserError(
+      'Blocked session history replacement authority is incomplete.',
+    );
+  }
+  const hasDeferredItems =
+    state._currentTurnDeferredSessionItemIndexes.size > 0;
+  const plan = hasDeferredItems
+    ? buildRunItemPersistencePlan(state, state._generatedItems, false, true)
+    : undefined;
+  if (hasDeferredItems && plan?.transactionKind !== 'accepted_replace') {
+    throw new UserError(
+      'Blocked session history replacement authority is incomplete.',
+    );
+  }
+  const suffixRunItems = hasDeferredItems
+    ? plan!.runItemsToReplace
+    : state._generatedItems.slice(
+        blockedStartIndex,
+        state._currentTurnPersistedItemCount,
+      );
+  const expectedSuffix = normalizeItemsForSessionPersistence(
+    extractOutputItemsFromRunItems(suffixRunItems, reasoningItemIdPolicy),
+  );
+  const currentItems = await session.getItems();
+  const comparableCurrentItems =
+    session.prepareHistoryItemsForPersistenceComparison?.(currentItems) ??
+    currentItems;
+  const comparableExpectedSuffix =
+    session.prepareHistoryItemsForPersistenceComparison?.(expectedSuffix) ??
+    expectedSuffix;
+  if (
+    comparableExpectedSuffix.length === 0 ||
+    !agentItemRangeMatches(
+      comparableCurrentItems,
+      comparableExpectedSuffix,
+      comparableCurrentItems.length - comparableExpectedSuffix.length,
+    )
+  ) {
+    throw new UserError(
+      'Session history suffix no longer matches the transaction precondition.',
+    );
+  }
+}
+
+function buildRunItemPersistencePlan(
+  state: RunState<any, any>,
+  items: RunItem[],
+  outputBlocked: boolean,
+  canUseHistoryTransactions: boolean,
+) {
+  return buildCanonicalRunItemPersistencePlan({
+    items,
+    alreadyPersistedCount: state._currentTurnPersistedItemCount ?? 0,
+    currentDeferredIndexes: state._currentTurnDeferredSessionItemIndexes,
+    outputBlocked,
+    canUseHistoryTransactions,
+  });
+}
 
 class SessionReconciliationRecoveryError extends Error {
   readonly errors: readonly [unknown, unknown];
@@ -92,12 +455,8 @@ export function createSessionPersistenceTracker(options: {
   hasCallModelInputFilter: boolean;
   persistInput?: typeof saveStreamInputToSession;
   resumingFromState?: boolean;
+  resumedSessionInputItems?: AgentInputItem[];
 }): SessionPersistenceTracker | undefined {
-  const { session } = options;
-  if (!session) {
-    return undefined;
-  }
-
   class SessionPersistenceTrackerImpl implements SessionPersistenceTracker {
     private readonly session?: Session;
     private readonly hasCallModelInputFilter: boolean;
@@ -115,8 +474,12 @@ export function createSessionPersistenceTracker(options: {
       this.session = options.session;
       this.hasCallModelInputFilter = options.hasCallModelInputFilter;
       this.persistInput = options.persistInput;
-      this.originalSnapshot = options.resumingFromState ? [] : undefined;
-      this.filteredSnapshot = undefined;
+      this.originalSnapshot = options.resumingFromState
+        ? cloneItems(options.resumedSessionInputItems ?? [])
+        : undefined;
+      this.filteredSnapshot = options.resumedSessionInputItems
+        ? cloneItems(options.resumedSessionInputItems)
+        : undefined;
       this.preparedSources = options.resumingFromState ? [] : undefined;
       this.initialPreparedItems = options.resumingFromState ? [] : undefined;
       this.initialSourcePositions = options.resumingFromState ? [] : undefined;
@@ -126,7 +489,11 @@ export function createSessionPersistenceTracker(options: {
       items?: AgentInputItem[],
       preparedInput?: string | AgentInputItem[],
     ) => {
-      const sessionItems = items ?? [];
+      const sessionItems =
+        items ??
+        (this.session === undefined && preparedInput !== undefined
+          ? toAgentInputList(preparedInput)
+          : []);
       this.originalSnapshot = cloneItems(
         deduplicateAgentInputItemsPreferringLatest(sessionItems),
       );
@@ -135,6 +502,13 @@ export function createSessionPersistenceTracker(options: {
         this.initialPreparedItems = preparedInput;
         this.initialSourcePositions = findOwnedItemIndexes(
           preparedInput,
+          sessionItems,
+        );
+      } else if (typeof preparedInput === 'string') {
+        this.preparedSources = undefined;
+        this.initialPreparedItems = sessionItems;
+        this.initialSourcePositions = findOwnedItemIndexes(
+          sessionItems,
           sessionItems,
         );
       } else {
@@ -625,8 +999,15 @@ export async function saveToSession(
   options: SessionPersistenceOptions = {},
 ): Promise<void> {
   const state = result.state;
-  const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
-  const newRunItems = result.newItems.slice(alreadyPersisted);
+  await prepareSessionHistoryTransactionsForRun(session, state, {
+    serverManagesConversation: false,
+  });
+  const persistencePlan = buildRunItemPersistencePlan(
+    state,
+    result.newItems,
+    options.outputBlocked === true,
+    isSessionHistoryTransactionAwareSession(session),
+  );
 
   if (
     typeof process !== 'undefined' &&
@@ -634,18 +1015,32 @@ export async function saveToSession(
   ) {
     console.debug(
       'saveToSession:newRunItems',
-      newRunItems.map((item) => item.type),
+      persistencePlan.runItemsToPersist.map((item) => item.type),
     );
+  }
+
+  if (
+    options.outputBlocked === true &&
+    !persistencePlan.useHistoryTransaction
+  ) {
+    await saveStreamInputToSession(session, sessionInputItems);
+    return;
   }
 
   await persistRunItemsToSession({
     session,
     state,
-    newRunItems,
+    newRunItems: persistencePlan.runItemsToPersist,
+    runItemsToReplace: persistencePlan.runItemsToReplace,
+    processedRunItemCount: persistencePlan.processedRunItemCount,
+    deferredRunItemIndexes: persistencePlan.deferredRunItemIndexes,
+    useHistoryTransaction: persistencePlan.useHistoryTransaction,
+    transactionKind: persistencePlan.transactionKind,
     extraInputItems: sessionInputItems,
-    lastResponseId: result.lastResponseId,
-    alreadyPersistedCount: alreadyPersisted,
-    runCompaction: options.runCompaction ?? true,
+    lastResponseId: options.outputBlocked ? undefined : result.lastResponseId,
+    alreadyPersistedCount: persistencePlan.alreadyPersistedCount,
+    runCompaction:
+      options.outputBlocked === true ? false : (options.runCompaction ?? true),
     compactionMode: options.compactionMode,
   });
 }
@@ -682,17 +1077,38 @@ export async function saveStreamResultToSession(
   sessionInputItems?: AgentInputItem[],
 ): Promise<void> {
   const state = result.state;
-  const alreadyPersisted = state._currentTurnPersistedItemCount ?? 0;
-  const newRunItems = result.newItems.slice(alreadyPersisted);
+  await prepareSessionHistoryTransactionsForRun(session, state, {
+    serverManagesConversation: false,
+  });
+  const persistencePlan = buildRunItemPersistencePlan(
+    state,
+    result.newItems,
+    options.outputBlocked === true,
+    isSessionHistoryTransactionAwareSession(session),
+  );
+
+  if (
+    options.outputBlocked === true &&
+    !persistencePlan.useHistoryTransaction
+  ) {
+    await saveStreamInputToSession(session, sessionInputItems);
+    return;
+  }
 
   await persistRunItemsToSession({
     session,
     state,
-    newRunItems,
+    newRunItems: persistencePlan.runItemsToPersist,
+    runItemsToReplace: persistencePlan.runItemsToReplace,
+    processedRunItemCount: persistencePlan.processedRunItemCount,
+    deferredRunItemIndexes: persistencePlan.deferredRunItemIndexes,
+    useHistoryTransaction: persistencePlan.useHistoryTransaction,
+    transactionKind: persistencePlan.transactionKind,
     extraInputItems: sessionInputItems,
-    lastResponseId: result.lastResponseId,
-    alreadyPersistedCount: alreadyPersisted,
-    runCompaction: options.runCompaction ?? true,
+    lastResponseId: options.outputBlocked ? undefined : result.lastResponseId,
+    alreadyPersistedCount: persistencePlan.alreadyPersistedCount,
+    runCompaction:
+      options.outputBlocked === true ? false : (options.runCompaction ?? true),
     compactionMode: options.compactionMode,
   });
 }
@@ -1094,6 +1510,11 @@ async function persistRunItemsToSession(options: {
   session?: Session;
   state: RunState<any, any>;
   newRunItems: RunItem[];
+  runItemsToReplace: RunItem[];
+  processedRunItemCount: number;
+  deferredRunItemIndexes: number[];
+  useHistoryTransaction: boolean;
+  transactionKind?: 'blocked_append' | 'accepted_replace';
   extraInputItems?: AgentInputItem[] | undefined;
   lastResponseId?: string;
   alreadyPersistedCount: number;
@@ -1104,6 +1525,11 @@ async function persistRunItemsToSession(options: {
     session,
     state,
     newRunItems,
+    runItemsToReplace,
+    processedRunItemCount,
+    deferredRunItemIndexes,
+    useHistoryTransaction,
+    transactionKind,
     extraInputItems = [],
     lastResponseId,
     alreadyPersistedCount,
@@ -1117,18 +1543,44 @@ async function persistRunItemsToSession(options: {
 
   await reconcileLegacyCompactionSessionBeforeResume(session, state);
 
-  const reasoningItemIdPolicy =
-    session.preserveReasoningItemIdsForPersistence?.() === true
-      ? undefined
-      : state._reasoningItemIdPolicy;
+  const effectiveReasoningItemIdPolicy =
+    getEffectiveSessionReasoningItemIdPolicy(session, state);
+  const frozenReasoningItemIdPolicy = useHistoryTransaction
+    ? (state._currentTurnSessionReasoningItemIdPolicy ??
+      effectiveReasoningItemIdPolicy)
+    : effectiveReasoningItemIdPolicy;
+  if (
+    useHistoryTransaction &&
+    transactionKind === 'accepted_replace' &&
+    (state._currentTurnBlockedSessionStartIndex === undefined ||
+      state._currentTurnSessionReasoningItemIdPolicy === undefined)
+  ) {
+    throw new UserError(
+      'Accepted session history replacement is missing its blocked-output persistence authority.',
+    );
+  }
   const itemsToSave = [
     ...extraInputItems,
-    ...extractOutputItemsFromRunItems(newRunItems, reasoningItemIdPolicy),
+    ...extractOutputItemsFromRunItems(newRunItems, frozenReasoningItemIdPolicy),
   ];
+  const commitPersistenceState = () => {
+    state._currentTurnPersistedItemCount =
+      alreadyPersistedCount + processedRunItemCount;
+    state._currentTurnDeferredSessionItemIndexes = new Set(
+      deferredRunItemIndexes,
+    );
+    if (deferredRunItemIndexes.length === 0) {
+      state._currentTurnBlockedSessionStartIndex = undefined;
+      state._currentTurnSessionHistoryTransactionSessionId = undefined;
+      state._currentTurnSessionReasoningItemIdPolicy = undefined;
+      state._currentTurnSessionHistoryTransactionInputItems = undefined;
+      state._currentTurnSessionHistoryTransactionCanReplaceAcceptedOutput =
+        undefined;
+    }
+  };
 
   if (itemsToSave.length === 0) {
-    state._currentTurnPersistedItemCount =
-      alreadyPersistedCount + newRunItems.length;
+    commitPersistenceState();
     if (runCompaction) {
       await runCompactionOnSession(
         session,
@@ -1141,6 +1593,67 @@ async function persistRunItemsToSession(options: {
   }
 
   const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
+  if (useHistoryTransaction) {
+    if (
+      !isSessionHistoryTransactionAwareSession(session) ||
+      transactionKind === undefined ||
+      state._currentTurnSessionHistoryTransactionSessionId === undefined ||
+      state._currentTurnSessionReasoningItemIdPolicy === undefined
+    ) {
+      throw new UserError(
+        'Session history transaction capability was lost while persisting run items.',
+      );
+    }
+    const normalizedInputItems =
+      normalizeItemsForSessionPersistence(extraInputItems);
+    const frozenInputItems =
+      state._currentTurnSessionHistoryTransactionInputItems;
+    if (
+      frozenInputItems === undefined ||
+      frozenInputItems.length !== normalizedInputItems.length ||
+      !agentItemRangeMatches(normalizedInputItems, frozenInputItems, 0)
+    ) {
+      throw new UserError(
+        'Session history transaction input no longer matches the pre-execution snapshot.',
+      );
+    }
+    const persistedItemCount = alreadyPersistedCount + processedRunItemCount;
+    state._currentTurnSessionHistoryTransactionCanReplaceAcceptedOutput ??=
+      state._serializedCurrentStep === undefined ||
+      state._currentStep !== state._serializedCurrentStep;
+    const operationId = getSessionHistoryTransactionOperationId(
+      state,
+      transactionKind,
+      alreadyPersistedCount,
+      persistedItemCount,
+    );
+    state._currentTurnBlockedSessionStartIndex ??= alreadyPersistedCount;
+    state._pendingSessionHistoryTransaction = structuredClone({
+      operationId,
+      transactionKind,
+      runItemIndexes: getRunItemIndexesForPendingTransaction(
+        state,
+        newRunItems,
+      ),
+      replaceRunItemIndexes: getRunItemIndexesForPendingTransaction(
+        state,
+        runItemsToReplace,
+      ),
+      alreadyPersistedCount,
+      persistedItemCount,
+      deferredItemIndexes: deferredRunItemIndexes,
+    });
+    await flushPendingSessionHistoryTransaction(session, state);
+    if (runCompaction) {
+      await runCompactionOnSession(
+        session,
+        lastResponseId,
+        state,
+        compactionMode,
+      );
+    }
+    return;
+  }
   const compactedItems = trimToLatestCompaction(sanitizedItems);
   assertPersistableCompactionBoundary(compactedItems);
   if (compactedItems[0]?.type === 'compaction') {
@@ -1153,8 +1666,7 @@ async function persistRunItemsToSession(options: {
   } else {
     await session.addItems(sanitizedItems);
   }
-  state._currentTurnPersistedItemCount =
-    alreadyPersistedCount + newRunItems.length;
+  commitPersistenceState();
   if (runCompaction) {
     await runCompactionOnSession(
       session,
@@ -1162,6 +1674,60 @@ async function persistRunItemsToSession(options: {
       state,
       compactionMode,
     );
+  }
+}
+
+async function flushPendingSessionHistoryTransaction(
+  session: Session | undefined,
+  state: RunState<any, any>,
+): Promise<void> {
+  const pending = state._pendingSessionHistoryTransaction;
+  if (!pending) {
+    return;
+  }
+  if (!isSessionHistoryTransactionAwareSession(session)) {
+    throw new UserError(
+      'A pending session history transaction requires the same transaction-aware session to resume safely.',
+    );
+  }
+  const boundSessionId = state._currentTurnSessionHistoryTransactionSessionId;
+  if (boundSessionId === undefined) {
+    throw new UserError(
+      'A pending session history transaction is missing its session binding.',
+    );
+  }
+  const sessionId = await session.getSessionId();
+  if (sessionId !== boundSessionId) {
+    throw new UserError(
+      'A pending session history transaction belongs to a different session and cannot be resumed safely.',
+    );
+  }
+
+  if (
+    state._currentTurnSessionHistoryTransactionCanReplaceAcceptedOutput ===
+    undefined
+  ) {
+    throw new UserError(
+      'A pending session history transaction is missing its accepted-output replacement authority.',
+    );
+  }
+  await session.applyHistoryTransaction({
+    operationId: pending.operationId,
+    transaction: buildPendingSessionHistoryTransaction(state),
+  });
+  state._currentTurnPersistedItemCount = pending.persistedItemCount;
+  state._currentTurnDeferredSessionItemIndexes = new Set(
+    pending.deferredItemIndexes,
+  );
+  state._pendingSessionHistoryTransaction = undefined;
+  state._currentTurnSessionHistoryTransactionInputItems = [];
+  if (pending.transactionKind === 'accepted_replace') {
+    state._currentTurnBlockedSessionStartIndex = undefined;
+    state._currentTurnSessionHistoryTransactionSessionId = undefined;
+    state._currentTurnSessionReasoningItemIdPolicy = undefined;
+    state._currentTurnSessionHistoryTransactionInputItems = undefined;
+    state._currentTurnSessionHistoryTransactionCanReplaceAcceptedOutput =
+      undefined;
   }
 }
 

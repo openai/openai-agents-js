@@ -1336,14 +1336,25 @@ export function registerRunStateCoreTests(): void {
       };
       const state = new RunState(context, 'input', agent, 1);
       state._generatedItems.push(
-        new RunToolCallOutputItem(rawShellOutput, agent, rawShellOutput.output),
+        new RunToolCallOutputItem(
+          rawShellOutput,
+          agent,
+          rawShellOutput.output,
+          undefined,
+          'executed',
+        ),
       );
-
       const restored = await RunState.fromString(agent, state.toString());
       const restoredItem = restored._generatedItems[0];
       expect(restoredItem).toBeInstanceOf(RunToolCallOutputItem);
       expect((restoredItem as RunToolCallOutputItem).rawItem).toEqual(
         rawShellOutput,
+      );
+      expect((restoredItem as RunToolCallOutputItem).executionStatus).toBe(
+        'executed',
+      );
+      expect(restored._sessionHistoryTransactionId).not.toBe(
+        state._sessionHistoryTransactionId,
       );
     });
 
@@ -4085,6 +4096,712 @@ export function registerRunStateMigrationTests(): void {
       );
     });
 
+    it('rejects local execution provenance on program output', async () => {
+      const agent = new Agent({ name: 'ProgramExecutionProvenanceAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._generatedItems.push(
+        new RunToolCallOutputItem(
+          {
+            type: 'program_output',
+            callId: 'program-execution-provenance',
+            status: 'completed',
+            output: 'done',
+          },
+          agent,
+          'done',
+          undefined,
+          'executed',
+        ),
+      );
+
+      await expect(
+        RunState.fromString(agent, state.toString()),
+      ).rejects.toThrow(
+        'Run state contains execution provenance for an unsupported tool output type.',
+      );
+    });
+
+    it.each([
+      {
+        schemaVersion: '1.16',
+        field: 'currentTurnDeferredSessionItemIndexes',
+        value: [0],
+      },
+      {
+        schemaVersion: '1.16',
+        field: 'currentTurnBlockedSessionStartIndex',
+        value: 0,
+      },
+      {
+        schemaVersion: '1.15',
+        field: 'currentTurnDeferredSessionItemIndexes',
+        value: [0],
+      },
+      {
+        schemaVersion: '1.15',
+        field: 'pendingSessionHistoryTransaction',
+        value: {
+          operationId: 'v117-operation',
+          transactionKind: 'blocked_append',
+          runItemIndexes: [],
+          replaceRunItemIndexes: [],
+          alreadyPersistedCount: 0,
+          persistedItemCount: 0,
+          deferredItemIndexes: [],
+        },
+      },
+      {
+        schemaVersion: '1.16',
+        field: 'currentTurnExecutedWithSessionBinding',
+        value: true,
+      },
+      {
+        schemaVersion: '1.16',
+        field: 'currentTurnSessionInputItems',
+        value: [{ type: 'message', role: 'user', content: 'portable input' }],
+      },
+    ])(
+      'rejects schema $schemaVersion payloads with $field',
+      async ({ schemaVersion, field, value }) => {
+        const agent = new Agent({ name: 'V116PersistenceEnvelopeAgent' });
+        const serialized = new RunState(
+          new RunContext(),
+          'input',
+          agent,
+          1,
+        ).toJSON() as any;
+        serialized.$schemaVersion = schemaVersion;
+        delete serialized.currentTurnDeferredSessionItemIndexes;
+        delete serialized.currentTurnBlockedSessionStartIndex;
+        delete serialized.currentTurnSessionHistoryTransactionSessionId;
+        delete serialized.currentTurnSessionReasoningItemIdPolicy;
+        delete serialized.currentTurnSessionHistoryTransactionInputItems;
+        delete serialized.sessionHistoryTransactionId;
+        delete serialized.pendingSessionHistoryTransaction;
+        serialized[field] = value;
+
+        await expect(
+          RunState.fromString(agent, JSON.stringify(serialized)),
+        ).rejects.toThrow(
+          `Run state schema version ${schemaVersion} does not support output guardrail session persistence state.`,
+        );
+      },
+    );
+
+    it('rejects schema 1.16 execution provenance', async () => {
+      const agent = new Agent({ name: 'V116ExecutionProvenanceAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._generatedItems.push(
+        new RunToolCallOutputItem(
+          {
+            type: 'function_call_result',
+            name: 'commit',
+            callId: 'call-v117-execution',
+            status: 'completed',
+            output: 'committed',
+          },
+          agent,
+          'committed',
+          undefined,
+          'executed',
+        ),
+      );
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.16';
+      delete serialized.currentTurnDeferredSessionItemIndexes;
+      delete serialized.sessionHistoryTransactionId;
+      delete serialized.pendingSessionHistoryTransaction;
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow(
+        'Run state schema version 1.16 does not support output guardrail session persistence state.',
+      );
+    });
+
+    it('rejects serialized local execution that was bound to a session', async () => {
+      const agent = new Agent({ name: 'BoundExecutionAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._generatedItems.push(
+        new RunToolCallItem(
+          {
+            type: 'function_call',
+            name: 'commit',
+            callId: 'call-bound-execution',
+            status: 'completed',
+            arguments: '{}',
+          },
+          agent,
+        ),
+      );
+      state._generatedItems.push(
+        new RunToolCallOutputItem(
+          {
+            type: 'function_call_result',
+            name: 'commit',
+            callId: 'call-bound-execution',
+            status: 'completed',
+            output: 'committed',
+          },
+          agent,
+          'committed',
+          undefined,
+          'executed',
+        ),
+      );
+      state._currentTurnSessionHistoryTransactionSessionId =
+        'original-bound-session';
+      const serialized = state.toJSON() as any;
+      expect(serialized.currentTurnExecutedWithSessionBinding).toBe(true);
+
+      const overrideContext = new RunContext({ source: 'override' });
+      const before = overrideContext.toJSON();
+      await expect(
+        RunState.fromStringWithContext(
+          agent,
+          JSON.stringify(serialized),
+          overrideContext,
+          { contextStrategy: 'merge' },
+        ),
+      ).rejects.toThrow(
+        'Serialized output guardrail session transaction authority cannot be resumed safely.',
+      );
+      expect(overrideContext.toJSON()).toEqual(before);
+    });
+
+    it('rejects serialized retained hosted work that was bound to a session', async () => {
+      const agent = new Agent({ name: 'BoundHostedExecutionAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._generatedItems.push(
+        new RunToolCallItem(
+          {
+            type: 'hosted_tool_call',
+            id: 'bound-hosted-execution',
+            name: 'web_search_call',
+            status: 'completed',
+            providerData: { type: 'web_search_call' },
+          },
+          agent,
+        ),
+      );
+      state._currentTurnSessionHistoryTransactionSessionId =
+        'original-hosted-session';
+
+      const serialized = state.toJSON() as any;
+      expect(serialized.currentTurnExecutedWithSessionBinding).toBe(true);
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow(
+        'Serialized output guardrail session transaction authority cannot be resumed safely.',
+      );
+    });
+
+    it('rejects a serialized terminal result for a bound persisted approval call', async () => {
+      const agent = new Agent({ name: 'BoundApprovalResultAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._generatedItems = [
+        new RunToolCallItem(
+          {
+            type: 'function_call',
+            name: 'approval_tool',
+            callId: 'call-bound-approval',
+            status: 'completed',
+            arguments: '{}',
+          },
+          agent,
+        ),
+        new RunToolCallOutputItem(
+          {
+            type: 'function_call_result',
+            name: 'approval_tool',
+            callId: 'call-bound-approval',
+            status: 'completed',
+            output: 'rejected',
+          },
+          agent,
+          'rejected',
+        ),
+      ];
+      state._currentTurnPersistedItemCount = 1;
+      state._currentTurnSessionHistoryTransactionSessionId =
+        'original-approval-session';
+
+      const serialized = state.toJSON() as any;
+      expect(serialized.currentTurnExecutedWithSessionBinding).toBe(true);
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow(
+        'Serialized output guardrail session transaction authority cannot be resumed safely.',
+      );
+    });
+
+    it('rejects schema 1.16 execution provenance in the processed response', async () => {
+      const agent = new Agent({
+        name: 'V116ProcessedExecutionProvenanceAgent',
+      });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      const outputItem = new RunToolCallOutputItem(
+        {
+          type: 'function_call_result',
+          name: 'commit',
+          callId: 'call-v117-processed-execution',
+          status: 'completed',
+          output: 'committed',
+        },
+        agent,
+        'committed',
+        undefined,
+        'executed',
+      );
+      state._lastProcessedResponse = {
+        newItems: [outputItem],
+        toolsUsed: [],
+        handoffs: [],
+        functions: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        mcpApprovalRequests: [],
+        hasToolsOrApprovalsToRun: () => false,
+      };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.16';
+      delete serialized.currentTurnDeferredSessionItemIndexes;
+      delete serialized.sessionHistoryTransactionId;
+      delete serialized.pendingSessionHistoryTransaction;
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow(
+        'Run state schema version 1.16 does not support output guardrail session persistence state.',
+      );
+    });
+
+    it('validates persistence authority before mutating an override context', async () => {
+      const agent = new Agent({ name: 'InvalidPersistenceAuthorityAgent' });
+      const approvalItem = new ToolApprovalItem(
+        {
+          type: 'function_call',
+          name: 'secure_tool',
+          callId: 'call-invalid-persistence-authority',
+          status: 'completed',
+          arguments: '{}',
+        } as any,
+        agent,
+      );
+      const serializedContext = new RunContext({ source: 'serialized' });
+      serializedContext.toolInput = { source: 'serialized' };
+      serializedContext.approveTool(approvalItem);
+      const serialized = new RunState(
+        serializedContext,
+        'input',
+        agent,
+        1,
+      ).toJSON() as any;
+      serialized.currentTurnPersistedItemCount = 1;
+      serialized.currentTurnDeferredSessionItemIndexes = [0];
+
+      const overrideContext = new RunContext({ source: 'override' });
+      const before = overrideContext.toJSON();
+      await expect(
+        RunState.fromStringWithContext(
+          agent,
+          JSON.stringify(serialized),
+          overrideContext,
+          { contextStrategy: 'merge' },
+        ),
+      ).rejects.toThrow(
+        'Serialized output guardrail session transaction authority cannot be resumed safely.',
+      );
+      expect(overrideContext.toJSON()).toEqual(before);
+      expect(
+        overrideContext.isToolApproved({
+          toolName: 'secure_tool',
+          callId: 'call-invalid-persistence-authority',
+        }),
+      ).toBeUndefined();
+      expect(overrideContext.toolInput).toBeUndefined();
+    });
+
+    it.each([
+      {
+        name: 'empty blocked transaction source',
+        operationId: undefined,
+        runItemIndexes: [] as number[],
+      },
+      {
+        name: 'mismatched operation id',
+        operationId: 'mismatched-operation-id',
+        runItemIndexes: [0],
+      },
+    ])(
+      'rejects a pending $name before mutating an override context',
+      async ({ operationId, runItemIndexes }) => {
+        const agent = new Agent({ name: 'InvalidPendingAuthorityAgent' });
+        const serializedContext = new RunContext({ source: 'serialized' });
+        serializedContext.toolInput = { source: 'serialized' };
+        const state = new RunState(serializedContext, 'input', agent, 1);
+        state._generatedItems.push(
+          new RunMessageOutputItem(
+            {
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [{ type: 'output_text', text: 'generated' }],
+            },
+            agent,
+          ),
+        );
+        const serialized = state.toJSON() as any;
+        const expectedOperationId = [
+          serialized.sessionHistoryTransactionId,
+          serialized.currentTurn,
+          'blocked_append',
+          0,
+          1,
+        ].join(':');
+        serialized.pendingSessionHistoryTransaction = {
+          operationId: operationId ?? expectedOperationId,
+          transactionKind: 'blocked_append',
+          runItemIndexes,
+          replaceRunItemIndexes: [],
+          alreadyPersistedCount: 0,
+          persistedItemCount: 1,
+          deferredItemIndexes: [],
+        };
+        serialized.currentTurnBlockedSessionStartIndex = 0;
+        serialized.currentTurnSessionHistoryTransactionSessionId =
+          'pending-authority-session';
+        serialized.currentTurnSessionReasoningItemIdPolicy = 'preserve';
+        serialized.currentTurnSessionHistoryTransactionInputItems = [];
+        const overrideContext = new RunContext({ source: 'override' });
+        const before = overrideContext.toJSON();
+        await expect(
+          RunState.fromStringWithContext(
+            agent,
+            JSON.stringify(serialized),
+            overrideContext,
+            { contextStrategy: 'merge' },
+          ),
+        ).rejects.toThrow(
+          'Serialized output guardrail session transaction authority cannot be resumed safely.',
+        );
+        expect(overrideContext.toJSON()).toEqual(before);
+      },
+    );
+
+    it.each([
+      {
+        name: 'a rejected message inside the processed interval',
+        runItemIndexes: [0],
+        deferredItemIndexes: [1, 2],
+        persistedItemCount: 3,
+      },
+      {
+        name: 'an item at the processed interval boundary',
+        runItemIndexes: [2],
+        deferredItemIndexes: [0, 1],
+        persistedItemCount: 2,
+      },
+    ])(
+      'rejects a pending blocked append sourced from $name before context mutation',
+      async ({ runItemIndexes, deferredItemIndexes, persistedItemCount }) => {
+        const agent = new Agent({ name: 'CanonicalPendingPlanAgent' });
+        const call: protocol.FunctionCallItem = {
+          type: 'function_call',
+          name: 'commit',
+          callId: 'call-canonical-pending',
+          status: 'completed',
+          arguments: '{}',
+        };
+        const result: protocol.FunctionCallResultItem = {
+          type: 'function_call_result',
+          name: 'commit',
+          callId: call.callId,
+          status: 'completed',
+          output: 'committed',
+        };
+        const state = new RunState(
+          new RunContext({ source: 'serialized' }),
+          'input',
+          agent,
+          1,
+        );
+        state._generatedItems = [
+          new RunMessageOutputItem(
+            {
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [{ type: 'output_text', text: 'rejected' }],
+            },
+            agent,
+          ),
+          new RunToolCallItem(call, agent),
+          new RunToolCallOutputItem(
+            result,
+            agent,
+            result.output,
+            undefined,
+            'executed',
+          ),
+        ];
+        const serialized = state.toJSON() as any;
+        serialized.currentTurnBlockedSessionStartIndex = 0;
+        serialized.currentTurnSessionHistoryTransactionSessionId =
+          'canonical-pending-session';
+        serialized.currentTurnSessionReasoningItemIdPolicy = 'preserve';
+        serialized.currentTurnSessionHistoryTransactionInputItems = [];
+        serialized.pendingSessionHistoryTransaction = {
+          operationId: [
+            serialized.sessionHistoryTransactionId,
+            serialized.currentTurn,
+            'blocked_append',
+            0,
+            persistedItemCount,
+          ].join(':'),
+          transactionKind: 'blocked_append',
+          runItemIndexes,
+          replaceRunItemIndexes: [],
+          alreadyPersistedCount: 0,
+          persistedItemCount,
+          deferredItemIndexes,
+        };
+
+        const overrideContext = new RunContext({ source: 'override' });
+        const before = overrideContext.toJSON();
+        await expect(
+          RunState.fromStringWithContext(
+            agent,
+            JSON.stringify(serialized),
+            overrideContext,
+            { contextStrategy: 'merge' },
+          ),
+        ).rejects.toThrow(
+          'Serialized output guardrail session transaction authority cannot be resumed safely.',
+        );
+        expect(overrideContext.toJSON()).toEqual(before);
+      },
+    );
+
+    it('rejects a pending accepted replacement that differs from the canonical sparse plan', async () => {
+      const agent = new Agent({ name: 'CanonicalAcceptedPlanAgent' });
+      const call: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: 'commit',
+        callId: 'call-canonical-accepted',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const result: protocol.FunctionCallResultItem = {
+        type: 'function_call_result',
+        name: 'commit',
+        callId: call.callId,
+        status: 'completed',
+        output: 'committed',
+      };
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._generatedItems = [
+        new RunMessageOutputItem(
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'accepted' }],
+          },
+          agent,
+        ),
+        new RunToolCallItem(call, agent),
+        new RunToolCallOutputItem(
+          result,
+          agent,
+          result.output,
+          undefined,
+          'executed',
+        ),
+      ];
+      state._currentTurnPersistedItemCount = 3;
+      state._currentTurnDeferredSessionItemIndexes = new Set([0]);
+      state._currentTurnBlockedSessionStartIndex = 0;
+      state._currentTurnSessionHistoryTransactionSessionId =
+        'canonical-accepted-session';
+      state._currentTurnSessionReasoningItemIdPolicy = 'preserve';
+      state._currentTurnSessionHistoryTransactionInputItems = [];
+      state._currentTurnSessionHistoryTransactionCanReplaceAcceptedOutput = true;
+      const serialized = state.toJSON() as any;
+      serialized.pendingSessionHistoryTransaction = {
+        operationId: [
+          serialized.sessionHistoryTransactionId,
+          serialized.currentTurn,
+          'accepted_replace',
+          3,
+          3,
+        ].join(':'),
+        transactionKind: 'accepted_replace',
+        runItemIndexes: [1, 2],
+        replaceRunItemIndexes: [1, 2],
+        alreadyPersistedCount: 3,
+        persistedItemCount: 3,
+        deferredItemIndexes: [],
+      };
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow(
+        'Serialized output guardrail session transaction authority cannot be resumed safely.',
+      );
+    });
+
+    it('rejects generated items outside acknowledged sparse authority', async () => {
+      const agent = new Agent({ name: 'ClosedSparseAuthorityAgent' });
+      const call: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: 'commit',
+        callId: 'call-closed-sparse-authority',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const result: protocol.FunctionCallResultItem = {
+        type: 'function_call_result',
+        name: 'commit',
+        callId: call.callId,
+        status: 'completed',
+        output: 'committed',
+      };
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._generatedItems = [
+        new RunMessageOutputItem(
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'guarded output' }],
+          },
+          agent,
+        ),
+        new RunToolCallItem(call, agent),
+        new RunToolCallOutputItem(
+          result,
+          agent,
+          result.output,
+          undefined,
+          'executed',
+        ),
+        new RunMessageOutputItem(
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'unguarded tail' }],
+          },
+          agent,
+        ),
+      ];
+      state._currentTurnPersistedItemCount = 3;
+      state._currentTurnDeferredSessionItemIndexes = new Set([0]);
+      state._currentTurnBlockedSessionStartIndex = 0;
+      state._currentTurnSessionHistoryTransactionSessionId =
+        'closed-sparse-authority-session';
+      state._currentTurnSessionReasoningItemIdPolicy = 'preserve';
+      state._currentTurnSessionHistoryTransactionInputItems = [];
+
+      await expect(
+        RunState.fromString(agent, state.toString()),
+      ).rejects.toThrow(
+        'Serialized output guardrail session transaction authority cannot be resumed safely.',
+      );
+    });
+
+    it('rejects generated items outside pending sparse authority', async () => {
+      const agent = new Agent({ name: 'ClosedPendingAuthorityAgent' });
+      const call: protocol.FunctionCallItem = {
+        type: 'function_call',
+        name: 'commit',
+        callId: 'call-closed-pending-authority',
+        status: 'completed',
+        arguments: '{}',
+      };
+      const result: protocol.FunctionCallResultItem = {
+        type: 'function_call_result',
+        name: 'commit',
+        callId: call.callId,
+        status: 'completed',
+        output: 'committed',
+      };
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._generatedItems = [
+        new RunToolCallItem(call, agent),
+        new RunToolCallOutputItem(
+          result,
+          agent,
+          result.output,
+          undefined,
+          'executed',
+        ),
+        new RunMessageOutputItem(
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'unguarded tail' }],
+          },
+          agent,
+        ),
+      ];
+      const serialized = state.toJSON() as any;
+      serialized.currentTurnBlockedSessionStartIndex = 0;
+      serialized.currentTurnSessionHistoryTransactionSessionId =
+        'closed-pending-authority-session';
+      serialized.currentTurnSessionReasoningItemIdPolicy = 'preserve';
+      serialized.currentTurnSessionHistoryTransactionInputItems = [];
+      serialized.pendingSessionHistoryTransaction = {
+        operationId: [
+          serialized.sessionHistoryTransactionId,
+          serialized.currentTurn,
+          'blocked_append',
+          0,
+          2,
+        ].join(':'),
+        transactionKind: 'blocked_append',
+        runItemIndexes: [0, 1],
+        replaceRunItemIndexes: [],
+        alreadyPersistedCount: 0,
+        persistedItemCount: 2,
+        deferredItemIndexes: [],
+      };
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow(
+        'Serialized output guardrail session transaction authority cannot be resumed safely.',
+      );
+    });
+
+    it('defaults output guardrail persistence state for a genuine schema 1.16 payload', async () => {
+      const agent = new Agent({ name: 'GenuineV116PersistenceAgent' });
+      const serialized = new RunState(
+        new RunContext(),
+        'input',
+        agent,
+        1,
+      ).toJSON() as any;
+      serialized.$schemaVersion = '1.16';
+      delete serialized.currentTurnDeferredSessionItemIndexes;
+      delete serialized.currentTurnSessionInputItems;
+      delete serialized.currentTurnSessionHistoryTransactionInputItems;
+      delete serialized.sessionHistoryTransactionId;
+      delete serialized.pendingSessionHistoryTransaction;
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(restored._currentTurnDeferredSessionItemIndexes.size).toBe(0);
+      expect(restored._sessionHistoryTransactionId).toBeTruthy();
+      expect(restored._pendingSessionHistoryTransaction).toBeUndefined();
+    });
+
     it('rejects schema version 1.12 payloads with tool output customData', async () => {
       const context = new RunContext();
       const agent = new Agent({ name: 'CustomDataVersionAgent' });
@@ -4113,7 +4830,7 @@ export function registerRunStateMigrationTests(): void {
       );
     });
 
-    it('reads schema 1.15 approval keys and emits category-aware schema 1.16 state', async () => {
+    it('reads schema 1.15 approval keys and emits the current category-aware state', async () => {
       const context = new RunContext();
       const agent = new Agent({ name: 'ApprovalKeyMigrationAgent' });
       const state = new RunState(context, 'input', agent, 2);
@@ -4147,7 +4864,7 @@ export function registerRunStateMigrationTests(): void {
           callId: 'legacy-call',
         }),
       ).toBe(false);
-      expect(restored.toJSON().$schemaVersion).toBe('1.16');
+      expect(restored.toJSON().$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     });
 
     it('rehydrates schema 1.15 approval identity from enabled prepared tools', async () => {

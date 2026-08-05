@@ -1035,6 +1035,7 @@ async function runApprovedFunctionTool<TContext>(
       let executedInput = approvalArgs;
       let toolDetails: ToolCallDetails = { toolCall: toolRun.toolCall };
       let shouldValidateToolOutput = false;
+      let executionStatus: 'executed' | undefined;
       if (inputGuardrailResult.type === 'reject') {
         toolOutput = await resolveFunctionFailureOutput(
           deps,
@@ -1082,6 +1083,7 @@ async function runApprovedFunctionTool<TContext>(
           input: toolRun.toolCall.arguments,
           details: toolDetails,
         });
+        executionStatus = 'executed';
         throwIfRedactionPromoted(redactedBeforeInvocation);
         const redactedBeforeOutputGuardrails = refreshRedaction();
         const outputGuardrailResults: ToolOutputGuardrailResult[] = [];
@@ -1187,6 +1189,7 @@ async function runApprovedFunctionTool<TContext>(
           agent,
           toolOutput,
           customData,
+          executionStatus,
         ),
       };
 
@@ -1720,7 +1723,13 @@ export async function executeShellActions(
           rawItem.providerData = providerMeta;
         }
 
-        return new RunToolCallOutputItem(rawItem, agent, rawItem.output);
+        return new RunToolCallOutputItem(
+          rawItem,
+          agent,
+          rawItem.output,
+          undefined,
+          'executed',
+        );
       },
     );
 
@@ -1892,7 +1901,13 @@ export async function executeApplyPatchOperations(
           span.spanData.output = output;
         }
 
-        return new RunToolCallOutputItem(rawItem, agent, output, customData);
+        return new RunToolCallOutputItem(
+          rawItem,
+          agent,
+          output,
+          customData,
+          'executed',
+        );
       },
     );
 
@@ -2095,7 +2110,13 @@ export async function executeComputerActions(
           span.spanData.output = imageUrl;
         }
 
-        return new RunToolCallOutputItem(rawItem, agent, imageUrl, customData);
+        return new RunToolCallOutputItem(
+          rawItem,
+          agent,
+          imageUrl,
+          customData,
+          'executed',
+        );
       },
     );
 

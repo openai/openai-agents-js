@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { randomUUID } from '@openai/agents-core/_shims';
 import { Agent } from './agent';
 import type { Handoff } from './handoff';
 import { getAgentToolSourceAgent } from './agentToolSourceRegistry';
@@ -27,6 +28,7 @@ import {
 import { AgentToolUseTracker } from './runner/toolUseTracker';
 import { nextStepSchema, NextStep } from './runner/steps';
 import { createToolRunFunction, type ProcessedResponse } from './runner/types';
+import { hasBlockedOutputExecutionEffect } from './runner/blockedOutputPersistence';
 import type { AgentSpanData, Span } from './tracing/spans';
 import { SystemError, UserError } from './errors';
 import { getGlobalTraceProvider } from './tracing/provider';
@@ -123,8 +125,10 @@ import {
  *   session-state envelope version 2.
  * - 1.16: Adds compaction items, category-aware function tool keys, and agent-scoped
  *   function approvals, including aliases for legacy pending-run accessors.
+ * - 1.17: Adds durable local tool execution provenance and blocked-output session
+ *   persistence bookkeeping.
  */
-export const CURRENT_SCHEMA_VERSION = '1.16' as const;
+export const CURRENT_SCHEMA_VERSION = '1.17' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -142,12 +146,35 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.13',
   '1.14',
   '1.15',
+  '1.16',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
 const $schemaVersion = z.enum(SUPPORTED_SCHEMA_VERSIONS);
 
+function schemaVersionSupportsV116State(
+  schemaVersion: SupportedSchemaVersion,
+): boolean {
+  return schemaVersion === '1.16' || schemaVersion === CURRENT_SCHEMA_VERSION;
+}
+
 type ContextOverrideStrategy = 'merge' | 'replace';
+
+const pendingSessionHistoryTransactionSchema = z
+  .object({
+    operationId: z.string().min(1),
+    transactionKind: z.enum(['blocked_append', 'accepted_replace']),
+    runItemIndexes: z.array(z.number().int().min(0)),
+    replaceRunItemIndexes: z.array(z.number().int().min(0)),
+    alreadyPersistedCount: z.number().int().min(0),
+    persistedItemCount: z.number().int().min(0),
+    deferredItemIndexes: z.array(z.number().int().min(0)),
+  })
+  .strict();
+
+type PendingSessionHistoryTransaction = z.infer<
+  typeof pendingSessionHistoryTransactionSchema
+>;
 
 type RunStateContextOverrideOptions<TContext> = {
   contextOverride?: RunContext<TContext>;
@@ -243,6 +270,7 @@ const itemSchema = z.discriminatedUnion('type', [
     agent: serializedAgentSchema,
     output: z.string(),
     customData: z.record(z.string(), z.any()).optional(),
+    executionStatus: z.literal('executed').optional(),
   }),
   z.object({
     type: z.literal('reasoning_item'),
@@ -522,6 +550,14 @@ export const SerializedRunState = z.object({
     .default({}),
   lastProcessedResponse: serializedProcessedResponseSchema.optional(),
   currentTurnPersistedItemCount: z.number().int().min(0).optional(),
+  currentTurnDeferredSessionItemIndexes: z
+    .array(z.number().int().min(0))
+    .optional(),
+  currentTurnBlockedSessionStartIndex: z.number().int().min(0).optional(),
+  currentTurnExecutedWithSessionBinding: z.literal(true).optional(),
+  currentTurnSessionInputItems: z.array(protocol.ModelItem).optional(),
+  pendingSessionHistoryTransaction:
+    pendingSessionHistoryTransactionSchema.optional(),
   pendingLegacyCompactionSessionItems: z.array(protocol.ModelItem).optional(),
   conversationId: z.string().optional(),
   previousResponseId: z.string().optional(),
@@ -647,6 +683,50 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public _currentTurnPersistedItemCount: number;
   /**
+   * Current-turn item indexes intentionally deferred when a blocked output persisted only a
+   * replay-safe subset. A later accepted resume replaces the sparse suffix in original order.
+   */
+  public _currentTurnDeferredSessionItemIndexes: Set<number>;
+  /**
+   * First current-turn index governed by the sparse blocked-output session suffix.
+   */
+  public _currentTurnBlockedSessionStartIndex: number | undefined;
+  /**
+   * Logical session bound to the current turn before a transaction-aware tool effect can occur.
+   */
+  public _currentTurnSessionHistoryTransactionSessionId: string | undefined;
+  /**
+   * Effective reasoning-item ID policy frozen for the current transaction-aware session turn.
+   */
+  public _currentTurnSessionReasoningItemIdPolicy:
+    ReasoningItemIdPolicy | undefined;
+  /**
+   * Normalized session input frozen before the current transaction-aware model request.
+   */
+  public _currentTurnSessionHistoryTransactionInputItems:
+    AgentInputItem[] | undefined;
+  /**
+   * Whether the current live batch may later replace its sparse suffix with accepted output.
+   */
+  public _currentTurnSessionHistoryTransactionCanReplaceAcceptedOutput:
+    boolean | undefined;
+  /**
+   * Current step reconstructed from serialized state. This reference is not serialized and is
+   * cleared implicitly when the live runner installs another step.
+   */
+  public _serializedCurrentStep: NextStep | undefined;
+  /**
+   * Stable per-run identifier used to derive idempotent session history transaction IDs.
+   */
+  public _sessionHistoryTransactionId: string;
+  /**
+   * Transaction reconstruction data awaiting confirmation from the session backend. Its
+   * generated-item indexes, operation identity, and post-commit bookkeeping remain stable across
+   * retries on the same live RunState; input stays in the separately frozen current-turn snapshot.
+   */
+  public _pendingSessionHistoryTransaction:
+    PendingSessionHistoryTransaction | undefined;
+  /**
    * Compaction marker and persisted suffix that an ordinary session must reconcile once after a
    * pre-1.16 snapshot is restored. The field remains serialized until reconciliation succeeds.
    */
@@ -729,6 +809,16 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     this._pendingAgentToolRunAliases = new Map();
     this._generatedItems = [];
     this._currentTurnPersistedItemCount = 0;
+    this._currentTurnDeferredSessionItemIndexes = new Set();
+    this._currentTurnBlockedSessionStartIndex = undefined;
+    this._currentTurnSessionHistoryTransactionSessionId = undefined;
+    this._currentTurnSessionReasoningItemIdPolicy = undefined;
+    this._currentTurnSessionHistoryTransactionInputItems = undefined;
+    this._currentTurnSessionHistoryTransactionCanReplaceAcceptedOutput =
+      undefined;
+    this._serializedCurrentStep = undefined;
+    this._sessionHistoryTransactionId = randomUUID();
+    this._pendingSessionHistoryTransaction = undefined;
     this._pendingLegacyCompactionSessionItems = undefined;
     this._maxTurns = maxTurns;
     this._inputGuardrailResults = [];
@@ -881,6 +971,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public resetTurnPersistence(): void {
     this._currentTurnPersistedItemCount = 0;
+    this._currentTurnDeferredSessionItemIndexes.clear();
   }
 
   /**
@@ -1116,6 +1207,33 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
         this._pendingAgentToolRunAliases.entries(),
       ),
       currentTurnPersistedItemCount: this._currentTurnPersistedItemCount,
+      currentTurnDeferredSessionItemIndexes:
+        this._currentTurnDeferredSessionItemIndexes.size > 0
+          ? [...this._currentTurnDeferredSessionItemIndexes].sort(
+              (left, right) => left - right,
+            )
+          : undefined,
+      currentTurnBlockedSessionStartIndex:
+        this._currentTurnBlockedSessionStartIndex,
+      currentTurnExecutedWithSessionBinding:
+        this._currentTurnSessionHistoryTransactionSessionId !== undefined &&
+        hasBlockedOutputExecutionEffect(
+          this._generatedItems,
+          this._currentTurnPersistedItemCount,
+        )
+          ? true
+          : undefined,
+      currentTurnSessionInputItems:
+        this._currentTurnSessionHistoryTransactionSessionId === undefined &&
+        this._currentTurnSessionHistoryTransactionInputItems !== undefined &&
+        this._currentTurnSessionHistoryTransactionInputItems.length > 0 &&
+        hasBlockedOutputExecutionEffect(
+          this._generatedItems,
+          this._currentTurnPersistedItemCount,
+        )
+          ? this._currentTurnSessionHistoryTransactionInputItems
+          : undefined,
+      pendingSessionHistoryTransaction: this._pendingSessionHistoryTransaction,
       pendingLegacyCompactionSessionItems:
         this._pendingLegacyCompactionSessionItems,
       lastProcessedResponse: this._lastProcessedResponse
@@ -1235,6 +1353,10 @@ async function buildRunStateFromString<
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
   );
+  assertSchemaVersionSupportsOutputGuardrailSessionPersistence(
+    currentSchemaVersion as SupportedSchemaVersion,
+    stateJson,
+  );
   const normalizedState = rehydrateLegacyCompactionRunItems(
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
@@ -1280,7 +1402,7 @@ function validateFunctionApprovalEnvelope(
   if (!hasFunctionApprovals && !hasLegacyFunctionApprovals) {
     return;
   }
-  if (schemaVersion !== CURRENT_SCHEMA_VERSION) {
+  if (!schemaVersionSupportsV116State(schemaVersion)) {
     throw new UserError(
       `Run state schema version ${schemaVersion} does not support owner-scoped function approvals. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
     );
@@ -1305,6 +1427,7 @@ function assertSchemaVersionSupportsToolSearch(
     schemaVersion === '1.13' ||
     schemaVersion === '1.14' ||
     schemaVersion === '1.15' ||
+    schemaVersion === '1.16' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   ) {
     return;
@@ -1327,6 +1450,7 @@ function assertSchemaVersionSupportsCustomData(
     schemaVersion === '1.13' ||
     schemaVersion === '1.14' ||
     schemaVersion === '1.15' ||
+    schemaVersion === '1.16' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   ) {
     return;
@@ -1351,6 +1475,7 @@ function schemaVersionSupportsAgentIdentity(
     schemaVersion === '1.13' ||
     schemaVersion === '1.14' ||
     schemaVersion === '1.15' ||
+    schemaVersion === '1.16' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   );
 }
@@ -1362,6 +1487,7 @@ function assertSchemaVersionSupportsProgrammaticToolCalling(
   if (
     schemaVersion === '1.14' ||
     schemaVersion === '1.15' ||
+    schemaVersion === '1.16' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   ) {
     return;
@@ -1382,7 +1508,7 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
 ): void {
   if (
     schemaVersion === '1.15' ||
-    schemaVersion === CURRENT_SCHEMA_VERSION ||
+    schemaVersionSupportsV116State(schemaVersion) ||
     !stateJson.sandbox
   ) {
     return;
@@ -1416,7 +1542,7 @@ function assertSchemaVersionSupportsCompactionItems(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
-  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+  if (schemaVersionSupportsV116State(schemaVersion)) {
     return;
   }
 
@@ -1430,6 +1556,78 @@ function assertSchemaVersionSupportsCompactionItems(
   throw new UserError(
     `Run state schema version ${schemaVersion} does not support compaction items. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
   );
+}
+
+function assertSchemaVersionSupportsOutputGuardrailSessionPersistence(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: z.infer<typeof SerializedRunState>,
+): void {
+  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+    validateOutputGuardrailSessionPersistenceState(stateJson);
+    return;
+  }
+
+  const hasExecutionProvenance = [
+    ...stateJson.generatedItems,
+    ...(stateJson.lastProcessedResponse?.newItems ?? []),
+  ].some(
+    (item) =>
+      item.type === 'tool_call_output_item' &&
+      item.executionStatus !== undefined,
+  );
+  const hasV117PersistenceEnvelope =
+    stateJson.currentTurnDeferredSessionItemIndexes !== undefined ||
+    stateJson.currentTurnBlockedSessionStartIndex !== undefined ||
+    stateJson.currentTurnExecutedWithSessionBinding !== undefined ||
+    stateJson.currentTurnSessionInputItems !== undefined ||
+    stateJson.pendingSessionHistoryTransaction !== undefined;
+  if (!hasV117PersistenceEnvelope && !hasExecutionProvenance) {
+    return;
+  }
+
+  throw new UserError(
+    `Run state schema version ${schemaVersion} does not support output guardrail session persistence state. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+  );
+}
+
+function validateOutputGuardrailSessionPersistenceState(
+  stateJson: z.infer<typeof SerializedRunState>,
+): void {
+  const persistedItemCount = stateJson.currentTurnPersistedItemCount ?? 0;
+  const deferredIndexes = stateJson.currentTurnDeferredSessionItemIndexes ?? [];
+  if (
+    deferredIndexes.length > 0 ||
+    stateJson.currentTurnBlockedSessionStartIndex !== undefined ||
+    stateJson.currentTurnExecutedWithSessionBinding === true ||
+    stateJson.pendingSessionHistoryTransaction !== undefined
+  ) {
+    throw new UserError(
+      'Serialized output guardrail session transaction authority cannot be resumed safely. Start a new run from the persisted session history.',
+    );
+  }
+  if (persistedItemCount > stateJson.generatedItems.length) {
+    throw new UserError(
+      'Run state contains unsupported serialized output guardrail session transaction state.',
+    );
+  }
+
+  const hasUnsupportedExecutionProvenance = [
+    ...stateJson.generatedItems,
+    ...(stateJson.lastProcessedResponse?.newItems ?? []),
+  ].some(
+    (item) =>
+      item.type === 'tool_call_output_item' &&
+      item.executionStatus === 'executed' &&
+      item.rawItem.type !== 'function_call_result' &&
+      item.rawItem.type !== 'shell_call_output' &&
+      item.rawItem.type !== 'computer_call_result' &&
+      item.rawItem.type !== 'apply_patch_call_output',
+  );
+  if (hasUnsupportedExecutionProvenance) {
+    throw new UserError(
+      'Run state contains execution provenance for an unsupported tool output type.',
+    );
+  }
 }
 
 function containsSerializedCompactionRunItems(
@@ -1500,7 +1698,7 @@ function rehydrateLegacyCompactionRunItems(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): LegacyCompactionRehydration {
-  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+  if (schemaVersionSupportsV116State(schemaVersion)) {
     return { stateJson };
   }
 
@@ -3134,7 +3332,7 @@ async function rehydrateToolSearchRuntimeTools<
   });
 
   if (
-    options.schemaVersion === CURRENT_SCHEMA_VERSION &&
+    schemaVersionSupportsV116State(options.schemaVersion) &&
     options.serializedProcessedResponse
   ) {
     const currentAgent = state._currentAgent as Agent<TContext, any>;
@@ -3332,14 +3530,15 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   stateJson: z.infer<typeof SerializedRunState>,
   options: RunStateContextOverrideOptions<TContext> = {},
 ): Promise<RunState<TContext, TAgent>> {
-  const agentMap = schemaVersionSupportsAgentIdentity(
-    stateJson.$schemaVersion as SupportedSchemaVersion,
-  )
+  const schemaVersion = stateJson.$schemaVersion as SupportedSchemaVersion;
+  const agentMap = schemaVersionSupportsAgentIdentity(schemaVersion)
     ? buildAgentIdentityMap(initialAgent).byIdentity
     : buildAgentMap(initialAgent);
+  const generatedItems = stateJson.generatedItems.map((item) =>
+    deserializeItem(item, agentMap),
+  );
   const contextOverride = options.contextOverride;
   const contextStrategy = options.contextStrategy ?? 'merge';
-  const schemaVersion = stateJson.$schemaVersion as SupportedSchemaVersion;
   let deferredLegacyApprovalContext: RunContext<TContext> | undefined;
 
   //
@@ -3354,7 +3553,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   );
   if (contextOverride) {
     if (contextStrategy === 'merge') {
-      if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+      if (schemaVersionSupportsV116State(schemaVersion)) {
         context._mergeApprovals(stateJson.context.approvals);
         context._mergeFunctionApprovals(
           stateJson.context.functionApprovals ?? [],
@@ -3382,7 +3581,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
       agentMap,
     );
     context._rebuildLegacyFunctionApprovals(
-      schemaVersion === CURRENT_SCHEMA_VERSION
+      schemaVersionSupportsV116State(schemaVersion)
         ? (stateJson.context.legacyFunctionApprovals ?? {})
         : stateJson.context.approvals,
     );
@@ -3490,11 +3689,28 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
     ? deserializeModelResponse(stateJson.lastModelResponse)
     : undefined;
 
-  state._generatedItems = stateJson.generatedItems.map((item) =>
-    deserializeItem(item, agentMap),
-  );
+  state._generatedItems = generatedItems;
   state._currentTurnPersistedItemCount =
     stateJson.currentTurnPersistedItemCount ?? 0;
+  const supportsOutputGuardrailSessionPersistence =
+    schemaVersion === CURRENT_SCHEMA_VERSION;
+  const deferredSessionItemIndexes = supportsOutputGuardrailSessionPersistence
+    ? (stateJson.currentTurnDeferredSessionItemIndexes ?? [])
+    : [];
+  state._currentTurnDeferredSessionItemIndexes = new Set(
+    deferredSessionItemIndexes,
+  );
+  state._currentTurnBlockedSessionStartIndex = undefined;
+  state._currentTurnSessionHistoryTransactionSessionId = undefined;
+  state._currentTurnSessionReasoningItemIdPolicy = undefined;
+  state._currentTurnSessionHistoryTransactionInputItems =
+    schemaVersion === CURRENT_SCHEMA_VERSION
+      ? stateJson.currentTurnSessionInputItems
+      : undefined;
+  state._currentTurnSessionHistoryTransactionCanReplaceAcceptedOutput =
+    undefined;
+  state._sessionHistoryTransactionId = randomUUID();
+  state._pendingSessionHistoryTransaction = undefined;
   state._pendingLegacyCompactionSessionItems =
     stateJson.pendingLegacyCompactionSessionItems;
   state._sandbox = stateJson.sandbox ?? undefined;
@@ -3505,7 +3721,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
       schemaVersion,
       serializedProcessedResponse: stateJson.lastProcessedResponse,
       prepareCurrentAgentForLegacyApprovals:
-        schemaVersion !== CURRENT_SCHEMA_VERSION &&
+        !schemaVersionSupportsV116State(schemaVersion) &&
         shouldRestoreSerializedContext &&
         Object.keys(stateJson.context.approvals).length > 0,
     },
@@ -3582,7 +3798,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
     legacyAvailableToolsByAgent,
   );
   const legacyApprovalContext = deferredLegacyApprovalContext ?? context;
-  if (schemaVersion !== CURRENT_SCHEMA_VERSION) {
+  if (!schemaVersionSupportsV116State(schemaVersion)) {
     legacyApprovalContext._retainLegacyFunctionApprovals(
       legacyFunctionApprovalKeys,
     );
@@ -3605,6 +3821,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
       legacyFunctionApprovalKeys,
     );
   }
+  state._serializedCurrentStep = state._currentStep;
   return state;
 }
 
@@ -3892,6 +4109,7 @@ export function deserializeItem(
         resolveSerializedAgent(serializedItem.agent, agentMap),
         serializedItem.output,
         serializedItem.customData,
+        serializedItem.executionStatus,
       );
     case 'reasoning_item':
       return new RunReasoningItem(
@@ -4081,7 +4299,7 @@ function rebindInterruptionFunctionToolStateKeys<TContext>(
         state,
         interruption,
       );
-      if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+      if (schemaVersionSupportsV116State(schemaVersion)) {
         const rawStateKey = getFunctionToolStateKeyForCall(
           interruption.rawItem,
         );
@@ -4282,7 +4500,7 @@ function migrateLegacyFunctionToolState<TContext>(
     readonly Tool<TContext>[]
   > = new Map(),
 ): Set<string> {
-  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+  if (schemaVersionSupportsV116State(schemaVersion)) {
     return new Set();
   }
 

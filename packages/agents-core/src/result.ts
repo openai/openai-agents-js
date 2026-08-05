@@ -300,6 +300,27 @@ export class StreamedRunResult<
   extends RunResultBase<TContext, TAgent>
   implements AsyncIterable<RunStreamEvent>
 {
+  #finalOutputHidden = false;
+
+  override get finalOutput():
+    ResolvedAgentOutput<TAgent['outputType']> | undefined {
+    if (this.#finalOutputHidden) {
+      logger.warn('Accessed finalOutput before agent run is completed.');
+      return undefined;
+    }
+    return super.finalOutput;
+  }
+
+  /** @internal */
+  _hideFinalOutput(): void {
+    this.#finalOutputHidden = true;
+  }
+
+  /** @internal */
+  _revealFinalOutput(): void {
+    this.#finalOutputHidden = false;
+  }
+
   /**
    * The current agent that is running
    */
@@ -339,6 +360,8 @@ export class StreamedRunResult<
     } = {} as any,
   ) {
     super(result.state);
+    this.#finalOutputHidden =
+      result.state?._currentStep?.type === 'next_step_final_output';
 
     this.#abortController = new AbortController();
     const { signal: combinedSignal, cleanup: cleanupCombinedSignal } =

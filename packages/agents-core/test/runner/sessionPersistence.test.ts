@@ -7,6 +7,7 @@ import {
 } from '../../src';
 import { Agent, AgentOutputType } from '../../src/agent';
 import {
+  RunHandoffCallItem as HandoffCallItem,
   RunHandoffOutputItem as HandoffOutputItem,
   RunCompactionItem as CompactionItem,
   RunMessageOutputItem as MessageOutputItem,
@@ -20,9 +21,11 @@ import {
 import { ModelResponse } from '../../src/model';
 import {
   prepareInputItemsWithSession,
+  releaseUnusedSessionHistoryTransactionBinding,
   saveStreamInputToSession,
   saveStreamResultToSession,
   saveToSession,
+  selectRunItemsForBlockedOutput,
 } from '../../src/runner/sessionPersistence';
 import { ServerConversationTracker } from '../../src/runner/conversation';
 import { getToolCallOutputItem } from '../../src/runner/toolExecution';
@@ -37,7 +40,9 @@ import type {
   OpenAIResponsesCompactionArgs,
   OpenAIResponsesCompactionResult,
   Session,
+  SessionHistoryTransactionArgs,
 } from '../../src/memory/session';
+import { MemorySession as TransactionMemorySession } from '../../src/memory/memorySession';
 import { toAgentInputList } from '../../src/runner/items';
 import { tool } from '../../src/tool';
 import type { FunctionTool } from '../../src/tool';
@@ -107,6 +112,1207 @@ function functionResult(
     output,
   );
 }
+
+function executedFunctionResult(
+  call: protocol.FunctionCallItem,
+  output: string,
+  agent: Agent<any, any> = TEST_AGENT,
+): ToolCallOutputItem {
+  return new ToolCallOutputItem(
+    {
+      type: 'function_call_result',
+      callId: call.callId,
+      name: call.name,
+      status: 'completed',
+      output,
+      ...(call.caller ? { caller: call.caller } : {}),
+    },
+    agent,
+    output,
+    undefined,
+    'executed',
+  );
+}
+
+describe('selectRunItemsForBlockedOutput', () => {
+  it('retains a committed pair and only reasoning tied to its call', () => {
+    const call = functionCall('call-retained');
+    const callItem = new ToolCallItem(call, TEST_AGENT);
+    const rejectedReasoning = new ReasoningItem(
+      {
+        type: 'reasoning',
+        id: 'reasoning-rejected',
+        content: [{ type: 'input_text', text: 'draft message' }],
+      },
+      TEST_AGENT,
+    );
+    const rejectedMessage = new MessageOutputItem(
+      fakeModelMessage('blocked'),
+      TEST_AGENT,
+    );
+    const retainedReasoning = new ReasoningItem(
+      {
+        type: 'reasoning',
+        id: 'reasoning-retained',
+        content: [{ type: 'input_text', text: 'call tool' }],
+      },
+      TEST_AGENT,
+    );
+    const result = executedFunctionResult(call, 'done');
+
+    expect(
+      selectRunItemsForBlockedOutput([
+        rejectedReasoning,
+        rejectedMessage,
+        retainedReasoning,
+        callItem,
+        result,
+      ]),
+    ).toEqual([retainedReasoning, callItem, result]);
+  });
+
+  it('retains a terminal result for a previously persisted approval call', () => {
+    const call = functionCall('call-rejected-after-approval');
+    const callItem = new ToolCallItem(call, TEST_AGENT);
+    const rejectedResult = functionResult(call, 'rejected');
+
+    expect(
+      selectRunItemsForBlockedOutput([callItem, rejectedResult], 1),
+    ).toEqual([rejectedResult]);
+    expect(
+      selectRunItemsForBlockedOutput([callItem, rejectedResult], 0),
+    ).toEqual([]);
+  });
+
+  it('uses provider shell result status and execution provenance', () => {
+    const call = new ToolCallItem(
+      {
+        type: 'shell_call',
+        callId: 'shell-call',
+        status: 'in_progress',
+        action: { commands: ['echo committed'] },
+      },
+      TEST_AGENT,
+    );
+    const result = new ToolCallOutputItem(
+      {
+        type: 'shell_call_output',
+        callId: 'shell-call',
+        output: [],
+        providerData: { status: 'completed' },
+      },
+      TEST_AGENT,
+      [],
+      undefined,
+      'executed',
+    );
+    const incompleteResult = new ToolCallOutputItem(
+      {
+        type: 'shell_call_output',
+        callId: 'shell-call',
+        output: [],
+        providerData: { status: 'incomplete' },
+      },
+      TEST_AGENT,
+      [],
+      undefined,
+      'executed',
+    );
+    const providerIncompleteResult = new ToolCallOutputItem(
+      {
+        type: 'shell_call_output',
+        callId: 'shell-call',
+        status: 'completed',
+        output: [],
+        providerData: { status: 'incomplete' },
+      },
+      TEST_AGENT,
+      [],
+      undefined,
+      'executed',
+    );
+    const itemIncompleteResult = new ToolCallOutputItem(
+      {
+        type: 'shell_call_output',
+        callId: 'shell-call',
+        status: 'incomplete',
+        output: [],
+        providerData: { status: 'completed' },
+      },
+      TEST_AGENT,
+      [],
+      undefined,
+      'executed',
+    );
+    const statuslessExecutedResult = new ToolCallOutputItem(
+      {
+        type: 'shell_call_output',
+        callId: 'shell-call',
+        output: [],
+      },
+      TEST_AGENT,
+      [],
+      undefined,
+      'executed',
+    );
+
+    expect(selectRunItemsForBlockedOutput([call, result])).toEqual([
+      call,
+      result,
+    ]);
+    expect(selectRunItemsForBlockedOutput([call, incompleteResult])).toEqual(
+      [],
+    );
+    expect(
+      selectRunItemsForBlockedOutput([call, providerIncompleteResult]),
+    ).toEqual([]);
+    expect(
+      selectRunItemsForBlockedOutput([call, itemIncompleteResult]),
+    ).toEqual([]);
+    expect(
+      selectRunItemsForBlockedOutput([call, statuslessExecutedResult]),
+    ).toEqual([call, statuslessExecutedResult]);
+  });
+
+  it('retains session authority for an executed result excluded from blocked history', async () => {
+    const state = new RunState(new RunContext(), 'input', TEST_AGENT, 1);
+    state._generatedItems = [
+      new ToolCallItem(
+        {
+          type: 'shell_call',
+          callId: 'excluded-bound-shell',
+          status: 'completed',
+          action: { commands: ['echo committed'] },
+        },
+        TEST_AGENT,
+      ),
+      new ToolCallOutputItem(
+        {
+          type: 'shell_call_output',
+          callId: 'excluded-bound-shell',
+          output: [],
+          providerData: { status: 'incomplete' },
+        },
+        TEST_AGENT,
+        [],
+        undefined,
+        'executed',
+      ),
+    ];
+    state._currentTurnSessionHistoryTransactionSessionId =
+      'excluded-bound-session';
+
+    releaseUnusedSessionHistoryTransactionBinding(state);
+
+    expect(state._currentTurnSessionHistoryTransactionSessionId).toBe(
+      'excluded-bound-session',
+    );
+    const serialized = state.toJSON();
+    expect(serialized.currentTurnExecutedWithSessionBinding).toBe(true);
+    await expect(
+      RunState.fromString(TEST_AGENT, JSON.stringify(serialized)),
+    ).rejects.toThrow(
+      'Serialized output guardrail session transaction authority cannot be resumed safely.',
+    );
+  });
+
+  it('does not treat program output as locally executed provenance', () => {
+    const program = new ToolCallItem(
+      {
+        type: 'program',
+        callId: 'program-untrusted-execution',
+        code: 'return "done";',
+        fingerprint: 'program-untrusted-execution-fingerprint',
+      },
+      TEST_AGENT,
+    );
+    const output = new ToolCallOutputItem(
+      {
+        type: 'program_output',
+        callId: 'program-untrusted-execution',
+        status: 'completed',
+        output: 'done',
+      },
+      TEST_AGENT,
+      'done',
+      undefined,
+      'executed',
+    );
+
+    expect(selectRunItemsForBlockedOutput([program, output])).toEqual([]);
+  });
+
+  it('retains completed handoff context and a pending program owner', () => {
+    const handoffCall = {
+      ...functionCall('call-handoff'),
+      name: 'transfer_to_target',
+    };
+    const handoffCallItem = new HandoffCallItem(handoffCall, TEST_AGENT);
+    const handoffOutputItem = new HandoffOutputItem(
+      {
+        type: 'function_call_result',
+        callId: handoffCall.callId,
+        name: handoffCall.name,
+        status: 'completed',
+        output: 'Transferred',
+      },
+      TEST_AGENT,
+      TEST_AGENT,
+    );
+    const program = new ToolCallItem(
+      {
+        type: 'program',
+        callId: 'program-owner',
+        code: 'return await tools.test({});',
+        fingerprint: 'program-owner-fingerprint',
+      },
+      TEST_AGENT,
+    );
+    const childCall = {
+      ...functionCall('program-child'),
+      caller: { type: 'program' as const, callerId: 'program-owner' },
+    };
+    const child = new ToolCallItem(childCall, TEST_AGENT);
+    const childResult = executedFunctionResult(childCall, 'committed');
+
+    expect(
+      selectRunItemsForBlockedOutput([
+        handoffCallItem,
+        handoffOutputItem,
+        program,
+        child,
+        childResult,
+      ]),
+    ).toEqual([
+      handoffCallItem,
+      handoffOutputItem,
+      program,
+      child,
+      childResult,
+    ]);
+  });
+
+  it('retains classified hosted tools and drops unknown completed kinds', () => {
+    const hosted = new ToolCallItem(
+      {
+        type: 'hosted_tool_call',
+        id: 'hosted-completed',
+        name: 'web_search_call',
+        status: 'completed',
+        providerData: { type: 'web_search_call' },
+      },
+      TEST_AGENT,
+    );
+    const unknown = new ToolCallItem(
+      {
+        type: 'hosted_tool_call',
+        id: 'hosted-future',
+        name: 'future_hosted_call',
+        status: 'completed',
+        providerData: { type: 'future_hosted_call' },
+      },
+      TEST_AGENT,
+    );
+    const legacyMcp = new ToolCallItem(
+      {
+        type: 'hosted_tool_call',
+        id: 'legacy-mcp-completed',
+        name: 'hosted_mcp',
+        providerData: { type: 'mcp_call', status: 'completed' },
+      },
+      TEST_AGENT,
+    );
+    const incompleteLegacyMcp = new ToolCallItem(
+      {
+        type: 'hosted_tool_call',
+        id: 'legacy-mcp-incomplete',
+        name: 'hosted_mcp',
+        providerData: { type: 'mcp_call', status: 'incomplete' },
+      },
+      TEST_AGENT,
+    );
+    const conflictingStatus = new ToolCallItem(
+      {
+        type: 'hosted_tool_call',
+        id: 'hosted-conflicting-status',
+        name: 'web_search_call',
+        status: 'completed',
+        providerData: {
+          type: 'web_search_call',
+          status: 'incomplete',
+        },
+      },
+      TEST_AGENT,
+    );
+    const conflictingType = new ToolCallItem(
+      {
+        type: 'hosted_tool_call',
+        id: 'hosted-conflicting-type',
+        name: 'web_search_call',
+        status: 'completed',
+        providerData: { type: 'future_hosted_call' },
+      },
+      TEST_AGENT,
+    );
+
+    expect(selectRunItemsForBlockedOutput([hosted])).toEqual([hosted]);
+    expect(selectRunItemsForBlockedOutput([legacyMcp])).toEqual([legacyMcp]);
+    expect(selectRunItemsForBlockedOutput([incompleteLegacyMcp])).toEqual([]);
+    expect(selectRunItemsForBlockedOutput([conflictingStatus])).toEqual([]);
+    expect(selectRunItemsForBlockedOutput([conflictingType])).toEqual([]);
+    expect(selectRunItemsForBlockedOutput([unknown])).toEqual([]);
+  });
+
+  it('retains tool-search provenance that loaded a committed dynamic tool', () => {
+    const searchCall = new ToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        arguments: { paths: ['dynamic_commit'] },
+        execution: 'client',
+        providerData: {
+          call_id: 'call-tool-search-dynamic',
+          execution: 'client',
+        },
+      },
+      TEST_AGENT,
+    );
+    const searchOutput = new ToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        status: 'completed',
+        execution: 'client',
+        tools: [{ type: 'function', name: 'dynamic_commit' }],
+        providerData: {
+          call_id: 'call-tool-search-dynamic',
+          execution: 'client',
+        },
+      },
+      TEST_AGENT,
+    );
+    const call = {
+      ...functionCall('call-dynamic-commit'),
+      name: 'dynamic_commit',
+    };
+    const callItem = new ToolCallItem(call, TEST_AGENT);
+    const result = executedFunctionResult(call, 'committed');
+
+    expect(
+      selectRunItemsForBlockedOutput([
+        searchCall,
+        searchOutput,
+        callItem,
+        result,
+      ]),
+    ).toEqual([searchCall, searchOutput, callItem, result]);
+  });
+
+  it('retains tool-search provenance that loaded a completed hosted MCP call', () => {
+    const searchCall = new ToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        arguments: { paths: ['inventory'] },
+        execution: 'client',
+        providerData: {
+          call_id: 'call-tool-search-hosted-mcp',
+          execution: 'client',
+        },
+      },
+      TEST_AGENT,
+    );
+    const searchOutput = new ToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        status: 'completed',
+        execution: 'client',
+        tools: [
+          {
+            type: 'mcp',
+            server_label: 'inventory',
+            server_url: 'https://inventory.example.com/mcp',
+            defer_loading: true,
+            require_approval: 'never',
+          },
+        ],
+        providerData: {
+          call_id: 'call-tool-search-hosted-mcp',
+          execution: 'client',
+        },
+      },
+      TEST_AGENT,
+    );
+    const hostedMcpCall = new ToolCallItem(
+      {
+        type: 'hosted_tool_call',
+        id: 'hosted-mcp-call',
+        name: 'hosted_mcp',
+        status: 'completed',
+        providerData: {
+          type: 'mcp_call',
+          server_label: 'inventory',
+        },
+      },
+      TEST_AGENT,
+    );
+
+    expect(
+      selectRunItemsForBlockedOutput([searchCall, searchOutput, hostedMcpCall]),
+    ).toEqual([searchCall, searchOutput, hostedMcpCall]);
+  });
+
+  it('keeps an earlier committed tool when an unrelated matching search appears later', () => {
+    const call = {
+      ...functionCall('call-dynamic-before-search'),
+      name: 'dynamic_commit',
+    };
+    const callItem = new ToolCallItem(call, TEST_AGENT);
+    const result = executedFunctionResult(call, 'committed');
+    const searchCall = new ToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        arguments: { paths: ['dynamic_commit'] },
+        execution: 'client',
+        providerData: {
+          call_id: 'call-late-dynamic-search',
+          execution: 'client',
+        },
+      },
+      TEST_AGENT,
+    );
+    const searchOutput = new ToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        status: 'completed',
+        execution: 'client',
+        tools: [{ type: 'function', name: 'dynamic_commit' }],
+        providerData: {
+          call_id: 'call-late-dynamic-search',
+          execution: 'client',
+        },
+      },
+      TEST_AGENT,
+    );
+
+    expect(
+      selectRunItemsForBlockedOutput([
+        callItem,
+        result,
+        searchCall,
+        searchOutput,
+      ]),
+    ).toEqual([callItem, result]);
+  });
+
+  it('keeps an earlier hosted MCP call when a matching search appears later', () => {
+    const hostedMcpCall = new ToolCallItem(
+      {
+        type: 'hosted_tool_call',
+        id: 'hosted-mcp-before-search',
+        name: 'hosted_mcp',
+        status: 'completed',
+        providerData: {
+          type: 'mcp_call',
+          server_label: 'inventory',
+        },
+      },
+      TEST_AGENT,
+    );
+    const searchCall = new ToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        arguments: { paths: ['inventory'] },
+        execution: 'client',
+        providerData: {
+          call_id: 'call-late-hosted-mcp-search',
+          execution: 'client',
+        },
+      },
+      TEST_AGENT,
+    );
+    const searchOutput = new ToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        status: 'completed',
+        execution: 'client',
+        tools: [
+          {
+            type: 'mcp',
+            server_label: 'inventory',
+            server_url: 'https://inventory.example.com/mcp',
+            defer_loading: true,
+            require_approval: 'never',
+          },
+        ],
+        providerData: {
+          call_id: 'call-late-hosted-mcp-search',
+          execution: 'client',
+        },
+      },
+      TEST_AGENT,
+    );
+
+    expect(
+      selectRunItemsForBlockedOutput([hostedMcpCall, searchCall, searchOutput]),
+    ).toEqual([hostedMcpCall]);
+  });
+
+  it('keeps explicit server tool-search outputs out of the FIFO fallback queue', () => {
+    const firstCall = new ToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        call_id: 'server-search-a',
+        execution: 'server',
+        status: 'completed',
+        arguments: { paths: ['alpha'] },
+      } as any,
+      TEST_AGENT,
+    );
+    const secondCall = new ToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        call_id: 'server-search-b',
+        execution: 'server',
+        status: 'completed',
+        arguments: { paths: ['beta'] },
+      } as any,
+      TEST_AGENT,
+    );
+    const firstOutput = new ToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        call_id: 'server-search-a',
+        execution: 'server',
+        status: 'completed',
+        tools: [],
+      } as any,
+      TEST_AGENT,
+    );
+    const secondOutput = new ToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        execution: 'server',
+        status: 'completed',
+        tools: [
+          {
+            type: 'mcp',
+            server_label: 'beta',
+            server_url: 'https://beta.example.com/mcp',
+            defer_loading: true,
+            require_approval: 'never',
+          },
+        ],
+      } as any,
+      TEST_AGENT,
+    );
+    const hostedMcpCall = new ToolCallItem(
+      {
+        type: 'hosted_tool_call',
+        id: 'hosted-mcp-beta',
+        name: 'hosted_mcp',
+        status: 'completed',
+        providerData: { type: 'mcp_call', server_label: 'beta' },
+      },
+      TEST_AGENT,
+    );
+
+    expect(
+      selectRunItemsForBlockedOutput([
+        firstCall,
+        secondCall,
+        firstOutput,
+        secondOutput,
+        hostedMcpCall,
+      ]),
+    ).toEqual([secondCall, secondOutput, hostedMcpCall]);
+  });
+
+  it('drops completed server tool-search output from an incomplete call', () => {
+    const searchCall = new ToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        call_id: 'server-incomplete-search',
+        execution: 'server',
+        status: 'incomplete',
+        arguments: { paths: ['inventory'] },
+      },
+      TEST_AGENT,
+    );
+    const searchOutput = new ToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        call_id: 'server-incomplete-search',
+        execution: 'server',
+        status: 'completed',
+        tools: [
+          {
+            type: 'mcp',
+            server_label: 'inventory',
+            server_url: 'https://inventory.example.com/mcp',
+            defer_loading: true,
+            require_approval: 'never',
+          },
+        ],
+      },
+      TEST_AGENT,
+    );
+    const hostedMcpCall = new ToolCallItem(
+      {
+        type: 'hosted_tool_call',
+        id: 'hosted-mcp-incomplete-search-call',
+        name: 'hosted_mcp',
+        status: 'completed',
+        providerData: {
+          type: 'mcp_call',
+          server_label: 'inventory',
+        },
+      },
+      TEST_AGENT,
+    );
+
+    expect(
+      selectRunItemsForBlockedOutput([searchCall, searchOutput, hostedMcpCall]),
+    ).toEqual([]);
+  });
+
+  it.each([
+    { label: 'missing', status: undefined },
+    { label: 'incomplete', status: 'incomplete' as const },
+  ])(
+    'drops a defer-loaded hosted MCP call with $label tool-search provenance',
+    ({ status }) => {
+      const searchCall = new ToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          arguments: { paths: ['inventory'] },
+          execution: 'client',
+          providerData: {
+            call_id: 'call-incomplete-hosted-mcp-search',
+            execution: 'client',
+          },
+        },
+        TEST_AGENT,
+      );
+      const searchOutput = new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          status,
+          execution: 'client',
+          tools: [
+            {
+              type: 'mcp',
+              server_label: 'inventory',
+              server_url: 'https://inventory.example.com/mcp',
+              defer_loading: true,
+              require_approval: 'never',
+            },
+          ],
+          providerData: {
+            call_id: 'call-incomplete-hosted-mcp-search',
+            execution: 'client',
+          },
+        },
+        TEST_AGENT,
+      );
+      const hostedMcpCall = new ToolCallItem(
+        {
+          type: 'hosted_tool_call',
+          id: 'hosted-mcp-incomplete-supplier',
+          name: 'hosted_mcp',
+          status: 'completed',
+          providerData: {
+            type: 'mcp_call',
+            server_label: 'inventory',
+          },
+        },
+        TEST_AGENT,
+      );
+
+      expect(
+        selectRunItemsForBlockedOutput([
+          searchCall,
+          searchOutput,
+          hostedMcpCall,
+        ]),
+      ).toEqual([]);
+    },
+  );
+
+  it.each([
+    {
+      name: 'incomplete supplier',
+      buildSearchItems: () => {
+        const searchCall = new ToolSearchCallItem(
+          {
+            type: 'tool_search_call',
+            arguments: { paths: ['dynamic_commit'] },
+            execution: 'client',
+            providerData: {
+              call_id: 'call-incomplete-search',
+              execution: 'client',
+            },
+          },
+          TEST_AGENT,
+        );
+        const searchOutput = new ToolSearchOutputItem(
+          {
+            type: 'tool_search_output',
+            status: 'incomplete',
+            execution: 'client',
+            tools: [{ type: 'function', name: 'dynamic_commit' }],
+            providerData: {
+              call_id: 'call-incomplete-search',
+              execution: 'client',
+            },
+          },
+          TEST_AGENT,
+        );
+        return [searchCall, searchOutput];
+      },
+    },
+    {
+      name: 'out-of-order supplier',
+      buildSearchItems: () => [
+        new ToolSearchOutputItem(
+          {
+            type: 'tool_search_output',
+            status: 'completed',
+            execution: 'client',
+            tools: [{ type: 'function', name: 'dynamic_commit' }],
+            providerData: {
+              call_id: 'call-out-of-order-search',
+              execution: 'client',
+            },
+          },
+          TEST_AGENT,
+        ),
+        new ToolSearchCallItem(
+          {
+            type: 'tool_search_call',
+            arguments: { paths: ['dynamic_commit'] },
+            execution: 'client',
+            providerData: {
+              call_id: 'call-out-of-order-search',
+              execution: 'client',
+            },
+          },
+          TEST_AGENT,
+        ),
+      ],
+    },
+  ])('drops a dynamic tool pair with a $name', ({ buildSearchItems }) => {
+    const call = {
+      ...functionCall('call-unresolved-dynamic-commit'),
+      name: 'dynamic_commit',
+    };
+    const callItem = new ToolCallItem(call, TEST_AGENT);
+    const result = executedFunctionResult(call, 'committed');
+
+    expect(
+      selectRunItemsForBlockedOutput([...buildSearchItems(), callItem, result]),
+    ).toEqual([]);
+  });
+
+  it('retains the latest same-call-id tool-search replacement for a committed dynamic tool', () => {
+    const searchCall = new ToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        arguments: { paths: ['dynamic_commit'] },
+        execution: 'client',
+        providerData: {
+          call_id: 'call-replaced-search',
+          execution: 'client',
+        },
+      },
+      TEST_AGENT,
+    );
+    const firstOutput = new ToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        status: 'completed',
+        execution: 'client',
+        tools: [{ type: 'function', name: 'dynamic_commit' }],
+        providerData: {
+          call_id: 'call-replaced-search',
+          execution: 'client',
+        },
+      },
+      TEST_AGENT,
+    );
+    const replacementOutput = new ToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        status: 'completed',
+        execution: 'client',
+        tools: [{ type: 'function', name: 'dynamic_commit' }],
+        providerData: {
+          call_id: 'call-replaced-search',
+          execution: 'client',
+        },
+      },
+      TEST_AGENT,
+    );
+    const call = {
+      ...functionCall('call-after-replaced-search'),
+      name: 'dynamic_commit',
+    };
+    const callItem = new ToolCallItem(call, TEST_AGENT);
+    const result = executedFunctionResult(call, 'committed');
+
+    expect(
+      selectRunItemsForBlockedOutput([
+        searchCall,
+        firstOutput,
+        replacementOutput,
+        callItem,
+        result,
+      ]),
+    ).toEqual([searchCall, replacementOutput, callItem, result]);
+  });
+
+  it.each(['client', 'server'] as const)(
+    'matches an explicit %s tool-search output to the latest repeated call occurrence',
+    (execution) => {
+      const searchCall = (path: string) =>
+        new ToolSearchCallItem(
+          {
+            type: 'tool_search_call',
+            arguments: { paths: [path] },
+            execution,
+            ...(execution === 'server'
+              ? { call_id: 'call-repeated-search', status: 'completed' }
+              : {
+                  providerData: {
+                    call_id: 'call-repeated-search',
+                    execution,
+                  },
+                }),
+          } as any,
+          TEST_AGENT,
+        );
+      const firstCall = searchCall('first_search');
+      const latestCall = searchCall('dynamic_commit');
+      const explicitOutput = new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          status: 'completed',
+          execution,
+          tools: [{ type: 'function', name: 'dynamic_commit' }],
+          ...(execution === 'server'
+            ? { call_id: 'call-repeated-search' }
+            : {
+                providerData: {
+                  call_id: 'call-repeated-search',
+                  execution,
+                },
+              }),
+        } as any,
+        TEST_AGENT,
+      );
+      const call = {
+        ...functionCall(`call-after-repeated-${execution}-search`),
+        name: 'dynamic_commit',
+      };
+      const callItem = new ToolCallItem(call, TEST_AGENT);
+      const result = executedFunctionResult(call, 'committed');
+
+      expect(
+        selectRunItemsForBlockedOutput([
+          firstCall,
+          latestCall,
+          explicitOutput,
+          callItem,
+          result,
+        ]),
+      ).toEqual([latestCall, explicitOutput, callItem, result]);
+    },
+  );
+
+  it.each(['client', 'server'] as const)(
+    'matches an anonymous %s tool-search output to the oldest occurrence left by an explicit output',
+    (execution) => {
+      const searchCall = (path: string) =>
+        new ToolSearchCallItem(
+          {
+            type: 'tool_search_call',
+            arguments: { paths: [path] },
+            execution,
+            ...(execution === 'server'
+              ? { call_id: 'call-mixed-search', status: 'completed' }
+              : {
+                  providerData: {
+                    call_id: 'call-mixed-search',
+                    execution,
+                  },
+                }),
+          } as any,
+          TEST_AGENT,
+        );
+      const firstCall = searchCall('dynamic_commit');
+      const latestCall = searchCall('other_tool');
+      const explicitOutput = new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          status: 'completed',
+          execution,
+          tools: [{ type: 'function', name: 'other_tool' }],
+          ...(execution === 'server'
+            ? { call_id: 'call-mixed-search' }
+            : {
+                providerData: {
+                  call_id: 'call-mixed-search',
+                  execution,
+                },
+              }),
+        } as any,
+        TEST_AGENT,
+      );
+      const anonymousOutput = new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          status: 'completed',
+          execution,
+          tools: [{ type: 'function', name: 'dynamic_commit' }],
+        } as any,
+        TEST_AGENT,
+      );
+      const call = {
+        ...functionCall(`call-after-mixed-${execution}-search`),
+        name: 'dynamic_commit',
+      };
+      const callItem = new ToolCallItem(call, TEST_AGENT);
+      const result = executedFunctionResult(call, 'committed');
+
+      expect(
+        selectRunItemsForBlockedOutput([
+          firstCall,
+          latestCall,
+          explicitOutput,
+          anonymousOutput,
+          callItem,
+          result,
+        ]),
+      ).toEqual([firstCall, anonymousOutput, callItem, result]);
+    },
+  );
+
+  it('retains the latest completed tool-search refresh for a committed dynamic tool', () => {
+    const searchItems = ['first', 'second'].flatMap((suffix) => [
+      new ToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          arguments: { paths: ['dynamic_commit'] },
+          execution: 'client',
+          providerData: {
+            call_id: `call-${suffix}-refresh`,
+            execution: 'client',
+          },
+        },
+        TEST_AGENT,
+      ),
+      new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          status: 'completed',
+          execution: 'client',
+          tools: [{ type: 'function', name: 'dynamic_commit' }],
+          providerData: {
+            call_id: `call-${suffix}-refresh`,
+            execution: 'client',
+          },
+        },
+        TEST_AGENT,
+      ),
+    ]);
+    const call = {
+      ...functionCall('call-after-refreshed-search'),
+      name: 'dynamic_commit',
+    };
+    const callItem = new ToolCallItem(call, TEST_AGENT);
+    const result = executedFunctionResult(call, 'committed');
+
+    expect(
+      selectRunItemsForBlockedOutput([...searchItems, callItem, result]),
+    ).toEqual([...searchItems.slice(2), callItem, result]);
+  });
+
+  it.each([
+    ['client', 'incomplete'],
+    ['client', 'out_of_order'],
+    ['server', 'incomplete'],
+    ['server', 'out_of_order'],
+  ] as const)(
+    'keeps a completed %s supplier when a different-key occurrence is %s',
+    (execution, invalidKind) => {
+      const searchCall = (key: string) =>
+        new ToolSearchCallItem(
+          {
+            type: 'tool_search_call',
+            arguments: { paths: ['dynamic_commit'] },
+            execution,
+            ...(execution === 'server'
+              ? { call_id: key, status: 'completed' }
+              : {
+                  providerData: { call_id: key, execution },
+                }),
+          } as any,
+          TEST_AGENT,
+        );
+      const searchOutput = (key: string, status: 'completed' | 'incomplete') =>
+        new ToolSearchOutputItem(
+          {
+            type: 'tool_search_output',
+            status,
+            execution,
+            tools: [{ type: 'function', name: 'dynamic_commit' }],
+            ...(execution === 'server'
+              ? { call_id: key }
+              : {
+                  providerData: { call_id: key, execution },
+                }),
+          } as any,
+          TEST_AGENT,
+        );
+      const firstCall = searchCall('call-effective-first');
+      const firstOutput = searchOutput('call-effective-first', 'completed');
+      const invalidCall = searchCall('call-ineffective-second');
+      const invalidOutput = searchOutput(
+        'call-ineffective-second',
+        invalidKind === 'incomplete' ? 'incomplete' : 'completed',
+      );
+      const invalidItems =
+        invalidKind === 'out_of_order'
+          ? [invalidOutput, invalidCall]
+          : [invalidCall, invalidOutput];
+      const call = {
+        ...functionCall('call-after-ineffective-search'),
+        name: 'dynamic_commit',
+      };
+      const callItem = new ToolCallItem(call, TEST_AGENT);
+      const result = executedFunctionResult(call, 'committed');
+
+      expect(
+        selectRunItemsForBlockedOutput([
+          firstCall,
+          firstOutput,
+          ...invalidItems,
+          callItem,
+          result,
+        ]),
+      ).toEqual([firstCall, firstOutput, callItem, result]);
+    },
+  );
+
+  it('invalidates an earlier supplier when a same-key replacement is incomplete', () => {
+    const searchCall = new ToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        arguments: { paths: ['dynamic_commit'] },
+        execution: 'client',
+        providerData: {
+          call_id: 'call-invalidated-search',
+          execution: 'client',
+        },
+      },
+      TEST_AGENT,
+    );
+    const completedOutput = new ToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        status: 'completed',
+        execution: 'client',
+        tools: [{ type: 'function', name: 'dynamic_commit' }],
+        providerData: {
+          call_id: 'call-invalidated-search',
+          execution: 'client',
+        },
+      },
+      TEST_AGENT,
+    );
+    const incompleteReplacement = new ToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        status: 'incomplete',
+        execution: 'client',
+        tools: [{ type: 'function', name: 'dynamic_commit' }],
+        providerData: {
+          call_id: 'call-invalidated-search',
+          execution: 'client',
+        },
+      },
+      TEST_AGENT,
+    );
+    const call = {
+      ...functionCall('call-after-invalidated-search'),
+      name: 'dynamic_commit',
+    };
+
+    expect(
+      selectRunItemsForBlockedOutput([
+        searchCall,
+        completedOutput,
+        incompleteReplacement,
+        new ToolCallItem(call, TEST_AGENT),
+        executedFunctionResult(call, 'committed'),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('rejects serialized pending blocked-output transaction authority', async () => {
+    const call = {
+      ...functionCall('call-serialized-before-search'),
+      name: 'dynamic_commit',
+    };
+    const callItem = new ToolCallItem(call, TEST_AGENT);
+    const result = executedFunctionResult(call, 'committed');
+    const searchCall = new ToolSearchCallItem(
+      {
+        type: 'tool_search_call',
+        call_id: 'call-serialized-late-search',
+        status: 'completed',
+        execution: 'server',
+        arguments: { paths: ['dynamic_commit'] },
+      } as any,
+      TEST_AGENT,
+    );
+    const searchOutput = new ToolSearchOutputItem(
+      {
+        type: 'tool_search_output',
+        call_id: 'call-serialized-late-search',
+        status: 'completed',
+        execution: 'server',
+        tools: [{ type: 'function', name: 'dynamic_commit' }],
+      } as any,
+      TEST_AGENT,
+    );
+    const state = new RunState(
+      new RunContext(undefined),
+      'input',
+      TEST_AGENT,
+      10,
+    );
+    state._generatedItems = [callItem, result, searchCall, searchOutput];
+    state._currentTurnBlockedSessionStartIndex = 0;
+    state._currentTurnSessionHistoryTransactionSessionId =
+      'serialized-plan-session';
+    state._currentTurnSessionReasoningItemIdPolicy = 'preserve';
+    state._currentTurnSessionHistoryTransactionInputItems = [];
+    state._currentTurnSessionHistoryTransactionCanReplaceAcceptedOutput = true;
+    state._pendingSessionHistoryTransaction = {
+      operationId: `${state._sessionHistoryTransactionId}:${state._currentTurn}:blocked_append:0:4`,
+      transactionKind: 'blocked_append',
+      runItemIndexes: [0, 1],
+      replaceRunItemIndexes: [],
+      alreadyPersistedCount: 0,
+      persistedItemCount: 4,
+      deferredItemIndexes: [2, 3],
+    };
+
+    await expect(
+      RunState.fromString(TEST_AGENT, state.toString()),
+    ).rejects.toThrow(
+      'Serialized output guardrail session transaction authority cannot be resumed safely.',
+    );
+  });
+});
 
 function shellCall(callId: string, command: string): protocol.ShellCallItem {
   return {
@@ -2541,6 +3747,109 @@ describe('saveToSession', () => {
       compaction,
     ]);
     expect(state._currentTurnPersistedItemCount).toBe(2);
+  });
+
+  it('retries a blocked-output transaction without duplicating committed tool effects', async () => {
+    class AcceptedBlockedThenThrowSession extends TransactionMemorySession {
+      operationIds: string[] = [];
+      transactions: SessionHistoryTransactionArgs['transaction'][] = [];
+      preserveReasoningIds = false;
+      private throwAfterFirstCommit = true;
+
+      preserveReasoningItemIdsForPersistence(): boolean {
+        return this.preserveReasoningIds;
+      }
+
+      override async applyHistoryTransaction(
+        args: SessionHistoryTransactionArgs,
+      ): Promise<void> {
+        this.operationIds.push(args.operationId);
+        this.transactions.push(structuredClone(args.transaction));
+        await super.applyHistoryTransaction(args);
+        if (this.throwAfterFirstCommit) {
+          this.throwAfterFirstCommit = false;
+          throw new Error('write outcome unknown');
+        }
+      }
+    }
+
+    const call = {
+      ...functionCall('call-blocked-retry'),
+      providerData: undefined,
+    };
+    const callItem = new ToolCallItem(call, TEST_AGENT);
+    const resultItem = executedFunctionResult(call, 'committed');
+    const session = new AcceptedBlockedThenThrowSession();
+    const state = new RunState(new RunContext(), 'input', TEST_AGENT, 1);
+    state.setReasoningItemIdPolicy('omit');
+    state._generatedItems = [
+      new ReasoningItem(
+        {
+          type: 'reasoning',
+          id: 'reasoning-blocked-retry',
+          content: [{ type: 'input_text', text: 'run the committed tool' }],
+        },
+        TEST_AGENT,
+      ),
+      callItem,
+      resultItem,
+    ];
+    const result = new RunResult(state as any);
+    const input = fakeModelMessage('blocked transaction input');
+    state._currentTurnSessionHistoryTransactionInputItems = [input];
+
+    await expect(
+      saveToSession(session, [input], result, {
+        outputBlocked: true,
+      }),
+    ).rejects.toThrow('write outcome unknown');
+    expect(state._currentTurnPersistedItemCount).toBe(0);
+    expect(state._pendingSessionHistoryTransaction).toBeDefined();
+    expect(
+      (session.transactions[0] as { items: AgentInputItem[] }).items.find(
+        (item) => item.type === 'function_call',
+      ),
+    ).not.toHaveProperty('providerData');
+    session.preserveReasoningIds = true;
+
+    const differentSession = new TransactionMemorySession({
+      sessionId: 'different-session',
+    });
+
+    await expect(
+      saveToSession(differentSession, [], new RunResult(state as any), {
+        outputBlocked: true,
+      }),
+    ).rejects.toThrow(
+      'Output guardrail session persistence belongs to a different session',
+    );
+    expect(await differentSession.getItems()).toEqual([]);
+    expect(state._pendingSessionHistoryTransaction).toBeDefined();
+
+    await expect(
+      saveToSession(session, [], new RunResult(state as any), {
+        outputBlocked: true,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(session.operationIds).toHaveLength(2);
+    expect(session.operationIds[1]).toBe(session.operationIds[0]);
+    const persistedItems = await session.getItems();
+    expect(persistedItems).toEqual(
+      JSON.parse(
+        JSON.stringify([
+          input,
+          {
+            type: 'reasoning',
+            content: [{ type: 'input_text', text: 'run the committed tool' }],
+          },
+          call,
+          resultItem.rawItem,
+        ]),
+      ),
+    );
+    expect(state._currentTurnPersistedItemCount).toBe(3);
+    expect(state._pendingSessionHistoryTransaction).toBeUndefined();
   });
 
   it('does not require a process global for debug session logging', async () => {
