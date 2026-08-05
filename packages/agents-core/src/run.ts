@@ -118,7 +118,10 @@ import type {
   CallModelInputFilter,
   PreparedModelCall,
 } from './runner/types';
-import { tryHandleRunError } from './runner/errorHandlers';
+import {
+  attachRunStateToError,
+  tryHandleRunError,
+} from './runner/errorHandlers';
 import type { RunErrorHandlers } from './runner/errorHandlers';
 import {
   finalizeSandboxRuntime,
@@ -1393,6 +1396,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
       } catch (err) {
         state._currentTurnInProgress = false;
+        attachRunStateToError(err, state);
         const handledResult = await tryHandleRunError({
           error: err,
           state,
@@ -2114,6 +2118,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       }
     } catch (error) {
       result.state._currentTurnInProgress = false;
+      attachRunStateToError(error, result.state);
       suppressStreamInputPersistence =
         error instanceof CompactionItemValidationError;
       if (guardrailTracker.pending) {
