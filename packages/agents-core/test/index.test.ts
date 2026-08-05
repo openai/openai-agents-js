@@ -9,6 +9,8 @@ import type {
   AgentToolOptionsWithDefault,
   AgentToolOptionsWithParameters,
   RunHookEvents,
+  SessionHistoryTransactionArgs,
+  SessionHistoryTransactionAwareSession,
   ToolNameCollisionPolicy,
 } from '../src/index';
 import * as Sandbox from '../src/sandbox';
@@ -24,6 +26,9 @@ describe('index.ts', () => {
     expect(agent.name).toEqual('TestAgent');
     expect(typeof AgentsCore.setSensitiveDataLoggingEnabled).toBe('function');
     expect(typeof AgentsCore.RunCompactionItem).toBe('function');
+    expect(typeof AgentsCore.isSessionHistoryTransactionAwareSession).toBe(
+      'function',
+    );
   });
 
   test('exposes public lifecycle and agent tool types', () => {
@@ -36,6 +41,8 @@ describe('index.ts', () => {
       AgentToolOptionsWithDefault<undefined, TestAgent>,
       AgentToolOptionsWithParameters<undefined, TestAgent, typeof _parameters>,
       AgentTool<undefined, TestAgent, typeof _parameters>,
+      SessionHistoryTransactionArgs,
+      SessionHistoryTransactionAwareSession,
       ToolNameCollisionPolicy,
     ];
 
