@@ -106,7 +106,10 @@ import {
   buildFunctionAbortResult,
   COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
 } from './streamReconciliation';
-import { runWithSiblingCancellation } from './siblingCancellation';
+import {
+  isSiblingCancellationSignal,
+  runWithSiblingCancellation,
+} from './siblingCancellation';
 
 type FunctionToolCallDeps<TContext = UnknownContext> = {
   agent: Agent<TContext, any>;
@@ -1113,6 +1116,9 @@ async function runApprovedFunctionTool<TContext>(
         });
         executionStatus = 'executed';
         throwIfRedactionPromoted(redactedBeforeInvocation);
+        if (isSiblingCancellationSignal(signal)) {
+          signal?.throwIfAborted();
+        }
         const redactedBeforeOutputGuardrails = refreshRedaction();
         const outputGuardrailResults: ToolOutputGuardrailResult[] = [];
         try {

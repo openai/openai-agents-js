@@ -1,5 +1,13 @@
 import { combineAbortSignals, isAbortError } from '../utils/abortSignals';
 
+class SiblingCancellationError extends Error {}
+
+export function isSiblingCancellationSignal(
+  signal: AbortSignal | undefined,
+): boolean {
+  return signal?.reason instanceof SiblingCancellationError;
+}
+
 type ConcurrentTask<T> = (
   signal?: AbortSignal,
   cancelSiblings?: () => void,
@@ -31,7 +39,7 @@ export async function runWithSiblingCancellation(
   );
   let firstFailureOwner: number | undefined;
   let firstFailure: { value: unknown } | undefined;
-  const siblingFailureReason = new Error(
+  const siblingFailureReason = new SiblingCancellationError(
     'Cancelled because a sibling task failed.',
   );
   const cancelSiblings = () => {

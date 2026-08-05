@@ -4403,6 +4403,98 @@ describe('executeShellActions', () => {
       expect(lateSideEffect).toBe(false);
     });
 
+    it('skips post-invocation work when an uncapped sibling ignores cancellation', async () => {
+      const primaryError = new Error('primary tool failure');
+      let markSlowToolStarted: (() => void) | undefined;
+      const slowToolStarted = new Promise<void>((resolve) => {
+        markSlowToolStarted = resolve;
+      });
+      let markCancellationObserved: (() => void) | undefined;
+      const cancellationObserved = new Promise<void>((resolve) => {
+        markCancellationObserved = resolve;
+      });
+      let releaseSlowTool: (() => void) | undefined;
+      const slowToolCanFinish = new Promise<void>((resolve) => {
+        releaseSlowTool = resolve;
+      });
+      const outputGuardrail = defineToolOutputGuardrail({
+        name: 'should_not_run',
+        run: vi.fn(async () => ToolGuardrailFunctionOutputFactory.allow()),
+      });
+      const customDataExtractor = vi.fn(() => ({ shouldNotRun: true }));
+      const failingTool = tool({
+        name: 'failing_tool',
+        description: 'fails after its sibling starts',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: async () => {
+          await slowToolStarted;
+          throw primaryError;
+        },
+      }) as unknown as FunctionTool;
+      const slowTool = tool({
+        name: 'slow_tool',
+        description: 'ignores cancellation and resolves later',
+        parameters: z.object({}),
+        outputGuardrails: [outputGuardrail],
+        customDataExtractor,
+        execute: async (_input, _context, details) => {
+          markSlowToolStarted?.();
+          details?.signal?.addEventListener(
+            'abort',
+            () => markCancellationObserved?.(),
+            { once: true },
+          );
+          await slowToolCanFinish;
+          return 'late tool output';
+        },
+      }) as unknown as FunctionTool;
+      const end = vi.fn();
+      runner.on('agent_tool_end', end);
+
+      let settled = false;
+      const resultPromise = executeFunctionToolCalls(
+        state._currentAgent,
+        [
+          {
+            toolCall: {
+              ...toolCall,
+              callId: 'failing-call',
+              name: 'failing_tool',
+            },
+            tool: failingTool,
+          },
+          {
+            toolCall: {
+              ...toolCall,
+              callId: 'slow-call',
+              name: 'slow_tool',
+            },
+            tool: slowTool,
+          },
+        ],
+        runner,
+        state,
+      ).finally(() => {
+        settled = true;
+      });
+      await cancellationObserved;
+
+      expect(settled).toBe(false);
+      releaseSlowTool?.();
+
+      const error = await resultPromise.catch((caught) => caught);
+      const slowToolEndCalls = end.mock.calls.filter(
+        ([, , endedTool]) => endedTool === slowTool,
+      );
+      expect(error).toBeInstanceOf(ToolCallError);
+      expect((error as ToolCallError).error).toBe(primaryError);
+      expect(outputGuardrail.run).not.toHaveBeenCalled();
+      expect(customDataExtractor).not.toHaveBeenCalled();
+      expect(slowToolEndCalls).toHaveLength(1);
+      expect(slowToolEndCalls[0]?.[3]).not.toBe('late tool output');
+    });
+
     it('reserves abort-shaped nested failure ownership while cleanup drains', async () => {
       const primaryError = new Error('primary function failure');
       primaryError.name = 'AbortError';
