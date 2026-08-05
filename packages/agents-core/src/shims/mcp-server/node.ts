@@ -1,7 +1,12 @@
-import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { DEFAULT_REQUEST_TIMEOUT_MSEC } from '@modelcontextprotocol/sdk/shared/protocol.js';
-import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import {
+  DEFAULT_REQUEST_TIMEOUT_MSEC,
+  ProtocolError,
+  ProtocolErrorCode,
+  type CacheableRequestOptions,
+  type Client,
+  type RequestOptions,
+  type Transport,
+} from '@modelcontextprotocol/client';
 
 import {
   BaseMCPServerStdio,
@@ -38,18 +43,14 @@ export interface SessionMessage {
   message: any;
 }
 
-type StreamableHttpClientModule =
-  typeof import('@modelcontextprotocol/sdk/client/index.js');
-type StreamableHttpTransportModule =
-  typeof import('@modelcontextprotocol/sdk/client/streamableHttp.js');
-type MCPTypesModule = typeof import('@modelcontextprotocol/sdk/types.js');
+type MCPClientModule = typeof import('@modelcontextprotocol/client');
 
 function failedToImport(error: unknown): never {
   logger.error(
     `
-Failed to load the MCP SDK. Please install the @modelcontextprotocol/sdk package.
+Failed to load the MCP SDK. Please install the @modelcontextprotocol/client package.
 
-npm install @modelcontextprotocol/sdk
+npm install @modelcontextprotocol/client
     `.trim(),
   );
   throw error;
@@ -78,6 +79,130 @@ function buildRequestOptions(
   return Object.keys(mergedOptions).length === 0 ? undefined : mergedOptions;
 }
 
+function buildCacheableRequestOptions(
+  clientSessionTimeoutSeconds?: number,
+  cacheMode: CacheableRequestOptions['cacheMode'] = 'refresh',
+): CacheableRequestOptions {
+  return {
+    ...buildRequestOptions(clientSessionTimeoutSeconds),
+    cacheMode,
+  };
+}
+
+async function listAllMcpTools(
+  client: Client,
+  requestOptions: RequestOptions | undefined,
+): Promise<{ tools: MCPTool[] }> {
+  const tools: MCPTool[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+
+  while (true) {
+    let response: { tools: MCPTool[]; nextCursor?: string };
+    try {
+      response = (await client.request(
+        {
+          method: 'tools/list',
+          ...(cursor === undefined ? {} : { params: { cursor } }),
+        },
+        requestOptions,
+      )) as { tools: MCPTool[]; nextCursor?: string };
+    } catch (error) {
+      if (cursor === undefined) {
+        throw error;
+      }
+      throw new Error(
+        'MCP tool listing failed while fetching a continuation page.',
+      );
+    }
+    tools.push(...response.tools);
+
+    const nextCursor = response.nextCursor;
+    if (nextCursor === undefined) {
+      return { tools };
+    }
+    if (seenCursors.has(nextCursor)) {
+      throw new Error(
+        'MCP server returned a repeated cursor while listing tools.',
+      );
+    }
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
+  }
+}
+
+async function listMcpTools(
+  client: Client,
+  requestOptions: RequestOptions | undefined,
+): Promise<{ tools: MCPTool[] }> {
+  if (getNegotiatedModernCapabilities(client) !== undefined) {
+    const response = await client.listTools(undefined, {
+      ...requestOptions,
+      cacheMode: 'bypass',
+    });
+    return { tools: response.tools as MCPTool[] };
+  }
+  return listAllMcpTools(client, requestOptions);
+}
+
+function getNegotiatedModernCapabilities(client: Client) {
+  const capabilities = client.getServerCapabilities();
+  return client.getProtocolEra() === 'modern' && capabilities !== undefined
+    ? capabilities
+    : undefined;
+}
+
+function getListedToolForCall(tools: readonly MCPTool[], toolName: string) {
+  const tool = tools.find((tool) => tool.name === toolName) as
+    | (MCPTool & {
+        execution?: { taskSupport?: 'forbidden' | 'optional' | 'required' };
+      })
+    | undefined;
+  if (tool?.execution?.taskSupport === 'required') {
+    throw new ProtocolError(
+      ProtocolErrorCode.InvalidRequest,
+      `Tool "${toolName}" requires task-based execution. Use client.experimental.tasks.callToolStream() instead.`,
+    );
+  }
+  return tool;
+}
+
+function listResourcesPage(
+  client: Client,
+  params: MCPListResourcesParams | undefined,
+  requestOptions: RequestOptions | undefined,
+): Promise<MCPListResourcesResult> {
+  const capabilities = getNegotiatedModernCapabilities(client);
+  if (capabilities !== undefined && capabilities.resources === undefined) {
+    return Promise.resolve({ resources: [] });
+  }
+  return client.request(
+    {
+      method: 'resources/list',
+      ...(params === undefined ? {} : { params }),
+    },
+    requestOptions,
+  ) as Promise<MCPListResourcesResult>;
+}
+
+function listResourceTemplatesPage(
+  client: Client,
+  params: MCPListResourcesParams | undefined,
+  requestOptions: RequestOptions | undefined,
+): Promise<MCPListResourceTemplatesResult> {
+  const capabilities = getNegotiatedModernCapabilities(client);
+  if (capabilities !== undefined && capabilities.resources === undefined) {
+    return Promise.resolve({ resourceTemplates: [] });
+  }
+  return client.request(
+    {
+      method: 'resources/templates/list',
+      ...(params === undefined ? {} : { params }),
+    },
+    requestOptions,
+  ) as Promise<MCPListResourceTemplatesResult>;
+}
+
 async function callWithMCPRequestSignal<T>(
   sourceSignal: AbortSignal | undefined,
   call: (requestSignal: AbortSignal | undefined) => Promise<T>,
@@ -103,73 +228,6 @@ type MaybeProtocolVersionTransport = MaybeSessionTransport & {
   protocolVersion?: string;
 };
 
-type ClientWithToolMetadataCache = {
-  cacheToolMetadata?: (tools: unknown[]) => void;
-};
-
-type MCPToolsPage = {
-  tools: MCPTool[];
-  nextCursor?: string;
-};
-
-type MCPToolsResultSchema = Parameters<Client['request']>[1];
-
-function getOptionalClientToolMetadataCache(
-  client: Client,
-): ClientWithToolMetadataCache['cacheToolMetadata'] {
-  const cacheToolMetadata = (client as unknown as ClientWithToolMetadataCache)
-    .cacheToolMetadata;
-  return typeof cacheToolMetadata === 'function'
-    ? cacheToolMetadata
-    : undefined;
-}
-
-function getClientToolMetadataCache(
-  client: Client,
-): NonNullable<ClientWithToolMetadataCache['cacheToolMetadata']> {
-  const cacheToolMetadata = getOptionalClientToolMetadataCache(client);
-  if (typeof cacheToolMetadata !== 'function') {
-    throw new Error(
-      'The installed MCP SDK does not support tool metadata caching required for paginated tool listing.',
-    );
-  }
-  return cacheToolMetadata;
-}
-
-async function requestMcpToolsPage(
-  client: Client,
-  resultSchema: MCPToolsResultSchema,
-  options: RequestOptions | undefined,
-  cursor: string | undefined,
-): Promise<MCPToolsPage> {
-  return (await client.request(
-    {
-      method: 'tools/list',
-      params: cursor === undefined ? undefined : { cursor },
-    },
-    resultSchema,
-    options,
-  )) as MCPToolsPage;
-}
-
-function cacheClientToolMetadata(client: Client, tools: MCPTool[]): void {
-  const cacheToolMetadata = getClientToolMetadataCache(client);
-  cacheToolMetadata.call(client, tools);
-}
-
-function replaceClientToolMetadata(
-  client: Client,
-  tools: MCPTool[],
-  fallbackTools: MCPTool[],
-): void {
-  try {
-    cacheClientToolMetadata(client, tools);
-  } catch (error) {
-    cacheClientToolMetadata(client, fallbackTools);
-    throw error;
-  }
-}
-
 function assertMcpToolListingIsCurrent(args: {
   listedClient: Client;
   currentClient: Client | null;
@@ -181,43 +239,6 @@ function assertMcpToolListingIsCurrent(args: {
     args.currentGeneration !== args.listedGeneration
   ) {
     throw new Error('MCP tool listing became stale before it completed.');
-  }
-}
-
-async function listAllMcpTools(args: {
-  fetchPage: (cursor: string | undefined) => Promise<MCPToolsPage>;
-  onPage: (response: MCPToolsPage) => void;
-}): Promise<MCPTool[]> {
-  const tools: MCPTool[] = [];
-  const seenCursors = new Set<string>();
-  let cursor: string | undefined;
-
-  while (true) {
-    let page: MCPToolsPage;
-    try {
-      page = await args.fetchPage(cursor);
-      args.onPage(page);
-    } catch (error) {
-      if (cursor === undefined) {
-        throw error;
-      }
-      throw new Error(
-        'MCP tool listing failed while fetching a continuation page.',
-      );
-    }
-    tools.push(...page.tools);
-
-    const nextCursor = page.nextCursor;
-    if (nextCursor === undefined) {
-      return tools;
-    }
-    if (seenCursors.has(nextCursor)) {
-      throw new Error(
-        'MCP server returned a repeated cursor while listing tools.',
-      );
-    }
-    seenCursors.add(nextCursor);
-    cursor = nextCursor;
   }
 }
 
@@ -245,14 +266,6 @@ function getTransportProtocolVersion(transport: unknown): string | undefined {
   }
 
   return undefined;
-}
-
-function isNotConnectedError(error: unknown, client: Client): boolean {
-  return (
-    error instanceof Error &&
-    error.message === 'Not connected' &&
-    client.transport == null
-  );
 }
 
 function attachCause(error: unknown, cause: unknown): unknown {
@@ -395,23 +408,25 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     this._toolsList = [];
     try {
       const { StdioClientTransport } =
-        await import('@modelcontextprotocol/sdk/client/stdio.js').catch(
+        await import('@modelcontextprotocol/client/stdio').catch(
           failedToImport,
         );
-      const { Client } =
-        await import('@modelcontextprotocol/sdk/client/index.js').catch(
-          failedToImport,
-        );
+      const { Client } = await import('@modelcontextprotocol/client').catch(
+        failedToImport,
+      );
       this.transport = new StdioClientTransport({
         command: this.params.command,
         args: this.params.args,
         env: this.params.env,
         cwd: this.params.cwd,
       });
-      this.session = new Client({
-        name: this._name,
-        version: '1.0.0', // You may want to make this configurable
-      });
+      this.session = new Client(
+        {
+          name: this._name,
+          version: '1.0.0', // You may want to make this configurable
+        },
+        { versionNegotiation: { mode: 'auto' }, listMaxPages: 0 },
+      );
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
@@ -434,8 +449,6 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   }
 
   async listTools(): Promise<MCPTool[]> {
-    const { ListToolsResultSchema } =
-      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
@@ -449,26 +462,16 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
       this.clientSessionTimeoutSeconds,
     );
     const session = this.session;
-    getClientToolMetadataCache(session);
     const cacheGeneration = this._toolsCacheGeneration;
-    const tools = await listAllMcpTools({
-      fetchPage: (cursor) =>
-        requestMcpToolsPage(
-          session,
-          ListToolsResultSchema,
-          requestOptions,
-          cursor,
-        ),
-      onPage: (response) =>
-        this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`),
-    });
+    const response = await listMcpTools(session, requestOptions);
+    this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     assertMcpToolListingIsCurrent({
       listedClient: session,
       currentClient: this.session,
       listedGeneration: cacheGeneration,
       currentGeneration: this._toolsCacheGeneration,
     });
-    replaceClientToolMetadata(session, tools, this._toolsList);
+    const tools = response.tools as MCPTool[];
     this._toolsList = tools;
     this._cacheDirty = false;
     return tools;
@@ -489,8 +492,6 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     meta?: Record<string, unknown> | null,
     options?: MCPCallToolOptions,
   ): Promise<CallToolResult> {
-    const { CallToolResultSchema } =
-      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
@@ -505,17 +506,17 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     const response = await callWithMCPRequestSignal(
       options?.signal,
       (requestSignal) =>
-        session.callTool(
-          params,
-          undefined,
-          buildRequestOptions(this.clientSessionTimeoutSeconds, {
+        session.callTool(params, {
+          ...buildRequestOptions(this.clientSessionTimeoutSeconds, {
             timeout: this.timeout,
             signal: requestSignal,
           }),
-        ),
+          toolDefinition: getListedToolForCall(this._toolsList, toolName),
+        }),
     );
-    const parsed = CallToolResultSchema.parse(response);
-    const result = attachParsedCallToolResultMetadata(parsed as CallToolResult);
+    const result = attachParsedCallToolResultMetadata(
+      response as CallToolResult,
+    );
     this.debugLog(
       () =>
         `Called tool ${toolName} (args: ${JSON.stringify(args)}, result: ${JSON.stringify(result)})`,
@@ -526,8 +527,6 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   async listResources(
     params?: MCPListResourcesParams,
   ): Promise<MCPListResourcesResult> {
-    const { ListResourcesResultSchema } =
-      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
@@ -536,16 +535,18 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     const requestOptions = buildRequestOptions(
       this.clientSessionTimeoutSeconds,
     );
-    const response = await this.session.listResources(params, requestOptions);
+    const response = await listResourcesPage(
+      this.session,
+      params,
+      requestOptions,
+    );
     this.debugLog(() => `Listed resources: ${JSON.stringify(response)}`);
-    return ListResourcesResultSchema.parse(response) as MCPListResourcesResult;
+    return response as MCPListResourcesResult;
   }
 
   async listResourceTemplates(
     params?: MCPListResourcesParams,
   ): Promise<MCPListResourceTemplatesResult> {
-    const { ListResourceTemplatesResultSchema } =
-      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
@@ -554,32 +555,29 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     const requestOptions = buildRequestOptions(
       this.clientSessionTimeoutSeconds,
     );
-    const response = await this.session.listResourceTemplates(
+    const response = await listResourceTemplatesPage(
+      this.session,
       params,
       requestOptions,
     );
     this.debugLog(
       () => `Listed resource templates: ${JSON.stringify(response)}`,
     );
-    return ListResourceTemplatesResultSchema.parse(
-      response,
-    ) as MCPListResourceTemplatesResult;
+    return response as MCPListResourceTemplatesResult;
   }
 
   async readResource(uri: string): Promise<MCPReadResourceResult> {
-    const { ReadResourceResultSchema } =
-      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
       );
     }
-    const requestOptions = buildRequestOptions(
+    const requestOptions = buildCacheableRequestOptions(
       this.clientSessionTimeoutSeconds,
     );
     const response = await this.session.readResource({ uri }, requestOptions);
     this.debugLog(() => `Read resource ${uri}: ${JSON.stringify(response)}`);
-    return ReadResourceResultSchema.parse(response) as MCPReadResourceResult;
+    return response as MCPReadResourceResult;
   }
 
   get name() {
@@ -643,23 +641,23 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     this._toolsList = [];
     try {
       const { SSEClientTransport } =
-        await import('@modelcontextprotocol/sdk/client/sse.js').catch(
-          failedToImport,
-        );
-      const { Client } =
-        await import('@modelcontextprotocol/sdk/client/index.js').catch(
-          failedToImport,
-        );
+        await import('@modelcontextprotocol/client').catch(failedToImport);
+      const { Client } = await import('@modelcontextprotocol/client').catch(
+        failedToImport,
+      );
       this.transport = new SSEClientTransport(new URL(this.params.url), {
         authProvider: this.params.authProvider,
         requestInit: this.params.requestInit,
         eventSourceInit: this.params.eventSourceInit,
         fetch: this.params.fetch,
       });
-      this.session = new Client({
-        name: this._name,
-        version: '1.0.0', // You may want to make this configurable
-      });
+      this.session = new Client(
+        {
+          name: this._name,
+          version: '1.0.0', // You may want to make this configurable
+        },
+        { listMaxPages: 0 },
+      );
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
       );
@@ -687,8 +685,6 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   }
 
   async listTools(): Promise<MCPTool[]> {
-    const { ListToolsResultSchema } =
-      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
@@ -702,28 +698,20 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
       this.clientSessionTimeoutSeconds,
     );
     const session = this.session;
-    getClientToolMetadataCache(session);
     const cacheGeneration = this._toolsCacheGeneration;
-    const tools = await listAllMcpTools({
-      fetchPage: (cursor) =>
-        runMcpTransportOperation(this.params.url, 'SSE list tools', () =>
-          requestMcpToolsPage(
-            session,
-            ListToolsResultSchema,
-            requestOptions,
-            cursor,
-          ),
-        ),
-      onPage: (response) =>
-        this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`),
-    });
+    const response = await runMcpTransportOperation(
+      this.params.url,
+      'SSE list tools',
+      () => listMcpTools(session, requestOptions),
+    );
+    this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     assertMcpToolListingIsCurrent({
       listedClient: session,
       currentClient: this.session,
       listedGeneration: cacheGeneration,
       currentGeneration: this._toolsCacheGeneration,
     });
-    replaceClientToolMetadata(session, tools, this._toolsList);
+    const tools = response.tools as MCPTool[];
     this._toolsList = tools;
     this._cacheDirty = false;
     return tools;
@@ -744,8 +732,6 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     meta?: Record<string, unknown> | null,
     options?: MCPCallToolOptions,
   ): Promise<CallToolResult> {
-    const { CallToolResultSchema } =
-      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
@@ -762,19 +748,19 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
       'SSE tool call',
       () =>
         callWithMCPRequestSignal(options?.signal, (requestSignal) =>
-          session.callTool(
-            params,
-            undefined,
-            buildRequestOptions(this.clientSessionTimeoutSeconds, {
+          session.callTool(params, {
+            ...buildRequestOptions(this.clientSessionTimeoutSeconds, {
               timeout: this.timeout,
               signal: requestSignal,
             }),
-          ),
+            toolDefinition: getListedToolForCall(this._toolsList, toolName),
+          }),
         ),
       options?.signal,
     );
-    const parsed = CallToolResultSchema.parse(response);
-    const result = attachParsedCallToolResultMetadata(parsed as CallToolResult);
+    const result = attachParsedCallToolResultMetadata(
+      response as CallToolResult,
+    );
     this.debugLog(
       () =>
         `Called tool ${toolName} (args: ${JSON.stringify(args)}, result: ${JSON.stringify(result)})`,
@@ -785,8 +771,6 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   async listResources(
     params?: MCPListResourcesParams,
   ): Promise<MCPListResourcesResult> {
-    const { ListResourcesResultSchema } =
-      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
@@ -798,17 +782,15 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     const response = await runMcpTransportOperation(
       this.params.url,
       'SSE list resources',
-      () => this.session!.listResources(params, requestOptions),
+      () => listResourcesPage(this.session!, params, requestOptions),
     );
     this.debugLog(() => `Listed resources: ${JSON.stringify(response)}`);
-    return ListResourcesResultSchema.parse(response) as MCPListResourcesResult;
+    return response as MCPListResourcesResult;
   }
 
   async listResourceTemplates(
     params?: MCPListResourcesParams,
   ): Promise<MCPListResourceTemplatesResult> {
-    const { ListResourceTemplatesResultSchema } =
-      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
@@ -820,25 +802,21 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     const response = await runMcpTransportOperation(
       this.params.url,
       'SSE list resource templates',
-      () => this.session!.listResourceTemplates(params, requestOptions),
+      () => listResourceTemplatesPage(this.session!, params, requestOptions),
     );
     this.debugLog(
       () => `Listed resource templates: ${JSON.stringify(response)}`,
     );
-    return ListResourceTemplatesResultSchema.parse(
-      response,
-    ) as MCPListResourceTemplatesResult;
+    return response as MCPListResourceTemplatesResult;
   }
 
   async readResource(uri: string): Promise<MCPReadResourceResult> {
-    const { ReadResourceResultSchema } =
-      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
       );
     }
-    const requestOptions = buildRequestOptions(
+    const requestOptions = buildCacheableRequestOptions(
       this.clientSessionTimeoutSeconds,
     );
     const response = await runMcpTransportOperation(
@@ -847,7 +825,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
       () => this.session!.readResource({ uri }, requestOptions),
     );
     this.debugLog(() => `Read resource ${uri}: ${JSON.stringify(response)}`);
-    return ReadResourceResultSchema.parse(response) as MCPReadResourceResult;
+    return response as MCPReadResourceResult;
   }
 
   get name() {
@@ -922,27 +900,20 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   }
 
   private async loadStreamableHttpRuntime(): Promise<{
-    clientModule: StreamableHttpClientModule;
-    transportModule: StreamableHttpTransportModule;
-    typesModule: MCPTypesModule;
+    clientModule: MCPClientModule;
+    transportModule: MCPClientModule;
   }> {
-    const [clientModule, transportModule, typesModule] = await Promise.all([
-      import('@modelcontextprotocol/sdk/client/index.js').catch(failedToImport),
-      import('@modelcontextprotocol/sdk/client/streamableHttp.js').catch(
-        failedToImport,
-      ),
-      import('@modelcontextprotocol/sdk/types.js').catch(failedToImport),
-    ]);
+    const clientModule = await import('@modelcontextprotocol/client').catch(
+      failedToImport,
+    );
 
-    return { clientModule, transportModule, typesModule };
+    return { clientModule, transportModule: clientModule };
   }
 
   private createStreamableHttpTransport(
-    StreamableHTTPClientTransport: StreamableHttpTransportModule['StreamableHTTPClientTransport'],
+    StreamableHTTPClientTransport: MCPClientModule['StreamableHTTPClientTransport'],
     options: { protocolVersion?: string; sessionId?: string } = {},
-  ): InstanceType<
-    StreamableHttpTransportModule['StreamableHTTPClientTransport']
-  > {
+  ): InstanceType<MCPClientModule['StreamableHTTPClientTransport']> {
     const transportOptions = {
       authProvider: this.params.authProvider,
       requestInit: this.params.requestInit,
@@ -960,14 +931,14 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       options.protocolVersion !== undefined &&
       typeof (
         transport as InstanceType<
-          StreamableHttpTransportModule['StreamableHTTPClientTransport']
+          MCPClientModule['StreamableHTTPClientTransport']
         > &
           MaybeProtocolVersionTransport
       ).setProtocolVersion === 'function'
     ) {
       (
         transport as InstanceType<
-          StreamableHttpTransportModule['StreamableHTTPClientTransport']
+          MCPClientModule['StreamableHTTPClientTransport']
         > &
           MaybeProtocolVersionTransport
       ).setProtocolVersion!(options.protocolVersion);
@@ -980,9 +951,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     options: { sessionId?: string } = {},
   ): Promise<{
     client: Client;
-    transport: InstanceType<
-      StreamableHttpTransportModule['StreamableHTTPClientTransport']
-    >;
+    transport: InstanceType<MCPClientModule['StreamableHTTPClientTransport']>;
   }> {
     const { clientModule, transportModule } =
       await this.loadStreamableHttpRuntime();
@@ -992,10 +961,13 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       StreamableHTTPClientTransport,
       options,
     );
-    const client = new Client({
-      name: this._name,
-      version: '1.0.0',
-    });
+    const client = new Client(
+      {
+        name: this._name,
+        version: '1.0.0',
+      },
+      { versionNegotiation: { mode: 'auto' }, listMaxPages: 0 },
+    );
     try {
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
@@ -1023,33 +995,17 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     return Math.max(1, (this.clientSessionTimeoutSeconds ?? 5) * 1000);
   }
 
-  private resetClientToolMetadataCache(client: Client): void {
-    getOptionalClientToolMetadataCache(client)?.call(client, []);
-  }
-
   private async publishConnectedStreamableHttpClient(args: {
     client: Client;
     transport: MaybeSessionTransport;
-    previousTransport?: MaybeSessionTransport | null;
+    preserveTools?: boolean;
   }): Promise<void> {
-    const previousClient = this.session;
-    const previousSessionId = getSessionId(args.previousTransport);
-    const nextSessionId = getSessionId(args.transport);
-    const preservesCommittedToolState =
-      previousClient === args.client &&
-      previousSessionId !== undefined &&
-      previousSessionId === nextSessionId;
-
-    if (!preservesCommittedToolState) {
-      this.resetClientToolMetadataCache(args.client);
-    }
-
     this.transport = args.transport;
     this.session = args.client;
     this.connectionStateVersion += 1;
     this._toolsCacheGeneration += 1;
     this._cacheDirty = true;
-    if (!preservesCommittedToolState) {
+    if (!args.preserveTools) {
       this._toolsList = [];
     }
 
@@ -1195,8 +1151,6 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     meta?: Record<string, unknown> | null,
     options?: MCPCallToolOptions,
   ): Promise<CallToolResult> {
-    const { CallToolResultSchema } =
-      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     const params = {
       name: toolName,
       arguments: args ?? {},
@@ -1205,17 +1159,15 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     const response = await callWithMCPRequestSignal(
       options?.signal,
       (requestSignal) =>
-        client.callTool(
-          params,
-          undefined,
-          buildRequestOptions(this.clientSessionTimeoutSeconds, {
+        client.callTool(params, {
+          ...buildRequestOptions(this.clientSessionTimeoutSeconds, {
             timeout: this.timeout,
             signal: requestSignal,
           }),
-        ),
+          toolDefinition: getListedToolForCall(this._toolsList, toolName),
+        }),
     );
-    const parsed = CallToolResultSchema.parse(response);
-    return attachParsedCallToolResultMetadata(parsed as CallToolResult);
+    return attachParsedCallToolResultMetadata(response as CallToolResult);
   }
 
   private async closeStreamableHttpClient(
@@ -1271,15 +1223,28 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     });
   }
 
+  private async closeStreamableHttpTransport(
+    transport: MaybeSessionTransport,
+    warningMessage: string,
+  ): Promise<void> {
+    await transport.close().catch((error) => {
+      logMcpTransportWarning(
+        this.logger,
+        this.params.url,
+        'streamable HTTP cleanup',
+        warningMessage,
+        error,
+      );
+    });
+  }
+
   private async reconnectExistingStreamableHttpClient(args: {
     client: Client;
     sessionId?: string;
     protocolVersion?: string;
   }): Promise<{
     client: Client;
-    transport: InstanceType<
-      StreamableHttpTransportModule['StreamableHTTPClientTransport']
-    >;
+    transport: InstanceType<MCPClientModule['StreamableHTTPClientTransport']>;
   }> {
     const { transportModule } = await this.loadStreamableHttpRuntime();
     const { StreamableHTTPClientTransport } = transportModule;
@@ -1296,7 +1261,10 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         this.clientSessionTimeoutSeconds,
       );
       await args.client.connect(transport, requestOptions);
-      if (args.sessionId !== undefined) {
+      if (
+        args.sessionId !== undefined &&
+        args.client.getProtocolEra() === 'legacy'
+      ) {
         // Reconnecting with an existing session skips initialize(), so resend
         // initialized to reopen the shared SSE stream for async responses.
         await this.reopenSharedStreamableHttpSession(args.client);
@@ -1381,17 +1349,26 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       }
 
       try {
-        await this.closeStreamableHttpClient(
-          {
-            client: previousClient,
-            transport: previousTransport,
-          },
-          {
-            terminateSession: false,
-            closeWarningMessage: 'Failed to close stale MCP client:',
-            terminateWarningMessage: 'Failed to terminate stale MCP session:',
-          },
-        );
+        if (sessionId === undefined) {
+          await this.closeStreamableHttpClient(
+            {
+              client: previousClient,
+              transport: previousTransport,
+            },
+            {
+              terminateSession: false,
+              closeWarningMessage: 'Failed to close stale MCP client:',
+              terminateWarningMessage: 'Failed to terminate stale MCP session:',
+            },
+          );
+        } else {
+          // Keep the v2 Client's negotiated capabilities and tool metadata when
+          // resuming the same server session on a replacement transport.
+          await this.closeStreamableHttpTransport(
+            previousTransport,
+            'Failed to close stale MCP transport:',
+          );
+        }
 
         const recovered = await this.reconnectExistingStreamableHttpClient({
           client: previousClient,
@@ -1433,7 +1410,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         await this.publishConnectedStreamableHttpClient({
           client: recovered.client,
           transport: recovered.transport,
-          previousTransport,
+          preserveTools: sessionId !== undefined,
         });
 
         return recovered.client;
@@ -1475,15 +1452,25 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       return 'none';
     }
 
-    if (isNotConnectedError(error, client)) {
+    const { clientModule } = await this.loadStreamableHttpRuntime();
+    const { SdkError, SdkErrorCode } = clientModule;
+
+    if (error instanceof SdkError && error.code === SdkErrorCode.NotConnected) {
+      return client.transport == null ? 'reconnect-and-retry' : 'none';
+    }
+
+    // MCP SDK v2 currently throws this plain Error after a transport detaches.
+    // Guard the message match with the actual disconnected client state.
+    if (
+      client.transport == null &&
+      error instanceof Error &&
+      error.message === 'Not connected'
+    ) {
       return 'reconnect-and-retry';
     }
 
-    const { typesModule } = await this.loadStreamableHttpRuntime();
-    const { ErrorCode, McpError } = typesModule;
-
-    return error instanceof McpError &&
-      error.code === ErrorCode.ConnectionClosed
+    return error instanceof SdkError &&
+      error.code === SdkErrorCode.ConnectionClosed
       ? 'reconnect-only'
       : 'none';
   }
@@ -1534,7 +1521,6 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       await this.publishConnectedStreamableHttpClient({
         client,
         transport,
-        previousTransport,
       });
       this.serverInitializeResult = {
         serverInfo: { name: this._name, version: '1.0.0' },
@@ -1578,8 +1564,6 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   }
 
   async listTools(): Promise<MCPTool[]> {
-    const { ListToolsResultSchema } =
-      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
@@ -1593,31 +1577,20 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       this.clientSessionTimeoutSeconds,
     );
     const session = this.session;
-    getClientToolMetadataCache(session);
     const cacheGeneration = this._toolsCacheGeneration;
-    const tools = await listAllMcpTools({
-      fetchPage: (cursor) =>
-        runMcpTransportOperation(
-          this.params.url,
-          'streamable HTTP list tools',
-          () =>
-            requestMcpToolsPage(
-              session,
-              ListToolsResultSchema,
-              requestOptions,
-              cursor,
-            ),
-        ),
-      onPage: (response) =>
-        this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`),
-    });
+    const response = await runMcpTransportOperation(
+      this.params.url,
+      'streamable HTTP list tools',
+      () => listMcpTools(session, requestOptions),
+    );
+    this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     assertMcpToolListingIsCurrent({
       listedClient: session,
       currentClient: this.session,
       listedGeneration: cacheGeneration,
       currentGeneration: this._toolsCacheGeneration,
     });
-    replaceClientToolMetadata(session, tools, this._toolsList);
+    const tools = response.tools as MCPTool[];
     this._toolsList = tools;
     this._cacheDirty = false;
     return tools;
@@ -1726,8 +1699,6 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   async listResources(
     params?: MCPListResourcesParams,
   ): Promise<MCPListResourcesResult> {
-    const { ListResourcesResultSchema } =
-      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
@@ -1739,17 +1710,15 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     const response = await runMcpTransportOperation(
       this.params.url,
       'streamable HTTP list resources',
-      () => this.session!.listResources(params, requestOptions),
+      () => listResourcesPage(this.session!, params, requestOptions),
     );
     this.debugLog(() => `Listed resources: ${JSON.stringify(response)}`);
-    return ListResourcesResultSchema.parse(response) as MCPListResourcesResult;
+    return response as MCPListResourcesResult;
   }
 
   async listResourceTemplates(
     params?: MCPListResourcesParams,
   ): Promise<MCPListResourceTemplatesResult> {
-    const { ListResourceTemplatesResultSchema } =
-      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
@@ -1761,25 +1730,21 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     const response = await runMcpTransportOperation(
       this.params.url,
       'streamable HTTP list resource templates',
-      () => this.session!.listResourceTemplates(params, requestOptions),
+      () => listResourceTemplatesPage(this.session!, params, requestOptions),
     );
     this.debugLog(
       () => `Listed resource templates: ${JSON.stringify(response)}`,
     );
-    return ListResourceTemplatesResultSchema.parse(
-      response,
-    ) as MCPListResourceTemplatesResult;
+    return response as MCPListResourceTemplatesResult;
   }
 
   async readResource(uri: string): Promise<MCPReadResourceResult> {
-    const { ReadResourceResultSchema } =
-      await import('@modelcontextprotocol/sdk/types.js').catch(failedToImport);
     if (!this.session) {
       throw new Error(
         'Server not initialized. Make sure you call connect() first.',
       );
     }
-    const requestOptions = buildRequestOptions(
+    const requestOptions = buildCacheableRequestOptions(
       this.clientSessionTimeoutSeconds,
     );
     const response = await runMcpTransportOperation(
@@ -1788,7 +1753,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       () => this.session!.readResource({ uri }, requestOptions),
     );
     this.debugLog(() => `Read resource ${uri}: ${JSON.stringify(response)}`);
-    return ReadResourceResultSchema.parse(response) as MCPReadResourceResult;
+    return response as MCPReadResourceResult;
   }
 
   get name() {
