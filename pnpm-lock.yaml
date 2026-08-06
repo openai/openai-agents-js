@@ -22,25 +22,25 @@ importers:
         version: 22.19.13
       '@typescript-eslint/eslint-plugin':
         specifier: ^8.62.1
-        version: 8.62.1(@typescript-eslint/parser@8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
+        version: 8.62.1(@typescript-eslint/parser@8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)
       '@typescript-eslint/parser':
         specifier: ^8.62.1
-        version: 8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
+        version: 8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)
       '@vitest/coverage-v8':
         specifier: ^3.2.6
-        version: 3.2.6(vitest@3.2.6(@types/debug@4.1.12)(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0))
+        version: 3.2.6(supports-color@8.1.1)(vitest@3.2.6(@types/debug@4.1.12)(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))
       concurrently:
         specifier: ^9.2.3
         version: 9.2.3
       eslint:
         specifier: ^9.39.4
-        version: 9.39.4(jiti@2.7.0)
+        version: 9.39.4(jiti@2.7.0)(supports-color@8.1.1)
       eslint-config-prettier:
         specifier: ^10.1.8
-        version: 10.1.8(eslint@9.39.4(jiti@2.7.0))
+        version: 10.1.8(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))
       eslint-plugin-unused-imports:
         specifier: ^4.4.1
-        version: 4.4.1(@typescript-eslint/eslint-plugin@8.62.1(@typescript-eslint/parser@8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0))
+        version: 4.4.1(@typescript-eslint/eslint-plugin@8.62.1(@typescript-eslint/parser@8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))
       execa:
         specifier: ^9.6.1
         version: 9.6.1
@@ -58,7 +58,7 @@ importers:
         version: 6.1.3
       tsc-multi:
         specifier: ^1.1.0
-        version: 1.1.0(typescript@5.9.3)
+        version: 1.1.0(supports-color@8.1.1)(typescript@5.9.3)
       tsx:
         specifier: ^4.22.4
         version: 4.22.4
@@ -67,25 +67,25 @@ importers:
         version: 5.9.3
       typescript-eslint:
         specifier: ^8.62.1
-        version: 8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
+        version: 8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)
       verdaccio:
         specifier: ^6.7.4
-        version: 6.7.4(typanion@3.14.0)
+        version: 6.7.4(supports-color@8.1.1)(typanion@3.14.0)
       vitest:
         specifier: ^3.2.6
-        version: 3.2.6(@types/debug@4.1.12)(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0)
+        version: 3.2.6(@types/debug@4.1.12)(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0)
 
   docs:
     dependencies:
       '@astrojs/mdx':
         specifier: ^5.0.6
-        version: 5.0.6(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0))
+        version: 5.0.6(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1)
       '@astrojs/starlight':
         specifier: ^0.38.5
-        version: 0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0))
+        version: 0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1)
       '@astrojs/starlight-tailwind':
         specifier: ^5.0.0
-        version: 5.0.0(@astrojs/starlight@0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0)))(tailwindcss@4.3.2)
+        version: 5.0.0(@astrojs/starlight@0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1))(tailwindcss@4.3.2)
       '@openai/agents':
         specifier: workspace:*
         version: link:../packages/agents
@@ -94,16 +94,16 @@ importers:
         version: 4.3.2(vite@7.3.6(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0))
       astro:
         specifier: ^6.4.8
-        version: 6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0)
+        version: 6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0)
       sharp:
         specifier: ^0.34.5
         version: 0.34.5
       starlight-llms-txt:
         specifier: ^0.8.1
-        version: 0.8.1(@astrojs/starlight@0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0)))(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0))
+        version: 0.8.1(@astrojs/starlight@0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1))(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1)
       starlight-typedoc:
         specifier: ^0.21.5
-        version: 0.21.5(@astrojs/starlight@0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0)))(typedoc-plugin-markdown@4.12.0(typedoc@0.28.19(typescript@5.9.3)))(typedoc@0.28.19(typescript@5.9.3))
+        version: 0.21.5(@astrojs/starlight@0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1))(typedoc-plugin-markdown@4.12.0(typedoc@0.28.19(typescript@5.9.3)))(typedoc@0.28.19(typescript@5.9.3))
       typedoc:
         specifier: ^0.28.19
         version: 0.28.19(typescript@5.9.3)
@@ -136,8 +136,8 @@ importers:
         specifier: ^5.4.1
         version: 5.4.1
       openai:
-        specifier: ^6.46.0
-        version: 6.46.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
+        specifier: ^7.2.0
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
       zod:
         specifier: ^4.0.0
         version: 4.3.5
@@ -198,13 +198,13 @@ importers:
         version: 19.2.3(react@19.2.3)
       react-markdown:
         specifier: ^9.0.3
-        version: 9.1.0(@types/react@19.1.8)(react@19.2.3)
+        version: 9.1.0(@types/react@19.1.8)(react@19.2.3)(supports-color@8.1.1)
       rehype-sanitize:
         specifier: ^6.0.0
         version: 6.0.0
       remark-gfm:
         specifier: ^4.0.0
-        version: 4.0.1
+        version: 4.0.1(supports-color@8.1.1)
       zod:
         specifier: ^4.0.0
         version: 4.3.5
@@ -235,10 +235,10 @@ importers:
         version: 1.1.3
       '@openai/agents':
         specifier: 0.3.9
-        version: 0.3.9(ws@8.21.0)(zod@3.25.76)
+        version: 0.3.9(@aws-sdk/credential-provider-node@3.972.33)(supports-color@8.1.1)(ws@8.21.0)(zod@3.25.76)
       '@openai/agents-extensions':
         specifier: 0.3.9
-        version: 0.3.9(@openai/agents@0.3.9(ws@8.21.0)(zod@3.25.76))(@openai/codex-sdk@0.86.0)(ws@8.21.0)(zod@3.25.76)
+        version: 0.3.9(@aws-sdk/credential-provider-node@3.972.33)(@openai/agents@0.3.9(@aws-sdk/credential-provider-node@3.972.33)(supports-color@8.1.1)(ws@8.21.0)(zod@3.25.76))(@openai/codex-sdk@0.86.0)(supports-color@8.1.1)(ws@8.21.0)(zod@3.25.76)
       hono:
         specifier: ^4.12.25
         version: 4.12.26
@@ -252,8 +252,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/agents
       openai:
-        specifier: ^6.46.0
-        version: 6.46.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
+        specifier: ^7.2.0
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
       zod:
         specifier: ^4.0.0
         version: 4.3.5
@@ -283,7 +283,7 @@ importers:
         version: 2.0.15(zod@4.3.5)
       '@modelcontextprotocol/server-filesystem':
         specifier: ^2026.1.14
-        version: 2026.1.14(zod@4.3.5)
+        version: 2026.1.14(supports-color@8.1.1)(zod@4.3.5)
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
@@ -300,8 +300,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/agents-realtime
       openai:
-        specifier: ^6.46.0
-        version: 6.46.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
+        specifier: ^7.2.0
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
       server-only:
         specifier: ^0.0.1
         version: 0.0.1
@@ -338,10 +338,10 @@ importers:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.26.0
-        version: 1.26.0(zod@4.4.3)
+        version: 1.26.0(supports-color@8.1.1)(zod@4.4.3)
       '@modelcontextprotocol/server-filesystem':
         specifier: ^2026.1.14
-        version: 2026.1.14(zod@4.4.3)
+        version: 2026.1.14(supports-color@8.1.1)(zod@4.4.3)
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
@@ -368,8 +368,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/agents
       openai:
-        specifier: ^6.46.0
-        version: 6.46.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
+        specifier: ^7.2.0
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
       zod:
         specifier: ^4.0.0
         version: 4.3.5
@@ -447,8 +447,8 @@ importers:
         specifier: ^4.1.7
         version: 4.1.10(vite@6.4.3(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0))
       openai:
-        specifier: ^6.46.0
-        version: 6.46.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
+        specifier: ^7.2.0
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
       tailwindcss:
         specifier: ^4.1.7
         version: 4.1.10
@@ -563,8 +563,8 @@ importers:
         specifier: ^5.0.0
         version: 5.0.0
       openai:
-        specifier: ^6.46.0
-        version: 6.46.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
+        specifier: ^7.2.0
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
       zod:
         specifier: ^4.0.0
         version: 4.3.5
@@ -608,8 +608,8 @@ importers:
         specifier: ^5.6.2
         version: 5.6.2
       openai:
-        specifier: ^6.46.0
-        version: 6.46.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
+        specifier: ^7.2.0
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
       playwright:
         specifier: ^1.55.1
         version: 1.57.0
@@ -630,10 +630,10 @@ importers:
         version: link:../agents-realtime
       debug:
         specifier: ^4.4.0
-        version: 4.4.1
+        version: 4.4.1(supports-color@8.1.1)
       openai:
-        specifier: ^6.46.0
-        version: 6.46.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
+        specifier: ^7.2.0
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
     devDependencies:
       '@types/debug':
         specifier: ^4.1.12
@@ -646,10 +646,10 @@ importers:
     dependencies:
       debug:
         specifier: ^4.4.0
-        version: 4.4.1
+        version: 4.4.1(supports-color@8.1.1)
       openai:
-        specifier: ^6.46.0
-        version: 6.46.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
+        specifier: ^7.2.0
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
     devDependencies:
       '@types/debug':
         specifier: ^4.1.12
@@ -672,17 +672,17 @@ importers:
         version: 8.18.1
       debug:
         specifier: ^4.4.0
-        version: 4.4.1
+        version: 4.4.1(supports-color@8.1.1)
     devDependencies:
       '@ai-sdk/provider':
         specifier: ^4.0.3
         version: 4.0.3
       '@blaxel/core':
         specifier: 0.2.82
-        version: 0.2.82(@hey-api/openapi-ts@0.96.1(magicast@0.5.3)(typescript@5.9.3))(debug@4.4.1)
+        version: 0.2.82(@hey-api/openapi-ts@0.96.1(magicast@0.5.3)(typescript@5.9.3))(debug@4.4.1(supports-color@8.1.1))(supports-color@8.1.1)
       '@daytonaio/sdk':
         specifier: 0.162.0
-        version: 0.162.0(debug@4.4.1)(ws@8.21.0)
+        version: 0.162.0(debug@4.4.1(supports-color@8.1.1))(supports-color@8.1.1)(ws@8.21.0)
       '@e2b/code-interpreter':
         specifier: 2.6.1
         version: 2.6.1
@@ -727,10 +727,10 @@ importers:
         version: link:../agents-core
       debug:
         specifier: ^4.4.0
-        version: 4.4.1
+        version: 4.4.1(supports-color@8.1.1)
       openai:
-        specifier: ^6.46.0
-        version: 6.46.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
+        specifier: ^7.2.0
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
     devDependencies:
       '@ai-sdk/provider':
         specifier: ^1.1.3
@@ -752,7 +752,7 @@ importers:
         version: 8.18.1
       debug:
         specifier: ^4.4.0
-        version: 4.4.1
+        version: 4.4.1(supports-color@8.1.1)
       ws:
         specifier: ^8.21.0
         version: 8.21.0
@@ -6215,19 +6215,29 @@ packages:
     resolution: {integrity: sha512-smsWv2LzFjP03xmvFoJ331ss6h+jixfA4UUV/Bsiyuu4YJPfN+FIQGOIiv4w9/+MoHkfkJ22UIaQWRVFRfH6Vw==}
     engines: {node: '>=20'}
 
-  openai@6.44.0:
-    resolution: {integrity: sha512-09/gH+8jH0RgUwsgWHAaxsKGRT5zVZ95IaJUnqAWj6XejIBmnFRwq2WUIF37VtDEsmGrtPmvCs5+yBSeZGWvkA==}
+  openai@6.46.0:
+    resolution: {integrity: sha512-DFg6jEPT2RO+oAyXtddeUJU8zkGy1OQ1AjGzNIJUMQG03TTqvCpy9tBpQ+2VVVnvrl3E56F8GEin2JYtWpITtA==}
     peerDependencies:
+      '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
+      '@smithy/hash-node': '>=4.3.0 <5'
+      '@smithy/signature-v4': '>=5.4.0 <6'
       ws: ^8.18.0
       zod: ^3.25 || ^4.0
     peerDependenciesMeta:
+      '@aws-sdk/credential-provider-node':
+        optional: true
+      '@smithy/hash-node':
+        optional: true
+      '@smithy/signature-v4':
+        optional: true
       ws:
         optional: true
       zod:
         optional: true
 
-  openai@6.46.0:
-    resolution: {integrity: sha512-DFg6jEPT2RO+oAyXtddeUJU8zkGy1OQ1AjGzNIJUMQG03TTqvCpy9tBpQ+2VVVnvrl3E56F8GEin2JYtWpITtA==}
+  openai@7.2.0:
+    resolution: {integrity: sha512-/P0jZP2WDSwSuiilTTcU4mkepzdSAiRrnTK2e9pk9KOzBoE3L9aHz2oIyIXqGbqnnMsGC0Izr223MOUhG2JuvQ==}
+    engines: {node: '>=22.0.0'}
     peerDependencies:
       '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
       '@smithy/hash-node': '>=4.3.0 <5'
@@ -8090,7 +8100,7 @@ snapshots:
     dependencies:
       picomatch: 4.0.4
 
-  '@astrojs/markdown-remark@7.1.2':
+  '@astrojs/markdown-remark@7.1.2(supports-color@8.1.1)':
     dependencies:
       '@astrojs/internal-helpers': 0.9.1
       '@astrojs/prism': 4.0.2
@@ -8101,8 +8111,8 @@ snapshots:
       mdast-util-definitions: 6.0.0
       rehype-raw: 7.0.0
       rehype-stringify: 10.0.1
-      remark-gfm: 4.0.1
-      remark-parse: 11.0.0
+      remark-gfm: 4.0.1(supports-color@8.1.1)
+      remark-parse: 11.0.0(supports-color@8.1.1)
       remark-rehype: 11.1.2
       remark-smartypants: 3.0.2
       retext-smartypants: 6.2.0
@@ -8116,7 +8126,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@astrojs/markdown-remark@7.2.0':
+  '@astrojs/markdown-remark@7.2.0(supports-color@8.1.1)':
     dependencies:
       '@astrojs/internal-helpers': 0.10.0
       '@astrojs/prism': 4.0.2
@@ -8126,8 +8136,8 @@ snapshots:
       mdast-util-definitions: 6.0.0
       rehype-raw: 7.0.0
       rehype-stringify: 10.0.1
-      remark-gfm: 4.0.1
-      remark-parse: 11.0.0
+      remark-gfm: 4.0.1(supports-color@8.1.1)
+      remark-parse: 11.0.0(supports-color@8.1.1)
       remark-rehype: 11.1.2
       remark-smartypants: 3.0.2
       unified: 11.0.5
@@ -8138,18 +8148,18 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@astrojs/mdx@5.0.6(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0))':
+  '@astrojs/mdx@5.0.6(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1)':
     dependencies:
-      '@astrojs/markdown-remark': 7.1.2
-      '@mdx-js/mdx': 3.1.1
+      '@astrojs/markdown-remark': 7.1.2(supports-color@8.1.1)
+      '@mdx-js/mdx': 3.1.1(supports-color@8.1.1)
       acorn: 8.17.0
-      astro: 6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0)
+      astro: 6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0)
       es-module-lexer: 2.3.0
       estree-util-visit: 2.0.0
       hast-util-to-html: 9.0.5
       piccolore: 0.1.3
       rehype-raw: 7.0.0
-      remark-gfm: 4.0.1
+      remark-gfm: 4.0.1(supports-color@8.1.1)
       remark-smartypants: 3.0.2
       source-map: 0.7.6
       unist-util-visit: 5.1.0
@@ -8167,22 +8177,22 @@ snapshots:
       stream-replace-string: 2.0.0
       zod: 4.4.3
 
-  '@astrojs/starlight-tailwind@5.0.0(@astrojs/starlight@0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0)))(tailwindcss@4.3.2)':
+  '@astrojs/starlight-tailwind@5.0.0(@astrojs/starlight@0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1))(tailwindcss@4.3.2)':
     dependencies:
-      '@astrojs/starlight': 0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0))
+      '@astrojs/starlight': 0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1)
       tailwindcss: 4.3.2
 
-  '@astrojs/starlight@0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0))':
+  '@astrojs/starlight@0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1)':
     dependencies:
-      '@astrojs/markdown-remark': 7.2.0
-      '@astrojs/mdx': 5.0.6(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0))
+      '@astrojs/markdown-remark': 7.2.0(supports-color@8.1.1)
+      '@astrojs/mdx': 5.0.6(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1)
       '@astrojs/sitemap': 3.7.3
       '@pagefind/default-ui': 1.5.2
       '@types/hast': 3.0.4
       '@types/js-yaml': 4.0.9
       '@types/mdast': 4.0.4
-      astro: 6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0)
-      astro-expressive-code: 0.42.0(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0))
+      astro: 6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0)
+      astro-expressive-code: 0.42.0(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))
       bcp-47: 2.1.0
       hast-util-from-html: 2.0.3
       hast-util-select: 6.0.4
@@ -8192,13 +8202,13 @@ snapshots:
       js-yaml: 4.3.0
       klona: 2.0.6
       magic-string: 0.30.21
-      mdast-util-directive: 3.1.0
+      mdast-util-directive: 3.1.0(supports-color@8.1.1)
       mdast-util-to-markdown: 2.1.2
       mdast-util-to-string: 4.0.0
       pagefind: 1.5.2
       rehype: 13.0.2
       rehype-format: 5.0.1
-      remark-directive: 4.0.0
+      remark-directive: 4.0.0(supports-color@8.1.1)
       ultrahtml: 1.6.0
       unified: 11.0.5
       unist-util-visit: 5.1.0
@@ -8688,12 +8698,12 @@ snapshots:
 
   '@bcoe/v8-coverage@1.0.2': {}
 
-  '@blaxel/core@0.2.82(@hey-api/openapi-ts@0.96.1(magicast@0.5.3)(typescript@5.9.3))(debug@4.4.1)':
+  '@blaxel/core@0.2.82(@hey-api/openapi-ts@0.96.1(magicast@0.5.3)(typescript@5.9.3))(debug@4.4.1(supports-color@8.1.1))(supports-color@8.1.1)':
     dependencies:
       '@hey-api/client-fetch': 0.10.2(@hey-api/openapi-ts@0.96.1(magicast@0.5.3)(typescript@5.9.3))
-      '@modelcontextprotocol/sdk': 1.26.0(zod@3.25.76)
+      '@modelcontextprotocol/sdk': 1.26.0(supports-color@8.1.1)(zod@3.25.76)
       archiver: 7.0.1
-      axios: 1.15.1(debug@4.4.1)
+      axios: 1.15.1(debug@4.4.1(supports-color@8.1.1))
       dockerfile-ast: 0.7.1
       dotenv: 16.6.1
       form-data: 4.0.5
@@ -8924,34 +8934,34 @@ snapshots:
       tunnel-agent: 0.6.0
       uuid: 8.3.2
 
-  '@daytona/api-client@0.162.0(debug@4.4.1)':
+  '@daytona/api-client@0.162.0(debug@4.4.1(supports-color@8.1.1))':
     dependencies:
-      axios: 1.15.1(debug@4.4.1)
+      axios: 1.15.1(debug@4.4.1(supports-color@8.1.1))
     transitivePeerDependencies:
       - debug
 
-  '@daytona/toolbox-api-client@0.162.0(debug@4.4.1)':
+  '@daytona/toolbox-api-client@0.162.0(debug@4.4.1(supports-color@8.1.1))':
     dependencies:
-      axios: 1.15.1(debug@4.4.1)
+      axios: 1.15.1(debug@4.4.1(supports-color@8.1.1))
     transitivePeerDependencies:
       - debug
 
-  '@daytonaio/sdk@0.162.0(debug@4.4.1)(ws@8.21.0)':
+  '@daytonaio/sdk@0.162.0(debug@4.4.1(supports-color@8.1.1))(supports-color@8.1.1)(ws@8.21.0)':
     dependencies:
       '@aws-sdk/client-s3': 3.1033.0
       '@aws-sdk/lib-storage': 3.1033.0(@aws-sdk/client-s3@3.1033.0)
-      '@daytona/api-client': 0.162.0(debug@4.4.1)
-      '@daytona/toolbox-api-client': 0.162.0(debug@4.4.1)
+      '@daytona/api-client': 0.162.0(debug@4.4.1(supports-color@8.1.1))
+      '@daytona/toolbox-api-client': 0.162.0(debug@4.4.1(supports-color@8.1.1))
       '@iarna/toml': 2.2.5
       '@opentelemetry/api': 1.9.0
       '@opentelemetry/exporter-trace-otlp-http': 0.207.0(@opentelemetry/api@1.9.0)
-      '@opentelemetry/instrumentation-http': 0.207.0(@opentelemetry/api@1.9.0)
+      '@opentelemetry/instrumentation-http': 0.207.0(@opentelemetry/api@1.9.0)(supports-color@8.1.1)
       '@opentelemetry/otlp-exporter-base': 0.207.0(@opentelemetry/api@1.9.0)
       '@opentelemetry/resources': 2.2.0(@opentelemetry/api@1.9.0)
-      '@opentelemetry/sdk-node': 0.207.0(@opentelemetry/api@1.9.0)
+      '@opentelemetry/sdk-node': 0.207.0(@opentelemetry/api@1.9.0)(supports-color@8.1.1)
       '@opentelemetry/sdk-trace-base': 2.7.0(@opentelemetry/api@1.9.0)
       '@opentelemetry/semantic-conventions': 1.40.0
-      axios: 1.15.1(debug@4.4.1)
+      axios: 1.15.1(debug@4.4.1(supports-color@8.1.1))
       busboy: 1.6.0
       dotenv: 17.4.2
       expand-tilde: 2.0.2
@@ -9210,17 +9220,17 @@ snapshots:
   '@esbuild/win32-x64@0.28.1':
     optional: true
 
-  '@eslint-community/eslint-utils@4.9.1(eslint@9.39.4(jiti@2.7.0))':
+  '@eslint-community/eslint-utils@4.9.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))':
     dependencies:
-      eslint: 9.39.4(jiti@2.7.0)
+      eslint: 9.39.4(jiti@2.7.0)(supports-color@8.1.1)
       eslint-visitor-keys: 3.4.3
 
   '@eslint-community/regexpp@4.12.2': {}
 
-  '@eslint/config-array@0.21.2':
+  '@eslint/config-array@0.21.2(supports-color@8.1.1)':
     dependencies:
       '@eslint/object-schema': 2.1.7
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       minimatch: 3.1.5
     transitivePeerDependencies:
       - supports-color
@@ -9233,10 +9243,10 @@ snapshots:
     dependencies:
       '@types/json-schema': 7.0.15
 
-  '@eslint/eslintrc@3.3.5':
+  '@eslint/eslintrc@3.3.5(supports-color@8.1.1)':
     dependencies:
       ajv: 6.15.0
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       espree: 10.4.0
       globals: 14.0.0
       ignore: 5.3.2
@@ -9572,7 +9582,7 @@ snapshots:
       globby: 11.1.0
       read-yaml-file: 1.1.0
 
-  '@mdx-js/mdx@3.1.1':
+  '@mdx-js/mdx@3.1.1(supports-color@8.1.1)':
     dependencies:
       '@types/estree': 1.0.9
       '@types/estree-jsx': 1.0.5
@@ -9584,14 +9594,14 @@ snapshots:
       estree-util-is-identifier-name: 3.0.0
       estree-util-scope: 1.0.0
       estree-walker: 3.0.3
-      hast-util-to-jsx-runtime: 2.3.6
+      hast-util-to-jsx-runtime: 2.3.6(supports-color@8.1.1)
       markdown-extensions: 2.0.0
       recma-build-jsx: 1.0.0
       recma-jsx: 1.0.1(acorn@8.17.0)
       recma-stringify: 1.0.0
-      rehype-recma: 1.0.0
-      remark-mdx: 3.1.1
-      remark-parse: 11.0.0
+      rehype-recma: 1.0.0(supports-color@8.1.1)
+      remark-mdx: 3.1.1(supports-color@8.1.1)
+      remark-parse: 11.0.0(supports-color@8.1.1)
       remark-rehype: 11.1.2
       source-map: 0.7.6
       unified: 11.0.5
@@ -9618,7 +9628,7 @@ snapshots:
       zod: 4.3.5
     optional: true
 
-  '@modelcontextprotocol/sdk@1.26.0(zod@3.25.76)':
+  '@modelcontextprotocol/sdk@1.26.0(supports-color@8.1.1)(zod@3.25.76)':
     dependencies:
       '@hono/node-server': 1.19.9(hono@4.12.26)
       ajv: 8.17.1
@@ -9628,8 +9638,8 @@ snapshots:
       cross-spawn: 7.0.6
       eventsource: 3.0.7
       eventsource-parser: 3.0.6
-      express: 5.2.1
-      express-rate-limit: 8.2.1(express@5.2.1)
+      express: 5.2.1(supports-color@8.1.1)
+      express-rate-limit: 8.2.1(express@5.2.1(supports-color@8.1.1))
       hono: 4.12.26
       jose: 6.1.3
       json-schema-typed: 8.0.2
@@ -9640,7 +9650,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/sdk@1.26.0(zod@4.3.5)':
+  '@modelcontextprotocol/sdk@1.26.0(supports-color@8.1.1)(zod@4.3.5)':
     dependencies:
       '@hono/node-server': 1.19.9(hono@4.12.26)
       ajv: 8.17.1
@@ -9650,8 +9660,8 @@ snapshots:
       cross-spawn: 7.0.6
       eventsource: 3.0.7
       eventsource-parser: 3.0.6
-      express: 5.2.1
-      express-rate-limit: 8.2.1(express@5.2.1)
+      express: 5.2.1(supports-color@8.1.1)
+      express-rate-limit: 8.2.1(express@5.2.1(supports-color@8.1.1))
       hono: 4.12.26
       jose: 6.1.3
       json-schema-typed: 8.0.2
@@ -9662,7 +9672,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/sdk@1.26.0(zod@4.4.3)':
+  '@modelcontextprotocol/sdk@1.26.0(supports-color@8.1.1)(zod@4.4.3)':
     dependencies:
       '@hono/node-server': 1.19.9(hono@4.12.26)
       ajv: 8.17.1
@@ -9672,8 +9682,8 @@ snapshots:
       cross-spawn: 7.0.6
       eventsource: 3.0.7
       eventsource-parser: 3.0.6
-      express: 5.2.1
-      express-rate-limit: 8.2.1(express@5.2.1)
+      express: 5.2.1(supports-color@8.1.1)
+      express-rate-limit: 8.2.1(express@5.2.1(supports-color@8.1.1))
       hono: 4.12.26
       jose: 6.1.3
       json-schema-typed: 8.0.2
@@ -9684,9 +9694,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/server-filesystem@2026.1.14(zod@4.3.5)':
+  '@modelcontextprotocol/server-filesystem@2026.1.14(supports-color@8.1.1)(zod@4.3.5)':
     dependencies:
-      '@modelcontextprotocol/sdk': 1.26.0(zod@4.3.5)
+      '@modelcontextprotocol/sdk': 1.26.0(supports-color@8.1.1)(zod@4.3.5)
       diff: 5.2.2
       glob: 10.5.0
       minimatch: 10.2.4
@@ -9696,9 +9706,9 @@ snapshots:
       - supports-color
       - zod
 
-  '@modelcontextprotocol/server-filesystem@2026.1.14(zod@4.4.3)':
+  '@modelcontextprotocol/server-filesystem@2026.1.14(supports-color@8.1.1)(zod@4.4.3)':
     dependencies:
-      '@modelcontextprotocol/sdk': 1.26.0(zod@4.4.3)
+      '@modelcontextprotocol/sdk': 1.26.0(supports-color@8.1.1)(zod@4.4.3)
       diff: 5.2.2
       glob: 10.5.0
       minimatch: 10.2.4
@@ -9746,67 +9756,82 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
 
-  '@openai/agents-core@0.3.9(ws@8.21.0)(zod@3.25.76)':
+  '@openai/agents-core@0.3.9(@aws-sdk/credential-provider-node@3.972.33)(supports-color@8.1.1)(ws@8.21.0)(zod@3.25.76)':
     dependencies:
-      debug: 4.4.3
-      openai: 6.44.0(ws@8.21.0)(zod@3.25.76)
+      debug: 4.4.3(supports-color@8.1.1)
+      openai: 6.46.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@3.25.76)
     optionalDependencies:
-      '@modelcontextprotocol/sdk': 1.26.0(zod@3.25.76)
+      '@modelcontextprotocol/sdk': 1.26.0(supports-color@8.1.1)(zod@3.25.76)
       zod: 3.25.76
     transitivePeerDependencies:
+      - '@aws-sdk/credential-provider-node'
       - '@cfworker/json-schema'
+      - '@smithy/hash-node'
+      - '@smithy/signature-v4'
       - supports-color
       - ws
 
-  '@openai/agents-extensions@0.3.9(@openai/agents@0.3.9(ws@8.21.0)(zod@3.25.76))(@openai/codex-sdk@0.86.0)(ws@8.21.0)(zod@3.25.76)':
+  '@openai/agents-extensions@0.3.9(@aws-sdk/credential-provider-node@3.972.33)(@openai/agents@0.3.9(@aws-sdk/credential-provider-node@3.972.33)(supports-color@8.1.1)(ws@8.21.0)(zod@3.25.76))(@openai/codex-sdk@0.86.0)(supports-color@8.1.1)(ws@8.21.0)(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 2.0.0
-      '@openai/agents': 0.3.9(ws@8.21.0)(zod@3.25.76)
-      '@openai/agents-core': 0.3.9(ws@8.21.0)(zod@3.25.76)
+      '@openai/agents': 0.3.9(@aws-sdk/credential-provider-node@3.972.33)(supports-color@8.1.1)(ws@8.21.0)(zod@3.25.76)
+      '@openai/agents-core': 0.3.9(@aws-sdk/credential-provider-node@3.972.33)(supports-color@8.1.1)(ws@8.21.0)(zod@3.25.76)
       '@types/ws': 8.18.1
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       ws: 8.21.0
       zod: 3.25.76
     optionalDependencies:
       '@openai/codex-sdk': 0.86.0
     transitivePeerDependencies:
+      - '@aws-sdk/credential-provider-node'
       - '@cfworker/json-schema'
+      - '@smithy/hash-node'
+      - '@smithy/signature-v4'
       - supports-color
 
-  '@openai/agents-openai@0.3.9(ws@8.21.0)(zod@3.25.76)':
+  '@openai/agents-openai@0.3.9(@aws-sdk/credential-provider-node@3.972.33)(supports-color@8.1.1)(ws@8.21.0)(zod@3.25.76)':
     dependencies:
-      '@openai/agents-core': 0.3.9(ws@8.21.0)(zod@3.25.76)
-      debug: 4.4.3
-      openai: 6.44.0(ws@8.21.0)(zod@3.25.76)
+      '@openai/agents-core': 0.3.9(@aws-sdk/credential-provider-node@3.972.33)(supports-color@8.1.1)(ws@8.21.0)(zod@3.25.76)
+      debug: 4.4.3(supports-color@8.1.1)
+      openai: 6.46.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@3.25.76)
       zod: 3.25.76
     transitivePeerDependencies:
+      - '@aws-sdk/credential-provider-node'
       - '@cfworker/json-schema'
+      - '@smithy/hash-node'
+      - '@smithy/signature-v4'
       - supports-color
       - ws
 
-  '@openai/agents-realtime@0.3.9(zod@3.25.76)':
+  '@openai/agents-realtime@0.3.9(@aws-sdk/credential-provider-node@3.972.33)(supports-color@8.1.1)(zod@3.25.76)':
     dependencies:
-      '@openai/agents-core': 0.3.9(ws@8.21.0)(zod@3.25.76)
+      '@openai/agents-core': 0.3.9(@aws-sdk/credential-provider-node@3.972.33)(supports-color@8.1.1)(ws@8.21.0)(zod@3.25.76)
       '@types/ws': 8.18.1
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       ws: 8.21.0
       zod: 3.25.76
     transitivePeerDependencies:
+      - '@aws-sdk/credential-provider-node'
       - '@cfworker/json-schema'
+      - '@smithy/hash-node'
+      - '@smithy/signature-v4'
       - bufferutil
       - supports-color
       - utf-8-validate
 
-  '@openai/agents@0.3.9(ws@8.21.0)(zod@3.25.76)':
+  '@openai/agents@0.3.9(@aws-sdk/credential-provider-node@3.972.33)(supports-color@8.1.1)(ws@8.21.0)(zod@3.25.76)':
     dependencies:
-      '@openai/agents-core': 0.3.9(ws@8.21.0)(zod@3.25.76)
-      '@openai/agents-openai': 0.3.9(ws@8.21.0)(zod@3.25.76)
-      '@openai/agents-realtime': 0.3.9(zod@3.25.76)
-      debug: 4.4.3
-      openai: 6.44.0(ws@8.21.0)(zod@3.25.76)
+      '@openai/agents-core': 0.3.9(@aws-sdk/credential-provider-node@3.972.33)(supports-color@8.1.1)(ws@8.21.0)(zod@3.25.76)
+      '@openai/agents-openai': 0.3.9(@aws-sdk/credential-provider-node@3.972.33)(supports-color@8.1.1)(ws@8.21.0)(zod@3.25.76)
+      '@openai/agents-realtime': 0.3.9(@aws-sdk/credential-provider-node@3.972.33)(supports-color@8.1.1)(zod@3.25.76)
+      debug: 4.4.3(supports-color@8.1.1)
+      openai: 6.46.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@3.25.76)
       zod: 3.25.76
     transitivePeerDependencies:
+      - '@aws-sdk/credential-provider-node'
       - '@cfworker/json-schema'
+      - '@smithy/hash-node'
+      - '@smithy/signature-v4'
       - bufferutil
       - supports-color
       - utf-8-validate
@@ -9944,22 +9969,22 @@ snapshots:
       '@opentelemetry/sdk-trace-base': 2.2.0(@opentelemetry/api@1.9.0)
       '@opentelemetry/semantic-conventions': 1.40.0
 
-  '@opentelemetry/instrumentation-http@0.207.0(@opentelemetry/api@1.9.0)':
+  '@opentelemetry/instrumentation-http@0.207.0(@opentelemetry/api@1.9.0)(supports-color@8.1.1)':
     dependencies:
       '@opentelemetry/api': 1.9.0
       '@opentelemetry/core': 2.2.0(@opentelemetry/api@1.9.0)
-      '@opentelemetry/instrumentation': 0.207.0(@opentelemetry/api@1.9.0)
+      '@opentelemetry/instrumentation': 0.207.0(@opentelemetry/api@1.9.0)(supports-color@8.1.1)
       '@opentelemetry/semantic-conventions': 1.40.0
       forwarded-parse: 2.1.2
     transitivePeerDependencies:
       - supports-color
 
-  '@opentelemetry/instrumentation@0.207.0(@opentelemetry/api@1.9.0)':
+  '@opentelemetry/instrumentation@0.207.0(@opentelemetry/api@1.9.0)(supports-color@8.1.1)':
     dependencies:
       '@opentelemetry/api': 1.9.0
       '@opentelemetry/api-logs': 0.207.0
       import-in-the-middle: 2.0.6
-      require-in-the-middle: 8.0.1
+      require-in-the-middle: 8.0.1(supports-color@8.1.1)
     transitivePeerDependencies:
       - supports-color
 
@@ -10023,7 +10048,7 @@ snapshots:
       '@opentelemetry/core': 2.2.0(@opentelemetry/api@1.9.0)
       '@opentelemetry/resources': 2.2.0(@opentelemetry/api@1.9.0)
 
-  '@opentelemetry/sdk-node@0.207.0(@opentelemetry/api@1.9.0)':
+  '@opentelemetry/sdk-node@0.207.0(@opentelemetry/api@1.9.0)(supports-color@8.1.1)':
     dependencies:
       '@opentelemetry/api': 1.9.0
       '@opentelemetry/api-logs': 0.207.0
@@ -10039,7 +10064,7 @@ snapshots:
       '@opentelemetry/exporter-trace-otlp-http': 0.207.0(@opentelemetry/api@1.9.0)
       '@opentelemetry/exporter-trace-otlp-proto': 0.207.0(@opentelemetry/api@1.9.0)
       '@opentelemetry/exporter-zipkin': 2.2.0(@opentelemetry/api@1.9.0)
-      '@opentelemetry/instrumentation': 0.207.0(@opentelemetry/api@1.9.0)
+      '@opentelemetry/instrumentation': 0.207.0(@opentelemetry/api@1.9.0)(supports-color@8.1.1)
       '@opentelemetry/propagator-b3': 2.2.0(@opentelemetry/api@1.9.0)
       '@opentelemetry/propagator-jaeger': 2.2.0(@opentelemetry/api@1.9.0)
       '@opentelemetry/resources': 2.2.0(@opentelemetry/api@1.9.0)
@@ -11121,15 +11146,15 @@ snapshots:
     dependencies:
       '@types/node': 22.19.13
 
-  '@typescript-eslint/eslint-plugin@8.62.1(@typescript-eslint/parser@8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)':
+  '@typescript-eslint/eslint-plugin@8.62.1(@typescript-eslint/parser@8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)':
     dependencies:
       '@eslint-community/regexpp': 4.12.2
-      '@typescript-eslint/parser': 8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
+      '@typescript-eslint/parser': 8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)
       '@typescript-eslint/scope-manager': 8.62.1
-      '@typescript-eslint/type-utils': 8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
-      '@typescript-eslint/utils': 8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
+      '@typescript-eslint/type-utils': 8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)
+      '@typescript-eslint/utils': 8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)
       '@typescript-eslint/visitor-keys': 8.62.1
-      eslint: 9.39.4(jiti@2.7.0)
+      eslint: 9.39.4(jiti@2.7.0)(supports-color@8.1.1)
       ignore: 7.0.5
       natural-compare: 1.4.0
       ts-api-utils: 2.5.0(typescript@5.9.3)
@@ -11137,23 +11162,23 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@typescript-eslint/parser@8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)':
+  '@typescript-eslint/parser@8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)':
     dependencies:
       '@typescript-eslint/scope-manager': 8.62.1
       '@typescript-eslint/types': 8.62.1
-      '@typescript-eslint/typescript-estree': 8.62.1(typescript@5.9.3)
+      '@typescript-eslint/typescript-estree': 8.62.1(supports-color@8.1.1)(typescript@5.9.3)
       '@typescript-eslint/visitor-keys': 8.62.1
-      debug: 4.4.3
-      eslint: 9.39.4(jiti@2.7.0)
+      debug: 4.4.3(supports-color@8.1.1)
+      eslint: 9.39.4(jiti@2.7.0)(supports-color@8.1.1)
       typescript: 5.9.3
     transitivePeerDependencies:
       - supports-color
 
-  '@typescript-eslint/project-service@8.62.1(typescript@5.9.3)':
+  '@typescript-eslint/project-service@8.62.1(supports-color@8.1.1)(typescript@5.9.3)':
     dependencies:
       '@typescript-eslint/tsconfig-utils': 8.62.1(typescript@5.9.3)
       '@typescript-eslint/types': 8.62.1
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       typescript: 5.9.3
     transitivePeerDependencies:
       - supports-color
@@ -11167,13 +11192,13 @@ snapshots:
     dependencies:
       typescript: 5.9.3
 
-  '@typescript-eslint/type-utils@8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)':
+  '@typescript-eslint/type-utils@8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)':
     dependencies:
       '@typescript-eslint/types': 8.62.1
-      '@typescript-eslint/typescript-estree': 8.62.1(typescript@5.9.3)
-      '@typescript-eslint/utils': 8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
-      debug: 4.4.3
-      eslint: 9.39.4(jiti@2.7.0)
+      '@typescript-eslint/typescript-estree': 8.62.1(supports-color@8.1.1)(typescript@5.9.3)
+      '@typescript-eslint/utils': 8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)
+      debug: 4.4.3(supports-color@8.1.1)
+      eslint: 9.39.4(jiti@2.7.0)(supports-color@8.1.1)
       ts-api-utils: 2.5.0(typescript@5.9.3)
       typescript: 5.9.3
     transitivePeerDependencies:
@@ -11181,13 +11206,13 @@ snapshots:
 
   '@typescript-eslint/types@8.62.1': {}
 
-  '@typescript-eslint/typescript-estree@8.62.1(typescript@5.9.3)':
+  '@typescript-eslint/typescript-estree@8.62.1(supports-color@8.1.1)(typescript@5.9.3)':
     dependencies:
-      '@typescript-eslint/project-service': 8.62.1(typescript@5.9.3)
+      '@typescript-eslint/project-service': 8.62.1(supports-color@8.1.1)(typescript@5.9.3)
       '@typescript-eslint/tsconfig-utils': 8.62.1(typescript@5.9.3)
       '@typescript-eslint/types': 8.62.1
       '@typescript-eslint/visitor-keys': 8.62.1
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       minimatch: 10.2.5
       semver: 7.8.5
       tinyglobby: 0.2.17
@@ -11196,13 +11221,13 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@typescript-eslint/utils@8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)':
+  '@typescript-eslint/utils@8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)':
     dependencies:
-      '@eslint-community/eslint-utils': 4.9.1(eslint@9.39.4(jiti@2.7.0))
+      '@eslint-community/eslint-utils': 4.9.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))
       '@typescript-eslint/scope-manager': 8.62.1
       '@typescript-eslint/types': 8.62.1
-      '@typescript-eslint/typescript-estree': 8.62.1(typescript@5.9.3)
-      eslint: 9.39.4(jiti@2.7.0)
+      '@typescript-eslint/typescript-estree': 8.62.1(supports-color@8.1.1)(typescript@5.9.3)
+      eslint: 9.39.4(jiti@2.7.0)(supports-color@8.1.1)
       typescript: 5.9.3
     transitivePeerDependencies:
       - supports-color
@@ -11236,22 +11261,22 @@ snapshots:
       - bare-abort-controller
       - react-native-b4a
 
-  '@verdaccio/auth@8.0.4':
+  '@verdaccio/auth@8.0.4(supports-color@8.1.1)':
     dependencies:
-      '@verdaccio/config': 8.1.2
+      '@verdaccio/config': 8.1.2(supports-color@8.1.1)
       '@verdaccio/core': 8.1.2
-      '@verdaccio/loaders': 8.0.3
-      '@verdaccio/signature': 8.0.3
-      debug: 4.4.3
+      '@verdaccio/loaders': 8.0.3(supports-color@8.1.1)
+      '@verdaccio/signature': 8.0.3(supports-color@8.1.1)
+      debug: 4.4.3(supports-color@8.1.1)
       lodash: 4.18.1
-      verdaccio-htpasswd: 13.0.3
+      verdaccio-htpasswd: 13.0.3(supports-color@8.1.1)
     transitivePeerDependencies:
       - supports-color
 
-  '@verdaccio/config@8.1.2':
+  '@verdaccio/config@8.1.2(supports-color@8.1.1)':
     dependencies:
       '@verdaccio/core': 8.1.2
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       js-yaml: 4.1.1
       lodash: 4.18.1
     transitivePeerDependencies:
@@ -11270,30 +11295,30 @@ snapshots:
     dependencies:
       lockfile: 1.0.4
 
-  '@verdaccio/hooks@8.0.3':
+  '@verdaccio/hooks@8.0.3(supports-color@8.1.1)':
     dependencies:
       '@verdaccio/core': 8.1.2
-      '@verdaccio/logger': 8.0.3
-      debug: 4.4.3
+      '@verdaccio/logger': 8.0.3(supports-color@8.1.1)
+      debug: 4.4.3(supports-color@8.1.1)
       got-cjs: 12.5.4
       handlebars: 4.7.9
     transitivePeerDependencies:
       - supports-color
 
-  '@verdaccio/loaders@8.0.3':
+  '@verdaccio/loaders@8.0.3(supports-color@8.1.1)':
     dependencies:
       '@verdaccio/core': 8.1.2
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       lodash: 4.18.1
     transitivePeerDependencies:
       - supports-color
 
-  '@verdaccio/local-storage-legacy@11.3.4':
+  '@verdaccio/local-storage-legacy@11.3.4(supports-color@8.1.1)':
     dependencies:
       '@verdaccio/core': 8.1.2
       '@verdaccio/file-locking': 13.0.1
       '@verdaccio/streams': 10.2.5
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       globby: 11.1.0
       lodash: 4.18.1
       lowdb: 1.0.0
@@ -11302,12 +11327,12 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@verdaccio/logger-commons@8.0.3':
+  '@verdaccio/logger-commons@8.0.3(supports-color@8.1.1)':
     dependencies:
       '@verdaccio/core': 8.1.2
       '@verdaccio/logger-prettify': 8.0.1
       colorette: 2.0.20
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
     transitivePeerDependencies:
       - supports-color
 
@@ -11320,57 +11345,57 @@ snapshots:
       pino-abstract-transport: 1.2.0
       sonic-boom: 3.8.1
 
-  '@verdaccio/logger@8.0.3':
+  '@verdaccio/logger@8.0.3(supports-color@8.1.1)':
     dependencies:
-      '@verdaccio/logger-commons': 8.0.3
+      '@verdaccio/logger-commons': 8.0.3(supports-color@8.1.1)
       pino: 9.14.0
     transitivePeerDependencies:
       - supports-color
 
-  '@verdaccio/middleware@8.0.5':
+  '@verdaccio/middleware@8.0.5(supports-color@8.1.1)':
     dependencies:
-      '@verdaccio/config': 8.1.2
+      '@verdaccio/config': 8.1.2(supports-color@8.1.1)
       '@verdaccio/core': 8.1.2
-      '@verdaccio/url': 13.0.3
-      debug: 4.4.3
-      express: 4.22.1
+      '@verdaccio/url': 13.0.3(supports-color@8.1.1)
+      debug: 4.4.3(supports-color@8.1.1)
+      express: 4.22.1(supports-color@8.1.1)
       express-rate-limit: 5.5.1
       lodash: 4.18.1
       lru-cache: 7.18.3
     transitivePeerDependencies:
       - supports-color
 
-  '@verdaccio/package-filter@13.0.3':
+  '@verdaccio/package-filter@13.0.3(supports-color@8.1.1)':
     dependencies:
       '@verdaccio/core': 8.1.2
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       semver: 7.7.4
     transitivePeerDependencies:
       - supports-color
 
-  '@verdaccio/search-indexer@8.0.2':
+  '@verdaccio/search-indexer@8.0.2(supports-color@8.1.1)':
     dependencies:
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       fuse.js: 7.3.0
     transitivePeerDependencies:
       - supports-color
 
-  '@verdaccio/signature@8.0.3':
+  '@verdaccio/signature@8.0.3(supports-color@8.1.1)':
     dependencies:
-      '@verdaccio/config': 8.1.2
+      '@verdaccio/config': 8.1.2(supports-color@8.1.1)
       '@verdaccio/core': 8.1.2
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       jsonwebtoken: 9.0.3
     transitivePeerDependencies:
       - supports-color
 
   '@verdaccio/streams@10.2.5': {}
 
-  '@verdaccio/tarball@13.0.3':
+  '@verdaccio/tarball@13.0.3(supports-color@8.1.1)':
     dependencies:
       '@verdaccio/core': 8.1.2
-      '@verdaccio/url': 13.0.3
-      debug: 4.4.3
+      '@verdaccio/url': 13.0.3(supports-color@8.1.1)
+      debug: 4.4.3(supports-color@8.1.1)
       gunzip-maybe: 1.4.2
       tar-stream: 3.1.7
     transitivePeerDependencies:
@@ -11378,16 +11403,16 @@ snapshots:
       - react-native-b4a
       - supports-color
 
-  '@verdaccio/ui-theme@9.0.0-next-9.20':
+  '@verdaccio/ui-theme@9.0.0-next-9.20(supports-color@8.1.1)':
     dependencies:
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
     transitivePeerDependencies:
       - supports-color
 
-  '@verdaccio/url@13.0.3':
+  '@verdaccio/url@13.0.3(supports-color@8.1.1)':
     dependencies:
       '@verdaccio/core': 8.1.2
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       validator: 13.15.26
     transitivePeerDependencies:
       - supports-color
@@ -11398,22 +11423,22 @@ snapshots:
       lodash: 4.18.1
       minimatch: 7.4.9
 
-  '@vitest/coverage-v8@3.2.6(vitest@3.2.6(@types/debug@4.1.12)(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0))':
+  '@vitest/coverage-v8@3.2.6(supports-color@8.1.1)(vitest@3.2.6(@types/debug@4.1.12)(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))':
     dependencies:
       '@ampproject/remapping': 2.3.0
       '@bcoe/v8-coverage': 1.0.2
       ast-v8-to-istanbul: 0.3.12
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       istanbul-lib-coverage: 3.2.2
       istanbul-lib-report: 3.0.1
-      istanbul-lib-source-maps: 5.0.6
+      istanbul-lib-source-maps: 5.0.6(supports-color@8.1.1)
       istanbul-reports: 3.2.0
       magic-string: 0.30.21
       magicast: 0.3.5
       std-env: 3.10.0
       test-exclude: 7.0.2
       tinyrainbow: 2.0.0
-      vitest: 3.2.6(@types/debug@4.1.12)(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0)
+      vitest: 3.2.6(@types/debug@4.1.12)(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0)
     transitivePeerDependencies:
       - supports-color
 
@@ -11494,9 +11519,9 @@ snapshots:
 
   acorn@8.17.0: {}
 
-  agent-base@6.0.2:
+  agent-base@6.0.2(supports-color@8.1.1):
     dependencies:
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
     transitivePeerDependencies:
       - supports-color
 
@@ -11624,16 +11649,16 @@ snapshots:
 
   astring@1.9.0: {}
 
-  astro-expressive-code@0.42.0(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0)):
+  astro-expressive-code@0.42.0(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0)):
     dependencies:
-      astro: 6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0)
+      astro: 6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0)
       rehype-expressive-code: 0.42.0
 
-  astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0):
+  astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0):
     dependencies:
       '@astrojs/compiler': 4.0.0
       '@astrojs/internal-helpers': 0.10.0
-      '@astrojs/markdown-remark': 7.2.0
+      '@astrojs/markdown-remark': 7.2.0(supports-color@8.1.1)
       '@astrojs/telemetry': 3.3.2
       '@capsizecss/unpack': 4.0.1
       '@clack/prompts': 1.6.0
@@ -11741,9 +11766,9 @@ snapshots:
 
   aws4@1.13.2: {}
 
-  axios@1.15.1(debug@4.4.1):
+  axios@1.15.1(debug@4.4.1(supports-color@8.1.1)):
     dependencies:
-      follow-redirects: 1.16.0(debug@4.4.1)
+      follow-redirects: 1.16.0(debug@4.4.1(supports-color@8.1.1))
       form-data: 4.0.5
       proxy-from-env: 2.1.0
     transitivePeerDependencies:
@@ -11783,11 +11808,11 @@ snapshots:
     dependencies:
       is-windows: 1.0.2
 
-  body-parser@1.20.5:
+  body-parser@1.20.5(supports-color@8.1.1):
     dependencies:
       bytes: 3.1.2
       content-type: 1.0.5
-      debug: 2.6.9
+      debug: 2.6.9(supports-color@8.1.1)
       depd: 2.0.0
       destroy: 1.2.0
       http-errors: 2.0.1
@@ -11800,11 +11825,11 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  body-parser@2.2.2:
+  body-parser@2.2.2(supports-color@8.1.1):
     dependencies:
       bytes: 3.1.2
       content-type: 1.0.5
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       http-errors: 2.0.1
       iconv-lite: 0.7.2
       on-finished: 2.4.1
@@ -12060,11 +12085,11 @@ snapshots:
     dependencies:
       mime-db: 1.54.0
 
-  compression@1.8.1:
+  compression@1.8.1(supports-color@8.1.1):
     dependencies:
       bytes: 3.1.2
       compressible: 2.0.18
-      debug: 2.6.9
+      debug: 2.6.9(supports-color@8.1.1)
       negotiator: 0.6.4
       on-headers: 1.1.0
       safe-buffer: 5.2.1
@@ -12169,17 +12194,23 @@ snapshots:
 
   dayjs@1.11.18: {}
 
-  debug@2.6.9:
+  debug@2.6.9(supports-color@8.1.1):
     dependencies:
       ms: 2.0.0
+    optionalDependencies:
+      supports-color: 8.1.1
 
-  debug@4.4.1:
+  debug@4.4.1(supports-color@8.1.1):
     dependencies:
       ms: 2.1.3
+    optionalDependencies:
+      supports-color: 8.1.1
 
-  debug@4.4.3:
+  debug@4.4.3(supports-color@8.1.1):
     dependencies:
       ms: 2.1.3
+    optionalDependencies:
+      supports-color: 8.1.1
 
   decode-named-character-reference@1.2.0:
     dependencies:
@@ -12494,15 +12525,15 @@ snapshots:
 
   escape-string-regexp@5.0.0: {}
 
-  eslint-config-prettier@10.1.8(eslint@9.39.4(jiti@2.7.0)):
+  eslint-config-prettier@10.1.8(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1)):
     dependencies:
-      eslint: 9.39.4(jiti@2.7.0)
+      eslint: 9.39.4(jiti@2.7.0)(supports-color@8.1.1)
 
-  eslint-plugin-unused-imports@4.4.1(@typescript-eslint/eslint-plugin@8.62.1(@typescript-eslint/parser@8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0)):
+  eslint-plugin-unused-imports@4.4.1(@typescript-eslint/eslint-plugin@8.62.1(@typescript-eslint/parser@8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1)):
     dependencies:
-      eslint: 9.39.4(jiti@2.7.0)
+      eslint: 9.39.4(jiti@2.7.0)(supports-color@8.1.1)
     optionalDependencies:
-      '@typescript-eslint/eslint-plugin': 8.62.1(@typescript-eslint/parser@8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
+      '@typescript-eslint/eslint-plugin': 8.62.1(@typescript-eslint/parser@8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)
 
   eslint-scope@8.4.0:
     dependencies:
@@ -12515,14 +12546,14 @@ snapshots:
 
   eslint-visitor-keys@5.0.1: {}
 
-  eslint@9.39.4(jiti@2.7.0):
+  eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1):
     dependencies:
-      '@eslint-community/eslint-utils': 4.9.1(eslint@9.39.4(jiti@2.7.0))
+      '@eslint-community/eslint-utils': 4.9.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))
       '@eslint-community/regexpp': 4.12.2
-      '@eslint/config-array': 0.21.2
+      '@eslint/config-array': 0.21.2(supports-color@8.1.1)
       '@eslint/config-helpers': 0.4.2
       '@eslint/core': 0.17.0
-      '@eslint/eslintrc': 3.3.5
+      '@eslint/eslintrc': 3.3.5(supports-color@8.1.1)
       '@eslint/js': 9.39.4
       '@eslint/plugin-kit': 0.4.1
       '@humanfs/node': 0.16.8
@@ -12532,7 +12563,7 @@ snapshots:
       ajv: 6.15.0
       chalk: 4.1.2
       cross-spawn: 7.0.6
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       escape-string-regexp: 4.0.0
       eslint-scope: 8.4.0
       eslint-visitor-keys: 4.2.1
@@ -12654,26 +12685,26 @@ snapshots:
 
   express-rate-limit@5.5.1: {}
 
-  express-rate-limit@8.2.1(express@5.2.1):
+  express-rate-limit@8.2.1(express@5.2.1(supports-color@8.1.1)):
     dependencies:
-      express: 5.2.1
+      express: 5.2.1(supports-color@8.1.1)
       ip-address: 10.0.1
 
-  express@4.22.1:
+  express@4.22.1(supports-color@8.1.1):
     dependencies:
       accepts: 1.3.8
       array-flatten: 1.1.1
-      body-parser: 1.20.5
+      body-parser: 1.20.5(supports-color@8.1.1)
       content-disposition: 0.5.4
       content-type: 1.0.5
       cookie: 0.7.2
       cookie-signature: 1.0.7
-      debug: 2.6.9
+      debug: 2.6.9(supports-color@8.1.1)
       depd: 2.0.0
       encodeurl: 2.0.0
       escape-html: 1.0.3
       etag: 1.8.1
-      finalhandler: 1.3.2
+      finalhandler: 1.3.2(supports-color@8.1.1)
       fresh: 0.5.2
       http-errors: 2.0.1
       merge-descriptors: 1.0.3
@@ -12685,8 +12716,8 @@ snapshots:
       qs: 6.14.2
       range-parser: 1.2.1
       safe-buffer: 5.2.1
-      send: 0.19.2
-      serve-static: 1.16.3
+      send: 0.19.2(supports-color@8.1.1)
+      serve-static: 1.16.3(supports-color@8.1.1)
       setprototypeof: 1.2.0
       statuses: 2.0.2
       type-is: 1.6.18
@@ -12695,21 +12726,21 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  express@4.22.2:
+  express@4.22.2(supports-color@8.1.1):
     dependencies:
       accepts: 1.3.8
       array-flatten: 1.1.1
-      body-parser: 1.20.5
+      body-parser: 1.20.5(supports-color@8.1.1)
       content-disposition: 0.5.4
       content-type: 1.0.5
       cookie: 0.7.2
       cookie-signature: 1.0.7
-      debug: 2.6.9
+      debug: 2.6.9(supports-color@8.1.1)
       depd: 2.0.0
       encodeurl: 2.0.0
       escape-html: 1.0.3
       etag: 1.8.1
-      finalhandler: 1.3.2
+      finalhandler: 1.3.2(supports-color@8.1.1)
       fresh: 0.5.2
       http-errors: 2.0.1
       merge-descriptors: 1.0.3
@@ -12721,8 +12752,8 @@ snapshots:
       qs: 6.15.3
       range-parser: 1.2.1
       safe-buffer: 5.2.1
-      send: 0.19.2
-      serve-static: 1.16.3
+      send: 0.19.2(supports-color@8.1.1)
+      serve-static: 1.16.3(supports-color@8.1.1)
       setprototypeof: 1.2.0
       statuses: 2.0.2
       type-is: 1.6.18
@@ -12731,20 +12762,20 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  express@5.2.1:
+  express@5.2.1(supports-color@8.1.1):
     dependencies:
       accepts: 2.0.0
-      body-parser: 2.2.2
+      body-parser: 2.2.2(supports-color@8.1.1)
       content-disposition: 1.0.1
       content-type: 1.0.5
       cookie: 0.7.2
       cookie-signature: 1.2.2
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       depd: 2.0.0
       encodeurl: 2.0.0
       escape-html: 1.0.3
       etag: 1.8.1
-      finalhandler: 2.1.1
+      finalhandler: 2.1.1(supports-color@8.1.1)
       fresh: 2.0.0
       http-errors: 2.0.1
       merge-descriptors: 2.0.0
@@ -12755,9 +12786,9 @@ snapshots:
       proxy-addr: 2.0.7
       qs: 6.14.1
       range-parser: 1.2.1
-      router: 2.2.0
-      send: 1.2.1
-      serve-static: 2.2.1
+      router: 2.2.0(supports-color@8.1.1)
+      send: 1.2.1(supports-color@8.1.1)
+      serve-static: 2.2.1(supports-color@8.1.1)
       statuses: 2.0.2
       type-is: 2.0.1
       vary: 1.1.2
@@ -12886,9 +12917,9 @@ snapshots:
     dependencies:
       to-regex-range: 5.0.1
 
-  finalhandler@1.3.2:
+  finalhandler@1.3.2(supports-color@8.1.1):
     dependencies:
-      debug: 2.6.9
+      debug: 2.6.9(supports-color@8.1.1)
       encodeurl: 2.0.0
       escape-html: 1.0.3
       on-finished: 2.4.1
@@ -12898,9 +12929,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  finalhandler@2.1.1:
+  finalhandler@2.1.1(supports-color@8.1.1):
     dependencies:
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       encodeurl: 2.0.0
       escape-html: 1.0.3
       on-finished: 2.4.1
@@ -12934,9 +12965,9 @@ snapshots:
 
   flattie@1.1.1: {}
 
-  follow-redirects@1.16.0(debug@4.4.1):
+  follow-redirects@1.16.0(debug@4.4.1(supports-color@8.1.1)):
     optionalDependencies:
-      debug: 4.4.1
+      debug: 4.4.1(supports-color@8.1.1)
 
   fontace@0.4.1:
     dependencies:
@@ -13281,7 +13312,7 @@ snapshots:
       unist-util-visit: 5.1.0
       zwitch: 2.0.4
 
-  hast-util-to-estree@3.1.3:
+  hast-util-to-estree@3.1.3(supports-color@8.1.1):
     dependencies:
       '@types/estree': 1.0.9
       '@types/estree-jsx': 1.0.5
@@ -13291,9 +13322,9 @@ snapshots:
       estree-util-attach-comments: 3.0.0
       estree-util-is-identifier-name: 3.0.0
       hast-util-whitespace: 3.0.0
-      mdast-util-mdx-expression: 2.0.1
-      mdast-util-mdx-jsx: 3.2.0
-      mdast-util-mdxjs-esm: 2.0.1
+      mdast-util-mdx-expression: 2.0.1(supports-color@8.1.1)
+      mdast-util-mdx-jsx: 3.2.0(supports-color@8.1.1)
+      mdast-util-mdxjs-esm: 2.0.1(supports-color@8.1.1)
       property-information: 7.2.0
       space-separated-tokens: 2.0.2
       style-to-js: 1.1.21
@@ -13316,7 +13347,7 @@ snapshots:
       stringify-entities: 4.0.4
       zwitch: 2.0.4
 
-  hast-util-to-jsx-runtime@2.3.6:
+  hast-util-to-jsx-runtime@2.3.6(supports-color@8.1.1):
     dependencies:
       '@types/estree': 1.0.9
       '@types/hast': 3.0.4
@@ -13325,9 +13356,9 @@ snapshots:
       devlop: 1.1.0
       estree-util-is-identifier-name: 3.0.0
       hast-util-whitespace: 3.0.0
-      mdast-util-mdx-expression: 2.0.1
-      mdast-util-mdx-jsx: 3.2.0
-      mdast-util-mdxjs-esm: 2.0.1
+      mdast-util-mdx-expression: 2.0.1(supports-color@8.1.1)
+      mdast-util-mdx-jsx: 3.2.0(supports-color@8.1.1)
+      mdast-util-mdxjs-esm: 2.0.1(supports-color@8.1.1)
       property-information: 7.1.0
       space-separated-tokens: 2.0.2
       style-to-js: 1.1.21
@@ -13433,10 +13464,10 @@ snapshots:
       quick-lru: 5.1.1
       resolve-alpn: 1.2.1
 
-  https-proxy-agent@5.0.1:
+  https-proxy-agent@5.0.1(supports-color@8.1.1):
     dependencies:
-      agent-base: 6.0.2
-      debug: 4.4.3
+      agent-base: 6.0.2(supports-color@8.1.1)
+      debug: 4.4.3(supports-color@8.1.1)
     transitivePeerDependencies:
       - supports-color
 
@@ -13577,10 +13608,10 @@ snapshots:
       make-dir: 4.0.0
       supports-color: 7.2.0
 
-  istanbul-lib-source-maps@5.0.6:
+  istanbul-lib-source-maps@5.0.6(supports-color@8.1.1):
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       istanbul-lib-coverage: 3.2.2
     transitivePeerDependencies:
       - supports-color
@@ -13908,13 +13939,13 @@ snapshots:
       '@types/unist': 3.0.3
       unist-util-visit: 5.1.0
 
-  mdast-util-directive@3.1.0:
+  mdast-util-directive@3.1.0(supports-color@8.1.1):
     dependencies:
       '@types/mdast': 4.0.4
       '@types/unist': 3.0.3
       ccount: 2.0.1
       devlop: 1.1.0
-      mdast-util-from-markdown: 2.0.3
+      mdast-util-from-markdown: 2.0.3(supports-color@8.1.1)
       mdast-util-to-markdown: 2.1.2
       parse-entities: 4.0.2
       stringify-entities: 4.0.4
@@ -13929,14 +13960,14 @@ snapshots:
       unist-util-is: 6.0.1
       unist-util-visit-parents: 6.0.2
 
-  mdast-util-from-markdown@2.0.2:
+  mdast-util-from-markdown@2.0.2(supports-color@8.1.1):
     dependencies:
       '@types/mdast': 4.0.4
       '@types/unist': 3.0.3
       decode-named-character-reference: 1.2.0
       devlop: 1.1.0
       mdast-util-to-string: 4.0.0
-      micromark: 4.0.2
+      micromark: 4.0.2(supports-color@8.1.1)
       micromark-util-decode-numeric-character-reference: 2.0.2
       micromark-util-decode-string: 2.0.1
       micromark-util-normalize-identifier: 2.0.1
@@ -13946,14 +13977,14 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  mdast-util-from-markdown@2.0.3:
+  mdast-util-from-markdown@2.0.3(supports-color@8.1.1):
     dependencies:
       '@types/mdast': 4.0.4
       '@types/unist': 3.0.3
       decode-named-character-reference: 1.3.0
       devlop: 1.1.0
       mdast-util-to-string: 4.0.0
-      micromark: 4.0.2
+      micromark: 4.0.2(supports-color@8.1.1)
       micromark-util-decode-numeric-character-reference: 2.0.2
       micromark-util-decode-string: 2.0.1
       micromark-util-normalize-identifier: 2.0.1
@@ -13971,67 +14002,67 @@ snapshots:
       mdast-util-find-and-replace: 3.0.2
       micromark-util-character: 2.1.1
 
-  mdast-util-gfm-footnote@2.1.0:
+  mdast-util-gfm-footnote@2.1.0(supports-color@8.1.1):
     dependencies:
       '@types/mdast': 4.0.4
       devlop: 1.1.0
-      mdast-util-from-markdown: 2.0.2
+      mdast-util-from-markdown: 2.0.2(supports-color@8.1.1)
       mdast-util-to-markdown: 2.1.2
       micromark-util-normalize-identifier: 2.0.1
     transitivePeerDependencies:
       - supports-color
 
-  mdast-util-gfm-strikethrough@2.0.0:
+  mdast-util-gfm-strikethrough@2.0.0(supports-color@8.1.1):
     dependencies:
       '@types/mdast': 4.0.4
-      mdast-util-from-markdown: 2.0.2
+      mdast-util-from-markdown: 2.0.2(supports-color@8.1.1)
       mdast-util-to-markdown: 2.1.2
     transitivePeerDependencies:
       - supports-color
 
-  mdast-util-gfm-table@2.0.0:
+  mdast-util-gfm-table@2.0.0(supports-color@8.1.1):
     dependencies:
       '@types/mdast': 4.0.4
       devlop: 1.1.0
       markdown-table: 3.0.4
-      mdast-util-from-markdown: 2.0.2
+      mdast-util-from-markdown: 2.0.2(supports-color@8.1.1)
       mdast-util-to-markdown: 2.1.2
     transitivePeerDependencies:
       - supports-color
 
-  mdast-util-gfm-task-list-item@2.0.0:
+  mdast-util-gfm-task-list-item@2.0.0(supports-color@8.1.1):
     dependencies:
       '@types/mdast': 4.0.4
       devlop: 1.1.0
-      mdast-util-from-markdown: 2.0.2
+      mdast-util-from-markdown: 2.0.2(supports-color@8.1.1)
       mdast-util-to-markdown: 2.1.2
     transitivePeerDependencies:
       - supports-color
 
-  mdast-util-gfm@3.1.0:
+  mdast-util-gfm@3.1.0(supports-color@8.1.1):
     dependencies:
-      mdast-util-from-markdown: 2.0.2
+      mdast-util-from-markdown: 2.0.2(supports-color@8.1.1)
       mdast-util-gfm-autolink-literal: 2.0.1
-      mdast-util-gfm-footnote: 2.1.0
-      mdast-util-gfm-strikethrough: 2.0.0
-      mdast-util-gfm-table: 2.0.0
-      mdast-util-gfm-task-list-item: 2.0.0
+      mdast-util-gfm-footnote: 2.1.0(supports-color@8.1.1)
+      mdast-util-gfm-strikethrough: 2.0.0(supports-color@8.1.1)
+      mdast-util-gfm-table: 2.0.0(supports-color@8.1.1)
+      mdast-util-gfm-task-list-item: 2.0.0(supports-color@8.1.1)
       mdast-util-to-markdown: 2.1.2
     transitivePeerDependencies:
       - supports-color
 
-  mdast-util-mdx-expression@2.0.1:
+  mdast-util-mdx-expression@2.0.1(supports-color@8.1.1):
     dependencies:
       '@types/estree-jsx': 1.0.5
       '@types/hast': 3.0.4
       '@types/mdast': 4.0.4
       devlop: 1.1.0
-      mdast-util-from-markdown: 2.0.2
+      mdast-util-from-markdown: 2.0.2(supports-color@8.1.1)
       mdast-util-to-markdown: 2.1.2
     transitivePeerDependencies:
       - supports-color
 
-  mdast-util-mdx-jsx@3.2.0:
+  mdast-util-mdx-jsx@3.2.0(supports-color@8.1.1):
     dependencies:
       '@types/estree-jsx': 1.0.5
       '@types/hast': 3.0.4
@@ -14039,7 +14070,7 @@ snapshots:
       '@types/unist': 3.0.3
       ccount: 2.0.1
       devlop: 1.1.0
-      mdast-util-from-markdown: 2.0.2
+      mdast-util-from-markdown: 2.0.2(supports-color@8.1.1)
       mdast-util-to-markdown: 2.1.2
       parse-entities: 4.0.2
       stringify-entities: 4.0.4
@@ -14048,23 +14079,23 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  mdast-util-mdx@3.0.0:
+  mdast-util-mdx@3.0.0(supports-color@8.1.1):
     dependencies:
-      mdast-util-from-markdown: 2.0.3
-      mdast-util-mdx-expression: 2.0.1
-      mdast-util-mdx-jsx: 3.2.0
-      mdast-util-mdxjs-esm: 2.0.1
+      mdast-util-from-markdown: 2.0.3(supports-color@8.1.1)
+      mdast-util-mdx-expression: 2.0.1(supports-color@8.1.1)
+      mdast-util-mdx-jsx: 3.2.0(supports-color@8.1.1)
+      mdast-util-mdxjs-esm: 2.0.1(supports-color@8.1.1)
       mdast-util-to-markdown: 2.1.2
     transitivePeerDependencies:
       - supports-color
 
-  mdast-util-mdxjs-esm@2.0.1:
+  mdast-util-mdxjs-esm@2.0.1(supports-color@8.1.1):
     dependencies:
       '@types/estree-jsx': 1.0.5
       '@types/hast': 3.0.4
       '@types/mdast': 4.0.4
       devlop: 1.1.0
-      mdast-util-from-markdown: 2.0.2
+      mdast-util-from-markdown: 2.0.2(supports-color@8.1.1)
       mdast-util-to-markdown: 2.1.2
     transitivePeerDependencies:
       - supports-color
@@ -14372,10 +14403,10 @@ snapshots:
 
   micromark-util-types@2.0.2: {}
 
-  micromark@4.0.2:
+  micromark@4.0.2(supports-color@8.1.1):
     dependencies:
       '@types/debug': 4.1.13
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       decode-named-character-reference: 1.3.0
       devlop: 1.1.0
       micromark-core-commonmark: 2.0.3
@@ -14639,12 +14670,13 @@ snapshots:
       powershell-utils: 0.1.0
       wsl-utils: 0.3.1
 
-  openai@6.44.0(ws@8.21.0)(zod@3.25.76):
+  openai@6.46.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@3.25.76):
     optionalDependencies:
+      '@aws-sdk/credential-provider-node': 3.972.33
       ws: 8.21.0
       zod: 3.25.76
 
-  openai@6.46.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5):
+  openai@7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5):
     optionalDependencies:
       '@aws-sdk/credential-provider-node': 3.972.33
       ws: 8.21.0
@@ -15079,17 +15111,17 @@ snapshots:
       react: 19.2.3
       scheduler: 0.27.0
 
-  react-markdown@9.1.0(@types/react@19.1.8)(react@19.2.3):
+  react-markdown@9.1.0(@types/react@19.1.8)(react@19.2.3)(supports-color@8.1.1):
     dependencies:
       '@types/hast': 3.0.4
       '@types/mdast': 4.0.4
       '@types/react': 19.1.8
       devlop: 1.1.0
-      hast-util-to-jsx-runtime: 2.3.6
+      hast-util-to-jsx-runtime: 2.3.6(supports-color@8.1.1)
       html-url-attributes: 3.0.1
       mdast-util-to-hast: 13.2.1
       react: 19.2.3
-      remark-parse: 11.0.0
+      remark-parse: 11.0.0(supports-color@8.1.1)
       remark-rehype: 11.1.2
       unified: 11.0.5
       unist-util-visit: 5.0.0
@@ -15234,11 +15266,11 @@ snapshots:
       hast-util-raw: 9.1.0
       vfile: 6.0.3
 
-  rehype-recma@1.0.0:
+  rehype-recma@1.0.0(supports-color@8.1.1):
     dependencies:
       '@types/estree': 1.0.9
       '@types/hast': 3.0.4
-      hast-util-to-estree: 3.1.3
+      hast-util-to-estree: 3.1.3(supports-color@8.1.1)
     transitivePeerDependencies:
       - supports-color
 
@@ -15268,37 +15300,37 @@ snapshots:
       rehype-stringify: 10.0.1
       unified: 11.0.5
 
-  remark-directive@4.0.0:
+  remark-directive@4.0.0(supports-color@8.1.1):
     dependencies:
       '@types/mdast': 4.0.4
-      mdast-util-directive: 3.1.0
+      mdast-util-directive: 3.1.0(supports-color@8.1.1)
       micromark-extension-directive: 4.0.0
       unified: 11.0.5
     transitivePeerDependencies:
       - supports-color
 
-  remark-gfm@4.0.1:
+  remark-gfm@4.0.1(supports-color@8.1.1):
     dependencies:
       '@types/mdast': 4.0.4
-      mdast-util-gfm: 3.1.0
+      mdast-util-gfm: 3.1.0(supports-color@8.1.1)
       micromark-extension-gfm: 3.0.0
-      remark-parse: 11.0.0
+      remark-parse: 11.0.0(supports-color@8.1.1)
       remark-stringify: 11.0.0
       unified: 11.0.5
     transitivePeerDependencies:
       - supports-color
 
-  remark-mdx@3.1.1:
+  remark-mdx@3.1.1(supports-color@8.1.1):
     dependencies:
-      mdast-util-mdx: 3.0.0
+      mdast-util-mdx: 3.0.0(supports-color@8.1.1)
       micromark-extension-mdxjs: 3.0.0
     transitivePeerDependencies:
       - supports-color
 
-  remark-parse@11.0.0:
+  remark-parse@11.0.0(supports-color@8.1.1):
     dependencies:
       '@types/mdast': 4.0.4
-      mdast-util-from-markdown: 2.0.2
+      mdast-util-from-markdown: 2.0.2(supports-color@8.1.1)
       micromark-util-types: 2.0.2
       unified: 11.0.5
     transitivePeerDependencies:
@@ -15329,9 +15361,9 @@ snapshots:
 
   require-from-string@2.0.2: {}
 
-  require-in-the-middle@8.0.1:
+  require-in-the-middle@8.0.1(supports-color@8.1.1):
     dependencies:
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       module-details-from-path: 1.0.4
     transitivePeerDependencies:
       - supports-color
@@ -15447,11 +15479,10 @@ snapshots:
       '@rollup/rollup-win32-x64-gnu': 4.62.2
       '@rollup/rollup-win32-x64-msvc': 4.62.2
       fsevents: 2.3.3
-    optional: true
 
-  router@2.2.0:
+  router@2.2.0(supports-color@8.1.1):
     dependencies:
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       depd: 2.0.0
       is-promise: 4.0.0
       parseurl: 1.3.3
@@ -15501,9 +15532,9 @@ snapshots:
 
   semver@7.8.5: {}
 
-  send@0.19.2:
+  send@0.19.2(supports-color@8.1.1):
     dependencies:
-      debug: 2.6.9
+      debug: 2.6.9(supports-color@8.1.1)
       depd: 2.0.0
       destroy: 1.2.0
       encodeurl: 2.0.0
@@ -15519,9 +15550,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  send@1.2.1:
+  send@1.2.1(supports-color@8.1.1):
     dependencies:
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       encodeurl: 2.0.0
       escape-html: 1.0.3
       etag: 1.8.1
@@ -15535,21 +15566,21 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  serve-static@1.16.3:
+  serve-static@1.16.3(supports-color@8.1.1):
     dependencies:
       encodeurl: 2.0.0
       escape-html: 1.0.3
       parseurl: 1.3.3
-      send: 0.19.2
+      send: 0.19.2(supports-color@8.1.1)
     transitivePeerDependencies:
       - supports-color
 
-  serve-static@2.2.1:
+  serve-static@2.2.1(supports-color@8.1.1):
     dependencies:
       encodeurl: 2.0.0
       escape-html: 1.0.3
       parseurl: 1.3.3
-      send: 1.2.1
+      send: 1.2.1(supports-color@8.1.1)
     transitivePeerDependencies:
       - supports-color
 
@@ -15712,28 +15743,28 @@ snapshots:
 
   stackback@0.0.2: {}
 
-  starlight-llms-txt@0.8.1(@astrojs/starlight@0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0)))(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0)):
+  starlight-llms-txt@0.8.1(@astrojs/starlight@0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1))(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1):
     dependencies:
-      '@astrojs/mdx': 5.0.6(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0))
-      '@astrojs/starlight': 0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0))
+      '@astrojs/mdx': 5.0.6(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1)
+      '@astrojs/starlight': 0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1)
       '@types/hast': 3.0.4
       '@types/micromatch': 4.0.10
-      astro: 6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0)
+      astro: 6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0)
       github-slugger: 2.0.0
       hast-util-select: 6.0.4
       micromatch: 4.0.8
       rehype-parse: 9.0.1
       rehype-remark: 10.0.1
-      remark-gfm: 4.0.1
+      remark-gfm: 4.0.1(supports-color@8.1.1)
       remark-stringify: 11.0.0
       unified: 11.0.5
       unist-util-remove: 4.0.0
     transitivePeerDependencies:
       - supports-color
 
-  starlight-typedoc@0.21.5(@astrojs/starlight@0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0)))(typedoc-plugin-markdown@4.12.0(typedoc@0.28.19(typescript@5.9.3)))(typedoc@0.28.19(typescript@5.9.3)):
+  starlight-typedoc@0.21.5(@astrojs/starlight@0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1))(typedoc-plugin-markdown@4.12.0(typedoc@0.28.19(typescript@5.9.3)))(typedoc@0.28.19(typescript@5.9.3)):
     dependencies:
-      '@astrojs/starlight': 0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(tsx@4.22.4)(yaml@2.9.0))
+      '@astrojs/starlight': 0.38.5(astro@6.4.8(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.62.2)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0))(supports-color@8.1.1)
       github-slugger: 2.0.0
       typedoc: 0.28.19(typescript@5.9.3)
       typedoc-plugin-markdown: 4.12.0(typedoc@0.28.19(typescript@5.9.3))
@@ -15997,9 +16028,9 @@ snapshots:
 
   ts-error@1.0.6: {}
 
-  tsc-multi@1.1.0(typescript@5.9.3):
+  tsc-multi@1.1.0(supports-color@8.1.1)(typescript@5.9.3):
     dependencies:
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       fast-glob: 3.3.3
       get-stdin: 8.0.0
       p-all: 3.0.0
@@ -16072,13 +16103,13 @@ snapshots:
       typescript: 5.9.3
       yaml: 2.9.0
 
-  typescript-eslint@8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3):
+  typescript-eslint@8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3):
     dependencies:
-      '@typescript-eslint/eslint-plugin': 8.62.1(@typescript-eslint/parser@8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
-      '@typescript-eslint/parser': 8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
-      '@typescript-eslint/typescript-estree': 8.62.1(typescript@5.9.3)
-      '@typescript-eslint/utils': 8.62.1(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
-      eslint: 9.39.4(jiti@2.7.0)
+      '@typescript-eslint/eslint-plugin': 8.62.1(@typescript-eslint/parser@8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)
+      '@typescript-eslint/parser': 8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)
+      '@typescript-eslint/typescript-estree': 8.62.1(supports-color@8.1.1)(typescript@5.9.3)
+      '@typescript-eslint/utils': 8.62.1(eslint@9.39.4(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)
+      eslint: 9.39.4(jiti@2.7.0)(supports-color@8.1.1)
       typescript: 5.9.3
     transitivePeerDependencies:
       - supports-color
@@ -16236,62 +16267,62 @@ snapshots:
 
   vary@1.1.2: {}
 
-  verdaccio-audit@13.0.3:
+  verdaccio-audit@13.0.3(supports-color@8.1.1):
     dependencies:
-      '@verdaccio/config': 8.1.2
+      '@verdaccio/config': 8.1.2(supports-color@8.1.1)
       '@verdaccio/core': 8.1.2
-      express: 4.22.1
-      https-proxy-agent: 5.0.1
+      express: 4.22.1(supports-color@8.1.1)
+      https-proxy-agent: 5.0.1(supports-color@8.1.1)
       node-fetch: 2.6.7
     transitivePeerDependencies:
       - encoding
       - supports-color
 
-  verdaccio-htpasswd@13.0.3:
+  verdaccio-htpasswd@13.0.3(supports-color@8.1.1):
     dependencies:
       '@verdaccio/core': 8.1.2
       '@verdaccio/file-locking': 13.0.1
       apache-md5: 1.1.8
       bcryptjs: 2.4.3
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       http-errors: 2.0.1
       unix-crypt-td-js: 1.1.4
     transitivePeerDependencies:
       - supports-color
 
-  verdaccio@6.7.4(typanion@3.14.0):
+  verdaccio@6.7.4(supports-color@8.1.1)(typanion@3.14.0):
     dependencies:
       '@cypress/request': 3.0.10
-      '@verdaccio/auth': 8.0.4
-      '@verdaccio/config': 8.1.2
+      '@verdaccio/auth': 8.0.4(supports-color@8.1.1)
+      '@verdaccio/config': 8.1.2(supports-color@8.1.1)
       '@verdaccio/core': 8.1.2
-      '@verdaccio/hooks': 8.0.3
-      '@verdaccio/loaders': 8.0.3
-      '@verdaccio/local-storage-legacy': 11.3.4
-      '@verdaccio/logger': 8.0.3
-      '@verdaccio/middleware': 8.0.5
-      '@verdaccio/package-filter': 13.0.3
-      '@verdaccio/search-indexer': 8.0.2
-      '@verdaccio/signature': 8.0.3
+      '@verdaccio/hooks': 8.0.3(supports-color@8.1.1)
+      '@verdaccio/loaders': 8.0.3(supports-color@8.1.1)
+      '@verdaccio/local-storage-legacy': 11.3.4(supports-color@8.1.1)
+      '@verdaccio/logger': 8.0.3(supports-color@8.1.1)
+      '@verdaccio/middleware': 8.0.5(supports-color@8.1.1)
+      '@verdaccio/package-filter': 13.0.3(supports-color@8.1.1)
+      '@verdaccio/search-indexer': 8.0.2(supports-color@8.1.1)
+      '@verdaccio/signature': 8.0.3(supports-color@8.1.1)
       '@verdaccio/streams': 10.2.5
-      '@verdaccio/tarball': 13.0.3
-      '@verdaccio/ui-theme': 9.0.0-next-9.20
-      '@verdaccio/url': 13.0.3
+      '@verdaccio/tarball': 13.0.3(supports-color@8.1.1)
+      '@verdaccio/ui-theme': 9.0.0-next-9.20(supports-color@8.1.1)
+      '@verdaccio/url': 13.0.3(supports-color@8.1.1)
       '@verdaccio/utils': 8.1.3
       JSONStream: 1.3.5
       async: 3.2.6
       clipanion: 4.0.0-rc.4(typanion@3.14.0)
-      compression: 1.8.1
+      compression: 1.8.1(supports-color@8.1.1)
       cors: 2.8.6
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       envinfo: 7.21.0
-      express: 4.22.2
+      express: 4.22.2(supports-color@8.1.1)
       lodash: 4.18.1
       lru-cache: 7.18.3
       mime: 3.0.0
       semver: 7.8.2
-      verdaccio-audit: 13.0.3
-      verdaccio-htpasswd: 13.0.3
+      verdaccio-audit: 13.0.3(supports-color@8.1.1)
+      verdaccio-htpasswd: 13.0.3(supports-color@8.1.1)
     transitivePeerDependencies:
       - bare-abort-controller
       - encoding
@@ -16320,10 +16351,10 @@ snapshots:
       '@types/unist': 3.0.3
       vfile-message: 4.0.3
 
-  vite-node@3.2.4(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0):
+  vite-node@3.2.4(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0):
     dependencies:
       cac: 6.7.14
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       es-module-lexer: 1.7.0
       pathe: 2.0.3
       vite: 6.4.3(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0)
@@ -16362,8 +16393,8 @@ snapshots:
       esbuild: 0.28.1
       fdir: 6.5.0(picomatch@4.0.4)
       picomatch: 4.0.4
-      postcss: 8.5.15
-      rollup: 4.62.0
+      postcss: 8.5.16
+      rollup: 4.62.2
       tinyglobby: 0.2.17
     optionalDependencies:
       '@types/node': 22.19.13
@@ -16377,7 +16408,7 @@ snapshots:
     optionalDependencies:
       vite: 7.3.6(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0)
 
-  vitest@3.2.6(@types/debug@4.1.12)(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0):
+  vitest@3.2.6(@types/debug@4.1.12)(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.6
@@ -16388,7 +16419,7 @@ snapshots:
       '@vitest/spy': 3.2.6
       '@vitest/utils': 3.2.6
       chai: 5.3.3
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       expect-type: 1.4.0
       magic-string: 0.30.21
       pathe: 2.0.3
@@ -16400,7 +16431,7 @@ snapshots:
       tinypool: 1.1.1
       tinyrainbow: 2.0.0
       vite: 6.4.3(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0)
-      vite-node: 3.2.4(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0)
+      vite-node: 3.2.4(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.32.0)(supports-color@8.1.1)(tsx@4.22.4)(yaml@2.9.0)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@types/debug': 4.1.12

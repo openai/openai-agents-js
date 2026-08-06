@@ -22,7 +22,7 @@
   "dependencies": {
     "@openai/agents-core": "workspace:*",
     "debug": "^4.4.0",
-    "openai": "^6.46.0"
+    "openai": "^7.2.0"
   },
   "scripts": {
     "prebuild": "tsx ../../scripts/embedMeta.ts",
