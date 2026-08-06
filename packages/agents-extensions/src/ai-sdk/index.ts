@@ -2073,6 +2073,51 @@ export class AiSdkModel implements Model {
     return transformed;
   }
 
+  async #transformOutputTextItems(
+    items: ModelResponse['output'],
+    request: ModelRequest,
+    stream: boolean,
+  ): Promise<void> {
+    let parts: protocol.OutputText[] = [];
+    const transformParts = async () => {
+      if (parts.length === 0) {
+        return;
+      }
+
+      const currentParts = parts;
+      parts = [];
+      const originalLengths = currentParts.map((part) => part.text.length);
+      const transformedText = await this.#transformOutputText(
+        currentParts.map((part) => part.text).join(''),
+        request,
+        stream,
+      );
+      let offset = 0;
+      for (const [index, part] of currentParts.entries()) {
+        const end =
+          index === currentParts.length - 1
+            ? transformedText.length
+            : Math.min(transformedText.length, offset + originalLengths[index]);
+        part.text = transformedText.slice(offset, end);
+        offset = end;
+      }
+    };
+
+    for (const item of items) {
+      if (item.type === 'message' && item.role === 'assistant') {
+        parts.push(
+          ...item.content.filter(
+            (content): content is protocol.OutputText =>
+              content.type === 'output_text',
+          ),
+        );
+      } else if (item.type !== 'reasoning') {
+        await transformParts();
+      }
+    }
+    await transformParts();
+  }
+
   async getResponse(request: ModelRequest) {
     return withGenerationSpan(async (span) => {
       try {
@@ -2173,18 +2218,17 @@ export class AiSdkModel implements Model {
           SerializedTool | SerializedHandoff
         >();
         let pendingTextParts: string[] = [];
-        const flushPendingText = async () => {
+        const flushPendingText = () => {
           if (pendingTextParts.length === 0) {
             return;
           }
-          const transformedText = await this.#transformOutputText(
-            pendingTextParts.join(''),
-            request,
-            false,
-          );
+          const textOutput: protocol.OutputText = {
+            type: 'output_text',
+            text: pendingTextParts.join(''),
+          };
           output.push({
             type: 'message',
-            content: [{ type: 'output_text', text: transformedText }],
+            content: [textOutput],
             role: 'assistant',
             status: 'completed',
             providerData: mergeProviderData(
@@ -2216,7 +2260,7 @@ export class AiSdkModel implements Model {
             ) {
               continue;
             }
-            await flushPendingText();
+            flushPendingText();
             output.push({
               type: 'reasoning',
               content: [{ type: 'input_text', text: reasoningText }],
@@ -2270,7 +2314,7 @@ export class AiSdkModel implements Model {
                   (hasToolCalls ? result.providerMetadata : undefined),
               ),
             });
-            await flushPendingText();
+            flushPendingText();
             output.push(toolCallItem);
             continue;
           }
@@ -2285,11 +2329,12 @@ export class AiSdkModel implements Model {
             ),
           });
           if (toolSearchOutput) {
-            await flushPendingText();
+            flushPendingText();
             output.push(toolSearchOutput);
           }
         }
-        await flushPendingText();
+        flushPendingText();
+        await this.#transformOutputTextItems(output, request, false);
 
         if (span && request.tracing === true) {
           span.spanData.output = output;
@@ -2706,16 +2751,11 @@ export class AiSdkModel implements Model {
         }
 
         if (entry.kind === 'text') {
-          const transformedText = await this.#transformOutputText(
-            entry.output.text,
-            request,
-            true,
-          );
           outputs.push({
             type: 'message',
             ...(entry.itemId ? { id: entry.itemId } : {}),
             role: 'assistant',
-            content: [{ ...entry.output, text: transformedText }],
+            content: [entry.output],
             status: 'completed',
             providerData: mergeProviderData(
               baseProviderData,
@@ -2734,6 +2774,7 @@ export class AiSdkModel implements Model {
           ),
         });
       }
+      await this.#transformOutputTextItems(outputs, request, true);
 
       const finalEvent: protocol.StreamEventResponseCompleted = {
         type: 'response_done',
