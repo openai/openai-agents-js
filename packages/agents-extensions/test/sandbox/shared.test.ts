@@ -40,6 +40,7 @@ import {
   openPtyWebSocket,
   parseExposedPortEndpoint,
   persistRemoteWorkspaceTar,
+  prepareManifestMounts,
   PtyProcessRegistry,
   RemoteSandboxEditor,
   assertConfiguredExposedPort,
@@ -366,7 +367,11 @@ describe('remote sandbox path helpers', () => {
             return { status: 0, stdout: 'x86_64\n' };
           }
           if (command.includes('sha256sum --check --strict -')) {
-            return { status: 86, stderr: 'checksum mismatch' };
+            return {
+              status: 86,
+              stdout: 'MOUNT_SECRET_SENTINEL',
+              stderr: 'MOUNT_SECRET_SENTINEL',
+            };
           }
           return { status: 0 };
         },
@@ -387,6 +392,326 @@ describe('remote sandbox path helpers', () => {
       architecture: 'amd64',
       status: 86,
     });
+    expect(JSON.stringify(caught)).not.toContain('MOUNT_SECRET_SENTINEL');
+  });
+
+  test('redacts unsupported rclone architecture command output', async () => {
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      mountStrategy: { type: 'test_cloud_bucket' },
+    };
+
+    const error = await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/logs',
+      installRcloneViaScript: true,
+      runCommand: async (command) => {
+        if (command.includes('command -v rclone')) {
+          return { status: 1 };
+        }
+        if (command === 'uname -m') {
+          return { status: 0, stdout: 'MOUNT_SECRET_SENTINEL' };
+        }
+        return { status: 0 };
+      },
+      writeFile: recordMountWrite(new Map<string, string>()),
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(SandboxMountError);
+    expect((error as SandboxMountError).details).toMatchObject({
+      architecture: 'unsupported',
+      status: 0,
+    });
+    expect(JSON.stringify(error)).not.toContain('MOUNT_SECRET_SENTINEL');
+  });
+
+  test('removes a credential config when writing it fails', async () => {
+    const commands: string[] = [];
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      accessKeyId: 'access-key',
+      secretAccessKey: 'secret-key',
+      mountStrategy: { type: 'test_cloud_bucket' },
+    };
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        runCommand: async (command) => {
+          commands.push(command);
+          return { status: 0, stdout: '' };
+        },
+        writeFile: async () => {
+          throw new Error('write failed');
+        },
+      }),
+    ).rejects.toThrow(/failed while trying to write rclone config/u);
+
+    expect(commands.at(-1)).toMatch(
+      /^rm -f -- '\/tmp\/openai-agents-test-.+\.conf'$/u,
+    );
+  });
+
+  test.each(['rejects', 'returns nonzero'] as const)(
+    'rejects a successful rclone mount when config cleanup %s',
+    async (cleanupFailure) => {
+      const commands: string[] = [];
+      const entry: S3Mount = {
+        type: 's3_mount',
+        bucket: 'agent-logs',
+        accessKeyId: 'access-key',
+        secretAccessKey: 'secret-key',
+        mountStrategy: { type: 'test_cloud_bucket' },
+      };
+
+      const error = await mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        runCommand: async (command) => {
+          commands.push(command);
+          if (
+            /^rm -f -- '\/tmp\/openai-agents-test-.+\.conf'$/u.test(command)
+          ) {
+            if (cleanupFailure === 'rejects') {
+              throw new Error('MOUNT_SECRET_SENTINEL');
+            }
+            return { status: 1, stderr: 'MOUNT_SECRET_SENTINEL' };
+          }
+          return { status: 0, stdout: '' };
+        },
+        writeFile: recordMountWrite(new Map<string, string>()),
+      }).then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+
+      expect(error).toBeInstanceOf(SandboxMountError);
+      expect(String(error)).toContain('remove rclone config');
+      expect(JSON.stringify(error)).not.toContain('MOUNT_SECRET_SENTINEL');
+      expect(
+        commands.some(
+          (command) =>
+            command.includes("'rclone' 'mount'") ||
+            command.includes('rclone mount'),
+        ),
+      ).toBe(true);
+    },
+  );
+
+  test('reports both rclone mount and credential cleanup failures safely', async () => {
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      accessKeyId: 'access-key',
+      secretAccessKey: 'secret-key',
+      mountStrategy: { type: 'test_cloud_bucket' },
+    };
+
+    const error = await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/logs',
+      runCommand: async (command) => {
+        if (/^rm -f -- '\/tmp\/openai-agents-test-.+\.conf'$/u.test(command)) {
+          return { status: 1, stderr: 'CLEANUP_SECRET_SENTINEL' };
+        }
+        if (
+          command.includes("'rclone' 'mount'") ||
+          command.includes('rclone mount')
+        ) {
+          return { status: 1, stderr: 'MOUNT_SECRET_SENTINEL' };
+        }
+        return { status: 0, stdout: '' };
+      },
+      writeFile: recordMountWrite(new Map<string, string>()),
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(SandboxMountError);
+    expect(String(error)).toContain(
+      'cloud bucket mount failed and credential cleanup could not complete',
+    );
+    expect((error as SandboxMountError).details).toMatchObject({
+      provider: 'test',
+      cleanupFailed: true,
+    });
+    expect(JSON.stringify(error)).not.toContain('MOUNT_SECRET_SENTINEL');
+    expect(JSON.stringify(error)).not.toContain('CLEANUP_SECRET_SENTINEL');
+  });
+
+  test('rejects symlink-aliased mount credentials during remote preflight', async () => {
+    const manifest = new Manifest({
+      entries: {
+        'secret.conf': {
+          type: 'file',
+          content: '[custom]\npassword = serialized\n',
+        },
+        data: {
+          type: 's3_mount',
+          bucket: 'agent-logs',
+          mountStrategy: {
+            type: 'test_cloud_bucket',
+            pattern: {
+              type: 'rclone',
+              remoteName: 'custom',
+              configFilePath: '/tmp/config',
+            },
+          },
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+
+    await expect(
+      prepareManifestMounts(manifest, async (path) => `/workspace/${path}`, {
+        credentialBoundaryManifest: manifest,
+        resolveCredentialPath: async () => '/workspace/secret.conf',
+      }),
+    ).rejects.toThrow(/resolve to a serialized manifest entry/u);
+  });
+
+  test('revalidates credential file paths before mount materialization', async () => {
+    const materializeMount = vi.fn();
+    let credentialPathResolutions = 0;
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'agent-logs',
+          mountStrategy: {
+            type: 'test_cloud_bucket',
+            pattern: {
+              type: 'rclone',
+              remoteName: 'custom',
+              configFilePath: '/run/rclone.conf',
+            },
+          },
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+
+    await expect(
+      materializeInlineManifest(
+        { mkdir: vi.fn(), writeFile: vi.fn() },
+        manifest,
+        'test',
+        async (path) => `/workspace/${path}`,
+        {
+          materializeMount,
+          resolveCredentialPath: async () =>
+            credentialPathResolutions++ === 0
+              ? '/run/rclone-a.conf'
+              : '/run/rclone-b.conf',
+        },
+      ),
+    ).rejects.toThrow(/mount authority changed after validation/u);
+
+    expect(credentialPathResolutions).toBe(2);
+    expect(materializeMount).not.toHaveBeenCalled();
+  });
+
+  test('revalidates credential file authority immediately before reading it', async () => {
+    const commands: string[] = [];
+    const writeFile = vi.fn();
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          remoteName: 'custom',
+          configFilePath: '/run/rclone.conf',
+        },
+      },
+    };
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        runCommand: async (command) => {
+          commands.push(command);
+          return { status: 0, stdout: '' };
+        },
+        writeFile,
+        revalidateMountAuthority: async () => {
+          throw new SandboxMountError(
+            'Sandbox mount authority changed after validation.',
+          );
+        },
+      }),
+    ).rejects.toThrow(/mount authority changed after validation/u);
+
+    expect(commands).not.toContain("cat -- '/run/rclone.conf'");
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  test('revalidates mount authority immediately before writing rclone credentials', async () => {
+    const commands: string[] = [];
+    const writeFile = vi.fn();
+    let revalidationCount = 0;
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      accessKeyId: 'access-key',
+      secretAccessKey: 'secret-key',
+      mountStrategy: { type: 'test_cloud_bucket' },
+    };
+
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        runCommand: async (command) => {
+          commands.push(command);
+          return { status: 0, stdout: '' };
+        },
+        writeFile,
+        revalidateMountAuthority: async () => {
+          revalidationCount += 1;
+          if (revalidationCount === 2) {
+            throw new SandboxMountError(
+              'Sandbox mount authority changed after validation.',
+            );
+          }
+        },
+      }),
+    ).rejects.toThrow(/mount authority changed after validation/u);
+
+    expect(revalidationCount).toBe(2);
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(
+      commands.some(
+        (command) =>
+          command.includes("'rclone' 'mount'") ||
+          command.includes('rclone mount'),
+      ),
+    ).toBe(false);
   });
 
   test('mounts Box entries through the shared rclone helper', async () => {
@@ -561,27 +886,65 @@ describe('remote sandbox path helpers', () => {
       }),
     ).rejects.toThrow(/remoteName to contain only/);
 
-    await expect(
-      mountRcloneCloudBucket({
-        providerName: 'TestSandboxClient',
-        providerId: 'test',
-        strategyType: 'test_cloud_bucket',
-        entry,
-        mountPath: '/workspace/logs',
-        pattern: {
-          type: 'rclone',
-          remoteName: 'logs',
-          configFilePath: '/workspace/rclone.conf',
-        },
-        runCommand: async (command) => {
-          if (command === "cat -- '/workspace/rclone.conf'") {
-            return { status: 1, stderr: 'permission denied' };
-          }
-          return { status: 0, stdout: '' };
-        },
-        writeFile: recordMountWrite(new Map<string, string>()),
-      }),
-    ).rejects.toThrow(/failed to read rclone config file/);
+    const configReadError = await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/logs',
+      pattern: {
+        type: 'rclone',
+        remoteName: 'logs',
+        configFilePath: '/workspace/rclone.conf',
+      },
+      runCommand: async (command) => {
+        if (command === "cat -- '/workspace/rclone.conf'") {
+          return { status: 1, stderr: 'MOUNT_SECRET_SENTINEL' };
+        }
+        return { status: 0, stdout: '' };
+      },
+      writeFile: recordMountWrite(new Map<string, string>()),
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(configReadError).toBeInstanceOf(SandboxMountError);
+    expect(String(configReadError)).toMatch(
+      /failed to read rclone config file/u,
+    );
+    expect((configReadError as SandboxMountError).details).toMatchObject({
+      status: 1,
+    });
+    expect(JSON.stringify(configReadError)).not.toContain(
+      'MOUNT_SECRET_SENTINEL',
+    );
+    expect(JSON.stringify(configReadError)).not.toContain(
+      '/workspace/rclone.conf',
+    );
+
+    const thrownCommandError = await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/logs',
+      pattern: { type: 'rclone', remoteName: 'logs' },
+      runCommand: async () => {
+        throw new Error('MOUNT_SECRET_SENTINEL');
+      },
+      writeFile: recordMountWrite(new Map<string, string>()),
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(thrownCommandError).toBeInstanceOf(SandboxMountError);
+    expect((thrownCommandError as SandboxMountError).details).toMatchObject({
+      provider: 'test',
+      operation: 'check /dev/fuse',
+    });
+    expect(JSON.stringify(thrownCommandError)).not.toContain(
+      'MOUNT_SECRET_SENTINEL',
+    );
 
     await expect(
       mountRcloneCloudBucket({
@@ -639,6 +1002,9 @@ describe('remote sandbox path helpers', () => {
       providerName: 'TestSandboxClient',
       providerId: 'test',
       mountPath: '/workspace/data',
+      handle: {
+        nfsPidPath: '/tmp/openai-agents-test-logs.nfs.pid',
+      },
       runCommand: async (command) => {
         commands.push(command);
         return { status: 0 };
@@ -647,14 +1013,67 @@ describe('remote sandbox path helpers', () => {
 
     expect(commands).toHaveLength(1);
     expect(commands[0]).toContain('openai_agents_kill_pidfile()');
-    expect(commands[0]).toContain("''|0|*[!0-9]*) return 0");
+    expect(commands[0]).toContain('require_termination=$1');
     expect(commands[0]).toContain(
       "cmdline=$(tr '\\000' ' ' < \"/proc/$pid/cmdline\"",
     );
     expect(commands[0]).toContain(
-      "openai_agents_kill_pidfile $pidfile 'rclone' 'serve' 'nfs'",
+      "openai_agents_kill_pidfile 1 '/tmp/openai-agents-test-logs.nfs.pid' 'rclone' 'serve' 'nfs'",
     );
+    expect(commands[0]).not.toContain('*.nfs.pid');
+    expect(commands[0]).toContain('helper_status=$?');
     expect(commands[0]).not.toContain('kill "$(cat "$pidfile")"');
+  });
+
+  test('preserves an unsuccessful rclone unmount status after pid cleanup', async () => {
+    let command = '';
+
+    await expect(
+      unmountRcloneMount({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        mountPath: '/workspace/data',
+        runCommand: async (receivedCommand) => {
+          command = receivedCommand;
+          return { status: 32, stderr: 'target is busy' };
+        },
+      }),
+    ).rejects.toThrow(/failed while trying to unmount cloud bucket/u);
+
+    expect(command).toContain('unmount_status=$?');
+    expect(command).toContain('helper_status=0');
+    expect(command).toContain(
+      '[ "$unmount_status" -eq 0 ] && [ "$helper_status" -eq 0 ]',
+    );
+    expect(command).not.toContain(
+      "umount -l '/workspace/data' >/dev/null 2>&1 || true",
+    );
+  });
+
+  test('rejects rclone replacement cleanup when its tracked NFS helper is not terminated', async () => {
+    let command = '';
+
+    await expect(
+      unmountRcloneMount({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        mountPath: '/workspace/data',
+        handle: {
+          nfsPidPath: '/tmp/openai-agents-test-logs.nfs.pid',
+        },
+        runCommand: async (receivedCommand) => {
+          command = receivedCommand;
+          return { status: 1 };
+        },
+      }),
+    ).rejects.toThrow(/failed while trying to unmount cloud bucket/u);
+
+    expect(command).toContain(
+      "openai_agents_kill_pidfile 1 '/tmp/openai-agents-test-logs.nfs.pid'",
+    );
+    expect(command).toContain('return 1');
+    expect(command).toContain('sleep 0.1');
+    expect(command).toContain('helper_status=$?');
   });
 
   test('passes S3 provider through the shared rclone helper', async () => {
@@ -694,7 +1113,7 @@ describe('remote sandbox path helpers', () => {
     expect(configText).toContain('provider = Minio');
   });
 
-  test('falls back to S3 env auth for partial credentials in the shared rclone helper', async () => {
+  test('rejects partial S3 credentials before shared rclone side effects', async () => {
     const commands: string[] = [];
     const writes = new Map<string, string>();
     const entry: S3Mount = {
@@ -710,28 +1129,26 @@ describe('remote sandbox path helpers', () => {
       },
     };
 
-    await mountRcloneCloudBucket({
-      providerName: 'TestSandboxClient',
-      providerId: 'test',
-      strategyType: 'test_cloud_bucket',
-      entry,
-      mountPath: '/workspace/logs',
-      runCommand: async (command) => {
-        commands.push(command);
-        if (command === 'id -u; id -g') {
-          return { status: 0, stdout: '1000\n1000\n' };
-        }
-        return { status: 0, stdout: '' };
-      },
-      writeFile: recordMountWrite(writes),
-    });
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        runCommand: async (command) => {
+          commands.push(command);
+          return { status: 0, stdout: '' };
+        },
+        writeFile: recordMountWrite(writes),
+      }),
+    ).rejects.toThrow(/both accessKeyId and secretAccessKey/u);
 
-    const configText = onlyMountWrite(writes);
-    expect(configText).toContain('env_auth = true');
-    expect(configText).not.toContain('access_key_id = access-key');
+    expect(commands).toEqual([]);
+    expect(writes.size).toBe(0);
   });
 
-  test('falls back to native GCS rclone config for partial HMAC credentials in the shared helper', async () => {
+  test('rejects partial GCS HMAC credentials before shared rclone side effects', async () => {
     const commands: string[] = [];
     const writes = new Map<string, string>();
     const entry: GCSMount = {
@@ -747,26 +1164,68 @@ describe('remote sandbox path helpers', () => {
       },
     };
 
-    await mountRcloneCloudBucket({
-      providerName: 'TestSandboxClient',
-      providerId: 'test',
-      strategyType: 'test_cloud_bucket',
-      entry,
-      mountPath: '/workspace/logs',
-      runCommand: async (command) => {
-        commands.push(command);
-        if (command === 'id -u; id -g') {
-          return { status: 0, stdout: '1000\n1000\n' };
-        }
-        return { status: 0, stdout: '' };
-      },
-      writeFile: recordMountWrite(writes),
-    });
+    await expect(
+      mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        runCommand: async (command) => {
+          commands.push(command);
+          return { status: 0, stdout: '' };
+        },
+        writeFile: recordMountWrite(writes),
+      }),
+    ).rejects.toThrow(/both accessId and secretAccessKey/u);
 
-    const configText = onlyMountWrite(writes);
-    expect(configText).toContain('type = google cloud storage');
-    expect(configText).toContain('env_auth = true');
-    expect(configText).not.toContain('access_key_id = gcs-access-id');
+    expect(commands).toEqual([]);
+    expect(writes.size).toBe(0);
+  });
+
+  test('enables ambient credential providers only after trusted opt-in', async () => {
+    const entries: Array<S3Mount | GCSMount | AzureBlobMount> = [
+      {
+        type: 's3_mount',
+        bucket: 'agent-logs',
+        mountStrategy: { type: 'test_cloud_bucket' },
+      },
+      {
+        type: 'gcs_mount',
+        bucket: 'agent-logs',
+        mountStrategy: { type: 'test_cloud_bucket' },
+      },
+      {
+        type: 'azure_blob_mount',
+        account: 'account-name',
+        container: 'agent-logs',
+        mountStrategy: { type: 'test_cloud_bucket' },
+      },
+    ];
+
+    for (const entry of entries) {
+      const writes = new Map<string, string>();
+      await mountRcloneCloudBucket({
+        providerName: 'TestSandboxClient',
+        providerId: 'test',
+        strategyType: 'test_cloud_bucket',
+        entry,
+        mountPath: '/workspace/logs',
+        allowAmbientCredentials: true,
+        runCommand: async (command) =>
+          command === 'id -u; id -g'
+            ? { status: 0, stdout: '1000\n1000\n' }
+            : { status: 0, stdout: '' },
+        writeFile: recordMountWrite(writes),
+      });
+      const configText = onlyMountWrite(writes);
+      if (entry.type === 'azure_blob_mount') {
+        expect(configText).toContain('use_msi = true');
+      } else {
+        expect(configText).toContain('env_auth = true');
+      }
+      expect(configText).not.toContain('anonymous = true');
+    }
   });
 
   test('rejects shared R2 rclone mounts without accountId even with customDomain', async () => {
@@ -833,6 +1292,8 @@ describe('remote sandbox path helpers', () => {
     expect(configText).toContain('type = azureblob');
     expect(configText).toContain('account = account-name');
     expect(configText).toContain('endpoint = https://blob.alias.example.test');
+    expect(configText).toContain('use_msi = false');
+    expect(configText).toContain('env_auth = false');
   });
 
   test('validates rclone NFS pidfiles during failed mount cleanup', async () => {
@@ -850,39 +1311,43 @@ describe('remote sandbox path helpers', () => {
       },
     };
 
-    await expect(
-      mountRcloneCloudBucket({
-        providerName: 'TestSandboxClient',
-        providerId: 'test',
-        strategyType: 'test_cloud_bucket',
-        entry,
-        mountPath: '/workspace/logs',
-        pattern: {
-          type: 'rclone',
-          mode: 'nfs',
-          remote: 'logs',
-        },
-        runCommand: async (command) => {
-          commands.push(command);
-          if (
-            command ===
-            'command -v rclone >/dev/null 2>&1 || test -x /usr/local/bin/rclone'
-          ) {
-            return { status: 0, stdout: '' };
-          }
-          if (command === 'command -v rclone >/dev/null 2>&1') {
-            return { status: 1, stdout: '' };
-          }
-          if (command.includes('mount -v -t nfs')) {
-            return { status: 1, stderr: 'mount failed' };
-          }
+    const error = await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/logs',
+      pattern: {
+        type: 'rclone',
+        mode: 'nfs',
+        remote: 'logs',
+      },
+      runCommand: async (command) => {
+        commands.push(command);
+        if (
+          command ===
+          'command -v rclone >/dev/null 2>&1 || test -x /usr/local/bin/rclone'
+        ) {
           return { status: 0, stdout: '' };
-        },
-        writeFile: recordMountWrite(new Map<string, string>()),
-      }),
-    ).rejects.toThrow(
+        }
+        if (command === 'command -v rclone >/dev/null 2>&1') {
+          return { status: 1, stdout: '' };
+        }
+        if (command.includes('mount -v -t nfs')) {
+          return { status: 1, stderr: 'MOUNT_SECRET_SENTINEL' };
+        }
+        return { status: 0, stdout: '' };
+      },
+      writeFile: recordMountWrite(new Map<string, string>()),
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain(
       'TestSandboxClient cloud bucket mount failed while trying to mount rclone nfs client.',
     );
+    expect(JSON.stringify(error)).not.toContain('MOUNT_SECRET_SENTINEL');
 
     const cleanupCommand = commands.find(
       (command) =>
@@ -891,8 +1356,9 @@ describe('remote sandbox path helpers', () => {
     );
     expect(cleanupCommand).toContain('openai_agents_kill_pidfile()');
     expect(cleanupCommand).toContain(
-      "openai_agents_kill_pidfile '/tmp/openai-agents-test-logs.nfs.pid' 'rclone' 'serve' 'nfs'",
+      "openai_agents_kill_pidfile 1 '/tmp/openai-agents-test-logs.nfs.pid' 'rclone' 'serve' 'nfs'",
     );
+    expect(cleanupCommand).toContain('[ "$helper_status" -eq 0 ] && rm -f --');
     expect(cleanupCommand).not.toContain('kill "$(cat');
     expect(commands).toContain(
       "'/usr/local/bin/rclone' 'serve' 'nfs' '--help' >/dev/null 2>&1",
@@ -902,6 +1368,78 @@ describe('remote sandbox path helpers', () => {
         command.includes("('/usr/local/bin/rclone' 'serve' 'nfs'"),
       ),
     ).toBe(true);
+  });
+
+  test('surfaces failed rclone NFS helper termination without leaking output', async () => {
+    const commands: string[] = [];
+    const entry: S3Mount = {
+      type: 's3_mount',
+      bucket: 'agent-logs',
+      accessKeyId: 'access-key',
+      secretAccessKey: 'secret-key',
+      mountStrategy: {
+        type: 'test_cloud_bucket',
+        pattern: {
+          type: 'rclone',
+          mode: 'nfs',
+          remote: 'logs',
+        },
+      },
+    };
+
+    const error = await mountRcloneCloudBucket({
+      providerName: 'TestSandboxClient',
+      providerId: 'test',
+      strategyType: 'test_cloud_bucket',
+      entry,
+      mountPath: '/workspace/logs',
+      pattern: {
+        type: 'rclone',
+        mode: 'nfs',
+        remote: 'logs',
+      },
+      runCommand: async (command) => {
+        commands.push(command);
+        if (
+          command ===
+          'command -v rclone >/dev/null 2>&1 || test -x /usr/local/bin/rclone'
+        ) {
+          return { status: 0, stdout: '' };
+        }
+        if (command === 'command -v rclone >/dev/null 2>&1') {
+          return { status: 1, stdout: '' };
+        }
+        if (command.includes('mount -v -t nfs')) {
+          return { status: 1, stderr: 'MOUNT_SECRET_SENTINEL' };
+        }
+        if (command.includes('openai_agents_kill_pidfile 1')) {
+          return { status: 1, stderr: 'CLEANUP_SECRET_SENTINEL' };
+        }
+        return { status: 0, stdout: '' };
+      },
+      writeFile: recordMountWrite(new Map<string, string>()),
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(SandboxMountError);
+    expect(String(error)).toContain(
+      'cloud bucket mount failed and credential cleanup could not complete',
+    );
+    expect((error as SandboxMountError).details).toMatchObject({
+      provider: 'test',
+      cleanupFailed: true,
+    });
+    expect(JSON.stringify(error)).not.toContain('MOUNT_SECRET_SENTINEL');
+    expect(JSON.stringify(error)).not.toContain('CLEANUP_SECRET_SENTINEL');
+    const cleanupCommand = commands.find((command) =>
+      command.includes('openai_agents_kill_pidfile 1'),
+    );
+    expect(cleanupCommand).toContain('[ "$helper_status" -eq 0 ] && rm -f --');
+    expect(commands).not.toContain(
+      "rm -f -- '/tmp/openai-agents-test-logs.conf'",
+    );
   });
 
   test('accept in-root absolute workspace paths', () => {
@@ -3207,7 +3745,11 @@ describe('remote sandbox path helpers', () => {
             },
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed(
+        'mounted',
+        'mounted/cache',
+        'mounted/cache/nested',
+      ),
       'test',
       resolvePath,
     );
@@ -3221,7 +3763,10 @@ describe('remote sandbox path helpers', () => {
             src: sourceFile,
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed(
+        'mounted',
+        'mounted/cache',
+      ),
       'test',
       resolvePath,
     );
@@ -3316,7 +3861,11 @@ describe('remote sandbox path helpers', () => {
             mountStrategy: { type: 'in_container' },
           }),
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed(
+        'mounted',
+        'mounted/cache',
+        'mounted/cache/nested',
+      ),
       'test',
       async (path) => {
         resolvedPaths.push(path);
@@ -3337,6 +3886,9 @@ describe('remote sandbox path helpers', () => {
       'mount:/workspace/mounted/cache/nested',
     ]);
     expect(resolvedPaths).toEqual([
+      'mounted',
+      'mounted/cache',
+      'mounted/cache/nested',
       'app',
       'app/note.txt',
       'app/nested',
@@ -3344,6 +3896,84 @@ describe('remote sandbox path helpers', () => {
       'mounted/cache',
       'mounted/cache/nested',
     ]);
+  });
+
+  test('validates all effective mount paths before materialization', async () => {
+    const writer = {
+      mkdir: vi.fn(),
+      writeFile: vi.fn(),
+    };
+    const materializeMount = vi.fn();
+    const manifest = new Manifest({
+      entries: {
+        'note.txt': file({ content: 'not written' }),
+        first: {
+          type: 's3_mount',
+          bucket: 'first',
+          accessKeyId: 'first-key',
+          secretAccessKey: 'first-secret',
+          mountStrategy: { type: 'in_container' },
+        },
+        second: {
+          type: 's3_mount',
+          bucket: 'second',
+          accessKeyId: 'second-key',
+          secretAccessKey: 'second-secret',
+          mountStrategy: { type: 'in_container' },
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('first', 'second');
+
+    await expect(
+      materializeInlineManifest(
+        writer,
+        manifest,
+        'test',
+        async (path) =>
+          path === 'second' ? '/workspace/redirected' : `/workspace/${path}`,
+        { materializeMount },
+      ),
+    ).rejects.toThrow(/model-controlled sandbox/u);
+
+    expect(materializeMount).not.toHaveBeenCalled();
+    expect(writer.mkdir).not.toHaveBeenCalled();
+    expect(writer.writeFile).not.toHaveBeenCalled();
+  });
+
+  test('revalidates effective mount paths immediately before materialization', async () => {
+    const materializeMount = vi.fn();
+    let mountPathResolutions = 0;
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'private',
+          accessKeyId: 'trusted-key',
+          secretAccessKey: 'trusted-secret',
+          mountStrategy: { type: 'in_container' },
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+
+    await expect(
+      materializeInlineManifest(
+        { mkdir: vi.fn(), writeFile: vi.fn() },
+        manifest,
+        'test',
+        async (path) => {
+          if (path !== 'data') {
+            return `/workspace/${path}`;
+          }
+          return mountPathResolutions++ === 0
+            ? '/workspace/data'
+            : '/workspace/redirected';
+        },
+        { materializeMount },
+      ),
+    ).rejects.toThrow(/model-controlled sandbox/u);
+
+    expect(mountPathResolutions).toBe(2);
+    expect(materializeMount).not.toHaveBeenCalled();
   });
 
   test('materializes local source manifest mounts after source entries', async () => {
@@ -3383,7 +4013,10 @@ describe('remote sandbox path helpers', () => {
             mountStrategy: { type: 'in_container' },
           }),
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed(
+        'mounted',
+        'mounted/cache',
+      ),
       'test',
       async (path) => {
         resolvedPaths.push(path);
@@ -3402,6 +4035,8 @@ describe('remote sandbox path helpers', () => {
       'mount:/workspace/mounted/cache',
     ]);
     expect(resolvedPaths).toEqual([
+      'mounted',
+      'mounted/cache',
       'copied/source.txt',
       'mounted',
       'mounted/cache',
@@ -3412,7 +4047,12 @@ describe('remote sandbox path helpers', () => {
     const state = {
       manifest: new Manifest({
         root: '/workspace',
-      }),
+      }).withInContainerMountCredentialExposureAllowed(
+        'project/mounted',
+        'project/mounted/cache',
+        '/remote/project/mounted',
+        '/remote/project/mounted/cache',
+      ),
     };
     const operations: string[] = [];
     const resolvedPaths: string[] = [];
@@ -3464,6 +4104,8 @@ describe('remote sandbox path helpers', () => {
       'mount:/remote/project/mounted/cache',
     ]);
     expect(resolvedPaths).toEqual([
+      'project/mounted',
+      'project/mounted/cache',
       'project',
       'project/child',
       'project/note.txt',

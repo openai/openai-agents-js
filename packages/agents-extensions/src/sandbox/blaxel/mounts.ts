@@ -42,6 +42,33 @@ export type BlaxelCloudBucketMountConfig = {
   accessToken?: string;
 };
 
+export type BlaxelFuseMountHandle = {
+  tokenServerPidPath?: string;
+};
+
+export function blaxelFuseMountHandle(
+  entry: Entry,
+  mountPath: string,
+  artifactScope: string,
+): BlaxelFuseMountHandle {
+  if (!isBlaxelCloudBucketMountEntry(entry)) {
+    return {};
+  }
+  const config = buildBlaxelCloudBucketMountConfig(
+    entry,
+    mountPath,
+    artifactScope,
+  );
+  return usesGcsAccessTokenSecret(config)
+    ? {
+        tokenServerPidPath: gcsAccessTokenArtifactPaths(
+          mountPath,
+          artifactScope,
+        ).pidPath,
+      }
+    : {};
+}
+
 export class BlaxelCloudBucketMountStrategy {
   readonly [key: string]: unknown;
   readonly type = 'blaxel_cloud_bucket';
@@ -155,7 +182,8 @@ export async function mountBlaxelCloudBucket(args: {
   artifactScope: string;
   runCommand: RemoteMountCommand;
   writeSecretFile: BlaxelMountSecretWriter;
-}): Promise<void> {
+  revalidateMountAuthority?: () => Promise<void>;
+}): Promise<BlaxelFuseMountHandle> {
   if (!isBlaxelCloudBucketMountEntry(args.entry)) {
     throw new SandboxUnsupportedFeatureError(
       'BlaxelSandboxClient only supports BlaxelCloudBucketMountStrategy cloud bucket mount entries.',
@@ -173,19 +201,41 @@ export async function mountBlaxelCloudBucket(args: {
     args.mountPath,
     args.artifactScope,
   );
+  await args.revalidateMountAuthority?.();
   try {
     await materializeBlaxelCloudBucketSecrets(config, args.writeSecretFile);
+    await args.revalidateMountAuthority?.();
     if (config.provider === 'gcs') {
       await runBlaxelMountScript(
         args.runCommand,
         buildGcsFuseMountScript(config),
       );
-      return;
+      return blaxelFuseMountHandle(
+        args.entry,
+        args.mountPath,
+        args.artifactScope,
+      );
     }
     await runBlaxelMountScript(args.runCommand, buildS3FuseMountScript(config));
-  } catch (error) {
-    await cleanupBlaxelCloudBucketSecrets(config, args.runCommand);
-    throw error;
+    return {};
+  } catch {
+    let cleanupFailed = false;
+    try {
+      await cleanupBlaxelCloudBucketSecrets(config, args.runCommand);
+    } catch {
+      cleanupFailed = true;
+    }
+    throw new SandboxMountError(
+      cleanupFailed
+        ? 'Blaxel cloud bucket mount failed and credential cleanup could not complete.'
+        : 'Blaxel cloud bucket mount failed.',
+      {
+        provider: 'blaxel',
+        operation: 'mount cloud bucket',
+        ...(cleanupFailed ? { cleanupFailed: true } : {}),
+      },
+      'mount_failed',
+    );
   }
 }
 
@@ -193,6 +243,7 @@ export async function unmountBlaxelFuseMount(args: {
   mountPath: string;
   artifactScope: string;
   runCommand: RemoteMountCommand;
+  handle?: BlaxelFuseMountHandle;
 }): Promise<void> {
   const {
     pidPath: tokenPidPath,
@@ -200,35 +251,48 @@ export async function unmountBlaxelFuseMount(args: {
     serverPath: tokenServerPath,
     payloadPath: tokenPayloadPath,
   } = gcsAccessTokenArtifactPaths(args.mountPath, args.artifactScope);
-  const tokenServerCleanup = [
-    safePidFileKillFunctionCommand(),
-    `if [ -e ${shellQuote(tokenPidPath)} ]; then ${safeKillPidFileCommand({
-      pidFile: shellQuote(tokenPidPath),
-      expectedCmdlineFragments: [tokenServerPath, tokenSocketPath],
-    })}; rm -f -- ${[
-      tokenPidPath,
-      tokenSocketPath,
-      tokenServerPath,
-      tokenPayloadPath,
-    ]
-      .map(shellQuote)
-      .join(' ')}; fi`,
-  ].join('; ');
-  const result = await args.runCommand(
-    `${[
-      `fusermount -u ${shellQuote(args.mountPath)} >/dev/null 2>&1`,
-      `fusermount3 -u ${shellQuote(args.mountPath)} >/dev/null 2>&1`,
-      `umount ${shellQuote(args.mountPath)} >/dev/null 2>&1`,
-      `umount -l ${shellQuote(args.mountPath)} >/dev/null 2>&1`,
-    ].join(' || ')}; status=$?; ${tokenServerCleanup}; exit $status`,
-    { timeoutMs: 30_000 },
-  );
+  const tokenServerCleanup = args.handle?.tokenServerPidPath
+    ? [
+        safePidFileKillFunctionCommand(),
+        safeKillPidFileCommand({
+          pidFile: shellQuote(args.handle.tokenServerPidPath),
+          expectedCmdlineFragments: [tokenServerPath, tokenSocketPath],
+          requireTermination: true,
+        }),
+        'helper_status=$?',
+        `rm -f -- ${[
+          tokenPidPath,
+          tokenSocketPath,
+          tokenServerPath,
+          tokenPayloadPath,
+        ]
+          .map(shellQuote)
+          .join(' ')}`,
+      ].join('; ')
+    : 'helper_status=0';
+  let result: RemoteMountCommandResult;
+  try {
+    result = await args.runCommand(
+      `${[
+        `fusermount -u ${shellQuote(args.mountPath)} >/dev/null 2>&1`,
+        `fusermount3 -u ${shellQuote(args.mountPath)} >/dev/null 2>&1`,
+        `umount ${shellQuote(args.mountPath)} >/dev/null 2>&1`,
+        `umount -l ${shellQuote(args.mountPath)} >/dev/null 2>&1`,
+      ].join(
+        ' || ',
+      )}; unmount_status=$?; ${tokenServerCleanup}; [ "$unmount_status" -eq 0 ] && [ "$helper_status" -eq 0 ]`,
+      { timeoutMs: 30_000 },
+    );
+  } catch {
+    throw new SandboxMountError('Blaxel cloud bucket unmount failed.', {
+      provider: 'blaxel',
+      operation: 'unmount cloud bucket',
+    });
+  }
   if (result.status !== 0) {
     throw new SandboxMountError('Blaxel cloud bucket unmount failed.', {
       provider: 'blaxel',
       status: result.status,
-      stderr: result.stderr,
-      stdout: result.stdout,
     });
   }
 }
@@ -430,7 +494,7 @@ function buildS3FuseMountScript(config: BlaxelCloudBucketMountConfig): string {
   if (!credentials) {
     return command;
   }
-  return `${command}; status=$?; rm -f -- ${shellQuote(credentialPath)}; exit $status`;
+  return `${command}; status=$?; rm -f -- ${shellQuote(credentialPath)}; cleanup_status=$?; [ "$status" -ne 0 ] && exit "$status"; exit "$cleanup_status"`;
 }
 
 function buildGcsFuseMountScript(config: BlaxelCloudBucketMountConfig): string {
@@ -488,14 +552,16 @@ function buildGcsFuseMountScript(config: BlaxelCloudBucketMountConfig): string {
     ...(usesAccessToken
       ? [
           safePidFileKillFunctionCommand(),
+          'helper_status=0',
           `if [ "$status" -ne 0 ]; then ${safeKillPidFileCommand({
             pidFile: shellQuote(tokenPidPath),
             expectedCmdlineFragments: [tokenServerPath, tokenSocketPath],
-          })}; rm -f -- ${[tokenPidPath, tokenSocketPath, tokenServerPath, tokenPayloadPath].map(shellQuote).join(' ')}; fi`,
+            requireTermination: true,
+          })} || helper_status=$?; [ "$helper_status" -eq 0 ] && rm -f -- ${[tokenPidPath, tokenSocketPath, tokenServerPath, tokenPayloadPath].map(shellQuote).join(' ')}; fi`,
         ]
       : []),
   ];
-  return `${command}; status=$?; ${cleanupCommands.join('; ')}; exit $status`;
+  return `${command}; status=$?; helper_status=0; ${cleanupCommands.join('; ')}; cleanup_status=$?; [ "$helper_status" -ne 0 ] && exit "$helper_status"; [ "$status" -ne 0 ] && exit "$status"; exit "$cleanup_status"`;
 }
 
 function buildGcsAccessTokenServerCommands(args: {
@@ -591,7 +657,30 @@ async function cleanupBlaxelCloudBucketSecrets(
   if (!command) {
     return;
   }
-  await runCommand(command, { timeoutMs: 30_000 }).catch(() => {});
+  let result: RemoteMountCommandResult;
+  try {
+    result = await runCommand(command, { timeoutMs: 30_000 });
+  } catch {
+    throw new SandboxMountError(
+      'Blaxel cloud bucket credential cleanup failed.',
+      {
+        provider: 'blaxel',
+        operation: 'cleanup cloud bucket credentials',
+      },
+      'mount_failed',
+    );
+  }
+  if (result.status !== 0) {
+    throw new SandboxMountError(
+      'Blaxel cloud bucket credential cleanup failed.',
+      {
+        provider: 'blaxel',
+        operation: 'cleanup cloud bucket credentials',
+        status: result.status,
+      },
+      'mount_failed',
+    );
+  }
 }
 
 function buildBlaxelCloudBucketSecretCleanupCommand(
@@ -611,13 +700,15 @@ function buildBlaxelCloudBucketSecretCleanupCommand(
   if (config.serviceAccountCredentials) {
     files.push(gcsCredentialPath(config.mountPath, config.artifactScope));
   }
-  if (usesGcsAccessTokenSecret(config)) {
+  const usesAccessToken = usesGcsAccessTokenSecret(config);
+  if (usesAccessToken) {
     const tokenPaths = gcsAccessTokenArtifactPaths(
       config.mountPath,
       config.artifactScope,
     );
     commands.push(
       safePidFileKillFunctionCommand(),
+      'helper_status=0',
       `if [ -e ${shellQuote(tokenPaths.pidPath)} ]; then ${safeKillPidFileCommand(
         {
           pidFile: shellQuote(tokenPaths.pidPath),
@@ -625,8 +716,9 @@ function buildBlaxelCloudBucketSecretCleanupCommand(
             tokenPaths.serverPath,
             tokenPaths.socketPath,
           ],
+          requireTermination: true,
         },
-      )}; fi`,
+      )} || helper_status=$?; fi`,
     );
     files.push(
       tokenPaths.pidPath,
@@ -636,7 +728,13 @@ function buildBlaxelCloudBucketSecretCleanupCommand(
     );
   }
   if (files.length > 0) {
-    commands.push(`rm -f -- ${files.map(shellQuote).join(' ')}`);
+    if (!usesAccessToken) {
+      commands.push('helper_status=0');
+    }
+    commands.push(
+      `[ "$helper_status" -eq 0 ] && rm -f -- ${files.map(shellQuote).join(' ')}`,
+      '[ "$helper_status" -eq 0 ]',
+    );
   }
   return commands.length > 0 ? commands.join('; ') : undefined;
 }
@@ -750,13 +848,18 @@ async function runBlaxelMountScript(
   runCommand: RemoteMountCommand,
   command: string,
 ): Promise<RemoteMountCommandResult> {
-  const result = await runCommand(command, { timeoutMs: 300_000 });
+  let result: RemoteMountCommandResult;
+  try {
+    result = await runCommand(command, { timeoutMs: 300_000 });
+  } catch {
+    throw new SandboxMountError('Blaxel cloud bucket mount failed.', {
+      provider: 'blaxel',
+    });
+  }
   if (result.status !== 0) {
     throw new SandboxMountError('Blaxel cloud bucket mount failed.', {
       provider: 'blaxel',
       status: result.status,
-      stderr: result.stderr,
-      stdout: result.stdout,
     });
   }
   return result;

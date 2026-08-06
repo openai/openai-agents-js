@@ -17,7 +17,7 @@ export type LivePreservedOwnedSessionEntry = {
 
 const livePreservedOwnedSessionsByRunState = new WeakMap<
   object,
-  Map<string, LivePreservedOwnedSessionEntry>
+  Set<LivePreservedOwnedSessionEntry>
 >();
 
 export function rememberLivePreservedOwnedSessions<TContext>(args: {
@@ -28,7 +28,13 @@ export function rememberLivePreservedOwnedSessions<TContext>(args: {
     SandboxSessionLike<SandboxSessionState>
   >;
 }): void {
-  const liveSessions = new Map<string, LivePreservedOwnedSessionEntry>();
+  const rejectedEntries = livePreservedOwnedSessionEntries(args.state).filter(
+    (entry) => entry.reuseRejected,
+  );
+  const rejectedSessions = new Set(
+    rejectedEntries.map((entry) => entry.session),
+  );
+  const liveSessions = new Set<LivePreservedOwnedSessionEntry>(rejectedEntries);
   for (const [agentKey, entry] of Object.entries(
     args.serializedState.sessionsByAgent ?? {},
   )) {
@@ -42,11 +48,20 @@ export function rememberLivePreservedOwnedSessions<TContext>(args: {
     if (!session) {
       continue;
     }
-    liveSessions.set(agentKey, {
+    const existing = [...liveSessions].find(
+      (liveEntry) =>
+        liveEntry.agentKey === agentKey && liveEntry.session === session,
+    );
+    if (existing) {
+      existing.reuseRejected ||= rejectedSessions.has(session);
+      continue;
+    }
+    liveSessions.add({
       agentKey,
       backendId: entry.backendId,
       currentAgentName: entry.currentAgentName,
       session,
+      ...(rejectedSessions.has(session) ? { reuseRejected: true } : {}),
     });
   }
 
@@ -60,7 +75,26 @@ export function rememberLivePreservedOwnedSessions<TContext>(args: {
 export function forgetLivePreservedOwnedSessions<TContext>(
   state: RunState<TContext, Agent<TContext, AgentOutputType>>,
 ): void {
-  livePreservedOwnedSessionsByRunState.delete(state);
+  const liveSessions = livePreservedOwnedSessionsByRunState.get(state);
+  if (!liveSessions) {
+    return;
+  }
+  for (const entry of liveSessions) {
+    if (!entry.reuseRejected) {
+      liveSessions.delete(entry);
+    }
+  }
+  if (liveSessions.size === 0) {
+    livePreservedOwnedSessionsByRunState.delete(state);
+  }
+}
+
+export function hasRejectedLivePreservedOwnedSessions<TContext>(
+  state: RunState<TContext, Agent<TContext, AgentOutputType>>,
+): boolean {
+  return livePreservedOwnedSessionEntries(state).some(
+    (entry) => entry.reuseRejected,
+  );
 }
 
 export function forgetLivePreservedOwnedSessionHandle<TContext>(args: {
@@ -74,14 +108,43 @@ export function forgetLivePreservedOwnedSessionHandle<TContext>(args: {
   if (!liveSessions) {
     return;
   }
-  for (const [agentKey, entry] of liveSessions) {
+  for (const entry of liveSessions) {
     if (entry.session === args.session) {
-      liveSessions.delete(agentKey);
+      liveSessions.delete(entry);
     }
   }
   if (liveSessions.size === 0) {
     livePreservedOwnedSessionsByRunState.delete(args.state);
   }
+}
+
+export function rememberRejectedLivePreservedOwnedSessionHandle<
+  TContext,
+>(args: {
+  state: RunState<TContext, Agent<TContext, AgentOutputType>> | undefined;
+  source: LivePreservedOwnedSessionEntry;
+  session: SandboxSessionLike<SandboxSessionState>;
+}): void {
+  if (!args.state) {
+    return;
+  }
+  const liveSessions =
+    livePreservedOwnedSessionsByRunState.get(args.state) ?? new Set();
+  const existing = [...liveSessions].find(
+    (entry) => entry.session === args.session,
+  );
+  if (existing) {
+    existing.reuseRejected = true;
+  } else {
+    liveSessions.add({
+      agentKey: args.source.agentKey,
+      backendId: args.source.backendId,
+      currentAgentName: args.source.currentAgentName,
+      session: args.session,
+      reuseRejected: true,
+    });
+  }
+  livePreservedOwnedSessionsByRunState.set(args.state, liveSessions);
 }
 
 export function rejectLivePreservedOwnedSessionHandle<TContext>(args: {
@@ -131,9 +194,23 @@ export function livePreservedOwnedSession<TContext>(args: {
     return undefined;
   }
   const liveSessions = livePreservedOwnedSessionsByRunState.get(args.runState);
-  const liveEntry = liveSessions?.get(args.agentKey);
-  if (!liveEntry || liveEntry.backendId !== args.client.backendId) {
+  const matchingEntries = [...(liveSessions ?? [])].filter(
+    (entry) =>
+      entry.agentKey === args.agentKey &&
+      entry.backendId === args.client.backendId,
+  );
+  const rejectedSessions = new Set(
+    [...(liveSessions ?? [])]
+      .filter((entry) => entry.reuseRejected)
+      .map((entry) => entry.session),
+  );
+  const liveEntry =
+    matchingEntries.find((entry) => rejectedSessions.has(entry.session)) ??
+    matchingEntries[0];
+  if (!liveEntry) {
     return undefined;
   }
-  return liveEntry;
+  return rejectedSessions.has(liveEntry.session)
+    ? { ...liveEntry, reuseRejected: true }
+    : liveEntry;
 }

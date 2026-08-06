@@ -1,5 +1,6 @@
 import {
   Manifest,
+  SandboxMountError,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
 } from '@openai/agents-core/sandbox';
@@ -1687,7 +1688,7 @@ describe('CloudflareSandboxClient', () => {
         sandboxId: 'cf_test',
         environment: {},
       }),
-    ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
+    ).rejects.toBeInstanceOf(SandboxMountError);
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
@@ -1912,6 +1913,102 @@ describe('CloudflareSandboxClient', () => {
     );
   });
 
+  test('omits opaque provider mount configuration from persisted state', async () => {
+    const client = new CloudflareSandboxClient();
+
+    const serialized = await client.serializeSessionState({
+      manifest: new Manifest(),
+      workerUrl: 'https://worker.example.com',
+      sandboxId: 'cf_test',
+      environment: {},
+      mounts: [
+        {
+          bucket: 'private',
+          secretAccessKey: 'CLOUDFLARE_MOUNT_SECRET_SENTINEL',
+        },
+      ],
+    } as never);
+
+    expect(serialized).not.toHaveProperty('mounts');
+    expect(serialized).toHaveProperty(
+      '__openaiAgentsNonResumableMountAuthority',
+      true,
+    );
+    expect(JSON.stringify(serialized)).not.toContain(
+      'CLOUDFLARE_MOUNT_SECRET_SENTINEL',
+    );
+  });
+
+  test('reuses opaque provider mounts only with exact current options', () => {
+    const mounts = [{ bucket: 'private', token: 'current-token' }];
+    const client = new CloudflareSandboxClient({
+      workerUrl: 'https://worker.example.com',
+      mounts,
+    });
+    const state = {
+      manifest: new Manifest(),
+      workerUrl: 'https://worker.example.com',
+      sandboxId: 'cf_test',
+      environment: {},
+      mounts,
+    } as never;
+
+    expect(client.canReusePreservedOwnedSession(state)).toBe(true);
+    expect(
+      client.canReusePreservedOwnedSession(state, {
+        clientOptions: {
+          workerUrl: 'https://worker.example.com',
+          mounts: [{ bucket: 'private', token: 'rotated-token' }],
+        },
+      }),
+    ).toBe(false);
+    expect(
+      client.canReusePreservedOwnedSession(state, {
+        clientOptions: {
+          workerUrl: 'https://worker.example.com',
+          mounts: undefined,
+        },
+      }),
+    ).toBe(false);
+  });
+
+  test('rejects serialized opaque mount authority before provider effects', async () => {
+    const client = new CloudflareSandboxClient({
+      workerUrl: 'https://worker.example.com',
+    });
+
+    await expect(
+      client.resume({
+        manifest: new Manifest(),
+        workerUrl: 'https://worker.example.com',
+        sandboxId: 'cf_test',
+        environment: {},
+        __openaiAgentsNonResumableMountAuthority: true,
+      }),
+    ).rejects.toThrow(/non-resumable mount authority/u);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('rejects deserialized state even when an opaque mount marker is deleted', async () => {
+    const client = new CloudflareSandboxClient({
+      workerUrl: 'https://worker.example.com',
+    });
+    const serialized = {
+      manifest: new Manifest(),
+      workerUrl: 'https://worker.example.com',
+      sandboxId: 'cf_test',
+      environment: {},
+      __openaiAgentsNonResumableMountAuthority: true,
+    } as Record<string, unknown>;
+    delete serialized.__openaiAgentsNonResumableMountAuthority;
+    const state = await client.deserializeSessionState(serialized);
+
+    await expect(client.resume(state)).rejects.toThrow(
+      /cannot safely resume persisted session state/u,
+    );
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   test('mounts Cloudflare bucket entries through worker endpoints', async () => {
     const client = new CloudflareSandboxClient({
       workerUrl: 'https://worker.example.com',
@@ -1953,6 +2050,59 @@ describe('CloudflareSandboxClient', () => {
         }),
       }),
     );
+  });
+
+  test('uses one validated effective path for Cloudflare bucket mounts', async () => {
+    const client = new CloudflareSandboxClient({
+      workerUrl: 'https://worker.example.com',
+    });
+    const session = await client.create(new Manifest());
+    let pathResolutions = 0;
+    global.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/exec') && init?.method === 'POST') {
+        const payload = JSON.parse(String(init.body)) as { argv?: string[] };
+        if (resolvedRemotePathFromValidationCommand(payload.argv?.[2] ?? '')) {
+          pathResolutions += 1;
+          const resolvedPath =
+            pathResolutions === 1
+              ? '/workspace/trusted-target'
+              : '/workspace/redirected-target';
+          return sseExecResponse([
+            {
+              event: 'stdout',
+              data: Buffer.from(`${resolvedPath}\n`).toString('base64'),
+            },
+            { event: 'exit', data: JSON.stringify({ exit_code: 0 }) },
+          ]);
+        }
+      }
+      if (url.includes('/v1/sandbox/cf_test/mount')) {
+        return new Response(null, { status: 200 });
+      }
+      return new Response(null, { status: 200 });
+    }) as typeof fetch;
+
+    await session.applyManifest(
+      new Manifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'logs',
+            mountPath: 'mounted/logs',
+            mountStrategy: new CloudflareBucketMountStrategy(),
+          },
+        },
+      }),
+    );
+
+    expect(pathResolutions).toBe(1);
+    const mountCall = vi
+      .mocked(global.fetch)
+      .mock.calls.find(([input]) => String(input).includes('/mount'));
+    expect(JSON.parse(String(mountCall?.[1]?.body))).toMatchObject({
+      mountPath: '/workspace/trusted-target',
+    });
   });
 
   test('forwards Cloudflare bucket provider hints for R2 custom domains', async () => {

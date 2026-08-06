@@ -1,11 +1,14 @@
 import {
   file,
+  gcsMount,
   Manifest,
+  s3Mount,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
   type SandboxSessionState,
 } from '@openai/agents-core/sandbox';
-import { describe, expect, test } from 'vitest';
+import { withExclusiveSandboxManifestMutation } from '@openai/agents-core/sandbox/internal';
+import { describe, expect, test, vi } from 'vitest';
 import {
   assertCoreConcurrencyLimitsUnsupported,
   assertCoreSnapshotUnsupported,
@@ -18,9 +21,15 @@ import {
   withProviderError,
   providerErrorRetryability,
   RemoteSandboxSessionBase,
+  serializeManifestRecord,
   type RemoteSandboxCommandOptions,
   type RemoteSandboxCommandResult,
 } from '../../src/sandbox/shared';
+import {
+  captureRcloneMountEnvironmentAuthorityForManifest,
+  rcloneMountEnvironmentAuthorityMatches,
+  validateRcloneMountEnvironmentCredentialExposure,
+} from '../../src/sandbox/shared/inContainerMounts';
 
 type FakeRemoteSessionState = SandboxSessionState & {
   configuredExposedPorts?: number[];
@@ -136,7 +145,349 @@ class FailedPathProbeSession extends FakeRemoteSession {
   }
 }
 
+class CredentialMountFakeSession extends FakeRemoteSession {
+  beforeApplyCalls = 0;
+  deleteCalls = 0;
+  failMount = false;
+  beforeApplyGate?: Promise<void>;
+  materializeGate?: Promise<void>;
+  observedAccessKeys: Array<string | undefined> = [];
+  observedAmbientCredentialPolicy: boolean[] = [];
+
+  protected override manifestMetadataSupport() {
+    return { mounts: true };
+  }
+
+  protected override manifestMaterializationOptions() {
+    return {
+      validateManifest: validateRcloneMountEnvironmentCredentialExposure,
+      materializeMount: async (
+        _path: string,
+        _entry: unknown,
+        context: {
+          environment?: Readonly<Record<string, string>>;
+          allowAmbientCredentials?: boolean;
+        },
+      ) => {
+        this.observedAccessKeys.push(context.environment?.AWS_ACCESS_KEY_ID);
+        this.observedAmbientCredentialPolicy.push(
+          context.allowAmbientCredentials === true,
+        );
+        await this.materializeGate;
+        if (this.failMount) {
+          throw new Error('mount failed');
+        }
+      },
+    };
+  }
+
+  protected override async beforeApplyManifest(): Promise<void> {
+    this.beforeApplyCalls += 1;
+    await this.beforeApplyGate;
+  }
+
+  protected override afterManifestMutationCommitted(
+    materializedManifest: Manifest,
+  ): void {
+    captureRcloneMountEnvironmentAuthorityForManifest(
+      this.state,
+      materializedManifest,
+    );
+  }
+
+  async delete(): Promise<void> {
+    this.deleteCalls += 1;
+  }
+}
+
+class RedirectedCredentialMountFakeSession extends CredentialMountFakeSession {
+  protected override async resolveRemotePath(path?: string): Promise<string> {
+    if (path === 'remote' || path === '/workspace/remote') {
+      return '/workspace/redirected';
+    }
+    return await super.resolveRemotePath(path);
+  }
+}
+
 describe('shared sandbox session helpers', () => {
+  test('restores mount credentials only from current configured environment', () => {
+    const manifest = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'private',
+          mountStrategy: { type: 'daytona_cloud_bucket' },
+        }),
+      },
+    });
+
+    const restored = deserializeRemoteSandboxSessionStateValues(
+      {
+        manifest: serializeManifestRecord(manifest),
+        environment: {
+          AWS_ACCESS_KEY_ID: 'STALE_ENV_AK',
+          AWS_SECRET_ACCESS_KEY: 'STALE_ENV_SK',
+          SAFE_RUNTIME_VALUE: 'persisted-safe',
+        },
+      },
+      {
+        AWS_ACCESS_KEY_ID: 'TRUSTED_ENV_AK',
+        AWS_SECRET_ACCESS_KEY: 'TRUSTED_ENV_SK',
+      },
+    );
+
+    expect(restored.environment).toEqual({
+      SAFE_RUNTIME_VALUE: 'persisted-safe',
+      AWS_ACCESS_KEY_ID: 'TRUSTED_ENV_AK',
+      AWS_SECRET_ACCESS_KEY: 'TRUSTED_ENV_SK',
+    });
+  });
+
+  test('validates ambient mount credentials before provider hooks', async () => {
+    const session = new CredentialMountFakeSession();
+
+    await expect(
+      session.applyManifest(
+        new Manifest({
+          entries: {
+            remote: s3Mount({
+              bucket: 'private',
+              mountStrategy: { type: 'e2b_cloud_bucket' },
+            }),
+          },
+          environment: { AWS_ACCESS_KEY_ID: 'untrusted-key' },
+        }),
+      ),
+    ).rejects.toThrow(/model-controlled sandbox/u);
+
+    expect(session.beforeApplyCalls).toBe(0);
+    expect(session.deleteCalls).toBe(0);
+    expect(session.observedAccessKeys).toEqual([]);
+    expect(session.observedAmbientCredentialPolicy).toEqual([]);
+  });
+
+  test('materializes mounts with staged environment and commits afterward', async () => {
+    const session = new CredentialMountFakeSession();
+    const update = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'private',
+          mountStrategy: { type: 'e2b_cloud_bucket' },
+        }),
+      },
+      environment: { AWS_ACCESS_KEY_ID: 'rotated-key' },
+    }).withInContainerMountCredentialExposureAllowed('remote');
+
+    await session.applyManifest(update);
+
+    expect(session.observedAccessKeys).toEqual(['rotated-key']);
+    expect(session.observedAmbientCredentialPolicy).toEqual([true]);
+    expect(session.state.environment.AWS_ACCESS_KEY_ID).toBe('rotated-key');
+  });
+
+  test('rejects replacing active mounts before provider effects', async () => {
+    const session = new CredentialMountFakeSession();
+    const mounted = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'private',
+          mountStrategy: { type: 'e2b_cloud_bucket' },
+        }),
+      },
+      environment: { AWS_ACCESS_KEY_ID: 'trusted-key' },
+    }).withInContainerMountCredentialExposureAllowed('remote');
+    await session.applyManifest(mounted);
+
+    await expect(
+      session.materializeEntry({ path: 'remote', entry: { type: 'dir' } }),
+    ).rejects.toThrow(/cannot be removed or replaced.*remote/u);
+    await expect(
+      session.applyManifest(
+        new Manifest({ entries: { remote: { type: 'dir' } } }),
+      ),
+    ).rejects.toThrow(/cannot be removed or replaced.*remote/u);
+
+    expect(session.beforeApplyCalls).toBe(1);
+    expect(session.observedAccessKeys).toEqual(['trusted-key']);
+    expect(session.state.manifest.entries.remote?.type).toBe('s3_mount');
+  });
+
+  test('materializes the same immutable delta that passed validation', async () => {
+    const session = new CredentialMountFakeSession();
+    let releaseBeforeApply!: () => void;
+    session.beforeApplyGate = new Promise<void>((resolve) => {
+      releaseBeforeApply = resolve;
+    });
+    const manifest = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'private',
+          mountStrategy: { type: 'e2b_cloud_bucket' },
+        }),
+      },
+      environment: { AWS_ACCESS_KEY_ID: 'trusted-key' },
+    }).withInContainerMountCredentialExposureAllowed('remote');
+
+    const applying = session.applyManifest(manifest);
+    await vi.waitFor(() => expect(session.beforeApplyCalls).toBe(1));
+    (manifest.entries as Record<string, typeof manifest.entries.remote>).other =
+      s3Mount({
+        bucket: 'mutated',
+        mountStrategy: { type: 'e2b_cloud_bucket' },
+      });
+    releaseBeforeApply();
+    await applying;
+
+    expect(session.state.manifest.entries).toHaveProperty('remote');
+    expect(session.state.manifest.entries).not.toHaveProperty('other');
+    expect(session.observedAccessKeys).toEqual(['trusted-key']);
+  });
+
+  test('serializes overlapping manifest mutations before provider effects', async () => {
+    const session = new CredentialMountFakeSession();
+    let releaseMaterialization!: () => void;
+    session.materializeGate = new Promise<void>((resolve) => {
+      releaseMaterialization = resolve;
+    });
+    const first = new Manifest({
+      entries: {
+        first: s3Mount({
+          bucket: 'first',
+          mountStrategy: { type: 'e2b_cloud_bucket' },
+        }),
+      },
+      environment: { AWS_ACCESS_KEY_ID: 'first-key' },
+    }).withInContainerMountCredentialExposureAllowed('first');
+    const second = new Manifest({
+      entries: {
+        second: s3Mount({
+          bucket: 'second',
+          mountStrategy: { type: 'e2b_cloud_bucket' },
+        }),
+      },
+      environment: { AWS_ACCESS_KEY_ID: 'second-key' },
+    }).withInContainerMountCredentialExposureAllowed('second');
+
+    const applyingFirst = session.applyManifest(first);
+    await vi.waitFor(() =>
+      expect(session.observedAccessKeys).toEqual(['first-key']),
+    );
+    const applyingSecond = session.applyManifest(second);
+    expect(session.observedAccessKeys).toEqual(['first-key']);
+    releaseMaterialization();
+    await Promise.all([applyingFirst, applyingSecond]);
+    expect(session.observedAccessKeys).toEqual(['first-key', 'second-key']);
+    expect(session.state.manifest.entries).toHaveProperty('first');
+    expect(session.state.manifest.entries).toHaveProperty('second');
+  });
+
+  test('validates credential opt-ins against resolved effective paths', async () => {
+    const session = new RedirectedCredentialMountFakeSession();
+    const manifest = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'private',
+          accessKeyId: 'trusted-key',
+          secretAccessKey: 'trusted-secret',
+          mountStrategy: { type: 'e2b_cloud_bucket' },
+        }),
+      },
+    }).withInContainerMountCredentialExposureAllowed('remote');
+
+    await expect(session.applyManifest(manifest)).rejects.toThrow(
+      /model-controlled sandbox/u,
+    );
+    expect(session.observedAccessKeys).toEqual([]);
+    expect(session.beforeApplyCalls).toBe(0);
+    expect(session.deleteCalls).toBe(0);
+    await expect(session.execCommand({ cmd: 'true' })).resolves.toContain(
+      'Process exited with code 0',
+    );
+  });
+
+  test('rejects direct serialization during a manifest mutation', async () => {
+    const session = new CredentialMountFakeSession();
+    let releaseMutation!: () => void;
+    let signalMutationStarted!: () => void;
+    const mutationStarted = new Promise<void>((resolve) => {
+      signalMutationStarted = resolve;
+    });
+    const mutation = withExclusiveSandboxManifestMutation(
+      session.state,
+      async () => {
+        signalMutationStarted();
+        await new Promise<void>((resolve) => {
+          releaseMutation = resolve;
+        });
+      },
+    );
+    await mutationStarted;
+
+    expect(() => serializeRemoteSandboxSessionState(session.state)).toThrow(
+      /cannot be inspected while a manifest mutation is in progress/u,
+    );
+
+    releaseMutation();
+    await mutation;
+  });
+
+  test('retains actual mount authority for environment-only updates', async () => {
+    const session = new CredentialMountFakeSession();
+    const mounted = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'private',
+          mountStrategy: { type: 'e2b_cloud_bucket' },
+        }),
+      },
+      environment: { AWS_ACCESS_KEY_ID: 'old-key' },
+    }).withInContainerMountCredentialExposureAllowed('remote');
+    await session.applyManifest(mounted);
+
+    await session.applyManifest(
+      new Manifest({ environment: { AWS_ACCESS_KEY_ID: 'new-key' } }),
+    );
+
+    expect(session.observedAccessKeys).toEqual(['old-key']);
+    expect(
+      rcloneMountEnvironmentAuthorityMatches(
+        session.state,
+        session.state.manifest,
+        session.state.environment,
+      ),
+    ).toBe(false);
+  });
+
+  test('poisons and deletes sessions after failed privileged transitions', async () => {
+    const session = new CredentialMountFakeSession();
+    const editor = session.createEditor();
+    session.failMount = true;
+    const update = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'private',
+          mountStrategy: { type: 'e2b_cloud_bucket' },
+        }),
+      },
+      environment: { AWS_ACCESS_KEY_ID: 'trusted-key' },
+    }).withInContainerMountCredentialExposureAllowed('remote');
+
+    await expect(session.applyManifest(update)).rejects.toThrow('mount failed');
+    expect(session.deleteCalls).toBe(1);
+    await expect(session.execCommand({ cmd: 'true' })).rejects.toThrow(
+      /privileged manifest transition failed/u,
+    );
+    expect(() => serializeRemoteSandboxSessionState(session.state)).toThrow(
+      /privileged manifest transition failed/u,
+    );
+    await expect(
+      editor.createFile({
+        type: 'create_file',
+        path: 'after-failure.txt',
+        diff: 'blocked',
+      }),
+    ).rejects.toThrow(/privileged manifest transition failed/u);
+  });
+
   test('rejects direct resume when native host paths need trusted rebinding', () => {
     const serialized = serializeRemoteSandboxSessionState({
       manifest: new Manifest({
@@ -166,6 +517,30 @@ describe('shared sandbox session helpers', () => {
     ).toThrow(
       'Sandbox session state requires trusted hostPath values for these path grants: /mnt/shared-data.',
     );
+  });
+
+  test('rejects resolved credential files before remote state persistence', () => {
+    const manifest = new Manifest({
+      environment: {
+        GOOGLE_APPLICATION_CREDENTIALS: async () => '/workspace/gcp.json',
+      },
+      entries: {
+        'gcp.json': file({ content: 'GCP_FILE_SECRET_SENTINEL' }),
+        remote: gcsMount({
+          bucket: 'private',
+          mountStrategy: { type: 'e2b_cloud_bucket' },
+        }),
+      },
+    }).withInContainerMountCredentialExposureAllowed('remote');
+
+    expect(() =>
+      serializeRemoteSandboxSessionState({
+        manifest,
+        environment: {
+          GOOGLE_APPLICATION_CREDENTIALS: '/workspace/gcp.json',
+        },
+      }),
+    ).toThrow(/serialized manifest entry/u);
   });
 
   test('rejects unsupported core create options for provider clients', () => {

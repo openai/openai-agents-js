@@ -1,10 +1,13 @@
 import {
   Manifest,
+  SandboxMountError,
   SandboxWorkspaceArchiveReadError,
   SandboxWorkspaceReadNotFoundError,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
+  type GCSMount,
   type Mount,
+  type S3Mount,
 } from '@openai/agents-core/sandbox';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
@@ -14,7 +17,10 @@ import {
   BlaxelSandboxClient,
   type BlaxelSandboxClientOptions,
 } from '../../src/sandbox/blaxel';
-import { resolvedRemotePathFromValidationCommand } from './remotePathValidation';
+import {
+  resolvedRemoteEffectivePathFromCommand,
+  resolvedRemotePathFromValidationCommand,
+} from './remotePathValidation';
 
 const createSandboxMock = vi.fn();
 const getMock = vi.fn();
@@ -93,9 +99,10 @@ describe('BlaxelSandboxClient', () => {
     getMock.mockResolvedValue(makeSandbox());
     processExecMock.mockImplementation(
       async (params: { command?: string } = {}) => {
-        const resolvedPath = resolvedRemotePathFromValidationCommand(
-          params.command ?? '',
-        );
+        const command = params.command ?? '';
+        const resolvedPath =
+          resolvedRemotePathFromValidationCommand(command) ??
+          resolvedRemoteEffectivePathFromCommand(command);
         return {
           stdout: resolvedPath ? `${resolvedPath}\n` : 'README.md\n',
           stderr: '',
@@ -135,6 +142,27 @@ describe('BlaxelSandboxClient', () => {
         snapshot: { type: 'remote' },
       }),
     ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
+    expect(createSandboxMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects unacknowledged mount credentials before provider creation', async () => {
+    const client = new BlaxelSandboxClient();
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            remote: {
+              type: 's3_mount',
+              bucket: 'private',
+              accessKeyId: 'access-key',
+              secretAccessKey: 'secret-key',
+              mountStrategy: new BlaxelCloudBucketMountStrategy(),
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow(/model-controlled sandbox/u);
     expect(createSandboxMock).not.toHaveBeenCalled();
   });
 
@@ -722,6 +750,34 @@ describe('BlaxelSandboxClient', () => {
     });
   });
 
+  test('serializes public bucket mounts without treating unrelated ambient credentials as mount authority', async () => {
+    const client = new BlaxelSandboxClient({
+      env: {
+        AWS_ACCESS_KEY_ID: 'unrelated-workload-key',
+      },
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'public-data',
+            mountPath: 'mounted/data',
+            mountStrategy: new BlaxelCloudBucketMountStrategy(),
+          },
+        },
+      }),
+    );
+
+    await expect(client.serializeSessionState(session.state)).resolves.toEqual(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          AWS_ACCESS_KEY_ID: 'unrelated-workload-key',
+        }),
+      }),
+    );
+  });
+
   test('rejects unsafe environment names before building shell commands', async () => {
     const client = new BlaxelSandboxClient();
     const session = await client.create(
@@ -878,6 +934,69 @@ describe('BlaxelSandboxClient', () => {
     expect(deleteMock).toHaveBeenCalledOnce();
   });
 
+  test('attempts every active mount cleanup and retries only failures', async () => {
+    const client = new BlaxelSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          first: {
+            type: 'gcs_mount',
+            bucket: 'private-gcs-a',
+            accessToken: 'token-a',
+            mountPath: 'mounted/gcs-a',
+            mountStrategy: new BlaxelCloudBucketMountStrategy(),
+          },
+          second: {
+            type: 'gcs_mount',
+            bucket: 'private-gcs-b',
+            accessToken: 'token-b',
+            mountPath: 'mounted/gcs-b',
+            mountStrategy: new BlaxelCloudBucketMountStrategy(),
+          },
+          drive: new BlaxelDriveMount({
+            driveName: 'agent-drive',
+            mountPath: 'mounted/drive',
+            mountStrategy: new BlaxelDriveMountStrategy(),
+          }),
+        },
+      }).withInContainerMountCredentialExposureAllowed(
+        'mounted/gcs-a',
+        'mounted/gcs-b',
+      ),
+    );
+    processExecMock.mockClear();
+    let fuseUnmountCount = 0;
+    processExecMock.mockImplementation(
+      async (params: { command?: string } = {}) => {
+        const command = String(params.command ?? '');
+        if (command.includes('fusermount -u')) {
+          fuseUnmountCount += 1;
+          return {
+            stdout: '',
+            stderr: '',
+            exitCode: fuseUnmountCount === 1 ? 1 : 0,
+          };
+        }
+        return { stdout: '', stderr: '', exitCode: 0 };
+      },
+    );
+    driveUnmountMock.mockRejectedValueOnce(new Error('drive transport lost'));
+
+    await expect(session.close()).rejects.toThrow(
+      'failed to unmount one or more active mounts',
+    );
+
+    expect(fuseUnmountCount).toBe(2);
+    expect(driveUnmountMock).toHaveBeenCalledTimes(1);
+    expect(deleteMock).not.toHaveBeenCalled();
+
+    await session.close();
+
+    expect(fuseUnmountCount).toBe(3);
+    expect(driveUnmountMock).toHaveBeenCalledTimes(2);
+    expect(deleteMock).toHaveBeenCalledOnce();
+  });
+
   test('retains FUSE mounts when every unmount command fails', async () => {
     const client = new BlaxelSandboxClient();
     const session = await client.create(
@@ -915,7 +1034,7 @@ describe('BlaxelSandboxClient', () => {
       .map(([params]) => String(params.command))
       .filter((command) => command.includes('fusermount -u'));
     expect(unmountCommands).toHaveLength(2);
-    expect(unmountCommands[0]?.split('; status=$?;')[0]).not.toContain(
+    expect(unmountCommands[0]?.split('; unmount_status=$?;')[0]).not.toContain(
       '|| true',
     );
     expect(deleteMock).toHaveBeenCalledOnce();
@@ -956,7 +1075,7 @@ describe('BlaxelSandboxClient', () => {
     expect(deleteMock).toHaveBeenCalledOnce();
   });
 
-  test('unmounts manifest mounts after resuming shared sandboxes', async () => {
+  test('rejects shared resume state containing in-container mounts', async () => {
     const client = new BlaxelSandboxClient();
     const manifest = new Manifest({
       entries: {
@@ -974,23 +1093,19 @@ describe('BlaxelSandboxClient', () => {
       },
     });
 
-    const session = await client.resume({
-      manifest,
-      sandboxName: 'shared-sandbox',
-      sandboxIdentity: 'shared-identity',
-      pauseOnExit: false,
-      ownsSandbox: false,
-      environment: {},
-    });
-    processExecMock.mockClear();
+    await expect(
+      client.resume({
+        manifest,
+        sandboxName: 'shared-sandbox',
+        sandboxIdentity: 'shared-identity',
+        pauseOnExit: false,
+        ownsSandbox: false,
+        environment: {},
+      }),
+    ).rejects.toBeInstanceOf(SandboxMountError);
 
-    await session.close();
-
-    const unmountCommands = processExecMock.mock.calls
-      .map(([params]) => String(params.command))
-      .filter((command) => command.includes('fusermount -u'));
-    expect(unmountCommands.join('\n')).toContain('/workspace/mounted/logs');
-    expect(driveUnmountMock).toHaveBeenCalledWith('/workspace/mounted/drive');
+    expect(processExecMock).not.toHaveBeenCalled();
+    expect(driveUnmountMock).not.toHaveBeenCalled();
     expect(deleteMock).not.toHaveBeenCalled();
   });
 
@@ -1278,6 +1393,84 @@ describe('BlaxelSandboxClient', () => {
     expect(deleteMock).not.toHaveBeenCalled();
   });
 
+  test('rejects cloud bucket mounts in reused named sandboxes without provider effects', async () => {
+    createSandboxMock.mockRejectedValueOnce(sandboxAlreadyExistsError());
+    const client = new BlaxelSandboxClient({
+      name: 'shared-sandbox',
+    } satisfies BlaxelSandboxClientOptions);
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            'README.md': {
+              type: 'file',
+              content: '# Must not be written\n',
+            },
+            data: {
+              type: 's3_mount',
+              bucket: 'agent-logs',
+              accessKeyId: 'access-key',
+              secretAccessKey: 'secret-key',
+              mountStrategy: new BlaxelCloudBucketMountStrategy(),
+            },
+          },
+        }).withInContainerMountCredentialExposureAllowed('data'),
+      ),
+    ).rejects.toThrow(/reused sandbox it does not own/u);
+
+    expect(getMock).toHaveBeenCalledWith('shared-sandbox');
+    expect(writeMock).not.toHaveBeenCalled();
+    expect(
+      processExecMock.mock.calls.some(([params]) =>
+        String(params.command).includes('s3fs'),
+      ),
+    ).toBe(false);
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  test('allows credentialless cloud bucket mounts in reused named sandboxes', async () => {
+    createSandboxMock.mockRejectedValueOnce(sandboxAlreadyExistsError());
+    const client = new BlaxelSandboxClient({
+      name: 'shared-sandbox',
+    } satisfies BlaxelSandboxClientOptions);
+
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          publicS3: {
+            type: 's3_mount',
+            bucket: 'public-s3',
+            mountPath: 'mounted/s3',
+            mountStrategy: new BlaxelCloudBucketMountStrategy(),
+          },
+          publicGcs: {
+            type: 'gcs_mount',
+            bucket: 'public-gcs',
+            mountPath: 'mounted/gcs',
+            mountStrategy: new BlaxelCloudBucketMountStrategy(),
+          },
+        },
+      }),
+    );
+
+    const commands = processExecMock.mock.calls.map(([params]) =>
+      String(params.command),
+    );
+    expect(commands.some((command) => command.includes('s3fs'))).toBe(true);
+    expect(
+      commands.some((command) => command.includes('public_bucket=1')),
+    ).toBe(true);
+    expect(commands.some((command) => command.includes('gcsfuse'))).toBe(true);
+    expect(
+      commands.some((command) => command.includes('--anonymous-access')),
+    ).toBe(true);
+    expect(session.state.ownsSandbox).toBe(false);
+
+    await session.close();
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
   test('resolves public exposed ports through Blaxel previews', async () => {
     const client = new BlaxelSandboxClient();
     const session = await client.create(new Manifest());
@@ -1408,7 +1601,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
     );
 
     expect(
@@ -1432,6 +1625,212 @@ describe('BlaxelSandboxClient', () => {
     );
   });
 
+  test.each<{
+    label: string;
+    command: string;
+    entry: S3Mount | GCSMount;
+  }>([
+    {
+      label: 'S3',
+      command: 's3fs',
+      entry: {
+        type: 's3_mount',
+        bucket: 'agent-logs',
+        accessKeyId: 'access-key',
+        secretAccessKey: 'secret-key',
+        mountPath: 'mounted/logs',
+        mountStrategy: new BlaxelCloudBucketMountStrategy(),
+      },
+    },
+    {
+      label: 'GCS',
+      command: 'gcsfuse',
+      entry: {
+        type: 'gcs_mount',
+        bucket: 'private-gcs',
+        serviceAccountCredentials:
+          '{"type":"service_account","private_key":"secret"}',
+        mountPath: 'mounted/logs',
+        mountStrategy: new BlaxelCloudBucketMountStrategy(),
+      },
+    },
+  ])(
+    'rejects a successful $label mount when credential cleanup fails',
+    async ({ command, entry }) => {
+      processExecMock.mockImplementation(
+        async (params: { command?: string } = {}) => {
+          const executed = String(params.command ?? '');
+          if (
+            executed.includes(command) &&
+            executed.includes('cleanup_status=$?')
+          ) {
+            return {
+              stdout: '',
+              stderr: 'MOUNT_SECRET_SENTINEL',
+              exitCode: 1,
+            };
+          }
+          const resolvedPath =
+            resolvedRemotePathFromValidationCommand(executed);
+          return {
+            stdout: resolvedPath ? `${resolvedPath}\n` : '',
+            stderr: '',
+            exitCode: 0,
+          };
+        },
+      );
+      const client = new BlaxelSandboxClient();
+
+      const error = await client
+        .create(
+          new Manifest({
+            entries: { data: entry },
+          }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+        )
+        .then(
+          () => undefined,
+          (caught: unknown) => caught,
+        );
+
+      expect(error).toBeInstanceOf(SandboxMountError);
+      expect(String(error)).toContain('Blaxel cloud bucket mount failed.');
+      expect(JSON.stringify(error)).not.toContain('MOUNT_SECRET_SENTINEL');
+      const mountCommand = processExecMock.mock.calls
+        .map(([params]) => String(params.command))
+        .find(
+          (executed) =>
+            executed.includes(command) &&
+            executed.includes('cleanup_status=$?'),
+        );
+      expect(mountCommand).toContain('[ "$status" -ne 0 ]');
+      expect(mountCommand).toContain('exit "$cleanup_status"');
+    },
+  );
+
+  test('reports mount and credential cleanup failures without leaking output', async () => {
+    processExecMock.mockImplementation(
+      async (params: { command?: string } = {}) => {
+        const executed = String(params.command ?? '');
+        if (/^rm -f -- '\/tmp\/s3fs-passwd-/u.test(executed)) {
+          return {
+            stdout: '',
+            stderr: 'CLEANUP_SECRET_SENTINEL',
+            exitCode: 1,
+          };
+        }
+        if (executed.includes('s3fs')) {
+          return {
+            stdout: '',
+            stderr: 'MOUNT_SECRET_SENTINEL',
+            exitCode: 1,
+          };
+        }
+        const resolvedPath = resolvedRemotePathFromValidationCommand(executed);
+        return {
+          stdout: resolvedPath ? `${resolvedPath}\n` : '',
+          stderr: '',
+          exitCode: 0,
+        };
+      },
+    );
+    const client = new BlaxelSandboxClient();
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'agent-logs',
+          accessKeyId: 'access-key',
+          secretAccessKey: 'secret-key',
+          mountPath: 'mounted/logs',
+          mountStrategy: new BlaxelCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('mounted/logs');
+
+    const error = await client.create(manifest).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(SandboxMountError);
+    expect(String(error)).toContain(
+      'mount failed and credential cleanup could not complete',
+    );
+    expect((error as SandboxMountError).details).toMatchObject({
+      provider: 'blaxel',
+      cleanupFailed: true,
+    });
+    expect(JSON.stringify(error)).not.toContain('MOUNT_SECRET_SENTINEL');
+    expect(JSON.stringify(error)).not.toContain('CLEANUP_SECRET_SENTINEL');
+  });
+
+  test('surfaces failed token helper termination and retains cleanup artifacts', async () => {
+    processExecMock.mockImplementation(
+      async (params: { command?: string } = {}) => {
+        const executed = String(params.command ?? '');
+        if (executed.includes('gcsfuse')) {
+          return {
+            stdout: '',
+            stderr: 'MOUNT_SECRET_SENTINEL',
+            exitCode: 1,
+          };
+        }
+        if (executed.includes('openai_agents_kill_pidfile 1')) {
+          return {
+            stdout: '',
+            stderr: 'CLEANUP_SECRET_SENTINEL',
+            exitCode: 1,
+          };
+        }
+        const resolvedPath = resolvedRemotePathFromValidationCommand(executed);
+        return {
+          stdout: resolvedPath ? `${resolvedPath}\n` : '',
+          stderr: '',
+          exitCode: 0,
+        };
+      },
+    );
+    const client = new BlaxelSandboxClient();
+
+    const error = await client
+      .create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 'gcs_mount',
+              bucket: 'private-gcs',
+              accessToken: 'ya29.token',
+              mountPath: 'mounted/gcs',
+              mountStrategy: new BlaxelCloudBucketMountStrategy(),
+            },
+          },
+        }).withInContainerMountCredentialExposureAllowed('mounted/gcs'),
+      )
+      .then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+
+    expect(error).toBeInstanceOf(SandboxMountError);
+    expect(String(error)).toContain(
+      'mount failed and credential cleanup could not complete',
+    );
+    expect((error as SandboxMountError).details).toMatchObject({
+      provider: 'blaxel',
+      cleanupFailed: true,
+    });
+    expect(JSON.stringify(error)).not.toContain('MOUNT_SECRET_SENTINEL');
+    expect(JSON.stringify(error)).not.toContain('CLEANUP_SECRET_SENTINEL');
+    const cleanupCommand = processExecMock.mock.calls
+      .map(([params]) => String(params.command))
+      .find(
+        (command) =>
+          command.includes('openai_agents_kill_pidfile 1') &&
+          !command.includes('gcsfuse'),
+      );
+    expect(cleanupCommand).toContain('[ "$helper_status" -eq 0 ] && rm -f --');
+  });
+
   test('scopes S3 credential files per sandbox session', async () => {
     const manifest = new Manifest({
       entries: {
@@ -1444,7 +1843,7 @@ describe('BlaxelSandboxClient', () => {
           mountStrategy: new BlaxelCloudBucketMountStrategy(),
         },
       },
-    });
+    }).withInContainerMountCredentialExposureAllowed('mounted/logs');
     const client = new BlaxelSandboxClient({
       name: 'shared-sandbox',
     } satisfies BlaxelSandboxClientOptions);
@@ -1479,7 +1878,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
     );
 
     const mountCommand = processExecMock.mock.calls
@@ -1512,7 +1911,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
     );
     session.state.environment['INVALID-NAME'] = 'env-value';
     processExecMock.mockClear();
@@ -1542,7 +1941,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
     );
     await session.close();
 
@@ -1557,12 +1956,16 @@ describe('BlaxelSandboxClient', () => {
     }
   });
 
-  test('cleans S3 credential files when cloud bucket mount commands reject', async () => {
+  test('cleans S3 credentials and redacts failed mount output', async () => {
     processExecMock.mockImplementation(
       async (params: { command?: string } = {}) => {
         const command = String(params.command ?? '');
         if (command.includes('command -v s3fs') || command.includes(' s3fs ')) {
-          throw new Error('transport lost');
+          return {
+            stdout: '',
+            stderr: 'MOUNT_SECRET_SENTINEL',
+            exitCode: 1,
+          };
         }
         const resolvedPath = resolvedRemotePathFromValidationCommand(command);
         return {
@@ -1574,8 +1977,8 @@ describe('BlaxelSandboxClient', () => {
     );
     const client = new BlaxelSandboxClient();
 
-    await expect(
-      client.create(
+    const error = await client
+      .create(
         new Manifest({
           entries: {
             data: {
@@ -1587,9 +1990,15 @@ describe('BlaxelSandboxClient', () => {
               mountStrategy: new BlaxelCloudBucketMountStrategy(),
             },
           },
-        }),
-      ),
-    ).rejects.toThrow('transport lost');
+        }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+      )
+      .then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain('Blaxel cloud bucket mount failed.');
+    expect(JSON.stringify(error)).not.toContain('MOUNT_SECRET_SENTINEL');
 
     const commands = processExecMock.mock.calls.map(([params]) =>
       String(params.command),
@@ -1616,14 +2025,14 @@ describe('BlaxelSandboxClient', () => {
       async (path: string, content: string): Promise<void> => {
         if (path.startsWith('/tmp/s3fs-passwd-')) {
           void content;
-          throw new Error('secret write lost');
+          throw new Error('RAW_SECRET_WRITE_SENTINEL');
         }
       },
     );
     const client = new BlaxelSandboxClient();
 
-    await expect(
-      client.create(
+    const error = await client
+      .create(
         new Manifest({
           entries: {
             data: {
@@ -1635,9 +2044,15 @@ describe('BlaxelSandboxClient', () => {
               mountStrategy: new BlaxelCloudBucketMountStrategy(),
             },
           },
-        }),
-      ),
-    ).rejects.toThrow('secret write lost');
+        }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+      )
+      .then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+    expect(error).toBeInstanceOf(SandboxMountError);
+    expect(String(error)).toContain('Blaxel cloud bucket mount failed.');
+    expect(JSON.stringify(error)).not.toContain('RAW_SECRET_WRITE_SENTINEL');
 
     const commands = processExecMock.mock.calls.map(([params]) =>
       String(params.command),
@@ -1681,8 +2096,8 @@ describe('BlaxelSandboxClient', () => {
       },
     });
 
-    await expect(
-      client.create(
+    const error = await client
+      .create(
         new Manifest({
           entries: {
             data: {
@@ -1694,11 +2109,15 @@ describe('BlaxelSandboxClient', () => {
               mountStrategy: new BlaxelCloudBucketMountStrategy(),
             },
           },
-        }),
-      ),
-    ).rejects.toThrow(
-      'BlaxelSandboxClient write mount secret timed out after 1ms.',
-    );
+        }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+      )
+      .then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+    expect(error).toBeInstanceOf(SandboxMountError);
+    expect(String(error)).toContain('Blaxel cloud bucket mount failed.');
+    expect(JSON.stringify(error)).not.toContain('write mount secret timed out');
 
     expect(secretPath).toMatch(/^\/tmp\/s3fs-passwd-/u);
     const commands = processExecMock.mock.calls.map(([params]) =>
@@ -1734,11 +2153,9 @@ describe('BlaxelSandboxClient', () => {
               mountStrategy: new BlaxelCloudBucketMountStrategy(),
             },
           },
-        }),
+        }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
       ),
-    ).rejects.toThrow(
-      'Blaxel cloud bucket mounts require both accessKeyId and secretAccessKey when either is provided.',
-    );
+    ).rejects.toThrow(/both accessKeyId and secretAccessKey/u);
 
     expect(
       processExecMock.mock.calls.some(([params]) =>
@@ -1761,7 +2178,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed('mounted/gcs'),
     );
 
     const mountCommand = processExecMock.mock.calls
@@ -1786,7 +2203,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed('mounted/gcs'),
     );
 
     const mountCommand = processExecMock.mock.calls
@@ -1815,7 +2232,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed('mounted/gcs'),
     );
 
     const mountCommand = processExecMock.mock.calls
@@ -1827,7 +2244,7 @@ describe('BlaxelSandboxClient', () => {
     expect(mountCommand).toContain('--token-url=unix:///tmp/gcs-access-token');
     expect(mountCommand).toContain('openai_agents_kill_pidfile()');
     expect(mountCommand).toContain(
-      "openai_agents_kill_pidfile '/tmp/gcs-access-token-",
+      "openai_agents_kill_pidfile 1 '/tmp/gcs-access-token-",
     );
     expect(mountCommand).not.toContain('kill "$(cat');
     expect(mountCommand).not.toContain('"access_token":"ya29.token"');
@@ -1883,9 +2300,9 @@ describe('BlaxelSandboxClient', () => {
               mountStrategy: new BlaxelCloudBucketMountStrategy(),
             },
           },
-        }),
+        }).withInContainerMountCredentialExposureAllowed('mounted/gcs'),
       ),
-    ).rejects.toThrow('transport lost');
+    ).rejects.toThrow('Blaxel cloud bucket mount failed.');
 
     const commands = processExecMock.mock.calls.map(([params]) =>
       String(params.command),
@@ -1925,8 +2342,8 @@ describe('BlaxelSandboxClient', () => {
     );
     const client = new BlaxelSandboxClient();
 
-    await expect(
-      client.create(
+    const error = await client
+      .create(
         new Manifest({
           entries: {
             data: {
@@ -1937,9 +2354,15 @@ describe('BlaxelSandboxClient', () => {
               mountStrategy: new BlaxelCloudBucketMountStrategy(),
             },
           },
-        }),
-      ),
-    ).rejects.toThrow('token write lost');
+        }).withInContainerMountCredentialExposureAllowed('mounted/gcs'),
+      )
+      .then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+    expect(error).toBeInstanceOf(SandboxMountError);
+    expect(String(error)).toContain('Blaxel cloud bucket mount failed.');
+    expect(JSON.stringify(error)).not.toContain('token write lost');
 
     const commands = processExecMock.mock.calls.map(([params]) =>
       String(params.command),
@@ -1982,7 +2405,10 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed(
+        'mounted/gcs-a',
+        'mounted/gcs-b',
+      ),
     );
     await session.close();
 
@@ -1995,6 +2421,10 @@ describe('BlaxelSandboxClient', () => {
     expect(combinedUnmounts).not.toContain('/tmp/gcs-access-token-*.pid');
     expect(combinedUnmounts).not.toContain('for pidfile');
     expect(combinedUnmounts).toContain('openai_agents_kill_pidfile()');
+    expect(combinedUnmounts).toContain(
+      "openai_agents_kill_pidfile 1 '/tmp/gcs-access-token-",
+    );
+    expect(combinedUnmounts).toContain('helper_status=$?');
     expect(combinedUnmounts).not.toContain('kill "$(cat');
     const pidPaths = [
       ...combinedUnmounts.matchAll(/\/tmp\/gcs-access-token-[^'"\s;]+\.pid/gu),
@@ -2004,6 +2434,43 @@ describe('BlaxelSandboxClient', () => {
     ].map(([path]) => path);
     expect(new Set(pidPaths).size).toBe(2);
     expect(new Set(payloadPaths).size).toBe(2);
+  });
+
+  test('does not accept cleanup when a tracked GCS token server remains active', async () => {
+    const client = new BlaxelSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          data: {
+            type: 'gcs_mount',
+            bucket: 'private-gcs',
+            accessToken: 'ya29.token',
+            mountPath: 'mounted/gcs',
+            mountStrategy: new BlaxelCloudBucketMountStrategy(),
+          },
+        },
+      }).withInContainerMountCredentialExposureAllowed('mounted/gcs'),
+    );
+    processExecMock.mockClear();
+    processExecMock.mockResolvedValue({
+      stdout: '',
+      stderr: 'token server still active',
+      exitCode: 1,
+    });
+
+    await expect(session.close()).rejects.toThrow(
+      'failed to unmount an active FUSE mount',
+    );
+    expect(deleteMock).not.toHaveBeenCalled();
+    const unmountCommand = String(
+      processExecMock.mock.calls.find(([params]) =>
+        String(params.command).includes('fusermount -u'),
+      )?.[0].command,
+    );
+    expect(unmountCommand).toContain(
+      "openai_agents_kill_pidfile 1 '/tmp/gcs-access-token-",
+    );
+    expect(unmountCommand).toContain('helper_status=$?');
   });
 
   test('uses collision-proof temp artifact ids for cloud bucket mounts', async () => {
@@ -2027,7 +2494,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed('a+b', 'a/b'),
     );
 
     const mountCommands = processExecMock.mock.calls
@@ -2064,7 +2531,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed(longMountPath),
     );
 
     const socketPaths = processExecMock.mock.calls.flatMap(([params]) =>

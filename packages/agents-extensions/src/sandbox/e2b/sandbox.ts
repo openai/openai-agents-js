@@ -6,6 +6,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxPreservedSessionReuseOptions,
   type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type ExposedPortEndpoint,
@@ -23,6 +24,7 @@ import {
   appendPtyOutput,
   assertCoreSnapshotUnsupported,
   assertRemoteSandboxSessionStateCanResume,
+  isRemoteSandboxSessionStateUnsafe,
   assertResumeRecreateAllowed,
   assertTarWorkspacePersistence,
   createPtyProcessEntry,
@@ -56,12 +58,17 @@ import {
   RemoteSandboxSessionBase,
   type RemoteSandboxCommandOptions,
   type RemoteSandboxCommandResult,
+  type ManifestMountMaterializationContext,
 } from '../shared';
 import {
+  captureRcloneMountEnvironmentAuthorityForManifest,
   mountRcloneCloudBucket,
+  rcloneMountEnvironmentAuthorityMatches,
   rclonePatternFromMountStrategy,
+  validateRcloneMountEnvironmentCredentialExposure,
   unmountRcloneMount,
   type RemoteMountCommand,
+  type RcloneMountHandle,
 } from '../shared/inContainerMounts';
 import { isE2BCloudBucketMountEntry } from './mounts';
 
@@ -203,7 +210,7 @@ export interface E2BSandboxSessionState extends SandboxSessionState {
 export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessionState> {
   private sandbox: E2BSandboxInstance;
   private readonly ptyProcesses = new PtyProcessRegistry();
-  private readonly activeMountPaths = new Set<string>();
+  private readonly activeMountPaths = new Map<string, RcloneMountHandle>();
 
   constructor(args: {
     state: E2BSandboxSessionState;
@@ -229,6 +236,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
   }
 
   async writeStdin(args: WriteStdinArgs): Promise<string> {
+    this.assertSessionUsable();
     return await writePtyStdin({
       providerName: 'E2BSandboxClient',
       registry: this.ptyProcesses,
@@ -408,6 +416,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
   }
 
   async persistWorkspace(): Promise<Uint8Array> {
+    this.assertSessionUsable();
     if (this.state.workspacePersistence === 'snapshot') {
       const archive = await this.persistWorkspaceViaNativeSnapshot();
       if (archive) {
@@ -427,6 +436,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
     data: WorkspaceArchiveData,
     options: WorkspaceArchiveOptions = {},
   ): Promise<void> {
+    this.assertSessionUsable();
     const snapshotRef = decodeNativeSnapshotRef(data);
     if (snapshotRef?.provider === 'e2b') {
       await this.replaceSandboxFromSnapshot(snapshotRef.snapshotId);
@@ -641,7 +651,22 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
   protected override manifestMaterializationOptions() {
     return {
       materializeMount: this.materializeMountEntry.bind(this),
+      validateManifest: validateRcloneMountEnvironmentCredentialExposure,
     };
+  }
+
+  protected override async forceTerminateAfterFailedPrivilegedManifestTransition(): Promise<void> {
+    await this.ptyProcesses.terminateAll().catch(() => {});
+    await this.sandbox.kill();
+  }
+
+  protected override afterManifestMutationCommitted(
+    materializedManifest: Manifest,
+  ): void {
+    captureRcloneMountEnvironmentAuthorityForManifest(
+      this.state,
+      materializedManifest,
+    );
   }
 
   protected override async runRemoteCommand(
@@ -747,6 +772,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
   private async materializeMountEntry(
     absolutePath: string,
     entry: Mount | TypedMount,
+    context: ManifestMountMaterializationContext,
   ): Promise<void> {
     if (!isE2BCloudBucketMountEntry(entry)) {
       throw new SandboxUnsupportedFeatureError(
@@ -760,42 +786,46 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
         },
       );
     }
-    const mountPath = await this.resolveRemotePath(
-      entry.mountPath ?? absolutePath,
-      { forWrite: true },
-    );
-    await mountRcloneCloudBucket({
+    const mountPath = absolutePath;
+    const handle = await mountRcloneCloudBucket({
       providerName: 'E2BSandboxClient',
       providerId: 'e2b',
       strategyType: 'e2b_cloud_bucket',
       entry,
       mountPath,
       pattern: rclonePatternFromMountStrategy(entry.mountStrategy),
-      runCommand: this.mountCommandRunner(),
+      runCommand: this.mountCommandRunner(
+        context.environment ?? this.state.environment,
+      ),
       writeFile: this.writeRemoteFile.bind(this),
       packageManagers: ['apt'],
       installRcloneViaScript: true,
+      allowAmbientCredentials: context.allowAmbientCredentials,
+      revalidateMountAuthority: context.revalidateMountAuthority,
     });
-    this.activeMountPaths.add(mountPath);
+    this.activeMountPaths.set(mountPath, handle);
   }
 
   private async unmountActiveMounts(): Promise<void> {
-    for (const mountPath of [...this.activeMountPaths].reverse()) {
+    for (const mountPath of [...this.activeMountPaths.keys()].reverse()) {
       await unmountRcloneMount({
         providerName: 'E2BSandboxClient',
         providerId: 'e2b',
         mountPath,
         runCommand: this.mountCommandRunner(),
+        handle: this.activeMountPaths.get(mountPath),
       }).catch(() => {});
       this.activeMountPaths.delete(mountPath);
     }
   }
 
-  private mountCommandRunner(): RemoteMountCommand {
+  private mountCommandRunner(
+    environment: Readonly<Record<string, string>> = this.state.environment,
+  ): RemoteMountCommand {
     return async (command, options = {}) => {
       const result = await this.runCommandForStatus(command, {
         cwd: this.state.manifest.root,
-        envs: this.state.environment,
+        envs: environment,
         timeoutMs: options.timeoutMs,
         user: options.user,
       });
@@ -877,6 +907,7 @@ export class E2BSandboxClient implements SandboxClient<
           manifest,
           resolvedOptions.env,
         );
+        validateRcloneMountEnvironmentCredentialExposure(manifest, environment);
         const sandbox = await createSandboxInstance(
           Sandbox,
           resolvedOptions,
@@ -929,7 +960,33 @@ export class E2BSandboxClient implements SandboxClient<
   }
 
   canPersistOwnedSessionState(state: E2BSandboxSessionState): boolean {
-    return state.pauseOnExit && state.pauseOnExitSupported === true;
+    return (
+      !isRemoteSandboxSessionStateUnsafe(state) &&
+      state.pauseOnExit &&
+      state.pauseOnExitSupported === true
+    );
+  }
+
+  async canReusePreservedOwnedSession(
+    state: E2BSandboxSessionState,
+    options: SandboxPreservedSessionReuseOptions<E2BSandboxClientOptions> = {},
+  ): Promise<boolean> {
+    if (isRemoteSandboxSessionStateUnsafe(state) || !options.trustedManifest) {
+      return false;
+    }
+    const trustedEnvironment = await materializeEnvironment(
+      options.trustedManifest,
+      { ...this.options, ...options.clientOptions }.env,
+    );
+    validateRcloneMountEnvironmentCredentialExposure(
+      options.trustedManifest,
+      trustedEnvironment,
+    );
+    return rcloneMountEnvironmentAuthorityMatches(
+      state,
+      options.trustedManifest,
+      trustedEnvironment,
+    );
   }
 
   async deserializeSessionState(

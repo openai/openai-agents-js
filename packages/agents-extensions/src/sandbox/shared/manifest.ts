@@ -6,23 +6,36 @@ import {
   Manifest,
   normalizeRelativePath,
   type SandboxConcurrencyLimits,
+  SandboxMountError,
   SandboxUnsupportedFeatureError,
   type Entry,
   type Mount,
   type TypedMount,
 } from '@openai/agents-core/sandbox';
 import {
+  assertExistingMountTopologyPreserved,
+  captureLiveMountCredentialAuthority,
+  copyValidatedMountEffectivePaths,
+  copyManifestMountCredentialExposurePolicy,
   deserializeManifest,
+  mountCredentialFileReferences,
   mergeManifestDelta,
   mergeManifestEntryDelta,
   normalizePosixPath,
   relativePosixPathWithinRoot,
   serializeManifestRecord,
+  stableJsonStringify,
+  validateMountCredentialBoundariesAtEffectivePath,
+  validateMountCredentialBoundaries,
+  validateMountCredentialFileEffectivePaths,
 } from '@openai/agents-core/sandbox/internal';
 import { mergeMaterializedEnvironment } from './environment';
 import { resolveSandboxRelativePath } from './paths';
 import type { RemoteManifestWriter } from './types';
-import type { RemoteSandboxPathResolver } from './types';
+import type {
+  RemoteSandboxCredentialPathResolver,
+  RemoteSandboxPathResolver,
+} from './types';
 
 export {
   deserializeManifest,
@@ -104,7 +117,7 @@ function cloneManifestWithOverrides(
     entries?: Record<string, Entry>;
   } = {},
 ): Manifest {
-  return new Manifest({
+  const cloned = new Manifest({
     version: manifest.version,
     root: overrides.root ?? manifest.root,
     entries: structuredClone(overrides.entries ?? manifest.entries),
@@ -119,6 +132,9 @@ function cloneManifestWithOverrides(
     extraPathGrants: structuredClone(manifest.extraPathGrants),
     remoteMountCommandAllowlist: [...manifest.remoteMountCommandAllowlist],
   });
+  // Preserve runtime-only trusted mount policy while cloning provider manifests.
+  copyManifestMountCredentialExposurePolicy(cloned, manifest);
+  return cloned;
 }
 
 function rebaseManifestEntryPathsForRoot(
@@ -183,6 +199,7 @@ export type ManifestMaterializationOptions = {
   materializeMount?: (
     absolutePath: string,
     entry: Mount | TypedMount,
+    context: ManifestMountMaterializationContext,
   ) => Promise<void>;
   applyMetadata?: (absolutePath: string, entry: Entry) => Promise<void>;
   concurrencyLimits?: SandboxConcurrencyLimits;
@@ -190,10 +207,36 @@ export type ManifestMaterializationOptions = {
   localSourceGrants?: Manifest['extraPathGrants'];
   resolvePath?: RemoteSandboxPathResolver;
   logicalPath?: string;
+  validateManifest?: (
+    manifest: Manifest,
+    environment: Record<string, string>,
+  ) => void;
+  preparedMounts?: readonly PreparedManifestMount[];
+  resolveCredentialPath?: RemoteSandboxCredentialPathResolver;
+  mountEnvironmentOverrides?: Readonly<Record<string, string>>;
+};
+
+export type PreparedManifestMount = {
+  logicalPath: string;
+  absolutePath: string;
+  entry: Mount | TypedMount;
+  allowMountCredentialExposure: boolean;
+  environment?: Readonly<Record<string, string>>;
+  revalidateMountAuthority: () => Promise<void>;
+};
+
+export type ManifestMountMaterializationContext = {
+  environment?: Readonly<Record<string, string>>;
+  allowAmbientCredentials?: boolean;
+  revalidateMountAuthority?: () => Promise<void>;
 };
 
 type DeferredMountMaterializationOptions = ManifestMaterializationOptions & {
   skipMountEntries?: boolean;
+  materializationEnvironment?: Readonly<Record<string, string>>;
+  preparedMountEnvironment?: Readonly<Record<string, string>>;
+  allowMountCredentialExposure?: boolean;
+  revalidateMountAuthority?: () => Promise<void>;
 };
 
 export type MaterializedManifestState = {
@@ -203,6 +246,16 @@ export type MaterializedManifestState = {
 
 export type MaterializedManifestEntryState = {
   manifest: Manifest;
+  environment?: Record<string, string>;
+};
+
+export type PreparedMaterializedManifestTransition = {
+  previousManifest: Manifest;
+  deltaManifest: Manifest;
+  nextManifest: Manifest;
+  nextEnvironment: Record<string, string>;
+  materializedManifest: Manifest;
+  preparedMounts: readonly PreparedManifestMount[];
 };
 
 export type ManifestEntryMaterializer<TOptions extends object> = (
@@ -271,7 +324,7 @@ export async function materializeInlineManifest(
 }
 
 export async function applyMaterializedManifestEntryToState<
-  TOptions extends object,
+  TOptions extends ManifestMaterializationOptions,
 >(
   state: MaterializedManifestEntryState,
   path: string,
@@ -283,23 +336,48 @@ export async function applyMaterializedManifestEntryToState<
   options: TOptions,
 ): Promise<void> {
   const logicalPath = resolveSandboxRelativePath(state.manifest.root, path);
+  const nextManifest = mergeManifestEntryDelta(
+    state.manifest,
+    logicalPath,
+    entry,
+  );
+  assertExistingMountTopologyPreserved(state.manifest, nextManifest);
+  validateMountCredentialBoundaries(nextManifest);
+  options.validateManifest?.(nextManifest, state.environment ?? {});
+  const entryManifest = new Manifest({
+    root: state.manifest.root,
+    entries: {
+      [logicalPath]: entry,
+    },
+  });
+  copyManifestMountCredentialExposurePolicy(entryManifest, nextManifest);
+  const materializationOptions = {
+    ...options,
+    preparedMounts:
+      options.preparedMounts ??
+      (await prepareManifestMounts(entryManifest, resolvePath, {
+        credentialBoundaryManifest: nextManifest,
+        environment: state.environment ?? {},
+        resolveCredentialPath: options.resolveCredentialPath,
+      })),
+    materializationEnvironment: state.environment ?? {},
+  } as TOptions & DeferredMountMaterializationOptions;
   await materializeManifestEntries(
     writer,
-    new Manifest({
-      root: state.manifest.root,
-      entries: {
-        [logicalPath]: entry,
-      },
-    }),
+    entryManifest,
     providerLabel,
     resolvePath,
     materializeEntry,
-    options,
+    materializationOptions,
   );
-  state.manifest = mergeManifestEntryDelta(state.manifest, logicalPath, entry);
+  copyValidatedMountEffectivePaths(nextManifest, state.manifest, entryManifest);
+  state.manifest = nextManifest;
+  captureLiveMountCredentialAuthority(state.manifest);
 }
 
-export async function applyMaterializedManifestToState<TOptions extends object>(
+export async function applyMaterializedManifestToState<
+  TOptions extends ManifestMaterializationOptions,
+>(
   state: MaterializedManifestState,
   manifest: Manifest,
   providerLabel: string,
@@ -307,22 +385,258 @@ export async function applyMaterializedManifestToState<TOptions extends object>(
   resolvePath: RemoteSandboxPathResolver,
   materializeEntry: ManifestEntryMaterializer<TOptions>,
   options: TOptions,
+  preparedTransition?: PreparedMaterializedManifestTransition,
 ): Promise<void> {
-  const previousManifest = state.manifest;
+  const transition =
+    preparedTransition ??
+    (await prepareMaterializedManifestTransition(
+      state,
+      manifest,
+      options,
+      resolvePath,
+    ));
+  if (transition.previousManifest !== state.manifest) {
+    throw new UserError(
+      'Sandbox manifest changed while a manifest transition was being prepared.',
+    );
+  }
+  const materializationOptions = {
+    ...options,
+    preparedMounts: transition.preparedMounts,
+    materializationEnvironment: transition.nextEnvironment,
+  } as TOptions & DeferredMountMaterializationOptions;
   await materializeManifestEntries(
     writer,
-    manifest,
+    transition.materializedManifest,
     providerLabel,
     resolvePath,
     materializeEntry,
-    options,
+    materializationOptions,
   );
-  state.manifest = mergeManifestDelta(previousManifest, manifest);
-  state.environment = await mergeMaterializedEnvironment(
+  copyValidatedMountEffectivePaths(
+    transition.nextManifest,
+    transition.previousManifest,
+    transition.materializedManifest,
+  );
+  state.manifest = transition.nextManifest;
+  captureLiveMountCredentialAuthority(state.manifest);
+  state.environment = transition.nextEnvironment;
+}
+
+export async function prepareMaterializedManifestTransition<
+  TOptions extends ManifestMaterializationOptions,
+>(
+  state: MaterializedManifestState,
+  manifest: Manifest,
+  options: TOptions,
+  resolvePath: RemoteSandboxPathResolver,
+): Promise<PreparedMaterializedManifestTransition> {
+  const previousManifest = state.manifest;
+  const deltaManifest = cloneManifestWithOverrides(manifest);
+  const nextManifest = mergeManifestDelta(previousManifest, deltaManifest);
+  assertExistingMountTopologyPreserved(previousManifest, nextManifest);
+  const nextEnvironment = await mergeMaterializedEnvironment(
     previousManifest,
-    state.manifest,
+    nextManifest,
     state.environment,
   );
+  validateMountCredentialBoundaries(nextManifest);
+  const mountEnvironment = {
+    ...nextEnvironment,
+    ...options.mountEnvironmentOverrides,
+  };
+  options.validateManifest?.(nextManifest, mountEnvironment);
+  const materializedManifest = cloneManifestWithOverrides(deltaManifest);
+  copyManifestMountCredentialExposurePolicy(
+    materializedManifest,
+    previousManifest,
+    deltaManifest,
+  );
+  const preparedMounts = await prepareManifestMounts(
+    materializedManifest,
+    resolvePath,
+    {
+      credentialBoundaryManifest: nextManifest,
+      environment: mountEnvironment,
+      resolveCredentialPath: options.resolveCredentialPath,
+    },
+  );
+  return {
+    previousManifest,
+    deltaManifest,
+    nextManifest,
+    nextEnvironment,
+    materializedManifest,
+    preparedMounts,
+  };
+}
+
+export async function prepareManifestMounts(
+  manifest: Manifest,
+  resolvePath: RemoteSandboxPathResolver,
+  options: {
+    credentialBoundaryManifest?: Manifest;
+    environment?: Record<string, string>;
+    resolveCredentialPath?: RemoteSandboxCredentialPathResolver;
+  } = {},
+): Promise<PreparedManifestMount[]> {
+  validateMountCredentialBoundaries(manifest);
+  const credentialBoundaryManifest =
+    options.credentialBoundaryManifest ?? manifest;
+  const preparedMounts: PreparedManifestMount[] = [];
+  const preparedLogicalPaths = new Set<string>();
+  for (const {
+    logicalPath,
+    mountPath,
+    entry,
+  } of manifest.mountTargetsForMaterialization()) {
+    const resolvedPath = resolveSandboxRelativePath(manifest.root, mountPath);
+    const prepareCandidate = async () => {
+      const absolutePath = await resolvePath(resolvedPath, { forWrite: true });
+      const preparedCredentialFiles = await prepareMountCredentialFiles({
+        manifest: credentialBoundaryManifest,
+        entry,
+        mountPath,
+        environment: options.environment ?? {},
+        resolvePath,
+        resolveCredentialPath:
+          options.resolveCredentialPath ??
+          (async (path) => await resolvePath(path, { forWrite: false })),
+      });
+      return {
+        absolutePath,
+        entry: preparedCredentialFiles.entry,
+        allowMountCredentialExposure:
+          validateMountCredentialBoundariesAtEffectivePath(
+            manifest,
+            logicalPath,
+            entry,
+            absolutePath,
+          ),
+        environment: preparedCredentialFiles.environment,
+      };
+    };
+    const candidate = await prepareCandidate();
+    const preparedMount: PreparedManifestMount = {
+      logicalPath,
+      ...candidate,
+      revalidateMountAuthority: async () => {
+        if (!candidate.allowMountCredentialExposure) {
+          return;
+        }
+        const current = await prepareCandidate();
+        if (
+          current.absolutePath !== candidate.absolutePath ||
+          current.allowMountCredentialExposure !==
+            candidate.allowMountCredentialExposure ||
+          stableJsonStringify(current.entry) !==
+            stableJsonStringify(candidate.entry) ||
+          stableJsonStringify(current.environment) !==
+            stableJsonStringify(candidate.environment)
+        ) {
+          throw new SandboxMountError(
+            'Sandbox mount authority changed after validation. Retry from current trusted configuration.',
+            { mountType: entry.type },
+            'mount_config_invalid',
+          );
+        }
+      },
+    };
+    preparedMounts.push(preparedMount);
+    preparedLogicalPaths.add(logicalPath);
+  }
+  for (const {
+    logicalPath,
+    mountPath,
+    entry,
+  } of credentialBoundaryManifest.mountTargetsForMaterialization()) {
+    if (preparedLogicalPaths.has(logicalPath)) {
+      continue;
+    }
+    await prepareMountCredentialFiles({
+      manifest: credentialBoundaryManifest,
+      entry,
+      mountPath,
+      environment: options.environment ?? {},
+      resolvePath,
+      resolveCredentialPath:
+        options.resolveCredentialPath ??
+        (async (path) => await resolvePath(path, { forWrite: false })),
+    });
+  }
+  return preparedMounts;
+}
+
+async function prepareMountCredentialFiles(args: {
+  manifest: Manifest;
+  entry: Mount | TypedMount;
+  mountPath: string;
+  environment: Record<string, string>;
+  resolvePath: RemoteSandboxPathResolver;
+  resolveCredentialPath: RemoteSandboxCredentialPathResolver;
+}): Promise<{
+  entry: Mount | TypedMount;
+  environment?: Readonly<Record<string, string>>;
+}> {
+  const references = mountCredentialFileReferences(
+    args.manifest,
+    args.entry,
+    args.environment,
+  );
+  if (references.length === 0) {
+    return { entry: structuredClone(args.entry) };
+  }
+  const manifestEntries = await Promise.all(
+    [...args.manifest.iterEntries()]
+      .filter(({ entry }) => !isMount(entry))
+      .map(async ({ logicalPath, entry }) => ({
+        path: await args.resolvePath(logicalPath, { forWrite: true }),
+        recursive: entry.type === 'local_dir' || entry.type === 'git_repo',
+      })),
+  );
+  const resolvedReferences = await Promise.all(
+    references.map(async ({ field, path }) => ({
+      field,
+      path: await args.resolveCredentialPath(path),
+    })),
+  );
+  validateMountCredentialFileEffectivePaths({
+    entry: args.entry,
+    mountPath: args.mountPath,
+    credentialFiles: resolvedReferences,
+    manifestEntries,
+  });
+  const preparedEntry = structuredClone(args.entry) as Record<string, unknown>;
+  let preparedEnvironment: Record<string, string> | undefined;
+  for (const reference of resolvedReferences) {
+    if (reference.field.startsWith('environment.')) {
+      preparedEnvironment ??= { ...args.environment };
+      preparedEnvironment[reference.field.slice('environment.'.length)] =
+        reference.path;
+      continue;
+    }
+    writeNestedField(preparedEntry, reference.field, reference.path);
+  }
+  return {
+    entry: preparedEntry as Mount | TypedMount,
+    environment: preparedEnvironment,
+  };
+}
+
+function writeNestedField(
+  record: Record<string, unknown>,
+  field: string,
+  value: unknown,
+): void {
+  const segments = field.split('.');
+  let current = record;
+  for (const segment of segments.slice(0, -1)) {
+    if (typeof current[segment] !== 'object' || current[segment] === null) {
+      current[segment] = {};
+    }
+    current = current[segment] as Record<string, unknown>;
+  }
+  current[segments.at(-1)!] = value;
 }
 
 export async function materializeManifestEntries<TOptions extends object>(
@@ -333,10 +647,16 @@ export async function materializeManifestEntries<TOptions extends object>(
   materializeEntry: ManifestEntryMaterializer<TOptions>,
   options: TOptions,
 ): Promise<void> {
+  validateMountCredentialBoundaries(manifest);
   const deferredOptions = {
     ...options,
     skipMountEntries: true,
   } as TOptions;
+  const resolvedMounts = await preparedMountsForManifest(
+    manifest,
+    resolvePath,
+    options as DeferredMountMaterializationOptions,
+  );
 
   const entries = Object.entries(manifest.entries).filter(
     ([, entry]) => !isMount(entry),
@@ -365,13 +685,65 @@ export async function materializeManifestEntries<TOptions extends object>(
   );
 
   for (const {
-    mountPath,
+    absolutePath,
     entry,
-  } of manifest.mountTargetsForMaterialization()) {
-    const logicalPath = resolveSandboxRelativePath(manifest.root, mountPath);
-    const absolutePath = await resolvePath(logicalPath, { forWrite: true });
-    await materializeEntry(writer, absolutePath, entry, providerLabel, options);
+    allowMountCredentialExposure,
+    environment,
+    revalidateMountAuthority,
+  } of resolvedMounts) {
+    await revalidateMountAuthority();
+    await materializeEntry(writer, absolutePath, entry, providerLabel, {
+      ...options,
+      allowMountCredentialExposure,
+      preparedMountEnvironment: environment,
+      revalidateMountAuthority,
+    });
   }
+}
+
+async function preparedMountsForManifest(
+  manifest: Manifest,
+  resolvePath: RemoteSandboxPathResolver,
+  options: DeferredMountMaterializationOptions,
+): Promise<PreparedManifestMount[]> {
+  const preparedMounts = options.preparedMounts;
+  if (!preparedMounts) {
+    return await prepareManifestMounts(manifest, resolvePath, {
+      credentialBoundaryManifest: manifest,
+      environment: {
+        ...(options.materializationEnvironment ?? {}),
+      },
+      resolveCredentialPath: options.resolveCredentialPath,
+    });
+  }
+  const targets = new Map(
+    manifest
+      .mountTargetsForMaterialization()
+      .map((target) => [target.logicalPath, target]),
+  );
+  if (targets.size !== preparedMounts.length) {
+    throw new UserError(
+      'Prepared sandbox mount candidates do not match the materialized manifest.',
+    );
+  }
+  return preparedMounts.map((prepared) => {
+    const target = targets.get(prepared.logicalPath);
+    if (!target) {
+      throw new UserError(
+        'Prepared sandbox mount candidate no longer exists in the materialized manifest.',
+      );
+    }
+    return {
+      ...prepared,
+      allowMountCredentialExposure:
+        validateMountCredentialBoundariesAtEffectivePath(
+          manifest,
+          target.logicalPath,
+          target.entry,
+          prepared.absolutePath,
+        ),
+    };
+  });
 }
 
 export async function runLimited<T>(
@@ -433,7 +805,19 @@ export async function materializeInlineManifestEntry(
       return;
     }
     if (options.materializeMount) {
-      await options.materializeMount(absolutePath, entry);
+      await options.materializeMount(absolutePath, entry, {
+        environment:
+          (options as DeferredMountMaterializationOptions)
+            .preparedMountEnvironment ??
+          (options as DeferredMountMaterializationOptions)
+            .materializationEnvironment,
+        allowAmbientCredentials: (
+          options as DeferredMountMaterializationOptions
+        ).allowMountCredentialExposure,
+        revalidateMountAuthority: (
+          options as DeferredMountMaterializationOptions
+        ).revalidateMountAuthority,
+      });
       return;
     }
     throw new SandboxUnsupportedFeatureError(

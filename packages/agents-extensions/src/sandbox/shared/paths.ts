@@ -273,6 +273,35 @@ export async function validateRemoteSandboxPath({
   return resolvedPath;
 }
 
+export async function resolveRemoteSandboxEffectivePath(args: {
+  path: string;
+  runCommand(command: string): Promise<RemotePathCommandResult>;
+}): Promise<string> {
+  const result = await args.runCommand(
+    `realpath -m -- ${shellQuote(args.path)}`,
+  );
+  const resolvedPath = result.stdout?.trim().split(/\r?\n/u).pop();
+  if (
+    result.status !== 0 ||
+    !resolvedPath?.startsWith('/') ||
+    resolvedPath.includes('\n')
+  ) {
+    const message = (
+      result.stderr ||
+      result.stdout ||
+      'effective path resolution failed'
+    )
+      .trim()
+      .split(/\r?\n/u)
+      .join('; ');
+    throw new SandboxPathResolutionError(
+      `Sandbox credential path "${args.path}" failed effective-path resolution: ${message}`,
+      { path: args.path },
+    );
+  }
+  return resolvedPath;
+}
+
 export async function validateRemoteSandboxPathForManifest({
   manifest,
   path,

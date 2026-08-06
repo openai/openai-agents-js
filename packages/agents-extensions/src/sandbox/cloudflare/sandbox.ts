@@ -1,6 +1,7 @@
 import { UserError, type ToolOutputImage } from '@openai/agents-core';
 import { loadEnv } from '@openai/agents-core/_shims';
 import {
+  cloneManifest,
   Manifest,
   SandboxArchiveError,
   SandboxMountError,
@@ -11,6 +12,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxPreservedSessionReuseOptions,
   type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type ExposedPortEndpoint,
@@ -27,6 +29,11 @@ import {
   type WorkspaceArchiveOptions,
   validateSandboxArchiveLimits,
 } from '@openai/agents-core/sandbox';
+import {
+  NON_RESUMABLE_MOUNT_AUTHORITY_KEY,
+  stableJsonStringify,
+  withExclusiveSandboxManifestMutation,
+} from '@openai/agents-core/sandbox/internal';
 import {
   assertTarWorkspacePersistence,
   createEmptyWorkspaceTarArchive,
@@ -446,6 +453,15 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
   }
 
   async materializeEntry(args: MaterializeEntryArgs): Promise<void> {
+    const entry = structuredClone(args.entry);
+    return await withExclusiveSandboxManifestMutation(this.state, async () =>
+      this.materializeEntryExclusive({ ...args, entry }),
+    );
+  }
+
+  private async materializeEntryExclusive(
+    args: MaterializeEntryArgs,
+  ): Promise<void> {
     assertSandboxEntryMetadataSupported(
       'CloudflareSandboxClient',
       args.path,
@@ -479,6 +495,16 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
   }
 
   async applyManifest(manifest: Manifest, runAs?: string): Promise<void> {
+    const manifestSnapshot = cloneManifest(manifest);
+    return await withExclusiveSandboxManifestMutation(this.state, async () =>
+      this.applyManifestExclusive(manifestSnapshot, runAs),
+    );
+  }
+
+  private async applyManifestExclusive(
+    manifest: Manifest,
+    runAs?: string,
+  ): Promise<void> {
     assertCloudflareManifestRoot(manifest);
     assertSandboxManifestMetadataSupported(
       'CloudflareSandboxClient',
@@ -518,6 +544,14 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     const mountPath = await this.resolveRemotePath(args.mountPath, {
       forWrite: true,
     });
+    await this.mountBucketAtResolvedPath({ ...args, mountPath });
+  }
+
+  private async mountBucketAtResolvedPath(args: {
+    bucket: string;
+    mountPath: string;
+    options: CloudflareBucketMountRequestOptions;
+  }): Promise<void> {
     const response = await this.fetch(
       `/v1/sandbox/${this.state.sandboxId}/mount`,
       {
@@ -527,7 +561,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         },
         body: JSON.stringify({
           bucket: args.bucket,
-          mountPath,
+          mountPath: args.mountPath,
           options: args.options,
         }),
       },
@@ -536,7 +570,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       throw await cloudflareMountError({
         response,
         message: 'Cloudflare bucket mount failed.',
-        mountPath,
+        mountPath: args.mountPath,
         bucket: args.bucket,
       });
     }
@@ -720,9 +754,9 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       );
     }
     const config = buildCloudflareBucketMountConfig(entry);
-    await this.mountBucket({
+    await this.mountBucketAtResolvedPath({
       bucket: config.bucketName,
-      mountPath: entry.mountPath ?? absolutePath,
+      mountPath: absolutePath,
       options: cloudflareBucketMountRequestOptions(config),
     });
   }
@@ -1041,10 +1075,27 @@ export class CloudflareSandboxClient implements SandboxClient<
   CloudflareSandboxSessionState
 > {
   readonly backendId = 'cloudflare';
+  readonly serializedSessionStateRequiresFreshCreation = true;
   private readonly options: Partial<CloudflareSandboxClientOptions>;
+  private readonly deserializedSessionStates =
+    new WeakSet<CloudflareSandboxSessionState>();
 
   constructor(options: Partial<CloudflareSandboxClientOptions> = {}) {
     this.options = options;
+  }
+
+  canReusePreservedOwnedSession(
+    state: CloudflareSandboxSessionState,
+    options: SandboxPreservedSessionReuseOptions<CloudflareSandboxClientOptions> = {},
+  ): boolean {
+    const resolvedOptions = {
+      ...this.options,
+      ...options.clientOptions,
+    };
+    return (
+      stableJsonStringify(state.mounts ?? []) ===
+      stableJsonStringify(resolvedOptions.mounts ?? [])
+    );
   }
 
   async create(
@@ -1178,7 +1229,16 @@ export class CloudflareSandboxClient implements SandboxClient<
   async serializeSessionState(
     state: CloudflareSandboxSessionState,
   ): Promise<Record<string, unknown>> {
-    return serializeRemoteSandboxSessionState(state);
+    const { mounts: _mounts, ...persistentState } = state;
+    return serializeRemoteSandboxSessionState(
+      {
+        ...persistentState,
+        ...(state.mounts?.length
+          ? { [NON_RESUMABLE_MOUNT_AUTHORITY_KEY]: true }
+          : {}),
+      },
+      state,
+    );
   }
 
   canPersistOwnedSessionState(): boolean {
@@ -1189,7 +1249,7 @@ export class CloudflareSandboxClient implements SandboxClient<
     state: Record<string, unknown>,
   ): Promise<CloudflareSandboxSessionState> {
     const baseState = await rehydrateRemoteSandboxSessionStateValues(state);
-    return {
+    const deserializedState: CloudflareSandboxSessionState = {
       ...state,
       ...baseState,
       workerUrl: readString(state, 'workerUrl'),
@@ -1210,11 +1270,18 @@ export class CloudflareSandboxClient implements SandboxClient<
       }),
       mounts: readOptionalRecordArray(state.mounts),
     };
+    this.deserializedSessionStates.add(deserializedState);
+    return deserializedState;
   }
 
   async resume(
     state: CloudflareSandboxSessionState,
   ): Promise<CloudflareSandboxSession> {
+    if (this.deserializedSessionStates.has(state)) {
+      throw new UserError(
+        'CloudflareSandboxClient cannot safely resume persisted session state. Create a fresh sandbox from current trusted options.',
+      );
+    }
     assertRemoteSandboxSessionStateCanResume(state);
     const sandboxId = normalizeCloudflarePersistedSandboxId(
       (state as Record<string, unknown>).sandboxId,

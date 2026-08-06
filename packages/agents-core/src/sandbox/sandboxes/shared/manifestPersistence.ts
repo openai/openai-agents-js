@@ -2,6 +2,7 @@ import { isMount, type Entry } from '../../entries';
 import { UserError } from '../../../errors';
 import {
   cloneManifest,
+  copyManifestMountCredentialExposurePolicy,
   isEnvValueReference,
   Manifest,
   type EnvValue,
@@ -20,6 +21,21 @@ import {
   decodeBase64ToUint8Array,
   encodeUint8ArrayToBase64,
 } from '../../../utils/base64';
+import {
+  copyTrustedMountCredentialRebindProvenance,
+  recordPersistedMountTopology,
+  recordPendingMountCredentialPaths,
+  redactMountCredentialsForPersistence,
+  sanitizePersistedManifestRecord,
+  validateMountCredentialBoundaries,
+} from '../../mountSecurity';
+
+export {
+  assertMountCredentialsRebound,
+  deserializeMountCredentialRedactionMetadata,
+  rebindPersistedMountCredentials,
+  serializeMountCredentialRedactionMetadata,
+} from '../../mountSecurity';
 
 type ManifestPersistenceState = {
   manifest: Manifest;
@@ -65,6 +81,10 @@ export function rebindPersistedPathGrants<TState extends SandboxSessionState>(
   const reboundState: SandboxSessionState = { ...state };
   if (options.replaceWithTrustedManifest && trustedManifest) {
     reboundState.manifest = cloneManifest(trustedManifest);
+    copyTrustedMountCredentialRebindProvenance(
+      reboundState.manifest,
+      state.manifest,
+    );
     delete reboundState[redactedHostPathGrantPathsKey];
     return reboundState as TState;
   }
@@ -111,6 +131,14 @@ export function rebindPersistedPathGrants<TState extends SandboxSessionState>(
       ...state.manifest.remoteMountCommandAllowlist,
     ],
   });
+  copyManifestMountCredentialExposurePolicy(
+    reboundState.manifest,
+    state.manifest,
+  );
+  copyTrustedMountCredentialRebindProvenance(
+    reboundState.manifest,
+    state.manifest,
+  );
 
   const reboundGrantsByPath = new Map(
     reboundState.manifest.extraPathGrants.map((grant) => [grant.path, grant]),
@@ -150,6 +178,7 @@ function readRedactedHostPathGrantPaths(
 export function serializeManifestRecord(
   manifest: Manifest,
 ): Record<string, unknown> {
+  validateMountCredentialBoundaries(manifest);
   return {
     version: manifest.version,
     root: manifest.root,
@@ -169,7 +198,13 @@ export function serializeManifestRecord(
 export function deserializeManifest(
   value: Record<string, unknown> | undefined,
 ): Manifest {
-  return new Manifest(deserializeManifestRecord(value ?? {}));
+  const { record, credentialPaths } = sanitizePersistedManifestRecord(
+    value ?? {},
+  );
+  const manifest = new Manifest(deserializeManifestRecord(record));
+  recordPersistedMountTopology(manifest);
+  recordPendingMountCredentialPaths(manifest, credentialPaths);
+  return manifest;
 }
 
 export function sanitizeEnvironmentForPersistence(
@@ -213,7 +248,7 @@ export function serializeEnvironmentForPersistence(
 }
 
 export function mergeManifestDelta(base: Manifest, update: Manifest): Manifest {
-  return new Manifest({
+  const merged = new Manifest({
     version: update.version ?? base.version,
     root: base.root,
     entries: {
@@ -234,6 +269,8 @@ export function mergeManifestDelta(base: Manifest, update: Manifest): Manifest {
       ? update.remoteMountCommandAllowlist
       : base.remoteMountCommandAllowlist,
   });
+  copyManifestMountCredentialExposurePolicy(merged, base, update);
+  return merged;
 }
 
 function cloneManifestEnvironment(
@@ -318,7 +355,12 @@ function sanitizeEntryForPersistence(
   }
 
   if (entry.type !== 'dir' || !entry.children) {
-    return !effectiveEphemeral || isMount(entry) ? { ...entry } : undefined;
+    if (effectiveEphemeral && !isMount(entry)) {
+      return undefined;
+    }
+    return isMount(entry)
+      ? redactMountCredentialsForPersistence(entry)
+      : { ...entry };
   }
 
   const children = sanitizeEntriesForPersistence(

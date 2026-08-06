@@ -13,7 +13,10 @@ import {
   E2BSandboxClient,
   type E2BSandboxClientOptions,
 } from '../../src/sandbox/e2b';
-import { decodeNativeSnapshotRef } from '../../src/sandbox/shared';
+import {
+  decodeNativeSnapshotRef,
+  markRemoteSandboxSessionStateUnsafe,
+} from '../../src/sandbox/shared';
 import { resolvedRemotePathFromValidationCommand } from './remotePathValidation';
 import { makeTarArchive } from './tarFixture';
 
@@ -1253,7 +1256,7 @@ describe('E2BSandboxClient', () => {
             mountStrategy: new E2BCloudBucketMountStrategy(),
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
     );
     await session.close();
 
@@ -1272,6 +1275,147 @@ describe('E2BSandboxClient', () => {
         String(command).includes('fusermount3 -u'),
       ),
     ).toBe(true);
+  });
+
+  test('rejects a retargeted effective path before credentialed mounts', async () => {
+    const defaultRun = runMock.getMockImplementation();
+    let mountPathResolutions = 0;
+    runMock.mockImplementation(async (command: string, ...args: unknown[]) => {
+      const resolvedPath = resolvedRemotePathFromValidationCommand(command);
+      if (resolvedPath === '/workspace/mounted/logs') {
+        mountPathResolutions += 1;
+        return {
+          stdout: `${
+            mountPathResolutions === 1 ? resolvedPath : '/workspace/redirected'
+          }\n`,
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      return await defaultRun!(command, ...args);
+    });
+
+    const client = new E2BSandboxClient();
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 's3_mount',
+              bucket: 'agent-logs',
+              accessKeyId: 'access-key',
+              secretAccessKey: 'secret-key',
+              mountPath: 'mounted/logs',
+              mountStrategy: new E2BCloudBucketMountStrategy(),
+            },
+          },
+        }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+      ),
+    ).rejects.toThrow(/model-controlled sandbox/u);
+
+    expect(mountPathResolutions).toBe(2);
+    expect(
+      runMock.mock.calls.some(([command]) =>
+        String(command).includes("'rclone' 'mount'"),
+      ),
+    ).toBe(false);
+  });
+
+  test('rejects ambient mount credentials before creating a sandbox', async () => {
+    const client = new E2BSandboxClient({
+      env: {
+        AWS_ACCESS_KEY_ID: 'access-key',
+        AWS_SECRET_ACCESS_KEY: 'secret-key',
+      },
+    });
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 's3_mount',
+              bucket: 'agent-logs',
+              mountStrategy: new E2BCloudBucketMountStrategy(),
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow(/model-controlled sandbox/u);
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects dynamic ambient mount credentials before remote effects', async () => {
+    const client = new E2BSandboxClient({
+      env: {
+        AWS_ACCESS_KEY_ID: 'access-key',
+        AWS_SECRET_ACCESS_KEY: 'secret-key',
+      },
+    });
+    const session = await client.create(new Manifest());
+    runMock.mockClear();
+
+    await expect(
+      session.materializeEntry({
+        path: 'data',
+        entry: {
+          type: 's3_mount',
+          bucket: 'agent-logs',
+          mountStrategy: new E2BCloudBucketMountStrategy(),
+        },
+      }),
+    ).rejects.toThrow(/model-controlled sandbox/u);
+    expect(runMock).not.toHaveBeenCalled();
+  });
+
+  test('blocks retained PTY input after a privileged transition tombstone', async () => {
+    const session = await new E2BSandboxClient().create(new Manifest());
+    markRemoteSandboxSessionStateUnsafe(session.state);
+
+    await expect(
+      session.writeStdin({ sessionId: 1, chars: 'blocked' }),
+    ).rejects.toThrow(/privileged manifest transition failed/u);
+  });
+
+  test('reuses live ambient mount authority only while values are exact', async () => {
+    const environment = {
+      AWS_ACCESS_KEY_ID: 'access-key',
+      AWS_SECRET_ACCESS_KEY: 'secret-key',
+    };
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'agent-logs',
+          mountStrategy: new E2BCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+    const client = new E2BSandboxClient({ env: environment });
+    const session = await client.create(manifest);
+
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest: manifest,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest: manifest,
+        clientOptions: {
+          env: {
+            ...environment,
+            AWS_SECRET_ACCESS_KEY: 'rotated-secret',
+          },
+        },
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest: manifest,
+        clientOptions: { env: undefined },
+      }),
+    ).resolves.toBe(false);
   });
 
   test('uses the installed rclone path when E2B PATH excludes it', async () => {
@@ -1324,7 +1468,7 @@ describe('E2BSandboxClient', () => {
             mountStrategy: new E2BCloudBucketMountStrategy(),
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
     );
 
     expect(

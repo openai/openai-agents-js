@@ -1,5 +1,6 @@
 import { UserError, type ToolOutputImage } from '@openai/agents-core';
 import {
+  cloneManifest,
   Manifest,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
@@ -29,6 +30,7 @@ import {
   normalizePosixPath,
   relativePosixPathWithinRoot,
   shellQuote,
+  withExclusiveSandboxManifestMutation,
 } from '@openai/agents-core/sandbox/internal';
 import { posix as pathPosix } from 'node:path';
 import {
@@ -632,45 +634,54 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
   }
 
   async materializeEntry(args: MaterializeEntryArgs): Promise<void> {
-    assertSandboxEntryMetadataSupported(
-      'ModalSandboxClient',
-      args.path,
-      args.entry,
-      MOUNT_MANIFEST_METADATA_SUPPORT,
-    );
-    assertModalLiveEntryMountsUnsupported(
-      args.entry,
-      args.path,
-      this.state.manifest,
-    );
-    await applyLocalSourceManifestEntryToState(
-      this.state,
-      args.path,
-      args.entry,
-      'modal',
-      this.writer(),
-      this.remotePathResolver,
-      this.manifestMaterializationOptions(args.runAs),
-    );
-    this.invalidateCloudBucketMounts();
+    const entry = structuredClone(args.entry);
+    await withExclusiveSandboxManifestMutation(this.state, async () => {
+      assertSandboxEntryMetadataSupported(
+        'ModalSandboxClient',
+        args.path,
+        entry,
+        MOUNT_MANIFEST_METADATA_SUPPORT,
+      );
+      assertModalLiveEntryMountsUnsupported(
+        entry,
+        args.path,
+        this.state.manifest,
+      );
+      await applyLocalSourceManifestEntryToState(
+        this.state,
+        args.path,
+        entry,
+        'modal',
+        this.writer(),
+        this.remotePathResolver,
+        this.manifestMaterializationOptions(args.runAs),
+      );
+      this.invalidateCloudBucketMounts();
+    });
   }
 
   async applyManifest(manifest: Manifest, runAs?: string): Promise<void> {
-    assertSandboxManifestMetadataSupported(
-      'ModalSandboxClient',
-      manifest,
-      MOUNT_MANIFEST_METADATA_SUPPORT,
-    );
-    assertModalLiveManifestMountsUnsupported(manifest, this.state.manifest);
-    await applyLocalSourceManifestToState(
-      this.state,
-      manifest,
-      'modal',
-      this.writer(),
-      this.remotePathResolver,
-      this.manifestMaterializationOptions(runAs),
-    );
-    this.invalidateCloudBucketMounts();
+    const manifestSnapshot = cloneManifest(manifest);
+    await withExclusiveSandboxManifestMutation(this.state, async () => {
+      assertSandboxManifestMetadataSupported(
+        'ModalSandboxClient',
+        manifestSnapshot,
+        MOUNT_MANIFEST_METADATA_SUPPORT,
+      );
+      assertModalLiveManifestMountsUnsupported(
+        manifestSnapshot,
+        this.state.manifest,
+      );
+      await applyLocalSourceManifestToState(
+        this.state,
+        manifestSnapshot,
+        'modal',
+        this.writer(),
+        this.remotePathResolver,
+        this.manifestMaterializationOptions(runAs),
+      );
+      this.invalidateCloudBucketMounts();
+    });
   }
 
   async persistWorkspace(): Promise<Uint8Array> {

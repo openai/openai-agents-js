@@ -7,13 +7,17 @@ import {
   SandboxUnsupportedFeatureError,
 } from '@openai/agents-core/sandbox';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { liveMountCredentialAuthorityMatches } from '@openai/agents-core/sandbox/internal';
 import {
   RunloopCloudBucketMountStrategy,
   RunloopSandboxClient,
   type RunloopUserParameters,
 } from '../../src/sandbox/runloop';
 import { decodeNativeSnapshotRef } from '../../src/sandbox/shared';
-import { resolvedRemotePathFromValidationCommand } from './remotePathValidation';
+import {
+  resolvedRemoteEffectivePathFromCommand,
+  resolvedRemotePathFromValidationCommand,
+} from './remotePathValidation';
 import { makeTarArchive } from './tarFixture';
 
 const runloopSdkConstructorMock = vi.fn();
@@ -91,7 +95,7 @@ function runloopCloudBucketManifest(
         ...entryOverrides,
       },
     },
-  });
+  }).withInContainerMountCredentialExposureAllowed('mounted/logs');
 }
 
 function execResult(args: {
@@ -104,6 +108,17 @@ function execResult(args: {
     stdout: vi.fn().mockResolvedValue(args.stdout ?? ''),
     stderr: vi.fn().mockResolvedValue(args.stderr ?? ''),
   };
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
 }
 
 function runloopRealpathResult(command: string) {
@@ -325,7 +340,9 @@ describe('RunloopSandboxClient', () => {
       if (realpathResult) {
         return realpathResult;
       }
-      const resolvedPath = resolvedRemotePathFromValidationCommand(command);
+      const resolvedPath =
+        resolvedRemotePathFromValidationCommand(command) ??
+        resolvedRemoteEffectivePathFromCommand(command);
       return {
         exitCode: 0,
         stdout: vi
@@ -646,6 +663,23 @@ describe('RunloopSandboxClient', () => {
     ).rejects.toBeInstanceOf(SandboxConfigurationError);
   });
 
+  test('normalizes trusted resume roots with current per-run user parameters', () => {
+    const client = new RunloopSandboxClient({
+      userParameters: { username: 'user', uid: 1000 },
+    });
+
+    expect(
+      client.resolveTrustedManifestForResume(new Manifest(), {
+        userParameters: { username: 'root', uid: 0 },
+      }).root,
+    ).toBe('/root');
+    expect(
+      client.resolveTrustedManifestForResume(new Manifest(), {
+        userParameters: undefined,
+      }).root,
+    ).toBe('/home/user');
+  });
+
   test('rejects manifest roots that resolve outside the effective Runloop home', async () => {
     execMock.mockImplementation(async (command: string) => {
       if (command.includes('OPENAI_AGENTS_REALPATH_HOME=')) {
@@ -762,6 +796,24 @@ describe('RunloopSandboxClient', () => {
       ),
     ).rejects.toBeInstanceOf(SandboxConfigurationError);
     expect(uploadMock).not.toHaveBeenCalled();
+
+    execMock.mockClear();
+    await expect(
+      session.applyManifest(
+        runloopManifest({
+          entries: {
+            private: {
+              type: 's3_mount',
+              bucket: 'private',
+              accessKeyId: 'access-key',
+              secretAccessKey: 'secret-key',
+              mountStrategy: new RunloopCloudBucketMountStrategy(),
+            },
+          },
+        }),
+      ),
+    ).rejects.toBeInstanceOf(SandboxMountError);
+    expect(execMock).not.toHaveBeenCalled();
 
     await session.applyManifest(
       runloopManifest({
@@ -913,6 +965,524 @@ describe('RunloopSandboxClient', () => {
         API_KEY: 'API_KEY',
       },
     });
+  });
+
+  test('rejects managed mount credentials before Runloop provider effects', async () => {
+    const client = new RunloopSandboxClient();
+    const manifest = runloopManifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'private',
+          mountPath: 'mounted/logs',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      },
+    });
+
+    await expect(
+      client.create(manifest, {
+        managedSecrets: {
+          AWS_ACCESS_KEY_ID: 'managed-access',
+          AWS_SECRET_ACCESS_KEY: 'managed-secret',
+        },
+      }),
+    ).rejects.toThrow(/model-controlled sandbox/u);
+
+    expect(runloopSdkConstructorMock).not.toHaveBeenCalled();
+    expect(secretCreateMock).not.toHaveBeenCalled();
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects managed credential files serialized by the manifest before provider effects', async () => {
+    const client = new RunloopSandboxClient();
+    const manifest = runloopManifest({
+      entries: {
+        'gcp.json': { type: 'file', content: '{"private_key":"secret"}' },
+        data: {
+          type: 'gcs_mount',
+          bucket: 'private',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+
+    await expect(
+      client.create(manifest, {
+        managedSecrets: {
+          GOOGLE_APPLICATION_CREDENTIALS: '/home/user/gcp.json',
+        },
+      }),
+    ).rejects.toThrow(/serialized manifest entry/u);
+
+    expect(runloopSdkConstructorMock).not.toHaveBeenCalled();
+    expect(secretCreateMock).not.toHaveBeenCalled();
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects opaque credential-file secretRefs before provider effects', async () => {
+    const client = new RunloopSandboxClient();
+    const manifest = runloopManifest({
+      entries: {
+        data: {
+          type: 'gcs_mount',
+          bucket: 'private',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+
+    await expect(
+      client.create(manifest, {
+        secretRefs: {
+          GOOGLE_APPLICATION_CREDENTIALS: 'gcp-credential-file',
+        },
+      }),
+    ).rejects.toThrow(/cannot be validated before an in-container mount/u);
+
+    expect(runloopSdkConstructorMock).not.toHaveBeenCalled();
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects a symlink-aliased managed credential file before manifest writes', async () => {
+    const client = new RunloopSandboxClient();
+    const manifest = runloopManifest({
+      entries: {
+        'gcp.json': { type: 'file', content: '{"private_key":"secret"}' },
+        data: {
+          type: 'gcs_mount',
+          bucket: 'private',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+    const defaultExec = execMock.getMockImplementation()!;
+    execMock.mockImplementation(async (command, ...args) => {
+      if (
+        resolvedRemoteEffectivePathFromCommand(String(command)) ===
+        '/tmp/gcp-link'
+      ) {
+        return execResult({
+          exitCode: 0,
+          stdout: '/home/user/gcp.json\n',
+        });
+      }
+      return await defaultExec(command, ...args);
+    });
+
+    await expect(
+      client.create(manifest, {
+        managedSecrets: {
+          GOOGLE_APPLICATION_CREDENTIALS: '/tmp/gcp-link',
+        },
+      }),
+    ).rejects.toThrow(/resolve to a serialized manifest entry/u);
+
+    expect(writeMock).not.toHaveBeenCalled();
+    expect(
+      execMock.mock.calls.some(([command]) =>
+        String(command).includes("'rclone' 'mount'"),
+      ),
+    ).toBe(false);
+  });
+
+  test('accepts exact-path trust for managed mount credentials and refuses live reuse', async () => {
+    const client = new RunloopSandboxClient();
+    const manifest = runloopManifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'private',
+          mountPath: 'mounted/logs',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('mounted/logs');
+    const session = await client.create(manifest, {
+      managedSecrets: {
+        AWS_ACCESS_KEY_ID: 'managed-access',
+        AWS_SECRET_ACCESS_KEY: 'managed-secret',
+      },
+    });
+
+    expect(secretCreateMock).toHaveBeenCalledTimes(2);
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        secrets: {
+          AWS_ACCESS_KEY_ID: 'AWS_ACCESS_KEY_ID',
+          AWS_SECRET_ACCESS_KEY: 'AWS_SECRET_ACCESS_KEY',
+        },
+      }),
+      undefined,
+    );
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest: manifest,
+        clientOptions: {
+          managedSecrets: {
+            AWS_ACCESS_KEY_ID: 'rotated-access',
+            AWS_SECRET_ACCESS_KEY: 'rotated-secret',
+          },
+        },
+      }),
+    ).resolves.toBe(false);
+  });
+
+  test('rejects dynamic mounts backed by managed secrets before mount effects', async () => {
+    const client = new RunloopSandboxClient();
+    const session = await client.create(runloopManifest(), {
+      managedSecrets: {
+        AWS_ACCESS_KEY_ID: 'managed-access',
+        AWS_SECRET_ACCESS_KEY: 'managed-secret',
+      },
+    });
+    execMock.mockClear();
+
+    await expect(
+      session.materializeEntry({
+        path: 'data',
+        entry: {
+          type: 's3_mount',
+          bucket: 'private',
+          mountPath: 'mounted/logs',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      }),
+    ).rejects.toThrow(/model-controlled sandbox/u);
+
+    expect(
+      execMock.mock.calls.some(([command]) =>
+        String(command).includes("'rclone' 'mount'"),
+      ),
+    ).toBe(false);
+    await expect(session.execCommand({ cmd: 'true' })).resolves.toContain(
+      'Process exited with code 0',
+    );
+  });
+
+  test('rejects a dynamic manifest entry aliased to a live managed credential file', async () => {
+    const client = new RunloopSandboxClient();
+    const manifest = runloopManifest({
+      entries: {
+        data: {
+          type: 'gcs_mount',
+          bucket: 'private',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+    const defaultExec = execMock.getMockImplementation()!;
+    execMock.mockImplementation(async (command, ...args) => {
+      if (
+        resolvedRemoteEffectivePathFromCommand(String(command)) ===
+        '/tmp/gcp-link'
+      ) {
+        return execResult({
+          exitCode: 0,
+          stdout: '/home/user/gcp.json\n',
+        });
+      }
+      return await defaultExec(command, ...args);
+    });
+    const session = await client.create(manifest, {
+      managedSecrets: {
+        GOOGLE_APPLICATION_CREDENTIALS: '/tmp/gcp-link',
+      },
+    });
+    execMock.mockClear();
+    writeMock.mockClear();
+
+    await expect(
+      session.materializeEntry({
+        path: 'gcp.json',
+        entry: { type: 'file', content: '{"private_key":"secret"}' },
+      }),
+    ).rejects.toThrow(/resolve to a serialized manifest entry/u);
+
+    expect(writeMock).not.toHaveBeenCalled();
+    expect(
+      execMock.mock.calls.some(([command]) =>
+        String(command).includes("'rclone' 'mount'"),
+      ),
+    ).toBe(false);
+  });
+
+  test('rejects serialization during direct mount rematerialization', async () => {
+    const client = new RunloopSandboxClient();
+    const manifest = runloopCloudBucketManifest();
+    const session = await client.create(manifest);
+    const execStarted = deferred<void>();
+    const execGate = deferred<void>();
+    const defaultExec = execMock.getMockImplementation();
+    let blocked = false;
+    execMock.mockImplementation(async (...args: unknown[]) => {
+      if (!blocked) {
+        blocked = true;
+        execStarted.resolve();
+        await execGate.promise;
+      }
+      return await defaultExec!(...(args as [string]));
+    });
+
+    const rematerializing = session.rematerializeManifestMounts(manifest);
+    await execStarted.promise;
+
+    await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+      /cannot be inspected while a manifest mutation is in progress/u,
+    );
+
+    execGate.resolve();
+    await rematerializing;
+  });
+
+  test.each([
+    {
+      label: 'managed secrets',
+      options: {
+        managedSecrets: {
+          AWS_ACCESS_KEY_ID: 'managed-access',
+          AWS_SECRET_ACCESS_KEY: 'managed-secret',
+        },
+      },
+    },
+    {
+      label: 'secret refs',
+      options: {
+        secretRefs: {
+          AWS_ACCESS_KEY_ID: 'managed-access-ref',
+          AWS_SECRET_ACCESS_KEY: 'managed-secret-ref',
+        },
+      },
+    },
+  ])(
+    'preserves $label authority across repeated direct rematerialization',
+    async ({ options }) => {
+      const manifest = runloopManifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'private',
+            mountStrategy: new RunloopCloudBucketMountStrategy(),
+          },
+        },
+      }).withInContainerMountCredentialExposureAllowed('data');
+      const client = new RunloopSandboxClient();
+      const session = await client.create(manifest, options);
+
+      await session.rematerializeManifestMounts(manifest);
+      await expect(
+        session.rematerializeManifestMounts(manifest),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  test('rejects direct mount rematerialization with different authority', async () => {
+    const client = new RunloopSandboxClient();
+    const session = await client.create(runloopManifest());
+    execMock.mockClear();
+
+    await expect(
+      session.rematerializeManifestMounts(runloopCloudBucketManifest()),
+    ).rejects.toThrow(/does not match the active session/u);
+
+    expect(execMock).not.toHaveBeenCalled();
+  });
+
+  test('replaces the recorded effective path and refreshes live authority', async () => {
+    const originalPath = '/home/user/mounted/logs';
+    const redirectedPath = '/home/user/redirected/logs';
+    const manifest = runloopCloudBucketManifest()
+      .withInContainerMountCredentialExposureAllowed('mounted/logs')
+      .withInContainerMountCredentialExposureAllowed('redirected/logs');
+    const client = new RunloopSandboxClient();
+    const session = await client.create(manifest);
+    const defaultExec = execMock.getMockImplementation()!;
+    execMock.mockClear();
+    execMock.mockImplementation(async (command, ...args) => {
+      if (resolvedRemotePathFromValidationCommand(String(command))) {
+        return execResult({ exitCode: 0, stdout: `${redirectedPath}\n` });
+      }
+      return await defaultExec(command, ...args);
+    });
+
+    await session.rematerializeManifestMounts(manifest);
+
+    const commands = execMock.mock.calls.map(([command]) => String(command));
+    expect(
+      commands.some(
+        (command) =>
+          command.includes('fusermount3 -u') && command.includes(originalPath),
+      ),
+    ).toBe(true);
+    expect(
+      commands.some(
+        (command) =>
+          command.includes("'rclone' 'mount'") &&
+          command.includes(redirectedPath),
+      ),
+    ).toBe(true);
+
+    const trustedWithoutRedirect = runloopManifest({
+      entries: structuredClone(session.state.manifest.entries),
+    }).withInContainerMountCredentialExposureAllowed('mounted/logs');
+    expect(
+      liveMountCredentialAuthorityMatches(
+        session.state.manifest,
+        trustedWithoutRedirect,
+      ),
+    ).toBe(false);
+  });
+
+  test('rejects direct rematerialization after managed secret authority changes', async () => {
+    const manifest = runloopManifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'private',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+    const client = new RunloopSandboxClient();
+    const session = await client.create(manifest, {
+      managedSecrets: {
+        AWS_ACCESS_KEY_ID: 'managed-access',
+        AWS_SECRET_ACCESS_KEY: 'managed-secret',
+      },
+    });
+    execMock.mockClear();
+    session.state.managedSecrets = {
+      ...session.state.managedSecrets,
+      AWS_ACCESS_KEY_ID: 'mutated-access-key',
+    };
+
+    await expect(session.rematerializeManifestMounts(manifest)).rejects.toThrow(
+      /environment authority does not match the active session/u,
+    );
+
+    expect(execMock).not.toHaveBeenCalled();
+    expect(shutdownMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects direct rematerialization aliased to a managed credential file', async () => {
+    const baseManifest = runloopManifest({
+      entries: {
+        data: {
+          type: 'gcs_mount',
+          bucket: 'private',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+    const defaultExec = execMock.getMockImplementation()!;
+    execMock.mockImplementation(async (command, ...args) => {
+      if (
+        resolvedRemoteEffectivePathFromCommand(String(command)) ===
+        '/tmp/gcp-link'
+      ) {
+        return execResult({
+          exitCode: 0,
+          stdout: '/home/user/gcp.json\n',
+        });
+      }
+      return await defaultExec(command, ...args);
+    });
+    const client = new RunloopSandboxClient();
+    const session = await client.create(baseManifest, {
+      managedSecrets: {
+        GOOGLE_APPLICATION_CREDENTIALS: '/tmp/gcp-link',
+      },
+    });
+    const nextManifest = runloopManifest({
+      entries: {
+        ...structuredClone(baseManifest.entries),
+        'gcp.json': { type: 'file', content: '{"private_key":"secret"}' },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+    execMock.mockClear();
+
+    await expect(
+      session.rematerializeManifestMounts(nextManifest),
+    ).rejects.toThrow(/resolve to a serialized manifest entry/u);
+
+    expect(
+      execMock.mock.calls.some(([command]) =>
+        String(command).includes('fusermount3 -u'),
+      ),
+    ).toBe(false);
+    expect(shutdownMock).not.toHaveBeenCalled();
+  });
+
+  test('tombstones direct rematerialization when detach commands return failure', async () => {
+    const manifest = runloopCloudBucketManifest();
+    const client = new RunloopSandboxClient();
+    const session = await client.create(manifest);
+    const defaultExec = execMock.getMockImplementation()!;
+    execMock.mockClear();
+    execMock.mockImplementation(async (command, ...args) => {
+      if (String(command).includes('fusermount3 -u')) {
+        return execResult({ exitCode: 32, stderr: 'target is busy' });
+      }
+      return await defaultExec(command, ...args);
+    });
+
+    await expect(session.rematerializeManifestMounts(manifest)).rejects.toThrow(
+      /failed while trying to unmount cloud bucket/u,
+    );
+
+    const commands = execMock.mock.calls.map(([command]) => String(command));
+    expect(
+      commands.some((command) => command.includes("'rclone' 'mount'")),
+    ).toBe(false);
+    expect(shutdownMock).toHaveBeenCalledOnce();
+    await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+      /privileged manifest transition failed/u,
+    );
+  });
+
+  test('tombstones direct rematerialization after a partial mount failure', async () => {
+    let manifest = runloopManifest({
+      entries: {
+        first: {
+          type: 's3_mount',
+          bucket: 'first',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+        second: {
+          type: 's3_mount',
+          bucket: 'second',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      },
+    });
+    manifest = manifest
+      .withInContainerMountCredentialExposureAllowed('first')
+      .withInContainerMountCredentialExposureAllowed('second');
+    const client = new RunloopSandboxClient();
+    const session = await client.create(manifest);
+    const defaultExec = execMock.getMockImplementation();
+    let mountAttempts = 0;
+    execMock.mockImplementation(async (command, ...args) => {
+      if (String(command).includes("'rclone' 'mount'")) {
+        mountAttempts += 1;
+        if (mountAttempts === 2) {
+          throw new Error('mount failed');
+        }
+      }
+      return await defaultExec!(command, ...args);
+    });
+    shutdownMock.mockRejectedValueOnce(new Error('shutdown failed'));
+
+    await expect(session.rematerializeManifestMounts(manifest)).rejects.toThrow(
+      'mount failed',
+    );
+    await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+      /privileged manifest transition failed/u,
+    );
+    await expect(session.execCommand({ cmd: 'true' })).rejects.toThrow(
+      /privileged manifest transition failed/u,
+    );
+    expect(shutdownMock).toHaveBeenCalledOnce();
   });
 
   test('updates existing Runloop managed secrets on conflict', async () => {
@@ -1330,6 +1900,46 @@ describe('RunloopSandboxClient', () => {
     }
   });
 
+  test('uses per-run user parameters and explicit clearing when resuming', async () => {
+    const client = new RunloopSandboxClient({
+      userParameters: { username: 'agent', uid: 1001 },
+      apiKey: 'constructor-key',
+    });
+    const rootState = await client.deserializeSessionState({
+      manifest: new Manifest({ root: '/root' }),
+      devboxId: 'devbox_test',
+      pauseOnExit: true,
+      environment: {},
+    });
+    const rootUser = { username: 'root', uid: 0 };
+    runloopSdkConstructorMock.mockClear();
+
+    const rootSession = await client.resume(rootState, {
+      clientOptions: {
+        userParameters: rootUser,
+        apiKey: 'per-run-key',
+      },
+    });
+
+    expect(rootSession.state.userParameters).toEqual(rootUser);
+    expect(rootSession.state.manifest.root).toBe('/root');
+    expect(runloopSdkConstructorMock).toHaveBeenCalledWith({
+      bearerToken: 'per-run-key',
+    });
+
+    const defaultState = await client.deserializeSessionState({
+      manifest: runloopManifest(),
+      devboxId: 'devbox_test',
+      pauseOnExit: true,
+      environment: {},
+    });
+    const defaultSession = await client.resume(defaultState, {
+      clientOptions: { userParameters: undefined },
+    });
+    expect(defaultSession.state.userParameters).toBeUndefined();
+    expect(defaultSession.state.manifest.root).toBe(RUNLOOP_HOME);
+  });
+
   test('uses trusted launch parameters when resuming sessions', async () => {
     const client = new RunloopSandboxClient({
       launchParameters: {
@@ -1370,7 +1980,7 @@ describe('RunloopSandboxClient', () => {
     expect(resumeMock).not.toHaveBeenCalled();
   });
 
-  test('refreshes ports and rematerializes cloud mounts when resuming', async () => {
+  test('rejects resume state containing cloud mounts before provider calls', async () => {
     getTunnelUrlMock.mockResolvedValueOnce(
       'https://3000-devbox.tunnel.runloop.ai',
     );
@@ -1388,26 +1998,16 @@ describe('RunloopSandboxClient', () => {
       .mockResolvedValueOnce('')
       .mockResolvedValueOnce('https://3000-resumed.tunnel.runloop.ai');
 
-    const resumed = await client.resume(session.state);
-    const endpoint = await resumed.resolveExposedPort(3000);
+    await expect(client.resume(session.state)).rejects.toBeInstanceOf(
+      SandboxMountError,
+    );
 
-    expect(resumeMock).toHaveBeenCalledOnce();
-    expect(
-      execMock.mock.calls.some(([command]) =>
-        String(command).includes("'rclone' 'mount'"),
-      ),
-    ).toBe(true);
-    expect(enableTunnelMock).toHaveBeenCalledWith({
-      auth_mode: 'open',
-      http_keep_alive: true,
-      wake_on_http: false,
-    });
-    expect(getTunnelUrlMock).toHaveBeenCalledTimes(2);
-    expect(endpoint.host).toBe('3000-resumed.tunnel.runloop.ai');
-    expect(resumed.state.exposedPorts?.['3000']).toBe(endpoint);
+    expect(resumeMock).not.toHaveBeenCalled();
+    expect(execMock).not.toHaveBeenCalled();
+    expect(enableTunnelMock).not.toHaveBeenCalled();
   });
 
-  test('suspends a resumed devbox when mount rematerialization fails', async () => {
+  test('does not resume or suspend state containing cloud mounts', async () => {
     const client = new RunloopSandboxClient();
     const session = await client.create(runloopCloudBucketManifest(), {
       pauseOnExit: true,
@@ -1418,15 +2018,15 @@ describe('RunloopSandboxClient', () => {
     execMock.mockRejectedValueOnce(new Error('mount failed'));
 
     await expect(client.resume(session.state)).rejects.toBeInstanceOf(
-      SandboxProviderError,
+      SandboxMountError,
     );
 
-    expect(resumeMock).toHaveBeenCalledOnce();
-    expect(suspendMock).toHaveBeenCalledOnce();
+    expect(resumeMock).not.toHaveBeenCalled();
+    expect(suspendMock).not.toHaveBeenCalled();
     expect(createMock).not.toHaveBeenCalled();
   });
 
-  test('keeps nested mount entries nested when rematerializing on resume', async () => {
+  test('rejects nested cloud mounts during resume', async () => {
     const client = new RunloopSandboxClient();
     const manifest = runloopManifest({
       entries: {
@@ -1443,19 +2043,17 @@ describe('RunloopSandboxClient', () => {
           },
         },
       },
-    });
+    }).withInContainerMountCredentialExposureAllowed('dir/data');
     const session = await client.create(manifest, { pauseOnExit: true });
     await session.close();
     execMock.mockClear();
 
-    const resumed = await client.resume(session.state);
-    const dirEntry = resumed.state.manifest.entries.dir;
+    await expect(client.resume(session.state)).rejects.toBeInstanceOf(
+      SandboxMountError,
+    );
 
-    expect(resumed.state.manifest.entries).not.toHaveProperty('dir/data');
-    expect(dirEntry).toMatchObject({ type: 'dir' });
-    expect(
-      (dirEntry as { children?: Record<string, unknown> }).children,
-    ).toHaveProperty('data');
+    expect(resumeMock).not.toHaveBeenCalled();
+    expect(execMock).not.toHaveBeenCalled();
   });
 
   test('delete terminates even when pauseOnExit is enabled', async () => {
@@ -2177,7 +2775,7 @@ describe('RunloopSandboxClient', () => {
             mountStrategy: new RunloopCloudBucketMountStrategy(),
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
     );
 
     const rootMountCommands = execMock.mock.calls
@@ -2219,7 +2817,7 @@ describe('RunloopSandboxClient', () => {
             mountStrategy: new RunloopCloudBucketMountStrategy(),
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
     );
 
     const defaultRootMountCommands = execMock.mock.calls

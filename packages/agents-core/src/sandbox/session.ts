@@ -6,9 +6,10 @@ import type { Entry } from './entries';
 import type { Manifest } from './manifest';
 import type { Snapshot } from './snapshot';
 
-export const SANDBOX_SESSION_STATE_VERSION = 2 as const;
+export const SANDBOX_SESSION_STATE_VERSION = 3 as const;
 export const SUPPORTED_SANDBOX_SESSION_STATE_VERSIONS = [
   1,
+  2,
   SANDBOX_SESSION_STATE_VERSION,
 ] as const;
 export type SandboxSessionStateVersion =

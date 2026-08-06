@@ -93,6 +93,10 @@ import {
   getSerializedFunctionToolPlaceholder,
   getSerializedShellToolPlaceholder,
 } from './sandbox/runtime/toolRehydration';
+import {
+  sanitizeSerializedSandboxState,
+  type SerializedSandboxState,
+} from './sandbox/runtime/sessionState';
 
 /**
  * The schema version of the serialized run state. This is used to ensure that the serialized
@@ -127,8 +131,10 @@ import {
  *   function approvals, including aliases for legacy pending-run accessors.
  * - 1.17: Adds durable local tool execution provenance and blocked-output session
  *   persistence bookkeeping.
+ * - 1.18: Adds sandbox session-state envelope version 3 so credential-redacted
+ *   mount authority cannot be consumed by older SDKs.
  */
-export const CURRENT_SCHEMA_VERSION = '1.17' as const;
+export const CURRENT_SCHEMA_VERSION = '1.18' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -147,6 +153,7 @@ const SUPPORTED_SCHEMA_VERSIONS = [
   '1.14',
   '1.15',
   '1.16',
+  '1.17',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -155,7 +162,17 @@ const $schemaVersion = z.enum(SUPPORTED_SCHEMA_VERSIONS);
 function schemaVersionSupportsV116State(
   schemaVersion: SupportedSchemaVersion,
 ): boolean {
-  return schemaVersion === '1.16' || schemaVersion === CURRENT_SCHEMA_VERSION;
+  return (
+    schemaVersion === '1.16' ||
+    schemaVersion === '1.17' ||
+    schemaVersion === CURRENT_SCHEMA_VERSION
+  );
+}
+
+function schemaVersionSupportsV117State(
+  schemaVersion: SupportedSchemaVersion,
+): boolean {
+  return schemaVersion === '1.17' || schemaVersion === CURRENT_SCHEMA_VERSION;
 }
 
 type ContextOverrideStrategy = 'merge' | 'replace';
@@ -320,7 +337,11 @@ const sandboxSessionStateEnvelopeSchema = z.object({
   version: z.union(
     SUPPORTED_SANDBOX_SESSION_STATE_VERSIONS.map((version) =>
       z.literal(version),
-    ) as [z.ZodLiteral<1>, z.ZodLiteral<typeof SANDBOX_SESSION_STATE_VERSION>],
+    ) as [
+      z.ZodLiteral<1>,
+      z.ZodLiteral<2>,
+      z.ZodLiteral<typeof SANDBOX_SESSION_STATE_VERSION>,
+    ],
   ),
   backendId: z.string(),
   manifest: z.record(z.string(), z.any()),
@@ -1134,6 +1155,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   toJSON(
     options: { includeTracingApiKey?: boolean } = {},
   ): z.infer<typeof SerializedRunState> {
+    assertSandboxStateUsesCurrentSessionEnvelope(this._sandbox);
     const agentIdentity = buildAgentIdentityMap(this.#startingAgent);
 
     const includeTracingApiKey = options.includeTracingApiKey === true;
@@ -1428,6 +1450,7 @@ function assertSchemaVersionSupportsToolSearch(
     schemaVersion === '1.14' ||
     schemaVersion === '1.15' ||
     schemaVersion === '1.16' ||
+    schemaVersion === '1.17' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   ) {
     return;
@@ -1451,6 +1474,7 @@ function assertSchemaVersionSupportsCustomData(
     schemaVersion === '1.14' ||
     schemaVersion === '1.15' ||
     schemaVersion === '1.16' ||
+    schemaVersion === '1.17' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   ) {
     return;
@@ -1476,6 +1500,7 @@ function schemaVersionSupportsAgentIdentity(
     schemaVersion === '1.14' ||
     schemaVersion === '1.15' ||
     schemaVersion === '1.16' ||
+    schemaVersion === '1.17' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   );
 }
@@ -1488,6 +1513,7 @@ function assertSchemaVersionSupportsProgrammaticToolCalling(
     schemaVersion === '1.14' ||
     schemaVersion === '1.15' ||
     schemaVersion === '1.16' ||
+    schemaVersion === '1.17' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   ) {
     return;
@@ -1506,11 +1532,7 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
-  if (
-    schemaVersion === '1.15' ||
-    schemaVersionSupportsV116State(schemaVersion) ||
-    !stateJson.sandbox
-  ) {
+  if (!stateJson.sandbox) {
     return;
   }
 
@@ -1520,16 +1542,54 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
       (entry) => entry.sessionState,
     ),
   ];
+  const supportsVersion2 =
+    schemaVersion === '1.15' ||
+    schemaVersion === '1.16' ||
+    schemaVersion === '1.17' ||
+    schemaVersion === CURRENT_SCHEMA_VERSION;
   if (
     envelopes.every(
-      (envelope) => envelope.version !== SANDBOX_SESSION_STATE_VERSION,
+      (envelope) =>
+        envelope.version === 1 ||
+        (envelope.version === 2 && supportsVersion2) ||
+        (envelope.version === SANDBOX_SESSION_STATE_VERSION &&
+          schemaVersion === CURRENT_SCHEMA_VERSION),
     )
   ) {
     return;
   }
 
+  const rejectedVersion = envelopes.find(
+    (envelope) =>
+      envelope.version !== 1 &&
+      !(envelope.version === 2 && supportsVersion2) &&
+      !(
+        envelope.version === SANDBOX_SESSION_STATE_VERSION &&
+        schemaVersion === CURRENT_SCHEMA_VERSION
+      ),
+  )?.version;
   throw new UserError(
-    `Run state schema version ${schemaVersion} does not support sandbox session state version ${SANDBOX_SESSION_STATE_VERSION}. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+    `Run state schema version ${schemaVersion} does not support sandbox session state version ${rejectedVersion}. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+  );
+}
+
+function assertSandboxStateUsesCurrentSessionEnvelope(
+  sandbox: z.infer<typeof sandboxStateSchema> | undefined,
+): void {
+  if (!sandbox) {
+    return;
+  }
+  const legacyVersions = [
+    sandbox.sessionState.version,
+    ...Object.values(sandbox.sessionsByAgent).map(
+      (entry) => entry.sessionState.version,
+    ),
+  ].filter((version) => version !== SANDBOX_SESSION_STATE_VERSION);
+  if (legacyVersions.length === 0) {
+    return;
+  }
+  throw new UserError(
+    'Legacy sandbox session state must be resumed through the Runner before it can be serialized with the current RunState schema.',
   );
 }
 
@@ -1562,7 +1622,7 @@ function assertSchemaVersionSupportsOutputGuardrailSessionPersistence(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
 ): void {
-  if (schemaVersion === CURRENT_SCHEMA_VERSION) {
+  if (schemaVersionSupportsV117State(schemaVersion)) {
     validateOutputGuardrailSessionPersistenceState(stateJson);
     return;
   }
@@ -3693,7 +3753,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   state._currentTurnPersistedItemCount =
     stateJson.currentTurnPersistedItemCount ?? 0;
   const supportsOutputGuardrailSessionPersistence =
-    schemaVersion === CURRENT_SCHEMA_VERSION;
+    schemaVersionSupportsV117State(schemaVersion);
   const deferredSessionItemIndexes = supportsOutputGuardrailSessionPersistence
     ? (stateJson.currentTurnDeferredSessionItemIndexes ?? [])
     : [];
@@ -3704,7 +3764,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   state._currentTurnSessionHistoryTransactionSessionId = undefined;
   state._currentTurnSessionReasoningItemIdPolicy = undefined;
   state._currentTurnSessionHistoryTransactionInputItems =
-    schemaVersion === CURRENT_SCHEMA_VERSION
+    schemaVersionSupportsV117State(schemaVersion)
       ? stateJson.currentTurnSessionInputItems
       : undefined;
   state._currentTurnSessionHistoryTransactionCanReplaceAcceptedOutput =
@@ -3713,7 +3773,11 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   state._pendingSessionHistoryTransaction = undefined;
   state._pendingLegacyCompactionSessionItems =
     stateJson.pendingLegacyCompactionSessionItems;
-  state._sandbox = stateJson.sandbox ?? undefined;
+  state._sandbox = stateJson.sandbox
+    ? sanitizeSerializedSandboxState(
+        stateJson.sandbox as SerializedSandboxState,
+      )
+    : undefined;
   const capabilitySnapshotsByAgent = await rehydrateToolSearchRuntimeTools(
     state,
     {

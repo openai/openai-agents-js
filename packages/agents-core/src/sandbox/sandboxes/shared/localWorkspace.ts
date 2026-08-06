@@ -13,6 +13,7 @@ import type {
 } from '../../entries';
 import { isMount } from '../../entries';
 import { Manifest, normalizeRelativePath } from '../../manifest';
+import { validateMountCredentialBoundaries } from '../../mountSecurity';
 import type { SandboxPathGrant } from '../../pathGrants';
 import { permissionsForSandboxEntry } from '../../permissions';
 import { WorkspacePathPolicy } from '../../workspacePaths';
@@ -89,6 +90,7 @@ export async function materializeLocalWorkspaceManifest(
   workspaceRootPath: string,
   options: MaterializeLocalWorkspaceOptions = {},
 ): Promise<void> {
+  validateMountCredentialBoundaries(manifest);
   assertLocalWorkspaceManifestMetadataSupported(
     'Local sandbox materialization',
     manifest,
@@ -234,6 +236,7 @@ export async function materializeLocalWorkspaceManifestMounts(
   workspaceRootPath: string,
   options: MaterializeLocalWorkspaceOptions = {},
 ): Promise<void> {
+  validateMountCredentialBoundaries(manifest);
   assertLocalWorkspaceManifestMetadataSupported(
     'Local sandbox materialization',
     manifest,
