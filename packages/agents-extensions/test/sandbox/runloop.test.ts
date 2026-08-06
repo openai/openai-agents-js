@@ -1160,6 +1160,133 @@ describe('RunloopSandboxClient', () => {
     );
   });
 
+  test('preserves unmatched persisted rclone refs during dynamic mount validation', async () => {
+    const client = new RunloopSandboxClient({ managedSecrets: {} });
+    const state = await client.deserializeSessionState({
+      manifest: runloopManifest(),
+      devboxId: 'devbox_test',
+      pauseOnExit: false,
+      environment: {},
+      secretRefs: {
+        RCLONE_CONFIG_STALE_TYPE: 'persisted-rclone-config',
+      },
+    });
+    const session = await client.resume(state);
+    execMock.mockClear();
+
+    await expect(
+      session.materializeEntry({
+        path: 'data',
+        entry: {
+          type: 's3_mount',
+          bucket: 'private',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      }),
+    ).rejects.toThrow(/model-controlled sandbox/u);
+
+    expect(execMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects unmatched persisted credential-file refs before dynamic mount effects', async () => {
+    const client = new RunloopSandboxClient({
+      managedSecrets: {
+        UNRELATED_SECRET: 'trusted-value',
+      },
+    });
+    const state = await client.deserializeSessionState({
+      manifest: runloopManifest(),
+      devboxId: 'devbox_test',
+      pauseOnExit: false,
+      environment: {},
+      secretRefs: {
+        GOOGLE_APPLICATION_CREDENTIALS: 'persisted-gcp-credentials',
+      },
+    });
+    const session = await client.resume(state);
+    execMock.mockClear();
+    const manifest = runloopManifest({
+      entries: {
+        data: {
+          type: 'gcs_mount',
+          bucket: 'private',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+
+    await expect(session.applyManifest(manifest)).rejects.toThrow(
+      /cannot be validated before an in-container mount/u,
+    );
+
+    expect(execMock).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    {
+      name: 'default user',
+      root: RUNLOOP_HOME,
+      userParameters: undefined,
+    },
+    {
+      name: 'root user',
+      root: '/root',
+      userParameters: { username: 'root', uid: 0 },
+    },
+  ])(
+    'exports current managed mount secrets after direct resume for $name',
+    async ({ root, userParameters }) => {
+      const client = new RunloopSandboxClient({
+        managedSecrets: {
+          AWS_ACCESS_KEY_ID: 'rotated-access',
+          AWS_SECRET_ACCESS_KEY: 'rotated-secret',
+        },
+        userParameters,
+      });
+      const state = await client.deserializeSessionState({
+        manifest: new Manifest({
+          root,
+          environment: { PATH: '/tmp/attacker-bin' },
+        }),
+        devboxId: 'devbox_test',
+        pauseOnExit: false,
+        environment: { PATH: '/tmp/attacker-bin' },
+        secretRefs: {
+          AWS_ACCESS_KEY_ID: 'persisted-access',
+          AWS_SECRET_ACCESS_KEY: 'persisted-secret',
+        },
+      });
+      const session = await client.resume(state);
+      execMock.mockClear();
+      const manifest = new Manifest({
+        root,
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'private',
+            mountStrategy: new RunloopCloudBucketMountStrategy(),
+          },
+        },
+      }).withInContainerMountCredentialExposureAllowed('data');
+
+      await session.applyManifest(manifest);
+
+      const mountCommand = execMock.mock.calls
+        .map(([command]) => String(command))
+        .find((command) => command.includes("'rclone' 'mount'"));
+      expect(mountCommand).toContain('AWS_ACCESS_KEY_ID');
+      expect(mountCommand).toContain('rotated-access');
+      expect(mountCommand).toContain('AWS_SECRET_ACCESS_KEY');
+      expect(mountCommand).toContain('rotated-secret');
+      expect(mountCommand).not.toContain('persisted-access');
+      expect(mountCommand).not.toContain('persisted-secret');
+      if (userParameters?.username === 'root') {
+        expect(mountCommand).not.toContain('export PATH=');
+        expect(mountCommand).not.toContain('/tmp/attacker-bin');
+      }
+    },
+  );
+
   test('rejects a dynamic manifest entry aliased to a live managed credential file', async () => {
     const client = new RunloopSandboxClient();
     const manifest = runloopManifest({

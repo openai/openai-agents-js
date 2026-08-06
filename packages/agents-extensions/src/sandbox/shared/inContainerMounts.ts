@@ -395,7 +395,7 @@ export function manifestUsesRcloneMountCredentialEnvironment(
   return rcloneCredentialEnvironmentNames(manifest, environment).size > 0;
 }
 
-function rcloneCredentialEnvironmentForEntry(
+export function rcloneCredentialEnvironmentForEntry(
   entry: Entry,
   environment: Record<string, string>,
 ): Record<string, string> {

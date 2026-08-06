@@ -70,6 +70,7 @@ import {
   captureRcloneMountEnvironmentAuthorityForManifest,
   manifestUsesRcloneMountCredentialEnvironment,
   mountRcloneCloudBucket,
+  rcloneCredentialEnvironmentForEntry,
   rcloneMountEnvironmentAuthorityMatches,
   rclonePatternFromMountStrategy,
   validateRcloneMountEnvironmentCredentialExposure,
@@ -282,14 +283,26 @@ function runloopMountValidationEnvironment(
 ): Record<string, string> {
   return {
     ...environment,
-    ...(managedSecrets ??
-      Object.fromEntries(
-        Object.entries(secretRefs ?? {}).map(([name, reference]) => [
-          name,
-          `runloop-secret-ref:${reference}`,
-        ]),
-      )),
+    ...Object.fromEntries(
+      Object.entries(
+        unresolvedRunloopSecretRefs(secretRefs, managedSecrets),
+      ).map(([name, reference]) => [name, `runloop-secret-ref:${reference}`]),
+    ),
+    ...(managedSecrets ?? {}),
   };
+}
+
+function unresolvedRunloopSecretRefs(
+  secretRefs: Record<string, string> | undefined,
+  managedSecrets: Record<string, string> | undefined,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(secretRefs ?? {}).filter(
+      ([name]) =>
+        !managedSecrets ||
+        !Object.prototype.hasOwnProperty.call(managedSecrets, name),
+    ),
+  );
 }
 
 function assertRunloopCredentialFileSecretRefsAreResolvable(
@@ -297,13 +310,10 @@ function assertRunloopCredentialFileSecretRefsAreResolvable(
   secretRefs: Record<string, string> | undefined,
   managedSecrets: Record<string, string> | undefined,
 ): void {
-  if (managedSecrets || !secretRefs) {
-    return;
-  }
   const credentialFileSecretRefs = Object.fromEntries(
-    Object.entries(secretRefs).filter(([name]) =>
-      RUNLOOP_CREDENTIAL_FILE_ENVIRONMENT_NAMES.has(name),
-    ),
+    Object.entries(
+      unresolvedRunloopSecretRefs(secretRefs, managedSecrets),
+    ).filter(([name]) => RUNLOOP_CREDENTIAL_FILE_ENVIRONMENT_NAMES.has(name)),
   );
   if (
     !manifestUsesRcloneMountCredentialEnvironment(
@@ -1096,6 +1106,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
       );
     }
     const mountPath = absolutePath;
+    const environment = context.environment ?? this.state.environment;
     const handle = await mountRcloneCloudBucket({
       providerName: 'RunloopSandboxClient',
       providerId: 'runloop',
@@ -1104,7 +1115,12 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
       mountPath,
       pattern: rclonePatternFromMountStrategy(entry.mountStrategy),
       runCommand: this.mountCommandRunner(
-        context.environment ?? this.state.environment,
+        environment,
+        currentRunloopManagedMountEnvironment(
+          entry,
+          this.state.managedSecrets,
+          context.environment,
+        ),
       ),
       writeFile: this.writeRemoteFile.bind(this),
       packageManagers: ['apt'],
@@ -1232,6 +1248,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
 
   private mountCommandRunner(
     environment: Readonly<Record<string, string>> = this.state.environment,
+    trustedEnvironment: Readonly<Record<string, string>> = {},
   ): RemoteMountCommand {
     return async (command, options = {}) => {
       const result = await this.execShellWithEnvironment(
@@ -1240,6 +1257,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         options.timeoutMs ?? this.state.timeouts?.fastOperationTimeoutMs,
         mountCommandEnvironment(
           environment,
+          trustedEnvironment,
           options.user,
           this.state.userParameters,
         ),
@@ -2612,11 +2630,28 @@ async function rematerializeRunloopManifestMounts(
 
 function mountCommandEnvironment(
   environment: Record<string, string>,
+  trustedEnvironment: Record<string, string>,
   user?: string,
   userParameters?: RunloopUserParameters,
 ): Record<string, string> {
   const effectiveUser = user ?? effectiveRunloopUsername(userParameters);
-  return effectiveUser === 'root' ? {} : environment;
+  return effectiveUser === 'root'
+    ? trustedEnvironment
+    : { ...environment, ...trustedEnvironment };
+}
+
+function currentRunloopManagedMountEnvironment(
+  entry: Mount | TypedMount,
+  managedSecrets: Readonly<Record<string, string>> | undefined,
+  preparedEnvironment: Readonly<Record<string, string>> | undefined,
+): Record<string, string> {
+  const currentManagedSecrets = { ...managedSecrets };
+  for (const name of Object.keys(currentManagedSecrets)) {
+    if (preparedEnvironment?.[name] !== undefined) {
+      currentManagedSecrets[name] = preparedEnvironment[name];
+    }
+  }
+  return rcloneCredentialEnvironmentForEntry(entry, currentManagedSecrets);
 }
 
 function buildShellCommand(
