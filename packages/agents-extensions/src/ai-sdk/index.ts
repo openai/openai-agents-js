@@ -1814,6 +1814,13 @@ function mergeProviderMetadata(
   return merged;
 }
 
+function shouldEmitReasoning(
+  text: string,
+  providerMetadata: Record<string, any> | undefined,
+): boolean {
+  return text.length > 0 || providerMetadata !== undefined;
+}
+
 function getHostedToolArgs(providerData: unknown): Record<string, any> {
   if (!isRecord(providerData)) {
     return {};
@@ -2200,6 +2207,15 @@ export class AiSdkModel implements Model {
           if (part.type === 'reasoning') {
             const reasoningText =
               typeof part.text === 'string' ? part.text : '';
+            const reasoningProviderMetadata = mergeProviderData(
+              undefined,
+              part.providerMetadata,
+            );
+            if (
+              !shouldEmitReasoning(reasoningText, reasoningProviderMetadata)
+            ) {
+              continue;
+            }
             await flushPendingText();
             output.push({
               type: 'reasoning',
@@ -2207,7 +2223,7 @@ export class AiSdkModel implements Model {
               rawContent: [{ type: 'reasoning_text', text: reasoningText }],
               providerData: mergeProviderData(
                 baseProviderData,
-                part.providerMetadata,
+                reasoningProviderMetadata,
               ),
             });
             continue;
@@ -2493,7 +2509,12 @@ export class AiSdkModel implements Model {
         text: string;
         providerMetadata?: Record<string, any>;
       }) => {
-        if (reasoningBlock.text || reasoningBlock.providerMetadata) {
+        if (
+          shouldEmitReasoning(
+            reasoningBlock.text,
+            reasoningBlock.providerMetadata,
+          )
+        ) {
           activeTextEntry = undefined;
         }
       };
@@ -2661,7 +2682,12 @@ export class AiSdkModel implements Model {
           if (!reasoningBlock) {
             continue;
           }
-          if (!reasoningBlock.text && !reasoningBlock.providerMetadata) {
+          if (
+            !shouldEmitReasoning(
+              reasoningBlock.text,
+              reasoningBlock.providerMetadata,
+            )
+          ) {
             continue;
           }
           outputs.push({

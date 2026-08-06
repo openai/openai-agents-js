@@ -2839,6 +2839,34 @@ describe('AiSdkModel.getResponse', () => {
     expect(result.finalOutput).toBe('Hello world');
   });
 
+  test('keeps text contiguous across empty reasoning content', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              { type: 'text', text: 'Hello ' },
+              { type: 'reasoning', text: '' },
+              { type: 'text', text: 'world' },
+            ],
+            usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const result = await run(
+      new Agent({ name: 'Assistant', model }),
+      'Say hello.',
+    );
+
+    expect(result.finalOutput).toBe('Hello world');
+  });
+
   test('applies transformOutputText to finalized assistant text', async () => {
     const transformOutputText = vi.fn((text: string, context: any) => {
       expect(context.stream).toBe(false);
