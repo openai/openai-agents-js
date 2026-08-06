@@ -2,4 +2,4 @@
 '@openai/agents-extensions': patch
 ---
 
-fix: transform complete interleaved AI SDK output once
+fix: transform complete AI SDK text within tool boundaries

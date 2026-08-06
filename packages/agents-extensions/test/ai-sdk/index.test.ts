@@ -2981,14 +2981,17 @@ describe('AiSdkModel.getResponse', () => {
     expect(output).toBe('firstsecond');
   });
 
-  test('keeps complete final output around provider-executed tool search', async () => {
+  test('transforms text separately around provider-executed tool search', async () => {
+    const transformOutputText = vi.fn((text: string) =>
+      text.replace('wrapped:', ''),
+    );
     const model = new AiSdkModel(
       stubModel(
         {
           async doGenerate() {
             return {
               content: [
-                { type: 'text', text: 'first' },
+                { type: 'text', text: 'wrapped:first' },
                 {
                   type: 'reasoning',
                   text: 'searching',
@@ -3003,13 +3006,14 @@ describe('AiSdkModel.getResponse', () => {
                   input: { query: 'weather' },
                   providerExecuted: true,
                 },
+                { type: 'text', text: 'wrapped:between-call-and-result' },
                 {
                   type: 'tool-result',
                   toolCallId: 'search_1',
                   toolName: 'tool_search',
                   result: [{ type: 'tool_reference', toolName: 'get_weather' }],
                 },
-                { type: 'text', text: 'second' },
+                { type: 'text', text: 'wrapped:after-result' },
               ],
               usage: { inputTokens: 1, outputTokens: 5, totalTokens: 6 },
               providerMetadata: {},
@@ -3021,6 +3025,7 @@ describe('AiSdkModel.getResponse', () => {
         },
         { provider: 'anthropic.messages', specificationVersion: 'v3' },
       ),
+      { transformOutputText },
     );
 
     const result = await run(
@@ -3041,10 +3046,21 @@ describe('AiSdkModel.getResponse', () => {
       'message',
       'reasoning',
       'tool_search_call',
+      'message',
       'tool_search_output',
       'message',
     ]);
-    expect(result.finalOutput).toBe('firstsecond');
+    expect(transformOutputText.mock.calls.map(([text]) => text)).toEqual([
+      'wrapped:first',
+      'wrapped:between-call-and-result',
+      'wrapped:after-result',
+    ]);
+    expect(
+      result.newItems
+        .filter((item) => item.rawItem?.type === 'message')
+        .map((item) => (item.rawItem as any).content[0].text),
+    ).toEqual(['first', 'between-call-and-result', 'after-result']);
+    expect(result.finalOutput).toBe('firstbetween-call-and-resultafter-result');
   });
 
   test('applies transformOutputText to finalized assistant text', async () => {
@@ -5209,8 +5225,12 @@ describe('AiSdkModel.getStreamedResponse', () => {
     warnSpy.mockRestore();
   });
 
-  test('preserves provider-executed tool search call and result order in streaming mode', async () => {
+  test('preserves text transform boundaries and provider-executed tool search order in streaming mode', async () => {
+    const transformOutputText = vi.fn((text: string) =>
+      text.replace('wrapped:', ''),
+    );
     const parts = [
+      { type: 'text-delta', id: 'text-1', delta: 'wrapped:first' },
       {
         type: 'tool-call',
         toolCallId: 'search_1',
@@ -5219,16 +5239,31 @@ describe('AiSdkModel.getStreamedResponse', () => {
         providerExecuted: true,
       },
       {
+        type: 'text-delta',
+        id: 'text-2',
+        delta: 'wrapped:after-search-call',
+      },
+      {
         type: 'tool-result',
         toolCallId: 'search_1',
         toolName: 'tool_search',
         result: [{ type: 'tool_reference', toolName: 'get_weather' }],
       },
       {
+        type: 'text-delta',
+        id: 'text-3',
+        delta: 'wrapped:after-search-result',
+      },
+      {
         type: 'tool-call',
         toolCallId: 'weather_1',
         toolName: 'get_weather',
         input: { city: 'Tokyo' },
+      },
+      {
+        type: 'text-delta',
+        id: 'text-4',
+        delta: 'wrapped:after-function-call',
       },
       { type: 'response-metadata', id: 'response_stream_1' },
       {
@@ -5246,6 +5281,7 @@ describe('AiSdkModel.getStreamedResponse', () => {
         },
         { provider: 'anthropic.messages', specificationVersion: 'v3' },
       ),
+      { transformOutputText },
     );
 
     const events: any[] = [];
@@ -5275,23 +5311,43 @@ describe('AiSdkModel.getStreamedResponse', () => {
 
     const final = events.at(-1);
     expect(final.response.output.map((item: any) => item.type)).toEqual([
+      'message',
       'tool_search_call',
+      'message',
       'tool_search_output',
+      'message',
       'function_call',
+      'message',
     ]);
-    expect(final.response.output[0]).toMatchObject({
+    expect(final.response.output[1]).toMatchObject({
       id: 'search_1',
       execution: 'server',
     });
-    expect(final.response.output[1]).toMatchObject({
+    expect(final.response.output[3]).toMatchObject({
       callId: 'search_1',
       execution: 'server',
       tools: [{ type: 'tool_reference', toolName: 'get_weather' }],
     });
-    expect(final.response.output[2]).toMatchObject({
+    expect(final.response.output[5]).toMatchObject({
       callId: 'weather_1',
       name: 'get_weather',
     });
+    expect(transformOutputText.mock.calls.map(([text]) => text)).toEqual([
+      'wrapped:first',
+      'wrapped:after-search-call',
+      'wrapped:after-search-result',
+      'wrapped:after-function-call',
+    ]);
+    expect(
+      final.response.output
+        .filter((item: any) => item.type === 'message')
+        .map((item: any) => item.content[0].text),
+    ).toEqual([
+      'first',
+      'after-search-call',
+      'after-search-result',
+      'after-function-call',
+    ]);
   });
 
   test('preserves interleaved reasoning and tool order in streaming mode', async () => {

@@ -2073,30 +2073,49 @@ export class AiSdkModel implements Model {
     return transformed;
   }
 
-  async #transformOutputTextParts(
-    parts: protocol.OutputText[],
+  async #transformOutputTextItems(
+    items: ModelResponse['output'],
     request: ModelRequest,
     stream: boolean,
   ): Promise<void> {
-    if (parts.length === 0) {
-      return;
-    }
+    let parts: protocol.OutputText[] = [];
+    const transformParts = async () => {
+      if (parts.length === 0) {
+        return;
+      }
 
-    const originalLengths = parts.map((part) => part.text.length);
-    const transformedText = await this.#transformOutputText(
-      parts.map((part) => part.text).join(''),
-      request,
-      stream,
-    );
-    let offset = 0;
-    for (const [index, part] of parts.entries()) {
-      const end =
-        index === parts.length - 1
-          ? transformedText.length
-          : Math.min(transformedText.length, offset + originalLengths[index]);
-      part.text = transformedText.slice(offset, end);
-      offset = end;
+      const currentParts = parts;
+      parts = [];
+      const originalLengths = currentParts.map((part) => part.text.length);
+      const transformedText = await this.#transformOutputText(
+        currentParts.map((part) => part.text).join(''),
+        request,
+        stream,
+      );
+      let offset = 0;
+      for (const [index, part] of currentParts.entries()) {
+        const end =
+          index === currentParts.length - 1
+            ? transformedText.length
+            : Math.min(transformedText.length, offset + originalLengths[index]);
+        part.text = transformedText.slice(offset, end);
+        offset = end;
+      }
+    };
+
+    for (const item of items) {
+      if (item.type === 'message' && item.role === 'assistant') {
+        parts.push(
+          ...item.content.filter(
+            (content): content is protocol.OutputText =>
+              content.type === 'output_text',
+          ),
+        );
+      } else if (item.type !== 'reasoning') {
+        await transformParts();
+      }
     }
+    await transformParts();
   }
 
   async getResponse(request: ModelRequest) {
@@ -2198,7 +2217,6 @@ export class AiSdkModel implements Model {
           string,
           SerializedTool | SerializedHandoff
         >();
-        const textOutputs: protocol.OutputText[] = [];
         let pendingTextParts: string[] = [];
         const flushPendingText = () => {
           if (pendingTextParts.length === 0) {
@@ -2208,7 +2226,6 @@ export class AiSdkModel implements Model {
             type: 'output_text',
             text: pendingTextParts.join(''),
           };
-          textOutputs.push(textOutput);
           output.push({
             type: 'message',
             content: [textOutput],
@@ -2317,7 +2334,7 @@ export class AiSdkModel implements Model {
           }
         }
         flushPendingText();
-        await this.#transformOutputTextParts(textOutputs, request, false);
+        await this.#transformOutputTextItems(output, request, false);
 
         if (span && request.tracing === true) {
           span.spanData.output = output;
@@ -2703,10 +2720,6 @@ export class AiSdkModel implements Model {
       }
 
       const outputs: protocol.OutputModelItem[] = [];
-      const textOutputs = orderedOutputEntries.flatMap((entry) =>
-        entry.kind === 'text' ? [entry.output] : [],
-      );
-      await this.#transformOutputTextParts(textOutputs, request, true);
 
       for (const entry of orderedOutputEntries) {
         if (entry.kind === 'reasoning') {
@@ -2761,6 +2774,7 @@ export class AiSdkModel implements Model {
           ),
         });
       }
+      await this.#transformOutputTextItems(outputs, request, true);
 
       const finalEvent: protocol.StreamEventResponseCompleted = {
         type: 'response_done',
