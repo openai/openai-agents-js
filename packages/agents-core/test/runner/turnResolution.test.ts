@@ -2304,7 +2304,7 @@ describe('resolveInterruptedTurn', () => {
     expect(result.preStepItems).not.toContain(rootApproval);
   });
 
-  it('removes resolved hosted MCP approvals but keeps unresolved ones', async () => {
+  it('filters pending hosted MCP approvals by server, tool, and request id', async () => {
     const agent = new Agent({ name: 'MCPAgent' });
     const approvalCall: protocol.HostedToolCallItem = {
       type: 'hosted_tool_call',
@@ -2312,8 +2312,7 @@ describe('resolveInterruptedTurn', () => {
       id: 'mcpr_123',
       status: 'in_progress',
       providerData: {
-        type: 'mcp_approval_request',
-        server_label: 'server',
+        server_label: 'server-a',
         name: 'approve_me',
         id: 'mcpr_123',
         arguments: '{}',
@@ -2321,10 +2320,25 @@ describe('resolveInterruptedTurn', () => {
       },
     };
     const approvalItem = new ToolApprovalItem(approvalCall, agent);
-    const originalPreStepItems = [approvalItem];
+    const pendingCall: protocol.HostedToolCallItem = {
+      ...approvalCall,
+      id: 'mcpr_456',
+      providerData: {
+        ...approvalCall.providerData,
+        id: 'mcpr_456',
+        server_label: 'server-b',
+      },
+    };
+    const pendingItem = new ToolApprovalItem(pendingCall, agent);
+    const originalPreStepItems = [approvalItem, pendingItem];
 
     const processedResponse: ProcessedResponse = {
-      newItems: [new ToolCallItem(approvalCall, agent), approvalItem],
+      newItems: [
+        new ToolCallItem(approvalCall, agent),
+        new ToolCallItem(pendingCall, agent),
+        approvalItem,
+        pendingItem,
+      ],
       handoffs: [],
       functions: [],
       computerActions: [],
@@ -2336,7 +2350,15 @@ describe('resolveInterruptedTurn', () => {
           mcpTool: {
             type: 'hosted_tool',
             name: 'hosted_mcp',
-            providerData: { server_label: 'server', type: 'mcp' },
+            providerData: { server_label: 'server-a', type: 'mcp' },
+          } as any,
+        },
+        {
+          requestItem: pendingItem,
+          mcpTool: {
+            type: 'hosted_tool',
+            name: 'hosted_mcp',
+            providerData: { server_label: 'server-b', type: 'mcp' },
           } as any,
         },
       ],
@@ -2366,6 +2388,7 @@ describe('resolveInterruptedTurn', () => {
     );
 
     expect(result.preStepItems).not.toContain(approvalItem);
+    expect(result.preStepItems).toContain(pendingItem);
     expect(result.newStepItems).toContainEqual(
       expect.objectContaining({
         rawItem: expect.objectContaining({

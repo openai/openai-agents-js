@@ -6,6 +6,9 @@ import {
   getFunctionToolLookupKey,
   getFunctionToolLegacyStateKeyFromStateKey,
   getFunctionToolStateKeyForCall,
+  getHostedMcpApprovalRequestIdentity,
+  getHostedMcpApprovalIdentityFromStateKey,
+  getHostedMcpApprovalStateKey,
 } from './toolIdentity';
 import { UnknownContext } from './types';
 import { Usage } from './usage';
@@ -174,6 +177,7 @@ type RunContextJson = {
 };
 
 type SerializedRunContextJson = RunContextJson & {
+  hostedMcpApprovals?: Record<string, ApprovalRecord>;
   functionApprovals?: SerializedFunctionApprovals;
   legacyFunctionApprovals?: Record<string, ApprovalRecord>;
   approvalInvocations?: SerializedApprovalInvocations;
@@ -204,6 +208,11 @@ export class RunContext<TContext = UnknownContext> {
   #approvals: Map<string, ApprovalRecord>;
 
   /**
+   * Hosted MCP approvals scoped by server label and tool name.
+   */
+  #hostedMcpApprovals: Map<string, ApprovalRecord>;
+
+  /**
    * Function-tool approvals scoped to the public agent that owns the call.
    */
   #functionApprovalState: FunctionApprovalState;
@@ -222,6 +231,7 @@ export class RunContext<TContext = UnknownContext> {
     this.context = context;
     this.usage = new Usage();
     this.#approvals = new Map();
+    this.#hostedMcpApprovals = new Map();
     this.#functionApprovalState = {
       approvalsByAgent: new Map(),
       legacyApprovals: new Map(),
@@ -249,6 +259,7 @@ export class RunContext<TContext = UnknownContext> {
     target.context = this.context;
     target.usage = this.usage;
     target.#approvals = this.#approvals;
+    target.#hostedMcpApprovals = this.#hostedMcpApprovals;
     target.#functionApprovalState = this.#functionApprovalState;
     target.#approvalInvocations = this.#approvalInvocations;
     target.#toolApprovalsByAgent = this.#toolApprovalsByAgent;
@@ -265,6 +276,7 @@ export class RunContext<TContext = UnknownContext> {
     clone.usage = this.usage;
     clone.toolInput = this.toolInput;
     clone.#approvals = cloneApprovalMap(this.#approvals);
+    clone.#hostedMcpApprovals = cloneApprovalMap(this.#hostedMcpApprovals);
     clone.#functionApprovalState = {
       approvalsByAgent: cloneAgentApprovalMap(
         this.#functionApprovalState.approvalsByAgent,
@@ -293,6 +305,10 @@ export class RunContext<TContext = UnknownContext> {
     this.#approvals.clear();
     for (const [toolName, approval] of source.#approvals) {
       this.#approvals.set(toolName, cloneApprovalRecord(approval));
+    }
+    this.#hostedMcpApprovals.clear();
+    for (const [stateKey, approval] of source.#hostedMcpApprovals) {
+      this.#hostedMcpApprovals.set(stateKey, cloneApprovalRecord(approval));
     }
     this.#functionApprovalState.approvalsByAgent.clear();
     for (const [agent, approvals] of source.#functionApprovalState
@@ -503,9 +519,10 @@ export class RunContext<TContext = UnknownContext> {
         return scopedDecision;
       }
     }
-    return this.#resolveStickyApprovalEntries(
-      this.#getApprovalEntries(toolName, false),
-    );
+    const stickyEntries = getHostedMcpApprovalRequestIdentity(rawItem)
+      ? this.#getHostedMcpApprovalEntries(toolName)
+      : this.#getApprovalEntries(toolName, false);
+    return this.#resolveStickyApprovalEntries(stickyEntries);
   }
 
   /**
@@ -560,9 +577,11 @@ export class RunContext<TContext = UnknownContext> {
         return scopedMessage;
       }
     }
-    return this.#getApprovalEntries(toolName, false).find(
-      (entry) => entry.rejected === true,
-    )?.stickyRejectMessage;
+    const stickyEntries = getHostedMcpApprovalRequestIdentity(rawItem)
+      ? this.#getHostedMcpApprovalEntries(toolName)
+      : this.#getApprovalEntries(toolName, false);
+    return stickyEntries.find((entry) => entry.rejected === true)
+      ?.stickyRejectMessage;
   }
 
   /**
@@ -587,6 +606,26 @@ export class RunContext<TContext = UnknownContext> {
   _mergeApprovals(approvals: Record<string, ApprovalRecord>) {
     for (const [toolName, incoming] of Object.entries(approvals)) {
       this.#setApprovalRecord(toolName, incoming);
+    }
+  }
+
+  /** @internal */
+  _rebuildHostedMcpApprovals(approvals: Record<string, ApprovalRecord>) {
+    this.#hostedMcpApprovals = new Map();
+    this._mergeHostedMcpApprovals(approvals);
+  }
+
+  /** @internal */
+  _mergeHostedMcpApprovals(approvals: Record<string, ApprovalRecord>) {
+    for (const [stateKey, incoming] of Object.entries(approvals)) {
+      if (!getHostedMcpApprovalIdentityFromStateKey(stateKey)) {
+        continue;
+      }
+      const current = this.#hostedMcpApprovals.get(stateKey);
+      this.#hostedMcpApprovals.set(
+        stateKey,
+        current ? mergeApprovalRecords(current, incoming) : incoming,
+      );
     }
   }
 
@@ -701,6 +740,9 @@ export class RunContext<TContext = UnknownContext> {
     for (const [toolName, incoming] of source.#approvals) {
       this.#setApprovalRecord(toolName, incoming);
     }
+    for (const [stateKey, incoming] of source.#hostedMcpApprovals) {
+      this._mergeHostedMcpApprovals({ [stateKey]: incoming });
+    }
     for (const [agent, approvalsByTool] of source.#functionApprovalState
       .approvalsByAgent) {
       for (const [toolName, incoming] of approvalsByTool) {
@@ -729,6 +771,9 @@ export class RunContext<TContext = UnknownContext> {
         continue;
       }
       this.#setApprovalRecord(toolName, incoming);
+    }
+    for (const [stateKey, incoming] of source.#hostedMcpApprovals) {
+      this._mergeHostedMcpApprovals({ [stateKey]: incoming });
     }
     for (const [agent, approvalsByTool] of source.#functionApprovalState
       .approvalsByAgent) {
@@ -954,6 +999,17 @@ export class RunContext<TContext = UnknownContext> {
   ): SerializedRunContextJson {
     const approvals = new Map(this.#approvals);
     if (!agentIdentityKeys) {
+      for (const [stateKey, incoming] of this.#hostedMcpApprovals) {
+        const identity = getHostedMcpApprovalIdentityFromStateKey(stateKey);
+        if (!identity?.toolName) {
+          continue;
+        }
+        const current = approvals.get(identity.toolName);
+        approvals.set(
+          identity.toolName,
+          current ? mergeApprovalRecords(current, incoming) : incoming,
+        );
+      }
       for (const [toolName, incoming] of this.#functionApprovalState
         .legacyApprovals) {
         const current = approvals.get(toolName);
@@ -979,6 +1035,9 @@ export class RunContext<TContext = UnknownContext> {
       usage: this.usage,
       approvals: Object.fromEntries(approvals.entries()),
     };
+    if (agentIdentityKeys && this.#hostedMcpApprovals.size > 0) {
+      json.hostedMcpApprovals = Object.fromEntries(this.#hostedMcpApprovals);
+    }
     if (agentIdentityKeys) {
       const functionApprovals: SerializedFunctionApprovals = [];
       for (const [agent, approvalsByTool] of this.#functionApprovalState
@@ -1032,6 +1091,10 @@ export class RunContext<TContext = UnknownContext> {
   }
 
   #getCallId(approvalItem: RunToolApprovalItem): string {
+    const hostedIdentity = getHostedMcpApprovalRequestIdentity(approvalItem);
+    if (hostedIdentity?.requestId) {
+      return hostedIdentity.requestId;
+    }
     if ('callId' in approvalItem.rawItem) {
       return approvalItem.rawItem.callId;
     }
@@ -1089,6 +1152,40 @@ export class RunContext<TContext = UnknownContext> {
           : []),
       ],
       callId,
+    );
+  }
+
+  /** @internal */
+  _getHostedMcpApprovalStatus(
+    approvalItem: RunToolApprovalItem['rawItem'] | RunToolApprovalItem,
+  ): boolean | undefined {
+    const identity = getHostedMcpApprovalRequestIdentity(approvalItem);
+    const stateKey = identity
+      ? getHostedMcpApprovalStateKey(identity)
+      : undefined;
+    if (!identity?.requestId || !stateKey) {
+      return undefined;
+    }
+    return this.#resolveApprovalEntries(
+      this.#getHostedMcpApprovalEntries(stateKey),
+      identity.requestId,
+    );
+  }
+
+  /** @internal */
+  _getHostedMcpRejectionMessage(
+    approvalItem: RunToolApprovalItem['rawItem'] | RunToolApprovalItem,
+  ): string | undefined {
+    const identity = getHostedMcpApprovalRequestIdentity(approvalItem);
+    const stateKey = identity
+      ? getHostedMcpApprovalStateKey(identity)
+      : undefined;
+    if (!identity?.requestId || !stateKey) {
+      return undefined;
+    }
+    return this.#getRejectionMessageFromEntries(
+      this.#getHostedMcpApprovalEntries(stateKey),
+      identity.requestId,
     );
   }
 
@@ -1184,11 +1281,16 @@ export class RunContext<TContext = UnknownContext> {
     approvalItem: RunToolApprovalItem,
     { alwaysApprove = false }: { alwaysApprove?: boolean } = {},
   ) {
-    const toolName = this.#getApprovalItemToolName(approvalItem);
+    const toolName = this.#getApprovalItemStorageKey(
+      approvalItem,
+      alwaysApprove,
+    );
     const isFunctionCall = approvalItem.rawItem.type === 'function_call';
     const approvals = isFunctionCall
       ? this.#getFunctionApprovalMap(approvalItem.agent)
-      : this.#approvals;
+      : getHostedMcpApprovalRequestIdentity(approvalItem)
+        ? this.#hostedMcpApprovals
+        : this.#approvals;
     const approvalKey = this.#getApprovalStorageKey(
       toolName,
       isFunctionCall,
@@ -1228,11 +1330,16 @@ export class RunContext<TContext = UnknownContext> {
       message,
     }: { alwaysReject?: boolean; message?: string } = {},
   ) {
-    const toolName = this.#getApprovalItemToolName(approvalItem);
+    const toolName = this.#getApprovalItemStorageKey(
+      approvalItem,
+      alwaysReject,
+    );
     const isFunctionCall = approvalItem.rawItem.type === 'function_call';
     const approvals = isFunctionCall
       ? this.#getFunctionApprovalMap(approvalItem.agent)
-      : this.#approvals;
+      : getHostedMcpApprovalRequestIdentity(approvalItem)
+        ? this.#hostedMcpApprovals
+        : this.#approvals;
     const approvalKey = this.#getApprovalStorageKey(
       toolName,
       isFunctionCall,
@@ -1388,6 +1495,11 @@ export class RunContext<TContext = UnknownContext> {
       .filter((approval): approval is ApprovalRecord => approval !== undefined);
   }
 
+  #getHostedMcpApprovalEntries(stateKey: string): ApprovalRecord[] {
+    const approval = this.#hostedMcpApprovals.get(stateKey);
+    return approval ? [approval] : [];
+  }
+
   #getToolApprovalMap(agent: Agent<any, any>): Map<string, ApprovalRecord> {
     const existing = this.#toolApprovalsByAgent.get(agent);
     if (existing) {
@@ -1485,6 +1597,32 @@ export class RunContext<TContext = UnknownContext> {
       getFunctionToolStateKeyForCall(approvalItem.rawItem, fallbackName) ??
       fallbackName
     );
+  }
+
+  #getApprovalItemStorageKey(
+    approvalItem: RunToolApprovalItem,
+    persistent: boolean,
+  ): string {
+    const hostedIdentity = getHostedMcpApprovalRequestIdentity(approvalItem);
+    if (!hostedIdentity) {
+      if (approvalItem.rawItem.type === 'hosted_tool_call' && persistent) {
+        throw new UserError(
+          'Persistent hosted approval decisions require valid MCP approval request provider data.',
+        );
+      }
+      return this.#getApprovalItemToolName(approvalItem);
+    }
+    if (!hostedIdentity.requestId) {
+      throw new UserError(
+        'Hosted MCP approval decisions require a non-empty request id.',
+      );
+    }
+    if (!hostedIdentity.serverLabel || !hostedIdentity.toolName) {
+      throw new UserError(
+        'Hosted MCP approval decisions require a non-empty server label and tool name.',
+      );
+    }
+    return getHostedMcpApprovalStateKey(hostedIdentity)!;
   }
 
   #getApprovalStorageKey(

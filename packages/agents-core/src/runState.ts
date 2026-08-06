@@ -68,6 +68,8 @@ import {
   getFunctionToolStateKeyForCall,
   getFunctionToolStateKeyForResolvedCall,
   getFunctionToolStateKeys,
+  getHostedMcpApprovalRequestIdentity,
+  getHostedMcpApprovalRequestKey,
   getToolCallNamespace,
   getToolCallDisplayName,
   resolveFunctionToolCall,
@@ -101,6 +103,7 @@ import {
 import {
   getCanonicalToolCaller,
   getHandoffToolInvocationName,
+  getHostedMcpApprovalToolName,
   getToolInvocationCallId,
   getToolInvocationFingerprint,
   getToolInvocationNameFromFingerprint,
@@ -146,7 +149,8 @@ import {
  *   persistence bookkeeping.
  * - 1.18: Adds sandbox session-state envelope version 3 so credential-redacted
  *   mount authority cannot be consumed by older SDKs, and binds per-call approvals
- *   and committed local tool results to canonical invocation fingerprints.
+ *   and committed local tool results to canonical invocation fingerprints. It also
+ *   scopes persistent hosted MCP approvals by server label and tool name.
  */
 export const CURRENT_SCHEMA_VERSION = '1.18' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
@@ -810,12 +814,15 @@ function validateToolInvocationCompletionEvidence(
       toolCall = rawToolCall;
       const providerData = toolCall.providerData as
         { id?: unknown; name?: unknown } | undefined;
-      expectedToolName =
+      const hostedToolName =
         typeof providerData?.name === 'string'
           ? providerData.name
           : callItem instanceof RunToolApprovalItem
             ? callItem.name
             : undefined;
+      expectedToolName = hostedToolName
+        ? getHostedMcpApprovalToolName(hostedToolName, toolCall)
+        : undefined;
       evidenceCallId =
         typeof providerData?.id === 'string'
           ? providerData.id
@@ -1507,6 +1514,7 @@ export const SerializedRunState = z.object({
   context: z.object({
     usage: usageSchema,
     approvals: z.record(z.string(), approvalRecordSchema),
+    hostedMcpApprovals: z.record(z.string(), approvalRecordSchema).optional(),
     functionApprovals: functionApprovalsSchema.optional(),
     legacyFunctionApprovals: z
       .record(z.string(), approvalRecordSchema)
@@ -4884,6 +4892,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   options: RunStateContextOverrideOptions<TContext> = {},
 ): Promise<RunState<TContext, TAgent>> {
   const schemaVersion = stateJson.$schemaVersion as SupportedSchemaVersion;
+  const serializedApprovals = stateJson.context.approvals;
   if (
     schemaVersionSupportsV118State(schemaVersion) &&
     (stateJson.context.approvalInvocations === undefined ||
@@ -4927,7 +4936,12 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   if (contextOverride) {
     if (contextStrategy === 'merge') {
       if (schemaVersionSupportsV116State(schemaVersion)) {
-        context._mergeApprovals(stateJson.context.approvals);
+        context._mergeApprovals(serializedApprovals);
+        if (schemaVersionSupportsV118State(schemaVersion)) {
+          context._mergeHostedMcpApprovals(
+            stateJson.context.hostedMcpApprovals ?? {},
+          );
+        }
         context._mergeFunctionApprovals(
           stateJson.context.functionApprovals ?? [],
           agentMap,
@@ -4945,16 +4959,19 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
         deferredLegacyApprovalContext = new RunContext<TContext>(
           stateJson.context.context as TContext,
         );
-        deferredLegacyApprovalContext._rebuildApprovals(
-          stateJson.context.approvals,
-        );
+        deferredLegacyApprovalContext._rebuildApprovals(serializedApprovals);
         deferredLegacyApprovalContext._rebuildLegacyFunctionApprovals(
-          stateJson.context.approvals,
+          serializedApprovals,
         );
       }
     }
   } else {
-    context._rebuildApprovals(stateJson.context.approvals);
+    context._rebuildApprovals(serializedApprovals);
+    context._rebuildHostedMcpApprovals(
+      schemaVersionSupportsV118State(schemaVersion)
+        ? (stateJson.context.hostedMcpApprovals ?? {})
+        : {},
+    );
     context._rebuildFunctionApprovals(
       stateJson.context.functionApprovals ?? [],
       agentMap,
@@ -4962,7 +4979,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
     context._rebuildLegacyFunctionApprovals(
       schemaVersionSupportsV116State(schemaVersion)
         ? (stateJson.context.legacyFunctionApprovals ?? {})
-        : stateJson.context.approvals,
+        : serializedApprovals,
     );
     context._rebuildApprovalInvocations(
       schemaVersionSupportsV118State(schemaVersion)
@@ -5185,6 +5202,17 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
       state,
       schemaVersion,
     );
+    if (
+      schemaVersion !== CURRENT_SCHEMA_VERSION &&
+      shouldRestoreSerializedContext
+    ) {
+      restoreLegacyHostedMcpApprovalsForPendingRequests(
+        context,
+        stateJson.context.approvals,
+        interruptions,
+        schemaVersion === '1.17',
+      );
+    }
     state._currentStep = {
       type: 'next_step_interruption',
       data: {
@@ -5702,6 +5730,151 @@ function deserializeInterruptions(
       (item): item is RunToolApprovalItem =>
         item instanceof RunToolApprovalItem,
     );
+}
+
+function restoreLegacyHostedMcpApprovalsForPendingRequests<TContext>(
+  context: RunContext<TContext>,
+  legacyApprovals: Record<string, z.infer<typeof approvalRecordSchema>>,
+  approvalItems: readonly RunToolApprovalItem[],
+  restoreStickyDecisions: boolean,
+): void {
+  const pendingByTool = new Map<
+    string,
+    Map<string, Map<string, RunToolApprovalItem | undefined>>
+  >();
+  const stickyClaimantsByTool = new Map<
+    string,
+    Map<string, RunToolApprovalItem | undefined>
+  >();
+  for (const [index, approvalItem] of approvalItems.entries()) {
+    const identity = getHostedMcpApprovalRequestIdentity(approvalItem);
+    const requestKey = identity
+      ? getHostedMcpApprovalRequestKey(identity)
+      : undefined;
+    const rawItem = approvalItem.rawItem as Record<string, unknown>;
+    const providerData = rawItem.providerData as
+      Record<string, unknown> | undefined;
+    const toolName = identity?.toolName ?? approvalItem.name;
+    const requestId =
+      identity?.requestId ??
+      (typeof rawItem.callId === 'string'
+        ? rawItem.callId
+        : typeof rawItem.id === 'string'
+          ? rawItem.id
+          : typeof providerData?.itemId === 'string'
+            ? providerData.itemId
+            : typeof providerData?.id === 'string'
+              ? providerData.id
+              : undefined);
+    if (!toolName) {
+      continue;
+    }
+    const claimantKey =
+      requestKey ?? JSON.stringify(['legacy_pending_claim', index]);
+    const stickyClaimants = stickyClaimantsByTool.get(toolName) ?? new Map();
+    stickyClaimants.set(claimantKey, requestKey ? approvalItem : undefined);
+    stickyClaimantsByTool.set(toolName, stickyClaimants);
+    if (!requestId) {
+      continue;
+    }
+    const pendingByRequestId = pendingByTool.get(toolName) ?? new Map();
+    const claimants = pendingByRequestId.get(requestId) ?? new Map();
+    claimants.set(claimantKey, requestKey ? approvalItem : undefined);
+    pendingByRequestId.set(requestId, claimants);
+    pendingByTool.set(toolName, pendingByRequestId);
+  }
+
+  for (const [toolName, pendingByRequestId] of pendingByTool) {
+    const legacy = legacyApprovals[toolName];
+    if (!legacy) {
+      continue;
+    }
+
+    const hasStickyDecision =
+      restoreStickyDecisions &&
+      (legacy.approved === true || legacy.rejected === true);
+    if (hasStickyDecision) {
+      const claimants = stickyClaimantsByTool.get(toolName) ?? new Map();
+      if (claimants.size === 1) {
+        const approvalItem = claimants.values().next().value;
+        const requestId = approvalItem
+          ? getHostedMcpApprovalRequestIdentity(approvalItem)?.requestId
+          : undefined;
+        if (approvalItem && requestId) {
+          restoreLegacyHostedMcpApprovalDecision(
+            context,
+            approvalItem,
+            legacy,
+            requestId,
+            true,
+          );
+        }
+      }
+      continue;
+    }
+
+    for (const [requestId, claimants] of pendingByRequestId) {
+      if (claimants.size !== 1) {
+        continue;
+      }
+      const approvalItem = claimants.values().next().value;
+      if (approvalItem) {
+        restoreLegacyHostedMcpApprovalDecision(
+          context,
+          approvalItem,
+          legacy,
+          requestId,
+          false,
+        );
+      }
+    }
+  }
+}
+
+function restoreLegacyHostedMcpApprovalDecision<TContext>(
+  context: RunContext<TContext>,
+  approvalItem: RunToolApprovalItem,
+  legacy: z.infer<typeof approvalRecordSchema>,
+  requestId: string,
+  restoreStickyDecisions: boolean,
+): void {
+  const decision = resolveLegacyHostedMcpApproval(
+    legacy,
+    requestId,
+    restoreStickyDecisions,
+  );
+  if (decision === true) {
+    context.approveTool(approvalItem);
+  } else if (decision === false) {
+    context.rejectTool(approvalItem, {
+      message:
+        legacy.messages?.[requestId] ??
+        (restoreStickyDecisions && legacy.rejected === true
+          ? legacy.stickyRejectMessage
+          : undefined),
+    });
+  }
+}
+
+function resolveLegacyHostedMcpApproval(
+  legacy: z.infer<typeof approvalRecordSchema>,
+  requestId: string,
+  restoreStickyDecisions: boolean,
+): boolean | undefined {
+  const stickyApproval = restoreStickyDecisions && legacy.approved === true;
+  const stickyRejection = restoreStickyDecisions && legacy.rejected === true;
+  if (stickyApproval || stickyRejection) {
+    return stickyApproval;
+  }
+
+  const exactApproval =
+    Array.isArray(legacy.approved) && legacy.approved.includes(requestId);
+  const exactRejection =
+    Array.isArray(legacy.rejected) && legacy.rejected.includes(requestId);
+  if (exactApproval || exactRejection) {
+    return exactApproval;
+  }
+  return undefined;
 }
 
 function rebindInterruptionFunctionToolStateKeys<TContext>(

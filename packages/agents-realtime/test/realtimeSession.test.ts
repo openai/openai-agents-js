@@ -3882,9 +3882,9 @@ describe('RealtimeSession', () => {
       arguments: { foo: 'bar' },
       approved: null,
     });
-    expect(s.context.getRejectionMessage('hosted_mcp', 'item-msg-1')).toBe(
-      'Denied by policy',
-    );
+    expect(
+      s.context.getRejectionMessage('hosted_mcp', 'item-msg-1'),
+    ).toBeUndefined();
   });
 
   it('reuses stored reject messages for hosted tool calls', async () => {

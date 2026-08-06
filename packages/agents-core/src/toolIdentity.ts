@@ -20,6 +20,23 @@ type MaybeToolCallWithNamespace = {
   namespace?: unknown;
 };
 
+type MaybeHostedMcpApprovalRequest = {
+  type?: unknown;
+  id?: unknown;
+  itemId?: unknown;
+  name?: unknown;
+  providerData?: unknown;
+  rawItem?: unknown;
+  server_label?: unknown;
+  serverLabel?: unknown;
+};
+
+export type HostedMcpApprovalRequestIdentity = {
+  requestId?: string;
+  serverLabel?: string;
+  toolName?: string;
+};
+
 declare const FUNCTION_TOOL_LOOKUP_KEY: unique symbol;
 
 /** @internal */
@@ -29,6 +46,113 @@ export type FunctionToolLookupKey = string & {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+/** @internal */
+export function getHostedMcpApprovalRequestIdentity(
+  value: unknown,
+): HostedMcpApprovalRequestIdentity | undefined {
+  const candidate = value as MaybeHostedMcpApprovalRequest;
+  const rawItem =
+    candidate?.rawItem && typeof candidate.rawItem === 'object'
+      ? (candidate.rawItem as MaybeHostedMcpApprovalRequest)
+      : candidate;
+  if (rawItem?.type !== 'hosted_tool_call') {
+    return undefined;
+  }
+
+  const providerData = rawItem.providerData as
+    MaybeHostedMcpApprovalRequest | undefined;
+  if (!providerData) {
+    return undefined;
+  }
+  if (
+    providerData.type !== undefined &&
+    providerData.type !== 'mcp_approval_request'
+  ) {
+    return undefined;
+  }
+  if (
+    providerData.type === undefined &&
+    !isNonEmptyString(providerData.server_label) &&
+    !(
+      isNonEmptyString(providerData.serverLabel) &&
+      isNonEmptyString(providerData.itemId)
+    )
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...(isNonEmptyString(providerData.id)
+      ? { requestId: providerData.id }
+      : isNonEmptyString(providerData.itemId)
+        ? { requestId: providerData.itemId }
+        : isNonEmptyString(rawItem.id)
+          ? { requestId: rawItem.id }
+          : {}),
+    ...(isNonEmptyString(providerData.server_label)
+      ? { serverLabel: providerData.server_label }
+      : isNonEmptyString(providerData.serverLabel)
+        ? { serverLabel: providerData.serverLabel }
+        : {}),
+    ...(isNonEmptyString(providerData.name)
+      ? { toolName: providerData.name }
+      : isNonEmptyString(rawItem.name) &&
+          rawItem.name !== 'mcp_approval_request'
+        ? { toolName: rawItem.name }
+        : {}),
+  };
+}
+
+/** @internal */
+export function getHostedMcpApprovalStateKey(
+  identity: HostedMcpApprovalRequestIdentity,
+): string | undefined {
+  if (identity.serverLabel && identity.toolName) {
+    return JSON.stringify([
+      'hosted_mcp',
+      identity.serverLabel,
+      identity.toolName,
+    ]);
+  }
+  return undefined;
+}
+
+/** @internal */
+export function getHostedMcpApprovalRequestKey(
+  identity: HostedMcpApprovalRequestIdentity,
+): string | undefined {
+  if (identity.serverLabel && identity.toolName && identity.requestId) {
+    return JSON.stringify([
+      'hosted_mcp_request',
+      identity.serverLabel,
+      identity.toolName,
+      identity.requestId,
+    ]);
+  }
+  return undefined;
+}
+
+/** @internal */
+export function getHostedMcpApprovalIdentityFromStateKey(
+  stateKey: string,
+): HostedMcpApprovalRequestIdentity | undefined {
+  try {
+    const value = JSON.parse(stateKey);
+    if (
+      Array.isArray(value) &&
+      value.length === 3 &&
+      value[0] === 'hosted_mcp' &&
+      isNonEmptyString(value[1]) &&
+      isNonEmptyString(value[2])
+    ) {
+      return { serverLabel: value[1], toolName: value[2] };
+    }
+  } catch {
+    // Non-JSON keys are not hosted MCP approval identities.
+  }
+  return undefined;
 }
 
 function encodeFunctionToolLookupKey(parts: string[]): FunctionToolLookupKey {

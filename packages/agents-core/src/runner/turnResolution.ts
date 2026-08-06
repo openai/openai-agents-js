@@ -46,7 +46,6 @@ import {
 } from './toolExecution';
 import { getRunStateTurnSpanParent } from './invocationContext';
 import { handleHostedMcpApprovals } from './mcpApprovals';
-import * as ProviderData from '../types/providerData';
 import * as protocol from '../types/protocol';
 import { AgentInputItem } from '../types';
 import type { FunctionTool, FunctionToolResult, Tool } from '../tool';
@@ -58,6 +57,8 @@ import {
   getFunctionToolStateKeys,
   getToolCallNamespace,
   resolveFunctionToolCall,
+  getHostedMcpApprovalRequestIdentity,
+  getHostedMcpApprovalRequestKey,
 } from '../toolIdentity';
 import type { RunErrorData, RunErrorHandlers } from './errorHandlers';
 import {
@@ -76,6 +77,7 @@ import {
 import { runWithSiblingCancellation } from './siblingCancellation';
 import {
   getHandoffToolInvocationName,
+  getHostedMcpApprovalToolName,
   getToolInvocationCallId,
   getToolInvocationFingerprint,
   type ApprovalCapableToolCall,
@@ -392,10 +394,7 @@ const APPROVAL_ITEM_TYPES = [
 ] as const;
 
 function isHostedMcpApprovalItem(item: RunToolApprovalItem): boolean {
-  return (
-    item.rawItem.type === 'hosted_tool_call' &&
-    item.rawItem.providerData?.type === 'mcp_approval_request'
-  );
+  return getHostedMcpApprovalRequestIdentity(item) !== undefined;
 }
 
 type ApprovalResolution = 'approved' | 'rejected' | 'pending';
@@ -1212,22 +1211,19 @@ export async function resolveInterruptedTurn<TContext>(
     functionResults,
     appendIfNew,
     resolveApproval: (rawItem) => {
-      const providerData =
-        rawItem.providerData as ProviderData.HostedMCPApprovalRequest;
-      const approvalRequestId = rawItem.id ?? providerData?.id;
-      if (!approvalRequestId) {
+      if (!getHostedMcpApprovalRequestIdentity(rawItem)?.requestId) {
         return undefined;
       }
       return state._context._resolveToolInvocationApproval(
         agent,
-        rawItem.name,
+        getHostedMcpApprovalToolName(rawItem.name, rawItem),
         rawItem,
       );
     },
     resolveRejectionMessage: (rawItem) =>
       state._context._getToolInvocationRejectionMessage(
         agent,
-        rawItem.name,
+        getHostedMcpApprovalToolName(rawItem.name, rawItem),
         rawItem,
       ),
   });
@@ -1245,16 +1241,16 @@ export async function resolveInterruptedTurn<TContext>(
       if (hostedMcpApprovals.pendingApprovals.has(item)) {
         return true;
       }
-      const approvalRequestId =
-        item.rawItem.id ??
-        (
-          item.rawItem.providerData as
-            ProviderData.HostedMCPApprovalRequest | undefined
-        )?.id;
-      if (approvalRequestId) {
-        return hostedMcpApprovals.pendingApprovalIds.has(approvalRequestId);
+      const approvalIdentity = getHostedMcpApprovalRequestIdentity(
+        item.rawItem,
+      );
+      const approvalRequestKey = approvalIdentity
+        ? getHostedMcpApprovalRequestKey(approvalIdentity)
+        : undefined;
+      if (approvalRequestKey) {
+        return hostedMcpApprovals.pendingApprovalKeys.has(approvalRequestKey);
       }
-      return false;
+      return true;
     }
 
     // Preserve all other approval items so resumptions can continue to reference the
@@ -1462,22 +1458,19 @@ export async function resolveTurnAfterModelResponse<
       functionResults,
       appendIfNew,
       resolveApproval: (rawItem) => {
-        const providerData =
-          rawItem.providerData as ProviderData.HostedMCPApprovalRequest;
-        const approvalRequestId = rawItem.id ?? providerData?.id;
-        if (!approvalRequestId) {
+        if (!getHostedMcpApprovalRequestIdentity(rawItem)?.requestId) {
           return undefined;
         }
         return state._context._resolveToolInvocationApproval(
           agent,
-          rawItem.name,
+          getHostedMcpApprovalToolName(rawItem.name, rawItem),
           rawItem,
         );
       },
       resolveRejectionMessage: (rawItem) =>
         state._context._getToolInvocationRejectionMessage(
           agent,
-          rawItem.name,
+          getHostedMcpApprovalToolName(rawItem.name, rawItem),
           rawItem,
         ),
     });

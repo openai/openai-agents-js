@@ -1,7 +1,11 @@
 import type { RunToolApprovalItem } from './items';
 import type { Agent } from './agent';
 import type { RunContext } from './runContext';
-import { getFunctionToolStateKey } from './toolIdentity';
+import {
+  getFunctionToolStateKey,
+  getHostedMcpApprovalRequestIdentity,
+  getHostedMcpApprovalStateKey,
+} from './toolIdentity';
 import type * as protocol from './types/protocol';
 
 export type ApprovalCapableToolCall = RunToolApprovalItem['rawItem'];
@@ -12,9 +16,23 @@ export type LocalToolCall =
   | protocol.ShellCallItem
   | protocol.ApplyPatchCallItem;
 
+export function getHostedMcpApprovalToolName(
+  toolName: string,
+  toolCall: ApprovalCapableToolCall,
+): string {
+  const identity = getHostedMcpApprovalRequestIdentity(toolCall);
+  return identity
+    ? (getHostedMcpApprovalStateKey(identity) ?? toolName)
+    : toolName;
+}
+
 export function getToolInvocationCallId(
   toolCall: ApprovalCapableToolCall,
 ): string | undefined {
+  const hostedMcpIdentity = getHostedMcpApprovalRequestIdentity(toolCall);
+  if (hostedMcpIdentity?.requestId) {
+    return hostedMcpIdentity.requestId;
+  }
   if ('callId' in toolCall && typeof toolCall.callId === 'string') {
     return toolCall.callId;
   }
@@ -134,6 +152,9 @@ function canonicalizeToolName(
   toolName: string,
   toolCall: ApprovalCapableToolCall,
 ): string {
+  if (toolCall.type === 'hosted_tool_call') {
+    return getHostedMcpApprovalToolName(toolName, toolCall);
+  }
   if (
     toolCall.type === 'computer_call' &&
     (toolName === 'computer' || toolName === 'computer_use_preview')

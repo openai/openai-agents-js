@@ -14,6 +14,7 @@ Provider wire-name grammar and length limits remain provider-owned validation un
 ## MCP and Handoffs
 
 - Prefixing local MCP tool names with a server name changes the model-visible collision-safe wrapper name, not the original name sent back to the MCP server.
+- Persistent hosted MCP approval identity includes both the server label and tool name, and its state uses a separate serialized namespace from legacy bare-name approvals. Legacy bare-name sticky decisions cannot authorize hosted MCP calls; an exact legacy approval request ID may be reused only when it uniquely identifies a pending request during resume.
 - Sanitize and length-limit generated MCP names deterministically, including a stable collision suffix. Cache entries must rebind wrappers to the current server instance.
 - Handoff tool names are routing identities. Keep text-runner and Realtime handoff conversion aligned and preserve explicit clone overrides.
 
