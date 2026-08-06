@@ -3718,6 +3718,48 @@ describe('Runner.run', () => {
       expect(result.outputGuardrailResults[0].agent).toBe(agent);
     });
 
+    it('retains completed output guardrail results on execution failure', async () => {
+      const runner = new Runner({
+        outputGuardrails: [
+          {
+            name: 'success',
+            execute: async () => ({
+              tripwireTriggered: false,
+              outputInfo: { ok: true },
+            }),
+          },
+          {
+            name: 'error',
+            execute: async () => {
+              throw new Error('boom');
+            },
+          },
+        ],
+      });
+      const agent = new Agent({
+        name: 'Out',
+        model: new FakeModel([
+          { output: [fakeModelMessage('hi')], usage: new Usage() },
+        ]),
+      });
+      let caughtError: unknown;
+
+      try {
+        await runner.run(agent, 'input');
+      } catch (error) {
+        caughtError = error;
+      }
+
+      expect(caughtError).toBeInstanceOf(GuardrailExecutionError);
+      const guardrailError = caughtError as GuardrailExecutionError;
+      expect(guardrailError.error).toEqual(new Error('boom'));
+      expect(
+        guardrailError.state
+          ?.toJSON()
+          .outputGuardrailResults.map((result) => result.guardrail.name),
+      ).toEqual(['success']);
+    });
+
     it('output guardrail tripwire throws', async () => {
       const guardrailFn = vi.fn(async () => ({
         tripwireTriggered: true,

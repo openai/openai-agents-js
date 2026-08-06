@@ -4410,6 +4410,9 @@ describe('Runner.run (streaming)', () => {
     expect(callsBeforeSiblingFinished).toBe(0);
     expect(settledBeforeSiblingFinished).toBe(false);
     expect(model.calls).toBe(0);
+    expect(result.inputGuardrailResults.map((r) => r.guardrail.name)).toEqual([
+      'slow-parallel-guardrail',
+    ]);
   });
 
   it('persists streaming input through the blocked result save when an output guardrail trips', async () => {

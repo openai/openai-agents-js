@@ -138,9 +138,11 @@ async function runGuardrailsWithTripwire<
     );
   });
 
+  let resultsPublished = false;
   try {
     const results = await Promise.all(guardrailPromises);
     resultsTarget.push(...results);
+    resultsPublished = true;
     for (const result of results) {
       if (result.output.tripwireTriggered) {
         if (state._currentAgentSpan) {
@@ -158,7 +160,14 @@ async function runGuardrailsWithTripwire<
     onErrorObserved?.(finalError);
     // Promise.all rejects immediately, so drain the full batch before the
     // failure is surfaced to prevent sibling guardrails from outliving the run.
-    await Promise.allSettled(guardrailPromises);
+    const settledResults = await Promise.allSettled(guardrailPromises);
+    if (!resultsPublished) {
+      for (const result of settledResults) {
+        if (result.status === 'fulfilled') {
+          resultsTarget.push(result.value);
+        }
+      }
+    }
     throw finalError;
   }
 }
