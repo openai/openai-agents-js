@@ -1,7 +1,7 @@
 ---
-'@openai/agents': patch
-'@openai/agents-core': patch
-'@openai/agents-openai': patch
+'@openai/agents': minor
+'@openai/agents-core': minor
+'@openai/agents-openai': minor
 ---
 
-chore: upgrade the OpenAI package to v7.2
+feat: require OpenAI Node SDK v7.2 or later
