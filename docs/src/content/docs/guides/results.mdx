@@ -158,6 +158,8 @@ The `inputGuardrailResults` and `outputGuardrailResults` properties contain agen
 
 Use these arrays when you want to log guardrail decisions, inspect extra metadata returned by guardrail functions, or debug why a run was blocked.
 
+If one guardrail fails to execute, results from sibling guardrails that completed successfully remain in the run state. For streamed runs, inspect the result arrays after `completed` rejects; for non-streamed runs, the `GuardrailExecutionError` carries the same settled `state`.
+
 ### Usage
 
 Token usage is aggregated in `result.state.usage`, which tracks request counts and token totals for the run. The same usage object is also available through `result.runContext.usage`. For streaming runs this data updates as responses arrive.

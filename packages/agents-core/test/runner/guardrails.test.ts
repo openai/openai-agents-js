@@ -136,6 +136,13 @@ describe('runInputGuardrails', () => {
     const agent = makeAgent({ name: 'Error' });
     const state = makeState(agent);
     state._currentTurn = 2;
+    const successfulGuardrail = defineInputGuardrail({
+      name: 'success',
+      execute: async () => ({
+        tripwireTriggered: false,
+        outputInfo: { ok: true },
+      }),
+    });
     const guardrail = defineInputGuardrail({
       name: 'error',
       execute: async () => {
@@ -145,10 +152,12 @@ describe('runInputGuardrails', () => {
 
     await expect(
       withTrace('guardrails-error', () =>
-        runInputGuardrails(state, [guardrail]),
+        runInputGuardrails(state, [successfulGuardrail, guardrail]),
       ),
     ).rejects.toBeInstanceOf(GuardrailExecutionError);
-    expect(state._inputGuardrailResults).toHaveLength(0);
+    expect(state._inputGuardrailResults.map((r) => r.guardrail.name)).toEqual([
+      'success',
+    ]);
     expect(state._currentTurn).toBe(1);
   });
 
@@ -157,6 +166,7 @@ describe('runInputGuardrails', () => {
     const state = makeState(agent);
     let releaseSlowGuardrail!: () => void;
     let markSlowStarted!: () => void;
+    let markFastFinished!: () => void;
     let markErrorThrown!: () => void;
     let slowGuardrailFinished = false;
     const slowGuardrailCanFinish = new Promise<void>((resolve) => {
@@ -164,6 +174,9 @@ describe('runInputGuardrails', () => {
     });
     const slowGuardrailStarted = new Promise<void>((resolve) => {
       markSlowStarted = resolve;
+    });
+    const fastGuardrailFinished = new Promise<void>((resolve) => {
+      markFastFinished = resolve;
     });
     const errorThrown = new Promise<void>((resolve) => {
       markErrorThrown = resolve;
@@ -183,14 +196,25 @@ describe('runInputGuardrails', () => {
     const errorGuardrail = defineInputGuardrail({
       name: 'error',
       execute: async () => {
-        await slowGuardrailStarted;
+        await fastGuardrailFinished;
         markErrorThrown();
         throw new Error('boom');
       },
     });
+    const fastGuardrail = defineInputGuardrail({
+      name: 'fast',
+      execute: async () => {
+        await slowGuardrailStarted;
+        markFastFinished();
+        return {
+          tripwireTriggered: false,
+          outputInfo: { fast: true },
+        };
+      },
+    });
 
     const runPromise = withTrace('guardrails-input-error-await-sibling', () =>
-      runInputGuardrails(state, [slowGuardrail, errorGuardrail]),
+      runInputGuardrails(state, [slowGuardrail, fastGuardrail, errorGuardrail]),
     );
     let settled = false;
     void runPromise.then(
@@ -210,6 +234,10 @@ describe('runInputGuardrails', () => {
     await expect(runPromise).rejects.toBeInstanceOf(GuardrailExecutionError);
     expect(settledBeforeSiblingFinished).toBe(false);
     expect(slowGuardrailFinished).toBe(true);
+    expect(state._inputGuardrailResults.map((r) => r.guardrail.name)).toEqual([
+      'slow',
+      'fast',
+    ]);
   });
 });
 
@@ -328,9 +356,16 @@ describe('runOutputGuardrails', () => {
     ]);
   });
 
-  it('wraps errors from guardrails without recording results', async () => {
+  it('wraps errors from guardrails and records completed results', async () => {
     const agent = makeAgent({ name: 'OutError' });
     const state = makeState(agent);
+    const successfulGuardrail = defineOutputGuardrail({
+      name: 'success',
+      execute: async () => ({
+        tripwireTriggered: false,
+        outputInfo: { ok: true },
+      }),
+    });
     const runnerGuardrail = defineOutputGuardrail({
       name: 'error',
       execute: async () => {
@@ -340,10 +375,16 @@ describe('runOutputGuardrails', () => {
 
     await expect(
       withTrace('guardrails-output-error', () =>
-        runOutputGuardrails(state, [runnerGuardrail as any], 'ok'),
+        runOutputGuardrails(
+          state,
+          [successfulGuardrail as any, runnerGuardrail as any],
+          'ok',
+        ),
       ),
     ).rejects.toBeInstanceOf(GuardrailExecutionError);
-    expect(state._outputGuardrailResults).toHaveLength(0);
+    expect(state._outputGuardrailResults.map((r) => r.guardrail.name)).toEqual([
+      'success',
+    ]);
   });
 
   it('awaits sibling output guardrails before surfacing execution failures', async () => {
@@ -351,6 +392,7 @@ describe('runOutputGuardrails', () => {
     const state = makeState(agent);
     let releaseSlowGuardrail!: () => void;
     let markSlowStarted!: () => void;
+    let markFastFinished!: () => void;
     let markErrorThrown!: () => void;
     let slowGuardrailFinished = false;
     const slowGuardrailCanFinish = new Promise<void>((resolve) => {
@@ -358,6 +400,9 @@ describe('runOutputGuardrails', () => {
     });
     const slowGuardrailStarted = new Promise<void>((resolve) => {
       markSlowStarted = resolve;
+    });
+    const fastGuardrailFinished = new Promise<void>((resolve) => {
+      markFastFinished = resolve;
     });
     const errorThrown = new Promise<void>((resolve) => {
       markErrorThrown = resolve;
@@ -369,24 +414,36 @@ describe('runOutputGuardrails', () => {
         await slowGuardrailCanFinish;
         slowGuardrailFinished = true;
         return {
-          tripwireTriggered: false,
+          tripwireTriggered: true,
           outputInfo: { slow: true },
         };
       },
     });
+    const primaryError = new Error('boom');
     const errorGuardrail = defineOutputGuardrail({
       name: 'error',
       execute: async () => {
-        await slowGuardrailStarted;
+        await fastGuardrailFinished;
         markErrorThrown();
-        throw new Error('boom');
+        throw primaryError;
+      },
+    });
+    const fastGuardrail = defineOutputGuardrail({
+      name: 'fast',
+      execute: async () => {
+        await slowGuardrailStarted;
+        markFastFinished();
+        return {
+          tripwireTriggered: false,
+          outputInfo: { fast: true },
+        };
       },
     });
 
     const runPromise = withTrace('guardrails-output-error-await-sibling', () =>
       runOutputGuardrails(
         state,
-        [slowGuardrail as any, errorGuardrail as any],
+        [slowGuardrail as any, fastGuardrail as any, errorGuardrail as any],
         'ok',
       ),
     );
@@ -405,8 +462,20 @@ describe('runOutputGuardrails', () => {
     const settledBeforeSiblingFinished = settled;
     releaseSlowGuardrail();
 
-    await expect(runPromise).rejects.toBeInstanceOf(GuardrailExecutionError);
+    let caughtError: unknown;
+    try {
+      await runPromise;
+    } catch (error) {
+      caughtError = error;
+    }
+
+    expect(caughtError).toBeInstanceOf(GuardrailExecutionError);
+    expect((caughtError as GuardrailExecutionError).error).toBe(primaryError);
     expect(settledBeforeSiblingFinished).toBe(false);
     expect(slowGuardrailFinished).toBe(true);
+    expect(state._outputGuardrailResults.map((r) => r.guardrail.name)).toEqual([
+      'slow',
+      'fast',
+    ]);
   });
 });
