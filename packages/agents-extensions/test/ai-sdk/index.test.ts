@@ -1240,6 +1240,63 @@ describe('itemsToLanguageV2Messages', () => {
     ]);
   });
 
+  test('preserves reasoning order around provider-executed tool search', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'reasoning',
+        content: [{ type: 'input_text', text: 'Find a weather tool.' }],
+        providerData: { anthropic: { signature: 'sig-before-search' } },
+      } as any,
+      {
+        type: 'tool_search_call',
+        callId: 'search_1',
+        execution: 'server',
+        arguments: { query: 'weather' },
+        status: 'completed',
+      },
+      {
+        type: 'tool_search_output',
+        callId: 'search_1',
+        execution: 'server',
+        status: 'completed',
+        tools: [{ type: 'tool_reference', toolName: 'get_weather' }],
+      },
+      {
+        type: 'reasoning',
+        content: [{ type: 'input_text', text: 'Call the weather tool.' }],
+        providerData: { anthropic: { signature: 'sig-after-search' } },
+      } as any,
+      {
+        type: 'function_call',
+        callId: 'weather_1',
+        name: 'get_weather',
+        arguments: '{"city":"Tokyo"}',
+        status: 'completed',
+      },
+    ];
+
+    const messages = itemsToLanguageV2Messages(stubModel({}), items);
+    const assistantContent = messages.flatMap((message) =>
+      message.role === 'assistant' && Array.isArray(message.content)
+        ? message.content
+        : [],
+    );
+
+    expect(assistantContent.map((part) => part.type)).toEqual([
+      'reasoning',
+      'tool-call',
+      'tool-result',
+      'reasoning',
+      'tool-call',
+    ]);
+    expect(assistantContent[0]).toMatchObject({
+      providerOptions: { anthropic: { signature: 'sig-before-search' } },
+    });
+    expect(assistantContent[3]).toMatchObject({
+      providerOptions: { anthropic: { signature: 'sig-after-search' } },
+    });
+  });
+
   test('orders provider-executed tool searches before pending client calls', () => {
     const items: protocol.ModelItem[] = [
       {
@@ -3094,6 +3151,110 @@ describe('AiSdkModel.getResponse', () => {
     });
   });
 
+  test('preserves interleaved reasoning and tool order in doGenerate', async () => {
+    const model = new AiSdkModel(
+      stubModel(
+        {
+          async doGenerate() {
+            return {
+              content: [
+                {
+                  type: 'reasoning',
+                  text: 'Find a weather tool.',
+                  providerMetadata: {
+                    anthropic: { signature: 'sig-before-search' },
+                  },
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  input: { query: 'weather' },
+                  providerExecuted: true,
+                },
+                {
+                  type: 'tool-result',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  result: [{ type: 'tool_reference', toolName: 'get_weather' }],
+                },
+                {
+                  type: 'text',
+                  text: 'I found the weather tool.',
+                },
+                {
+                  type: 'reasoning',
+                  text: 'Call the weather tool.',
+                  providerMetadata: {
+                    anthropic: { signature: 'sig-after-search' },
+                  },
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'weather_1',
+                  toolName: 'get_weather',
+                  input: { city: 'Tokyo' },
+                },
+              ],
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              providerMetadata: {},
+              response: { id: 'response_1' },
+              finishReason: 'tool-calls',
+              warnings: [],
+            } as any;
+          },
+        },
+        { provider: 'anthropic.messages', specificationVersion: 'v3' },
+      ),
+    );
+
+    const result = await withTrace('t', () =>
+      model.getResponse({
+        input: 'Find the weather tool and use it.',
+        tools: [
+          aiSdkToolSearchTool({
+            type: 'provider',
+            id: 'anthropic.tool_search_regex_20251119',
+          }),
+          {
+            type: 'function',
+            name: 'get_weather',
+            description: 'Get the weather.',
+            parameters: { type: 'object', properties: {} },
+            strict: true,
+            providerData: { anthropic: { deferLoading: true } },
+          } as any,
+        ],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+
+    expect(result.output.map((item) => item.type)).toEqual([
+      'reasoning',
+      'tool_search_call',
+      'tool_search_output',
+      'message',
+      'reasoning',
+      'function_call',
+    ]);
+    expect(result.output[0]).toMatchObject({
+      providerData: {
+        anthropic: { signature: 'sig-before-search' },
+      },
+    });
+    expect(result.output[3]).toMatchObject({
+      content: [{ type: 'output_text', text: 'I found the weather tool.' }],
+    });
+    expect(result.output[4]).toMatchObject({
+      providerData: {
+        anthropic: { signature: 'sig-after-search' },
+      },
+    });
+  });
+
   test('preserves provider-executed tool search errors and continues the run', async () => {
     const prompts: any[] = [];
     const errorResult = {
@@ -4572,6 +4733,122 @@ describe('AiSdkModel.getStreamedResponse', () => {
     expect(final.response.output[2]).toMatchObject({
       callId: 'weather_1',
       name: 'get_weather',
+    });
+  });
+
+  test('preserves interleaved reasoning and tool order in streaming mode', async () => {
+    const parts = [
+      {
+        type: 'reasoning-start',
+        id: 'reasoning_1',
+      },
+      {
+        type: 'reasoning-delta',
+        id: 'reasoning_1',
+        delta: 'Find a weather tool.',
+      },
+      {
+        type: 'reasoning-end',
+        id: 'reasoning_1',
+        providerMetadata: {
+          anthropic: { signature: 'sig-before-search' },
+        },
+      },
+      {
+        type: 'tool-call',
+        toolCallId: 'search_1',
+        toolName: 'tool_search',
+        input: { query: 'weather' },
+        providerExecuted: true,
+      },
+      {
+        type: 'tool-result',
+        toolCallId: 'search_1',
+        toolName: 'tool_search',
+        result: [{ type: 'tool_reference', toolName: 'get_weather' }],
+      },
+      {
+        type: 'reasoning-start',
+        id: 'reasoning_2',
+      },
+      {
+        type: 'reasoning-delta',
+        id: 'reasoning_2',
+        delta: 'Call the weather tool.',
+      },
+      {
+        type: 'reasoning-end',
+        id: 'reasoning_2',
+        providerMetadata: {
+          anthropic: { signature: 'sig-after-search' },
+        },
+      },
+      {
+        type: 'tool-call',
+        toolCallId: 'weather_1',
+        toolName: 'get_weather',
+        input: { city: 'Tokyo' },
+      },
+      { type: 'response-metadata', id: 'response_stream_1' },
+      {
+        type: 'finish',
+        finishReason: 'tool-calls',
+        usage: { inputTokens: 3, outputTokens: 4 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel(
+        {
+          async doStream() {
+            return { stream: partsStream(parts) } as any;
+          },
+        },
+        { provider: 'anthropic.messages', specificationVersion: 'v3' },
+      ),
+    );
+
+    const events: any[] = [];
+    for await (const event of model.getStreamedResponse({
+      input: 'Find the weather tool and use it.',
+      tools: [
+        aiSdkToolSearchTool({
+          type: 'provider',
+          id: 'anthropic.tool_search_regex_20251119',
+        }),
+        {
+          type: 'function',
+          name: 'get_weather',
+          description: 'Get the weather.',
+          parameters: { type: 'object', properties: {} },
+          strict: true,
+          providerData: { anthropic: { deferLoading: true } },
+        } as any,
+      ],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      events.push(event);
+    }
+
+    const final = events.at(-1);
+    expect(final.response.output.map((item: any) => item.type)).toEqual([
+      'reasoning',
+      'tool_search_call',
+      'tool_search_output',
+      'reasoning',
+      'function_call',
+    ]);
+    expect(final.response.output[0]).toMatchObject({
+      providerData: {
+        anthropic: { signature: 'sig-before-search' },
+      },
+    });
+    expect(final.response.output[3]).toMatchObject({
+      providerData: {
+        anthropic: { signature: 'sig-after-search' },
+      },
     });
   });
 
