@@ -1,4 +1,5 @@
-import { win32 as pathWin32 } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join, win32 as pathWin32 } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { validateRemoteSandboxPath } from '../../src/sandbox/shared';
 
@@ -54,6 +55,37 @@ describe('remote sandbox path command construction', () => {
     expect(extractHelperDir(commands[0])).not.toBe(
       extractHelperDir(commands[1]),
     );
+  });
+
+  test('does not send local hostPath values to remote path helpers', async () => {
+    const commands: string[] = [];
+    const hostPath = join(tmpdir(), 'host-only-data');
+
+    await validateRemoteSandboxPath({
+      root: '/workspace',
+      path: '/mnt/data/input.txt',
+      options: {
+        extraPathGrants: [
+          {
+            path: '/mnt/data',
+            hostPath,
+            readOnly: true,
+          },
+        ],
+      },
+      runCommand: async (command) => {
+        commands.push(command);
+        return {
+          status: 0,
+          stdout: '/mnt/data/input.txt\n',
+          stderr: '',
+        };
+      },
+    });
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toContain("'/mnt/data' '1'");
+    expect(commands[0]).not.toContain(hostPath);
   });
 
   test('returns the remote validated resolved path to callers', async () => {

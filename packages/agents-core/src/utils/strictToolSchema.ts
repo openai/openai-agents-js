@@ -1,26 +1,40 @@
 import type { JsonObjectSchema } from '../types';
+import { UserError } from '../errors';
 import { readZodDefinition, readZodType } from './zodCompat';
 
 export function toOpenAIStrictToolSchema<T extends JsonObjectSchema<any>>(
   schema: T,
 ): T {
-  return ensureStrictSchemaEntry(structuredClone(schema)) as T;
+  return ensureStrictSchemaEntry(structuredClone(schema), true) as T;
 }
 
-function ensureStrictSchemaEntry(entry: unknown): unknown {
+function ensureStrictSchemaEntry(entry: unknown, isRoot = false): unknown {
   if (typeof entry !== 'object' || entry === null) {
     return entry;
   }
 
   const record = entry as Record<string, unknown>;
+  const properties = isRecord(record.properties)
+    ? record.properties
+    : undefined;
+  const hasObjectKeywords =
+    properties !== undefined || 'additionalProperties' in record;
 
   if (
-    record.type === 'object' &&
-    typeof record.properties === 'object' &&
-    record.properties !== null &&
-    !Array.isArray(record.properties)
+    record.type === undefined &&
+    hasObjectKeywords &&
+    record.additionalProperties !== false
   ) {
-    const properties = record.properties as Record<string, unknown>;
+    throw new UserError(
+      'Cannot convert a typeless open JSON schema to strict mode. Set `type: "object"` with `additionalProperties: false`, or disable strict mode.',
+    );
+  }
+
+  if (!isRoot && record.type === undefined && properties !== undefined) {
+    record.type = 'object';
+  }
+
+  if (record.type === 'object' && properties !== undefined) {
     const originalRequired = new Set(
       Array.isArray(record.required) ? record.required.map(String) : [],
     );

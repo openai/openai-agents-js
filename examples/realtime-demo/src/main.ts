@@ -1,4 +1,4 @@
-// @ts-expect-error Typescript doesn't know about the css module
+// @ts-expect-error TypeScript does not know about the CSS module
 import './style.css';
 import {
   connectButton,

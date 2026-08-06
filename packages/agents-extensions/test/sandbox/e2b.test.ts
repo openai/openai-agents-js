@@ -1,5 +1,7 @@
 import {
+  EnvValueReference,
   Manifest,
+  registerEnvValueReference,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
 } from '@openai/agents-core/sandbox';
@@ -735,6 +737,72 @@ describe('E2BSandboxClient', () => {
     expect(recreated.state.sandboxId).toBe('sbx_test');
   });
 
+  test('reuses refreshed environment references when recreating a missing sandbox', async () => {
+    let resolveCount = 0;
+    class E2BSecretReference extends EnvValueReference {
+      static readonly type = 'test.e2b_secret_reference';
+
+      constructor(readonly key: string) {
+        super();
+      }
+
+      override serialize(): Record<string, unknown> {
+        return { key: this.key };
+      }
+
+      override async resolve(): Promise<string> {
+        resolveCount += 1;
+        return `credential-${resolveCount}:${this.key}`;
+      }
+    }
+
+    const unregister = registerEnvValueReference(
+      E2BSecretReference,
+      (payload) => {
+        if (typeof payload.key !== 'string') {
+          throw new TypeError('E2B secret reference key must be a string.');
+        }
+        return new E2BSecretReference(payload.key);
+      },
+    );
+    try {
+      const client = new E2BSandboxClient({
+        pauseOnExit: true,
+        template: 'base',
+      });
+      const session = await client.create(
+        new Manifest({
+          environment: {
+            TOKEN: new E2BSecretReference('openai-key'),
+          },
+        }),
+      );
+      const serialized = await client.serializeSessionState(session.state);
+      resolveCount = 0;
+      const restored = await client.deserializeSessionState(serialized);
+      expect(resolveCount).toBe(1);
+      expect(restored.environment).toEqual({
+        TOKEN: 'credential-1:openai-key',
+      });
+      createMock.mockClear();
+      connectMock.mockRejectedValueOnce(new Error('not found'));
+
+      const recreated = await client.resume(restored);
+
+      expect(resolveCount).toBe(1);
+      expect(createMock).toHaveBeenCalledWith('base', {
+        envs: {
+          TOKEN: 'credential-1:openai-key',
+        },
+      });
+      expect(recreated.state.manifest.environment.TOKEN).toBeInstanceOf(
+        E2BSecretReference,
+      );
+    } finally {
+      unregister();
+    }
+  });
+
   test('fails fast when reconnect fails with a provider error', async () => {
     const client = new E2BSandboxClient({
       pauseOnExit: true,
@@ -967,27 +1035,7 @@ describe('E2BSandboxClient', () => {
     expect(createSnapshotMock).not.toHaveBeenCalled();
   });
 
-  test('falls back to tar snapshots when the workspace root is ephemeral', async () => {
-    const archive = makeTarArchive([{ name: 'keep.txt', content: 'keep' }]);
-    runMock.mockImplementation(async (command: string) => {
-      const resolvedPath = resolvedRemotePathFromValidationCommand(command);
-      if (resolvedPath) {
-        return {
-          stdout: `${resolvedPath}\n`,
-          stderr: '',
-          exitCode: 0,
-        };
-      }
-      const archivePath = command.match(/-cf '([^']+)'/)?.[1];
-      if (archivePath) {
-        files.set(archivePath, archive);
-      }
-      return {
-        stdout: '',
-        stderr: '',
-        exitCode: 0,
-      };
-    });
+  test('persists an empty tar when the workspace root is ephemeral', async () => {
     const client = new E2BSandboxClient({
       workspacePersistence: 'snapshot',
     });
@@ -1001,9 +1049,13 @@ describe('E2BSandboxClient', () => {
         },
       }),
     );
+    runMock.mockClear();
 
-    await expect(session.persistWorkspace()).resolves.toEqual(archive);
+    await expect(session.persistWorkspace()).resolves.toEqual(
+      makeTarArchive([]),
+    );
     expect(createSnapshotMock).not.toHaveBeenCalled();
+    expect(runMock).not.toHaveBeenCalled();
   });
 
   test('resolves configured exposed ports through E2B hosts', async () => {
@@ -1164,6 +1216,13 @@ describe('E2BSandboxClient', () => {
         };
       }
       if (command.startsWith('test -e ')) {
+        if (command.includes('OPENAI_AGENTS_READ_PATH_PROBE_V1')) {
+          return {
+            stdout: '',
+            stderr: 'find: /workspace/missing.txt: No such file or directory',
+            exitCode: 1,
+          };
+        }
         throw Object.assign(new Error('missing path'), {
           exitCode: 1,
           stderr: 'missing path',
@@ -1215,7 +1274,7 @@ describe('E2BSandboxClient', () => {
     ).toBe(true);
   });
 
-  test('continues mount setup when E2B throws for install probes', async () => {
+  test('uses the installed rclone path when E2B PATH excludes it', async () => {
     let rcloneProbeFailures = 0;
     runMock.mockImplementation(async (command: string) => {
       const resolvedPath = resolvedRemotePathFromValidationCommand(command);
@@ -1235,6 +1294,13 @@ describe('E2BSandboxClient', () => {
           stderr: 'rclone missing',
         });
       }
+      if (command === 'uname -m') {
+        return {
+          stdout: 'x86_64\n',
+          stderr: '',
+          exitCode: 0,
+        };
+      }
       return {
         stdout: '',
         stderr: '',
@@ -1245,6 +1311,9 @@ describe('E2BSandboxClient', () => {
 
     await client.create(
       new Manifest({
+        environment: {
+          PATH: '/usr/bin:/bin',
+        },
         entries: {
           data: {
             type: 's3_mount',
@@ -1263,9 +1332,14 @@ describe('E2BSandboxClient', () => {
         String(command).includes('command -v apt-get'),
       ),
     ).toBe(true);
+    const installCommand = runMock.mock.calls
+      .map(([command]) => String(command))
+      .find((command) => command.includes('sha256sum --check --strict -'));
+    expect(installCommand).toContain('rclone-v1.74.4-linux-amd64.zip');
+    expect(installCommand).not.toContain('https://rclone.org/install.sh');
     expect(
       runMock.mock.calls.some(([command]) =>
-        String(command).includes("'rclone' 'mount'"),
+        String(command).includes("'/usr/local/bin/rclone' 'mount'"),
       ),
     ).toBe(true);
   });

@@ -1,8 +1,21 @@
 import { describe, expect, it } from 'vitest';
 
 import { Agent } from '../../src/agent';
-import { getTracing, ensureAgentSpan } from '../../src/runner/tracing';
-import { withTrace } from '../../src/tracing';
+import {
+  ensureAgentSpan,
+  finishRunnerSpan,
+  getTracing,
+  recordRunnerSpanUsage,
+  startTaskSpan,
+  startTurnSpan,
+} from '../../src/runner/tracing';
+import {
+  createAgentSpan,
+  setCurrentSpan,
+  setTracingDisabled,
+  withTrace,
+} from '../../src/tracing';
+import { Usage } from '../../src/usage';
 
 describe('getTracing', () => {
   it('returns the correct tracing mode for each combination', () => {
@@ -29,6 +42,65 @@ describe('getTracing', () => {
 
       expect(updated.spanData.handoffs).toEqual(['delegate']);
       updated.end();
+    });
+  });
+
+  it('uses explicit runner-owned parents instead of the ambient span', async () => {
+    setTracingDisabled(false);
+    try {
+      await withTrace('workflow', async () => {
+        const taskSpan = startTaskSpan('workflow');
+        const ambientSpan = createAgentSpan({
+          data: { name: 'ambient sibling' },
+        });
+        ambientSpan.start();
+        setCurrentSpan(ambientSpan);
+
+        const agent = new Agent({ name: 'runner-owned agent' });
+        const agentSpan = ensureAgentSpan({
+          agent,
+          handoffs: [],
+          tools: [],
+          parent: taskSpan.span,
+        });
+
+        setCurrentSpan(ambientSpan);
+        const turnSpan = startTurnSpan(1, agent.name, agentSpan);
+
+        expect(agentSpan.parentId).toBe(taskSpan.span.spanId);
+        expect(turnSpan.span.parentId).toBe(agentSpan.spanId);
+
+        finishRunnerSpan(turnSpan);
+        agentSpan.end();
+        ambientSpan.end();
+        finishRunnerSpan(taskSpan);
+      });
+    } finally {
+      setTracingDisabled(true);
+    }
+  });
+
+  it('sums cached input token aliases in runner span usage', async () => {
+    await withTrace('workflow', async () => {
+      const taskSpan = startTaskSpan('workflow');
+
+      recordRunnerSpanUsage(
+        taskSpan,
+        new Usage({
+          inputTokens: 8,
+          outputTokens: 2,
+          totalTokens: 10,
+          inputTokensDetails: [
+            { cached_tokens: 2 },
+            { cached_input_tokens: 3 },
+          ],
+        }),
+      );
+      finishRunnerSpan(taskSpan);
+
+      expect(taskSpan.span.spanData.usage).toMatchObject({
+        cached_input_tokens: 5,
+      });
     });
   });
 });

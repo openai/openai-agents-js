@@ -15,6 +15,7 @@ import type {
 import { ApplyPatchOperation } from '../../types/protocol';
 import { encodeUint8ArrayToBase64 } from '../../utils/base64';
 import type { ViewImageArgs } from '../session';
+import type { ToolCallDetails } from '../../tool';
 import { withSandboxSpan } from '../runtime/spans';
 import { isRecord } from '../shared/typeGuards';
 import {
@@ -534,7 +535,10 @@ class FilesystemCapability extends Capability {
     }
 
     const tools: Tool<any>[] = [];
-    const viewImage = async (path: string): Promise<ViewImageToolResult> => {
+    const viewImage = async (
+      path: string,
+      details?: ToolCallDetails,
+    ): Promise<ViewImageToolResult> => {
       if (!session.viewImage) {
         throw new UserError(
           'Filesystem sandbox sessions must provide viewImage().',
@@ -552,6 +556,7 @@ class FilesystemCapability extends Capability {
               path,
               runAs: this._runAs,
             } satisfies ViewImageArgs),
+          this.tracingParent(details),
         );
       } catch (error) {
         return renderViewImageError(path, error);
@@ -567,11 +572,11 @@ class FilesystemCapability extends Capability {
           parameters: z.object({
             path: z.string().describe('Local filesystem path to an image file'),
           }),
-          execute: async ({
-            path,
-          }: {
-            path: string;
-          }): Promise<ViewImageToolResult> => await viewImage(path),
+          execute: async (
+            { path }: { path: string },
+            _context,
+            details?: ToolCallDetails,
+          ): Promise<ViewImageToolResult> => await viewImage(path, details),
         }),
       );
     } else {
@@ -583,8 +588,12 @@ class FilesystemCapability extends Capability {
           parameters: z.object({
             path: z.string().describe('Local filesystem path to an image file'),
           }),
-          execute: async ({ path }: { path: string }): Promise<string> =>
-            renderImageForTextTransport(await viewImage(path)),
+          execute: async (
+            { path }: { path: string },
+            _context,
+            details?: ToolCallDetails,
+          ): Promise<string> =>
+            renderImageForTextTransport(await viewImage(path, details)),
         }),
       );
     }

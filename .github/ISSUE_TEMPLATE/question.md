@@ -13,4 +13,4 @@ assignees: ''
 
 ### Question
 
-Describe your question. Provide details if available.
+<!-- Describe your question. Provide details if available. -->

@@ -248,6 +248,31 @@
       white-space: nowrap;
     }
 
+    @media (min-width: 50rem) {
+      &:has(> .openai-hero) > table:first-of-type {
+        display: table;
+        table-layout: fixed;
+        width: 100%;
+
+        :is(th, td):nth-child(1) {
+          width: 28%;
+        }
+
+        :is(th, td):nth-child(2) {
+          width: 30%;
+        }
+
+        :is(th, td):nth-child(3) {
+          width: 42%;
+        }
+
+        td code {
+          overflow-wrap: anywhere;
+          white-space: normal;
+        }
+      }
+    }
+
     th:not(:where(.not-content *)) {
       text-transform: uppercase;
       font-size: var(--sl-text-2xs) !important;

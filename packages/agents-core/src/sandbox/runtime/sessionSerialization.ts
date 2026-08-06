@@ -1,4 +1,4 @@
-import type { SandboxClient } from '../client';
+import type { SandboxClient, SandboxClientOptions } from '../client';
 import type { SandboxSessionLike, SandboxSessionState } from '../session';
 import {
   getPreviousSerializedSessionsByAgent,
@@ -16,6 +16,7 @@ export async function serializeSandboxRuntimeState(args: {
   >;
   sessionAgentNamesByKey: ReadonlyMap<string, string>;
   ownedSessionAgentKeys: ReadonlySet<string>;
+  clientOptions?: SandboxClientOptions;
   includeOwnedSessions?: boolean;
   preferredCurrentAgentKey?: string;
 }): Promise<SerializedSandboxState | undefined> {
@@ -25,6 +26,7 @@ export async function serializeSandboxRuntimeState(args: {
     sessionsByAgentKey,
     sessionAgentNamesByKey,
     ownedSessionAgentKeys,
+    clientOptions,
     includeOwnedSessions,
     preferredCurrentAgentKey,
   } = args;
@@ -56,14 +58,17 @@ export async function serializeSandboxRuntimeState(args: {
       isOwnedSession &&
       includeOwnedSessions &&
       client.canReusePreservedOwnedSession
-        ? await client.canReusePreservedOwnedSession(session.state)
+        ? await client.canReusePreservedOwnedSession(session.state, {
+            clientOptions,
+          })
         : true;
     // Start from previous entries so handoff agents that were not touched this turn
     // keep their sandbox sessions in the RunState.
     const providerState = await client.serializeSessionState(session.state, {
       preserveOwnedSession: isOwnedSession && !!includeOwnedSessions,
       reuseLiveSession,
-      willCloseAfterSerialize: isOwnedSession && !includeOwnedSessions,
+      willCloseAfterSerialize:
+        isOwnedSession && (!includeOwnedSessions || !reuseLiveSession),
     });
     sessionsByAgent[currentAgentKey] = {
       backendId: client.backendId,

@@ -7,7 +7,7 @@ const agent = new RealtimeAgent({
 
 // Create a transport that connects to OpenAI Realtime via Cloudflare/workerd's fetch-based upgrade.
 const cfTransport = new CloudflareRealtimeTransportLayer({
-  url: 'wss://api.openai.com/v1/realtime?model=gpt-realtime-2',
+  url: 'wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1',
 });
 
 const session = new RealtimeSession(agent, {

@@ -1,5 +1,196 @@
 # @openai/agents-extensions
 
+## 0.14.3
+
+### Patch Changes
+
+- 6e32cdd: fix: preserve streamed reasoning provider metadata across events
+- 15ac711: fix: resolve ambiguous tool and handoff names consistently with a warning by default and an opt-in error policy, including owner-scoped approvals for nested agents
+- 92a0809: fix: enforce sandbox output budgets across core and extension providers
+- Updated dependencies [31bc820]
+- Updated dependencies [90781d8]
+- Updated dependencies [08169df]
+- Updated dependencies [1154aa0]
+- Updated dependencies [15ac711]
+- Updated dependencies [59fa3fc]
+- Updated dependencies [2d5d040]
+- Updated dependencies [427331f]
+- Updated dependencies [4bb80e4]
+- Updated dependencies [78f8581]
+- Updated dependencies [b4a90f9]
+- Updated dependencies [9416c96]
+- Updated dependencies [f431475]
+- Updated dependencies [9cbba54]
+- Updated dependencies [0f9b12e]
+- Updated dependencies [92a0809]
+- Updated dependencies [1eaa425]
+  - @openai/agents-core@0.14.3
+
+## 0.14.2
+
+### Patch Changes
+
+- 0134edc: fix: reject ephemeral manifest paths during sandbox archive hydration
+- 25e1cf0: feat: preserve sandbox environment secret references
+- Updated dependencies [e8de524]
+- Updated dependencies [b4b8b21]
+- Updated dependencies [7255289]
+- Updated dependencies [25e1cf0]
+  - @openai/agents-core@0.14.2
+
+## 0.14.1
+
+### Patch Changes
+
+- 73abbdc: fix: support native Windows host paths in sandbox path grants (#1537)
+- Updated dependencies [e4158f1]
+- Updated dependencies [73abbdc]
+- Updated dependencies [48094d0]
+- Updated dependencies [58e3a43]
+  - @openai/agents-core@0.14.1
+
+## 0.14.0
+
+### Minor Changes
+
+- 67e9733: feat: disable sensitive model and tool data logging by default with a programmatic opt-in
+
+### Patch Changes
+
+- 929160b: feat: add Vercel S3 bucket mount support
+- f7771c1: feat: add default task and turn tracing with a per-run opt-out
+- b0aaeec: fix: preserve AI SDK v3 image tool outputs as image URLs, data, and file IDs
+- 02ef342: feat: add Programmatic Tool Calling with caller-aware replay, runtime-validated Zod outputs, configuration preflight, examples, and explicit unsupported-adapter errors
+- b04baf0: fix(ai-sdk): flush the pending assistant message before user and system turns
+
+  Provider-executed tool search folds its result into the in-progress assistant message and leaves it pending (no flush). The `user` and `system` message branches in `itemsToLanguageV2Messages` did not flush that pending assistant message before pushing their own, so a server tool-search turn followed by a new user turn emitted the assistant message last — the request ended on an assistant message and Anthropic rejected it as an unintended prefill. Route all turn-boundary branches through a shared `flushCurrentAssistantMessage()` helper so the pending assistant is always flushed first.
+
+- e8a4ffa: fix: support AI SDK v4 models and AI SDK 7 peers (#1499)
+- c939119: fix: preserve refusal messages in AI SDK history
+- fa7c36f: fix: honor sensitive logging flags across runtime error and payload paths
+- a3092ca: fix: distinguish missing sandbox paths from inaccessible files and provider failures
+- d601be6: fix: pin and verify rclone sandbox installs
+- Updated dependencies [f7771c1]
+- Updated dependencies [457166e]
+- Updated dependencies [b907917]
+- Updated dependencies [02ef342]
+- Updated dependencies [b45fd21]
+- Updated dependencies [efdd60e]
+- Updated dependencies [e4f3293]
+- Updated dependencies [fa7c36f]
+- Updated dependencies [67e9733]
+- Updated dependencies [a3092ca]
+- Updated dependencies [68cc86b]
+- Updated dependencies [4461a35]
+- Updated dependencies [84aed6e]
+  - @openai/agents-core@0.14.0
+
+## 0.13.5
+
+### Patch Changes
+
+- 2437c35: feat: add AI SDK provider-executed tool search support (#1479)
+- 72ca4bc: fix: correlate streamed text deltas with completed output items (#1484)
+- f86acf5: chore: bump E2B version
+- Updated dependencies [2437c35]
+- Updated dependencies [72ca4bc]
+- Updated dependencies [f1ae0b4]
+  - @openai/agents-core@0.13.5
+
+## 0.13.4
+
+### Patch Changes
+
+- 6c12d5c: fix: concatenate all text parts in AI SDK non-streaming responses instead of keeping only the first
+- Updated dependencies [a1670ce]
+  - @openai/agents-core@0.13.4
+
+## 0.13.3
+
+### Patch Changes
+
+- Updated dependencies [a1ea36f]
+- Updated dependencies [4292ecc]
+  - @openai/agents-core@0.13.3
+
+## 0.13.2
+
+### Patch Changes
+
+- Updated dependencies [4c14038]
+- Updated dependencies [e5b75e1]
+- Updated dependencies [240b6eb]
+  - @openai/agents-core@0.13.2
+
+## 0.13.1
+
+### Patch Changes
+
+- Updated dependencies [532ab2b]
+- Updated dependencies [ec48462]
+  - @openai/agents-core@0.13.1
+
+## 0.13.0
+
+### Patch Changes
+
+- @openai/agents-core@0.13.0
+
+## 0.12.1
+
+### Patch Changes
+
+- 5f57fe1: test: improve agents-core and agents-extensions coverage
+- dc7864a: refactor: consolidate internal runtime helpers and adapter normalization
+- f105eff: test: tighten Twilio transport test fakes
+- Updated dependencies [f064c56]
+- Updated dependencies [b65face]
+- Updated dependencies [59a67c4]
+- Updated dependencies [81d654f]
+- Updated dependencies [5f57fe1]
+- Updated dependencies [dc7864a]
+  - @openai/agents-core@0.12.1
+
+## 0.12.0
+
+### Patch Changes
+
+- 8f6a84b: fix: update the ws dependency to 8.21.0
+- Updated dependencies [e044d14]
+- Updated dependencies [a8f81cd]
+- Updated dependencies [c450c2b]
+- Updated dependencies [5350aad]
+- Updated dependencies [395699e]
+- Updated dependencies [f990172]
+  - @openai/agents-core@0.12.0
+
+## 0.11.8
+
+### Patch Changes
+
+- Updated dependencies [dd64ba6]
+- Updated dependencies [b740fb3]
+  - @openai/agents-core@0.11.8
+
+## 0.11.7
+
+### Patch Changes
+
+- 9c6db7c: fix: preserve complete Vercel PAT credentials while delegating incomplete authentication
+- e87c017: Update the Modal sandbox provider for the Modal SDK 0.7.6 sandbox command, filesystem, secrets, and cloud bucket mount APIs.
+- edd0a07: fix: expose sandbox error retryability metadata
+- 6d9152d: fix: recover expired credentials in legacy Vercel sandbox sessions through SDK authentication
+- Updated dependencies [edd0a07]
+- Updated dependencies [dfbc3b0]
+  - @openai/agents-core@0.11.7
+
+## 0.11.6
+
+### Patch Changes
+
+- Updated dependencies [13f7662]
+  - @openai/agents-core@0.11.6
+
 ## 0.11.5
 
 ### Patch Changes

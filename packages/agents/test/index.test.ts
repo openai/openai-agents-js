@@ -1,14 +1,49 @@
 import * as Agents from '../src/index';
+import type {
+  AgentHookEvents,
+  AgentTool,
+  AgentToolOptions,
+  AgentToolOptionsWithDefault,
+  AgentToolOptionsWithParameters,
+  RunHookEvents,
+  SessionHistoryTransactionArgs,
+  SessionHistoryTransactionAwareSession,
+  ToolNameCollisionPolicy,
+} from '../src/index';
 import * as Sandbox from '../src/sandbox';
 import * as LocalSandbox from '../src/sandbox/local';
 import { RealtimeAgent } from '../src/realtime';
 import { isZodObject } from '../src/utils';
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, expectTypeOf } from 'vitest';
+import { z } from 'zod';
 
 describe('Exports', () => {
   test('Agent is out there', () => {
     const agent = new Agents.Agent({ name: 'Test' });
     expect(agent.name).toBe('Test');
+    expect(typeof Agents.setSensitiveDataLoggingEnabled).toBe('function');
+    expect(typeof Agents.RunCompactionItem).toBe('function');
+    expect(typeof Agents.isSessionHistoryTransactionAwareSession).toBe(
+      'function',
+    );
+  });
+
+  test('lifecycle and agent tool types are out there', () => {
+    const _parameters = z.object({ query: z.string() });
+    type TestAgent = Agents.Agent<undefined>;
+    type PublicTypes = [
+      AgentHookEvents<undefined>,
+      RunHookEvents<undefined>,
+      AgentToolOptions<undefined, TestAgent, typeof _parameters>,
+      AgentToolOptionsWithDefault<undefined, TestAgent>,
+      AgentToolOptionsWithParameters<undefined, TestAgent, typeof _parameters>,
+      AgentTool<undefined, TestAgent, typeof _parameters>,
+      SessionHistoryTransactionArgs,
+      SessionHistoryTransactionAwareSession,
+      ToolNameCollisionPolicy,
+    ];
+
+    expectTypeOf<PublicTypes>().not.toBeNever();
   });
 });
 
@@ -42,6 +77,16 @@ describe('Tool search exports', () => {
         type: 'tool_search',
         execution: 'client',
       },
+    });
+  });
+});
+
+describe('Programmatic Tool Calling exports', () => {
+  test('programmaticToolCallingTool should be available', () => {
+    expect(Agents.programmaticToolCallingTool()).toEqual({
+      type: 'hosted_tool',
+      name: 'programmatic_tool_calling',
+      providerData: { type: 'programmatic_tool_calling' },
     });
   });
 });

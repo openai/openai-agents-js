@@ -57,6 +57,12 @@ export type OpenAIRealtimeWebRTCOptions = {
   audioElement?: HTMLAudioElement;
   /**
    * The media stream to use for audio input. If not provided, the default microphone will be used.
+   *
+   * A stream you pass here stays owned by your application. `close()` will not stop its tracks,
+   * so the stream remains usable for a level meter, a recorder, or a later reconnect. Keep a
+   * reference to it and call `stop()` on its tracks once you are actually done with it, otherwise
+   * the microphone stays open after the session ends. A microphone the transport opens for you
+   * because this option is omitted is still stopped by `close()`.
    */
   mediaStream?: MediaStream;
   /**
@@ -100,12 +106,37 @@ export class OpenAIRealtimeWebRTC
   #cancelOngoingResponse = false;
   #muted = false;
   #connectPromise: Promise<void> | undefined;
+  #cancelConnectionAttempt: (() => void) | undefined;
   #connectAttemptId = 0;
   #peerConnectionDisconnectedTimeout: ReturnType<typeof setTimeout> | undefined;
   #responseCreateSequencer = new ResponseCreateSequencer(
     (event) => this.#sendEventNow(event),
     (error) => this._onError(error),
   );
+
+  #reportError(error: unknown) {
+    try {
+      this._onError(error);
+    } catch {
+      // Error observers must not interrupt connection state cleanup.
+    }
+  }
+
+  #cleanupFailedConnection(error: unknown) {
+    let cleanupFailed = false;
+    let cleanupError: unknown;
+    try {
+      this.close();
+    } catch (caughtError) {
+      cleanupFailed = true;
+      cleanupError = caughtError;
+    }
+
+    this.#reportError(error);
+    if (cleanupFailed) {
+      this.#reportError(cleanupError);
+    }
+  }
 
   constructor(private readonly options: OpenAIRealtimeWebRTCOptions = {}) {
     if (typeof RTCPeerConnection === 'undefined') {
@@ -159,31 +190,69 @@ export class OpenAIRealtimeWebRTC
       return;
     }
 
+    if (this.#connectPromise) {
+      return this.#connectPromise;
+    }
+
     if (this.#state.status === 'connecting') {
-      if (this.#connectPromise) {
-        return this.#connectPromise;
-      }
       logger.warn(
         'Realtime connection already in progress but no promise found',
       );
       return;
     }
 
-    const model = options.model ?? this.currentModel;
+    const previousModel = this.currentModel;
+    const model = options.model ?? previousModel;
     this.currentModel = model;
     const baseUrl = options.url ?? this.#url;
-    const apiKey = await this._getApiKey(options);
-
-    const isClientKey = typeof apiKey === 'string' && apiKey.startsWith('ek_');
-    if (isBrowserEnvironment() && !this.#useInsecureApiKey && !isClientKey) {
-      throw new UserError(
-        'Using the WebRTC connection in a browser environment requires an ephemeral client key. If you need to use a regular API key, use the WebSocket transport or set the `useInsecureApiKey` option to true.',
-      );
-    }
-
     const attemptId = ++this.#connectAttemptId;
-    // eslint-disable-next-line no-async-promise-executor
-    this.#connectPromise = new Promise<void>(async (resolve, reject) => {
+    let resolveConnection: () => void;
+    let rejectConnection: (reason?: unknown) => void;
+    const connectionReady = new Promise<void>((resolve, reject) => {
+      resolveConnection = resolve;
+      rejectConnection = reject;
+    });
+    let shouldRestoreModel = true;
+    const isActiveAttempt = () => this.#connectAttemptId === attemptId;
+    const releaseConnectionAttempt = () => {
+      if (!isActiveAttempt()) {
+        return false;
+      }
+
+      if (shouldRestoreModel) {
+        this.currentModel = previousModel;
+      }
+      this.#connectPromise = undefined;
+      this.#cancelConnectionAttempt = undefined;
+      this.#connectAttemptId += 1;
+      return true;
+    };
+
+    const prepareConnection = async () => {
+      let apiKey: string | undefined;
+      try {
+        apiKey = await this._getApiKey(options);
+      } catch (error) {
+        releaseConnectionAttempt();
+        rejectConnection(error);
+        return;
+      }
+      if (!isActiveAttempt()) {
+        return;
+      }
+
+      const isClientKey =
+        typeof apiKey === 'string' && apiKey.startsWith('ek_');
+      if (isBrowserEnvironment() && !this.#useInsecureApiKey && !isClientKey) {
+        releaseConnectionAttempt();
+        rejectConnection(
+          new UserError(
+            'Using the WebRTC connection in a browser environment requires an ephemeral client key. If you need to use a regular API key, use the WebSocket transport or set the `useInsecureApiKey` option to true.',
+          ),
+        );
+        return;
+      }
+
       try {
         const userSessionConfig: Partial<RealtimeSessionConfig> = {
           ...(options.initialSessionConfig || {}),
@@ -212,8 +281,21 @@ export class OpenAIRealtimeWebRTC
           callId,
         };
         this.emit('connection_change', this.#state.status);
+        if (
+          this.#connectAttemptId !== attemptId ||
+          this.#state.dataChannel !== dataChannel
+        ) {
+          throw new Error('Connection closed before setup completed');
+        }
 
         dataChannel.addEventListener('open', () => {
+          if (
+            this.#connectAttemptId !== attemptId ||
+            this.#state.dataChannel !== dataChannel
+          ) {
+            return;
+          }
+
           this.#state = {
             status: 'connecting',
             peerConnection,
@@ -224,15 +306,46 @@ export class OpenAIRealtimeWebRTC
           // Wait for session.updated acknowledgement before resolving connect().
           // Without this, audio can flow to the server before config (instructions,
           // tools, modalities) is applied, causing the server to use defaults.
-          let resolved = false;
+          let settled = false;
           // eslint-disable-next-line prefer-const -- declared before finish() to avoid TDZ if a callback fires synchronously
           let timeoutId: ReturnType<typeof setTimeout> | undefined;
-          const finish = () => {
-            if (resolved) return;
-            resolved = true;
+          const removeConfigAckListeners = () => {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
             dataChannel.removeEventListener('message', onConfigAck);
             dataChannel.removeEventListener('close', onClose);
+          };
+          const fail = (error: unknown, cleanupTransport = true) => {
+            if (settled) return;
+            settled = true;
+            removeConfigAckListeners();
+            rejectConnection(error);
+            const released = releaseConnectionAttempt();
+            if (
+              cleanupTransport &&
+              released &&
+              this.#state.dataChannel === dataChannel
+            ) {
+              this.#cleanupFailedConnection(error);
+            } else if (cleanupTransport) {
+              this.#reportError(error);
+            }
+          };
+          this.#cancelConnectionAttempt = () => {
+            fail(
+              new Error(
+                'Connection closed before session config was acknowledged',
+              ),
+              false,
+            );
+          };
+          const isActiveConnection = () =>
+            this.#connectAttemptId === attemptId &&
+            this.#state.status === 'connected' &&
+            this.#state.dataChannel === dataChannel &&
+            dataChannel.readyState === 'open';
+          const finish = () => {
+            if (settled) return;
+            removeConfigAckListeners();
             // Reject if the transport was closed/errored while waiting,
             // the dataChannel is no longer open, or a different connection
             // attempt is now active (stale timeout from an earlier connect).
@@ -241,17 +354,10 @@ export class OpenAIRealtimeWebRTC
               this.#state.dataChannel !== dataChannel ||
               dataChannel.readyState !== 'open'
             ) {
-              // Transition to disconnected if this attempt is still the
-              // active one so that callers can retry connect() without
-              // needing to call close() first.
-              if (this.#state.dataChannel === dataChannel) {
-                this.close();
-              }
-              reject(
-                new Error(
-                  'Connection closed before session config was acknowledged',
-                ),
+              const error = new Error(
+                'Connection closed before session config was acknowledged',
               );
+              fail(error);
               return;
             }
             this.#state = {
@@ -260,13 +366,42 @@ export class OpenAIRealtimeWebRTC
               dataChannel,
               callId,
             };
-            this.emit('connection_change', this.#state.status);
-            this._onOpen();
-            resolve();
+            if (this.#connectAttemptId === attemptId) {
+              this.#connectPromise = undefined;
+            }
+            try {
+              this.emit('connection_change', this.#state.status);
+              if (!isActiveConnection()) {
+                fail(
+                  new Error(
+                    'Connection closed before session config was acknowledged',
+                  ),
+                );
+                return;
+              }
+              this._onOpen();
+              if (!isActiveConnection()) {
+                fail(
+                  new Error(
+                    'Connection closed before session config was acknowledged',
+                  ),
+                );
+                return;
+              }
+            } catch (error) {
+              fail(error);
+              return;
+            }
+            shouldRestoreModel = false;
+            if (isActiveAttempt()) {
+              this.#cancelConnectionAttempt = undefined;
+            }
+            settled = true;
+            resolveConnection();
           };
           const onConfigAck = (ackEvent: MessageEvent) => {
-            const parsed = JSON.parse(ackEvent.data);
-            if (parsed.type === 'session.updated') {
+            const { data: parsed } = parseRealtimeEvent(ackEvent);
+            if (parsed?.type === 'session.updated') {
               finish();
             }
           };
@@ -274,7 +409,7 @@ export class OpenAIRealtimeWebRTC
             finish();
           };
           timeoutId = setTimeout(() => {
-            if (!resolved) {
+            if (!settled) {
               logger.warn(
                 'Timed out waiting for session.updated ack — resolving connect() anyway',
               );
@@ -288,7 +423,19 @@ export class OpenAIRealtimeWebRTC
           // finish() resolves connect() before _onMessage emits the
           // session.updated event to external listeners.
           dataChannel.addEventListener('message', (event) => {
+            if (
+              this.#connectAttemptId !== attemptId ||
+              this.#state.dataChannel !== dataChannel
+            ) {
+              return;
+            }
             this._onMessage(event);
+            if (
+              this.#connectAttemptId !== attemptId ||
+              this.#state.dataChannel !== dataChannel
+            ) {
+              return;
+            }
             const { data: parsed, isGeneric } = parseRealtimeEvent(event);
             if (!parsed || isGeneric) {
               return;
@@ -317,13 +464,23 @@ export class OpenAIRealtimeWebRTC
             }
           });
 
-          this.updateSessionConfig(userSessionConfig);
+          try {
+            this.updateSessionConfig(userSessionConfig);
+          } catch (error) {
+            fail(error);
+          }
         });
 
         dataChannel.addEventListener('error', (event) => {
-          this.close();
-          this._onError(event);
-          reject(event);
+          if (
+            this.#connectAttemptId !== attemptId ||
+            this.#state.dataChannel !== dataChannel
+          ) {
+            return;
+          }
+          rejectConnection(event);
+          releaseConnectionAttempt();
+          this.#cleanupFailedConnection(event);
         });
 
         // set up audio playback
@@ -340,12 +497,28 @@ export class OpenAIRealtimeWebRTC
           (await navigator.mediaDevices.getUserMedia({
             audio: true,
           }));
+        if (!isActiveAttempt()) {
+          if (!this.options.mediaStream) {
+            for (const track of stream.getAudioTracks()) {
+              try {
+                track.stop();
+              } catch (error) {
+                this.#reportError(error);
+              }
+            }
+          }
+          return;
+        }
         peerConnection.addTrack(stream.getAudioTracks()[0]);
 
         if (this.options.changePeerConnection) {
           const originalPeerConnection = peerConnection;
-          peerConnection =
+          const changedPeerConnection =
             await this.options.changePeerConnection(peerConnection);
+          if (!isActiveAttempt()) {
+            return;
+          }
+          peerConnection = changedPeerConnection;
           if (originalPeerConnection !== peerConnection) {
             originalPeerConnection.onconnectionstatechange = null;
           }
@@ -354,7 +527,13 @@ export class OpenAIRealtimeWebRTC
         }
 
         const offer = await peerConnection.createOffer();
+        if (!isActiveAttempt()) {
+          return;
+        }
         await peerConnection.setLocalDescription(offer);
+        if (!isActiveAttempt()) {
+          return;
+        }
 
         if (!offer.sdp) {
           throw new Error('Failed to create offer');
@@ -369,28 +548,59 @@ export class OpenAIRealtimeWebRTC
             'X-OpenAI-Agents-SDK': HEADERS['X-OpenAI-Agents-SDK'],
           },
         });
+        if (!isActiveAttempt()) {
+          return;
+        }
+
+        if (!sdpResponse.ok) {
+          // Without this the error body is passed to setRemoteDescription and
+          // surfaces as an opaque "Failed to parse SessionDescription", hiding
+          // the real cause (e.g. insufficient_quota, invalid ephemeral key).
+          const detail = await readSdpErrorDetail(sdpResponse);
+          if (!isActiveAttempt()) {
+            return;
+          }
+          throw new Error(
+            `Realtime call request failed with status ${sdpResponse.status}${detail}`,
+          );
+        }
 
         callId = sdpResponse.headers?.get('Location')?.split('/').pop();
         this.#state = { ...this.#state, callId };
 
+        const answerSdp = await sdpResponse.text();
+        if (!isActiveAttempt()) {
+          return;
+        }
         const answer: RTCSessionDescriptionInit = {
           type: 'answer',
-          sdp: await sdpResponse.text(),
+          sdp: answerSdp,
         };
 
         await peerConnection.setRemoteDescription(answer);
       } catch (error) {
-        this.close();
-        this._onError(error);
-        reject(error);
+        rejectConnection(error);
+        if (releaseConnectionAttempt()) {
+          this.#cleanupFailedConnection(error);
+        } else {
+          this.#reportError(error);
+        }
       }
-    }).finally(() => {
+    };
+
+    this.#cancelConnectionAttempt = () => {
+      rejectConnection(new Error('Connection closed before setup completed'));
+      releaseConnectionAttempt();
+    };
+    this.#connectPromise = connectionReady.finally(() => {
       // Only clear if this is still the active connection attempt.
       // A newer connect() may have already replaced #connectPromise.
       if (this.#connectAttemptId === attemptId) {
         this.#connectPromise = undefined;
+        this.#cancelConnectionAttempt = undefined;
       }
     });
+    void prepareConnection();
     return this.#connectPromise;
   }
 
@@ -513,30 +723,60 @@ export class OpenAIRealtimeWebRTC
    */
   close() {
     this.#clearPeerConnectionDisconnectedTimeout();
-    this.#responseCreateSequencer.releaseWaiters();
+    this.#cancelConnectionAttempt?.();
+    const { dataChannel, peerConnection } = this.#state;
+    const shouldNotify = this.#state.status !== 'disconnected';
+
+    this.#state = {
+      status: 'disconnected',
+      peerConnection: undefined,
+      dataChannel: undefined,
+      callId: undefined,
+    };
+
+    let cleanupError: unknown;
+    const runCleanup = (cleanup: () => void) => {
+      try {
+        cleanup();
+      } catch (error) {
+        cleanupError ??= error;
+      }
+    };
+
+    runCleanup(() => this.#responseCreateSequencer.releaseWaiters());
     this.#cancelOngoingResponse = false;
-    if (this.#state.dataChannel) {
-      this.#state.dataChannel.close();
+    if (dataChannel) {
+      runCleanup(() => dataChannel.close());
     }
 
-    if (this.#state.peerConnection) {
-      const peerConnection = this.#state.peerConnection;
-      peerConnection.onconnectionstatechange = null;
-      peerConnection.getSenders().forEach((sender) => {
-        sender.track?.stop();
+    if (peerConnection) {
+      runCleanup(() => {
+        peerConnection.onconnectionstatechange = null;
       });
-      peerConnection.close();
+      // Skip sender cleanup when the caller supplied `mediaStream`. That stream belongs to the
+      // application, which may still be using it for a level meter, a recorder, or a later
+      // reconnect, so stopping it here would end the track permanently. This is deliberately
+      // scoped to that one case rather than a per-track ownership rule, so senders added through
+      // `changePeerConnection` are left to whoever added them.
+      if (!this.options.mediaStream) {
+        let senders: RTCRtpSender[] = [];
+        runCleanup(() => {
+          senders = peerConnection.getSenders();
+        });
+        for (const sender of senders) {
+          runCleanup(() => sender.track?.stop());
+        }
+      }
+      runCleanup(() => peerConnection.close());
     }
 
-    if (this.#state.status !== 'disconnected') {
-      this.#state = {
-        status: 'disconnected',
-        peerConnection: undefined,
-        dataChannel: undefined,
-        callId: undefined,
-      };
-      this.emit('connection_change', this.#state.status);
-      this._onClose();
+    if (shouldNotify) {
+      runCleanup(() => this.emit('connection_change', this.#state.status));
+      runCleanup(() => this._onClose());
+    }
+
+    if (cleanupError) {
+      throw cleanupError;
     }
   }
 
@@ -559,4 +799,25 @@ export class OpenAIRealtimeWebRTC
       type: 'output_audio_buffer.clear',
     });
   }
+}
+
+async function readSdpErrorDetail(response: Response): Promise<string> {
+  try {
+    const text = await response.text();
+    if (text) {
+      try {
+        const message = JSON.parse(text)?.error?.message;
+        if (typeof message === 'string' && message) {
+          return `: ${message}`;
+        }
+      } catch {
+        // Non-JSON body — fall through to the raw text below.
+      }
+      return `: ${text}`;
+    }
+  } catch {
+    // Ignore response body read failures and use the status text below.
+  }
+
+  return response.statusText ? `: ${response.statusText}` : '';
 }

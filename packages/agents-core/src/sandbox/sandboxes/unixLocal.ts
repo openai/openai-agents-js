@@ -49,7 +49,10 @@ import {
   type WorkspaceArchiveOptions,
 } from '../session';
 import { Manifest, normalizeRelativePath } from '../manifest';
-import { SandboxConfigurationError } from '../errors';
+import {
+  SandboxConfigurationError,
+  SandboxUnsupportedFeatureError,
+} from '../errors';
 import {
   WorkspacePathPolicy,
   type ResolveSandboxPathOptions,
@@ -65,6 +68,7 @@ import {
   pathExists,
 } from './shared/localWorkspace';
 import {
+  assertHostPathGrantsRebound,
   mergeManifestEntryDelta,
   mergeManifestDelta,
   sanitizeEnvironmentForPersistence,
@@ -417,6 +421,7 @@ export class UnixLocalSandboxSession<
   }
 
   async applyManifest(manifest: Manifest, runAs?: string): Promise<void> {
+    assertUnixLocalHostPathGrantsUnsupported(manifest);
     assertLocalWorkspaceManifestMetadataSupported(
       'UnixLocalSandboxClient',
       manifest,
@@ -903,6 +908,7 @@ export class UnixLocalSandboxClient implements SandboxClient<
         ? { archiveLimits: createArgs.archiveLimits }
         : {}),
     };
+    assertUnixLocalHostPathGrantsUnsupported(manifest);
     assertLocalWorkspaceManifestMetadataSupported(
       'UnixLocalSandboxClient',
       manifest,
@@ -941,6 +947,8 @@ export class UnixLocalSandboxClient implements SandboxClient<
     state: UnixLocalSandboxSessionState,
     options: SandboxClientResumeOptions = {},
   ): Promise<UnixLocalSandboxSession> {
+    assertHostPathGrantsRebound(state);
+    assertUnixLocalHostPathGrantsUnsupported(state.manifest);
     const archiveLimits =
       options.archiveLimits === undefined
         ? this.options.archiveLimits
@@ -956,6 +964,7 @@ export class UnixLocalSandboxClient implements SandboxClient<
   async serializeSessionState(
     state: UnixLocalSandboxSessionState,
   ): Promise<Record<string, unknown>> {
+    assertUnixLocalHostPathGrantsUnsupported(state.manifest);
     const snapshotSpec = state.snapshotSpec ?? this.options.snapshot ?? null;
     const snapshot = await persistLocalSnapshot(
       'UnixLocalSandboxClient',
@@ -1065,6 +1074,24 @@ function pathWithinLogicalRoot(path: string, root: string): boolean {
   return path === root || path.startsWith(`${root}/`);
 }
 
+function assertUnixLocalHostPathGrantsUnsupported(manifest: Manifest): void {
+  const grant = manifest.extraPathGrants.find(
+    ({ hostPath }) => hostPath !== undefined,
+  );
+  if (!grant) {
+    return;
+  }
+
+  throw new SandboxUnsupportedFeatureError(
+    `UnixLocalSandboxClient does not support path grant hostPath for "${grant.path}". Omit hostPath when the host and sandbox paths are the same, or use DockerSandboxClient when they differ.`,
+    {
+      provider: 'UnixLocalSandboxClient',
+      feature: 'manifest.extraPathGrants.hostPath',
+      path: grant.path,
+    },
+  );
+}
+
 function validateResolvedHostPath(args: {
   path?: string;
   resolvedPath: string;
@@ -1126,6 +1153,15 @@ class UnixLocalSandboxEditor implements Editor {
   constructor(session: UnixLocalSandboxSession, runAs?: string) {
     this.session = session;
     this.runAs = runAs;
+  }
+
+  canAccessPathForEdit(path: string): boolean {
+    try {
+      this.session.resolveSandboxPath(path, { forWrite: true });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async createFile(

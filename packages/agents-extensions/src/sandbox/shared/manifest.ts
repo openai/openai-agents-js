@@ -1,5 +1,7 @@
 import { UserError } from '@openai/agents-core';
 import {
+  Environment,
+  isEnvValueReference,
   isMount,
   Manifest,
   normalizeRelativePath,
@@ -47,6 +49,23 @@ export function cloneManifestWithoutMountEntries(manifest: Manifest): Manifest {
   return cloneManifestWithOverrides(manifest, {
     entries: removeMountEntries(manifest.entries),
   });
+}
+
+export function manifestWithMaterializedEnvironmentReferences(
+  manifest: Manifest,
+  environment: Record<string, string>,
+): Manifest {
+  const materializedManifest = cloneManifestWithOverrides(manifest);
+  for (const [key, value] of Object.entries(manifest.environment)) {
+    if (isEnvValueReference(value) && typeof environment[key] === 'string') {
+      materializedManifest.environment[key] = new Environment({
+        value: environment[key],
+        ...(value.ephemeral ? { ephemeral: true } : {}),
+        ...(value.description ? { description: value.description } : {}),
+      });
+    }
+  }
+  return materializedManifest;
 }
 
 export function manifestContainsLocalSource(manifest: Manifest): boolean {

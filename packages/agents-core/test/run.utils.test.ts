@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { getTurnInput } from '../src/run';
 import {
   RunMessageOutputItem as MessageOutputItem,
+  RunCompactionItem as CompactionItem,
   RunReasoningItem as ReasoningItem,
   RunToolCallItem,
+  RunToolCallOutputItem,
 } from '../src/items';
 import { Agent } from '../src/agent';
 import { TEST_MODEL_MESSAGE } from './stubs';
@@ -77,5 +79,66 @@ describe('getTurnInput', () => {
         content: 'hello',
       },
     ]);
+  });
+
+  it('keeps only items from the latest compaction marker', () => {
+    const agent = new Agent({ name: 'A' });
+    const earlierMessage = new MessageOutputItem(TEST_MODEL_MESSAGE, agent);
+    const compaction = {
+      type: 'compaction',
+      id: 'cmp_latest',
+      encrypted_content: 'ciphertext',
+    } satisfies protocol.CompactionItem;
+    const latestMessage = {
+      ...TEST_MODEL_MESSAGE,
+      id: 'msg_latest',
+    };
+
+    const result = getTurnInput('old input', [
+      earlierMessage,
+      new CompactionItem(compaction, agent),
+      new MessageOutputItem(latestMessage, agent),
+    ]);
+
+    expect(result).toEqual([compaction, latestMessage]);
+  });
+
+  it('drops orphan calls before considering pre-compaction results', () => {
+    const agent = new Agent({ name: 'A' });
+    const callId = 'call_reused_after_compaction';
+    const oldResult = new RunToolCallOutputItem(
+      {
+        type: 'function_call_result',
+        name: 'reused_tool',
+        callId,
+        output: 'old result',
+        status: 'completed',
+      },
+      agent,
+      'old result',
+    );
+    const compaction = {
+      type: 'compaction',
+      id: 'cmp_reused_call',
+      encrypted_content: 'ciphertext',
+    } satisfies protocol.CompactionItem;
+    const newCall = new RunToolCallItem(
+      {
+        type: 'function_call',
+        name: 'reused_tool',
+        callId,
+        arguments: '{}',
+        status: 'completed',
+      },
+      agent,
+    );
+
+    const result = getTurnInput('old input', [
+      oldResult,
+      new CompactionItem(compaction, agent),
+      newCall,
+    ]);
+
+    expect(result).toEqual([compaction]);
   });
 });

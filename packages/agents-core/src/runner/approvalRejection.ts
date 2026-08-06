@@ -1,4 +1,5 @@
-import logger from '../logger';
+import logger, { getSafeErrorType } from '../logger';
+import type { Agent } from '../agent';
 import { RunContext } from '../runContext';
 import type { ToolErrorFormatter, ToolErrorFormatterArgs } from '../run';
 
@@ -11,6 +12,8 @@ type ApprovalRejectionMessageOptions<TContext = unknown> = {
   runContext: RunContext<TContext>;
   toolType: ApprovalRejectedToolType;
   toolName: string;
+  approvalToolNames?: readonly string[];
+  approvalAgent?: Agent<any, any>;
   callId: string;
   toolErrorFormatter?: ToolErrorFormatter<TContext>;
 };
@@ -23,12 +26,26 @@ export async function resolveApprovalRejectionMessage<TContext>({
   runContext,
   toolType,
   toolName,
+  approvalToolNames = [toolName],
+  approvalAgent,
   callId,
   toolErrorFormatter,
 }: ApprovalRejectionMessageOptions<TContext>): Promise<string> {
   // Per-call message from state.reject(item, { message }) takes precedence over
   // the global toolErrorFormatter callback and the SDK default.
-  const perCallMessage = runContext.getRejectionMessage(toolName, callId);
+  const perCallMessage = approvalToolNames
+    .map((approvalToolName) =>
+      approvalAgent
+        ? runContext._getFunctionRejectionMessage(
+            approvalToolName,
+            callId,
+            approvalAgent,
+          )
+        : runContext.getRejectionMessage(approvalToolName, callId, {
+            functionTool: false,
+          }),
+    )
+    .find((message): message is string => typeof message === 'string');
   if (typeof perCallMessage === 'string') {
     return perCallMessage;
   }
@@ -56,8 +73,11 @@ export async function resolveApprovalRejectionMessage<TContext>({
       );
     }
   } catch (error) {
+    const errorDetails = logger.dontLogToolData
+      ? getSafeErrorType(error)
+      : toErrorMessage(error);
     logger.warn(
-      `toolErrorFormatter threw while formatting approval rejection: ${toErrorMessage(error)}`,
+      `toolErrorFormatter threw while formatting approval rejection: ${errorDetails}`,
     );
   }
 

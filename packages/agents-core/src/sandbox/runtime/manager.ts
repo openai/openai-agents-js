@@ -1,8 +1,9 @@
 import type { Agent, AgentOutputType } from '../../agent';
-import logger from '../../logger';
+import logger, { logModelAndToolActionWarning } from '../../logger';
 import { UserError } from '../../errors';
 import type { RunState } from '../../runState';
 import type { AgentInputItem } from '../../types';
+import type { Span, Trace } from '../../tracing';
 import type { SandboxAgent } from '../agent';
 import type { Memory } from '../capabilities/memory';
 import { isMemoryCapability } from '../capabilities/memory';
@@ -12,7 +13,7 @@ import type {
   SandboxRunConfig,
 } from '../client';
 import { SandboxLifecycleError } from '../errors';
-import { cloneManifest, Manifest } from '../manifest';
+import { cloneManifest, isEnvValueReference, Manifest } from '../manifest';
 import { type SandboxSessionLike, type SandboxSessionState } from '../session';
 import { isDefaultRemoteMountCommandAllowlist } from '../shared/remoteMountCommandAllowlist';
 import { serializeManifestEnvironment } from '../shared/environment';
@@ -31,18 +32,26 @@ import {
   acquireSandboxAgent,
   allocateAgentKeys,
   getObjectId,
+  indexAgentsByKey,
   isSandboxAgent,
   releaseSandboxAgents,
 } from './agentKeys';
 import {
   forgetLivePreservedOwnedSessions,
+  forgetLivePreservedOwnedSessionHandle,
   livePreservedOwnedSessionEntries,
   livePreservedOwnedSession,
   preservedOwnedSessionAgentKeysWithoutLiveReuse,
+  rejectLivePreservedOwnedSessionHandle,
   rememberLivePreservedOwnedSessions,
+  type LivePreservedOwnedSessionEntry,
 } from './livePreservedSessions';
 import { applyManifestToProvidedSession } from './providedSessionManifest';
 import { serializeSandboxRuntimeState } from './sessionSerialization';
+import {
+  assertHostPathGrantsRebound,
+  rebindPersistedPathGrants,
+} from '../sandboxes/shared/manifestPersistence';
 import {
   cleanupSandboxSession,
   hasSessionCleanup,
@@ -50,6 +59,7 @@ import {
   runSandboxSessionPreStopHooks,
 } from './sessionLifecycle';
 import {
+  assertTrustedManifestForDockerRunState,
   deserializeSandboxSessionStateEntry,
   getPreviousSerializedSessionsByAgent,
   getSerializedSandboxState,
@@ -72,9 +82,25 @@ type SandboxCleanupPlan = {
   afterOwnedSessionClose?: {
     clearSandboxState?: boolean;
     forgetLivePreservedSessions?: boolean;
+    removeClosedSessionsFromSandboxState?: boolean;
   };
   deferredError?: unknown;
 };
+
+type LivePreservedOwnedSessionReuseDecision = {
+  entry: LivePreservedOwnedSessionEntry;
+  reusable: boolean;
+};
+
+type SandboxAgentIdentityRegistry = {
+  agentKeys: Map<number, string>;
+  agentsByKey: Map<string, Agent<any, AgentOutputType>>;
+};
+
+const sandboxAgentIdentitiesByRunState = new WeakMap<
+  object,
+  SandboxAgentIdentityRegistry
+>();
 
 export class SandboxRuntimeManager<TContext> {
   private readonly sandboxConfig?: SandboxRunConfig;
@@ -83,6 +109,7 @@ export class SandboxRuntimeManager<TContext> {
     Agent<TContext, AgentOutputType>
   >;
   private readonly agentKeys: Map<number, string>;
+  private readonly agentsByKey: Map<string, Agent<TContext, AgentOutputType>>;
   private readonly acquiredAgents = new Map<
     number,
     SandboxAgent<TContext, AgentOutputType>
@@ -124,15 +151,31 @@ export class SandboxRuntimeManager<TContext> {
   }) {
     this.sandboxConfig = args.sandboxConfig;
     this.runState = args.runState;
-    this.agentKeys = allocateAgentKeys(args.startingAgent);
+    const existingIdentityRegistry = args.runState
+      ? sandboxAgentIdentitiesByRunState.get(args.runState)
+      : undefined;
+    if (existingIdentityRegistry) {
+      this.agentKeys = existingIdentityRegistry.agentKeys;
+      this.agentsByKey = existingIdentityRegistry.agentsByKey;
+    } else {
+      this.agentKeys = allocateAgentKeys(args.startingAgent);
+      this.agentsByKey = indexAgentsByKey(args.startingAgent, this.agentKeys);
+      if (args.runState) {
+        sandboxAgentIdentitiesByRunState.set(args.runState, {
+          agentKeys: this.agentKeys,
+          agentsByKey: this.agentsByKey,
+        });
+      }
+    }
   }
 
   async prepareAgent(args: {
     currentAgent: Agent<TContext, AgentOutputType>;
     turnInput: AgentInputItem[];
     runConfigModel?: SandboxRuntimeModel;
+    tracingParent?: Span<any> | Trace;
   }): Promise<SandboxPreparedAgent<TContext>> {
-    const { currentAgent, turnInput, runConfigModel } = args;
+    const { currentAgent, turnInput, runConfigModel, tracingParent } = args;
     if (!isSandboxAgent(currentAgent)) {
       this.activeMemory = undefined;
       return {
@@ -152,15 +195,16 @@ export class SandboxRuntimeManager<TContext> {
       {
         agent_name: currentAgent.name,
       },
-      async () => {
+      async (prepareSpan) => {
         this.acquireAgent(currentAgent);
-        const session = await this.ensureSession(currentAgent);
+        const session = await this.ensureSession(currentAgent, prepareSpan);
         // Bind a clone to the live session so capability tools and instructions can carry
         // per-session state without mutating the public SandboxAgent instance.
         const executionAgent = this.getPreparedAgent(
           currentAgent,
           session,
           runConfigModel,
+          tracingParent,
         );
         const memory = executionAgent.capabilities.find(isMemoryCapability);
         if (memory) {
@@ -181,6 +225,7 @@ export class SandboxRuntimeManager<TContext> {
           ),
         };
       },
+      tracingParent,
     );
   }
 
@@ -188,22 +233,33 @@ export class SandboxRuntimeManager<TContext> {
     state: RunState<TContext, Agent<TContext, AgentOutputType>>,
     options: {
       preserveOwnedSessions?: boolean;
+      tracingParent?: Span<any> | Trace;
     } = {},
   ): Promise<void> {
     const preserveOwnedSessions = options.preserveOwnedSessions ?? false;
-    const runCleanup = async () => {
+    const runCleanup = async (cleanupSpan?: Span<any> | Trace) => {
       let preserveCleanupHandles = false;
       try {
-        const cleanupPlan = await this.planCleanup(state, {
-          preserveOwnedSessions,
-        });
+        const cleanupPlan = await this.planCleanup(
+          state,
+          { preserveOwnedSessions },
+          cleanupSpan,
+        );
         await this.executeCleanupPlan(state, cleanupPlan, {
           onCloseError: () => {
             preserveCleanupHandles = true;
           },
-          preserveOwnedSessions,
+          tracingParent: cleanupSpan,
         });
       } finally {
+        if (hasPreservedOwnedSessions(getSerializedSandboxState(state))) {
+          sandboxAgentIdentitiesByRunState.set(state, {
+            agentKeys: this.agentKeys,
+            agentsByKey: this.agentsByKey,
+          });
+        } else {
+          sandboxAgentIdentitiesByRunState.delete(state);
+        }
         this.releaseAgents();
         this.sessionsByAgent.clear();
         if (!preserveCleanupHandles) {
@@ -224,11 +280,16 @@ export class SandboxRuntimeManager<TContext> {
       this.preparedAgents.size === 0 &&
       this.ownedSessionAgentKeys.size === 0
     ) {
-      await runCleanup();
+      await runCleanup(options.tracingParent);
       return;
     }
 
-    await withSandboxSpan('sandbox.cleanup', {}, runCleanup);
+    await withSandboxSpan(
+      'sandbox.cleanup',
+      {},
+      runCleanup,
+      options.tracingParent,
+    );
   }
 
   private async planCleanup(
@@ -236,11 +297,16 @@ export class SandboxRuntimeManager<TContext> {
     options: {
       preserveOwnedSessions: boolean;
     },
+    tracingParent?: Span<any> | Trace,
   ): Promise<SandboxCleanupPlan> {
     if (this.sessionsByAgentKey.size > 0) {
       return await this.planCleanupForActiveSessions(state, options);
     }
-    return await this.planCleanupForSerializedStateOnly(state, options);
+    return await this.planCleanupForSerializedStateOnly(
+      state,
+      options,
+      tracingParent,
+    );
   }
 
   private async planCleanupForActiveSessions(
@@ -294,6 +360,7 @@ export class SandboxRuntimeManager<TContext> {
         cleanupPlan.ownedSessionCloseTarget = 'all';
         cleanupPlan.afterOwnedSessionClose = {
           forgetLivePreservedSessions: true,
+          removeClosedSessionsFromSandboxState: true,
         };
       }
     }
@@ -306,6 +373,7 @@ export class SandboxRuntimeManager<TContext> {
     options: {
       preserveOwnedSessions: boolean;
     },
+    tracingParent?: Span<any> | Trace,
   ): Promise<SandboxCleanupPlan> {
     const cleanupPlan: SandboxCleanupPlan = options.preserveOwnedSessions
       ? {}
@@ -321,26 +389,31 @@ export class SandboxRuntimeManager<TContext> {
       hasPreservedOwnedSessions(sandboxState) &&
       !options.preserveOwnedSessions
     ) {
-      const closedLiveSessionAgentKeys =
+      const { closedAgentKeys, closeErrors } =
         await this.closeLivePreservedOwnedSessions(state);
-      if (closedLiveSessionAgentKeys.size > 0) {
-        forgetLivePreservedOwnedSessions(state);
+      if (closedAgentKeys.size > 0) {
         if (
           sandboxState &&
-          !removeClosedPreservedOwnedSessions(
-            sandboxState,
-            closedLiveSessionAgentKeys,
-          )
+          !removeClosedPreservedOwnedSessions(sandboxState, closedAgentKeys)
         ) {
           state._sandbox = undefined;
           sandboxState = undefined;
         }
       }
+      if (closeErrors.length === 1) {
+        throw closeErrors[0];
+      }
+      if (closeErrors.length > 1) {
+        throw new SandboxLifecycleError(
+          'Failed to close one or more live preserved owned sandbox sessions.',
+          { errors: closeErrors },
+        );
+      }
 
       if (hasPreservedOwnedSessions(sandboxState)) {
         if (this.sandboxConfig?.client) {
           try {
-            await this.adoptPreservedOwnedSessions();
+            await this.adoptPreservedOwnedSessions(tracingParent);
             if (this.ownedSessionAgentKeys.size > 0) {
               cleanupPlan.ownedSessionCloseTarget = 'all';
               cleanupPlan.afterOwnedSessionClose = {
@@ -360,7 +433,7 @@ export class SandboxRuntimeManager<TContext> {
           cleanupPlan.ownedSessionCloseTarget = undefined;
           cleanupPlan.afterOwnedSessionClose = undefined;
         }
-      } else if (closedLiveSessionAgentKeys.size > 0) {
+      } else if (closedAgentKeys.size > 0) {
         state._sandbox = undefined;
       }
     } else if (!hasPreservedOwnedSessions(sandboxState)) {
@@ -376,18 +449,17 @@ export class SandboxRuntimeManager<TContext> {
     plan: SandboxCleanupPlan,
     options: {
       onCloseError: () => void;
-      preserveOwnedSessions: boolean;
+      tracingParent?: Span<any> | Trace;
     },
   ): Promise<void> {
     if (plan.ownedSessionCloseTarget) {
+      let closedSessionAgentKeys: ReadonlySet<string>;
       try {
-        await this.closeOwnedSessions(
+        closedSessionAgentKeys = await this.closeOwnedSessions(
           plan.ownedSessionCloseTarget === 'all'
             ? undefined
             : plan.ownedSessionCloseTarget,
-          {
-            preserveOwnedSessions: options.preserveOwnedSessions,
-          },
+          { tracingParent: options.tracingParent },
         );
       } catch (error) {
         options.onCloseError();
@@ -396,6 +468,15 @@ export class SandboxRuntimeManager<TContext> {
 
       if (plan.afterOwnedSessionClose?.forgetLivePreservedSessions) {
         forgetLivePreservedOwnedSessions(state);
+      }
+      if (plan.afterOwnedSessionClose?.removeClosedSessionsFromSandboxState) {
+        const sandboxState = getSerializedSandboxState(state);
+        if (
+          sandboxState &&
+          !removeClosedSerializedSessions(sandboxState, closedSessionAgentKeys)
+        ) {
+          state._sandbox = undefined;
+        }
       }
       if (plan.afterOwnedSessionClose?.clearSandboxState) {
         state._sandbox = undefined;
@@ -409,7 +490,10 @@ export class SandboxRuntimeManager<TContext> {
 
   private async closeLivePreservedOwnedSessions(
     state: RunState<TContext, Agent<TContext, AgentOutputType>>,
-  ): Promise<Set<string>> {
+  ): Promise<{
+    closedAgentKeys: Set<string>;
+    closeErrors: unknown[];
+  }> {
     const sessionAgentKeys = new Map<
       SandboxSessionLike<SandboxSessionState>,
       string[]
@@ -422,8 +506,10 @@ export class SandboxRuntimeManager<TContext> {
     const closedAgentKeys = new Set<string>();
     const closeErrors: unknown[] = [];
     for (const [session, agentKeys] of sessionAgentKeys) {
+      rejectLivePreservedOwnedSessionHandle({ state, session });
       try {
         await cleanupSandboxSession(session);
+        forgetLivePreservedOwnedSessionHandle({ state, session });
         for (const agentKey of agentKeys) {
           closedAgentKeys.add(agentKey);
         }
@@ -431,16 +517,7 @@ export class SandboxRuntimeManager<TContext> {
         closeErrors.push(error);
       }
     }
-    if (closeErrors.length === 1) {
-      throw closeErrors[0];
-    }
-    if (closeErrors.length > 1) {
-      throw new SandboxLifecycleError(
-        'Failed to close one or more live preserved owned sandbox sessions.',
-        { errors: closeErrors },
-      );
-    }
-    return closedAgentKeys;
+    return { closedAgentKeys, closeErrors };
   }
 
   private async runPreStopHooksBeforeRelease(): Promise<void> {
@@ -482,6 +559,7 @@ export class SandboxRuntimeManager<TContext> {
       inputOverride?: string | AgentInputItem[];
       sdkSessionId?: () => Promise<string | undefined>;
       runAgent: SandboxMemoryAgentRunner;
+      tracingParent?: Span<any> | Trace;
     },
   ): Promise<void> {
     if (!this.activeMemory || this.activeMemory.memory.generate === null) {
@@ -494,6 +572,7 @@ export class SandboxRuntimeManager<TContext> {
         memory: this.activeMemory.memory,
         runAs: this.activeMemory.runAs,
         runAgent: args.runAgent,
+        tracingParent: args.tracingParent,
       });
       await manager.enqueueState(state, {
         exception: args.exception,
@@ -505,11 +584,17 @@ export class SandboxRuntimeManager<TContext> {
         },
       });
     } catch (error) {
-      logger.warn(`Failed to enqueue sandbox memory generation: ${error}`);
+      logModelAndToolActionWarning(
+        logger,
+        'Failed to enqueue sandbox memory generation:',
+        error,
+      );
     }
   }
 
-  async adoptPreservedOwnedSessions(): Promise<boolean> {
+  async adoptPreservedOwnedSessions(
+    tracingParent?: Span<any> | Trace,
+  ): Promise<boolean> {
     const sandboxState = getSerializedSandboxState(this.runState);
     if (!hasPreservedOwnedSessions(sandboxState)) {
       return false;
@@ -536,17 +621,18 @@ export class SandboxRuntimeManager<TContext> {
       if (this.sessionsByAgentKey.has(agentKey)) {
         continue;
       }
-      const liveEntry = livePreservedOwnedSession({
-        runState: this.runState,
+      const liveDecision = await this.inspectLivePreservedOwnedSessionReuse({
         client,
         agentKey,
         serializedEntry: entry,
+        trustedManifest: this.resolveTrustedManifestForAgentKey(agentKey),
       });
-      if (liveEntry) {
-        // Same RunState can resume immediately without round-tripping through provider
-        // reconnect APIs when the backend says its live handle is reusable.
-        this.sessionsByAgentKey.set(agentKey, liveEntry.session);
-        this.sessionAgentNamesByKey.set(agentKey, liveEntry.currentAgentName);
+      if (liveDecision?.reusable) {
+        this.sessionsByAgentKey.set(agentKey, liveDecision.entry.session);
+        this.sessionAgentNamesByKey.set(
+          agentKey,
+          liveDecision.entry.currentAgentName,
+        );
         this.ownedSessionAgentKeys.add(agentKey);
         continue;
       }
@@ -555,14 +641,21 @@ export class SandboxRuntimeManager<TContext> {
           'Sandbox client must implement resume() to restore preserved sandbox sessions.',
         );
       }
+      const rejectedLiveEntry =
+        await this.prepareRejectedLiveSessionReplacement(client, liveDecision);
       const serializedState = await deserializeSandboxSessionStateEntry(
         client,
         entry,
+        this.resolveTrustedManifestForAgentKey(agentKey),
+        {
+          clientOptions: this.sandboxConfig?.options,
+          snapshot: this.sandboxConfig?.snapshot,
+        },
       );
       if (!serializedState) {
         continue;
       }
-      const session = await withSandboxSpan(
+      let session = await withSandboxSpan(
         'sandbox.resume_session',
         {
           agent_name: entry.currentAgentName,
@@ -572,6 +665,11 @@ export class SandboxRuntimeManager<TContext> {
           await client.resume!(serializedState, {
             archiveLimits: this.sandboxConfig?.archiveLimits,
           }),
+        tracingParent,
+      );
+      session = await this.replaceRejectedLiveSession(
+        rejectedLiveEntry,
+        session,
       );
       this.applyArchiveLimits(session);
       this.sessionsByAgentKey.set(agentKey, session);
@@ -593,6 +691,7 @@ export class SandboxRuntimeManager<TContext> {
 
   private async ensureSession(
     agent: SandboxAgent<TContext, AgentOutputType>,
+    tracingParent?: Span<any> | Trace,
   ): Promise<SandboxSessionLike<SandboxSessionState>> {
     const agentId = getObjectId(agent);
     const agentKey = this.agentKey(agent);
@@ -606,6 +705,7 @@ export class SandboxRuntimeManager<TContext> {
       this.applyArchiveLimits(existingByKey);
       await this.ensureSessionStarted(existingByKey, agent, 'resume', {
         oncePerSession: true,
+        tracingParent,
       });
       this.currentAgentId = agentId;
       this.sessionsByAgent.set(agentId, existingByKey);
@@ -628,6 +728,7 @@ export class SandboxRuntimeManager<TContext> {
       );
       await this.ensureSessionStarted(session, agent, 'provided', {
         oncePerSession: true,
+        tracingParent,
       });
       this.registerSessionForAgent(agent, session);
       return session;
@@ -636,10 +737,17 @@ export class SandboxRuntimeManager<TContext> {
     const configuredManifest = this.resolveConfiguredManifest(agent);
 
     const client = this.requireClient();
-    const resumed = await this.resumeSessionForAgent(client, agent);
+    const resumed = await this.resumeSessionForAgent(
+      client,
+      agent,
+      configuredManifest.manifest,
+      tracingParent,
+    );
     if (resumed) {
       this.applyArchiveLimits(resumed);
-      await this.ensureSessionStarted(resumed, agent, 'resume');
+      await this.ensureSessionStarted(resumed, agent, 'resume', {
+        tracingParent,
+      });
       this.registerSessionForAgent(agent, resumed, { owned: true });
       return resumed;
     }
@@ -667,9 +775,12 @@ export class SandboxRuntimeManager<TContext> {
         backend_id: client.backendId,
       },
       async () => await createSession(createArgs),
+      tracingParent,
     );
     this.applyArchiveLimits(session);
-    await this.ensureSessionStarted(session, agent, 'create');
+    await this.ensureSessionStarted(session, agent, 'create', {
+      tracingParent,
+    });
     this.registerSessionForAgent(agent, session, { owned: true });
     return session;
   }
@@ -707,6 +818,7 @@ export class SandboxRuntimeManager<TContext> {
     reason: string,
     options: {
       oncePerSession?: boolean;
+      tracingParent?: Span<any> | Trace;
     } = {},
   ): Promise<void> {
     if (!session.start) {
@@ -736,6 +848,7 @@ export class SandboxRuntimeManager<TContext> {
       async () => {
         await session.start!({ reason });
       },
+      options.tracingParent,
     );
     if (options.oncePerSession) {
       this.sessionStartPromises.set(session, startPromise);
@@ -754,6 +867,7 @@ export class SandboxRuntimeManager<TContext> {
     agent: SandboxAgent<TContext, AgentOutputType>,
     session: SandboxSessionLike<SandboxSessionState>,
     runConfigModel?: SandboxRuntimeModel,
+    tracingParent?: Span<any> | Trace,
   ): SandboxAgent<TContext, AgentOutputType> {
     const agentId = getObjectId(agent);
     const manifestSignature = getManifestSignature(session.state.manifest);
@@ -763,7 +877,14 @@ export class SandboxRuntimeManager<TContext> {
       this.preparedSessions.get(agentId) === session &&
       this.preparedManifestSignatures.get(agentId) === manifestSignature
     ) {
-      return cached as SandboxAgent<TContext, AgentOutputType>;
+      const cachedSandboxAgent = cached as SandboxAgent<
+        TContext,
+        AgentOutputType
+      >;
+      for (const capability of cachedSandboxAgent.capabilities) {
+        capability.bindTracingParent(tracingParent);
+      }
+      return cachedSandboxAgent;
     }
 
     // Capability instructions include a rendered filesystem view, so a manifest change
@@ -774,6 +895,7 @@ export class SandboxRuntimeManager<TContext> {
       capabilities: cloneSandboxCapabilities(agent.capabilities),
       runConfigModel,
       processManifest: false,
+      tracingParent,
     });
     this.preparedAgents.set(agentId, prepared);
     this.preparedSessions.set(agentId, session);
@@ -784,6 +906,8 @@ export class SandboxRuntimeManager<TContext> {
   private async resumeSessionForAgent(
     client: SandboxClient,
     agent: SandboxAgent<TContext, AgentOutputType>,
+    trustedManifest: Manifest,
+    tracingParent?: Span<any> | Trace,
   ): Promise<SandboxSessionLike<SandboxSessionState> | undefined> {
     const agentKey = this.agentKey(agent);
     const serializedEntry = getSerializedSessionEntryForAgent(
@@ -798,39 +922,74 @@ export class SandboxRuntimeManager<TContext> {
       }
       return undefined;
     }
-    const liveEntry = livePreservedOwnedSession({
-      runState: this.runState,
+    const liveDecision = await this.inspectLivePreservedOwnedSessionReuse({
       client,
       agentKey,
       serializedEntry,
+      trustedManifest,
     });
-    if (liveEntry) {
-      return liveEntry.session;
+    if (liveDecision?.reusable) {
+      return liveDecision.entry.session;
     }
+    const rejectedLiveEntry = await this.prepareRejectedLiveSessionReplacement(
+      client,
+      liveDecision,
+    );
 
     if (this.sandboxConfig?.sessionState) {
-      return await withSandboxSpan(
+      if (
+        client.backendId === 'docker' &&
+        Object.keys(this.sandboxConfig.sessionState.manifest.environment).some(
+          (key) => !(key in trustedManifest.environment),
+        )
+      ) {
+        throw new UserError(
+          'Docker sandbox session state cannot be resumed because the current trusted manifest removes an environment variable. Start a fresh session from a snapshot instead.',
+        );
+      }
+      const sessionState = rebindPersistedPathGrants(
+        this.sandboxConfig.sessionState,
+        trustedManifest,
+        {
+          replaceWithTrustedManifest: client.backendId === 'docker',
+        },
+      );
+      if (client.backendId === 'docker') {
+        sessionState.environment = {
+          ...(sessionState.environment ?? {}),
+          ...(await trustedManifest.resolveEnvironment()),
+        };
+      }
+      assertHostPathGrantsRebound(sessionState);
+      const session = await withSandboxSpan(
         'sandbox.resume_session',
         {
           agent_name: agent.name,
           backend_id: client.backendId,
         },
         async () =>
-          await client.resume!(this.sandboxConfig!.sessionState!, {
+          await client.resume!(sessionState, {
             archiveLimits: this.sandboxConfig?.archiveLimits,
           }),
+        tracingParent,
       );
+      return await this.replaceRejectedLiveSession(rejectedLiveEntry, session);
     }
 
     const serializedState = await deserializeSandboxSessionStateEntry(
       client,
       serializedEntry,
+      trustedManifest,
+      {
+        clientOptions: this.sandboxConfig?.options,
+        snapshot: this.sandboxConfig?.snapshot,
+      },
     );
     if (!serializedState) {
       return undefined;
     }
 
-    return await withSandboxSpan(
+    const session = await withSandboxSpan(
       'sandbox.resume_session',
       {
         agent_name: agent.name,
@@ -840,7 +999,157 @@ export class SandboxRuntimeManager<TContext> {
         await client.resume!(serializedState, {
           archiveLimits: this.sandboxConfig?.archiveLimits,
         }),
+      tracingParent,
     );
+    return await this.replaceRejectedLiveSession(rejectedLiveEntry, session);
+  }
+
+  private async inspectLivePreservedOwnedSessionReuse(args: {
+    client: SandboxClient;
+    agentKey: string;
+    serializedEntry: ReturnType<typeof getSerializedSessionEntryForAgent>;
+    trustedManifest?: Manifest;
+  }): Promise<LivePreservedOwnedSessionReuseDecision | undefined> {
+    const liveEntry = livePreservedOwnedSession({
+      runState: this.runState,
+      client: args.client,
+      agentKey: args.agentKey,
+      serializedEntry: args.serializedEntry,
+    });
+    if (!liveEntry) {
+      return undefined;
+    }
+
+    assertTrustedManifestForDockerRunState(args.client, args.trustedManifest);
+
+    if (liveEntry.reuseRejected) {
+      return { entry: liveEntry, reusable: false };
+    }
+
+    const canReuse = args.client.canReusePreservedOwnedSession;
+    if (!canReuse) {
+      await refreshLiveEnvironmentReferences(
+        liveEntry.session.state,
+        args.trustedManifest,
+      );
+      return { entry: liveEntry, reusable: true };
+    }
+
+    const trustedManifest = args.trustedManifest;
+    if (
+      args.client.backendId === 'docker' &&
+      trustedManifest &&
+      Object.keys(liveEntry.session.state.manifest.environment).some(
+        (key) => !(key in trustedManifest.environment),
+      )
+    ) {
+      rejectLivePreservedOwnedSessionHandle({
+        state: this.runState,
+        session: liveEntry.session,
+      });
+      return { entry: liveEntry, reusable: false };
+    }
+
+    const candidateState = args.trustedManifest
+      ? rebindPersistedPathGrants(
+          liveEntry.session.state,
+          args.trustedManifest,
+          {
+            replaceWithTrustedManifest: args.client.backendId === 'docker',
+          },
+        )
+      : liveEntry.session.state;
+    if (args.client.backendId === 'docker' && args.trustedManifest) {
+      candidateState.environment = {
+        ...(liveEntry.session.state.environment ?? {}),
+        ...(await args.trustedManifest.resolveEnvironment()),
+      };
+    }
+    if (
+      !(await canReuse.call(args.client, candidateState, {
+        clientOptions: this.sandboxConfig?.options,
+        revalidateManifestEntries: true,
+      }))
+    ) {
+      rejectLivePreservedOwnedSessionHandle({
+        state: this.runState,
+        session: liveEntry.session,
+      });
+      return { entry: liveEntry, reusable: false };
+    }
+
+    if (args.client.backendId !== 'docker') {
+      await refreshLiveEnvironmentReferences(
+        candidateState,
+        args.trustedManifest,
+      );
+    }
+
+    // Rebind only after the backend has verified that its live authority still
+    // matches the current trusted manifest.
+    liveEntry.session.state.manifest =
+      args.client.backendId === 'docker' && args.trustedManifest
+        ? manifestWithTrustedRuntimePolicies(
+            rebindPersistedPathGrants(
+              liveEntry.session.state,
+              args.trustedManifest,
+              {
+                replaceWithTrustedGrantSet: true,
+              },
+            ).manifest,
+            args.trustedManifest,
+          )
+        : candidateState.manifest;
+    liveEntry.session.state.environment = candidateState.environment;
+    return { entry: liveEntry, reusable: true };
+  }
+
+  private async prepareRejectedLiveSessionReplacement(
+    client: SandboxClient,
+    decision: LivePreservedOwnedSessionReuseDecision | undefined,
+  ): Promise<LivePreservedOwnedSessionEntry | undefined> {
+    if (!decision || decision.reusable) {
+      return undefined;
+    }
+    if (client.backendId === 'docker') {
+      return decision.entry;
+    }
+    await cleanupSandboxSession(decision.entry.session);
+    forgetLivePreservedOwnedSessionHandle({
+      state: this.runState,
+      session: decision.entry.session,
+    });
+    return undefined;
+  }
+
+  private async replaceRejectedLiveSession(
+    rejectedEntry: LivePreservedOwnedSessionEntry | undefined,
+    replacement: SandboxSessionLike<SandboxSessionState>,
+  ): Promise<SandboxSessionLike<SandboxSessionState>> {
+    if (!rejectedEntry) {
+      return replacement;
+    }
+
+    try {
+      await cleanupSandboxSession(rejectedEntry.session);
+    } catch (rejectedCleanupError) {
+      try {
+        await cleanupSandboxSession(replacement);
+      } catch (replacementCleanupError) {
+        throw new SandboxLifecycleError(
+          'Failed to close the rejected live sandbox session and its replacement.',
+          {
+            errors: [rejectedCleanupError, replacementCleanupError],
+          },
+        );
+      }
+      throw rejectedCleanupError;
+    }
+    forgetLivePreservedOwnedSessionHandle({
+      state: this.runState,
+      session: rejectedEntry.session,
+    });
+    return replacement;
   }
 
   private async serializeState(
@@ -861,6 +1170,7 @@ export class SandboxRuntimeManager<TContext> {
       sessionsByAgentKey: this.sessionsByAgentKey,
       sessionAgentNamesByKey: this.sessionAgentNamesByKey,
       ownedSessionAgentKeys: this.ownedSessionAgentKeys,
+      clientOptions: this.sandboxConfig?.options,
       includeOwnedSessions: args.includeOwnedSessions,
       preferredCurrentAgentKey,
     });
@@ -889,11 +1199,13 @@ export class SandboxRuntimeManager<TContext> {
     const agentId = getObjectId(agent);
     const existing = this.agentKeys.get(agentId);
     if (existing) {
+      this.agentsByKey.set(existing, agent);
       return existing;
     }
 
     const agentKey = this.allocateRuntimeAgentKey(agent.name);
     this.agentKeys.set(agentId, agentKey);
+    this.agentsByKey.set(agentKey, agent);
     return agentKey;
   }
 
@@ -941,30 +1253,49 @@ export class SandboxRuntimeManager<TContext> {
     };
   }
 
+  private resolveTrustedManifestForAgentKey(
+    agentKey: string,
+  ): Manifest | undefined {
+    const agent = this.agentsByKey.get(agentKey);
+    if (!agent || !isSandboxAgent(agent)) {
+      return undefined;
+    }
+    return this.resolveConfiguredManifest(agent).manifest;
+  }
+
   private async closeOwnedSessions(
     agentKeys?: Iterable<string>,
     options: {
-      preserveOwnedSessions?: boolean;
+      tracingParent?: Span<any> | Trace;
     } = {},
-  ): Promise<void> {
+  ): Promise<ReadonlySet<string>> {
     const keysToClose = [...(agentKeys ?? this.ownedSessionAgentKeys)].filter(
       (agentKey) => this.ownedSessionAgentKeys.has(agentKey),
     );
     const sessionsToClose = new Map<
       SandboxSessionLike<SandboxSessionState>,
-      string | undefined
+      {
+        agentKeys: string[];
+        agentName: string | undefined;
+      }
     >();
     for (const agentKey of keysToClose) {
       const session = this.sessionsByAgentKey.get(agentKey);
       if (!session || !hasSessionCleanup(session)) {
         continue;
       }
-      if (!sessionsToClose.has(session)) {
-        sessionsToClose.set(session, this.sessionAgentNamesByKey.get(agentKey));
+      const existing = sessionsToClose.get(session);
+      if (existing) {
+        existing.agentKeys.push(agentKey);
+      } else {
+        sessionsToClose.set(session, {
+          agentKeys: [agentKey],
+          agentName: this.sessionAgentNamesByKey.get(agentKey),
+        });
       }
     }
     if (sessionsToClose.size === 0) {
-      return;
+      return new Set();
     }
 
     await withSandboxSpan(
@@ -972,26 +1303,30 @@ export class SandboxRuntimeManager<TContext> {
       {
         session_count: sessionsToClose.size,
       },
-      async () => {
+      async (cleanupSessionsSpan) => {
         await Promise.all(
-          [...sessionsToClose].map(async ([session, agentName]) => {
+          [...sessionsToClose].map(async ([session, { agentName }]) => {
             await withSandboxSpan(
               'sandbox.shutdown',
               {
                 agent_name: agentName,
               },
               async () => {
-                await cleanupSandboxSession(
+                rejectLivePreservedOwnedSessionHandle({
+                  state: this.runState,
                   session,
-                  options.preserveOwnedSessions
-                    ? { preserveOwnedSessions: true }
-                    : undefined,
-                );
+                });
+                await cleanupSandboxSession(session);
               },
+              cleanupSessionsSpan,
             );
           }),
         );
       },
+      options.tracingParent,
+    );
+    return new Set(
+      [...sessionsToClose.values()].flatMap(({ agentKeys }) => agentKeys),
     );
   }
 
@@ -1028,15 +1363,114 @@ function isDefaultManifest(manifest: Manifest): boolean {
   );
 }
 
+function manifestWithTrustedRuntimePolicies(
+  manifest: Manifest,
+  trustedManifest: Manifest,
+): Manifest {
+  return new Manifest({
+    version: manifest.version,
+    root: manifest.root,
+    entries: structuredClone(manifest.entries),
+    environment: Object.fromEntries(
+      Object.entries(trustedManifest.environment).map(([key, value]) => [
+        key,
+        value.init(),
+      ]),
+    ),
+    users: structuredClone(manifest.users),
+    groups: structuredClone(manifest.groups),
+    extraPathGrants: structuredClone(manifest.extraPathGrants),
+    remoteMountCommandAllowlist: [
+      ...trustedManifest.remoteMountCommandAllowlist,
+    ],
+  });
+}
+
+async function refreshLiveEnvironmentReferences(
+  state: SandboxSessionState,
+  trustedManifest: Manifest | undefined,
+): Promise<void> {
+  if (!trustedManifest) {
+    return;
+  }
+  const referenceKeys = new Set([
+    ...Object.entries(state.manifest.environment)
+      .filter(([, value]) => isEnvValueReference(value))
+      .map(([key]) => key),
+    ...Object.entries(trustedManifest.environment)
+      .filter(([, value]) => isEnvValueReference(value))
+      .map(([key]) => key),
+  ]);
+  if (referenceKeys.size === 0) {
+    return;
+  }
+  const resolvedEnvironment = Object.fromEntries(
+    (
+      await Promise.all(
+        [...referenceKeys].map(async (key) => {
+          const value = trustedManifest.environment[key];
+          return value ? ([key, await value.resolve()] as const) : undefined;
+        }),
+      )
+    ).filter((entry) => entry !== undefined),
+  );
+  const environment = { ...(state.environment ?? {}) };
+  const manifestEnvironment = Object.fromEntries(
+    Object.entries(state.manifest.environment)
+      .filter(([key]) => !referenceKeys.has(key))
+      .map(([key, value]) => [key, value.init()]),
+  );
+  for (const key of referenceKeys) {
+    delete environment[key];
+    const value = trustedManifest.environment[key];
+    if (value) {
+      manifestEnvironment[key] = value.init();
+    }
+  }
+  const manifest = new Manifest({
+    version: state.manifest.version,
+    root: state.manifest.root,
+    entries: structuredClone(state.manifest.entries),
+    environment: manifestEnvironment,
+    users: structuredClone(state.manifest.users),
+    groups: structuredClone(state.manifest.groups),
+    extraPathGrants: structuredClone(state.manifest.extraPathGrants),
+    remoteMountCommandAllowlist: [
+      ...state.manifest.remoteMountCommandAllowlist,
+    ],
+  });
+  state.environment = {
+    ...environment,
+    ...resolvedEnvironment,
+  };
+  state.manifest = manifest;
+}
+
 function removeClosedPreservedOwnedSessions(
   sandboxState: SerializedSandboxState,
   agentKeys: ReadonlySet<string>,
+): boolean {
+  return removeClosedSerializedSessions(sandboxState, agentKeys, {
+    requirePreservedSession: true,
+  });
+}
+
+function removeClosedSerializedSessions(
+  sandboxState: SerializedSandboxState,
+  agentKeys: ReadonlySet<string>,
+  options: {
+    requirePreservedSession?: boolean;
+  } = {},
 ): boolean {
   for (const agentKey of agentKeys) {
     delete sandboxState.sessionsByAgent[agentKey];
   }
 
-  if (!hasPreservedOwnedSessions(sandboxState)) {
+  const remainingEntries = Object.values(sandboxState.sessionsByAgent);
+  if (
+    options.requirePreservedSession &&
+    !remainingEntries.some((entry) => entry.preservedOwnedSession)
+  ) {
     return false;
   }
 
@@ -1048,9 +1482,9 @@ function removeClosedPreservedOwnedSessions(
     return true;
   }
 
-  const nextEntry = Object.values(sandboxState.sessionsByAgent).find(
-    (entry) => entry.preservedOwnedSession,
-  );
+  const nextEntry = options.requirePreservedSession
+    ? remainingEntries.find((entry) => entry.preservedOwnedSession)
+    : remainingEntries[0];
   if (!nextEntry) {
     return false;
   }

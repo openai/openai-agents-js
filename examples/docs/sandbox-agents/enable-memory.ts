@@ -17,7 +17,7 @@ const manifest = new Manifest({
 
 const agent = new SandboxAgent({
   name: 'Memory-enabled reviewer',
-  model: 'gpt-5.5',
+  model: 'gpt-5.6-sol',
   instructions:
     'Inspect the workspace, verify important claims, and preserve useful lessons for follow-up runs.',
   defaultManifest: manifest,

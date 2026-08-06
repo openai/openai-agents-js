@@ -17,13 +17,9 @@ export type UsageInput = Partial<
     output_tokens: number;
     total_tokens: number;
     input_tokens_details:
-      | Record<string, number>
-      | Array<Record<string, number>>
-      | object;
+      Record<string, number> | Array<Record<string, number>> | object;
     output_tokens_details:
-      | Record<string, number>
-      | Array<Record<string, number>>
-      | object;
+      Record<string, number> | Array<Record<string, number>> | object;
     request_usage_entries: RequestUsageInput[];
   }
 > & { requests?: number; requestUsageEntries?: RequestUsageInput[] };

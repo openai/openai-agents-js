@@ -7,6 +7,7 @@ import {
   RealtimeSessionConfig,
 } from '@openai/agents/realtime';
 import { getLogger } from '@openai/agents';
+import { logModelActionError } from '@openai/agents-core/utils/internal';
 import type {
   WebSocket as NodeWebSocket,
   MessageEvent as NodeMessageEvent,
@@ -14,6 +15,21 @@ import type {
 } from 'ws';
 
 import type { ErrorEvent } from 'undici-types';
+
+type LegacyRealtimeAudioConfig = Partial<RealtimeSessionConfig> & {
+  inputAudioFormat?: 'pcm16' | 'g711_ulaw' | 'g711_alaw';
+  outputAudioFormat?: 'pcm16' | 'g711_ulaw' | 'g711_alaw';
+};
+
+function withTwilioLegacyAudioDefaults(
+  config: LegacyRealtimeAudioConfig = {},
+): Partial<RealtimeSessionConfig> {
+  return {
+    ...config,
+    inputAudioFormat: config.inputAudioFormat ?? 'g711_ulaw',
+    outputAudioFormat: config.outputAudioFormat ?? 'g711_ulaw',
+  } as Partial<RealtimeSessionConfig>;
+}
 
 /**
  * The options for the Twilio Realtime Transport Layer.
@@ -70,12 +86,7 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     partialConfig?: Partial<RealtimeSessionConfig>,
   ): Partial<RealtimeSessionConfig> {
     if (!partialConfig) {
-      const newConfig: Partial<RealtimeSessionConfig> = {};
-      // @ts-expect-error - this is a valid config
-      newConfig.inputAudioFormat = 'g711_ulaw';
-      // @ts-expect-error - this is a valid config
-      newConfig.outputAudioFormat = 'g711_ulaw';
-      return newConfig;
+      return withTwilioLegacyAudioDefaults();
     }
 
     const audioConfig = 'audio' in partialConfig ? partialConfig.audio : null;
@@ -96,13 +107,9 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
       };
     }
 
-    return {
-      ...partialConfig,
-      // @ts-expect-error - this is a valid config
-      inputAudioFormat: partialConfig.inputAudioFormat ?? 'g711_ulaw',
-      // @ts-expect-error - this is a valid config
-      outputAudioFormat: partialConfig.outputAudioFormat ?? 'g711_ulaw',
-    };
+    return withTwilioLegacyAudioDefaults(
+      partialConfig as LegacyRealtimeAudioConfig,
+    );
   }
 
   async connect(options: RealtimeTransportLayerConnectOptions) {
@@ -116,7 +123,9 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
         try {
           const data = JSON.parse(message.data.toString());
           if (this.#logger.dontLogModelData) {
-            this.#logger.debug('Twilio message:', data.event);
+            this.#logger.debug(
+              'Twilio message received. Message data is redacted.',
+            );
           } else {
             this.#logger.debug('Twilio message:', data);
           }
@@ -140,10 +149,16 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
                 if (Number.isFinite(count)) {
                   this.#lastPlayedChunkCount = count;
                 } else {
-                  this.#logger.warn(
-                    'Invalid mark name received:',
-                    data.mark.name,
-                  );
+                  if (this.#logger.dontLogModelData) {
+                    this.#logger.warn(
+                      'Invalid mark name received. Mark data is redacted.',
+                    );
+                  } else {
+                    this.#logger.warn(
+                      'Invalid mark name received:',
+                      data.mark.name,
+                    );
+                  }
                 }
               } else if (data.mark.name.startsWith('done:')) {
                 this.#lastPlayedChunkCount = 0;
@@ -156,7 +171,8 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
               break;
           }
         } catch (error) {
-          this.#logger.error(
+          logModelActionError(
+            this.#logger,
             'Error parsing message:',
             error,
             'Message:',

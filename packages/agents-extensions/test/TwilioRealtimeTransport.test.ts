@@ -3,7 +3,10 @@ import { EventEmitter } from 'events';
 import { TwilioRealtimeTransportLayer } from '../src/TwilioRealtimeTransport';
 import { allowConsole } from '../../../helpers/tests/console-guard';
 
-import type { MessageEvent as NodeMessageEvent } from 'ws';
+import type {
+  MessageEvent as NodeMessageEvent,
+  WebSocket as NodeWebSocket,
+} from 'ws';
 import type { MessageEvent } from 'undici-types';
 
 vi.mock('@openai/agents/realtime', () => {
@@ -34,14 +37,28 @@ vi.mock('@openai/agents/realtime', () => {
 class FakeTwilioWebSocket extends EventEmitter {
   send = vi.fn();
   close = vi.fn();
+
+  addEventListener(
+    type: string,
+    listener: (evt: MessageEvent | NodeMessageEvent) => void,
+  ) {
+    this.on(type, (evt) => listener(type === 'message' ? { data: evt } : evt));
+  }
 }
 
-// @ts-expect-error - we're making the node event emitter compatible with the browser event emitter
-FakeTwilioWebSocket.prototype.addEventListener = function (
-  type: string,
-  listener: (evt: MessageEvent | NodeMessageEvent) => void,
-) {
-  this.on(type, (evt) => listener(type === 'message' ? { data: evt } : evt));
+const asTwilioWebSocket = (
+  socket: FakeTwilioWebSocket,
+): WebSocket | NodeWebSocket => socket as unknown as WebSocket | NodeWebSocket;
+
+const setCurrentItemId = (
+  transport: TwilioRealtimeTransportLayer,
+  currentItemId: string,
+): void => {
+  (
+    transport as unknown as {
+      currentItemId: string;
+    }
+  ).currentItemId = currentItemId;
 };
 
 const base64 = (data: string) => Buffer.from(data).toString('base64');
@@ -53,7 +70,7 @@ describe('TwilioRealtimeTransportLayer', () => {
 
   test('_setInputAndOutputAudioFormat defaults g711', () => {
     const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: new FakeTwilioWebSocket() as any,
+      twilioWebSocket: asTwilioWebSocket(new FakeTwilioWebSocket()),
     });
     expect(transport._setInputAndOutputAudioFormat()).toEqual({
       inputAudioFormat: 'g711_ulaw',
@@ -66,7 +83,7 @@ describe('TwilioRealtimeTransportLayer', () => {
 
   test('_setInputAndOutputAudioFormat preserves nested audio config', () => {
     const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: new FakeTwilioWebSocket() as any,
+      twilioWebSocket: asTwilioWebSocket(new FakeTwilioWebSocket()),
     });
 
     expect(
@@ -107,7 +124,7 @@ describe('TwilioRealtimeTransportLayer', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: twilio as any,
+      twilioWebSocket: asTwilioWebSocket(twilio),
     });
     await transport.connect({ apiKey: 'ek_test' } as any);
     const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
@@ -141,12 +158,7 @@ describe('TwilioRealtimeTransportLayer', () => {
     transport.on('error', errListener);
     twilio.emit('message', { toString: () => 'bad{' });
     expect(errListener).toHaveBeenCalled();
-    expect(errorSpy).toHaveBeenCalledWith(
-      'Error parsing message:',
-      expect.any(Error),
-      'Message:',
-      expect.any(Object),
-    );
+    expect(errorSpy).toHaveBeenCalledWith('Error parsing message:', 'object');
     errorSpy.mockRestore();
 
     twilio.emit('close');
@@ -155,32 +167,72 @@ describe('TwilioRealtimeTransportLayer', () => {
     expect(closeSpy).toHaveBeenCalledTimes(2);
   });
 
+  test('redacts Twilio message and parse-error data when model logging is disabled', async () => {
+    allowConsole(['error', 'warn']);
+    const original = process.env.OPENAI_AGENTS_DONT_LOG_MODEL_DATA;
+    process.env.OPENAI_AGENTS_DONT_LOG_MODEL_DATA = '1';
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: asTwilioWebSocket(twilio),
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const secret = 'SECRET_TWILIO_MESSAGE_123';
+    const emittedErrors: unknown[] = [];
+    transport.on('error', (error) => emittedErrors.push(error));
+
+    try {
+      twilio.emit('message', {
+        toString: () =>
+          JSON.stringify({ event: 'mark', mark: { name: `u:${secret}` } }),
+      });
+      twilio.emit('message', {
+        secret,
+        toString: () => `bad{${secret}`,
+      });
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Invalid mark name received. Mark data is redacted.',
+      );
+      expect(errorSpy).toHaveBeenCalledWith('Error parsing message:', 'object');
+      expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secret);
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(secret);
+      expect(emittedErrors).toHaveLength(1);
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+      if (typeof original === 'undefined') {
+        delete process.env.OPENAI_AGENTS_DONT_LOG_MODEL_DATA;
+      } else {
+        process.env.OPENAI_AGENTS_DONT_LOG_MODEL_DATA = original;
+      }
+    }
+  });
+
   test('_onAudio resets chunk count and emits', async () => {
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: twilio as any,
+      twilioWebSocket: asTwilioWebSocket(twilio),
     });
     await transport.connect({ apiKey: 'ek_test' } as any);
     const sendSpy = vi.mocked(twilio.send);
     const audioListener = vi.fn();
     transport.on('audio', audioListener);
 
-    // @ts-expect-error - we're testing protected readonly fields
-    transport.currentItemId = 'a';
+    setCurrentItemId(transport, 'a');
     transport['_onAudio']({
       responseId: 'FAKE_ID',
       type: 'audio',
       data: new Uint8Array(8).buffer,
     });
-    // @ts-expect-error - we're testing protected readonly fields
-    transport.currentItemId = 'a';
+    setCurrentItemId(transport, 'a');
     transport['_onAudio']({
       responseId: 'FAKE_ID',
       type: 'audio',
       data: new Uint8Array(16).buffer,
     });
-    // @ts-expect-error - we're testing protected readonly fields
-    transport.currentItemId = 'b';
+    setCurrentItemId(transport, 'b');
     transport['_onAudio']({
       responseId: 'FAKE_ID',
       type: 'audio',
@@ -199,7 +251,7 @@ describe('TwilioRealtimeTransportLayer', () => {
   test('connect preserves nested audio config while defaulting Twilio formats', async () => {
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: twilio as any,
+      twilioWebSocket: asTwilioWebSocket(twilio),
     });
     const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
     const connectSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.connect);
@@ -244,7 +296,7 @@ describe('TwilioRealtimeTransportLayer', () => {
   test('updateSessionConfig keeps audio format', async () => {
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: twilio as any,
+      twilioWebSocket: asTwilioWebSocket(twilio),
     });
     await transport.connect({ apiKey: 'ek_test' } as any);
     const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
@@ -288,7 +340,7 @@ describe('TwilioRealtimeTransportLayer', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: twilio as any,
+      twilioWebSocket: asTwilioWebSocket(twilio),
     });
     await transport.connect({ apiKey: 'ek_test' } as any);
     const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
@@ -307,7 +359,9 @@ describe('TwilioRealtimeTransportLayer', () => {
     twilio.emit('message', {
       toString: () => JSON.stringify({ event: 'mark', mark: { name: 'u:x' } }),
     });
-    expect(warnSpy).toHaveBeenCalledWith('Invalid mark name received:', 'u:x');
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Invalid mark name received. Mark data is redacted.',
+    );
 
     twilio.emit('message', {
       toString: () =>
@@ -331,7 +385,7 @@ describe('TwilioRealtimeTransportLayer', () => {
   test('resets chunk count on done marks before interrupting', async () => {
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: twilio as any,
+      twilioWebSocket: asTwilioWebSocket(twilio),
     });
     await transport.connect({ apiKey: 'ek_test' } as any);
     const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');

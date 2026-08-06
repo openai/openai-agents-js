@@ -1,5 +1,6 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
+import mdx from '@astrojs/mdx';
 import starlight from '@astrojs/starlight';
 import { createStarlightTypeDocPlugin } from 'starlight-typedoc';
 import tailwindcss from '@tailwindcss/vite';
@@ -144,7 +145,7 @@ const sidebar = [
           zh: '沙盒智能体',
           ko: '샌드박스 에이전트',
         },
-        collapsed: false,
+        collapsed: true,
         items: [
           {
             label: 'Quickstart',
@@ -180,6 +181,53 @@ const sidebar = [
               ja: 'エージェントメモリ',
               zh: '智能体记忆',
               ko: '에이전트 메모리',
+            },
+          },
+        ],
+      },
+      {
+        label: 'Realtime agents',
+        translations: {
+          ja: 'リアルタイムエージェント',
+          zh: '实时智能体',
+          ko: '실시간 에이전트',
+        },
+        collapsed: true,
+        items: [
+          {
+            label: 'Overview',
+            link: '/guides/voice-agents',
+            translations: {
+              ja: 'リアルタイムエージェントの概要',
+              zh: '实时智能体概述',
+              ko: '실시간 에이전트 개요',
+            },
+          },
+          {
+            label: 'Quickstart',
+            link: '/guides/voice-agents/quickstart',
+            translations: {
+              ja: 'クイックスタート',
+              zh: '快速开始',
+              ko: '빠른 시작',
+            },
+          },
+          {
+            label: 'Building Realtime Agents',
+            link: '/guides/voice-agents/build',
+            translations: {
+              ja: 'リアルタイムエージェントの構築',
+              zh: '构建实时智能体',
+              ko: '실시간 에이전트 구축',
+            },
+          },
+          {
+            label: 'Transport Mechanisms',
+            link: '/guides/voice-agents/transport',
+            translations: {
+              ja: 'リアルタイムトランスポート',
+              zh: '传输机制',
+              ko: '전송 방식',
             },
           },
         ],
@@ -302,60 +350,13 @@ const sidebar = [
         },
       },
       {
-        label: 'Voice Agents',
-        translations: {
-          ja: '音声エージェント',
-          zh: '语音智能体',
-          ko: '음성 에이전트',
-        },
-        collapsed: false,
-        items: [
-          {
-            label: 'Overview',
-            link: '/guides/voice-agents',
-            translations: {
-              ja: '音声エージェントの概要',
-              zh: '语音智能体概述',
-              ko: '음성 에이전트 개요',
-            },
-          },
-          {
-            label: 'Quickstart',
-            link: '/guides/voice-agents/quickstart',
-            translations: {
-              ja: 'クイックスタート',
-              zh: '快速开始',
-              ko: '빠른 시작',
-            },
-          },
-          {
-            label: 'Building Voice Agents',
-            link: '/guides/voice-agents/build',
-            translations: {
-              ja: '音声エージェントの構築',
-              zh: '构建语音智能体',
-              ko: '음성 에이전트 구축',
-            },
-          },
-          {
-            label: 'Transport Mechanisms',
-            link: '/guides/voice-agents/transport',
-            translations: {
-              ja: 'リアルタイムトランスポート',
-              zh: '传输机制',
-              ko: '전송 방식',
-            },
-          },
-        ],
-      },
-      {
         label: 'Extensions',
         translations: {
           ja: '拡張機能',
           zh: '扩展',
           ko: '확장 기능',
         },
-        collapsed: false,
+        collapsed: true,
         items: [
           {
             label: 'AI SDK Integration',
@@ -499,6 +500,10 @@ export default defineConfig({
         themes: ['houston', 'one-light'],
       },
       customCss: ['./src/styles/global.css'],
+    }),
+    mdx({
+      gfm: true,
+      optimize: true,
     }),
   ],
 

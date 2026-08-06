@@ -1,6 +1,5 @@
 import {
   Model,
-  RequestUsage,
   Usage,
   withResponseSpan,
   createResponseSpan,
@@ -53,6 +52,8 @@ import {
   mergeQueryParamsIntoURL,
   splitResponsesTransportOverrides,
 } from './responsesTransportUtils';
+import type { OpenAIClient } from './openaiClient';
+
 import {
   CodeInterpreterStatus,
   FileSearchStatus,
@@ -64,6 +65,11 @@ import {
   getSnakeCasedProviderDataWithoutReservedKeys,
 } from './utils/providerData';
 import { normalizePromptCacheRetention } from './utils/modelSettings';
+import {
+  normalizeInstructions,
+  searchParamsToAuthHeaderQuery,
+  toRequestUsageEntry,
+} from './responsesUtils';
 import { ProviderData } from '@openai/agents-core/types';
 import {
   encodeUint8ArrayToBase64,
@@ -71,6 +77,21 @@ import {
   getToolSearchProviderCallId,
   normalizeHostedMcpRequireApproval,
 } from '@openai/agents-core/utils';
+import {
+  assertValidCompactionItems,
+  formatInlineData,
+  getInlineMediaType,
+} from '@openai/agents-core/utils/internal';
+
+type ModelTracingParent = Parameters<typeof createResponseSpan>[1];
+
+function getModelTracingParent(request: ModelRequest): ModelTracingParent {
+  return (
+    request as ModelRequest & {
+      _internal?: { tracingParent?: ModelTracingParent };
+    }
+  )._internal?.tracingParent;
+}
 
 type ToolChoice =
   | ToolChoiceOptions
@@ -158,11 +179,18 @@ function toOpenAIToolSearchOutputToolPayload(
   }
 
   if (tool.type === 'function') {
-    const { deferLoading, ...rest } = tool as Record<string, any>;
+    const { deferLoading, allowedCallers, outputSchema, ...rest } =
+      tool as Record<string, any>;
     return {
       ...rest,
       ...(typeof deferLoading === 'boolean'
         ? { defer_loading: deferLoading }
+        : {}),
+      ...(Array.isArray(allowedCallers)
+        ? { allowed_callers: allowedCallers }
+        : {}),
+      ...(outputSchema && typeof outputSchema === 'object'
+        ? { output_schema: outputSchema }
         : {}),
     };
   }
@@ -201,11 +229,17 @@ function fromOpenAIToolSearchOutputToolPayload(
   }
 
   if (tool.type === 'function') {
-    const { defer_loading, ...rest } = tool;
+    const { defer_loading, allowed_callers, output_schema, ...rest } = tool;
     return {
       ...rest,
       ...(typeof defer_loading === 'boolean'
         ? { deferLoading: defer_loading }
+        : {}),
+      ...(Array.isArray(allowed_callers)
+        ? { allowedCallers: allowed_callers }
+        : {}),
+      ...(output_schema && typeof output_schema === 'object'
+        ? { outputSchema: output_schema }
         : {}),
     };
   }
@@ -318,6 +352,7 @@ const HostedToolChoice = z.enum([
   'code_interpreter',
   'image_generation',
   'mcp',
+  'programmatic_tool_calling',
   // Specialized local tools
   'shell',
   'apply_patch',
@@ -642,6 +677,110 @@ function assertSupportedToolChoice(
   }
 }
 
+function collectProgrammaticToolConfiguration(tools: ResponsesTool[]): {
+  hasProgrammaticToolCalling: boolean;
+  hasToolSearch: boolean;
+  programmaticEligibleTools: ResponsesTool[];
+  programmaticOnlyTools: ResponsesTool[];
+} {
+  let hasProgrammaticToolCalling = false;
+  let hasToolSearch = false;
+  const programmaticEligibleTools: ResponsesTool[] = [];
+  const programmaticOnlyTools: ResponsesTool[] = [];
+
+  const visit = (tool: ResponsesTool) => {
+    if (tool.type === 'namespace' && Array.isArray(tool.tools)) {
+      for (const nestedTool of tool.tools) {
+        visit(nestedTool);
+      }
+      return;
+    }
+
+    if (tool.type === 'programmatic_tool_calling') {
+      hasProgrammaticToolCalling = true;
+      return;
+    }
+
+    if (tool.type === 'tool_search') {
+      hasToolSearch = true;
+    }
+
+    const allowedCallers = (tool as { allowed_callers?: unknown })
+      .allowed_callers;
+    if (
+      !Array.isArray(allowedCallers) ||
+      !allowedCallers.includes('programmatic')
+    ) {
+      return;
+    }
+
+    programmaticEligibleTools.push(tool);
+    if (!allowedCallers.includes('direct')) {
+      programmaticOnlyTools.push(tool);
+    }
+  };
+
+  for (const tool of tools) {
+    visit(tool);
+  }
+
+  return {
+    hasProgrammaticToolCalling,
+    hasToolSearch,
+    programmaticEligibleTools,
+    programmaticOnlyTools,
+  };
+}
+
+function describeResponsesTool(tool: ResponsesTool): string {
+  const name = (tool as { name?: unknown }).name;
+  return typeof name === 'string' ? name : String(tool.type);
+}
+
+function assertValidProgrammaticToolCallingConfiguration(
+  toolChoice: ToolChoice | undefined,
+  tools: ResponsesTool[],
+  options?: { allowPromptSuppliedTools?: boolean },
+): void {
+  const allowPromptSuppliedTools = options?.allowPromptSuppliedTools === true;
+  const {
+    hasProgrammaticToolCalling,
+    hasToolSearch,
+    programmaticEligibleTools,
+    programmaticOnlyTools,
+  } = collectProgrammaticToolConfiguration(tools);
+  const forcesProgrammaticToolCalling =
+    typeof toolChoice === 'object' &&
+    (toolChoice as { type?: unknown }).type === 'programmatic_tool_calling';
+
+  if (
+    forcesProgrammaticToolCalling &&
+    !hasProgrammaticToolCalling &&
+    !allowPromptSuppliedTools
+  ) {
+    throw new UserError(
+      'modelSettings.toolChoice="programmatic_tool_calling" requires programmaticToolCallingTool() in the agent tools.',
+    );
+  }
+
+  if (programmaticOnlyTools.length > 0 && !hasProgrammaticToolCalling) {
+    throw new UserError(
+      `Tools restricted to programmatic callers require programmaticToolCallingTool(). Affected tools: ${programmaticOnlyTools.map(describeResponsesTool).join(', ')}.`,
+    );
+  }
+
+  if (
+    hasProgrammaticToolCalling &&
+    !hasToolSearch &&
+    programmaticEligibleTools.length === 0 &&
+    !allowPromptSuppliedTools
+  ) {
+    throw new UserError(
+      'programmaticToolCallingTool() requires at least one tool whose allowedCallers includes "programmatic".',
+    );
+  }
+}
+
 function getCompatibleToolChoice(
   toolChoice: ToolChoice | undefined,
   tools: ResponsesTool[],
@@ -771,7 +910,7 @@ function convertLegacyToolOutputContent(
     const legacyImageUrl = (output as any).imageUrl;
     const legacyFileId = (output as any).fileId;
     const dataValue = (output as any).data;
-    const topLevelInlineMediaType = getImageInlineMediaType(
+    const topLevelInlineMediaType = getInlineMediaType(
       output as Record<string, any>,
     );
 
@@ -780,7 +919,7 @@ function convertLegacyToolOutputContent(
     } else if (isRecord(output.image)) {
       const imageObj = output.image as Record<string, any>;
       const inlineMediaType =
-        getImageInlineMediaType(imageObj) ?? topLevelInlineMediaType;
+        getInlineMediaType(imageObj) ?? topLevelInlineMediaType;
       if (typeof imageObj.url === 'string' && imageObj.url.length > 0) {
         structured.image = imageObj.url;
       } else if (
@@ -1138,33 +1277,6 @@ function getShellCallProviderDataForInput(
   };
 }
 
-function getImageInlineMediaType(
-  source: Record<string, any>,
-): string | undefined {
-  if (typeof source.mediaType === 'string' && source.mediaType.length > 0) {
-    return source.mediaType;
-  }
-  if (
-    typeof (source as any).mimeType === 'string' &&
-    (source as any).mimeType.length > 0
-  ) {
-    return (source as any).mimeType;
-  }
-  return undefined;
-}
-
-function formatInlineData(
-  data: string | Uint8Array,
-  mediaType?: string,
-): string {
-  if (typeof data === 'string' && data.startsWith('data:')) {
-    return data;
-  }
-  const base64 =
-    typeof data === 'string' ? data : encodeUint8ArrayToBase64(data);
-  return mediaType ? `data:${mediaType};base64,${base64}` : base64;
-}
-
 function toOpenAIShellSkill(
   skill: SerializedShellContainerSkill,
 ): OpenAI.Responses.SkillReference | OpenAI.Responses.InlineSkill {
@@ -1395,9 +1507,12 @@ function getTools<_TContext = unknown>(
           );
         }
 
-        const { tool: openaiTool, include: openaiIncludes } = converTool(tool, {
-          usePreviewComputerTool,
-        });
+        const { tool: openaiTool, include: openaiIncludes } = convertTool(
+          tool,
+          {
+            usePreviewComputerTool,
+          },
+        );
         if (namespaceState.functionNames.has(tool.name)) {
           throw new UserError(
             `Namespace "${namespaceName}" cannot contain duplicate function tool name "${tool.name}".`,
@@ -1429,7 +1544,7 @@ function getTools<_TContext = unknown>(
       hasDeferredSearchableTool = true;
     }
 
-    const { tool: openaiTool, include: openaiIncludes } = converTool(tool, {
+    const { tool: openaiTool, include: openaiIncludes } = convertTool(tool, {
       usePreviewComputerTool,
     });
     openaiTools.push(openaiTool);
@@ -1464,7 +1579,7 @@ function getTools<_TContext = unknown>(
   };
 }
 
-function converTool<_TContext = unknown>(
+function convertTool<_TContext = unknown>(
   tool: SerializedTool,
   options?: {
     usePreviewComputerTool?: boolean;
@@ -1480,6 +1595,10 @@ function converTool<_TContext = unknown>(
       description: tool.description,
       parameters: tool.parameters,
       strict: tool.strict,
+      ...(tool.allowedCallers
+        ? { allowed_callers: [...tool.allowedCallers] }
+        : {}),
+      ...(tool.outputSchema ? { output_schema: tool.outputSchema } : {}),
     };
     if (tool.deferLoading) {
       openaiTool.defer_loading = true;
@@ -1518,6 +1637,9 @@ function converTool<_TContext = unknown>(
       tool: {
         type: 'shell',
         environment: toOpenAIShellEnvironment(tool.environment),
+        ...(tool.allowedCallers
+          ? { allowed_callers: [...tool.allowedCallers] }
+          : {}),
       } as OpenAI.Responses.FunctionShellTool,
       include: undefined,
     };
@@ -1525,6 +1647,9 @@ function converTool<_TContext = unknown>(
     return {
       tool: {
         type: 'apply_patch',
+        ...(tool.allowedCallers
+          ? { allowed_callers: [...tool.allowedCallers] }
+          : {}),
       } as OpenAI.Responses.ApplyPatchTool,
       include: undefined,
     };
@@ -1578,6 +1703,7 @@ function converTool<_TContext = unknown>(
         tool: {
           type: 'code_interpreter',
           container: tool.providerData.container,
+          allowed_callers: tool.providerData.allowed_callers,
         },
         include: tool.providerData.include_outputs
           ? ['code_interpreter_call.outputs']
@@ -1590,6 +1716,13 @@ function converTool<_TContext = unknown>(
           execution: tool.providerData.execution,
           description: tool.providerData.description,
           parameters: tool.providerData.parameters,
+        },
+        include: undefined,
+      };
+    } else if (tool.providerData?.type === 'programmatic_tool_calling') {
+      return {
+        tool: {
+          type: 'programmatic_tool_calling',
         },
         include: undefined,
       };
@@ -1622,6 +1755,7 @@ function converTool<_TContext = unknown>(
         require_approval: convertMCPRequireApproval(
           tool.providerData.require_approval,
         ),
+        allowed_callers: tool.providerData.allowed_callers,
         server_description: tool.providerData.server_description,
       };
       if (tool.providerData.defer_loading === true) {
@@ -1677,6 +1811,9 @@ function getInputMessageContent(
     return {
       type: 'input_text',
       text: entry.text,
+      ...(entry.promptCacheBreakpoint
+        ? { prompt_cache_breakpoint: entry.promptCacheBreakpoint }
+        : {}),
       ...getSnakeCasedProviderDataWithoutReservedKeys(entry.providerData, [
         'type',
         'text',
@@ -1698,6 +1835,9 @@ function getInputMessageContent(
     }
     return {
       ...imageEntry,
+      ...(entry.promptCacheBreakpoint
+        ? { prompt_cache_breakpoint: entry.promptCacheBreakpoint }
+        : {}),
       ...getSnakeCasedProviderDataWithoutReservedKeys(entry.providerData, [
         'type',
         'detail',
@@ -1753,6 +1893,9 @@ function getInputMessageContent(
     }
     return {
       ...fileEntry,
+      ...(entry.promptCacheBreakpoint
+        ? { prompt_cache_breakpoint: entry.promptCacheBreakpoint }
+        : {}),
       ...getSnakeCasedProviderDataWithoutReservedKeys(entry.providerData, [
         'type',
         'file_data',
@@ -1842,6 +1985,7 @@ function getMessageItem(
         'id',
         'role',
         'content',
+        'phase',
       ]),
     };
   }
@@ -1856,6 +2000,7 @@ function getMessageItem(
           'id',
           'role',
           'content',
+          'phase',
         ]),
       };
     }
@@ -1868,23 +2013,37 @@ function getMessageItem(
         'id',
         'role',
         'content',
+        'phase',
       ]),
     };
   }
 
   if (item.role === 'assistant') {
+    const phase =
+      item.phase ?? getProviderDataField<unknown>(item.providerData, ['phase']);
+    if (
+      typeof phase !== 'undefined' &&
+      phase !== 'commentary' &&
+      phase !== 'final_answer'
+    ) {
+      throw new UserError(
+        `Invalid assistant message phase: ${JSON.stringify(phase)}. Expected "commentary" or "final_answer".`,
+      );
+    }
     const assistantMessage: OpenAI.Responses.ResponseOutputMessage = {
       type: 'message',
       id: item.id!,
       role: 'assistant',
       content: item.content.map(getOutputMessageContent),
       status: item.status,
+      ...(typeof phase === 'undefined' ? {} : { phase }),
       ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
         'type',
         'id',
         'role',
         'content',
         'status',
+        'phase',
       ]),
     };
     return assistantMessage;
@@ -1903,6 +2062,36 @@ function isMessageItem(item: protocol.ModelItem): item is protocol.MessageItem {
   }
 
   return false;
+}
+
+type OpenAIToolCaller =
+  { type: 'direct' } | { type: 'program'; caller_id: string };
+
+function toOpenAIToolCaller(
+  caller: protocol.ToolCaller | undefined,
+): OpenAIToolCaller | undefined {
+  if (!caller) {
+    return undefined;
+  }
+  if (caller.type === 'direct') {
+    return { type: 'direct' };
+  }
+  return { type: 'program', caller_id: caller.callerId };
+}
+
+function fromOpenAIToolCaller(
+  caller: unknown,
+): protocol.ToolCaller | undefined {
+  if (!isRecord(caller)) {
+    return undefined;
+  }
+  if (caller.type === 'direct') {
+    return { type: 'direct' };
+  }
+  if (caller.type === 'program' && typeof caller.caller_id === 'string') {
+    return { type: 'program', callerId: caller.caller_id };
+  }
+  return undefined;
 }
 
 function getPrompt(prompt: ModelRequest['prompt']):
@@ -2005,6 +2194,43 @@ function getInputItems(
       return toolSearchOutput;
     }
 
+    if (item.type === 'program') {
+      return {
+        type: 'program',
+        id: item.id!,
+        call_id: item.callId,
+        code: item.code,
+        fingerprint: item.fingerprint,
+        ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
+          'type',
+          'id',
+          'call_id',
+          'callId',
+          'code',
+          'fingerprint',
+        ]),
+      } satisfies OpenAI.Responses.ResponseInputItem.Program;
+    }
+
+    if (item.type === 'program_output') {
+      return {
+        type: 'program_output',
+        id: item.id!,
+        call_id: item.callId,
+        result: item.output,
+        status: item.status,
+        ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
+          'type',
+          'id',
+          'call_id',
+          'callId',
+          'output',
+          'result',
+          'status',
+        ]),
+      } satisfies OpenAI.Responses.ResponseInputItem.ProgramOutput;
+    }
+
     if (item.type === 'function_call') {
       const entry: ResponseFunctionToolCallWithNamespace = {
         id: item.id,
@@ -2013,6 +2239,7 @@ function getInputItems(
         call_id: item.callId,
         arguments: item.arguments,
         status: item.status,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
         ...(typeof item.namespace === 'string'
           ? { namespace: item.namespace }
           : {}),
@@ -2024,6 +2251,7 @@ function getInputItems(
           'arguments',
           'status',
           'namespace',
+          'caller',
         ]),
       };
 
@@ -2041,6 +2269,7 @@ function getInputItems(
         call_id: item.callId,
         output: normalizedOutput,
         status: item.status,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
         ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
           'type',
           'id',
@@ -2048,6 +2277,7 @@ function getInputItems(
           'output',
           'status',
           'namespace',
+          'caller',
         ]),
       };
       return entry as unknown as OpenAI.Responses.ResponseInputItem.FunctionCallOutput;
@@ -2170,12 +2400,15 @@ function getInputItems(
         item.providerData,
       );
 
-      const entry: OpenAI.Responses.ResponseInputItem.ShellCall = {
+      const entry: OpenAI.Responses.ResponseInputItem.ShellCall & {
+        caller?: ReturnType<typeof toOpenAIToolCaller>;
+      } = {
         type: 'shell_call',
         id: item.id,
         call_id: item.callId,
         status: item.status ?? 'in_progress',
         action,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
         ...shellProviderData,
       };
 
@@ -2200,11 +2433,14 @@ function getInputItems(
 
       const entry: OpenAI.Responses.ResponseInputItem.ShellCallOutput & {
         max_output_length?: number;
+        caller?: ReturnType<typeof toOpenAIToolCaller>;
       } = {
         type: 'shell_call_output',
         call_id: item.callId,
         output: sanitizedOutputs,
         id: item.id ?? undefined,
+        status: item.status ?? undefined,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
       };
       if (typeof item.maxOutputLength === 'number') {
         entry.max_output_length = item.maxOutputLength;
@@ -2217,30 +2453,41 @@ function getInputItems(
       if (!item.operation) {
         throw new UserError('apply_patch_call missing operation');
       }
-      const entry: OpenAI.Responses.ResponseInputItem.ApplyPatchCall = {
+      const entry: OpenAI.Responses.ResponseInputItem.ApplyPatchCall & {
+        caller?: ReturnType<typeof toOpenAIToolCaller>;
+      } = {
         type: 'apply_patch_call',
         id: item.id ?? undefined,
         call_id: item.callId,
         status: item.status ?? 'in_progress',
         operation: item.operation,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
       };
 
       return entry;
     }
 
     if (item.type === 'apply_patch_call_output') {
-      const entry: OpenAI.Responses.ResponseInputItem.ApplyPatchCallOutput = {
+      const entry: OpenAI.Responses.ResponseInputItem.ApplyPatchCallOutput & {
+        caller?: ReturnType<typeof toOpenAIToolCaller>;
+      } = {
         type: 'apply_patch_call_output',
         id: item.id ?? undefined,
         call_id: item.callId,
         status: item.status ?? 'completed',
         output: item.output ?? undefined,
+        ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
       };
 
       return entry;
     }
 
     if (item.type === 'hosted_tool_call') {
+      const hostedCaller = (
+        item as protocol.HostedToolCallItem & {
+          caller?: protocol.ToolCaller;
+        }
+      ).caller;
       if (
         item.providerData?.type === 'web_search_call' ||
         item.providerData?.type === 'web_search' // for backward compatibility
@@ -2287,7 +2534,9 @@ function getInputItems(
         item.providerData?.type === 'code_interpreter_call' ||
         item.providerData?.type === 'code_interpreter' // for backward compatibility
       ) {
-        const entry: OpenAI.Responses.ResponseCodeInterpreterToolCall = {
+        const entry: OpenAI.Responses.ResponseCodeInterpreterToolCall & {
+          caller?: OpenAIToolCaller;
+        } = {
           ...camelOrSnakeToSnakeCase(item.providerData), // place here to prioritize the below fields
           type: 'code_interpreter_call',
           id: item.id!,
@@ -2298,6 +2547,7 @@ function getInputItems(
             item.providerData?.outputs ?? item.providerData?.results ?? [],
           status: CodeInterpreterStatus.parse(item.status ?? 'failed'),
           container_id: item.providerData?.container_id,
+          ...(hostedCaller ? { caller: toOpenAIToolCaller(hostedCaller) } : {}),
         };
 
         return entry;
@@ -2324,13 +2574,16 @@ function getInputItems(
       ) {
         const providerData =
           item.providerData as ProviderData.HostedMCPListTools;
-        const entry: OpenAI.Responses.ResponseInputItem.McpListTools = {
+        const entry: OpenAI.Responses.ResponseInputItem.McpListTools & {
+          caller?: OpenAIToolCaller;
+        } = {
           ...camelOrSnakeToSnakeCase(item.providerData),
           type: 'mcp_list_tools',
           id: item.id!,
           tools: camelOrSnakeToSnakeCase(providerData.tools) as any,
           server_label: providerData.server_label,
           error: providerData.error,
+          ...(hostedCaller ? { caller: toOpenAIToolCaller(hostedCaller) } : {}),
         };
         return entry;
       } else if (
@@ -2339,13 +2592,16 @@ function getInputItems(
       ) {
         const providerData =
           item.providerData as ProviderData.HostedMCPApprovalRequest;
-        const entry: OpenAI.Responses.ResponseInputItem.McpApprovalRequest = {
+        const entry: OpenAI.Responses.ResponseInputItem.McpApprovalRequest & {
+          caller?: OpenAIToolCaller;
+        } = {
           ...camelOrSnakeToSnakeCase(item.providerData), // place here to prioritize the below fields
           type: 'mcp_approval_request',
           id: providerData.id ?? item.id!,
           name: providerData.name,
           arguments: providerData.arguments,
           server_label: providerData.server_label,
+          ...(hostedCaller ? { caller: toOpenAIToolCaller(hostedCaller) } : {}),
         };
         return entry;
       } else if (
@@ -2354,13 +2610,16 @@ function getInputItems(
       ) {
         const providerData =
           item.providerData as ProviderData.HostedMCPApprovalResponse;
-        const entry: OpenAI.Responses.ResponseInputItem.McpApprovalResponse = {
+        const entry: OpenAI.Responses.ResponseInputItem.McpApprovalResponse & {
+          caller?: OpenAIToolCaller;
+        } = {
           ...camelOrSnakeToSnakeCase(providerData),
           type: 'mcp_approval_response',
           id: providerData.id,
           approve: providerData.approve,
           approval_request_id: providerData.approval_request_id,
           reason: providerData.reason,
+          ...(hostedCaller ? { caller: toOpenAIToolCaller(hostedCaller) } : {}),
         };
         return entry;
       } else if (
@@ -2368,7 +2627,9 @@ function getInputItems(
         item.name === 'mcp_call'
       ) {
         const providerData = item.providerData as ProviderData.HostedMCPCall;
-        const entry: OpenAI.Responses.ResponseInputItem.McpCall = {
+        const entry: OpenAI.Responses.ResponseInputItem.McpCall & {
+          caller?: OpenAIToolCaller;
+        } = {
           // output, which can be a large text string, is optional here, so we don't include it
           // output: item.output,
           ...camelOrSnakeToSnakeCase(providerData), // place here to prioritize the below fields
@@ -2378,6 +2639,7 @@ function getInputItems(
           arguments: providerData.arguments,
           server_label: providerData.server_label,
           error: providerData.error,
+          ...(hostedCaller ? { caller: toOpenAIToolCaller(hostedCaller) } : {}),
         };
         return entry;
       }
@@ -2390,14 +2652,13 @@ function getInputItems(
     if (item.type === 'compaction') {
       const encryptedContent =
         (item as any).encrypted_content ?? (item as any).encryptedContent;
-      if (typeof encryptedContent !== 'string') {
-        throw new UserError('Compaction item missing encrypted_content');
-      }
-      return {
+      const compactionItem = {
         type: 'compaction',
         id: item.id ?? undefined,
         encrypted_content: encryptedContent,
-      } as OpenAI.Responses.ResponseInputItem;
+      } as protocol.CompactionItem;
+      assertValidCompactionItems([compactionItem]);
+      return compactionItem as OpenAI.Responses.ResponseInputItem;
     }
 
     if (item.type === 'unknown') {
@@ -2451,14 +2712,22 @@ function convertToOutputItem(
 ): protocol.OutputModelItem[] {
   return items.map((item) => {
     if (item.type === 'message') {
-      const { id, type, role, content, status, ...providerData } = item;
+      const { id, type, role, content, status, phase, ...providerData } = item;
       return {
         id,
         type,
         role,
         content: content.map(convertToMessageContentItem),
         status,
-        providerData,
+        ...(phase === 'commentary' || phase === 'final_answer'
+          ? { phase }
+          : {}),
+        providerData: {
+          ...providerData,
+          ...(phase === 'commentary' || phase === 'final_answer'
+            ? { phase }
+            : {}),
+        },
       };
     } else if (item.type === 'tool_search_call') {
       const {
@@ -2497,6 +2766,44 @@ function convertToOutputItem(
         providerData,
       };
       return output;
+    } else if (item.type === 'program') {
+      const {
+        id,
+        call_id,
+        code,
+        fingerprint,
+        type: _type,
+        ...providerData
+      } = item as OpenAI.Responses.ResponseOutputItem.Program &
+        Record<string, unknown>;
+      const output: protocol.ProgramCallItem = {
+        type: 'program',
+        id,
+        callId: call_id,
+        code,
+        fingerprint,
+        providerData,
+      };
+      return output;
+    } else if (item.type === 'program_output') {
+      const {
+        id,
+        call_id,
+        result,
+        status,
+        type: _type,
+        ...providerData
+      } = item as OpenAI.Responses.ResponseOutputItem.ProgramOutput &
+        Record<string, unknown>;
+      const output: protocol.ProgramCallResultItem = {
+        type: 'program_output',
+        id,
+        callId: call_id,
+        output: result,
+        status,
+        providerData,
+      };
+      return output;
     } else if (
       item.type === 'file_search_call' ||
       item.type === 'web_search_call' ||
@@ -2504,6 +2811,12 @@ function convertToOutputItem(
       item.type === 'code_interpreter_call'
     ) {
       const { status, ...remainingItem } = item;
+      const caller = fromOpenAIToolCaller(
+        (remainingItem as { caller?: unknown }).caller,
+      );
+      if (caller) {
+        delete (remainingItem as { caller?: unknown }).caller;
+      }
       let outputData = undefined;
       if ('result' in remainingItem && remainingItem.result !== null) {
         // type: "image_generation_call"
@@ -2516,6 +2829,7 @@ function convertToOutputItem(
         name: item.type,
         status,
         output: outputData,
+        ...(caller ? { caller } : {}),
         providerData: remainingItem,
       };
       return output;
@@ -2525,6 +2839,7 @@ function convertToOutputItem(
         call_id,
         name,
         namespace,
+        caller,
         status,
         arguments: args,
         ...providerData
@@ -2537,6 +2852,7 @@ function convertToOutputItem(
         ...(typeof namespace === 'string' ? { namespace } : {}),
         status,
         arguments: args,
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       return output;
@@ -2548,6 +2864,7 @@ function convertToOutputItem(
         name: toolName,
         function_name: functionName,
         namespace,
+        caller,
         ...providerData
       } = item as OpenAI.Responses.ResponseFunctionToolCallOutputItem & {
         name?: string;
@@ -2562,6 +2879,7 @@ function convertToOutputItem(
         ...(typeof namespace === 'string' ? { namespace } : {}),
         status: status ?? 'completed',
         output: convertFunctionCallOutputToProtocol(rawOutput),
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       return output;
@@ -2585,7 +2903,7 @@ function convertToOutputItem(
       };
       return output;
     } else if (item.type === 'shell_call') {
-      const { call_id, status, action, ...providerData } = item;
+      const { call_id, status, action, caller, ...providerData } = item;
       const shellAction: protocol.ShellAction = {
         commands: Array.isArray(action?.commands) ? action.commands : [],
       };
@@ -2603,6 +2921,7 @@ function convertToOutputItem(
         callId: call_id,
         status: status ?? 'in_progress',
         action: shellAction,
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       return output;
@@ -2611,6 +2930,8 @@ function convertToOutputItem(
         call_id,
         output: responseOutput,
         max_output_length,
+        status,
+        caller,
         ...providerData
       } = item as ResponseShellCallOutput;
       let normalizedOutput: protocol.ShellCallOutputContent[] = [];
@@ -2635,6 +2956,8 @@ function convertToOutputItem(
         id: item.id ?? undefined,
         callId: call_id,
         output: normalizedOutput,
+        ...(status ? { status } : {}),
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       if (typeof max_output_length === 'number') {
@@ -2642,7 +2965,7 @@ function convertToOutputItem(
       }
       return output;
     } else if (item.type === 'apply_patch_call') {
-      const { call_id, status, operation, ...providerData } = item;
+      const { call_id, status, operation, caller, ...providerData } = item;
       if (!operation) {
         throw new UserError('apply_patch_call missing operation');
       }
@@ -2679,6 +3002,7 @@ function convertToOutputItem(
         callId: call_id,
         status: status ?? 'in_progress',
         operation: normalizedOperation,
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       return output;
@@ -2687,6 +3011,7 @@ function convertToOutputItem(
         call_id,
         status,
         output: responseOutput,
+        caller,
         ...providerData
       } = item as unknown as ResponseApplyPatchCallOutput;
       const output: protocol.ApplyPatchCallResultItem = {
@@ -2695,40 +3020,62 @@ function convertToOutputItem(
         callId: call_id,
         status,
         output: typeof responseOutput === 'string' ? responseOutput : undefined,
+        ...(caller ? { caller: fromOpenAIToolCaller(caller) } : {}),
         providerData,
       };
       return output;
     } else if (item.type === 'mcp_list_tools') {
       const { ...providerData } = item;
+      const caller = fromOpenAIToolCaller(
+        (providerData as Record<string, unknown>).caller,
+      );
+      if (caller) {
+        delete (providerData as Record<string, unknown>).caller;
+      }
       const output: protocol.HostedToolCallItem = {
         type: 'hosted_tool_call',
         id: item.id!,
         name: item.type,
         status: 'completed',
         output: undefined,
+        ...(caller ? { caller } : {}),
         providerData,
       };
       return output;
     } else if (item.type === 'mcp_approval_request') {
       const { ...providerData } = item;
+      const caller = fromOpenAIToolCaller(
+        (providerData as Record<string, unknown>).caller,
+      );
+      if (caller) {
+        delete (providerData as Record<string, unknown>).caller;
+      }
       const output: protocol.HostedToolCallItem = {
         type: 'hosted_tool_call',
         id: item.id!,
         name: 'mcp_approval_request',
         status: 'completed',
         output: undefined,
+        ...(caller ? { caller } : {}),
         providerData,
       };
       return output;
     } else if (item.type === 'mcp_call') {
       // Avoiding to duplicate potentially large output data
       const { output: outputData, ...providerData } = item;
+      const caller = fromOpenAIToolCaller(
+        (providerData as Record<string, unknown>).caller,
+      );
+      if (caller) {
+        delete (providerData as Record<string, unknown>).caller;
+      }
       const output: protocol.HostedToolCallItem = {
         type: 'hosted_tool_call',
         id: item.id!,
         name: item.type,
         status: 'completed',
         output: outputData || undefined,
+        ...(caller ? { caller } : {}),
         providerData,
       };
       return output;
@@ -2756,16 +3103,14 @@ function convertToOutputItem(
         created_by?: string;
         id?: string;
       };
-      if (typeof encrypted_content !== 'string') {
-        throw new UserError('Compaction item missing encrypted_content');
-      }
-      const output: protocol.CompactionItem = {
+      const output = {
         type: 'compaction',
         id: item.id ?? undefined,
         encrypted_content,
         created_by,
         providerData,
-      };
+      } as unknown as protocol.CompactionItem;
+      assertValidCompactionItems([output]);
       return output;
     }
 
@@ -2777,7 +3122,7 @@ function convertToOutputItem(
   });
 }
 
-export { getToolChoice, converTool, getInputItems, convertToOutputItem };
+export { getToolChoice, convertTool, getInputItems, convertToOutputItem };
 
 const TERMINAL_RESPONSES_STREAM_EVENT_TYPES = new Set([
   'response.completed',
@@ -2863,13 +3208,92 @@ export class OpenAIResponsesModel implements Model {
   protected readonly _client: OpenAI;
   protected readonly _model: string;
 
-  constructor(client: OpenAI, model: string) {
-    this._client = client;
+  constructor(client: OpenAIClient, model: string) {
+    this._client = client as OpenAI;
     this._model = model;
   }
 
   getRetryAdvice(args: ModelRetryAdviceRequest): ModelRetryAdvice | undefined {
     return getOpenAIRetryAdvice(args);
+  }
+
+  /**
+   * @internal
+   */
+  protected _convertResponseOutputItems(
+    items: Array<Record<string, any>>,
+  ): protocol.OutputModelItem[] {
+    return convertToOutputItem(items as ResponseOutputItemWithFunctionResult[]);
+  }
+
+  /**
+   * @internal
+   */
+  protected _getResponseForSDKOutput(
+    response: OpenAI.Responses.Response,
+  ): OpenAI.Responses.Response {
+    return response;
+  }
+
+  /**
+   * @internal
+   */
+  protected _shouldEmitOutputTextDelta(
+    _event: Record<string, any>,
+    _outputItem: Record<string, any> | undefined,
+  ): boolean {
+    return true;
+  }
+
+  /**
+   * @internal
+   */
+  protected _shouldEmitRawModelEvent(_event: Record<string, any>): boolean {
+    return true;
+  }
+
+  /**
+   * @internal
+   */
+  protected _getResponsesCreateRequestOverrides(
+    _request: ModelRequest,
+    _requestData: Record<string, any>,
+  ): Record<string, any> {
+    return {};
+  }
+
+  /**
+   * @internal
+   */
+  protected _getResponseUsage(response: OpenAI.Responses.Response): Usage {
+    return new Usage({
+      inputTokens: response.usage?.input_tokens ?? 0,
+      outputTokens: response.usage?.output_tokens ?? 0,
+      totalTokens: response.usage?.total_tokens ?? 0,
+      inputTokensDetails: { ...response.usage?.input_tokens_details },
+      outputTokensDetails: { ...response.usage?.output_tokens_details },
+      requestUsageEntries: [
+        toRequestUsageEntry(response.usage, 'responses.create'),
+      ],
+    });
+  }
+
+  /**
+   * @internal
+   */
+  protected _getStreamedResponseUsage(
+    response: OpenAI.Responses.Response,
+  ): protocol.UsageData {
+    return {
+      inputTokens: response.usage?.input_tokens ?? 0,
+      outputTokens: response.usage?.output_tokens ?? 0,
+      totalTokens: response.usage?.total_tokens ?? 0,
+      inputTokensDetails: { ...response.usage?.input_tokens_details },
+      outputTokensDetails: { ...response.usage?.output_tokens_details },
+      requestUsageEntries: [
+        toRequestUsageEntry(response.usage, 'responses.create'),
+      ],
+    };
   }
 
   /**
@@ -2980,6 +3404,11 @@ export class OpenAIResponsesModel implements Model {
     assertSupportedToolChoice(toolChoice, toolChoiceValidationTools, {
       allowPromptSuppliedTools,
     });
+    assertValidProgrammaticToolCallingConfiguration(
+      toolChoice,
+      toolChoiceValidationTools,
+      { allowPromptSuppliedTools },
+    );
     const { text, ...restOfProviderData } = providerDataWithoutTransport;
 
     if (request.modelSettings.reasoning) {
@@ -3042,6 +3471,7 @@ export class OpenAIResponsesModel implements Model {
       prompt_cache_retention: normalizePromptCacheRetention(
         request.modelSettings.promptCacheRetention,
       ),
+      prompt_cache_options: request.modelSettings.promptCacheOptions,
       context_management: getContextManagement(
         request.modelSettings.contextManagement,
       ),
@@ -3054,6 +3484,11 @@ export class OpenAIResponsesModel implements Model {
         ...transportOverrides.extraBody,
       };
     }
+
+    requestData = {
+      ...requestData,
+      ...this._getResponsesCreateRequestOverrides(request, requestData),
+    };
 
     // Keep the transport mode aligned with the calling path even if extra_body includes stream.
     requestData.stream = stream;
@@ -3099,30 +3534,28 @@ export class OpenAIResponsesModel implements Model {
    * @returns A promise that resolves to the response from the model.
    */
   async getResponse(request: ModelRequest): Promise<ModelResponse> {
-    const response = await withResponseSpan(async (span) => {
-      const response = await this._fetchResponse(request, false);
+    const response = await withResponseSpan(
+      async (span) => {
+        const response = await this._fetchResponse(request, false);
 
-      if (request.tracing) {
-        span.spanData.response_id = response.id;
-        span.spanData._input = request.input;
-        span.spanData._response = response;
-      }
+        if (request.tracing) {
+          span.spanData.response_id = response.id;
+          span.spanData._input = request.input;
+          span.spanData._response = response;
+        }
 
-      return response;
-    });
+        return response;
+      },
+      undefined,
+      getModelTracingParent(request),
+    );
 
+    const responseForSDKOutput = this._getResponseForSDKOutput(response);
     const output: ModelResponse = {
-      usage: new Usage({
-        inputTokens: response.usage?.input_tokens ?? 0,
-        outputTokens: response.usage?.output_tokens ?? 0,
-        totalTokens: response.usage?.total_tokens ?? 0,
-        inputTokensDetails: { ...response.usage?.input_tokens_details },
-        outputTokensDetails: { ...response.usage?.output_tokens_details },
-        requestUsageEntries: [
-          toRequestUsageEntry(response.usage, 'responses.create'),
-        ],
-      }),
-      output: convertToOutputItem(response.output),
+      usage: this._getResponseUsage(response),
+      output: this._convertResponseOutputItems(
+        responseForSDKOutput.output as Array<Record<string, any>>,
+      ),
       responseId: response.id,
       requestId: getOpenAIResponseRequestId(response),
       providerData: response,
@@ -3139,7 +3572,9 @@ export class OpenAIResponsesModel implements Model {
   async *getStreamedResponse(
     request: ModelRequest,
   ): AsyncIterable<ResponseStreamEvent> {
-    const span = request.tracing ? createResponseSpan() : undefined;
+    const span = request.tracing
+      ? createResponseSpan(undefined, getModelTracingParent(request))
+      : undefined;
     try {
       if (span) {
         span.start();
@@ -3151,8 +3586,27 @@ export class OpenAIResponsesModel implements Model {
       const response = await this._fetchResponse(request, true);
 
       let finalResponse: OpenAI.Responses.Response | undefined;
+      const outputItemsByIndex = new Map<number, Record<string, any>>();
       for await (const event of response) {
         const eventType = (event as { type?: string }).type;
+        const shouldEmitRawModelEvent = this._shouldEmitRawModelEvent(
+          event as unknown as Record<string, any>,
+        );
+        if (eventType === 'response.output_item.added') {
+          const outputItemAdded = event as unknown as {
+            output_index?: number;
+            item?: Record<string, any>;
+          };
+          if (
+            typeof outputItemAdded.output_index === 'number' &&
+            outputItemAdded.item
+          ) {
+            outputItemsByIndex.set(
+              outputItemAdded.output_index,
+              outputItemAdded.item,
+            );
+          }
+        }
         if (eventType === 'response.created') {
           yield {
             type: 'response_started',
@@ -3167,58 +3621,61 @@ export class OpenAIResponsesModel implements Model {
             };
           finalResponse = terminalEvent.response;
           const { response, ...remainingEvent } = terminalEvent;
-          const { output, usage, id, ...remainingResponse } = response;
+          const {
+            output: _output,
+            usage: _usage,
+            id,
+            ...remainingResponse
+          } = response;
+          const responseForSDKOutput = this._getResponseForSDKOutput(response);
           yield {
             type: 'response_done',
             response: {
               id: id,
               requestId: getOpenAIResponseRequestId(response),
-              output: convertToOutputItem(output),
-              usage: {
-                inputTokens: usage?.input_tokens ?? 0,
-                outputTokens: usage?.output_tokens ?? 0,
-                totalTokens: usage?.total_tokens ?? 0,
-                inputTokensDetails: {
-                  ...usage?.input_tokens_details,
-                },
-                outputTokensDetails: {
-                  ...usage?.output_tokens_details,
-                },
-                requestUsageEntries: [
-                  toRequestUsageEntry(usage, 'responses.create'),
-                ],
-              },
+              output: this._convertResponseOutputItems(
+                responseForSDKOutput.output as Array<Record<string, any>>,
+              ),
+              usage: this._getStreamedResponseUsage(response),
               providerData: remainingResponse,
             },
             providerData: remainingEvent,
           };
-          if (eventType === 'response.completed') {
+        } else if (eventType === 'response.output_text.delta') {
+          const { delta, ...remainingEvent } = event as unknown as {
+            delta: string;
+            item_id?: string;
+            output_index?: number;
+          } & Record<string, any>;
+          const itemId = remainingEvent.item_id;
+          const outputItem =
+            typeof remainingEvent.output_index === 'number'
+              ? outputItemsByIndex.get(remainingEvent.output_index)
+              : undefined;
+          if (
+            this._shouldEmitOutputTextDelta(
+              event as unknown as Record<string, any>,
+              outputItem,
+            )
+          ) {
             yield {
-              type: 'model',
-              event: event,
-              providerData: {
-                rawModelEventSource: OPENAI_RESPONSES_RAW_MODEL_EVENT_SOURCE,
-              },
+              type: 'output_text_delta',
+              delta: delta,
+              ...(typeof itemId === 'string' ? { itemId } : {}),
+              providerData: remainingEvent,
             };
           }
-        } else if (eventType === 'response.output_text.delta') {
-          const { delta, ...remainingEvent } = event as {
-            delta: string;
-          } & Record<string, any>;
-          yield {
-            type: 'output_text_delta',
-            delta: delta,
-            providerData: remainingEvent,
-          };
         }
 
-        yield {
-          type: 'model',
-          event: event,
-          providerData: {
-            rawModelEventSource: OPENAI_RESPONSES_RAW_MODEL_EVENT_SOURCE,
-          },
-        };
+        if (shouldEmitRawModelEvent) {
+          yield {
+            type: 'model',
+            event: event,
+            providerData: {
+              rawModelEventSource: OPENAI_RESPONSES_RAW_MODEL_EVENT_SOURCE,
+            },
+          };
+        }
       }
 
       if (request.tracing && span && finalResponse) {
@@ -3277,7 +3734,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
   #wsRequestLock: Promise<void> = Promise.resolve();
 
   constructor(
-    client: OpenAI,
+    client: OpenAIClient,
     model: string,
     options: OpenAIResponsesWSModelOptions = {},
   ) {
@@ -3450,7 +3907,6 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
           }
           throw new ResponsesWebSocketInternalError(
             'connection_closed_before_terminal_response_event',
-            'Responses websocket connection closed before a terminal response event.',
           );
         }
 
@@ -3630,8 +4086,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
     mergeQueryParamsIntoURL(
       baseURL,
       clientWithInternals._options?.defaultQuery as
-        | Record<string, unknown>
-        | undefined,
+        Record<string, unknown> | undefined,
     );
     if (explicitBaseQuery && Array.from(explicitBaseQuery.keys()).length > 0) {
       const explicitTopLevelKeys = new Set<string>();
@@ -3818,8 +4273,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
   }
 
   #createWebSocketRequestTimeoutDeadline():
-    | WebSocketRequestTimeoutDeadline
-    | undefined {
+    WebSocketRequestTimeoutDeadline | undefined {
     const timeoutMs = this.#getWebSocketFrameReadTimeoutMs();
     if (
       typeof timeoutMs !== 'number' ||
@@ -3895,59 +4349,4 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
       frameReadTimeout.errorMessage,
     );
   }
-}
-
-/**
- * Sending an empty string for instructions can override the prompt parameter.
- * Thus, this method checks if the instructions is an empty string and returns undefined if it is.
- * @param instructions - The instructions to normalize.
- * @returns The normalized instructions.
- */
-function normalizeInstructions(
-  instructions: string | undefined,
-): string | undefined {
-  if (typeof instructions === 'string') {
-    if (instructions.trim() === '') {
-      return undefined;
-    }
-    return instructions;
-  }
-  return undefined;
-}
-
-function searchParamsToAuthHeaderQuery(
-  searchParams: URLSearchParams,
-): Record<string, string | string[]> | undefined {
-  const query: Record<string, string | string[]> = {};
-  let hasEntries = false;
-
-  for (const [key, value] of searchParams.entries()) {
-    hasEntries = true;
-    const existingValue = query[key];
-    if (typeof existingValue === 'undefined') {
-      query[key] = value;
-      continue;
-    }
-    if (Array.isArray(existingValue)) {
-      existingValue.push(value);
-      continue;
-    }
-    query[key] = [existingValue, value];
-  }
-
-  return hasEntries ? query : undefined;
-}
-
-function toRequestUsageEntry(
-  usage: OpenAI.Responses.ResponseUsage | undefined,
-  endpoint: string,
-): RequestUsage {
-  return new RequestUsage({
-    inputTokens: usage?.input_tokens ?? 0,
-    outputTokens: usage?.output_tokens ?? 0,
-    totalTokens: usage?.total_tokens ?? 0,
-    inputTokensDetails: { ...usage?.input_tokens_details },
-    outputTokensDetails: { ...usage?.output_tokens_details },
-    endpoint,
-  });
 }

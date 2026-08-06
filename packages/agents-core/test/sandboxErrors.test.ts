@@ -44,6 +44,58 @@ describe('sandbox errors', () => {
     expect(error.name).toBe('SandboxError');
     expect(error.code).toBe('runtime_error');
     expect(error.details).toEqual({ provider: 'fake' });
+    expect(error.retryable).toBeNull();
+  });
+
+  it('exposes explicit retryability metadata', () => {
+    const error = new SandboxExecTransportError('backend unavailable', {
+      provider: 'fake',
+      retryable: true,
+    });
+
+    expect(error.retryable).toBe(true);
+  });
+
+  it('inherits retryability from wrapped sandbox causes', () => {
+    const cause = new SandboxWorkspaceArchiveReadError('archive failed', {
+      retryable: false,
+    });
+    const error = new SandboxWorkspaceStopError('stop failed', { cause });
+
+    expect(error.retryable).toBe(false);
+  });
+
+  it('marks deterministic sandbox errors as non-retryable', () => {
+    expect(new SandboxWorkspaceReadNotFoundError('missing').retryable).toBe(
+      false,
+    );
+    expect(new SandboxWorkspaceWriteTypeError('bad write').retryable).toBe(
+      false,
+    );
+    expect(new SandboxExecTimeoutError('timeout').retryable).toBe(false);
+  });
+
+  it('keeps broad archive and snapshot failures as unknown by default', () => {
+    expect(
+      new SandboxWorkspaceArchiveReadError('archive read').retryable,
+    ).toBeNull();
+    expect(new SandboxGitCloneError('clone failed').retryable).toBeNull();
+    expect(new SandboxGitCopyError('copy failed').retryable).toBeNull();
+    expect(
+      new SandboxSnapshotPersistError('persist failed').retryable,
+    ).toBeNull();
+    expect(
+      new SandboxSnapshotRestoreError('restore failed').retryable,
+    ).toBeNull();
+  });
+
+  it('infers provider retryability from status details', () => {
+    expect(
+      new SandboxExecTransportError('rate limited', { status: 429 }).retryable,
+    ).toBe(true);
+    expect(
+      new SandboxExecTransportError('bad request', { status: 400 }).retryable,
+    ).toBe(false);
   });
 
   it('exposes Python-parity error codes for concrete sandbox failures', () => {

@@ -51,6 +51,7 @@ import {
   type StructuredToolInputBuilder,
 } from './agentToolInput';
 import {
+  getToolCallParentSpanFromDetails,
   getAgentToolParentRunConfigFromDetails,
   getInheritedAgentToolRunConfig,
   mergeAgentToolRunConfig,
@@ -59,10 +60,16 @@ import type { ZodObjectLike } from './utils/zodCompat';
 import { saveAgentToolRunResult } from './agentToolRunResults';
 import { registerAgentToolSourceAgent } from './agentToolSourceRegistry';
 import type { AgentToolInvocation } from './agentToolInvocation';
+import {
+  getToolUsageRecorder,
+  setRunnerParentUsageRecorder,
+} from './runner/usageTracking';
+import { setRunnerInvocationSpanParent } from './runner/invocationContext';
+import type { Span } from './tracing';
+import { hasDefinitelyDifferentOutputTypes } from './agentOutputTypeWarning';
 
 type CompletedRunResult<TContext, TAgent extends Agent<TContext, any>> = (
-  | RunResult<TContext, TAgent>
-  | StreamedRunResult<TContext, TAgent>
+  RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>
 ) & {
   finalOutput: ResolvedAgentOutput<TAgent['outputType']>;
 };
@@ -100,7 +107,7 @@ type AgentToolEventHandler<TAgent extends Agent<any, any>> = (
 ) => void | Promise<void>;
 type AgentToolInputBuilder<TParameters extends AgentToolInputParameters> =
   StructuredToolInputBuilder<ToolExecuteArgument<TParameters>>;
-type AgentToolOptions<
+export type AgentToolOptions<
   TContext,
   TAgent extends Agent<TContext, any>,
   TParameters extends AgentToolInputParameters,
@@ -164,21 +171,21 @@ type AgentToolOptions<
    */
   onStream?: (event: AgentToolStreamEvent<TAgent>) => void | Promise<void>;
 };
-type AgentToolOptionsWithDefault<
+export type AgentToolOptionsWithDefault<
   TContext,
   TAgent extends Agent<TContext, any>,
 > = Omit<
   AgentToolOptions<TContext, TAgent, typeof AgentAsToolInputSchema>,
   'parameters'
 > & { parameters?: undefined };
-type AgentToolOptionsWithParameters<
+export type AgentToolOptionsWithParameters<
   TContext,
   TAgent extends Agent<TContext, any>,
   TParameters extends AgentToolInputParameters,
 > = AgentToolOptions<TContext, TAgent, TParameters> & {
   parameters: TParameters;
 };
-type AgentTool<
+export type AgentTool<
   TContext,
   TAgent extends Agent<TContext, any>,
   TParameters extends AgentToolInputParameters,
@@ -451,8 +458,7 @@ type ExtractHandoffOutput<T> = T extends Handoff<any, infer O> ? O : never;
 export type HandoffsOutputUnion<
   Handoffs extends readonly (Agent<any, any> | Handoff<any, any>)[],
 > =
-  | ExtractAgentOutput<Handoffs[number]>
-  | ExtractHandoffOutput<Handoffs[number]>;
+  ExtractAgentOutput<Handoffs[number]> | ExtractHandoffOutput<Handoffs[number]>;
 
 /**
  * Helper type for config with handoffs
@@ -586,18 +592,30 @@ export class Agent<
       config.handoffOutputTypeWarningEnabled
     ) {
       if (this.handoffs && this.outputType) {
-        const outputTypes = new Set<string>([JSON.stringify(this.outputType)]);
+        const outputTypes: unknown[] = [this.outputType];
         for (const h of this.handoffs) {
           if ('outputType' in h && h.outputType) {
-            outputTypes.add(JSON.stringify(h.outputType));
+            outputTypes.push(h.outputType);
           } else if ('agent' in h && h.agent.outputType) {
-            outputTypes.add(JSON.stringify(h.agent.outputType));
+            outputTypes.push(h.agent.outputType);
           }
         }
-        if (outputTypes.size > 1) {
-          logger.warn(
-            `[Agent] Warning: Handoff agents have different output types: ${Array.from(outputTypes).join(', ')}. You can make it type-safe by using Agent.create({ ... }) method instead.`,
+
+        if (logger.dontLogModelData) {
+          if (hasDefinitelyDifferentOutputTypes(outputTypes)) {
+            logger.warn(
+              '[Agent] Warning: Handoff agents have different output types. Output type details are redacted. You can make it type-safe by using Agent.create({ ... }) method instead.',
+            );
+          }
+        } else {
+          const serializedOutputTypes = outputTypes.map((type) =>
+            JSON.stringify(type),
           );
+          if (new Set<string>(serializedOutputTypes).size > 1) {
+            logger.warn(
+              `[Agent] Warning: Handoff agents have different output types: ${serializedOutputTypes.join(', ')}. You can make it type-safe by using Agent.create({ ... }) method instead.`,
+            );
+          }
         }
       }
     }
@@ -739,8 +757,7 @@ export class Agent<
       parameters: toolParameters,
       strict: true,
       needsApproval: needsApproval as
-        | boolean
-        | ToolApprovalFunction<ToolInputParametersStrict>,
+        boolean | ToolApprovalFunction<ToolInputParametersStrict>,
       isEnabled,
       execute: async (
         params: ToolExecuteArgument<ToolInputParametersStrict>,
@@ -794,6 +811,11 @@ export class Agent<
           runConfig,
         );
         const runner = new Runner(nestedRunConfig);
+        setRunnerParentUsageRecorder(runner, getToolUsageRecorder(details));
+        setRunnerInvocationSpanParent(
+          runner,
+          getToolCallParentSpanFromDetails(details),
+        );
         const resumeContextStrategy = resumeState?.contextStrategy ?? 'merge';
         const resumeContext =
           resumeContextStrategy === 'preferSerialized' ? undefined : runContext;
@@ -811,7 +833,7 @@ export class Agent<
               context &&
               resumeContext !== context
             ) {
-              resumeContext._mergeApprovals(context.toJSON().approvals);
+              resumeContext._mergeApprovalState(context);
             }
             runInput = await RunState.fromStringWithContext<TContext, TAgent>(
               this,
@@ -870,6 +892,17 @@ export class Agent<
               });
             }
             await streamResult.completed;
+            if (streamResult.cancelled) {
+              const currentStep = streamResult.state._currentStep;
+              const hasCommittedOutcome =
+                (currentStep?.type === 'next_step_final_output' &&
+                  streamResult.state._currentTurnInProgress === false) ||
+                (streamResult.interruptions?.length ?? 0) > 0;
+              if (!hasCommittedOutcome) {
+                combinedSignal?.throwIfAborted();
+                throw new Error('Nested agent run was cancelled.');
+              }
+            }
           }
 
           const completedResult = result as CompletedRunResult<
@@ -903,6 +936,8 @@ export class Agent<
             outputText = await customOutputExtractor(
               completedResultWithAgentToolInvocation,
             );
+          } else if ((completedResult.interruptions?.length ?? 0) > 0) {
+            outputText = '';
           } else {
             const finalOutputText =
               typeof completedResult.finalOutput !== 'undefined'
@@ -991,6 +1026,7 @@ export class Agent<
    */
   async getMcpTools(
     runContext: RunContext<TContext>,
+    tracingParent?: Span<any>,
   ): Promise<Tool<TContext>[]> {
     if (this.mcpServers.length > 0) {
       const includeServerInToolNames =
@@ -1005,6 +1041,7 @@ export class Agent<
         reservedToolNames: includeServerInToolNames
           ? await this.getMcpToolReservedNames(runContext)
           : undefined,
+        tracingParent,
       });
     }
 
@@ -1037,8 +1074,9 @@ export class Agent<
    */
   async getAllTools(
     runContext: RunContext<TContext>,
+    tracingParent?: Span<any>,
   ): Promise<Tool<TContext>[]> {
-    const mcpTools = await this.getMcpTools(runContext);
+    const mcpTools = await this.getMcpTools(runContext, tracingParent);
     const enabledTools: Tool<TContext>[] = [];
 
     for (const candidate of this.tools) {

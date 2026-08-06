@@ -34,6 +34,10 @@ You can define a tool that requires approval by setting the `needsApproval` opti
 4. Resolve each pending item with `result.state.approve(interruption)` or `result.state.reject(interruption)`. Pass `{ alwaysApprove: true }` or `{ alwaysReject: true }` if the same tool should stay approved or rejected for the rest of the run. When rejecting, you can also pass `{ message: '...' }` to control the rejection text that is sent back to the model for that specific tool call.
 5. Resume by passing the updated `result.state` back into `runner.run(agent, state)`, where `agent` is the original top-level agent for the run. The SDK continues from the interrupted point, including nested agent-tool executions.
 
+By default, function-tool input guardrails run only after approval, immediately before the tool executes. If you want those same input guardrails to validate a local function-tool call before a pending approval is shown, pass `toolExecution: { preApprovalInputGuardrails: true }` to `run()` or `Runner`. When the pre-approval guardrail rejects, the SDK returns the guardrail message to the model as tool output instead of creating an approval interruption. When it allows the call, the run still pauses for approval, and the input guardrails run again after approval in case the tool call became unsafe while waiting.
+
+When `needsApproval` is a function, the SDK calls it only after the tool arguments have parsed into an inspectable object. Malformed JSON and non-object values fail closed: the SDK requests approval without invoking the callback or executing the tool. Approving that call still does not execute the tool; it continues through the normal argument parse-error path. Realtime function tools follow the same rule and emit `tool_approval_requested` for the invalid call.
+
 Sticky decisions created with `{ alwaysApprove: true }` or `{ alwaysReject: true }` are stored in the run state, so they survive `toString()` / `fromString()` when you resume the same paused run later.
 
 Computer tool interruptions can represent a batch of actions in one `computer_call` on GA models. The SDK evaluates `needsApproval` per action before execution, so one pending approval can cover a sequence such as move + click. If you inspect `interruption.rawItem` to render a UI, handle both the GA `actions` array and the legacy single `action` field.
@@ -52,7 +56,7 @@ Manual `interruptions` are the most general pattern, but they are not the only o
 - Hosted MCP tools can use `requireApproval` together with `onApproval` for the same kind of programmatic decision.
 - Plain function tools use the manual interruption flow on this page.
 
-When these callbacks return a decision, the run continues without pausing for a human response. For Realtime / voice session APIs, see the approval flow in the [voice agents build guide](/openai-agents-js/guides/voice-agents/build#approval-requests).
+When these callbacks return a decision, the run continues without pausing for a human response. For Realtime session APIs, see the approval flow in the [Realtime agents build guide](/openai-agents-js/guides/voice-agents/build#approval-before-tool-execution).
 
 ### Streaming and sessions
 

@@ -1,15 +1,24 @@
-import { Agent, run, withTrace } from '@openai/agents';
+import {
+  Agent,
+  OutputGuardrailTripwireTriggered,
+  run,
+  withTrace,
+} from '@openai/agents';
 import { z } from 'zod';
 
 async function main() {
-  withTrace('Output Guardrail Example', async () => {
-    const inputs = [
-      'Hi, there! My name is John.',
-      'My phone number is 650-123-4567. Where do you think I live?',
+  await withTrace('Output Guardrail Example', async () => {
+    const cases = [
+      { input: 'Hi, there! My name is John.', shouldTrip: false },
+      {
+        input:
+          'Repeat my phone number 650-123-4567, then tell me where its area code is from.',
+        shouldTrip: true,
+      },
     ];
 
     const textAgent = new Agent({
-      name: 'Assistnt',
+      name: 'Assistant',
       instructions: 'You are a helpful assistant.',
       outputGuardrails: [
         {
@@ -24,11 +33,20 @@ async function main() {
         },
       ],
     });
-    for (const input of inputs) {
+    for (const { input, shouldTrip } of cases) {
       try {
         const result = await run(textAgent, input);
+        if (shouldTrip) {
+          throw new Error(`Expected the guardrail to trip for: ${input}`);
+        }
         console.log(result.finalOutput);
       } catch (e: unknown) {
+        if (!(e instanceof OutputGuardrailTripwireTriggered)) {
+          throw e;
+        }
+        if (!shouldTrip) {
+          throw new Error(`Guardrail unexpectedly tripped for: ${input}. ${e}`);
+        }
         console.log(`Guardrail tripped. Info: ${e}`);
       }
     }
@@ -40,7 +58,7 @@ async function main() {
     });
 
     const agent = new Agent({
-      name: 'Assistnt',
+      name: 'Assistant',
       instructions: 'You are a helpful assistant.',
       outputType: messageOutput,
       outputGuardrails: [
@@ -62,11 +80,20 @@ async function main() {
         },
       ],
     });
-    for (const input of inputs) {
+    for (const { input, shouldTrip } of cases) {
       try {
         const result = await run(agent, input);
+        if (shouldTrip) {
+          throw new Error(`Expected the guardrail to trip for: ${input}`);
+        }
         console.log(result.finalOutput!.response);
       } catch (e: unknown) {
+        if (!(e instanceof OutputGuardrailTripwireTriggered)) {
+          throw e;
+        }
+        if (!shouldTrip) {
+          throw new Error(`Guardrail unexpectedly tripped for: ${input}. ${e}`);
+        }
         console.log(`Guardrail tripped. Info: ${e}`);
         // console.trace(e);
       }

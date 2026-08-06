@@ -1,5 +1,12 @@
+import type { Agent } from './agent';
+import { UserError } from './errors';
 import { RunToolApprovalItem } from './items';
 import logger from './logger';
+import {
+  getFunctionToolLookupKey,
+  getFunctionToolLegacyStateKeyFromStateKey,
+  getFunctionToolStateKeyForCall,
+} from './toolIdentity';
 import { UnknownContext } from './types';
 import { Usage } from './usage';
 
@@ -10,19 +17,39 @@ type ApprovalRecord = {
   stickyRejectMessage?: string;
 };
 
+type SerializedFunctionApprovals = Array<{
+  agentIdentity: string;
+  approvals: Record<string, ApprovalRecord>;
+}>;
+
+type FunctionApprovalState = {
+  approvalsByAgent: Map<Agent<any, any>, Map<string, ApprovalRecord>>;
+  legacyApprovals: Map<string, ApprovalRecord>;
+};
+
 const COMPUTER_APPROVAL_TOOL_NAMES = new Set([
   'computer',
   'computer_use_preview',
 ]);
 
-function getApprovalToolNameCandidates(toolName: string): string[] {
-  if (!COMPUTER_APPROVAL_TOOL_NAMES.has(toolName)) {
-    return [toolName];
+function getApprovalToolNameCandidates(
+  toolName: string,
+  includeFunctionAliases: boolean,
+): string[] {
+  if (COMPUTER_APPROVAL_TOOL_NAMES.has(toolName)) {
+    return toolName === 'computer'
+      ? ['computer', 'computer_use_preview']
+      : ['computer_use_preview', 'computer'];
   }
 
-  return toolName === 'computer'
-    ? ['computer', 'computer_use_preview']
-    : ['computer_use_preview', 'computer'];
+  if (includeFunctionAliases) {
+    const bareFunctionKey = toolName.startsWith('[')
+      ? undefined
+      : getFunctionToolLookupKey(toolName);
+    return bareFunctionKey ? [toolName, bareFunctionKey] : [toolName];
+  }
+
+  return [toolName];
 }
 
 function mergeApprovalList(
@@ -98,6 +125,11 @@ type RunContextJson = {
   toolInput?: unknown;
 };
 
+type SerializedRunContextJson = RunContextJson & {
+  functionApprovals?: SerializedFunctionApprovals;
+  legacyFunctionApprovals?: Record<string, ApprovalRecord>;
+};
+
 /**
  * A context object that is passed to the `Runner.run()` method.
  */
@@ -122,10 +154,19 @@ export class RunContext<TContext = UnknownContext> {
    */
   #approvals: Map<string, ApprovalRecord>;
 
+  /**
+   * Function-tool approvals scoped to the public agent that owns the call.
+   */
+  #functionApprovalState: FunctionApprovalState;
+
   constructor(context: TContext = {} as TContext) {
     this.context = context;
     this.usage = new Usage();
     this.#approvals = new Map();
+    this.#functionApprovalState = {
+      approvalsByAgent: new Map(),
+      legacyApprovals: new Map(),
+    };
   }
 
   /**
@@ -147,6 +188,7 @@ export class RunContext<TContext = UnknownContext> {
     target.context = this.context;
     target.usage = this.usage;
     target.#approvals = this.#approvals;
+    target.#functionApprovalState = this.#functionApprovalState;
     return target;
   }
 
@@ -176,26 +218,418 @@ export class RunContext<TContext = UnknownContext> {
   }
 
   /**
+   * Rebuild owner-scoped function approvals from serialized RunState data.
+   * @internal
+   */
+  _rebuildFunctionApprovals(
+    approvals: SerializedFunctionApprovals,
+    agentsByIdentity: ReadonlyMap<string, Agent<any, any>>,
+  ): void {
+    this.#functionApprovalState.approvalsByAgent = new Map();
+    this._mergeFunctionApprovals(approvals, agentsByIdentity);
+  }
+
+  /**
+   * Rebuild legacy function-only approvals from serialized RunState data.
+   * @internal
+   */
+  _rebuildLegacyFunctionApprovals(
+    approvals: Record<string, ApprovalRecord>,
+  ): void {
+    this.#functionApprovalState.legacyApprovals = new Map();
+    this._mergeLegacyFunctionApprovals(approvals);
+  }
+
+  /**
+   * Merge legacy function-only approvals from serialized RunState data.
+   * @internal
+   */
+  _mergeLegacyFunctionApprovals(
+    approvals: Record<string, ApprovalRecord>,
+  ): void {
+    for (const [toolName, incoming] of Object.entries(approvals)) {
+      this.#setLegacyFunctionApprovalRecord(toolName, incoming);
+    }
+  }
+
+  /**
+   * Retain only legacy approvals proven to belong to enabled function tools.
+   * @internal
+   */
+  _retainLegacyFunctionApprovals(toolNames: ReadonlySet<string>): void {
+    for (const toolName of this.#functionApprovalState.legacyApprovals.keys()) {
+      if (!toolNames.has(toolName)) {
+        this.#functionApprovalState.legacyApprovals.delete(toolName);
+      }
+    }
+  }
+
+  /**
+   * Remove migrated function-only keys from the non-function aggregate map.
+   * @internal
+   */
+  _removeMigratedFunctionApprovalsFromAggregate(
+    functionToolNames: ReadonlySet<string>,
+    exactNonFunctionToolNames: ReadonlySet<string>,
+  ): void {
+    for (const toolName of functionToolNames) {
+      if (!exactNonFunctionToolNames.has(toolName)) {
+        this.#approvals.delete(toolName);
+      }
+    }
+  }
+
+  /**
+   * Merge owner-scoped function approvals from serialized RunState data.
+   * @internal
+   */
+  _mergeFunctionApprovals(
+    approvals: SerializedFunctionApprovals,
+    agentsByIdentity: ReadonlyMap<string, Agent<any, any>>,
+  ): void {
+    this._validateFunctionApprovalOwners(approvals, agentsByIdentity);
+    for (const { agentIdentity, approvals: approvalsByTool } of approvals) {
+      const agent = agentsByIdentity.get(agentIdentity)!;
+      for (const [toolName, incoming] of Object.entries(approvalsByTool)) {
+        this.#setFunctionApprovalRecord(agent, toolName, incoming);
+      }
+    }
+  }
+
+  /**
+   * Validate serialized function-approval owners without mutating this context.
+   * @internal
+   */
+  _validateFunctionApprovalOwners(
+    approvals: SerializedFunctionApprovals,
+    agentsByIdentity: ReadonlyMap<string, Agent<any, any>>,
+  ): void {
+    const seenAgentIdentities = new Set<string>();
+    for (const { agentIdentity } of approvals) {
+      if (
+        seenAgentIdentities.has(agentIdentity) ||
+        !agentsByIdentity.has(agentIdentity)
+      ) {
+        throw new UserError(
+          'RunState contains invalid function approval ownership for the current agent graph.',
+        );
+      }
+      seenAgentIdentities.add(agentIdentity);
+    }
+  }
+
+  /**
+   * Merge all approval state from another live context.
+   * @internal
+   */
+  _mergeApprovalState(source: RunContext<TContext>): void {
+    for (const [toolName, incoming] of source.#approvals) {
+      this.#setApprovalRecord(toolName, incoming);
+    }
+    for (const [agent, approvalsByTool] of source.#functionApprovalState
+      .approvalsByAgent) {
+      for (const [toolName, incoming] of approvalsByTool) {
+        this.#setFunctionApprovalRecord(agent, toolName, incoming);
+      }
+    }
+    for (const [toolName, incoming] of source.#functionApprovalState
+      .legacyApprovals) {
+      this.#setLegacyFunctionApprovalRecord(toolName, incoming);
+    }
+  }
+
+  /**
+   * Merges canonicalized legacy approvals without replacing existing exact
+   * non-function records that use the same legacy name.
+   * @internal
+   */
+  _mergeApprovalStatePreservingExactKeys(
+    source: RunContext<TContext>,
+    exactToolNames: ReadonlySet<string>,
+  ): void {
+    for (const [toolName, incoming] of source.#approvals) {
+      if (exactToolNames.has(toolName) && this.#approvals.has(toolName)) {
+        continue;
+      }
+      this.#setApprovalRecord(toolName, incoming);
+    }
+    for (const [agent, approvalsByTool] of source.#functionApprovalState
+      .approvalsByAgent) {
+      for (const [toolName, incoming] of approvalsByTool) {
+        this.#setFunctionApprovalRecord(agent, toolName, incoming);
+      }
+    }
+    for (const [toolName, incoming] of source.#functionApprovalState
+      .legacyApprovals) {
+      this.#setLegacyFunctionApprovalRecord(toolName, incoming);
+    }
+  }
+
+  /**
+   * Moves a legacy function-tool approval to an exact category-aware key.
+   * @internal
+   */
+  _migrateToolApproval(
+    agent: Agent<any, any>,
+    legacyToolName: string,
+    canonicalToolName: string,
+    callIds: readonly string[],
+    migratePermanentDecision: boolean,
+    preserveMovedCallDecisions = false,
+  ): void {
+    if (legacyToolName === canonicalToolName) {
+      return;
+    }
+    const legacy =
+      this.#functionApprovalState.legacyApprovals.get(legacyToolName);
+    if (!legacy) {
+      return;
+    }
+
+    const callIdSet = new Set(callIds);
+    const movedApproved =
+      legacy.approved === true
+        ? migratePermanentDecision
+          ? true
+          : [...callIdSet]
+        : Array.isArray(legacy.approved)
+          ? legacy.approved.filter((callId) => callIdSet.has(callId))
+          : [];
+    const movedRejected =
+      legacy.rejected === true
+        ? migratePermanentDecision
+          ? true
+          : [...callIdSet]
+        : Array.isArray(legacy.rejected)
+          ? legacy.rejected.filter((callId) => callIdSet.has(callId))
+          : [];
+    let movedMessages = legacy.messages
+      ? Object.fromEntries(
+          Object.entries(legacy.messages).filter(([callId]) =>
+            callIdSet.has(callId),
+          ),
+        )
+      : undefined;
+    if (
+      legacy.rejected === true &&
+      !migratePermanentDecision &&
+      legacy.stickyRejectMessage !== undefined
+    ) {
+      for (const callId of callIdSet) {
+        (movedMessages ??= {})[callId] ??= legacy.stickyRejectMessage;
+      }
+    }
+    const moved: ApprovalRecord = {
+      approved: movedApproved,
+      rejected: movedRejected,
+      ...(movedMessages && Object.keys(movedMessages).length > 0
+        ? { messages: movedMessages }
+        : {}),
+      ...(migratePermanentDecision && legacy.stickyRejectMessage !== undefined
+        ? { stickyRejectMessage: legacy.stickyRejectMessage }
+        : {}),
+    };
+    const hasMovedDecision =
+      moved.approved === true ||
+      moved.rejected === true ||
+      (Array.isArray(moved.approved) && moved.approved.length > 0) ||
+      (Array.isArray(moved.rejected) && moved.rejected.length > 0);
+    if (!hasMovedDecision) {
+      return;
+    }
+    this.#setFunctionApprovalRecord(agent, canonicalToolName, moved);
+
+    const remainingApproved =
+      legacy.approved === true
+        ? migratePermanentDecision
+          ? []
+          : true
+        : Array.isArray(legacy.approved)
+          ? legacy.approved.filter(
+              (callId) => preserveMovedCallDecisions || !callIdSet.has(callId),
+            )
+          : [];
+    const remainingRejected =
+      legacy.rejected === true
+        ? migratePermanentDecision
+          ? []
+          : true
+        : Array.isArray(legacy.rejected)
+          ? legacy.rejected.filter(
+              (callId) => preserveMovedCallDecisions || !callIdSet.has(callId),
+            )
+          : [];
+    const remainingMessages = legacy.messages
+      ? Object.fromEntries(
+          Object.entries(legacy.messages).filter(
+            ([callId]) => preserveMovedCallDecisions || !callIdSet.has(callId),
+          ),
+        )
+      : undefined;
+    const remaining: ApprovalRecord = {
+      approved: remainingApproved,
+      rejected: remainingRejected,
+      ...(remainingMessages && Object.keys(remainingMessages).length > 0
+        ? { messages: remainingMessages }
+        : {}),
+      ...(!migratePermanentDecision && legacy.stickyRejectMessage !== undefined
+        ? { stickyRejectMessage: legacy.stickyRejectMessage }
+        : {}),
+    };
+    const hasRemainingDecision =
+      remaining.approved === true ||
+      remaining.rejected === true ||
+      (Array.isArray(remaining.approved) && remaining.approved.length > 0) ||
+      (Array.isArray(remaining.rejected) && remaining.rejected.length > 0);
+    if (hasRemainingDecision) {
+      this.#functionApprovalState.legacyApprovals.set(
+        legacyToolName,
+        remaining,
+      );
+    } else {
+      this.#functionApprovalState.legacyApprovals.delete(legacyToolName);
+    }
+  }
+
+  /**
    * Retrieve the caller-provided rejection message for a specific tool call.
    *
    * @param toolName - The name of the tool.
    * @param callId - The call ID of the tool invocation.
    * @returns The message string if one was provided, `undefined` otherwise.
    */
-  getRejectionMessage(toolName: string, callId: string): string | undefined {
-    for (const approvalEntry of this.#getApprovalEntries(toolName)) {
-      if (typeof approvalEntry.messages?.[callId] === 'string') {
-        return approvalEntry.messages[callId];
-      }
-    }
+  getRejectionMessage(
+    toolName: string,
+    callId: string,
+    options: { functionTool?: boolean } = {},
+  ): string | undefined {
+    const functionTool = options.functionTool ?? true;
+    const includeFunctionState =
+      functionTool ||
+      getFunctionToolLegacyStateKeyFromStateKey(toolName) !== undefined;
+    return this.#getRejectionMessageFromEntries(
+      [
+        ...this.#getApprovalEntries(toolName, functionTool),
+        ...(includeFunctionState
+          ? [
+              ...this.#getLegacyFunctionApprovalEntries(toolName),
+              ...this.#getFunctionApprovalEntries(toolName, functionTool),
+            ]
+          : []),
+      ],
+      callId,
+    );
+  }
 
-    for (const approvalEntry of this.#getApprovalEntries(toolName)) {
-      if (approvalEntry.rejected === true) {
-        return approvalEntry.stickyRejectMessage;
-      }
+  /**
+   * Retrieve a rejection message for the agent that owns a function call.
+   * @internal
+   */
+  _getFunctionRejectionMessage(
+    toolName: string,
+    callId: string,
+    agent: Agent<any, any>,
+  ): string | undefined {
+    const scopedEntries = this.#getFunctionApprovalEntries(
+      toolName,
+      false,
+      agent,
+    );
+    const scopedDecision = this.#resolveApprovalEntries(scopedEntries, callId);
+    const scopedMessage = this.#getRejectionMessageFromEntries(
+      scopedEntries,
+      callId,
+    );
+    if (scopedMessage !== undefined) {
+      return scopedMessage;
     }
-
+    if (
+      scopedDecision === undefined &&
+      this.#functionApprovalState.legacyApprovals.size > 0
+    ) {
+      return this.#getRejectionMessageFromEntries(
+        this.#getLegacyFunctionApprovalEntries(toolName),
+        callId,
+      );
+    }
     return undefined;
+  }
+
+  /**
+   * Serialize public RunContext state using the released aggregate shape.
+   */
+  toJSON(): RunContextJson {
+    return this.#serialize();
+  }
+
+  /**
+   * Serialize RunContext state with stable function-approval ownership.
+   * @internal
+   */
+  _toJSONForRunState(
+    agentIdentityKeys: ReadonlyMap<Agent<any, any>, string>,
+  ): SerializedRunContextJson {
+    return this.#serialize(agentIdentityKeys);
+  }
+
+  #serialize(
+    agentIdentityKeys?: ReadonlyMap<Agent<any, any>, string>,
+  ): SerializedRunContextJson {
+    const approvals = new Map(this.#approvals);
+    if (!agentIdentityKeys) {
+      for (const [toolName, incoming] of this.#functionApprovalState
+        .legacyApprovals) {
+        const current = approvals.get(toolName);
+        approvals.set(
+          toolName,
+          current ? mergeApprovalRecords(current, incoming) : incoming,
+        );
+      }
+      for (const approvalsByTool of this.#functionApprovalState.approvalsByAgent.values()) {
+        for (const [toolName, incoming] of approvalsByTool) {
+          const publicToolName =
+            getFunctionToolLegacyStateKeyFromStateKey(toolName) ?? toolName;
+          const current = approvals.get(publicToolName);
+          approvals.set(
+            publicToolName,
+            current ? mergeApprovalRecords(current, incoming) : incoming,
+          );
+        }
+      }
+    }
+    const json: SerializedRunContextJson = {
+      context: this.context,
+      usage: this.usage,
+      approvals: Object.fromEntries(approvals.entries()),
+    };
+    if (agentIdentityKeys) {
+      const functionApprovals: SerializedFunctionApprovals = [];
+      for (const [agent, approvalsByTool] of this.#functionApprovalState
+        .approvalsByAgent) {
+        const agentIdentity = agentIdentityKeys.get(agent);
+        if (!agentIdentity) {
+          // Nested agent runs share their parent's context. Only persist
+          // approvals owned by agents reachable from this RunState graph.
+          continue;
+        }
+        functionApprovals.push({
+          agentIdentity,
+          approvals: Object.fromEntries(approvalsByTool),
+        });
+      }
+      if (functionApprovals.length > 0) {
+        json.functionApprovals = functionApprovals;
+      }
+      if (this.#functionApprovalState.legacyApprovals.size > 0) {
+        json.legacyFunctionApprovals = Object.fromEntries(
+          this.#functionApprovalState.legacyApprovals,
+        );
+      }
+    }
+    if (typeof this.toolInput !== 'undefined') {
+      json.toolInput = this.toolInput;
+    }
+    return json;
   }
 
   #getCallId(approvalItem: RunToolApprovalItem): string {
@@ -204,8 +638,7 @@ export class RunContext<TContext = UnknownContext> {
     }
 
     const providerData = approvalItem.rawItem.providerData as
-      | { itemId?: string; id?: string }
-      | undefined;
+      { itemId?: string; id?: string } | undefined;
     return (
       approvalItem.rawItem.id ?? providerData?.itemId ?? providerData?.id ?? ''
     );
@@ -217,9 +650,53 @@ export class RunContext<TContext = UnknownContext> {
    * @param approval - Details about the tool call being evaluated.
    * @returns `true` if the tool call has been approved, `false` if blocked and `undefined` if not yet approved or rejected.
    */
-  isToolApproved(approval: { toolName: string; callId: string }) {
-    const { toolName, callId } = approval;
-    const approvalEntries = this.#getApprovalEntries(toolName);
+  isToolApproved(approval: {
+    toolName: string;
+    callId: string;
+    /** @internal Whether legacy function-tool aliases should be considered. */
+    functionTool?: boolean;
+    /** @internal Public agent that owns a function-tool approval. */
+    agent?: Agent<any, any>;
+  }) {
+    const { toolName, callId, functionTool = true, agent } = approval;
+    if (agent) {
+      const scopedDecision = this.#resolveApprovalEntries(
+        this.#getFunctionApprovalEntries(toolName, functionTool, agent),
+        callId,
+      );
+      if (scopedDecision !== undefined) {
+        return scopedDecision;
+      }
+      if (this.#functionApprovalState.legacyApprovals.size === 0) {
+        return undefined;
+      }
+      return this.#resolveApprovalEntries(
+        this.#getLegacyFunctionApprovalEntries(toolName),
+        callId,
+      );
+    }
+
+    const includeFunctionState =
+      functionTool ||
+      getFunctionToolLegacyStateKeyFromStateKey(toolName) !== undefined;
+    return this.#resolveApprovalEntries(
+      [
+        ...this.#getApprovalEntries(toolName, functionTool),
+        ...(includeFunctionState
+          ? this.#getLegacyFunctionApprovalEntries(toolName)
+          : []),
+        ...(!agent && includeFunctionState
+          ? this.#getFunctionApprovalEntries(toolName, functionTool)
+          : []),
+      ],
+      callId,
+    );
+  }
+
+  #resolveApprovalEntries(
+    approvalEntries: readonly ApprovalRecord[],
+    callId: string,
+  ): boolean | undefined {
     const hasPermanentApproval = approvalEntries.some(
       (approvalEntry) => approvalEntry.approved === true,
     );
@@ -271,6 +748,23 @@ export class RunContext<TContext = UnknownContext> {
     return undefined;
   }
 
+  #getRejectionMessageFromEntries(
+    approvalEntries: readonly ApprovalRecord[],
+    callId: string,
+  ): string | undefined {
+    for (const approvalEntry of approvalEntries) {
+      if (typeof approvalEntry.messages?.[callId] === 'string') {
+        return approvalEntry.messages[callId];
+      }
+    }
+    for (const approvalEntry of approvalEntries) {
+      if (approvalEntry.rejected === true) {
+        return approvalEntry.stickyRejectMessage;
+      }
+    }
+    return undefined;
+  }
+
   /**
    * Approve a tool call.
    *
@@ -281,25 +775,32 @@ export class RunContext<TContext = UnknownContext> {
     approvalItem: RunToolApprovalItem,
     { alwaysApprove = false }: { alwaysApprove?: boolean } = {},
   ) {
-    const toolName =
-      approvalItem.toolName ?? (approvalItem.rawItem as any).name;
-    const approvalKey = this.#getApprovalStorageKey(toolName);
+    const toolName = this.#getApprovalItemToolName(approvalItem);
+    const approvals =
+      approvalItem.rawItem.type === 'function_call'
+        ? this.#getFunctionApprovalMap(approvalItem.agent)
+        : this.#approvals;
+    const approvalKey = this.#getApprovalStorageKey(
+      toolName,
+      approvalItem.rawItem.type === 'function_call',
+      approvals,
+    );
     if (alwaysApprove) {
-      this.#approvals.set(approvalKey, {
+      approvals.set(approvalKey, {
         approved: true,
         rejected: [],
       });
       return;
     }
 
-    const approvalEntry = this.#approvals.get(approvalKey) ?? {
+    const approvalEntry = approvals.get(approvalKey) ?? {
       approved: [],
       rejected: [],
     };
     if (Array.isArray(approvalEntry.approved)) {
       approvalEntry.approved.push(this.#getCallId(approvalItem));
     }
-    this.#approvals.set(approvalKey, approvalEntry);
+    approvals.set(approvalKey, approvalEntry);
   }
 
   /**
@@ -314,12 +815,19 @@ export class RunContext<TContext = UnknownContext> {
       message,
     }: { alwaysReject?: boolean; message?: string } = {},
   ) {
-    const toolName =
-      approvalItem.toolName ?? (approvalItem.rawItem as any).name;
-    const approvalKey = this.#getApprovalStorageKey(toolName);
+    const toolName = this.#getApprovalItemToolName(approvalItem);
+    const approvals =
+      approvalItem.rawItem.type === 'function_call'
+        ? this.#getFunctionApprovalMap(approvalItem.agent)
+        : this.#approvals;
+    const approvalKey = this.#getApprovalStorageKey(
+      toolName,
+      approvalItem.rawItem.type === 'function_call',
+      approvals,
+    );
     if (alwaysReject) {
       const callId = this.#getCallId(approvalItem);
-      this.#approvals.set(approvalKey, {
+      approvals.set(approvalKey, {
         approved: false,
         rejected: true,
         ...(message !== undefined
@@ -332,7 +840,7 @@ export class RunContext<TContext = UnknownContext> {
       return;
     }
 
-    const approvalEntry = this.#approvals.get(approvalKey) ?? {
+    const approvalEntry = approvals.get(approvalKey) ?? {
       approved: [] as string[],
       rejected: [] as string[],
     };
@@ -345,7 +853,7 @@ export class RunContext<TContext = UnknownContext> {
         approvalEntry.messages[callId] = message;
       }
     }
-    this.#approvals.set(approvalKey, approvalEntry);
+    approvals.set(approvalKey, approvalEntry);
   }
 
   /**
@@ -368,34 +876,109 @@ export class RunContext<TContext = UnknownContext> {
     return fork;
   }
 
-  toJSON(): RunContextJson {
-    const json: RunContextJson = {
-      context: this.context,
-      usage: this.usage,
-      approvals: Object.fromEntries(this.#approvals.entries()),
-    };
-    if (typeof this.toolInput !== 'undefined') {
-      json.toolInput = this.toolInput;
-    }
-    return json;
-  }
-
-  #getApprovalEntries(toolName: string): ApprovalRecord[] {
-    return getApprovalToolNameCandidates(toolName)
+  #getApprovalEntries(
+    toolName: string,
+    includeFunctionAliases: boolean,
+  ): ApprovalRecord[] {
+    return getApprovalToolNameCandidates(toolName, includeFunctionAliases)
       .map((candidate) => this.#approvals.get(candidate))
       .filter((approval): approval is ApprovalRecord => approval !== undefined);
   }
 
-  #getApprovalStorageKey(toolName: string): string {
+  #getFunctionApprovalEntries(
+    toolName: string,
+    includeFunctionAliases: boolean,
+    agent?: Agent<any, any>,
+  ): ApprovalRecord[] {
+    const candidates = getApprovalToolNameCandidates(
+      toolName,
+      includeFunctionAliases,
+    );
+    const approvalMaps = agent
+      ? [this.#functionApprovalState.approvalsByAgent.get(agent)]
+      : [...this.#functionApprovalState.approvalsByAgent.values()];
+    return approvalMaps.flatMap((approvalsByTool) =>
+      approvalsByTool
+        ? candidates
+            .map((candidate) => approvalsByTool.get(candidate))
+            .filter(
+              (approval): approval is ApprovalRecord => approval !== undefined,
+            )
+        : [],
+    );
+  }
+
+  #getLegacyFunctionApprovalEntries(toolName: string): ApprovalRecord[] {
+    const legacyToolName =
+      getFunctionToolLegacyStateKeyFromStateKey(toolName) ?? toolName;
+    return getApprovalToolNameCandidates(legacyToolName, true)
+      .map((candidate) =>
+        this.#functionApprovalState.legacyApprovals.get(candidate),
+      )
+      .filter((approval): approval is ApprovalRecord => approval !== undefined);
+  }
+
+  #getFunctionApprovalMap(agent: Agent<any, any>): Map<string, ApprovalRecord> {
+    const existing = this.#functionApprovalState.approvalsByAgent.get(agent);
+    if (existing) {
+      return existing;
+    }
+    const approvals = new Map<string, ApprovalRecord>();
+    this.#functionApprovalState.approvalsByAgent.set(agent, approvals);
+    return approvals;
+  }
+
+  #getApprovalItemToolName(approvalItem: RunToolApprovalItem): string {
+    const fallbackName =
+      approvalItem.toolName ?? (approvalItem.rawItem as any).name;
+    if (approvalItem.rawItem.type !== 'function_call') {
+      return fallbackName;
+    }
     return (
-      getApprovalToolNameCandidates(toolName).find((candidate) =>
-        this.#approvals.has(candidate),
+      approvalItem.functionToolStateKey ??
+      getFunctionToolStateKeyForCall(approvalItem.rawItem, fallbackName) ??
+      fallbackName
+    );
+  }
+
+  #getApprovalStorageKey(
+    toolName: string,
+    includeFunctionAliases: boolean,
+    approvals: ReadonlyMap<string, ApprovalRecord> = this.#approvals,
+  ): string {
+    return (
+      getApprovalToolNameCandidates(toolName, includeFunctionAliases).find(
+        (candidate) => approvals.has(candidate),
       ) ?? toolName
     );
   }
 
+  #setFunctionApprovalRecord(
+    agent: Agent<any, any>,
+    toolName: string,
+    incoming: ApprovalRecord,
+  ): void {
+    const approvalsByTool = this.#getFunctionApprovalMap(agent);
+    const current = approvalsByTool.get(toolName);
+    approvalsByTool.set(
+      toolName,
+      current ? mergeApprovalRecords(current, incoming) : incoming,
+    );
+  }
+
+  #setLegacyFunctionApprovalRecord(
+    toolName: string,
+    incoming: ApprovalRecord,
+  ): void {
+    const current = this.#functionApprovalState.legacyApprovals.get(toolName);
+    this.#functionApprovalState.legacyApprovals.set(
+      toolName,
+      current ? mergeApprovalRecords(current, incoming) : incoming,
+    );
+  }
+
   #setApprovalRecord(toolName: string, incoming: ApprovalRecord): void {
-    const candidates = getApprovalToolNameCandidates(toolName);
+    const candidates = getApprovalToolNameCandidates(toolName, false);
     const existingEntries = candidates
       .map((candidate) => this.#approvals.get(candidate))
       .filter((approval): approval is ApprovalRecord => approval !== undefined);

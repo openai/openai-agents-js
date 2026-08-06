@@ -12,6 +12,7 @@ export type LivePreservedOwnedSessionEntry = {
   backendId: string;
   currentAgentName: string;
   session: SandboxSessionLike<SandboxSessionState>;
+  reuseRejected?: boolean;
 };
 
 const livePreservedOwnedSessionsByRunState = new WeakMap<
@@ -60,6 +61,45 @@ export function forgetLivePreservedOwnedSessions<TContext>(
   state: RunState<TContext, Agent<TContext, AgentOutputType>>,
 ): void {
   livePreservedOwnedSessionsByRunState.delete(state);
+}
+
+export function forgetLivePreservedOwnedSessionHandle<TContext>(args: {
+  state: RunState<TContext, Agent<TContext, AgentOutputType>> | undefined;
+  session: SandboxSessionLike<SandboxSessionState>;
+}): void {
+  if (!args.state) {
+    return;
+  }
+  const liveSessions = livePreservedOwnedSessionsByRunState.get(args.state);
+  if (!liveSessions) {
+    return;
+  }
+  for (const [agentKey, entry] of liveSessions) {
+    if (entry.session === args.session) {
+      liveSessions.delete(agentKey);
+    }
+  }
+  if (liveSessions.size === 0) {
+    livePreservedOwnedSessionsByRunState.delete(args.state);
+  }
+}
+
+export function rejectLivePreservedOwnedSessionHandle<TContext>(args: {
+  state: RunState<TContext, Agent<TContext, AgentOutputType>> | undefined;
+  session: SandboxSessionLike<SandboxSessionState>;
+}): void {
+  if (!args.state) {
+    return;
+  }
+  const liveSessions = livePreservedOwnedSessionsByRunState.get(args.state);
+  if (!liveSessions) {
+    return;
+  }
+  for (const entry of liveSessions.values()) {
+    if (entry.session === args.session) {
+      entry.reuseRejected = true;
+    }
+  }
 }
 
 export function livePreservedOwnedSessionEntries<TContext>(

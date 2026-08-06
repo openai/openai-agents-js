@@ -88,6 +88,122 @@ describe('utils/messages', () => {
     expect(getOutputText(response)).toBe('first final');
   });
 
+  it('getOutputText joins messages segmented by reasoning', () => {
+    const response: ModelResponse = {
+      usage: new Usage(),
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'first' }],
+        } as any,
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'thinking' }],
+        } as any,
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'second' }],
+        } as any,
+      ],
+    };
+
+    expect(getOutputText(response)).toBe('firstsecond');
+  });
+
+  it('getOutputText joins messages around provider-executed tool search', () => {
+    const response: ModelResponse = {
+      usage: new Usage(),
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'first' }],
+        } as any,
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'thinking' }],
+        } as any,
+        {
+          type: 'tool_search_call',
+          callId: 'search_1',
+          execution: 'server',
+          arguments: { query: 'weather' },
+        },
+        {
+          type: 'tool_search_output',
+          callId: 'search_1',
+          execution: 'server',
+          tools: [{ type: 'tool_reference', functionName: 'get_weather' }],
+        },
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'second' }],
+        } as any,
+      ],
+    };
+
+    expect(getOutputText(response)).toBe('firstsecond');
+  });
+
+  it('getOutputText keeps the last message without reasoning', () => {
+    const response: ModelResponse = {
+      usage: new Usage(),
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'first' }],
+        } as any,
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'second' }],
+        } as any,
+      ],
+    };
+
+    expect(getOutputText(response)).toBe('second');
+  });
+
+  it('getOutputText joins messages when reasoning is the final item', () => {
+    const response: ModelResponse = {
+      usage: new Usage(),
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'first' }],
+        } as any,
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'thinking' }],
+        } as any,
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'second' }],
+        } as any,
+        {
+          type: 'reasoning',
+          content: [{ type: 'input_text', text: 'checking' }],
+        } as any,
+      ],
+    };
+
+    expect(getOutputText(response)).toBe('firstsecond');
+  });
+
   it('getOutputText returns empty string when output is empty', () => {
     const response: ModelResponse = {
       usage: new Usage(),

@@ -6,6 +6,8 @@ import {
   createGuardrailSpan,
   createSpeechSpan,
   createMCPListToolsSpan,
+  createTaskSpan,
+  createTurnSpan,
   withAgentSpan,
   withFunctionSpan,
 } from '../src/tracing/createSpans';
@@ -14,12 +16,17 @@ import {
   setTraceProcessors,
   setTracingDisabled,
   withTrace,
+  withTraceContext,
 } from '../src/tracing';
 import type { TraceProvider } from '../src/tracing/provider';
 import type { Span } from '../src/tracing/spans';
 import * as providerModule from '../src/tracing/provider';
 import { defaultProcessor, TracingProcessor } from '../src/tracing/processor';
 import type { Trace } from '../src/tracing/traces';
+import { Agent } from '../src/agent';
+import { StreamedRunResult } from '../src/result';
+import { RunContext } from '../src/runContext';
+import { RunState } from '../src/runState';
 
 class RecordingProcessor implements TracingProcessor {
   tracesStarted: Trace[] = [];
@@ -77,6 +84,35 @@ describe('create*Span helpers', () => {
     expect(createSpanMock).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ type: 'agent', name: 'Agent' }),
+      }),
+      undefined,
+    );
+  });
+
+  it('createTaskSpan falls back to the default workflow name', () => {
+    createTaskSpan();
+
+    expect(createSpanMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          type: 'task',
+          name: 'Agent workflow',
+        }),
+      }),
+      undefined,
+    );
+  });
+
+  it('createTurnSpan records the turn and agent name', () => {
+    createTurnSpan({ data: { turn: 2, agent_name: 'Researcher' } });
+
+    expect(createSpanMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          type: 'turn',
+          turn: 2,
+          agent_name: 'Researcher',
+        },
       }),
       undefined,
     );
@@ -172,6 +208,45 @@ describe('with*Span helpers', () => {
     expect(functionSpan?.error).toMatchObject({
       message: 'boom',
       data: { reason: 'bad input' },
+    });
+  });
+
+  it('records errors when a deferred stream loop rejects', async () => {
+    const trace = providerModule
+      .getGlobalTraceProvider()
+      .createTrace({ name: 'stream failure' });
+    const agent = new Agent({ name: 'stream agent' });
+    const state: RunState<unknown, Agent<any, any>> = new RunState(
+      new RunContext(),
+      [],
+      agent,
+      1,
+    );
+    let rejectStream!: (error: Error) => void;
+    const streamLoopPromise = new Promise<void>((_resolve, reject) => {
+      rejectStream = reject;
+    });
+    const result = new StreamedRunResult({ state });
+    result._setStreamLoopPromise(streamLoopPromise);
+    const streamError = Object.assign(new Error('stream failed'), {
+      data: { phase: 'stream loop' },
+    });
+
+    await trace.start();
+    await withTraceContext({ trace }, async () =>
+      withAgentSpan(async () => result, undefined, trace),
+    );
+    rejectStream(streamError);
+    await expect(streamLoopPromise).rejects.toBe(streamError);
+    await Promise.resolve();
+    await trace.end();
+
+    const agentSpan = processor.spansEnded.find(
+      (span) => span.spanData.type === 'agent',
+    );
+    expect(agentSpan?.error).toMatchObject({
+      message: 'stream failed',
+      data: { phase: 'stream loop' },
     });
   });
 });

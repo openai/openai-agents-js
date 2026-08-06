@@ -28,6 +28,7 @@ describe('MCPServerStreamableHttp', () => {
     expect(() => server.close()).toThrow();
     expect(() => server.listTools()).toThrow();
     expect(() => server.callTool('tool', {})).toThrow();
+    expect(() => server.callToolResult('tool', {})).toThrow();
     expect(() => server.invalidateToolsCache()).toThrow();
   });
 });
@@ -43,6 +44,7 @@ describe('MCPServerSSE', () => {
     expect(() => server.close()).toThrow();
     expect(() => server.listTools()).toThrow();
     expect(() => server.callTool('tool', {})).toThrow();
+    expect(() => server.callToolResult('tool', {})).toThrow();
     expect(() => server.invalidateToolsCache()).toThrow();
   });
 });

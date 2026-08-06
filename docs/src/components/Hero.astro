@@ -2,14 +2,14 @@
 import { Code, TabItem, Tabs } from '@astrojs/starlight/components';
 import helloWorldSandboxExample from '../../../examples/docs/toppage/sandboxAgent.ts?raw';
 import helloWorldExample from '../../../examples/docs/toppage/textAgent.ts?raw';
-import helloWorldVoiceExample from '../../../examples/docs/toppage/voiceAgent.ts?raw';
+import helloWorldRealtimeExample from '../../../examples/docs/toppage/voiceAgent.ts?raw';
 const path = Astro.url.pathname;
 const pathPrefix =
   path !== '/' ? (!path.endsWith('/') ? path + '/' : path) : '';
 const quickstartLinks = {
-  sandbox: `${pathPrefix}guides/sandbox-agents`,
   text: `${pathPrefix}guides/quickstart`,
-  voice: `${pathPrefix}guides/voice-agents/quickstart`,
+  sandbox: `${pathPrefix}guides/sandbox-agents`,
+  realtime: `${pathPrefix}guides/voice-agents/quickstart`,
 };
 ---
 
@@ -22,11 +22,11 @@ const quickstartLinks = {
           <slot name="description" />
         </p>
         <a
-          href={quickstartLinks.sandbox}
+          href={quickstartLinks.text}
           class="openai-hero-cta"
-          data-sandbox-href={quickstartLinks.sandbox}
           data-text-href={quickstartLinks.text}
-          data-voice-href={quickstartLinks.voice}
+          data-sandbox-href={quickstartLinks.sandbox}
+          data-realtime-href={quickstartLinks.realtime}
         >
           <slot name="cta" />
         </a>
@@ -34,16 +34,16 @@ const quickstartLinks = {
     </div>
     <div class="openai-hero-code flex-1 overflow-x-scroll">
       <Tabs>
-        <TabItem label="Sandbox Agent">
-          <Code lang="typescript" code={helloWorldSandboxExample} />
-        </TabItem>
         <TabItem label="Text Agent">
           <Code lang="typescript" code={helloWorldExample} />
         </TabItem>
-        <TabItem label="Voice Agent">
+        <TabItem label="Sandbox Agent">
+          <Code lang="typescript" code={helloWorldSandboxExample} />
+        </TabItem>
+        <TabItem label="Realtime Agent">
           <Code
             lang="typescript"
-            code={helloWorldVoiceExample}
+            code={helloWorldRealtimeExample}
             class="flex-1"
           />
         </TabItem>
@@ -62,8 +62,8 @@ const quickstartLinks = {
       if (normalizedLabel.includes('sandbox')) {
         return cta?.dataset.sandboxHref;
       }
-      if (normalizedLabel.includes('voice')) {
-        return cta?.dataset.voiceHref;
+      if (normalizedLabel.includes('realtime')) {
+        return cta?.dataset.realtimeHref;
       }
       return cta?.dataset.textHref;
     };

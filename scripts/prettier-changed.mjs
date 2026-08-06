@@ -7,6 +7,7 @@ const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 process.chdir(repoRoot);
 
 const TARGET_PREFIXES = ['packages/', 'examples/', 'integration-tests/'];
+const checkOnly = process.argv.includes('--check');
 
 function readGitLines(args) {
   const output = execFileSync('git', args, {
@@ -36,6 +37,14 @@ const changedFiles = new Set([
     ...TARGET_PREFIXES.map((prefix) => prefix.slice(0, -1)),
   ]),
   ...readGitLines([
+    'diff',
+    '--cached',
+    '--name-only',
+    '--diff-filter=ACMR',
+    '--',
+    ...TARGET_PREFIXES.map((prefix) => prefix.slice(0, -1)),
+  ]),
+  ...readGitLines([
     'ls-files',
     '--others',
     '--exclude-standard',
@@ -47,13 +56,15 @@ const changedFiles = new Set([
 const filesToFormat = [...changedFiles].filter(isTargetTsFile).sort();
 
 if (filesToFormat.length === 0) {
-  console.log('No changed TypeScript files to format.');
+  console.log(
+    `No changed TypeScript files to ${checkOnly ? 'check' : 'format'}.`,
+  );
   process.exit(0);
 }
 
 const prettier = spawnSync(
   process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm',
-  ['exec', 'prettier', '--write', ...filesToFormat],
+  ['exec', 'prettier', checkOnly ? '--check' : '--write', ...filesToFormat],
   {
     cwd: repoRoot,
     stdio: 'inherit',

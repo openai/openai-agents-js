@@ -30,6 +30,7 @@ const buildApprovalRequest = (id = 'mcpr_1'): ToolRunMCPApprovalRequest => {
       id: providerData.id,
       status: 'in_progress',
       providerData,
+      caller: { type: 'program', callerId: 'call_prog_1' },
     },
     TEST_AGENT,
   );
@@ -79,6 +80,10 @@ describe('handleHostedMcpApprovals', () => {
     const response = newItems[0] as RunToolCallItem;
     const raw = response.rawItem as protocol.HostedToolCallItem;
     expect(raw.name).toBe('mcp_approval_response');
+    expect(raw.caller).toEqual({
+      type: 'program',
+      callerId: 'call_prog_1',
+    });
     expect(result.pendingApprovals.size).toBe(0);
     expect(result.pendingApprovalIds.size).toBe(0);
   });
@@ -112,6 +117,10 @@ describe('handleHostedMcpApprovals', () => {
     expect(providerData).toMatchObject({
       approval_request_id: 'mcpr_approved',
       approve: true,
+    });
+    expect((response.rawItem as protocol.HostedToolCallItem).caller).toEqual({
+      type: 'program',
+      callerId: 'call_prog_1',
     });
     expect(result.pendingApprovals.size).toBe(0);
     expect(result.pendingApprovalIds.size).toBe(0);
@@ -149,6 +158,10 @@ describe('handleHostedMcpApprovals', () => {
       approval_request_id: 'mcpr_rejected',
       approve: false,
       reason: 'Denied by policy',
+    });
+    expect((response.rawItem as protocol.HostedToolCallItem).caller).toEqual({
+      type: 'program',
+      callerId: 'call_prog_1',
     });
     expect(result.pendingApprovals.size).toBe(0);
     expect(result.pendingApprovalIds.size).toBe(0);

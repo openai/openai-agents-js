@@ -2,7 +2,7 @@
 name: Bug report
 about: Report a bug
 title: ''
-labels: bug
+labels: ''
 assignees: ''
 ---
 
@@ -13,17 +13,43 @@ assignees: ''
 
 ### Describe the bug
 
-A clear and concise description of what the bug is.
+<!-- Clearly and concisely describe the bug. -->
 
 ### Debug information
 
-- Agents SDK version: (e.g. `v0.0.1`)
-- Runtime environment (e.g. `Node.js 22.16.0`)
+- Agents SDK version:
+- Related package versions (optional, e.g. `openai`, `zod`, or `@openai/agents-extensions`):
+- Runtime and version (e.g. Node.js, Deno, or Bun):
+- Operating system:
+- Model and model provider:
+- Does the issue reproduce with the latest Agents SDK release?
+- Does the issue occur consistently or intermittently?
+
+If an error occurred, include the full stack trace and any relevant logs. Remove API keys, tokens, model input or output, and other sensitive information before posting.
+
+<!-- Paste the stack trace or relevant logs below. -->
+
+```text
+
+```
 
 ### Repro steps
 
-Ideally provide a minimal JavaScript/TypeScript script that can be run to reproduce the bug.
+Ideally provide a minimal, self-contained JavaScript or TypeScript script that can be run to reproduce the bug.
+
+```typescript
+import { Agent, run } from '@openai/agents';
+
+const agent = new Agent({
+  name: 'Example agent',
+  instructions: '...',
+  // Add the model and any other settings needed to reproduce the bug.
+});
+
+const result = await run(agent, '...');
+console.log(result.finalOutput);
+```
 
 ### Expected behavior
 
-A clear and concise description of what you expected to happen.
+<!-- Clearly and concisely describe what you expected to happen. -->

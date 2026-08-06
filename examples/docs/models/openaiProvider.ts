@@ -11,7 +11,7 @@ setDefaultOpenAIKey(process.env.OPENAI_API_KEY!);
 
 setDefaultOpenAIClient(new OpenAI({ apiKey: process.env.OPENAI_API_KEY! }));
 
-const runner = new Runner({ model: 'gpt‑4o-mini' });
+const runner = new Runner({ model: 'gpt-4o-mini' });
 const agent = new Agent({
   name: 'Test Agent',
   instructions: 'You are a helpful assistant.',

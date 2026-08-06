@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { setTracingDisabled, withTrace } from '@openai/agents-core';
+import {
+  Agent,
+  ModelRefusalError,
+  Runner,
+  setTracingDisabled,
+  withTrace,
+} from '@openai/agents-core';
 import * as AgentsCore from '@openai/agents-core';
 import { OpenAIChatCompletionsModel } from '../src/openaiChatCompletionsModel';
 import { HEADERS } from '../src/defaults';
@@ -140,6 +146,116 @@ describe('OpenAIChatCompletionsModel streaming scenarios', () => {
       totalTokens: 22,
       inputTokensDetails: { cached_tokens: 4 },
       outputTokensDetails: { reasoning_tokens: 6 },
+    });
+  });
+
+  it('surfaces an empty content-filter terminal to the runner as a refusal', async () => {
+    const create = vi.fn().mockImplementation(async () => ({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          id: 'filtered-response',
+          created: 0,
+          model: 'gpt-stream',
+          object: 'chat.completion.chunk',
+          choices: [{ index: 0, delta: {}, finish_reason: 'content_filter' }],
+        } as any;
+      },
+    }));
+    const client = {
+      chat: { completions: { create } },
+      baseURL: 'https://example',
+    };
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-stream');
+    const agent = new Agent({ name: 'Filtered agent', model });
+
+    const result = await new Runner().run(agent, 'hello', {
+      stream: true,
+      maxTurns: 2,
+    });
+    const consume = async () => {
+      for await (const _event of result) {
+        // Consume the stream.
+      }
+    };
+
+    const error = await consume().then(
+      () => undefined,
+      (caught) => caught,
+    );
+    expect(error).toBeInstanceOf(ModelRefusalError);
+    expect(error).toMatchObject({
+      refusal: "Response withheld by the provider's content filter.",
+    });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves usage reported on a non-final chunk when the terminal chunk has no usage', async () => {
+    // Some OpenAI-compatible providers or gateways may emit a later chunk
+    // without usage after reporting usage: usage arrives on a non-final
+    // chunk and the terminal chunk carries no usage of its own.
+    const stream = {
+      async *[Symbol.asyncIterator]() {
+        yield makeChunk({ content: 'Hello' });
+        yield makeChunk(
+          { content: ' world' },
+          {
+            prompt_tokens: 17,
+            completion_tokens: 4,
+            total_tokens: 21,
+          },
+        );
+        // Terminal chunk: finish_reason is set but there is no usage field.
+        yield {
+          id: 'res-stream',
+          created: 0,
+          model: 'gpt-stream',
+          object: 'chat.completion.chunk',
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        } as any;
+      },
+    };
+
+    const create = vi.fn().mockResolvedValue(stream);
+    const client = {
+      chat: { completions: { create } },
+      baseURL: 'https://openai-compatible.example/v1',
+    };
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-stream');
+    const events: any[] = [];
+
+    const request: any = {
+      input: 'hi there',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    };
+
+    for await (const event of model.getStreamedResponse(request)) {
+      events.push(event);
+    }
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stream: true,
+        stream_options: { include_usage: true },
+      }),
+      { headers: HEADERS, signal: undefined },
+    );
+
+    const finalEvent = events.find((ev) => ev.type === 'response_done');
+    expect(finalEvent).toBeDefined();
+    // The usage reported mid-stream must survive the terminal usage-less
+    // chunk instead of being reset to zero.
+    expect(finalEvent.response.usage).toEqual({
+      inputTokens: 17,
+      outputTokens: 4,
+      totalTokens: 21,
+      inputTokensDetails: { cached_tokens: 0 },
+      outputTokensDetails: { reasoning_tokens: 0 },
     });
   });
 

@@ -49,6 +49,7 @@ export type SandboxErrorCode =
 export class SandboxError extends UserError {
   readonly code: SandboxErrorCode;
   readonly details?: Record<string, unknown>;
+  readonly retryable: boolean | null;
 
   constructor(
     message: string,
@@ -58,6 +59,7 @@ export class SandboxError extends UserError {
     super(message);
     this.code = code;
     this.details = details;
+    this.retryable = inferSandboxErrorRetryability(code, details);
   }
 }
 
@@ -424,4 +426,100 @@ export class SandboxSnapshotNotRestorableError extends SandboxSnapshotError {
   constructor(message: string, details?: Record<string, unknown>) {
     super(message, details, 'snapshot_not_restorable');
   }
+}
+
+function inferSandboxErrorRetryability(
+  code: SandboxErrorCode,
+  details?: Record<string, unknown>,
+): boolean | null {
+  const retryable = details?.retryable;
+  if (typeof retryable === 'boolean') {
+    return retryable;
+  }
+
+  const cause = details?.cause;
+  if (cause instanceof SandboxError) {
+    return cause.retryable;
+  }
+
+  const providerRetryability = inferProviderDetailsRetryability(details);
+  if (providerRetryability !== null) {
+    return providerRetryability;
+  }
+
+  switch (code) {
+    case 'configuration_error':
+    case 'unsupported_feature':
+    case 'path_resolution_error':
+    case 'invalid_manifest_path':
+    case 'invalid_compression_scheme':
+    case 'exposed_port_unavailable':
+    case 'exec_nonzero':
+    case 'exec_timeout':
+    case 'pty_session_not_found':
+    case 'apply_patch_invalid_path':
+    case 'apply_patch_invalid_diff':
+    case 'apply_patch_file_not_found':
+    case 'apply_patch_decode_error':
+    case 'workspace_read_not_found':
+    case 'workspace_write_type_error':
+    case 'workspace_root_not_found':
+    case 'git_missing_in_image':
+    case 'git_subpath_error':
+    case 'mount_missing_tool':
+    case 'mount_config_invalid':
+    case 'skills_config_invalid':
+    case 'sandbox_config_invalid':
+    case 'snapshot_not_restorable':
+      return false;
+    default:
+      return null;
+  }
+}
+
+function inferProviderDetailsRetryability(
+  details?: Record<string, unknown>,
+): boolean | null {
+  const status = readStatus(details);
+  if (status !== undefined) {
+    if ([408, 425, 429, 500, 502, 503, 504].includes(status)) {
+      return true;
+    }
+    if ([400, 401, 403, 404, 409, 422].includes(status)) {
+      return false;
+    }
+  }
+
+  const code = details?.errorCode ?? details?.providerErrorCode;
+  if (typeof code === 'string') {
+    const normalized = code.toLowerCase();
+    if (/(rate.?limit|timeout|connection|unavailable)/u.test(normalized)) {
+      return true;
+    }
+    if (
+      /(authentication|authorization|permission|forbidden|not.?found|validation|bad.?request|conflict|unprocessable)/u.test(
+        normalized,
+      )
+    ) {
+      return false;
+    }
+  }
+
+  return null;
+}
+
+function readStatus(details?: Record<string, unknown>): number | undefined {
+  if (!details) {
+    return undefined;
+  }
+  for (const key of ['status', 'httpStatus', 'responseStatus']) {
+    const value = details[key];
+    if (typeof value === 'number' && Number.isInteger(value)) {
+      return value;
+    }
+    if (typeof value === 'string' && /^\d+$/u.test(value)) {
+      return Number(value);
+    }
+  }
+  return undefined;
 }

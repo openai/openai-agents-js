@@ -38,6 +38,8 @@ import {
   getCurrentTrace,
   getCurrentSpan,
   dispatchSpan,
+  dispatchSpanEnd,
+  dispatchSpanStart,
   dispatchTrace,
   setTraceProcessors,
   setTracingDisabled,
@@ -69,6 +71,7 @@ import { Usage } from '../src/usage';
 import * as protocol from '../src/types/protocol';
 import { setDefaultModelProvider } from '../src/providers';
 import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../src/shims/shims-browser';
+import { supportsProcessLifecycleEvents as workerdSupportsProcessLifecycleEvents } from '../src/shims/shims-workerd';
 
 const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
 
@@ -436,6 +439,45 @@ describe('Trace & Span lifecycle', () => {
     onSpy.mockRestore();
   });
 
+  it('does not register process cleanup listeners in workerd', async () => {
+    const onceSpy = vi.spyOn(process, 'once');
+    const onSpy = vi.spyOn(process, 'on');
+
+    vi.resetModules();
+    vi.doMock('@openai/agents-core/_shims', async () => {
+      const actual = await vi.importActual('@openai/agents-core/_shims');
+      return {
+        ...(actual as Record<string, unknown>),
+        supportsProcessLifecycleEvents: workerdSupportsProcessLifecycleEvents,
+      };
+    });
+
+    try {
+      const { TraceProvider: WorkerdTraceProvider } =
+        await import('../src/tracing/provider');
+      new WorkerdTraceProvider();
+
+      expect(workerdSupportsProcessLifecycleEvents()).toBe(false);
+      expect(onceSpy).not.toHaveBeenCalledWith(
+        'beforeExit',
+        expect.any(Function),
+      );
+      expect(
+        onSpy.mock.calls.filter(
+          ([event]) =>
+            event === 'SIGINT' ||
+            event === 'SIGTERM' ||
+            event === 'unhandledRejection',
+        ),
+      ).toEqual([]);
+    } finally {
+      onceSpy.mockRestore();
+      onSpy.mockRestore();
+      vi.resetModules();
+      vi.unmock('@openai/agents-core/_shims');
+    }
+  });
+
   it('does not force exit when beforeExit tracing cleanup times out', async () => {
     vi.useFakeTimers();
     allowConsole(['warn']);
@@ -648,6 +690,12 @@ describe('ConsoleSpanExporter', () => {
   it('logs traces and spans when tracing is enabled', async () => {
     allowConsole(['log']);
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const modelDataSpy = vi
+      .spyOn(coreLogger, 'dontLogModelData', 'get')
+      .mockReturnValue(false);
+    const toolDataSpy = vi
+      .spyOn(coreLogger, 'dontLogToolData', 'get')
+      .mockReturnValue(false);
     const originalEnv = process.env.NODE_ENV;
     const originalDisableTracing = process.env.OPENAI_AGENTS_DISABLE_TRACING;
     process.env.NODE_ENV = 'production';
@@ -679,6 +727,8 @@ describe('ConsoleSpanExporter', () => {
     expect(messages.some((msg) => msg.includes('Export span'))).toBe(true);
 
     logSpy.mockRestore();
+    modelDataSpy.mockRestore();
+    toolDataSpy.mockRestore();
     process.env.NODE_ENV = originalEnv;
     if (typeof originalDisableTracing === 'undefined') {
       delete process.env.OPENAI_AGENTS_DISABLE_TRACING;
@@ -687,6 +737,58 @@ describe('ConsoleSpanExporter', () => {
     }
     setTracingDisabled(true);
   });
+
+  it.each([
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'redacts console-exported trace data when model=%s or tool=%s logging is disabled',
+    async (dontLogModelData, dontLogToolData) => {
+      allowConsole(['log']);
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      vi.spyOn(coreLogger, 'dontLogModelData', 'get').mockReturnValue(
+        dontLogModelData,
+      );
+      vi.spyOn(coreLogger, 'dontLogToolData', 'get').mockReturnValue(
+        dontLogToolData,
+      );
+      const originalEnv = process.env.NODE_ENV;
+      const originalDisableTracing = process.env.OPENAI_AGENTS_DISABLE_TRACING;
+      process.env.NODE_ENV = 'production';
+      delete process.env.OPENAI_AGENTS_DISABLE_TRACING;
+      setTracingDisabled(false);
+      const secret = 'SECRET_CONSOLE_TRACE_123';
+      const exporter = new ConsoleSpanExporter();
+      const trace = new Trace({ name: secret, groupId: secret });
+      const span = new Span(
+        {
+          traceId: trace.traceId,
+          data: { type: 'custom', name: secret, data: { secret } },
+        },
+        new TestProcessor(),
+      );
+
+      await exporter.export([trace, span]);
+
+      expect(logSpy).toHaveBeenCalledWith(
+        '[Exporter] Export trace. Trace data is redacted.',
+      );
+      expect(logSpy).toHaveBeenCalledWith(
+        '[Exporter] Export span. Span data is redacted.',
+      );
+      expect(JSON.stringify(logSpy.mock.calls)).not.toContain(secret);
+
+      vi.restoreAllMocks();
+      process.env.NODE_ENV = originalEnv;
+      if (typeof originalDisableTracing === 'undefined') {
+        delete process.env.OPENAI_AGENTS_DISABLE_TRACING;
+      } else {
+        process.env.OPENAI_AGENTS_DISABLE_TRACING = originalDisableTracing;
+      }
+      setTracingDisabled(true);
+    },
+  );
 });
 
 // -----------------------------------------------------------------------------------------
@@ -823,7 +925,7 @@ describe('BatchTraceProcessor', () => {
       expect(exportCalls).toBe(1);
       expect(errorSpy).toHaveBeenCalledWith(
         'Tracing exporter failed to export batch',
-        expect.any(Error),
+        'object',
       );
 
       await processor.onTraceStart(recovered);
@@ -835,6 +937,52 @@ describe('BatchTraceProcessor', () => {
       await processor.shutdown();
     } finally {
       errorSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('redacts exporter exceptions and continues scheduled exports', async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(coreLogger, 'error').mockImplementation(() => {});
+    vi.spyOn(coreLogger, 'dontLogModelData', 'get').mockReturnValue(true);
+    vi.spyOn(coreLogger, 'dontLogToolData', 'get').mockReturnValue(false);
+    try {
+      const secret = 'SECRET_TRACE_EXPORTER_ERROR_123';
+      let exportCalls = 0;
+      const exported: Array<(Trace | Span<any>)[]> = [];
+      const flakyExporter: TracingExporter = {
+        export: async (items) => {
+          exportCalls += 1;
+          if (exportCalls === 1) {
+            throw new Error(secret);
+          }
+          exported.push([...items]);
+        },
+      };
+      const processor = new BatchTraceProcessor(flakyExporter, {
+        maxQueueSize: 10,
+        maxBatchSize: 1,
+        scheduleDelay: 50,
+      });
+      const failed = new Trace({ name: 'failed' });
+      const recovered = new Trace({ name: 'recovered' });
+
+      await processor.onTraceStart(failed);
+      await vi.advanceTimersByTimeAsync(60);
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Tracing exporter failed to export batch',
+        'object',
+      );
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(secret);
+
+      await processor.onTraceStart(recovered);
+      await vi.advanceTimersByTimeAsync(60);
+
+      expect(exportCalls).toBe(2);
+      expect(exported).toEqual([[recovered]]);
+      await processor.shutdown();
+    } finally {
+      vi.restoreAllMocks();
       vi.useRealTimers();
     }
   });
@@ -1574,6 +1722,45 @@ describe('MultiTracingProcessor', () => {
     expect(span.endedAt).toBe(endedAt);
   });
 
+  it('dispatches span starts and ends independently without mutating timestamps', async () => {
+    const processor1 = new TestProcessor();
+    const processor2 = new TestProcessor();
+    const multiProcessor = new MultiTracingProcessor();
+    multiProcessor.addTraceProcessor(processor1);
+    multiProcessor.addTraceProcessor(processor2);
+
+    const startedAt = '2026-05-22T00:00:00.000Z';
+    const endedAt = '2026-05-22T00:00:01.000Z';
+    const span = new Span(
+      {
+        traceId: 'trace_completed',
+        spanId: 'span_completed',
+        data: { type: 'custom', name: 'long-lived-span', data: {} },
+        startedAt,
+        endedAt,
+      },
+      new TestProcessor(),
+    );
+
+    await multiProcessor.dispatchSpanStart(span);
+
+    expect(processor1.spansStarted).toEqual([span]);
+    expect(processor1.spansEnded).toHaveLength(0);
+    expect(processor2.spansStarted).toEqual([span]);
+    expect(processor2.spansEnded).toHaveLength(0);
+    expect(span.startedAt).toBe(startedAt);
+    expect(span.endedAt).toBe(endedAt);
+
+    await multiProcessor.dispatchSpanEnd(span);
+
+    expect(processor1.spansStarted).toEqual([span]);
+    expect(processor1.spansEnded).toEqual([span]);
+    expect(processor2.spansStarted).toEqual([span]);
+    expect(processor2.spansEnded).toEqual([span]);
+    expect(span.startedAt).toBe(startedAt);
+    expect(span.endedAt).toBe(endedAt);
+  });
+
   it('does not dispatch no-op traces or spans', async () => {
     const processor = new TestProcessor();
     const multiProcessor = new MultiTracingProcessor();
@@ -1614,6 +1801,12 @@ describe('MultiTracingProcessor', () => {
     await multiProcessor.dispatchSpan(noopSpan);
     await multiProcessor.dispatchSpan(spanWithNoopTraceId);
     await multiProcessor.dispatchSpan(spanWithNoopSpanId);
+    await multiProcessor.dispatchSpanStart(noopSpan);
+    await multiProcessor.dispatchSpanStart(spanWithNoopTraceId);
+    await multiProcessor.dispatchSpanStart(spanWithNoopSpanId);
+    await multiProcessor.dispatchSpanEnd(noopSpan);
+    await multiProcessor.dispatchSpanEnd(spanWithNoopTraceId);
+    await multiProcessor.dispatchSpanEnd(spanWithNoopSpanId);
 
     expect(processor.tracesStarted).toHaveLength(0);
     expect(processor.tracesEnded).toHaveLength(0);
@@ -1659,6 +1852,34 @@ describe('completed trace dispatch helpers', () => {
     expect(processor.spansEnded).toEqual([span]);
   });
 
+  it('dispatches span starts and ends independently through TraceProvider', async () => {
+    const processor = new TestProcessor();
+    const provider = new TraceProvider();
+    provider.setDisabled(false);
+    provider.registerProcessor(processor);
+
+    const span = new Span(
+      {
+        traceId: 'trace_completed',
+        spanId: 'span_completed',
+        data: { type: 'custom', name: 'long-lived-span', data: {} },
+        startedAt: '2026-05-22T00:00:00.000Z',
+        endedAt: '2026-05-22T00:00:01.000Z',
+      },
+      new TestProcessor(),
+    );
+
+    await provider.dispatchSpanStart(span);
+
+    expect(processor.spansStarted).toEqual([span]);
+    expect(processor.spansEnded).toHaveLength(0);
+
+    await provider.dispatchSpanEnd(span);
+
+    expect(processor.spansStarted).toEqual([span]);
+    expect(processor.spansEnded).toEqual([span]);
+  });
+
   it('does not dispatch completed traces and spans when TraceProvider tracing is disabled', async () => {
     const processor = new TestProcessor();
     const provider = new TraceProvider();
@@ -1679,6 +1900,8 @@ describe('completed trace dispatch helpers', () => {
 
     await provider.dispatchTrace(trace);
     await provider.dispatchSpan(span);
+    await provider.dispatchSpanStart(span);
+    await provider.dispatchSpanEnd(span);
 
     expect(processor.tracesStarted).toHaveLength(0);
     expect(processor.tracesEnded).toHaveLength(0);
@@ -1712,6 +1935,33 @@ describe('completed trace dispatch helpers', () => {
     expect(processor.spansEnded).toEqual([span]);
   });
 
+  it('dispatches span starts and ends independently through global helpers', async () => {
+    const processor = new TestProcessor();
+    setTracingDisabled(false);
+    setTraceProcessors([processor]);
+
+    const span = new Span(
+      {
+        traceId: 'trace_completed',
+        spanId: 'span_completed',
+        data: { type: 'custom', name: 'long-lived-span', data: {} },
+        startedAt: '2026-05-22T00:00:00.000Z',
+        endedAt: '2026-05-22T00:00:01.000Z',
+      },
+      new TestProcessor(),
+    );
+
+    await dispatchSpanStart(span);
+
+    expect(processor.spansStarted).toEqual([span]);
+    expect(processor.spansEnded).toHaveLength(0);
+
+    await dispatchSpanEnd(span);
+
+    expect(processor.spansStarted).toEqual([span]);
+    expect(processor.spansEnded).toEqual([span]);
+  });
+
   it('does not dispatch completed traces and spans through global helpers when tracing is disabled', async () => {
     const processor = new TestProcessor();
     setTraceProcessors([processor]);
@@ -1731,6 +1981,8 @@ describe('completed trace dispatch helpers', () => {
 
     await dispatchTrace(trace);
     await dispatchSpan(span);
+    await dispatchSpanStart(span);
+    await dispatchSpanEnd(span);
 
     expect(processor.tracesStarted).toHaveLength(0);
     expect(processor.tracesEnded).toHaveLength(0);

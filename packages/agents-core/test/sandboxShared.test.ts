@@ -1,5 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
-import { Manifest, dir, file, mount } from '../src/sandbox';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  EnvValueReference,
+  Manifest,
+  dir,
+  file,
+  mount,
+  registerEnvValueReference,
+} from '../src/sandbox';
 import {
   deserializeManifest,
   deserializePersistedEnvironmentForRuntime,
@@ -11,6 +18,7 @@ import {
   mergeManifestEntryDelta,
   mergeMaterializedEnvironment,
   mergeStaticMaterializedEnvironment,
+  rehydratePersistedEnvironmentForRuntime,
   serializeManifestEnvironment,
   serializeManifestRecord,
   serializeRuntimeEnvironmentForPersistence,
@@ -31,24 +39,110 @@ import {
   relativePosixPathWithinRoot,
 } from '../src/sandbox/shared/posixPath';
 
+const processPlatformDescriptor = Object.getOwnPropertyDescriptor(
+  process,
+  'platform',
+);
+
+afterEach(() => {
+  vi.doUnmock('node:os');
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+  vi.resetModules();
+  if (processPlatformDescriptor) {
+    Object.defineProperty(process, 'platform', processPlatformDescriptor);
+  }
+});
+
+async function loadDefaultLocalSnapshotBaseDir(args: {
+  platform: NodeJS.Platform;
+  home: string;
+  temp: string;
+}): Promise<() => string> {
+  vi.resetModules();
+  vi.doMock('node:os', () => ({
+    homedir: () => args.home,
+    tmpdir: () => args.temp,
+  }));
+  Object.defineProperty(process, 'platform', {
+    value: args.platform,
+    configurable: true,
+  });
+
+  return (await import('../src/sandbox/sandboxes/shared/localSnapshotPaths'))
+    .defaultLocalSnapshotBaseDir;
+}
+
 describe('sandbox shared helpers', () => {
-  it('truncates output with a byte budget and keeps head and tail context', () => {
+  it('includes truncation metadata within the output byte budget', () => {
     const result = truncateOutput('0123456789abcdef', 2);
 
     expect(result).toEqual({
-      text: 'Total output lines: 1\n\n0123...2 tokens truncated...cdef',
+      text: '...4 tok',
       originalTokenCount: 4,
     });
+    expect(new TextEncoder().encode(result.text)).toHaveLength(8);
+  });
+
+  it.each([
+    { maxOutputTokens: 0, expected: '' },
+    { maxOutputTokens: 1, expected: '...4' },
+  ])(
+    'does not exceed a $maxOutputTokens-token tiny output budget',
+    ({ maxOutputTokens, expected }) => {
+      const result = truncateOutput('0123456789abcdef', maxOutputTokens);
+
+      expect(result).toEqual({
+        text: expected,
+        originalTokenCount: 4,
+      });
+      expect(
+        new TextEncoder().encode(result.text).byteLength,
+      ).toBeLessThanOrEqual(maxOutputTokens * 4);
+    },
+  );
+
+  it('keeps line metadata plus head and tail context when space permits', () => {
+    const output = '0123456789'.repeat(20);
+    const result = truncateOutput(output, 32);
+
+    expect(result.text).toMatch(/^Total output lines: 1\n\n012345/u);
+    expect(result.text).toContain('tokens truncated');
+    expect(result.text).toMatch(/456789$/u);
+    expect(
+      new TextEncoder().encode(result.text).byteLength,
+    ).toBeLessThanOrEqual(128);
+  });
+
+  it('keeps multibyte output valid and within the byte budget', () => {
+    const result = truncateOutput('🙂漢字'.repeat(20), 32);
+
+    expect(result.text).not.toContain('\uFFFD');
+    expect(result.text).toContain('tokens truncated');
+    expect(
+      new TextEncoder().encode(result.text).byteLength,
+    ).toBeLessThanOrEqual(128);
   });
 
   it('preserves active process truncation notices when applying output budgets', () => {
     const result = truncateOutput(
-      '[...1200 characters truncated from process output...]\n0123456789abcdef',
-      2,
+      `[...1200 characters truncated from process output...]\n${'0123456789'.repeat(1000)}`,
+      20,
     );
 
     expect(result.text).toContain('characters truncated from process output');
-    expect(result.text).toContain('tokens truncated');
+    expect(
+      new TextEncoder().encode(result.text).byteLength,
+    ).toBeLessThanOrEqual(80);
+  });
+
+  it('leaves unlimited and already-fitting output unchanged', () => {
+    expect(truncateOutput('short\noutput')).toEqual({
+      text: 'short\noutput',
+    });
+    expect(truncateOutput('short\noutput', 4)).toEqual({
+      text: 'short\noutput',
+    });
   });
 
   it('sniffs image media types from bytes and falls back to path extensions', () => {
@@ -104,6 +198,102 @@ describe('sandbox shared helpers', () => {
     expect(jsonEqual({ b: 2, a: 1 }, { a: 1, b: 2 })).toBe(true);
   });
 
+  it('resolves default local snapshot directories by platform and environment', async () => {
+    vi.stubEnv('OPENAI_AGENTS_SANDBOX_SNAPSHOT_DIR', '  /custom/snapshots  ');
+    let defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'linux',
+      home: '/home/tester',
+      temp: '/tmp',
+    });
+    expect(defaultLocalSnapshotBaseDir()).toBe('/custom/snapshots');
+
+    vi.stubEnv('OPENAI_AGENTS_SANDBOX_SNAPSHOT_DIR', '');
+    defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'darwin',
+      home: '/Users/tester',
+      temp: '/tmp',
+    });
+    expect(defaultLocalSnapshotBaseDir()).toBe(
+      '/Users/tester/Library/Application Support/openai-agents-js/sandbox-snapshots',
+    );
+
+    vi.stubEnv('LOCALAPPDATA', '  C:\\Users\\tester\\AppData\\Local  ');
+    defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'win32',
+      home: 'C:\\Users\\tester',
+      temp: 'C:\\Temp',
+    });
+    expect(defaultLocalSnapshotBaseDir()).toBe(
+      'C:\\Users\\tester\\AppData\\Local\\openai-agents-js\\sandbox-snapshots',
+    );
+
+    vi.stubEnv('LOCALAPPDATA', '');
+    vi.stubEnv('XDG_STATE_HOME', '  /state  ');
+    defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'linux',
+      home: '',
+      temp: '/tmp',
+    });
+    expect(defaultLocalSnapshotBaseDir()).toBe(
+      '/state/openai-agents-js/sandbox-snapshots',
+    );
+  });
+
+  it('preserves explicit relative local snapshot directory overrides', async () => {
+    vi.stubEnv('OPENAI_AGENTS_SANDBOX_SNAPSHOT_DIR', '  relative/snapshots  ');
+    const defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'linux',
+      home: '/home/tester',
+      temp: '/tmp',
+    });
+
+    expect(defaultLocalSnapshotBaseDir()).toBe('relative/snapshots');
+  });
+
+  it('ignores relative XDG state directories', async () => {
+    vi.stubEnv('XDG_STATE_HOME', 'relative-state');
+    const defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'linux',
+      home: '/home/tester',
+      temp: '/tmp',
+    });
+
+    expect(defaultLocalSnapshotBaseDir()).toBe(
+      '/home/tester/.local/state/openai-agents-js/sandbox-snapshots',
+    );
+  });
+
+  it.each(['relative-local', '/tmp/localappdata'])(
+    'ignores invalid Windows app-data directories: %s',
+    async (localAppData) => {
+      vi.stubEnv('LOCALAPPDATA', localAppData);
+      const defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir(
+        {
+          platform: 'win32',
+          home: 'C:\\Users\\tester',
+          temp: 'C:\\Temp',
+        },
+      );
+
+      expect(defaultLocalSnapshotBaseDir()).toBe(
+        'C:\\Users\\tester\\AppData\\Local\\openai-agents-js\\sandbox-snapshots',
+      );
+    },
+  );
+
+  it('falls back to the temporary directory without a home directory', async () => {
+    vi.stubEnv('XDG_STATE_HOME', 'relative-state');
+    const defaultLocalSnapshotBaseDir = await loadDefaultLocalSnapshotBaseDir({
+      platform: 'linux',
+      home: '',
+      temp: '/tmp',
+    });
+
+    expect(defaultLocalSnapshotBaseDir()).toBe(
+      '/tmp/openai-agents-js/sandbox-snapshots',
+    );
+  });
+
   it('normalizes POSIX sandbox paths and compares roots', () => {
     expect(normalizePosixPath('/workspace//src/../README.md')).toBe(
       '/workspace/README.md',
@@ -157,6 +347,13 @@ describe('sandbox shared helpers', () => {
           ephemeral: true,
         },
       },
+      extraPathGrants: [
+        {
+          path: '/mnt/shared-data',
+          hostPath: '/private/tmp/shared-data',
+          readOnly: true,
+        },
+      ],
     });
 
     const serialized = serializeManifestRecord(manifest);
@@ -189,6 +386,12 @@ describe('sandbox shared helpers', () => {
       environment: {
         KEPT: { value: 'ok' },
       },
+      extraPathGrants: [
+        {
+          path: '/mnt/shared-data',
+          readOnly: true,
+        },
+      ],
     });
     expect(serialized.entries).not.toHaveProperty('tmp.txt');
     expect(serialized.entries).not.toHaveProperty([
@@ -200,6 +403,30 @@ describe('sandbox shared helpers', () => {
       'dir',
       'children',
       'nested.tmp',
+    ]);
+    expect(serialized.extraPathGrants).not.toHaveProperty([0, 'hostPath']);
+  });
+
+  it('does not restore host path grants from persisted manifests', () => {
+    const restored = deserializeManifest({
+      version: 1,
+      root: '/workspace',
+      entries: {},
+      environment: {},
+      extraPathGrants: [
+        {
+          path: '/mnt/shared-data',
+          hostPath: '/private/tmp/untrusted-data',
+          readOnly: true,
+        },
+      ],
+    });
+
+    expect(restored.extraPathGrants).toEqual([
+      {
+        path: '/mnt/shared-data',
+        readOnly: true,
+      },
     ]);
   });
 
@@ -228,6 +455,23 @@ describe('sandbox shared helpers', () => {
     expect(
       (restored.entries.nested as any).children['payload.bin'].content,
     ).toEqual(bytes);
+  });
+
+  it('restores binary manifest files without host base64 globals', () => {
+    const bytes = Uint8Array.from([0, 255, 34, 17, 128]);
+    const serialized = serializeManifestRecord(
+      new Manifest({
+        entries: {
+          'payload.bin': file({ content: bytes }),
+        },
+      }),
+    );
+    vi.stubGlobal('Buffer', undefined);
+    vi.stubGlobal('atob', undefined);
+
+    const restored = deserializeManifest(serialized);
+
+    expect((restored.entries['payload.bin'] as any).content).toEqual(bytes);
   });
 
   it('materializes manifest environment values and preserves runtime overrides', async () => {
@@ -334,6 +578,74 @@ describe('sandbox shared helpers', () => {
     });
   });
 
+  it('persists environment references without their resolved runtime values', async () => {
+    let currentSecret = 'first-secret';
+    class SessionSecretReference extends EnvValueReference {
+      static readonly type = 'test.session_secret_reference';
+
+      constructor(readonly key: string) {
+        super();
+      }
+
+      serialize(): Record<string, unknown> {
+        return { key: this.key };
+      }
+
+      async resolve(): Promise<string> {
+        return `${currentSecret}:${this.key}`;
+      }
+    }
+    const unregister = registerEnvValueReference(
+      SessionSecretReference,
+      (payload) => {
+        if (typeof payload.key !== 'string') {
+          throw new TypeError('Session secret reference key must be a string.');
+        }
+        return new SessionSecretReference(payload.key);
+      },
+    );
+    try {
+      const manifest = new Manifest({
+        environment: {
+          TOKEN: new SessionSecretReference('openai-key'),
+          STATIC: 'enabled',
+        },
+      });
+
+      expect(serializeManifestRecord(manifest).environment).toEqual({
+        TOKEN: {
+          type: SessionSecretReference.type,
+          key: 'openai-key',
+        },
+        STATIC: { value: 'enabled' },
+      });
+      expect(
+        serializeRuntimeEnvironmentForPersistence(manifest, {
+          TOKEN: 'first-secret:openai-key',
+          STATIC: 'runtime-override',
+        }),
+      ).toEqual({
+        STATIC: 'enabled',
+      });
+
+      const restored = deserializeManifest(
+        JSON.parse(JSON.stringify(serializeManifestRecord(manifest))),
+      );
+      currentSecret = 'replayed-secret';
+      await expect(
+        rehydratePersistedEnvironmentForRuntime(restored, {
+          TOKEN: 'persisted-plaintext-must-not-win',
+          STATIC: 'enabled',
+        }),
+      ).resolves.toEqual({
+        TOKEN: 'replayed-secret:openai-key',
+        STATIC: 'enabled',
+      });
+    } finally {
+      unregister();
+    }
+  });
+
   it('materializes static manifest environment without invoking resolvers', () => {
     const previous = new Manifest({
       environment: {
@@ -398,19 +710,33 @@ describe('sandbox shared helpers', () => {
   });
 
   it('merges manifest deltas by replacing named and path-keyed entries', () => {
+    const baseHostPath = process.cwd();
+    const updatedHostPath = `${process.cwd()}-updated`;
     const base = new Manifest({
       entries: {
         'base.txt': file({ content: 'base' }),
       },
       groups: [{ name: 'operators', users: [{ name: 'agent' }] }],
-      extraPathGrants: [{ path: '/tmp/base', readOnly: true }],
+      extraPathGrants: [
+        {
+          path: '/tmp/base',
+          hostPath: baseHostPath,
+          readOnly: true,
+        },
+      ],
     });
     const update = new Manifest({
       entries: {
         'update.txt': file({ content: 'update' }),
       },
       groups: [{ name: 'operators', users: [{ name: 'reviewer' }] }],
-      extraPathGrants: [{ path: '/tmp/base', readOnly: false }],
+      extraPathGrants: [
+        {
+          path: '/tmp/base',
+          hostPath: updatedHostPath,
+          readOnly: false,
+        },
+      ],
     });
 
     const merged = mergeManifestDelta(base, update);
@@ -420,7 +746,11 @@ describe('sandbox shared helpers', () => {
       { name: 'operators', users: [{ name: 'reviewer' }] },
     ]);
     expect(merged.extraPathGrants).toEqual([
-      { path: '/tmp/base', readOnly: false },
+      {
+        path: '/tmp/base',
+        hostPath: updatedHostPath,
+        readOnly: false,
+      },
     ]);
   });
 

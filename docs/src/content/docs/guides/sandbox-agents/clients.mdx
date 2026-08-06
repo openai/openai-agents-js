@@ -59,6 +59,8 @@ There are two lifecycle styles.
 | SDK-owned | `sandbox: { client }` | The runner | The sandbox only needs to live for one run. |
 | Developer-owned | `sandbox: { session }` | Your code | You need to inspect files afterward, reuse the same live session, or coordinate multiple runs. |
 
+On normal completion or failure, the runner closes an SDK-owned session. When a run pauses for an approval interruption, or when an unfinished streamed run is cancelled, the runner instead preserves the owned sandbox state in `RunState` so the same run can continue.
+
 When you create a session yourself, close it yourself:
 
 <Code
@@ -84,6 +86,10 @@ Use `sessionState` when you want to reconnect to the same backend session throug
 
 `RunState` can also preserve runner-managed sandbox state when you pause or resume a larger workflow. Use explicit `sessionState` when the sandbox lifecycle is managed outside a serialized run.
 
+For Docker, resuming the same in-memory `RunState` can reuse the live container only after the SDK verifies its identity and revalidates the current manifest, environment, and path grants. If live reuse is unavailable or rejected, Docker falls back to a restorable snapshot. A `RunState` serialized and reconstructed with `RunState.fromString(...)` does not carry trusted live-container authority, so Docker also restores from a snapshot instead of attaching to the serialized container ID. Resume fails rather than attaching to an unverified container when no restorable snapshot is configured.
+
+For local snapshots with no explicit `baseDir`, set `OPENAI_AGENTS_SANDBOX_SNAPSHOT_DIR` to override the storage directory. Otherwise the SDK uses `~/Library/Application Support/openai-agents-js/sandbox-snapshots` on macOS, `%LOCALAPPDATA%\openai-agents-js\sandbox-snapshots` on Windows, and `$XDG_STATE_HOME/openai-agents-js/sandbox-snapshots` on other platforms, with home-directory and temporary-directory fallbacks when those locations are unavailable.
+
 ### Manifest materialization
 
 Manifest entries are prepared before the agent runs. You can tune materialization concurrency per run or per client create call:
@@ -95,6 +101,10 @@ Manifest entries are prepared before the agent runs. You can tune materializatio
 />
 
 `manifestEntries` limits parallel top-level entry work. `localDirFiles` limits file copy concurrency inside `localDir()` entries.
+
+### Filesystem existence checks
+
+When a session implements `pathExists()`, `false` means the backend confirmed that the path is missing. Permission errors, I/O failures, and provider probe failures reject with a provider error instead of being treated as a missing path. This prevents editor, manifest, and memory flows from overwriting or replacing paths that may exist but are inaccessible.
 
 ## Mounts and remote storage
 
@@ -146,6 +156,8 @@ Install `@openai/agents-extensions` and satisfy its package-level peers. Each pr
 
 `CloudflareSandboxClient` does not import a Cloudflare npm SDK. It talks to a deployed Cloudflare Sandbox bridge Worker over HTTP instead.
 
+`VercelSandboxClient` resolves each PAT credential field with the precedence per-create options, constructor options, then `VERCEL_PROJECT_ID`, `VERCEL_TEAM_ID`, and `VERCEL_TOKEN`. It forwards credentials only when the resulting `projectId`, `teamId`, and `token` are all non-empty. Otherwise it omits all three fields and lets `@vercel/sandbox` resolve authentication, including platform OIDC or local provider credentials. Complete resolved credentials are preserved when sessions are serialized and resumed. Serialized credentials are treated as a complete triple and are not mixed with current options or environment variables; incomplete serialized credentials are discarded before current configuration is resolved as a fallback. Because the token remains present in serialized session state, store that state securely.
+
 Hosted sandbox clients expose provider-specific mount strategies. Choose the backend and mount strategy that best fit your storage provider:
 
 | Backend | Mount notes |
@@ -157,7 +169,9 @@ Hosted sandbox clients expose provider-specific mount strategies. Choose the bac
 | `DaytonaSandboxClient` | Supports rclone-backed mounts with `DaytonaCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
 | `E2BSandboxClient` | Supports rclone-backed mounts with `E2BCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
 | `RunloopSandboxClient` | Supports rclone-backed mounts with `RunloopCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
-| `VercelSandboxClient` | No hosted-specific mount strategy is currently exposed. Use manifest files, repos, snapshots, or other workspace inputs instead. |
+| `VercelSandboxClient` | Supports create-time S3 mounts with `VercelCloudBucketMountStrategy`. Inline credentials require `allowS3CredentialExposure: true`; reuse the live mounted session because serialized mount state cannot be resumed. |
+
+For E2B and Runloop rclone-backed mounts, the SDK uses an existing `rclone` binary when available. Otherwise it installs an SDK-pinned Linux archive only after verifying its SHA-256 checksum; unsupported architectures and checksum failures abort the mount.
 
 The table below summarizes which remote storage entries each backend can mount directly:
 
@@ -170,7 +184,7 @@ The table below summarizes which remote storage entries each backend can mount d
 | `DaytonaSandboxClient` | yes | yes | yes | yes | yes | no |
 | `E2BSandboxClient` | yes | yes | yes | yes | yes | no |
 | `RunloopSandboxClient` | yes | yes | yes | yes | yes | no |
-| `VercelSandboxClient` | no | no | no | no | no | no |
+| `VercelSandboxClient` | yes | no | no | no | no | no |
 
 ### Exposed ports
 

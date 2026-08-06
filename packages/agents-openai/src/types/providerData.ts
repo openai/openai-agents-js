@@ -22,6 +22,10 @@ export type CodeInterpreterTool = Omit<
   include_outputs?: boolean;
 };
 
+export type ProgrammaticToolCallingTool = {
+  type: 'programmatic_tool_calling';
+};
+
 export type ToolSearchTool = Omit<OpenAI.Responses.ToolSearchTool, 'type'> & {
   type: 'tool_search';
   name: 'tool_search';

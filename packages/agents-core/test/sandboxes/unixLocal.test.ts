@@ -13,9 +13,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  EnvValueReference,
   Manifest,
   InMemoryRemoteSnapshotStore,
   NoopSnapshotSpec,
+  registerEnvValueReference,
   skills,
   UnixLocalSandboxClient,
   urlForExposedPort,
@@ -24,6 +26,7 @@ import {
   applyOwnershipRecursive,
   materializeLocalWorkspaceManifest,
   materializeLocalWorkspaceManifestMounts,
+  pathExists,
 } from '../../src/sandbox/sandboxes/shared/localWorkspace';
 
 const ONE_BY_ONE_PNG = Uint8Array.from(
@@ -44,6 +47,27 @@ describe('UnixLocalSandboxClient', () => {
 
   afterEach(async () => {
     await rm(rootDir, { recursive: true, force: true });
+  });
+
+  it('distinguishes missing local paths from invalid and recursive symbolic links', async () => {
+    const missingPath = join(rootDir, 'missing');
+    const brokenPath = join(rootDir, 'broken');
+    const invalidPath = join(rootDir, 'invalid');
+    const recursivePath = join(rootDir, 'recursive');
+    await writeFile(join(rootDir, 'not-a-directory'), 'hello');
+    await symlink('missing-target', brokenPath);
+    await symlink('not-a-directory/child', invalidPath);
+    await symlink('recursive', recursivePath);
+
+    await expect(pathExists(missingPath)).resolves.toBe(false);
+    await expect(pathExists(rootDir)).resolves.toBe(true);
+    await expect(pathExists(brokenPath)).resolves.toBe(false);
+    await expect(pathExists(invalidPath)).rejects.toMatchObject({
+      code: 'ENOTDIR',
+    });
+    await expect(pathExists(recursivePath)).rejects.toMatchObject({
+      code: 'ELOOP',
+    });
   });
 
   it('materializes manifest entries and runs commands in the workspace', async () => {
@@ -245,6 +269,7 @@ describe('UnixLocalSandboxClient', () => {
       login: false,
       yieldTimeMs: 1_000,
     });
+
     const serialized = await client.serializeSessionState(session.state);
 
     expect(output).toContain('runtime-value');
@@ -1018,6 +1043,37 @@ describe('UnixLocalSandboxClient', () => {
     });
   });
 
+  it('rejects hostPath before applying a manifest delta', async () => {
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(new Manifest());
+
+    await expect(
+      session.applyManifest(
+        new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/shared-data',
+              hostPath: rootDir,
+              readOnly: true,
+            },
+          ],
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: 'unsupported_feature',
+      details: {
+        provider: 'UnixLocalSandboxClient',
+        feature: 'manifest.extraPathGrants.hostPath',
+        path: '/mnt/shared-data',
+      },
+    });
+    expect(session.state.manifest.extraPathGrants).toEqual([]);
+
+    await session.close();
+  });
+
   it('supports incremental filesystem operations and manifest application', async () => {
     const client = new UnixLocalSandboxClient({
       workspaceBaseDir: rootDir,
@@ -1413,6 +1469,85 @@ describe('UnixLocalSandboxClient', () => {
     await expect(stat(join(snapshot.path, 'keep.txt'))).resolves.toBeTruthy();
     await expect(stat(join(snapshot.path, 'tmp.txt'))).rejects.toThrow();
     await expect(stat(join(snapshot.path, 'dir/nested.tmp'))).rejects.toThrow();
+  });
+
+  it('re-resolves registered environment references without persisting secrets', async () => {
+    let currentSecret = 'activity-secret';
+    class LocalSecretReference extends EnvValueReference {
+      static readonly type = 'test.local_secret_reference';
+
+      constructor(readonly key: string) {
+        super();
+      }
+
+      serialize(): Record<string, unknown> {
+        return { key: this.key };
+      }
+
+      async resolve(): Promise<string> {
+        return `${currentSecret}:${this.key}`;
+      }
+    }
+    const unregister = registerEnvValueReference(
+      LocalSecretReference,
+      (payload) => {
+        if (typeof payload.key !== 'string') {
+          throw new TypeError('Local secret reference key must be a string.');
+        }
+        return new LocalSecretReference(payload.key);
+      },
+    );
+    try {
+      const client = new UnixLocalSandboxClient({
+        workspaceBaseDir: rootDir,
+        snapshot: {
+          type: 'local',
+          baseDir: rootDir,
+        },
+      });
+      const session = await client.create(
+        new Manifest({
+          environment: {
+            TOKEN: new LocalSecretReference('openai-key'),
+          },
+        }),
+      );
+
+      const serialized = await client.serializeSessionState(session.state);
+      const serializedJson = JSON.stringify(serialized);
+      expect(serializedJson).not.toContain('activity-secret');
+      expect(serialized.manifest).toMatchObject({
+        environment: {
+          TOKEN: {
+            type: LocalSecretReference.type,
+            key: 'openai-key',
+          },
+        },
+      });
+      expect(serialized.environment).toEqual({});
+
+      currentSecret = 'worker-secret';
+      const restoredState = await client.deserializeSessionState(
+        JSON.parse(serializedJson),
+      );
+      expect(restoredState.manifest.environment.TOKEN).toBeInstanceOf(
+        LocalSecretReference,
+      );
+      expect(restoredState.environment).toEqual({
+        TOKEN: 'worker-secret:openai-key',
+      });
+
+      const restored = await client.resume(restoredState);
+      const output = await restored.execCommand({
+        cmd: 'printf "%s\\n" "$TOKEN"',
+        shell: '/bin/sh',
+        login: false,
+        yieldTimeMs: 500,
+      });
+      expect(output).toContain('worker-secret:openai-key');
+    } finally {
+      unregister();
+    }
   });
 
   it('excludes an ephemeral root entry from local snapshots', async () => {

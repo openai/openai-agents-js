@@ -4,7 +4,7 @@ import { z } from 'zod';
 async function main() {
   await withTrace('Agents as tools streaming example', async () => {
     const billingStatusCheckerTool = tool({
-      name: 'Billing statu checker',
+      name: 'Billing status checker',
       description:
         'You are a billing agent that answers questions about billing.',
       parameters: z.object({

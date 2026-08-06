@@ -7,6 +7,7 @@ export {
   RealtimeSessionConnectOptions,
   RealtimeSessionOptions,
   RealtimeContextData,
+  RealtimeToolExecutionConfig,
 } from './realtimeSession';
 
 export { RealtimeSessionEventTypes } from './realtimeSessionEvents';
@@ -16,6 +17,7 @@ export {
   TransportLayerAudio,
   TransportLayerResponseCompleted,
   TransportLayerResponseStarted,
+  TransportLayerOutputTextDelta,
   TransportLayerTranscriptDelta,
   TransportError,
   TransportToolCallEvent,
@@ -83,6 +85,7 @@ export {
   FunctionTool,
   ModelBehaviorError,
   OutputGuardrailTripwireTriggered,
+  setSensitiveDataLoggingEnabled,
   tool,
   UserError,
 } from '@openai/agents-core';

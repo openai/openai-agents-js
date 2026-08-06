@@ -228,6 +228,35 @@ describe('utils/zodJsonSchemaCompat', () => {
     });
   });
 
+  it('fails the whole union when a member cannot be converted', () => {
+    // A silently dropped union member would emit a schema that forbids
+    // outputs the Zod schema accepts: a model constrained by the emitted
+    // schema could never produce the dropped variant.
+    const schema = z.object({
+      action: z.discriminatedUnion('type', [
+        z.object({
+          type: z.literal('replace'),
+          // z.preprocess is not convertible by this fallback converter.
+          id: z.preprocess(
+            (value) => (typeof value === 'string' ? value : null),
+            z.string().nullable(),
+          ),
+        }),
+        z.object({ type: z.literal('none'), reason: z.string() }),
+      ]),
+    });
+
+    expect(zodJsonSchemaCompat(schema)).toBeUndefined();
+  });
+
+  it('fails the whole tuple when a member cannot be converted', () => {
+    const schema = z.object({
+      pair: z.tuple([z.string(), z.date()]),
+    });
+
+    expect(zodJsonSchemaCompat(schema)).toBeUndefined();
+  });
+
   it('returns undefined when schema shape cannot be introspected', () => {
     const tricky = {
       shape: () => {

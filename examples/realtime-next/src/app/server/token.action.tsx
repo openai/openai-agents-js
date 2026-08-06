@@ -17,7 +17,7 @@ export async function getToken() {
       body: JSON.stringify({
         session: {
           type: 'realtime',
-          model: 'gpt-realtime-2',
+          model: 'gpt-realtime-2.1',
           tools: [
             {
               type: 'mcp',

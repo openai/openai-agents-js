@@ -1,5 +1,14 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { withTrace, setTracingDisabled } from '@openai/agents-core';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  Agent,
+  Runner,
+  Span,
+  Trace,
+  setTraceProcessors,
+  withTrace,
+  setTracingDisabled,
+  type TracingProcessor,
+} from '@openai/agents-core';
 import { OpenAIChatCompletionsModel } from '../src/openaiChatCompletionsModel';
 import { HEADERS } from '../src/defaults';
 import logger from '../src/logger';
@@ -29,10 +38,28 @@ class FakeClient {
   baseURL = 'base';
 }
 
+class RecordingProcessor implements TracingProcessor {
+  readonly spansEnded: Span<any>[] = [];
+
+  async onTraceStart(_trace: Trace): Promise<void> {}
+  async onTraceEnd(_trace: Trace): Promise<void> {}
+  async onSpanStart(_span: Span<any>): Promise<void> {}
+  async onSpanEnd(span: Span<any>): Promise<void> {
+    this.spansEnded.push(span);
+  }
+  async shutdown(): Promise<void> {}
+  async forceFlush(): Promise<void> {}
+}
+
 describe('OpenAIChatCompletionsModel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setTracingDisabled(true);
+  });
+
+  afterEach(() => {
+    setTracingDisabled(true);
+    setTraceProcessors([]);
   });
 
   it('handles text message output', async () => {
@@ -467,7 +494,218 @@ describe('OpenAIChatCompletionsModel', () => {
     ]);
   });
 
-  it('sends prompt cache retention when provided', async () => {
+  it.each([null, ''])(
+    'surfaces an empty content-filtered message as a refusal (content: %j)',
+    async (content) => {
+      const client = new FakeClient();
+      const response = {
+        id: 'r',
+        choices: [
+          {
+            finish_reason: 'content_filter',
+            message: {
+              role: 'assistant',
+              content,
+              refusal: '',
+              tool_calls: [],
+            },
+          },
+        ],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      } as any;
+      client.chat.completions.create.mockResolvedValue(response);
+
+      const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+      const req: any = {
+        input: 'u',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      };
+
+      const result = await withTrace('t', () => model.getResponse(req));
+
+      expect(result.output).toEqual([
+        {
+          id: 'r',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [
+            {
+              type: 'refusal',
+              refusal: "Response withheld by the provider's content filter.",
+              providerData: {
+                role: 'assistant',
+                content: null,
+                tool_calls: [],
+              },
+            },
+          ],
+        },
+      ]);
+    },
+  );
+
+  it('preserves content, provider refusals, and tool calls from content-filtered messages', async () => {
+    const client = new FakeClient();
+    client.chat.completions.create
+      .mockResolvedValueOnce({
+        id: 'content-response',
+        choices: [
+          {
+            finish_reason: 'content_filter',
+            message: { content: 'partial' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        id: 'refusal-response',
+        choices: [
+          {
+            finish_reason: 'content_filter',
+            message: { content: null, refusal: 'provider refusal' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        id: 'tool-response',
+        choices: [
+          {
+            finish_reason: 'content_filter',
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: 'call-1',
+                  type: 'function',
+                  function: { name: 'lookup', arguments: '{}' },
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    const contentResult = await withTrace('content', () =>
+      model.getResponse(req),
+    );
+    const refusalResult = await withTrace('refusal', () =>
+      model.getResponse(req),
+    );
+    const toolResult = await withTrace('tool', () => model.getResponse(req));
+
+    expect(contentResult.output[0]).toMatchObject({
+      type: 'message',
+      content: [{ type: 'output_text', text: 'partial' }],
+    });
+    expect(refusalResult.output[0]).toMatchObject({
+      type: 'message',
+      content: [{ type: 'refusal', refusal: 'provider refusal' }],
+    });
+    expect(toolResult.output).toMatchObject([
+      {
+        id: 'tool-response',
+        type: 'function_call',
+        arguments: '{}',
+        name: 'lookup',
+        callId: 'call-1',
+        status: 'completed',
+      },
+    ]);
+  });
+
+  it('does not synthesize a refusal for other finish reasons', async () => {
+    const client = new FakeClient();
+    client.chat.completions.create.mockResolvedValue({
+      id: 'r',
+      choices: [
+        {
+          finish_reason: 'stop',
+          message: { content: null },
+        },
+      ],
+    });
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const result = await withTrace('t', () =>
+      model.getResponse({
+        input: 'u',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      }),
+    );
+
+    expect(result.output).toEqual([]);
+  });
+
+  it('traces the synthesized refusal without mutating raw provider data', async () => {
+    const processor = new RecordingProcessor();
+    setTraceProcessors([processor]);
+    setTracingDisabled(false);
+
+    const client = new FakeClient();
+    const rawResponse = {
+      id: 'r',
+      choices: [
+        {
+          finish_reason: 'content_filter',
+          message: { role: 'assistant', content: null },
+        },
+      ],
+    };
+    client.chat.completions.create.mockResolvedValue(rawResponse);
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+
+    const result = await withTrace('content-filter-refusal', () =>
+      model.getResponse({
+        input: 'u',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: true,
+      }),
+    );
+
+    expect(result.providerData).toBe(rawResponse);
+    expect(rawResponse.choices[0].message).toEqual({
+      role: 'assistant',
+      content: null,
+    });
+
+    const generationSpan = processor.spansEnded.find(
+      (span) => span.spanData.type === 'generation',
+    );
+    expect(generationSpan?.spanData.output).toEqual([
+      expect.objectContaining({
+        choices: [
+          expect.objectContaining({
+            message: expect.objectContaining({
+              refusal: "Response withheld by the provider's content filter.",
+            }),
+          }),
+        ],
+      }),
+    ]);
+  });
+
+  it('sends prompt cache controls when provided', async () => {
     const client = new FakeClient();
     const response = {
       id: 'r',
@@ -481,6 +719,7 @@ describe('OpenAIChatCompletionsModel', () => {
       input: 'u',
       modelSettings: {
         promptCacheRetention: 'in-memory',
+        promptCacheOptions: { mode: 'explicit', ttl: '30m' },
       },
       tools: [],
       outputType: 'text',
@@ -493,9 +732,66 @@ describe('OpenAIChatCompletionsModel', () => {
     expect(client.chat.completions.create).toHaveBeenCalledWith(
       expect.objectContaining({
         prompt_cache_retention: 'in_memory',
+        prompt_cache_options: { mode: 'explicit', ttl: '30m' },
       }),
       { headers: HEADERS, signal: undefined },
     );
+  });
+
+  it('warns once for Responses-only reasoning settings', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [{ message: { content: 'hi' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-5.6');
+    const req: any = {
+      input: 'u',
+      modelSettings: {
+        reasoning: { mode: 'pro', effort: 'max', context: 'all_turns' },
+      },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await withTrace('t', () => model.getResponse(req));
+    await withTrace('t', () => model.getResponse(req));
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]?.[0]).toContain('reasoning.mode');
+    expect(warnSpy.mock.calls[0]?.[0]).toContain('reasoning.context');
+    expect(client.chat.completions.create.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ reasoning_effort: 'max' }),
+    );
+    expect(
+      client.chat.completions.create.mock.calls[0]?.[0],
+    ).not.toHaveProperty('reasoning');
+    warnSpy.mockRestore();
+  });
+
+  it('rejects Responses-only reasoning settings in strict mode', async () => {
+    const client = new FakeClient();
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-5.6', {
+      strictFeatureValidation: true,
+    });
+    const req: any = {
+      input: 'u',
+      modelSettings: { reasoning: { mode: 'pro', context: 'all_turns' } },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await expect(withTrace('t', () => model.getResponse(req))).rejects.toThrow(
+      /reasoning\.mode.*reasoning\.context/,
+    );
+    expect(client.chat.completions.create).not.toHaveBeenCalled();
   });
 
   it('handles refusal message', async () => {
@@ -530,11 +826,21 @@ describe('OpenAIChatCompletionsModel', () => {
     ]);
   });
 
-  it('handles audio message', async () => {
+  it('preserves audio from a content-filtered message', async () => {
     const client = new FakeClient();
     const response = {
       id: 'r',
-      choices: [{ message: { audio: { data: 'zzz', format: 'mp3' } } }],
+      choices: [
+        {
+          finish_reason: 'content_filter',
+          message: {
+            content: null,
+            refusal: null,
+            tool_calls: [],
+            audio: { data: 'zzz', format: 'mp3' },
+          },
+        },
+      ],
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     } as any;
     client.chat.completions.create.mockResolvedValue(response);
@@ -677,6 +983,193 @@ describe('OpenAIChatCompletionsModel', () => {
       headers: HEADERS,
       signal: undefined,
     });
+  });
+
+  it.each(['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
+    'omits implicit reasoning effort for %s function tools',
+    async (modelName) => {
+      const client = new FakeClient();
+      const response = {
+        id: 'gpt-5.6-tool-response',
+        choices: [{ message: { content: 'done' } }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      } as any;
+      client.chat.completions.create.mockResolvedValue(response);
+
+      const model = new OpenAIChatCompletionsModel(client as any, modelName);
+      const req: any = {
+        input: 'prompt',
+        modelSettings: {
+          reasoning: { effort: 'none' },
+          text: { verbosity: 'low' },
+        },
+        _internal: {
+          reasoningEffortImplicit: true,
+        },
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup',
+            description: 'Look up a value.',
+            parameters: { type: 'object', properties: {}, required: [] },
+            strict: true,
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      };
+
+      await withTrace(`${modelName} implicit reasoning`, () =>
+        model.getResponse(req),
+      );
+
+      const [args] = client.chat.completions.create.mock.calls[0];
+      expect(args.reasoning_effort).toBeUndefined();
+      expect(args.verbosity).toBe('low');
+      expect(args.tools).toHaveLength(1);
+    },
+  );
+
+  it('preserves explicit GPT-5.6 reasoning effort with function tools', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'gpt-5.6-explicit-tool-response',
+      choices: [{ message: { content: 'done' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-5.6-sol');
+    const req: any = {
+      input: 'prompt',
+      modelSettings: {
+        reasoning: { effort: 'low' },
+      },
+      _internal: {
+        reasoningEffortImplicit: false,
+      },
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup',
+          description: 'Look up a value.',
+          parameters: { type: 'object', properties: {}, required: [] },
+          strict: true,
+        },
+      ],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await withTrace('gpt-5.6 explicit reasoning', () => model.getResponse(req));
+
+    const [args] = client.chat.completions.create.mock.calls[0];
+    expect(args.reasoning_effort).toBe('low');
+  });
+
+  it('preserves explicit provider reasoning effort over implicit defaults', async () => {
+    const client = new FakeClient();
+    client.chat.completions.create.mockResolvedValue({
+      id: 'gpt-5.6-provider-reasoning-response',
+      choices: [{ message: { content: 'done' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    });
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-5.6-sol');
+    const providerData = { reasoning_effort: 'low' };
+    const runner = new Runner({
+      model: 'gpt-5.6-sol',
+      modelProvider: { getModel: () => model },
+      modelSettings: { providerData },
+      tracingDisabled: true,
+    });
+
+    await runner.run(
+      new Agent({
+        name: 'Handoff agent',
+        handoffs: [new Agent({ name: 'Specialist' })],
+      }),
+      'delegate this',
+    );
+
+    const [request] = client.chat.completions.create.mock.calls[0];
+    expect(request.reasoning_effort).toBe('low');
+    expect(providerData).toEqual({ reasoning_effort: 'low' });
+  });
+
+  it('preserves implicit GPT-5.6 reasoning effort without tools', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'gpt-5.6-text-response',
+      choices: [{ message: { content: 'done' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-5.6-sol');
+    const req: any = {
+      input: 'prompt',
+      modelSettings: {
+        reasoning: { effort: 'none' },
+      },
+      _internal: {
+        reasoningEffortImplicit: true,
+      },
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await withTrace('gpt-5.6 implicit text reasoning', () =>
+      model.getResponse(req),
+    );
+
+    const [args] = client.chat.completions.create.mock.calls[0];
+    expect(args.reasoning_effort).toBe('none');
+  });
+
+  it('does not persist implicit reasoning effort across runner calls', async () => {
+    const client = new FakeClient();
+    client.chat.completions.create
+      .mockResolvedValueOnce({
+        id: 'gpt-5.6-text-response',
+        choices: [{ message: { content: 'first' } }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      })
+      .mockResolvedValueOnce({
+        id: 'gpt-5.6-tool-response',
+        choices: [{ message: { content: 'second' } }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      });
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-5.6');
+    const providerData = { customOption: 'keep' };
+    const runner = new Runner({
+      model: 'gpt-5.6',
+      modelProvider: { getModel: () => model },
+      modelSettings: { providerData },
+      tracingDisabled: true,
+    });
+
+    await runner.run(new Agent({ name: 'Text agent' }), 'hello');
+    await runner.run(
+      new Agent({
+        name: 'Handoff agent',
+        handoffs: [new Agent({ name: 'Specialist' })],
+      }),
+      'delegate this',
+    );
+
+    const [textRequest] = client.chat.completions.create.mock.calls[0];
+    const [toolRequest] = client.chat.completions.create.mock.calls[1];
+    expect(textRequest.reasoning_effort).toBe('none');
+    expect(toolRequest.reasoning_effort).toBeUndefined();
+    expect(textRequest.customOption).toBe('keep');
+    expect(toolRequest.customOption).toBe('keep');
+    expect(providerData).toEqual({ customOption: 'keep' });
   });
 
   it('handles function tool calls', async () => {
@@ -865,6 +1358,30 @@ describe('OpenAIChatCompletionsModel', () => {
 
     await expect(withTrace('t', () => model.getResponse(req))).rejects.toThrow(
       'Function tools with deferLoading: true are only supported with the Responses API.',
+    );
+    expect(client.chat.completions.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects Programmatic Tool Calling before sending a request', async () => {
+    const client = new FakeClient();
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [
+        {
+          type: 'hosted_tool',
+          name: 'programmatic_tool_calling',
+          providerData: { type: 'programmatic_tool_calling' },
+        },
+      ],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    await expect(withTrace('t', () => model.getResponse(req))).rejects.toThrow(
+      'Programmatic Tool Calling is only supported with the Responses API.',
     );
     expect(client.chat.completions.create).not.toHaveBeenCalled();
   });

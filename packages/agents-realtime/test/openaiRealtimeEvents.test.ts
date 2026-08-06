@@ -5,8 +5,12 @@ function createEvent(payload: any): MessageEvent {
   return new MessageEvent('message', { data: JSON.stringify(payload) });
 }
 
+function createRawEvent(data: any): MessageEvent {
+  return new MessageEvent('message', { data });
+}
+
 describe('parseRealtimeEvent', () => {
-  it('parses known conversation.item.created event', () => {
+  it('parses known conversation.item.added event', () => {
     const payload = {
       type: 'conversation.item.added',
       event_id: 'evt_1',
@@ -17,6 +21,7 @@ describe('parseRealtimeEvent', () => {
 
     expect(result.isGeneric).toBe(false);
     expect(result.data).toEqual(payload);
+    expect(result.raw).toEqual(payload);
   });
 
   it('returns generic result for unknown event type', () => {
@@ -25,6 +30,7 @@ describe('parseRealtimeEvent', () => {
 
     expect(result.isGeneric).toBe(true);
     expect(result.data).toEqual(payload);
+    expect(result.raw).toEqual(payload);
   });
 
   it('preserves fields for unknown events', () => {
@@ -37,23 +43,37 @@ describe('parseRealtimeEvent', () => {
 
     expect(result.isGeneric).toBe(true);
     expect(result.data).toEqual(payload);
+    expect(result.raw).toEqual(payload);
   });
 
-  it('parses event with extra fields', () => {
+  it('preserves extra fields in the raw value for known events', () => {
     const payload = {
       type: 'conversation.item.added',
       event_id: 'evt_2',
-      item: { extra: 'field' },
+      item: {
+        type: 'message',
+        content: [
+          {
+            type: 'input_text',
+            text: 'hello',
+            provider_nested: { value: true },
+          },
+        ],
+      },
       previous_item_id: 'evt_prev2',
-      another: 123,
+      provider_top_level: 123,
     };
     const result = parseRealtimeEvent(createEvent(payload));
 
     expect(result.isGeneric).toBe(false);
-    expect(result.data).toMatchObject({
+    expect(result.raw).toEqual(payload);
+    expect(result.data).toEqual({
       type: 'conversation.item.added',
       event_id: 'evt_2',
-      item: {},
+      item: {
+        type: 'message',
+        content: [{ type: 'input_text', text: 'hello' }],
+      },
       previous_item_id: 'evt_prev2',
     });
   });
@@ -62,6 +82,23 @@ describe('parseRealtimeEvent', () => {
     const result = parseRealtimeEvent(createEvent({ notype: true }));
     expect(result.isGeneric).toBe(true);
     expect(result.data).toBeNull();
+    expect(result.raw).toBeNull();
+  });
+
+  it('returns null data for malformed JSON', () => {
+    const result = parseRealtimeEvent(createRawEvent('{'));
+    expect(result.isGeneric).toBe(true);
+    expect(result.data).toBeNull();
+    expect(result.raw).toBeNull();
+  });
+
+  it('returns null data for binary non-JSON frames', () => {
+    const result = parseRealtimeEvent(
+      createRawEvent(new Uint8Array([0, 1, 2])),
+    );
+    expect(result.isGeneric).toBe(true);
+    expect(result.data).toBeNull();
+    expect(result.raw).toBeNull();
   });
 
   it('parses input_audio_transcription.completed with tokens usage', () => {

@@ -50,16 +50,16 @@ async function main() {
   );
   let hasInterruptions = result.interruptions?.length > 0;
   while (hasInterruptions) {
-    // storing
+    // Store the current run state
     await fs.writeFile(
       'result.json',
       JSON.stringify(result.state, null, 2),
       'utf-8',
     );
 
-    // from here on you could run things on a different thread/process
+    // At this point, another process could review the saved state
 
-    // reading later on
+    // Read the saved state later
     const storedState = await fs.readFile('result.json', 'utf-8');
     const state = await RunState.fromString(agent, storedState);
 
@@ -75,7 +75,7 @@ async function main() {
       }
     }
 
-    // resume execution of the current state
+    // Resume execution from the restored state
     result = await run(agent, state);
     hasInterruptions = result.interruptions?.length > 0;
   }

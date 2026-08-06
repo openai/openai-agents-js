@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 async function main() {
   const agent = new Agent({
-    name: 'Assistnt',
+    name: 'Assistant',
     instructions:
       'You are a helpful assistant. You ALWAYS write long responses, making sure to be verbose and detailed.',
   });
