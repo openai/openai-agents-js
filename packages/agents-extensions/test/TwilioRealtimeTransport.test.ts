@@ -214,6 +214,7 @@ describe('TwilioRealtimeTransportLayer', () => {
         process.env.OPENAI_AGENTS_DONT_LOG_MODEL_DATA = original;
       }
     }
+  });
   test('interrupt skips Twilio clear before stream start', async () => {
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
