@@ -2,20 +2,109 @@ import type { JsonObjectSchema } from '../types';
 import { UserError } from '../errors';
 import { readZodDefinition, readZodType } from './zodCompat';
 
+type SyntheticNullableSchema = {
+  schema: unknown;
+};
+
+type JsonSchemaNullability = 'allows' | 'disallows' | 'unknown';
+
+type StrictSchemaPreparationContext = {
+  originalRoot: unknown;
+  preparedRoot: unknown;
+  preparedSchemas: WeakMap<object, object>;
+  references: Array<{
+    originalReference: string;
+    preparedSchema: Record<string, unknown>;
+  }>;
+  syntheticNullableSchemas: WeakMap<object, SyntheticNullableSchema>;
+};
+
+type PreparedOpenAIStrictToolSchema<T> = {
+  schema: T;
+  normalizeInput: (value: unknown) => unknown;
+};
+
 export function toOpenAIStrictToolSchema<T extends JsonObjectSchema<any>>(
   schema: T,
 ): T {
-  return ensureStrictSchemaEntry(structuredClone(schema), true) as T;
+  return prepareOpenAIStrictToolSchemaInternal(schema, false).schema;
 }
 
-function ensureStrictSchemaEntry(entry: unknown, isRoot = false): unknown {
+export function prepareOpenAIStrictToolSchema<T extends JsonObjectSchema<any>>(
+  schema: T,
+): PreparedOpenAIStrictToolSchema<T> {
+  return prepareOpenAIStrictToolSchemaInternal(schema, true);
+}
+
+function prepareOpenAIStrictToolSchemaInternal<T extends JsonObjectSchema<any>>(
+  schema: T,
+  requireUnambiguousNormalization: boolean,
+): PreparedOpenAIStrictToolSchema<T> {
+  validateOpenAIStrictProviderSchema(schema, schema);
+  validateOpenAIStrictJsonSchema(
+    schema,
+    schema,
+    new WeakSet(),
+    requireUnambiguousNormalization,
+  );
+  const preparedSchemas = new WeakMap<object, object>();
+  const syntheticNullableSchemas = new WeakMap<
+    object,
+    SyntheticNullableSchema
+  >();
+  const context: StrictSchemaPreparationContext = {
+    originalRoot: schema,
+    preparedRoot: undefined,
+    preparedSchemas,
+    references: [],
+    syntheticNullableSchemas,
+  };
+  const strictSchema = ensureStrictSchemaEntry(
+    structuredClone(schema),
+    schema,
+    context,
+    true,
+  ) as T;
+  stabilizeLocalJsonSchemaReferences(strictSchema, context);
+  context.preparedRoot = strictSchema;
+
+  return {
+    schema: strictSchema,
+    normalizeInput: (value: unknown) =>
+      normalizeStrictJsonSchemaValue(strictSchema, value, context),
+  };
+}
+
+function ensureStrictSchemaEntry(
+  entry: unknown,
+  originalEntry: unknown,
+  context: StrictSchemaPreparationContext,
+  isRoot = false,
+): unknown {
   if (typeof entry !== 'object' || entry === null) {
     return entry;
   }
 
   const record = entry as Record<string, unknown>;
+  const originalRecord = isRecord(originalEntry) ? originalEntry : undefined;
+  if (originalRecord) {
+    const preparedRecord = context.preparedSchemas.get(originalRecord);
+    if (preparedRecord) {
+      return preparedRecord;
+    }
+    context.preparedSchemas.set(originalRecord, record);
+  }
+  if (typeof originalRecord?.$ref === 'string') {
+    context.references.push({
+      originalReference: originalRecord.$ref,
+      preparedSchema: record,
+    });
+  }
   const properties = isRecord(record.properties)
     ? record.properties
+    : undefined;
+  const originalProperties = isRecord(originalRecord?.properties)
+    ? originalRecord.properties
     : undefined;
   const hasObjectKeywords =
     properties !== undefined || 'additionalProperties' in record;
@@ -34,24 +123,37 @@ function ensureStrictSchemaEntry(entry: unknown, isRoot = false): unknown {
     record.type = 'object';
   }
 
-  if (record.type === 'object' && properties !== undefined) {
+  if (schemaConvertsObjectProperties(record) && properties !== undefined) {
+    const preparedProperties = { ...properties };
+    record.properties = preparedProperties;
     const originalRequired = new Set(
-      Array.isArray(record.required) ? record.required.map(String) : [],
+      Array.isArray(originalRecord?.required)
+        ? originalRecord.required.map(String)
+        : [],
     );
 
-    for (const [key, value] of Object.entries(properties)) {
-      const normalized = ensureStrictSchemaEntry(value);
-      properties[key] = originalRequired.has(key)
-        ? normalized
-        : wrapNullableSchema(normalized);
+    for (const [key, value] of Object.entries(preparedProperties)) {
+      const originalValue = originalProperties?.[key] ?? value;
+      const optional = !originalRequired.has(key);
+      const nullability = optional
+        ? getKnownJsonSchemaNullability(originalValue, context.originalRoot)
+        : undefined;
+      const normalized = ensureStrictSchemaEntry(value, originalValue, context);
+      preparedProperties[key] =
+        nullability === 'disallows'
+          ? wrapNullableSchema(normalized, context.syntheticNullableSchemas)
+          : normalized;
     }
 
-    record.required = Object.keys(properties);
+    record.required = Object.keys(preparedProperties);
     record.additionalProperties = false;
   }
 
   for (const key of ['$defs', 'definitions']) {
     const nested = record[key];
+    const originalNested = isRecord(originalRecord?.[key])
+      ? originalRecord[key]
+      : undefined;
     if (
       typeof nested === 'object' &&
       nested !== null &&
@@ -61,23 +163,46 @@ function ensureStrictSchemaEntry(entry: unknown, isRoot = false): unknown {
         nested as Record<string, unknown>,
       )) {
         (nested as Record<string, unknown>)[nestedKey] =
-          ensureStrictSchemaEntry(nestedValue);
+          ensureStrictSchemaEntry(
+            nestedValue,
+            originalNested?.[nestedKey] ?? nestedValue,
+            context,
+          );
       }
     }
   }
 
-  for (const key of ['anyOf', 'allOf', 'oneOf']) {
+  for (const key of ['anyOf']) {
     const nested = record[key];
+    const originalNested = Array.isArray(originalRecord?.[key])
+      ? originalRecord[key]
+      : [];
     if (Array.isArray(nested)) {
-      record[key] = nested.map((value) => ensureStrictSchemaEntry(value));
+      record[key] = nested.map((value, index) =>
+        ensureStrictSchemaEntry(value, originalNested[index] ?? value, context),
+      );
     }
   }
 
   const items = record.items;
+  const originalItems = originalRecord?.items;
   if (Array.isArray(items)) {
-    record.items = items.map((value) => ensureStrictSchemaEntry(value));
+    const originalItemEntries = Array.isArray(originalItems)
+      ? originalItems
+      : [];
+    record.items = items.map((value, index) =>
+      ensureStrictSchemaEntry(
+        value,
+        originalItemEntries[index] ?? value,
+        context,
+      ),
+    );
   } else if (typeof items === 'object' && items !== null) {
-    record.items = ensureStrictSchemaEntry(items);
+    record.items = ensureStrictSchemaEntry(
+      items,
+      originalItems ?? items,
+      context,
+    );
   }
 
   if (record.default === null) {
@@ -87,12 +212,104 @@ function ensureStrictSchemaEntry(entry: unknown, isRoot = false): unknown {
   return record;
 }
 
-function wrapNullableSchema(schema: unknown): unknown {
-  if (
-    typeof schema !== 'object' ||
-    schema === null ||
-    isSchemaNullable(schema as Record<string, unknown>)
-  ) {
+function schemaConvertsObjectProperties(
+  schema: Record<string, unknown>,
+): boolean {
+  return (
+    isRecord(schema.properties) &&
+    (schema.type === 'object' ||
+      (Array.isArray(schema.type) && schema.type.includes('object')) ||
+      typeof schema.type === 'undefined')
+  );
+}
+
+function stabilizeLocalJsonSchemaReferences(
+  preparedRoot: unknown,
+  context: StrictSchemaPreparationContext,
+): void {
+  if (!isRecord(preparedRoot)) {
+    return;
+  }
+
+  // Strict conversion can wrap an optional property, replace
+  // `additionalProperties`, or leave an inapplicable subschema untouched. A
+  // local pointer into one of those locations would no longer identify the
+  // target that was classified and normalized. Hoist only those unstable
+  // targets so the provider schema and invocation normalizer share one
+  // context-independent prepared node.
+  const hoistedReferences = new WeakMap<object, string>();
+  let nextDefinitionIndex = 0;
+
+  for (let index = 0; index < context.references.length; index += 1) {
+    const { originalReference, preparedSchema } = context.references[index];
+    const originalTarget = resolveLocalJsonSchemaReference(
+      originalReference,
+      context.originalRoot,
+    );
+    if (typeof originalTarget === 'undefined') {
+      continue;
+    }
+
+    const preparedTarget = isRecord(originalTarget)
+      ? (context.preparedSchemas.get(originalTarget) ??
+        ensureStrictSchemaEntry(
+          structuredClone(originalTarget),
+          originalTarget,
+          context,
+        ))
+      : originalTarget;
+    const pointerTarget = resolveLocalJsonSchemaReference(
+      originalReference,
+      preparedRoot,
+    );
+    if (pointerTarget === preparedTarget) {
+      continue;
+    }
+
+    let definitionName = isRecord(originalTarget)
+      ? hoistedReferences.get(originalTarget)
+      : undefined;
+    if (!definitionName) {
+      const existingDefinitions = preparedRoot.$defs;
+      if (
+        typeof existingDefinitions !== 'undefined' &&
+        !isRecord(existingDefinitions)
+      ) {
+        throw new UserError(
+          'Cannot stabilize local JSON schema references because the root `$defs` value is not an object. Use an object-valued `$defs` or disable strict mode.',
+        );
+      }
+      const definitions = isRecord(existingDefinitions)
+        ? existingDefinitions
+        : {};
+      preparedRoot.$defs = definitions;
+      do {
+        definitionName = `__openai_strict_ref_${nextDefinitionIndex}`;
+        nextDefinitionIndex += 1;
+      } while (
+        Object.prototype.hasOwnProperty.call(definitions, definitionName)
+      );
+      definitions[definitionName] = preparedTarget;
+      if (isRecord(originalTarget)) {
+        hoistedReferences.set(originalTarget, definitionName);
+      }
+    }
+    preparedSchema.$ref = `#/$defs/${definitionName}`;
+  }
+}
+
+function wrapNullableSchema(
+  schema: unknown,
+  syntheticNullableSchemas: WeakMap<object, SyntheticNullableSchema>,
+): unknown {
+  if (schema === false) {
+    const nullableSchema = {
+      anyOf: [false, { type: 'null' }],
+    };
+    syntheticNullableSchemas.set(nullableSchema, { schema });
+    return nullableSchema;
+  }
+  if (typeof schema !== 'object' || schema === null) {
     return schema;
   }
 
@@ -101,83 +318,92 @@ function wrapNullableSchema(schema: unknown): unknown {
       ? { description: (schema as { description: string }).description }
       : {};
 
-  return {
+  const nullableSchema = {
     ...description,
     anyOf: [schema, { type: 'null' }],
   };
-}
-
-function isSchemaNullable(schema: Record<string, unknown>): boolean {
-  const type = schema.type;
-  if (type === 'null') {
-    return true;
-  }
-  if (Array.isArray(type) && type.includes('null')) {
-    return true;
-  }
-
-  for (const key of ['anyOf', 'oneOf', 'allOf']) {
-    const entries = schema[key];
-    if (
-      Array.isArray(entries) &&
-      entries.some(
-        (entry) =>
-          typeof entry === 'object' &&
-          entry !== null &&
-          isSchemaNullable(entry as Record<string, unknown>),
-      )
-    ) {
-      return true;
-    }
-  }
-
-  return false;
+  syntheticNullableSchemas.set(nullableSchema, {
+    schema,
+  });
+  return nullableSchema;
 }
 
 export function stripStrictNullsForJsonSchema(
   schema: unknown,
   value: unknown,
-  optionalProperty: boolean = false,
+): unknown {
+  if (!isRecord(schema)) {
+    return value;
+  }
+
+  return prepareOpenAIStrictToolSchema(
+    schema as JsonObjectSchema<any>,
+  ).normalizeInput(value);
+}
+
+function normalizeStrictJsonSchemaValue(
+  schema: unknown,
+  value: unknown,
+  context: StrictSchemaPreparationContext,
 ): unknown {
   if (value === undefined) {
     return undefined;
   }
-  if (value === null) {
-    if (optionalProperty && !jsonSchemaAllowsNull(schema)) {
-      return undefined;
+
+  let currentSchema = schema;
+  if (isRecord(currentSchema)) {
+    const syntheticNullableSchema =
+      context.syntheticNullableSchemas.get(currentSchema);
+    if (syntheticNullableSchema) {
+      if (value === null) {
+        return undefined;
+      }
+      currentSchema = syntheticNullableSchema.schema;
     }
+  }
+  const resolvedSchema = resolveLocalJsonSchema(currentSchema, context);
+  if (resolvedSchema !== currentSchema) {
+    return normalizeStrictJsonSchemaValue(resolvedSchema, value, context);
+  }
+
+  if (value === null) {
     return value;
   }
 
   if (Array.isArray(value)) {
-    const schemaRecord = isRecord(schema) ? schema : undefined;
+    const schemaRecord = isRecord(currentSchema) ? currentSchema : undefined;
     const items = schemaRecord?.items;
     if (Array.isArray(items)) {
       return value.map((entry, index) =>
-        stripStrictNullsForJsonSchema(items[index], entry),
+        normalizeStrictJsonSchemaValue(items[index], entry, context),
       );
     }
     if (items && typeof items === 'object') {
-      return value.map((entry) => stripStrictNullsForJsonSchema(items, entry));
+      return value.map((entry) =>
+        normalizeStrictJsonSchemaValue(items, entry, context),
+      );
     }
     return value;
   }
 
-  if (!isRecord(value) || !isJsonSchemaObject(schema)) {
+  if (
+    !isRecord(value) ||
+    !isRecord(currentSchema) ||
+    !schemaConvertsObjectProperties(currentSchema)
+  ) {
     return value;
   }
 
-  const properties = isRecord(schema.properties) ? schema.properties : {};
-  const required = new Set(
-    Array.isArray(schema.required) ? schema.required.map(String) : [],
-  );
+  const properties = isRecord(currentSchema.properties)
+    ? currentSchema.properties
+    : {};
   const normalized: Record<string, unknown> = { ...value };
 
   for (const [key, propertySchema] of Object.entries(properties)) {
-    const nextValue = stripStrictNullsForJsonSchema(
+    const nextValue = normalizeStrictJsonSchemaValue(
       propertySchema,
       normalized[key],
-      !required.has(key),
+      context,
     );
     if (typeof nextValue === 'undefined') {
       delete normalized[key];
@@ -189,25 +415,543 @@ export function stripStrictNullsForJsonSchema(
   return normalized;
 }
 
-function isJsonSchemaObject(schema: unknown): schema is Record<
-  string,
-  unknown
-> & {
-  properties?: Record<string, unknown>;
-  required?: unknown[];
-} {
+// This guard defines the local argument normalizer's supported boundary; it is
+// not a complete validator for every provider-specific JSON Schema keyword.
+// Reject composition and reference forms whose nullability cannot be mapped
+// without widening the caller's schema. Local `$ref` values must resolve within
+// the root document and cannot carry assertion siblings. Plain `anyOf` branches
+// that contain optional object fields are also rejected below, even when they
+// have a discriminator, because this path has no runtime schema validator to
+// select a branch. Nested `$id` resources are rejected because local pointers
+// are resolved only within the root resource. Use Zod for branch-aware
+// validation, make the affected fields required, move sibling constraints into
+// the branch or target, or disable strict mode.
+// Provider compatibility is checked across every retained schema location,
+// including properties that the local null normalizer does not traverse.
+// Schema applicators outside the traversal below are rejected rather than
+// partially interpreted, even when a provider model may accept a subset.
+const unsupportedStrictNormalizationKeywords = [
+  '$dynamicRef',
+  '$recursiveRef',
+  'additionalItems',
+  'allOf',
+  'contains',
+  'contentSchema',
+  'dependencies',
+  'dependentRequired',
+  'dependentSchemas',
+  'else',
+  'if',
+  'maxContains',
+  'minContains',
+  'not',
+  'oneOf',
+  'patternProperties',
+  'prefixItems',
+  'propertyNames',
+  'then',
+  'unevaluatedItems',
+  'unevaluatedProperties',
+] as const;
+
+const referenceMetadataKeywords = new Set([
+  '$anchor',
+  '$comment',
+  '$defs',
+  '$id',
+  '$ref',
+  '$schema',
+  'default',
+  'deprecated',
+  'description',
+  'definitions',
+  'examples',
+  'readOnly',
+  'title',
+  'writeOnly',
+]);
+
+const anyOfMetadataKeywords = new Set([...referenceMetadataKeywords, 'anyOf']);
+
+function validateOpenAIStrictProviderSchema(
+  schema: unknown,
+  rootSchema: unknown,
+  visitedSchemas: WeakSet<object> = new WeakSet(),
+): void {
+  if (typeof schema === 'boolean') {
+    return;
+  }
   if (!isRecord(schema)) {
-    return false;
+    throw new UserError(
+      'Cannot convert a JSON schema containing a non-boolean, non-object schema node to strict mode. Replace the invalid node with a JSON schema object or boolean, or disable strict mode.',
+    );
+  }
+  if (visitedSchemas.has(schema)) {
+    return;
+  }
+  visitedSchemas.add(schema);
+
+  if (schema !== rootSchema && '$id' in schema) {
+    throw new UserError(
+      'Cannot convert a JSON schema with a nested `$id` resource to strict mode because local references are resolved only within the root resource. Remove the nested `$id` or disable strict mode.',
+    );
   }
 
-  return (
-    schema.type === 'object' ||
-    (isRecord(schema.properties) && !Array.isArray(schema.properties))
+  for (const keyword of unsupportedStrictNormalizationKeywords) {
+    if (keyword in schema) {
+      throw new UserError(
+        `Cannot convert a JSON schema using unsupported keyword \`${keyword}\` to strict mode. Remove the keyword or disable strict mode.`,
+      );
+    }
+  }
+
+  if ('$ref' in schema) {
+    if (typeof schema.$ref !== 'string') {
+      throw new UserError(
+        'Cannot convert a JSON schema with a non-string `$ref` to strict mode.',
+      );
+    }
+    const resolved = resolveLocalJsonSchemaReference(schema.$ref, rootSchema);
+    if (typeof resolved === 'undefined') {
+      throw new UserError(
+        `Cannot convert unresolved or external JSON schema reference \`${schema.$ref}\` to strict mode. Use a local reference or disable strict mode.`,
+      );
+    }
+    validateOpenAIStrictProviderSchema(resolved, rootSchema, visitedSchemas);
+  }
+
+  if ('anyOf' in schema) {
+    if (!Array.isArray(schema.anyOf) || schema.anyOf.length === 0) {
+      throw new UserError(
+        'Cannot convert a JSON schema with an invalid `anyOf` to strict mode.',
+      );
+    }
+    for (const branch of schema.anyOf) {
+      validateOpenAIStrictProviderSchema(branch, rootSchema, visitedSchemas);
+    }
+  }
+
+  const properties = isRecord(schema.properties)
+    ? schema.properties
+    : undefined;
+  if (properties) {
+    for (const propertySchema of Object.values(properties)) {
+      validateOpenAIStrictProviderSchema(
+        propertySchema,
+        rootSchema,
+        visitedSchemas,
+      );
+    }
+  }
+
+  const items = schema.items;
+  if (Array.isArray(items)) {
+    for (const item of items) {
+      validateOpenAIStrictProviderSchema(item, rootSchema, visitedSchemas);
+    }
+  } else if (typeof items !== 'undefined') {
+    validateOpenAIStrictProviderSchema(items, rootSchema, visitedSchemas);
+  }
+
+  if ('additionalProperties' in schema) {
+    validateOpenAIStrictProviderSchema(
+      schema.additionalProperties,
+      rootSchema,
+      visitedSchemas,
+    );
+  }
+
+  for (const key of ['$defs', 'definitions']) {
+    const definitions = schema[key];
+    if (!isRecord(definitions)) {
+      continue;
+    }
+    for (const definition of Object.values(definitions)) {
+      validateOpenAIStrictProviderSchema(
+        definition,
+        rootSchema,
+        visitedSchemas,
+      );
+    }
+  }
+}
+
+function validateOpenAIStrictJsonSchema(
+  schema: unknown,
+  rootSchema: unknown,
+  visitedSchemas: WeakSet<object> = new WeakSet(),
+  requireUnambiguousNormalization = true,
+): void {
+  if (typeof schema === 'boolean') {
+    return;
+  }
+  if (!isRecord(schema) || visitedSchemas.has(schema)) {
+    return;
+  }
+  visitedSchemas.add(schema);
+
+  if ('$ref' in schema) {
+    if (typeof schema.$ref !== 'string') {
+      throw new UserError(
+        'Cannot convert a JSON schema with a non-string `$ref` to strict mode.',
+      );
+    }
+    const unsupportedSibling = Object.keys(schema).find(
+      (key) => !referenceMetadataKeywords.has(key),
+    );
+    if (unsupportedSibling) {
+      throw new UserError(
+        `Cannot convert a JSON schema combining \`$ref\` with sibling keyword \`${unsupportedSibling}\` to strict mode. Move the constraint into the referenced schema or disable strict mode.`,
+      );
+    }
+    const resolved = resolveLocalJsonSchemaReference(schema.$ref, rootSchema);
+    if (typeof resolved === 'undefined') {
+      throw new UserError(
+        `Cannot convert unresolved or external JSON schema reference \`${schema.$ref}\` to strict mode. Use a local reference or disable strict mode.`,
+      );
+    }
+    validateOpenAIStrictJsonSchema(
+      resolved,
+      rootSchema,
+      visitedSchemas,
+      requireUnambiguousNormalization,
+    );
+  }
+
+  if ('anyOf' in schema) {
+    if (!Array.isArray(schema.anyOf) || schema.anyOf.length === 0) {
+      throw new UserError(
+        'Cannot convert a JSON schema with an invalid `anyOf` to strict mode.',
+      );
+    }
+    const unsupportedSibling = Object.keys(schema).find(
+      (key) => !anyOfMetadataKeywords.has(key),
+    );
+    if (unsupportedSibling) {
+      throw new UserError(
+        `Cannot convert a JSON schema combining \`anyOf\` with sibling keyword \`${unsupportedSibling}\` to strict mode. Move the constraint into each branch or disable strict mode.`,
+      );
+    }
+    for (const branch of schema.anyOf) {
+      validateOpenAIStrictJsonSchema(
+        branch,
+        rootSchema,
+        visitedSchemas,
+        requireUnambiguousNormalization,
+      );
+    }
+    // Plain JSON Schema tools do not have a runtime validator that selects the
+    // matching branch. Supporting even discriminated branches here would add a
+    // second partial schema interpreter alongside the Zod validation path.
+    if (
+      requireUnambiguousNormalization &&
+      schema.anyOf.some((branch) =>
+        jsonSchemaRequiresSyntheticNullStripping(branch, rootSchema),
+      )
+    ) {
+      throw new UserError(
+        'Cannot convert an `anyOf` branch containing optional object properties to strict mode because plain JSON Schema tools do not select a branch during input normalization. Use a Zod schema, make the branch properties required, or disable strict mode.',
+      );
+    }
+  }
+
+  const properties = isRecord(schema.properties)
+    ? schema.properties
+    : undefined;
+  if (schemaConvertsObjectProperties(schema) && properties) {
+    const required = new Set(
+      Array.isArray(schema.required) ? schema.required.map(String) : [],
+    );
+    for (const [key, propertySchema] of Object.entries(properties)) {
+      validateOpenAIStrictJsonSchema(
+        propertySchema,
+        rootSchema,
+        visitedSchemas,
+        requireUnambiguousNormalization,
+      );
+      if (!required.has(key)) {
+        getKnownJsonSchemaNullability(propertySchema, rootSchema);
+      }
+    }
+  }
+
+  const items = schema.items;
+  if (Array.isArray(items)) {
+    for (const item of items) {
+      validateOpenAIStrictJsonSchema(
+        item,
+        rootSchema,
+        visitedSchemas,
+        requireUnambiguousNormalization,
+      );
+    }
+  } else if (typeof items !== 'undefined') {
+    validateOpenAIStrictJsonSchema(
+      items,
+      rootSchema,
+      visitedSchemas,
+      requireUnambiguousNormalization,
+    );
+  }
+
+  for (const key of ['$defs', 'definitions']) {
+    const definitions = schema[key];
+    if (!isRecord(definitions)) {
+      continue;
+    }
+    for (const definition of Object.values(definitions)) {
+      validateOpenAIStrictJsonSchema(
+        definition,
+        rootSchema,
+        visitedSchemas,
+        requireUnambiguousNormalization,
+      );
+    }
+  }
+}
+
+function getKnownJsonSchemaNullability(
+  schema: unknown,
+  rootSchema: unknown,
+): Exclude<JsonSchemaNullability, 'unknown'> {
+  const nullability = getJsonSchemaNullability(schema, rootSchema);
+  if (nullability === 'unknown') {
+    throw new UserError(
+      'Cannot determine whether an optional JSON schema property accepts `null`. Make its nullability explicit with a supported schema form, make the property required, or disable strict mode.',
+    );
+  }
+  return nullability;
+}
+
+function getJsonSchemaNullability(
+  schema: unknown,
+  rootSchema: unknown,
+  visitedReferences: ReadonlySet<string> = new Set(),
+): JsonSchemaNullability {
+  if (schema === true) {
+    return 'allows';
+  }
+  if (schema === false) {
+    return 'disallows';
+  }
+  if (!isRecord(schema)) {
+    return 'unknown';
+  }
+
+  const type = schema.type;
+  if ('type' in schema) {
+    if (typeof type !== 'string' && !Array.isArray(type)) {
+      return 'unknown';
+    }
+    if (type !== 'null' && !(Array.isArray(type) && type.includes('null'))) {
+      return 'disallows';
+    }
+  }
+
+  if ('enum' in schema) {
+    if (!Array.isArray(schema.enum)) {
+      return 'unknown';
+    }
+    if (!schema.enum.includes(null)) {
+      return 'disallows';
+    }
+  }
+
+  if ('const' in schema && schema.const !== null) {
+    return 'disallows';
+  }
+
+  if ('$ref' in schema) {
+    const referencedNullability = getReferencedJsonSchemaNullability(
+      schema.$ref,
+      rootSchema,
+      visitedReferences,
+    );
+    if (referencedNullability !== 'allows') {
+      return referencedNullability;
+    }
+  }
+
+  if ('anyOf' in schema) {
+    if (!Array.isArray(schema.anyOf)) {
+      return 'unknown';
+    }
+    const entries = schema.anyOf.map((entry) =>
+      getJsonSchemaNullability(entry, rootSchema, visitedReferences),
+    );
+    if (entries.includes('allows')) {
+      return 'allows';
+    }
+    return entries.every((entry) => entry === 'disallows')
+      ? 'disallows'
+      : 'unknown';
+  }
+
+  // Strict conversion infers an object type for nested schemas that declare
+  // properties. Preserve that released interpretation when deciding whether an
+  // optional property needs a synthetic nullable wrapper.
+  if (!('type' in schema) && isRecord(schema.properties)) {
+    return 'disallows';
+  }
+
+  return 'allows';
+}
+
+function jsonSchemaRequiresSyntheticNullStripping(
+  schema: unknown,
+  rootSchema: unknown,
+  visitedSchemas: WeakSet<object> = new WeakSet(),
+): boolean {
+  if (!isRecord(schema) || visitedSchemas.has(schema)) {
+    return false;
+  }
+  visitedSchemas.add(schema);
+
+  if (typeof schema.$ref === 'string') {
+    const resolved = resolveLocalJsonSchemaReference(schema.$ref, rootSchema);
+    return jsonSchemaRequiresSyntheticNullStripping(
+      resolved,
+      rootSchema,
+      visitedSchemas,
+    );
+  }
+
+  if (Array.isArray(schema.anyOf)) {
+    return schema.anyOf.some((branch) =>
+      jsonSchemaRequiresSyntheticNullStripping(
+        branch,
+        rootSchema,
+        visitedSchemas,
+      ),
+    );
+  }
+
+  const properties =
+    schemaConvertsObjectProperties(schema) && isRecord(schema.properties)
+      ? schema.properties
+      : {};
+  const required = new Set(
+    Array.isArray(schema.required) ? schema.required.map(String) : [],
+  );
+  for (const [key, propertySchema] of Object.entries(properties)) {
+    if (
+      (!required.has(key) &&
+        getKnownJsonSchemaNullability(propertySchema, rootSchema) ===
+          'disallows') ||
+      jsonSchemaRequiresSyntheticNullStripping(
+        propertySchema,
+        rootSchema,
+        visitedSchemas,
+      )
+    ) {
+      return true;
+    }
+  }
+
+  const items = schema.items;
+  return Array.isArray(items)
+    ? items.some((item) =>
+        jsonSchemaRequiresSyntheticNullStripping(
+          item,
+          rootSchema,
+          visitedSchemas,
+        ),
+      )
+    : jsonSchemaRequiresSyntheticNullStripping(
+        items,
+        rootSchema,
+        visitedSchemas,
+      );
+}
+
+function getReferencedJsonSchemaNullability(
+  reference: unknown,
+  rootSchema: unknown,
+  visitedReferences: ReadonlySet<string>,
+): JsonSchemaNullability {
+  if (typeof reference !== 'string' || visitedReferences.has(reference)) {
+    return 'unknown';
+  }
+
+  const resolved = resolveLocalJsonSchemaReference(reference, rootSchema);
+  if (typeof resolved === 'undefined') {
+    return 'unknown';
+  }
+  return getJsonSchemaNullability(
+    resolved,
+    rootSchema,
+    new Set([...visitedReferences, reference]),
   );
 }
 
-function jsonSchemaAllowsNull(schema: unknown): boolean {
-  return isRecord(schema) ? isSchemaNullable(schema) : false;
+function resolveLocalJsonSchema(
+  schema: unknown,
+  context: StrictSchemaPreparationContext,
+): unknown {
+  let current = schema;
+  const visitedReferences = new Set<string>();
+
+  while (isRecord(current) && typeof current.$ref === 'string') {
+    const reference = current.$ref;
+    if (visitedReferences.has(reference)) {
+      return schema;
+    }
+    visitedReferences.add(reference);
+
+    const resolved = resolveLocalJsonSchemaReference(
+      reference,
+      context.preparedRoot,
+    );
+    if (typeof resolved === 'undefined') {
+      return schema;
+    }
+    current = resolved;
+  }
+
+  return current;
+}
+
+function resolveLocalJsonSchemaReference(
+  reference: string,
+  rootSchema: unknown,
+): unknown {
+  if (!reference.startsWith('#')) {
+    return undefined;
+  }
+  return reference === '#'
+    ? rootSchema
+    : resolveJsonPointer(rootSchema, reference);
+}
+
+function resolveJsonPointer(root: unknown, reference: string): unknown {
+  let current = root;
+  let pointer: string;
+
+  try {
+    pointer = decodeURIComponent(reference.slice(1));
+  } catch {
+    return undefined;
+  }
+  if (!pointer.startsWith('/')) {
+    return undefined;
+  }
+
+  for (const rawToken of pointer.slice(1).split('/')) {
+    if (/~(?:[^01]|$)/.test(rawToken)) {
+      return undefined;
+    }
+    const token = rawToken.replace(/~1/g, '/').replace(/~0/g, '~');
+    if (
+      typeof current !== 'object' ||
+      current === null ||
+      !Object.prototype.hasOwnProperty.call(current, token)
+    ) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[token];
+  }
+
+  return current;
 }
 
 export function stripStrictNullsForZodSchema(
@@ -236,6 +980,11 @@ export function stripStrictNullsForZodSchema(
         return normalized;
       }
     }
+  }
+
+  if (type === 'intersection') {
+    const left = stripStrictNullsForZodSchema(def?.left, value);
+    return stripStrictNullsForZodSchema(def?.right, left);
   }
 
   if (type === 'object' && isRecord(value)) {

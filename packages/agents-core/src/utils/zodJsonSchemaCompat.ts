@@ -1,4 +1,5 @@
 import type { JsonObjectSchema, JsonSchemaDefinitionEntry } from '../types';
+import { UserError } from '../errors';
 import type { ZodObjectLike } from './zodCompat';
 import { readZodDefinition, readZodType } from './zodCompat';
 
@@ -33,6 +34,20 @@ type ShapeCandidate = {
   shape?: Record<string, unknown> | (() => Record<string, unknown>);
 };
 
+type ConversionContext = {
+  lowerObjectIntersections: boolean;
+  loweredObjectIntersection: boolean;
+  loweredPrimitiveIntersection: boolean;
+  losslessForWholeSchemaFallback: boolean;
+};
+
+export type OpenAIStrictZodSchemaConversion = {
+  schema: JsonObjectSchema<any>;
+  loweredObjectIntersection: boolean;
+  loweredPrimitiveIntersection: boolean;
+  losslessForWholeSchemaFallback: boolean;
+};
+
 const JSON_SCHEMA_DRAFT_07 = 'http://json-schema.org/draft-07/schema#';
 const OPTIONAL_WRAPPERS = new Set(['optional']);
 const DECORATOR_WRAPPERS = new Set([
@@ -47,6 +62,14 @@ const DECORATOR_WRAPPERS = new Set([
   'readonly',
   'refinement',
   'transform',
+]);
+const LOSSLESS_STRICT_FALLBACK_DECORATORS = new Set([
+  'brand',
+  'branded',
+  'catch',
+  'default',
+  'prefault',
+  'readonly',
 ]);
 
 // Primitive leaf nodes map 1:1 to JSON Schema types; everything else is handled
@@ -72,12 +95,48 @@ export function hasJsonSchemaObjectShape(
 export function zodJsonSchemaCompat(
   input: ZodObjectLike,
 ): JsonObjectSchema<any> | undefined {
+  return convertZodObjectSchema(input, {
+    lowerObjectIntersections: false,
+    loweredObjectIntersection: false,
+    loweredPrimitiveIntersection: false,
+    losslessForWholeSchemaFallback: true,
+  })?.schema;
+}
+
+export function zodJsonSchemaCompatForOpenAIStrict(
+  input: ZodObjectLike,
+): OpenAIStrictZodSchemaConversion | undefined {
+  return convertZodObjectSchema(input, {
+    lowerObjectIntersections: true,
+    loweredObjectIntersection: false,
+    loweredPrimitiveIntersection: false,
+    losslessForWholeSchemaFallback: true,
+  });
+}
+
+function convertZodObjectSchema(
+  input: ZodObjectLike,
+  context: ConversionContext,
+): OpenAIStrictZodSchemaConversion | undefined {
+  const rootDefinition = readZodDefinition(input);
+  if (
+    context.lowerObjectIntersections &&
+    !isLosslessStrictFallbackNode('object', rootDefinition)
+  ) {
+    context.losslessForWholeSchemaFallback = false;
+  }
   // Attempt to build an object schema from Zod's internal shape. If we cannot
   // understand the structure we return undefined, letting callers raise a
   // descriptive error instead of emitting an invalid schema.
-  const schema = buildObjectSchema(input);
+  const schema = buildObjectSchema(input, context);
   if (!schema) {
     return undefined;
+  }
+  if (
+    context.loweredObjectIntersection &&
+    !context.losslessForWholeSchemaFallback
+  ) {
+    throwLossyZodIntersectionFallback();
   }
 
   if (!Array.isArray(schema.required)) {
@@ -92,7 +151,28 @@ export function zodJsonSchemaCompat(
     schema.$schema = JSON_SCHEMA_DRAFT_07;
   }
 
-  return schema as JsonObjectSchema<Record<string, JsonSchemaDefinitionEntry>>;
+  return {
+    schema: schema as JsonObjectSchema<
+      Record<string, JsonSchemaDefinitionEntry>
+    >,
+    loweredObjectIntersection: context.loweredObjectIntersection,
+    loweredPrimitiveIntersection: context.loweredPrimitiveIntersection,
+    losslessForWholeSchemaFallback: context.losslessForWholeSchemaFallback,
+  };
+}
+
+export function assertLosslessOpenAIStrictZodSchemaConversion(
+  conversion: OpenAIStrictZodSchemaConversion,
+): void {
+  if (!conversion.losslessForWholeSchemaFallback) {
+    throwLossyZodIntersectionFallback();
+  }
+}
+
+function throwLossyZodIntersectionFallback(): never {
+  throw new UserError(
+    'Cannot convert this Zod schema with an intersection to OpenAI strict mode without losing constraints. Use unconstrained compatible intersections, combine the fields into one Zod object, or disable strict mode.',
+  );
 }
 
 export function mergeJsonSchemaDescriptions(
@@ -182,7 +262,10 @@ export function mergeJsonSchemaDescriptions(
   }
 }
 
-function buildObjectSchema(value: unknown): LooseJsonObjectSchema | undefined {
+function buildObjectSchema(
+  value: unknown,
+  context: ConversionContext,
+): LooseJsonObjectSchema | undefined {
   const shape = readShape(value);
   if (!shape) {
     return undefined;
@@ -192,7 +275,7 @@ function buildObjectSchema(value: unknown): LooseJsonObjectSchema | undefined {
   const required: string[] = [];
 
   for (const [key, field] of Object.entries(shape)) {
-    const { schema, optional } = convertProperty(field);
+    const { schema, optional } = convertProperty(field, context);
     if (!schema) {
       return undefined;
     }
@@ -225,10 +308,19 @@ function buildObjectSchema(value: unknown): LooseJsonObjectSchema | undefined {
   return schema;
 }
 
-function convertProperty(value: unknown): {
+function convertProperty(
+  value: unknown,
+  context: ConversionContext,
+): {
   schema?: JsonSchemaDefinitionEntry;
   optional: boolean;
 } {
+  if (
+    context.lowerObjectIntersections &&
+    hasUnsupportedStrictFallbackDecorator(value)
+  ) {
+    context.losslessForWholeSchemaFallback = false;
+  }
   // Remove wrapper decorators (brand, transform, etc.) before attempting to
   // classify the node, tracking whether we crossed an `optional` boundary so we
   // can populate the `required` array later.
@@ -245,12 +337,22 @@ function convertProperty(value: unknown): {
     current = next;
   }
 
-  return { schema: convertSchema(current), optional };
+  return { schema: convertSchema(current, context), optional };
 }
 
-function convertSchema(value: unknown): JsonSchemaDefinitionEntry | undefined {
+function convertSchema(
+  value: unknown,
+  context: ConversionContext,
+): JsonSchemaDefinitionEntry | undefined {
   if (value === undefined) {
     return undefined;
+  }
+
+  if (
+    context.lowerObjectIntersections &&
+    hasUnsupportedStrictFallbackDecorator(value)
+  ) {
+    context.losslessForWholeSchemaFallback = false;
   }
 
   const unwrapped = unwrapDecorators(value);
@@ -260,50 +362,77 @@ function convertSchema(value: unknown): JsonSchemaDefinitionEntry | undefined {
   if (!type) {
     return undefined;
   }
+  if (
+    context.lowerObjectIntersections &&
+    !isLosslessStrictFallbackNode(type, def)
+  ) {
+    context.losslessForWholeSchemaFallback = false;
+  }
 
+  let schema: JsonSchemaDefinitionEntry | undefined;
   if (type in SIMPLE_TYPE_MAPPING) {
-    return { ...SIMPLE_TYPE_MAPPING[type] };
+    schema = { ...SIMPLE_TYPE_MAPPING[type] };
+  } else {
+    switch (type) {
+      case 'object':
+        schema = buildObjectSchema(unwrapped, context);
+        break;
+      case 'array':
+        schema = buildArraySchema(def, context);
+        break;
+      case 'tuple':
+        schema = buildTupleSchema(def, context);
+        break;
+      case 'union':
+      case 'discriminatedunion':
+        schema = buildUnionSchema(def, context);
+        break;
+      case 'intersection':
+        schema = buildIntersectionSchema(def, context);
+        break;
+      case 'literal':
+        schema = buildLiteral(def);
+        break;
+      case 'enum':
+      case 'nativeenum':
+        schema = buildEnum(def);
+        break;
+      case 'record':
+        schema = buildRecordSchema(def, context);
+        break;
+      case 'nullable':
+        schema = buildNullableSchema(def, context);
+        break;
+      default:
+        return undefined;
+    }
   }
 
-  switch (type) {
-    case 'object':
-      return buildObjectSchema(unwrapped);
-    case 'array':
-      return buildArraySchema(def);
-    case 'tuple':
-      return buildTupleSchema(def);
-    case 'union':
-    case 'discriminatedunion':
-      return buildUnionSchema(def);
-    case 'intersection':
-      return buildIntersectionSchema(def);
-    case 'literal':
-      return buildLiteral(def);
-    case 'enum':
-    case 'nativeenum':
-      return buildEnum(def);
-    case 'record':
-      return buildRecordSchema(def);
-    case 'nullable':
-      return buildNullableSchema(def);
-    default:
-      return undefined;
+  const description = readZodDescription(value);
+  if (schema && description) {
+    schema.description = description;
   }
+  return schema;
 }
 
 // --- JSON Schema builders -------------------------------------------------
 
 function buildArraySchema(
   def: Record<string, unknown> | undefined,
+  context: ConversionContext,
 ): JsonSchemaDefinitionEntry | undefined {
-  const items = convertSchema(extractFirst(def, 'element', 'items', 'type'));
+  const items = convertSchema(
+    extractFirst(def, 'element', 'items', 'type'),
+    context,
+  );
   return items ? { type: 'array', items } : undefined;
 }
 
 function buildTupleSchema(
   def: Record<string, unknown> | undefined,
+  context: ConversionContext,
 ): JsonSchemaDefinitionEntry | undefined {
-  const items = convertAllOrFail(coerceArray(def?.items));
+  const items = convertAllOrFail(coerceArray(def?.items), context);
   if (!items || !items.length) {
     return undefined;
   }
@@ -320,8 +449,12 @@ function buildTupleSchema(
 
 function buildUnionSchema(
   def: Record<string, unknown> | undefined,
+  context: ConversionContext,
 ): JsonSchemaDefinitionEntry | undefined {
-  const options = convertAllOrFail(coerceArray(def?.options ?? def?.schemas));
+  const options = convertAllOrFail(
+    coerceArray(def?.options ?? def?.schemas),
+    context,
+  );
   return options && options.length ? { anyOf: options } : undefined;
 }
 
@@ -335,10 +468,11 @@ function buildUnionSchema(
  */
 function convertAllOrFail(
   members: unknown[],
+  context: ConversionContext,
 ): JsonSchemaDefinitionEntry[] | undefined {
   const converted: JsonSchemaDefinitionEntry[] = [];
   for (const member of members) {
-    const schema = convertSchema(member);
+    const schema = convertSchema(member, context);
     if (!schema) {
       return undefined;
     }
@@ -349,16 +483,47 @@ function convertAllOrFail(
 
 function buildIntersectionSchema(
   def: Record<string, unknown> | undefined,
+  context: ConversionContext,
 ): JsonSchemaDefinitionEntry | undefined {
-  const left = convertSchema(def?.left);
-  const right = convertSchema(def?.right);
-  return left && right ? { allOf: [left, right] } : undefined;
+  const leftSource = def?.left;
+  const rightSource = def?.right;
+  const left = convertSchema(leftSource, context);
+  const right = convertSchema(rightSource, context);
+  if (!left || !right) {
+    return undefined;
+  }
+  if (!context.lowerObjectIntersections) {
+    return { allOf: [left, right] };
+  }
+
+  // OpenAI Structured Outputs does not support `allOf`. The strict tool path
+  // therefore lowers only closed object intersections that can be represented
+  // without changing what the authoritative Zod parser forwards to the tool.
+  if (
+    !isClosedZodObjectIntersectionOperand(leftSource) ||
+    !isClosedZodObjectIntersectionOperand(rightSource)
+  ) {
+    const mergedPrimitive = mergePrimitiveIntersectionSchemas(left, right);
+    if (mergedPrimitive) {
+      context.loweredPrimitiveIntersection = true;
+      return mergedPrimitive;
+    }
+    context.losslessForWholeSchemaFallback = false;
+    return { allOf: [left, right] };
+  }
+  const merged = mergeObjectIntersectionSchemas(left, right);
+  if (!merged) {
+    throwUnsupportedZodIntersection();
+  }
+  context.loweredObjectIntersection = true;
+  return merged;
 }
 
 function buildRecordSchema(
   def: Record<string, unknown> | undefined,
+  context: ConversionContext,
 ): JsonSchemaDefinitionEntry | undefined {
-  const valueSchema = convertSchema(def?.valueType ?? def?.values);
+  const valueSchema = convertSchema(def?.valueType ?? def?.values, context);
   return valueSchema
     ? { type: 'object', additionalProperties: valueSchema }
     : undefined;
@@ -366,9 +531,201 @@ function buildRecordSchema(
 
 function buildNullableSchema(
   def: Record<string, unknown> | undefined,
+  context: ConversionContext,
 ): JsonSchemaDefinitionEntry | undefined {
-  const inner = convertSchema(def?.innerType ?? def?.type);
+  const inner = convertSchema(def?.innerType ?? def?.type, context);
   return inner ? { anyOf: [inner, { type: 'null' }] } : undefined;
+}
+
+function isClosedZodObjectIntersectionOperand(value: unknown): boolean {
+  const unwrapped = unwrapDecorators(value);
+  const type = readZodType(unwrapped);
+  if (type === 'intersection') {
+    return true;
+  }
+  if (type !== 'object') {
+    return false;
+  }
+
+  const def = readZodDefinition(unwrapped);
+  const catchall = def?.catchall;
+  // Zod v3 strict object intersections reject the other branch's distinct
+  // properties during parsing, so flattening them would widen the provider
+  // schema beyond what the authoritative parser accepts.
+  if (
+    !def ||
+    def.unknownKeys === 'strict' ||
+    def.unknownKeys === 'passthrough' ||
+    (typeof catchall !== 'undefined' && readZodType(catchall) !== 'never')
+  ) {
+    throwUnsupportedZodIntersection();
+  }
+  return true;
+}
+
+function mergeObjectIntersectionSchemas(
+  left: JsonSchemaDefinitionEntry,
+  right: JsonSchemaDefinitionEntry,
+): JsonSchemaDefinitionEntry | undefined {
+  if (!isClosedJsonObjectSchema(left) || !isClosedJsonObjectSchema(right)) {
+    return undefined;
+  }
+
+  const properties = { ...left.properties };
+  for (const [key, value] of Object.entries(right.properties)) {
+    if (Object.prototype.hasOwnProperty.call(properties, key)) {
+      return undefined;
+    }
+    properties[key] = value;
+  }
+
+  const required = new Set<string>();
+  for (const schema of [left, right]) {
+    if (Array.isArray(schema.required)) {
+      for (const key of schema.required) {
+        required.add(String(key));
+      }
+    }
+  }
+  const descriptions = [left.description, right.description].filter(
+    (description): description is string => typeof description === 'string',
+  );
+  return {
+    type: 'object',
+    properties,
+    required: [...required],
+    additionalProperties: false,
+    ...(descriptions.length > 0
+      ? { description: descriptions.join('\n\n') }
+      : {}),
+  };
+}
+
+function mergePrimitiveIntersectionSchemas(
+  left: JsonSchemaDefinitionEntry,
+  right: JsonSchemaDefinitionEntry,
+): JsonSchemaDefinitionEntry | undefined {
+  if (
+    typeof left !== 'object' ||
+    left === null ||
+    typeof right !== 'object' ||
+    right === null ||
+    typeof left.type !== 'string' ||
+    left.type !== right.type ||
+    !['string', 'number', 'boolean'].includes(left.type) ||
+    Object.keys(left).some((key) => !['type', 'description'].includes(key)) ||
+    Object.keys(right).some((key) => !['type', 'description'].includes(key))
+  ) {
+    return undefined;
+  }
+
+  const descriptions = [left.description, right.description].filter(
+    (description): description is string => typeof description === 'string',
+  );
+  return {
+    type: left.type,
+    ...(descriptions.length > 0
+      ? { description: descriptions.join('\n\n') }
+      : {}),
+  };
+}
+
+function isClosedJsonObjectSchema(
+  value: JsonSchemaDefinitionEntry,
+): value is JsonSchemaDefinitionEntry & {
+  type: 'object';
+  properties: Record<string, JsonSchemaDefinitionEntry>;
+  required?: unknown[];
+  additionalProperties: false;
+  description?: string;
+} {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    value.type === 'object' &&
+    typeof value.properties === 'object' &&
+    value.properties !== null &&
+    value.additionalProperties === false
+  );
+}
+
+function throwUnsupportedZodIntersection(): never {
+  throw new UserError(
+    'Cannot convert this Zod intersection to an OpenAI strict schema. Use compatible Zod object intersections with distinct properties and closed object branches, combine the fields into one Zod object, or disable strict mode.',
+  );
+}
+
+function hasUnsupportedStrictFallbackDecorator(value: unknown): boolean {
+  let current = value;
+  while (true) {
+    const type = readZodType(current);
+    if (!type) {
+      return false;
+    }
+    if (OPTIONAL_WRAPPERS.has(type)) {
+      const inner = readZodDefinition(current)?.innerType;
+      if (!inner || inner === current) {
+        return false;
+      }
+      current = inner;
+      continue;
+    }
+    if (!DECORATOR_WRAPPERS.has(type)) {
+      return false;
+    }
+    if (!LOSSLESS_STRICT_FALLBACK_DECORATORS.has(type)) {
+      return true;
+    }
+    const def = readZodDefinition(current);
+    const next =
+      def?.innerType ??
+      def?.schema ??
+      def?.base ??
+      def?.type ??
+      def?.wrapped ??
+      def?.underlying;
+    if (!next || next === current) {
+      return true;
+    }
+    current = next;
+  }
+}
+
+function isLosslessStrictFallbackNode(
+  type: string,
+  def: Record<string, unknown> | undefined,
+): boolean {
+  if (!def) {
+    return false;
+  }
+  if (Array.isArray(def.checks) && def.checks.length > 0) {
+    return false;
+  }
+  if (typeof def.check === 'string') {
+    return false;
+  }
+  if (
+    type === 'array' &&
+    [def.minLength, def.maxLength, def.exactLength].some(
+      (constraint) => constraint !== null && constraint !== undefined,
+    )
+  ) {
+    return false;
+  }
+  if (type === 'tuple' && typeof def.rest !== 'undefined') {
+    return false;
+  }
+  if (type === 'record') {
+    return false;
+  }
+  if (type === 'object') {
+    const catchall = def.catchall;
+    return (
+      def.unknownKeys !== 'passthrough' &&
+      (typeof catchall === 'undefined' || readZodType(catchall) === 'never')
+    );
+  }
+  return true;
 }
 
 function unwrapDecorators(value: unknown): unknown {

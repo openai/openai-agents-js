@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { z as zod3 } from 'zod/v3';
-import { zodJsonSchemaCompat } from '../../src/utils/zodJsonSchemaCompat';
+import {
+  zodJsonSchemaCompat,
+  zodJsonSchemaCompatForOpenAIStrict,
+} from '../../src/utils/zodJsonSchemaCompat';
 
 describe('utils/zodJsonSchemaCompat', () => {
   it('builds schema for basic object with optional property', () => {
@@ -131,6 +134,49 @@ describe('utils/zodJsonSchemaCompat', () => {
       type: 'string',
       enum: ['one', 'two'],
     });
+  });
+
+  it('lowers closed object intersections for OpenAI strict schemas', () => {
+    const schema = z.object({
+      list: z.array(
+        z
+          .intersection(
+            z.object({ left: z.string() }).describe('Left.'),
+            z.object({ right: z.number() }).describe('Right.'),
+          )
+          .describe('Wrapper.'),
+      ),
+    });
+
+    const converted = zodJsonSchemaCompatForOpenAIStrict(schema);
+    expect(converted?.loweredObjectIntersection).toBe(true);
+    expect(converted?.schema.properties.list).toMatchObject({
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          left: { type: 'string' },
+          right: { type: 'number' },
+        },
+        required: ['left', 'right'],
+        additionalProperties: false,
+        description: 'Wrapper.',
+      },
+    });
+  });
+
+  it('rejects strict whole-schema fallbacks that would lose constraints', () => {
+    const schema = z.object({
+      combined: z.intersection(
+        z.object({ left: z.string().min(3) }),
+        z.object({ right: z.number() }),
+      ),
+      sibling: z.string().email(),
+    });
+
+    expect(() => zodJsonSchemaCompatForOpenAIStrict(schema)).toThrow(
+      'without losing constraints',
+    );
   });
 
   it('converts nested record and array structures', () => {
