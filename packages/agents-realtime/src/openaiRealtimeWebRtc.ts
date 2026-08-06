@@ -57,6 +57,12 @@ export type OpenAIRealtimeWebRTCOptions = {
   audioElement?: HTMLAudioElement;
   /**
    * The media stream to use for audio input. If not provided, the default microphone will be used.
+   *
+   * A stream you pass here stays owned by your application. `close()` will not stop its tracks,
+   * so the stream remains usable for a level meter, a recorder, or a later reconnect. Keep a
+   * reference to it and call `stop()` on its tracks once you are actually done with it, otherwise
+   * the microphone stays open after the session ends. A microphone the transport opens for you
+   * because this option is omitted is still stopped by `close()`.
    */
   mediaStream?: MediaStream;
   /**
@@ -720,6 +726,7 @@ export class OpenAIRealtimeWebRTC
     this.#cancelConnectionAttempt?.();
     const { dataChannel, peerConnection } = this.#state;
     const shouldNotify = this.#state.status !== 'disconnected';
+
     this.#state = {
       status: 'disconnected',
       peerConnection: undefined,
@@ -746,12 +753,19 @@ export class OpenAIRealtimeWebRTC
       runCleanup(() => {
         peerConnection.onconnectionstatechange = null;
       });
-      let senders: RTCRtpSender[] = [];
-      runCleanup(() => {
-        senders = peerConnection.getSenders();
-      });
-      for (const sender of senders) {
-        runCleanup(() => sender.track?.stop());
+      // Skip sender cleanup when the caller supplied `mediaStream`. That stream belongs to the
+      // application, which may still be using it for a level meter, a recorder, or a later
+      // reconnect, so stopping it here would end the track permanently. This is deliberately
+      // scoped to that one case rather than a per-track ownership rule, so senders added through
+      // `changePeerConnection` are left to whoever added them.
+      if (!this.options.mediaStream) {
+        let senders: RTCRtpSender[] = [];
+        runCleanup(() => {
+          senders = peerConnection.getSenders();
+        });
+        for (const sender of senders) {
+          runCleanup(() => sender.track?.stop());
+        }
       }
       runCleanup(() => peerConnection.close());
     }
