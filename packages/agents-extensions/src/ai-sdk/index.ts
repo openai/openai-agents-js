@@ -2165,11 +2165,39 @@ export class AiSdkModel implements Model {
           string,
           SerializedTool | SerializedHandoff
         >();
-        let emittedText = false;
+        let pendingTextParts: string[] = [];
+        const flushPendingText = async () => {
+          if (pendingTextParts.length === 0) {
+            return;
+          }
+          const transformedText = await this.#transformOutputText(
+            pendingTextParts.join(''),
+            request,
+            false,
+          );
+          output.push({
+            type: 'message',
+            content: [{ type: 'output_text', text: transformedText }],
+            role: 'assistant',
+            status: 'completed',
+            providerData: mergeProviderData(
+              baseProviderData,
+              (result as any).providerMetadata,
+            ),
+          });
+          pendingTextParts = [];
+        };
         for (const part of resultContent) {
           if (!part) {
             continue;
           }
+
+          if (part.type === 'text' && typeof part.text === 'string') {
+            pendingTextParts.push(part.text);
+            continue;
+          }
+
+          await flushPendingText();
 
           if (part.type === 'reasoning') {
             const reasoningText =
@@ -2183,36 +2211,6 @@ export class AiSdkModel implements Model {
                 part.providerMetadata,
               ),
             });
-            continue;
-          }
-
-          if (part.type === 'text' && typeof part.text === 'string') {
-            if (!emittedText) {
-              const combinedText = resultContent
-                .filter(
-                  (content: any) =>
-                    content?.type === 'text' &&
-                    typeof content.text === 'string',
-                )
-                .map((content: any) => content.text)
-                .join('');
-              const transformedText = await this.#transformOutputText(
-                combinedText,
-                request,
-                false,
-              );
-              output.push({
-                type: 'message',
-                content: [{ type: 'output_text', text: transformedText }],
-                role: 'assistant',
-                status: 'completed',
-                providerData: mergeProviderData(
-                  baseProviderData,
-                  (result as any).providerMetadata,
-                ),
-              });
-              emittedText = true;
-            }
             continue;
           }
 
@@ -2275,6 +2273,7 @@ export class AiSdkModel implements Model {
             output.push(toolSearchOutput);
           }
         }
+        await flushPendingText();
 
         if (span && request.tracing === true) {
           span.spanData.output = output;
@@ -2446,7 +2445,11 @@ export class AiSdkModel implements Model {
       let usageOutputTokensDetails: Record<string, number> | undefined;
       type StreamOutputEntry =
         | { kind: 'reasoning'; reasoningId: string }
-        | { kind: 'text' }
+        | {
+            kind: 'text';
+            output: protocol.OutputText;
+            itemId?: string;
+          }
         | {
             kind: 'tool';
             item:
@@ -2460,8 +2463,8 @@ export class AiSdkModel implements Model {
         string,
         SerializedTool | SerializedHandoff
       >();
-      let textOutput: protocol.OutputText | undefined;
-      let textItemId: string | undefined;
+      let activeTextEntry:
+        Extract<StreamOutputEntry, { kind: 'text' }> | undefined;
 
       const reasoningBlocks = new Map<
         string,
@@ -2518,31 +2521,36 @@ export class AiSdkModel implements Model {
 
         switch (part.type) {
           case 'text-delta': {
-            if (!textOutput) {
-              textOutput = { type: 'output_text', text: '' };
-              orderedOutputEntries.push({ kind: 'text' });
-              // The adapter combines all AI SDK text blocks into one output
-              // message, so every normalized delta must use that message ID.
-              textItemId =
-                typeof (part as any).id === 'string'
-                  ? (part as any).id
-                  : undefined;
+            if (!activeTextEntry) {
+              activeTextEntry = {
+                kind: 'text',
+                output: { type: 'output_text', text: '' },
+                itemId:
+                  typeof (part as any).id === 'string'
+                    ? (part as any).id
+                    : undefined,
+              };
+              orderedOutputEntries.push(activeTextEntry);
             }
-            textOutput.text += (part as any).delta;
+            activeTextEntry.output.text += (part as any).delta;
             yield {
               type: 'output_text_delta',
               delta: (part as any).delta,
-              ...(textItemId ? { itemId: textItemId } : {}),
+              ...(activeTextEntry.itemId
+                ? { itemId: activeTextEntry.itemId }
+                : {}),
             };
             break;
           }
           case 'reasoning-start': {
+            activeTextEntry = undefined;
             // Start tracking a new reasoning block
             const reasoningId = (part as any).id ?? 'default';
             getReasoningBlock(reasoningId, (part as any).providerMetadata);
             break;
           }
           case 'reasoning-delta': {
+            activeTextEntry = undefined;
             // Accumulate reasoning text
             const reasoningId = (part as any).id ?? 'default';
             const reasoningBlock = getReasoningBlock(
@@ -2553,12 +2561,14 @@ export class AiSdkModel implements Model {
             break;
           }
           case 'reasoning-end': {
+            activeTextEntry = undefined;
             // Capture final provider metadata (may contain signature)
             const reasoningId = (part as any).id ?? 'default';
             getReasoningBlock(reasoningId, (part as any).providerMetadata);
             break;
           }
           case 'tool-call': {
+            activeTextEntry = undefined;
             const toolCallId = (part as any).toolCallId;
             if (toolCallId) {
               const requestedTool =
@@ -2584,6 +2594,7 @@ export class AiSdkModel implements Model {
             break;
           }
           case 'tool-result': {
+            activeTextEntry = undefined;
             const toolCallId = (part as any).toolCallId;
             if (!toolCallId) {
               break;
@@ -2656,19 +2667,16 @@ export class AiSdkModel implements Model {
         }
 
         if (entry.kind === 'text') {
-          if (!textOutput) {
-            continue;
-          }
           const transformedText = await this.#transformOutputText(
-            textOutput.text,
+            entry.output.text,
             request,
             true,
           );
           outputs.push({
             type: 'message',
-            ...(textItemId ? { id: textItemId } : {}),
+            ...(entry.itemId ? { id: entry.itemId } : {}),
             role: 'assistant',
-            content: [{ ...textOutput, text: transformedText }],
+            content: [{ ...entry.output, text: transformedText }],
             status: 'completed',
             providerData: mergeProviderData(
               baseProviderData,

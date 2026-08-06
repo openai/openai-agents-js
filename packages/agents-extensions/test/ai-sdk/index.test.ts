@@ -342,7 +342,7 @@ describe('AiSdkModel end-to-end scenarios', () => {
     },
   );
 
-  test('streams text blocks and tool calls with a stable message ID', async () => {
+  test('preserves separate text message IDs around tool calls', async () => {
     const parts = [
       { type: 'text-delta', id: 'text-1', delta: 'Hello ' },
       {
@@ -396,7 +396,7 @@ describe('AiSdkModel end-to-end scenarios', () => {
       events.filter((event) => event.type === 'output_text_delta'),
     ).toEqual([
       { type: 'output_text_delta', itemId: 'text-1', delta: 'Hello ' },
-      { type: 'output_text_delta', itemId: 'text-1', delta: 'world' },
+      { type: 'output_text_delta', itemId: 'text-2', delta: 'world' },
     ]);
     expect(final.type).toBe('response_done');
     expect(final.response.output).toEqual([
@@ -404,7 +404,7 @@ describe('AiSdkModel end-to-end scenarios', () => {
         type: 'message',
         id: 'text-1',
         role: 'assistant',
-        content: [{ type: 'output_text', text: 'Hello world' }],
+        content: [{ type: 'output_text', text: 'Hello ' }],
         status: 'completed',
         providerData: { model: 'stub:m', responseId: 'resp-stream' },
       },
@@ -415,6 +415,14 @@ describe('AiSdkModel end-to-end scenarios', () => {
         arguments: '{"q":"a"}',
         status: 'completed',
         providerData: { model: 'stub:m', meta: 1, responseId: 'resp-stream' },
+      },
+      {
+        type: 'message',
+        id: 'text-2',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'world' }],
+        status: 'completed',
+        providerData: { model: 'stub:m', responseId: 'resp-stream' },
       },
       {
         type: 'function_call',
@@ -3190,6 +3198,10 @@ describe('AiSdkModel.getResponse', () => {
                   },
                 },
                 {
+                  type: 'text',
+                  text: 'I will call it now.',
+                },
+                {
                   type: 'tool-call',
                   toolCallId: 'weather_1',
                   toolName: 'get_weather',
@@ -3238,6 +3250,7 @@ describe('AiSdkModel.getResponse', () => {
       'tool_search_output',
       'message',
       'reasoning',
+      'message',
       'function_call',
     ]);
     expect(result.output[0]).toMatchObject({
@@ -3252,6 +3265,9 @@ describe('AiSdkModel.getResponse', () => {
       providerData: {
         anthropic: { signature: 'sig-after-search' },
       },
+    });
+    expect(result.output[5]).toMatchObject({
+      content: [{ type: 'output_text', text: 'I will call it now.' }],
     });
   });
 
@@ -4768,6 +4784,11 @@ describe('AiSdkModel.getStreamedResponse', () => {
         result: [{ type: 'tool_reference', toolName: 'get_weather' }],
       },
       {
+        type: 'text-delta',
+        id: 'text_1',
+        delta: 'I found the weather tool.',
+      },
+      {
         type: 'reasoning-start',
         id: 'reasoning_2',
       },
@@ -4782,6 +4803,11 @@ describe('AiSdkModel.getStreamedResponse', () => {
         providerMetadata: {
           anthropic: { signature: 'sig-after-search' },
         },
+      },
+      {
+        type: 'text-delta',
+        id: 'text_2',
+        delta: 'I will call it now.',
       },
       {
         type: 'tool-call',
@@ -4837,7 +4863,9 @@ describe('AiSdkModel.getStreamedResponse', () => {
       'reasoning',
       'tool_search_call',
       'tool_search_output',
+      'message',
       'reasoning',
+      'message',
       'function_call',
     ]);
     expect(final.response.output[0]).toMatchObject({
@@ -4846,9 +4874,17 @@ describe('AiSdkModel.getStreamedResponse', () => {
       },
     });
     expect(final.response.output[3]).toMatchObject({
+      id: 'text_1',
+      content: [{ type: 'output_text', text: 'I found the weather tool.' }],
+    });
+    expect(final.response.output[4]).toMatchObject({
       providerData: {
         anthropic: { signature: 'sig-after-search' },
       },
+    });
+    expect(final.response.output[5]).toMatchObject({
+      id: 'text_2',
+      content: [{ type: 'output_text', text: 'I will call it now.' }],
     });
   });
 
