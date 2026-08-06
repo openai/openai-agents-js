@@ -14,6 +14,7 @@ import {
   handoff,
   protocol,
   run,
+  RunContext,
   tool,
   toolNamespace,
   withTrace,
@@ -2867,6 +2868,139 @@ describe('AiSdkModel.getResponse', () => {
     expect(result.finalOutput).toBe('Hello world');
   });
 
+  test('keeps complete final output across interleaved reasoning', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              { type: 'text', text: 'first' },
+              { type: 'reasoning', text: 'thinking' },
+              { type: 'text', text: 'second' },
+              { type: 'reasoning', text: 'checking' },
+            ],
+            usage: { inputTokens: 1, outputTokens: 3, totalTokens: 4 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const result = await run(
+      new Agent({ name: 'Assistant', model }),
+      'Respond in two parts.',
+    );
+
+    expect(result.newItems.map((item) => item.rawItem?.type)).toEqual([
+      'message',
+      'reasoning',
+      'message',
+      'reasoning',
+    ]);
+    expect(result.finalOutput).toBe('firstsecond');
+  });
+
+  test('keeps complete final output when used as an agent tool', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              { type: 'text', text: 'first' },
+              { type: 'reasoning', text: 'thinking' },
+              { type: 'text', text: 'second' },
+              { type: 'reasoning', text: 'checking' },
+            ],
+            usage: { inputTokens: 1, outputTokens: 3, totalTokens: 4 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+    const agentTool = new Agent({ name: 'Assistant', model }).asTool({
+      toolDescription: 'Respond in two parts.',
+    });
+
+    const output = await agentTool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'Respond in two parts.' }),
+    );
+
+    expect(output).toBe('firstsecond');
+  });
+
+  test('keeps complete final output around provider-executed tool search', async () => {
+    const model = new AiSdkModel(
+      stubModel(
+        {
+          async doGenerate() {
+            return {
+              content: [
+                { type: 'text', text: 'first' },
+                {
+                  type: 'reasoning',
+                  text: 'searching',
+                  providerMetadata: {
+                    anthropic: { signature: 'sig-search' },
+                  },
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  input: { query: 'weather' },
+                  providerExecuted: true,
+                },
+                {
+                  type: 'tool-result',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  result: [{ type: 'tool_reference', toolName: 'get_weather' }],
+                },
+                { type: 'text', text: 'second' },
+              ],
+              usage: { inputTokens: 1, outputTokens: 5, totalTokens: 6 },
+              providerMetadata: {},
+              response: { id: 'id' },
+              finishReason: 'stop',
+              warnings: [],
+            } as any;
+          },
+        },
+        { provider: 'anthropic.messages', specificationVersion: 'v3' },
+      ),
+    );
+
+    const result = await run(
+      new Agent({
+        name: 'Assistant',
+        model,
+        tools: [
+          aiSdkToolSearchTool({
+            type: 'provider',
+            id: 'anthropic.tool_search_regex_20251119',
+          }),
+        ],
+      }),
+      'Search and answer.',
+    );
+
+    expect(result.newItems.map((item) => item.rawItem?.type)).toEqual([
+      'message',
+      'reasoning',
+      'tool_search_call',
+      'tool_search_output',
+      'message',
+    ]);
+    expect(result.finalOutput).toBe('firstsecond');
+  });
+
   test('applies transformOutputText to finalized assistant text', async () => {
     const transformOutputText = vi.fn((text: string, context: any) => {
       expect(context.stream).toBe(false);
@@ -4640,6 +4774,55 @@ describe('AiSdkModel.getStreamedResponse', () => {
         },
       },
     ]);
+  });
+
+  test('keeps complete streamed final output across interleaved reasoning', async () => {
+    const parts = [
+      { type: 'text-delta', id: 'text-1', delta: 'first' },
+      { type: 'reasoning-start', id: 'reasoning-1' },
+      {
+        type: 'reasoning-delta',
+        id: 'reasoning-1',
+        delta: 'thinking',
+      },
+      { type: 'reasoning-end', id: 'reasoning-1' },
+      { type: 'text-delta', id: 'text-2', delta: 'second' },
+      { type: 'reasoning-start', id: 'reasoning-2' },
+      {
+        type: 'reasoning-delta',
+        id: 'reasoning-2',
+        delta: 'checking',
+      },
+      { type: 'reasoning-end', id: 'reasoning-2' },
+      { type: 'response-metadata', id: 'id1' },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 3 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return { stream: partsStream(parts) } as any;
+        },
+      }),
+    );
+
+    const result = await run(
+      new Agent({ name: 'Assistant', model }),
+      'Respond in two parts.',
+      { stream: true },
+    );
+    await result.completed;
+
+    expect(result.newItems.map((item) => item.rawItem?.type)).toEqual([
+      'message',
+      'reasoning',
+      'message',
+      'reasoning',
+    ]);
+    expect(result.finalOutput).toBe('firstsecond');
   });
 
   test('keeps streamed text contiguous across replacement tool calls', async () => {

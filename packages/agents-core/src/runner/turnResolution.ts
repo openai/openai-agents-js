@@ -12,6 +12,7 @@ import { ModelResponse } from '../model';
 import type { RunConfig, Runner, ToolErrorFormatter } from '../run';
 import { RunState } from '../runState';
 import {
+  getOutputText,
   getRefusalFromOutputMessage,
   getTextFromOutputMessage,
 } from '../utils/messages';
@@ -1239,11 +1240,17 @@ export async function resolveTurnAfterModelResponse<
     (item) => item instanceof RunMessageOutputItem,
   );
 
-  // we will use the last content output as the final output
-  const potentialFinalOutput =
+  // A model response may split assistant text across multiple messages around
+  // non-message output items such as reasoning. Preserve all of that text while
+  // retaining the last message's refusal semantics.
+  const lastMessageText =
     messageItems.length > 0
       ? getTextFromOutputMessage(messageItems[messageItems.length - 1].rawItem)
       : undefined;
+  const potentialFinalOutput =
+    typeof lastMessageText === 'undefined'
+      ? undefined
+      : getOutputText(newResponse) || lastMessageText;
 
   // Keep looping if any tool output placeholders still require an approval follow-up.
   const hasPendingToolsOrApprovals =

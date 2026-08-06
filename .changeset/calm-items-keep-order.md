@@ -1,5 +1,6 @@
 ---
+'@openai/agents-core': patch
 '@openai/agents-extensions': patch
 ---
 
-fix: preserve AI SDK response item ordering (#1593)
+fix: preserve complete AI SDK response text and item ordering (#1593)
