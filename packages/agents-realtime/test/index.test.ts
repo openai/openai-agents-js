@@ -1,5 +1,9 @@
 import { describe, test, expect } from 'vitest';
-import { RealtimeAgent, RealtimeSession } from '../src';
+import {
+  RealtimeAgent,
+  RealtimeSession,
+  setSensitiveDataLoggingEnabled,
+} from '../src';
 
 describe('RealtimeAgent', () => {
   test('should be available', () => {
@@ -20,5 +24,11 @@ describe('RealtimeSession', () => {
       }),
     );
     expect(session).toBeDefined();
+  });
+});
+
+describe('Sensitive data logging', () => {
+  test('exports the programmatic logging override', () => {
+    expect(typeof setSensitiveDataLoggingEnabled).toBe('function');
   });
 });

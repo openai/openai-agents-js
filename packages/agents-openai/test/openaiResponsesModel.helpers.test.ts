@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { Buffer } from 'node:buffer';
 import {
   getToolChoice,
-  converTool,
+  convertTool,
   getInputItems,
   convertToOutputItem,
 } from '../src/openaiResponsesModel';
@@ -29,6 +29,9 @@ describe('getToolChoice', () => {
     });
     expect(getToolChoice('shell')).toEqual({ type: 'shell' });
     expect(getToolChoice('apply_patch')).toEqual({ type: 'apply_patch' });
+    expect(getToolChoice('programmatic_tool_calling')).toEqual({
+      type: 'programmatic_tool_calling',
+    });
   });
 
   it('supports arbitrary function names', () => {
@@ -81,9 +84,44 @@ describe('getToolChoice', () => {
   });
 });
 
-describe('converTool', () => {
+describe('convertTool', () => {
+  it('converts Programmatic Tool Calling tools and eligible metadata', () => {
+    const outputSchema = {
+      type: 'object',
+      properties: { value: { type: 'string' } },
+      required: ['value'],
+      additionalProperties: false,
+    };
+    expect(
+      convertTool({
+        type: 'function',
+        name: 'lookup',
+        description: 'Lookup a value.',
+        parameters: { type: 'object' },
+        strict: true,
+        allowedCallers: ['programmatic'],
+        outputSchema,
+      } as any).tool,
+    ).toEqual({
+      type: 'function',
+      name: 'lookup',
+      description: 'Lookup a value.',
+      parameters: { type: 'object' },
+      strict: true,
+      allowed_callers: ['programmatic'],
+      output_schema: outputSchema,
+    });
+    expect(
+      convertTool({
+        type: 'hosted_tool',
+        name: 'programmatic_tool_calling',
+        providerData: { type: 'programmatic_tool_calling' },
+      } as any).tool,
+    ).toEqual({ type: 'programmatic_tool_calling' });
+  });
+
   it('converts function tools', () => {
-    const t = converTool({
+    const t = convertTool({
       type: 'function',
       name: 'f',
       description: 'd',
@@ -99,7 +137,7 @@ describe('converTool', () => {
   });
 
   it('converts deferred function tools', () => {
-    const t = converTool({
+    const t = convertTool({
       type: 'function',
       name: 'f',
       description: 'd',
@@ -117,7 +155,7 @@ describe('converTool', () => {
   });
 
   it('converts computer tools', () => {
-    const t = converTool({
+    const t = convertTool({
       type: 'computer',
     } as any);
     expect(t.tool).toEqual({
@@ -126,7 +164,7 @@ describe('converTool', () => {
   });
 
   it('converts preview computer tools when requested', () => {
-    const t = converTool(
+    const t = convertTool(
       {
         type: 'computer',
         environment: 'mac',
@@ -146,7 +184,7 @@ describe('converTool', () => {
 
   it('rejects preview computer tools without display metadata', () => {
     expect(() =>
-      converTool(
+      convertTool(
         {
           type: 'computer',
         } as any,
@@ -158,7 +196,7 @@ describe('converTool', () => {
   });
 
   it('converts shell tools', () => {
-    const t = converTool({ type: 'shell', name: 'shell' } as any);
+    const t = convertTool({ type: 'shell', name: 'shell' } as any);
     expect(t.tool).toEqual({
       type: 'shell',
       environment: { type: 'local' },
@@ -166,7 +204,7 @@ describe('converTool', () => {
   });
 
   it('converts shell tools with custom environment', () => {
-    const t = converTool({
+    const t = convertTool({
       type: 'shell',
       name: 'shell',
       environment: { type: 'container_reference', containerId: 'cont_123' },
@@ -178,7 +216,7 @@ describe('converTool', () => {
   });
 
   it('converts shell container auto environment with camelCase fields', () => {
-    const t = converTool({
+    const t = convertTool({
       type: 'shell',
       name: 'shell',
       environment: {
@@ -226,7 +264,7 @@ describe('converTool', () => {
   });
 
   it('converts shell container auto environment with inline skill payloads', () => {
-    const t = converTool({
+    const t = convertTool({
       type: 'shell',
       name: 'shell',
       environment: {
@@ -274,7 +312,7 @@ describe('converTool', () => {
 
   it('rejects shell environments with snake_case fields', () => {
     expect(() =>
-      converTool({
+      convertTool({
         type: 'shell',
         name: 'shell',
         environment: {
@@ -287,7 +325,7 @@ describe('converTool', () => {
 
   it('throws for invalid local shell skill definitions', () => {
     expect(() =>
-      converTool({
+      convertTool({
         type: 'shell',
         name: 'shell',
         environment: {
@@ -302,7 +340,7 @@ describe('converTool', () => {
 
   it('throws for container_reference without container id', () => {
     expect(() =>
-      converTool({
+      convertTool({
         type: 'shell',
         name: 'shell',
         environment: { type: 'container_reference' },
@@ -312,7 +350,7 @@ describe('converTool', () => {
 
   it('throws for invalid inline shell skill payloads', () => {
     expect(() =>
-      converTool({
+      convertTool({
         type: 'shell',
         name: 'shell',
         environment: {
@@ -336,7 +374,7 @@ describe('converTool', () => {
 
   it('throws for skill_reference payloads that omit skillId', () => {
     expect(() =>
-      converTool({
+      convertTool({
         type: 'shell',
         name: 'shell',
         environment: {
@@ -348,12 +386,12 @@ describe('converTool', () => {
   });
 
   it('converts apply_patch tools', () => {
-    const t = converTool({ type: 'apply_patch', name: 'apply_patch' } as any);
+    const t = convertTool({ type: 'apply_patch', name: 'apply_patch' } as any);
     expect(t.tool).toEqual({ type: 'apply_patch' });
   });
 
   it('converts builtin tools', () => {
-    const web = converTool({
+    const web = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'web_search',
@@ -367,7 +405,7 @@ describe('converTool', () => {
       search_context_size: 'low',
     });
 
-    const file = converTool({
+    const file = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'file_search',
@@ -385,7 +423,7 @@ describe('converTool', () => {
     });
     expect(file.include).toEqual(['file_search_call.results']);
 
-    const code = converTool({
+    const code = convertTool({
       type: 'hosted_tool',
       providerData: { type: 'code_interpreter', container: 'python' },
     } as any);
@@ -394,7 +432,7 @@ describe('converTool', () => {
       container: 'python',
     });
 
-    const codeWithOutputs = converTool({
+    const codeWithOutputs = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'code_interpreter',
@@ -408,7 +446,7 @@ describe('converTool', () => {
     });
     expect(codeWithOutputs.include).toEqual(['code_interpreter_call.outputs']);
 
-    const toolSearch = converTool({
+    const toolSearch = convertTool({
       type: 'hosted_tool',
       providerData: { type: 'tool_search' },
     } as any);
@@ -416,7 +454,7 @@ describe('converTool', () => {
       type: 'tool_search',
     });
 
-    const clientToolSearch = converTool({
+    const clientToolSearch = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'tool_search',
@@ -448,7 +486,7 @@ describe('converTool', () => {
       },
     });
 
-    const img = converTool({
+    const img = convertTool({
       type: 'hosted_tool',
       providerData: { type: 'image_generation', background: 'auto' },
     } as any);
@@ -465,7 +503,7 @@ describe('converTool', () => {
       size: undefined,
     });
 
-    const custom = converTool({
+    const custom = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'mcp',
@@ -486,7 +524,7 @@ describe('converTool', () => {
       require_approval: 'never',
     });
 
-    const always = converTool({
+    const always = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'mcp',
@@ -502,7 +540,7 @@ describe('converTool', () => {
       require_approval: 'always',
     });
 
-    const scoped = converTool({
+    const scoped = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'mcp',
@@ -526,7 +564,7 @@ describe('converTool', () => {
   });
 
   it('preserves MCP approval read-only filters when converting tools', () => {
-    const scoped = converTool({
+    const scoped = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'mcp',
@@ -551,7 +589,7 @@ describe('converTool', () => {
 
   it('rejects invalid MCP approval policies before converting tools', () => {
     expect(() =>
-      converTool({
+      convertTool({
         type: 'hosted_tool',
         providerData: {
           type: 'mcp',
@@ -567,7 +605,7 @@ describe('converTool', () => {
   });
 
   it('preserves explicit false external web access on web search tools', () => {
-    const web = converTool({
+    const web = convertTool({
       type: 'hosted_tool',
       providerData: {
         type: 'web_search',
@@ -585,11 +623,112 @@ describe('converTool', () => {
   });
 
   it('throws on unsupported tool', () => {
-    expect(() => converTool({ type: 'other' } as any)).toThrow();
+    expect(() => convertTool({ type: 'other' } as any)).toThrow();
   });
 });
 
 describe('getInputItems', () => {
+  it('replays caller linkage on MCP approval requests and responses', () => {
+    expect(
+      getInputItems([
+        {
+          type: 'hosted_tool_call',
+          id: 'mcpr_1',
+          name: 'mcp_approval_request',
+          caller: { type: 'program', callerId: 'call_prog_1' },
+          providerData: {
+            type: 'mcp_approval_request',
+            id: 'mcpr_1',
+            name: 'lookup',
+            arguments: '{}',
+            server_label: 'server',
+          },
+        },
+        {
+          type: 'hosted_tool_call',
+          name: 'mcp_approval_response',
+          caller: { type: 'program', callerId: 'call_prog_1' },
+          providerData: {
+            type: 'mcp_approval_response',
+            approve: true,
+            approval_request_id: 'mcpr_1',
+          },
+        },
+      ] as any),
+    ).toMatchObject([
+      {
+        type: 'mcp_approval_request',
+        id: 'mcpr_1',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+      {
+        type: 'mcp_approval_response',
+        approve: true,
+        approval_request_id: 'mcpr_1',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+    ]);
+  });
+
+  it('replays Programmatic Tool Calling items and caller linkage', () => {
+    expect(
+      getInputItems([
+        {
+          type: 'program',
+          id: 'prog_1',
+          callId: 'call_prog_1',
+          code: 'text("ok")',
+          fingerprint: 'fp_1',
+        },
+        {
+          type: 'function_call_result',
+          id: 'fc_out_1',
+          callId: 'call_1',
+          name: 'lookup',
+          status: 'completed',
+          output: 'ok',
+          caller: { type: 'program', callerId: 'call_prog_1' },
+        },
+        {
+          type: 'program_output',
+          id: 'prog_out_1',
+          callId: 'call_prog_1',
+          output: 'ok',
+          status: 'completed',
+          providerData: {
+            output: 'stale-output',
+            result: 'stale-result',
+            customField: 'kept',
+          },
+        },
+      ]),
+    ).toEqual([
+      {
+        type: 'program',
+        id: 'prog_1',
+        call_id: 'call_prog_1',
+        code: 'text("ok")',
+        fingerprint: 'fp_1',
+      },
+      {
+        type: 'function_call_output',
+        id: 'fc_out_1',
+        call_id: 'call_1',
+        output: 'ok',
+        status: 'completed',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+      {
+        type: 'program_output',
+        id: 'prog_out_1',
+        call_id: 'call_prog_1',
+        result: 'ok',
+        status: 'completed',
+        custom_field: 'kept',
+      },
+    ]);
+  });
+
   it('converts messages and tool calls/results', () => {
     const items = getInputItems([
       { role: 'user', content: 'hi', id: 'u1' },
@@ -641,6 +780,7 @@ describe('getInputItems', () => {
         type: 'shell_call_output',
         id: 'sh2',
         callId: 's1',
+        status: 'incomplete',
         output: [
           {
             stdout: 'hi',
@@ -692,6 +832,7 @@ describe('getInputItems', () => {
       type: 'shell_call_output',
       id: 'sh2',
       call_id: 's1',
+      status: 'incomplete',
       output: [
         {
           stdout: 'hi',
@@ -1166,9 +1307,15 @@ describe('getInputItems', () => {
   });
 
   it('handles string and fallback outputs for function_call_result', () => {
+    const schemaJson = JSON.stringify({ type: 'text', text: 'ok' });
     const items = getInputItems([
       { type: 'function_call_result', callId: 'str', output: 'ok' },
       { type: 'function_call_result', callId: 'num', output: 42 },
+      {
+        type: 'function_call_result',
+        callId: 'schema',
+        output: { type: 'text', text: schemaJson },
+      },
     ] as any);
 
     expect(items[0]).toMatchObject({
@@ -1180,6 +1327,11 @@ describe('getInputItems', () => {
       type: 'function_call_output',
       call_id: 'num',
       output: '42',
+    });
+    expect(items[2]).toMatchObject({
+      type: 'function_call_output',
+      call_id: 'schema',
+      output: schemaJson,
     });
   });
 
@@ -1697,12 +1849,35 @@ describe('getInputItems', () => {
         type: 'hosted_tool_call',
         id: 'c',
         status: 'completed',
+        caller: { type: 'program', callerId: 'call_prog_1' },
         providerData: { type: 'code_interpreter', code: 'print()' },
       },
     ] as any);
     expect(ci[0]).toMatchObject({
       type: 'code_interpreter_call',
       code: 'print()',
+      caller: { type: 'program', caller_id: 'call_prog_1' },
+    });
+
+    const mcp = getInputItems([
+      {
+        type: 'hosted_tool_call',
+        id: 'mcp_1',
+        name: 'mcp_call',
+        status: 'completed',
+        caller: { type: 'program', callerId: 'call_prog_1' },
+        providerData: {
+          type: 'mcp_call',
+          id: 'mcp_1',
+          name: 'lookup',
+          arguments: '{}',
+          server_label: 'server',
+        },
+      },
+    ] as any);
+    expect(mcp[0]).toMatchObject({
+      type: 'mcp_call',
+      caller: { type: 'program', caller_id: 'call_prog_1' },
     });
 
     const img = getInputItems([
@@ -2148,6 +2323,118 @@ describe('getInputItems', () => {
 });
 
 describe('convertToOutputItem', () => {
+  it('lifts hosted Programmatic Tool Calling caller linkage', () => {
+    expect(
+      convertToOutputItem([
+        {
+          type: 'code_interpreter_call',
+          id: 'ci_1',
+          code: 'print("ok")',
+          container_id: 'container_1',
+          outputs: [{ type: 'logs', logs: 'ok' }],
+          status: 'completed',
+          caller: { type: 'program', caller_id: 'call_prog_1' },
+        },
+      ] as any),
+    ).toEqual([
+      {
+        type: 'hosted_tool_call',
+        id: 'ci_1',
+        name: 'code_interpreter_call',
+        status: 'completed',
+        output: undefined,
+        caller: { type: 'program', callerId: 'call_prog_1' },
+        providerData: {
+          type: 'code_interpreter_call',
+          id: 'ci_1',
+          code: 'print("ok")',
+          container_id: 'container_1',
+          outputs: [{ type: 'logs', logs: 'ok' }],
+        },
+      },
+    ]);
+  });
+
+  it('lifts hosted MCP caller linkage', () => {
+    const [output] = convertToOutputItem([
+      {
+        type: 'mcp_call',
+        id: 'mcp_1',
+        name: 'lookup',
+        arguments: '{}',
+        server_label: 'server',
+        status: 'completed',
+        output: 'ok',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+    ] as any);
+
+    expect(output).toMatchObject({
+      type: 'hosted_tool_call',
+      id: 'mcp_1',
+      name: 'mcp_call',
+      caller: { type: 'program', callerId: 'call_prog_1' },
+    });
+    expect(output.providerData).not.toHaveProperty('caller');
+  });
+
+  it('converts Programmatic Tool Calling items and caller linkage', () => {
+    const out = convertToOutputItem([
+      {
+        type: 'program',
+        id: 'prog_1',
+        call_id: 'call_prog_1',
+        code: 'text("ok")',
+        fingerprint: 'fp_1',
+      },
+      {
+        type: 'function_call',
+        id: 'fc_1',
+        call_id: 'call_1',
+        name: 'lookup',
+        arguments: '{}',
+        status: 'completed',
+        caller: { type: 'program', caller_id: 'call_prog_1' },
+      },
+      {
+        type: 'program_output',
+        id: 'prog_out_1',
+        call_id: 'call_prog_1',
+        result: 'ok',
+        status: 'completed',
+      },
+    ] as any);
+
+    expect(out).toEqual([
+      {
+        type: 'program',
+        id: 'prog_1',
+        callId: 'call_prog_1',
+        code: 'text("ok")',
+        fingerprint: 'fp_1',
+        providerData: {},
+      },
+      {
+        type: 'function_call',
+        id: 'fc_1',
+        callId: 'call_1',
+        name: 'lookup',
+        status: 'completed',
+        arguments: '{}',
+        caller: { type: 'program', callerId: 'call_prog_1' },
+        providerData: { id: 'fc_1', type: 'function_call' },
+      },
+      {
+        type: 'program_output',
+        id: 'prog_out_1',
+        callId: 'call_prog_1',
+        output: 'ok',
+        status: 'completed',
+        providerData: {},
+      },
+    ]);
+  });
+
   it('converts output items', () => {
     const out = convertToOutputItem([
       {
@@ -2632,6 +2919,7 @@ describe('convertToOutputItem', () => {
         type: 'shell_call_output',
         id: 'sh2',
         call_id: 's1',
+        status: 'incomplete',
         output: [
           {
             stdout: 'hi',
@@ -2664,6 +2952,7 @@ describe('convertToOutputItem', () => {
     expect(out[1]).toMatchObject({
       type: 'shell_call_output',
       callId: 's1',
+      status: 'incomplete',
       output: [
         {
           stdout: 'hi',

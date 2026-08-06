@@ -97,7 +97,7 @@ If you want more direct access to the underlying Realtime API, you have two opti
 
 If you still want to benefit from all of the capabilities of the `RealtimeSession` you can access your transport layer through `session.transport`.
 
-The transport layer emits every event it receives under the `*` event and you can send raw events using `sendEvent()`. This is the escape hatch for low-level operations such as `session.update`, `response.create`, or `response.cancel`.
+The transport layer emits every event it receives under the `*` event and you can send raw events using `sendEvent()`. A `*` listener receives a structured clone of the original parsed JSON payload, including fields the current SDK schema does not know about. Named and derived event listeners continue to receive validated, normalized event objects. This is the escape hatch for low-level operations such as `session.update`, `response.create`, or `response.cancel`.
 
 <Code lang="typescript" code={transportEventsExample} />
 

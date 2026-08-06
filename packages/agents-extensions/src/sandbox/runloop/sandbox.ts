@@ -19,6 +19,7 @@ import {
 import { posix as pathPosix } from 'node:path';
 import {
   assertCoreSnapshotUnsupported,
+  assertRemoteSandboxSessionStateCanResume,
   assertTarWorkspacePersistence,
   assertResumeRecreateAllowed,
   assertRunAsUnsupported,
@@ -28,9 +29,10 @@ import {
   cloneManifestWithRoot,
   decodeNativeSnapshotRef,
   assertShellEnvironmentName,
-  deserializeRemoteSandboxSessionStateValues,
+  rehydrateRemoteSandboxSessionStateValues,
   encodeNativeSnapshotRef,
   materializeEnvironment,
+  manifestWithMaterializedEnvironmentReferences,
   providerErrorMessage,
   serializeRemoteSandboxSessionState,
   shellQuote,
@@ -1479,7 +1481,7 @@ export class RunloopSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<RunloopSandboxSessionState> {
-    const baseState = deserializeRemoteSandboxSessionStateValues(
+    const baseState = await rehydrateRemoteSandboxSessionStateValues(
       state,
       this.options.env,
     );
@@ -1522,6 +1524,7 @@ export class RunloopSandboxClient implements SandboxClient<
   async resume(
     state: RunloopSandboxSessionState,
   ): Promise<RunloopSandboxSession> {
+    assertRemoteSandboxSessionStateCanResume(state);
     const resumeState: RunloopSandboxSessionState = {
       ...state,
       baseUrl: this.options.baseUrl,
@@ -1581,7 +1584,16 @@ export class RunloopSandboxClient implements SandboxClient<
         createTimeoutMs: resumeState.createTimeoutMs,
         timeouts: resumeState.timeouts,
       };
-      return await this.create(resumeState.manifest, recreateOptions);
+      const manifest = resumeState.manifest;
+      const session = await this.create(
+        manifestWithMaterializedEnvironmentReferences(
+          manifest,
+          resumeState.environment,
+        ),
+        recreateOptions,
+      );
+      session.state.manifest = manifest;
+      return session;
     }
   }
 }

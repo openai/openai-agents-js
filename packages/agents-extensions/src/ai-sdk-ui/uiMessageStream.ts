@@ -27,9 +27,7 @@ export type AiSdkUiMessageStreamSource =
   | { toStream: () => ReadableStream<RunStreamEvent> };
 
 export type AiSdkUiMessageStreamHeaders =
-  | Headers
-  | Record<string, string>
-  | Array<[string, string]>;
+  Headers | Record<string, string> | Array<[string, string]>;
 
 export type AiSdkUiMessageStreamResponseOptions = {
   headers?: AiSdkUiMessageStreamHeaders;
@@ -98,6 +96,14 @@ function extractToolInput(item: RunToolCallItem): ToolInputPayload | null {
       toolCallId,
       toolName,
       input: parseJsonArgs(raw.arguments),
+    };
+  }
+
+  if (raw.type === 'program' && typeof raw.code === 'string') {
+    return {
+      toolCallId,
+      toolName: 'programmatic_tool_calling',
+      input: { code: raw.code },
     };
   }
 
@@ -215,9 +221,11 @@ async function* buildUiMessageStream(
   let stepOpen = false;
   let pendingStepClose = false;
   let responseHasText = false;
+  let responseHasUnkeyedText = false;
   let stepHasTextOutput = false;
   let textOpen = false;
   let currentTextId = '';
+  const streamedTextItemIds = new Set<string>();
   const startedToolCalls = new Set<string>();
   const emittedToolOutputs = new Set<string>();
   // FIFO fallback for tool_search outputs that do not carry an explicit call_id.
@@ -258,6 +266,9 @@ async function* buildUiMessageStream(
       if (data.type === 'response_started') {
         yield* ensureMessageStart();
         responseHasText = false;
+        responseHasUnkeyedText = false;
+        streamedTextItemIds.clear();
+        currentTextId = '';
         yield* ensureStepStart();
       }
 
@@ -266,8 +277,18 @@ async function* buildUiMessageStream(
         yield* ensureStepStart();
         responseHasText = true;
         stepHasTextOutput = true;
+        if (data.itemId) {
+          streamedTextItemIds.add(data.itemId);
+        } else {
+          responseHasUnkeyedText = true;
+        }
+        const nextTextId = data.itemId ?? (currentTextId || createId('text'));
+        if (textOpen && currentTextId !== nextTextId) {
+          yield { type: 'text-end', id: currentTextId };
+          textOpen = false;
+        }
         if (!textOpen) {
-          currentTextId = createId('text');
+          currentTextId = nextTextId;
           textOpen = true;
           yield { type: 'text-start', id: currentTextId };
         }
@@ -296,14 +317,18 @@ async function* buildUiMessageStream(
     if (event.type === 'run_item_stream_event') {
       if (event.name === 'message_output_created') {
         yield* ensureMessageStart();
-        if (!responseHasText) {
+        const item = event.item as RunMessageOutputItem;
+        const itemId = item.rawItem.id;
+        const alreadyStreamed =
+          responseHasUnkeyedText ||
+          (typeof itemId === 'string' && streamedTextItemIds.has(itemId));
+        if (!responseHasText || !alreadyStreamed) {
           if (!stepOpen) {
             yield* ensureStepStart();
           }
-          const item = event.item as RunMessageOutputItem;
           const content = item.content;
           if (content) {
-            const textId = createId('text');
+            const textId = itemId ?? createId('text');
             yield { type: 'text-start', id: textId };
             yield { type: 'text-delta', id: textId, delta: content };
             yield { type: 'text-end', id: textId };

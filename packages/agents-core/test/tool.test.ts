@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi } from 'vitest';
 import {
   applyPatchTool,
   computerTool,
@@ -17,7 +17,14 @@ import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
 import { serializeTool } from '../src/utils/serialize';
 import { FakeEditor, FakeShell } from './stubs';
-import { ToolTimeoutError } from '../src/errors';
+import {
+  InvalidToolInputError,
+  InvalidToolOutputError,
+  ToolTimeoutError,
+  UserError,
+} from '../src/errors';
+import type { JsonObjectSchema, JsonObjectSchemaNonStrict } from '../src/types';
+import logger from '../src/logger';
 
 interface Bar {
   bar: string;
@@ -40,6 +47,101 @@ describe('Tool', () => {
     expect(t.parameters.required.length).toEqual(1);
   });
 
+  it('normalizes typeless nested objects in strict JSON schemas', () => {
+    const parameters: JsonObjectSchema<any> = {
+      type: 'object',
+      properties: {
+        nested: {
+          properties: {
+            optional: { type: 'string' },
+          },
+          required: [],
+          additionalProperties: false,
+        },
+      },
+      required: ['nested'],
+      additionalProperties: false,
+    };
+    const t = tool({
+      name: 'typeless_nested_object',
+      description: 'Normalize a typeless nested object.',
+      parameters,
+      execute: async () => 'ok',
+    });
+
+    expect(serializeTool(t)).toMatchObject({
+      strict: true,
+      parameters: {
+        type: 'object',
+        properties: {
+          nested: {
+            type: 'object',
+            properties: {
+              optional: {
+                anyOf: [{ type: 'string' }, { type: 'null' }],
+              },
+            },
+            required: ['optional'],
+            additionalProperties: false,
+          },
+        },
+        required: ['nested'],
+        additionalProperties: false,
+      },
+    });
+    expect(parameters.properties.nested).not.toHaveProperty('type');
+  });
+
+  it('rejects typeless open objects when constructing strict tools', () => {
+    const parameters: JsonObjectSchema<any> = {
+      type: 'object',
+      properties: {
+        open: {
+          properties: {},
+          additionalProperties: true,
+        },
+      },
+      required: ['open'],
+      additionalProperties: false,
+    };
+
+    expect(() =>
+      tool({
+        name: 'typeless_open_object',
+        description: 'Reject a typeless open object.',
+        parameters,
+        execute: async () => 'ok',
+      }),
+    ).toThrow(UserError);
+    expect(parameters.properties.open).not.toHaveProperty('type');
+  });
+
+  it('preserves typeless open objects for non-strict tools', () => {
+    const parameters: JsonObjectSchemaNonStrict<any> = {
+      type: 'object',
+      properties: {
+        open: {
+          properties: {},
+          additionalProperties: true,
+        },
+      },
+      required: ['open'],
+      additionalProperties: true,
+    };
+    const t = tool({
+      name: 'non_strict_typeless_open_object',
+      description: 'Preserve a typeless open object.',
+      parameters,
+      strict: false,
+      execute: async () => 'ok',
+    });
+
+    expect(serializeTool(t)).toMatchObject({
+      strict: false,
+      parameters,
+    });
+  });
+
   it('records deferLoading when requested', () => {
     const t = tool({
       name: 'deferred_lookup',
@@ -52,6 +154,229 @@ describe('Tool', () => {
     });
 
     expect(t.deferLoading).toBe(true);
+  });
+
+  it('records provider data when requested', () => {
+    const t = tool({
+      name: 'provider_lookup',
+      description: 'Provider-specific lookup tool.',
+      parameters: z.object({
+        query: z.string(),
+      }),
+      providerData: {
+        anthropic: { deferLoading: true },
+      },
+      execute: async () => ({ bar: 'ok' }),
+    });
+
+    expect(t.providerData).toEqual({
+      anthropic: { deferLoading: true },
+    });
+  });
+
+  it('records Programmatic Tool Calling metadata', () => {
+    const outputSchema = {
+      type: 'object',
+      properties: { value: { type: 'string' } },
+      required: ['value'],
+      additionalProperties: false,
+    } as any;
+    const t = tool({
+      name: 'structured_lookup',
+      description: 'Return structured data.',
+      parameters: z.object({ query: z.string() }),
+      allowedCallers: ['programmatic'],
+      outputSchema,
+      execute: async ({ query }) => ({ value: query }),
+    });
+
+    expect(t.allowedCallers).toEqual(['programmatic']);
+    expect(t.outputSchema).toBe(outputSchema);
+    expect(serializeTool(t)).toMatchObject({
+      allowedCallers: ['programmatic'],
+      outputSchema,
+    });
+  });
+
+  it('uses unknown for plain JSON Schema output types', () => {
+    const outputSchema: JsonObjectSchema<{
+      value: { type: 'string' };
+    }> = {
+      type: 'object',
+      properties: { value: { type: 'string' } },
+      required: ['value'],
+      additionalProperties: false,
+    };
+    const t = tool({
+      name: 'plain_json_schema_output',
+      description: 'Return structured data.',
+      parameters: z.object({}),
+      outputSchema,
+      execute: async () => ({ value: 'ok' }),
+    });
+
+    expectTypeOf(t.invoke(new RunContext(), '{}')).toEqualTypeOf<
+      Promise<unknown>
+    >();
+  });
+
+  it('converts a Zod output schema and infers the execute result', () => {
+    const outputSchema = z.object({
+      value: z.string(),
+      count: z.number(),
+    });
+    const t = tool({
+      name: 'structured_zod_lookup',
+      description: 'Return structured data.',
+      parameters: z.object({ query: z.string() }),
+      allowedCallers: ['programmatic'],
+      outputSchema,
+      execute: async ({ query }) => ({ value: query, count: 1 }),
+    });
+
+    expect(t.outputSchema).toEqual({
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      properties: {
+        value: { type: 'string' },
+        count: { type: 'number' },
+      },
+      required: ['value', 'count'],
+      additionalProperties: false,
+    });
+    expectTypeOf(t.invoke(new RunContext(), '{"query":"test"}')).toEqualTypeOf<
+      Promise<string | { value: string; count: number }>
+    >();
+
+    tool({
+      name: 'invalid_structured_zod_lookup',
+      description: 'Type-check an invalid structured result.',
+      parameters: z.object({ query: z.string() }),
+      outputSchema,
+      // @ts-expect-error The execute result must match the Zod output schema.
+      execute: async ({ query }) => ({ value: query, count: 'one' }),
+    });
+
+    tool({
+      name: 'invalid_structured_zod_fallback',
+      description: 'Type-check an invalid structured fallback.',
+      parameters: z.object({}),
+      outputSchema,
+      execute: async () => ({ value: 'ok', count: 1 }),
+      // @ts-expect-error The error fallback must match the Zod output schema.
+      errorFunction: () => ({ value: 'fallback', count: 'one' }),
+    });
+  });
+
+  it('validates and transforms Zod output schemas at runtime', async () => {
+    const t = tool({
+      name: 'runtime_structured_zod_lookup',
+      description: 'Return structured data.',
+      parameters: z.object({}),
+      outputSchema: z.object({ value: z.string().trim() }),
+      execute: async () => ({ value: '  ok  ' }),
+    });
+
+    await expect(t.invoke(new RunContext(), '{}')).resolves.toEqual({
+      value: 'ok',
+    });
+  });
+
+  it('rejects invalid Zod output at runtime', async () => {
+    const t = tool({
+      name: 'invalid_runtime_structured_zod_lookup',
+      description: 'Return structured data.',
+      parameters: z.object({}),
+      outputSchema: z.object({ value: z.string() }),
+      execute: async () => ({ value: 123 }) as any,
+    });
+
+    await expect(t.invoke(new RunContext(), '{}')).rejects.toMatchObject({
+      name: 'InvalidToolOutputError',
+      toolOutput: { output: { value: 123 } },
+    });
+  });
+
+  it('requires schema-compatible error fallbacks for Zod outputs', async () => {
+    const validFallback = tool({
+      name: 'valid_structured_error_fallback',
+      description: 'Return structured data.',
+      parameters: z.object({}),
+      outputSchema: z.object({ value: z.string() }),
+      execute: async () => {
+        throw new Error('boom');
+      },
+      errorFunction: () => ({ value: 'fallback' }),
+    });
+    const invalidFallback = tool({
+      name: 'invalid_structured_error_fallback',
+      description: 'Return structured data.',
+      parameters: z.object({}),
+      outputSchema: z.object({ value: z.string() }),
+      execute: async () => {
+        throw new Error('boom');
+      },
+      errorFunction: () => ({ value: 123 }) as any,
+    });
+    const noFallback = tool({
+      name: 'structured_error_without_fallback',
+      description: 'Return structured data.',
+      parameters: z.object({}),
+      outputSchema: z.object({ value: z.string() }),
+      execute: async () => {
+        throw new Error('boom');
+      },
+    });
+
+    await expect(validFallback.invoke(new RunContext(), '{}')).resolves.toEqual(
+      { value: 'fallback' },
+    );
+    await expect(
+      invalidFallback.invoke(new RunContext(), '{}'),
+    ).rejects.toBeInstanceOf(InvalidToolOutputError);
+    await expect(noFallback.invoke(new RunContext(), '{}')).rejects.toThrow(
+      'boom',
+    );
+  });
+
+  it('rejects invalid allowedCallers values at tool construction', () => {
+    expect(() =>
+      tool({
+        name: 'empty_allowed_callers',
+        description: 'Invalid configuration.',
+        parameters: z.object({}),
+        allowedCallers: [] as any,
+        execute: async () => 'ok',
+      }),
+    ).toThrow(/must contain at least one caller/);
+    expect(() =>
+      shellTool({
+        shell: new FakeShell(),
+        allowedCallers: ['programmatic', 'programmatic'] as any,
+      }),
+    ).toThrow(/must not contain duplicate callers/);
+    for (const invalidCaller of ['', 0, false, undefined, null]) {
+      expect(() =>
+        tool({
+          name: 'falsy_invalid_allowed_caller',
+          description: 'Invalid configuration.',
+          parameters: z.object({}),
+          allowedCallers: [invalidCaller] as any,
+          execute: async () => 'ok',
+        }),
+      ).toThrow(/contains unsupported caller/);
+    }
+
+    const typecheckEmptyAllowedCallers = () =>
+      tool({
+        name: 'typecheck_empty_allowed_callers',
+        description: 'Invalid configuration.',
+        parameters: z.object({}),
+        // @ts-expect-error allowedCallers must be non-empty.
+        allowedCallers: [],
+        execute: async () => 'ok',
+      });
+    expectTypeOf(typecheckEmptyAllowedCallers).toBeFunction();
   });
 
   it('toolNamespace returns shallow-cloned function tools', () => {
@@ -205,21 +530,19 @@ describe('Tool', () => {
   });
 
   it('computerTool initializes computer per run context when an initializer is provided', async () => {
-    const initializer = vi.fn(
-      async (): Promise<Computer> => ({
-        environment: 'mac' as const,
-        dimensions: [1, 1],
-        screenshot: async () => 'img',
-        click: async () => {},
-        doubleClick: async () => {},
-        drag: async () => {},
-        keypress: async () => {},
-        move: async () => {},
-        scroll: async () => {},
-        type: async () => {},
-        wait: async () => {},
-      }),
-    );
+    const initializer = vi.fn(async (): Promise<Computer> => ({
+      environment: 'mac' as const,
+      dimensions: [1, 1],
+      screenshot: async () => 'img',
+      click: async () => {},
+      doubleClick: async () => {},
+      drag: async () => {},
+      keypress: async () => {},
+      move: async () => {},
+      scroll: async () => {},
+      type: async () => {},
+      wait: async () => {},
+    }));
     const t = computerTool({ name: 'comp', computer: initializer });
 
     const ctxA = new RunContext();
@@ -329,6 +652,49 @@ describe('Tool', () => {
     expect(dispose).toHaveBeenCalledTimes(1);
     expect(dispose).toHaveBeenCalledWith({ runContext: ctx, computer: first });
     expect(second).not.toBe(first);
+  });
+
+  it('redacts computer disposal errors and completes cleanup', async () => {
+    const computer = {
+      environment: 'mac' as const,
+      dimensions: [1, 1] as [number, number],
+      screenshot: async () => 'img',
+      click: async () => {},
+      doubleClick: async () => {},
+      drag: async () => {},
+      keypress: async () => {},
+      move: async () => {},
+      scroll: async () => {},
+      type: async () => {},
+      wait: async () => {},
+    };
+    const secret = 'SECRET_COMPUTER_DISPOSAL_123';
+    const initializer = vi.fn(async () => computer);
+    const t = computerTool({
+      computer: {
+        create: initializer,
+        dispose: async () => {
+          throw new Error(secret);
+        },
+      },
+    });
+    const ctx = new RunContext();
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(true);
+
+    await resolveComputer({ tool: t, runContext: ctx });
+    await expect(disposeResolvedComputers({ runContext: ctx })).resolves.toBe(
+      undefined,
+    );
+    await resolveComputer({ tool: t, runContext: ctx });
+
+    expect(initializer).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Failed to dispose computer for run context:',
+      'object',
+    );
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secret);
+    vi.restoreAllMocks();
   });
 
   it('shellTool assigns default name', () => {
@@ -590,6 +956,15 @@ describe('create a tool using hostedMcpTool utility', () => {
     expect(t.providerData.server_label).toBe('gitmcp');
   });
 
+  it('defaults MCP approval to never', () => {
+    const t = hostedMcpTool({
+      serverLabel: 'gitmcp',
+      serverUrl: 'https://gitmcp.io/openai/codex',
+    });
+
+    expect(t.providerData.require_approval).toBe('never');
+  });
+
   it('propagates authorization when approval is never required', () => {
     const t = hostedMcpTool({
       serverLabel: 'gitmcp',
@@ -660,6 +1035,37 @@ describe('create a tool using hostedMcpTool utility', () => {
     ).toThrowError(/cannot be listed in both always and never/);
   });
 
+  it.each([
+    [null, /value must be "always", "never", or an object/],
+    [[], /value must be "always", "never", or an object/],
+    [{}, /must include at least one of always or never/],
+    [{ always: null }, /always must be an object/],
+    [{ always: { unsupported: true } }, /unsupported key "unsupported"/],
+    [
+      { always: { toolNames: ['search'], tool_names: ['search'] } },
+      /must not specify both toolNames and tool_names/,
+    ],
+    [
+      { always: { readOnly: true, read_only: true } },
+      /must not specify both readOnly and read_only/,
+    ],
+    [{ always: { toolNames: 'search' } }, /toolNames must be an array/],
+    [
+      { always: { toolNames: [''] } },
+      /toolNames must contain only non-empty strings/,
+    ],
+    [{ always: { readOnly: 'yes' } }, /readOnly must be a boolean/],
+    [{ always: {} }, /must include toolNames or readOnly/],
+  ])('rejects invalid MCP approval policy %#', (requireApproval, message) => {
+    expect(() =>
+      hostedMcpTool({
+        serverLabel: 'gitmcp',
+        serverUrl: 'https://gitmcp.io/openai/codex',
+        requireApproval,
+      } as any),
+    ).toThrowError(message);
+  });
+
   it('normalizes MCP approval tool name filters', () => {
     const t = hostedMcpTool({
       serverLabel: 'gitmcp',
@@ -691,6 +1097,22 @@ describe('create a tool using hostedMcpTool utility', () => {
       never: { tool_names: ['search'], read_only: true },
     });
   });
+
+  it('accepts canonical MCP approval filter keys', () => {
+    const t = hostedMcpTool({
+      serverLabel: 'gitmcp',
+      serverUrl: 'https://gitmcp.io/openai/codex',
+      requireApproval: {
+        always: { tool_names: ['delete'] },
+        never: { read_only: true },
+      },
+    } as any);
+
+    expect(t.providerData.require_approval).toEqual({
+      always: { tool_names: ['delete'] },
+      never: { read_only: true },
+    });
+  });
 });
 
 describe('tool.invoke', () => {
@@ -717,27 +1139,17 @@ describe('tool.invoke', () => {
     expect(res).toBe('bad');
   });
 
-  it('throws InvalidToolInputError with context on malformed JSON', async () => {
-    const t = tool({
-      name: 'test',
-      description: 'test',
-      parameters: z.object({ foo: z.string() }),
-      execute: async () => 'ok',
-      errorFunction: null, // disable error handling to let the error propagate
-    });
-    const ctx = new RunContext();
-    const malformedInput = '{invalid json}';
-
-    await expect(t.invoke(ctx, malformedInput)).rejects.toMatchObject({
-      message: 'Invalid JSON input for tool',
-      toolInvocation: {
-        runContext: ctx,
-        input: malformedInput,
-      },
-    });
-  });
-
-  it('throws InvalidToolInputError with context on Zod validation failure', async () => {
+  it.each([
+    ['malformed JSON', 'SECRET_MALFORMED_TOOL_INPUT_123'],
+    [
+      'schema validation',
+      JSON.stringify({ age: 'SECRET_SCHEMA_TOOL_INPUT_123' }),
+    ],
+  ])('redacts %s failures from direct invocation', async (_label, input) => {
+    const flagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(true);
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
     const t = tool({
       name: 'test',
       description: 'test',
@@ -746,42 +1158,273 @@ describe('tool.invoke', () => {
       errorFunction: null,
     });
     const ctx = new RunContext();
-    const invalidInput = '{"age": "not a number"}';
 
-    await expect(t.invoke(ctx, invalidInput)).rejects.toMatchObject({
-      message: 'Invalid JSON input for tool',
-      toolInvocation: {
-        runContext: ctx,
-        input: invalidInput,
-      },
-    });
+    try {
+      const error = await t.invoke(ctx, input).catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(InvalidToolInputError);
+      expect(error).toMatchObject({
+        message: 'Invalid JSON input for tool',
+        originalError: undefined,
+        toolInvocation: undefined,
+      });
+      expect(error).not.toHaveProperty('cause');
+      expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(input);
+    } finally {
+      debugSpy.mockRestore();
+      flagSpy.mockRestore();
+    }
   });
 
-  it('errorFunction receives InvalidToolInputError with originalError and toolInvocation', async () => {
-    let capturedError: unknown;
+  it.each([
+    ['malformed JSON', 'SECRET_MALFORMED_TOOL_DIAGNOSTIC_123'],
+    [
+      'schema validation',
+      JSON.stringify({ age: 'SECRET_SCHEMA_TOOL_DIAGNOSTIC_123' }),
+    ],
+  ])(
+    'preserves %s diagnostics when tool data is enabled',
+    async (_label, input) => {
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(false);
+      const t = tool({
+        name: 'test',
+        description: 'test',
+        parameters: z.object({ age: z.number() }),
+        execute: async () => 'ok',
+        errorFunction: null,
+      });
+      const ctx = new RunContext();
+      const details = { resumeState: 'resume_123' };
+
+      try {
+        const error = await t
+          .invoke(ctx, input, details)
+          .catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(InvalidToolInputError);
+        expect(error).toMatchObject({
+          message: 'Invalid JSON input for tool',
+          toolInvocation: { runContext: ctx, input, details },
+        });
+        expect(error.originalError).toBeDefined();
+      } finally {
+        flagSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    ['redacted', true],
+    ['diagnostic', false],
+  ] as const)(
+    'applies %s parser context before invoking errorFunction',
+    async (_mode, dontLogToolData) => {
+      const secret = 'SECRET_CUSTOM_ERROR_FUNCTION_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(dontLogToolData);
+      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+      let capturedError: unknown;
+      let capturedDetails: unknown;
+      const t = tool({
+        name: 'test',
+        description: 'test',
+        parameters: z.object({ count: z.number() }),
+        execute: async () => 'ok',
+        errorFunction: (_ctx, error, details) => {
+          capturedError = error;
+          capturedDetails = details;
+          return details?.toolCall?.arguments ?? 'handled';
+        },
+      });
+      const ctx = new RunContext();
+      const invalidInput = JSON.stringify({ count: secret });
+      const details = {
+        toolCall: {
+          type: 'function_call' as const,
+          callId: 'call_custom_error_function',
+          name: 'test',
+          arguments: invalidInput,
+        },
+      };
+
+      try {
+        const res = await t.invoke(ctx, invalidInput, details);
+
+        if (dontLogToolData) {
+          expect(res).toBe('handled');
+          expect(capturedError).toMatchObject({
+            message: 'Invalid JSON input for tool',
+            originalError: undefined,
+            toolInvocation: undefined,
+          });
+          expect(capturedDetails).toBeUndefined();
+          expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(secret);
+        } else {
+          expect(res).toBe(invalidInput);
+          expect(capturedError).toMatchObject({
+            message: 'Invalid JSON input for tool',
+            toolInvocation: { runContext: ctx, input: invalidInput, details },
+          });
+          expect(capturedDetails).toBe(details);
+        }
+      } finally {
+        debugSpy.mockRestore();
+        flagSpy.mockRestore();
+      }
+    },
+  );
+
+  it('discards direct fallback output when secure mode is enabled during errorFunction', async () => {
+    const secret = 'SECRET_DIRECT_LATE_ERROR_FUNCTION_123';
+    let redactToolData = false;
+    const flagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockImplementation(() => redactToolData);
     const t = tool({
-      name: 'test',
+      name: 'late_direct_redaction',
+      description: 'Promote redaction while handling invalid input.',
+      parameters: z.object({ value: z.number() }),
+      execute: async () => 'unexpected',
+      errorFunction: (_context, _error, details) => {
+        redactToolData = true;
+        return details?.toolCall?.arguments ?? 'unexpected';
+      },
+    });
+    const input = JSON.stringify({ value: secret });
+    const details = {
+      toolCall: {
+        type: 'function_call' as const,
+        callId: 'call_late_direct_redaction',
+        name: 'late_direct_redaction',
+        arguments: input,
+      },
+    };
+
+    try {
+      const error = await t
+        .invoke(new RunContext(), input, details)
+        .catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(InvalidToolInputError);
+      expect(error).toMatchObject({
+        message: 'Invalid JSON input for tool',
+        originalError: undefined,
+        toolInvocation: undefined,
+      });
+      expect(JSON.stringify(error)).not.toContain(secret);
+    } finally {
+      flagSpy.mockRestore();
+    }
+  });
+
+  it('preserves errorFunction details for execution errors in redacted mode', async () => {
+    const flagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(true);
+    const details = { resumeState: 'resume_execution_error' };
+    let capturedDetails: unknown;
+    const t = tool({
+      name: 'execution_error',
       description: 'test',
-      parameters: z.object({ count: z.number() }),
-      execute: async () => 'ok',
-      errorFunction: (_ctx, error) => {
-        capturedError = error;
+      parameters: z.object({}),
+      execute: async () => {
+        throw new Error('execution failed');
+      },
+      errorFunction: (_ctx, _error, callbackDetails) => {
+        capturedDetails = callbackDetails;
         return 'handled';
       },
     });
-    const ctx = new RunContext();
-    const invalidInput = '{"count": "not a number"}';
 
-    const res = await t.invoke(ctx, invalidInput);
-    expect(res).toBe('handled');
-    expect(capturedError).toMatchObject({
-      message: 'Invalid JSON input for tool',
-      toolInvocation: {
-        runContext: ctx,
-        input: invalidInput,
-      },
+    try {
+      const result = await t.invoke(new RunContext(), '{}', details);
+
+      expect(result).toBe('handled');
+      expect(capturedDetails).toBe(details);
+    } finally {
+      flagSpy.mockRestore();
+    }
+  });
+
+  it('does not inspect hostile parser errors in redacted mode', async () => {
+    const flagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(true);
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    const t = tool({
+      name: 'hostile_parser',
+      description: 'test',
+      parameters: z.object({
+        value: z.string().refine(() => {
+          revoke();
+          throw proxy;
+        }),
+      }),
+      execute: async () => 'ok',
+      errorFunction: null,
     });
-    expect((capturedError as any).originalError).toBeDefined();
+
+    try {
+      const error = await t
+        .invoke(new RunContext(), '{"value":"trigger"}')
+        .catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(InvalidToolInputError);
+      expect(error.originalError).toBeUndefined();
+      expect(debugSpy).toHaveBeenCalledWith(
+        'Invalid JSON input for tool hostile_parser',
+      );
+    } finally {
+      debugSpy.mockRestore();
+      flagSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['number', 0],
+    ['boolean', false],
+    ['symbol', Symbol('parser failure')],
+  ])('redacts a %s parser-thrown value', async (_label, thrownValue) => {
+    const flagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(true);
+    const execute = vi.fn(async () => 'unexpected');
+    const t = tool({
+      name: 'arbitrary_parser_failure',
+      description: 'test',
+      parameters: z.object({
+        value: z.string().refine(() => {
+          throw thrownValue;
+        }),
+      }),
+      execute,
+      errorFunction: null,
+    });
+    let caught: unknown = 'not thrown';
+
+    try {
+      try {
+        await t.invoke(new RunContext(), '{"value":"trigger"}');
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(caught).toBeInstanceOf(InvalidToolInputError);
+      expect(caught).toMatchObject({
+        message: 'Invalid JSON input for tool',
+        originalError: undefined,
+        toolInvocation: undefined,
+      });
+    } finally {
+      flagSpy.mockRestore();
+    }
   });
 
   it('needsApproval boolean becomes function', async () => {
@@ -863,6 +1506,91 @@ describe('tool.invoke', () => {
     });
 
     expect(result).toBe("Tool 'slow' timed out after 5ms.");
+  });
+
+  it('raises timeouts by default for structured outputs', async () => {
+    const t = tool({
+      name: 'structured_slow',
+      description: 'slow structured tool',
+      parameters: z.object({}),
+      outputSchema: z.object({ status: z.string() }),
+      timeoutMs: 5,
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return { status: 'done' };
+      },
+    });
+
+    await expect(
+      invokeFunctionTool({
+        tool: t,
+        runContext: new RunContext(),
+        input: '{}',
+      }),
+    ).rejects.toBeInstanceOf(ToolTimeoutError);
+  });
+
+  it('validates structured timeout fallbacks', async () => {
+    const t = tool({
+      name: 'structured_timeout_fallback',
+      description: 'slow structured tool',
+      parameters: z.object({}),
+      outputSchema: z.object({ status: z.string() }),
+      timeoutMs: 5,
+      timeoutBehavior: 'error_as_result',
+      timeoutErrorFunction: (_context, _error, details) => ({
+        status: details?.toolCall?.callId ?? 'timed-out',
+      }),
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return { status: 'done' };
+      },
+    });
+
+    await expect(
+      invokeFunctionTool({
+        tool: t,
+        runContext: new RunContext(),
+        input: '{}',
+        details: {
+          toolCall: {
+            type: 'function_call',
+            callId: 'call-structured-timeout',
+            name: 'structured_timeout_fallback',
+            arguments: '{}',
+            status: 'completed',
+          },
+        },
+      }),
+    ).resolves.toEqual({ status: 'call-structured-timeout' });
+  });
+
+  it('requires timeout fallbacks for structured error results', () => {
+    expect(() =>
+      tool({
+        name: 'structured_timeout_without_fallback',
+        description: 'Invalid structured timeout configuration.',
+        parameters: z.object({}),
+        outputSchema: z.object({ status: z.string() }),
+        timeoutMs: 5,
+        timeoutBehavior: 'error_as_result',
+        execute: async () => ({ status: 'done' }),
+        // The cast verifies the runtime boundary in addition to the type test.
+      } as any),
+    ).toThrow(/requires timeoutErrorFunction/);
+
+    const typecheckMissingTimeoutFallback = () =>
+      // @ts-expect-error Structured error results require timeoutErrorFunction.
+      tool({
+        name: 'typecheck_structured_timeout_without_fallback',
+        description: 'Invalid structured timeout configuration.',
+        parameters: z.object({}),
+        outputSchema: z.object({ status: z.string() }),
+        timeoutMs: 5,
+        timeoutBehavior: 'error_as_result',
+        execute: async () => ({ status: 'done' }),
+      });
+    expectTypeOf(typecheckMissingTimeoutFallback).toBeFunction();
   });
 
   it('enforces timeout when invoking FunctionTool directly', async () => {

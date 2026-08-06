@@ -51,6 +51,23 @@ describe('Compaction', () => {
     });
   });
 
+  it.each(['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
+    'uses the 1M context window for %s compaction',
+    (model) => {
+      const capability = compaction();
+
+      expect(CompactionModelInfo.forModel(model)?.contextWindow).toBe(1047576);
+      expect(capability.samplingParams({ model })).toEqual({
+        context_management: [
+          {
+            type: 'compaction',
+            compact_threshold: 942818,
+          },
+        ],
+      });
+    },
+  );
+
   it('tracks Python sandbox model context windows for compaction', () => {
     expect(CompactionModelInfo.forModel('o1-pro')?.contextWindow).toBe(200000);
     expect(CompactionModelInfo.forModel('o3-mini')?.contextWindow).toBe(200000);

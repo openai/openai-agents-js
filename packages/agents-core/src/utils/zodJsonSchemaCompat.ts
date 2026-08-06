@@ -303,10 +303,8 @@ function buildArraySchema(
 function buildTupleSchema(
   def: Record<string, unknown> | undefined,
 ): JsonSchemaDefinitionEntry | undefined {
-  const items = coerceArray(def?.items)
-    .map((item) => convertSchema(item))
-    .filter(Boolean) as JsonSchemaDefinitionEntry[];
-  if (!items.length) {
+  const items = convertAllOrFail(coerceArray(def?.items));
+  if (!items || !items.length) {
     return undefined;
   }
   const schema: JsonSchemaDefinitionEntry = {
@@ -323,10 +321,30 @@ function buildTupleSchema(
 function buildUnionSchema(
   def: Record<string, unknown> | undefined,
 ): JsonSchemaDefinitionEntry | undefined {
-  const options = coerceArray(def?.options ?? def?.schemas)
-    .map((option) => convertSchema(option))
-    .filter(Boolean) as JsonSchemaDefinitionEntry[];
-  return options.length ? { anyOf: options } : undefined;
+  const options = convertAllOrFail(coerceArray(def?.options ?? def?.schemas));
+  return options && options.length ? { anyOf: options } : undefined;
+}
+
+/**
+ * Converts every member or fails the whole collection. Silently dropping an
+ * unconvertible member would emit a schema that looks valid but forbids
+ * outputs the Zod schema accepts — e.g. a discriminated-union action variant
+ * containing `z.preprocess` disappears from the union, so a model constrained
+ * by the emitted schema can never produce that action. Returning `undefined`
+ * propagates the failure so callers surface a descriptive error instead.
+ */
+function convertAllOrFail(
+  members: unknown[],
+): JsonSchemaDefinitionEntry[] | undefined {
+  const converted: JsonSchemaDefinitionEntry[] = [];
+  for (const member of members) {
+    const schema = convertSchema(member);
+    if (!schema) {
+      return undefined;
+    }
+    converted.push(schema);
+  }
+  return converted;
 }
 
 function buildIntersectionSchema(
@@ -432,11 +450,7 @@ function buildLiteral(
     return undefined;
   }
   const literal = extractFirst(def, 'value', 'literal') as
-    | string
-    | number
-    | boolean
-    | null
-    | undefined;
+    string | number | boolean | null | undefined;
   if (literal === undefined && Array.isArray(def.values)) {
     const values = def.values as Array<string | number | boolean | null>;
     if (values.length === 1) {

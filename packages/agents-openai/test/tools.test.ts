@@ -1,14 +1,26 @@
 import { getClientToolSearchExecutor } from '@openai/agents-core';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, expectTypeOf } from 'vitest';
 import {
   codeInterpreterTool,
   fileSearchTool,
   imageGenerationTool,
+  programmaticToolCallingTool,
   toolSearchTool,
+  type ProgrammaticToolCallingTool,
   webSearchTool,
 } from '../src/tools';
 
 describe('Tool', () => {
+  it('programmaticToolCallingTool', () => {
+    const tool = programmaticToolCallingTool();
+    expectTypeOf(tool).toEqualTypeOf<ProgrammaticToolCallingTool>();
+    expect(tool).toEqual({
+      type: 'hosted_tool',
+      name: 'programmatic_tool_calling',
+      providerData: { type: 'programmatic_tool_calling' },
+    });
+  });
+
   it('webSearchTool', () => {
     const t = webSearchTool({
       userLocation: { type: 'approximate', city: 'Tokyo' },
@@ -58,6 +70,25 @@ describe('Tool', () => {
         include_outputs: true,
       },
     });
+  });
+
+  it('codeInterpreterTool preserves allowed callers', () => {
+    expect(
+      codeInterpreterTool({ allowedCallers: ['programmatic'] }),
+    ).toMatchObject({
+      providerData: { allowed_callers: ['programmatic'] },
+    });
+  });
+
+  it('codeInterpreterTool rejects invalid allowed callers', () => {
+    expect(() => codeInterpreterTool({ allowedCallers: [] as any })).toThrow(
+      /must contain at least one caller/,
+    );
+    expect(() =>
+      codeInterpreterTool({
+        allowedCallers: ['programmatic', 'programmatic'] as any,
+      }),
+    ).toThrow(/must not contain duplicate callers/);
   });
 
   it('imageGenerationTool with gpt-image-1', () => {

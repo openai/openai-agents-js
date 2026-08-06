@@ -1,6 +1,6 @@
 import type { Agent, AgentOutputType } from '../agent';
 import { UserError } from '../errors';
-import logger from '../logger';
+import logger, { logToolActionWarning } from '../logger';
 import { rehydrateProcessedResponseTools, type RunState } from '../runState';
 import type { SandboxRuntimeManager } from '../sandbox/runtime';
 import type { SandboxMemoryAgentRunner } from '../sandbox/memory/generation';
@@ -9,8 +9,11 @@ import { isSandboxAgent } from '../sandbox/runtime/agentKeys';
 import { processedResponseRequiresExecutionToolRehydration } from '../sandbox/runtime/toolRehydration';
 import { disposeResolvedComputers } from '../tool';
 import { resetCurrentSpan } from '../tracing/context';
+import type { Span } from '../tracing/spans';
+import type { Trace } from '../tracing/traces';
 import type { AgentInputItem } from '../types';
 import { prepareAgentArtifacts } from './modelPreparation';
+import type { ToolNameCollisionPolicy } from './runConfig';
 
 export type SandboxMemoryPersistenceContext = {
   sdkSessionId?: () => Promise<string | undefined>;
@@ -25,8 +28,17 @@ export async function prepareSandboxInterruptedTurnResume<
   state: RunState<TContext, TAgent>;
   sandboxRuntime: SandboxRuntimeManager<TContext>;
   runConfigModel?: SandboxRuntimeModel;
+  toolNameCollisionPolicy?: ToolNameCollisionPolicy;
+  tracingParent?: Span<any> | Trace;
 }): Promise<void> {
-  const { startingAgent, state, sandboxRuntime, runConfigModel } = args;
+  const {
+    startingAgent,
+    state,
+    sandboxRuntime,
+    runConfigModel,
+    toolNameCollisionPolicy,
+    tracingParent,
+  } = args;
   logger.debug('Continuing from interruption');
   if (!state._lastTurnResponse || !state._lastProcessedResponse) {
     throw new UserError('No model response found in previous state', state);
@@ -44,14 +56,16 @@ export async function prepareSandboxInterruptedTurnResume<
   }
 
   const resumedPreservedSessions =
-    await sandboxRuntime.adoptPreservedOwnedSessions();
+    await sandboxRuntime.adoptPreservedOwnedSessions(tracingParent);
   if (resumedPreservedSessions || requiresExecutionToolRehydration) {
     await rehydrateInterruptedTurnExecutionTools({
       startingAgent,
       state,
       sandboxRuntime,
       runConfigModel,
+      toolNameCollisionPolicy,
       force: resumedPreservedSessions,
+      tracingParent,
     });
   }
 }
@@ -60,26 +74,34 @@ export async function finalizeSandboxRuntime<TContext>(args: {
   state: RunState<TContext, Agent<TContext, AgentOutputType>>;
   sandboxRuntime: SandboxRuntimeManager<TContext>;
   preserveSessionsForInterruption: boolean;
+  finishAgentSpanForInterruption?: boolean;
   runError?: unknown;
   groupId?: string;
   memoryContext?: SandboxMemoryPersistenceContext;
   runAgent: SandboxMemoryAgentRunner;
+  tracingParent?: Span<any> | Trace;
 }): Promise<void> {
   const {
     state,
     sandboxRuntime,
     preserveSessionsForInterruption,
+    finishAgentSpanForInterruption = false,
     runError,
     groupId,
     memoryContext,
     runAgent,
+    tracingParent,
   } = args;
 
   if (!preserveSessionsForInterruption) {
     try {
       await disposeResolvedComputers({ runContext: state._context });
     } catch (error) {
-      logger.warn(`Failed to dispose computers after run: ${error}`);
+      logToolActionWarning(
+        logger,
+        'Failed to dispose computers after run:',
+        error,
+      );
     }
   }
 
@@ -90,15 +112,20 @@ export async function finalizeSandboxRuntime<TContext>(args: {
     sdkSessionId: memoryContext?.sdkSessionId,
     runAgent: async (agent, input, runOptions) =>
       await runAgent(agent, input, runOptions),
+    tracingParent,
   });
   try {
     await sandboxRuntime.cleanup(state, {
       preserveOwnedSessions: preserveSessionsForInterruption,
+      tracingParent,
     });
   } finally {
     if (state._currentAgentSpan) {
       try {
-        if (!preserveSessionsForInterruption) {
+        if (
+          !preserveSessionsForInterruption ||
+          finishAgentSpanForInterruption
+        ) {
           state._currentAgentSpan.end();
         }
       } finally {
@@ -116,9 +143,19 @@ export async function rehydrateInterruptedTurnExecutionTools<
   state: RunState<TContext, TAgent>;
   sandboxRuntime: SandboxRuntimeManager<TContext>;
   runConfigModel?: SandboxRuntimeModel;
+  toolNameCollisionPolicy?: ToolNameCollisionPolicy;
   force?: boolean;
+  tracingParent?: Span<any> | Trace;
 }): Promise<void> {
-  const { startingAgent, state, sandboxRuntime, runConfigModel, force } = args;
+  const {
+    startingAgent,
+    state,
+    sandboxRuntime,
+    runConfigModel,
+    toolNameCollisionPolicy,
+    force,
+    tracingParent,
+  } = args;
   if (
     !force &&
     !processedResponseRequiresExecutionToolRehydration(
@@ -132,10 +169,12 @@ export async function rehydrateInterruptedTurnExecutionTools<
     currentAgent: state._currentAgent,
     turnInput: [],
     runConfigModel,
+    tracingParent,
   });
   const artifacts = await prepareAgentArtifacts(
     state,
     preparedSandboxAgent.executionAgent,
+    toolNameCollisionPolicy,
   );
   await rehydrateProcessedResponseTools(startingAgent, state, artifacts.tools);
 }

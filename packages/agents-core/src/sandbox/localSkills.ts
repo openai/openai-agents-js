@@ -8,7 +8,10 @@ import {
 import { localDir } from './entries';
 import type { Manifest } from './manifest';
 import type { SandboxPathGrant } from './pathGrants';
-import { isHostPathWithinRoot } from './shared/hostPath';
+import {
+  isHostPathWithinRoot,
+  sandboxPathGrantHostPath,
+} from './shared/hostPath';
 
 export type LocalDirLazySkillSourceOptions = {
   /**
@@ -86,7 +89,10 @@ function resolveLocalSkillSourcePath(
   if (
     isHostPathWithinRoot(base, resolvedSourcePath) ||
     sourceGrants.some((grant) =>
-      isHostPathWithinRoot(resolve(grant.path), resolvedSourcePath),
+      isHostPathWithinRoot(
+        resolve(sandboxPathGrantHostPath(grant)),
+        resolvedSourcePath,
+      ),
     )
   ) {
     return resolvedSourcePath;

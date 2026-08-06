@@ -2,10 +2,12 @@ import {
   attachClientToolSearchExecutor,
   HostedTool,
   type ClientToolSearchExecutor,
+  type ToolAllowedCallers,
   UserError,
 } from '@openai/agents-core';
 import type OpenAI from 'openai';
 import { z } from 'zod';
+import { normalizeToolAllowedCallers } from '@openai/agents-core/utils/internal';
 import * as ProviderData from './types/providerData';
 
 // -----------------------------------------------------
@@ -155,8 +157,17 @@ export type CodeInterpreterTool = {
    */
   includeOutputs?: boolean;
   container?:
-    | string
-    | OpenAI.Responses.Tool.CodeInterpreter.CodeInterpreterToolAuto;
+    string | OpenAI.Responses.Tool.CodeInterpreter.CodeInterpreterToolAuto;
+  /**
+   * Execution contexts allowed to invoke code interpreter.
+   */
+  allowedCallers?: ToolAllowedCallers;
+};
+
+export type ProgrammaticToolCallingTool = HostedTool & {
+  type: 'hosted_tool';
+  name: 'programmatic_tool_calling';
+  providerData: ProviderData.ProgrammaticToolCallingTool;
 };
 
 export type ToolSearchTool<Context = unknown> = {
@@ -176,16 +187,34 @@ export type ToolSearchTool<Context = unknown> = {
 export function codeInterpreterTool(
   options: Partial<Omit<CodeInterpreterTool, 'type'>> = {},
 ): HostedTool {
+  const allowedCallers = normalizeToolAllowedCallers(
+    options.allowedCallers,
+    options.name ?? 'code_interpreter',
+  );
   const providerData: ProviderData.CodeInterpreterTool = {
     type: 'code_interpreter',
     name: options.name ?? 'code_interpreter',
     container: options.container ?? { type: 'auto' },
     include_outputs: options.includeOutputs,
+    allowed_callers: allowedCallers ? [...allowedCallers] : undefined,
   };
   return {
     type: 'hosted_tool',
     name: options.name ?? 'code_interpreter',
     providerData,
+  };
+}
+
+/**
+ * Enables Programmatic Tool Calling for eligible Responses API tools.
+ */
+export function programmaticToolCallingTool(): ProgrammaticToolCallingTool {
+  return {
+    type: 'hosted_tool',
+    name: 'programmatic_tool_calling',
+    providerData: {
+      type: 'programmatic_tool_calling',
+    } satisfies ProviderData.ProgrammaticToolCallingTool,
   };
 }
 

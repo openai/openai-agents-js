@@ -25,6 +25,8 @@ export type TransportToolCallEvent = {
   callId: string;
   arguments: string;
   previousItemId?: string;
+  /** The response that produced this tool call. */
+  responseId: string;
 };
 
 /**
@@ -58,6 +60,13 @@ export type InputAudioTranscriptionCompletedEvent = {
 
 export type TransportLayerTranscriptDelta = {
   type: 'transcript_delta';
+  itemId: string;
+  delta: string;
+  responseId: string;
+};
+
+export type TransportLayerOutputTextDelta = {
+  type: 'output_text_delta';
   itemId: string;
   delta: string;
   responseId: string;
@@ -111,6 +120,11 @@ export type RealtimeTransportEventTypes = {
    * Triggered when there is a new text delta of the transcript available.
    */
   audio_transcript_delta: [deltaEvent: TransportLayerTranscriptDelta];
+
+  /**
+   * Triggered when there is a new text output delta available.
+   */
+  output_text_delta: [deltaEvent: TransportLayerOutputTextDelta];
 
   /**
    * Triggered when the audio generation is done.

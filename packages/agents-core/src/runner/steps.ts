@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ModelResponse } from '../model';
 import { RunItem } from '../items';
 import { AgentInputItem } from '../types';
+import type { FinalOutputSource } from '../runState';
 
 export const nextStepSchema = z.discriminatedUnion('type', [
   z.object({
@@ -30,6 +31,7 @@ export class SingleStepResult {
     public preStepItems: RunItem[],
     public newStepItems: RunItem[],
     public nextStep: NextStep,
+    public finalOutputSource?: FinalOutputSource,
   ) {}
 
   get generatedItems(): RunItem[] {

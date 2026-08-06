@@ -1,6 +1,11 @@
 import { Agent, AgentOutputType } from './agent';
 import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
-import { ModelBehaviorError, UserError } from './errors';
+import {
+  AgentsError,
+  ModelBehaviorError,
+  OutputGuardrailTripwireTriggered,
+  UserError,
+} from './errors';
 import {
   defineInputGuardrail,
   defineOutputGuardrail,
@@ -15,7 +20,7 @@ import type {
 } from './guardrail';
 import { Handoff, HandoffInputFilter } from './handoff';
 import { RunHooks } from './lifecycle';
-import logger from './logger';
+import logger, { logModelAndToolActionDebug } from './logger';
 import { Model, ModelProvider, ModelResponse, ModelSettings } from './model';
 import { getDefaultModelProvider } from './providers';
 import { RunContext } from './runContext';
@@ -23,15 +28,19 @@ import { RunResult, StreamedRunResult } from './result';
 import { RunState } from './runState';
 import { RunItem } from './items';
 import {
-  getOrCreateTrace,
+  getCurrentTrace,
+  getCurrentTraceContext,
   resetCurrentSpan,
   setCurrentSpan,
   withNewSpanContext,
   withTrace,
+  withTraceContext,
 } from './tracing/context';
 import type { TracingConfig } from './tracing';
+import { includeTaskAndTurnSpans, mergeTracingConfig } from './tracing/config';
 import { Usage } from './usage';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
+import { isDataRedactedError } from './utils/finalOutputError';
 import { DEFAULT_MAX_TURNS } from './runner/constants';
 import { StreamEventResponseCompleted } from './types/protocol';
 import type { Session, SessionInputCallback } from './memory/session';
@@ -53,7 +62,6 @@ import {
   maybeResetToolChoice,
   selectModel,
 } from './runner/modelSettings';
-import { getDefaultModelSettings } from './defaultModel';
 import {
   getResponseWithRetry,
   getStreamedResponseWithRetry,
@@ -66,12 +74,19 @@ import {
 } from './runner/streaming';
 import {
   createSessionPersistenceTracker,
+  captureSessionHistoryTransactionInputItems,
+  markSessionHistoryTransactionInputPersisted,
+  prepareSessionHistoryTransactionsForRun,
+  releaseProvisionalSessionHistoryTransactionBinding,
+  releaseUnusedSessionHistoryTransactionBinding,
   prepareInputItemsWithSession,
   saveStreamInputToSession,
   saveStreamResultToSession,
   saveToSession,
+  type SessionPersistenceOptions,
 } from './runner/sessionPersistence';
 import { resolveTurnAfterModelResponse } from './runner/turnResolution';
+import { hasBlockedOutputExecutionEffect } from './runner/blockedOutputPersistence';
 import { prepareTurn } from './runner/turnPreparation';
 import { prepareAgentArtifacts } from './runner/modelPreparation';
 import {
@@ -79,14 +94,45 @@ import {
   handleInterruptedOutcome,
   resumeInterruptedTurn,
 } from './runner/runLoop';
-import { applyTraceOverrides, getTracing } from './runner/tracing';
-import type { ReasoningItemIdPolicy } from './runner/items';
+import {
+  applyTraceOverrides,
+  ensureActiveAgentSpanForInterruptedResume,
+  ensureTurnSpan,
+  finishRunnerSpan,
+  getRunnerSpanErrorDetails,
+  getTracing,
+  setRunnerSpanError,
+  startRunnerInvocationSpans,
+  startTurnSpan,
+  recordRunnerSpanUsage,
+  type RunnerSpanLifecycle,
+} from './runner/tracing';
+import {
+  getRunnerParentUsageRecorder,
+  setRunStateUsageRecorder,
+} from './runner/usageTracking';
+import {
+  getRunnerInvocationSpanParent,
+  getRunStateTurnSpanParent,
+  setRunStateTurnSpanParent,
+} from './runner/invocationContext';
+import type { Span, TaskSpanData } from './tracing/spans';
+import { NoopTrace, type Trace } from './tracing/traces';
+import { NOOP_TRACE_OR_SPAN_ID } from './tracing/utils';
+import {
+  assertValidCompactionItems,
+  CompactionItemValidationError,
+  type ReasoningItemIdPolicy,
+} from './runner/items';
 import type {
   AgentArtifacts,
   CallModelInputFilter,
   PreparedModelCall,
 } from './runner/types';
-import { tryHandleRunError } from './runner/errorHandlers';
+import {
+  attachRunStateToError,
+  prepareRunErrorFinalOutput,
+} from './runner/errorHandlers';
 import type { RunErrorHandlers } from './runner/errorHandlers';
 import {
   finalizeSandboxRuntime,
@@ -102,6 +148,30 @@ import {
   recordStreamEventForAbortReconciliation,
   shouldReconcileStreamAbort,
 } from './runner/streamReconciliation';
+import {
+  getImplicitModelSettingsForResolvedModel,
+  validateToolExecutionConfig,
+  validateToolNameCollisionPolicy,
+  type ToolExecutionConfig,
+  type ToolNameCollisionPolicy,
+} from './runner/runConfig';
+export type {
+  ToolExecutionConfig,
+  ToolNameCollisionPolicy,
+} from './runner/runConfig';
+
+function hasPersistedToolOutput(state: RunState<any, any>): boolean {
+  return state._generatedItems
+    .slice(0, state._currentTurnPersistedItemCount)
+    .some((item) => item.type === 'tool_call_output_item');
+}
+
+function hasRetainableBlockedOutputEffect(state: RunState<any, any>): boolean {
+  return hasBlockedOutputExecutionEffect(
+    state._generatedItems,
+    state._currentTurnPersistedItemCount,
+  );
+}
 
 export type {
   CallModelInputFilter,
@@ -123,26 +193,15 @@ export type { ReasoningItemIdPolicy } from './runner/items';
 
 // Maintenance: keep helper utilities (e.g., GuardrailTracker) in runner/* modules so run.ts stays orchestration-only.
 
-function getImplicitModelSettingsForResolvedModel(
-  explictlyModelSet: boolean,
-  resolvedModelName?: string,
-): ModelSettings {
-  if (resolvedModelName && resolvedModelName.trim().length > 0) {
-    return getDefaultModelSettings(resolvedModelName);
-  }
-  if (explictlyModelSet) {
-    return {};
-  }
-  return getDefaultModelSettings();
-}
-
 // --------------------------------------------------------------
 //  Configuration
 // --------------------------------------------------------------
 
+export type ToolErrorKind = 'approval_rejected' | 'tool_not_found';
+
 export type ToolErrorFormatterArgs<
   TContext = unknown,
-  TKind extends 'approval_rejected' = 'approval_rejected',
+  TKind extends ToolErrorKind = ToolErrorKind,
 > = {
   /**
    * The category of tool error being formatted.
@@ -177,29 +236,7 @@ export type ToolErrorFormatter<TContext = unknown> = (
 /**
  * SDK-side execution settings for local tool calls.
  */
-export type ToolExecutionConfig = {
-  /**
-   * Maximum number of local function tool calls to execute concurrently.
-   * Set to `null` or leave unset to start all function tool calls emitted in a turn.
-   * This does not change provider-side `parallelToolCalls` behavior.
-   */
-  maxFunctionToolConcurrency?: number | null;
-};
-
-function validateToolExecutionConfig(
-  config: ToolExecutionConfig | undefined,
-): ToolExecutionConfig | undefined {
-  const maxConcurrency = config?.maxFunctionToolConcurrency;
-  if (maxConcurrency == null) {
-    return config;
-  }
-  if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
-    throw new UserError(
-      'toolExecution.maxFunctionToolConcurrency must be an integer greater than or equal to 1.',
-    );
-  }
-  return config;
-}
+export type ToolNotFoundBehavior = 'raise_error' | 'return_error_to_model';
 
 /**
  * Configures settings for the entire agent run.
@@ -207,14 +244,15 @@ function validateToolExecutionConfig(
 export type RunConfig = {
   /**
    * The model to use for the entire agent run. If set, will override the model set on every
-   * agent. The modelProvider passed in below must be able to resolve this model name.
+   * agent. String model names are resolved with the configured modelProvider, or the default
+   * model provider if no explicit provider is configured.
    */
   model?: string | Model;
 
   /**
    * The model provider to use when looking up string model names. Defaults to OpenAI.
    */
-  modelProvider: ModelProvider;
+  modelProvider?: ModelProvider;
 
   /**
    * Configure global model settings. Any non-null values will override the agent-specific model
@@ -289,6 +327,24 @@ export type RunConfig = {
   toolExecution?: ToolExecutionConfig;
 
   /**
+   * Controls unresolved function tool calls emitted by the model.
+   *
+   * - `raise_error` preserves the default behavior and raises a `ModelBehaviorError`.
+   * - `return_error_to_model` returns a model-visible tool error and lets the run continue.
+   */
+  toolNotFoundBehavior?: ToolNotFoundBehavior;
+
+  /**
+   * Controls collisions between enabled function tool and handoff names.
+   *
+   * - `warn` logs an actionable warning and exposes only the current dispatch winner.
+   * - `error` raises `UserError` before the model is called.
+   *
+   * Defaults to `warn`. Existing strict validation for namespaced and deferred tools is unchanged.
+   */
+  toolNameCollisionPolicy?: ToolNameCollisionPolicy;
+
+  /**
    * Customizes how session history is combined with the current turn's input.
    * When omitted, history items are appended before the new input.
    */
@@ -332,6 +388,8 @@ type SharedRunOptions<
   tracing?: TracingConfig;
   sandbox?: SandboxRunConfig;
   toolExecution?: ToolExecutionConfig;
+  toolNotFoundBehavior?: ToolNotFoundBehavior;
+  toolNameCollisionPolicy?: ToolNameCollisionPolicy;
   /**
    * Error handlers keyed by error kind.
    */
@@ -372,6 +430,24 @@ export type IndividualRunOptions<
   TAgent extends Agent<any, any> = Agent<any, any>,
 > = StreamRunOptions<TContext, TAgent> | NonStreamRunOptions<TContext, TAgent>;
 
+type RunnerConfig = RunConfig & {
+  modelProvider: ModelProvider;
+};
+
+class LazyDefaultModelProvider implements ModelProvider {
+  #modelProvider: ModelProvider | undefined;
+
+  getModel(modelName?: string): Promise<Model> | Model {
+    const modelProvider = this.#modelProvider ?? getDefaultModelProvider();
+    this.#modelProvider = modelProvider;
+    return modelProvider.getModel(modelName);
+  }
+}
+
+function isNoopTrace(trace: Trace | null | undefined): boolean {
+  return trace instanceof NoopTrace || trace?.traceId === NOOP_TRACE_OR_SPAN_ID;
+}
+
 // --------------------------------------------------------------
 //  Runner
 // --------------------------------------------------------------
@@ -398,8 +474,7 @@ export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
   agent: TAgent,
   input: string | AgentInputItem[] | RunState<TContext, TAgent>,
   options?:
-    | StreamRunOptions<TContext, TAgent>
-    | NonStreamRunOptions<TContext, TAgent>,
+    StreamRunOptions<TContext, TAgent> | NonStreamRunOptions<TContext, TAgent>,
 ): Promise<RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>> {
   const runner = getDefaultRunner();
   if (options?.stream) {
@@ -414,7 +489,7 @@ export async function run<TAgent extends Agent<any, any>, TContext = undefined>(
  * tracing. Reuse a `Runner` instance when you want consistent configuration across multiple runs.
  */
 export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
-  public readonly config: RunConfig;
+  public readonly config: RunnerConfig;
   private readonly traceOverrides: {
     traceId?: string;
     workflowName?: string;
@@ -431,7 +506,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   constructor(config: Partial<RunConfig> = {}) {
     super();
     this.config = {
-      modelProvider: config.modelProvider ?? getDefaultModelProvider(),
+      modelProvider: config.modelProvider ?? new LazyDefaultModelProvider(),
       model: config.model,
       modelSettings: config.modelSettings,
       handoffInputFilter: config.handoffInputFilter,
@@ -446,6 +521,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       tracing: config.tracing,
       sandbox: config.sandbox,
       toolExecution: validateToolExecutionConfig(config.toolExecution),
+      toolNotFoundBehavior: config.toolNotFoundBehavior ?? 'raise_error',
+      toolNameCollisionPolicy: validateToolNameCollisionPolicy(
+        config.toolNameCollisionPolicy,
+      ),
       sessionInputCallback: config.sessionInputCallback,
       callModelInputFilter: config.callModelInputFilter,
       toolErrorFormatter: config.toolErrorFormatter,
@@ -514,6 +593,29 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   ): Promise<
     RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>
   > {
+    if (input instanceof RunState) {
+      if (isNoopTrace(input._trace)) {
+        input._trace = null;
+      }
+      if (input._currentAgentSpan?.spanId === NOOP_TRACE_OR_SPAN_ID) {
+        input.setCurrentAgentSpan(undefined);
+      }
+    }
+    const taskSpanName = this.#getTaskSpanName(
+      input instanceof RunState ? input._trace?.name : undefined,
+    );
+    const capturedInvocationTraceContext = getCurrentTraceContext();
+    const invocationTraceContext = isNoopTrace(
+      capturedInvocationTraceContext?.trace,
+    )
+      ? undefined
+      : capturedInvocationTraceContext;
+    const configuredInvocationSpanParent = getRunnerInvocationSpanParent(this);
+    const invocationSpanParent: Span<any> | Trace | undefined =
+      configuredInvocationSpanParent ??
+      (input instanceof RunState && input._trace
+        ? input._trace
+        : (invocationTraceContext?.span ?? invocationTraceContext?.trace));
     const resolvedOptions = options ?? { stream: false, context: undefined };
     // Per-run options take precedence over runner defaults for session memory behavior.
     const sessionInputCallback =
@@ -526,12 +628,29 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       resolvedOptions.toolErrorFormatter ?? this.config.toolErrorFormatter;
     const reasoningItemIdPolicy =
       resolvedOptions.reasoningItemIdPolicy ??
+      (input instanceof RunState ? input._reasoningItemIdPolicy : undefined) ??
       this.config.reasoningItemIdPolicy;
     const toolExecution = validateToolExecutionConfig(
       resolvedOptions.toolExecution ?? this.config.toolExecution,
     );
+    const toolNotFoundBehavior =
+      resolvedOptions.toolNotFoundBehavior ?? this.config.toolNotFoundBehavior;
+    const toolNameCollisionPolicy = validateToolNameCollisionPolicy(
+      resolvedOptions.toolNameCollisionPolicy === undefined
+        ? this.config.toolNameCollisionPolicy
+        : resolvedOptions.toolNameCollisionPolicy,
+    );
     const hasCallModelInputFilter = Boolean(callModelInputFilter);
-    const tracingConfig = resolvedOptions.tracing ?? this.config.tracing;
+    const tracingConfig = mergeTracingConfig(
+      this.config.tracing,
+      resolvedOptions.tracing,
+    );
+    const runContext =
+      input instanceof RunState
+        ? input._context
+        : resolvedOptions.context instanceof RunContext
+          ? resolvedOptions.context
+          : new RunContext(resolvedOptions.context);
     const traceOverrides = {
       ...this.traceOverrides,
       ...(resolvedOptions.tracing?.apiKey !== undefined
@@ -540,16 +659,25 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     };
     const effectiveOptions = {
       ...resolvedOptions,
+      context: runContext,
       sessionInputCallback,
       callModelInputFilter,
       toolErrorFormatter,
       reasoningItemIdPolicy,
       toolExecution,
+      toolNotFoundBehavior,
+      toolNameCollisionPolicy,
+      tracing: tracingConfig,
     };
+    const useTaskAndTurnSpans =
+      !this.config.tracingDisabled && includeTaskAndTurnSpans(tracingConfig);
     const resumingFromState = input instanceof RunState;
+    // A resumed turn may be inactive but already have persisted items.
     const preserveTurnPersistenceOnResume =
       resumingFromState &&
-      (input as RunState<TContext, TAgent>)._currentTurnInProgress === true;
+      ((input as RunState<TContext, TAgent>)._currentTurnInProgress === true ||
+        (input as RunState<TContext, TAgent>)._currentTurnPersistedItemCount >
+          0);
     const resumedConversationId = resumingFromState
       ? (input as RunState<TContext, TAgent>)._conversationId
       : undefined;
@@ -562,11 +690,36 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // When the server tracks conversation history we defer to it for previous turns so local session
     // persistence can focus solely on the new delta being generated in this process.
     const session = effectiveOptions.session;
+    let provisionalSessionHistoryTransactionSessionId: string | undefined;
+    let provisionalSessionHistoryTransactionInputItems:
+      AgentInputItem[] | undefined;
+    if (resumingFromState) {
+      const resumedState = input as RunState<TContext, TAgent>;
+      const hadSessionBinding =
+        resumedState._currentTurnSessionHistoryTransactionSessionId !==
+        undefined;
+      const portableInputItems =
+        resumedState._currentTurnSessionHistoryTransactionInputItems;
+      resumedState.setReasoningItemIdPolicy(reasoningItemIdPolicy);
+      await prepareSessionHistoryTransactionsForRun(session, resumedState, {
+        serverManagesConversation,
+      });
+      if (!hadSessionBinding) {
+        provisionalSessionHistoryTransactionSessionId =
+          resumedState._currentTurnSessionHistoryTransactionSessionId;
+        provisionalSessionHistoryTransactionInputItems = portableInputItems;
+      }
+    }
     const sessionPersistence = createSessionPersistenceTracker({
       session,
+      runContext,
       hasCallModelInputFilter,
       persistInput: saveStreamInputToSession,
       resumingFromState,
+      resumedSessionInputItems: resumingFromState
+        ? (input as RunState<TContext, TAgent>)
+            ._currentTurnSessionHistoryTransactionInputItems
+        : undefined,
     });
 
     let preparedInput: typeof input = input;
@@ -582,6 +735,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           preserveDroppedNewItems: serverManagesConversation,
           reasoningItemIdPolicy,
         },
+        runContext,
       );
       if (serverManagesConversation && session) {
         // When the server manages memory we only persist the new turn inputs locally so the
@@ -595,26 +749,40 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       } else {
         preparedInput = prepared.preparedInput;
       }
-      sessionPersistence?.setPreparedItems(prepared.sessionItems);
+      sessionPersistence?.setPreparedItems(
+        prepared.sessionItems,
+        prepared.preparedInput,
+      );
     }
     // Streaming runs persist the input asynchronously, so track a one-shot helper
     // that can be awaited from multiple branches without double-writing.
     const ensureStreamInputPersisted =
       sessionPersistence?.buildPersistInputOnce(serverManagesConversation);
 
-    const executeRun = async () => {
+    const executeRun = async (
+      effectiveInvocationSpanParent = invocationSpanParent,
+    ) => {
       if (effectiveOptions.stream) {
         const streamResult = await this.#runIndividualStream(
           agent,
           preparedInput,
+          taskSpanName,
           effectiveOptions,
           ensureStreamInputPersisted,
+          sessionPersistence?.setPreparedTurnItems,
           sessionPersistence?.recordTurnItems,
+          sessionPersistence?.getItemsForPersistence,
           preserveTurnPersistenceOnResume,
+          provisionalSessionHistoryTransactionSessionId,
+          provisionalSessionHistoryTransactionInputItems,
           {
             sdkSessionId: async () => await session?.getSessionId(),
-            inputOverride: () => sessionPersistence?.getItemsForPersistence(),
+            inputOverride: () =>
+              session
+                ? sessionPersistence?.getItemsForPersistence()
+                : undefined,
           },
+          effectiveInvocationSpanParent,
         );
         return streamResult;
       }
@@ -622,24 +790,65 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         agent,
         preparedInput,
         effectiveOptions,
+        taskSpanName,
+        sessionPersistence?.setPreparedTurnItems,
         sessionPersistence?.recordTurnItems,
+        sessionPersistence?.getItemsForPersistence,
         preserveTurnPersistenceOnResume,
+        provisionalSessionHistoryTransactionSessionId,
+        provisionalSessionHistoryTransactionInputItems,
         {
           sdkSessionId: async () => await session?.getSessionId(),
-          inputOverride: () => sessionPersistence?.getItemsForPersistence(),
+          inputOverride: () =>
+            session ? sessionPersistence?.getItemsForPersistence() : undefined,
         },
+        effectiveInvocationSpanParent,
+        session && sessionPersistence && !serverManagesConversation
+          ? async (result, persistenceOptions) => {
+              await saveToSession(
+                session,
+                sessionPersistence.getItemsForPersistence(),
+                result,
+                persistenceOptions,
+              );
+            }
+          : undefined,
       );
-      // See note above: allow sessions to run for callbacks/state but skip writes when the server
-      // is the source of truth for transcript history.
-      if (sessionPersistence && !serverManagesConversation) {
-        await saveToSession(
-          session,
-          sessionPersistence.getItemsForPersistence(),
-          runResult,
-        );
-      }
       return runResult;
     };
+
+    if (this.config.tracingDisabled) {
+      const disabledTrace = new NoopTrace();
+      if (preparedInput instanceof RunState) {
+        preparedInput._currentAgentSpan?.end();
+        preparedInput._trace = null;
+        preparedInput.setCurrentAgentSpan(undefined);
+      }
+      return withTrace(disabledTrace, async () => {
+        try {
+          const result = await executeRun(disabledTrace);
+          const clearDisabledTraceState = () => {
+            result.state._trace = null;
+            result.state.setCurrentAgentSpan(undefined);
+          };
+          if (result instanceof StreamedRunResult) {
+            void result.completed.then(
+              clearDisabledTraceState,
+              clearDisabledTraceState,
+            );
+          } else {
+            clearDisabledTraceState();
+          }
+          return result;
+        } catch (error) {
+          if (error instanceof AgentsError && error.state) {
+            error.state._trace = null;
+            error.state.setCurrentAgentSpan(undefined);
+          }
+          throw error;
+        }
+      });
+    }
 
     if (preparedInput instanceof RunState && preparedInput._trace) {
       const applied = applyTraceOverrides(
@@ -650,25 +859,48 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       preparedInput._trace = applied.trace;
       preparedInput._currentAgentSpan = applied.currentSpan;
       return withTrace(preparedInput._trace, async () => {
-        if (preparedInput._currentAgentSpan) {
+        if (preparedInput._currentAgentSpan && !useTaskAndTurnSpans) {
           setCurrentSpan(preparedInput._currentAgentSpan);
         }
         return executeRun();
       });
     }
-    return getOrCreateTrace(async () => executeRun(), {
-      traceId: this.config.traceId,
-      name: this.config.workflowName,
-      groupId: this.config.groupId,
-      metadata: this.config.traceMetadata,
-      // Per-run tracing config overrides exporter defaults such as environment API key.
-      tracingApiKey: tracingConfig?.apiKey,
-    });
+    const executeInInvocationTrace = async (
+      effectiveInvocationSpanParent = invocationSpanParent,
+    ) => {
+      if (preparedInput instanceof RunState && !preparedInput._trace) {
+        preparedInput._trace = getCurrentTrace();
+      }
+      return executeRun(effectiveInvocationSpanParent);
+    };
+    if (invocationTraceContext) {
+      return withTraceContext(invocationTraceContext, executeInInvocationTrace);
+    }
+    return withTrace(
+      this.config.workflowName ?? 'Agent workflow',
+      async (trace) => executeInInvocationTrace(trace),
+      {
+        traceId: this.config.traceId,
+        groupId: this.config.groupId,
+        metadata: this.config.traceMetadata,
+        // Per-run tracing config overrides exporter defaults such as environment API key.
+        tracingApiKey: tracingConfig?.apiKey,
+      },
+    );
   }
 
   // --------------------------------------------------------------
   //  Internals
   // --------------------------------------------------------------
+
+  #getTaskSpanName(restoredWorkflowName?: string): string {
+    return (
+      this.traceOverrides.workflowName ??
+      restoredWorkflowName ??
+      this.config.workflowName ??
+      'Agent workflow'
+    );
+  }
 
   private readonly inputGuardrailDefs: InputGuardrailDefinition[];
 
@@ -685,10 +917,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     agent: Agent<TContext, AgentOutputType>,
   ): Promise<{
     model: Model;
-    explictlyModelSet: boolean;
+    explicitlyModelSet: boolean;
     resolvedModelName?: string;
   }> {
-    const explictlyModelSet =
+    const explicitlyModelSet =
       (agent.model !== undefined &&
         agent.model !== Agent.DEFAULT_MODEL_PLACEHOLDER) ||
       (this.config.model !== undefined &&
@@ -700,7 +932,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       typeof selectedModel === 'string'
         ? await this.config.modelProvider.getModel(selectedModel)
         : selectedModel;
-    return { model: resolvedModel, explictlyModelSet, resolvedModelName };
+    return { model: resolvedModel, explicitlyModelSet, resolvedModelName };
   }
 
   async #resolveSandboxRuntimeModelForAgent<TContext>(
@@ -731,7 +963,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const hasSandboxOverride = typeof options.sandbox !== 'undefined';
     const hasToolExecutionOverride =
       typeof options.toolExecution !== 'undefined';
-    if (!hasSandboxOverride && !hasToolExecutionOverride) {
+    const hasToolNotFoundBehaviorOverride =
+      typeof options.toolNotFoundBehavior !== 'undefined';
+    const hasToolNameCollisionPolicyOverride =
+      typeof options.toolNameCollisionPolicy !== 'undefined';
+    const hasTracingOverride = typeof options.tracing !== 'undefined';
+    if (
+      !hasSandboxOverride &&
+      !hasToolExecutionOverride &&
+      !hasToolNotFoundBehaviorOverride &&
+      !hasToolNameCollisionPolicyOverride &&
+      !hasTracingOverride
+    ) {
       return this.config;
     }
     return {
@@ -740,6 +983,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       ...(hasToolExecutionOverride
         ? { toolExecution: options.toolExecution }
         : {}),
+      ...(hasToolNotFoundBehaviorOverride
+        ? { toolNotFoundBehavior: options.toolNotFoundBehavior }
+        : {}),
+      ...(hasToolNameCollisionPolicyOverride
+        ? { toolNameCollisionPolicy: options.toolNameCollisionPolicy }
+        : {}),
+      ...(hasTracingOverride ? { tracing: options.tracing } : {}),
     };
   }
 
@@ -754,14 +1004,27 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     startingAgent: TAgent,
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
     options: NonStreamRunOptions<TContext, TAgent>,
+    taskSpanName: string,
+    sessionTurnInputUpdate?: (
+      preparedInput: AgentInputItem[],
+      processedInput: AgentInputItem[],
+    ) => void,
     // sessionInputUpdate lets the caller adjust queued session items after filters run so we
     // persist exactly what we send to the model (e.g., after redactions or truncation).
     sessionInputUpdate?: (
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => void,
+    getSessionInputForPersistence?: () => AgentInputItem[] | undefined,
     preserveTurnPersistenceOnResume?: boolean,
+    provisionalSessionHistoryTransactionSessionId?: string,
+    provisionalSessionHistoryTransactionInputItems?: AgentInputItem[],
     sandboxMemoryRunContext?: SandboxMemoryPersistenceContext,
+    invocationSpanParent?: Span<any> | Trace,
+    persistResult?: (
+      result: RunResult<TContext, TAgent>,
+      options?: SessionPersistenceOptions,
+    ) => Promise<void>,
   ): Promise<RunResult<TContext, TAgent>> {
     return withNewSpanContext(async () => {
       // if we have a saved state we use that one, otherwise we create a new one
@@ -807,6 +1070,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         (isResumedState ? state._previousResponseId : undefined);
 
       if (!isResumedState) {
+        await prepareSessionHistoryTransactionsForRun(options.session, state, {
+          serverManagesConversation: Boolean(
+            resolvedConversationId || resolvedPreviousResponseId,
+          ),
+        });
+      }
+
+      if (!isResumedState) {
         state.setConversationContext(
           resolvedConversationId,
           resolvedPreviousResponseId,
@@ -836,9 +1107,182 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       const toolErrorFormatter =
         options.toolErrorFormatter ?? this.config.toolErrorFormatter;
 
+      const useTaskAndTurnSpans =
+        !this.config.tracingDisabled &&
+        includeTaskAndTurnSpans(options.tracing);
+      const resumingInterruptedTurn =
+        isResumedState && state._currentStep?.type === 'next_step_interruption';
+      const invocationSpans = useTaskAndTurnSpans
+        ? startRunnerInvocationSpans({
+            name: taskSpanName,
+            agent: state._currentAgent,
+            restoredAgentSpan: isResumedState
+              ? state._currentAgentSpan
+              : undefined,
+            resumeInterruptedTurn: resumingInterruptedTurn,
+            parent: invocationSpanParent,
+          })
+        : undefined;
+      const taskSpan = invocationSpans?.taskSpan;
+      const optOutResumeAgentSpan =
+        resumingInterruptedTurn && !useTaskAndTurnSpans
+          ? ensureActiveAgentSpanForInterruptedResume({
+              agent: state._currentAgent,
+              restoredAgentSpan: isResumedState
+                ? state._currentAgentSpan
+                : undefined,
+              parent: invocationSpanParent ?? getCurrentTrace() ?? undefined,
+            })
+          : undefined;
+      if (useTaskAndTurnSpans && isResumedState) {
+        state.setCurrentAgentSpan(invocationSpans?.agentSpan);
+      } else if (optOutResumeAgentSpan) {
+        state.setCurrentAgentSpan(optOutResumeAgentSpan);
+      }
+
       // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
       let continuingInterruptedTurn = false;
       let runError: unknown;
+      let currentTurnSpan: ReturnType<typeof startTurnSpan> | undefined;
+      const parentUsageRecorder = getRunnerParentUsageRecorder(this);
+      const recordUsage = (usage: Usage) => {
+        recordRunnerSpanUsage(taskSpan, usage);
+        recordRunnerSpanUsage(currentTurnSpan, usage);
+        parentUsageRecorder?.(usage);
+      };
+      setRunStateUsageRecorder(state, recordUsage);
+      let completedResult: RunResult<TContext, TAgent> | undefined;
+      let persistenceCheckpoint: RunResult<TContext, TAgent> | undefined;
+      let approvedToolCheckpointCompacted = false;
+      let approvedToolCheckpointRequiresLocalInputCompaction =
+        isResumedState && hasPersistedToolOutput(state);
+      let approvedToolCheckpointModelResponseCount =
+        state._modelResponses.length;
+      let completedResultPersisted = false;
+      const completeResult = (result: RunResult<TContext, TAgent>) => {
+        completedResult = result;
+        return result;
+      };
+      const persistNonStreamingResult = async (
+        result: RunResult<TContext, TAgent>,
+      ) => {
+        const hasUnpersistedItems =
+          result.newItems.length > state._currentTurnPersistedItemCount;
+        const modelResponseAdvanced =
+          result.rawResponses.length > approvedToolCheckpointModelResponseCount;
+        const persistenceOptions =
+          approvedToolCheckpointRequiresLocalInputCompaction
+            ? approvedToolCheckpointCompacted &&
+              !hasUnpersistedItems &&
+              !modelResponseAdvanced
+              ? { runCompaction: false }
+              : { compactionMode: 'input' as const }
+            : undefined;
+        await persistResult?.(result, persistenceOptions);
+      };
+      const recordNonStreamingError = (error: unknown) => {
+        if (state._currentAgentSpan) {
+          state._currentAgentSpan.setError({
+            message: 'Error in agent run',
+            data: {
+              error: getRunnerSpanErrorDetails(
+                error,
+                this.config.traceIncludeSensitiveData,
+              ),
+            },
+          });
+        }
+        setRunnerSpanError(
+          currentTurnSpan,
+          error,
+          this.config.traceIncludeSensitiveData,
+        );
+        setRunnerSpanError(
+          taskSpan,
+          error,
+          this.config.traceIncludeSensitiveData,
+        );
+        runError = error;
+      };
+      const finalizeCurrentOutput = async (): Promise<
+        RunResult<TContext, TAgent>
+      > => {
+        const currentStep = state._currentStep;
+        if (currentStep?.type !== 'next_step_final_output') {
+          throw new ModelBehaviorError(
+            'Expected a final output step while finalizing the run.',
+            state,
+          );
+        }
+        try {
+          await runOutputGuardrails(
+            state,
+            this.outputGuardrailDefs,
+            currentStep.output,
+          );
+        } catch (error) {
+          if (
+            error instanceof OutputGuardrailTripwireTriggered &&
+            persistResult
+          ) {
+            try {
+              await persistResult(new RunResult<TContext, TAgent>(state), {
+                outputBlocked: true,
+              });
+            } catch (persistenceError) {
+              error.state ??= state;
+              (error as Error & { cause?: unknown }).cause = persistenceError;
+            }
+            releaseUnusedSessionHistoryTransactionBinding(state);
+          } else if (error instanceof OutputGuardrailTripwireTriggered) {
+            releaseUnusedSessionHistoryTransactionBinding(state);
+          } else {
+            try {
+              await persistNonStreamingResult(
+                new RunResult<TContext, TAgent>(state),
+              );
+              completedResultPersisted = true;
+            } catch (persistenceError) {
+              if (!isDataRedactedError(error)) {
+                (error as Error & { cause?: unknown }).cause = persistenceError;
+              }
+            }
+          }
+          throw error;
+        }
+        if (
+          state._serializedCurrentStep === currentStep &&
+          hasRetainableBlockedOutputEffect(state)
+        ) {
+          releaseProvisionalSessionHistoryTransactionBinding(
+            state,
+            provisionalSessionHistoryTransactionSessionId,
+            provisionalSessionHistoryTransactionInputItems,
+          );
+          throw new UserError(
+            'Accepted final output cannot be resumed directly from serialized terminal state. Start a new run from persisted session history.',
+          );
+        }
+        finishRunnerSpan(currentTurnSpan);
+        setRunStateTurnSpanParent(state, undefined);
+        currentTurnSpan = undefined;
+        const result = new RunResult<TContext, TAgent>(state);
+        await persistNonStreamingResult(result);
+        completedResultPersisted = true;
+        state._currentTurnInProgress = false;
+        this.emit(
+          'agent_end',
+          state._context,
+          state._currentAgent,
+          currentStep.output,
+        );
+        state._currentAgent.emit(
+          'agent_end',
+          state._context,
+          currentStep.output,
+        );
+        return completeResult(result);
+      };
 
       try {
         while (true) {
@@ -855,14 +1299,42 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               runConfigModel: await this.#resolveSandboxRuntimeModelForAgent(
                 state._currentAgent,
               ),
+              toolNameCollisionPolicy: options.toolNameCollisionPolicy,
+              tracingParent:
+                getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
             });
+
+            if (useTaskAndTurnSpans) {
+              currentTurnSpan = ensureTurnSpan(
+                currentTurnSpan,
+                state._currentTurn,
+                state._currentAgent.name,
+                state._currentAgentSpan,
+              );
+              setRunStateTurnSpanParent(state, currentTurnSpan.span);
+            }
 
             const interruptedOutcome = await resumeInterruptedTurn({
               state,
               runner: this,
               toolErrorFormatter,
               agentToolParentRunConfig,
+              signal: options.signal,
             });
+            if (interruptedOutcome.approvedToolResumed && persistResult) {
+              const approvedToolResult = new RunResult<TContext, TAgent>(state);
+              approvedToolCheckpointRequiresLocalInputCompaction = true;
+              await persistResult(approvedToolResult, {
+                compactionMode: 'input',
+              });
+              approvedToolCheckpointCompacted = true;
+              approvedToolCheckpointModelResponseCount =
+                approvedToolResult.rawResponses.length;
+            }
+            if (options.signal?.aborted) {
+              persistenceCheckpoint = new RunResult<TContext, TAgent>(state);
+            }
+            options.signal?.throwIfAborted();
 
             // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
             // The counter will be reset when _currentTurn is incremented (starting a new turn)
@@ -874,9 +1346,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 continuingInterruptedTurn = value;
               },
             });
+            if (!shouldContinue) {
+              finishRunnerSpan(currentTurnSpan);
+              setRunStateTurnSpanParent(state, undefined);
+              currentTurnSpan = undefined;
+            }
             if (shouldReturn) {
               // we are still in an interruption, so we need to avoid an infinite loop
-              return new RunResult<TContext, TAgent>(state);
+              return completeResult(new RunResult<TContext, TAgent>(state));
             }
             if (shouldContinue) {
               continue;
@@ -884,6 +1361,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           if (state._currentStep.type === 'next_step_run_again') {
+            if (
+              approvedToolCheckpointCompacted &&
+              state._currentTurnSessionHistoryTransactionSessionId === undefined
+            ) {
+              await prepareSessionHistoryTransactionsForRun(
+                options.session,
+                state,
+                { serverManagesConversation: false },
+              );
+            }
             const wasContinuingInterruptedTurn = continuingInterruptedTurn;
             continuingInterruptedTurn = false;
             const guardrailTracker = createGuardrailTracker();
@@ -906,6 +1393,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               emitAgentStart: (context, agent, inputItems) => {
                 this.emit('agent_start', context, agent, inputItems);
               },
+              onAgentSpanReady: useTaskAndTurnSpans
+                ? (turn, agentName) => {
+                    currentTurnSpan = ensureTurnSpan(
+                      currentTurnSpan,
+                      turn,
+                      agentName,
+                      state._currentAgentSpan,
+                    );
+                    setRunStateTurnSpanParent(state, currentTurnSpan.span);
+                  }
+                : undefined,
+              agentSpanParent: taskSpan?.span ?? invocationSpanParent,
             });
             if (
               preserveTurnPersistenceOnResume &&
@@ -917,16 +1416,23 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
 
             guardrailTracker.setPromise(parallelGuardrailPromise);
+            const sessionPreparedTurnInput = [...turnInput];
             const preparedSandboxAgent = await sandboxRuntime.prepareAgent({
               currentAgent: state._currentAgent,
               turnInput,
               runConfigModel: await this.#resolveSandboxRuntimeModelForAgent(
                 state._currentAgent,
               ),
+              tracingParent: currentTurnSpan?.span ?? state._currentAgentSpan,
             });
+            sessionTurnInputUpdate?.(
+              sessionPreparedTurnInput,
+              preparedSandboxAgent.turnInput,
+            );
             const artifacts = await prepareAgentArtifacts(
               state,
               preparedSandboxAgent.executionAgent,
+              options.toolNameCollisionPolicy,
             );
             const preparedCall = await this.#prepareModelCall(
               state,
@@ -937,8 +1443,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               serverConversationTracker,
               sessionInputUpdate,
             );
+            captureSessionHistoryTransactionInputItems(
+              options.session,
+              state,
+              getSessionInputForPersistence?.(),
+            );
 
-            guardrailTracker.throwIfError();
+            await guardrailTracker.throwIfError();
 
             state._lastTurnResponse = await getResponseWithRetry(
               preparedCall.model,
@@ -946,13 +1457,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 systemInstructions: preparedCall.modelInput.instructions,
                 prompt: preparedCall.prompt,
                 // Explicit agent/run config models should take precedence over prompt defaults.
-                ...(preparedCall.explictlyModelSet
+                ...(preparedCall.explicitlyModelSet
                   ? { overridePromptModel: true }
                   : {}),
                 input: preparedCall.modelInput.input,
                 previousResponseId: preparedCall.previousResponseId,
                 conversationId: preparedCall.conversationId,
                 modelSettings: preparedCall.modelSettings,
+                _internal: preparedCall.modelRequestInternal,
                 tools: preparedCall.serializedTools,
                 toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
                 outputType: convertAgentOutputTypeToSerializable(
@@ -968,7 +1480,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             );
             if (serverConversationTracker) {
               serverConversationTracker.markInputAsSent(
-                preparedCall.sourceItems,
+                preparedCall.filterApplied
+                  ? preparedCall.sourceItems
+                  : preparedCall.turnInput,
                 {
                   filterApplied: preparedCall.filterApplied,
                   allTurnItems: preparedCall.turnInput,
@@ -977,6 +1491,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
             state._modelResponses.push(state._lastTurnResponse);
             state._context.usage.add(state._lastTurnResponse.usage);
+            recordUsage(state._lastTurnResponse.usage);
             state._noActiveAgentRun = false;
 
             // After each turn record the items echoed by the server so future requests only
@@ -998,6 +1513,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               preparedCall.handoffs,
               state,
               [...preparedCall.turnInput, ...state._generatedItems],
+              options.toolNotFoundBehavior,
+              {
+                allowPromptSuppliedTools: preparedCall.allowPromptSuppliedTools,
+              },
             );
 
             state._lastProcessedResponse = processedResponse;
@@ -1015,6 +1534,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               toolErrorFormatter,
               agentToolParentRunConfig,
               options.errorHandlers,
+              options.signal,
             );
 
             applyTurnResult({
@@ -1024,6 +1544,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               toolsUsed: state._lastProcessedResponse?.toolsUsed ?? [],
               resetTurnPersistence: !isResumedState,
             });
+            if (options.signal?.aborted) {
+              persistenceCheckpoint = new RunResult<TContext, TAgent>(state);
+            }
+            options.signal?.throwIfAborted();
+            if (turnResult.nextStep.type !== 'next_step_final_output') {
+              finishRunnerSpan(currentTurnSpan);
+              setRunStateTurnSpanParent(state, undefined);
+              currentTurnSpan = undefined;
+            }
           }
 
           const currentStep = state._currentStep;
@@ -1034,24 +1563,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           switch (currentStep.type) {
             case 'next_step_final_output':
-              await runOutputGuardrails(
-                state,
-                this.outputGuardrailDefs,
-                currentStep.output,
-              );
-              state._currentTurnInProgress = false;
-              this.emit(
-                'agent_end',
-                state._context,
-                state._currentAgent,
-                currentStep.output,
-              );
-              state._currentAgent.emit(
-                'agent_end',
-                state._context,
-                currentStep.output,
-              );
-              return new RunResult<TContext, TAgent>(state);
+              if (options.signal?.aborted) {
+                releaseProvisionalSessionHistoryTransactionBinding(
+                  state,
+                  provisionalSessionHistoryTransactionSessionId,
+                  provisionalSessionHistoryTransactionInputItems,
+                );
+              }
+              options.signal?.throwIfAborted();
+              return await finalizeCurrentOutput();
             case 'next_step_handoff':
               state.setCurrentAgent(currentStep.newAgent as TAgent);
               if (state._currentAgentSpan) {
@@ -1067,7 +1587,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               break;
             case 'next_step_interruption':
               // Interrupted. Don't run any guardrails.
-              return new RunResult<TContext, TAgent>(state);
+              return completeResult(new RunResult<TContext, TAgent>(state));
             case 'next_step_run_again':
               state._currentTurnInProgress = false;
               logger.debug('Running next loop');
@@ -1078,40 +1598,73 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
       } catch (err) {
         state._currentTurnInProgress = false;
-        const handledResult = await tryHandleRunError({
+        attachRunStateToError(err, state);
+        releaseUnusedSessionHistoryTransactionBinding(state);
+        const errorHandled = await prepareRunErrorFinalOutput({
           error: err,
           state,
           errorHandlers: options.errorHandlers,
-          outputGuardrailDefs: this.outputGuardrailDefs,
-          emitAgentEnd: (context, agent, outputText) => {
-            this.emit('agent_end', context, agent, outputText);
-            agent.emit('agent_end', context, outputText);
-          },
         });
-        if (handledResult) {
-          return handledResult;
+        if (errorHandled) {
+          try {
+            return await finalizeCurrentOutput();
+          } catch (finalizationError) {
+            recordNonStreamingError(finalizationError);
+            throw finalizationError;
+          }
         }
-        if (state._currentAgentSpan) {
-          state._currentAgentSpan.setError({
-            message: 'Error in agent run',
-            data: { error: String(err) },
-          });
-        }
-        runError = err;
+        recordNonStreamingError(err);
         throw err;
       } finally {
+        finishRunnerSpan(currentTurnSpan);
+        setRunStateTurnSpanParent(state, undefined);
         const preserveSandboxSessions =
           state._currentStep?.type === 'next_step_interruption';
-        await finalizeSandboxRuntime({
-          state: state as RunState<TContext, Agent<TContext, AgentOutputType>>,
-          sandboxRuntime,
-          preserveSessionsForInterruption: preserveSandboxSessions,
-          runError,
-          groupId: this.config.groupId,
-          memoryContext: sandboxMemoryRunContext,
-          runAgent: async (agent, input, runOptions) =>
-            await this.run(agent, input, runOptions),
-        });
+        try {
+          try {
+            await finalizeSandboxRuntime({
+              state: state as RunState<
+                TContext,
+                Agent<TContext, AgentOutputType>
+              >,
+              sandboxRuntime,
+              preserveSessionsForInterruption: preserveSandboxSessions,
+              finishAgentSpanForInterruption:
+                Boolean(taskSpan) || runError !== undefined,
+              runError,
+              groupId: this.config.groupId,
+              memoryContext: sandboxMemoryRunContext,
+              runAgent: async (agent, input, runOptions) =>
+                await this.run(agent, input, runOptions),
+              tracingParent:
+                taskSpan?.span ??
+                state._currentAgentSpan ??
+                invocationSpanParent,
+            });
+          } catch (error) {
+            setRunnerSpanError(
+              taskSpan,
+              error,
+              this.config.traceIncludeSensitiveData,
+            );
+            await Promise.reject(error);
+          }
+          const resultToPersist = completedResult ?? persistenceCheckpoint;
+          if (resultToPersist && !completedResultPersisted) {
+            try {
+              await persistNonStreamingResult(resultToPersist);
+            } catch (error) {
+              setRunnerSpanError(
+                taskSpan,
+                error,
+                this.config.traceIncludeSensitiveData,
+              );
+              await Promise.reject(error);
+            }
+          }
+        } finally {
+          finishRunnerSpan(taskSpan);
+        }
       }
     });
   }
@@ -1129,12 +1682,21 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     options: StreamRunOptions<TContext, TAgent>,
     isResumedState: boolean,
     ensureStreamInputPersisted?: () => Promise<void>,
+    sessionTurnInputUpdate?: (
+      preparedInput: AgentInputItem[],
+      processedInput: AgentInputItem[],
+    ) => void,
     sessionInputUpdate?: (
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => void,
+    getStreamInputForPersistence?: () => AgentInputItem[] | undefined,
     preserveTurnPersistenceOnResume?: boolean,
+    provisionalSessionHistoryTransactionSessionId?: string,
+    provisionalSessionHistoryTransactionInputItems?: AgentInputItem[],
     sandboxMemoryRunContext?: SandboxMemoryPersistenceContext,
+    taskSpan?: RunnerSpanLifecycle<TaskSpanData>,
+    invocationSpanParent?: Span<any> | Trace,
   ): Promise<void> {
     const resolvedReasoningItemIdPolicy =
       options.reasoningItemIdPolicy ??
@@ -1171,19 +1733,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       // Both success and error paths call this helper, so guard against multiple writes.
       await ensureStreamInputPersisted();
       streamInputPersisted = true;
+      markSessionHistoryTransactionInputPersisted(result.state);
     };
     let parallelGuardrailPromise: Promise<InputGuardrailResult[]> | undefined;
-    const awaitGuardrailsAndPersistInput = async () => {
+    const awaitInputGuardrails = async () => {
       await guardrailTracker.awaitCompletion();
       if (guardrailTracker.failed) {
         throw guardrailTracker.error;
-      }
-      if (
-        sentInputToModel &&
-        !streamInputPersisted &&
-        !guardrailTracker.failed
-      ) {
-        await persistStreamInputIfNeeded();
       }
     };
 
@@ -1201,13 +1757,175 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const toolErrorFormatter =
       options.toolErrorFormatter ?? this.config.toolErrorFormatter;
     const agentToolParentRunConfig = this.#getAgentToolParentRunConfig(options);
+    const useTaskAndTurnSpans =
+      !this.config.tracingDisabled && includeTaskAndTurnSpans(options.tracing);
 
     // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
     let continuingInterruptedTurn = false;
     let runError: unknown;
+    let suppressStreamInputPersistence = false;
+    let approvedToolCheckpointCompacted = false;
+    let approvedToolCheckpointRequiresLocalInputCompaction =
+      isResumedState && hasPersistedToolOutput(result.state);
+    let approvedToolCheckpointModelResponseCount = result.rawResponses.length;
+    let currentTurnSpan: ReturnType<typeof startTurnSpan> | undefined;
+    const parentUsageRecorder = getRunnerParentUsageRecorder(this);
+    const recordUsage = (usage: Usage) => {
+      recordRunnerSpanUsage(taskSpan, usage);
+      recordRunnerSpanUsage(currentTurnSpan, usage);
+      parentUsageRecorder?.(usage);
+    };
+    setRunStateUsageRecorder(result.state, recordUsage);
+    const saveStreamResultWithCompactionOwnership = async (
+      overrideOptions?: SessionPersistenceOptions,
+    ) => {
+      const hasUnpersistedItems =
+        result.newItems.length > result.state._currentTurnPersistedItemCount;
+      const modelResponseAdvanced =
+        result.rawResponses.length > approvedToolCheckpointModelResponseCount;
+      const persistenceOptions =
+        overrideOptions ??
+        (approvedToolCheckpointRequiresLocalInputCompaction
+          ? approvedToolCheckpointCompacted &&
+            !hasUnpersistedItems &&
+            !modelResponseAdvanced
+            ? { runCompaction: false }
+            : { compactionMode: 'input' as const }
+          : undefined);
+      const sessionInputItems = streamInputPersisted
+        ? undefined
+        : getStreamInputForPersistence?.();
+      // A remote session may commit addItems before rejecting, and compaction happens after the
+      // append. Once the combined save starts, retrying the input is therefore unsafe.
+      streamInputPersisted = true;
+      await saveStreamResultToSession(
+        options.session,
+        result,
+        persistenceOptions,
+        sessionInputItems,
+      );
+    };
+    const recordStreamingError = (error: unknown) => {
+      if (result.state._currentAgentSpan) {
+        result.state._currentAgentSpan.setError({
+          message: 'Error in agent run',
+          data: {
+            error: getRunnerSpanErrorDetails(
+              error,
+              this.config.traceIncludeSensitiveData,
+            ),
+          },
+        });
+      }
+      setRunnerSpanError(
+        currentTurnSpan,
+        error,
+        this.config.traceIncludeSensitiveData,
+      );
+      setRunnerSpanError(
+        taskSpan,
+        error,
+        this.config.traceIncludeSensitiveData,
+      );
+      runError = error;
+    };
+    const finalizeStreamOutput = async (): Promise<void> => {
+      const currentStep = result.state._currentStep;
+      if (currentStep?.type !== 'next_step_final_output') {
+        throw new ModelBehaviorError(
+          'Expected a final output step while finalizing the run.',
+          result.state,
+        );
+      }
+      result._hideFinalOutput();
+      try {
+        await runOutputGuardrails(
+          result.state,
+          this.outputGuardrailDefs,
+          currentStep.output,
+        );
+      } catch (error) {
+        if (
+          error instanceof OutputGuardrailTripwireTriggered &&
+          !serverManagesConversation
+        ) {
+          try {
+            await saveStreamResultWithCompactionOwnership({
+              outputBlocked: true,
+            });
+          } catch (persistenceError) {
+            error.state ??= result.state;
+            (error as Error & { cause?: unknown }).cause = persistenceError;
+          }
+          releaseUnusedSessionHistoryTransactionBinding(result.state);
+        } else if (error instanceof OutputGuardrailTripwireTriggered) {
+          releaseUnusedSessionHistoryTransactionBinding(result.state);
+        } else if (!serverManagesConversation) {
+          try {
+            await saveStreamResultWithCompactionOwnership();
+          } catch (persistenceError) {
+            if (!isDataRedactedError(error)) {
+              (error as Error & { cause?: unknown }).cause = persistenceError;
+            }
+          }
+        }
+        throw error;
+      }
+      if (
+        result.state._serializedCurrentStep === currentStep &&
+        hasRetainableBlockedOutputEffect(result.state)
+      ) {
+        releaseProvisionalSessionHistoryTransactionBinding(
+          result.state,
+          provisionalSessionHistoryTransactionSessionId,
+          provisionalSessionHistoryTransactionInputItems,
+        );
+        throw new UserError(
+          'Accepted final output cannot be resumed directly from serialized terminal state. Start a new run from persisted session history.',
+        );
+      }
+      finishRunnerSpan(currentTurnSpan);
+      setRunStateTurnSpanParent(result.state, undefined);
+      currentTurnSpan = undefined;
+      result.state._currentTurnInProgress = false;
+      // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
+      if (!serverManagesConversation) {
+        await saveStreamResultWithCompactionOwnership();
+      }
+      result._revealFinalOutput();
+      this.emit(
+        'agent_end',
+        result.state._context,
+        result.state._currentAgent,
+        currentStep.output,
+      );
+      result.state._currentAgent.emit(
+        'agent_end',
+        result.state._context,
+        currentStep.output,
+      );
+    };
 
     try {
       while (true) {
+        // Let the current action batch settle, but never start new work after
+        // cancellation once a turn has already begun. Preserve the existing
+        // first-request behavior for an initially aborted stream.
+        if (
+          result.cancelled &&
+          (result.state._currentTurn > 0 ||
+            result.state._currentStep?.type === 'next_step_final_output')
+        ) {
+          if (result.state._currentStep?.type === 'next_step_final_output') {
+            releaseProvisionalSessionHistoryTransactionBinding(
+              result.state,
+              provisionalSessionHistoryTransactionSessionId,
+              provisionalSessionHistoryTransactionInputItems,
+            );
+          }
+          return;
+        }
+
         const currentAgent = result.state._currentAgent;
 
         result.state._currentStep = result.state._currentStep ?? {
@@ -1222,17 +1940,45 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             runConfigModel: await this.#resolveSandboxRuntimeModelForAgent(
               result.state._currentAgent,
             ),
+            toolNameCollisionPolicy: options.toolNameCollisionPolicy,
+            tracingParent:
+              getRunStateTurnSpanParent(result.state) ??
+              result.state._currentAgentSpan,
           });
+
+          if (useTaskAndTurnSpans) {
+            currentTurnSpan = ensureTurnSpan(
+              currentTurnSpan,
+              result.state._currentTurn,
+              result.state._currentAgent.name,
+              result.state._currentAgentSpan,
+            );
+            setRunStateTurnSpanParent(result.state, currentTurnSpan.span);
+          }
 
           const interruptedOutcome = await resumeInterruptedTurn({
             state: result.state,
             runner: this,
             toolErrorFormatter,
             agentToolParentRunConfig,
+            signal: options.signal,
             onStepItems: (turnResult) => {
               addStepToRunResult(result, turnResult);
             },
           });
+          if (
+            interruptedOutcome.approvedToolResumed &&
+            !serverManagesConversation &&
+            options.session
+          ) {
+            approvedToolCheckpointRequiresLocalInputCompaction = true;
+            await saveStreamResultToSession(options.session, result, {
+              compactionMode: 'input',
+            });
+            approvedToolCheckpointCompacted = true;
+            approvedToolCheckpointModelResponseCount =
+              result.rawResponses.length;
+          }
 
           // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
           // The counter will be reset when _currentTurn is incremented (starting a new turn)
@@ -1244,6 +1990,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               continuingInterruptedTurn = value;
             },
           });
+          if (!shouldContinue) {
+            finishRunnerSpan(currentTurnSpan);
+            setRunStateTurnSpanParent(result.state, undefined);
+            currentTurnSpan = undefined;
+          }
           if (shouldReturn) {
             // we are still in an interruption, so we need to avoid an infinite loop
             return;
@@ -1254,6 +2005,17 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
 
         if (result.state._currentStep.type === 'next_step_run_again') {
+          if (
+            approvedToolCheckpointCompacted &&
+            result.state._currentTurnSessionHistoryTransactionSessionId ===
+              undefined
+          ) {
+            await prepareSessionHistoryTransactionsForRun(
+              options.session,
+              result.state,
+              { serverManagesConversation: false },
+            );
+          }
           parallelGuardrailPromise = undefined;
           guardrailTracker = createGuardrailTracker();
           const wasContinuingInterruptedTurn = continuingInterruptedTurn;
@@ -1282,6 +2044,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             emitAgentStart: (context, agent, inputItems) => {
               this.emit('agent_start', context, agent, inputItems);
             },
+            onAgentSpanReady: useTaskAndTurnSpans
+              ? (turn, agentName) => {
+                  currentTurnSpan = ensureTurnSpan(
+                    currentTurnSpan,
+                    turn,
+                    agentName,
+                    result.state._currentAgentSpan,
+                  );
+                  setRunStateTurnSpanParent(result.state, currentTurnSpan.span);
+                }
+              : undefined,
+            agentSpanParent: taskSpan?.span ?? invocationSpanParent,
           });
           if (
             preserveTurnPersistenceOnResume &&
@@ -1296,17 +2070,24 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           parallelGuardrailPromise = preparedTurn.parallelGuardrailPromise;
           guardrailTracker.setPromise(parallelGuardrailPromise);
           // If guardrails are still running, defer input persistence until they finish.
-          const delayStreamInputPersistence = guardrailTracker.pending;
+          const sessionPreparedTurnInput = [...turnInput];
           const preparedSandboxAgent = await sandboxRuntime.prepareAgent({
             currentAgent: result.state._currentAgent,
             turnInput,
             runConfigModel: await this.#resolveSandboxRuntimeModelForAgent(
               result.state._currentAgent,
             ),
+            tracingParent:
+              currentTurnSpan?.span ?? result.state._currentAgentSpan,
           });
+          sessionTurnInputUpdate?.(
+            sessionPreparedTurnInput,
+            preparedSandboxAgent.turnInput,
+          );
           const artifacts = await prepareAgentArtifacts(
             result.state,
             preparedSandboxAgent.executionAgent,
+            options.toolNameCollisionPolicy,
           );
 
           const preparedCall = await this.#prepareModelCall(
@@ -1318,8 +2099,20 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             serverConversationTracker,
             sessionInputUpdate,
           );
+          captureSessionHistoryTransactionInputItems(
+            options.session,
+            result.state,
+            getStreamInputForPersistence?.(),
+          );
 
-          guardrailTracker.throwIfError();
+          await guardrailTracker.throwIfError();
+
+          // Initial request and session-persistence ordering remain unchanged.
+          // Once a logical turn is established, do not start another model
+          // request if cancellation arrives during asynchronous preparation.
+          if ((sentInputToModel || isResumedState) && result.cancelled) {
+            return;
+          }
 
           let finalResponse: ModelResponse | undefined = undefined;
           const abortReconciliationState =
@@ -1335,7 +2128,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             // unmarked so a retry can resend safely.
             // Record the exact input that was sent so the server tracker can advance safely.
             serverConversationTracker.markInputAsSent(
-              preparedCall.sourceItems,
+              preparedCall.filterApplied
+                ? preparedCall.sourceItems
+                : preparedCall.turnInput,
               {
                 filterApplied: preparedCall.filterApplied,
                 allTurnItems: preparedCall.turnInput,
@@ -1360,7 +2155,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 {
                   systemInstructions: preparedCall.modelInput.instructions,
                   prompt: preparedCall.prompt,
-                  ...(preparedCall.explictlyModelSet
+                  ...(preparedCall.explicitlyModelSet
                     ? { overridePromptModel: true }
                     : {}),
                   input: reconciliationInput,
@@ -1370,6 +2165,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   ),
                   conversationId: preparedCall.conversationId,
                   modelSettings: preparedCall.modelSettings,
+                  _internal: preparedCall.modelRequestInternal,
                   tools: preparedCall.serializedTools,
                   toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
                   handoffs: preparedCall.serializedHandoffs,
@@ -1386,6 +2182,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 abortReconciliationState,
                 reconciliationResponse,
               );
+              result.state._context.usage.add(reconciliationResponse.usage);
+              recordUsage(reconciliationResponse.usage);
               serverConversationTracker.trackServerItems(
                 reconciliationResponse,
               );
@@ -1394,18 +2192,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 serverConversationTracker.previousResponseId,
               );
             } catch (error) {
-              logger.debug(
-                'Failed to reconcile streamed function calls after abort.',
+              logModelAndToolActionDebug(
+                logger,
+                'Failed to reconcile streamed tool calls after abort.',
                 error,
               );
             }
           };
 
           sentInputToModel = true;
-          if (!delayStreamInputPersistence) {
-            await persistStreamInputIfNeeded();
-          }
-
           try {
             for await (const event of getStreamedResponseWithRetry(
               preparedCall.model,
@@ -1413,13 +2208,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 systemInstructions: preparedCall.modelInput.instructions,
                 prompt: preparedCall.prompt,
                 // Streaming requests should also honor explicitly chosen models.
-                ...(preparedCall.explictlyModelSet
+                ...(preparedCall.explicitlyModelSet
                   ? { overridePromptModel: true }
                   : {}),
                 input: preparedCall.modelInput.input,
                 previousResponseId: preparedCall.previousResponseId,
                 conversationId: preparedCall.conversationId,
                 modelSettings: preparedCall.modelSettings,
+                _internal: preparedCall.modelRequestInternal,
                 tools: preparedCall.serializedTools,
                 toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
                 handoffs: preparedCall.serializedHandoffs,
@@ -1433,13 +2229,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 signal: options.signal,
               },
             )) {
-              guardrailTracker.throwIfError();
+              await guardrailTracker.throwIfError();
               markInputOnce();
               recordStreamEventForAbortReconciliation(
                 abortReconciliationState,
                 event,
               );
               if (event.type === 'response_done') {
+                assertValidCompactionItems(event.response.output);
                 const parsed = StreamEventResponseCompleted.parse(event);
                 finalResponse = {
                   usage: new Usage(parsed.response.usage),
@@ -1448,11 +2245,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   requestId: parsed.response.requestId,
                 };
                 result.state._context.usage.add(finalResponse.usage);
+                recordUsage(finalResponse.usage);
               }
               if (result.cancelled) {
                 // When the user's code exits a loop to consume the stream, we need to break
                 // this loop to prevent internal false errors and unnecessary processing
-                await awaitGuardrailsAndPersistInput();
+                await awaitInputGuardrails();
                 await reconcileStreamAbortIfNeeded();
                 return;
               }
@@ -1463,7 +2261,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               if (sentInputToModel) {
                 markInputOnce();
               }
-              await awaitGuardrailsAndPersistInput();
+              await awaitInputGuardrails();
               await reconcileStreamAbortIfNeeded();
               return;
             }
@@ -1474,7 +2272,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             markInputOnce();
           }
 
-          await awaitGuardrailsAndPersistInput();
+          await awaitInputGuardrails();
 
           if (result.cancelled) {
             return;
@@ -1506,6 +2304,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             preparedCall.handoffs,
             result.state,
             [...preparedCall.turnInput, ...result.state._generatedItems],
+            options.toolNotFoundBehavior,
+            {
+              allowPromptSuppliedTools: preparedCall.allowPromptSuppliedTools,
+            },
           );
 
           result.state._lastProcessedResponse = processedResponse;
@@ -1528,6 +2330,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             toolErrorFormatter,
             agentToolParentRunConfig,
             options.errorHandlers,
+            options.signal,
           );
 
           applyTurnResult({
@@ -1540,46 +2343,22 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               addStepToRunResult(result, step, { skipItems: preToolItems });
             },
           });
+          if (turnResult.nextStep.type !== 'next_step_final_output') {
+            finishRunnerSpan(currentTurnSpan);
+            setRunStateTurnSpanParent(result.state, undefined);
+            currentTurnSpan = undefined;
+          }
         }
 
         const currentStep = result.state._currentStep;
         switch (currentStep.type) {
           case 'next_step_final_output':
-            try {
-              await runOutputGuardrails(
-                result.state,
-                this.outputGuardrailDefs,
-                currentStep.output,
-              );
-            } catch (error) {
-              // Do not leave blocked output visible through StreamedRunResult.finalOutput.
-              result.state._currentStep = undefined;
-              result.state._finalOutputSource = undefined;
-              throw error;
-            }
-            result.state._currentTurnInProgress = false;
-            await persistStreamInputIfNeeded();
-            // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
-            if (!serverManagesConversation) {
-              await saveStreamResultToSession(options.session, result);
-            }
-            this.emit(
-              'agent_end',
-              result.state._context,
-              currentAgent,
-              currentStep.output,
-            );
-            currentAgent.emit(
-              'agent_end',
-              result.state._context,
-              currentStep.output,
-            );
+            await finalizeStreamOutput();
             return;
           case 'next_step_interruption':
             // We are done for now. Don't run any output guardrails.
-            await persistStreamInputIfNeeded();
             if (!serverManagesConversation) {
-              await saveStreamResultToSession(options.session, result);
+              await saveStreamResultWithCompactionOwnership();
             }
             return;
           case 'next_step_handoff':
@@ -1610,68 +2389,81 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       }
     } catch (error) {
       result.state._currentTurnInProgress = false;
+      attachRunStateToError(error, result.state);
+      releaseUnusedSessionHistoryTransactionBinding(result.state);
+      suppressStreamInputPersistence =
+        error instanceof CompactionItemValidationError;
       if (guardrailTracker.pending) {
         await guardrailTracker.awaitCompletion({ suppressErrors: true });
       }
-      if (
-        sentInputToModel &&
-        !streamInputPersisted &&
-        !guardrailTracker.failed
-      ) {
-        await persistStreamInputIfNeeded();
-      }
-      const handledResult = await tryHandleRunError({
+      const errorHandled = await prepareRunErrorFinalOutput({
         error,
         state: result.state,
         errorHandlers: options.errorHandlers,
-        outputGuardrailDefs: this.outputGuardrailDefs,
-        emitAgentEnd: (context, agent, outputText) => {
-          this.emit('agent_end', context, agent, outputText);
-          agent.emit('agent_end', context, outputText);
-        },
         streamResult: result,
       });
-      if (handledResult) {
-        await persistStreamInputIfNeeded();
-        if (!serverManagesConversation) {
-          await saveStreamResultToSession(options.session, result);
+      if (errorHandled) {
+        try {
+          await finalizeStreamOutput();
+          return;
+        } catch (finalizationError) {
+          recordStreamingError(finalizationError);
+          throw finalizationError;
         }
-        return;
       }
-      if (result.state._currentAgentSpan) {
-        result.state._currentAgentSpan.setError({
-          message: 'Error in agent run',
-          data: { error: String(error) },
-        });
-      }
-      runError = error;
+      recordStreamingError(error);
       throw error;
     } finally {
+      finishRunnerSpan(currentTurnSpan);
+      setRunStateTurnSpanParent(result.state, undefined);
       if (guardrailTracker.pending) {
         await guardrailTracker.awaitCompletion({ suppressErrors: true });
       }
       if (
         sentInputToModel &&
         !streamInputPersisted &&
-        !guardrailTracker.failed
+        !guardrailTracker.failed &&
+        !suppressStreamInputPersistence
       ) {
         await persistStreamInputIfNeeded();
       }
       const preserveSandboxSessions =
-        result.state._currentStep?.type === 'next_step_interruption';
-      await finalizeSandboxRuntime({
-        state: result.state as RunState<
-          TContext,
-          Agent<TContext, AgentOutputType>
-        >,
-        sandboxRuntime,
-        preserveSessionsForInterruption: preserveSandboxSessions,
-        runError,
-        groupId: this.config.groupId,
-        memoryContext: sandboxMemoryRunContext,
-        runAgent: async (agent, input, runOptions) =>
-          await this.run(agent, input, runOptions),
-      });
+        result.state._currentStep?.type === 'next_step_interruption' ||
+        (result.cancelled &&
+          result.state._currentStep?.type !== 'next_step_final_output' &&
+          runError === undefined);
+      try {
+        try {
+          await finalizeSandboxRuntime({
+            state: result.state as RunState<
+              TContext,
+              Agent<TContext, AgentOutputType>
+            >,
+            sandboxRuntime,
+            preserveSessionsForInterruption: preserveSandboxSessions,
+            finishAgentSpanForInterruption:
+              Boolean(taskSpan) || runError !== undefined,
+            runError,
+            groupId: this.config.groupId,
+            memoryContext: sandboxMemoryRunContext,
+            runAgent: async (agent, input, runOptions) =>
+              await this.run(agent, input, runOptions),
+            tracingParent:
+              taskSpan?.span ??
+              result.state._currentAgentSpan ??
+              invocationSpanParent,
+          });
+        } catch (error) {
+          setRunnerSpanError(
+            taskSpan,
+            error,
+            this.config.traceIncludeSensitiveData,
+          );
+          await Promise.reject(error);
+        }
+      } finally {
+        finishRunnerSpan(taskSpan);
+      }
     }
   }
 
@@ -1684,14 +2476,23 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   >(
     agent: TAgent,
     input: string | AgentInputItem[] | RunState<TContext, TAgent>,
+    taskSpanName: string,
     options?: StreamRunOptions<TContext, TAgent>,
     ensureStreamInputPersisted?: () => Promise<void>,
+    sessionTurnInputUpdate?: (
+      preparedInput: AgentInputItem[],
+      processedInput: AgentInputItem[],
+    ) => void,
     sessionInputUpdate?: (
       sourceItems: (AgentInputItem | undefined)[],
       filteredItems?: AgentInputItem[],
     ) => void,
+    getStreamInputForPersistence?: () => AgentInputItem[] | undefined,
     preserveTurnPersistenceOnResume?: boolean,
+    provisionalSessionHistoryTransactionSessionId?: string,
+    provisionalSessionHistoryTransactionInputItems?: AgentInputItem[],
     sandboxMemoryRunContext?: SandboxMemoryPersistenceContext,
+    invocationSpanParent?: Span<any> | Trace,
   ): Promise<StreamedRunResult<TContext, TAgent>> {
     options = options ?? ({} as StreamRunOptions<TContext>);
     return withNewSpanContext(async () => {
@@ -1715,6 +2516,56 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           state._maxTurns = options.maxTurns;
         }
       }
+      const resolvedReasoningItemIdPolicy =
+        options.reasoningItemIdPolicy ??
+        (isResumedState ? state._reasoningItemIdPolicy : undefined) ??
+        this.config.reasoningItemIdPolicy;
+      state.setReasoningItemIdPolicy(resolvedReasoningItemIdPolicy);
+      const resolvedConversationId =
+        options.conversationId ??
+        (isResumedState ? state._conversationId : undefined);
+      const resolvedPreviousResponseId =
+        options.previousResponseId ??
+        (isResumedState ? state._previousResponseId : undefined);
+      if (!isResumedState) {
+        await prepareSessionHistoryTransactionsForRun(options.session, state, {
+          serverManagesConversation: Boolean(
+            resolvedConversationId || resolvedPreviousResponseId,
+          ),
+        });
+      }
+      const useTaskAndTurnSpans =
+        !this.config.tracingDisabled &&
+        includeTaskAndTurnSpans(options.tracing);
+      const resumingInterruptedTurn =
+        isResumedState && state._currentStep?.type === 'next_step_interruption';
+      const invocationSpans = useTaskAndTurnSpans
+        ? startRunnerInvocationSpans({
+            name: taskSpanName,
+            agent: state._currentAgent,
+            restoredAgentSpan: isResumedState
+              ? state._currentAgentSpan
+              : undefined,
+            resumeInterruptedTurn: resumingInterruptedTurn,
+            parent: invocationSpanParent,
+          })
+        : undefined;
+      const taskSpan = invocationSpans?.taskSpan;
+      const optOutResumeAgentSpan =
+        resumingInterruptedTurn && !useTaskAndTurnSpans
+          ? ensureActiveAgentSpanForInterruptedResume({
+              agent: state._currentAgent,
+              restoredAgentSpan: isResumedState
+                ? state._currentAgentSpan
+                : undefined,
+              parent: invocationSpanParent ?? getCurrentTrace() ?? undefined,
+            })
+          : undefined;
+      if (useTaskAndTurnSpans && isResumedState) {
+        state.setCurrentAgentSpan(invocationSpans?.agentSpan);
+      } else if (optOutResumeAgentSpan) {
+        state.setCurrentAgentSpan(optOutResumeAgentSpan);
+      }
       const sandboxRuntime = new SandboxRuntimeManager<TContext>({
         startingAgent: agent,
         sandboxConfig: options.sandbox ?? this.config.sandbox,
@@ -1722,12 +2573,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           ? (state as RunState<TContext, Agent<TContext, AgentOutputType>>)
           : undefined,
       });
-      const resolvedConversationId =
-        options.conversationId ??
-        (isResumedState ? state._conversationId : undefined);
-      const resolvedPreviousResponseId =
-        options.previousResponseId ??
-        (isResumedState ? state._previousResponseId : undefined);
       if (!isResumedState) {
         state.setConversationContext(
           resolvedConversationId,
@@ -1756,9 +2601,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         streamOptions,
         isResumedState,
         ensureStreamInputPersisted,
+        sessionTurnInputUpdate,
         sessionInputUpdate,
+        getStreamInputForPersistence,
         preserveTurnPersistenceOnResume,
+        provisionalSessionHistoryTransactionSessionId,
+        provisionalSessionHistoryTransactionInputItems,
         sandboxMemoryRunContext,
+        taskSpan,
+        invocationSpanParent,
       ).then(
         () => {
           result._done();
@@ -1795,7 +2646,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       filteredItems?: AgentInputItem[],
     ) => void,
   ): Promise<PreparedModelCall<TContext>> {
-    const { model, explictlyModelSet, resolvedModelName } =
+    const { model, explicitlyModelSet, resolvedModelName } =
       await this.#resolveModelForAgent(executionAgent);
 
     const hasExplicitAgentModelSettings =
@@ -1806,9 +2657,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const implicitModelSettings = hasExplicitAgentModelSettings
       ? undefined
       : getImplicitModelSettingsForResolvedModel(
-          explictlyModelSet,
+          explicitlyModelSet,
           resolvedModelName,
         );
+    const modelRequestInternal = {
+      reasoningEffortImplicit:
+        implicitModelSettings?.reasoning?.effort !== undefined &&
+        !hasExplicitTopLevelReasoningEffort(this.config.modelSettings) &&
+        !hasExplicitTopLevelReasoningEffort(agentModelSettings),
+      tracingParent:
+        getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
+      toolNameCollisionPolicy: options.toolNameCollisionPolicy ?? 'warn',
+    };
 
     let modelSettings = mergeModelSettings(
       implicitModelSettings,
@@ -1816,7 +2676,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     );
     modelSettings = mergeModelSettings(modelSettings, agentModelSettings);
     modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
-      explictlyModelSet,
+      explicitlyModelSet,
       agentModelSettings ?? implicitModelSettings ?? {},
       model,
       modelSettings,
@@ -1833,6 +2693,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       state._context,
     );
     const prompt = await executionAgent.getPrompt(state._context);
+    const allowPromptSuppliedTools =
+      Boolean(prompt) &&
+      !(
+        artifacts.toolsExplicitlyProvided &&
+        artifacts.serializedTools.length === 0 &&
+        artifacts.serializedHandoffs.length === 0
+      );
 
     const { modelInput, sourceItems, persistedItems, filterApplied } =
       await applyCallModelInputFilter(
@@ -1843,13 +2710,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         systemInstructions,
       );
 
-    // Provide filtered clones whenever filters run so session history mirrors the model payload.
-    // Returning an empty array is intentional: it tells the session layer to persist "nothing"
-    // instead of falling back to the unfiltered originals when the filter redacts everything.
-    sessionInputUpdate?.(
-      sourceItems,
-      filterApplied ? persistedItems : undefined,
-    );
+    // Persist normalized clones so session history mirrors the exact model payload. An empty array
+    // is intentional when a filter removes everything.
+    sessionInputUpdate?.(sourceItems, persistedItems);
 
     const previousResponseId =
       serverConversationTracker?.previousResponseId ??
@@ -1860,10 +2723,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     return {
       ...artifacts,
       model,
-      explictlyModelSet,
+      explicitlyModelSet,
+      modelRequestInternal,
       modelSettings,
       modelInput,
       prompt,
+      allowPromptSuppliedTools,
       previousResponseId,
       conversationId,
       sourceItems,
@@ -1876,6 +2741,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 // internal helpers and constants
 
 let defaultRunner: Runner | undefined;
+
+function hasExplicitTopLevelReasoningEffort(settings?: ModelSettings): boolean {
+  return settings?.reasoning?.effort !== undefined;
+}
 
 const getDefaultRunner = (): Runner => {
   if (!defaultRunner) {

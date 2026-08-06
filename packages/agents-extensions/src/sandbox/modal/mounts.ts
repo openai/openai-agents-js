@@ -8,6 +8,7 @@ import {
   type TypedMount,
 } from '@openai/agents-core/sandbox';
 import { readOptionalString } from '../shared';
+import { validateCredentialPair as validateSandboxCredentialPair } from '@openai/agents-core/sandbox/internal';
 
 export type ModalCloudBucketMountCredentials = Record<string, string>;
 
@@ -233,15 +234,16 @@ function validateCredentialPair(args: {
   secretAccessKey?: string;
   mountType: string;
 }): void {
-  if (Boolean(args.accessKeyId) !== Boolean(args.secretAccessKey)) {
-    throw new SandboxMountError(
+  validateSandboxCredentialPair({
+    accessKeyId: args.accessKeyId,
+    secretAccessKey: args.secretAccessKey,
+    message:
       'Modal cloud bucket mounts require both accessKeyId and secretAccessKey when either is provided.',
-      {
-        provider: 'modal',
-        mountType: args.mountType,
-      },
-    );
-  }
+    details: {
+      provider: 'modal',
+      mountType: args.mountType,
+    },
+  });
 }
 
 function validateGcsCredentialPair(args: {

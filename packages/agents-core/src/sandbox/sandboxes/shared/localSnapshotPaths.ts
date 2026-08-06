@@ -1,5 +1,10 @@
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { posix, win32 } from 'node:path';
+
+function isAbsoluteWindowsPath(value: string): boolean {
+  const root = win32.parse(value).root;
+  return win32.isAbsolute(value) && root.length > 1;
+}
 
 export function defaultLocalSnapshotBaseDir(): string {
   const configured = process.env.OPENAI_AGENTS_SANDBOX_SNAPSHOT_DIR?.trim();
@@ -9,7 +14,7 @@ export function defaultLocalSnapshotBaseDir(): string {
 
   const home = homedir();
   if (process.platform === 'darwin' && home) {
-    return join(
+    return posix.join(
       home,
       'Library',
       'Application Support',
@@ -20,16 +25,24 @@ export function defaultLocalSnapshotBaseDir(): string {
 
   if (process.platform === 'win32') {
     const localAppData = process.env.LOCALAPPDATA?.trim();
-    return join(
-      localAppData || (home ? join(home, 'AppData', 'Local') : tmpdir()),
+    return win32.join(
+      localAppData && isAbsoluteWindowsPath(localAppData)
+        ? localAppData
+        : home
+          ? win32.join(home, 'AppData', 'Local')
+          : tmpdir(),
       'openai-agents-js',
       'sandbox-snapshots',
     );
   }
 
   const stateHome = process.env.XDG_STATE_HOME?.trim();
-  return join(
-    stateHome || (home ? join(home, '.local', 'state') : tmpdir()),
+  return posix.join(
+    stateHome && posix.isAbsolute(stateHome)
+      ? stateHome
+      : home
+        ? posix.join(home, '.local', 'state')
+        : tmpdir(),
     'openai-agents-js',
     'sandbox-snapshots',
   );

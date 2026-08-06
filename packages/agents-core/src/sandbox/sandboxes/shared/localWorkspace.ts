@@ -39,7 +39,9 @@ import {
   isHostPathWithinRoot,
   isHostPathStrictlyWithinRoot,
   relativeHostPathEscapesRoot,
+  sandboxPathGrantHostPath,
 } from '../../shared/hostPath';
+import { isSandboxPathNotFoundError } from '../../shared/pathProbe';
 
 const GIT_VERSION_TIMEOUT_MS = 10_000;
 const GIT_CLONE_TIMEOUT_MS = 5 * 60_000;
@@ -263,7 +265,12 @@ export async function applyOwnershipRecursive(
   uid: number,
   gid: number,
 ): Promise<void> {
-  const info = await lstat(targetPath).catch(() => null);
+  const info = await lstat(targetPath).catch((error: unknown) => {
+    if (isSandboxPathNotFoundError(error)) {
+      return null;
+    }
+    throw error;
+  });
   if (!info) {
     return;
   }
@@ -288,8 +295,31 @@ export async function pathExists(path: string): Promise<boolean> {
   try {
     await stat(path);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (!isSandboxPathNotFoundError(error)) {
+      throw error;
+    }
+    let info: Stats;
+    try {
+      info = await lstat(path);
+    } catch (probeError) {
+      if (isSandboxPathNotFoundError(probeError)) {
+        return false;
+      }
+      throw probeError;
+    }
+    if (info.isSymbolicLink()) {
+      try {
+        await stat(path);
+        return true;
+      } catch (retryError) {
+        if (isSandboxPathNotFoundError(retryError)) {
+          return false;
+        }
+        throw retryError;
+      }
+    }
+    return true;
   }
 }
 
@@ -622,7 +652,10 @@ function resolveLocalSourcePath(
   if (
     isHostPathWithinRoot(base, resolvedSourcePath) ||
     (options.localSourceGrants ?? []).some((grant) =>
-      isHostPathWithinRoot(resolve(grant.path), resolvedSourcePath),
+      isHostPathWithinRoot(
+        resolve(sandboxPathGrantHostPath(grant)),
+        resolvedSourcePath,
+      ),
     )
   ) {
     return resolvedSourcePath;

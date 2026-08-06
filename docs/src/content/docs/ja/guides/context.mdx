@@ -6,14 +6,14 @@ description: Learn how to provide local data via RunContext and expose context t
 import { Aside, Code } from '@astrojs/starlight/components';
 import localContextExample from '../../../../../../examples/docs/context/localContext.ts?raw';
 
-コンテキストは多義的な用語です。関心を持つ可能性のあるコンテキストには、大きく 2 つの種類があります。
+コンテキストという用語には多くの意味があります。ここでは、主に次の 2 種類のコンテキストについて考えます。
 
-1. **ローカルコンテキスト**: 実行中にコードからアクセスできるものです。ツールに必要な依存関係やデータ、`onHandoff` のようなコールバック、ライフサイクルフックが含まれます。
-2. **エージェント / LLM コンテキスト**: レスポンス生成時に言語モデルが参照できるものです。
+1. コードが実行中にアクセスできる **ローカルコンテキスト**：ツールに必要な依存関係やデータ、`onHandoff` などのコールバック、ライフサイクルフック
+2. 言語モデルが応答を生成するときに参照できる **エージェント / LLM コンテキスト**
 
 ## ローカルコンテキスト
 
-ローカルコンテキストは `RunContext<T>` 型で表されます。状態や依存関係を保持する任意のオブジェクトを作成し、それを `Runner.run()` に渡します。すべてのツール呼び出しとフックは `RunContext` ラッパーを受け取り、そのオブジェクトを読み取ったり変更したりできます。
+ローカルコンテキストは、`RunContext<T>` 型で表されます。状態や依存関係を保持する任意のオブジェクトを作成し、`Runner.run()` に渡します。すべてのツール呼び出しとフックには `RunContext` ラッパーが渡されるため、そのオブジェクトの読み取りや変更が可能です。
 
 <Code
   lang="typescript"
@@ -21,7 +21,7 @@ import localContextExample from '../../../../../../examples/docs/context/localCo
   title="ローカルコンテキストの例"
 />
 
-1 回の実行に参加するすべてのエージェント、ツール、フックは、同じコンテキストの **型** を使用する必要があります。
+1 回の実行に参加するすべてのエージェント、ツール、フックでは、同じコンテキストの **型** を使用する必要があります。
 
 ローカルコンテキストは、次のような用途に使用します。
 
@@ -30,41 +30,41 @@ import localContextExample from '../../../../../../examples/docs/context/localCo
 - ヘルパー関数
 
 <Aside type="note">
-  コンテキストオブジェクトは LLM に送信されることは
-  **ありません**。これは完全にローカルなもので、自由に 読み書きできます。
+  コンテキストオブジェクトは LLM に送信
+  **されません**。これは完全にローカルなものであり、 自由に読み書きできます。
 </Aside>
 
-1 回の実行内では、派生コンテキストは同じ基盤となるアプリコンテキスト、承認、使用状況トラッキングを共有します。ネストされた `agent.asTool()` の実行では別の `toolInput` が添付される場合がありますが、デフォルトではアプリ状態の分離されたコピーは取得しません。
+1 回の実行内では、派生したコンテキストは、基になる同じアプリケーションコンテキスト、承認、および使用量追跡を共有します。ネストされた `agent.asTool()` の実行では異なる `toolInput` が設定される場合がありますが、デフォルトではアプリケーション状態の分離されたコピーは作成されません。
 
-### `RunContext` の公開内容
+### `RunContext` が公開する情報
 
-`RunContext<T>` は、アプリで定義したコンテキストオブジェクトのラッパーです。実際には、ほとんどの場合、次のものを使用します。
+`RunContext<T>` は、アプリケーションで定義したコンテキストオブジェクトのラッパーです。実際には、主に次のものを使用します。
 
-- `runContext.context` は、独自の可変アプリ状態と依存関係に使用します。
-- `runContext.usage` は、現在の実行における集約されたトークン / リクエスト使用量に使用します。
-- `runContext.toolInput` は、現在の実行が `agent.asTool()` の内部で実行されている場合の構造化入力に使用します。
-- `runContext.approveTool(...)` / `runContext.rejectTool(...)` は、承認状態をプログラムで更新する必要がある場合に使用します。
+- `runContext.context`：変更可能な独自のアプリケーション状態と依存関係
+- `runContext.usage`：現在の実行で集計されたトークンとリクエストの使用量
+- `runContext.toolInput`：現在の実行が `agent.asTool()` 内で行われている場合の構造化入力
+- `runContext.approveTool(...)` / `runContext.rejectTool(...)`：プログラムから承認状態を更新する場合
 
-`runContext.context` だけがアプリで定義したオブジェクトです。他のフィールドは SDK が管理するランタイムメタデータです。
+アプリケーションで定義するオブジェクトは `runContext.context` だけです。その他のフィールドは、SDK が管理するランタイムメタデータです。
 
-あとで [人間の介入（HITL）](/openai-agents-js/ja/guides/human-in-the-loop) のために [`RunState`](/openai-agents-js/ja/guides/results#state) をシリアライズする場合、そのランタイムメタデータも状態とともに保存されます。シリアライズした状態を永続化または送信する予定がある場合は、`runContext.context` にシークレットを入れないでください。
+後で [人間の介入（HITL）](/openai-agents-js/ja/guides/human-in-the-loop) のために [`RunState`](/openai-agents-js/ja/guides/results#interruptions-and-resumable-state) をシリアライズすると、そのランタイムメタデータも状態とともに保存されます。シリアライズした状態を永続化または送信する予定がある場合は、`runContext.context` に機密情報を格納しないでください。
 
 <Aside type="note">
   `RunContext`
-  は現在の実行におけるローカルなアプリ状態に関するものです。会話状態は
+  は、現在の実行におけるローカルのアプリケーション状態を扱います。会話状態は
   別の関心事です。ターンをどのように引き継ぐかに応じて、`result.history`、`session`、`conversationId`、または
-  `previousResponseId` を使用します。その判断については
+  `previousResponseId` を使用します。この判断については、
   [エージェントの実行](/openai-agents-js/ja/guides/running-agents#state-and-conversation-management)
   を参照してください。
 </Aside>
 
-`RunContext` をサブクラス化する場合は、ネストされた実行や派生実行でも、依存しているサブクラス固有のインスタンス状態が引き続き保持されることを確認してください。SDK はネストされた実行中に内部でフォークされたコンテキストを作成します。
+`RunContext` をサブクラス化する場合は、ネストまたは派生した実行でも、依存しているサブクラス固有のインスタンス状態が保持されることを確認してください。SDK はネストされた実行中に、内部で分岐したコンテキストを作成します。
 
 ## エージェント / LLM コンテキスト
 
-LLM が呼び出されるとき、LLM が参照できるデータは会話履歴から来るものだけです。追加情報を利用可能にするには、いくつかの選択肢があります。
+LLM が呼び出されたときに参照できるデータは、会話履歴に含まれるものだけです。追加情報を利用可能にするには、次の方法があります。
 
-1. エージェントの `instructions` に追加します。これはシステムメッセージまたは開発者メッセージとも呼ばれます。静的な文字列でも、コンテキストを受け取って文字列を返す関数でもかまいません。
-2. `Runner.run()` を呼び出すときに `input` に含めます。これは instructions の手法に似ていますが、メッセージを [指揮系統（chain of command）](https://cdn.openai.com/spec/model-spec-2024-05-08.html#follow-the-chain-of-command) のより低い位置に配置できます。
-3. LLM が必要に応じてデータを取得できるように、関数ツール経由で公開します。
-4. ファイル、データベース、または Web からの関連データに基づいて応答できるように、取得や Web 検索ツールを使用します。
+1. エージェントの `instructions` に追加します。これはシステムメッセージまたは開発者メッセージとも呼ばれます。静的な文字列のほか、コンテキストを受け取って文字列を返す関数も指定できます。
+2. `Runner.run()` を呼び出すときに `input` に含めます。これは instructions を使用する方法に似ていますが、メッセージを[指揮系統](https://cdn.openai.com/spec/model-spec-2024-05-08.html#follow-the-chain-of-command)のより下位に配置できます。
+3. 関数ツールを通じて公開し、LLM が必要に応じてデータを取得できるようにします。
+4. 検索ツールや Web 検索ツールを使用し、ファイル、データベース、または Web の関連データに基づいて応答を生成します。

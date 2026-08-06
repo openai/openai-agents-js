@@ -1,5 +1,6 @@
 import { UserError } from '../../errors';
 import type { Model, ModelSettings } from '../../model';
+import type { Span, Trace } from '../../tracing';
 import { dir } from '../entries';
 import { normalizeRelativePath, type Manifest } from '../manifest';
 import { withSandboxSpan } from '../runtime/spans';
@@ -114,6 +115,7 @@ class MemoryCapability extends Capability {
         session,
         runAs: this._runAs,
         store: this.store,
+        tracingParent: this._tracingParent,
       }).hydrateFromStore(this.layout.memoriesDir);
     }
     const memorySummary = await this.readMemorySummary(session);
@@ -154,6 +156,7 @@ class MemoryCapability extends Capability {
               runAs: this._runAs,
               maxBytes: MEMORY_SUMMARY_MAX_BYTES,
             } satisfies ReadFileArgs),
+          this._tracingParent,
         );
         return normalizeMemorySummaryPayload(payload);
       } catch (error) {
@@ -174,6 +177,7 @@ class MemoryCapability extends Capability {
         session,
         path,
         runAs: this._runAs,
+        tracingParent: this._tracingParent,
       });
     }
 
@@ -375,6 +379,7 @@ async function readMemorySummaryWithShell(args: {
   session: SandboxSessionLike;
   path: string;
   runAs?: string;
+  tracingParent?: Span<any> | Trace;
 }): Promise<string | null> {
   const command = [
     `if [ -f ${shellQuote(args.path)} ]; then`,
@@ -397,6 +402,7 @@ async function readMemorySummaryWithShell(args: {
         maxOutputTokens: 20_000,
         runAs: args.runAs,
       } satisfies ExecCommandArgs),
+    args.tracingParent,
   );
 
   const begin = output.indexOf(MEMORY_BEGIN_MARKER);

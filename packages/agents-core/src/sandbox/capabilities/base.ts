@@ -1,15 +1,15 @@
 import type { AgentInputItem } from '../../types';
 import type { Model } from '../../model';
-import type { Tool } from '../../tool';
+import type { Tool, ToolCallDetails } from '../../tool';
+import { getToolCallParentSpanFromDetails } from '../../agentToolRunConfig';
+import type { Span, Trace } from '../../tracing';
 import { SandboxConfigurationError } from '../errors';
 import type { Manifest } from '../manifest';
 import type { SandboxSessionLike } from '../session';
 import type { SandboxUser } from '../users';
 
 export type CapabilityInstructionsResult =
-  | string
-  | null
-  | Promise<string | null>;
+  string | null | Promise<string | null>;
 
 export abstract class Capability {
   abstract readonly type: string;
@@ -17,12 +17,18 @@ export abstract class Capability {
   protected _session?: SandboxSessionLike;
   protected _runAs?: string;
   protected _modelInstance?: Model;
+  protected _tracingParent?: Span<any> | Trace;
 
   clone(): this {
     const cloned = Object.create(Object.getPrototypeOf(this)) as this;
 
     for (const [key, value] of Object.entries(this)) {
-      if (key === '_session' || key === '_runAs' || key === '_modelInstance') {
+      if (
+        key === '_session' ||
+        key === '_runAs' ||
+        key === '_modelInstance' ||
+        key === '_tracingParent'
+      ) {
         continue;
       }
       (cloned as Record<string, unknown>)[key] = cloneCapabilityValue(value);
@@ -44,6 +50,17 @@ export abstract class Capability {
   bindModel(_model: string, modelInstance?: Model): this {
     this._modelInstance = modelInstance;
     return this;
+  }
+
+  bindTracingParent(parent?: Span<any> | Trace): this {
+    this._tracingParent = parent;
+    return this;
+  }
+
+  protected tracingParent(
+    details?: ToolCallDetails,
+  ): Span<any> | Trace | undefined {
+    return getToolCallParentSpanFromDetails(details) ?? this._tracingParent;
   }
 
   requiredCapabilityTypes(): Set<string> {

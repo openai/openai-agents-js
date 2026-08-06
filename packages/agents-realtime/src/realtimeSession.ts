@@ -8,6 +8,7 @@ import {
   RunContext,
   Usage,
   RunToolApprovalItem,
+  UserError,
   invokeFunctionTool,
   type FunctionTool,
   type ToolErrorFormatterArgs,
@@ -15,6 +16,12 @@ import {
 } from '@openai/agents-core';
 import { RuntimeEventEmitter } from '@openai/agents-core/_shims';
 import { isZodObject, toSmartString } from '@openai/agents-core/utils';
+import {
+  getSafeErrorType,
+  hasDynamicFunctionToolApprovalPolicy,
+  hasInspectableFunctionToolArguments,
+  logToolActionError,
+} from '@openai/agents-core/utils/internal';
 import type {
   RealtimeSessionConfig,
   RealtimeSessionConfigDefinition,
@@ -42,7 +49,12 @@ import { OpenAIRealtimeWebSocket } from './openaiRealtimeWebsocket';
 import { RealtimeAgent } from './realtimeAgent';
 import { RealtimeSessionEventTypes } from './realtimeSessionEvents';
 import type { ApiKey, RealtimeTransportLayer } from './transportLayer';
-import type { TransportToolCallEvent } from './transportLayerEvents';
+import type {
+  TransportLayerOutputTextDelta,
+  TransportLayerResponseStarted,
+  TransportLayerTranscriptDelta,
+  TransportToolCallEvent,
+} from './transportLayerEvents';
 import type { InputAudioTranscriptionCompletedEvent } from './transportLayerEvents';
 import {
   approvalItemToRealtimeApprovalItem,
@@ -56,6 +68,7 @@ import {
   isBackgroundResult,
   isValidRealtimeTool,
   toRealtimeToolDefinition,
+  validateRealtimeToolNames,
 } from './tool';
 import {
   runToolInputGuardrails,
@@ -68,6 +81,14 @@ import {
  */
 export type RealtimeContextData<TContext = unknown> = TContext & {
   history: RealtimeItem[];
+};
+
+export type RealtimeToolExecutionConfig = {
+  /**
+   * Runs function tool input guardrails before emitting a pending human approval interruption.
+   * The same guardrails still run again immediately before tool execution after approval.
+   */
+  preApprovalInputGuardrails?: boolean;
 };
 
 export type RealtimeSessionOptions<TContext = unknown> = {
@@ -105,6 +126,11 @@ export type RealtimeSessionOptions<TContext = unknown> = {
    * Additional session config options. Overrides default client options.
    */
   config?: Partial<RealtimeSessionConfig>;
+
+  /**
+   * SDK-side execution settings for local realtime tool calls.
+   */
+  toolExecution?: RealtimeToolExecutionConfig;
 
   /**
    * Whether the history copy should include a local copy of the audio data. By default it is not
@@ -175,7 +201,76 @@ function cloneDefaultSessionConfig(): Partial<RealtimeSessionConfig> {
   ) as Partial<RealtimeSessionConfig>;
 }
 
+function validateRealtimeToolExecutionConfig(
+  config: RealtimeToolExecutionConfig | undefined,
+): RealtimeToolExecutionConfig | undefined {
+  if (
+    typeof config?.preApprovalInputGuardrails !== 'undefined' &&
+    typeof config.preApprovalInputGuardrails !== 'boolean'
+  ) {
+    throw new UserError(
+      'toolExecution.preApprovalInputGuardrails must be a boolean when provided.',
+    );
+  }
+  return config;
+}
+
 const TOOL_APPROVAL_REJECTION_MESSAGE = 'Tool execution was not approved.';
+
+type SessionRealtimeAgent<TBaseContext> =
+  | RealtimeAgent<TBaseContext>
+  | RealtimeAgent<RealtimeContextData<TBaseContext>>;
+
+type RealtimeFunctionTool<TBaseContext> = FunctionTool<
+  RealtimeContextData<TBaseContext>,
+  any,
+  unknown
+>;
+
+type RealtimeDispatchSnapshot<TBaseContext> = {
+  agent: SessionRealtimeAgent<TBaseContext>;
+  functionTools: RealtimeFunctionTool<TBaseContext>[];
+  handoffs: Handoff[];
+};
+
+type PreparedRealtimeAgentState<TBaseContext> = {
+  agent: SessionRealtimeAgent<TBaseContext>;
+  toolDefinitions?: RealtimeToolDefinition[];
+  dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>;
+};
+
+type PendingRealtimeFunctionCall<TBaseContext> = {
+  toolCall: TransportToolCallEvent;
+  tool: RealtimeFunctionTool<TBaseContext>;
+  agent: SessionRealtimeAgent<TBaseContext>;
+  dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>;
+  approvalItem: RunToolApprovalItem;
+};
+
+type OutputGuardrailDeltaSource = 'audio' | 'text';
+
+type OutputGuardrailDeltaState = {
+  text: string;
+  lastRunIndex: number;
+};
+
+function normalizeRealtimeFunctionCallId(
+  toolCall: TransportToolCallEvent,
+): TransportToolCallEvent {
+  const callId = toolCall.callId || toolCall.id || '';
+  return callId === toolCall.callId ? toolCall : { ...toolCall, callId };
+}
+
+function getStartedResponseId(
+  event: TransportLayerResponseStarted,
+): string | undefined {
+  const response = event.providerData?.response;
+  if (typeof response !== 'object' || response === null) {
+    return undefined;
+  }
+  const responseId = (response as { id?: unknown }).id;
+  return typeof responseId === 'string' ? responseId : undefined;
+}
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -218,17 +313,32 @@ export class RealtimeSession<
   TBaseContext = unknown,
 > extends RuntimeEventEmitter<RealtimeSessionEventTypes<TBaseContext>> {
   #transport: RealtimeTransportLayer;
-  #currentAgent:
-    | RealtimeAgent<TBaseContext>
-    | RealtimeAgent<RealtimeContextData<TBaseContext>>;
+  #currentAgent: SessionRealtimeAgent<TBaseContext>;
   #currentTools?: RealtimeToolDefinition[];
+  #currentDispatchSnapshot?: RealtimeDispatchSnapshot<TBaseContext>;
+  #responseDispatchSnapshots = new Map<
+    string,
+    RealtimeDispatchSnapshot<TBaseContext>
+  >();
+  #pendingResponseDispatchSnapshot:
+    RealtimeDispatchSnapshot<TBaseContext> | undefined;
+  #pendingFunctionCalls = new Map<
+    string,
+    PendingRealtimeFunctionCall<TBaseContext>
+  >();
   #context: RunContext<RealtimeContextData<TBaseContext>>;
   #outputGuardrails: RealtimeOutputGuardrailDefinition[] = [];
   #outputGuardrailSettings: RealtimeOutputGuardrailSettings;
-  #transcribedTextDeltas: Record<string, string> = {};
+  #outputGuardrailDeltaState = new Map<
+    string,
+    Map<string, OutputGuardrailDeltaState>
+  >();
   #history: RealtimeItem[] = [];
   #shouldIncludeAudioData: boolean;
   #interruptedByGuardrail: Record<string, boolean> = {};
+  #activeResponseId: string | undefined;
+  #responseGeneration = 0;
+  #connectionGeneration = 0;
   #audioStarted = false;
   // Tracks all MCP tools fetched per server label (from mcp_list_tools results).
   #allMcpToolsByServer: Map<string, RealtimeMcpToolInfo[]> = new Map();
@@ -243,6 +353,7 @@ export class RealtimeSession<
   #lastSessionConfig: Partial<RealtimeSessionConfig> | null =
     cloneDefaultSessionConfig();
   #automaticallyTriggerResponseForMcpToolCalls: boolean = true;
+  #toolExecution: RealtimeToolExecutionConfig | undefined;
   #eventListenersAttached = false;
 
   constructor(
@@ -281,6 +392,9 @@ export class RealtimeSession<
     this.#shouldIncludeAudioData = options.historyStoreAudio ?? false;
     this.#automaticallyTriggerResponseForMcpToolCalls =
       options.automaticallyTriggerResponseForMcpToolCalls ?? true;
+    this.#toolExecution = validateRealtimeToolExecutionConfig(
+      options.toolExecution,
+    );
   }
 
   /**
@@ -332,36 +446,73 @@ export class RealtimeSession<
     return this.#availableMcpTools;
   }
 
-  async #setCurrentAgent(
-    agent:
-      | RealtimeAgent<TBaseContext>
-      | RealtimeAgent<RealtimeContextData<TBaseContext>>,
-  ) {
-    this.#currentAgent = agent;
-    const handoffs = await (
-      this.#currentAgent as RealtimeAgent<TBaseContext>
-    ).getEnabledHandoffs(this.#context);
+  async #prepareAgent(
+    agent: SessionRealtimeAgent<TBaseContext>,
+  ): Promise<PreparedRealtimeAgentState<TBaseContext>> {
+    const [handoffs, agentTools] = await Promise.all([
+      (agent as RealtimeAgent<TBaseContext>).getEnabledHandoffs(this.#context),
+      (agent as RealtimeAgent<TBaseContext>).getAllTools(this.#context),
+    ]);
     const handoffTools = handoffs.map((handoff) =>
       handoff.getHandoffAsFunctionTool(),
     );
-    const allTools = (
-      await (this.#currentAgent as RealtimeAgent<TBaseContext>).getAllTools(
-        this.#context,
-      )
-    )
-      .filter(isValidRealtimeTool)
-      .map(toRealtimeToolDefinition);
+    const realtimeTools = agentTools.filter(isValidRealtimeTool);
+    const functionTools = realtimeTools.filter(
+      (tool): tool is RealtimeFunctionTool<TBaseContext> =>
+        tool.type === 'function',
+    );
+
+    validateRealtimeToolNames(functionTools, handoffs);
+
     const hasToolsDefined =
-      typeof this.#currentAgent.tools !== 'undefined' ||
-      typeof this.#currentAgent.mcpServers !== 'undefined';
+      typeof agent.tools !== 'undefined' ||
+      typeof agent.mcpServers !== 'undefined';
     const hasHandoffsDefined = handoffs.length > 0;
-    this.#currentTools =
-      hasToolsDefined || hasHandoffsDefined
-        ? [...allTools, ...handoffTools]
-        : undefined;
+    return {
+      agent,
+      toolDefinitions:
+        hasToolsDefined || hasHandoffsDefined
+          ? [...realtimeTools.map(toRealtimeToolDefinition), ...handoffTools]
+          : undefined,
+      dispatchSnapshot: {
+        agent,
+        functionTools,
+        handoffs,
+      },
+    };
+  }
+
+  #applyPreparedAgent(
+    prepared: PreparedRealtimeAgentState<TBaseContext>,
+  ): void {
+    this.#currentAgent = prepared.agent;
+    this.#currentTools = prepared.toolDefinitions;
+    this.#currentDispatchSnapshot = prepared.dispatchSnapshot;
 
     // Recompute currently available MCP tools based on the new agent's active server labels.
     this.#updateAvailableMcpTools();
+  }
+
+  async #setCurrentAgent(agent: SessionRealtimeAgent<TBaseContext>) {
+    const prepared = await this.#prepareAgent(agent);
+    this.#applyPreparedAgent(prepared);
+  }
+
+  #captureResponseDispatchSnapshot(
+    responseId: string,
+  ): RealtimeDispatchSnapshot<TBaseContext> | undefined {
+    const existingSnapshot = this.#responseDispatchSnapshots.get(responseId);
+    if (existingSnapshot) {
+      return existingSnapshot;
+    }
+
+    const snapshot =
+      this.#pendingResponseDispatchSnapshot ?? this.#currentDispatchSnapshot;
+    this.#pendingResponseDispatchSnapshot = undefined;
+    if (snapshot) {
+      this.#responseDispatchSnapshots.set(responseId, snapshot);
+    }
+    return snapshot;
   }
 
   async #getSessionConfig(
@@ -499,26 +650,32 @@ export class RealtimeSession<
   }
 
   async updateAgent(newAgent: RealtimeAgent<TBaseContext>) {
+    const prepared = await this.#prepareAgent(newAgent);
     this.#currentAgent.emit('agent_handoff', this.#context, newAgent);
     this.emit('agent_handoff', this.#context, this.#currentAgent, newAgent);
 
-    await this.#setCurrentAgent(newAgent);
+    this.#applyPreparedAgent(prepared);
     await this.#transport.updateSessionConfig(await this.#getSessionConfig());
 
     return newAgent;
   }
 
-  async #handleHandoff(toolCall: TransportToolCallEvent, handoff: Handoff) {
+  async #handleHandoff(
+    toolCall: TransportToolCallEvent,
+    handoff: Handoff,
+    sourceAgent: SessionRealtimeAgent<TBaseContext>,
+  ) {
     const newAgent = (await handoff.onInvokeHandoff(
       this.#context,
       toolCall.arguments,
     )) as RealtimeAgent<TBaseContext>;
+    const prepared = await this.#prepareAgent(newAgent);
 
-    this.#currentAgent.emit('agent_handoff', this.#context, newAgent);
-    this.emit('agent_handoff', this.#context, this.#currentAgent, newAgent);
+    sourceAgent.emit('agent_handoff', this.#context, newAgent);
+    this.emit('agent_handoff', this.#context, sourceAgent, newAgent);
 
     // update session with new agent
-    await this.#setCurrentAgent(newAgent);
+    this.#applyPreparedAgent(prepared);
     await this.#transport.updateSessionConfig(await this.#getSessionConfig());
     const output = getTransferMessage(newAgent);
     this.#transport.sendFunctionCallOutput(toolCall, output, true);
@@ -561,8 +718,11 @@ export class RealtimeSession<
         );
       }
     } catch (error) {
+      const errorDetails = logger.dontLogToolData
+        ? getSafeErrorType(error)
+        : toErrorMessage(error);
       logger.warn(
-        `toolErrorFormatter threw while formatting approval rejection: ${toErrorMessage(error)}`,
+        `toolErrorFormatter threw while formatting approval rejection: ${errorDetails}`,
       );
     }
 
@@ -570,33 +730,57 @@ export class RealtimeSession<
   }
 
   async #handleFunctionToolCall(
-    toolCall: TransportToolCallEvent,
-    tool: FunctionTool<RealtimeContextData<TBaseContext>, any, unknown>,
+    incomingToolCall: TransportToolCallEvent,
+    tool: RealtimeFunctionTool<TBaseContext>,
+    agent: SessionRealtimeAgent<TBaseContext>,
+    dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>,
   ) {
+    const toolCall = normalizeRealtimeFunctionCallId(incomingToolCall);
     this.#context.context.history = JSON.parse(JSON.stringify(this.#history)); // deep copy of the history
     let parsedArgs: any = toolCall.arguments;
-    if (tool.parameters) {
-      if (isZodObject(tool.parameters)) {
-        parsedArgs = tool.parameters.parse(parsedArgs);
-      } else {
-        parsedArgs = JSON.parse(parsedArgs);
+    const dynamicApprovalPolicy = hasDynamicFunctionToolApprovalPolicy(tool);
+    let argumentParseError: unknown;
+    try {
+      if (tool.parameters) {
+        if (isZodObject(tool.parameters)) {
+          parsedArgs = tool.parameters.parse(parsedArgs);
+        } else {
+          parsedArgs = JSON.parse(parsedArgs);
+        }
       }
+    } catch (error) {
+      if (!dynamicApprovalPolicy) {
+        throw error;
+      }
+      argumentParseError = error;
     }
-    const needsApproval = await tool.needsApproval(
-      this.#context,
-      parsedArgs,
-      toolCall.callId,
-    );
+    const forceApproval =
+      dynamicApprovalPolicy &&
+      (argumentParseError !== undefined ||
+        !hasInspectableFunctionToolArguments(parsedArgs));
+    const existingApproval = dynamicApprovalPolicy
+      ? this.context.isToolApproved({
+          toolName: tool.name,
+          callId: toolCall.callId,
+        })
+      : undefined;
+    const needsApproval =
+      forceApproval ||
+      existingApproval !== undefined ||
+      (await tool.needsApproval(this.#context, parsedArgs, toolCall.callId));
     if (needsApproval) {
-      const approval = this.context.isToolApproved({
-        toolName: tool.name,
-        callId: toolCall.callId,
-      });
+      const approval =
+        existingApproval ??
+        this.context.isToolApproved({
+          toolName: tool.name,
+          callId: toolCall.callId,
+        });
       if (approval === false) {
-        this.emit('agent_tool_start', this.#context, this.#currentAgent, tool, {
+        this.#pendingFunctionCalls.delete(toolCall.callId);
+        this.emit('agent_tool_start', this.#context, agent, tool, {
           toolCall,
         });
-        this.#currentAgent.emit('agent_tool_start', this.#context, tool, {
+        agent.emit('agent_tool_start', this.#context, tool, {
           toolCall,
         });
 
@@ -605,44 +789,66 @@ export class RealtimeSession<
           toolCall.callId,
         );
         this.#transport.sendFunctionCallOutput(toolCall, result, true);
-        this.emit(
-          'agent_tool_end',
-          this.#context,
-          this.#currentAgent,
-          tool,
-          result,
-          { toolCall },
-        );
-        this.#currentAgent.emit('agent_tool_end', this.#context, tool, result, {
+        this.emit('agent_tool_end', this.#context, agent, tool, result, {
+          toolCall,
+        });
+        agent.emit('agent_tool_end', this.#context, tool, result, {
           toolCall,
         });
         return;
       } else if (typeof approval === 'undefined') {
-        this.emit(
-          'tool_approval_requested',
-          this.#context,
-          this.#currentAgent,
-          {
-            type: 'function_approval' as const,
-            tool,
-            approvalItem: new RunToolApprovalItem(toolCall, this.#currentAgent),
-          },
-        );
+        if (this.#toolExecution?.preApprovalInputGuardrails === true) {
+          const inputGuardrailResult = await runToolInputGuardrails({
+            guardrails: tool.inputGuardrails,
+            context: this.#context,
+            agent,
+            toolCall: toolCall as any,
+          });
+
+          if (inputGuardrailResult.type === 'reject') {
+            this.#transport.sendFunctionCallOutput(
+              toolCall,
+              inputGuardrailResult.message,
+              true,
+            );
+            return;
+          }
+        }
+        const approvalItem = new RunToolApprovalItem(toolCall, agent);
+        this.#pendingFunctionCalls.set(toolCall.callId, {
+          toolCall,
+          tool,
+          agent,
+          dispatchSnapshot,
+          approvalItem,
+        });
+        this.emit('tool_approval_requested', this.#context, agent, {
+          type: 'function_approval' as const,
+          tool,
+          approvalItem,
+        });
         return;
       }
+    }
+
+    this.#pendingFunctionCalls.delete(toolCall.callId);
+    if (argumentParseError !== undefined) {
+      const errorMessage = `An error occurred while parsing tool arguments. Please try again with valid JSON. Error: ${toErrorMessage(argumentParseError)}`;
+      this.#transport.sendFunctionCallOutput(toolCall, errorMessage, true);
+      return;
     }
 
     const inputGuardrailResult = await runToolInputGuardrails({
       guardrails: tool.inputGuardrails,
       context: this.#context,
-      agent: this.#currentAgent,
+      agent,
       toolCall: toolCall as any,
     });
 
-    this.emit('agent_tool_start', this.#context, this.#currentAgent, tool, {
+    this.emit('agent_tool_start', this.#context, agent, tool, {
       toolCall,
     });
-    this.#currentAgent.emit('agent_tool_start', this.#context, tool, {
+    agent.emit('agent_tool_start', this.#context, tool, {
       toolCall,
     });
 
@@ -664,7 +870,7 @@ export class RealtimeSession<
         : await runToolOutputGuardrails({
             guardrails: tool.outputGuardrails,
             context: this.#context,
-            agent: this.#currentAgent,
+            agent,
             toolCall: toolCall as any,
             toolOutput: result,
           });
@@ -677,65 +883,98 @@ export class RealtimeSession<
       stringResult = toSmartString(guardedResult);
       this.#transport.sendFunctionCallOutput(toolCall, stringResult, true);
     }
-    this.emit(
-      'agent_tool_end',
-      this.#context,
-      this.#currentAgent,
-      tool,
-      stringResult,
-      { toolCall },
-    );
-    this.#currentAgent.emit(
-      'agent_tool_end',
-      this.#context,
-      tool,
-      stringResult,
-      { toolCall },
-    );
+    this.emit('agent_tool_end', this.#context, agent, tool, stringResult, {
+      toolCall,
+    });
+    agent.emit('agent_tool_end', this.#context, tool, stringResult, {
+      toolCall,
+    });
   }
 
-  async #handleFunctionCall(toolCall: TransportToolCallEvent) {
-    const enabledHandoffs = await (
-      this.#currentAgent as RealtimeAgent<TBaseContext>
-    ).getEnabledHandoffs(this.#context);
-    const handoffMap = new Map(
-      enabledHandoffs.map((handoff) => [handoff.toolName, handoff]),
+  async #handleFunctionCall(
+    toolCall: TransportToolCallEvent,
+    dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>,
+  ) {
+    const [toolEnabled, handoffEnabled] = await Promise.all([
+      Promise.all(
+        dispatchSnapshot.functionTools.map((tool) =>
+          tool.isEnabled(this.#context, dispatchSnapshot.agent),
+        ),
+      ),
+      Promise.all(
+        dispatchSnapshot.handoffs.map((handoff) =>
+          handoff.isEnabled({
+            runContext: this.#context,
+            agent: dispatchSnapshot.agent,
+          }),
+        ),
+      ),
+    ]);
+    const filteredSnapshot: RealtimeDispatchSnapshot<TBaseContext> = {
+      agent: dispatchSnapshot.agent,
+      functionTools: dispatchSnapshot.functionTools.filter(
+        (_tool, index) => toolEnabled[index],
+      ),
+      handoffs: dispatchSnapshot.handoffs.filter(
+        (_handoff, index) => handoffEnabled[index],
+      ),
+    };
+    validateRealtimeToolNames(
+      filteredSnapshot.functionTools,
+      filteredSnapshot.handoffs,
     );
 
-    const allTools = await (
-      this.#currentAgent as RealtimeAgent<TBaseContext>
-    ).getAllTools(this.#context);
-    const functionToolMap = new Map(allTools.map((tool) => [tool.name, tool]));
+    const functionToolMap = new Map(
+      filteredSnapshot.functionTools.map((tool) => [tool.name, tool]),
+    );
+    const handoffMap = new Map(
+      filteredSnapshot.handoffs.map((handoff) => [handoff.toolName, handoff]),
+    );
+
+    const functionTool = functionToolMap.get(toolCall.name);
+    if (functionTool) {
+      await this.#handleFunctionToolCall(
+        toolCall,
+        functionTool,
+        filteredSnapshot.agent,
+        filteredSnapshot,
+      );
+      return;
+    }
 
     const possibleHandoff = handoffMap.get(toolCall.name);
     if (possibleHandoff) {
-      await this.#handleHandoff(toolCall, possibleHandoff);
-    } else {
-      const functionTool = functionToolMap.get(toolCall.name);
-      if (functionTool && functionTool.type === 'function') {
-        await this.#handleFunctionToolCall(toolCall, functionTool);
-      } else {
-        const message = `Tool ${toolCall.name} not found`;
-        this.#transport.sendFunctionCallOutput(toolCall, message, false);
-        this.emit('error', {
-          type: 'error',
-          error: new ModelBehaviorError(message),
-        });
-      }
+      await this.#handleHandoff(
+        toolCall,
+        possibleHandoff,
+        filteredSnapshot.agent,
+      );
+      return;
     }
+
+    const message = `Tool ${toolCall.name} not found`;
+    this.#transport.sendFunctionCallOutput(toolCall, message, false);
+    this.emit('error', {
+      type: 'error',
+      error: new ModelBehaviorError(message),
+    });
   }
 
   async #runOutputGuardrails(
     output: string,
     responseId: string,
     itemId: string,
+    sourceAgent: SessionRealtimeAgent<TBaseContext>,
+    source: OutputGuardrailDeltaSource | 'final',
+    responseGeneration: number,
+    connectionGeneration: number,
   ) {
     if (this.#outputGuardrails.length === 0) {
       return;
     }
 
     const guardrailArgs: OutputGuardrailFunctionArgs<unknown, 'text'> = {
-      agent: this.#currentAgent as Agent<unknown, 'text'>,
+      agent: sourceAgent as Agent<unknown, 'text'>,
       agentOutput: output,
       context: this.#context,
     };
@@ -747,6 +986,9 @@ export class RealtimeSession<
       (result) => result.output.tripwireTriggered,
     );
     if (firstTripwireTriggered) {
+      if (connectionGeneration !== this.#connectionGeneration) {
+        return;
+      }
       // this ensures that if one guardrail already trips and we are in the middle of another
       // guardrail run, we don't trip again
       if (this.#interruptedByGuardrail[responseId]) {
@@ -757,10 +999,26 @@ export class RealtimeSession<
         `Output guardrail triggered: ${JSON.stringify(firstTripwireTriggered.output.outputInfo)}`,
         firstTripwireTriggered,
       );
-      this.emit('guardrail_tripped', this.#context, this.#currentAgent, error, {
+      this.emit('guardrail_tripped', this.#context, sourceAgent, error, {
         itemId,
       });
-      this.interrupt();
+
+      if (
+        responseGeneration !== this.#responseGeneration ||
+        (this.#activeResponseId !== undefined &&
+          this.#activeResponseId !== responseId)
+      ) {
+        return;
+      }
+
+      if (source === 'text' && this.#activeResponseId === responseId) {
+        this.#transport.sendEvent({
+          type: 'response.cancel',
+          response_id: responseId,
+        });
+      } else if (source !== 'text') {
+        this.interrupt();
+      }
 
       const feedbackText = getRealtimeGuardrailFeedbackMessage(
         firstTripwireTriggered,
@@ -768,6 +1026,74 @@ export class RealtimeSession<
       this.sendMessage(feedbackText);
       return;
     }
+  }
+
+  #scheduleOutputGuardrails(
+    output: string,
+    responseId: string,
+    itemId: string,
+    source: OutputGuardrailDeltaSource | 'final',
+    sourceAgent: SessionRealtimeAgent<TBaseContext>,
+    responseGeneration = this.#responseGeneration,
+    connectionGeneration = this.#connectionGeneration,
+  ) {
+    void this.#runOutputGuardrails(
+      output,
+      responseId,
+      itemId,
+      sourceAgent,
+      source,
+      responseGeneration,
+      connectionGeneration,
+    ).catch((error) => {
+      this.emit('error', { type: 'error', error });
+    });
+  }
+
+  #handleOutputGuardrailDelta(
+    event: TransportLayerTranscriptDelta | TransportLayerOutputTextDelta,
+    source: OutputGuardrailDeltaSource,
+  ) {
+    const { delta, itemId, responseId } = event;
+    if (this.#activeResponseId === undefined) {
+      this.#activeResponseId = responseId;
+      this.#captureResponseDispatchSnapshot(responseId);
+    }
+    let responseState = this.#outputGuardrailDeltaState.get(responseId);
+    if (!responseState) {
+      responseState = new Map();
+      this.#outputGuardrailDeltaState.set(responseId, responseState);
+    }
+
+    const state = responseState.get(itemId) ?? {
+      text: '',
+      lastRunIndex: 0,
+    };
+    state.text += delta;
+    responseState.set(itemId, state);
+
+    if (this.#outputGuardrailSettings.debounceTextLength < 0) {
+      return;
+    }
+
+    const newRunIndex = Math.floor(
+      state.text.length / this.#outputGuardrailSettings.debounceTextLength,
+    );
+    if (newRunIndex <= state.lastRunIndex) {
+      return;
+    }
+
+    state.lastRunIndex = newRunIndex;
+    const sourceAgent =
+      this.#responseDispatchSnapshots.get(responseId)?.agent ??
+      this.#currentAgent;
+    this.#scheduleOutputGuardrails(
+      state.text,
+      responseId,
+      itemId,
+      source,
+      sourceAgent,
+    );
   }
 
   #setEventListeners() {
@@ -820,12 +1146,28 @@ export class RealtimeSession<
       }
       this.emit('audio', event);
     });
-    this.#transport.on('turn_started', () => {
+    this.#transport.on('turn_started', (event) => {
       this.#audioStarted = false;
+      const responseId = getStartedResponseId(event);
+      this.#activeResponseId = responseId;
+      this.#responseGeneration += 1;
+      this.#pendingResponseDispatchSnapshot = this.#currentDispatchSnapshot;
+      if (responseId) {
+        this.#captureResponseDispatchSnapshot(responseId);
+      }
       this.emit('agent_start', this.#context, this.#currentAgent);
       this.#currentAgent.emit('agent_start', this.#context, this.#currentAgent);
     });
     this.#transport.on('turn_done', (event) => {
+      const responseId = event.response.id;
+      const sourceAgent =
+        this.#captureResponseDispatchSnapshot(responseId)?.agent ??
+        this.#currentAgent;
+      const responseGeneration = this.#responseGeneration;
+      const connectionGeneration = this.#connectionGeneration;
+      if (this.#activeResponseId === responseId) {
+        this.#activeResponseId = undefined;
+      }
       const outputItems = event.response.output ?? [];
       let textOutput = '';
       let itemId = '';
@@ -850,7 +1192,17 @@ export class RealtimeSession<
       this.emit('agent_end', this.#context, this.#currentAgent, textOutput);
       this.#currentAgent.emit('agent_end', this.#context, textOutput);
 
-      this.#runOutputGuardrails(textOutput, event.response.id, itemId);
+      this.#scheduleOutputGuardrails(
+        textOutput,
+        responseId,
+        itemId,
+        'final',
+        sourceAgent,
+        responseGeneration,
+        connectionGeneration,
+      );
+      this.#outputGuardrailDeltaState.delete(responseId);
+      this.#responseDispatchSnapshots.delete(responseId);
     });
 
     this.#transport.on('audio_done', () => {
@@ -860,35 +1212,20 @@ export class RealtimeSession<
       this.emit('audio_stopped', this.#context, this.#currentAgent);
     });
 
-    let lastRunIndex = 0;
-    let lastItemId: string | undefined;
     this.#transport.on('audio_transcript_delta', (event) => {
       try {
-        const delta = event.delta;
-        const itemId = event.itemId;
-        const responseId = event.responseId;
-        if (lastItemId !== itemId) {
-          lastItemId = itemId;
-          lastRunIndex = 0;
-        }
-        const currentText = this.#transcribedTextDeltas[itemId] ?? '';
-        const newText = currentText + delta;
-        this.#transcribedTextDeltas[itemId] = newText;
+        this.#handleOutputGuardrailDelta(event, 'audio');
+      } catch (err) {
+        this.emit('error', {
+          type: 'error',
+          error: err,
+        });
+      }
+    });
 
-        if (this.#outputGuardrailSettings.debounceTextLength < 0) {
-          return;
-        }
-
-        const newRunIndex = Math.floor(
-          newText.length / this.#outputGuardrailSettings.debounceTextLength,
-        );
-        if (newRunIndex > lastRunIndex) {
-          lastRunIndex = newRunIndex;
-          // We don't cancel existing runs because we want the first one to fail to fail
-          // The transport layer should upon failure handle the interruption and stop the model
-          // from generating further
-          this.#runOutputGuardrails(newText, responseId, itemId);
-        }
+    this.#transport.on('output_text_delta', (event) => {
+      try {
+        this.#handleOutputGuardrailDelta(event, 'text');
       } catch (err) {
         this.emit('error', {
           type: 'error',
@@ -942,9 +1279,22 @@ export class RealtimeSession<
 
     this.#transport.on('function_call', async (event) => {
       try {
-        await this.#handleFunctionCall(event);
+        if (!event.responseId) {
+          throw new ModelBehaviorError(
+            'Realtime function call is missing a responseId and cannot be dispatched safely.',
+          );
+        }
+        const dispatchSnapshot = this.#captureResponseDispatchSnapshot(
+          event.responseId,
+        );
+        if (!dispatchSnapshot) {
+          throw new ModelBehaviorError(
+            'Realtime tool dispatch is unavailable before the session tool configuration is resolved.',
+          );
+        }
+        await this.#handleFunctionCall(event, dispatchSnapshot);
       } catch (error) {
-        logger.error('Error handling function call', error);
+        logToolActionError(logger, 'Error handling function call', error);
         this.emit('error', {
           type: 'error',
           error,
@@ -1050,6 +1400,13 @@ export class RealtimeSession<
    * @param options - The options for the connection.
    */
   async connect(options: RealtimeSessionConnectOptions) {
+    this.#connectionGeneration += 1;
+    this.#responseGeneration = 0;
+    this.#activeResponseId = undefined;
+    this.#outputGuardrailDeltaState.clear();
+    this.#interruptedByGuardrail = {};
+    this.#pendingResponseDispatchSnapshot = undefined;
+    this.#responseDispatchSnapshots.clear();
     // makes sure the current agent is correctly set and loads the tools
     await this.#setCurrentAgent(this.initialAgent);
 
@@ -1123,7 +1480,14 @@ export class RealtimeSession<
    * Disconnect from the session.
    */
   close() {
+    this.#connectionGeneration += 1;
+    this.#responseGeneration = 0;
+    this.#activeResponseId = undefined;
+    this.#outputGuardrailDeltaState.clear();
     this.#interruptedByGuardrail = {};
+    this.#pendingResponseDispatchSnapshot = undefined;
+    this.#pendingFunctionCalls.clear();
+    this.#responseDispatchSnapshots.clear();
     this.#transport.close();
   }
 
@@ -1145,6 +1509,60 @@ export class RealtimeSession<
     this.#transport.interrupt();
   }
 
+  #resolvePendingFunctionCall(
+    approvalItem: RunToolApprovalItem,
+  ): PendingRealtimeFunctionCall<TBaseContext> | undefined {
+    if (approvalItem.rawItem.type !== 'function_call') {
+      return undefined;
+    }
+
+    const rawToolCall = approvalItem.rawItem as typeof approvalItem.rawItem & {
+      responseId?: unknown;
+    };
+    if (typeof rawToolCall.responseId !== 'string') {
+      return undefined;
+    }
+    const toolCall = normalizeRealtimeFunctionCallId(
+      rawToolCall as TransportToolCallEvent,
+    );
+    const pending = this.#pendingFunctionCalls.get(toolCall.callId);
+    if (pending) {
+      return pending;
+    }
+
+    const agent =
+      approvalItem.agent instanceof RealtimeAgent
+        ? (approvalItem.agent as SessionRealtimeAgent<TBaseContext>)
+        : this.#currentAgent;
+    const toolName = approvalItem.toolName ?? approvalItem.rawItem.name;
+    const tool = agent.tools.find(
+      (candidate): candidate is RealtimeFunctionTool<TBaseContext> =>
+        candidate.type === 'function' && candidate.name === toolName,
+    );
+    if (!tool) {
+      return undefined;
+    }
+
+    const dispatchSnapshot =
+      this.#currentDispatchSnapshot?.agent === agent
+        ? this.#currentDispatchSnapshot
+        : { agent, functionTools: [tool], handoffs: [] };
+    return {
+      toolCall,
+      tool,
+      agent,
+      dispatchSnapshot,
+      approvalItem:
+        toolCall === approvalItem.rawItem
+          ? approvalItem
+          : new RunToolApprovalItem(
+              toolCall,
+              approvalItem.agent,
+              approvalItem.toolName,
+            ),
+    };
+  }
+
   /**
    * Approve a tool call. This will also trigger the tool call to the agent.
    * @param approvalItem - The approval item to approve.
@@ -1155,18 +1573,18 @@ export class RealtimeSession<
     approvalItem: RunToolApprovalItem,
     options: { alwaysApprove?: boolean } = { alwaysApprove: false },
   ) {
-    this.#context.approveTool(approvalItem, options);
+    const pending = this.#resolvePendingFunctionCall(approvalItem);
+    this.#context.approveTool(pending?.approvalItem ?? approvalItem, options);
     const toolName =
       approvalItem.toolName ?? (approvalItem.rawItem as any).name;
-    const tool = this.#currentAgent.tools.find(
-      (tool) => tool.name === toolName,
-    );
-    if (
-      tool &&
-      tool.type === 'function' &&
-      approvalItem.rawItem.type === 'function_call'
-    ) {
-      await this.#handleFunctionToolCall(approvalItem.rawItem, tool);
+    if (pending) {
+      this.#pendingFunctionCalls.delete(pending.toolCall.callId);
+      await this.#handleFunctionToolCall(
+        pending.toolCall,
+        pending.tool,
+        pending.agent,
+        pending.dispatchSnapshot,
+      );
     } else if (approvalItem.rawItem.type === 'hosted_tool_call') {
       if (options.alwaysApprove) {
         logger.warn(
@@ -1195,20 +1613,20 @@ export class RealtimeSession<
       alwaysReject: false,
     },
   ) {
-    this.#context.rejectTool(approvalItem, options);
+    const pending = this.#resolvePendingFunctionCall(approvalItem);
+    this.#context.rejectTool(pending?.approvalItem ?? approvalItem, options);
 
     // we still need to simulate a tool call to the agent to let the agent know
     const toolName =
       approvalItem.toolName ?? (approvalItem.rawItem as any).name;
-    const tool = this.#currentAgent.tools.find(
-      (tool) => tool.name === toolName,
-    );
-    if (
-      tool &&
-      tool.type === 'function' &&
-      approvalItem.rawItem.type === 'function_call'
-    ) {
-      await this.#handleFunctionToolCall(approvalItem.rawItem, tool);
+    if (pending) {
+      this.#pendingFunctionCalls.delete(pending.toolCall.callId);
+      await this.#handleFunctionToolCall(
+        pending.toolCall,
+        pending.tool,
+        pending.agent,
+        pending.dispatchSnapshot,
+      );
     } else if (approvalItem.rawItem.type === 'hosted_tool_call') {
       if (options.alwaysReject) {
         logger.warn(

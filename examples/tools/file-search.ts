@@ -8,50 +8,72 @@ async function main() {
 
   const text = `Arrakis, the desert planet in Frank Herbert's "Dune," was inspired by the scarcity of water
     as a metaphor for oil and other finite resources.`;
-  const upload = await client.files.create({
-    file: await toFile(Buffer.from(text, 'utf-8'), 'cafe.txt'),
-    purpose: 'assistants',
-  });
-  const vectorStore = await client.vectorStores.create({
-    name: 'Arrakis',
-  });
-  console.log(vectorStore);
-  const indexed = await client.vectorStores.files.createAndPoll(
-    vectorStore.id,
-    { file_id: upload.id },
-  );
-  console.log(indexed);
+  let uploadId: string | undefined;
+  let vectorStoreId: string | undefined;
 
-  const agent = new Agent({
-    name: 'File searcher',
-    instructions: 'You are a helpful agent.',
-    tools: [
-      fileSearchTool([vectorStore.id], {
-        maxNumResults: 3,
-        includeSearchResults: true,
-      }),
-    ],
-  });
+  try {
+    const upload = await client.files.create({
+      file: await toFile(Buffer.from(text, 'utf-8'), 'arrakis.txt'),
+      purpose: 'assistants',
+    });
+    uploadId = upload.id;
 
-  await withTrace('File search example', async () => {
-    const result = await run(
-      agent,
-      'Be concise, and tell me 1 sentence about Arrakis I might not know.',
+    const vectorStore = await client.vectorStores.create({
+      name: 'Arrakis',
+      expires_after: { anchor: 'last_active_at', days: 1 },
+    });
+    vectorStoreId = vectorStore.id;
+    console.log(vectorStore);
+
+    const indexed = await client.vectorStores.files.createAndPoll(
+      vectorStore.id,
+      { file_id: upload.id },
     );
-    console.log(result.finalOutput);
-    /*
-    Arrakis, the desert planet in Frank Herbert's "Dune," was inspired by the scarcity of water
-    as a metaphor for oil and other finite resources.
-    */
+    console.log(indexed);
 
-    console.log(
-      '\n' +
-        result.newItems.map((out: unknown) => JSON.stringify(out)).join('\n'),
-    );
-    /*
-    {"id":"...", "queries":["Arrakis"], "results":[...]}
-    */
-  });
+    const agent = new Agent({
+      name: 'File searcher',
+      instructions: 'You are a helpful agent.',
+      tools: [
+        fileSearchTool([vectorStore.id], {
+          maxNumResults: 3,
+          includeSearchResults: true,
+        }),
+      ],
+    });
+
+    await withTrace('File search example', async () => {
+      const result = await run(
+        agent,
+        'Be concise, and tell me 1 sentence about Arrakis I might not know.',
+      );
+      console.log(result.finalOutput);
+
+      const fileSearchCall = result.newItems.find(
+        (item) =>
+          item.type === 'tool_call_item' &&
+          item.rawItem.type === 'hosted_tool_call' &&
+          item.rawItem.name === 'file_search_call',
+      );
+      if (!fileSearchCall) {
+        throw new Error('Expected the agent to call the file search tool.');
+      }
+
+      console.log(JSON.stringify(fileSearchCall, null, 2));
+    });
+  } finally {
+    try {
+      if (vectorStoreId) {
+        await client.vectorStores.delete(vectorStoreId);
+        console.log(`Deleted vector store ${vectorStoreId}.`);
+      }
+    } finally {
+      if (uploadId) {
+        await client.files.delete(uploadId);
+        console.log(`Deleted file ${uploadId}.`);
+      }
+    }
+  }
 }
 
 main().catch((error) => {

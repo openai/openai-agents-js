@@ -1881,7 +1881,7 @@ describe('RunloopSandboxClient', () => {
     expect(downloadMock).toHaveBeenCalled();
   });
 
-  test('falls back to tar persistence when the workspace root is ephemeral', async () => {
+  test('persists an empty tar when the workspace root is ephemeral', async () => {
     const client = new RunloopSandboxClient();
     const session = await client.create(
       runloopManifest({
@@ -1893,16 +1893,12 @@ describe('RunloopSandboxClient', () => {
         },
       }),
     );
-    const archive = makeTarArchive([{ name: 'keep.txt', content: 'keep' }]);
-    downloadMock.mockResolvedValueOnce({
-      buffer: async () => Buffer.from(archive),
-    });
-
     const snapshotBytes = await session.persistWorkspace();
 
     expect(snapshotDiskMock).not.toHaveBeenCalled();
     expect(decodeNativeSnapshotRef(snapshotBytes)).toBeUndefined();
-    expect(downloadMock).toHaveBeenCalled();
+    expect(snapshotBytes).toEqual(makeTarArchive([]));
+    expect(downloadMock).not.toHaveBeenCalled();
   });
 
   test('reports provider errors when native snapshot restore is unsupported', async () => {

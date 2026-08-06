@@ -8,13 +8,14 @@ import type { Capability } from '../capabilities';
 import type { SandboxAgent } from '../agent';
 import { cloneManifest, Manifest } from '../manifest';
 import type { SandboxSessionLike, SandboxSessionState } from '../session';
+import type { Span, Trace } from '../../tracing';
 import {
   getDefaultSandboxInstructions,
   renderFilesystemInstructions,
   renderInstructionSection,
   renderRemoteMountPolicyInstructions,
 } from './prompts';
-import { manifestWithRunAsUser } from './runAsManifest';
+import { manifestWithRunAsUser, sandboxRunAsName } from './runAsManifest';
 
 export { getDefaultSandboxInstructions } from './prompts';
 
@@ -24,6 +25,7 @@ type PrepareSandboxAgentArgs<TContext, TOutput extends AgentOutputType> = {
   capabilities?: Capability[];
   runConfigModel?: SandboxRuntimeModel;
   processManifest?: boolean;
+  tracingParent?: Span<any> | Trace;
 };
 
 export type ResolvedSandboxRuntimeModel = {
@@ -45,6 +47,7 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
   capabilities,
   runConfigModel,
   processManifest = true,
+  tracingParent,
 }: PrepareSandboxAgentArgs<TContext, TOutput>): SandboxAgent<
   TContext,
   TOutput
@@ -59,11 +62,15 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
     capability
       .bind(session)
       .bindRunAs(agent.runAs)
-      .bindModel(resolvedModel, resolvedModelInstance),
+      .bindModel(resolvedModel, resolvedModelInstance)
+      .bindTracingParent(tracingParent),
   );
   const boundCapabilityTypes = new Set(
     boundCapabilities.map((capability) => capability.type),
   );
+  const canEditorAccessPath = boundCapabilityTypes.has('filesystem')
+    ? resolveEditorPathAccess(session, sandboxRunAsName(agent.runAs))
+    : undefined;
   const runtimeManifest = processManifest
     ? boundCapabilities.reduce(
         (manifest, capability) => capability.processManifest(manifest),
@@ -151,8 +158,10 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
         );
       }
 
-      const remoteMountPolicy =
-        renderRemoteMountPolicyInstructions(runtimeManifest);
+      const remoteMountPolicy = renderRemoteMountPolicyInstructions(
+        runtimeManifest,
+        canEditorAccessPath,
+      );
       if (remoteMountPolicy) {
         segments.push(
           renderInstructionSection(
@@ -180,6 +189,21 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
 
   prepared.runtimeManifest = runtimeManifest;
   return prepared;
+}
+
+function resolveEditorPathAccess(
+  session: SandboxSessionLike<SandboxSessionState>,
+  runAs?: string,
+): ((path: string) => boolean) | undefined {
+  const editor = session.createEditor?.(runAs) as
+    | {
+        canAccessPathForEdit?: (path: string) => boolean;
+      }
+    | undefined;
+  if (typeof editor?.canAccessPathForEdit !== 'function') {
+    return undefined;
+  }
+  return editor.canAccessPathForEdit.bind(editor);
 }
 
 function resolveManifest<TContext, TOutput extends AgentOutputType>(

@@ -23,6 +23,11 @@ type ItemsToMessagesOptions = {
   strictFeatureValidation?: boolean;
 };
 
+type ChatCompletionAssistantMessageWithReasoning =
+  ChatCompletionAssistantMessageParam & {
+    reasoning?: string;
+  };
+
 export function convertToolChoice(
   toolChoice: 'auto' | 'required' | 'none' | (string & {}) | undefined | null,
 ): ChatCompletionToolChoiceOption | undefined {
@@ -123,6 +128,9 @@ export function extractAllUserContent(
       out.push({
         type: 'text',
         text: c.text,
+        ...(c.promptCacheBreakpoint
+          ? { prompt_cache_breakpoint: c.promptCacheBreakpoint }
+          : {}),
         ...getProviderDataWithoutReservedKeys(c.providerData, ['type', 'text']),
       });
     } else if (c.type === 'input_image') {
@@ -152,8 +160,17 @@ export function extractAllUserContent(
         type: 'image_url',
         image_url: {
           url: imageSource,
+          // Honor the top-level `detail` field, matching the Responses path
+          // (openaiResponsesModel) and the Python SDK. `providerData.image_url.detail`
+          // still takes precedence (spread last) to preserve existing behavior.
+          ...(c.detail !== undefined
+            ? { detail: c.detail as 'auto' | 'low' | 'high' }
+            : {}),
           ...imageUrl,
         },
+        ...(c.promptCacheBreakpoint
+          ? { prompt_cache_breakpoint: c.promptCacheBreakpoint }
+          : {}),
         ...rest,
       });
     } else if (c.type === 'input_file') {
@@ -193,6 +210,9 @@ export function extractAllUserContent(
       out.push({
         type: 'file',
         file,
+        ...(c.promptCacheBreakpoint
+          ? { prompt_cache_breakpoint: c.promptCacheBreakpoint }
+          : {}),
         ...rest,
       });
     } else if (c.type === 'audio') {
@@ -228,6 +248,9 @@ export function extractAllUserContent(
           format: inputAudioFormat,
           ...inputAudio,
         } as ChatCompletionContentPartInputAudio['input_audio'],
+        ...(c.promptCacheBreakpoint
+          ? { prompt_cache_breakpoint: c.promptCacheBreakpoint }
+          : {}),
         ...rest,
       });
     } else {
@@ -258,7 +281,8 @@ export function itemsToMessages(
     return [{ role: 'user', content: items }];
   }
   const result: ChatCompletionMessageParam[] = [];
-  let currentAssistantMsg: ChatCompletionAssistantMessageParam | null = null;
+  let currentAssistantMsg: ChatCompletionAssistantMessageWithReasoning | null =
+    null;
   const flushAssistantMessage = () => {
     if (currentAssistantMsg) {
       if (
@@ -286,6 +310,21 @@ export function itemsToMessages(
       const { content, role, providerData } = item;
       flushAssistantMessage();
       if (role === 'assistant') {
+        const phase = item.phase ?? providerData?.phase;
+        if (typeof phase !== 'undefined' && phase !== null) {
+          if (phase !== 'commentary' && phase !== 'final_answer') {
+            throw new UserError(
+              `Invalid assistant message phase: ${JSON.stringify(phase)}. Expected "commentary" or "final_answer".`,
+            );
+          }
+
+          const message =
+            'Assistant message phase is not supported by the Chat Completions API. Use the Responses API to preserve assistant message phases.';
+          if (options.strictFeatureValidation) {
+            throw new UserError(message);
+          }
+          logger.warn(`${message} The phase will be dropped.`);
+        }
         const assistant: ChatCompletionAssistantMessageParam = {
           role: 'assistant',
           content: extractAllAssistantContent(content),
@@ -294,6 +333,7 @@ export function itemsToMessages(
             'content',
             'tool_calls',
             'audio',
+            'phase',
           ]),
         };
 
@@ -315,6 +355,7 @@ export function itemsToMessages(
           ...getProviderDataWithoutReservedKeys(providerData, [
             'role',
             'content',
+            'phase',
           ]),
         });
       } else if (role === 'system') {
@@ -324,13 +365,14 @@ export function itemsToMessages(
           ...getProviderDataWithoutReservedKeys(providerData, [
             'role',
             'content',
+            'phase',
           ]),
         });
       }
     } else if (item.type === 'reasoning') {
       const asst = ensureAssistantMessage();
-      // @ts-expect-error - reasoning is not supported in the official Chat Completion API spec
-      // this is handling third party providers that support reasoning
+      // Some third-party providers support reasoning on assistant messages even
+      // though it is not part of the official Chat Completions API type.
       asst.reasoning = item.rawContent?.[0]?.text;
       continue;
     } else if (item.type === 'hosted_tool_call') {
@@ -395,6 +437,11 @@ export function itemsToMessages(
         'Tool search items are not supported for chat completions. Please use the Responses API when replaying tool search history.',
       );
     } else if (item.type === 'function_call') {
+      if (item.caller?.type === 'program') {
+        throw new UserError(
+          'Programmatic Tool Calling history is not supported for chat completions. Please use the Responses API.',
+        );
+      }
       const hasQualifiedOrInvalidName =
         typeof item.name === 'string' &&
         !CHAT_COMPLETIONS_FUNCTION_NAME_PATTERN.test(item.name);
@@ -441,6 +488,11 @@ export function itemsToMessages(
         ]),
       );
     } else if (item.type === 'function_call_result') {
+      if (item.caller?.type === 'program') {
+        throw new UserError(
+          'Programmatic Tool Calling history is not supported for chat completions. Please use the Responses API.',
+        );
+      }
       flushAssistantMessage();
       const funcOutput = item;
       const toolContent = normalizeFunctionCallOutputForChat(
@@ -465,6 +517,10 @@ export function itemsToMessages(
     } else if (item.type === 'compaction') {
       throw new UserError(
         'Compaction items are not supported for chat completions. Please use the Responses API when working with compaction.',
+      );
+    } else if (item.type === 'program' || item.type === 'program_output') {
+      throw new UserError(
+        'Programmatic Tool Calling history is not supported for chat completions. Please use the Responses API.',
       );
     } else {
       const exhaustive = item satisfies never; // ensures that the type is exhaustive

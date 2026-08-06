@@ -6,12 +6,14 @@ import { UnknownContext } from './aliases';
  */
 export type HostedMCPTool<Context = UnknownContext> = {
   type: 'mcp';
+  allowed_callers?: Array<'direct' | 'programmatic'>;
   allowed_tools?: string[] | { tool_names: string[] };
   defer_loading?: boolean;
   server_description?: string;
 } &
   // MCP server
-  (| {
+  (
+    | {
         server_label: string;
         server_url?: string;
         authorization?: string;

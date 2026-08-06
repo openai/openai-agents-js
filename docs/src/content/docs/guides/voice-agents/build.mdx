@@ -1,6 +1,6 @@
 ---
-title: Building Voice Agents
-description: Learn how to build voice agents using the OpenAI Agents SDK, how session behavior works, and which realtime features are available.
+title: Building Realtime Agents
+description: Learn how to build realtime agents using the OpenAI Agents SDK, how session behavior works, and which realtime features are available.
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';
@@ -53,7 +53,7 @@ Under the hood, the SDK normalizes this configuration into the Realtime [`sessio
 
 Prefer the newer SDK config shape with `outputModalities`, `audio.input`, and `audio.output`. Older SDK aliases such as `modalities`, `inputAudioFormat`, `outputAudioFormat`, `inputAudioTranscription`, and `turnDetection` are still normalized for backwards compatibility, but new code should use the nested `audio` structure shown here.
 
-For reasoning-capable Realtime models such as `gpt-realtime-2`, set `reasoning.effort` on the session config. Higher reasoning effort can increase latency and token usage. You can also set `parallelToolCalls` when you want to control whether the model may call multiple tools in parallel.
+For reasoning-capable Realtime models such as `gpt-realtime-2.1`, set `reasoning.effort` on the session config. Higher reasoning effort can increase latency and token usage. You can also set `parallelToolCalls` when you want to control whether the model may call multiple tools in parallel.
 
 For speech-to-speech sessions, the usual choice is `outputModalities: ['audio']`, which gives you audio output plus transcripts. Switch to `['text']` only when you want text-only responses.
 
@@ -73,6 +73,7 @@ Additional `RealtimeSession` options you can set at construction time:
 | `workflowName` | `string` | Friendly name for the trace workflow. |
 | `automaticallyTriggerResponseForMcpToolCalls` | `boolean` | Auto-trigger a model response when an MCP tool call completes (default: `true`). |
 | `toolErrorFormatter` | `ToolErrorFormatter` | Customize tool approval rejection messages returned to the model. |
+| `toolExecution` | `RealtimeToolExecutionConfig` | SDK-side execution settings for local realtime function tools. Set `preApprovalInputGuardrails: true` to run input guardrails before pending approval requests. |
 
 `connect(...)` options:
 
@@ -173,6 +174,8 @@ Because the session stays live, the model for that session does not change durin
 
 Just like regular agents, Realtime Agents can call tools to perform actions. Realtime supports **function tools** (executed locally) and **hosted MCP tools** (executed remotely by the Realtime API). You can define a function tool using the same `tool()` helper you would use for a regular agent.
 
+Responses-only tool options do not carry over to Realtime agents. Function tool `outputSchema` and `allowedCallers` values that include `'programmatic'` are rejected, as are programmatic callers on hosted MCP tools. Use directly callable function or hosted MCP tools in a Realtime session, or delegate work that needs Programmatic Tool Calling to a Responses agent.
+
 <Code lang="typescript" code={defineToolExample} />
 
 #### Function tools
@@ -225,16 +228,18 @@ Resolve the request with `await session.approve(request.approvalItem)` or `await
 
 If you do not pass a per-call rejection `message`, the session falls back to `toolErrorFormatter` (if configured) and then to the SDK default rejection text.
 
+By default, function-tool input guardrails run after approval, immediately before the tool executes. If you pass `toolExecution: { preApprovalInputGuardrails: true }` to `new RealtimeSession(...)`, local function-tool input guardrails also run before the session emits `tool_approval_requested`. A guardrail rejection sends the rejection message back as the tool output and skips the approval event. If the guardrail allows the call, the approval event is still emitted, and the guardrails run again after `session.approve(...)` before execution.
+
 <Code lang="typescript" code={toolApprovalEventExample} />
 
 <Aside type="note">
-  While the voice agent is waiting for approval for the tool call, the agent
+  While the realtime agent is waiting for approval for the tool call, the agent
   will not be able to process new requests from the user.
 </Aside>
 
 ### Guardrails
 
-Guardrails offer a way to monitor whether what the agent has said violated a set of rules and immediately cut off the response. These checks run against the transcript stream of the agent's response. In audio sessions, the SDK uses output audio transcripts and transcript deltas, so the important prerequisite is transcript availability rather than a separate text output modality.
+Guardrails offer a way to monitor whether what the agent has said violated a set of rules and immediately cut off the response. These checks run against the output stream of the agent's response. In text-only sessions, the SDK evaluates output text deltas. In audio sessions, it uses output audio transcripts and transcript deltas, so the important prerequisite is transcript availability rather than a separate text output modality.
 
 The guardrails you provide run asynchronously as a model response is returned, allowing you to cut off the response based on a predefined classification trigger, for example "mentions a specific banned word".
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client } from '@modelcontextprotocol/client';
 import { z } from 'zod';
 
 class ProbeTransport {
@@ -79,6 +79,134 @@ class ProbeTransport {
   }
 }
 
+class NegotiationProbeTransport {
+  onmessage?: (message: unknown) => void;
+  onerror?: (error: unknown) => void;
+  onclose?: () => void;
+
+  readonly sentMethods: string[] = [];
+  sessionId?: string;
+  protocolVersion?: string;
+
+  constructor(private readonly era: 'legacy' | 'modern') {}
+
+  async start(): Promise<void> {}
+
+  async close(): Promise<void> {
+    this.onclose?.();
+  }
+
+  setProtocolVersion(version: string): void {
+    this.protocolVersion = version;
+  }
+
+  async send(message: {
+    id?: number;
+    method?: string;
+    params?: { cursor?: string };
+  }): Promise<void> {
+    this.sentMethods.push(message.method ?? `response:${message.id}`);
+    if (message.id === undefined) {
+      return;
+    }
+
+    if (message.method === 'server/discover') {
+      if (this.era === 'legacy') {
+        this.onmessage?.({
+          jsonrpc: '2.0',
+          id: message.id,
+          error: { code: -32601, message: 'Method not found' },
+        });
+        return;
+      }
+      this.onmessage?.({
+        jsonrpc: '2.0',
+        id: message.id,
+        result: {
+          resultType: 'complete',
+          ttlMs: 0,
+          cacheScope: 'private',
+          supportedVersions: ['2026-07-28'],
+          capabilities: { tools: {} },
+        },
+      });
+      return;
+    }
+
+    if (message.method === 'initialize') {
+      this.onmessage?.({
+        jsonrpc: '2.0',
+        id: message.id,
+        result: {
+          protocolVersion: '2025-06-18',
+          capabilities: { tools: {} },
+          serverInfo: { name: 'legacy-probe-server', version: '1.0.0' },
+        },
+      });
+      return;
+    }
+
+    if (message.method === 'tools/list') {
+      const modernContinuation = message.params?.cursor === 'modern-next';
+      this.onmessage?.({
+        jsonrpc: '2.0',
+        id: message.id,
+        result:
+          this.era === 'modern'
+            ? {
+                resultType: 'complete',
+                ttlMs: 0,
+                cacheScope: 'private',
+                tools: [
+                  {
+                    name: modernContinuation
+                      ? 'modern-tool-2'
+                      : 'modern-tool-1',
+                    inputSchema: { type: 'object' },
+                    ...(!modernContinuation
+                      ? {
+                          outputSchema: {
+                            type: 'object',
+                            properties: { message: { type: 'string' } },
+                            required: ['message'],
+                          },
+                        }
+                      : {}),
+                  },
+                ],
+                ...(modernContinuation ? {} : { nextCursor: 'modern-next' }),
+              }
+            : {
+                tools: [
+                  {
+                    name: 'legacy-tool',
+                    inputSchema: { type: 'object' },
+                  },
+                ],
+              },
+      });
+      return;
+    }
+
+    if (message.method === 'tools/call') {
+      this.onmessage?.({
+        jsonrpc: '2.0',
+        id: message.id,
+        result:
+          this.era === 'modern'
+            ? {
+                resultType: 'complete',
+                content: [{ type: 'text', text: 'invalid structured result' }],
+                structuredContent: { message: 123 },
+              }
+            : {
+                content: [{ type: 'text', text: 'legacy result' }],
+              },
+      });
+    }
+  }
+}
+
 describe('upstream MCP request cancellation characterization', () => {
   it('cancels only the aborted request and lets siblings complete', async () => {
     const transport = new ProbeTransport();
@@ -105,9 +233,9 @@ describe('upstream MCP request cancellation characterization', () => {
       expect(slowResult).toMatchObject({
         status: 'rejected',
         reason: expect.objectContaining({
-          name: 'McpError',
-          code: -32001,
-          message: 'MCP error -32001: probe abort',
+          name: 'SdkError',
+          code: 'REQUEST_TIMEOUT',
+          message: 'probe abort',
         }),
       });
       expect(fastResult).toEqual({
@@ -122,6 +250,92 @@ describe('upstream MCP request cancellation characterization', () => {
         'fast',
         'notifications/cancelled',
       ]);
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+describe('upstream MCP v2 protocol negotiation', () => {
+  it('uses the 2026 protocol when server/discover succeeds', async () => {
+    const transport = new NegotiationProbeTransport('modern');
+    const client = new Client(
+      { name: 'modern-probe-client', version: '1.0.0' },
+      { versionNegotiation: { mode: 'auto' } },
+    );
+
+    await client.connect(transport as any);
+    try {
+      expect(client.getProtocolEra()).toBe('modern');
+      expect(client.getNegotiatedProtocolVersion()).toBe('2026-07-28');
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(
+        ['modern-tool-1', 'modern-tool-2'],
+      );
+      expect(transport.sentMethods).toEqual([
+        'server/discover',
+        'tools/list',
+        'tools/list',
+      ]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('falls back to the legacy initialize flow for an old server', async () => {
+    const transport = new NegotiationProbeTransport('legacy');
+    const client = new Client(
+      { name: 'legacy-probe-client', version: '1.0.0' },
+      { versionNegotiation: { mode: 'auto' } },
+    );
+
+    await client.connect(transport as any);
+    try {
+      expect(client.getProtocolEra()).toBe('legacy');
+      expect(client.getNegotiatedProtocolVersion()).toBe('2025-06-18');
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(
+        ['legacy-tool'],
+      );
+      expect(transport.sentMethods).toEqual([
+        'server/discover',
+        'initialize',
+        'notifications/initialized',
+        'tools/list',
+      ]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('preserves negotiated state and tool metadata across same-session reconnects', async () => {
+    const firstTransport = new NegotiationProbeTransport('modern');
+    const client = new Client(
+      { name: 'resume-probe-client', version: '1.0.0' },
+      { versionNegotiation: { mode: 'auto' } },
+    );
+
+    await client.connect(firstTransport as any);
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
+      'modern-tool-1',
+      'modern-tool-2',
+    ]);
+    firstTransport.sessionId = 'shared-session';
+    await firstTransport.close();
+
+    const resumedTransport = new NegotiationProbeTransport('modern');
+    resumedTransport.sessionId = 'shared-session';
+    await client.connect(resumedTransport as any);
+
+    try {
+      expect(client.getServerCapabilities()).toMatchObject({ tools: {} });
+      expect(client.getNegotiatedProtocolVersion()).toBe('2026-07-28');
+      expect(resumedTransport.protocolVersion).toBe('2026-07-28');
+      await expect(
+        client.callTool({ name: 'modern-tool-1', arguments: {} }),
+      ).rejects.toMatchObject({
+        name: 'ProtocolError',
+        code: -32602,
+      });
+      expect(resumedTransport.sentMethods).toEqual(['tools/call']);
     } finally {
       await client.close();
     }

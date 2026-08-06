@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { setTimeout as setTimeoutPromise } from 'node:timers/promises';
 import {
   beforeAll,
   beforeEach,
@@ -12,8 +13,10 @@ import {
 import { z } from 'zod';
 import {
   Agent,
+  GuardrailExecutionError,
   InputGuardrailTripwireTriggered,
   MaxTurnsExceededError,
+  ModelBehaviorError,
   ModelRefusalError,
   ModelResponse,
   OutputGuardrailTripwireTriggered,
@@ -29,11 +32,15 @@ import {
   setTraceProcessors,
   setTracingDisabled,
   BatchTraceProcessor,
+  withTrace,
   user,
   assistant,
   type ToolExecutionConfig,
+  type ToolNameCollisionPolicy,
+  type ToolNotFoundBehavior,
 } from '../src';
 import { RunStreamEvent } from '../src/events';
+import { InvalidToolInputError, ToolCallError } from '../src/errors';
 import { ServerConversationTracker } from '../src/runner/conversation';
 import { removeAllTools } from '../src/extensions';
 import { handoff } from '../src/handoff';
@@ -45,6 +52,7 @@ import {
   RunToolSearchCallItem,
   RunToolSearchOutputItem,
 } from '../src/items';
+import { MemorySession as CoreMemorySession } from '../src/memory/memorySession';
 import { getTurnInput, selectModel } from '../src/run';
 import { RunContext } from '../src/runContext';
 import { RunState } from '../src/runState';
@@ -56,6 +64,8 @@ import {
   hostedMcpTool,
   computerTool,
   shellTool,
+  applyPatchTool,
+  type HostedTool,
 } from '../src/tool';
 import logger from '../src/logger';
 import { getGlobalTraceProvider } from '../src/tracing/provider';
@@ -71,6 +81,8 @@ import {
   TEST_MODEL_FUNCTION_CALL,
   TEST_TOOL,
   FakeComputer,
+  FakeEditor,
+  FakeShell,
 } from './stubs';
 import {
   Model,
@@ -78,6 +90,12 @@ import {
   ModelRequest,
   ModelSettings,
 } from '../src/model';
+
+const PROGRAMMATIC_TOOL_CALLING_TOOL: HostedTool = {
+  type: 'hosted_tool',
+  name: 'programmatic_tool_calling',
+  providerData: { type: 'programmatic_tool_calling' },
+};
 
 function getFirstTextContent(item: AgentInputItem): string | undefined {
   if (item.type !== 'message') {
@@ -107,6 +125,7 @@ describe('Runner.run', () => {
     it('accepts public tool execution config', () => {
       const toolExecution = {
         maxFunctionToolConcurrency: 2,
+        preApprovalInputGuardrails: true,
       } satisfies ToolExecutionConfig;
 
       const runner = new Runner({
@@ -115,6 +134,1582 @@ describe('Runner.run', () => {
       });
 
       expect(runner.config.toolExecution).toBe(toolExecution);
+    });
+
+    it('returns a redacted invalid-argument output to the model', async () => {
+      const secret = 'SECRET_NON_STREAMING_MODEL_OUTPUT_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(true);
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              arguments: secret,
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('recovered')],
+          usage: new Usage(),
+        },
+      ]);
+      const getResponseSpy = vi.spyOn(model, 'getResponse');
+      const agent = new Agent({
+        name: 'InvalidArgumentAgent',
+        model,
+        tools: [TEST_TOOL],
+      });
+
+      try {
+        const result = await run(agent, 'start');
+
+        expect(result.finalOutput).toBe('recovered');
+        expect(getResponseSpy).toHaveBeenCalledTimes(2);
+        const secondRequest = getResponseSpy.mock.calls[1][0];
+        const toolOutput = getRequestInputItems(secondRequest).find(
+          (item) => item.type === 'function_call_result',
+        ) as protocol.FunctionCallResultItem | undefined;
+        expect(toolOutput?.output).toEqual({
+          type: 'text',
+          text: 'An error occurred while parsing tool arguments. Please try again with valid JSON.',
+        });
+        expect(JSON.stringify(toolOutput)).not.toContain(secret);
+      } finally {
+        getResponseSpy.mockRestore();
+        flagSpy.mockRestore();
+      }
+    });
+
+    it.each([
+      ['redacted', true],
+      ['diagnostic', false],
+    ] as const)(
+      '%s invalid-argument errors handle real Runner state safely',
+      async (_mode, dontLogToolData) => {
+        const secret = dontLogToolData
+          ? 'SECRET_REDACTED_RUN_STATE_123'
+          : 'SECRET_DIAGNOSTIC_RUN_STATE_123';
+        const flagSpy = vi
+          .spyOn(logger, 'dontLogToolData', 'get')
+          .mockReturnValue(dontLogToolData);
+        const model = new FakeModel([
+          {
+            output: [
+              {
+                ...TEST_MODEL_FUNCTION_CALL,
+                arguments: secret,
+              },
+            ],
+            usage: new Usage(),
+          },
+        ]);
+        const structuredTool = tool({
+          name: 'test',
+          description: 'Validate structured input.',
+          parameters: z.object({ test: z.string() }),
+          outputSchema: z.object({ status: z.string() }),
+          errorFunction: null,
+          execute: async () => ({ status: 'unexpected' }),
+        });
+        const agent = new Agent({
+          name: 'InvalidArgumentStateAgent',
+          model,
+          tools: [structuredTool],
+        });
+
+        try {
+          const error = await run(agent, 'start').catch((caught) => caught);
+
+          expect(error).toBeInstanceOf(ToolCallError);
+          const toolCallError = error as ToolCallError;
+          expect(toolCallError.error).toBeInstanceOf(InvalidToolInputError);
+          const inputError = toolCallError.error as InvalidToolInputError;
+          if (dontLogToolData) {
+            expect(toolCallError.state).toBeUndefined();
+            expect(inputError.state).toBeUndefined();
+            expect(inputError.originalError).toBeUndefined();
+            expect(inputError.toolInvocation).toBeUndefined();
+            expect(JSON.stringify(toolCallError)).not.toContain(secret);
+          } else {
+            expect(toolCallError.state).toBeDefined();
+            expect(inputError.state).toBe(toolCallError.state);
+            expect(inputError.originalError).toBeDefined();
+            expect(inputError.toolInvocation?.input).toBe(secret);
+            expect(
+              inputError.state?._lastProcessedResponse?.functions[0].toolCall
+                .arguments,
+            ).toBe(secret);
+          }
+        } finally {
+          flagSpy.mockRestore();
+        }
+      },
+    );
+
+    it('propagates run cancellation to a direct function tool', async () => {
+      const controller = new AbortController();
+      const abortReason = new Error('stop direct tool');
+      let toolSignal: AbortSignal | undefined;
+      let markToolStarted: (() => void) | undefined;
+      const toolStarted = new Promise<void>((resolve) => {
+        markToolStarted = resolve;
+      });
+      let releaseTool: (() => void) | undefined;
+      const toolCanFinish = new Promise<void>((resolve) => {
+        releaseTool = resolve;
+      });
+      const abortableTool = tool({
+        name: 'test',
+        description: 'finishes cleanup after the run is cancelled',
+        parameters: z.object({ test: z.string() }),
+        execute: async (_input, _context, details) => {
+          toolSignal = details?.signal;
+          markToolStarted?.();
+          await toolCanFinish;
+          return 'cancelled after cleanup';
+        },
+      });
+      const model = new FakeModel([
+        {
+          output: [{ ...TEST_MODEL_FUNCTION_CALL }],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('unexpected second response')],
+          usage: new Usage(),
+        },
+      ]);
+      const getResponseSpy = vi.spyOn(model, 'getResponse');
+      const agent = new Agent({
+        name: 'DirectCancellationAgent',
+        model,
+        tools: [abortableTool],
+      });
+      const state = new RunState(new RunContext(), 'start', agent, 10);
+
+      const runPromise = run(agent, state, { signal: controller.signal });
+      const rejection = expect(runPromise).rejects.toBe(abortReason);
+      await toolStarted;
+
+      expect(toolSignal).toBe(controller.signal);
+      controller.abort(abortReason);
+      releaseTool?.();
+
+      await rejection;
+      expect(getResponseSpy).toHaveBeenCalledTimes(1);
+      expect(
+        state._generatedItems.filter(
+          (item) => item.rawItem.type === 'function_call_result',
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('preserves a function tool abort reason without wrapping it', async () => {
+      const controller = new AbortController();
+      const abortReason = new Error('stop failed tool');
+      let markToolStarted: (() => void) | undefined;
+      const toolStarted = new Promise<void>((resolve) => {
+        markToolStarted = resolve;
+      });
+      const abortableTool = tool({
+        name: 'test',
+        description: 'throws the run abort reason',
+        parameters: z.object({ test: z.string() }),
+        execute: async (_input, _context, details) => {
+          markToolStarted?.();
+          if (!details?.signal) {
+            throw new Error('Expected the run abort signal');
+          }
+          await setTimeoutPromise(60_000, undefined, {
+            signal: details.signal,
+          });
+          return 'unexpected tool output';
+        },
+      });
+      const model = new FakeModel([
+        {
+          output: [{ ...TEST_MODEL_FUNCTION_CALL }],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'AbortReasonAgent',
+        model,
+        tools: [abortableTool],
+      });
+      const state = new RunState(new RunContext(), 'start', agent, 10);
+
+      const runPromise = run(agent, state, { signal: controller.signal });
+      const rejection = expect(runPromise).rejects.toBe(abortReason);
+      await toolStarted;
+
+      controller.abort(abortReason);
+
+      await rejection;
+      expect(
+        state._generatedItems.filter(
+          (item) =>
+            item.rawItem.type === 'function_call_result' &&
+            item.rawItem.callId === TEST_MODEL_FUNCTION_CALL.callId &&
+            item.rawItem.status === 'incomplete',
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('waits for sibling function tools before surfacing cancellation', async () => {
+      const controller = new AbortController();
+      const abortReason = new Error('stop parallel tools');
+      let markAbortToolStarted: (() => void) | undefined;
+      const abortToolStarted = new Promise<void>((resolve) => {
+        markAbortToolStarted = resolve;
+      });
+      let markAbortObserved: (() => void) | undefined;
+      const abortObserved = new Promise<void>((resolve) => {
+        markAbortObserved = resolve;
+      });
+      let markSiblingStarted: (() => void) | undefined;
+      const siblingStarted = new Promise<void>((resolve) => {
+        markSiblingStarted = resolve;
+      });
+      let releaseSibling: (() => void) | undefined;
+      const siblingCanFinish = new Promise<void>((resolve) => {
+        releaseSibling = resolve;
+      });
+      let siblingFinished = false;
+
+      const abortableTool = tool({
+        name: 'abortable_tool',
+        description: 'throws the run abort reason',
+        parameters: z.object({ test: z.string() }),
+        errorFunction: null,
+        execute: async (_input, _context, details) => {
+          markAbortToolStarted?.();
+          if (!details?.signal) {
+            throw new Error('Expected the run abort signal');
+          }
+          try {
+            await setTimeoutPromise(60_000, undefined, {
+              signal: details.signal,
+            });
+          } catch (error) {
+            markAbortObserved?.();
+            throw error;
+          }
+          return 'unexpected tool output';
+        },
+      });
+      const siblingTool = tool({
+        name: 'sibling_tool',
+        description: 'finishes independently of run cancellation',
+        parameters: z.object({ test: z.string() }),
+        execute: async () => {
+          markSiblingStarted?.();
+          await siblingCanFinish;
+          siblingFinished = true;
+          return 'sibling complete';
+        },
+      });
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'abortable-call',
+              callId: 'abortable-call',
+              name: 'abortable_tool',
+            },
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'sibling-call',
+              callId: 'sibling-call',
+              name: 'sibling_tool',
+            },
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'ParallelCancellationAgent',
+        model,
+        tools: [abortableTool, siblingTool],
+      });
+      const state = new RunState(new RunContext(), 'start', agent, 10);
+
+      const runPromise = run(agent, state, { signal: controller.signal });
+      let runSettled = false;
+      const runOutcome = runPromise.then(
+        () => {
+          runSettled = true;
+          return { error: undefined };
+        },
+        (error: unknown) => {
+          runSettled = true;
+          return { error };
+        },
+      );
+      await Promise.all([abortToolStarted, siblingStarted]);
+
+      controller.abort(abortReason);
+      await abortObserved;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      const settledBeforeSibling = runSettled;
+
+      releaseSibling?.();
+      const outcome = await runOutcome;
+
+      expect(settledBeforeSibling).toBe(false);
+      expect(siblingFinished).toBe(true);
+      expect(outcome.error).toBe(abortReason);
+      expect(
+        state._generatedItems.filter(
+          (item) =>
+            item.rawItem.type === 'function_call_result' &&
+            item.rawItem.callId === 'sibling-call',
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('waits for a concurrent computer action before surfacing cancellation', async () => {
+      const controller = new AbortController();
+      const abortReason = new Error('stop parallel actions');
+      let markAbortToolStarted: (() => void) | undefined;
+      const abortToolStarted = new Promise<void>((resolve) => {
+        markAbortToolStarted = resolve;
+      });
+      let markAbortObserved: (() => void) | undefined;
+      const abortObserved = new Promise<void>((resolve) => {
+        markAbortObserved = resolve;
+      });
+      let markComputerStarted: (() => void) | undefined;
+      const computerStarted = new Promise<void>((resolve) => {
+        markComputerStarted = resolve;
+      });
+      let releaseComputer: (() => void) | undefined;
+      const computerCanFinish = new Promise<void>((resolve) => {
+        releaseComputer = resolve;
+      });
+      let computerFinished = false;
+
+      const abortableTool = tool({
+        name: 'abortable_tool',
+        description: 'throws the run abort reason',
+        parameters: z.object({ test: z.string() }),
+        errorFunction: null,
+        execute: async (_input, _context, details) => {
+          markAbortToolStarted?.();
+          if (!details?.signal) {
+            throw new Error('Expected the run abort signal');
+          }
+          if (!details.signal.aborted) {
+            await new Promise<void>((resolve) => {
+              details.signal?.addEventListener('abort', () => resolve(), {
+                once: true,
+              });
+            });
+          }
+          markAbortObserved?.();
+          details.signal.throwIfAborted();
+          return 'unexpected tool output';
+        },
+      });
+      const computer = new FakeComputer();
+      const computerClick = vi.fn(async () => {
+        markComputerStarted?.();
+        await computerCanFinish;
+        computerFinished = true;
+      });
+      computer.click = computerClick;
+      const computerCall: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        id: 'computer-call',
+        callId: 'computer-call',
+        status: 'completed',
+        action: {
+          type: 'click',
+          x: 1,
+          y: 1,
+          button: 'left',
+        },
+      };
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'abortable-call',
+              callId: 'abortable-call',
+              name: 'abortable_tool',
+            },
+            computerCall,
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'ParallelActionCancellationAgent',
+        model,
+        tools: [abortableTool, computerTool({ computer })],
+      });
+      const state = new RunState(new RunContext(), 'start', agent, 10);
+
+      const runPromise = run(agent, state, { signal: controller.signal });
+      let runSettled = false;
+      const runOutcome = runPromise.then(
+        () => {
+          runSettled = true;
+          return { error: undefined };
+        },
+        (error: unknown) => {
+          runSettled = true;
+          return { error };
+        },
+      );
+      await Promise.all([abortToolStarted, computerStarted]);
+
+      controller.abort(abortReason);
+      await abortObserved;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      const settledBeforeComputer = runSettled;
+
+      releaseComputer?.();
+      const outcome = await runOutcome;
+
+      expect(settledBeforeComputer).toBe(false);
+      expect(computerFinished).toBe(true);
+      expect(outcome.error).toBe(abortReason);
+      expect(computerClick).toHaveBeenCalledTimes(1);
+      expect(
+        state._generatedItems.filter(
+          (item) => item.rawItem.type === 'computer_call_result',
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('cancels and drains function work after a computer category failure', async () => {
+      const primaryError = new Error('computer category failed');
+      let markFunctionStarted: (() => void) | undefined;
+      const functionStarted = new Promise<void>((resolve) => {
+        markFunctionStarted = resolve;
+      });
+      let functionCancelled = false;
+      let functionDrained = false;
+      let lateSideEffect = false;
+
+      const abortableTool = tool({
+        name: 'abortable_tool',
+        description: 'waits for sibling category cancellation',
+        parameters: z.object({ test: z.string() }),
+        errorFunction: null,
+        execute: async (_input, _context, details) => {
+          markFunctionStarted?.();
+          if (!details?.signal) {
+            throw new Error('Expected an internal cancellation signal');
+          }
+          try {
+            await setTimeoutPromise(60_000, undefined, {
+              signal: details.signal,
+            });
+            lateSideEffect = true;
+            return 'unexpected tool output';
+          } catch (error) {
+            functionCancelled = true;
+            await Promise.resolve();
+            functionDrained = true;
+            throw error;
+          }
+        },
+      });
+      const computer = new FakeComputer();
+      const computerCall: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        id: 'computer-call',
+        callId: 'computer-call',
+        status: 'completed',
+        action: { type: 'screenshot' },
+        providerData: {
+          pending_safety_checks: [
+            {
+              id: 'safety-check',
+              code: 'malicious_instructions',
+            },
+          ],
+        },
+      };
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'abortable-call',
+              callId: 'abortable-call',
+              name: 'abortable_tool',
+            },
+            computerCall,
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'SiblingCategoryFailureAgent',
+        model,
+        tools: [
+          abortableTool,
+          computerTool({
+            computer,
+            onSafetyCheck: async () => {
+              await functionStarted;
+              throw primaryError;
+            },
+          }),
+        ],
+      });
+
+      const error = await run(agent, 'start').catch((caught) => caught);
+
+      expect(error).toBe(primaryError);
+      expect(functionCancelled).toBe(true);
+      expect(functionDrained).toBe(true);
+      expect(lateSideEffect).toBe(false);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(lateSideEffect).toBe(false);
+    });
+
+    it('reserves a batched computer approval failure while sibling callbacks drain', async () => {
+      const primaryError = new Error('computer approval failed');
+      let markFunctionStarted: (() => void) | undefined;
+      const functionStarted = new Promise<void>((resolve) => {
+        markFunctionStarted = resolve;
+      });
+      let markFunctionCancelled: (() => void) | undefined;
+      const functionCancelled = new Promise<void>((resolve) => {
+        markFunctionCancelled = resolve;
+      });
+      let startedApprovals = 0;
+      let markApprovalsStarted: (() => void) | undefined;
+      const approvalsStarted = new Promise<void>((resolve) => {
+        markApprovalsStarted = resolve;
+      });
+      let releaseBlockedApproval: (() => void) | undefined;
+      const blockedApprovalCanFinish = new Promise<void>((resolve) => {
+        releaseBlockedApproval = resolve;
+      });
+      let runSettled = false;
+      let sideEffectAfterRejection = false;
+
+      const abortableTool = tool({
+        name: 'abortable_tool',
+        description: 'waits for sibling category cancellation',
+        parameters: z.object({ test: z.string() }),
+        errorFunction: null,
+        execute: async (_input, _context, details) => {
+          markFunctionStarted?.();
+          if (!details?.signal) {
+            throw new Error('Expected an internal cancellation signal');
+          }
+          await new Promise<void>((resolve) => {
+            if (details.signal?.aborted) {
+              resolve();
+              return;
+            }
+            details.signal?.addEventListener('abort', () => resolve(), {
+              once: true,
+            });
+          });
+          markFunctionCancelled?.();
+          return 'cancelled';
+        },
+      });
+      const computer = new FakeComputer();
+      const screenshot = vi.fn(async () => 'img');
+      computer.screenshot = screenshot;
+      const needsApproval = vi.fn(
+        async (_context: RunContext, action: protocol.ComputerAction) => {
+          startedApprovals += 1;
+          if (startedApprovals === 2) {
+            markApprovalsStarted?.();
+          }
+          await approvalsStarted;
+          if (action.type === 'click') {
+            await functionStarted;
+            throw primaryError;
+          }
+          await blockedApprovalCanFinish;
+          sideEffectAfterRejection = runSettled;
+          return false;
+        },
+      );
+      const computerCall: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        id: 'computer-call',
+        callId: 'computer-call',
+        status: 'completed',
+        actions: [
+          { type: 'click', x: 1, y: 2, button: 'left' },
+          { type: 'move', x: 3, y: 4 },
+        ],
+      };
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'abortable-call',
+              callId: 'abortable-call',
+              name: 'abortable_tool',
+            },
+            computerCall,
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'BatchedComputerApprovalFailureAgent',
+        model,
+        tools: [abortableTool, computerTool({ computer, needsApproval })],
+      });
+
+      const runOutcome = run(agent, 'start')
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        )
+        .finally(() => {
+          runSettled = true;
+        });
+
+      await functionCancelled;
+      expect(runSettled).toBe(false);
+      releaseBlockedApproval?.();
+
+      expect(await runOutcome).toBe(primaryError);
+      expect(sideEffectAfterRejection).toBe(false);
+      expect(needsApproval).toHaveBeenCalledTimes(2);
+      expect(screenshot).not.toHaveBeenCalled();
+    });
+
+    it('drains function post-invocation work after a category failure', async () => {
+      const primaryError = new Error('computer category failed');
+      let markPostInvocationStarted: (() => void) | undefined;
+      const postInvocationStarted = new Promise<void>((resolve) => {
+        markPostInvocationStarted = resolve;
+      });
+      let releasePostInvocation: (() => void) | undefined;
+      const postInvocationCanFinish = new Promise<void>((resolve) => {
+        releasePostInvocation = resolve;
+      });
+      let postInvocationFinished = false;
+
+      const quickTool = tool({
+        name: 'quick_tool',
+        description: 'finishes before sibling category failure',
+        parameters: z.object({ test: z.string() }),
+        execute: async () => 'tool output',
+        customDataExtractor: async () => {
+          markPostInvocationStarted?.();
+          await postInvocationCanFinish;
+          postInvocationFinished = true;
+          return { lifecycle: 'complete' };
+        },
+      });
+      const computerCall: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        id: 'computer-call',
+        callId: 'computer-call',
+        status: 'completed',
+        action: { type: 'screenshot' },
+        providerData: {
+          pending_safety_checks: [
+            {
+              id: 'safety-check',
+              code: 'malicious_instructions',
+            },
+          ],
+        },
+      };
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'quick-call',
+              callId: 'quick-call',
+              name: 'quick_tool',
+            },
+            computerCall,
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'PostInvocationDrainAgent',
+        model,
+        tools: [
+          quickTool,
+          computerTool({
+            computer: new FakeComputer(),
+            onSafetyCheck: async () => {
+              await postInvocationStarted;
+              throw primaryError;
+            },
+          }),
+        ],
+      });
+
+      let runSettled = false;
+      const runOutcome = run(agent, 'start').then(
+        () => {
+          runSettled = true;
+          return undefined;
+        },
+        (error: unknown) => {
+          runSettled = true;
+          return error;
+        },
+      );
+      await postInvocationStarted;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      expect(runSettled).toBe(false);
+      releasePostInvocation?.();
+      const error = await runOutcome;
+      expect(error).toBe(primaryError);
+      expect(postInvocationFinished).toBe(true);
+    });
+
+    it('stops computer actions while failed function work drains', async () => {
+      const primaryError = new Error('function category failed');
+      let markSlowFunctionStarted: (() => void) | undefined;
+      const slowFunctionStarted = new Promise<void>((resolve) => {
+        markSlowFunctionStarted = resolve;
+      });
+      let markComputerPreparationStarted: (() => void) | undefined;
+      const computerPreparationStarted = new Promise<void>((resolve) => {
+        markComputerPreparationStarted = resolve;
+      });
+      let releaseComputerPreparation: (() => void) | undefined;
+      const computerPreparationCanFinish = new Promise<void>((resolve) => {
+        releaseComputerPreparation = resolve;
+      });
+      let markFunctionCleanupStarted: (() => void) | undefined;
+      const functionCleanupStarted = new Promise<void>((resolve) => {
+        markFunctionCleanupStarted = resolve;
+      });
+      let releaseFunctionCleanup: (() => void) | undefined;
+      const functionCleanupCanFinish = new Promise<void>((resolve) => {
+        releaseFunctionCleanup = resolve;
+      });
+      let functionCleanupFinished = false;
+
+      const failingTool = tool({
+        name: 'failing_tool',
+        description: 'fails after sibling categories start',
+        parameters: z.object({ test: z.string() }),
+        errorFunction: null,
+        execute: async () => {
+          await Promise.all([slowFunctionStarted, computerPreparationStarted]);
+          throw primaryError;
+        },
+      });
+      const slowTool = tool({
+        name: 'slow_tool',
+        description: 'blocks cleanup after cancellation',
+        parameters: z.object({ test: z.string() }),
+        errorFunction: null,
+        execute: async (_input, _context, details) => {
+          markSlowFunctionStarted?.();
+          if (!details?.signal) {
+            throw new Error('Expected an internal cancellation signal');
+          }
+          try {
+            await setTimeoutPromise(60_000, undefined, {
+              signal: details.signal,
+            });
+            return 'unexpected tool output';
+          } catch (error) {
+            markFunctionCleanupStarted?.();
+            await functionCleanupCanFinish;
+            functionCleanupFinished = true;
+            throw error;
+          }
+        },
+      });
+      const computer = new FakeComputer();
+      const screenshot = vi.fn(async () => 'img');
+      computer.screenshot = screenshot;
+      const firstComputerCall: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        id: 'computer-call-1',
+        callId: 'computer-call-1',
+        status: 'completed',
+        action: { type: 'screenshot' },
+        providerData: {
+          pending_safety_checks: [
+            {
+              id: 'safety-check',
+              code: 'malicious_instructions',
+            },
+          ],
+        },
+      };
+      const secondComputerCall: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        id: 'computer-call-2',
+        callId: 'computer-call-2',
+        status: 'completed',
+        action: { type: 'screenshot' },
+      };
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'failing-call',
+              callId: 'failing-call',
+              name: 'failing_tool',
+            },
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'slow-call',
+              callId: 'slow-call',
+              name: 'slow_tool',
+            },
+            firstComputerCall,
+            secondComputerCall,
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'FunctionFailureStopsComputerAgent',
+        model,
+        tools: [
+          failingTool,
+          slowTool,
+          computerTool({
+            computer,
+            onSafetyCheck: async () => {
+              markComputerPreparationStarted?.();
+              await computerPreparationCanFinish;
+              return true;
+            },
+          }),
+        ],
+      });
+
+      let runSettled = false;
+      const runOutcome = run(agent, 'start').then(
+        () => {
+          runSettled = true;
+          return undefined;
+        },
+        (error: unknown) => {
+          runSettled = true;
+          return error;
+        },
+      );
+      await functionCleanupStarted;
+
+      releaseComputerPreparation?.();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(screenshot).not.toHaveBeenCalled();
+      expect(runSettled).toBe(false);
+
+      releaseFunctionCleanup?.();
+      const error = await runOutcome;
+      expect(error).toBeInstanceOf(ToolCallError);
+      expect((error as ToolCallError).error).toBe(primaryError);
+      expect(functionCleanupFinished).toBe(true);
+      expect(screenshot).not.toHaveBeenCalled();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(screenshot).not.toHaveBeenCalled();
+    });
+
+    it('finishes a rejected computer safety check as aborted after a function failure', async () => {
+      const primaryError = new Error('function category failed');
+      const secondaryError = new Error(
+        'safety check failed after cancellation',
+      );
+      let markSafetyCheckStarted: (() => void) | undefined;
+      const safetyCheckStarted = new Promise<void>((resolve) => {
+        markSafetyCheckStarted = resolve;
+      });
+      let releaseSafetyCheck: (() => void) | undefined;
+      const safetyCheckCanFinish = new Promise<void>((resolve) => {
+        releaseSafetyCheck = resolve;
+      });
+      let markSlowFunctionStarted: (() => void) | undefined;
+      const slowFunctionStarted = new Promise<void>((resolve) => {
+        markSlowFunctionStarted = resolve;
+      });
+      let markCancellationObserved: (() => void) | undefined;
+      const cancellationObserved = new Promise<void>((resolve) => {
+        markCancellationObserved = resolve;
+      });
+
+      const failingTool = tool({
+        name: 'failing_tool',
+        description: 'fails after the computer safety check starts',
+        parameters: z.object({ test: z.string() }),
+        errorFunction: null,
+        execute: async () => {
+          await Promise.all([safetyCheckStarted, slowFunctionStarted]);
+          throw primaryError;
+        },
+      });
+      const slowTool = tool({
+        name: 'slow_tool',
+        description: 'observes sibling cancellation',
+        parameters: z.object({ test: z.string() }),
+        execute: async (_input, _context, details) => {
+          markSlowFunctionStarted?.();
+          await new Promise<void>((resolve) => {
+            details?.signal?.addEventListener(
+              'abort',
+              () => {
+                markCancellationObserved?.();
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          return 'cancelled';
+        },
+      });
+      const queuedParser = vi.fn(() => true);
+      const queuedToolExecute = vi.fn(async () => 'unexpected');
+      const queuedTool = tool({
+        name: 'queued_tool',
+        description: 'must remain unclaimed after the function failure',
+        parameters: z.object({ value: z.string().refine(queuedParser) }),
+        execute: queuedToolExecute,
+      });
+      const fakeComputer = new FakeComputer();
+      const screenshot = vi.fn(async () => 'img');
+      fakeComputer.screenshot = screenshot;
+      const computer = computerTool({
+        computer: fakeComputer,
+        onSafetyCheck: async () => {
+          markSafetyCheckStarted?.();
+          await safetyCheckCanFinish;
+          throw secondaryError;
+        },
+      });
+      const computerCall: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        id: 'computer-call',
+        callId: 'computer-call',
+        status: 'completed',
+        action: { type: 'screenshot' },
+        providerData: {
+          pending_safety_checks: [
+            {
+              id: 'safety-check',
+              code: 'malicious_instructions',
+            },
+          ],
+        },
+      };
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'failing-call',
+              callId: 'failing-call',
+              name: 'failing_tool',
+            },
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'slow-call',
+              callId: 'slow-call',
+              name: 'slow_tool',
+            },
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'queued-call',
+              callId: 'queued-call',
+              name: 'queued_tool',
+              arguments: JSON.stringify({ value: 'queued' }),
+            },
+            computerCall,
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'RejectedSafetyCheckCancellationAgent',
+        model,
+        tools: [failingTool, slowTool, queuedTool, computer],
+      });
+      const runner = new Runner({
+        toolExecution: { maxFunctionToolConcurrency: 2 },
+      });
+      const end = vi.fn();
+      runner.on('agent_tool_end', end);
+
+      let settled = false;
+      const runOutcome = runner.run(agent, 'start').then(
+        () => {
+          settled = true;
+          return undefined;
+        },
+        (error: unknown) => {
+          settled = true;
+          return error;
+        },
+      );
+      await cancellationObserved;
+
+      expect(settled).toBe(false);
+      releaseSafetyCheck?.();
+
+      const error = await runOutcome;
+      const computerEndCalls = end.mock.calls.filter(
+        ([, , endedTool]) => endedTool === computer,
+      );
+      expect(error).toBeInstanceOf(ToolCallError);
+      expect((error as ToolCallError).error).toBe(primaryError);
+      expect(screenshot).not.toHaveBeenCalled();
+      expect(queuedParser).not.toHaveBeenCalled();
+      expect(queuedToolExecute).not.toHaveBeenCalled();
+      expect(computerEndCalls).toHaveLength(1);
+      expect(computerEndCalls[0]?.[3]).toBe('aborted');
+    });
+
+    it('reconciles later actions without starting them after cancellation', async () => {
+      const controller = new AbortController();
+      const abortReason = new Error('stop mixed actions');
+      let markToolStarted: (() => void) | undefined;
+      const toolStarted = new Promise<void>((resolve) => {
+        markToolStarted = resolve;
+      });
+      const abortableTool = tool({
+        name: 'abortable_tool',
+        description: 'throws the run abort reason',
+        parameters: z.object({ test: z.string() }),
+        errorFunction: null,
+        execute: async (_input, _context, details) => {
+          markToolStarted?.();
+          if (!details?.signal) {
+            throw new Error('Expected the run abort signal');
+          }
+          if (!details.signal.aborted) {
+            await new Promise<void>((resolve) => {
+              details.signal?.addEventListener('abort', () => resolve(), {
+                once: true,
+              });
+            });
+          }
+          details.signal.throwIfAborted();
+          return 'unexpected tool output';
+        },
+      });
+      const approvalToolExecute = vi.fn(async () => 'approved');
+      const approvalTool = tool({
+        name: 'approval_tool',
+        description: 'requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: true,
+        execute: approvalToolExecute,
+      });
+      const shell = new FakeShell();
+      const editor = new FakeEditor();
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'abortable-call',
+              callId: 'abortable-call',
+              name: 'abortable_tool',
+            },
+            {
+              type: 'shell_call',
+              callId: 'shell-call',
+              status: 'completed',
+              action: { commands: ['echo completed'] },
+            },
+            {
+              type: 'apply_patch_call',
+              callId: 'apply-patch-call',
+              status: 'completed',
+              operation: {
+                type: 'update_file',
+                path: 'README.md',
+                diff: 'diff --git',
+              },
+            },
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'approval-call',
+              callId: 'approval-call',
+              name: 'approval_tool',
+            },
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'MixedActionCancellationAgent',
+        model,
+        tools: [
+          abortableTool,
+          approvalTool,
+          shellTool({ shell }),
+          applyPatchTool({ editor }),
+        ],
+      });
+      const state = new RunState(new RunContext(), 'start', agent, 10);
+
+      const runPromise = run(agent, state, { signal: controller.signal });
+      const rejection = expect(runPromise).rejects.toBe(abortReason);
+      await toolStarted;
+
+      controller.abort(abortReason);
+
+      await rejection;
+      expect(shell.calls).toHaveLength(0);
+      expect(editor.operations).toHaveLength(0);
+      expect(approvalToolExecute).not.toHaveBeenCalled();
+      expect(state.getInterruptions()).toHaveLength(1);
+      expect(state.getInterruptions()[0].rawItem).toMatchObject({
+        type: 'function_call',
+        callId: 'approval-call',
+      });
+      expect(
+        state._generatedItems.filter(
+          (item) =>
+            item.rawItem.type === 'function_call_result' &&
+            item.rawItem.callId === 'abortable-call' &&
+            item.rawItem.status === 'incomplete',
+        ),
+      ).toHaveLength(1);
+      expect(
+        state._generatedItems.filter(
+          (item) =>
+            item.rawItem.type === 'shell_call_output' &&
+            item.rawItem.callId === 'shell-call' &&
+            item.rawItem.status === 'incomplete',
+        ),
+      ).toHaveLength(1);
+      expect(
+        state._generatedItems.filter(
+          (item) =>
+            item.rawItem.type === 'apply_patch_call_output' &&
+            item.rawItem.callId === 'apply-patch-call' &&
+            item.rawItem.status === 'failed',
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('does not start queued function tools after cancellation', async () => {
+      const controller = new AbortController();
+      const abortReason = new Error('stop queued tools');
+      let markToolStarted: (() => void) | undefined;
+      const toolStarted = new Promise<void>((resolve) => {
+        markToolStarted = resolve;
+      });
+      const abortableTool = tool({
+        name: 'abortable_tool',
+        description: 'throws the run abort reason',
+        parameters: z.object({ test: z.string() }),
+        errorFunction: null,
+        execute: async (_input, _context, details) => {
+          markToolStarted?.();
+          if (!details?.signal) {
+            throw new Error('Expected the run abort signal');
+          }
+          if (!details.signal.aborted) {
+            await new Promise<void>((resolve) => {
+              details.signal?.addEventListener('abort', () => resolve(), {
+                once: true,
+              });
+            });
+          }
+          details.signal.throwIfAborted();
+          return 'unexpected tool output';
+        },
+      });
+      const queuedExecute = vi.fn(async () => 'unexpected queued output');
+      const queuedTool = tool({
+        name: 'queued_tool',
+        description: 'must not start after cancellation',
+        parameters: z.object({ test: z.string() }),
+        execute: queuedExecute,
+      });
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'abortable-call',
+              callId: 'abortable-call',
+              name: 'abortable_tool',
+            },
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'queued-call',
+              callId: 'queued-call',
+              name: 'queued_tool',
+            },
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'QueuedCancellationAgent',
+        model,
+        tools: [abortableTool, queuedTool],
+      });
+      const state = new RunState(new RunContext(), 'start', agent, 10);
+      const runner = new Runner({
+        toolExecution: { maxFunctionToolConcurrency: 1 },
+      });
+
+      const runPromise = runner.run(agent, state, {
+        signal: controller.signal,
+      });
+      const rejection = expect(runPromise).rejects.toBe(abortReason);
+      await toolStarted;
+
+      controller.abort(abortReason);
+
+      await rejection;
+      expect(queuedExecute).not.toHaveBeenCalled();
+      expect(
+        state._generatedItems.filter(
+          (item) =>
+            item.rawItem.type === 'function_call_result' &&
+            item.rawItem.status === 'incomplete',
+        ),
+      ).toHaveLength(2);
+    });
+
+    it('propagates run cancellation to an approved function tool', async () => {
+      const controller = new AbortController();
+      const abortReason = new Error('stop approved tool');
+      let toolSignal: AbortSignal | undefined;
+      let markToolStarted: (() => void) | undefined;
+      const toolStarted = new Promise<void>((resolve) => {
+        markToolStarted = resolve;
+      });
+      let releaseTool: (() => void) | undefined;
+      const toolCanFinish = new Promise<void>((resolve) => {
+        releaseTool = resolve;
+      });
+      const approvalTool = tool({
+        name: 'test',
+        description: 'requires approval before waiting for cancellation',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: true,
+        execute: async (_input, _context, details) => {
+          toolSignal = details?.signal;
+          markToolStarted?.();
+          await toolCanFinish;
+          return 'approved tool cleanup complete';
+        },
+      });
+      const model = new FakeModel([
+        {
+          output: [{ ...TEST_MODEL_FUNCTION_CALL }],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('unexpected second response')],
+          usage: new Usage(),
+        },
+      ]);
+      const getResponseSpy = vi.spyOn(model, 'getResponse');
+      const agent = new Agent({
+        name: 'ApprovedCancellationAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const interruptedResult = await run(agent, 'start');
+      expect(interruptedResult.interruptions).toHaveLength(1);
+      interruptedResult.state.approve(interruptedResult.interruptions[0]);
+
+      const runPromise = run(agent, interruptedResult.state, {
+        signal: controller.signal,
+      });
+      const rejection = expect(runPromise).rejects.toBe(abortReason);
+      await toolStarted;
+
+      expect(toolSignal).toBe(controller.signal);
+      controller.abort(abortReason);
+      releaseTool?.();
+
+      await rejection;
+      expect(getResponseSpy).toHaveBeenCalledTimes(1);
+      expect(
+        interruptedResult.state._generatedItems.filter(
+          (item) => item.rawItem.type === 'function_call_result',
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('preserves approved sibling results when cancellation is surfaced', async () => {
+      const controller = new AbortController();
+      const abortReason = new Error('stop approved siblings');
+      let markAbortToolStarted: (() => void) | undefined;
+      const abortToolStarted = new Promise<void>((resolve) => {
+        markAbortToolStarted = resolve;
+      });
+      let markSiblingStarted: (() => void) | undefined;
+      const siblingStarted = new Promise<void>((resolve) => {
+        markSiblingStarted = resolve;
+      });
+      let releaseSibling: (() => void) | undefined;
+      const siblingCanFinish = new Promise<void>((resolve) => {
+        releaseSibling = resolve;
+      });
+      const abortableTool = tool({
+        name: 'approved_abortable_tool',
+        description: 'throws the run abort reason after approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: true,
+        errorFunction: null,
+        execute: async (_input, _context, details) => {
+          markAbortToolStarted?.();
+          if (!details?.signal) {
+            throw new Error('Expected the run abort signal');
+          }
+          if (!details.signal.aborted) {
+            await new Promise<void>((resolve) => {
+              details.signal?.addEventListener('abort', () => resolve(), {
+                once: true,
+              });
+            });
+          }
+          details.signal.throwIfAborted();
+          return 'unexpected tool output';
+        },
+      });
+      const siblingTool = tool({
+        name: 'approved_sibling_tool',
+        description: 'finishes independently after approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: true,
+        execute: async () => {
+          markSiblingStarted?.();
+          await siblingCanFinish;
+          return 'approved sibling complete';
+        },
+      });
+      const model = new FakeModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'approved-abortable-call',
+              callId: 'approved-abortable-call',
+              name: 'approved_abortable_tool',
+            },
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              id: 'approved-sibling-call',
+              callId: 'approved-sibling-call',
+              name: 'approved_sibling_tool',
+            },
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'ApprovedSiblingCancellationAgent',
+        model,
+        tools: [abortableTool, siblingTool],
+      });
+
+      const interruptedResult = await run(agent, 'start');
+      expect(interruptedResult.interruptions).toHaveLength(2);
+      for (const interruption of interruptedResult.interruptions) {
+        interruptedResult.state.approve(interruption);
+      }
+
+      const runPromise = run(agent, interruptedResult.state, {
+        signal: controller.signal,
+      });
+      const rejection = expect(runPromise).rejects.toBe(abortReason);
+      await Promise.all([abortToolStarted, siblingStarted]);
+
+      controller.abort(abortReason);
+      releaseSibling?.();
+
+      await rejection;
+      expect(interruptedResult.state.getInterruptions()).toHaveLength(0);
+      expect(
+        interruptedResult.state._generatedItems.filter(
+          (item) =>
+            item.rawItem.type === 'function_call_result' &&
+            item.rawItem.callId === 'approved-abortable-call' &&
+            item.rawItem.status === 'incomplete',
+        ),
+      ).toHaveLength(1);
+      expect(
+        interruptedResult.state._generatedItems.filter(
+          (item) =>
+            item.rawItem.type === 'function_call_result' &&
+            item.rawItem.callId === 'approved-sibling-call' &&
+            item.rawItem.status === 'completed',
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('accepts public tool not found behavior config', () => {
+      const toolNotFoundBehavior =
+        'return_error_to_model' satisfies ToolNotFoundBehavior;
+
+      const runner = new Runner({
+        tracingDisabled: true,
+        toolNotFoundBehavior,
+      });
+
+      expect(runner.config.toolNotFoundBehavior).toBe('return_error_to_model');
+    });
+
+    it('defaults the public tool name collision policy to warn', () => {
+      const runner = new Runner({ tracingDisabled: true });
+
+      expect(runner.config.toolNameCollisionPolicy).toBe('warn');
+    });
+
+    it('accepts the public tool name collision policy config', () => {
+      const toolNameCollisionPolicy = 'error' satisfies ToolNameCollisionPolicy;
+      const runner = new Runner({
+        tracingDisabled: true,
+        toolNameCollisionPolicy,
+      });
+
+      expect(runner.config.toolNameCollisionPolicy).toBe('error');
+    });
+
+    it('rejects an invalid tool name collision policy in Runner config', () => {
+      expect(
+        () =>
+          new Runner({
+            toolNameCollisionPolicy: 'invalid' as ToolNameCollisionPolicy,
+          }),
+      ).toThrow('toolNameCollisionPolicy must be either "warn" or "error".');
+    });
+
+    it('rejects a null tool name collision policy in Runner config', () => {
+      expect(
+        () =>
+          new Runner({
+            toolNameCollisionPolicy: null as any,
+          }),
+      ).toThrow('toolNameCollisionPolicy must be either "warn" or "error".');
+    });
+
+    it('rejects an invalid per-run tool name collision policy before model calls', async () => {
+      const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+      const getResponse = vi.spyOn(model, 'getResponse');
+      const agent = new Agent({ name: 'Invalid policy agent', model });
+
+      await expect(
+        new Runner().run(agent, 'hello', {
+          toolNameCollisionPolicy: 'invalid' as ToolNameCollisionPolicy,
+        }),
+      ).rejects.toThrow(
+        'toolNameCollisionPolicy must be either "warn" or "error".',
+      );
+      expect(getResponse).not.toHaveBeenCalled();
+    });
+
+    it('rejects a null per-run tool name collision policy before model calls', async () => {
+      const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+      const getResponse = vi.spyOn(model, 'getResponse');
+      const agent = new Agent({ name: 'Null policy agent', model });
+
+      await expect(
+        new Runner().run(agent, 'hello', {
+          toolNameCollisionPolicy: null as any,
+        }),
+      ).rejects.toThrow(
+        'toolNameCollisionPolicy must be either "warn" or "error".',
+      );
+      expect(getResponse).not.toHaveBeenCalled();
+    });
+
+    it('keeps the default provider lazy until a string model needs it', async () => {
+      const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+      const provider = {
+        getModel: vi.fn(() => model),
+      } satisfies ModelProvider;
+      setDefaultModelProvider(provider);
+
+      try {
+        const runner = new Runner({
+          model: 'default-model',
+          tracingDisabled: true,
+        });
+
+        expect(provider.getModel).not.toHaveBeenCalled();
+
+        await runner.run(new Agent({ name: 'Lazy Provider Agent' }), 'hello');
+
+        expect(provider.getModel).toHaveBeenCalledWith('default-model');
+      } finally {
+        setDefaultModelProvider(new FakeModelProvider());
+      }
+    });
+
+    it("keeps a runner's resolved default provider stable", async () => {
+      const firstProvider = {
+        getModel: vi.fn(
+          () => new FakeModel([{ ...TEST_MODEL_RESPONSE_BASIC }]),
+        ),
+      } satisfies ModelProvider;
+      const laterProvider = {
+        getModel: vi.fn(
+          () => new FakeModel([{ ...TEST_MODEL_RESPONSE_BASIC }]),
+        ),
+      } satisfies ModelProvider;
+      setDefaultModelProvider(firstProvider);
+
+      try {
+        const runner = new Runner({
+          model: 'default-model',
+          tracingDisabled: true,
+        });
+
+        await runner.run(new Agent({ name: 'Stable Provider Agent' }), 'hello');
+        setDefaultModelProvider(laterProvider);
+        await runner.run(new Agent({ name: 'Stable Provider Agent' }), 'hello');
+
+        expect(firstProvider.getModel).toHaveBeenCalledTimes(2);
+        expect(laterProvider.getModel).not.toHaveBeenCalled();
+      } finally {
+        setDefaultModelProvider(new FakeModelProvider());
+      }
+    });
+
+    it('does not require a modelProvider when the selected model is a Model object', async () => {
+      const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+      const provider = {
+        getModel: vi.fn(() => {
+          throw new Error('default provider should not be used');
+        }),
+      } satisfies ModelProvider;
+      setDefaultModelProvider(provider);
+
+      try {
+        const runner = new Runner({
+          model,
+          tracingDisabled: true,
+        });
+
+        await runner.run(new Agent({ name: 'Model Object Agent' }), 'hello');
+
+        expect(provider.getModel).not.toHaveBeenCalled();
+      } finally {
+        setDefaultModelProvider(new FakeModelProvider());
+      }
     });
 
     it('rejects invalid function tool concurrency config', () => {
@@ -134,6 +1729,204 @@ describe('Runner.run', () => {
       ).toThrow(
         'toolExecution.maxFunctionToolConcurrency must be an integer greater than or equal to 1.',
       );
+    });
+
+    it('rejects invalid pre-approval input guardrail config', () => {
+      expect(
+        () =>
+          new Runner({
+            tracingDisabled: true,
+            toolExecution: { preApprovalInputGuardrails: 'yes' as any },
+          }),
+      ).toThrow(
+        'toolExecution.preApprovalInputGuardrails must be a boolean when provided.',
+      );
+    });
+
+    it('returns missing function tool errors to the model when opted in', async () => {
+      class RecordingModel extends FakeModel {
+        readonly requests: ModelRequest[] = [];
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.requests.push(request);
+          return super.getResponse(request);
+        }
+      }
+
+      const model = new RecordingModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: 'missing_tool',
+              callId: 'call_missing',
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('recovered')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'MissingToolAgent',
+        model,
+        modelSettings: { toolChoice: 'required' },
+        toolUseBehavior: 'run_llm_again',
+      });
+
+      const result = await run(agent, 'start', {
+        toolNotFoundBehavior: 'return_error_to_model',
+      });
+
+      expect(result.finalOutput).toBe('recovered');
+      expect(model.requests).toHaveLength(2);
+      expect(model.requests[0].modelSettings.toolChoice).toBe('required');
+      expect(model.requests[1].modelSettings.toolChoice).toBeUndefined();
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(secondInput).toContainEqual({
+        type: 'function_call_result',
+        name: 'missing_tool',
+        callId: 'call_missing',
+        status: 'completed',
+        output: {
+          type: 'text',
+          text: "Tool 'missing_tool' not found.",
+        },
+      });
+    });
+
+    it('uses toolErrorFormatter for missing function tool errors', async () => {
+      class RecordingModel extends FakeModel {
+        readonly requests: ModelRequest[] = [];
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.requests.push(request);
+          return super.getResponse(request);
+        }
+      }
+
+      const model = new RecordingModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: 'missing_tool',
+              callId: 'call_missing',
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('formatter recovered')],
+          usage: new Usage(),
+        },
+      ]);
+      const seenKinds: string[] = [];
+      const agent = new Agent({
+        name: 'MissingToolFormatterAgent',
+        model,
+        toolUseBehavior: 'run_llm_again',
+      });
+
+      const result = await run(agent, 'start', {
+        toolNotFoundBehavior: 'return_error_to_model',
+        toolErrorFormatter: (args) => {
+          seenKinds.push(args.kind);
+          if (args.kind !== 'tool_not_found') {
+            return undefined;
+          }
+          return `${args.toolName} unavailable for ${args.callId}`;
+        },
+      });
+
+      expect(result.finalOutput).toBe('formatter recovered');
+      expect(seenKinds).toEqual(['tool_not_found']);
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(secondInput).toContainEqual({
+        type: 'function_call_result',
+        name: 'missing_tool',
+        callId: 'call_missing',
+        status: 'completed',
+        output: {
+          type: 'text',
+          text: 'missing_tool unavailable for call_missing',
+        },
+      });
+    });
+
+    it('redacts hostile tool-not-found formatter errors and keeps the fallback result', async () => {
+      class RecordingModel extends FakeModel {
+        readonly requests: ModelRequest[] = [];
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.requests.push(request);
+          return super.getResponse(request);
+        }
+      }
+
+      const model = new RecordingModel([
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: 'missing_tool',
+              callId: 'call_missing',
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('formatter fallback recovered')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'MissingToolFormatterFallbackAgent',
+        model,
+        toolUseBehavior: 'run_llm_again',
+      });
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(true);
+      const hostileError = new Proxy(
+        {},
+        {
+          getPrototypeOf() {
+            throw new Error('SECRET_TOOL_NOT_FOUND_FORMATTER_123');
+          },
+        },
+      );
+
+      const result = await run(agent, 'start', {
+        toolNotFoundBehavior: 'return_error_to_model',
+        toolErrorFormatter: () => {
+          throw hostileError;
+        },
+      });
+
+      expect(result.finalOutput).toBe('formatter fallback recovered');
+      expect(warnSpy).toHaveBeenCalledWith(
+        'toolErrorFormatter threw while formatting tool not found:',
+        'object',
+      );
+      expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(
+        'SECRET_TOOL_NOT_FOUND_FORMATTER_123',
+      );
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      expect(secondInput).toContainEqual({
+        type: 'function_call_result',
+        name: 'missing_tool',
+        callId: 'call_missing',
+        status: 'completed',
+        output: {
+          type: 'text',
+          text: "Tool 'missing_tool' not found.",
+        },
+      });
     });
 
     it('does not persist nested agent-tool metadata when resuming a RunState', async () => {
@@ -556,7 +2349,7 @@ describe('Runner.run', () => {
       await expect(() =>
         RunState.fromString(agent, state.toString()),
       ).rejects.toThrow(
-        /no longer provides toolSearchTool\(\{ execution: "client", execute \}\)/,
+        /require toolSearchTool\(\{ execution: "client", execute \}\) when custom client tool_search parameters are provided/,
       );
     });
 
@@ -815,6 +2608,219 @@ describe('Runner.run', () => {
       expect(model.requests).toHaveLength(2);
       expect(model.requests[0]?.modelSettings.toolChoice).toBe('required');
       expect(model.requests[1]?.modelSettings.toolChoice).toBe('none');
+    });
+
+    it('continues Programmatic Tool Calling through nested calls and program output', async () => {
+      class ProgrammaticToolCallingModel implements Model {
+        requests: ModelRequest[] = [];
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.requests.push(request);
+          if (this.requests.length === 1) {
+            return {
+              output: [
+                {
+                  type: 'program',
+                  id: 'prog_1',
+                  callId: 'call_prog_1',
+                  code: 'const values = await Promise.all([tools.lookup({key:"a"}), tools.lookup({key:"b"})]); text(JSON.stringify(values));',
+                  fingerprint: 'fp_1',
+                },
+                {
+                  type: 'function_call',
+                  id: 'fc_1',
+                  callId: 'call_1',
+                  name: 'lookup',
+                  arguments: '{"key":"a"}',
+                  caller: { type: 'program', callerId: 'call_prog_1' },
+                },
+                {
+                  type: 'function_call',
+                  id: 'fc_2',
+                  callId: 'call_2',
+                  name: 'lookup',
+                  arguments: '{"key":"b"}',
+                  caller: { type: 'program', callerId: 'call_prog_1' },
+                },
+              ],
+              usage: new Usage(),
+            };
+          }
+          if (this.requests.length === 2) {
+            return {
+              output: [
+                {
+                  type: 'program_output',
+                  id: 'prog_out_1',
+                  callId: 'call_prog_1',
+                  output: '[{"key":"a"},{"key":"b"}]',
+                  status: 'completed',
+                },
+              ],
+              usage: new Usage(),
+            };
+          }
+          return {
+            output: [fakeModelMessage('Program completed.')],
+            usage: new Usage(),
+          };
+        }
+
+        async *getStreamedResponse(): AsyncIterable<protocol.StreamEvent> {
+          yield* [];
+          throw new Error('Not implemented');
+        }
+      }
+
+      const model = new ProgrammaticToolCallingModel();
+      const lookup = tool({
+        name: 'lookup',
+        description: 'Return the requested key.',
+        parameters: z.object({ key: z.string() }),
+        allowedCallers: ['programmatic'],
+        outputSchema: {
+          type: 'object',
+          properties: { key: { type: 'string' } },
+          required: ['key'],
+          additionalProperties: false,
+        },
+        execute: async ({ key }) => ({ key }),
+      });
+      const agent = new Agent({
+        name: 'ProgramAgent',
+        model,
+        tools: [lookup, PROGRAMMATIC_TOOL_CALLING_TOOL],
+        toolUseBehavior: 'stop_on_first_tool',
+        modelSettings: { toolChoice: 'programmatic_tool_calling' },
+      });
+
+      const result = await run(agent, 'Run the program.');
+
+      expect(result.finalOutput).toBe('Program completed.');
+      expect(model.requests).toHaveLength(3);
+      expect(model.requests[0]?.modelSettings.toolChoice).toBe(
+        'programmatic_tool_calling',
+      );
+      expect(model.requests[1]?.modelSettings.toolChoice).toBeUndefined();
+      const secondInput = model.requests[1]?.input as AgentInputItem[];
+      expect(secondInput.map((item) => item.type)).toEqual([
+        'message',
+        'program',
+        'function_call',
+        'function_call',
+        'function_call_result',
+        'function_call_result',
+      ]);
+      expect(
+        secondInput
+          .filter((item) => item.type === 'function_call_result')
+          .map((item) => item.caller),
+      ).toEqual([
+        { type: 'program', callerId: 'call_prog_1' },
+        { type: 'program', callerId: 'call_prog_1' },
+      ]);
+      const thirdInput = model.requests[2]?.input as AgentInputItem[];
+      expect(thirdInput.at(-1)).toMatchObject({
+        type: 'program_output',
+        callId: 'call_prog_1',
+        output: '[{"key":"a"},{"key":"b"}]',
+      });
+    });
+
+    it('accepts Programmatic Tool Calling supplied by a prompt template', async () => {
+      const lookup = tool({
+        name: 'prompt_lookup',
+        description: 'Return the requested key.',
+        parameters: z.object({ key: z.string() }),
+        allowedCallers: ['programmatic'],
+        outputSchema: {
+          type: 'object',
+          properties: { key: { type: 'string' } },
+          required: ['key'],
+          additionalProperties: false,
+        },
+        execute: async ({ key }) => ({ key }),
+      });
+      const agent = new Agent({
+        name: 'PromptProgramAgent',
+        model: new FakeModel([
+          {
+            output: [
+              {
+                type: 'program',
+                id: 'prog_prompt_supplied',
+                callId: 'call_prog_prompt_supplied',
+                code: 'text(await tools.prompt_lookup({key:"prompt"}))',
+                fingerprint: 'fp_prompt_supplied',
+              },
+              {
+                type: 'function_call',
+                id: 'fc_prompt_supplied',
+                callId: 'call_prompt_lookup',
+                name: 'prompt_lookup',
+                arguments: '{"key":"prompt"}',
+                caller: {
+                  type: 'program',
+                  callerId: 'call_prog_prompt_supplied',
+                },
+              },
+            ],
+            usage: new Usage(),
+          },
+          {
+            output: [
+              {
+                type: 'program_output',
+                id: 'prog_out_prompt_supplied',
+                callId: 'call_prog_prompt_supplied',
+                output: '{"key":"prompt"}',
+                status: 'completed',
+              },
+              fakeModelMessage('Prompt program completed.'),
+            ],
+            usage: new Usage(),
+          },
+        ]),
+        prompt: { promptId: 'pmpt_programmatic_tool_calling' },
+        tools: [lookup],
+      });
+
+      const result = await run(agent, 'Run the prompt program.');
+
+      expect(result.finalOutput).toBe('Prompt program completed.');
+      expect(result.newItems.map((item) => item.rawItem.type)).toEqual([
+        'program',
+        'function_call',
+        'function_call_result',
+        'program_output',
+        'message',
+      ]);
+    });
+
+    it('rejects prompt-supplied Programmatic Tool Calling when tools are explicitly disabled', async () => {
+      const agent = new Agent({
+        name: 'PromptProgramAgent',
+        model: new FakeModel([
+          {
+            output: [
+              {
+                type: 'program',
+                id: 'prog_prompt_disabled',
+                callId: 'call_prog_prompt_disabled',
+                code: 'text("blocked")',
+                fingerprint: 'fp_prompt_disabled',
+              },
+            ],
+            usage: new Usage(),
+          },
+        ]),
+        prompt: { promptId: 'pmpt_programmatic_tool_calling' },
+        tools: [],
+      });
+
+      await expect(run(agent, 'Run the prompt program.')).rejects.toThrow(
+        /without programmaticToolCallingTool\(\)/,
+      );
     });
 
     it('sholuld handle structured output', async () => {
@@ -1419,6 +3425,50 @@ describe('Runner.run', () => {
       setTracingDisabled(true);
     });
 
+    it('can clear a restored RunState trace so resume uses the ambient trace', async () => {
+      setTracingDisabled(false);
+      try {
+        const provider = getGlobalTraceProvider();
+        const agent = new Agent({
+          name: 'ResumeAmbientTrace',
+          model: new FakeModel([
+            { output: [fakeModelMessage('hi')], usage: new Usage() },
+          ]),
+        });
+        const state = new RunState(new RunContext(), 'hi', agent, 1);
+        const restoredTrace = provider.createTrace({
+          traceId: 'restored-trace-id',
+          name: 'Restored workflow',
+        });
+        state._trace = restoredTrace;
+        state._currentAgentSpan = provider.createSpan(
+          { data: { type: 'agent', name: 'RestoredSpan' } },
+          restoredTrace,
+        );
+        state.clearTrace();
+
+        const ambientTrace = provider.createTrace({
+          traceId: 'ambient-trace-id',
+          name: 'Ambient workflow',
+        });
+
+        const resumed = await withTrace(ambientTrace, async () =>
+          new Runner().run(agent, state),
+        );
+
+        expect(resumed.state._trace?.traceId).toBe('ambient-trace-id');
+        expect(resumed.state._currentAgentSpan?.traceId).toBe(
+          'ambient-trace-id',
+        );
+        expect(resumed.state._trace?.traceId).not.toBe('restored-trace-id');
+        expect(resumed.state._currentAgentSpan?.traceId).not.toBe(
+          'restored-trace-id',
+        );
+      } finally {
+        setTracingDisabled(true);
+      }
+    });
+
     it('input guardrail executes only once', async () => {
       const firstResponse: ModelResponse = {
         output: [
@@ -1495,6 +3545,83 @@ describe('Runner.run', () => {
       expect(result.finalOutput).toBe('done');
       expect(result.inputGuardrailResults).toHaveLength(1);
       expect(blockingGuardrail.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not call the model while sibling parallel guardrails drain after a failure', async () => {
+      let releaseSlowGuardrail!: () => void;
+      let markSlowStarted!: () => void;
+      let markErrorThrown!: () => void;
+      const slowGuardrailCanFinish = new Promise<void>((resolve) => {
+        releaseSlowGuardrail = resolve;
+      });
+      const slowGuardrailStarted = new Promise<void>((resolve) => {
+        markSlowStarted = resolve;
+      });
+      const errorThrown = new Promise<void>((resolve) => {
+        markErrorThrown = resolve;
+      });
+      const slowGuardrail = {
+        name: 'slow-parallel-guardrail',
+        execute: async () => {
+          markSlowStarted();
+          await slowGuardrailCanFinish;
+          return { tripwireTriggered: false, outputInfo: {} };
+        },
+      };
+      const errorGuardrail = {
+        name: 'failing-parallel-guardrail',
+        execute: async () => {
+          await slowGuardrailStarted;
+          markErrorThrown();
+          throw new Error('boom');
+        },
+      };
+
+      class TrackingModel implements Model {
+        calls = 0;
+
+        async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+          this.calls++;
+          return {
+            output: [fakeModelMessage('should not run')],
+            usage: new Usage(),
+          };
+        }
+
+        /* eslint-disable require-yield */
+        async *getStreamedResponse(_request: ModelRequest) {
+          throw new Error('not implemented');
+        }
+        /* eslint-enable require-yield */
+      }
+
+      const model = new TrackingModel();
+      const agent = new Agent({
+        name: 'ParallelGuardrailFailure',
+        model,
+        inputGuardrails: [slowGuardrail, errorGuardrail],
+      });
+
+      const runPromise = run(agent, 'hello');
+      let runSettled = false;
+      void runPromise.then(
+        () => {
+          runSettled = true;
+        },
+        () => {
+          runSettled = true;
+        },
+      );
+      await errorThrown;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const callsBeforeSiblingFinished = model.calls;
+      const settledBeforeSiblingFinished = runSettled;
+      releaseSlowGuardrail();
+
+      await expect(runPromise).rejects.toBeInstanceOf(GuardrailExecutionError);
+      expect(callsBeforeSiblingFinished).toBe(0);
+      expect(settledBeforeSiblingFinished).toBe(false);
+      expect(model.calls).toBe(0);
     });
 
     it('throws InputGuardrailTripwireTriggered when parallel guardrail trips with structured output and model returns non-JSON', async () => {
@@ -1589,6 +3716,48 @@ describe('Runner.run', () => {
       );
       expect(result.outputGuardrailResults[0].agentOutput).toBe('hi');
       expect(result.outputGuardrailResults[0].agent).toBe(agent);
+    });
+
+    it('retains completed output guardrail results on execution failure', async () => {
+      const runner = new Runner({
+        outputGuardrails: [
+          {
+            name: 'success',
+            execute: async () => ({
+              tripwireTriggered: false,
+              outputInfo: { ok: true },
+            }),
+          },
+          {
+            name: 'error',
+            execute: async () => {
+              throw new Error('boom');
+            },
+          },
+        ],
+      });
+      const agent = new Agent({
+        name: 'Out',
+        model: new FakeModel([
+          { output: [fakeModelMessage('hi')], usage: new Usage() },
+        ]),
+      });
+      let caughtError: unknown;
+
+      try {
+        await runner.run(agent, 'input');
+      } catch (error) {
+        caughtError = error;
+      }
+
+      expect(caughtError).toBeInstanceOf(GuardrailExecutionError);
+      const guardrailError = caughtError as GuardrailExecutionError;
+      expect(guardrailError.error).toEqual(new Error('boom'));
+      expect(
+        guardrailError.state
+          ?.toJSON()
+          .outputGuardrailResults.map((result) => result.guardrail.name),
+      ).toEqual(['success']);
     });
 
     it('output guardrail tripwire throws', async () => {
@@ -2209,6 +4378,333 @@ describe('Runner.run', () => {
       expect(result.finalOutput).toBe('safe fallback');
     });
 
+    it('throws invalid structured final output without a handler', async () => {
+      const agent = new Agent({
+        name: 'InvalidStructuredOutput',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      await expect(run(agent, 'x')).rejects.toBeInstanceOf(ModelBehaviorError);
+    });
+
+    it('invalid final output handler returns structured final output', async () => {
+      const agent = new Agent({
+        name: 'InvalidStructuredOutputHandler',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      const result = await run(agent, 'x', {
+        errorHandlers: {
+          invalidFinalOutput: ({ error, runData }) => {
+            expect(error).toBeInstanceOf(ModelBehaviorError);
+            expect(runData.rawResponses).toHaveLength(1);
+            expect(extractAllTextOutput(runData.newItems)).toBe(
+              'not valid json',
+            );
+            return { finalOutput: { summary: 'safe fallback' } };
+          },
+        },
+      });
+
+      expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
+      expect(extractAllTextOutput(result.newItems)).toBe(
+        'not valid json{"summary":"safe fallback"}',
+      );
+    });
+
+    it('invalid final output handler can skip history updates', async () => {
+      const agent = new Agent({
+        name: 'InvalidStructuredOutputNoHistory',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      const result = await run(agent, 'x', {
+        errorHandlers: {
+          invalidFinalOutput: () => ({
+            finalOutput: { summary: 'safe fallback' },
+            includeInHistory: false,
+          }),
+        },
+      });
+
+      expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
+      expect(extractAllTextOutput(result.newItems)).toBe('not valid json');
+    });
+
+    it('invalid final output handler can decline recovery', async () => {
+      const agent = new Agent({
+        name: 'InvalidStructuredOutputDeclined',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      await expect(
+        run(agent, 'x', {
+          errorHandlers: {
+            invalidFinalOutput: () => undefined,
+          },
+        }),
+      ).rejects.toBeInstanceOf(ModelBehaviorError);
+    });
+
+    it('invalid final output handler validates fallback output', async () => {
+      const agent = new Agent({
+        name: 'InvalidStructuredOutputBadFallback',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      await expect(
+        run(agent, 'x', {
+          errorHandlers: {
+            invalidFinalOutput: () => ({
+              finalOutput: { unexpected: 'value' } as any,
+            }),
+          },
+        }),
+      ).rejects.toThrow(UserError);
+    });
+
+    it('default error handler can handle invalid final output', async () => {
+      const agent = new Agent({
+        name: 'DefaultInvalidStructuredOutput',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      const result = await run(agent, 'x', {
+        errorHandlers: {
+          default: ({ error }) => {
+            expect(error).toBeInstanceOf(ModelBehaviorError);
+            return { finalOutput: { summary: 'safe fallback' } };
+          },
+        },
+      });
+
+      expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
+    });
+
+    it.each([
+      { name: 'missing message', output: [] },
+      { name: 'empty text message', output: [fakeModelMessage('')] },
+    ])(
+      'empty structured output handler avoids another model turn for $name',
+      async ({ output }) => {
+        class CountingModel implements Model {
+          public requests: ModelRequest[] = [];
+
+          constructor(private responses: ModelResponse[]) {}
+
+          async getResponse(request: ModelRequest): Promise<ModelResponse> {
+            this.requests.push(request);
+            const response = this.responses.shift();
+            if (!response) {
+              throw new Error('No response found');
+            }
+            return response;
+          }
+
+          getStreamedResponse(_request: ModelRequest): AsyncIterable<any> {
+            throw new Error('Not implemented');
+          }
+        }
+
+        const model = new CountingModel([
+          { output, usage: new Usage() },
+          {
+            output: [fakeModelMessage('{"summary":"unused"}')],
+            usage: new Usage(),
+          },
+        ]);
+        const agent = new Agent({
+          name: 'EmptyStructuredOutputHandler',
+          outputType: z.object({ summary: z.string() }),
+          model,
+        });
+
+        const result = await run(agent, 'x', {
+          errorHandlers: {
+            invalidFinalOutput: ({ error }) => {
+              expect(error).toBeInstanceOf(ModelBehaviorError);
+              expect((error as ModelBehaviorError).message).toBe(
+                'Model returned no final output for the structured output type.',
+              );
+              return { finalOutput: { summary: 'safe fallback' } };
+            },
+          },
+        });
+
+        expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
+        expect(model.requests).toHaveLength(1);
+      },
+    );
+
+    it('invalid final output fallback does not retry or replay tools', async () => {
+      const sideEffects: string[] = [];
+      const recordSideEffect = tool({
+        name: 'record_side_effect',
+        description: 'Records a side effect.',
+        parameters: z.object({ value: z.string() }),
+        execute: async ({ value }) => {
+          sideEffects.push(value);
+          return `recorded:${value}`;
+        },
+      });
+      const agent = new Agent({
+        name: 'InvalidStructuredOutputAfterTool',
+        outputType: z.object({ summary: z.string() }),
+        tools: [recordSideEffect],
+        model: new FakeModel([
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_1',
+                callId: 'call_1',
+                name: 'record_side_effect',
+                status: 'completed',
+                arguments: '{"value":"once"}',
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_2',
+                callId: 'call_2',
+                name: 'record_side_effect',
+                status: 'completed',
+                arguments: '{"value":"replayed"}',
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('{"summary":"unexpected retry"}')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      const result = await run(agent, 'x', {
+        errorHandlers: {
+          invalidFinalOutput: () => ({
+            finalOutput: { summary: 'safe fallback' },
+          }),
+        },
+      });
+
+      expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
+      expect(sideEffects).toEqual(['once']);
+    });
+
+    it('nested agent tools return invalid final output fallbacks', async () => {
+      const nestedAgent = new Agent({
+        name: 'NestedRecoverer',
+        outputType: z.object({ summary: z.string() }),
+        model: new FakeModel([
+          {
+            output: [fakeModelMessage('not valid json')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+      const nestedTool = nestedAgent.asTool({
+        toolName: 'recover_nested',
+        toolDescription: 'Recovers a structured nested output.',
+        runOptions: {
+          errorHandlers: {
+            invalidFinalOutput: () => ({
+              finalOutput: { summary: 'safe fallback' },
+            }),
+          },
+        },
+      });
+      const parentAgent = new Agent({
+        name: 'ParentAgent',
+        tools: [nestedTool],
+        model: new FakeModel([
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_nested',
+                callId: 'call_nested',
+                name: 'recover_nested',
+                status: 'completed',
+                arguments: '{"input":"recover"}',
+                providerData: {},
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('parent done')],
+            usage: new Usage(),
+          },
+        ]),
+      });
+
+      const result = await run(parentAgent, 'x');
+      const nestedToolOutput = result.newItems.find(
+        (item): item is ToolCallOutputItem =>
+          item instanceof ToolCallOutputItem &&
+          item.rawItem.type === 'function_call_result' &&
+          item.rawItem.callId === 'call_nested',
+      );
+
+      const nestedOutput = nestedToolOutput?.rawItem.output;
+      const nestedOutputText =
+        typeof nestedOutput === 'string'
+          ? nestedOutput
+          : !Array.isArray(nestedOutput) && nestedOutput?.type === 'text'
+            ? nestedOutput.text
+            : undefined;
+      expect(nestedOutputText).toBe('{"summary":"safe fallback"}');
+      expect(result.finalOutput).toBe('parent done');
+    });
+
     it('enforces maxTurns across multiple model calls', async () => {
       // Bug: After first model call, _lastTurnResponse is set, so turn counter never advances.
       // With maxTurns=1, we should only allow 1 model call, but currently allows 2.
@@ -2800,6 +5296,230 @@ describe('Runner.run', () => {
         expect(firstPart?.providerData).toEqual({ annotations: [] });
       });
 
+      it('persists accepted tool results before surfacing cancellation', async () => {
+        const controller = new AbortController();
+        const abortReason = new Error('stop after tool result');
+        let markToolStarted: (() => void) | undefined;
+        const toolStarted = new Promise<void>((resolve) => {
+          markToolStarted = resolve;
+        });
+        let releaseTool: (() => void) | undefined;
+        const toolCanFinish = new Promise<void>((resolve) => {
+          releaseTool = resolve;
+        });
+        const abortableTool = tool({
+          name: 'test',
+          description: 'finishes after cancellation',
+          parameters: z.object({ test: z.string() }),
+          execute: async () => {
+            markToolStarted?.();
+            await toolCanFinish;
+            return 'completed tool result';
+          },
+        });
+        const model = new FakeModel([
+          {
+            output: [{ ...TEST_MODEL_FUNCTION_CALL }],
+            usage: new Usage(),
+          },
+        ]);
+        const agent = new Agent({
+          name: 'SessionCancellationAgent',
+          model,
+          tools: [abortableTool],
+        });
+        const session = new MemorySession();
+
+        const runPromise = run(agent, 'start', {
+          session,
+          signal: controller.signal,
+        });
+        const rejection = expect(runPromise).rejects.toBe(abortReason);
+        await toolStarted;
+
+        controller.abort(abortReason);
+        releaseTool?.();
+
+        await rejection;
+        expect(session.added).toHaveLength(1);
+        expect(session.added[0].map((item) => item.type)).toEqual([
+          'message',
+          'function_call',
+          'function_call_result',
+        ]);
+      });
+
+      it('does not persist a cancelled tool turn again when its state resumes', async () => {
+        const controller = new AbortController();
+        const abortReason = new Error('stop before the next model turn');
+        let markToolStarted: (() => void) | undefined;
+        const toolStarted = new Promise<void>((resolve) => {
+          markToolStarted = resolve;
+        });
+        let releaseTool: (() => void) | undefined;
+        const toolCanFinish = new Promise<void>((resolve) => {
+          releaseTool = resolve;
+        });
+        const abortableTool = tool({
+          name: 'test',
+          description: 'finishes after cancellation',
+          parameters: z.object({ test: z.string() }),
+          execute: async () => {
+            markToolStarted?.();
+            await toolCanFinish;
+            return 'completed tool result';
+          },
+        });
+        const model = new FakeModel([
+          {
+            output: [{ ...TEST_MODEL_FUNCTION_CALL }],
+            usage: new Usage(),
+          },
+          {
+            output: [fakeModelMessage('resumed response')],
+            usage: new Usage(),
+          },
+        ]);
+        const agent = new Agent({
+          name: 'SessionCancellationResumeAgent',
+          model,
+          tools: [abortableTool],
+        });
+        const state = new RunState(new RunContext(), 'start', agent, 10);
+        const session = new MemorySession([user('start')]);
+
+        const runPromise = run(agent, state, {
+          session,
+          signal: controller.signal,
+        });
+        const rejection = expect(runPromise).rejects.toBe(abortReason);
+        await toolStarted;
+
+        controller.abort(abortReason);
+        releaseTool?.();
+
+        await rejection;
+        expect(session.added).toHaveLength(1);
+        expect(session.added[0].map((item) => item.type)).toEqual([
+          'function_call',
+          'function_call_result',
+        ]);
+
+        await run(agent, state, { session });
+
+        expect(session.added).toHaveLength(2);
+        expect(session.added[1].map((item) => item.type)).toEqual(['message']);
+        expect(
+          session.added
+            .flat()
+            .filter(
+              (item) =>
+                item.type === 'function_call' &&
+                item.callId === TEST_MODEL_FUNCTION_CALL.callId,
+            ),
+        ).toHaveLength(1);
+      });
+
+      it('does not execute or repersist a handoff skipped by cancellation', async () => {
+        const controller = new AbortController();
+        const abortReason = new Error('stop before the handoff');
+        let markToolStarted: (() => void) | undefined;
+        const toolStarted = new Promise<void>((resolve) => {
+          markToolStarted = resolve;
+        });
+        let releaseTool: (() => void) | undefined;
+        const toolCanFinish = new Promise<void>((resolve) => {
+          releaseTool = resolve;
+        });
+        const abortableTool = tool({
+          name: 'test',
+          description: 'finishes after cancellation',
+          parameters: z.object({ test: z.string() }),
+          execute: async () => {
+            markToolStarted?.();
+            await toolCanFinish;
+            return 'completed tool result';
+          },
+        });
+        const agentB = new Agent({
+          name: 'SessionCancellationHandoffTarget',
+          model: new FakeModel([
+            {
+              output: [fakeModelMessage('handoff response')],
+              usage: new Usage(),
+            },
+          ]),
+        });
+        const onHandoff = vi.fn();
+        const handoffToB = handoff(agentB, { onHandoff });
+        const handoffCall: protocol.FunctionCallItem = {
+          id: 'handoff-call',
+          type: 'function_call',
+          name: handoffToB.toolName,
+          callId: 'handoff-call',
+          status: 'completed',
+          arguments: '{}',
+        };
+        const agentA = new Agent({
+          name: 'SessionCancellationHandoffSource',
+          model: new FakeModel([
+            {
+              output: [{ ...TEST_MODEL_FUNCTION_CALL }, handoffCall],
+              usage: new Usage(),
+            },
+            {
+              output: [fakeModelMessage('resumed source response')],
+              usage: new Usage(),
+            },
+          ]),
+          tools: [abortableTool],
+          handoffs: [handoffToB],
+        });
+        const state = new RunState(new RunContext(), 'start', agentA, 10);
+        const session = new MemorySession([user('start')]);
+
+        const runPromise = run(agentA, state, {
+          session,
+          signal: controller.signal,
+        });
+        const rejection = expect(runPromise).rejects.toBe(abortReason);
+        await toolStarted;
+
+        controller.abort(abortReason);
+        releaseTool?.();
+
+        await rejection;
+        expect(state._currentStep?.type).toBe('next_step_run_again');
+        expect(onHandoff).not.toHaveBeenCalled();
+        expect(session.added).toHaveLength(1);
+
+        const result = await run(agentA, state, { session });
+
+        expect(result.finalOutput).toBe('resumed source response');
+        expect(onHandoff).not.toHaveBeenCalled();
+        expect(session.added).toHaveLength(2);
+        expect(session.added[1].map((item) => item.type)).toEqual(['message']);
+        expect(
+          session.added
+            .flat()
+            .filter(
+              (item) =>
+                item.type === 'function_call' &&
+                item.callId === TEST_MODEL_FUNCTION_CALL.callId,
+            ),
+        ).toHaveLength(1);
+        expect(
+          session.added
+            .flat()
+            .filter(
+              (item) =>
+                item.type === 'function_call_result' &&
+                item.callId === handoffCall.callId &&
+                item.status === 'incomplete',
+            ),
+        ).toHaveLength(1);
+      });
+
       it('applies runner-level reasoningItemIdPolicy to replayed session history', async () => {
         class ReasoningPreservingSession extends MemorySession {
           preserveReasoningItemIdsForPersistence(): boolean {
@@ -3083,6 +5803,60 @@ describe('Runner.run', () => {
         expect(persistedUsers).toHaveLength(1);
         expect(getFirstTextContent(persistedUsers[0])).toBe('Fresh input');
       });
+
+      it.each([
+        { name: 'run', stream: false },
+        { name: 'stream', stream: true },
+      ])(
+        'does not grow session history from repeated references across $name turns',
+        async ({ stream }) => {
+          const model = stream
+            ? new StreamingModel(fakeModelMessage('assistant'))
+            : new FakeModel(
+                Array.from({ length: 3 }, (_, turn) => ({
+                  ...TEST_MODEL_RESPONSE_BASIC,
+                  output: [fakeModelMessage(`assistant ${turn}`)],
+                })),
+              );
+          const agent = new Agent({ name: 'RepeatedHistorySession', model });
+          const session = new MemorySession();
+          const sessionInputCallback = (
+            history: AgentInputItem[],
+            newItems: AgentInputItem[],
+          ) => {
+            if (history.length === 0) {
+              return newItems;
+            }
+            return history.concat(history[0], newItems);
+          };
+
+          for (let turn = 0; turn < 3; turn += 1) {
+            if (stream) {
+              const result = await run(agent, `user ${turn}`, {
+                session,
+                sessionInputCallback,
+                stream: true,
+              });
+              await result.completed;
+            } else {
+              await run(agent, `user ${turn}`, {
+                session,
+                sessionInputCallback,
+              });
+            }
+          }
+
+          const storedItems = await session.getItems();
+          const storedUserMessages = storedItems.filter(
+            (item): item is protocol.UserMessageItem =>
+              item.type === 'message' && 'role' in item && item.role === 'user',
+          );
+          expect(
+            storedUserMessages.map((item) => getFirstTextContent(item)),
+          ).toEqual(['user 0', 'user 1', 'user 2']);
+          expect(storedItems).toHaveLength(6);
+        },
+      );
 
       it('persists reordered new items ahead of matching history', async () => {
         const model = new RecordingModel([
@@ -3594,6 +6368,206 @@ describe('Runner.run', () => {
       expect(getFirstTextContent(sentInput[0])).toBe('Second input');
     });
 
+    it('keeps duplicate calls before their outputs in non-streaming runs', async () => {
+      const model = new FilterTrackingModel([
+        {
+          ...TEST_MODEL_RESPONSE_BASIC,
+          output: [fakeModelMessage('deduplicated result')],
+        },
+      ]);
+      const agent = new Agent({ name: 'DeduplicateCallAgent', model });
+      const oldCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        callId: 'call_deduplicated',
+        name: 'lookup',
+        arguments: '{"value":"old"}',
+      };
+      const output: protocol.FunctionCallResultItem = {
+        type: 'function_call_result',
+        callId: 'call_deduplicated',
+        name: 'lookup',
+        status: 'completed',
+        output: 'done',
+      };
+      const newCall: protocol.FunctionCallItem = {
+        ...oldCall,
+        arguments: '{"value":"new"}',
+      };
+      const runner = new Runner({
+        callModelInputFilter: () => ({
+          input: [oldCall, output, newCall],
+        }),
+      });
+
+      await runner.run(agent, 'start');
+
+      expect(model.lastRequest?.input).toEqual([newCall, output]);
+    });
+
+    it('persists normalized input plus items injected by a later model call', async () => {
+      const executeTool = tool({
+        name: 'execute_later_injection',
+        description: 'Executes a test call.',
+        parameters: z.object({}),
+        execute: async () => 'done',
+      });
+      const model = new FilterTrackingModel([
+        {
+          output: [
+            {
+              type: 'function_call',
+              callId: 'call_execute_later_injection',
+              name: executeTool.name,
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'LaterInjectionAgent',
+        model,
+        tools: [executeTool],
+      });
+      const oldCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        callId: 'call_input_duplicate',
+        name: 'lookup',
+        arguments: '{"value":"old"}',
+      };
+      const newCall: protocol.FunctionCallItem = {
+        ...oldCall,
+        arguments: '{"value":"new"}',
+      };
+      const injected = user('injected later');
+      const persisted: AgentInputItem[] = [];
+      const session: Session = {
+        getSessionId: async () => 'later-injection',
+        getItems: async () => [...persisted],
+        addItems: async (items) => {
+          persisted.push(...items);
+        },
+        popItem: async () => persisted.pop(),
+        clearSession: async () => {
+          persisted.length = 0;
+        },
+      };
+      let filterCalls = 0;
+      const runner = new Runner({
+        callModelInputFilter: ({ modelData }) => {
+          filterCalls++;
+          return {
+            ...modelData,
+            input:
+              filterCalls === 1
+                ? modelData.input
+                : [injected, ...modelData.input],
+          };
+        },
+      });
+
+      await runner.run(agent, [oldCall, newCall], { session });
+
+      expect(persisted.slice(0, 2)).toEqual([injected, newCall]);
+      expect(
+        persisted.filter(
+          (item) =>
+            item.type === 'function_call' && item.callId === oldCall.callId,
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('persists an earlier duplicate explicitly selected by the filter', async () => {
+      const model = new FilterTrackingModel([
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({ name: 'EarlierDuplicateAgent', model });
+      const oldCall: protocol.FunctionCallItem = {
+        type: 'function_call',
+        callId: 'call_earlier_duplicate',
+        name: 'lookup',
+        arguments: '{"value":"old"}',
+      };
+      const newCall: protocol.FunctionCallItem = {
+        ...oldCall,
+        arguments: '{"value":"new"}',
+      };
+      const persisted: AgentInputItem[] = [];
+      const session: Session = {
+        getSessionId: async () => 'earlier-duplicate',
+        getItems: async () => [...persisted],
+        addItems: async (items) => {
+          persisted.push(...items);
+        },
+        popItem: async () => persisted.pop(),
+        clearSession: async () => {
+          persisted.length = 0;
+        },
+      };
+      const runner = new Runner({
+        callModelInputFilter: ({ modelData }) => ({
+          ...modelData,
+          input: modelData.input.slice(0, 1),
+        }),
+      });
+
+      await runner.run(agent, [oldCall, newCall], { session });
+
+      expect(model.lastRequest?.input).toEqual([oldCall]);
+      expect(persisted[0]).toEqual(oldCall);
+    });
+
+    it('persists a repeated current clone separately from equal-content history', async () => {
+      const model = new FilterTrackingModel([
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({ name: 'RepeatedCurrentCloneAgent', model });
+      const sameMessage = user('same');
+      const persisted: AgentInputItem[] = [structuredClone(sameMessage)];
+      const session: Session = {
+        getSessionId: async () => 'repeated-current-clone',
+        getItems: async () => structuredClone(persisted),
+        addItems: async (items) => {
+          persisted.push(...structuredClone(items));
+        },
+        popItem: async () => persisted.pop(),
+        clearSession: async () => {
+          persisted.length = 0;
+        },
+      };
+      const runner = new Runner({
+        callModelInputFilter: ({ modelData }) => {
+          const current = modelData.input.at(-1);
+          if (!current) {
+            throw new Error('Expected current input.');
+          }
+          return { ...modelData, input: [current, current] };
+        },
+      });
+
+      await runner.run(agent, [sameMessage], { session });
+
+      expect(model.lastRequest?.input).toHaveLength(2);
+      expect(
+        persisted.filter(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'user' &&
+            getFirstTextContent(item) === 'same',
+        ),
+      ).toHaveLength(3);
+    });
+
     it('supports async filters for streaming runs', async () => {
       const streamingModel = new FilterStreamingModel({
         output: [fakeModelMessage('stream response')],
@@ -3637,6 +6611,44 @@ describe('Runner.run', () => {
           streamInput[0].role,
       ).toBe('user');
       expect(getFirstTextContent(streamInput[0])).toBe('Alpha');
+    });
+
+    it('keeps duplicate outputs at their latest position in streaming runs', async () => {
+      const model = new FilterStreamingModel({
+        output: [fakeModelMessage('stream response')],
+        usage: new Usage(),
+      });
+      const agent = new Agent({ name: 'StreamDeduplicateOutputAgent', model });
+      const oldOutput: protocol.FunctionCallResultItem = {
+        type: 'function_call_result',
+        callId: 'call_stream_output',
+        name: 'lookup',
+        status: 'completed',
+        output: 'old',
+      };
+      const call: protocol.FunctionCallItem = {
+        type: 'function_call',
+        callId: 'call_stream_output',
+        name: 'lookup',
+        arguments: '{}',
+      };
+      const newOutput: protocol.FunctionCallResultItem = {
+        ...oldOutput,
+        output: 'new',
+      };
+      const runner = new Runner({
+        callModelInputFilter: async () => ({
+          input: [oldOutput, call, newOutput],
+        }),
+      });
+
+      const result = await runner.run(agent, 'start', { stream: true });
+      for await (const _event of result.toStream()) {
+        // Drain the stream.
+      }
+      await result.completed;
+
+      expect(model.lastRequest?.input).toEqual([call, newOutput]);
     });
 
     it('does not mutate run history when filter mutates input items', async () => {
@@ -4018,7 +7030,7 @@ describe('Runner.run', () => {
       expect(texts).toContain('second turn');
     });
 
-    it('keeps original inputs when filters prepend new items', async () => {
+    it('keeps equal-content injected and original inputs', async () => {
       class RecordingSession implements Session {
         #history: AgentInputItem[] = [];
         added: AgentInputItem[][] = [];
@@ -4064,7 +7076,7 @@ describe('Runner.run', () => {
       const runner = new Runner({
         callModelInputFilter: ({ modelData }) => ({
           instructions: modelData.instructions,
-          input: [assistant('primer'), ...modelData.input],
+          input: [structuredClone(modelData.input[0]), ...modelData.input],
         }),
       });
 
@@ -4075,7 +7087,9 @@ describe('Runner.run', () => {
       const persistedTexts = persisted
         .map((item) => getFirstTextContent(item))
         .filter((text): text is string => typeof text === 'string');
-      expect(persistedTexts).toContain('Persist me');
+      expect(
+        persistedTexts.filter((text) => text === 'Persist me'),
+      ).toHaveLength(2);
     });
 
     it('throws when filter returns invalid data', async () => {
@@ -4664,10 +7678,10 @@ describe('Runner.run', () => {
       }
       await result.completed;
 
-      expect(session.added).toHaveLength(2);
-      const streamedItems = session.added[1];
-      expect(streamedItems).toHaveLength(1);
-      const savedAssistant = streamedItems[0] as protocol.AssistantMessageItem;
+      expect(session.added).toHaveLength(1);
+      const streamedItems = session.added[0];
+      expect(streamedItems).toHaveLength(2);
+      const savedAssistant = streamedItems[1] as protocol.AssistantMessageItem;
       expect(savedAssistant.providerData).toEqual({ annotations: ['keep-me'] });
       expect(getFirstTextContent(savedAssistant)).toBe(
         'assistant with metadata',
@@ -4792,26 +7806,35 @@ describe('Runner.run', () => {
       expect(requestSettings.text?.verbosity).toBe('medium');
     });
 
-    it('uses model-specific defaults when the RunConfig model is explicit', async () => {
-      const modelResponse: ModelResponse = {
-        output: [fakeModelMessage('Hello explicit runner GPT-5')],
-        usage: new Usage(),
-      };
-      const inspectableModel = new InspectableModel(modelResponse);
-      const runner = new Runner({
-        model: 'gpt-5',
-        modelProvider: new InspectableModelProvider(inspectableModel),
-      });
-      const agent = new Agent({ name: 'RunnerModelAgent' });
+    it.each([
+      ['gpt-5', 'low'],
+      ['gpt-5.6', 'none'],
+    ] as const)(
+      'uses model-specific defaults when the RunConfig model is %s',
+      async (modelName, reasoningEffort) => {
+        const modelResponse: ModelResponse = {
+          output: [fakeModelMessage('Hello explicit runner GPT-5')],
+          usage: new Usage(),
+        };
+        const inspectableModel = new InspectableModel(modelResponse);
+        const runner = new Runner({
+          model: modelName,
+          modelProvider: new InspectableModelProvider(inspectableModel),
+        });
+        const agent = new Agent({ name: 'RunnerModelAgent' });
 
-      const result = await runner.run(agent, 'hello');
+        const result = await runner.run(agent, 'hello');
 
-      expect(result.finalOutput).toBe('Hello explicit runner GPT-5');
-      expect(inspectableModel.lastRequest?.modelSettings).toMatchObject({
-        reasoning: { effort: 'low' },
-        text: { verbosity: 'low' },
-      });
-    });
+        expect(result.finalOutput).toBe('Hello explicit runner GPT-5');
+        expect(inspectableModel.lastRequest?.modelSettings).toMatchObject({
+          reasoning: { effort: reasoningEffort },
+          text: { verbosity: 'low' },
+        });
+        expect(
+          inspectableModel.lastRequest?._internal?.reasoningEffortImplicit,
+        ).toBe(true);
+      },
+    );
 
     it('lets RunConfig modelSettings override implicit model defaults', async () => {
       const modelResponse: ModelResponse = {
@@ -4837,6 +7860,9 @@ describe('Runner.run', () => {
         text: { verbosity: 'low' },
         temperature: 0.7,
       });
+      expect(
+        inspectableModel.lastRequest?._internal?.reasoningEffortImplicit,
+      ).toBe(false);
     });
   });
 
@@ -5855,6 +8881,72 @@ describe('Runner.run', () => {
       });
     });
 
+    it('does not re-emit missing function tool results when resuming an interrupted turn', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+      const missingToolCall: protocol.FunctionCallItem = {
+        ...buildToolCall('call-missing', 'missing'),
+        name: 'missing_tool',
+      };
+
+      const model = new TrackingModel([
+        buildResponse(
+          [buildToolCall('call-approved', 'foo'), missingToolCall],
+          'resp-mixed-missing-1',
+        ),
+        buildResponse([fakeModelMessage('done')], 'resp-mixed-missing-2'),
+      ]);
+
+      const agent = new Agent({
+        name: 'MixedMissingToolResumeAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message', {
+        conversationId: 'conv-mixed-missing',
+        toolNotFoundBehavior: 'return_error_to_model',
+      });
+
+      expect(firstResult.interruptions).toHaveLength(1);
+      const preResumeMissingResults = firstResult.state._generatedItems.filter(
+        (item) =>
+          item.rawItem.type === 'function_call_result' &&
+          item.rawItem.callId === 'call-missing',
+      );
+      expect(preResumeMissingResults).toHaveLength(1);
+
+      firstResult.state.approve(firstResult.interruptions[0]);
+      const secondResult = await runner.run(agent, firstResult.state, {
+        conversationId: 'conv-mixed-missing',
+        toolNotFoundBehavior: 'return_error_to_model',
+      });
+
+      expect(secondResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+
+      const allMissingResults = secondResult.state._generatedItems.filter(
+        (item) =>
+          item.rawItem.type === 'function_call_result' &&
+          item.rawItem.callId === 'call-missing',
+      );
+      expect(allMissingResults).toHaveLength(1);
+
+      const secondInput = model.requests[1].input as AgentInputItem[];
+      const missingResultsSentOnResume = secondInput.filter(
+        (item) =>
+          item.type === 'function_call_result' &&
+          item.callId === 'call-missing',
+      );
+      expect(missingResultsSentOnResume).toHaveLength(1);
+    });
+
     it('does not resend prior items when resuming with previousResponseId', async () => {
       const approvalTool = tool({
         name: 'test',
@@ -5902,6 +8994,120 @@ describe('Runner.run', () => {
         type: 'function_call_result',
         callId: 'call-prev',
       });
+    });
+
+    it('does not replay an acknowledged result after serializing consecutive approvals', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+      const model = new TrackingModel([
+        buildResponse([buildToolCall('call-serialized-1', 'first')], 'resp-1'),
+        buildResponse([buildToolCall('call-serialized-2', 'second')], 'resp-2'),
+        buildResponse([fakeModelMessage('done')], 'resp-3'),
+      ]);
+      const agent = new Agent({
+        name: 'SerializedConsecutiveApprovalAgent',
+        model,
+        tools: [approvalTool],
+      });
+      const runner = new Runner();
+
+      const firstResult = await runner.run(agent, 'user_message', {
+        previousResponseId: 'initial-response',
+      });
+      expect(firstResult.interruptions).toHaveLength(1);
+      firstResult.state.approve(firstResult.interruptions[0]);
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        previousResponseId: 'initial-response',
+      });
+      expect(secondResult.interruptions).toHaveLength(1);
+
+      const restoredState = await RunState.fromString(
+        agent,
+        secondResult.state.toString(),
+      );
+      const [restoredApproval] = restoredState.getInterruptions();
+      restoredState.approve(restoredApproval);
+
+      const thirdResult = await runner.run(agent, restoredState, {
+        previousResponseId: 'initial-response',
+      });
+
+      expect(thirdResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(3);
+      expect(model.requests[2].input).toEqual([
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: 'call-serialized-2',
+        }),
+      ]);
+    });
+
+    it('does not replay acknowledged hosted MCP approval responses', async () => {
+      const mcpTool = hostedMcpTool({
+        serverLabel: 'demo_server',
+        serverUrl: 'https://example.com',
+        requireApproval: {
+          always: { toolNames: ['demo_tool'] },
+        },
+      });
+      const buildMcpApproval = (id: string): protocol.HostedToolCallItem => ({
+        type: 'hosted_tool_call',
+        id: `item-${id}`,
+        name: 'mcp_approval_request',
+        status: 'completed',
+        providerData: {
+          type: 'mcp_approval_request',
+          server_label: 'demo_server',
+          name: 'demo_tool',
+          id,
+          arguments: '{}',
+        },
+      });
+      const model = new TrackingModel([
+        buildResponse([buildMcpApproval('approval-1')], 'resp-mcp-1'),
+        buildResponse([buildMcpApproval('approval-2')], 'resp-mcp-2'),
+        buildResponse([fakeModelMessage('done')], 'resp-mcp-3'),
+      ]);
+      const agent = new Agent({
+        name: 'ConsecutiveHostedMcpApprovalAgent',
+        model,
+        tools: [mcpTool],
+      });
+      const runner = new Runner();
+
+      const firstResult = await runner.run(agent, 'user_message', {
+        conversationId: 'conv-mcp-consecutive',
+      });
+      expect(firstResult.interruptions).toHaveLength(1);
+      firstResult.state.approve(firstResult.interruptions[0]);
+
+      const secondResult = await runner.run(agent, firstResult.state, {
+        conversationId: 'conv-mcp-consecutive',
+      });
+      expect(secondResult.interruptions).toHaveLength(1);
+      secondResult.state.approve(secondResult.interruptions[0]);
+
+      const thirdResult = await runner.run(agent, secondResult.state, {
+        conversationId: 'conv-mcp-consecutive',
+      });
+
+      expect(thirdResult.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(3);
+      expect(model.requests[2].input).toEqual([
+        expect.objectContaining({
+          type: 'hosted_tool_call',
+          name: 'mcp_approval_response',
+          providerData: expect.objectContaining({
+            approval_request_id: 'approval-2',
+          }),
+        }),
+      ]);
     });
 
     it('does not resend items when resuming multiple times without new approvals', async () => {
@@ -6199,6 +9405,114 @@ describe('Runner.run', () => {
         type: 'function_call_result',
         callId: 'call-1',
       });
+    });
+  });
+
+  describe('inline compaction items', () => {
+    class RecordingModel extends FakeModel {
+      readonly requests: ModelRequest[] = [];
+
+      override async getResponse(
+        request: ModelRequest,
+      ): Promise<ModelResponse> {
+        this.requests.push(request);
+        return super.getResponse(request);
+      }
+    }
+
+    const COMPACTION_ITEM: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_inline',
+      encrypted_content: 'ciphertext',
+      created_by: 'compaction_endpoint',
+      providerData: { extra: 'value' },
+    };
+
+    it('replays a compaction marker in provider order on the next request', async () => {
+      const lookup = tool({
+        name: 'lookup',
+        description: 'Look something up.',
+        parameters: z.object({}),
+        execute: async () => 'tool result payload',
+      });
+      const model = new RecordingModel([
+        {
+          output: [
+            COMPACTION_ITEM,
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: 'lookup',
+              callId: 'call_lookup',
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        { output: [fakeModelMessage('done')], usage: new Usage() },
+      ]);
+      const agent = new Agent({
+        name: 'CompactionAgent',
+        model,
+        tools: [lookup],
+      });
+
+      const result = await run(agent, [user('identifiable old user input')]);
+
+      expect(result.finalOutput).toBe('done');
+      expect(model.requests).toHaveLength(2);
+      const secondInput = getRequestInputItems(model.requests[1]);
+      expect(secondInput).toHaveLength(3);
+      expect(secondInput[0]).toEqual(COMPACTION_ITEM);
+      expect(secondInput[1]).toMatchObject({
+        type: 'function_call',
+        callId: 'call_lookup',
+      });
+      expect(secondInput[2]).toMatchObject({
+        type: 'function_call_result',
+        callId: 'call_lookup',
+      });
+      expect(secondInput).not.toContainEqual(
+        expect.objectContaining({
+          content: 'identifiable old user input',
+        }),
+      );
+      expect(result.output).toContainEqual(COMPACTION_ITEM);
+      expect(result.history[0]).toEqual(COMPACTION_ITEM);
+    });
+
+    it('rewrites ordinary session history from the latest compaction marker', async () => {
+      const session = new CoreMemorySession({
+        initialItems: [user('earlier stored input')],
+      });
+      const clearSession = vi.spyOn(session, 'clearSession');
+      const model = new RecordingModel([
+        {
+          output: [COMPACTION_ITEM, fakeModelMessage('first turn done')],
+          usage: new Usage(),
+        },
+        { output: [fakeModelMessage('second turn done')], usage: new Usage() },
+      ]);
+      const agent = new Agent({
+        name: 'SessionCompactionAgent',
+        model,
+      });
+
+      await run(agent, 'new user input', { session });
+
+      expect(clearSession).toHaveBeenCalledOnce();
+      const stored = await session.getItems();
+      expect(stored[0]).toEqual(COMPACTION_ITEM);
+      expect(stored).toHaveLength(2);
+
+      await run(agent, 'later user input', { session });
+      const laterInput = getRequestInputItems(model.requests[1]);
+      expect(laterInput[0]).toEqual(COMPACTION_ITEM);
+      expect(laterInput).not.toContainEqual(
+        expect.objectContaining({ content: 'earlier stored input' }),
+      );
+      expect(getFirstTextContent(laterInput[laterInput.length - 1])).toBe(
+        'later user input',
+      );
     });
   });
 

@@ -1,5 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CallToolResultContent, MCPServer, MCPTool } from '../src/mcp';
+
+const mcpLogger = vi.hoisted(() => ({
+  debug: vi.fn(),
+  error: vi.fn(),
+  warn: vi.fn(),
+  dontLogModelData: false,
+  dontLogToolData: false,
+}));
 
 vi.mock('../src/logger', async () => {
   const actual =
@@ -10,8 +18,15 @@ vi.mock('../src/logger', async () => {
       const base = actual.getLogger(namespace);
       return {
         ...base,
-        error: () => {},
-        warn: () => {},
+        debug: mcpLogger.debug,
+        error: mcpLogger.error,
+        warn: mcpLogger.warn,
+        get dontLogModelData() {
+          return mcpLogger.dontLogModelData;
+        },
+        get dontLogToolData() {
+          return mcpLogger.dontLogToolData;
+        },
       };
     },
   };
@@ -78,10 +93,40 @@ class FailingConnectServer extends BaseTestServer {
   }
 }
 
+class FixedErrorConnectServer extends BaseTestServer {
+  constructor(
+    name: string,
+    readonly error: Error,
+  ) {
+    super(name);
+  }
+
+  async connect(): Promise<void> {
+    await super.connect();
+    throw this.error;
+  }
+}
+
+class HangingConnectServer extends BaseTestServer {
+  async connect(): Promise<void> {
+    await super.connect();
+    await new Promise<void>(() => {});
+  }
+}
+
 class AbortConnectServer extends BaseTestServer {
   async connect(): Promise<void> {
     await super.connect();
     const error = new Error('connect aborted');
+    error.name = 'AbortError';
+    throw error;
+  }
+}
+
+class AbortCloseServer extends BaseTestServer {
+  async close(): Promise<void> {
+    this.closeCalls += 1;
+    const error = new Error('close aborted');
     error.name = 'AbortError';
     throw error;
   }
@@ -136,6 +181,45 @@ class FlakyCloseServer extends BaseTestServer {
   }
 }
 
+class ResourceTrackingServer extends BaseTestServer {
+  public resourceOpen = false;
+  public failClose: boolean;
+
+  constructor(
+    name: string,
+    private readonly lifecycleEvents: string[],
+    options: { failConnectCall?: number; failClose?: boolean } = {},
+  ) {
+    super(name);
+    this.failConnectCall = options.failConnectCall;
+    this.failClose = options.failClose ?? false;
+  }
+
+  private readonly failConnectCall: number | undefined;
+
+  async connect(): Promise<void> {
+    this.connectCalls += 1;
+    this.lifecycleEvents.push(`${this.name}:connect`);
+    if (this.resourceOpen) {
+      throw new Error('connect called before cleanup');
+    }
+    this.resourceOpen = true;
+    if (this.connectCalls === this.failConnectCall) {
+      throw new Error('connect failed after opening resource');
+    }
+  }
+
+  async close(): Promise<void> {
+    this.closeCalls += 1;
+    this.lifecycleEvents.push(`${this.name}:close`);
+    if (this.failClose) {
+      throw new Error('close failed');
+    }
+    this.resourceOpen = false;
+    this.cleaned = true;
+  }
+}
+
 async function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
@@ -158,6 +242,176 @@ async function withTimeout<T>(
 }
 
 describe('MCPServers', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mcpLogger.dontLogModelData = false;
+    mcpLogger.dontLogToolData = false;
+  });
+
+  it('uses fixed messages for URL-derived server names when connecting fails in redacted mode', async () => {
+    const serverName =
+      'streamable-http: https://example.test/mcp/SECRET_MCP_PATH_123?token=SECRET_MCP_QUERY_123';
+    const server = new FlakyServer(serverName, 1);
+    mcpLogger.dontLogToolData = true;
+
+    const session = await connectMcpServers([server], {
+      connectTimeoutMs: null,
+      closeTimeoutMs: null,
+    });
+
+    expect(session.failed).toEqual([server]);
+    expect(mcpLogger.error).toHaveBeenCalledWith(
+      'Failed to connect MCP server:',
+      'object',
+    );
+    const calls = JSON.stringify([
+      ...mcpLogger.debug.mock.calls,
+      ...mcpLogger.error.mock.calls,
+    ]);
+    expect(calls).not.toContain('SECRET_MCP_PATH_123');
+    expect(calls).not.toContain('SECRET_MCP_QUERY_123');
+  });
+
+  it('uses fixed messages for custom server names when closing fails in redacted mode', async () => {
+    const serverName = 'SECRET_CUSTOM_MCP_SERVER_123';
+    const server = new FlakyCloseServer(serverName, 1);
+    mcpLogger.dontLogToolData = true;
+    const session = await connectMcpServers([server], {
+      connectTimeoutMs: null,
+      closeTimeoutMs: null,
+    });
+
+    await session.close();
+
+    expect(mcpLogger.error).toHaveBeenCalledWith(
+      'Failed to close MCP server:',
+      'object',
+    );
+    const calls = JSON.stringify([
+      ...mcpLogger.debug.mock.calls,
+      ...mcpLogger.error.mock.calls,
+    ]);
+    expect(calls).not.toContain(serverName);
+  });
+
+  it('uses fixed messages when closing is cancelled in redacted mode', async () => {
+    const serverName = 'SECRET_CANCELLED_MCP_SERVER_123';
+    const server = new AbortCloseServer(serverName);
+    mcpLogger.dontLogToolData = true;
+    const session = await connectMcpServers([server], {
+      connectTimeoutMs: null,
+      closeTimeoutMs: null,
+    });
+
+    await session.close();
+
+    expect(mcpLogger.debug).toHaveBeenCalledWith(
+      'Close cancelled for MCP server:',
+      'object',
+    );
+    expect(session.errors.get(server)?.name).toBe('AbortError');
+    const calls = JSON.stringify([
+      ...mcpLogger.debug.mock.calls,
+      ...mcpLogger.error.mock.calls,
+    ]);
+    expect(calls).not.toContain(serverName);
+  });
+
+  it('does not read server names while formatting redacted logs', async () => {
+    const server = new FlakyServer('unused', 1);
+    let nameReads = 0;
+    Object.defineProperty(server, 'name', {
+      configurable: true,
+      get: () => {
+        nameReads += 1;
+        return 'SECRET_MCP_GETTER_NAME_123';
+      },
+    });
+    mcpLogger.dontLogToolData = true;
+
+    const session = await connectMcpServers([server], {
+      connectTimeoutMs: null,
+      closeTimeoutMs: null,
+    });
+
+    expect(session.failed).toEqual([server]);
+    expect(nameReads).toBe(0);
+    expect(mcpLogger.error).toHaveBeenCalledWith(
+      'Failed to connect MCP server:',
+      'object',
+    );
+  });
+
+  it('preserves MCP server failure diagnostics when tool logging is enabled', async () => {
+    const serverName = 'diagnostic-server';
+    const server = new FlakyServer(serverName, 1);
+
+    await connectMcpServers([server], {
+      connectTimeoutMs: null,
+      closeTimeoutMs: null,
+    });
+
+    expect(mcpLogger.error).toHaveBeenCalledWith(
+      `Failed to connect MCP server '${serverName}':`,
+      expect.any(Error),
+    );
+  });
+
+  it('preserves arbitrary errors from custom MCP servers', async () => {
+    const error = new Error('custom server password_marker detail');
+    const server = new FixedErrorConnectServer('custom-server', error);
+
+    const session = await connectMcpServers([server], {
+      connectTimeoutMs: null,
+      closeTimeoutMs: null,
+    });
+
+    expect(session.errors.get(server)).toBe(error);
+  });
+
+  it('removes credentials from URL-derived lifecycle timeout errors', async () => {
+    const endpoint = new URL('https://example.test/mcp');
+    endpoint.username = 'user_marker';
+    endpoint.password = 'password_marker';
+    endpoint.searchParams.set('token', 'query_marker');
+    endpoint.hash = 'fragment_marker';
+    const server = new HangingConnectServer(
+      `streamable-http: ${endpoint.toString()}`,
+    );
+
+    const session = await connectMcpServers([server], {
+      connectTimeoutMs: 1,
+      closeTimeoutMs: null,
+    });
+
+    const error = session.errors.get(server);
+    expect(error?.message).toContain('https://example.test/mcp');
+    expect(error?.message).not.toContain('user_marker');
+    expect(error?.message).not.toContain('password_marker');
+    expect(error?.message).not.toContain('query_marker');
+    expect(error?.message).not.toContain('fragment_marker');
+    await session.close();
+  });
+
+  it('removes credentials from malformed URL-derived lifecycle errors', async () => {
+    const server = new HangingConnectServer(
+      `streamable-http: https://${['user_marker', 'password_marker'].join(
+        ':',
+      )}@`,
+    );
+
+    const session = await connectMcpServers([server], {
+      connectTimeoutMs: 1,
+      closeTimeoutMs: null,
+    });
+
+    const error = session.errors.get(server);
+    expect(error?.message).toContain('streamable-http: <redacted endpoint>');
+    expect(error?.message).not.toContain('user_marker');
+    expect(error?.message).not.toContain('password_marker');
+    await session.close();
+  });
+
   it('reconnects failed servers only by default', async () => {
     const server = new FlakyServer('flaky', 1);
     const session = await connectMcpServers([server]);
@@ -169,6 +423,71 @@ describe('MCPServers', () => {
     expect(session.active).toEqual([server]);
     expect(session.failed).toEqual([]);
   });
+
+  it.each([false, true])(
+    'cleans a partially opened server before reconnecting (parallel=%s)',
+    async (connectInParallel) => {
+      const lifecycleEvents: string[] = [];
+      const healthy = new BaseTestServer('healthy');
+      const failed = new ResourceTrackingServer('failed', lifecycleEvents, {
+        failConnectCall: 1,
+      });
+      const session = await connectMcpServers([healthy, failed], {
+        connectInParallel,
+        connectTimeoutMs: null,
+        closeTimeoutMs: null,
+      });
+
+      try {
+        expect(session.active).toEqual([healthy]);
+        expect(session.failed).toEqual([failed]);
+
+        await session.reconnect();
+
+        expect(lifecycleEvents).toEqual([
+          'failed:connect',
+          'failed:close',
+          'failed:connect',
+        ]);
+        expect(failed.resourceOpen).toBe(true);
+        expect(session.active).toEqual([healthy, failed]);
+        expect(session.failed).toEqual([]);
+        expect(session.errors.has(failed)).toBe(false);
+        expect(healthy.connectCalls).toBe(1);
+        expect(healthy.closeCalls).toBe(0);
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'does not reconnect after cleanup fails (parallel=%s)',
+    async (connectInParallel) => {
+      const lifecycleEvents: string[] = [];
+      const server = new ResourceTrackingServer('failed', lifecycleEvents, {
+        failConnectCall: 1,
+        failClose: true,
+      });
+      const session = await connectMcpServers([server], {
+        connectInParallel,
+        connectTimeoutMs: null,
+        closeTimeoutMs: null,
+      });
+
+      await session.reconnect();
+
+      expect(lifecycleEvents).toEqual(['failed:connect', 'failed:close']);
+      expect(server.connectCalls).toBe(1);
+      expect(server.resourceOpen).toBe(true);
+      expect(session.active).toEqual([]);
+      expect(session.failed).toEqual([server]);
+      expect(session.errors.get(server)?.message).toBe('close failed');
+
+      server.failClose = false;
+      await session.close();
+    },
+  );
 
   it('deduplicates failures across reconnect attempts', async () => {
     const server = new FlakyServer('flaky', 2);
@@ -204,6 +523,81 @@ describe('MCPServers', () => {
     expect(session.failed).toEqual([]);
     expect(server.connectCalls).toBe(2);
   });
+
+  it.each([false, true])(
+    'cleans every reconnect-all target before reconnecting successful cleanups (parallel=%s)',
+    async (connectInParallel) => {
+      const lifecycleEvents: string[] = [];
+      const cleanupFailure = new ResourceTrackingServer(
+        'cleanup-failure',
+        lifecycleEvents,
+        { failClose: true },
+      );
+      const reconnectable = new ResourceTrackingServer(
+        'reconnectable',
+        lifecycleEvents,
+      );
+      const session = await connectMcpServers([cleanupFailure, reconnectable], {
+        connectInParallel,
+        connectTimeoutMs: null,
+        closeTimeoutMs: null,
+      });
+      lifecycleEvents.length = 0;
+
+      await session.reconnect({ failedOnly: false });
+
+      expect(lifecycleEvents).toEqual([
+        'reconnectable:close',
+        'cleanup-failure:close',
+        'reconnectable:connect',
+      ]);
+      expect(cleanupFailure.connectCalls).toBe(1);
+      expect(reconnectable.connectCalls).toBe(2);
+      expect(session.active).toEqual([reconnectable]);
+      expect(session.failed).toEqual([cleanupFailure]);
+      expect(session.errors.get(cleanupFailure)?.message).toBe('close failed');
+
+      cleanupFailure.failClose = false;
+      await session.close();
+    },
+  );
+
+  it.each([false, true])(
+    'keeps closed servers inactive when strict reconnect-all fails (parallel=%s)',
+    async (connectInParallel) => {
+      const lifecycleEvents: string[] = [];
+      const reconnectFailure = new ResourceTrackingServer(
+        'reconnect-failure',
+        lifecycleEvents,
+        { failConnectCall: 2 },
+      );
+      const peer = new ResourceTrackingServer('peer', lifecycleEvents);
+      const session = await connectMcpServers([reconnectFailure, peer], {
+        connectInParallel,
+        connectTimeoutMs: null,
+        closeTimeoutMs: null,
+        strict: true,
+      });
+      lifecycleEvents.length = 0;
+
+      await expect(session.reconnect({ failedOnly: false })).rejects.toThrow(
+        'connect failed after opening resource',
+      );
+
+      expect(session.failed).toContain(reconnectFailure);
+      expect(session.active).not.toContain(reconnectFailure);
+      if (connectInParallel) {
+        expect(session.active).toEqual([peer]);
+        expect(session.failed).not.toContain(peer);
+      } else {
+        expect(session.active).toEqual([]);
+        expect(session.failed).toContain(peer);
+        expect(session.errors.get(peer)?.name).toBe('ClosedError');
+      }
+
+      await session.close();
+    },
+  );
 
   it('keeps failed servers active when dropFailed is false', async () => {
     const server = new FlakyServer('flaky', 1);
@@ -281,36 +675,80 @@ describe('MCPServers', () => {
     expect(aborting.cleaned).toBe(true);
   });
 
-  it('rejects commands while a timed-out close is still in flight', async () => {
-    const closeGate = createDeferred<void>();
-    const server = new SlowCloseServer('slow', closeGate);
-    const session = await connectMcpServers([server], {
-      connectInParallel: true,
-      closeTimeoutMs: 1,
-    });
+  it.each([false, true])(
+    'keeps reconnect-all targets inactive when cleanup aborts (parallel=%s)',
+    async (connectInParallel) => {
+      const aborting = new AbortCloseServer('aborting');
+      const session = await connectMcpServers([aborting], {
+        connectInParallel,
+        suppressAbortError: false,
+      });
 
-    await session.close();
-    const reconnectPromise = session.reconnect({ failedOnly: false });
-    await expect(withTimeout(reconnectPromise, 500)).resolves.toEqual([]);
-    expect(session.failed).toEqual([server]);
-    expect(session.errors.get(server)?.name).toBe('ClosingError');
-    closeGate.resolve();
-  });
+      await expect(session.reconnect({ failedOnly: false })).rejects.toThrow(
+        'close aborted',
+      );
 
-  it('allows retrying close after a failure in parallel workers', async () => {
-    const server = new FlakyCloseServer('flaky', 1);
-    const session = await connectMcpServers([server], {
-      connectInParallel: true,
-    });
+      expect(session.active).toEqual([]);
+      expect(session.failed).toEqual([aborting]);
+      expect(session.errors.get(aborting)?.name).toBe('AbortError');
+      expect(aborting.connectCalls).toBe(1);
+    },
+  );
 
-    await session.close();
-    expect(server.cleaned).toBe(false);
-    expect(server.closeCalls).toBe(1);
+  it.each([false, true])(
+    'skips reconnect-all targets after suppressed cleanup aborts (parallel=%s)',
+    async (connectInParallel) => {
+      const aborting = new AbortCloseServer('aborting');
+      const session = await connectMcpServers([aborting], {
+        connectInParallel,
+      });
 
-    await session.close();
-    expect(server.cleaned).toBe(true);
-    expect(server.closeCalls).toBe(2);
-  });
+      await expect(session.reconnect({ failedOnly: false })).resolves.toEqual(
+        [],
+      );
+
+      expect(session.failed).toEqual([aborting]);
+      expect(session.errors.get(aborting)?.name).toBe('AbortError');
+      expect(aborting.connectCalls).toBe(1);
+    },
+  );
+
+  it.each([false, true])(
+    'rejects commands while a timed-out close is still in flight (parallel=%s)',
+    async (connectInParallel) => {
+      const closeGate = createDeferred<void>();
+      const server = new SlowCloseServer('slow', closeGate);
+      const session = await connectMcpServers([server], {
+        connectInParallel,
+        closeTimeoutMs: 1,
+      });
+
+      await session.close();
+      const reconnectPromise = session.reconnect({ failedOnly: false });
+      await expect(withTimeout(reconnectPromise, 500)).resolves.toEqual([]);
+      expect(session.failed).toEqual([server]);
+      expect(session.errors.get(server)?.name).toBe('ClosingError');
+      closeGate.resolve();
+    },
+  );
+
+  it.each([false, true])(
+    'allows retrying close after a failure (parallel=%s)',
+    async (connectInParallel) => {
+      const server = new FlakyCloseServer('flaky', 1);
+      const session = await connectMcpServers([server], {
+        connectInParallel,
+      });
+
+      await session.close();
+      expect(server.cleaned).toBe(false);
+      expect(server.closeCalls).toBe(1);
+
+      await session.close();
+      expect(server.cleaned).toBe(true);
+      expect(server.closeCalls).toBe(2);
+    },
+  );
 
   it('attaches async dispose when supported', async () => {
     const server = new BaseTestServer('server');

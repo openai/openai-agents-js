@@ -17,6 +17,7 @@ import { RunState } from '../runState';
 import { getTurnInput } from './items';
 import { withGuardrailSpan } from '../tracing';
 import type { GuardrailFunctionOutput } from '../guardrail';
+import { processFinalOutputWithRedaction } from '../utils/finalOutputError';
 
 export type GuardrailTracker = {
   readonly pending: boolean;
@@ -25,7 +26,7 @@ export type GuardrailTracker = {
   markPending: () => void;
   setPromise: (promise?: Promise<InputGuardrailResult[]>) => void;
   setError: (err: unknown) => void;
-  throwIfError: () => void;
+  throwIfError: () => Promise<void>;
   awaitCompletion: (options?: { suppressErrors?: boolean }) => Promise<void>;
 };
 
@@ -38,7 +39,6 @@ export const createGuardrailTracker = (): GuardrailTracker => {
   const setError = (err: unknown) => {
     failed = true;
     error = err;
-    pending = false;
   };
 
   const setPromise = (incoming?: Promise<InputGuardrailResult[]>) => {
@@ -58,8 +58,11 @@ export const createGuardrailTracker = (): GuardrailTracker => {
       });
   };
 
-  const throwIfError = () => {
+  const throwIfError = async () => {
     if (error) {
+      if (promise) {
+        await promise;
+      }
       throw error;
     }
   };
@@ -110,7 +113,8 @@ async function runGuardrailsWithTripwire<
   resultsTarget: TResult[];
   onTripwire: (result: TResult) => never;
   isTripwireError: (error: unknown) => boolean;
-  onError: (error: unknown) => never;
+  onError: (error: unknown) => unknown;
+  onErrorObserved?: (error: unknown) => void;
 }): Promise<TResult[]> {
   const {
     state,
@@ -120,25 +124,26 @@ async function runGuardrailsWithTripwire<
     onTripwire,
     isTripwireError,
     onError,
+    onErrorObserved,
   } = options;
 
-  try {
-    // Keep tripwire handling behind this await-all barrier so sibling guardrails
-    // can finish cleanup before the tripwire error is surfaced.
-    const results = await Promise.all(
-      guardrails.map(async (guardrail) => {
-        return withGuardrailSpan(
-          async (span) => {
-            const result = await guardrail.run(guardrailArgs);
-            span.spanData.triggered = result.output.tripwireTriggered;
-            return result;
-          },
-          { data: { name: guardrail.name } },
-          state._currentAgentSpan,
-        );
-      }),
+  const guardrailPromises = guardrails.map(async (guardrail) => {
+    return withGuardrailSpan(
+      async (span) => {
+        const result = await guardrail.run(guardrailArgs);
+        span.spanData.triggered = result.output.tripwireTriggered;
+        return result;
+      },
+      { data: { name: guardrail.name } },
+      state._currentAgentSpan,
     );
+  });
+
+  let resultsPublished = false;
+  try {
+    const results = await Promise.all(guardrailPromises);
     resultsTarget.push(...results);
+    resultsPublished = true;
     for (const result of results) {
       if (result.output.tripwireTriggered) {
         if (state._currentAgentSpan) {
@@ -152,11 +157,19 @@ async function runGuardrailsWithTripwire<
     }
     return results;
   } catch (error) {
-    if (isTripwireError(error)) {
-      throw error;
+    const finalError = isTripwireError(error) ? error : onError(error);
+    onErrorObserved?.(finalError);
+    // Promise.all rejects immediately, so drain the full batch before the
+    // failure is surfaced to prevent sibling guardrails from outliving the run.
+    const settledResults = await Promise.allSettled(guardrailPromises);
+    if (!resultsPublished) {
+      for (const result of settledResults) {
+        if (result.status === 'fulfilled') {
+          resultsTarget.push(result.value);
+        }
+      }
     }
-    onError(error);
-    return [];
+    throw finalError;
   }
 }
 
@@ -196,6 +209,7 @@ export async function runInputGuardrails<
 >(
   state: RunState<TContext, TAgent>,
   guardrails: InputGuardrailDefinition[],
+  options: { onErrorObserved?: (error: unknown) => void } = {},
 ): Promise<InputGuardrailResult[]> {
   if (guardrails.length === 0) {
     return [];
@@ -222,12 +236,13 @@ export async function runInputGuardrails<
     onError: (error) => {
       // roll back the current turn to enable reruns
       state._currentTurn--;
-      throw new GuardrailExecutionError(
+      return new GuardrailExecutionError(
         `Input guardrail failed to complete: ${error}`,
         error as Error,
         state,
       );
     },
+    onErrorObserved: options.onErrorObserved,
   });
 }
 
@@ -255,7 +270,12 @@ export async function runOutputGuardrails<
   if (guardrails.length === 0) {
     return;
   }
-  const agentOutput = state._currentAgent.processFinalOutput(output);
+  const agentOutput =
+    state._currentAgent.outputType === 'text'
+      ? state._currentAgent.processFinalOutput(output)
+      : processFinalOutputWithRedaction(() =>
+          state._currentAgent.processFinalOutput(output),
+        );
   const runOutput = getTurnInput(
     [],
     state._generatedItems,
@@ -285,7 +305,7 @@ export async function runOutputGuardrails<
     isTripwireError: (error) =>
       error instanceof OutputGuardrailTripwireTriggered,
     onError: (error) => {
-      throw new GuardrailExecutionError(
+      return new GuardrailExecutionError(
         `Output guardrail failed to complete: ${error}`,
         error as Error,
         state,

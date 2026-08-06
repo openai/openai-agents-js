@@ -3,6 +3,7 @@ import { type Entry, type Manifest } from '@openai/agents-core/sandbox';
 import {
   isHostPathStrictlyWithinRoot,
   isHostPathWithinRoot,
+  sandboxPathGrantHostPath,
 } from '@openai/agents-core/sandbox/internal';
 import { constants, type Dirent, type Stats } from 'node:fs';
 import {
@@ -196,7 +197,10 @@ function resolveLocalSourcePath(
   if (
     isHostPathWithinRoot(base, resolvedSourcePath) ||
     (options.localSourceGrants ?? []).some((grant) =>
-      isHostPathWithinRoot(resolve(grant.path), resolvedSourcePath),
+      isHostPathWithinRoot(
+        resolve(sandboxPathGrantHostPath(grant)),
+        resolvedSourcePath,
+      ),
     )
   ) {
     return resolvedSourcePath;

@@ -1,6 +1,4 @@
-// Use function instead of exporting the value to prevent
-// circular dependency resolution issues caused by other exports in '@openai/agents-core/_shims'
-import * as _shims from '@openai/agents-core/_shims';
+import * as _configShims from '@openai/agents-core/_shims/config';
 
 function fallbackIsBrowserEnvironment(): boolean {
   return (
@@ -12,8 +10,8 @@ function fallbackIsBrowserEnvironment(): boolean {
 
 function isBrowserEnvironment(): boolean {
   try {
-    if (typeof _shims?.isBrowserEnvironment === 'function') {
-      return _shims.isBrowserEnvironment();
+    if (typeof _configShims?.isBrowserEnvironment === 'function') {
+      return _configShims.isBrowserEnvironment();
     }
   } catch {
     // Fallback below.
@@ -28,7 +26,7 @@ function isBrowserEnvironment(): boolean {
  */
 export function loadEnv(): Record<string, string | undefined> {
   try {
-    const env = _shims?.loadEnv?.();
+    const env = _configShims?.loadEnv?.();
     return typeof env === 'object' && env != null ? env : {};
   } catch {
     return {};
@@ -39,14 +37,47 @@ export function loadEnv(): Record<string, string | undefined> {
  * Checks if a flag is enabled in the environment.
  *
  * @param flagName - The name of the flag to check.
+ * @param defaultValue - The value to return when the flag is not set.
  * @returns `true` if the flag is enabled, `false` otherwise.
  */
-function isEnabled(flagName: string): boolean {
-  const env = loadEnv();
-  return (
-    typeof env !== 'undefined' &&
-    (env[flagName] === 'true' || env[flagName] === '1')
-  );
+function isEnabled(flagName: string, defaultValue: boolean = false): boolean {
+  const flagValue = loadEnv()[flagName];
+  if (flagValue === undefined) {
+    return defaultValue;
+  }
+  if (flagValue === 'true' || flagValue === '1') {
+    return true;
+  }
+  if (flagValue === 'false' || flagValue === '0') {
+    return false;
+  }
+  return defaultValue;
+}
+
+let sensitiveDataLoggingEnabledOverride: boolean | undefined;
+
+/**
+ * Enables or disables sensitive model and tool data logging programmatically.
+ * This override takes precedence over the logging environment variables.
+ *
+ * @param enabled - Whether sensitive model and tool data may be logged.
+ * @throws {TypeError} If `enabled` is not a primitive boolean.
+ */
+export function setSensitiveDataLoggingEnabled(enabled: boolean): void {
+  if (typeof enabled !== 'boolean') {
+    sensitiveDataLoggingEnabledOverride = false;
+    throw new TypeError(
+      'Sensitive data logging can only be enabled or disabled with a boolean value.',
+    );
+  }
+  sensitiveDataLoggingEnabledOverride = enabled;
+}
+
+function shouldSuppressSensitiveData(flagName: string): boolean {
+  if (sensitiveDataLoggingEnabledOverride !== undefined) {
+    return !sensitiveDataLoggingEnabledOverride;
+  }
+  return isEnabled(flagName, true);
 }
 
 /**
@@ -69,9 +100,9 @@ export const tracing = {
  */
 export const logging = {
   get dontLogModelData() {
-    return isEnabled('OPENAI_AGENTS_DONT_LOG_MODEL_DATA');
+    return shouldSuppressSensitiveData('OPENAI_AGENTS_DONT_LOG_MODEL_DATA');
   },
   get dontLogToolData() {
-    return isEnabled('OPENAI_AGENTS_DONT_LOG_TOOL_DATA');
+    return shouldSuppressSensitiveData('OPENAI_AGENTS_DONT_LOG_TOOL_DATA');
   },
 };

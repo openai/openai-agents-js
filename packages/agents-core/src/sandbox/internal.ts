@@ -1,9 +1,12 @@
 export {
+  assertHostPathGrantsRebound,
+  deserializeHostPathGrantRedactionMetadata,
   deserializeManifest,
   mergeManifestEntryDelta,
   mergeManifestDelta,
   sanitizeEnvironmentForPersistence,
   serializeEnvironmentForPersistence,
+  serializeHostPathGrantRedactionMetadata,
   serializeManifest,
   serializeManifestRecord,
 } from './sandboxes/shared/manifestPersistence';
@@ -17,6 +20,7 @@ export {
   isHostPathWithinRoot,
   relativeHostPathEscapesRoot,
   relativeHostPathEscapesRootOrSelf,
+  sandboxPathGrantHostPath,
 } from './shared/hostPath';
 export {
   hasBackslashPathSeparator,
@@ -34,10 +38,34 @@ export {
   materializeStaticEnvironment,
   mergeMaterializedEnvironment,
   mergeStaticMaterializedEnvironment,
+  rehydratePersistedEnvironmentForRuntime,
+  resolveEnvironmentReferences,
   serializeManifestEnvironment,
   serializeRuntimeEnvironmentForPersistence,
 } from './shared/environment';
 export { shellQuote } from './shared/shell';
+export {
+  isSandboxPathNotFoundError,
+  probeSandboxPathExists,
+  type SandboxPathProbeResult,
+} from './shared/pathProbe';
+export {
+  isRecord,
+  isStringRecord,
+  readOptionalBoolean,
+  readOptionalNumber,
+  readOptionalNumberArray,
+  readOptionalRecord,
+  readOptionalRecordArray,
+  readOptionalString,
+  readOptionalStringRecord,
+  readString,
+  readStringArray,
+} from './shared/typeGuards';
+export {
+  validateCredentialPair,
+  type CredentialPairValidation,
+} from './shared/credentials';
 export {
   assertViewImageByteLength,
   imageOutputFromBytes,

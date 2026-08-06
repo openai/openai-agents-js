@@ -39,11 +39,13 @@ import {
   defineToolOutputGuardrail,
   shellTool,
   applyPatchTool,
+  attachClientToolSearchExecutor,
 } from '../src';
 import { getDefaultModelProvider } from '../src/providers';
 import { user } from '../src/helpers/message';
 import * as protocol from '../src/types/protocol';
 import logger from '../src/logger';
+import { getFunctionToolStateKey } from '../src/toolIdentity';
 
 /**
  * Fake model for scenario-style tests. It queues per-turn outputs (or errors),
@@ -83,9 +85,7 @@ class RecordingModel implements Model {
       throw new Error('No queued output');
     }
     return this.#turnOutputs.shift() as
-      | ModelResponse
-      | ModelResponse['output']
-      | Error;
+      ModelResponse | ModelResponse['output'] | Error;
   }
 
   #recordArgs(request: ModelRequest) {
@@ -575,6 +575,139 @@ describe('Agent scenarios (examples and docs patterns)', () => {
 
     warnSpy.mockRestore();
   });
+
+  it.each([
+    ['current schema after restoration', 'after restoration', false],
+    ['legacy schema before serialization', 'before serialization', true],
+    ['legacy schema after restoration', 'after restoration', true],
+  ] as const)(
+    'rebinds nested deferred bare approvals in %s',
+    async (_description, approvalTiming, downgrade) => {
+      let executions = 0;
+      const deferredApprovalTool = tool({
+        name: 'secure_lookup',
+        description: 'Requires approval after deferred loading.',
+        parameters: z.object({}).strict(),
+        deferLoading: true,
+        needsApproval: true,
+        execute: async () => {
+          executions += 1;
+          return 'approved lookup';
+        },
+      });
+      const clientToolSearch = attachClientToolSearchExecutor(
+        {
+          type: 'hosted_tool',
+          name: 'tool_search',
+          providerData: { type: 'tool_search', execution: 'client' },
+        },
+        async () => deferredApprovalTool,
+      );
+      const nestedModel = new RecordingModel();
+      nestedModel.addMultipleTurnOutputs([
+        [
+          {
+            type: 'tool_search_call',
+            id: 'nested-search-call',
+            status: 'completed',
+            arguments: {},
+            providerData: {
+              call_id: 'nested-search-provider-call',
+              execution: 'client',
+            },
+          } as protocol.ToolSearchCallItem,
+          functionToolCall('secure_lookup', '{}', 'nested-deferred-call'),
+        ],
+        [textMessage('Nested done')],
+      ]);
+      const nestedAgent = new Agent({
+        name: 'LegacyNestedDeferredAgent',
+        model: nestedModel,
+        tools: [clientToolSearch],
+      });
+      const nestedTool = nestedAgent.asTool({
+        toolName: 'legacy_nested_agent',
+        toolDescription: 'Runs the nested deferred approval agent.',
+      });
+      const outerModel = new RecordingModel();
+      outerModel.addMultipleTurnOutputs([
+        [
+          functionToolCall(
+            nestedTool.name,
+            JSON.stringify({ input: 'look up the record' }),
+            'outer-nested-call',
+          ),
+        ],
+        [textMessage('Outer done')],
+      ]);
+      const outerAgent = new Agent({
+        name: 'LegacyNestedDeferredOuterAgent',
+        model: outerModel,
+        tools: [nestedTool],
+      });
+      const runner = new Runner();
+
+      const first = await runner.run(outerAgent, 'start');
+      expect(first.interruptions).toHaveLength(1);
+      expect(first.interruptions[0]?.agent).toBe(nestedAgent);
+
+      if (approvalTiming === 'before serialization') {
+        first.state.approve(first.interruptions[0]!);
+      }
+      const publicApprovals = first.state._context.toJSON().approvals;
+      const serialized = first.state.toJSON() as any;
+      const downgradeToLegacy = (value: any) => {
+        value.$schemaVersion = '1.15';
+        delete value.context.functionApprovals;
+        delete value.context.legacyFunctionApprovals;
+        delete value.pendingAgentToolRunAliases;
+        for (const interruption of value.currentStep?.data?.interruptions ??
+          []) {
+          delete interruption.functionToolStateKey;
+        }
+      };
+      if (downgrade) {
+        for (const [key, pendingState] of Object.entries(
+          serialized.pendingAgentToolRuns,
+        )) {
+          const nestedState = JSON.parse(pendingState as string);
+          downgradeToLegacy(nestedState);
+          serialized.pendingAgentToolRuns[key] = JSON.stringify(nestedState);
+        }
+        downgradeToLegacy(serialized);
+        serialized.context.approvals = {
+          ...serialized.context.approvals,
+          ...publicApprovals,
+        };
+      }
+
+      const restored = await RunState.fromString(
+        outerAgent,
+        JSON.stringify(serialized),
+      );
+      const approval = restored.getInterruptions()[0];
+      expect(approval?.functionToolStateKey).toBe(
+        getFunctionToolStateKey(deferredApprovalTool),
+      );
+      if (approvalTiming === 'after restoration') {
+        restored.approve(approval!);
+      } else {
+        expect(
+          restored._context.isToolApproved({
+            toolName: getFunctionToolStateKey(deferredApprovalTool)!,
+            callId: 'nested-deferred-call',
+            functionTool: false,
+            agent: nestedAgent,
+          }),
+        ).toBe(true);
+      }
+
+      const resumed = await runner.run(outerAgent, restored);
+      expect(resumed.interruptions).toHaveLength(0);
+      expect(resumed.finalOutput).toBe('Outer done');
+      expect(executions).toBe(1);
+    },
+  );
 
   it('handles multi-step approvals in deeply nested agent tools', async () => {
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
@@ -1698,6 +1831,61 @@ describe('Agent scenarios (examples and docs patterns)', () => {
 
     const resumed = await run(agent, first.state);
     expect(resumed.finalOutput).toBe('approved:hi');
+    expect(executed).toBe(1);
+    expect(model.calls.length).toBe(1);
+  });
+
+  it('reruns tool input guardrails when resuming approved state after pre-approval guardrails', async () => {
+    let executed = 0;
+    const inputGuardrailRun = vi.fn(async () => ({
+      behavior: { type: 'allow' as const },
+    }));
+    const approvalTool = tool({
+      name: 'guarded_approval',
+      description: 'requires approval',
+      parameters: z.object({ input: z.string() }),
+      needsApproval: true,
+      inputGuardrails: [
+        {
+          name: 'time_sensitive_check',
+          run: inputGuardrailRun,
+        },
+      ],
+      execute: async ({ input }) => {
+        executed += 1;
+        return `approved:${input}`;
+      },
+    });
+
+    const model = new RecordingModel([
+      functionToolCall('guarded_approval', JSON.stringify({ input: 'hi' })),
+    ]);
+
+    const agent = new Agent({
+      name: 'approval-guardrail-resume',
+      model,
+      tools: [approvalTool],
+      toolUseBehavior: 'stop_on_first_tool',
+      modelSettings: { toolChoice: 'required' },
+    });
+
+    const first = await run(agent, 'hello', {
+      toolExecution: { preApprovalInputGuardrails: true },
+    });
+    expect(first.interruptions).toHaveLength(1);
+    expect(inputGuardrailRun).toHaveBeenCalledTimes(1);
+    expect(executed).toBe(0);
+
+    const restored = await RunState.fromString(agent, first.state.toString());
+    restored.approve(restored.getInterruptions()[0]);
+
+    const resumed = await run(agent, restored, {
+      toolExecution: { preApprovalInputGuardrails: true },
+    });
+
+    expect(resumed.finalOutput).toBe('approved:hi');
+    expect(inputGuardrailRun).toHaveBeenCalledTimes(2);
+    expect(resumed.toolInputGuardrailResults).toHaveLength(2);
     expect(executed).toBe(1);
     expect(model.calls.length).toBe(1);
   });

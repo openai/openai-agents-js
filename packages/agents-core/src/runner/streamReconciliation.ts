@@ -1,23 +1,107 @@
+import { randomUUID } from '@openai/agents-core/_shims';
+
 import type { ModelRequest, ModelResponse } from '../model';
 import type {
+  ApplyPatchCallResultItem,
+  ComputerCallResultItem,
+  ComputerUseCallItem,
   FunctionCallItem,
   FunctionCallResultItem,
+  ProgramCallResultItem,
+  ShellCallResultItem,
   StreamEvent,
+  ToolCaller,
 } from '../types/protocol';
 
 type PendingStreamedFunctionCall = Pick<
   FunctionCallItem,
-  'callId' | 'name' | 'namespace'
+  'callId' | 'name' | 'namespace' | 'caller'
 >;
+
+type PendingStreamedToolCall = {
+  callId: string;
+  caller?: ToolCaller;
+};
 
 export type StreamAbortReconciliationState = {
   responseId?: string;
   pendingFunctionCalls: Map<string, PendingStreamedFunctionCall>;
+  pendingShellCalls: Map<string, PendingStreamedToolCall>;
+  pendingApplyPatchCalls: Map<string, PendingStreamedToolCall>;
+  pendingProgramCalls: Map<string, string>;
 };
+
+// 1x1 transparent PNG data URL used when a computer result requires an image
+// but cancellation prevents the SDK from capturing the current screen.
+export const COMPUTER_FALLBACK_SCREENSHOT_DATA_URL =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
+
+export function buildFunctionAbortResult(
+  toolCall: PendingStreamedFunctionCall,
+): FunctionCallResultItem {
+  return {
+    type: 'function_call_result',
+    name: toolCall.name,
+    ...(typeof toolCall.namespace === 'string'
+      ? { namespace: toolCall.namespace }
+      : {}),
+    callId: toolCall.callId,
+    status: 'incomplete',
+    output: { type: 'text', text: 'aborted' },
+    ...(toolCall.caller ? { caller: toolCall.caller } : {}),
+  };
+}
+
+export function buildComputerAbortResult(
+  toolCall: Pick<ComputerUseCallItem, 'callId'>,
+): ComputerCallResultItem {
+  return {
+    type: 'computer_call_result',
+    callId: toolCall.callId,
+    output: {
+      type: 'computer_screenshot',
+      data: COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
+    },
+    providerData: { status: 'incomplete' },
+  };
+}
+
+export function buildShellAbortResult(
+  toolCall: PendingStreamedToolCall,
+): ShellCallResultItem {
+  return {
+    type: 'shell_call_output',
+    callId: toolCall.callId,
+    status: 'incomplete',
+    output: [
+      {
+        stdout: '',
+        stderr: 'aborted',
+        outcome: { type: 'timeout' },
+      },
+    ],
+    ...(toolCall.caller ? { caller: toolCall.caller } : {}),
+  };
+}
+
+export function buildApplyPatchAbortResult(
+  toolCall: PendingStreamedToolCall,
+): ApplyPatchCallResultItem {
+  return {
+    type: 'apply_patch_call_output',
+    callId: toolCall.callId,
+    status: 'failed',
+    output: 'aborted',
+    ...(toolCall.caller ? { caller: toolCall.caller } : {}),
+  };
+}
 
 export function createStreamAbortReconciliationState(): StreamAbortReconciliationState {
   return {
     pendingFunctionCalls: new Map(),
+    pendingShellCalls: new Map(),
+    pendingApplyPatchCalls: new Map(),
+    pendingProgramCalls: new Map(),
   };
 }
 
@@ -27,6 +111,9 @@ export function recordStreamEventForAbortReconciliation(
 ): void {
   if (event.type === 'response_done') {
     state.pendingFunctionCalls.clear();
+    state.pendingShellCalls.clear();
+    state.pendingApplyPatchCalls.clear();
+    state.pendingProgramCalls.clear();
     state.responseId = event.response.id;
     return;
   }
@@ -46,6 +133,17 @@ export function recordStreamEventForAbortReconciliation(
   }
 
   if (
+    rawEvent.type === 'response.output_item.added' &&
+    isRecord(rawEvent.item) &&
+    rawEvent.item.type === 'program_output' &&
+    typeof rawEvent.item.call_id === 'string' &&
+    typeof rawEvent.item.id === 'string'
+  ) {
+    state.pendingProgramCalls.set(rawEvent.item.call_id, rawEvent.item.id);
+    return;
+  }
+
+  if (
     rawEvent.type !== 'response.output_item.done' ||
     !isRecord(rawEvent.item)
   ) {
@@ -53,6 +151,19 @@ export function recordStreamEventForAbortReconciliation(
   }
 
   const item = rawEvent.item;
+  const caller = getToolCaller(item);
+  if (item.type === 'program' && typeof item.call_id === 'string') {
+    if (!state.pendingProgramCalls.has(item.call_id)) {
+      state.pendingProgramCalls.set(item.call_id, generateProgramOutputId());
+    }
+    return;
+  }
+
+  if (item.type === 'program_output' && typeof item.call_id === 'string') {
+    state.pendingProgramCalls.delete(item.call_id);
+    return;
+  }
+
   if (item.type === 'function_call' && typeof item.call_id === 'string') {
     state.pendingFunctionCalls.set(item.call_id, {
       callId: item.call_id,
@@ -60,6 +171,27 @@ export function recordStreamEventForAbortReconciliation(
       ...(typeof item.namespace === 'string'
         ? { namespace: item.namespace }
         : {}),
+      ...(caller ? { caller } : {}),
+    });
+    return;
+  }
+
+  if (
+    item.type === 'shell_call' &&
+    typeof item.call_id === 'string' &&
+    isClientOwnedShellCall(item)
+  ) {
+    state.pendingShellCalls.set(item.call_id, {
+      callId: item.call_id,
+      ...(caller ? { caller } : {}),
+    });
+    return;
+  }
+
+  if (item.type === 'apply_patch_call' && typeof item.call_id === 'string') {
+    state.pendingApplyPatchCalls.set(item.call_id, {
+      callId: item.call_id,
+      ...(caller ? { caller } : {}),
     });
     return;
   }
@@ -69,22 +201,59 @@ export function recordStreamEventForAbortReconciliation(
     typeof item.call_id === 'string'
   ) {
     state.pendingFunctionCalls.delete(item.call_id);
+    return;
+  }
+
+  if (item.type === 'shell_call_output' && typeof item.call_id === 'string') {
+    state.pendingShellCalls.delete(item.call_id);
+    return;
+  }
+
+  if (
+    item.type === 'apply_patch_call_output' &&
+    typeof item.call_id === 'string'
+  ) {
+    state.pendingApplyPatchCalls.delete(item.call_id);
   }
 }
 
 export function buildAbortReconciliationInput(
   state: StreamAbortReconciliationState,
-): FunctionCallResultItem[] {
-  return Array.from(state.pendingFunctionCalls.values(), (toolCall) => ({
-    type: 'function_call_result',
-    name: toolCall.name,
-    ...(typeof toolCall.namespace === 'string'
-      ? { namespace: toolCall.namespace }
-      : {}),
-    callId: toolCall.callId,
-    status: 'incomplete',
-    output: { type: 'text', text: 'aborted' },
-  }));
+): (
+  | FunctionCallResultItem
+  | ShellCallResultItem
+  | ApplyPatchCallResultItem
+  | ProgramCallResultItem
+)[] {
+  const functionOutputs = Array.from(
+    state.pendingFunctionCalls.values(),
+    buildFunctionAbortResult,
+  );
+  const shellOutputs = Array.from(
+    state.pendingShellCalls.values(),
+    buildShellAbortResult,
+  );
+  const applyPatchOutputs = Array.from(
+    state.pendingApplyPatchCalls.values(),
+    buildApplyPatchAbortResult,
+  );
+  const programOutputs = Array.from(
+    state.pendingProgramCalls,
+    ([callId, id]): ProgramCallResultItem => ({
+      type: 'program_output',
+      id,
+      callId,
+      status: 'incomplete',
+      output: 'aborted',
+    }),
+  );
+
+  return [
+    ...functionOutputs,
+    ...shellOutputs,
+    ...applyPatchOutputs,
+    ...programOutputs,
+  ];
 }
 
 export function getAbortReconciliationPreviousResponseId(
@@ -100,7 +269,12 @@ export function getAbortReconciliationPreviousResponseId(
 export function shouldReconcileStreamAbort(
   state: StreamAbortReconciliationState,
 ): boolean {
-  return state.pendingFunctionCalls.size > 0;
+  return (
+    state.pendingFunctionCalls.size > 0 ||
+    state.pendingProgramCalls.size > 0 ||
+    state.pendingShellCalls.size > 0 ||
+    state.pendingApplyPatchCalls.size > 0
+  );
 }
 
 export function markAbortReconciliationComplete(
@@ -108,6 +282,9 @@ export function markAbortReconciliationComplete(
   response: ModelResponse | undefined,
 ): void {
   state.pendingFunctionCalls.clear();
+  state.pendingShellCalls.clear();
+  state.pendingApplyPatchCalls.clear();
+  state.pendingProgramCalls.clear();
   if (response?.responseId) {
     state.responseId = response.responseId;
   }
@@ -115,4 +292,31 @@ export function markAbortReconciliationComplete(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function getToolCaller(item: Record<string, unknown>): ToolCaller | undefined {
+  if (!isRecord(item.caller)) {
+    return undefined;
+  }
+  if (item.caller.type === 'direct') {
+    return { type: 'direct' };
+  }
+  if (
+    item.caller.type === 'program' &&
+    typeof item.caller.caller_id === 'string'
+  ) {
+    return {
+      type: 'program',
+      callerId: item.caller.caller_id,
+    };
+  }
+  return undefined;
+}
+
+function isClientOwnedShellCall(item: Record<string, unknown>): boolean {
+  return !isRecord(item.environment) || item.environment.type === 'local';
+}
+
+function generateProgramOutputId(): string {
+  return `prog_out_${randomUUID().replace(/-/g, '')}`;
 }

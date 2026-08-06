@@ -55,12 +55,26 @@ export const OutputText = SharedBase.extend({
 
 export type OutputText = z.infer<typeof OutputText>;
 
+export const PromptCacheBreakpoint = z.object({
+  /**
+   * The breakpoint mode. Always `explicit`.
+   */
+  mode: z.literal('explicit'),
+});
+
+export type PromptCacheBreakpoint = z.infer<typeof PromptCacheBreakpoint>;
+
 export const InputText = SharedBase.extend({
   type: z.literal('input_text'),
   /**
    * A text input for example a message from a user
    */
   text: z.string(),
+
+  /**
+   * Marks the exact end of a reusable prompt prefix.
+   */
+  promptCacheBreakpoint: PromptCacheBreakpoint.optional(),
 });
 
 export type InputText = z.infer<typeof InputText>;
@@ -97,6 +111,11 @@ export const InputImage = SharedBase.extend({
    * Future models may add new values, therefore this accepts any string.
    */
   detail: z.string().optional(),
+
+  /**
+   * Marks the exact end of a reusable prompt prefix.
+   */
+  promptCacheBreakpoint: PromptCacheBreakpoint.optional(),
 });
 
 export type InputImage = z.infer<typeof InputImage>;
@@ -125,6 +144,11 @@ export const InputFile = SharedBase.extend({
    * Optional filename metadata when uploading file data inline.
    */
   filename: z.string().optional(),
+
+  /**
+   * Marks the exact end of a reusable prompt prefix.
+   */
+  promptCacheBreakpoint: PromptCacheBreakpoint.optional(),
 });
 
 export type InputFile = z.infer<typeof InputFile>;
@@ -153,6 +177,11 @@ export const AudioContent = SharedBase.extend({
    * The transcript of the audio.
    */
   transcript: z.string().nullable().optional(),
+
+  /**
+   * Marks the exact end of a reusable prompt prefix.
+   */
+  promptCacheBreakpoint: PromptCacheBreakpoint.optional(),
 });
 
 export type AudioContent = z.infer<typeof AudioContent>;
@@ -350,6 +379,11 @@ export const AssistantMessageItem = MessageBase.extend({
   role: z.literal('assistant'),
 
   /**
+   * Whether this assistant message is intermediate commentary or a final answer.
+   */
+  phase: z.enum(['commentary', 'final_answer']).optional(),
+
+  /**
    * The status of the message.
    */
   status: z.enum(['in_progress', 'completed', 'incomplete']),
@@ -415,6 +449,34 @@ export type MessageItem = z.infer<typeof MessageItem>;
 // Tool call types
 // ----------------------------
 
+export const ToolCaller = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('direct') }),
+  z.object({
+    type: z.literal('program'),
+    callerId: z.string(),
+  }),
+]);
+
+export type ToolCaller = z.infer<typeof ToolCaller>;
+
+export const ProgramCallItem = ItemBase.extend({
+  type: z.literal('program'),
+  callId: z.string(),
+  code: z.string(),
+  fingerprint: z.string(),
+});
+
+export type ProgramCallItem = z.infer<typeof ProgramCallItem>;
+
+export const ProgramCallResultItem = ItemBase.extend({
+  type: z.literal('program_output'),
+  callId: z.string(),
+  output: z.string(),
+  status: z.enum(['completed', 'incomplete']),
+});
+
+export type ProgramCallResultItem = z.infer<typeof ProgramCallResultItem>;
+
 export const HostedToolCallItem = ItemBase.extend({
   type: z.literal('hosted_tool_call'),
   /**
@@ -439,6 +501,11 @@ export const HostedToolCallItem = ItemBase.extend({
    * The primary output of the tool call. Additional output might be in the `providerData` field.
    */
   output: z.string().optional(),
+
+  /**
+   * The execution context that invoked the hosted tool.
+   */
+  caller: ToolCaller.optional(),
 });
 
 export type HostedToolCallItem = z.infer<typeof HostedToolCallItem>;
@@ -469,6 +536,7 @@ export const FunctionCallItem = ItemBase.extend({
    * The arguments of the function call.
    */
   arguments: z.string(),
+  caller: ToolCaller.optional(),
 });
 
 export type FunctionCallItem = z.infer<typeof FunctionCallItem>;
@@ -556,6 +624,7 @@ export const FunctionCallResultItem = ItemBase.extend({
    * The status of the tool call.
    */
   status: z.enum(['in_progress', 'completed', 'incomplete']),
+  caller: ToolCaller.optional(),
 
   /**
    * The output of the tool call.
@@ -636,6 +705,7 @@ export const ShellCallItem = ItemBase.extend({
   callId: z.string(),
   status: z.enum(['in_progress', 'completed', 'incomplete']).optional(),
   action: ShellAction,
+  caller: ToolCaller.optional(),
 });
 
 export type ShellCallItem = z.infer<typeof ShellCallItem>;
@@ -663,8 +733,10 @@ export type ShellCallOutputContent = z.infer<typeof ShellCallOutputContent>;
 export const ShellCallResultItem = ItemBase.extend({
   type: z.literal('shell_call_output'),
   callId: z.string(),
+  status: z.enum(['in_progress', 'completed', 'incomplete']).optional(),
   maxOutputLength: z.number().optional(),
   output: z.array(ShellCallOutputContent),
+  caller: ToolCaller.optional(),
 });
 
 export type ShellCallResultItem = z.infer<typeof ShellCallResultItem>;
@@ -712,6 +784,7 @@ export const ApplyPatchCallItem = ItemBase.extend({
   callId: z.string(),
   status: z.enum(['in_progress', 'completed']),
   operation: ApplyPatchOperation,
+  caller: ToolCaller.optional(),
 });
 
 export type ApplyPatchCallItem = z.infer<typeof ApplyPatchCallItem>;
@@ -721,11 +794,13 @@ export const ApplyPatchCallResultItem = ItemBase.extend({
   callId: z.string(),
   status: z.enum(['completed', 'failed']),
   output: z.string().optional(),
+  caller: ToolCaller.optional(),
 });
 
 export type ApplyPatchCallResultItem = z.infer<typeof ApplyPatchCallResultItem>;
 
 export const ToolCallItem = z.discriminatedUnion('type', [
+  ProgramCallItem,
   ComputerUseCallItem,
   ShellCallItem,
   ApplyPatchCallItem,
@@ -798,6 +873,8 @@ export const OutputModelItem = z.discriminatedUnion('type', [
   ToolSearchCallItem,
   ToolSearchOutputItem,
   HostedToolCallItem,
+  ProgramCallItem,
+  ProgramCallResultItem,
   FunctionCallItem,
   ComputerUseCallItem,
   ShellCallItem,
@@ -819,6 +896,8 @@ export const ModelItem = z.union([
   ToolSearchCallItem,
   ToolSearchOutputItem,
   HostedToolCallItem,
+  ProgramCallItem,
+  ProgramCallResultItem,
   FunctionCallItem,
   ComputerUseCallItem,
   ShellCallItem,
@@ -880,6 +959,10 @@ export type UsageData = z.infer<typeof UsageData>;
  */
 export const StreamEventTextStream = SharedBase.extend({
   type: z.literal('output_text_delta'),
+  /**
+   * The ID of the output item this delta belongs to, when provided by the model.
+   */
+  itemId: z.string().optional(),
   /**
    * The delta text that was streamed by the modelto the user.
    */

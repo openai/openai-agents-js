@@ -1,9 +1,9 @@
 import { zodResponsesFunction, zodTextFormat } from 'openai/helpers/zod';
 import { UserError } from '../errors';
-import { ToolInputParameters } from '../tool';
+import type { ToolInputParameters } from '../tool';
 import { JsonObjectSchema, JsonSchemaDefinition, TextOutput } from '../types';
 import { isZodObject } from './typeGuards';
-import { AgentOutputType } from '../agent';
+import type { AgentOutputType } from '../agent';
 import {
   zodJsonSchemaCompat,
   hasJsonSchemaObjectShape,

@@ -9,10 +9,13 @@ This guide helps new contributors get started with the OpenAI Agents JS monorepo
 1.  [Policies & Mandatory Rules](#policies--mandatory-rules)
 2.  [Project Structure Guide](#project-structure-guide)
 3.  [Operation Guide](#operation-guide)
+4.  [Code Review Rules](#code-review-rules)
 
 ## Policies & Mandatory Rules
 
 ### Mandatory Skill Usage
+
+Repository skills are stored under `.agents/skills/`. A reference such as `$<skill-name>` in this file is a repository instruction reference, not a request for manual user invocation. When a rule requires a skill, read `.agents/skills/<skill-name>/SKILL.md` completely before taking task actions, follow its instructions, and resolve referenced files relative to that skill directory.
 
 #### `$code-change-verification`
 
@@ -35,13 +38,41 @@ When working on OpenAI API or OpenAI platform integrations in this repo (Respons
 
 #### `$implementation-strategy`
 
-Before changing runtime code, exported APIs, external configuration, persisted schemas, wire protocols, or other user-facing behavior, use `$implementation-strategy` to decide the compatibility boundary and implementation shape. Judge breaking changes against the latest release tag, not unreleased branch-local churn. Interfaces introduced or changed after the latest release tag may be rewritten without compatibility shims unless they already have a released or otherwise supported durable-state consumer, or the user explicitly asks for a migration path.
+Before changing or reviewing runtime code, exported APIs, external configuration, persisted schemas, wire protocols, or other user-facing behavior, use `$implementation-strategy` to decide the compatibility boundary and implementation shape. Before coding, write an implementation scope contract that states the required behavior, compatibility requirements, intentionally unsupported cases and their failure behavior, and an already-supported alternative for those cases or that none exists. Treat this contract as a short, updateable engineering decision record, not as a new public API promise. During review, use the skill before requesting compatibility layers, migrations, new abstractions, or broader refactors.
+
+Repeat the skill before editing each new review-feedback batch; an earlier strategy decision is stale when a comment would widen the supported contract or add another compatibility branch, resolver condition, or test permutation. Judge breaking changes against the latest release tag, not unreleased branch-local churn. Interfaces introduced or changed after the latest release tag may be rewritten without compatibility shims unless they already have a released or otherwise supported durable-state consumer, or the user explicitly asks for a migration path.
+
+#### `$implementation-final-review`
+
+After implementing runtime code, tests, examples, build/test behavior, or behavior-impacting docs and completing focused tests, run `$implementation-final-review` before final `$changeset-validation`, `$code-change-verification`, and `$pr-draft-summary` work and before declaring the task complete. This repository instruction authorizes automatic invocation without a separate user mention. Do not invoke it for planning, investigation, review, or report-only tasks, repo-meta changes, or docs without behavior impact. The skill's clean-review gate does not replace any other mandatory repository skill or verification gate.
 
 #### `$pr-draft-summary`
 
-When a task in this repo finishes with moderate-or-larger code changes, invoke `$pr-draft-summary` in the final handoff to generate the required PR summary block, branch suggestion, title, and draft description. Treat this as the default close-out step after runtime code, tests, examples, build/test configuration, or docs with behavior impact are changed.
+Before sending the final response for a task, inspect the actual task diff. If it includes runtime code, tests, examples, build/test configuration, or docs with behavior impact, invoke `$pr-draft-summary` to generate the required PR summary block, branch suggestion, title, and draft description. This is a mandatory close-out gate regardless of the perceived size of the change; do not classify an eligible runtime, test, example, or build/test configuration change as trivial. Run it after any required `$code-change-verification` and `$changeset-validation` work.
 
-Skip `$pr-draft-summary` only for trivial or conversation-only tasks, repo-meta/doc-only tasks without behavior impact, or when the user explicitly says not to include the PR draft block.
+Skip `$pr-draft-summary` only when no eligible files changed, every change is limited to repo metadata or docs without behavior impact, the task is conversation-only, or the user explicitly says not to include the PR draft block.
+
+### Git Worktree and Branch Safety
+
+Work in the user's current checkout and on the current branch by default. If the Codex task is already running in a selected Git worktree or primary checkout, use that checkout without requesting additional permission, including for commands that operate on its dependency tree. Do not create or switch to another Git worktree, and do not create or switch branches, unless the user explicitly asks for or approves that exact action in the current conversation. A request to implement, investigate, review, test, or verify changes does not by itself authorize changing the active worktree or branch.
+
+If isolation or a different checkout is needed, explain why and ask the user before changing Git state. This requirement also applies when another rule or workflow recommends a linked worktree: stop and request approval instead of choosing or creating one automatically.
+
+### pnpm Safety
+
+Use pnpm in the user's selected checkout without changing worktrees or branches. Do not use `CI=1`, `--force`, or `confirmModulesPurge=false` to bypass an incompatible `node_modules` prompt. Stop and diagnose the pnpm configuration mismatch instead of silently recreating dependencies. Keep machine-specific pnpm store and shell configuration outside the repository.
+
+### Scope Discipline and Complexity Reset
+
+- Implement the narrowest explicitly stated set of behaviors that satisfies the request. Do not interpret every shape accepted by TypeScript structural typing, an overloaded or generic API, or a third-party interface unless those shapes are required by the task or supported behavior shipped in the latest release.
+- Prefer adapting the required case into an existing pipeline over creating a parallel contract, resolver, conversion path, or source of truth. Continue to derive schema, validation, identity, documentation, package exports, and invocation from the existing source-of-truth functions, types, or modules.
+- Every new abstraction, state field, cached classification, compatibility branch, or dispatch mode must map to a stated requirement, released contract, supported durable boundary, or verified runtime risk. Remove it if that mapping cannot be stated concretely.
+- Treat a second related review finding that would add another condition, protocol hop, compatibility case, or test permutation to the same abstraction as a mandatory complexity-reset checkpoint, not another item to patch. Continue the design only when concrete evidence shows that the additional case belongs to the supported contract.
+- When that signal appears, stop extending the current design. Re-read the original requirement, group all findings by root cause, compare the complete diff with the merge base of the intended target branch or with the latest release tag when it is the compatibility baseline, and replace branch-local machinery with a narrower contract. Existing unreleased code and tests are not sunk costs. Perform this reset proactively; do not wait for the user or reviewer to request it.
+- A released-version reproducer proves reachability, not a supported contract. Verify the exact shape against documentation, tests, examples, intentional public typing, explicit maintainer intent, or concrete user reliance before adding compatibility machinery.
+- Prefer an actionable error during construction or validation, before a model/tool request, persisted mutation, or other side effect, and an existing supported alternative (for example an explicit function wrapper, typed adapter, configuration, or lower-level API) over partially emulating a broad interface. Do not add another alternative when an adequate supported one already exists.
+- A growing diff is not itself proof of overengineering, but unexpected cross-package spread, duplicated metadata, combinatorial tests, or repeated special cases requires restarting the design review from the original requirement before more code is added.
+- Before handoff, verify that the patch has one source of truth per concern, tests the required behavior and intentionally unsupported cases, and does not accidentally make every constructible type or runtime combination part of the supported SDK behavior.
 
 ### ExecPlans
 
@@ -71,6 +102,7 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 - `scripts/dev.mts`: Runs concurrent build-watchers and the docs dev server (`pnpm dev`).
 - `scripts/embedMeta.ts`: Generates `src/metadata.ts` for each package before build.
 - `helpers/tests/`: Shared test utilities.
+- `.agents/references/`: Durable SDK maintainer architecture references. Start with [the reference map](.agents/references/README.md) and open only the files relevant to the affected boundary.
 - `README.md`: High-level overview and installation instructions.
 - `CONTRIBUTING.md`: Official contribution guidelines (this guide is complementary).
 - `pnpm-workspace.yaml`: Defines workspace packages.
@@ -81,15 +113,27 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 
 ### Agents Core Runtime Guidelines
 
+- For public exports, convenience-package re-exports, ESM/CJS/types, optional dependencies, import side effects, or Node/browser/workerd shims, read [Public API, package, and runtime boundaries](.agents/references/public-api-package-and-runtime-boundaries.md).
+- For Agent configuration, cloning, dynamic instructions, enabled tools/handoffs, nested agent tools, run context, usage, or public-versus-prepared identity, read [Agent definition and run context](.agents/references/agent-definition-and-run-context.md).
 - `packages/agents-core/src/run.ts` is the runtime entrypoint; keep it small and focused on orchestration.
 - Add new runtime logic under `packages/agents-core/src/runner/`, organized by responsibility, then import into `run.ts`.
 - When `run.ts` grows, refactor helpers into `runner/` modules and leave only wiring and composition in `run.ts`.
 - Keep `packages/agents-core/src/agent.ts` focused on the Agent class and its type definitions; move helper logic into dedicated modules (for example, `agentToolInput.ts`).
-- Keep streaming and non-streaming loops behaviorally aligned; changes to one loop should be mirrored in the other.
-- Input guardrails run only on the first turn; interruption resumes should not increment the turn counter.
-- When `conversationId`/`previousResponseId` is provided, only deltas are sent; `callModelInputFilter` must return an input array and keep session persistence in sync.
-- Adding new tool/output/approval item types requires coordinated updates across model output processing, tool execution, turn resolution, streaming events, run item extraction, and RunState serialization.
-- If serialized RunState shape changes in a released or otherwise supported snapshot format, bump the schema version and update serialization/deserialization. Unreleased post-tag RunState changes on `main` may fold into the same next schema version when no supported snapshot consumer exists yet.
+- For turn accounting, guardrail order, handoffs, interruption, cancellation, hooks, final output, or streaming behavior, read [Runner lifecycle](.agents/references/runner-lifecycle.md). Keep streaming and non-streaming paths behaviorally aligned.
+- For new model output, tool call, approval, or run-item variants, read [Run item and stream lifecycle](.agents/references/run-item-and-stream-lifecycle.md) and update every applicable processing, event, replay, persistence, tracing, serialization, and adapter surface.
+- For function-tool parameters, structured output, strict JSON Schema conversion, Zod v3/v4, or provider schema conversion, read [Schema and Zod boundaries](.agents/references/schema-and-zod-boundaries.md).
+- For `conversationId`, `previousResponseId`, explicit replay, filtering, continuation, compaction strategy, retry, or resume, read [Conversation state ownership](.agents/references/conversation-state-ownership.md).
+- For session callbacks, stored input, history mutation, per-turn writes, rollback, or compaction replacement, read [Session persistence](.agents/references/session-persistence.md).
+- For serialized RunState, approvals, agent/tool reconstruction, traces, conversation IDs, or sandbox state, read [RunState schema and resume](.agents/references/runstate-schema-and-resume.md). Bump a released schema when its durable meaning changes; unreleased post-tag versions may be folded into the same next schema when no supported snapshot consumer exists.
+- For tool names, namespaces, lookup, call IDs, approvals, collisions, deferred tools, MCP names, or trace labels, read [Tool identity and routing](.agents/references/tool-identity-and-routing.md) and use the canonical helpers in `toolIdentity.ts` and `tooling.ts`.
+- For tool planning, approvals, guardrails, concurrency, aborts, timeouts, hooks, failure conversion, nested agent tools, or tool-choice reset, read [Tool execution and approval lifecycle](.agents/references/tool-execution-and-approval-lifecycle.md).
+- For local MCP connections, stdio/SSE/streamable HTTP, requests, cache/filtering, retries, cancellation, or cleanup, read [MCP transport, cache, and shims](.agents/references/mcp-transport-cache-and-shims.md).
+- For model resolution, settings merge, Responses/Chat Completions conversion, provider data, raw events, retries, transport reuse, or Responses WebSocket sessions, read [Model, provider, and conversion boundaries](.agents/references/model-provider-and-conversion-boundaries.md).
+- For trace/span context, processors, export, flush, shutdown, resume, runtime storage, usage, or sensitive data, read [Tracing and runtime context](.agents/references/tracing-and-runtime-context.md).
+- For Realtime agent/session state, response sequencing, tools, guardrails, history, handoffs, listeners, or cleanup, read [Realtime session lifecycle](.agents/references/realtime-session-lifecycle.md).
+- For WebRTC, WebSocket, SIP, Twilio, Cloudflare, connection state, audio formats, transcripts, or Realtime event payloads, read [Realtime transport, audio, and events](.agents/references/realtime-transport-audio-and-events.md).
+- For sandbox preparation, sessions, manifests, mounts, path grants, snapshots, credentials, timeout, resume, process execution, or cleanup, read [Sandbox runtime and provider boundaries](.agents/references/sandbox-runtime-and-provider-boundaries.md).
+- For AI SDK model/UI adapters, provider metadata, usage, reasoning, tool-call translation, aborts, or stream completion, read [Extension adapter boundaries](.agents/references/extension-adapter-boundaries.md).
 
 ### Runtime and Platform Review Checklist
 
@@ -110,8 +154,8 @@ Use this checklist when the touched code is in the relevant area. Add focused re
 
 ### Development Workflow
 
-1.  Sync with `main` (or default branch).
-2.  Create a feature/fix branch with a descriptive name:
+1.  Stay in the user's current checkout and on the current branch unless the user explicitly asks for or approves a Git state change.
+2.  If the user explicitly requests a feature/fix branch, create one with a descriptive name:
     ```bash
     git checkout -b feat/<short-description>
     ```
@@ -120,7 +164,7 @@ Use this checklist when the touched code is in the relevant area. Add focused re
 5.  When `$code-change-verification` applies (see Mandatory Skill Usage), run it to execute the full verification stack with the skill-defined phase barriers before considering the work complete.
 6.  Commit using Conventional Commits.
 7.  Push and open a pull request.
-8.  When reporting code changes as complete (after substantial code work), invoke `$pr-draft-summary` as the final handoff step unless the task falls under the documented skip cases.
+8.  Before reporting eligible changes as complete, inspect the actual task diff and invoke `$pr-draft-summary` as the mandatory final handoff step unless the task falls under the documented skip cases.
 
 ### Testing & Automated Checks
 
@@ -157,7 +201,7 @@ When `$code-change-verification` applies (see Mandatory Skill Usage), invoke it 
 - To run locally only if needed:
   ```bash
   pnpm local-npm:start   # starts Verdaccio on :4873
-  pnpm local-npm:publish # public pacakges to the local repo
+  pnpm local-npm:publish # public packages to the local repo
   pnpm test:integration  # runs integration tests
   ```
 
@@ -187,7 +231,7 @@ See [this README](integration-tests/README.md) for details.
 
 #### Mandatory Local Run Order
 
-When `$code-change-verification` applies (see Mandatory Skill Usage), run the full validation sequence locally via the `$code-change-verification` skill; do not skip any step, and preserve the skill-defined barriers (`pnpm i`, `pnpm build`, then the remaining validation steps).
+When `$code-change-verification` applies (see Mandatory Skill Usage), run the full validation sequence locally via the `$code-change-verification` skill; do not skip any step, and preserve the skill-defined barriers (`pnpm i --frozen-lockfile`, `pnpm build`, then the remaining validation steps).
 
 Before opening a pull request, always run `$changeset-validation` to ensure all changed packages are covered by a changeset and the validation passes; if no packages were touched and a changeset is unnecessary, you can skip creating one.
 
@@ -262,12 +306,21 @@ Before opening a pull request, always run `$changeset-validation` to ensure all 
   pnpm changeset
   ```
 
-### Review Process & What Reviewers Look For
+## Code Review Rules
+
+- Use `$implementation-strategy` to establish the requested outcome and latest released compatibility boundary before judging implementation scope or architecture.
+- Treat added complexity as an actionable finding only when specific machinery is not required by the task, a released contract, supported durable state, or a verified runtime or platform risk. Identify the unnecessary machinery and recommend the smallest safe removal or direct replacement.
+- Do not request speculative abstractions, general-purpose helpers, configuration knobs, dependencies, compatibility layers, feature flags, parallel code paths, or extensibility for hypothetical future consumers.
+- Do not process a sequence of related review comments as independent local fixes when they expose the same missing boundary. Classify them together, decide whether the disputed shapes belong to the supported contract, and prefer one narrowing redesign over accumulating branches.
+- Review the complete diff from the merge base of the intended target branch, or from the latest release tag when it is the compatibility baseline, not only the latest incremental fix. Passing tests do not justify branch-local machinery that no longer matches the original requirement.
+- Keep findings scoped to the patch. Do not block on unrelated cleanup, pre-existing bugs, or optional refactors; report them separately when useful.
+- Require a broader refactor only when concrete evidence shows the focused change would otherwise be incorrect, unsafe, incompatible, or materially harder to maintain.
+
+### Baseline review expectations
 
 - ✅ All automated checks pass (build, tests, lint).
 - ✅ Tests cover new behavior and edge cases.
 - ✅ Code is readable and maintainable.
-- ✅ Public APIs have doc comments.
 - ✅ Examples updated if behavior changes.
 - ✅ Documentation (in `docs/`) updated for user-facing changes.
 - ✅ Commit history is clean and follows Conventional Commits.

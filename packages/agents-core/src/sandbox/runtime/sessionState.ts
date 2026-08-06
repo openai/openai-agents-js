@@ -3,14 +3,29 @@ import type { RunState } from '../../runState';
 import type { Agent, AgentOutputType } from '../../agent';
 import type { SandboxClient } from '../client';
 import {
+  isEnvValueReference,
+  isSerializedEnvValueReference,
+  type Manifest,
+  type ManifestEnvironment,
+} from '../manifest';
+import {
   SANDBOX_SESSION_STATE_VERSION,
+  SUPPORTED_SANDBOX_SESSION_STATE_VERSIONS,
   type SandboxSessionState,
   type SandboxSessionStateEnvelope,
 } from '../session';
 import {
+  assertHostPathGrantsRebound,
+  deserializeHostPathGrantRedactionMetadata,
+  rebindPersistedPathGrants,
+  serializeHostPathGrantRedactionMetadata,
   serializeManifest,
   serializeManifestRecord,
 } from '../sandboxes/shared/manifestPersistence';
+import {
+  markRunStateSessionState,
+  type RunStateSessionTrustedConfig,
+} from '../internal/sessionStateTrust';
 
 export type SerializedSandboxSessionEntry = {
   backendId: string;
@@ -58,15 +73,39 @@ export function toSessionStateEnvelope(
       : {}),
     // Keep provider-owned fields separate from the SDK envelope so version and backend
     // checks can run before deserializing provider-specific state.
-    providerState,
+    providerState: {
+      ...providerStateWithoutSdkEnvelopeFields(providerState, backendId),
+      ...serializeHostPathGrantRedactionMetadata(state),
+    },
   };
+}
+
+function providerStateWithoutSdkEnvelopeFields(
+  providerState: Record<string, unknown>,
+  backendId: string,
+): Record<string, unknown> {
+  const sanitized = { ...providerState };
+  delete sanitized.manifest;
+  if (backendId === 'docker') {
+    delete sanitized.sessionIdentity;
+  }
+  delete sanitized.snapshot;
+  delete sanitized.snapshotFingerprint;
+  delete sanitized.snapshotFingerprintVersion;
+  delete sanitized.workspaceReady;
+  delete sanitized.exposedPorts;
+  return sanitized;
 }
 
 export function assertSessionStateEnvelope(
   client: SandboxClient,
   envelope: SandboxSessionStateEnvelope,
 ): void {
-  if (envelope.version !== SANDBOX_SESSION_STATE_VERSION) {
+  if (
+    !SUPPORTED_SANDBOX_SESSION_STATE_VERSIONS.includes(
+      envelope.version as (typeof SUPPORTED_SANDBOX_SESSION_STATE_VERSIONS)[number],
+    )
+  ) {
     throw new UserError(
       `Sandbox session state version ${envelope.version} is not supported. Please use version ${SANDBOX_SESSION_STATE_VERSION}.`,
     );
@@ -81,6 +120,8 @@ export function assertSessionStateEnvelope(
 export async function deserializeSandboxSessionStateEntry(
   client: SandboxClient,
   serializedEntry: SerializedSandboxSessionEntry | undefined,
+  trustedManifest?: Manifest,
+  trustedConfig: RunStateSessionTrustedConfig = {},
 ): Promise<SandboxSessionState | undefined> {
   if (!serializedEntry) {
     return undefined;
@@ -90,6 +131,7 @@ export async function deserializeSandboxSessionStateEntry(
       'RunState sandbox backend does not match the configured sandbox client.',
     );
   }
+  assertTrustedManifestForDockerRunState(client, trustedManifest);
   if (!client.deserializeSessionState) {
     throw new UserError(
       'Sandbox client must implement deserializeSessionState() to resume RunState sandbox state.',
@@ -97,17 +139,54 @@ export async function deserializeSandboxSessionStateEntry(
   }
   const envelope = serializedEntry.sessionState;
   assertSessionStateEnvelope(client, envelope);
-  return await client.deserializeSessionState(
-    providerStateWithSdkEnvelopeFields(envelope),
+  assertTrustedEnvironmentForPersistedReferences(envelope, trustedManifest);
+  const state = await client.deserializeSessionState(
+    providerStateWithSdkEnvelopeFields(envelope, trustedManifest),
   );
+  if (client.backendId === 'docker') {
+    delete state.sessionIdentity;
+  }
+  const reboundState = rebindPersistedPathGrants(
+    {
+      ...state,
+      ...deserializeHostPathGrantRedactionMetadata(envelope.providerState),
+    },
+    trustedManifest,
+    {
+      replaceWithTrustedManifest:
+        client.backendId === 'docker' && trustedManifest !== undefined,
+    },
+  );
+  assertHostPathGrantsRebound(reboundState);
+  return markRunStateSessionState(reboundState, trustedConfig);
+}
+
+export function assertTrustedManifestForDockerRunState(
+  client: SandboxClient,
+  trustedManifest: Manifest | undefined,
+): void {
+  if (client.backendId === 'docker' && trustedManifest === undefined) {
+    throw new UserError(
+      'Docker RunState resume requires a current trusted manifest for the sandbox agent.',
+    );
+  }
 }
 
 function providerStateWithSdkEnvelopeFields(
   envelope: SandboxSessionStateEnvelope,
+  trustedManifest?: Manifest,
 ): Record<string, unknown> {
   return {
-    ...envelope.providerState,
-    manifest: envelope.manifest,
+    ...providerStateWithoutSdkEnvelopeFields(
+      envelope.providerState,
+      envelope.backendId,
+    ),
+    manifest: trustedManifest
+      ? {
+          ...envelope.manifest,
+          environment: cloneManifestEnvironment(trustedManifest.environment),
+        }
+      : envelope.manifest,
     ...(envelope.snapshot !== undefined ? { snapshot: envelope.snapshot } : {}),
     ...(envelope.snapshotFingerprint !== undefined
       ? { snapshotFingerprint: envelope.snapshotFingerprint }
@@ -122,6 +201,51 @@ function providerStateWithSdkEnvelopeFields(
       ? { exposedPorts: structuredClone(envelope.exposedPorts) }
       : {}),
   };
+}
+
+function assertTrustedEnvironmentForPersistedReferences(
+  envelope: SandboxSessionStateEnvelope,
+  trustedManifest: Manifest | undefined,
+): void {
+  const persistedEnvironment = envelope.manifest.environment;
+  if (
+    !persistedEnvironment ||
+    typeof persistedEnvironment !== 'object' ||
+    Array.isArray(persistedEnvironment)
+  ) {
+    return;
+  }
+
+  const referenceKeys = Object.entries(persistedEnvironment)
+    .filter(([, value]) => isSerializedEnvValueReference(value))
+    .map(([key]) => key);
+  if (referenceKeys.length === 0) {
+    return;
+  }
+  if (!trustedManifest) {
+    throw new UserError(
+      'RunState sandbox session state with environment value references requires a current trusted manifest for the sandbox agent.',
+    );
+  }
+
+  const missingReferenceKeys = referenceKeys.filter(
+    (key) =>
+      !trustedManifest.environment[key] ||
+      !isEnvValueReference(trustedManifest.environment[key]),
+  );
+  if (missingReferenceKeys.length > 0) {
+    throw new UserError(
+      `RunState sandbox session state contains environment value references that are not present in the current trusted manifest: ${missingReferenceKeys.join(', ')}.`,
+    );
+  }
+}
+
+function cloneManifestEnvironment(
+  environment: Record<string, { init(): ManifestEnvironment[string] }>,
+): ManifestEnvironment {
+  return Object.fromEntries(
+    Object.entries(environment).map(([key, value]) => [key, value.init()]),
+  );
 }
 
 export function getSerializedSessionEntryForAgent(

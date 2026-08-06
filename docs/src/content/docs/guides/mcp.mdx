@@ -84,11 +84,14 @@ If you can programmatically determine whether a tool call is safe, you can use t
 | `authorization` | `string` | Optional authorization token sent to the hosted MCP backend. |
 | `headers` | `Record<string, string>` | Optional extra request headers. |
 | `allowedTools` | `string[] \| object` | Allowlist of tool names exposed to the model. Pass `string[]` or `{ toolNames?: string[] }`. |
+| `allowedCallers` | `('direct' \| 'programmatic')[]` | Responses-only non-empty list controlling whether hosted MCP tools can be called directly, through Programmatic Tool Calling, or both. |
 | `deferLoading` | `boolean` | Responses-only deferred loading for hosted MCP tools. Requires `toolSearchTool()` in the same agent. |
 | `requireApproval` | `'never' \| 'always' \| object` | Approval policy for hosted MCP tool calls. Use the object form for per-tool overrides. Defaults to `'never'`. |
 | `onApproval` | Approval callback | Optional callback for programmatic approval/rejection when `requireApproval` requires approval handling. |
 
 Set `deferLoading: true` when you want the model to load a hosted MCP server's tool definitions on demand via tool search instead of exposing them up front. This only works with the OpenAI Responses API, requires `toolSearchTool()` in the same request, and should be used with GPT-5.4 and newer supported model releases. See the [Tools guide](/openai-agents-js/guides/tools#deferred-tool-loading-with-tool-search) for the full deferred-loading setup.
+
+Set `allowedCallers: ['programmatic']` when hosted MCP tools should only be called from model-generated JavaScript, or include both `'direct'` and `'programmatic'` to allow either path. Add `programmaticToolCallingTool()` to the same agent. Existing `requireApproval` and `onApproval` policies still apply when the program invokes an MCP tool. See [Programmatic Tool Calling](/openai-agents-js/guides/tools#programmatic-tool-calling) for the complete setup.
 
 `requireApproval` object form:
 
@@ -151,6 +154,8 @@ Notes:
 - When `errorFunction` is unset, the SDK uses the default tool error formatter.
 - Server-level `errorFunction` values override `Agent.mcpConfig.errorFunction` for that server.
 - `includeServerInToolNames` is opt-in. When enabled, each local MCP tool is exposed to the model with a deterministic server-prefixed name, which helps avoid collisions when multiple MCP servers publish tools with the same name.
+- The SDK removes URL credentials, query parameters, and fragments from URL-derived server names and transport errors before exposing them through logs, traces, and error messages. Set an explicit, unique, non-secret `name` when you need a stable server label.
+- If distinct URL-derived server names become identical after credentials, query parameters, and fragments are removed and they publish the same tool name, configuration fails before the model request. Set explicit, unique, non-secret `name` values for those servers.
 
 ## 2. Streamable HTTP MCP servers
 
@@ -172,6 +177,8 @@ Constructor options:
 | `clientSessionTimeoutSeconds` | `number` | Timeout for MCP client sessions. |
 | `toolFilter` | `MCPToolFilterCallable \| MCPToolFilterStatic` | Filter available tools. |
 | `toolMetaResolver` | `MCPToolMetaResolver` | Inject per-call MCP `_meta` request fields. |
+| `useStructuredContent` | `boolean` | Use JSON-serialized MCP `structuredContent` as the model-visible output when available and the result is not an error. Defaults to `false`. |
+| `customDataExtractor` | `MCPToolCustomDataExtractor` | Attach SDK-only JSON metadata to emitted local MCP tool output items. The callback can read MCP result `_meta`, `structuredContent`, `isError`, and the model-visible tool output. |
 | `errorFunction` | `MCPToolErrorFunction \| null` | Map MCP call failures to model-visible text. |
 | `timeout` | `number` | Per-request timeout (milliseconds). |
 | `logger` | `Logger` | Custom logger. |
@@ -208,6 +215,8 @@ Constructor options:
 | `encodingErrorHandler` | `'strict' \| 'ignore' \| 'replace'` | Encoding error strategy. |
 | `toolFilter` | `MCPToolFilterCallable \| MCPToolFilterStatic` | Filter available tools. |
 | `toolMetaResolver` | `MCPToolMetaResolver` | Inject per-call MCP `_meta` request fields. |
+| `useStructuredContent` | `boolean` | Use JSON-serialized MCP `structuredContent` as the model-visible output when available and the result is not an error. Defaults to `false`. |
+| `customDataExtractor` | `MCPToolCustomDataExtractor` | Attach SDK-only JSON metadata to emitted local MCP tool output items. The callback can read MCP result `_meta`, `structuredContent`, `isError`, and the model-visible tool output. |
 | `errorFunction` | `MCPToolErrorFunction \| null` | Map MCP call failures to model-visible text. |
 | `timeout` | `number` | Per-request timeout (milliseconds). |
 | `logger` | `Logger` | Custom logger. |
@@ -246,6 +255,8 @@ If you want a strict “all or nothing” connection or different timeouts, use 
 | Option | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `failedOnly` | `boolean` | `true` | Retry only failed servers (`true`) or reconnect all servers (`false`). |
+
+Before reconnecting, `MCPServers` closes the selected servers. It reconnects only servers that closed successfully; cleanup failures remain available through `failed` and `errors`.
 
 ### Async disposal (optional)
 

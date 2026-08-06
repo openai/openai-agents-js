@@ -6,15 +6,21 @@ import {
   getAllMcpTools,
   withTrace,
 } from '@openai/agents';
+import { createRequire } from 'node:module';
 import * as path from 'node:path';
 
 async function main() {
+  const require = createRequire(import.meta.url);
   const samplesDir = path.join(__dirname, 'sample_files');
 
   // Create multiple MCP servers to demonstrate getAllMcpTools
   const filesystemServer = new MCPServerStdio({
     name: 'Filesystem Server',
-    fullCommand: `pnpm exec mcp-server-filesystem ${samplesDir}`,
+    command: process.execPath,
+    args: [
+      require.resolve('@modelcontextprotocol/server-filesystem/dist/index.js'),
+      samplesDir,
+    ],
   });
 
   // Note: This example shows how to use multiple servers

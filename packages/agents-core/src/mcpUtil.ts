@@ -2,6 +2,7 @@ import type { Agent } from './agent';
 import type { RunContext } from './runContext';
 import type { MCPTool } from './mcp';
 import type { UnknownContext } from './types';
+import type { ToolOutputCustomDataExtractor } from './utils/customData';
 
 /** Context information available to tool filter functions. */
 export interface MCPToolFilterContext<TContext = UnknownContext> {
@@ -33,6 +34,32 @@ export type MCPToolMetaResolver<TContext = UnknownContext> = (
   | Record<string, unknown>
   | null
   | undefined;
+
+/** Context information available to MCP tool custom data extractors. */
+export interface MCPToolCustomDataContext<TContext = UnknownContext> {
+  /** The current run context. */
+  runContext: RunContext<TContext>;
+  /** Name of the MCP server. */
+  serverName: string;
+  /** Original name of the tool on the MCP server. */
+  toolName: string;
+  /** Public function-tool name exposed through the Agents SDK. */
+  toolDisplayName: string;
+  /** Parsed tool arguments. */
+  arguments: Record<string, unknown> | null;
+  /** MCP tool result `_meta`, if present. */
+  resultMeta?: Record<string, unknown>;
+  /** MCP tool result `structuredContent`, if present. */
+  structuredContent?: Record<string, unknown>;
+  /** MCP tool result `isError`, if present. */
+  isError?: boolean;
+  /** The model-visible output produced from the MCP tool result. */
+  toolOutput: unknown;
+}
+
+/** A function that produces SDK-only custom data for MCP tool output items. */
+export type MCPToolCustomDataExtractor<TContext = UnknownContext> =
+  ToolOutputCustomDataExtractor<MCPToolCustomDataContext<TContext>>;
 
 /** A function that determines whether a tool should be available. */
 export type MCPToolFilterCallable<TContext = UnknownContext> = (

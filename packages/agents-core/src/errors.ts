@@ -101,6 +101,41 @@ export class InvalidToolInputError extends ModelBehaviorError {
 export class UserError extends AgentsError {}
 
 /**
+ * Context from a function tool output that failed runtime validation.
+ */
+export type ToolOutputErrorContext = {
+  /** The run context at the time of the error. */
+  runContext?: RunContext<any>;
+  /** The invalid value returned by the tool or one of its fallback paths. */
+  output?: unknown;
+  /** The details of the tool call made by the model. */
+  details?: ToolInvocationErrorContext['details'];
+};
+
+/**
+ * Error thrown when a function tool returns a value that does not match its
+ * runtime output schema.
+ */
+export class InvalidToolOutputError extends UserError {
+  /** The original error thrown during validation, if any. */
+  originalError?: unknown;
+
+  /** Context from the tool output that failed validation. */
+  toolOutput?: ToolOutputErrorContext;
+
+  constructor(
+    message: string,
+    state?: RunState<any, Agent<any, any>>,
+    originalError?: unknown,
+    toolOutput?: ToolOutputErrorContext,
+  ) {
+    super(message, state);
+    this.originalError = originalError;
+    this.toolOutput = toolOutput;
+  }
+}
+
+/**
  * Error thrown when a guardrail execution fails.
  */
 export class GuardrailExecutionError extends AgentsError {
@@ -118,6 +153,9 @@ export class GuardrailExecutionError extends AgentsError {
 /**
  * Error thrown when a tool call fails.
  */
+const toolCallErrors = new WeakSet<ToolCallError>();
+const toolTimeoutErrors = new WeakSet<ToolTimeoutError>();
+
 export class ToolCallError extends AgentsError {
   error: Error;
   constructor(
@@ -127,6 +165,7 @@ export class ToolCallError extends AgentsError {
   ) {
     super(message, state);
     this.error = error;
+    toolCallErrors.add(this);
   }
 }
 
@@ -148,6 +187,38 @@ export class ToolTimeoutError extends AgentsError {
     super(`Tool '${toolName}' timed out after ${timeoutMs}ms.`, state);
     this.toolName = toolName;
     this.timeoutMs = timeoutMs;
+    toolTimeoutErrors.add(this);
+  }
+}
+
+/** @internal */
+export function isToolTimeoutError(error: unknown): error is ToolTimeoutError {
+  return toolTimeoutErrors.has(error as ToolTimeoutError);
+}
+
+/** @internal */
+export function clearToolErrorState(
+  error: unknown,
+  state: RunState<any, Agent<any, any>>,
+): void {
+  const visited = new WeakSet<object>();
+  let current = error;
+  while (toolCallErrors.has(current as ToolCallError)) {
+    const toolCallError = current as ToolCallError;
+    if (visited.has(toolCallError)) {
+      return;
+    }
+    visited.add(toolCallError);
+    if (toolCallError.state === state) {
+      toolCallError.state = undefined;
+    }
+    current = toolCallError.error;
+  }
+  if (toolTimeoutErrors.has(current as ToolTimeoutError)) {
+    const timeoutError = current as ToolTimeoutError;
+    if (timeoutError.state === state) {
+      timeoutError.state = undefined;
+    }
   }
 }
 

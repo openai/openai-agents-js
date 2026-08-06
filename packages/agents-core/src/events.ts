@@ -42,6 +42,7 @@ export type RunItemStreamEventName =
   | 'tool_called'
   | 'tool_output'
   | 'reasoning_item_created'
+  | 'compaction_item_created'
   | 'tool_approval_requested';
 
 /**
@@ -77,6 +78,4 @@ export class RunAgentUpdatedStreamEvent {
  * A streaming event from an agent run.
  */
 export type RunStreamEvent =
-  | RunRawModelStreamEvent
-  | RunItemStreamEvent
-  | RunAgentUpdatedStreamEvent;
+  RunRawModelStreamEvent | RunItemStreamEvent | RunAgentUpdatedStreamEvent;

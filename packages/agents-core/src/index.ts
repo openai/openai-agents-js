@@ -13,7 +13,13 @@ export {
   ToolUseBehavior,
   ToolUseBehaviorFlags,
 } from './agent';
-export type { CompletedAgentToolInvocationRunResult } from './agent';
+export type {
+  AgentTool,
+  AgentToolOptions,
+  AgentToolOptionsWithDefault,
+  AgentToolOptionsWithParameters,
+  CompletedAgentToolInvocationRunResult,
+} from './agent';
 export { Computer } from './computer';
 export { ShellAction, ShellResult, ShellOutputResult, Shell } from './shell';
 export {
@@ -26,6 +32,7 @@ export {
   AgentsError,
   GuardrailExecutionError,
   InputGuardrailTripwireTriggered,
+  InvalidToolOutputError,
   MaxTurnsExceededError,
   ModelBehaviorError,
   ModelRefusalError,
@@ -37,6 +44,7 @@ export {
   UserError,
   SystemError,
 } from './errors';
+export type { ToolOutputErrorContext } from './errors';
 export {
   RunAgentUpdatedStreamEvent,
   RunRawModelStreamEvent,
@@ -80,6 +88,7 @@ export {
   getHandoff,
   getTransferMessage,
   Handoff,
+  HandoffCloneOptions,
   handoff,
   HandoffInputData,
   HandoffEnabledFunction,
@@ -87,6 +96,7 @@ export {
 export { assistant, system, user } from './helpers/message';
 export {
   extractAllTextOutput,
+  RunCompactionItem,
   RunHandoffCallItem,
   RunHandoffOutputItem,
   RunItem,
@@ -99,13 +109,18 @@ export {
   RunToolSearchOutputItem,
 } from './items';
 export { AgentHooks } from './lifecycle';
+export type { AgentHookEvents, RunHookEvents } from './lifecycle';
 export { getLogger } from './logger';
+export { setSensitiveDataLoggingEnabled } from './config';
 export { applyDiff } from './utils/applyDiff';
 export {
   getAllMcpTools,
   invalidateServerToolsCache,
   mcpToFunctionTool,
+  MCPCallToolOptions,
   MCPBlobResourceContent,
+  CallToolResult,
+  CallToolResultContent,
   MCPListResourcesParams,
   MCPListResourcesResult,
   MCPListResourceTemplatesResult,
@@ -133,6 +148,8 @@ export {
   MCPToolFilterCallable,
   MCPToolFilterContext,
   MCPToolFilterStatic,
+  MCPToolCustomDataContext,
+  MCPToolCustomDataExtractor,
   MCPToolMetaContext,
   MCPToolMetaResolver,
   createMCPToolStaticFilter,
@@ -182,6 +199,9 @@ export type {
   ToolErrorFormatter,
   ToolErrorFormatterArgs,
   ToolExecutionConfig,
+  ToolNameCollisionPolicy,
+  ToolNotFoundBehavior,
+  ToolErrorKind,
   ReasoningItemIdPolicy,
   RunErrorData,
   RunErrorHandler,
@@ -218,6 +238,8 @@ export {
   ToolExecuteArgument,
   ToolEnabledFunction,
   ToolOptionsWithGuardrails,
+  ToolAllowedCaller,
+  ToolAllowedCallers,
 } from './tool';
 export type {
   ClientToolSearchExecutor,
@@ -241,8 +263,16 @@ export type {
   ShellToolContainerNetworkPolicyDisabled,
   ShellToolContainerNetworkPolicyDomainSecret,
   ToolInputParameters,
+  ToolOutputSchema,
   ToolOptions,
   ToolNamespaceOptions,
+  ToolOutputCustomData,
+  FunctionToolCustomDataContext,
+  FunctionToolCustomDataExtractor,
+  ComputerToolCustomDataContext,
+  ComputerToolCustomDataExtractor,
+  ApplyPatchToolCustomDataContext,
+  ApplyPatchToolCustomDataExtractor,
 } from './tool';
 export type {
   ToolOutputText,
@@ -269,6 +299,9 @@ export type {
   ShellCallResultItem,
   ApplyPatchCallItem,
   ApplyPatchCallResultItem,
+  ProgramCallItem,
+  ProgramCallResultItem,
+  ToolCaller,
   FunctionCallItem,
   FunctionCallResultItem,
   JsonSchemaDefinition,
@@ -291,19 +324,28 @@ export type {
   StreamEventGenericItem,
 } from './types';
 export { RequestUsage, Usage } from './usage';
+export type { RequestUsageInput, UsageInput } from './usage';
 export type {
   Session,
+  RunContextAwareSession,
   SessionInputCallback,
   SessionHistoryMutation,
   SessionHistoryRewriteArgs,
   SessionHistoryRewriteAwareSession,
+  SessionHistoryAppendItemsTransaction,
+  SessionHistoryReplaceSuffixTransaction,
+  SessionHistoryTransaction,
+  SessionHistoryTransactionArgs,
+  SessionHistoryTransactionAwareSession,
   OpenAIResponsesCompactionArgs,
   OpenAIResponsesCompactionAwareSession,
   OpenAIResponsesCompactionResult,
 } from './memory/session';
 export {
   isOpenAIResponsesCompactionAwareSession,
+  isRunContextAwareSession,
   isSessionHistoryRewriteAwareSession,
+  isSessionHistoryTransactionAwareSession,
 } from './memory/session';
 export { applySessionHistoryMutations } from './memory/historyMutations';
 export { MemorySession } from './memory/memorySession';

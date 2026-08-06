@@ -1,4 +1,5 @@
 import type { AgentInputItem } from '../types';
+import type { RunContext } from '../runContext';
 import type { RequestUsage } from '../usage';
 
 /**
@@ -47,6 +48,17 @@ export interface Session {
   prepareHistoryItemForModelInput?(item: AgentInputItem): AgentInputItem;
 
   /**
+   * Optionally normalize stored and expected history before persistence reconciliation compares
+   * them.
+   *
+   * Session implementations can use this to remove backend-assigned metadata while preserving
+   * their public `getItems()` shape.
+   */
+  prepareHistoryItemsForPersistenceComparison?(
+    items: AgentInputItem[],
+  ): AgentInputItem[];
+
+  /**
    * Optionally preserve reasoning item IDs when persisting generated output.
    *
    * Some remote session stores require provider-assigned reasoning identities to accept stored
@@ -62,6 +74,16 @@ export interface Session {
   addItems(items: AgentInputItem[]): Promise<void>;
 
   /**
+   * Optionally replace the logical session history with a compaction marker and its retained
+   * suffix without resetting the session identity.
+   *
+   * Implementations may append the replacement when their backend treats the leading compaction
+   * item as the authoritative replay boundary. If this method is absent, the runner falls back to
+   * clearing and rebuilding the session with rollback protection.
+   */
+  replaceHistoryWithCompaction?(items: AgentInputItem[]): Promise<void>;
+
+  /**
    * Remove and return the most recent item from the conversation history if it
    * exists.
    */
@@ -73,8 +95,79 @@ export interface Session {
   clearSession(): Promise<void>;
 }
 
+/**
+ * Optional session capability for receiving the active run context.
+ *
+ * Sessions opt in explicitly so existing implementations keep their legacy method call shapes.
+ * The runner passes the same {@link RunContext} instance to every history operation in a run.
+ */
+export interface RunContextAwareSession<TContext = unknown> extends Session {
+  readonly acceptsRunContext: true;
+
+  getItems(
+    limit?: number,
+    runContext?: RunContext<TContext>,
+  ): Promise<AgentInputItem[]>;
+
+  addItems(
+    items: AgentInputItem[],
+    runContext?: RunContext<TContext>,
+  ): Promise<void>;
+
+  replaceHistoryWithCompaction?(
+    items: AgentInputItem[],
+    runContext?: RunContext<TContext>,
+  ): Promise<void>;
+
+  popItem(
+    runContext?: RunContext<TContext>,
+  ): Promise<AgentInputItem | undefined>;
+
+  clearSession(runContext?: RunContext<TContext>): Promise<void>;
+}
+
 export interface SessionHistoryRewriteAwareSession extends Session {
   applyHistoryMutations(args: SessionHistoryRewriteArgs): Promise<void> | void;
+}
+
+export type SessionHistoryAppendItemsTransaction = {
+  type: 'append_items';
+  items: AgentInputItem[];
+};
+
+export type SessionHistoryReplaceSuffixTransaction = {
+  type: 'replace_suffix';
+  expectedSuffix: AgentInputItem[];
+  replacement: AgentInputItem[];
+};
+
+export type SessionHistoryTransaction =
+  SessionHistoryAppendItemsTransaction | SessionHistoryReplaceSuffixTransaction;
+
+export type SessionHistoryTransactionArgs = {
+  /**
+   * A non-empty identifier that remains stable when this transaction is retried.
+   */
+  operationId: string;
+  transaction: SessionHistoryTransaction;
+};
+
+/**
+ * Optional session capability for atomic, idempotent history changes.
+ *
+ * Implementations must persist the operation identifier and history change atomically. Repeating
+ * an operation identifier with the same transaction must succeed without applying the transaction
+ * again. Reusing an operation identifier with a different transaction, or attempting to replace a
+ * suffix that does not match, must fail without changing history.
+ *
+ * Implementations may reject item metadata that cannot be snapshotted and compared deterministically,
+ * but must do so before changing history or recording the operation identifier.
+ */
+export interface SessionHistoryTransactionAwareSession extends Session {
+  applyHistoryTransaction(
+    args: SessionHistoryTransactionArgs,
+    runContext?: RunContext<any>,
+  ): Promise<void> | void;
 }
 
 /**
@@ -121,6 +214,7 @@ export interface OpenAIResponsesCompactionAwareSession extends Session {
    */
   runCompaction(
     args?: OpenAIResponsesCompactionArgs,
+    runContext?: RunContext<any>,
   ):
     | Promise<OpenAIResponsesCompactionResult | null>
     | OpenAIResponsesCompactionResult
@@ -137,6 +231,16 @@ export function isOpenAIResponsesCompactionAwareSession(
   );
 }
 
+export function isRunContextAwareSession(
+  session: Session | undefined,
+): session is RunContextAwareSession<unknown> {
+  return (
+    !!session &&
+    (session as Partial<RunContextAwareSession<unknown>>).acceptsRunContext ===
+      true
+  );
+}
+
 export function isSessionHistoryRewriteAwareSession(
   session: Session | undefined,
 ): session is SessionHistoryRewriteAwareSession {
@@ -144,5 +248,15 @@ export function isSessionHistoryRewriteAwareSession(
     !!session &&
     typeof (session as SessionHistoryRewriteAwareSession)
       .applyHistoryMutations === 'function'
+  );
+}
+
+export function isSessionHistoryTransactionAwareSession(
+  session: Session | undefined,
+): session is SessionHistoryTransactionAwareSession {
+  return (
+    !!session &&
+    typeof (session as SessionHistoryTransactionAwareSession)
+      .applyHistoryTransaction === 'function'
   );
 }

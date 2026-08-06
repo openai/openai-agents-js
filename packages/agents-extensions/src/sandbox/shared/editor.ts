@@ -5,6 +5,7 @@ import {
   type ApplyPatchResult,
   type Editor,
 } from '@openai/agents-core';
+import { isSandboxPathNotFoundError } from '@openai/agents-core/sandbox/internal';
 import { posixDirname } from './paths';
 import type { RemoteEditorIo } from './types';
 
@@ -79,8 +80,11 @@ export class RemoteSandboxEditor implements Editor {
     try {
       await this.io.readText(path);
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      if (isSandboxPathNotFoundError(error)) {
+        return false;
+      }
+      throw error;
     }
   }
 }

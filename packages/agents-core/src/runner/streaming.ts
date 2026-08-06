@@ -1,6 +1,7 @@
 import logger from '../logger';
 import { RunItemStreamEvent, RunItemStreamEventName } from '../events';
 import {
+  RunCompactionItem,
   RunHandoffCallItem,
   RunHandoffOutputItem,
   RunItem,
@@ -14,24 +15,7 @@ import {
 } from '../items';
 import { StreamedRunResult } from '../result';
 
-export const isAbortError = (error: unknown): boolean => {
-  if (!error) {
-    return false;
-  }
-  if (error instanceof Error && error.name === 'AbortError') {
-    return true;
-  }
-  const DomExceptionCtor =
-    typeof DOMException !== 'undefined' ? DOMException : undefined;
-  if (
-    DomExceptionCtor &&
-    error instanceof DomExceptionCtor &&
-    error.name === 'AbortError'
-  ) {
-    return true;
-  }
-  return false;
-};
+export { isAbortError } from '../utils/abortSignals';
 
 function getRunItemStreamEventName(
   item: RunItem,
@@ -62,6 +46,9 @@ function getRunItemStreamEventName(
   if (item instanceof RunReasoningItem) {
     return 'reasoning_item_created';
   }
+  if (item instanceof RunCompactionItem) {
+    return 'compaction_item_created';
+  }
   if (item instanceof RunToolApprovalItem) {
     return 'tool_approval_requested';
   }
@@ -74,7 +61,11 @@ function enqueueRunItemStreamEvent(
 ): void {
   const itemName = getRunItemStreamEventName(item);
   if (!itemName) {
-    logger.warn('Unknown item type: ', item);
+    if (logger.dontLogModelData || logger.dontLogToolData) {
+      logger.warn('Unknown item type. Item data is redacted.');
+    } else {
+      logger.warn('Unknown item type: ', item);
+    }
     return;
   }
   result._addItem(new RunItemStreamEvent(itemName, item));

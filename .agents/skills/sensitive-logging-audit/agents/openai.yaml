@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sensitive Logging Audit"
+  short_description: "Audit model/tool payload logging without ID false positives"
+  default_prompt: "Use $sensitive-logging-audit to inventory runtime logs, prove model or tool payload exposure before changing code, preserve operational metadata, and fix confirmed leaks."

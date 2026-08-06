@@ -26,6 +26,7 @@ import {
 import {
   appendPtyOutput,
   assertCoreSnapshotUnsupported,
+  assertRemoteSandboxSessionStateCanResume,
   assertTarWorkspacePersistence,
   createPtyProcessEntry,
   imageOutputFromBytes,
@@ -36,7 +37,7 @@ import {
   closeRemoteSessionOnManifestError,
   cloneManifestWithRoot,
   createRunAsRemoteEditor,
-  deserializeRemoteSandboxSessionStateValues,
+  rehydrateRemoteSandboxSessionStateValues,
   elapsedSeconds,
   formatExecResponse,
   formatPtyExecUpdate,
@@ -45,6 +46,7 @@ import {
   materializeEnvironment,
   manifestMaterializationOptionsWithRunAs,
   persistRemoteWorkspaceTar,
+  probeRemoteSandboxPathExists,
   assertConfiguredExposedPort,
   getCachedExposedPortEndpoint,
   parseExposedPortEndpoint,
@@ -436,18 +438,32 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   async pathExists(path: string, runAs?: string): Promise<boolean> {
     const absolutePath = await this.resolveRemotePath(path);
     if (!runAs) {
-      const result = await this.sandbox.process.executeCommand(
-        `test -e ${shellQuote(absolutePath)}`,
-        this.state.manifest.root,
-        this.state.environment,
-        5,
-      );
-      return result.exitCode === 0;
+      return await probeRemoteSandboxPathExists({
+        providerName: 'DaytonaSandboxClient',
+        providerId: 'daytona',
+        path: absolutePath,
+        runCommand: async (command) => {
+          const result = await this.sandbox.process.executeCommand(
+            command,
+            this.state.manifest.root,
+            this.state.environment,
+            5,
+          );
+          return {
+            status: result.exitCode,
+            stderr: result.exitCode === 0 ? '' : result.result,
+          };
+        },
+      });
     }
     return await runAsRemotePathExists(
       absolutePath,
       runAs,
       this.runAsCommandRunner.bind(this),
+      {
+        providerName: 'DaytonaSandboxClient',
+        providerId: 'daytona',
+      },
     );
   }
 
@@ -1139,7 +1155,7 @@ export class DaytonaSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<DaytonaSandboxSessionState> {
-    const baseState = deserializeRemoteSandboxSessionStateValues(
+    const baseState = await rehydrateRemoteSandboxSessionStateValues(
       state,
       this.options.env,
     );
@@ -1169,6 +1185,7 @@ export class DaytonaSandboxClient implements SandboxClient<
   async resume(
     state: DaytonaSandboxSessionState,
   ): Promise<DaytonaSandboxSession> {
+    assertRemoteSandboxSessionStateCanResume(state);
     const client = await createDaytonaClient({
       ...this.options,
       apiKey: state.apiKey ?? this.options.apiKey,

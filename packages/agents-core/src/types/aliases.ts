@@ -16,6 +16,8 @@ import {
   ReasoningItem,
   CompactionItem,
   UnknownItem,
+  ProgramCallItem,
+  ProgramCallResultItem,
 } from './protocol';
 
 /**
@@ -38,6 +40,8 @@ export type AgentOutputItem =
   | ToolSearchCallItem
   | ToolSearchOutputItem
   | HostedToolCallItem
+  | ProgramCallItem
+  | ProgramCallResultItem
   | FunctionCallItem
   | ComputerUseCallItem
   | ShellCallItem
@@ -60,6 +64,8 @@ export type AgentInputItem =
   | ToolSearchCallItem
   | ToolSearchOutputItem
   | HostedToolCallItem
+  | ProgramCallItem
+  | ProgramCallResultItem
   | FunctionCallItem
   | ComputerUseCallItem
   | ShellCallItem

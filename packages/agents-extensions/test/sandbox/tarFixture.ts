@@ -1,8 +1,9 @@
 export type TarFixtureEntry = {
   name: string;
-  type?: '0' | '1' | '2' | '5';
+  type?: '0' | '1' | '2' | '3' | '5' | 'g' | 'L' | 'x';
   content?: string | Uint8Array;
   linkName?: string;
+  mode?: number;
 };
 
 const BLOCK_SIZE = 512;
@@ -22,10 +23,23 @@ export function makeTarArchive(entries: TarFixtureEntry[]): Uint8Array {
   return concatBytes(chunks);
 }
 
+export function makePaxRecord(key: string, value: string): string {
+  const encoder = new TextEncoder();
+  let length = encoder.encode(`${key}=${value}\n`).byteLength + 2;
+  while (true) {
+    const record = `${length} ${key}=${value}\n`;
+    const byteLength = encoder.encode(record).byteLength;
+    if (byteLength === length) {
+      return record;
+    }
+    length = byteLength;
+  }
+}
+
 function makeTarHeader(entry: TarFixtureEntry, size: number): Uint8Array {
   const header = new Uint8Array(BLOCK_SIZE);
   writeField(header, 0, 100, entry.name);
-  writeField(header, 100, 8, '0000644');
+  writeField(header, 100, 8, toOctal(entry.mode ?? 0o644, 7));
   writeField(header, 108, 8, '0000000');
   writeField(header, 116, 8, '0000000');
   writeField(header, 124, 12, toOctal(size, 11));

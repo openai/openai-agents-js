@@ -5,9 +5,10 @@ import { Agent, run, tool, RunState, RunResult } from '@openai/agents';
 
 const getWeatherTool = tool({
   name: 'get_weather',
-  description: 'Get the weather for a given city',
+  description:
+    'Get weather conditions for one city. The result does not include temperature.',
   parameters: z.object({
-    city: z.string(),
+    city: z.string().describe('City whose weather conditions to retrieve.'),
   }),
   execute: async ({ city }) => {
     return `The weather in ${city} is sunny`;
@@ -17,16 +18,18 @@ const getWeatherTool = tool({
 // A specialist sub-agent that we will expose as a tool.
 const weatherAgent = new Agent({
   name: 'Weather agent',
-  instructions: 'You provide concise weather information based on the input.',
+  instructions:
+    'Use the available tool to report weather conditions for every requested city. Report conditions only, without temperatures.',
   handoffDescription: 'Handles weather-related queries',
   tools: [getWeatherTool],
 });
 
 const getTemperatureTool = tool({
   name: 'get_temperature',
-  description: 'Get the temperature for a given city',
+  description:
+    'Get the current temperature for one city. Call separately for each requested city.',
   parameters: z.object({
-    city: z.string(),
+    city: z.string().describe('City whose current temperature to retrieve.'),
   }),
   needsApproval: async (_ctx, { city }) => city.includes('Oakland'),
   execute: async ({ city }) => {
@@ -38,13 +41,13 @@ const getTemperatureTool = tool({
 const agent = new Agent({
   name: 'Basic test agent',
   instructions:
-    'You are a basic agent. For weather questions, use the weather agent tool with an appropriate input string and then answer.',
+    'Use the available tools to answer weather questions. Retrieve every requested kind of information for every requested city before answering.',
   tools: [
     getTemperatureTool,
     weatherAgent.asTool({
       toolName: 'ask_weather_agent',
       toolDescription:
-        'Ask the weather agent about a location. Pass a short input string.',
+        'Get weather conditions for one or more locations. This tool does not return temperatures.',
       // Demonstrate approvals at the agent-as-tool level.
       // Require approval when the input mentions San Francisco.
       needsApproval: async (_ctx, { input }) => input.includes('San Francisco'),
@@ -73,7 +76,7 @@ async function confirm(question: string) {
 async function main() {
   let result: RunResult<unknown, Agent<unknown, any>> = await run(
     agent,
-    'What is the weather and temperature in San Francisco and Oakland? Use available tools as needed.',
+    'What is the weather and temperature in San Francisco and Oakland?',
   );
   let hasInterruptions = result.interruptions?.length > 0;
   while (hasInterruptions) {

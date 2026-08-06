@@ -8,7 +8,7 @@
     "@openai/agents-extensions": "workspace:*",
     "@openai/codex-sdk": "^0.86.0",
     "chalk": "^5.6.2",
-    "openai": "^6.35.0",
+    "openai": "^7.2.0",
     "playwright": "^1.55.1",
     "zod": "^4.0.0"
   },
@@ -24,6 +24,7 @@
     "start:web-search-filters": "tsx web-search-filters.ts",
     "start:code-interpreter": "tsx code-interpreter.ts",
     "start:image-generation": "tsx image-generation.ts",
+    "start:programmatic-tool-calling": "tsx programmatic-tool-calling.ts",
     "start:shell": "tsx local-shell.ts",
     "start:local-shell": "tsx local-shell.ts",
     "start:container-shell": "tsx container-shell-skill-ref.ts",

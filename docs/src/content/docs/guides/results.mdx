@@ -90,6 +90,8 @@ In practice:
 
 Choose `newItems` over `output` whenever you need to know which agent produced an item or whether it marks a tool, tool-search, handoff, or approval boundary. When you use `toolSearchTool()`, these tool-search items are the easiest way to inspect which deferred tools or namespaces were loaded before the normal tool call happened.
 
+If a local tool or MCP server defines `customDataExtractor`, the corresponding `RunToolCallOutputItem.customData` contains the returned SDK-only metadata. This data is useful for application UI state such as renderer hints or internal IDs. It survives `RunState` serialization, but it is excluded from `history` and is not sent back to the model.
+
 ## Continue or resume the conversation
 
 ### Active agent
@@ -155,6 +157,8 @@ The `runContext` property is the supported public view of the run context on the
 The `inputGuardrailResults` and `outputGuardrailResults` properties contain agent-level guardrail results. Tool guardrail results are exposed separately via `toolInputGuardrailResults` and `toolOutputGuardrailResults`.
 
 Use these arrays when you want to log guardrail decisions, inspect extra metadata returned by guardrail functions, or debug why a run was blocked.
+
+If one guardrail fails to execute, results from sibling guardrails that completed successfully remain in the run state. For streamed runs, inspect the result arrays after `completed` rejects; for non-streamed runs, the `GuardrailExecutionError` carries the same settled `state`.
 
 ### Usage
 

@@ -3,6 +3,7 @@ import {
   ModelSettingsToolChoice,
   Prompt,
 } from '@openai/agents-core/types';
+import type { ProviderData } from '@openai/agents-core/types';
 
 export type RealtimeClientMessage = {
   type: string;
@@ -187,8 +188,8 @@ function isDefined(
     | keyof RealtimeSessionConfigDeprecated,
   object: Partial<RealtimeSessionConfig>,
 ) {
-  // @ts-expect-error fudging with types here for the index types
-  return key in object && typeof object[key] !== 'undefined';
+  const config = object as Record<PropertyKey, unknown>;
+  return key in config && typeof config[key] !== 'undefined';
 }
 
 function isDeprecatedConfig(
@@ -312,12 +313,14 @@ export type HostedMCPApprovalFilter = HostedToolFilter & {
   read_only?: boolean;
 };
 
-// TODO unify this with the core types
-export type HostedMCPToolDefinition = {
-  type: 'mcp';
-  server_label: string;
+type CoreHostedMCPToolDefinition = ProviderData.HostedMCPTool<unknown>;
+type RealtimeHostedMCPSharedFields = Pick<
+  CoreHostedMCPToolDefinition,
+  'type' | 'server_label' | 'headers'
+>;
+
+export type HostedMCPToolDefinition = RealtimeHostedMCPSharedFields & {
   server_url?: string;
-  headers?: Record<string, string>;
   allowed_tools?: string[] | HostedToolFilter;
   require_approval?:
     | 'never'

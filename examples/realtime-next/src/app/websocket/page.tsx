@@ -94,6 +94,17 @@ const agent = new RealtimeAgent({
   handoffs: [weatherExpert],
 });
 
+async function closeAudioPlayer(audioPlayer: WavStreamPlayer | null) {
+  if (!audioPlayer) {
+    return;
+  }
+  try {
+    await audioPlayer.interrupt();
+  } finally {
+    await audioPlayer.context?.close();
+  }
+}
+
 export default function Home() {
   const session = useRef<RealtimeSession | null>(null);
   const player = useRef<WavStreamPlayer | null>(null);
@@ -109,9 +120,9 @@ export default function Home() {
   // Image capture handled by CameraCapture component.
 
   useEffect(() => {
-    session.current = new RealtimeSession(agent, {
+    const createdSession = new RealtimeSession(agent, {
       transport: 'websocket',
-      model: 'gpt-realtime-2',
+      model: 'gpt-realtime-2.1',
       outputGuardrails: guardrails,
       config: {
         audio: {
@@ -121,42 +132,45 @@ export default function Home() {
         },
       },
     });
-    recorder.current = new WavRecorder({ sampleRate: 24000 });
-    player.current = new WavStreamPlayer({ sampleRate: 24000 });
+    const createdRecorder = new WavRecorder({ sampleRate: 24000 });
+    const createdPlayer = new WavStreamPlayer({ sampleRate: 24000 });
+    session.current = createdSession;
+    recorder.current = createdRecorder;
+    player.current = createdPlayer;
 
-    session.current.on('audio', (event) => {
+    createdSession.on('audio', (event) => {
       player.current?.add16BitPCM(event.data, event.responseId);
     });
 
-    session.current.on('transport_event', (event) => {
+    createdSession.on('transport_event', (event) => {
       setEvents((events) => [...events, event]);
     });
 
-    session.current.on('audio_interrupted', () => {
+    createdSession.on('audio_interrupted', () => {
       // We only need to interrupt the player if we are already playing
       // everything else is handled by the session
-      player.current?.interrupt();
+      void player.current?.interrupt();
     });
 
-    session.current.on('history_updated', (history) => {
+    createdSession.on('history_updated', (history) => {
       setHistory(history);
     });
 
-    session.current.on('error', (error) => {
+    createdSession.on('error', (error) => {
       console.error('error', error);
     });
 
-    session.current.on(
+    createdSession.on(
       'guardrail_tripped',
       (_context, _agent, guardrailError) => {
         setOutputGuardrailResult(guardrailError);
       },
     );
-    session.current.on('mcp_tools_changed', (tools) => {
+    createdSession.on('mcp_tools_changed', (tools) => {
       setMcpTools(tools.map((t) => t.name));
     });
 
-    session.current.on(
+    createdSession.on(
       'tool_approval_requested',
       (_context, _agent, approvalRequest) => {
         // You'll be prompted when making the tool call that requires approval in web browser.
@@ -171,7 +185,7 @@ export default function Home() {
       },
     );
 
-    session.current.on(
+    createdSession.on(
       'mcp_tool_call_completed',
       (_context, _agent, toolCall) => {
         session.current?.transport?.sendEvent({
@@ -179,6 +193,26 @@ export default function Home() {
         });
       },
     );
+
+    return () => {
+      const activePlayer = player.current;
+      createdSession.close();
+      void Promise.all([
+        createdRecorder.quit(),
+        closeAudioPlayer(activePlayer),
+      ]).catch((error) => {
+        console.error('Error closing audio resources', error);
+      });
+      if (session.current === createdSession) {
+        session.current = null;
+      }
+      if (recorder.current === createdRecorder) {
+        recorder.current = null;
+      }
+      if (player.current === activePlayer) {
+        player.current = null;
+      }
+    };
   }, []);
 
   async function record() {
@@ -189,12 +223,24 @@ export default function Home() {
 
   async function connect() {
     if (isConnected) {
-      await session.current?.close();
-      await player.current?.interrupt();
-      await recorder.current?.end();
-      setIsConnected(false);
+      const activePlayer = player.current;
+      session.current?.close();
+      try {
+        await Promise.all([
+          recorder.current?.quit(),
+          closeAudioPlayer(activePlayer),
+        ]);
+      } finally {
+        if (player.current === activePlayer) {
+          player.current = null;
+        }
+        setIsConnected(false);
+      }
     } else {
-      await player.current?.connect();
+      const activePlayer =
+        player.current ?? new WavStreamPlayer({ sampleRate: 24000 });
+      player.current = activePlayer;
+      await activePlayer.connect();
       const token = await getToken();
       await session.current?.connect({
         apiKey: token,

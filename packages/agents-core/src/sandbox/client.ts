@@ -75,6 +75,17 @@ export type SandboxSessionSerializationOptions = {
   willCloseAfterSerialize?: boolean;
 };
 
+export type SandboxPreservedSessionReuseOptions<
+  TOptions extends SandboxClientOptions = SandboxClientOptions,
+> = {
+  clientOptions?: TOptions;
+  /**
+   * Revalidate the entries materialized when the backend was created before
+   * reusing a same-process preserved session.
+   */
+  revalidateManifestEntries?: boolean;
+};
+
 export interface SandboxClient<
   TOptions extends SandboxClientOptions = SandboxClientOptions,
   TSessionState extends SandboxSessionState = SandboxSessionState,
@@ -92,6 +103,7 @@ export interface SandboxClient<
   ): Promise<boolean> | boolean;
   canReusePreservedOwnedSession?(
     state: TSessionState,
+    options?: SandboxPreservedSessionReuseOptions<TOptions>,
   ): Promise<boolean> | boolean;
   deserializeSessionState?(
     state: Record<string, unknown>,

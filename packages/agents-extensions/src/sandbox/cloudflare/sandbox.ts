@@ -29,8 +29,10 @@ import {
 } from '@openai/agents-core/sandbox';
 import {
   assertTarWorkspacePersistence,
+  createEmptyWorkspaceTarArchive,
   toWorkspaceArchiveBytes,
   validateWorkspaceTarArchive,
+  workspaceTarProtectedPaths,
 } from '../shared/archive';
 import { RemoteSandboxEditor } from '../shared/editor';
 import {
@@ -55,6 +57,7 @@ import {
   truncateOutput,
 } from '../shared/output';
 import { assertConfiguredExposedPort } from '../shared/ports';
+import { probeRemoteSandboxPathExists } from '../shared/pathProbe';
 import {
   addPtyWebSocketListener,
   appendPtyOutput,
@@ -88,7 +91,8 @@ import {
   sandboxUserShellCommand,
 } from '../shared/runAs';
 import {
-  deserializeRemoteSandboxSessionStateValues,
+  assertRemoteSandboxSessionStateCanResume,
+  rehydrateRemoteSandboxSessionStateValues,
   serializeRemoteSandboxSessionState,
 } from '../shared/sessionState';
 import {
@@ -376,15 +380,28 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
   async pathExists(path: string, runAs?: string): Promise<boolean> {
     const absolutePath = await this.resolveRemotePath(path);
     if (!runAs) {
-      const result = await this.execShell(
-        `test -e ${shellQuote(absolutePath)}`,
-      );
-      return result.exitCode === 0;
+      return await probeRemoteSandboxPathExists({
+        providerName: 'CloudflareSandboxClient',
+        providerId: 'cloudflare',
+        path: absolutePath,
+        runCommand: async (command) => {
+          const result = await this.execShell(command);
+          return {
+            status: result.exitCode,
+            stdout: result.stdout,
+            stderr: result.stderr,
+          };
+        },
+      });
     }
     return await runAsRemotePathExists(
       absolutePath,
       runAs,
       this.runAsCommandRunner.bind(this),
+      {
+        providerName: 'CloudflareSandboxClient',
+        providerId: 'cloudflare',
+      },
     );
   }
 
@@ -552,10 +569,11 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
 
   async persistWorkspace(): Promise<Uint8Array> {
     assertTarWorkspacePersistence('CloudflareSandboxClient', 'tar');
-    const excludes = [...this.state.manifest.ephemeralPersistencePaths()]
-      .filter((path) => path.length > 0)
-      .sort((left, right) => left.localeCompare(right))
-      .join(',');
+    const protectedPaths = workspaceTarProtectedPaths(this.state.manifest);
+    if (protectedPaths.includes('')) {
+      return createEmptyWorkspaceTarArchive();
+    }
+    const excludes = protectedPaths.join(',');
     const response = await this.fetch(
       `/v1/sandbox/${this.state.sandboxId}/persist${
         excludes ? `?excludes=${encodeURIComponent(excludes)}` : ''
@@ -590,6 +608,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     const archive = toWorkspaceArchiveBytes(data);
     validateWorkspaceTarArchive(archive, {
       allowExternalSymlinkTargets: false,
+      rejectRelPaths: workspaceTarProtectedPaths(this.state.manifest),
       archiveLimits:
         options.archiveLimits === undefined
           ? this.archiveLimits
@@ -708,9 +727,12 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     });
   }
 
-  private async execShell(
-    shellCommand: string,
-  ): Promise<{ exitCode: number; output: string }> {
+  private async execShell(shellCommand: string): Promise<{
+    exitCode: number;
+    output: string;
+    stdout: string;
+    stderr: string;
+  }> {
     const response = await this.fetch(
       `/v1/sandbox/${this.state.sandboxId}/exec`,
       {
@@ -853,6 +875,8 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     return {
       exitCode: exitCode ?? 1,
       output,
+      stdout,
+      stderr,
     };
   }
 
@@ -865,8 +889,8 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     );
     return {
       status: result.exitCode,
-      stdout: result.output,
-      stderr: '',
+      stdout: result.stdout,
+      stderr: result.stderr,
     };
   }
 
@@ -999,8 +1023,8 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         const result = await this.execShell(command);
         return {
           status: result.exitCode,
-          stdout: result.output,
-          stderr: '',
+          stdout: result.stdout,
+          stderr: result.stderr,
         };
       },
     });
@@ -1164,7 +1188,7 @@ export class CloudflareSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<CloudflareSandboxSessionState> {
-    const baseState = deserializeRemoteSandboxSessionStateValues(state);
+    const baseState = await rehydrateRemoteSandboxSessionStateValues(state);
     return {
       ...state,
       ...baseState,
@@ -1191,6 +1215,7 @@ export class CloudflareSandboxClient implements SandboxClient<
   async resume(
     state: CloudflareSandboxSessionState,
   ): Promise<CloudflareSandboxSession> {
+    assertRemoteSandboxSessionStateCanResume(state);
     const sandboxId = normalizeCloudflarePersistedSandboxId(
       (state as Record<string, unknown>).sandboxId,
     );
@@ -1431,10 +1456,21 @@ async function cloudflareProviderHttpErrorWithBody(
       provider: 'cloudflare',
       operation,
       status: response.status,
+      retryable: cloudflareRetryabilityForStatus(response.status),
       ...context,
       ...(cause ? { cause } : {}),
     },
   );
+}
+
+function cloudflareRetryabilityForStatus(status: number): boolean | null {
+  if (status === 500 || status === 503) {
+    return true;
+  }
+  if (status === 400) {
+    return false;
+  }
+  return null;
 }
 
 async function readCloudflareErrorBody(

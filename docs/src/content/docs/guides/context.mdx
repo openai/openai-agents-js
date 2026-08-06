@@ -47,7 +47,7 @@ Within a single run, derived contexts share the same underlying app context, app
 
 Only `runContext.context` is your app-defined object. The other fields are runtime metadata managed by the SDK.
 
-If you later serialize a [`RunState`](/openai-agents-js/guides/results#state) for [human-in-the-loop](/openai-agents-js/guides/human-in-the-loop), that runtime metadata is saved with the state. Avoid putting secrets in `runContext.context` if you intend to persist or transmit serialized state.
+If you later serialize a [`RunState`](/openai-agents-js/guides/results#interruptions-and-resumable-state) for [human-in-the-loop](/openai-agents-js/guides/human-in-the-loop), that runtime metadata is saved with the state. Avoid putting secrets in `runContext.context` if you intend to persist or transmit serialized state.
 
 <Aside type="note">
   `RunContext` is about local app state for the current run. Conversation state

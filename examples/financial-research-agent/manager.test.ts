@@ -1,0 +1,151 @@
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import {
+  FinancialReportData,
+  FinancialSearchPlan,
+  VerificationResult,
+} from './agents';
+import { FinancialResearchManager } from './manager';
+
+const initialReport: FinancialReportData = {
+  short_summary: 'Initial summary',
+  markdown_report: 'Initial report',
+  follow_up_questions: [],
+};
+
+const revisedReport: FinancialReportData = {
+  short_summary: 'Revised summary',
+  markdown_report: 'Revised report',
+  follow_up_questions: [],
+};
+
+class TestFinancialResearchManager extends FinancialResearchManager {
+  searchResults = ['Primary source summary'];
+  writeReportSearchResults: string[] | undefined;
+  writeReportCalls = 0;
+  verificationCalls = 0;
+  revisionCalls = 0;
+  verificationFailuresBeforePass = 0;
+
+  async planSearches(): Promise<FinancialSearchPlan> {
+    return { searches: [] };
+  }
+
+  async performSearches(): Promise<string[]> {
+    return this.searchResults;
+  }
+
+  async writeReport(
+    _query: string,
+    searchResults: string[],
+  ): Promise<FinancialReportData> {
+    this.writeReportCalls++;
+    this.writeReportSearchResults = searchResults;
+    return initialReport;
+  }
+
+  async verifyReport(
+    _report: FinancialReportData,
+  ): Promise<VerificationResult> {
+    this.verificationCalls++;
+    if (this.verificationCalls <= this.verificationFailuresBeforePass) {
+      return {
+        verified: false,
+        issues: `Resolve verification issue ${this.verificationCalls}.`,
+      };
+    }
+    return { verified: true, issues: '' };
+  }
+
+  async reviseReport(
+    _query: string,
+    _report: FinancialReportData,
+    _verification: VerificationResult,
+    _searchResults: string[],
+  ): Promise<FinancialReportData> {
+    this.revisionCalls++;
+    return {
+      ...revisedReport,
+      short_summary: `Revised summary ${this.revisionCalls}`,
+    };
+  }
+}
+
+beforeEach(() => {
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+test('revises and re-verifies until the report passes verification', async () => {
+  const manager = new TestFinancialResearchManager();
+  manager.verificationFailuresBeforePass = 2;
+
+  await manager.run('Research query');
+
+  expect(manager.revisionCalls).toBe(2);
+  expect(manager.verificationCalls).toBe(3);
+});
+
+test('does not revise a report that passes verification', async () => {
+  const manager = new TestFinancialResearchManager();
+
+  await manager.run('Research query');
+
+  expect(manager.revisionCalls).toBe(0);
+  expect(manager.verificationCalls).toBe(1);
+});
+
+test('fails before writing when no usable search summaries remain', async () => {
+  const manager = new TestFinancialResearchManager();
+  manager.searchResults = [];
+
+  await expect(manager.run('Research query')).rejects.toThrow(
+    'Financial research failed because no usable search summaries were returned.',
+  );
+
+  expect(manager.writeReportCalls).toBe(0);
+  expect(manager.verificationCalls).toBe(0);
+});
+
+test('fails before writing when the search summary is blank', async () => {
+  const manager = new TestFinancialResearchManager();
+  manager.searchResults = [''];
+
+  await expect(manager.run('Research query')).rejects.toThrow(
+    'Financial research failed because no usable search summaries were returned.',
+  );
+
+  expect(manager.writeReportCalls).toBe(0);
+  expect(manager.verificationCalls).toBe(0);
+});
+
+test('filters blank search summaries while preserving usable results', async () => {
+  const manager = new TestFinancialResearchManager();
+  manager.searchResults = [
+    '',
+    'Primary source summary',
+    ' \n',
+    'Secondary source summary',
+  ];
+
+  await manager.run('Research query');
+
+  expect(manager.writeReportSearchResults).toEqual([
+    'Primary source summary',
+    'Secondary source summary',
+  ]);
+});
+
+test('fails closed when the report remains unverified', async () => {
+  const manager = new TestFinancialResearchManager();
+  manager.verificationFailuresBeforePass = 3;
+
+  await expect(manager.run('Research query')).rejects.toThrow(
+    'Report failed verification after 2 revisions:\nResolve verification issue 3.',
+  );
+
+  expect(manager.revisionCalls).toBe(2);
+  expect(manager.verificationCalls).toBe(3);
+});

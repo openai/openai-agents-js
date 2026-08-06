@@ -2,7 +2,7 @@
   "name": "@openai/agents-extensions",
   "repository": "https://github.com/openai/openai-agents-js",
   "homepage": "https://openai.github.io/openai-agents-js/",
-  "version": "0.11.4",
+  "version": "0.14.3",
   "description": "Extensions for the OpenAI Agents SDK",
   "author": "OpenAI <support@openai.com>",
   "main": "dist/index.js",
@@ -76,7 +76,7 @@
     }
   },
   "peerDependencies": {
-    "@ai-sdk/provider": "^2.0.0 || ^3.0.0",
+    "@ai-sdk/provider": "^2.0.0 || ^3.0.0 || ^4.0.0",
     "@blaxel/core": "^0.2.82",
     "@daytonaio/sdk": "^0.162.0",
     "@e2b/code-interpreter": "^2.3.3",
@@ -84,10 +84,10 @@
     "@openai/codex-sdk": ">=0.86.0",
     "@runloop/api-client": "^1.16.2",
     "@vercel/sandbox": "^1.9.3",
-    "ai": "^6.0.0",
+    "ai": "^6.0.0 || ^7.0.0",
     "e2b": "^2.14.1",
-    "modal": "^0.7.4",
-    "ws": "^8.18.1",
+    "modal": "^0.7.6",
+    "ws": "^8.21.0",
     "zod": "^4.0.0"
   },
   "peerDependenciesMeta": {
@@ -130,20 +130,20 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "@ai-sdk/provider": "^3.0.0",
+    "@ai-sdk/provider": "^4.0.3",
     "@blaxel/core": "0.2.82",
     "@daytonaio/sdk": "0.162.0",
-    "@e2b/code-interpreter": "2.3.3",
+    "@e2b/code-interpreter": "2.6.1",
     "@openai/agents": "workspace:>=0.0.0",
     "@openai/codex-sdk": "^0.86.0",
     "@runloop/api-client": "1.16.2",
     "@types/debug": "^4.1.12",
     "@vercel/sandbox": "1.9.3",
     "ai": "^6.0.42",
-    "e2b": "^2.14.1",
-    "modal": "0.7.4",
+    "e2b": "2.32.0",
+    "modal": "0.7.6",
     "undici-types": "6.21.0",
-    "ws": "^8.18.1",
+    "ws": "^8.21.0",
     "zod": "^4.0.0"
   },
   "files": [

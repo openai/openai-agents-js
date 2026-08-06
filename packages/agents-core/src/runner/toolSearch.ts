@@ -1,9 +1,12 @@
 import type { Agent } from '../agent';
-import { UserError } from '../errors';
+import { ModelBehaviorError, UserError } from '../errors';
+import type { Handoff } from '../handoff';
+import logger from '../logger';
 import type { RunContext } from '../runContext';
 import {
   getClientToolSearchExecutor,
   getToolSearchRuntimeToolKey,
+  getToolSearchRuntimeRoutingKey,
   type FunctionTool,
   type HostedMCPTool,
   type Tool,
@@ -11,10 +14,13 @@ import {
 import type * as protocol from '../types/protocol';
 import * as ProviderData from '../types/providerData';
 import {
+  buildFunctionToolLookupMap,
+  getBareTopLevelFunctionToolName,
   getExplicitFunctionToolNamespace,
   getFunctionToolNamespaceDescription,
   getFunctionToolQualifiedName,
   toolQualifiedName,
+  type FunctionToolLookupKey,
 } from '../toolIdentity';
 import { serializeTool } from '../utils/serialize';
 import { normalizeHostedMcpRequireApproval } from '../utils/mcpApproval';
@@ -160,16 +166,18 @@ function serializeFunctionToolForToolSearchOutput(
 ): protocol.ToolSearchOutputTool {
   const serialized = serializeTool(tool) as Record<string, unknown>;
   const namespace = getExplicitFunctionToolNamespace(tool);
+  const { providerData: _providerData, ...toolSearchPayload } = serialized;
+  void _providerData;
 
   if (!namespace) {
-    return serialized as protocol.ToolSearchOutputTool;
+    return toolSearchPayload as protocol.ToolSearchOutputTool;
   }
 
   const {
     namespace: _namespace,
     namespaceDescription,
     ...toolPayload
-  } = serialized;
+  } = toolSearchPayload;
   void namespaceDescription;
   return toolPayload as protocol.ToolSearchOutputTool;
 }
@@ -363,6 +371,7 @@ function normalizeHostedMcpProviderData(
     connector_id?: unknown;
     authorization?: unknown;
     allowed_tools?: unknown;
+    allowed_callers?: unknown;
     defer_loading?: unknown;
     headers?: unknown;
     require_approval?: unknown;
@@ -397,6 +406,14 @@ function normalizeHostedMcpProviderData(
   if (candidate.allowed_tools !== undefined) {
     normalized.allowed_tools =
       candidate.allowed_tools as ProviderData.HostedMCPTool<any>['allowed_tools'];
+  }
+  if (
+    Array.isArray(candidate.allowed_callers) &&
+    candidate.allowed_callers.every(
+      (caller) => caller === 'direct' || caller === 'programmatic',
+    )
+  ) {
+    normalized.allowed_callers = candidate.allowed_callers;
   }
   if (candidate.defer_loading === true) {
     normalized.defer_loading = true;
@@ -588,7 +605,7 @@ export function createClientToolSearchOutputFromTools(
   const seenToolKeys = new Set<string>();
 
   for (const tool of tools) {
-    const runtimeToolKey = getToolSearchRuntimeToolKey(tool);
+    const runtimeToolKey = getToolSearchRuntimeRoutingKey(tool);
     if (runtimeToolKey && seenToolKeys.has(runtimeToolKey)) {
       continue;
     }
@@ -665,6 +682,35 @@ export function createBuiltInClientToolSearchOutput(
   );
 }
 
+function indexCustomClientToolSearchRuntimeTools<TContext>(
+  runtimeTools: Tool<TContext>[],
+): Map<string, Tool<TContext>> {
+  const runtimeToolsByKey = new Map<string, Tool<TContext>>();
+  for (const runtimeTool of runtimeTools) {
+    if (
+      runtimeTool.type === 'function' &&
+      getExplicitFunctionToolNamespace(runtimeTool) === runtimeTool.name
+    ) {
+      throw new ModelBehaviorError(
+        'Responses tool search reserves same-name namespaces for deferred top-level function tools. Rename the namespace or tool name to avoid ambiguous dispatch.',
+      );
+    }
+    const runtimeToolKey = getToolSearchRuntimeRoutingKey(runtimeTool);
+    if (!runtimeToolKey) {
+      throw new ModelBehaviorError(
+        'Client tool_search execute() returned an unsupported tool type.',
+      );
+    }
+    if (runtimeToolsByKey.has(runtimeToolKey)) {
+      throw new ModelBehaviorError(
+        'Client tool_search execute() returned multiple tools with the same routed identity. Return only one tool for each routed identity.',
+      );
+    }
+    runtimeToolsByKey.set(runtimeToolKey, runtimeTool);
+  }
+  return runtimeToolsByKey;
+}
+
 export async function executeCustomClientToolSearch<TContext>(args: {
   agent: Agent<TContext, any>;
   runContext: RunContext<TContext>;
@@ -674,6 +720,7 @@ export async function executeCustomClientToolSearch<TContext>(args: {
 }): Promise<{
   output: protocol.ToolSearchOutputItem;
   runtimeTools: Tool<TContext>[];
+  callbackRuntimeTools: Tool<TContext>[];
 }> {
   const { agent, runContext, toolSearchCall, toolSearchTool, tools } = args;
   const executor = getClientToolSearchExecutor(toolSearchTool);
@@ -683,7 +730,7 @@ export async function executeCustomClientToolSearch<TContext>(args: {
     );
   }
 
-  const runtimeTools = normalizeClientToolSearchExecutorResult(
+  const callbackRuntimeTools = normalizeClientToolSearchExecutorResult(
     await executor({
       agent,
       availableTools: [...tools],
@@ -692,11 +739,161 @@ export async function executeCustomClientToolSearch<TContext>(args: {
       toolCall: toolSearchCall,
     }),
   );
+  const runtimeTools = await filterEnabledToolSearchRuntimeTools({
+    agent,
+    runContext,
+    runtimeTools: callbackRuntimeTools,
+  });
+  indexCustomClientToolSearchRuntimeTools(runtimeTools);
 
   return {
     output: createClientToolSearchOutputFromTools(toolSearchCall, runtimeTools),
     runtimeTools,
+    callbackRuntimeTools,
   };
+}
+
+export async function filterEnabledToolSearchRuntimeTools<TContext>(args: {
+  agent: Agent<TContext, any>;
+  runContext: RunContext<TContext>;
+  runtimeTools: Tool<TContext>[];
+}): Promise<Tool<TContext>[]> {
+  const { agent, runContext, runtimeTools } = args;
+  const enabledTools: Tool<TContext>[] = [];
+  for (const runtimeTool of runtimeTools) {
+    if (
+      runtimeTool.type === 'function' &&
+      !(await runtimeTool.isEnabled(runContext, agent))
+    ) {
+      continue;
+    }
+    enabledTools.push(runtimeTool);
+  }
+  return enabledTools;
+}
+
+export function registerRuntimeToolSearchTools<TContext>(args: {
+  availableTools: Tool<TContext>[];
+  functionMap: Map<FunctionToolLookupKey, FunctionTool<TContext>>;
+  handoffMap: Map<string, Handoff<any, any>>;
+  mcpToolMap: Map<string, HostedMCPTool>;
+  replaceableRuntimeToolKeys?: Set<string>;
+  replacedRuntimeTools?: Tool<TContext>[];
+  runtimeTools: Tool<TContext>[];
+}): Tool<TContext>[] {
+  const {
+    availableTools,
+    functionMap,
+    handoffMap,
+    mcpToolMap,
+    replaceableRuntimeToolKeys,
+    replacedRuntimeTools = [],
+    runtimeTools,
+  } = args;
+  const availableToolsByKey = new Map<string, Tool<TContext>>();
+  for (const tool of availableTools) {
+    const key = getToolSearchRuntimeRoutingKey(tool);
+    if (key) {
+      availableToolsByKey.set(key, tool);
+    }
+  }
+
+  const runtimeToolsByKey =
+    indexCustomClientToolSearchRuntimeTools(runtimeTools);
+
+  for (const [runtimeToolKey, runtimeTool] of runtimeToolsByKey) {
+    const existingTool = availableToolsByKey.get(runtimeToolKey);
+    if (
+      existingTool &&
+      existingTool !== runtimeTool &&
+      !replaceableRuntimeToolKeys?.has(runtimeToolKey)
+    ) {
+      throw new ModelBehaviorError(
+        logger.dontLogToolData
+          ? 'Client tool_search execute() returned a tool that conflicts with an existing available tool.'
+          : `Client tool_search execute() returned tool "${getToolSearchRuntimeToolKey(runtimeTool) ?? runtimeToolKey}" that conflicts with an existing available tool.`,
+      );
+    }
+    if (runtimeTool.type === 'function') {
+      const bareToolName = getBareTopLevelFunctionToolName(runtimeTool);
+      if (bareToolName && handoffMap.has(bareToolName)) {
+        throw new ModelBehaviorError(
+          'Client tool_search execute() returned a bare function tool that conflicts with an available handoff. Assign a unique tool name or use a namespace.',
+        );
+      }
+      continue;
+    }
+    if (
+      runtimeTool.type === 'hosted_tool' &&
+      runtimeTool.providerData?.type === 'mcp'
+    ) {
+      continue;
+    }
+    throw new ModelBehaviorError(
+      'Client tool_search execute() returned an unsupported tool type.',
+    );
+  }
+
+  const replacedRuntimeToolSet = new Set(replacedRuntimeTools);
+  for (let index = availableTools.length - 1; index >= 0; index--) {
+    if (replacedRuntimeToolSet.has(availableTools[index]!)) {
+      availableTools.splice(index, 1);
+    }
+  }
+  for (const [key, tool] of functionMap) {
+    if (replacedRuntimeToolSet.has(tool)) {
+      functionMap.delete(key);
+    }
+  }
+  for (const [serverLabel, tool] of mcpToolMap) {
+    if (replacedRuntimeToolSet.has(tool)) {
+      mcpToolMap.delete(serverLabel);
+    }
+  }
+
+  const registeredTools: Tool<TContext>[] = [];
+  for (const [runtimeToolKey, runtimeTool] of runtimeToolsByKey) {
+    const existingIndex = availableTools.findIndex(
+      (availableTool) =>
+        getToolSearchRuntimeRoutingKey(availableTool) === runtimeToolKey,
+    );
+    const existingTool =
+      existingIndex >= 0 ? availableTools[existingIndex] : undefined;
+    if (existingTool === runtimeTool) {
+      if (replaceableRuntimeToolKeys?.has(runtimeToolKey)) {
+        registeredTools.push(runtimeTool);
+      }
+      continue;
+    }
+
+    if (existingIndex >= 0) {
+      availableTools[existingIndex] = runtimeTool;
+    } else {
+      availableTools.push(runtimeTool);
+    }
+    registeredTools.push(runtimeTool);
+    replaceableRuntimeToolKeys?.add(runtimeToolKey);
+    if (runtimeTool.type === 'function') {
+      const runtimeFunctionMap = buildFunctionToolLookupMap([runtimeTool]);
+      for (const [key, tool] of runtimeFunctionMap) {
+        functionMap.set(key, tool);
+      }
+      continue;
+    }
+
+    if (
+      runtimeTool.type === 'hosted_tool' &&
+      runtimeTool.providerData?.type === 'mcp'
+    ) {
+      mcpToolMap.set(
+        runtimeTool.providerData.server_label,
+        runtimeTool as HostedMCPTool,
+      );
+      continue;
+    }
+  }
+
+  return registeredTools;
 }
 
 export function getClientToolSearchHelper<TContext>(

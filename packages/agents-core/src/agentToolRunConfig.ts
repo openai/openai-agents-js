@@ -1,5 +1,7 @@
 import type { RunConfig } from './run';
 import { mergeModelSettings } from './runner/modelSettingsMerge';
+import { mergeTracingConfig } from './tracing/config';
+import type { Span } from './tracing/spans';
 
 const TRANSPORT_OVERRIDE_PROVIDER_DATA_ALIAS_KEYS = [
   ['extra_headers', 'extraHeaders'],
@@ -9,6 +11,7 @@ const TRANSPORT_OVERRIDE_PROVIDER_DATA_ALIAS_KEYS = [
 const AGENT_TOOL_PARENT_RUN_CONFIG_SYMBOL = Symbol(
   'openai.agents.agentToolParentRunConfig',
 );
+const TOOL_CALL_PARENT_SPAN_SYMBOL = Symbol('openai.agents.toolCallParentSpan');
 
 function isPlainObjectLike(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -57,6 +60,32 @@ export function getAgentToolParentRunConfigFromDetails(
   return isPlainObjectLike(legacyParentRunConfig)
     ? (legacyParentRunConfig as Partial<RunConfig>)
     : undefined;
+}
+
+export function setToolCallParentSpanOnDetails(
+  details: object,
+  parent: Span<any> | undefined,
+): void {
+  if (!parent) {
+    return;
+  }
+  Object.defineProperty(details, TOOL_CALL_PARENT_SPAN_SYMBOL, {
+    value: parent,
+    enumerable: false,
+    configurable: true,
+    writable: false,
+  });
+}
+
+export function getToolCallParentSpanFromDetails(
+  details: unknown,
+): Span<any> | undefined {
+  if (!details || typeof details !== 'object') {
+    return undefined;
+  }
+  return (details as Record<PropertyKey, unknown>)[
+    TOOL_CALL_PARENT_SPAN_SYMBOL
+  ] as Span<any> | undefined;
 }
 
 function getSafeInheritedAgentToolModelSettings(
@@ -281,6 +310,23 @@ export function getInheritedAgentToolRunConfig(
   if (typeof parentRunConfig.toolExecution !== 'undefined') {
     inheritedRunConfig.toolExecution = parentRunConfig.toolExecution;
   }
+  if (typeof parentRunConfig.toolNotFoundBehavior !== 'undefined') {
+    inheritedRunConfig.toolNotFoundBehavior =
+      parentRunConfig.toolNotFoundBehavior;
+  }
+  if (typeof parentRunConfig.toolNameCollisionPolicy !== 'undefined') {
+    inheritedRunConfig.toolNameCollisionPolicy =
+      parentRunConfig.toolNameCollisionPolicy;
+  }
+  if (typeof parentRunConfig.tracing !== 'undefined') {
+    inheritedRunConfig.tracing = parentRunConfig.tracing;
+  }
+  if (
+    typeof parentRunConfig.tracingDisabled !== 'undefined' &&
+    typeof toolRunConfigOverride?.tracingDisabled === 'undefined'
+  ) {
+    inheritedRunConfig.tracingDisabled = parentRunConfig.tracingDisabled;
+  }
 
   return Object.keys(inheritedRunConfig).length > 0
     ? inheritedRunConfig
@@ -308,6 +354,13 @@ export function mergeAgentToolRunConfig(
   );
   if (typeof mergedModelSettings !== 'undefined') {
     mergedRunConfig.modelSettings = mergedModelSettings;
+  }
+  const mergedTracing = mergeTracingConfig(
+    inheritedRunConfig.tracing,
+    toolRunConfigOverride.tracing,
+  );
+  if (typeof mergedTracing !== 'undefined') {
+    mergedRunConfig.tracing = mergedTracing;
   }
 
   return mergedRunConfig;

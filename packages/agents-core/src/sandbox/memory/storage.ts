@@ -1,4 +1,5 @@
 import { UserError } from '../../errors';
+import type { Span, Trace } from '../../tracing';
 import { dir, file } from '../entries';
 import { normalizeRelativePath } from '../manifest';
 import { withSandboxSpan } from '../runtime/spans';
@@ -69,19 +70,26 @@ export class SandboxMemoryStorage {
   private runAs?: string;
   private readonly store?: MemoryStore;
   private readonly appendQueues = new Map<string, Promise<void>>();
+  private tracingParent?: Span<any> | Trace;
 
   constructor(args: {
     session: SandboxSessionLike<SandboxSessionState>;
     runAs?: string;
     store?: MemoryStore;
+    tracingParent?: Span<any> | Trace;
   }) {
     this.session = args.session;
     this.runAs = args.runAs;
     this.store = args.store;
+    this.tracingParent = args.tracingParent;
   }
 
-  updateRuntimeContext(args: { runAs?: string }): void {
+  updateRuntimeContext(args: {
+    runAs?: string;
+    tracingParent?: Span<any> | Trace;
+  }): void {
     this.runAs = args.runAs;
+    this.tracingParent = args.tracingParent;
   }
 
   async ensureLayout(memory: Memory): Promise<void> {
@@ -139,6 +147,7 @@ export class SandboxMemoryStorage {
               runAs: this.runAs,
               maxBytes: MEMORY_TEXT_MAX_BYTES,
             } satisfies ReadFileArgs),
+          this.tracingParent,
         );
         return decodeText(payload);
       } catch (error) {
@@ -190,6 +199,7 @@ export class SandboxMemoryStorage {
               path: normalizedPath,
               runAs: this.runAs,
             } satisfies ReadFileArgs),
+          this.tracingParent,
         );
         return decodeText(payload);
       } catch (error) {
@@ -253,6 +263,7 @@ export class SandboxMemoryStorage {
           entry: file({ content }),
           runAs: this.runAs,
         } satisfies MaterializeEntryArgs),
+      this.tracingParent,
     );
     await this.store?.write(normalizedPath, payload);
   }
@@ -484,6 +495,7 @@ export class SandboxMemoryStorage {
               : Math.ceil((options.maxBytes + 4096) / 4),
           runAs: this.runAs,
         } satisfies ExecCommandArgs),
+      this.tracingParent,
     );
 
     const begin = output.indexOf(MEMORY_READ_BEGIN_MARKER);
@@ -548,6 +560,7 @@ export class SandboxMemoryStorage {
           maxOutputTokens: 20_000,
           runAs: this.runAs,
         } satisfies ExecCommandArgs),
+      this.tracingParent,
     );
     if (!execOutputSucceeded(output) || execOutputWasTruncated(output)) {
       throw new UserError(

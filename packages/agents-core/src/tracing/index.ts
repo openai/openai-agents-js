@@ -1,26 +1,38 @@
 import { TracingProcessor } from './processor';
 import { getGlobalTraceProvider } from './provider';
 import type { TracingConfig } from './config';
+import type { Span, SpanData } from './spans';
+import type { Trace } from './traces';
+import type { TracingIdGenerator } from './utils';
 
 export {
+  getCurrentTraceContext,
   getCurrentSpan,
   getCurrentTrace,
   getOrCreateTrace,
   resetCurrentSpan,
   setCurrentSpan,
+  setTracingContextStorage,
+  withTraceContext,
   withTrace,
 } from './context';
+export type { TraceContextSnapshot, TracingContextStorage } from './context';
 export * from './createSpans';
 export {
   BatchTraceProcessor,
   TracingExporter,
   TracingProcessor,
   ConsoleSpanExporter,
+  MultiTracingProcessor,
 } from './processor';
 export { NoopSpan, Span } from './spans';
 export type {
   SpanData,
   AgentSpanData,
+  TaskSpanData,
+  TurnSpanData,
+  TaskUsageData,
+  TurnUsageData,
   FunctionSpanData,
   GenerationUsageData,
   GenerationSpanData,
@@ -36,7 +48,14 @@ export type {
   SpanError,
 } from './spans';
 export { NoopTrace, Trace } from './traces';
-export { generateGroupId, generateSpanId, generateTraceId } from './utils';
+export {
+  defaultTracingIdGenerator,
+  generateGroupId,
+  generateSpanId,
+  generateTraceId,
+} from './utils';
+export type { TracingIdGenerator } from './utils';
+export type { TraceProviderOptions } from './provider';
 export type { TracingConfig };
 
 /**
@@ -64,6 +83,67 @@ export function setTraceProcessors(processors: TracingProcessor[]): void {
  */
 export function setTracingDisabled(disabled: boolean): void {
   getGlobalTraceProvider().setDisabled(disabled);
+}
+
+/**
+ * Set the trace and span ID generator for the global tracing provider.
+ *
+ * @param idGenerator - Custom ID generator methods, or undefined to restore defaults.
+ */
+export function setTracingIdGenerator(
+  idGenerator?: Partial<TracingIdGenerator>,
+): void {
+  getGlobalTraceProvider().setIdGenerator(idGenerator);
+}
+
+/**
+ * Dispatch a completed trace lifecycle to all processors registered on the
+ * global tracing provider.
+ *
+ * This bypasses Trace.start() and Trace.end(), so callers can replay a
+ * completed lifecycle without mutating the trace state.
+ */
+export async function dispatchTrace(trace: Trace): Promise<void> {
+  await getGlobalTraceProvider().dispatchTrace(trace);
+}
+
+/**
+ * Dispatch a completed span lifecycle to all processors registered on the
+ * global tracing provider.
+ *
+ * This bypasses Span.start() and Span.end(), so callers can replay a completed
+ * lifecycle without mutating existing timestamps.
+ */
+export async function dispatchSpan<TSpanData extends SpanData>(
+  span: Span<TSpanData>,
+): Promise<void> {
+  await getGlobalTraceProvider().dispatchSpan(span);
+}
+
+/**
+ * Dispatch a span start event to all processors registered on the global
+ * tracing provider.
+ *
+ * This bypasses Span.start(), so callers can emit a start event without
+ * mutating the span state or existing timestamps.
+ */
+export async function dispatchSpanStart<TSpanData extends SpanData>(
+  span: Span<TSpanData>,
+): Promise<void> {
+  await getGlobalTraceProvider().dispatchSpanStart(span);
+}
+
+/**
+ * Dispatch a span end event to all processors registered on the global tracing
+ * provider.
+ *
+ * This bypasses Span.end(), so callers can emit an end event without mutating
+ * the span state or existing timestamps.
+ */
+export async function dispatchSpanEnd<TSpanData extends SpanData>(
+  span: Span<TSpanData>,
+): Promise<void> {
+  await getGlobalTraceProvider().dispatchSpanEnd(span);
 }
 
 /**

@@ -1,6 +1,7 @@
 import type { Agent, AgentOutputType } from '../agent';
 import type { RunState } from '../runState';
 import type { RunConfig, Runner, ToolErrorFormatter } from '../run';
+import { getFunctionToolStateKeyForCall } from '../toolIdentity';
 import type { SingleStepResult } from './steps';
 import type { ProcessedResponse } from './types';
 import { resolveInterruptedTurn } from './turnResolution';
@@ -8,6 +9,7 @@ import { resolveInterruptedTurn } from './turnResolution';
 export type InterruptedTurnOutcome = {
   nextStep: SingleStepResult['nextStep'];
   action: 'return_interruption' | 'rerun_turn' | 'advance_step';
+  approvedToolResumed: boolean;
 };
 
 export type InterruptedTurnControl = {
@@ -52,7 +54,7 @@ export function applyTurnResult<
   state._currentStep = turnResult.nextStep;
   state._finalOutputSource =
     turnResult.nextStep.type === 'next_step_final_output'
-      ? 'turn_resolution'
+      ? (turnResult.finalOutputSource ?? 'turn_resolution')
       : undefined;
 }
 
@@ -64,6 +66,7 @@ export async function resumeInterruptedTurn<
   runner: Runner;
   toolErrorFormatter?: ToolErrorFormatter;
   agentToolParentRunConfig?: Partial<RunConfig>;
+  signal?: AbortSignal;
   onStepItems?: (turnResult: SingleStepResult) => void;
 }): Promise<InterruptedTurnOutcome> {
   const {
@@ -71,8 +74,36 @@ export async function resumeInterruptedTurn<
     runner,
     toolErrorFormatter,
     agentToolParentRunConfig,
+    signal,
     onStepItems,
   } = options;
+  const approvedToolWillResume = state.getInterruptions().some((item) => {
+    const rawItem = item.rawItem;
+    if (rawItem.type === 'hosted_tool_call') {
+      return false;
+    }
+    const toolName =
+      rawItem.type === 'function_call'
+        ? (item.functionToolStateKey ??
+          getFunctionToolStateKeyForCall(rawItem, item.name))
+        : item.name;
+    const callId =
+      'callId' in rawItem && typeof rawItem.callId === 'string'
+        ? rawItem.callId
+        : 'id' in rawItem && typeof rawItem.id === 'string'
+          ? rawItem.id
+          : undefined;
+    return (
+      toolName !== undefined &&
+      callId !== undefined &&
+      state._context.isToolApproved({
+        toolName,
+        callId,
+        functionTool: false,
+        ...(rawItem.type === 'function_call' ? { agent: item.agent } : {}),
+      }) === true
+    );
+  });
   const turnResult = await resolveInterruptedTurn<TContext>(
     state._currentAgent,
     state._originalInput,
@@ -83,7 +114,11 @@ export async function resumeInterruptedTurn<
     state,
     toolErrorFormatter,
     agentToolParentRunConfig,
+    signal,
   );
+  const approvedToolResumed =
+    approvedToolWillResume &&
+    turnResult.generatedItems.length > state._currentTurnPersistedItemCount;
 
   applyTurnResult({
     state,
@@ -98,12 +133,24 @@ export async function resumeInterruptedTurn<
   // return_interruption: still waiting on approvals. rerun_turn: same turn rerun without increment.
   // advance_step: proceed without rerunning the same turn.
   if (turnResult.nextStep.type === 'next_step_interruption') {
-    return { nextStep: turnResult.nextStep, action: 'return_interruption' };
+    return {
+      nextStep: turnResult.nextStep,
+      action: 'return_interruption',
+      approvedToolResumed,
+    };
   }
   if (turnResult.nextStep.type === 'next_step_run_again') {
-    return { nextStep: turnResult.nextStep, action: 'rerun_turn' };
+    return {
+      nextStep: turnResult.nextStep,
+      action: 'rerun_turn',
+      approvedToolResumed,
+    };
   }
-  return { nextStep: turnResult.nextStep, action: 'advance_step' };
+  return {
+    nextStep: turnResult.nextStep,
+    action: 'advance_step',
+    approvedToolResumed,
+  };
 }
 
 export function handleInterruptedOutcome<

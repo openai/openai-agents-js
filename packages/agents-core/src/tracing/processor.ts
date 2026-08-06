@@ -1,6 +1,6 @@
 import { Span as TSpan } from './spans';
 import { Trace } from './traces';
-import logger from '../logger';
+import logger, { logModelAndToolActionError } from '../logger';
 import {
   timer as _timer,
   isTracingLoopRunningByDefault,
@@ -8,8 +8,16 @@ import {
 import type { Timeout, Timer } from '../shims/interface';
 import { tracing } from '../config';
 import { combineAbortSignals } from '../utils/abortSignals';
+import { NOOP_TRACE_OR_SPAN_ID } from './utils';
 
 type Span = TSpan<any>;
+
+function isNoopSpan(span: Span): boolean {
+  return (
+    span.traceId === NOOP_TRACE_OR_SPAN_ID ||
+    span.spanId === NOOP_TRACE_OR_SPAN_ID
+  );
+}
 
 /**
  * Interface for processing traces
@@ -75,6 +83,14 @@ export class ConsoleSpanExporter implements TracingExporter {
     }
 
     for (const item of items) {
+      if (logger.dontLogModelData || logger.dontLogToolData) {
+        console.log(
+          item.type === 'trace'
+            ? '[Exporter] Export trace. Trace data is redacted.'
+            : '[Exporter] Export span. Span data is redacted.',
+        );
+        continue;
+      }
       if (item.type === 'trace') {
         console.log(
           `[Exporter] Export trace traceId=${item.traceId} name=${item.name}${item.groupId ? ` groupId=${item.groupId}` : ''}`,
@@ -200,7 +216,11 @@ export class BatchTraceProcessor implements TracingProcessor {
       try {
         await this.#exporter.export(batch, combinedSignal.signal);
       } catch (error) {
-        logger.error('Tracing exporter failed to export batch', error);
+        logModelAndToolActionError(
+          logger,
+          'Tracing exporter failed to export batch',
+          error,
+        );
       } finally {
         combinedSignal.cleanup();
         this.#activeExportAbortControllers.delete(activeExportAbortController);
@@ -365,6 +385,56 @@ export class MultiTracingProcessor implements TracingProcessor {
     for (const processor of this.#processors) {
       await processor.onSpanEnd(span);
     }
+  }
+
+  /**
+   * Dispatches a completed trace lifecycle to every registered processor without
+   * calling Trace.start() or Trace.end().
+   */
+  async dispatchTrace(trace: Trace): Promise<void> {
+    if (trace.traceId === NOOP_TRACE_OR_SPAN_ID) {
+      return;
+    }
+
+    await this.onTraceStart(trace);
+    await this.onTraceEnd(trace);
+  }
+
+  /**
+   * Dispatches a completed span lifecycle to every registered processor without
+   * calling Span.start() or Span.end().
+   */
+  async dispatchSpan(span: Span): Promise<void> {
+    if (isNoopSpan(span)) {
+      return;
+    }
+
+    await this.onSpanStart(span);
+    await this.onSpanEnd(span);
+  }
+
+  /**
+   * Dispatches a span start event to every registered processor without calling
+   * Span.start().
+   */
+  async dispatchSpanStart(span: Span): Promise<void> {
+    if (isNoopSpan(span)) {
+      return;
+    }
+
+    await this.onSpanStart(span);
+  }
+
+  /**
+   * Dispatches a span end event to every registered processor without calling
+   * Span.end().
+   */
+  async dispatchSpanEnd(span: Span): Promise<void> {
+    if (isNoopSpan(span)) {
+      return;
+    }
+
+    await this.onSpanEnd(span);
   }
 
   async shutdown(timeout?: number): Promise<void> {

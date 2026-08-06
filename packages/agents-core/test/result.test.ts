@@ -168,6 +168,52 @@ describe('StreamedRunResult', () => {
     expect(sr.error).toBe(err);
   });
 
+  it.each([
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'redacts streamed run errors when model=%s or tool=%s logging is disabled',
+    async (dontLogModelData, dontLogToolData) => {
+      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+      vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(
+        dontLogModelData,
+      );
+      vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(
+        dontLogToolData,
+      );
+      const state = createState();
+      const sr = new StreamedRunResult({ state });
+      const secret = 'SECRET_STREAMED_RUN_ERROR_123';
+      const err = new Error(secret);
+
+      sr._raiseError(err);
+
+      await expect(sr.completed).rejects.toBe(err);
+      expect(sr.error).toBe(err);
+      expect(debugSpy).toHaveBeenCalledWith('Resulted in an error:', 'object');
+      expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(secret);
+      vi.restoreAllMocks();
+    },
+  );
+
+  it('keeps rejecting when redacted streamed run logging receives a revoked Proxy', async () => {
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(true);
+    vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(false);
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+
+    sr._raiseError(proxy);
+
+    await expect(sr.completed).rejects.toBe(proxy);
+    expect(sr.error).toBe(proxy);
+    expect(debugSpy).toHaveBeenCalledWith('Resulted in an error:', 'object');
+    vi.restoreAllMocks();
+  });
+
   it('handles abort while iterating without throwing', async () => {
     const state = createState();
     const controller = new AbortController();
@@ -184,9 +230,52 @@ describe('StreamedRunResult', () => {
     controller.abort();
 
     await expect(consumePromise).resolves.toBeUndefined();
+    sr._done();
     await expect(sr.completed).resolves.toBeUndefined();
     expect(sr.cancelled).toBe(true);
     expect(sr.error).toBe(null);
+  });
+
+  it('waits for the background run loop after cancellation', async () => {
+    const state = createState();
+    const controller = new AbortController();
+    const sr = new StreamedRunResult({ state, signal: controller.signal });
+    const reader = (sr.toStream() as any).getReader();
+
+    controller.abort();
+    await expect(reader.read()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+
+    let completedSettled = false;
+    void sr.completed.then(() => {
+      completedSettled = true;
+    });
+    await Promise.resolve();
+
+    expect(completedSettled).toBe(false);
+
+    sr._done();
+    await expect(sr.completed).resolves.toBeUndefined();
+  });
+
+  it('reports a background run error after cancellation', async () => {
+    const state = createState();
+    const controller = new AbortController();
+    const sr = new StreamedRunResult({ state, signal: controller.signal });
+    const reader = (sr.toStream() as any).getReader();
+    const error = new Error('failed after cancellation');
+
+    controller.abort();
+    await expect(reader.read()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    sr._raiseError(error);
+
+    await expect(sr.completed).rejects.toBe(error);
+    expect(sr.error).toBe(error);
   });
 
   it('preserves an already-aborted signal for the run loop', async () => {
@@ -201,6 +290,7 @@ describe('StreamedRunResult', () => {
     expect(signal).toBeDefined();
     expect(signal?.aborted).toBe(true);
     expect(sr.cancelled).toBe(true);
+    sr._done();
     await expect(sr.completed).resolves.toBeUndefined();
   });
 
@@ -217,6 +307,7 @@ describe('StreamedRunResult', () => {
 
     const reader = (sr.toStream() as any).getReader();
     await reader.cancel();
+    sr._done();
     await sr.completed;
 
     expect(sr.cancelled).toBe(true);

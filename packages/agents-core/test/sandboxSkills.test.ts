@@ -7,7 +7,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   skills,
   type Entry,
@@ -16,6 +16,7 @@ import {
   type SandboxSessionState,
   Manifest,
   SandboxSkillsConfigError,
+  SandboxWorkspaceReadNotFoundError,
 } from '../src/sandbox';
 import { localDirLazySkillSource } from '../src/sandbox/local';
 
@@ -61,7 +62,9 @@ class FakeSkillsSession implements SandboxSession {
   async readFile(args: { path: string }): Promise<string | Uint8Array> {
     const content = this.files.get(args.path);
     if (typeof content === 'undefined') {
-      throw new Error(`file not found: ${args.path}`);
+      throw new SandboxWorkspaceReadNotFoundError(
+        `file not found: ${args.path}`,
+      );
     }
     return content;
   }
@@ -591,6 +594,68 @@ describe('Skills', () => {
     expect(instructions).toContain(
       '- spreadsheet-review: Review spreadsheets quickly (file: .agents/sheet-tools)',
     );
+  });
+
+  it('ignores missing skill directories while preserving access failures', async () => {
+    const capability = skills({ from: { type: 'dir', children: {} } });
+    const session = new FakeSkillsSession();
+    capability.bind(session);
+
+    vi.spyOn(session, 'listDir').mockRejectedValueOnce(
+      new SandboxWorkspaceReadNotFoundError('missing skill directory'),
+    );
+    await expect(capability.instructions(new Manifest())).resolves.toContain(
+      '.agents',
+    );
+
+    const denied = Object.assign(new Error('Permission denied'), {
+      code: 'EACCES',
+    });
+    vi.spyOn(session, 'listDir').mockRejectedValueOnce(denied);
+    await expect(capability.instructions(new Manifest())).rejects.toBe(denied);
+  });
+
+  it('skips missing skill files without suppressing unreadable files', async () => {
+    const capability = skills({ from: { type: 'dir', children: {} } });
+    const session = new FakeSkillsSession();
+    session.files.set('.agents/blocked/SKILL.md', '# Placeholder');
+    capability.bind(session);
+
+    vi.spyOn(session, 'readFile').mockRejectedValueOnce(
+      new SandboxWorkspaceReadNotFoundError('missing skill file'),
+    );
+    await expect(capability.instructions(new Manifest())).resolves.toContain(
+      '.agents',
+    );
+
+    const denied = Object.assign(new Error('Permission denied'), {
+      code: 'EACCES',
+    });
+    vi.spyOn(session, 'readFile').mockRejectedValueOnce(denied);
+    await expect(capability.instructions(new Manifest())).rejects.toBe(denied);
+  });
+
+  it('does not materialize lazy skills when their existence cannot be determined', async () => {
+    const capability = skills({
+      lazyFrom: {
+        source: { type: 'local_dir', src: 'skills' },
+        index: [{ name: 'dynamic-skill', description: 'dynamic' }],
+      },
+    });
+    const session = new FakeSkillsSession();
+    const denied = Object.assign(new Error('Permission denied'), {
+      code: 'EACCES',
+    });
+    vi.spyOn(session, 'pathExists').mockRejectedValue(denied);
+    capability.bind(session);
+
+    await expect(
+      (capability.tools()[0] as any).invoke(
+        undefined,
+        JSON.stringify({ skill_name: 'dynamic-skill' }),
+      ),
+    ).resolves.toContain('Permission denied');
+    expect(session.materializeCalls).toEqual([]);
   });
 
   it('renders lazy loading guidance for lazy skill sources', async () => {

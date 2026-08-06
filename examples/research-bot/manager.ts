@@ -20,7 +20,7 @@ export class ResearchManager {
   async run(query: string): Promise<void> {
     await withTrace('Research workflow', async (trace) => {
       console.log(
-        `[trace_id] View trace: https://platform.openai.com/traces/trace?trace_id=${trace.traceId}`,
+        `[trace_id] View trace: https://platform.openai.com/logs/trace?trace_id=${trace.traceId}`,
       );
       console.log(`[starting] Starting research...`);
       const searchPlan = await this._planSearches(query);
