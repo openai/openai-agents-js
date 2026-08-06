@@ -2903,6 +2903,52 @@ describe('AiSdkModel.getResponse', () => {
     expect(result.finalOutput).toBe('firstsecond');
   });
 
+  test('transforms complete structured output once across interleaved reasoning', async () => {
+    const transformOutputText = vi.fn((text: string) => {
+      return text.match(/\{[\s\S]*\}/)?.[0] ?? text;
+    });
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              { type: 'text', text: 'Result: {"content":' },
+              { type: 'reasoning', text: 'thinking' },
+              { type: 'text', text: '"structured"}' },
+            ],
+            usage: { inputTokens: 1, outputTokens: 3, totalTokens: 4 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+      { transformOutputText },
+    );
+
+    const result = await run(
+      new Agent({
+        name: 'Structured Assistant',
+        model,
+        outputType: z.object({ content: z.string() }),
+      }),
+      'Respond with structured output.',
+    );
+
+    expect(transformOutputText).toHaveBeenCalledOnce();
+    expect(transformOutputText).toHaveBeenCalledWith(
+      'Result: {"content":"structured"}',
+      expect.objectContaining({ stream: false }),
+    );
+    expect(result.newItems.map((item) => item.rawItem?.type)).toEqual([
+      'message',
+      'reasoning',
+      'message',
+    ]);
+    expect(result.finalOutput).toEqual({ content: 'structured' });
+  });
+
   test('keeps complete final output when used as an agent tool', async () => {
     const model = new AiSdkModel(
       stubModel({
@@ -4823,6 +4869,64 @@ describe('AiSdkModel.getStreamedResponse', () => {
       'reasoning',
     ]);
     expect(result.finalOutput).toBe('firstsecond');
+  });
+
+  test('transforms complete streamed structured output once across interleaved reasoning', async () => {
+    const transformOutputText = vi.fn((text: string) => {
+      return text.match(/\{[\s\S]*\}/)?.[0] ?? text;
+    });
+    const parts = [
+      {
+        type: 'text-delta',
+        id: 'text-1',
+        delta: 'Result: {"content":',
+      },
+      { type: 'reasoning-start', id: 'reasoning-1' },
+      {
+        type: 'reasoning-delta',
+        id: 'reasoning-1',
+        delta: 'thinking',
+      },
+      { type: 'reasoning-end', id: 'reasoning-1' },
+      { type: 'text-delta', id: 'text-2', delta: '"structured"}' },
+      { type: 'response-metadata', id: 'id1' },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 3 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return { stream: partsStream(parts) } as any;
+        },
+      }),
+      { transformOutputText },
+    );
+
+    const result = await run(
+      new Agent({
+        name: 'Structured Assistant',
+        model,
+        outputType: z.object({ content: z.string() }),
+      }),
+      'Respond with structured output.',
+      { stream: true },
+    );
+    await result.completed;
+
+    expect(transformOutputText).toHaveBeenCalledOnce();
+    expect(transformOutputText).toHaveBeenCalledWith(
+      'Result: {"content":"structured"}',
+      expect.objectContaining({ stream: true }),
+    );
+    expect(result.newItems.map((item) => item.rawItem?.type)).toEqual([
+      'message',
+      'reasoning',
+      'message',
+    ]);
+    expect(result.finalOutput).toEqual({ content: 'structured' });
   });
 
   test('keeps streamed text contiguous across replacement tool calls', async () => {
