@@ -2801,6 +2801,44 @@ describe('AiSdkModel.getResponse', () => {
     ]);
   });
 
+  test('keeps text contiguous across skipped response content', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              { type: 'text', text: 'Hello ' },
+              {
+                type: 'source',
+                sourceType: 'url',
+                id: 'source-1',
+                url: 'https://example.com/source',
+              },
+              {
+                type: 'file',
+                mediaType: 'image/png',
+                data: 'iVBORw0KGgo=',
+              },
+              { type: 'text', text: 'world' },
+            ],
+            usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const result = await run(
+      new Agent({ name: 'Assistant', model }),
+      'Say hello.',
+    );
+
+    expect(result.finalOutput).toBe('Hello world');
+  });
+
   test('applies transformOutputText to finalized assistant text', async () => {
     const transformOutputText = vi.fn((text: string, context: any) => {
       expect(context.stream).toBe(false);
@@ -4454,6 +4492,195 @@ describe('AiSdkModel.getStreamedResponse', () => {
         callId: 'c1',
         name: 'foo',
         arguments: '{"k":"v"}',
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id1',
+        },
+      },
+    ]);
+  });
+
+  test('keeps streamed text contiguous across skipped response content', async () => {
+    const parts = [
+      { type: 'text-delta', id: 'text-1', delta: 'Hello ' },
+      {
+        type: 'source',
+        sourceType: 'url',
+        id: 'source-1',
+        url: 'https://example.com/source',
+      },
+      {
+        type: 'file',
+        mediaType: 'image/png',
+        data: 'iVBORw0KGgo=',
+      },
+      { type: 'text-delta', id: 'text-2', delta: 'world' },
+      { type: 'response-metadata', id: 'id1' },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 2 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return { stream: partsStream(parts) } as any;
+        },
+      }),
+    );
+
+    const events: any[] = [];
+    for await (const event of model.getStreamedResponse({
+      input: 'Say hello.',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      events.push(event);
+    }
+
+    const final = events.at(-1);
+    expect(final.response.output).toEqual([
+      {
+        type: 'message',
+        id: 'text-1',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Hello world' }],
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id1',
+        },
+      },
+    ]);
+  });
+
+  test('keeps streamed text contiguous across empty reasoning frames', async () => {
+    const parts = [
+      { type: 'text-delta', id: 'text-1', delta: 'Hello ' },
+      { type: 'reasoning-start', id: 'reasoning-1' },
+      { type: 'reasoning-end', id: 'reasoning-1' },
+      { type: 'text-delta', id: 'text-2', delta: 'world' },
+      { type: 'response-metadata', id: 'id1' },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 2 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return { stream: partsStream(parts) } as any;
+        },
+      }),
+    );
+
+    const events: any[] = [];
+    for await (const event of model.getStreamedResponse({
+      input: 'Say hello.',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      events.push(event);
+    }
+
+    expect(
+      events.filter((event) => event.type === 'output_text_delta'),
+    ).toEqual([
+      { type: 'output_text_delta', itemId: 'text-1', delta: 'Hello ' },
+      { type: 'output_text_delta', itemId: 'text-1', delta: 'world' },
+    ]);
+    const final = events.at(-1);
+    expect(final.response.output).toEqual([
+      {
+        type: 'message',
+        id: 'text-1',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Hello world' }],
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id1',
+        },
+      },
+    ]);
+  });
+
+  test('keeps streamed text contiguous across replacement tool calls', async () => {
+    const parts = [
+      {
+        type: 'tool-call',
+        toolCallId: 'call-1',
+        toolName: 'lookup',
+        input: '{"version":1}',
+      },
+      { type: 'text-delta', id: 'text-1', delta: 'Hello ' },
+      {
+        type: 'tool-call',
+        toolCallId: 'call-1',
+        toolName: 'lookup',
+        input: '{"version":2}',
+      },
+      { type: 'text-delta', id: 'text-2', delta: 'world' },
+      { type: 'response-metadata', id: 'id1' },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 2 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return { stream: partsStream(parts) } as any;
+        },
+      }),
+    );
+
+    const events: any[] = [];
+    for await (const event of model.getStreamedResponse({
+      input: 'Say hello.',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      events.push(event);
+    }
+
+    expect(
+      events.filter((event) => event.type === 'output_text_delta'),
+    ).toEqual([
+      { type: 'output_text_delta', itemId: 'text-1', delta: 'Hello ' },
+      { type: 'output_text_delta', itemId: 'text-1', delta: 'world' },
+    ]);
+    const final = events.at(-1);
+    expect(final.response.output).toEqual([
+      {
+        type: 'function_call',
+        callId: 'call-1',
+        name: 'lookup',
+        arguments: '{"version":2}',
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id1',
+        },
+      },
+      {
+        type: 'message',
+        id: 'text-1',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Hello world' }],
         status: 'completed',
         providerData: {
           model: 'stub:m',

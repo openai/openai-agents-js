@@ -2197,11 +2197,10 @@ export class AiSdkModel implements Model {
             continue;
           }
 
-          await flushPendingText();
-
           if (part.type === 'reasoning') {
             const reasoningText =
               typeof part.text === 'string' ? part.text : '';
+            await flushPendingText();
             output.push({
               type: 'reasoning',
               content: [{ type: 'input_text', text: reasoningText }],
@@ -2243,20 +2242,20 @@ export class AiSdkModel implements Model {
               requestedToolsByCallId.set(part.toolCallId, requestedTool);
             }
 
-            output.push(
-              createProtocolToolCallItem({
-                requestedTool,
-                toolCallId: part.toolCallId,
-                toolName: part.toolName,
-                input: part.input,
-                providerExecuted: part.providerExecuted,
-                providerData: mergeProviderData(
-                  baseProviderData,
-                  part.providerMetadata ??
-                    (hasToolCalls ? result.providerMetadata : undefined),
-                ),
-              }),
-            );
+            const toolCallItem = createProtocolToolCallItem({
+              requestedTool,
+              toolCallId: part.toolCallId,
+              toolName: part.toolName,
+              input: part.input,
+              providerExecuted: part.providerExecuted,
+              providerData: mergeProviderData(
+                baseProviderData,
+                part.providerMetadata ??
+                  (hasToolCalls ? result.providerMetadata : undefined),
+              ),
+            });
+            await flushPendingText();
+            output.push(toolCallItem);
             continue;
           }
 
@@ -2270,6 +2269,7 @@ export class AiSdkModel implements Model {
             ),
           });
           if (toolSearchOutput) {
+            await flushPendingText();
             output.push(toolSearchOutput);
           }
         }
@@ -2489,6 +2489,14 @@ export class AiSdkModel implements Model {
         );
         return reasoningBlock;
       };
+      const closeActiveTextForReasoning = (reasoningBlock: {
+        text: string;
+        providerMetadata?: Record<string, any>;
+      }) => {
+        if (reasoningBlock.text || reasoningBlock.providerMetadata) {
+          activeTextEntry = undefined;
+        }
+      };
 
       const appendToolItem = (
         item:
@@ -2501,6 +2509,7 @@ export class AiSdkModel implements Model {
           ? toolCallEntryIndexById.get(toolCallId)
           : undefined;
         if (existingIndex === undefined) {
+          activeTextEntry = undefined;
           const entryIndex = orderedOutputEntries.length;
           orderedOutputEntries.push({ kind: 'tool', item });
           if (toolCallId) {
@@ -2543,14 +2552,16 @@ export class AiSdkModel implements Model {
             break;
           }
           case 'reasoning-start': {
-            activeTextEntry = undefined;
             // Start tracking a new reasoning block
             const reasoningId = (part as any).id ?? 'default';
-            getReasoningBlock(reasoningId, (part as any).providerMetadata);
+            const reasoningBlock = getReasoningBlock(
+              reasoningId,
+              (part as any).providerMetadata,
+            );
+            closeActiveTextForReasoning(reasoningBlock);
             break;
           }
           case 'reasoning-delta': {
-            activeTextEntry = undefined;
             // Accumulate reasoning text
             const reasoningId = (part as any).id ?? 'default';
             const reasoningBlock = getReasoningBlock(
@@ -2558,17 +2569,20 @@ export class AiSdkModel implements Model {
               (part as any).providerMetadata,
             );
             reasoningBlock.text += (part as any).delta ?? '';
+            closeActiveTextForReasoning(reasoningBlock);
             break;
           }
           case 'reasoning-end': {
-            activeTextEntry = undefined;
             // Capture final provider metadata (may contain signature)
             const reasoningId = (part as any).id ?? 'default';
-            getReasoningBlock(reasoningId, (part as any).providerMetadata);
+            const reasoningBlock = getReasoningBlock(
+              reasoningId,
+              (part as any).providerMetadata,
+            );
+            closeActiveTextForReasoning(reasoningBlock);
             break;
           }
           case 'tool-call': {
-            activeTextEntry = undefined;
             const toolCallId = (part as any).toolCallId;
             if (toolCallId) {
               const requestedTool =
@@ -2594,7 +2608,6 @@ export class AiSdkModel implements Model {
             break;
           }
           case 'tool-result': {
-            activeTextEntry = undefined;
             const toolCallId = (part as any).toolCallId;
             if (!toolCallId) {
               break;
