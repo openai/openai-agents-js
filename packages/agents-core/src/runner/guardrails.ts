@@ -17,6 +17,7 @@ import { RunState } from '../runState';
 import { getTurnInput } from './items';
 import { withGuardrailSpan } from '../tracing';
 import type { GuardrailFunctionOutput } from '../guardrail';
+import { processFinalOutputWithRedaction } from '../utils/finalOutputError';
 
 export type GuardrailTracker = {
   readonly pending: boolean;
@@ -260,7 +261,12 @@ export async function runOutputGuardrails<
   if (guardrails.length === 0) {
     return;
   }
-  const agentOutput = state._currentAgent.processFinalOutput(output);
+  const agentOutput =
+    state._currentAgent.outputType === 'text'
+      ? state._currentAgent.processFinalOutput(output)
+      : processFinalOutputWithRedaction(() =>
+          state._currentAgent.processFinalOutput(output),
+        );
   const runOutput = getTurnInput(
     [],
     state._generatedItems,

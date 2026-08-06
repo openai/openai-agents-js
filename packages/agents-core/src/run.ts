@@ -40,6 +40,7 @@ import type { TracingConfig } from './tracing';
 import { includeTaskAndTurnSpans, mergeTracingConfig } from './tracing/config';
 import { Usage } from './usage';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
+import { isDataRedactedError } from './utils/finalOutputError';
 import { DEFAULT_MAX_TURNS } from './runner/constants';
 import { StreamEventResponseCompleted } from './types/protocol';
 import type { Session, SessionInputCallback } from './memory/session';
@@ -1242,7 +1243,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               );
               completedResultPersisted = true;
             } catch (persistenceError) {
-              (error as Error & { cause?: unknown }).cause = persistenceError;
+              if (!isDataRedactedError(error)) {
+                (error as Error & { cause?: unknown }).cause = persistenceError;
+              }
             }
           }
           throw error;
@@ -1861,7 +1864,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           try {
             await saveStreamResultWithCompactionOwnership();
           } catch (persistenceError) {
-            (error as Error & { cause?: unknown }).cause = persistenceError;
+            if (!isDataRedactedError(error)) {
+              (error as Error & { cause?: unknown }).cause = persistenceError;
+            }
           }
         }
         throw error;
