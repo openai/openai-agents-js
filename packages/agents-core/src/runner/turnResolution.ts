@@ -15,8 +15,12 @@ import {
   getRefusalFromOutputMessage,
   getTextFromOutputMessage,
 } from '../utils/messages';
-import { getSchemaAndParserFromInputType } from '../utils/tools';
 import { safeExecute } from '../utils/safeExecute';
+import {
+  isDataRedactedError,
+  processFinalOutputWithRedaction,
+  REDACTED_FINAL_OUTPUT_ERROR_MESSAGE,
+} from '../utils/finalOutputError';
 import { addErrorToCurrentSpan } from '../tracing/context';
 import { NextStep, SingleStepResult, nextStepSchema } from './steps';
 import type {
@@ -51,6 +55,7 @@ import type { RunErrorData, RunErrorHandlers } from './errorHandlers';
 import {
   createRunErrorFinalOutputItem,
   formatRunErrorFinalOutput,
+  preserveInvalidFinalOutputRedaction,
   resolveRunErrorHandler,
   validateRunErrorHandlerFinalOutput,
 } from './errorHandlers';
@@ -672,32 +677,39 @@ async function resolveInvalidFinalOutput<
   newItems: RunItem[];
   state: RunState<TContext, TAgent>;
 }): Promise<string | undefined> {
-  const handlerResult = await resolveRunErrorHandler({
-    error: args.error,
-    errorKind: 'invalidFinalOutput',
-    errorHandlers: args.errorHandlers,
-    context: args.state._context,
-    runData: buildTurnRunErrorData(
-      args.state,
-      args.agent,
-      args.originalInput,
-      args.preStepItems,
-      args.newItems,
-    ),
-  });
-  if (!handlerResult) {
-    return undefined;
-  }
+  return preserveInvalidFinalOutputRedaction(async (redactFromStart) => {
+    const handlerResult = await resolveRunErrorHandler({
+      error: args.error,
+      errorKind: 'invalidFinalOutput',
+      errorHandlers: args.errorHandlers,
+      context: args.state._context,
+      runData: buildTurnRunErrorData(
+        args.state,
+        args.agent,
+        args.originalInput,
+        args.preStepItems,
+        args.newItems,
+      ),
+    });
+    if (!handlerResult) {
+      return undefined;
+    }
 
-  const outputText = formatRunErrorFinalOutput(
-    args.agent,
-    handlerResult.finalOutput,
-  );
-  validateRunErrorHandlerFinalOutput(args.agent, outputText);
-  if (handlerResult.includeInHistory !== false) {
-    args.newItems.push(createRunErrorFinalOutputItem(args.agent, outputText));
-  }
-  return outputText;
+    const outputText = formatRunErrorFinalOutput(
+      args.agent,
+      handlerResult.finalOutput,
+    );
+    validateRunErrorHandlerFinalOutput(
+      args.agent,
+      outputText,
+      true,
+      redactFromStart,
+    );
+    if (handlerResult.includeInHistory !== false) {
+      args.newItems.push(createRunErrorFinalOutputItem(args.agent, outputText));
+    }
+    return outputText;
+  }, isDataRedactedError(args.error));
 }
 
 /**
@@ -1337,20 +1349,27 @@ export async function resolveTurnAfterModelResponse<
 
     if (agent.outputType !== 'text' && potentialFinalOutput) {
       // Structured output schema => always leads to a final output if we have text.
-      const { parser } = getSchemaAndParserFromInputType(
-        agent.outputType,
-        'final_output',
+      const [error] = await safeExecute(() =>
+        processFinalOutputWithRedaction(() =>
+          agent.processFinalOutput(potentialFinalOutput),
+        ),
       );
-      const [error] = await safeExecute(() => parser(potentialFinalOutput));
       if (error) {
-        const outputErrorMessage = formatFinalOutputTypeError(error);
+        const redacted = isDataRedactedError(error);
+        const outputErrorMessage = redacted
+          ? error.message
+          : formatFinalOutputTypeError(error);
+        const includeTraceErrorDetails =
+          runner.config.traceIncludeSensitiveData && !redacted;
         addErrorToCurrentSpan({
-          message: outputErrorMessage,
-          data: {
-            error: String(error),
-          },
+          message: includeTraceErrorDetails
+            ? outputErrorMessage
+            : REDACTED_FINAL_OUTPUT_ERROR_MESSAGE,
+          data: includeTraceErrorDetails ? { error: String(error) } : {},
         });
-        const outputError = new ModelBehaviorError(outputErrorMessage);
+        const outputError = redacted
+          ? (error as ModelBehaviorError)
+          : new ModelBehaviorError(outputErrorMessage);
         const handledOutput = await resolveInvalidFinalOutput({
           error: outputError,
           errorHandlers,

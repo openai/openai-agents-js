@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   Agent,
   MemorySession,
+  ModelBehaviorError,
   OutputGuardrailTripwireTriggered,
   RequestUsage,
   Runner,
@@ -39,6 +40,7 @@ import { mergeAgentToolRunConfig } from '../src/agentToolRunConfig';
 import { SandboxRuntimeManager } from '../src/sandbox/runtime';
 import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../src/shims/shims-browser';
 import { fakeModelMessage, FakeModel } from './stubs';
+import logger from '../src/logger';
 
 class RecordingProcessor implements TracingProcessor {
   readonly spansStarted: Span<any>[] = [];
@@ -2304,9 +2306,214 @@ describe('runner task and turn tracing', () => {
     },
   );
 
+  it.each([
+    ['redacted trace', false, false],
+    ['redacted trace streamed', false, true],
+    ['sensitive trace', true, false],
+    ['sensitive trace streamed', true, true],
+  ] as const)(
+    '%s controls recovered structured-output error details',
+    async (_mode, traceIncludeSensitiveData, stream) => {
+      const secret = 'SECRET_RECOVERED_FINAL_OUTPUT_TRACE_4212';
+      const response: ModelResponse = {
+        output: [fakeModelMessage(JSON.stringify({ summary: secret }))],
+        usage: new Usage(),
+      };
+      const agent = new Agent({
+        name: 'Recovered structured-output tracing agent',
+        outputType: z.object({ summary: z.string() }),
+        model: stream
+          ? new StreamingModel(response)
+          : new FakeModel([response]),
+      });
+      let parserCalls = 0;
+      agent.processFinalOutput = (output: string) => {
+        parserCalls += 1;
+        if (parserCalls === 1) {
+          throw new Error(`Overridden parser rejected ${output}`);
+        }
+        return JSON.parse(output);
+      };
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogModelData', 'get')
+        .mockReturnValue(false);
+      const runner = new Runner({ traceIncludeSensitiveData });
+      const options = {
+        errorHandlers: {
+          invalidFinalOutput: () => ({
+            finalOutput: { summary: 'safe fallback' },
+          }),
+        },
+      };
+
+      try {
+        if (stream) {
+          const result = await runner.run(agent, 'hello', {
+            ...options,
+            stream: true,
+          });
+          await result.completed;
+          expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
+        } else {
+          const result = await runner.run(agent, 'hello', options);
+          expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
+        }
+      } finally {
+        flagSpy.mockRestore();
+      }
+
+      expect(spanOfType(processor, 'task').error).toBeNull();
+      expect(parserCalls).toBeGreaterThanOrEqual(2);
+      const turnError = spanOfType(processor, 'turn').error;
+      const renderedTurnError = JSON.stringify(turnError);
+      if (traceIncludeSensitiveData) {
+        expect(renderedTurnError).toContain(secret);
+      } else {
+        expect(turnError).toEqual({
+          message:
+            'Invalid output type: final assistant output did not match the expected schema.',
+          data: {},
+        });
+        expect(renderedTurnError).not.toContain(secret);
+      }
+    },
+  );
+
+  it.each([
+    ['redacted', true, false],
+    ['redacted streamed', true, true],
+    ['diagnostic', false, false],
+    ['diagnostic streamed', false, true],
+  ] as const)(
+    '%s structured-output errors follow the model-data policy in span callbacks',
+    async (_mode, dontLogModelData, stream) => {
+      const secret = 'SECRET_FINAL_OUTPUT_SPAN_4207';
+      const response: ModelResponse = {
+        output: [fakeModelMessage(JSON.stringify({ summary: secret }))],
+        usage: new Usage(),
+      };
+      const agent = new Agent({
+        name: 'Structured output span agent',
+        outputType: z.object({ summary: z.string() }),
+        model: stream
+          ? new StreamingModel(response)
+          : new FakeModel([response]),
+      });
+      agent.processFinalOutput = (output: string): never => {
+        throw new Error(`Overridden parser rejected ${output}`);
+      };
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogModelData', 'get')
+        .mockReturnValue(dontLogModelData);
+
+      try {
+        if (stream) {
+          const result = await new Runner().run(agent, 'hello', {
+            stream: true,
+          });
+          await expect(result.completed).rejects.toBeInstanceOf(
+            ModelBehaviorError,
+          );
+        } else {
+          await expect(new Runner().run(agent, 'hello')).rejects.toBeInstanceOf(
+            ModelBehaviorError,
+          );
+        }
+      } finally {
+        flagSpy.mockRestore();
+      }
+
+      const renderedErrors = JSON.stringify([
+        ...processor.spanErrorsAtEnd.values(),
+      ]);
+      if (dontLogModelData) {
+        expect(renderedErrors).not.toContain(secret);
+      } else {
+        expect(renderedErrors).toContain(secret);
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'keeps redacted guardrail parser and persistence errors out of span callbacks (stream=%s)',
+    async (stream) => {
+      const parserSecret = 'SECRET_GUARDRAIL_PARSER_SPAN_4210';
+      const persistenceSecret = 'SECRET_GUARDRAIL_PERSISTENCE_SPAN_4211';
+      const response: ModelResponse = {
+        output: [fakeModelMessage(JSON.stringify({ summary: parserSecret }))],
+        usage: new Usage(),
+      };
+      const agent = new Agent({
+        name: 'Guardrail persistence tracing agent',
+        outputType: z.object({ summary: z.string() }),
+        model: stream
+          ? new StreamingModel(response)
+          : new FakeModel([response]),
+      });
+      let parserCalls = 0;
+      agent.processFinalOutput = (output: string) => {
+        parserCalls += 1;
+        if (parserCalls === 1) {
+          return JSON.parse(output);
+        }
+        throw new Error(`Guardrail parser rejected ${output}`);
+      };
+      class RejectingPersistenceSession extends MemorySession {
+        override async applyHistoryTransaction(): Promise<void> {
+          throw new Error(`Persistence rejected ${persistenceSecret}`);
+        }
+      }
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogModelData', 'get')
+        .mockReturnValue(true);
+      const runner = new Runner({
+        outputGuardrails: [
+          {
+            name: 'never runs after parser failure',
+            execute: vi.fn(async () => ({
+              tripwireTriggered: false,
+              outputInfo: {},
+            })),
+          },
+        ],
+      });
+
+      let error: unknown;
+      try {
+        if (stream) {
+          const result = await runner.run(agent, 'hello', {
+            stream: true,
+            session: new RejectingPersistenceSession(),
+          });
+          await result.completed;
+        } else {
+          await runner.run(agent, 'hello', {
+            session: new RejectingPersistenceSession(),
+          });
+        }
+      } catch (caught) {
+        error = caught;
+      } finally {
+        flagSpy.mockRestore();
+      }
+
+      expect(error).toBeInstanceOf(ModelBehaviorError);
+      expect((error as Error & { cause?: unknown }).cause).toBeUndefined();
+      expect(parserCalls).toBe(2);
+      const renderedErrors = JSON.stringify([
+        ...processor.spanErrorsAtEnd.values(),
+      ]);
+      expect(renderedErrors).not.toContain(parserSecret);
+      expect(renderedErrors).not.toContain(persistenceSecret);
+    },
+  );
+
   it.each([false, true])(
     'marks task and turn spans when an error handler fails (stream=%s)',
     async (stream) => {
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogModelData', 'get')
+        .mockReturnValue(false);
       const response: ModelResponse = {
         output: [fakeModelMessage('not valid json')],
         usage: new Usage(),
@@ -2346,6 +2553,7 @@ describe('runner task and turn tracing', () => {
           data: { error: String(handlerError) },
         });
       }
+      flagSpy.mockRestore();
     },
   );
 

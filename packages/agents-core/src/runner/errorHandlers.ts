@@ -10,6 +10,7 @@ import {
 } from '../errors';
 import { assistant } from '../helpers/message';
 import { RunItem, RunMessageOutputItem } from '../items';
+import logger from '../logger';
 import { ModelResponse } from '../model';
 import { StreamedRunResult } from '../result';
 import { RunContext } from '../runContext';
@@ -21,6 +22,7 @@ import type {
 } from '../types';
 import { getTurnInput } from './items';
 import { streamStepItemsToRunResult } from './streaming';
+import { createRedactedErrorDetailsError } from '../utils/finalOutputError';
 
 /**
  * Error kinds supported by run error handlers.
@@ -89,6 +91,22 @@ type ResolveRunErrorHandlerArgs<TContext, TAgent extends Agent<any, any>> = {
   runData: RunErrorData<TContext, TAgent>;
 };
 
+export async function preserveInvalidFinalOutputRedaction<T>(
+  callback: (redactFromStart: boolean) => T | Promise<T>,
+  inheritedRedaction = false,
+): Promise<T> {
+  const redactFromStart = inheritedRedaction || logger.dontLogModelData;
+
+  try {
+    return await callback(redactFromStart);
+  } catch (error) {
+    if (redactFromStart || logger.dontLogModelData) {
+      throw createRedactedErrorDetailsError();
+    }
+    throw error;
+  }
+}
+
 /**
  * Attaches the active run state to nested tool guardrail tripwire errors without replacing them.
  */
@@ -143,10 +161,18 @@ const createFinalOutputItem = <TAgent extends Agent<any, any>>(
 function validateRunErrorFinalOutput<TAgent extends Agent<any, any>>(
   agent: TAgent,
   outputText: string,
+  redactInvalidOutputDetails = false,
+  redactFromStart = false,
 ): void {
   try {
     agent.processFinalOutput(outputText);
   } catch (error) {
+    if (
+      redactInvalidOutputDetails &&
+      (redactFromStart || logger.dontLogModelData)
+    ) {
+      throw createRedactedErrorDetailsError();
+    }
     const message = error instanceof Error ? error.message : String(error);
     throw new UserError(`Invalid run error handler finalOutput: ${message}`);
   }

@@ -28,6 +28,7 @@ import type {
   ToolOutputGuardrailResult,
 } from './toolGuardrail';
 import { combineAbortSignalsWithOptions } from './utils/abortSignals';
+import { processFinalOutputWithRedaction } from './utils/finalOutputError';
 
 type AbortHandlerRef<T extends object> = {
   current?: T;
@@ -268,9 +269,18 @@ class RunResultBase<
    */
   get finalOutput(): ResolvedAgentOutput<TAgent['outputType']> | undefined {
     if (this.state._currentStep?.type === 'next_step_final_output') {
-      return this.state._currentAgent.processFinalOutput(
-        this.state._currentStep.output,
-      ) as ResolvedAgentOutput<TAgent['outputType']>;
+      const output = this.state._currentStep.output;
+      if (this.state._currentAgent.outputType === 'text') {
+        return this.state._currentAgent.processFinalOutput(
+          output,
+        ) as ResolvedAgentOutput<TAgent['outputType']>;
+      }
+      return processFinalOutputWithRedaction(
+        () =>
+          this.state._currentAgent.processFinalOutput(
+            output,
+          ) as ResolvedAgentOutput<TAgent['outputType']>,
+      );
     }
 
     logger.warn('Accessed finalOutput before agent run is completed.');
