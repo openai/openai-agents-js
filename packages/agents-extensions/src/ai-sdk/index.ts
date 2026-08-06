@@ -899,6 +899,7 @@ export function itemsToLanguageV2Messages(
         };
         continue;
       }
+      flushCurrentAssistantMessage();
       messages.push({
         role: 'assistant',
         content: [
@@ -1813,6 +1814,13 @@ function mergeProviderMetadata(
   return merged;
 }
 
+function shouldEmitReasoning(
+  text: string,
+  providerMetadata: Record<string, any> | undefined,
+): boolean {
+  return text.length > 0 || providerMetadata !== undefined;
+}
+
 function getHostedToolArgs(providerData: unknown): Record<string, any> {
   if (!isRecord(providerData)) {
     return {};
@@ -2157,26 +2165,6 @@ export class AiSdkModel implements Model {
 
         const resultContent = (result as any).content ?? [];
 
-        // Emit reasoning before tool calls so Anthropic thinking signatures propagate into the next turn.
-        // Extract and add reasoning items FIRST (required by Anthropic: thinking blocks must precede tool_use blocks)
-        const reasoningParts = resultContent.filter(
-          (c: any) => c && c.type === 'reasoning',
-        );
-        for (const reasoningPart of reasoningParts) {
-          const reasoningText =
-            typeof reasoningPart.text === 'string' ? reasoningPart.text : '';
-          output.push({
-            type: 'reasoning',
-            content: [{ type: 'input_text', text: reasoningText }],
-            rawContent: [{ type: 'reasoning_text', text: reasoningText }],
-            // Preserve provider-specific metadata (including signature for Anthropic extended thinking)
-            providerData: mergeProviderData(
-              baseProviderData,
-              reasoningPart.providerMetadata,
-            ),
-          });
-        }
-
         const hasToolCalls = resultContent.some(
           (c: any) => c && c.type === 'tool-call',
         );
@@ -2184,11 +2172,64 @@ export class AiSdkModel implements Model {
           string,
           SerializedTool | SerializedHandoff
         >();
+        let pendingTextParts: string[] = [];
+        const flushPendingText = async () => {
+          if (pendingTextParts.length === 0) {
+            return;
+          }
+          const transformedText = await this.#transformOutputText(
+            pendingTextParts.join(''),
+            request,
+            false,
+          );
+          output.push({
+            type: 'message',
+            content: [{ type: 'output_text', text: transformedText }],
+            role: 'assistant',
+            status: 'completed',
+            providerData: mergeProviderData(
+              baseProviderData,
+              (result as any).providerMetadata,
+            ),
+          });
+          pendingTextParts = [];
+        };
         for (const part of resultContent) {
-          if (
-            !part ||
-            (part.type !== 'tool-call' && part.type !== 'tool-result')
-          ) {
+          if (!part) {
+            continue;
+          }
+
+          if (part.type === 'text' && typeof part.text === 'string') {
+            pendingTextParts.push(part.text);
+            continue;
+          }
+
+          if (part.type === 'reasoning') {
+            const reasoningText =
+              typeof part.text === 'string' ? part.text : '';
+            const reasoningProviderMetadata = mergeProviderData(
+              undefined,
+              part.providerMetadata,
+            );
+            if (
+              !shouldEmitReasoning(reasoningText, reasoningProviderMetadata)
+            ) {
+              continue;
+            }
+            await flushPendingText();
+            output.push({
+              type: 'reasoning',
+              content: [{ type: 'input_text', text: reasoningText }],
+              rawContent: [{ type: 'reasoning_text', text: reasoningText }],
+              providerData: mergeProviderData(
+                baseProviderData,
+                reasoningProviderMetadata,
+              ),
+            });
+            continue;
+          }
+
+          if (part.type !== 'tool-call' && part.type !== 'tool-result') {
             continue;
           }
 
@@ -2217,20 +2258,20 @@ export class AiSdkModel implements Model {
               requestedToolsByCallId.set(part.toolCallId, requestedTool);
             }
 
-            output.push(
-              createProtocolToolCallItem({
-                requestedTool,
-                toolCallId: part.toolCallId,
-                toolName: part.toolName,
-                input: part.input,
-                providerExecuted: part.providerExecuted,
-                providerData: mergeProviderData(
-                  baseProviderData,
-                  part.providerMetadata ??
-                    (hasToolCalls ? result.providerMetadata : undefined),
-                ),
-              }),
-            );
+            const toolCallItem = createProtocolToolCallItem({
+              requestedTool,
+              toolCallId: part.toolCallId,
+              toolName: part.toolName,
+              input: part.input,
+              providerExecuted: part.providerExecuted,
+              providerData: mergeProviderData(
+                baseProviderData,
+                part.providerMetadata ??
+                  (hasToolCalls ? result.providerMetadata : undefined),
+              ),
+            });
+            await flushPendingText();
+            output.push(toolCallItem);
             continue;
           }
 
@@ -2244,40 +2285,11 @@ export class AiSdkModel implements Model {
             ),
           });
           if (toolSearchOutput) {
+            await flushPendingText();
             output.push(toolSearchOutput);
           }
         }
-
-        // Some of other platforms may return both tool calls and text.
-        // Putting a text message here will let the agent loop to complete,
-        // so adding this item only when the tool calls are empty.
-        // Note that the same support is not available for streaming mode.
-        if (!hasToolCalls) {
-          const textParts = resultContent.filter(
-            (c: any) => c && c.type === 'text' && typeof c.text === 'string',
-          );
-          if (textParts.length > 0) {
-            // A model response may contain multiple text parts. Concatenate them
-            // to mirror the streaming path (which accumulates every text-delta
-            // into a single output_text) instead of dropping all but the first.
-            const combinedText = textParts.map((c: any) => c.text).join('');
-            const transformedText = await this.#transformOutputText(
-              combinedText,
-              request,
-              false,
-            );
-            output.push({
-              type: 'message',
-              content: [{ type: 'output_text', text: transformedText }],
-              role: 'assistant',
-              status: 'completed',
-              providerData: mergeProviderData(
-                baseProviderData,
-                (result as any).providerMetadata,
-              ),
-            });
-          }
-        }
+        await flushPendingText();
 
         if (span && request.tracing === true) {
           span.spanData.output = output;
@@ -2447,21 +2459,29 @@ export class AiSdkModel implements Model {
       let usageCompletionTokens = 0;
       let usageInputTokensDetails: Record<string, number> | undefined;
       let usageOutputTokensDetails: Record<string, number> | undefined;
-      const toolItems: Array<
-        | protocol.FunctionCallItem
-        | protocol.ToolSearchCallItem
-        | protocol.ToolSearchOutputItem
-      > = [];
-      const toolCallItemIndexById = new Map<string, number>();
+      type StreamOutputEntry =
+        | { kind: 'reasoning'; reasoningId: string }
+        | {
+            kind: 'text';
+            output: protocol.OutputText;
+            itemId?: string;
+          }
+        | {
+            kind: 'tool';
+            item:
+              | protocol.FunctionCallItem
+              | protocol.ToolSearchCallItem
+              | protocol.ToolSearchOutputItem;
+          };
+      const orderedOutputEntries: StreamOutputEntry[] = [];
+      const toolCallEntryIndexById = new Map<string, number>();
       const requestedToolsByCallId = new Map<
         string,
         SerializedTool | SerializedHandoff
       >();
-      let textOutput: protocol.OutputText | undefined;
-      let textItemId: string | undefined;
+      let activeTextEntry:
+        Extract<StreamOutputEntry, { kind: 'text' }> | undefined;
 
-      // State for tracking reasoning blocks (for Anthropic extended thinking):
-      // Track reasoning deltas so we can preserve Anthropic signatures even when text is redacted.
       const reasoningBlocks = new Map<
         string,
         {
@@ -2473,15 +2493,52 @@ export class AiSdkModel implements Model {
         reasoningId: string,
         providerMetadata: Record<string, any> | undefined,
       ) => {
-        const reasoningBlock = reasoningBlocks.get(reasoningId) ?? {
-          text: '',
-        };
+        let reasoningBlock = reasoningBlocks.get(reasoningId);
+        if (!reasoningBlock) {
+          reasoningBlock = { text: '' };
+          reasoningBlocks.set(reasoningId, reasoningBlock);
+          orderedOutputEntries.push({ kind: 'reasoning', reasoningId });
+        }
         reasoningBlock.providerMetadata = mergeProviderMetadata(
           reasoningBlock.providerMetadata,
           providerMetadata,
         );
-        reasoningBlocks.set(reasoningId, reasoningBlock);
         return reasoningBlock;
+      };
+      const closeActiveTextForReasoning = (reasoningBlock: {
+        text: string;
+        providerMetadata?: Record<string, any>;
+      }) => {
+        if (
+          shouldEmitReasoning(
+            reasoningBlock.text,
+            reasoningBlock.providerMetadata,
+          )
+        ) {
+          activeTextEntry = undefined;
+        }
+      };
+
+      const appendToolItem = (
+        item:
+          | protocol.FunctionCallItem
+          | protocol.ToolSearchCallItem
+          | protocol.ToolSearchOutputItem,
+        toolCallId?: string,
+      ) => {
+        const existingIndex = toolCallId
+          ? toolCallEntryIndexById.get(toolCallId)
+          : undefined;
+        if (existingIndex === undefined) {
+          activeTextEntry = undefined;
+          const entryIndex = orderedOutputEntries.length;
+          orderedOutputEntries.push({ kind: 'tool', item });
+          if (toolCallId) {
+            toolCallEntryIndexById.set(toolCallId, entryIndex);
+          }
+        } else {
+          orderedOutputEntries[existingIndex] = { kind: 'tool', item };
+        }
       };
 
       for await (const part of stream) {
@@ -2494,27 +2551,35 @@ export class AiSdkModel implements Model {
 
         switch (part.type) {
           case 'text-delta': {
-            if (!textOutput) {
-              textOutput = { type: 'output_text', text: '' };
-              // The adapter combines all AI SDK text blocks into one output
-              // message, so every normalized delta must use that message ID.
-              textItemId =
-                typeof (part as any).id === 'string'
-                  ? (part as any).id
-                  : undefined;
+            if (!activeTextEntry) {
+              activeTextEntry = {
+                kind: 'text',
+                output: { type: 'output_text', text: '' },
+                itemId:
+                  typeof (part as any).id === 'string'
+                    ? (part as any).id
+                    : undefined,
+              };
+              orderedOutputEntries.push(activeTextEntry);
             }
-            textOutput.text += (part as any).delta;
+            activeTextEntry.output.text += (part as any).delta;
             yield {
               type: 'output_text_delta',
               delta: (part as any).delta,
-              ...(textItemId ? { itemId: textItemId } : {}),
+              ...(activeTextEntry.itemId
+                ? { itemId: activeTextEntry.itemId }
+                : {}),
             };
             break;
           }
           case 'reasoning-start': {
             // Start tracking a new reasoning block
             const reasoningId = (part as any).id ?? 'default';
-            getReasoningBlock(reasoningId, (part as any).providerMetadata);
+            const reasoningBlock = getReasoningBlock(
+              reasoningId,
+              (part as any).providerMetadata,
+            );
+            closeActiveTextForReasoning(reasoningBlock);
             break;
           }
           case 'reasoning-delta': {
@@ -2525,12 +2590,17 @@ export class AiSdkModel implements Model {
               (part as any).providerMetadata,
             );
             reasoningBlock.text += (part as any).delta ?? '';
+            closeActiveTextForReasoning(reasoningBlock);
             break;
           }
           case 'reasoning-end': {
             // Capture final provider metadata (may contain signature)
             const reasoningId = (part as any).id ?? 'default';
-            getReasoningBlock(reasoningId, (part as any).providerMetadata);
+            const reasoningBlock = getReasoningBlock(
+              reasoningId,
+              (part as any).providerMetadata,
+            );
+            closeActiveTextForReasoning(reasoningBlock);
             break;
           }
           case 'tool-call': {
@@ -2554,13 +2624,7 @@ export class AiSdkModel implements Model {
                   (part as any).providerMetadata,
                 ),
               });
-              const existingIndex = toolCallItemIndexById.get(toolCallId);
-              if (existingIndex === undefined) {
-                toolCallItemIndexById.set(toolCallId, toolItems.length);
-                toolItems.push(toolCallItem);
-              } else {
-                toolItems[existingIndex] = toolCallItem;
-              }
+              appendToolItem(toolCallItem, toolCallId);
             }
             break;
           }
@@ -2584,7 +2648,7 @@ export class AiSdkModel implements Model {
               ),
             });
             if (toolSearchOutput) {
-              toolItems.push(toolSearchOutput);
+              appendToolItem(toolSearchOutput);
             }
             break;
           }
@@ -2612,13 +2676,23 @@ export class AiSdkModel implements Model {
 
       const outputs: protocol.OutputModelItem[] = [];
 
-      // Add reasoning items FIRST (required by Anthropic: thinking blocks must precede tool_use blocks)
-      // Emit reasoning item even when text is empty to preserve signature in providerData for redacted thinking streams
-      for (const [reasoningId, reasoningBlock] of reasoningBlocks) {
-        if (reasoningBlock.text || reasoningBlock.providerMetadata) {
+      for (const entry of orderedOutputEntries) {
+        if (entry.kind === 'reasoning') {
+          const reasoningBlock = reasoningBlocks.get(entry.reasoningId);
+          if (!reasoningBlock) {
+            continue;
+          }
+          if (
+            !shouldEmitReasoning(
+              reasoningBlock.text,
+              reasoningBlock.providerMetadata,
+            )
+          ) {
+            continue;
+          }
           outputs.push({
             type: 'reasoning',
-            id: reasoningId !== 'default' ? reasoningId : undefined,
+            id: entry.reasoningId !== 'default' ? entry.reasoningId : undefined,
             content: [{ type: 'input_text', text: reasoningBlock.text }],
             rawContent: [{ type: 'reasoning_text', text: reasoningBlock.text }],
             // Preserve provider-specific metadata (including signature for Anthropic extended thinking)
@@ -2628,33 +2702,34 @@ export class AiSdkModel implements Model {
               responseId ? { responseId } : undefined,
             ),
           });
+          continue;
         }
-      }
 
-      if (textOutput) {
-        const transformedText = await this.#transformOutputText(
-          textOutput.text,
-          request,
-          true,
-        );
+        if (entry.kind === 'text') {
+          const transformedText = await this.#transformOutputText(
+            entry.output.text,
+            request,
+            true,
+          );
+          outputs.push({
+            type: 'message',
+            ...(entry.itemId ? { id: entry.itemId } : {}),
+            role: 'assistant',
+            content: [{ ...entry.output, text: transformedText }],
+            status: 'completed',
+            providerData: mergeProviderData(
+              baseProviderData,
+              responseId ? { responseId } : undefined,
+            ),
+          });
+          continue;
+        }
+
         outputs.push({
-          type: 'message',
-          ...(textItemId ? { id: textItemId } : {}),
-          role: 'assistant',
-          content: [{ ...textOutput, text: transformedText }],
-          status: 'completed',
+          ...entry.item,
           providerData: mergeProviderData(
             baseProviderData,
-            responseId ? { responseId } : undefined,
-          ),
-        });
-      }
-      for (const toolItem of toolItems) {
-        outputs.push({
-          ...toolItem,
-          providerData: mergeProviderData(
-            baseProviderData,
-            toolItem.providerData,
+            entry.item.providerData,
             responseId ? { responseId } : undefined,
           ),
         });

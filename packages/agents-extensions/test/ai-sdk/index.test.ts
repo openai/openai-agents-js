@@ -342,7 +342,7 @@ describe('AiSdkModel end-to-end scenarios', () => {
     },
   );
 
-  test('streams text blocks and tool calls with a stable message ID', async () => {
+  test('preserves separate text message IDs around tool calls', async () => {
     const parts = [
       { type: 'text-delta', id: 'text-1', delta: 'Hello ' },
       {
@@ -396,7 +396,7 @@ describe('AiSdkModel end-to-end scenarios', () => {
       events.filter((event) => event.type === 'output_text_delta'),
     ).toEqual([
       { type: 'output_text_delta', itemId: 'text-1', delta: 'Hello ' },
-      { type: 'output_text_delta', itemId: 'text-1', delta: 'world' },
+      { type: 'output_text_delta', itemId: 'text-2', delta: 'world' },
     ]);
     expect(final.type).toBe('response_done');
     expect(final.response.output).toEqual([
@@ -404,7 +404,7 @@ describe('AiSdkModel end-to-end scenarios', () => {
         type: 'message',
         id: 'text-1',
         role: 'assistant',
-        content: [{ type: 'output_text', text: 'Hello world' }],
+        content: [{ type: 'output_text', text: 'Hello ' }],
         status: 'completed',
         providerData: { model: 'stub:m', responseId: 'resp-stream' },
       },
@@ -415,6 +415,14 @@ describe('AiSdkModel end-to-end scenarios', () => {
         arguments: '{"q":"a"}',
         status: 'completed',
         providerData: { model: 'stub:m', meta: 1, responseId: 'resp-stream' },
+      },
+      {
+        type: 'message',
+        id: 'text-2',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'world' }],
+        status: 'completed',
+        providerData: { model: 'stub:m', responseId: 'resp-stream' },
       },
       {
         type: 'function_call',
@@ -1238,6 +1246,63 @@ describe('itemsToLanguageV2Messages', () => {
         providerOptions: { execution: 'server' },
       },
     ]);
+  });
+
+  test('preserves reasoning order around provider-executed tool search', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'reasoning',
+        content: [{ type: 'input_text', text: 'Find a weather tool.' }],
+        providerData: { anthropic: { signature: 'sig-before-search' } },
+      } as any,
+      {
+        type: 'tool_search_call',
+        callId: 'search_1',
+        execution: 'server',
+        arguments: { query: 'weather' },
+        status: 'completed',
+      },
+      {
+        type: 'tool_search_output',
+        callId: 'search_1',
+        execution: 'server',
+        status: 'completed',
+        tools: [{ type: 'tool_reference', toolName: 'get_weather' }],
+      },
+      {
+        type: 'reasoning',
+        content: [{ type: 'input_text', text: 'Call the weather tool.' }],
+        providerData: { anthropic: { signature: 'sig-after-search' } },
+      } as any,
+      {
+        type: 'function_call',
+        callId: 'weather_1',
+        name: 'get_weather',
+        arguments: '{"city":"Tokyo"}',
+        status: 'completed',
+      },
+    ];
+
+    const messages = itemsToLanguageV2Messages(stubModel({}), items);
+    const assistantContent = messages.flatMap((message) =>
+      message.role === 'assistant' && Array.isArray(message.content)
+        ? message.content
+        : [],
+    );
+
+    expect(assistantContent.map((part) => part.type)).toEqual([
+      'reasoning',
+      'tool-call',
+      'tool-result',
+      'reasoning',
+      'tool-call',
+    ]);
+    expect(assistantContent[0]).toMatchObject({
+      providerOptions: { anthropic: { signature: 'sig-before-search' } },
+    });
+    expect(assistantContent[3]).toMatchObject({
+      providerOptions: { anthropic: { signature: 'sig-after-search' } },
+    });
   });
 
   test('orders provider-executed tool searches before pending client calls', () => {
@@ -2736,6 +2801,72 @@ describe('AiSdkModel.getResponse', () => {
     ]);
   });
 
+  test('keeps text contiguous across skipped response content', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              { type: 'text', text: 'Hello ' },
+              {
+                type: 'source',
+                sourceType: 'url',
+                id: 'source-1',
+                url: 'https://example.com/source',
+              },
+              {
+                type: 'file',
+                mediaType: 'image/png',
+                data: 'iVBORw0KGgo=',
+              },
+              { type: 'text', text: 'world' },
+            ],
+            usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const result = await run(
+      new Agent({ name: 'Assistant', model }),
+      'Say hello.',
+    );
+
+    expect(result.finalOutput).toBe('Hello world');
+  });
+
+  test('keeps text contiguous across empty reasoning content', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              { type: 'text', text: 'Hello ' },
+              { type: 'reasoning', text: '' },
+              { type: 'text', text: 'world' },
+            ],
+            usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const result = await run(
+      new Agent({ name: 'Assistant', model }),
+      'Say hello.',
+    );
+
+    expect(result.finalOutput).toBe('Hello world');
+  });
+
   test('applies transformOutputText to finalized assistant text', async () => {
     const transformOutputText = vi.fn((text: string, context: any) => {
       expect(context.stream).toBe(false);
@@ -3091,6 +3222,118 @@ describe('AiSdkModel.getResponse', () => {
       type: 'function_call',
       callId: 'weather_1',
       name: 'get_weather',
+    });
+  });
+
+  test('preserves interleaved reasoning and tool order in doGenerate', async () => {
+    const model = new AiSdkModel(
+      stubModel(
+        {
+          async doGenerate() {
+            return {
+              content: [
+                {
+                  type: 'reasoning',
+                  text: 'Find a weather tool.',
+                  providerMetadata: {
+                    anthropic: { signature: 'sig-before-search' },
+                  },
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  input: { query: 'weather' },
+                  providerExecuted: true,
+                },
+                {
+                  type: 'tool-result',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  result: [{ type: 'tool_reference', toolName: 'get_weather' }],
+                },
+                {
+                  type: 'text',
+                  text: 'I found the weather tool.',
+                },
+                {
+                  type: 'reasoning',
+                  text: 'Call the weather tool.',
+                  providerMetadata: {
+                    anthropic: { signature: 'sig-after-search' },
+                  },
+                },
+                {
+                  type: 'text',
+                  text: 'I will call it now.',
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'weather_1',
+                  toolName: 'get_weather',
+                  input: { city: 'Tokyo' },
+                },
+              ],
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              providerMetadata: {},
+              response: { id: 'response_1' },
+              finishReason: 'tool-calls',
+              warnings: [],
+            } as any;
+          },
+        },
+        { provider: 'anthropic.messages', specificationVersion: 'v3' },
+      ),
+    );
+
+    const result = await withTrace('t', () =>
+      model.getResponse({
+        input: 'Find the weather tool and use it.',
+        tools: [
+          aiSdkToolSearchTool({
+            type: 'provider',
+            id: 'anthropic.tool_search_regex_20251119',
+          }),
+          {
+            type: 'function',
+            name: 'get_weather',
+            description: 'Get the weather.',
+            parameters: { type: 'object', properties: {} },
+            strict: true,
+            providerData: { anthropic: { deferLoading: true } },
+          } as any,
+        ],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+
+    expect(result.output.map((item) => item.type)).toEqual([
+      'reasoning',
+      'tool_search_call',
+      'tool_search_output',
+      'message',
+      'reasoning',
+      'message',
+      'function_call',
+    ]);
+    expect(result.output[0]).toMatchObject({
+      providerData: {
+        anthropic: { signature: 'sig-before-search' },
+      },
+    });
+    expect(result.output[3]).toMatchObject({
+      content: [{ type: 'output_text', text: 'I found the weather tool.' }],
+    });
+    expect(result.output[4]).toMatchObject({
+      providerData: {
+        anthropic: { signature: 'sig-after-search' },
+      },
+    });
+    expect(result.output[5]).toMatchObject({
+      content: [{ type: 'output_text', text: 'I will call it now.' }],
     });
   });
 
@@ -4286,6 +4529,195 @@ describe('AiSdkModel.getStreamedResponse', () => {
     ]);
   });
 
+  test('keeps streamed text contiguous across skipped response content', async () => {
+    const parts = [
+      { type: 'text-delta', id: 'text-1', delta: 'Hello ' },
+      {
+        type: 'source',
+        sourceType: 'url',
+        id: 'source-1',
+        url: 'https://example.com/source',
+      },
+      {
+        type: 'file',
+        mediaType: 'image/png',
+        data: 'iVBORw0KGgo=',
+      },
+      { type: 'text-delta', id: 'text-2', delta: 'world' },
+      { type: 'response-metadata', id: 'id1' },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 2 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return { stream: partsStream(parts) } as any;
+        },
+      }),
+    );
+
+    const events: any[] = [];
+    for await (const event of model.getStreamedResponse({
+      input: 'Say hello.',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      events.push(event);
+    }
+
+    const final = events.at(-1);
+    expect(final.response.output).toEqual([
+      {
+        type: 'message',
+        id: 'text-1',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Hello world' }],
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id1',
+        },
+      },
+    ]);
+  });
+
+  test('keeps streamed text contiguous across empty reasoning frames', async () => {
+    const parts = [
+      { type: 'text-delta', id: 'text-1', delta: 'Hello ' },
+      { type: 'reasoning-start', id: 'reasoning-1' },
+      { type: 'reasoning-end', id: 'reasoning-1' },
+      { type: 'text-delta', id: 'text-2', delta: 'world' },
+      { type: 'response-metadata', id: 'id1' },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 2 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return { stream: partsStream(parts) } as any;
+        },
+      }),
+    );
+
+    const events: any[] = [];
+    for await (const event of model.getStreamedResponse({
+      input: 'Say hello.',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      events.push(event);
+    }
+
+    expect(
+      events.filter((event) => event.type === 'output_text_delta'),
+    ).toEqual([
+      { type: 'output_text_delta', itemId: 'text-1', delta: 'Hello ' },
+      { type: 'output_text_delta', itemId: 'text-1', delta: 'world' },
+    ]);
+    const final = events.at(-1);
+    expect(final.response.output).toEqual([
+      {
+        type: 'message',
+        id: 'text-1',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Hello world' }],
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id1',
+        },
+      },
+    ]);
+  });
+
+  test('keeps streamed text contiguous across replacement tool calls', async () => {
+    const parts = [
+      {
+        type: 'tool-call',
+        toolCallId: 'call-1',
+        toolName: 'lookup',
+        input: '{"version":1}',
+      },
+      { type: 'text-delta', id: 'text-1', delta: 'Hello ' },
+      {
+        type: 'tool-call',
+        toolCallId: 'call-1',
+        toolName: 'lookup',
+        input: '{"version":2}',
+      },
+      { type: 'text-delta', id: 'text-2', delta: 'world' },
+      { type: 'response-metadata', id: 'id1' },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 2 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return { stream: partsStream(parts) } as any;
+        },
+      }),
+    );
+
+    const events: any[] = [];
+    for await (const event of model.getStreamedResponse({
+      input: 'Say hello.',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      events.push(event);
+    }
+
+    expect(
+      events.filter((event) => event.type === 'output_text_delta'),
+    ).toEqual([
+      { type: 'output_text_delta', itemId: 'text-1', delta: 'Hello ' },
+      { type: 'output_text_delta', itemId: 'text-1', delta: 'world' },
+    ]);
+    const final = events.at(-1);
+    expect(final.response.output).toEqual([
+      {
+        type: 'function_call',
+        callId: 'call-1',
+        name: 'lookup',
+        arguments: '{"version":2}',
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id1',
+        },
+      },
+      {
+        type: 'message',
+        id: 'text-1',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Hello world' }],
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id1',
+        },
+      },
+    ]);
+  });
+
   test('applies transformOutputText to finalized streamed assistant text', async () => {
     const transformOutputText = vi.fn((text: string, context: any) => {
       expect(context.stream).toBe(true);
@@ -4572,6 +5004,142 @@ describe('AiSdkModel.getStreamedResponse', () => {
     expect(final.response.output[2]).toMatchObject({
       callId: 'weather_1',
       name: 'get_weather',
+    });
+  });
+
+  test('preserves interleaved reasoning and tool order in streaming mode', async () => {
+    const parts = [
+      {
+        type: 'reasoning-start',
+        id: 'reasoning_1',
+      },
+      {
+        type: 'reasoning-delta',
+        id: 'reasoning_1',
+        delta: 'Find a weather tool.',
+      },
+      {
+        type: 'reasoning-end',
+        id: 'reasoning_1',
+        providerMetadata: {
+          anthropic: { signature: 'sig-before-search' },
+        },
+      },
+      {
+        type: 'tool-call',
+        toolCallId: 'search_1',
+        toolName: 'tool_search',
+        input: { query: 'weather' },
+        providerExecuted: true,
+      },
+      {
+        type: 'tool-result',
+        toolCallId: 'search_1',
+        toolName: 'tool_search',
+        result: [{ type: 'tool_reference', toolName: 'get_weather' }],
+      },
+      {
+        type: 'text-delta',
+        id: 'text_1',
+        delta: 'I found the weather tool.',
+      },
+      {
+        type: 'reasoning-start',
+        id: 'reasoning_2',
+      },
+      {
+        type: 'reasoning-delta',
+        id: 'reasoning_2',
+        delta: 'Call the weather tool.',
+      },
+      {
+        type: 'reasoning-end',
+        id: 'reasoning_2',
+        providerMetadata: {
+          anthropic: { signature: 'sig-after-search' },
+        },
+      },
+      {
+        type: 'text-delta',
+        id: 'text_2',
+        delta: 'I will call it now.',
+      },
+      {
+        type: 'tool-call',
+        toolCallId: 'weather_1',
+        toolName: 'get_weather',
+        input: { city: 'Tokyo' },
+      },
+      { type: 'response-metadata', id: 'response_stream_1' },
+      {
+        type: 'finish',
+        finishReason: 'tool-calls',
+        usage: { inputTokens: 3, outputTokens: 4 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel(
+        {
+          async doStream() {
+            return { stream: partsStream(parts) } as any;
+          },
+        },
+        { provider: 'anthropic.messages', specificationVersion: 'v3' },
+      ),
+    );
+
+    const events: any[] = [];
+    for await (const event of model.getStreamedResponse({
+      input: 'Find the weather tool and use it.',
+      tools: [
+        aiSdkToolSearchTool({
+          type: 'provider',
+          id: 'anthropic.tool_search_regex_20251119',
+        }),
+        {
+          type: 'function',
+          name: 'get_weather',
+          description: 'Get the weather.',
+          parameters: { type: 'object', properties: {} },
+          strict: true,
+          providerData: { anthropic: { deferLoading: true } },
+        } as any,
+      ],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      events.push(event);
+    }
+
+    const final = events.at(-1);
+    expect(final.response.output.map((item: any) => item.type)).toEqual([
+      'reasoning',
+      'tool_search_call',
+      'tool_search_output',
+      'message',
+      'reasoning',
+      'message',
+      'function_call',
+    ]);
+    expect(final.response.output[0]).toMatchObject({
+      providerData: {
+        anthropic: { signature: 'sig-before-search' },
+      },
+    });
+    expect(final.response.output[3]).toMatchObject({
+      id: 'text_1',
+      content: [{ type: 'output_text', text: 'I found the weather tool.' }],
+    });
+    expect(final.response.output[4]).toMatchObject({
+      providerData: {
+        anthropic: { signature: 'sig-after-search' },
+      },
+    });
+    expect(final.response.output[5]).toMatchObject({
+      id: 'text_2',
+      content: [{ type: 'output_text', text: 'I will call it now.' }],
     });
   });
 
