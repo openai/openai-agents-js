@@ -58,9 +58,9 @@ const secretTool = tool({
 });
 
 const agent = new RealtimeAgent({
-  name: 'Greeter',
+  name: 'Voice Assistant',
   instructions:
-    'You are a friendly assistant. When you use a tool always first say what you are about to do.',
+    'You are a friendly voice assistant. Respond naturally and concisely. When you use a tool, always first say what you are about to do.',
   tools: [
     hostedMcpTool({
       serverLabel: 'deepwiki',
