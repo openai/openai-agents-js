@@ -3,7 +3,7 @@ import METADATA from './metadata';
 import type { OpenAIClient } from './openaiClient';
 
 export const DEFAULT_OPENAI_API = 'responses';
-export const DEFAULT_OPENAI_MODEL = 'gpt-5.4-mini';
+export const DEFAULT_OPENAI_MODEL = 'gpt-5.6-luna';
 export const DEFAULT_OPENAI_RESPONSES_TRANSPORT = 'http';
 
 let _defaultOpenAIAPI = DEFAULT_OPENAI_API;

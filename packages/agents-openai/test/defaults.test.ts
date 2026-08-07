@@ -15,8 +15,8 @@ import {
 import OpenAI from 'openai';
 
 describe('Defaults', () => {
-  test('Default OpenAI model is gpt-5.4-mini', () => {
-    expect(DEFAULT_OPENAI_MODEL).toBe('gpt-5.4-mini');
+  test('Default OpenAI model is gpt-5.6-luna', () => {
+    expect(DEFAULT_OPENAI_MODEL).toBe('gpt-5.6-luna');
   });
   test('get/setTracingExportApiKey', async () => {
     setTracingExportApiKey('foo');

@@ -40,9 +40,9 @@ describe('gpt5ReasoningSettingsRequired', () => {
   });
 });
 describe('getDefaultModel', () => {
-  test('falls back to gpt-5.4-mini when env var missing', () => {
+  test('falls back to gpt-5.6-luna when env var missing', () => {
     mockedLoadEnv.mockReturnValue({});
-    expect(getDefaultModel()).toBe('gpt-5.4-mini');
+    expect(getDefaultModel()).toBe('gpt-5.6-luna');
   });
   test('lowercases provided env value', () => {
     mockedLoadEnv.mockReturnValue({
@@ -84,7 +84,7 @@ describe('isGpt5Default', () => {
   });
 });
 describe('getDefaultModelSettings', () => {
-  test('returns GPT-5.4 mini defaults when no model is specified', () => {
+  test('returns GPT-5.6 Luna defaults when no model is specified', () => {
     mockedLoadEnv.mockReturnValue({});
     expect(getDefaultModelSettings()).toEqual({
       reasoning: { effort: 'none' },
