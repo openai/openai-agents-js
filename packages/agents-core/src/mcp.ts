@@ -365,6 +365,11 @@ export class MCPServerStreamableHttp
     this.clearLocalToolsCache();
     await this.underlying.invalidateToolsCache();
   }
+  private async closeAndInvalidateToolsCaches(): Promise<void> {
+    const invalidation = this.invalidateToolsCaches();
+    const closing = this.underlying.close();
+    await Promise.all([invalidation, closing]);
+  }
   get name(): string {
     return this.underlying.name;
   }
@@ -378,9 +383,8 @@ export class MCPServerStreamableHttp
     );
   }
   close(): Promise<void> {
-    return this.toolsLifecycle.runLifecycleOperation(
-      () => this.invalidateToolsCaches(),
-      () => this.underlying.close(),
+    return this.toolsLifecycle.runLifecycleOperation(() =>
+      this.closeAndInvalidateToolsCaches(),
     );
   }
   async listTools(): Promise<MCPTool[]> {

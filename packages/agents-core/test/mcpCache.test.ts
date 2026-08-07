@@ -1153,10 +1153,10 @@ function createStubUnderlying(name: string, initialTools: MCPTool[]) {
       cacheDirty = true;
     },
     async close() {
-      await closeOperation?.();
       connected = false;
       sessionId = undefined;
       cacheDirty = true;
+      await closeOperation?.();
     },
     async listTools() {
       if (!connected) {
@@ -1181,6 +1181,14 @@ function createStubUnderlying(name: string, initialTools: MCPTool[]) {
       toolsGeneration += 1;
       cacheDirty = true;
       await invalidateServerToolsCache(name);
+    },
+    async callToolResult() {
+      if (!connected) {
+        throw new Error(
+          'Server not initialized. Make sure you call connect() first.',
+        );
+      }
+      return { content: [{ type: 'text', text: 'ok' }] };
     },
   };
   return {
@@ -1423,3 +1431,34 @@ describe.each(wrapperCacheCases)(
     });
   },
 );
+
+it('starts streamable HTTP close before yielding', async () => {
+  const serverName = 'streamable-http-immediate-close';
+  await invalidateServerToolsCache(serverName);
+  const server = new MCPServerStreamableHttp({
+    url: 'http://localhost:1',
+    name: serverName,
+    cacheToolsList: true,
+  });
+  const { stub, setCloseOperation } = createStubUnderlying(serverName, [
+    toolNamed('a'),
+  ]);
+  (server as unknown as { underlying: typeof stub }).underlying = stub;
+  const closeStarted = createDeferredVoid();
+  const resumeClose = createDeferredVoid();
+  setCloseOperation(async () => {
+    closeStarted.resolve();
+    await resumeClose.promise;
+  });
+  await server.connect();
+
+  const closing = server.close();
+  const toolCallExpectation = expect(server.callTool('a', {})).rejects.toThrow(
+    'Server not initialized',
+  );
+  await closeStarted.promise;
+  resumeClose.resolve();
+
+  await closing;
+  await toolCallExpectation;
+});
