@@ -151,6 +151,25 @@ class SkillContractTest(unittest.TestCase):
         self.assertLess(gate_start, reviewer_wait)
         self.assertLess(clean_gate_acceptance, pr_summary)
 
+    def test_iterative_review_uses_risk_tiered_test_coverage(self) -> None:
+        required_text = (
+            "for changes unrelated to every owner in",
+            "run `pnpm test:review`",
+            "for a leaf subsystem change",
+            "plus that subsystem's complete test file or directory",
+            "with `pnpm test <path>`",
+            "for cross-cutting core changes",
+            "shared test-infrastructure changes",
+            "The reduced check earns no final-gate credit",
+            "including `pnpm test`",
+        )
+
+        for text in required_text:
+            with self.subTest(text=text):
+                self.assertIn(text, self.skill)
+
+        self.assertNotIn("pnpm test -- <path>", self.skill)
+
 
 if __name__ == "__main__":
     unittest.main()

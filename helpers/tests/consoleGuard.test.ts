@@ -3,13 +3,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const guardPath = join(rootDir, 'helpers/tests/console-guard.ts');
 const guardCorePath = join(rootDir, 'helpers/tests/stdioGuard.ts');
 const vitestPath = join(rootDir, 'node_modules/vitest/vitest.mjs');
-const temporaryDirectories: string[] = [];
 const SUBPROCESS_TIMEOUT_MS = 20_000;
 const SUBPROCESS_FORCE_KILL_MS = 2_000;
 const SUBPROCESS_TEST_TIMEOUT_MS = 30_000;
@@ -23,55 +22,51 @@ async function runFixture(
   } = {},
 ) {
   const fixtureDir = await mkdtemp(join(tmpdir(), 'agents-stdio-guard-'));
-  temporaryDirectories.push(fixtureDir);
-  await Promise.all([
-    ...Object.entries(files).map(([name, contents]) =>
-      writeFile(join(fixtureDir, name), contents),
-    ),
-    writeFile(
-      join(fixtureDir, 'console-guard.ts'),
-      await readFile(guardPath, 'utf8'),
-    ),
-    writeFile(
-      join(fixtureDir, 'stdioGuard.ts'),
-      await readFile(guardCorePath, 'utf8'),
-    ),
-    symlink(
-      join(rootDir, 'node_modules'),
-      join(fixtureDir, 'node_modules'),
-      process.platform === 'win32' ? 'junction' : 'dir',
-    ),
-  ]);
-  const configPath = join(fixtureDir, 'vitest.config.ts');
-  await writeFile(
-    configPath,
-    `export default { test: { include: ['*.test.ts'], maxWorkers: 1, minWorkers: 1, setupFiles: ['./console-guard.ts']${options.globalSetup ? `, globalSetup: ${JSON.stringify(options.globalSetup)}` : ''} } };\n`,
-  );
-  return execa(process.execPath, [vitestPath, 'run', '--config', configPath], {
-    cwd: fixtureDir,
-    env: {
-      ...process.env,
-      TEST_STDIO_MODE: 'error',
-      ...options.env,
-    },
-    reject: false,
-    timeout: options.timeoutMs ?? SUBPROCESS_TIMEOUT_MS,
-    forceKillAfterDelay: SUBPROCESS_FORCE_KILL_MS,
-  });
+  try {
+    await Promise.all([
+      ...Object.entries(files).map(([name, contents]) =>
+        writeFile(join(fixtureDir, name), contents),
+      ),
+      writeFile(
+        join(fixtureDir, 'console-guard.ts'),
+        await readFile(guardPath, 'utf8'),
+      ),
+      writeFile(
+        join(fixtureDir, 'stdioGuard.ts'),
+        await readFile(guardCorePath, 'utf8'),
+      ),
+      symlink(
+        join(rootDir, 'node_modules'),
+        join(fixtureDir, 'node_modules'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      ),
+    ]);
+    const configPath = join(fixtureDir, 'vitest.config.ts');
+    await writeFile(
+      configPath,
+      `export default { test: { include: ['*.test.ts'], maxWorkers: 1, minWorkers: 1, setupFiles: ['./console-guard.ts']${options.globalSetup ? `, globalSetup: ${JSON.stringify(options.globalSetup)}` : ''} } };\n`,
+    );
+    return await execa(
+      process.execPath,
+      [vitestPath, 'run', '--config', configPath],
+      {
+        cwd: fixtureDir,
+        env: {
+          ...process.env,
+          TEST_STDIO_MODE: 'error',
+          ...options.env,
+        },
+        reject: false,
+        timeout: options.timeoutMs ?? SUBPROCESS_TIMEOUT_MS,
+        forceKillAfterDelay: SUBPROCESS_FORCE_KILL_MS,
+      },
+    );
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
 }
 
-afterEach(async () => {
-  await Promise.all(
-    temporaryDirectories.splice(0).map((directory) =>
-      rm(directory, {
-        recursive: true,
-        force: true,
-      }),
-    ),
-  );
-});
-
-describe(
+describe.concurrent(
   'test stdout/stderr guard',
   { timeout: SUBPROCESS_TEST_TIMEOUT_MS },
   () => {

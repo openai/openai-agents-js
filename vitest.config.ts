@@ -1,6 +1,13 @@
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defineConfig } from 'vitest/config';
+import { availableParallelism } from 'node:os';
+import { configDefaults, defineConfig } from 'vitest/config';
+import {
+  assertReviewOptionalFilesExist,
+  isReviewTestProfile,
+  reviewOptionalFilesForRoot,
+} from './helpers/vitest/reviewTestProfile';
+import { recommendedTestWorkers } from './helpers/vitest/testConcurrency';
 import {
   createWorkspacePackageAliases,
   readWorkspacePackages,
@@ -10,6 +17,8 @@ const rootDir = dirname(fileURLToPath(import.meta.url));
 const packagesDir = resolve(rootDir, 'packages');
 const workspacePackages = readWorkspacePackages(packagesDir);
 const testAliases = createWorkspacePackageAliases(workspacePackages);
+const reviewTestProfile = isReviewTestProfile();
+const maxWorkers = recommendedTestWorkers(availableParallelism());
 const financialResearchExampleRoot = resolve(
   rootDir,
   'examples/financial-research-agent',
@@ -24,6 +33,21 @@ const baseTestConfig = {
   globalSetup: resolve(rootDir, 'helpers/tests/setup.ts'),
 };
 
+assertReviewOptionalFilesExist(rootDir);
+
+function reviewExcludes(projectRoot: string): { exclude?: string[] } {
+  if (!reviewTestProfile) {
+    return {};
+  }
+  const optionalFiles = reviewOptionalFilesForRoot(rootDir, projectRoot);
+  if (optionalFiles.length === 0) {
+    return {};
+  }
+  return {
+    exclude: [...configDefaults.exclude, ...optionalFiles],
+  };
+}
+
 const packageProjects = workspacePackages.map(({ name, root }) => {
   return {
     root,
@@ -32,6 +56,7 @@ const packageProjects = workspacePackages.map(({ name, root }) => {
     },
     test: {
       ...baseTestConfig,
+      ...reviewExcludes(root),
       alias: testAliases,
       name,
     },
@@ -45,6 +70,7 @@ const financialResearchExampleProject = {
   },
   test: {
     ...baseTestConfig,
+    ...reviewExcludes(financialResearchExampleRoot),
     alias: testAliases,
     name: 'financial-research-agent-example',
     include: ['manager.test.ts'],
@@ -58,6 +84,7 @@ const realtimeReactNativeExampleProject = {
   },
   test: {
     ...baseTestConfig,
+    ...reviewExcludes(realtimeReactNativeExampleRoot),
     alias: testAliases,
     name: 'realtime-react-native-example',
     include: ['test/**/*.test.ts'],
@@ -67,6 +94,7 @@ const realtimeReactNativeExampleProject = {
 export default defineConfig({
   test: {
     pool: 'threads',
+    maxWorkers,
     projects: [
       {
         root: rootDir,
@@ -75,10 +103,14 @@ export default defineConfig({
         },
         test: {
           ...baseTestConfig,
+          ...reviewExcludes(rootDir),
           alias: testAliases,
           name: 'workspace-test-config',
+          maxConcurrency: 4,
           include: [
             'helpers/tests/consoleGuard.test.ts',
+            'helpers/vitest/reviewTestProfile.test.ts',
+            'helpers/vitest/testConcurrency.test.ts',
             'helpers/vitest/workspacePackageAliases.test.ts',
             'scripts/update-rclone-pin.test.mjs',
           ],

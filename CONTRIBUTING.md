@@ -72,6 +72,14 @@ CI=1 pnpm test
 
 Tests use Vitest and are located alongside source files in each package under `packages/*/test`.
 
+During an iterative review, `pnpm test:review` skips the slow subsystem-specific tests listed in `helpers/vitest/reviewTestProfile.ts`. Choose review coverage by impact:
+
+- For changes unrelated to every review-optional owner, run `pnpm test:review`.
+- For a leaf subsystem change, run `pnpm test:review` plus that subsystem's complete test file or directory with `pnpm test <path>`.
+- For cross-cutting core changes, shared test infrastructure changes, or an uncertain boundary, run the complete `pnpm test` suite.
+
+The reduced profile is only for preliminary feedback. Final verification must always run `pnpm test`, including every review-optional test.
+
 ### Code style
 
 - Maintain existing TypeScript style.
