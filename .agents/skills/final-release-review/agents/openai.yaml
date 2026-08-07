@@ -1,4 +1,4 @@
 interface:
   display_name: "Final Release Review"
-  short_description: "Audit a release candidate against the previous tag"
-  default_prompt: "Use $final-release-review to audit the release candidate diff against the previous release tag and call the ship/block gate."
+  short_description: "Audit Changesets-based release readiness"
+  default_prompt: "Use $final-release-review to derive the release type from Changesets, audit the release diff, review documentation coverage, and call the ship/block gate."
