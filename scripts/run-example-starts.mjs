@@ -70,6 +70,8 @@ export const DEFAULT_INTERACTIVE_INPUTS = new Map([
 ]);
 
 export const EXCLUDED_STARTS = new Set([
+  // This Expo development-client app requires a native build and an interactive simulator or device.
+  'realtime-react-native:start',
   // The documented entrypoint for this example is `dev`; `next start` is only for a built app server.
   'realtime-next:start',
   // This server is intended for manual browser-driven demo flows, not unattended batch validation.

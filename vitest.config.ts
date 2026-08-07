@@ -14,6 +14,10 @@ const financialResearchExampleRoot = resolve(
   rootDir,
   'examples/financial-research-agent',
 );
+const realtimeReactNativeExampleRoot = resolve(
+  rootDir,
+  'examples/realtime-react-native',
+);
 
 const baseTestConfig = {
   setupFiles: [resolve(rootDir, 'helpers/tests/console-guard.ts')],
@@ -47,6 +51,19 @@ const financialResearchExampleProject = {
   },
 };
 
+const realtimeReactNativeExampleProject = {
+  root: realtimeReactNativeExampleRoot,
+  resolve: {
+    alias: testAliases,
+  },
+  test: {
+    ...baseTestConfig,
+    alias: testAliases,
+    name: 'realtime-react-native-example',
+    include: ['test/**/*.test.ts'],
+  },
+};
+
 export default defineConfig({
   test: {
     pool: 'threads',
@@ -60,6 +77,7 @@ export default defineConfig({
       },
       ...packageProjects,
       financialResearchExampleProject,
+      realtimeReactNativeExampleProject,
     ],
     // Coverage options are global in Vitest workspaces.
     // Keep the filter at the root to avoid scanning docs/examples/dist output.
