@@ -444,8 +444,9 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
 
   async invalidateToolsCache(): Promise<void> {
     this._toolsCacheGeneration += 1;
-    await invalidateServerToolsCache(this.name);
     this._cacheDirty = true;
+    this._toolsList = [];
+    await invalidateServerToolsCache(this.name);
   }
 
   async listTools(): Promise<MCPTool[]> {
@@ -680,8 +681,9 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
 
   async invalidateToolsCache(): Promise<void> {
     this._toolsCacheGeneration += 1;
-    await invalidateServerToolsCache(this.name);
     this._cacheDirty = true;
+    this._toolsList = [];
+    await invalidateServerToolsCache(this.name);
   }
 
   async listTools(): Promise<MCPTool[]> {
@@ -1559,8 +1561,9 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
 
   async invalidateToolsCache(): Promise<void> {
     this._toolsCacheGeneration += 1;
-    await invalidateServerToolsCache(this.name);
     this._cacheDirty = true;
+    this._toolsList = [];
+    await invalidateServerToolsCache(this.name);
   }
 
   async listTools(): Promise<MCPTool[]> {

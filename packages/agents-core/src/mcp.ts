@@ -42,6 +42,7 @@ import {
   MCPTool,
 } from './mcpShared';
 import {
+  beginServerToolsCacheListing,
   cachedMcpToolKeysByServer as _cachedToolKeysByServer,
   cachedMcpTools as _cachedTools,
 } from './mcpToolCache';
@@ -79,6 +80,70 @@ type PrefixedToolNameCandidate = {
   serverIndex: number;
   toolIndex: number;
 };
+
+class MCPToolsLifecycleGuard {
+  private generation = 0;
+  private activeOperations = 0;
+
+  private startLifecycleBranch(
+    operation: (() => Promise<void>) | undefined,
+  ): Promise<void> {
+    try {
+      return operation?.() ?? Promise.resolve();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  private beginLifecycleOperation(): void {
+    this.activeOperations += 1;
+    this.generation += 1;
+  }
+
+  private endLifecycleOperation(): void {
+    this.activeOperations -= 1;
+  }
+
+  async runLifecycleOperation(
+    invalidate: () => Promise<void>,
+    operation?: () => Promise<void>,
+  ): Promise<void> {
+    this.beginLifecycleOperation();
+    try {
+      const [invalidationResult, operationResult] = await Promise.allSettled([
+        this.startLifecycleBranch(invalidate),
+        this.startLifecycleBranch(operation),
+      ]);
+      if (invalidationResult.status === 'rejected') {
+        throw invalidationResult.reason;
+      }
+      if (operationResult.status === 'rejected') {
+        throw operationResult.reason;
+      }
+    } finally {
+      this.endLifecycleOperation();
+    }
+  }
+
+  invalidate(): void {
+    this.generation += 1;
+  }
+
+  beginListing(): number {
+    if (this.activeOperations > 0) {
+      throw new Error(
+        'Cannot list MCP tools while a server lifecycle operation is in progress.',
+      );
+    }
+    return this.generation;
+  }
+
+  assertListingIsCurrent(listingGeneration: number): void {
+    if (this.activeOperations > 0 || listingGeneration !== this.generation) {
+      throw new Error('MCP tool listing became stale before it completed.');
+    }
+  }
+}
 
 /**
  * Interface for MCP server implementations.
@@ -227,6 +292,7 @@ export class MCPServerStdio
   implements MCPServerWithResources
 {
   private underlying: UnderlyingMCPServerStdio;
+  private readonly toolsLifecycle = new MCPToolsLifecycleGuard();
   constructor(options: MCPServerStdioOptions) {
     super(options);
     this.underlying = new UnderlyingMCPServerStdio(options);
@@ -234,17 +300,29 @@ export class MCPServerStdio
   get name(): string {
     return this.underlying.name;
   }
+  private async invalidateToolsCaches(): Promise<void> {
+    this._cachedTools = undefined;
+    await this.underlying.invalidateToolsCache();
+  }
   connect(): Promise<void> {
-    return this.underlying.connect();
+    return this.toolsLifecycle.runLifecycleOperation(
+      () => this.invalidateToolsCaches(),
+      () => this.underlying.connect(),
+    );
   }
   close(): Promise<void> {
-    return this.underlying.close();
+    return this.toolsLifecycle.runLifecycleOperation(
+      () => this.invalidateToolsCaches(),
+      () => this.underlying.close(),
+    );
   }
   async listTools(): Promise<MCPTool[]> {
+    const listingGeneration = this.toolsLifecycle.beginListing();
     if (this.cacheToolsList && this._cachedTools) {
       return this._cachedTools;
     }
     const tools = await this.underlying.listTools();
+    this.toolsLifecycle.assertListingIsCurrent(listingGeneration);
     if (this.cacheToolsList) {
       this._cachedTools = tools;
     }
@@ -280,7 +358,9 @@ export class MCPServerStdio
     return this.underlying.readResource(uri);
   }
   invalidateToolsCache(): Promise<void> {
-    return this.underlying.invalidateToolsCache();
+    return this.toolsLifecycle.runLifecycleOperation(() =>
+      this.invalidateToolsCaches(),
+    );
   }
 }
 
@@ -290,6 +370,7 @@ export class MCPServerStreamableHttp
 {
   private underlying: UnderlyingMCPServerStreamableHttp;
   private _cachedToolsSessionId: string | undefined = undefined;
+  private readonly toolsLifecycle = new MCPToolsLifecycleGuard();
   constructor(options: MCPServerStreamableHttpOptions) {
     super(options);
     this.underlying = new UnderlyingMCPServerStreamableHttp(options);
@@ -298,25 +379,34 @@ export class MCPServerStreamableHttp
     this._cachedTools = undefined;
     this._cachedToolsSessionId = undefined;
   }
+  private async invalidateToolsCaches(): Promise<void> {
+    this.clearLocalToolsCache();
+    await this.underlying.invalidateToolsCache();
+  }
   get name(): string {
     return this.underlying.name;
   }
   get sessionId(): string | undefined {
     return this.underlying.sessionId;
   }
-  async connect(): Promise<void> {
-    this.clearLocalToolsCache();
-    await this.underlying.connect();
+  connect(): Promise<void> {
+    return this.toolsLifecycle.runLifecycleOperation(
+      () => this.invalidateToolsCaches(),
+      () => this.underlying.connect(),
+    );
   }
-  async close(): Promise<void> {
-    this.clearLocalToolsCache();
-    await this.underlying.close();
+  close(): Promise<void> {
+    return this.toolsLifecycle.runLifecycleOperation(
+      () => this.invalidateToolsCaches(),
+      () => this.underlying.close(),
+    );
   }
   async listTools(): Promise<MCPTool[]> {
+    const listingGeneration = this.toolsLifecycle.beginListing();
     const sessionId = this.sessionId;
     if (sessionId === undefined) {
-      this.clearLocalToolsCache();
-      await this.underlying.invalidateToolsCache();
+      this.toolsLifecycle.invalidate();
+      await this.invalidateToolsCaches();
       return this.underlying.listTools();
     }
 
@@ -328,6 +418,7 @@ export class MCPServerStreamableHttp
       return this._cachedTools;
     }
     const tools = await this.underlying.listTools();
+    this.toolsLifecycle.assertListingIsCurrent(listingGeneration);
     if (this.cacheToolsList) {
       this._cachedTools = tools;
       this._cachedToolsSessionId = sessionId;
@@ -358,7 +449,8 @@ export class MCPServerStreamableHttp
       );
     } finally {
       if (previousSessionId !== this.sessionId) {
-        this.clearLocalToolsCache();
+        this.toolsLifecycle.invalidate();
+        await this.invalidateToolsCaches();
       }
     }
   }
@@ -375,9 +467,10 @@ export class MCPServerStreamableHttp
   readResource(uri: string): Promise<MCPReadResourceResult> {
     return this.underlying.readResource(uri);
   }
-  async invalidateToolsCache(): Promise<void> {
-    this.clearLocalToolsCache();
-    await this.underlying.invalidateToolsCache();
+  invalidateToolsCache(): Promise<void> {
+    return this.toolsLifecycle.runLifecycleOperation(() =>
+      this.invalidateToolsCaches(),
+    );
   }
 }
 
@@ -386,6 +479,7 @@ export class MCPServerSSE
   implements MCPServerWithResources
 {
   private underlying: UnderlyingMCPServerSSE;
+  private readonly toolsLifecycle = new MCPToolsLifecycleGuard();
   constructor(options: MCPServerSSEOptions) {
     super(options);
     this.underlying = new UnderlyingMCPServerSSE(options);
@@ -393,17 +487,29 @@ export class MCPServerSSE
   get name(): string {
     return this.underlying.name;
   }
+  private async invalidateToolsCaches(): Promise<void> {
+    this._cachedTools = undefined;
+    await this.underlying.invalidateToolsCache();
+  }
   connect(): Promise<void> {
-    return this.underlying.connect();
+    return this.toolsLifecycle.runLifecycleOperation(
+      () => this.invalidateToolsCaches(),
+      () => this.underlying.connect(),
+    );
   }
   close(): Promise<void> {
-    return this.underlying.close();
+    return this.toolsLifecycle.runLifecycleOperation(
+      () => this.invalidateToolsCaches(),
+      () => this.underlying.close(),
+    );
   }
   async listTools(): Promise<MCPTool[]> {
+    const listingGeneration = this.toolsLifecycle.beginListing();
     if (this.cacheToolsList && this._cachedTools) {
       return this._cachedTools;
     }
     const tools = await this.underlying.listTools();
+    this.toolsLifecycle.assertListingIsCurrent(listingGeneration);
     if (this.cacheToolsList) {
       this._cachedTools = tools;
     }
@@ -439,7 +545,9 @@ export class MCPServerSSE
     return this.underlying.readResource(uri);
   }
   invalidateToolsCache(): Promise<void> {
-    return this.underlying.invalidateToolsCache();
+    return this.toolsLifecycle.runLifecycleOperation(() =>
+      this.invalidateToolsCaches(),
+    );
   }
 }
 
@@ -499,10 +607,12 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
     agent,
     runContext,
   });
+  const serverName = server.name;
   // Use cache key generator injected from the outside, or the default if absent.
   if (server.cacheToolsList && _cachedTools[cacheKey]) {
     return _cachedTools[cacheKey];
   }
+  const cacheListing = beginServerToolsCacheListing(serverName);
 
   const listToolsForServer = async (
     span?: Span<MCPListToolsSpanData>,
@@ -563,27 +673,31 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
       span.spanData.result = mcpTools.map((t) => t.name);
     }
     // Cache store
-    if (server.cacheToolsList) {
+    if (server.cacheToolsList && cacheListing.isCurrent()) {
       _cachedTools[cacheKey] = mcpTools;
-      if (!_cachedToolKeysByServer[server.name]) {
-        _cachedToolKeysByServer[server.name] = new Set();
+      if (!_cachedToolKeysByServer[serverName]) {
+        _cachedToolKeysByServer[serverName] = new Set();
       }
-      _cachedToolKeysByServer[server.name].add(cacheKey);
+      _cachedToolKeysByServer[serverName].add(cacheKey);
     }
     return mcpTools;
   };
 
-  if (!tracingParent && !getCurrentTrace()) {
-    return listToolsForServer();
-  }
+  try {
+    if (!tracingParent && !getCurrentTrace()) {
+      return await listToolsForServer();
+    }
 
-  return withMCPListToolsSpan(
-    listToolsForServer,
-    {
-      data: { server: getMcpServerExternalName(server.name) },
-    },
-    tracingParent,
-  );
+    return await withMCPListToolsSpan(
+      listToolsForServer,
+      {
+        data: { server: getMcpServerExternalName(server.name) },
+      },
+      tracingParent,
+    );
+  } finally {
+    cacheListing.release();
+  }
 }
 
 function convertMcpToolsToFunctionTools<TContext = UnknownContext>({
