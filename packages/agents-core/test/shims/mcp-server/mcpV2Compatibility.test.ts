@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import { NodeMCPServerStreamableHttp } from '../../../src/shims/mcp-server/node';
-import { allowConsole } from '../../../../../helpers/tests/console-guard';
 
 function createTool(name: string) {
   return {
@@ -319,7 +318,7 @@ describe('MCP SDK v2 compatibility', () => {
   });
 
   it('does not request unadvertised lists from a modern server', async () => {
-    allowConsole(['debug']);
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
     const requests: string[] = [];
     const fetch = async (_url: string | URL | Request, init?: RequestInit) => {
       if (init?.method === 'DELETE') {
@@ -362,8 +361,13 @@ describe('MCP SDK v2 compatibility', () => {
       await expect(server.listResourceTemplates()).resolves.toEqual({
         resourceTemplates: [],
       });
+      expect(debugSpy).toHaveBeenCalledTimes(1);
+      expect(debugSpy).toHaveBeenCalledWith(
+        'Client.listTools() called but server does not advertise tools capability - returning empty list',
+      );
       expect(requests).toEqual(['server/discover']);
     } finally {
+      debugSpy.mockRestore();
       await server.close();
     }
   });

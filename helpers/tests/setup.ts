@@ -1,5 +1,8 @@
-import { setTracingDisabled } from '../../packages/agents-core/src';
+import { guardGlobalSetup } from './stdioGuard';
 
 export function setup() {
-  setTracingDisabled(true);
+  return guardGlobalSetup(async () => {
+    const { setupTests } = await import('./setupTests');
+    return setupTests();
+  });
 }

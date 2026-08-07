@@ -32,7 +32,6 @@ import {
   type LanguageModelV2,
 } from '@ai-sdk/provider';
 import type { SerializedOutputType } from '@openai/agents';
-import { allowConsole } from '../../../../helpers/tests/console-guard';
 import { z } from 'zod';
 
 function stubModel(
@@ -3210,7 +3209,6 @@ describe('AiSdkModel.getResponse', () => {
   });
 
   test('normalizes empty string input for namespaced object tools in doGenerate', async () => {
-    allowConsole(['warn']);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const model = new AiSdkModel(
       stubModel({
@@ -3269,7 +3267,6 @@ describe('AiSdkModel.getResponse', () => {
   });
 
   test('preserves hosted tool_search calls in doGenerate', async () => {
-    allowConsole(['warn']);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const model = new AiSdkModel(
       stubModel({
@@ -4045,7 +4042,6 @@ describe('AiSdkModel.getResponse', () => {
   });
 
   test('exposes one winner when the same function tool object is repeated in doGenerate', async () => {
-    allowConsole(['warn']);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const doGenerate = vi.fn(async (_options: any): Promise<any> => ({
       content: [],
@@ -4327,7 +4323,6 @@ describe('AiSdkModel.getResponse', () => {
   });
 
   test('handles function call output', async () => {
-    allowConsole(['warn']);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const model = new AiSdkModel(
       stubModel({
@@ -4388,7 +4383,6 @@ describe('AiSdkModel.getResponse', () => {
   ] as const)(
     'redacts unknown tool names when %s is enabled',
     async (flagName) => {
-      allowConsole(['warn']);
       const original = process.env[flagName];
       process.env[flagName] = '1';
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -4508,7 +4502,6 @@ describe('AiSdkModel.getResponse', () => {
   });
 
   test('falls back to result.providerMetadata when toolCall.providerMetadata is undefined', async () => {
-    allowConsole(['warn']);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const resultProviderMetadata = { fallback: true };
 
@@ -5154,7 +5147,6 @@ describe('AiSdkModel.getStreamedResponse', () => {
   });
 
   test('preserves hosted tool_search calls in streaming mode', async () => {
-    allowConsole(['warn']);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const parts = [
       {
@@ -7232,7 +7224,6 @@ describe('AiSdkModel', () => {
   });
 
   test('exposes one winner when the same function tool object is repeated in streaming mode', async () => {
-    allowConsole(['warn']);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const doStream = vi.fn(async (_options: any): Promise<any> => ({
       stream: partsStream([]),

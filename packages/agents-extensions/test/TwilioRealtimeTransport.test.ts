@@ -1,7 +1,6 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { TwilioRealtimeTransportLayer } from '../src/TwilioRealtimeTransport';
-import { allowConsole } from '../../../helpers/tests/console-guard';
 
 import type {
   MessageEvent as NodeMessageEvent,
@@ -120,7 +119,6 @@ describe('TwilioRealtimeTransportLayer', () => {
   });
 
   test('connect handles messages and events', async () => {
-    allowConsole(['error']);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
@@ -168,7 +166,6 @@ describe('TwilioRealtimeTransportLayer', () => {
   });
 
   test('redacts Twilio message and parse-error data when model logging is disabled', async () => {
-    allowConsole(['error', 'warn']);
     const original = process.env.OPENAI_AGENTS_DONT_LOG_MODEL_DATA;
     process.env.OPENAI_AGENTS_DONT_LOG_MODEL_DATA = '1';
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -336,7 +333,6 @@ describe('TwilioRealtimeTransportLayer', () => {
   });
 
   test('resets counters on new Twilio start and handles invalid marks', async () => {
-    allowConsole(['warn']);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({

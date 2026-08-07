@@ -29,7 +29,6 @@ import {
 } from '../src/tracing/processor';
 
 import coreLogger from '../src/logger';
-import { allowConsole } from '../../../helpers/tests/console-guard';
 
 import {
   withTrace,
@@ -480,7 +479,6 @@ describe('Trace & Span lifecycle', () => {
 
   it('does not force exit when beforeExit tracing cleanup times out', async () => {
     vi.useFakeTimers();
-    allowConsole(['warn']);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('process.exit should not be called');
@@ -669,7 +667,6 @@ describe('Runner tracing configuration', () => {
 
 describe('ConsoleSpanExporter', () => {
   it('skips export when tracing is disabled', async () => {
-    allowConsole(['log']);
     const debugSpy = vi.spyOn(coreLogger, 'debug').mockImplementation(() => {});
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     setTracingDisabled(true);
@@ -688,7 +685,6 @@ describe('ConsoleSpanExporter', () => {
   });
 
   it('logs traces and spans when tracing is enabled', async () => {
-    allowConsole(['log']);
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const modelDataSpy = vi
       .spyOn(coreLogger, 'dontLogModelData', 'get')
@@ -745,7 +741,6 @@ describe('ConsoleSpanExporter', () => {
   ])(
     'redacts console-exported trace data when model=%s or tool=%s logging is disabled',
     async (dontLogModelData, dontLogToolData) => {
-      allowConsole(['log']);
       const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
       vi.spyOn(coreLogger, 'dontLogModelData', 'get').mockReturnValue(
         dontLogModelData,
