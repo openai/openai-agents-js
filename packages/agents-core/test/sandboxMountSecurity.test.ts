@@ -325,6 +325,38 @@ describe('sandbox mount credential boundaries', () => {
     );
   });
 
+  it('allows a trusted external rclone config path', () => {
+    const manifest = new Manifest({
+      extraPathGrants: [
+        {
+          path: '/run/openai-agents/rclone.conf',
+          hostPath: '/tmp/rclone.conf',
+          readOnly: true,
+        },
+      ],
+      entries: {
+        remote: s3Mount({
+          bucket: 'example',
+          mountStrategy: inContainerMountStrategy({
+            pattern: {
+              type: 'rclone',
+              configFilePath: '/run/openai-agents/rclone.conf',
+            },
+          }),
+        }),
+      },
+    });
+
+    expect(() => validateMountCredentialBoundaries(manifest)).toThrow(
+      /model-controlled sandbox/u,
+    );
+    expect(() =>
+      validateMountCredentialBoundaries(
+        manifest.withInContainerMountCredentialExposureAllowed('remote'),
+      ),
+    ).not.toThrow();
+  });
+
   it('rejects explicit and environment credential files in manifest entries', () => {
     const explicit = new Manifest({
       entries: {

@@ -10,6 +10,7 @@ import {
 import { DockerSandboxClient } from '@openai/agents/sandbox/local';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 const mountImage =
   process.env.SANDBOX_STORAGE_MOUNT_IMAGE ??
@@ -24,6 +25,10 @@ const azureAccountName = 'devstoreaccount1';
 const azureAccountKey =
   'Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==';
 const azureContainer = 'azurite-smoke';
+const azureRcloneConfigPath = '/run/openai-agents/azure-emulator-rclone.conf';
+const azureRcloneConfigHostPath = fileURLToPath(
+  new URL('./azure-emulator-rclone.conf', import.meta.url),
+);
 
 const s3Bucket = 'minio-smoke';
 const s3AccessKeyId = 'minioadmin';
@@ -223,6 +228,13 @@ async function smokeAzureBlobMount() {
   }
 
   const manifest = new Manifest({
+    extraPathGrants: [
+      {
+        path: azureRcloneConfigPath,
+        hostPath: azureRcloneConfigHostPath,
+        readOnly: true,
+      },
+    ],
     entries: {
       azure: azureBlobMount({
         container: azureContainer,
@@ -234,22 +246,13 @@ async function smokeAzureBlobMount() {
           pattern: mountPattern({
             type: 'rclone',
             mode: 'fuse',
-            args: [
-              '--azureblob-use-emulator',
-              '--contimeout',
-              '5s',
-              '--timeout',
-              '10s',
-              '--retries',
-              '1',
-              '--low-level-retries',
-              '1',
-            ],
+            remoteName: 'azure_emulator',
+            configFilePath: azureRcloneConfigPath,
           }),
         }),
       }),
     },
-  });
+  }).withInContainerMountCredentialExposureAllowed('azure');
 
   const client = new DockerSandboxClient({ image: mountImage });
   const session = await client.create(manifest);
@@ -318,21 +321,11 @@ async function smokeS3Mount() {
           pattern: mountPattern({
             type: 'rclone',
             mode: 'fuse',
-            args: [
-              '--contimeout',
-              '5s',
-              '--timeout',
-              '10s',
-              '--retries',
-              '1',
-              '--low-level-retries',
-              '1',
-            ],
           }),
         }),
       }),
     },
-  });
+  }).withInContainerMountCredentialExposureAllowed('s3');
 
   const client = new DockerSandboxClient({ image: mountImage });
   const session = await client.create(manifest);
