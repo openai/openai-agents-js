@@ -657,6 +657,180 @@ describe('OpenAIConversationsSession', () => {
     });
   });
 
+  it('preserves IDs required by program items when adding items', async () => {
+    const createMock = vi.fn();
+    const inputItems = [
+      {
+        id: 'program-item',
+        type: 'program',
+        callId: 'program-call',
+        code: 'return tools.lookup({ sku: "A-1" });',
+        fingerprint: 'program-fingerprint',
+      },
+      {
+        id: 'program-output-item',
+        type: 'program_output',
+        callId: 'program-call',
+        output: '{"available":42}',
+        status: 'completed',
+      },
+      {
+        id: 'message-item',
+        type: 'message',
+        role: 'assistant',
+        content: [],
+      },
+    ];
+    getInputItemsMock.mockReturnValue([
+      {
+        id: 'program-item',
+        type: 'program',
+        call_id: 'program-call',
+        code: 'return tools.lookup({ sku: "A-1" });',
+        fingerprint: 'program-fingerprint',
+        providerData: { server: 'metadata' },
+      },
+      {
+        id: 'program-output-item',
+        type: 'program_output',
+        call_id: 'program-call',
+        result: '{"available":42}',
+        status: 'completed',
+        provider_data: { server: 'metadata' },
+      },
+      {
+        id: 'message-item',
+        type: 'message',
+        role: 'assistant',
+        content: [],
+      },
+    ] as any);
+
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list: vi.fn(),
+            create: createMock,
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    await session.addItems(inputItems as any);
+
+    expect(createMock).toHaveBeenCalledWith('conv-123', {
+      items: [
+        {
+          id: 'program-item',
+          type: 'program',
+          call_id: 'program-call',
+          code: 'return tools.lookup({ sku: "A-1" });',
+          fingerprint: 'program-fingerprint',
+        },
+        {
+          id: 'program-output-item',
+          type: 'program_output',
+          call_id: 'program-call',
+          result: '{"available":42}',
+          status: 'completed',
+        },
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [],
+        },
+      ],
+    });
+  });
+
+  it.each([
+    {
+      name: 'a missing program ID',
+      inputItem: {
+        type: 'program',
+        callId: 'program-call',
+        code: 'return 42;',
+        fingerprint: 'program-fingerprint',
+      },
+      convertedItem: {
+        id: undefined,
+        type: 'program',
+        call_id: 'program-call',
+        code: 'return 42;',
+        fingerprint: 'program-fingerprint',
+      },
+    },
+    {
+      name: 'a non-string program ID',
+      inputItem: {
+        id: 42,
+        type: 'program',
+        callId: 'program-call',
+        code: 'return 42;',
+        fingerprint: 'program-fingerprint',
+      },
+      convertedItem: {
+        id: 42,
+        type: 'program',
+        call_id: 'program-call',
+        code: 'return 42;',
+        fingerprint: 'program-fingerprint',
+      },
+    },
+    {
+      name: 'a non-string program output ID',
+      inputItem: {
+        id: 42,
+        type: 'program_output',
+        callId: 'program-call',
+        output: '42',
+        status: 'completed',
+      },
+      convertedItem: {
+        id: 42,
+        type: 'program_output',
+        call_id: 'program-call',
+        result: '42',
+        status: 'completed',
+      },
+    },
+  ])(
+    'does not synthesize or coerce $name',
+    async ({ inputItem, convertedItem }) => {
+      const createMock = vi
+        .fn()
+        .mockRejectedValue(new Error('Conversation item ID is invalid'));
+      getInputItemsMock.mockReturnValue([convertedItem] as any);
+
+      const session = createSession({
+        client: {
+          conversations: {
+            items: {
+              list: vi.fn(),
+              create: createMock,
+              delete: vi.fn(),
+            },
+            create: vi.fn(),
+            delete: vi.fn(),
+          },
+        } as any,
+        conversationId: 'conv-123',
+      });
+
+      await expect(session.addItems([inputItem] as any)).rejects.toThrow(
+        'Conversation item ID is invalid',
+      );
+      expect(createMock).toHaveBeenCalledWith('conv-123', {
+        items: [convertedItem],
+      });
+    },
+  );
+
   it('preserves the conversation ID when replacing history with compaction', async () => {
     const createItems = vi.fn();
     const deleteConversation = vi.fn();
@@ -671,7 +845,26 @@ describe('OpenAIConversationsSession', () => {
       status: 'completed',
       content: [{ type: 'output_text', text: 'retained' }],
     };
-    getInputItemsMock.mockReturnValue([compaction, retained] as any);
+    const program = {
+      id: 'program-item',
+      type: 'program',
+      call_id: 'program-call',
+      code: 'return 42;',
+      fingerprint: 'program-fingerprint',
+    };
+    const programOutput = {
+      id: 'program-output-item',
+      type: 'program_output',
+      call_id: 'program-call',
+      result: '42',
+      status: 'completed',
+    };
+    getInputItemsMock.mockReturnValue([
+      compaction,
+      program,
+      programOutput,
+      retained,
+    ] as any);
     const session = createSession({
       client: {
         conversations: {
@@ -687,7 +880,12 @@ describe('OpenAIConversationsSession', () => {
       conversationId: 'conv-preserved',
     });
 
-    await session.replaceHistoryWithCompaction([compaction, retained] as any);
+    await session.replaceHistoryWithCompaction([
+      compaction,
+      program,
+      programOutput,
+      retained,
+    ] as any);
 
     expect(createItems).toHaveBeenCalledWith('conv-preserved', {
       items: [
@@ -695,6 +893,8 @@ describe('OpenAIConversationsSession', () => {
           type: 'compaction',
           encrypted_content: 'ciphertext',
         },
+        program,
+        programOutput,
         retained,
       ],
     });
@@ -737,6 +937,16 @@ describe('OpenAIConversationsSession', () => {
         arguments: '{}',
       },
     ]);
+    const program = {
+      id: 'program-persistence-id',
+      type: 'program',
+      call_id: 'program-call',
+      code: 'return 42;',
+      fingerprint: 'program-fingerprint',
+    };
+    expect(
+      session.prepareHistoryItemsForPersistenceComparison([program] as any),
+    ).toEqual([program]);
   });
 
   it('preserves reasoning identity and encrypted content when adding items', async () => {
