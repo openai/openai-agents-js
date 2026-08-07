@@ -42,9 +42,10 @@ export function applyTurnResult<
     onStepItems,
   } = options;
   onStepItems?.(turnResult);
+  state._commitToolInvocations(turnResult.toolInvocationCommitItems);
   state._toolUseTracker.addToolUse(agent, toolsUsed);
   state._originalInput = turnResult.originalInput;
-  state._generatedItems = turnResult.generatedItems;
+  state._replaceGeneratedItems(turnResult.generatedItems);
   if (
     resetTurnPersistence &&
     turnResult.nextStep.type === 'next_step_run_again'
@@ -96,12 +97,11 @@ export async function resumeInterruptedTurn<
     return (
       toolName !== undefined &&
       callId !== undefined &&
-      state._context.isToolApproved({
+      state._context._resolveToolInvocationApproval(
+        item.agent,
         toolName,
-        callId,
-        functionTool: false,
-        ...(rawItem.type === 'function_call' ? { agent: item.agent } : {}),
-      }) === true
+        rawItem,
+      ) === true
     );
   });
   const turnResult = await resolveInterruptedTurn<TContext>(

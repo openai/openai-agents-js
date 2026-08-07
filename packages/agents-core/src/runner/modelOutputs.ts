@@ -109,6 +109,7 @@ function ensureProgrammaticToolCallingAvailable<TContext>(
 
 type ModelResponseProcessingOptions = {
   allowPromptSuppliedTools?: boolean;
+  beforeClientToolSearch?: () => void;
 };
 
 const MCP_HOSTED_CALL_TYPES = new Set([
@@ -1039,6 +1040,8 @@ export async function processModelResponseAsync<TContext>(
       processingOptions,
     );
   }
+
+  processingOptions.beforeClientToolSearch?.();
 
   const items: RunItem[] = [];
   const runHandoffs: ToolRunHandoff[] = [];

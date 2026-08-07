@@ -2974,12 +2974,14 @@ describe('Agent scenarios (examples and docs patterns)', () => {
         functionToolCall(
           'translate_to_spanish',
           JSON.stringify({ input: 'Hi' }),
+          'translate-spanish',
         ),
       ],
       [
         functionToolCall(
           'translate_to_french',
           JSON.stringify({ input: 'Hi' }),
+          'translate-french',
         ),
       ],
       [textMessage('Summary complete')],

@@ -32,6 +32,7 @@ export class SingleStepResult {
     public newStepItems: RunItem[],
     public nextStep: NextStep,
     public finalOutputSource?: FinalOutputSource,
+    public toolInvocationCommitItems: RunItem[] = newStepItems,
   ) {}
 
   get generatedItems(): RunItem[] {

@@ -8339,7 +8339,7 @@ describe('Runner.run', () => {
       ).toBe(false);
     });
 
-    it('acknowledges ignored handoffs even when callIds were reused in earlier turns', async () => {
+    it('rejects an ignored handoff that reuses a committed callId', async () => {
       const agentBModel = new TrackingModel([
         buildResponse([fakeModelMessage('done B')], 'resp-b'),
       ]);
@@ -8383,24 +8383,16 @@ describe('Runner.run', () => {
         handoffs: [handoffToB, handoffToC],
       });
 
-      const result = await new Runner().run(agentA, 'hi', {
-        previousResponseId: 'initial-response',
-      });
+      await expect(
+        new Runner().run(agentA, 'hi', {
+          previousResponseId: 'initial-response',
+        }),
+      ).rejects.toThrow(
+        'Tool call ID reused-call-id was reused for a different invocation after its output was committed.',
+      );
 
-      expect(result.finalOutput).toBe('done B');
-      expect(agentBModel.requests).toHaveLength(1);
+      expect(agentBModel.requests).toHaveLength(0);
       expect(agentCModel.requests).toHaveLength(0);
-      expect(agentBModel.requests[0].previousResponseId).toBe('resp-handoff');
-      expect(agentBModel.requests[0].input).toEqual([
-        expect.objectContaining({
-          type: 'function_call_result',
-          callId: acceptedCall.callId,
-        }),
-        expect.objectContaining({
-          type: 'function_call_result',
-          callId: ignoredCall.callId,
-        }),
-      ]);
     });
 
     it('replays pending managed handoff acknowledgements when resuming in non-stream mode', async () => {

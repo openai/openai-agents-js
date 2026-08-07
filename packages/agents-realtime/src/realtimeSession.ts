@@ -18,9 +18,15 @@ import { RuntimeEventEmitter } from '@openai/agents-core/_shims';
 import { isZodObject, toSmartString } from '@openai/agents-core/utils';
 import {
   getSafeErrorType,
+  getBoundToolInvocationRejectionMessage,
   hasDynamicFunctionToolApprovalPolicy,
   hasInspectableFunctionToolArguments,
+  getToolInvocationApproval,
+  getToolInvocationRejectionMessage,
   logToolActionError,
+  validateHandoffToolInvocation,
+  validateToolInvocationApproval,
+  validateToolInvocationName,
 } from '@openai/agents-core/utils/internal';
 import type {
   RealtimeSessionConfig,
@@ -245,6 +251,39 @@ type PendingRealtimeFunctionCall<TBaseContext> = {
   agent: SessionRealtimeAgent<TBaseContext>;
   dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>;
   approvalItem: RunToolApprovalItem;
+  fingerprint: string;
+  connectionGeneration: number;
+};
+
+type CompletedRealtimeToolCall = {
+  fingerprint: string;
+  output: string;
+  startResponse: boolean;
+};
+
+type ActiveRealtimeToolCall = {
+  fingerprint: string;
+  completion: Promise<CompletedRealtimeToolCall | undefined>;
+  resolve: (outcome: CompletedRealtimeToolCall | undefined) => void;
+};
+
+type CanonicalRealtimeToolInvocation = {
+  callId: string;
+  fingerprint: string;
+  connectionGeneration: number;
+};
+
+type IssuedRealtimeApproval<TBaseContext> = {
+  kind: 'function' | 'mcp';
+  connectionGeneration: number;
+  agent: SessionRealtimeAgent<TBaseContext>;
+  callId: string;
+  fingerprint: string;
+  toolName: string;
+  rawName: string;
+  tool?: RealtimeFunctionTool<TBaseContext>;
+  trustedApprovalItem: RunToolApprovalItem;
+  decisionState: 'pending' | 'sending' | 'decided';
 };
 
 type OutputGuardrailDeltaSource = 'audio' | 'text';
@@ -323,8 +362,28 @@ export class RealtimeSession<
   #pendingResponseDispatchSnapshot:
     RealtimeDispatchSnapshot<TBaseContext> | undefined;
   #pendingFunctionCalls = new Map<
-    string,
-    PendingRealtimeFunctionCall<TBaseContext>
+    SessionRealtimeAgent<TBaseContext>,
+    Map<string, PendingRealtimeFunctionCall<TBaseContext>>
+  >();
+  #issuedApprovals = new WeakMap<
+    RunToolApprovalItem,
+    IssuedRealtimeApproval<TBaseContext>
+  >();
+  #mcpApprovalInvocations = new Map<
+    SessionRealtimeAgent<TBaseContext>,
+    Map<string, IssuedRealtimeApproval<TBaseContext>>
+  >();
+  #completedToolCalls = new Map<
+    SessionRealtimeAgent<TBaseContext>,
+    Map<string, CompletedRealtimeToolCall>
+  >();
+  #sendingToolCallOutputs = new Map<
+    SessionRealtimeAgent<TBaseContext>,
+    Set<string>
+  >();
+  #activeToolCalls = new Map<
+    SessionRealtimeAgent<TBaseContext>,
+    Map<string, ActiveRealtimeToolCall>
   >();
   #context: RunContext<RealtimeContextData<TBaseContext>>;
   #outputGuardrails: RealtimeOutputGuardrailDefinition[] = [];
@@ -339,6 +398,7 @@ export class RealtimeSession<
   #activeResponseId: string | undefined;
   #responseGeneration = 0;
   #connectionGeneration = 0;
+  #connectedGeneration: number | undefined;
   #audioStarted = false;
   // Tracks all MCP tools fetched per server label (from mcp_list_tools results).
   #allMcpToolsByServer: Map<string, RealtimeMcpToolInfo[]> = new Map();
@@ -517,14 +577,16 @@ export class RealtimeSession<
 
   async #getSessionConfig(
     additionalConfig: Partial<RealtimeSessionConfig> = {},
+    preparedAgent?: PreparedRealtimeAgentState<TBaseContext>,
+    connectionGeneration?: number,
   ): Promise<Partial<RealtimeSessionConfig>> {
+    const configAgent = preparedAgent?.agent ?? this.#currentAgent;
+    const configTools = preparedAgent?.toolDefinitions ?? this.#currentTools;
     const overridesConfig: Partial<RealtimeSessionConfig> =
       additionalConfig ?? {};
     const optionsConfig: Partial<RealtimeSessionConfig> =
       this.options.config ?? {};
-    const instructions = await this.#currentAgent.getSystemPrompt(
-      this.#context,
-    );
+    const instructions = await configAgent.getSystemPrompt(this.#context);
     const getAudioOutputVoiceOverride = (
       config: Partial<RealtimeSessionConfig>,
     ): string | undefined => {
@@ -566,7 +628,7 @@ export class RealtimeSession<
         ? audioOutputVoiceOverride
         : typeof topLevelVoiceOverride !== 'undefined'
           ? topLevelVoiceOverride
-          : this.#currentAgent.voice;
+          : configAgent.voice;
 
     // Start from any previously-sent config (so we preserve values like audio formats)
     // and the original options.config provided by the user. Preference order:
@@ -587,17 +649,22 @@ export class RealtimeSession<
       instructions,
       voice: resolvedVoice,
       model: this.options.model,
-      tools: this.#currentTools,
+      tools: configTools,
       tracing: tracingConfig,
       prompt:
-        typeof this.#currentAgent.prompt === 'function'
-          ? await this.#currentAgent.prompt(this.#context, this.#currentAgent)
-          : this.#currentAgent.prompt,
+        typeof configAgent.prompt === 'function'
+          ? await configAgent.prompt(this.#context, configAgent)
+          : configAgent.prompt,
     };
 
     // Update our cache so subsequent updates inherit the full set including any
     // dynamic fields we just overwrote.
-    this.#lastSessionConfig = fullConfig;
+    if (
+      connectionGeneration === undefined ||
+      connectionGeneration === this.#connectionGeneration
+    ) {
+      this.#lastSessionConfig = fullConfig;
+    }
 
     return fullConfig;
   }
@@ -664,32 +731,286 @@ export class RealtimeSession<
     toolCall: TransportToolCallEvent,
     handoff: Handoff,
     sourceAgent: SessionRealtimeAgent<TBaseContext>,
+    invocation: CanonicalRealtimeToolInvocation,
   ) {
+    if (!this.#isCurrentRealtimeInvocation(invocation)) {
+      return undefined;
+    }
     const newAgent = (await handoff.onInvokeHandoff(
       this.#context,
       toolCall.arguments,
     )) as RealtimeAgent<TBaseContext>;
+    if (!this.#isCurrentRealtimeInvocation(invocation)) {
+      return undefined;
+    }
     const prepared = await this.#prepareAgent(newAgent);
+    if (!this.#isCurrentRealtimeInvocation(invocation)) {
+      return undefined;
+    }
+    const sessionConfig = await this.#getSessionConfig(
+      {},
+      prepared,
+      invocation.connectionGeneration,
+    );
+    if (!this.#isCurrentRealtimeInvocation(invocation)) {
+      return undefined;
+    }
+    await this.#transport.updateSessionConfig(sessionConfig);
+    if (!this.#isCurrentRealtimeInvocation(invocation)) {
+      return undefined;
+    }
 
     sourceAgent.emit('agent_handoff', this.#context, newAgent);
+    if (!this.#isCurrentRealtimeInvocation(invocation)) {
+      return undefined;
+    }
     this.emit('agent_handoff', this.#context, sourceAgent, newAgent);
+    if (!this.#isCurrentRealtimeInvocation(invocation)) {
+      return undefined;
+    }
 
     // update session with new agent
     this.#applyPreparedAgent(prepared);
-    await this.#transport.updateSessionConfig(await this.#getSessionConfig());
     const output = getTransferMessage(newAgent);
-    this.#transport.sendFunctionCallOutput(toolCall, output, true);
+    this.#sendCommittedFunctionCallOutput(
+      sourceAgent,
+      invocation,
+      toolCall,
+      output,
+      true,
+    );
 
     return newAgent;
   }
 
-  async #resolveApprovalRejectionMessage(
-    toolName: string,
+  #getPendingFunctionCalls(
+    agent: SessionRealtimeAgent<TBaseContext>,
+  ): Map<string, PendingRealtimeFunctionCall<TBaseContext>> {
+    let calls = this.#pendingFunctionCalls.get(agent);
+    if (!calls) {
+      calls = new Map();
+      this.#pendingFunctionCalls.set(agent, calls);
+    }
+    return calls;
+  }
+
+  #getMcpApprovalInvocations(
+    agent: SessionRealtimeAgent<TBaseContext>,
+  ): Map<string, IssuedRealtimeApproval<TBaseContext>> {
+    let invocations = this.#mcpApprovalInvocations.get(agent);
+    if (!invocations) {
+      invocations = new Map();
+      this.#mcpApprovalInvocations.set(agent, invocations);
+    }
+    return invocations;
+  }
+
+  #deletePendingFunctionCall(
+    agent: SessionRealtimeAgent<TBaseContext>,
     callId: string,
+  ): void {
+    const calls = this.#pendingFunctionCalls.get(agent);
+    calls?.delete(callId);
+    if (calls?.size === 0) {
+      this.#pendingFunctionCalls.delete(agent);
+    }
+  }
+
+  #sendCommittedFunctionCallOutput(
+    agent: SessionRealtimeAgent<TBaseContext>,
+    invocation: CanonicalRealtimeToolInvocation,
+    toolCall: TransportToolCallEvent,
+    output: string,
+    startResponse: boolean,
+  ): void {
+    if (!this.#isCurrentRealtimeInvocation(invocation)) {
+      return;
+    }
+    let sending = this.#sendingToolCallOutputs.get(agent);
+    if (!sending) {
+      sending = new Set();
+      this.#sendingToolCallOutputs.set(agent, sending);
+    }
+    if (sending.has(invocation.callId)) {
+      return;
+    }
+    let calls = this.#completedToolCalls.get(agent);
+    if (!calls) {
+      calls = new Map();
+      this.#completedToolCalls.set(agent, calls);
+    }
+    calls.set(invocation.callId, {
+      fingerprint: invocation.fingerprint,
+      output,
+      startResponse,
+    });
+    sending.add(invocation.callId);
+    try {
+      this.#transport.sendFunctionCallOutput(toolCall, output, startResponse);
+    } finally {
+      sending.delete(invocation.callId);
+      if (sending.size === 0) {
+        this.#sendingToolCallOutputs.delete(agent);
+      }
+    }
+  }
+
+  #isCurrentRealtimeInvocation(
+    invocation: CanonicalRealtimeToolInvocation,
+  ): boolean {
+    return (
+      invocation.connectionGeneration === this.#connectionGeneration &&
+      invocation.connectionGeneration === this.#connectedGeneration
+    );
+  }
+
+  async #runRealtimeToolInvocation(
+    agent: SessionRealtimeAgent<TBaseContext>,
+    invocation: CanonicalRealtimeToolInvocation,
+    toolCall: TransportToolCallEvent,
+    execute: () => Promise<unknown>,
+  ): Promise<void> {
+    if (!this.#isCurrentRealtimeInvocation(invocation)) {
+      return;
+    }
+    const completed = this.#completedToolCalls
+      .get(agent)
+      ?.get(invocation.callId);
+    if (completed) {
+      if (completed.fingerprint !== invocation.fingerprint) {
+        throw new ModelBehaviorError(
+          `Tool call ID ${invocation.callId} was reused for a different realtime invocation after completion.`,
+        );
+      }
+      this.#sendCommittedFunctionCallOutput(
+        agent,
+        invocation,
+        toolCall,
+        completed.output,
+        completed.startResponse,
+      );
+      return;
+    }
+
+    const activeCalls = this.#getActiveToolCalls(agent);
+    const active = activeCalls.get(invocation.callId);
+    if (active) {
+      if (active.fingerprint !== invocation.fingerprint) {
+        throw new ModelBehaviorError(
+          `Tool call ID ${invocation.callId} was reused for a different realtime invocation while execution was active.`,
+        );
+      }
+      const activeOutcome = await active.completion;
+      if (
+        activeOutcome &&
+        invocation.connectionGeneration === this.#connectionGeneration
+      ) {
+        this.#sendCommittedFunctionCallOutput(
+          agent,
+          invocation,
+          toolCall,
+          activeOutcome.output,
+          activeOutcome.startResponse,
+        );
+      }
+      return;
+    }
+
+    let resolveCompletion: (
+      outcome: CompletedRealtimeToolCall | undefined,
+    ) => void = () => {};
+    const completion = new Promise<CompletedRealtimeToolCall | undefined>(
+      (resolve) => {
+        resolveCompletion = resolve;
+      },
+    );
+    const activeCall = {
+      fingerprint: invocation.fingerprint,
+      completion,
+      resolve: resolveCompletion,
+    };
+    activeCalls.set(invocation.callId, activeCall);
+    try {
+      if (this.#isCurrentRealtimeInvocation(invocation)) {
+        await execute();
+      }
+    } finally {
+      resolveCompletion(
+        this.#completedToolCalls.get(agent)?.get(invocation.callId),
+      );
+      if (activeCalls.get(invocation.callId) === activeCall) {
+        activeCalls.delete(invocation.callId);
+      }
+      if (
+        activeCalls.size === 0 &&
+        this.#activeToolCalls.get(agent) === activeCalls
+      ) {
+        this.#activeToolCalls.delete(agent);
+      }
+    }
+  }
+
+  #transferActiveToolCallToPendingApproval(
+    agent: SessionRealtimeAgent<TBaseContext>,
+    invocation: CanonicalRealtimeToolInvocation,
+  ): void {
+    const activeCalls = this.#activeToolCalls.get(agent);
+    const active = activeCalls?.get(invocation.callId);
+    if (!active) {
+      return;
+    }
+    if (active.fingerprint !== invocation.fingerprint) {
+      throw new ModelBehaviorError(
+        `Tool call ID ${invocation.callId} changed while transferring realtime approval ownership.`,
+      );
+    }
+    active.resolve(undefined);
+    activeCalls?.delete(invocation.callId);
+    if (
+      activeCalls?.size === 0 &&
+      this.#activeToolCalls.get(agent) === activeCalls
+    ) {
+      this.#activeToolCalls.delete(agent);
+    }
+  }
+
+  #getActiveToolCalls(
+    agent: SessionRealtimeAgent<TBaseContext>,
+  ): Map<string, ActiveRealtimeToolCall> {
+    let calls = this.#activeToolCalls.get(agent);
+    if (!calls) {
+      calls = new Map();
+      this.#activeToolCalls.set(agent, calls);
+    }
+    return calls;
+  }
+
+  #resetToolInvocationState(): void {
+    for (const calls of this.#activeToolCalls.values()) {
+      for (const active of calls.values()) {
+        active.resolve(undefined);
+      }
+    }
+    this.#pendingFunctionCalls.clear();
+    this.#mcpApprovalInvocations.clear();
+    this.#completedToolCalls.clear();
+    this.#sendingToolCallOutputs.clear();
+    this.#activeToolCalls.clear();
+  }
+
+  async #resolveApprovalRejectionMessage(
+    tool: RealtimeFunctionTool<TBaseContext>,
+    toolCall: TransportToolCallEvent,
+    agent: SessionRealtimeAgent<TBaseContext>,
     toolType: ToolErrorFormatterArgs['toolType'] = 'function',
   ): Promise<string> {
     // Per-call message from state.reject(item, { message }) takes precedence.
-    const perCallMessage = this.#context.getRejectionMessage(toolName, callId);
+    const perCallMessage = getToolInvocationRejectionMessage(
+      this.#context,
+      agent,
+      tool,
+      toolCall,
+    );
     if (typeof perCallMessage === 'string') {
       return perCallMessage;
     }
@@ -703,8 +1024,8 @@ export class RealtimeSession<
       const formattedMessage = await toolErrorFormatter({
         kind: 'approval_rejected',
         toolType,
-        toolName,
-        callId,
+        toolName: tool.name,
+        callId: toolCall.callId,
         defaultMessage: TOOL_APPROVAL_REJECTION_MESSAGE,
         runContext: this.#context,
       });
@@ -736,6 +1057,42 @@ export class RealtimeSession<
     dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>,
   ) {
     const toolCall = normalizeRealtimeFunctionCallId(incomingToolCall);
+    const invocation = {
+      ...validateToolInvocationApproval(this.#context, agent, tool, toolCall),
+      connectionGeneration: this.#connectionGeneration,
+    };
+    const pending = this.#pendingFunctionCalls
+      .get(agent)
+      ?.get(invocation.callId);
+    if (pending) {
+      if (pending.fingerprint !== invocation.fingerprint) {
+        throw new ModelBehaviorError(
+          `Tool call ID ${invocation.callId} was reused for a different realtime invocation while approval was pending.`,
+        );
+      }
+      return;
+    }
+    await this.#runRealtimeToolInvocation(agent, invocation, toolCall, () =>
+      this.#executeFunctionToolCall(
+        toolCall,
+        tool,
+        agent,
+        dispatchSnapshot,
+        invocation,
+      ),
+    );
+  }
+
+  async #executeFunctionToolCall(
+    toolCall: TransportToolCallEvent,
+    tool: RealtimeFunctionTool<TBaseContext>,
+    agent: SessionRealtimeAgent<TBaseContext>,
+    dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>,
+    invocation: CanonicalRealtimeToolInvocation,
+  ) {
+    if (!this.#isCurrentRealtimeInvocation(invocation)) {
+      return;
+    }
     this.#context.context.history = JSON.parse(JSON.stringify(this.#history)); // deep copy of the history
     let parsedArgs: any = toolCall.arguments;
     const dynamicApprovalPolicy = hasDynamicFunctionToolApprovalPolicy(tool);
@@ -759,36 +1116,49 @@ export class RealtimeSession<
       (argumentParseError !== undefined ||
         !hasInspectableFunctionToolArguments(parsedArgs));
     const existingApproval = dynamicApprovalPolicy
-      ? this.context.isToolApproved({
-          toolName: tool.name,
-          callId: toolCall.callId,
-        })
+      ? getToolInvocationApproval(this.context, agent, tool, toolCall)
       : undefined;
     const needsApproval =
       forceApproval ||
       existingApproval !== undefined ||
       (await tool.needsApproval(this.#context, parsedArgs, toolCall.callId));
+    if (!this.#isCurrentRealtimeInvocation(invocation)) {
+      return;
+    }
     if (needsApproval) {
       const approval =
         existingApproval ??
-        this.context.isToolApproved({
-          toolName: tool.name,
-          callId: toolCall.callId,
-        });
+        getToolInvocationApproval(this.context, agent, tool, toolCall);
       if (approval === false) {
-        this.#pendingFunctionCalls.delete(toolCall.callId);
+        this.#deletePendingFunctionCall(agent, toolCall.callId);
         this.emit('agent_tool_start', this.#context, agent, tool, {
           toolCall,
         });
+        if (!this.#isCurrentRealtimeInvocation(invocation)) {
+          return;
+        }
         agent.emit('agent_tool_start', this.#context, tool, {
           toolCall,
         });
+        if (!this.#isCurrentRealtimeInvocation(invocation)) {
+          return;
+        }
 
         const result = await this.#resolveApprovalRejectionMessage(
-          tool.name,
-          toolCall.callId,
+          tool,
+          toolCall,
+          agent,
         );
-        this.#transport.sendFunctionCallOutput(toolCall, result, true);
+        if (!this.#isCurrentRealtimeInvocation(invocation)) {
+          return;
+        }
+        this.#sendCommittedFunctionCallOutput(
+          agent,
+          invocation,
+          toolCall,
+          result,
+          true,
+        );
         this.emit('agent_tool_end', this.#context, agent, tool, result, {
           toolCall,
         });
@@ -804,9 +1174,14 @@ export class RealtimeSession<
             agent,
             toolCall: toolCall as any,
           });
+          if (!this.#isCurrentRealtimeInvocation(invocation)) {
+            return;
+          }
 
           if (inputGuardrailResult.type === 'reject') {
-            this.#transport.sendFunctionCallOutput(
+            this.#sendCommittedFunctionCallOutput(
+              agent,
+              invocation,
               toolCall,
               inputGuardrailResult.message,
               true,
@@ -814,14 +1189,37 @@ export class RealtimeSession<
             return;
           }
         }
-        const approvalItem = new RunToolApprovalItem(toolCall, agent);
-        this.#pendingFunctionCalls.set(toolCall.callId, {
-          toolCall,
+        const trustedToolCall = { ...toolCall };
+        const trustedApprovalItem = new RunToolApprovalItem(
+          trustedToolCall,
+          agent,
+        );
+        const approvalItem = new RunToolApprovalItem(
+          { ...trustedToolCall },
+          agent,
+        );
+        this.#getPendingFunctionCalls(agent).set(toolCall.callId, {
+          toolCall: trustedToolCall,
           tool,
           agent,
           dispatchSnapshot,
-          approvalItem,
+          approvalItem: trustedApprovalItem,
+          fingerprint: invocation.fingerprint,
+          connectionGeneration: invocation.connectionGeneration,
         });
+        this.#issuedApprovals.set(approvalItem, {
+          kind: 'function',
+          connectionGeneration: invocation.connectionGeneration,
+          agent,
+          callId: invocation.callId,
+          fingerprint: invocation.fingerprint,
+          toolName: tool.name,
+          rawName: trustedToolCall.name,
+          tool,
+          trustedApprovalItem,
+          decisionState: 'pending',
+        });
+        this.#transferActiveToolCallToPendingApproval(agent, invocation);
         this.emit('tool_approval_requested', this.#context, agent, {
           type: 'function_approval' as const,
           tool,
@@ -831,10 +1229,16 @@ export class RealtimeSession<
       }
     }
 
-    this.#pendingFunctionCalls.delete(toolCall.callId);
+    this.#deletePendingFunctionCall(agent, toolCall.callId);
     if (argumentParseError !== undefined) {
       const errorMessage = `An error occurred while parsing tool arguments. Please try again with valid JSON. Error: ${toErrorMessage(argumentParseError)}`;
-      this.#transport.sendFunctionCallOutput(toolCall, errorMessage, true);
+      this.#sendCommittedFunctionCallOutput(
+        agent,
+        invocation,
+        toolCall,
+        errorMessage,
+        true,
+      );
       return;
     }
 
@@ -844,13 +1248,22 @@ export class RealtimeSession<
       agent,
       toolCall: toolCall as any,
     });
+    if (!this.#isCurrentRealtimeInvocation(invocation)) {
+      return;
+    }
 
     this.emit('agent_tool_start', this.#context, agent, tool, {
       toolCall,
     });
+    if (!this.#isCurrentRealtimeInvocation(invocation)) {
+      return;
+    }
     agent.emit('agent_tool_start', this.#context, tool, {
       toolCall,
     });
+    if (!this.#isCurrentRealtimeInvocation(invocation)) {
+      return;
+    }
 
     this.#context.context.history = JSON.parse(JSON.stringify(this.#history)); // deep copy of the history
     const result =
@@ -864,6 +1277,9 @@ export class RealtimeSession<
               toolCall,
             },
           });
+    if (!this.#isCurrentRealtimeInvocation(invocation)) {
+      return;
+    }
     const guardedResult =
       inputGuardrailResult.type === 'reject'
         ? result
@@ -874,14 +1290,29 @@ export class RealtimeSession<
             toolCall: toolCall as any,
             toolOutput: result,
           });
+    if (!this.#isCurrentRealtimeInvocation(invocation)) {
+      return;
+    }
     let stringResult: string;
     if (isBackgroundResult(guardedResult)) {
       // Don't generate a new response, just send the result
       stringResult = toSmartString(guardedResult.content);
-      this.#transport.sendFunctionCallOutput(toolCall, stringResult, false);
+      this.#sendCommittedFunctionCallOutput(
+        agent,
+        invocation,
+        toolCall,
+        stringResult,
+        false,
+      );
     } else {
       stringResult = toSmartString(guardedResult);
-      this.#transport.sendFunctionCallOutput(toolCall, stringResult, true);
+      this.#sendCommittedFunctionCallOutput(
+        agent,
+        invocation,
+        toolCall,
+        stringResult,
+        true,
+      );
     }
     this.emit('agent_tool_end', this.#context, agent, tool, stringResult, {
       toolCall,
@@ -892,72 +1323,136 @@ export class RealtimeSession<
   }
 
   async #handleFunctionCall(
-    toolCall: TransportToolCallEvent,
+    incomingToolCall: TransportToolCallEvent,
     dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>,
   ) {
-    const [toolEnabled, handoffEnabled] = await Promise.all([
-      Promise.all(
-        dispatchSnapshot.functionTools.map((tool) =>
-          tool.isEnabled(this.#context, dispatchSnapshot.agent),
-        ),
-      ),
-      Promise.all(
-        dispatchSnapshot.handoffs.map((handoff) =>
-          handoff.isEnabled({
-            runContext: this.#context,
-            agent: dispatchSnapshot.agent,
-          }),
-        ),
-      ),
-    ]);
-    const filteredSnapshot: RealtimeDispatchSnapshot<TBaseContext> = {
-      agent: dispatchSnapshot.agent,
-      functionTools: dispatchSnapshot.functionTools.filter(
-        (_tool, index) => toolEnabled[index],
-      ),
-      handoffs: dispatchSnapshot.handoffs.filter(
-        (_handoff, index) => handoffEnabled[index],
-      ),
+    const toolCall = normalizeRealtimeFunctionCallId(incomingToolCall);
+    const candidateFunctionTool = dispatchSnapshot.functionTools.find(
+      (tool) => tool.name === toolCall.name,
+    );
+    const candidateHandoff = dispatchSnapshot.handoffs.find(
+      (handoff) => handoff.toolName === toolCall.name,
+    );
+    const validatedInvocation = candidateFunctionTool
+      ? validateToolInvocationApproval(
+          this.#context,
+          dispatchSnapshot.agent,
+          candidateFunctionTool,
+          toolCall,
+        )
+      : candidateHandoff
+        ? validateHandoffToolInvocation(
+            this.#context,
+            dispatchSnapshot.agent,
+            candidateHandoff.toolName,
+            toolCall,
+          )
+        : validateToolInvocationName(
+            this.#context,
+            dispatchSnapshot.agent,
+            toolCall.name,
+            toolCall,
+          );
+    const invocation = {
+      ...validatedInvocation,
+      connectionGeneration: this.#connectionGeneration,
     };
-    validateRealtimeToolNames(
-      filteredSnapshot.functionTools,
-      filteredSnapshot.handoffs,
-    );
-
-    const functionToolMap = new Map(
-      filteredSnapshot.functionTools.map((tool) => [tool.name, tool]),
-    );
-    const handoffMap = new Map(
-      filteredSnapshot.handoffs.map((handoff) => [handoff.toolName, handoff]),
-    );
-
-    const functionTool = functionToolMap.get(toolCall.name);
-    if (functionTool) {
-      await this.#handleFunctionToolCall(
-        toolCall,
-        functionTool,
-        filteredSnapshot.agent,
-        filteredSnapshot,
-      );
+    const pending = this.#pendingFunctionCalls
+      .get(dispatchSnapshot.agent)
+      ?.get(invocation.callId);
+    if (pending) {
+      if (pending.fingerprint !== invocation.fingerprint) {
+        throw new ModelBehaviorError(
+          `Tool call ID ${invocation.callId} was reused for a different realtime invocation while approval was pending.`,
+        );
+      }
       return;
     }
 
-    const possibleHandoff = handoffMap.get(toolCall.name);
-    if (possibleHandoff) {
-      await this.#handleHandoff(
-        toolCall,
-        possibleHandoff,
-        filteredSnapshot.agent,
-      );
-      return;
-    }
+    await this.#runRealtimeToolInvocation(
+      dispatchSnapshot.agent,
+      invocation,
+      toolCall,
+      async () => {
+        const [toolEnabled, handoffEnabled] = await Promise.all([
+          Promise.all(
+            dispatchSnapshot.functionTools.map((tool) =>
+              tool.isEnabled(this.#context, dispatchSnapshot.agent),
+            ),
+          ),
+          Promise.all(
+            dispatchSnapshot.handoffs.map((handoff) =>
+              handoff.isEnabled({
+                runContext: this.#context,
+                agent: dispatchSnapshot.agent,
+              }),
+            ),
+          ),
+        ]);
+        if (!this.#isCurrentRealtimeInvocation(invocation)) {
+          return;
+        }
+        const filteredSnapshot: RealtimeDispatchSnapshot<TBaseContext> = {
+          agent: dispatchSnapshot.agent,
+          functionTools: dispatchSnapshot.functionTools.filter(
+            (_tool, index) => toolEnabled[index],
+          ),
+          handoffs: dispatchSnapshot.handoffs.filter(
+            (_handoff, index) => handoffEnabled[index],
+          ),
+        };
+        validateRealtimeToolNames(
+          filteredSnapshot.functionTools,
+          filteredSnapshot.handoffs,
+        );
 
-    const message = `Tool ${toolCall.name} not found`;
-    this.#transport.sendFunctionCallOutput(toolCall, message, false);
-    this.emit('error', {
-      type: 'error',
-      error: new ModelBehaviorError(message),
-    });
+        const functionToolMap = new Map(
+          filteredSnapshot.functionTools.map((tool) => [tool.name, tool]),
+        );
+        const handoffMap = new Map(
+          filteredSnapshot.handoffs.map((handoff) => [
+            handoff.toolName,
+            handoff,
+          ]),
+        );
+
+        const functionTool = functionToolMap.get(toolCall.name);
+        if (functionTool) {
+          await this.#executeFunctionToolCall(
+            toolCall,
+            functionTool,
+            filteredSnapshot.agent,
+            filteredSnapshot,
+            invocation,
+          );
+          return;
+        }
+
+        const possibleHandoff = handoffMap.get(toolCall.name);
+        if (possibleHandoff) {
+          await this.#handleHandoff(
+            toolCall,
+            possibleHandoff,
+            filteredSnapshot.agent,
+            invocation,
+          );
+          return;
+        }
+
+        const message = `Tool ${toolCall.name} not found`;
+        this.#sendCommittedFunctionCallOutput(
+          filteredSnapshot.agent,
+          invocation,
+          toolCall,
+          message,
+          false,
+        );
+        this.emit('error', {
+          type: 'error',
+          error: new ModelBehaviorError(message),
+        });
+      },
+    );
   }
 
   async #runOutputGuardrails(
@@ -1268,6 +1763,9 @@ export class RealtimeSession<
 
     this.#transport.on('function_call', async (event) => {
       try {
+        if (this.#connectedGeneration !== this.#connectionGeneration) {
+          return;
+        }
         if (!event.responseId) {
           throw new ModelBehaviorError(
             'Realtime function call is missing a responseId and cannot be dispatched safely.',
@@ -1326,13 +1824,69 @@ export class RealtimeSession<
     });
 
     this.#transport.on('mcp_approval_request', (approvalRequest) => {
-      this.emit('tool_approval_requested', this.#context, this.#currentAgent, {
-        type: 'mcp_approval_request' as const,
-        approvalItem: realtimeApprovalItemToApprovalItem(
-          this.#currentAgent,
+      try {
+        if (this.#connectedGeneration !== this.#connectionGeneration) {
+          return;
+        }
+        const agent = this.#currentAgent;
+        const trustedApprovalItem = realtimeApprovalItemToApprovalItem(
+          agent,
           approvalRequest,
-        ),
-      });
+        );
+        if (trustedApprovalItem.rawItem.type !== 'hosted_tool_call') {
+          throw new ModelBehaviorError(
+            'Realtime MCP approval could not be normalized safely.',
+          );
+        }
+        const toolName = trustedApprovalItem.rawItem.name;
+        const invocation = validateToolInvocationName(
+          this.#context,
+          agent,
+          toolName,
+          trustedApprovalItem.rawItem,
+        );
+        const agentInvocations = this.#getMcpApprovalInvocations(agent);
+        const existing = agentInvocations.get(invocation.callId);
+        if (existing) {
+          if (existing.fingerprint !== invocation.fingerprint) {
+            throw new ModelBehaviorError(
+              `Tool call ID ${invocation.callId} was reused for a different realtime MCP approval invocation.`,
+            );
+          }
+          return;
+        }
+        const approvalItem = realtimeApprovalItemToApprovalItem(
+          agent,
+          approvalRequest,
+        );
+        const issued: IssuedRealtimeApproval<TBaseContext> = {
+          kind: 'mcp',
+          connectionGeneration: this.#connectionGeneration,
+          agent,
+          callId: invocation.callId,
+          fingerprint: invocation.fingerprint,
+          toolName,
+          rawName: trustedApprovalItem.rawItem.name,
+          trustedApprovalItem,
+          decisionState: 'pending',
+        };
+        this.#issuedApprovals.set(approvalItem, issued);
+        agentInvocations.set(invocation.callId, issued);
+        this.emit('tool_approval_requested', this.#context, agent, {
+          type: 'mcp_approval_request' as const,
+          approvalItem,
+        });
+      } catch (error) {
+        logToolActionError(
+          logger,
+          'Error handling MCP approval request',
+          error,
+        );
+        this.emit('error', {
+          type: 'error',
+          error,
+        });
+      }
     });
   }
 
@@ -1390,6 +1944,9 @@ export class RealtimeSession<
    */
   async connect(options: RealtimeSessionConnectOptions) {
     this.#connectionGeneration += 1;
+    const connectionGeneration = this.#connectionGeneration;
+    this.#connectedGeneration = undefined;
+    this.#resetToolInvocationState();
     this.#responseGeneration = 0;
     this.#activeResponseId = undefined;
     this.#outputGuardrailDeltaState.clear();
@@ -1398,18 +1955,31 @@ export class RealtimeSession<
     this.#responseDispatchSnapshots.clear();
     // makes sure the current agent is correctly set and loads the tools
     await this.#setCurrentAgent(this.initialAgent);
+    if (connectionGeneration !== this.#connectionGeneration) {
+      return;
+    }
 
     if (!this.#eventListenersAttached) {
       this.#setEventListeners();
       this.#eventListenersAttached = true;
+    }
+    const initialSessionConfig = await this.#getSessionConfig(
+      this.options.config,
+    );
+    if (connectionGeneration !== this.#connectionGeneration) {
+      return;
     }
     await this.#transport.connect({
       apiKey: options.apiKey ?? this.options.apiKey,
       model: this.options.model,
       url: options.url,
       callId: options.callId,
-      initialSessionConfig: await this.#getSessionConfig(this.options.config),
+      initialSessionConfig,
     });
+    if (connectionGeneration !== this.#connectionGeneration) {
+      return;
+    }
+    this.#connectedGeneration = connectionGeneration;
     // Ensure the cached lastSessionConfig includes everything passed as the initial session config
     // (the call above already set it via #getSessionConfig but in case additional overrides were
     // passed directly here in the future we could merge them). For now it's a no-op.
@@ -1469,13 +2039,14 @@ export class RealtimeSession<
    * Disconnect from the session.
    */
   close() {
+    this.#connectedGeneration = undefined;
     this.#connectionGeneration += 1;
     this.#responseGeneration = 0;
     this.#activeResponseId = undefined;
     this.#outputGuardrailDeltaState.clear();
     this.#interruptedByGuardrail = {};
     this.#pendingResponseDispatchSnapshot = undefined;
-    this.#pendingFunctionCalls.clear();
+    this.#resetToolInvocationState();
     this.#responseDispatchSnapshots.clear();
     this.#transport.close();
   }
@@ -1498,6 +2069,73 @@ export class RealtimeSession<
     this.#transport.interrupt();
   }
 
+  #validateIssuedApproval(
+    approvalItem: RunToolApprovalItem,
+  ): IssuedRealtimeApproval<TBaseContext> | undefined {
+    let issued = this.#issuedApprovals.get(approvalItem);
+    if (
+      !issued &&
+      approvalItem.rawItem.type === 'hosted_tool_call' &&
+      approvalItem.agent instanceof RealtimeAgent
+    ) {
+      const agent = approvalItem.agent as SessionRealtimeAgent<TBaseContext>;
+      const { callId } = validateToolInvocationName(
+        this.#context,
+        agent,
+        approvalItem.rawItem.name,
+        approvalItem.rawItem,
+      );
+      issued = this.#mcpApprovalInvocations.get(agent)?.get(callId);
+    }
+    if (
+      issued !== undefined &&
+      (issued.connectionGeneration !== this.#connectionGeneration ||
+        issued.connectionGeneration !== this.#connectedGeneration)
+    ) {
+      throw new ModelBehaviorError(
+        'Tool approval belongs to a closed realtime connection.',
+      );
+    }
+    if (!issued) {
+      return undefined;
+    }
+    if (approvalItem.agent !== issued.agent) {
+      throw new ModelBehaviorError(
+        `Tool call ID ${issued.callId} approval does not belong to its issuing realtime agent.`,
+      );
+    }
+    if (
+      !('name' in approvalItem.rawItem) ||
+      approvalItem.rawItem.name !== issued.rawName
+    ) {
+      throw new ModelBehaviorError(
+        `Tool call ID ${issued.callId} approval changed its issued realtime tool name.`,
+      );
+    }
+    const supplied = issued.tool
+      ? validateToolInvocationApproval(
+          this.#context,
+          issued.agent,
+          issued.tool,
+          approvalItem.rawItem,
+        )
+      : validateToolInvocationName(
+          this.#context,
+          issued.agent,
+          issued.toolName,
+          approvalItem.rawItem,
+        );
+    if (
+      supplied.callId !== issued.callId ||
+      supplied.fingerprint !== issued.fingerprint
+    ) {
+      throw new ModelBehaviorError(
+        `Tool call ID ${issued.callId} approval does not match its issued realtime invocation.`,
+      );
+    }
+    return issued;
+  }
+
   #resolvePendingFunctionCall(
     approvalItem: RunToolApprovalItem,
   ): PendingRealtimeFunctionCall<TBaseContext> | undefined {
@@ -1514,15 +2152,33 @@ export class RealtimeSession<
     const toolCall = normalizeRealtimeFunctionCallId(
       rawToolCall as TransportToolCallEvent,
     );
-    const pending = this.#pendingFunctionCalls.get(toolCall.callId);
-    if (pending) {
-      return pending;
-    }
-
     const agent =
       approvalItem.agent instanceof RealtimeAgent
         ? (approvalItem.agent as SessionRealtimeAgent<TBaseContext>)
         : this.#currentAgent;
+    const pending = this.#pendingFunctionCalls.get(agent)?.get(toolCall.callId);
+    if (pending) {
+      if (pending.connectionGeneration !== this.#connectionGeneration) {
+        throw new ModelBehaviorError(
+          `Tool call ID ${toolCall.callId} approval belongs to a closed realtime connection.`,
+        );
+      }
+      const suppliedInvocation = validateToolInvocationApproval(
+        this.#context,
+        agent,
+        pending.tool,
+        toolCall,
+      );
+      if (
+        toolCall.name !== pending.toolCall.name ||
+        suppliedInvocation.fingerprint !== pending.fingerprint
+      ) {
+        throw new ModelBehaviorError(
+          `Tool call ID ${toolCall.callId} approval does not match the pending realtime invocation.`,
+        );
+      }
+      return pending;
+    }
     const toolName = approvalItem.toolName ?? approvalItem.rawItem.name;
     const tool = agent.tools.find(
       (candidate): candidate is RealtimeFunctionTool<TBaseContext> =>
@@ -1536,11 +2192,17 @@ export class RealtimeSession<
       this.#currentDispatchSnapshot?.agent === agent
         ? this.#currentDispatchSnapshot
         : { agent, functionTools: [tool], handoffs: [] };
+    const invocation = {
+      ...validateToolInvocationApproval(this.#context, agent, tool, toolCall),
+      connectionGeneration: this.#connectionGeneration,
+    };
     return {
       toolCall,
       tool,
       agent,
       dispatchSnapshot,
+      fingerprint: invocation.fingerprint,
+      connectionGeneration: invocation.connectionGeneration,
       approvalItem:
         toolCall === approvalItem.rawItem
           ? approvalItem
@@ -1562,27 +2224,58 @@ export class RealtimeSession<
     approvalItem: RunToolApprovalItem,
     options: { alwaysApprove?: boolean } = { alwaysApprove: false },
   ) {
+    const issued = this.#validateIssuedApproval(approvalItem);
+    if (issued && issued.decisionState !== 'pending') {
+      return;
+    }
     const pending = this.#resolvePendingFunctionCall(approvalItem);
-    this.#context.approveTool(pending?.approvalItem ?? approvalItem, options);
+    if (issued?.kind === 'function' && !pending) {
+      throw new ModelBehaviorError(
+        `Tool call ID ${issued.callId} no longer has a pending realtime invocation.`,
+      );
+    }
+    if (issued?.kind === 'function') {
+      issued.decisionState = 'decided';
+    }
+    const effectiveApprovalItem =
+      pending?.approvalItem ?? issued?.trustedApprovalItem ?? approvalItem;
+    this.#context.approveTool(effectiveApprovalItem, options);
     const toolName =
-      approvalItem.toolName ?? (approvalItem.rawItem as any).name;
+      effectiveApprovalItem.toolName ??
+      ('name' in effectiveApprovalItem.rawItem
+        ? effectiveApprovalItem.rawItem.name
+        : undefined);
     if (pending) {
-      this.#pendingFunctionCalls.delete(pending.toolCall.callId);
+      this.#deletePendingFunctionCall(pending.agent, pending.toolCall.callId);
       await this.#handleFunctionToolCall(
         pending.toolCall,
         pending.tool,
         pending.agent,
         pending.dispatchSnapshot,
       );
-    } else if (approvalItem.rawItem.type === 'hosted_tool_call') {
+    } else if (effectiveApprovalItem.rawItem.type === 'hosted_tool_call') {
       if (options.alwaysApprove) {
         logger.warn(
           'Always approving MCP tools is not supported. Use the allowed tools configuration instead.',
         );
       }
-      const mcpApprovalRequest =
-        approvalItemToRealtimeApprovalItem(approvalItem);
-      this.#transport.sendMcpResponse(mcpApprovalRequest, true);
+      const mcpApprovalRequest = approvalItemToRealtimeApprovalItem(
+        effectiveApprovalItem,
+      );
+      if (issued) {
+        issued.decisionState = 'sending';
+      }
+      try {
+        this.#transport.sendMcpResponse(mcpApprovalRequest, true);
+      } catch (error) {
+        if (issued) {
+          issued.decisionState = 'pending';
+        }
+        throw error;
+      }
+      if (issued) {
+        issued.decisionState = 'decided';
+      }
     } else {
       throw new ModelBehaviorError(`Tool ${toolName ?? 'unknown'} not found`);
     }
@@ -1602,37 +2295,70 @@ export class RealtimeSession<
       alwaysReject: false,
     },
   ) {
+    const issued = this.#validateIssuedApproval(approvalItem);
+    if (issued && issued.decisionState !== 'pending') {
+      return;
+    }
     const pending = this.#resolvePendingFunctionCall(approvalItem);
-    this.#context.rejectTool(pending?.approvalItem ?? approvalItem, options);
+    if (issued?.kind === 'function' && !pending) {
+      throw new ModelBehaviorError(
+        `Tool call ID ${issued.callId} no longer has a pending realtime invocation.`,
+      );
+    }
+    if (issued?.kind === 'function') {
+      issued.decisionState = 'decided';
+    }
+    const effectiveApprovalItem =
+      pending?.approvalItem ?? issued?.trustedApprovalItem ?? approvalItem;
+    this.#context.rejectTool(effectiveApprovalItem, options);
 
     // we still need to simulate a tool call to the agent to let the agent know
     const toolName =
-      approvalItem.toolName ?? (approvalItem.rawItem as any).name;
+      effectiveApprovalItem.toolName ??
+      ('name' in effectiveApprovalItem.rawItem
+        ? effectiveApprovalItem.rawItem.name
+        : undefined);
     if (pending) {
-      this.#pendingFunctionCalls.delete(pending.toolCall.callId);
+      this.#deletePendingFunctionCall(pending.agent, pending.toolCall.callId);
       await this.#handleFunctionToolCall(
         pending.toolCall,
         pending.tool,
         pending.agent,
         pending.dispatchSnapshot,
       );
-    } else if (approvalItem.rawItem.type === 'hosted_tool_call') {
+    } else if (effectiveApprovalItem.rawItem.type === 'hosted_tool_call') {
       if (options.alwaysReject) {
         logger.warn(
           'Always rejecting MCP tools is not supported. Use the allowed tools configuration instead.',
         );
       }
-      const mcpApprovalRequest =
-        approvalItemToRealtimeApprovalItem(approvalItem);
-      const rejectionReason = this.#context.getRejectionMessage(
-        toolName,
-        mcpApprovalRequest.itemId,
+      const mcpApprovalRequest = approvalItemToRealtimeApprovalItem(
+        effectiveApprovalItem,
       );
-      this.#transport.sendMcpResponse(
-        mcpApprovalRequest,
-        false,
-        rejectionReason,
+      const rejectionReason = getBoundToolInvocationRejectionMessage(
+        this.#context,
+        effectiveApprovalItem.agent,
+        effectiveApprovalItem.toolName ?? effectiveApprovalItem.rawItem.name,
+        effectiveApprovalItem.rawItem,
       );
+      if (issued) {
+        issued.decisionState = 'sending';
+      }
+      try {
+        this.#transport.sendMcpResponse(
+          mcpApprovalRequest,
+          false,
+          rejectionReason,
+        );
+      } catch (error) {
+        if (issued) {
+          issued.decisionState = 'pending';
+        }
+        throw error;
+      }
+      if (issued) {
+        issued.decisionState = 'decided';
+      }
     } else {
       throw new ModelBehaviorError(`Tool ${toolName ?? 'unknown'} not found`);
     }

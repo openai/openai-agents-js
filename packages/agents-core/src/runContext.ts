@@ -1,5 +1,5 @@
 import type { Agent } from './agent';
-import { UserError } from './errors';
+import { ModelBehaviorError, UserError } from './errors';
 import { RunToolApprovalItem } from './items';
 import logger from './logger';
 import {
@@ -9,6 +9,11 @@ import {
 } from './toolIdentity';
 import { UnknownContext } from './types';
 import { Usage } from './usage';
+import {
+  getToolInvocationCallId,
+  getToolInvocationFingerprint,
+  type ApprovalCapableToolCall,
+} from './toolInvocation';
 
 type ApprovalRecord = {
   approved: boolean | string[];
@@ -17,8 +22,51 @@ type ApprovalRecord = {
   stickyRejectMessage?: string;
 };
 
+function cloneApprovalRecord(record: ApprovalRecord): ApprovalRecord {
+  return {
+    approved: Array.isArray(record.approved)
+      ? [...record.approved]
+      : record.approved,
+    rejected: Array.isArray(record.rejected)
+      ? [...record.rejected]
+      : record.rejected,
+    ...(record.messages ? { messages: { ...record.messages } } : {}),
+    ...(record.stickyRejectMessage !== undefined
+      ? { stickyRejectMessage: record.stickyRejectMessage }
+      : {}),
+  };
+}
+
+function cloneApprovalMap(
+  records: ReadonlyMap<string, ApprovalRecord>,
+): Map<string, ApprovalRecord> {
+  return new Map(
+    [...records].map(([toolName, record]) => [
+      toolName,
+      cloneApprovalRecord(record),
+    ]),
+  );
+}
+
+function cloneAgentApprovalMap(
+  records: ReadonlyMap<Agent<any, any>, ReadonlyMap<string, ApprovalRecord>>,
+): Map<Agent<any, any>, Map<string, ApprovalRecord>> {
+  return new Map(
+    [...records].map(([agent, approvals]) => [
+      agent,
+      cloneApprovalMap(approvals),
+    ]),
+  );
+}
+
 type SerializedFunctionApprovals = Array<{
   agentIdentity: string;
+  approvals: Record<string, ApprovalRecord>;
+}>;
+
+type SerializedApprovalInvocations = Array<{
+  agentIdentity: string;
+  invocations: Record<string, string>;
   approvals: Record<string, ApprovalRecord>;
 }>;
 
@@ -128,6 +176,7 @@ type RunContextJson = {
 type SerializedRunContextJson = RunContextJson & {
   functionApprovals?: SerializedFunctionApprovals;
   legacyFunctionApprovals?: Record<string, ApprovalRecord>;
+  approvalInvocations?: SerializedApprovalInvocations;
 };
 
 /**
@@ -159,6 +208,16 @@ export class RunContext<TContext = UnknownContext> {
    */
   #functionApprovalState: FunctionApprovalState;
 
+  /**
+   * Canonical invocation fingerprints for per-call approval decisions.
+   */
+  #approvalInvocations: Map<Agent<any, any>, Map<string, string>>;
+
+  /**
+   * Non-function per-call decisions scoped to the public agent that owns them.
+   */
+  #toolApprovalsByAgent: Map<Agent<any, any>, Map<string, ApprovalRecord>>;
+
   constructor(context: TContext = {} as TContext) {
     this.context = context;
     this.usage = new Usage();
@@ -167,6 +226,8 @@ export class RunContext<TContext = UnknownContext> {
       approvalsByAgent: new Map(),
       legacyApprovals: new Map(),
     };
+    this.#approvalInvocations = new Map();
+    this.#toolApprovalsByAgent = new Map();
   }
 
   /**
@@ -189,7 +250,319 @@ export class RunContext<TContext = UnknownContext> {
     target.usage = this.usage;
     target.#approvals = this.#approvals;
     target.#functionApprovalState = this.#functionApprovalState;
+    target.#approvalInvocations = this.#approvalInvocations;
+    target.#toolApprovalsByAgent = this.#toolApprovalsByAgent;
     return target;
+  }
+
+  /**
+   * Creates an isolated context copy for transactional RunState restoration.
+   * @internal
+   */
+  _cloneForRunStateDeserialization(): RunContext<TContext> {
+    const clone = this._createFork();
+    clone.context = this.context;
+    clone.usage = this.usage;
+    clone.toolInput = this.toolInput;
+    clone.#approvals = cloneApprovalMap(this.#approvals);
+    clone.#functionApprovalState = {
+      approvalsByAgent: cloneAgentApprovalMap(
+        this.#functionApprovalState.approvalsByAgent,
+      ),
+      legacyApprovals: cloneApprovalMap(
+        this.#functionApprovalState.legacyApprovals,
+      ),
+    };
+    clone.#approvalInvocations = new Map(
+      [...this.#approvalInvocations].map(([agent, invocations]) => [
+        agent,
+        new Map(invocations),
+      ]),
+    );
+    clone.#toolApprovalsByAgent = cloneAgentApprovalMap(
+      this.#toolApprovalsByAgent,
+    );
+    return clone;
+  }
+
+  /**
+   * Replaces approval state after a transactional RunState restoration passes.
+   * @internal
+   */
+  _replaceApprovalState(source: RunContext<TContext>): void {
+    this.#approvals.clear();
+    for (const [toolName, approval] of source.#approvals) {
+      this.#approvals.set(toolName, cloneApprovalRecord(approval));
+    }
+    this.#functionApprovalState.approvalsByAgent.clear();
+    for (const [agent, approvals] of source.#functionApprovalState
+      .approvalsByAgent) {
+      this.#functionApprovalState.approvalsByAgent.set(
+        agent,
+        cloneApprovalMap(approvals),
+      );
+    }
+    this.#functionApprovalState.legacyApprovals.clear();
+    for (const [toolName, approval] of source.#functionApprovalState
+      .legacyApprovals) {
+      this.#functionApprovalState.legacyApprovals.set(
+        toolName,
+        cloneApprovalRecord(approval),
+      );
+    }
+    this.#approvalInvocations.clear();
+    for (const [agent, invocations] of source.#approvalInvocations) {
+      this.#approvalInvocations.set(agent, new Map(invocations));
+    }
+    this.#toolApprovalsByAgent.clear();
+    for (const [agent, approvals] of source.#toolApprovalsByAgent) {
+      this.#toolApprovalsByAgent.set(agent, cloneApprovalMap(approvals));
+    }
+  }
+
+  /**
+   * Rebuild per-call approval bindings from serialized RunState data.
+   * @internal
+   */
+  _rebuildApprovalInvocations(
+    invocations: SerializedApprovalInvocations,
+    agentsByIdentity: ReadonlyMap<string, Agent<any, any>>,
+  ): void {
+    this.#approvalInvocations = new Map();
+    this.#toolApprovalsByAgent = new Map();
+    this._mergeApprovalInvocations(invocations, agentsByIdentity);
+  }
+
+  /**
+   * Merge serialized per-call approval bindings into a live context.
+   * @internal
+   */
+  _mergeApprovalInvocations(
+    invocations: SerializedApprovalInvocations,
+    agentsByIdentity: ReadonlyMap<string, Agent<any, any>>,
+  ): void {
+    this._validateApprovalInvocations(invocations, agentsByIdentity);
+    for (const {
+      agentIdentity,
+      invocations: byCallId,
+      approvals,
+    } of invocations) {
+      const agent = agentsByIdentity.get(agentIdentity)!;
+      this.#mergeAgentApprovalInvocations(
+        agent,
+        new Map(Object.entries(byCallId)),
+      );
+      for (const [toolName, incoming] of Object.entries(approvals)) {
+        this.#setToolApprovalRecord(agent, toolName, incoming);
+      }
+    }
+  }
+
+  /**
+   * Validate serialized approval-invocation ownership and conflicts without
+   * mutating this context.
+   * @internal
+   */
+  _validateApprovalInvocations(
+    invocations: SerializedApprovalInvocations,
+    agentsByIdentity: ReadonlyMap<string, Agent<any, any>>,
+  ): void {
+    const seenAgentIdentities = new Set<string>();
+    for (const { agentIdentity, invocations: byCallId } of invocations) {
+      if (
+        !agentsByIdentity.has(agentIdentity) ||
+        seenAgentIdentities.has(agentIdentity)
+      ) {
+        throw new UserError(
+          'RunState contains invalid approval invocation ownership for the current agent graph.',
+        );
+      }
+      seenAgentIdentities.add(agentIdentity);
+      const agent = agentsByIdentity.get(agentIdentity)!;
+      for (const [callId, fingerprint] of Object.entries(byCallId)) {
+        this._validateAgentApprovalInvocation(agent, callId, fingerprint);
+      }
+    }
+  }
+
+  /**
+   * Bind a legacy per-call decision to its serialized approval item.
+   * @internal
+   */
+  _bindLegacyApprovalInvocation(approvalItem: RunToolApprovalItem): void {
+    const callId = getToolInvocationCallId(approvalItem.rawItem);
+    const agentInvocations = this.#getApprovalInvocations(approvalItem.agent);
+    if (!callId || agentInvocations.has(callId)) {
+      return;
+    }
+    const toolName = this.#getApprovalItemToolName(approvalItem);
+    const decision = this.isToolApproved({
+      toolName,
+      callId,
+      functionTool: false,
+      ...(approvalItem.rawItem.type === 'function_call'
+        ? { agent: approvalItem.agent }
+        : {}),
+    });
+    if (decision !== undefined) {
+      agentInvocations.set(
+        callId,
+        getToolInvocationFingerprint(toolName, approvalItem.rawItem),
+      );
+      if (approvalItem.rawItem.type !== 'function_call') {
+        this.#copyPerCallToolApproval(approvalItem.agent, toolName, callId);
+      }
+    }
+  }
+
+  /**
+   * Fail closed when an agent-local call ID with a per-call decision is reused.
+   * @internal
+   */
+  _validateAgentApprovalInvocation(
+    agent: Agent<any, any>,
+    callId: string,
+    fingerprint: string,
+  ): void {
+    const approvedFingerprint = this.#approvalInvocations
+      .get(agent)
+      ?.get(callId);
+    if (
+      approvedFingerprint !== undefined &&
+      approvedFingerprint !== fingerprint
+    ) {
+      throw new ModelBehaviorError(
+        `Tool call ID ${callId} was reused for a different invocation after an approval decision.`,
+      );
+    }
+  }
+
+  /**
+   * Validate a canonical tool invocation before approval lookup or execution.
+   * @internal
+   */
+  _validateToolInvocation(
+    agent: Agent<any, any>,
+    toolName: string,
+    rawItem: ApprovalCapableToolCall,
+  ): { callId: string; fingerprint: string } {
+    const callId = getToolInvocationCallId(rawItem);
+    if (!callId) {
+      throw new ModelBehaviorError(
+        'Tool invocation is missing a non-empty call ID.',
+      );
+    }
+    const fingerprint = getToolInvocationFingerprint(toolName, rawItem);
+    this._validateAgentApprovalInvocation(agent, callId, fingerprint);
+    return { callId, fingerprint };
+  }
+
+  /**
+   * Resolve a decision only when its per-call binding belongs to this agent.
+   * Sticky tool-wide decisions remain shared.
+   * @internal
+   */
+  _resolveToolInvocationApproval(
+    agent: Agent<any, any>,
+    toolName: string,
+    rawItem: ApprovalCapableToolCall,
+  ): boolean | undefined {
+    const { callId, fingerprint } = this._validateToolInvocation(
+      agent,
+      toolName,
+      rawItem,
+    );
+    if (rawItem.type === 'function_call') {
+      const scopedEntries = this.#getFunctionApprovalEntries(
+        toolName,
+        false,
+        agent,
+      );
+      const stickyDecision = this.#resolveStickyApprovalEntries(scopedEntries);
+      if (stickyDecision !== undefined) {
+        return stickyDecision;
+      }
+      const legacyEntries = this.#getLegacyFunctionApprovalEntries(toolName);
+      const legacyStickyDecision =
+        this.#resolveStickyApprovalEntries(legacyEntries);
+      if (legacyStickyDecision !== undefined) {
+        return legacyStickyDecision;
+      }
+      if (this.#approvalInvocations.get(agent)?.get(callId) === fingerprint) {
+        return (
+          this.#resolveApprovalEntries(scopedEntries, callId) ??
+          this.#resolveApprovalEntries(legacyEntries, callId)
+        );
+      }
+      return undefined;
+    }
+    const entries = this.#getToolApprovalEntries(toolName, agent);
+    if (this.#approvalInvocations.get(agent)?.get(callId) === fingerprint) {
+      const scopedDecision = this.#resolveApprovalEntries(entries, callId);
+      if (scopedDecision !== undefined) {
+        return scopedDecision;
+      }
+    }
+    return this.#resolveStickyApprovalEntries(
+      this.#getApprovalEntries(toolName, false),
+    );
+  }
+
+  /**
+   * Resolve a rejection message only from the owning per-call binding or a
+   * sticky tool-wide rejection.
+   * @internal
+   */
+  _getToolInvocationRejectionMessage(
+    agent: Agent<any, any>,
+    toolName: string,
+    rawItem: ApprovalCapableToolCall,
+  ): string | undefined {
+    const { callId, fingerprint } = this._validateToolInvocation(
+      agent,
+      toolName,
+      rawItem,
+    );
+    if (rawItem.type === 'function_call') {
+      const scopedEntries = this.#getFunctionApprovalEntries(
+        toolName,
+        false,
+        agent,
+      );
+      const stickyMessage = scopedEntries.find(
+        (entry) => entry.rejected === true,
+      )?.stickyRejectMessage;
+      if (stickyMessage !== undefined) {
+        return stickyMessage;
+      }
+      const legacyEntries = this.#getLegacyFunctionApprovalEntries(toolName);
+      const legacyStickyMessage = legacyEntries.find(
+        (entry) => entry.rejected === true,
+      )?.stickyRejectMessage;
+      if (legacyStickyMessage !== undefined) {
+        return legacyStickyMessage;
+      }
+      if (this.#approvalInvocations.get(agent)?.get(callId) === fingerprint) {
+        return (
+          this.#getRejectionMessageFromEntries(scopedEntries, callId) ??
+          this.#getRejectionMessageFromEntries(legacyEntries, callId)
+        );
+      }
+      return undefined;
+    }
+    const entries = this.#getToolApprovalEntries(toolName, agent);
+    if (this.#approvalInvocations.get(agent)?.get(callId) === fingerprint) {
+      const scopedMessage = this.#getRejectionMessageFromEntries(
+        entries,
+        callId,
+      );
+      if (scopedMessage !== undefined) {
+        return scopedMessage;
+      }
+    }
+    return this.#getApprovalEntries(toolName, false).find(
+      (entry) => entry.rejected === true,
+    )?.stickyRejectMessage;
   }
 
   /**
@@ -323,6 +696,8 @@ export class RunContext<TContext = UnknownContext> {
    * @internal
    */
   _mergeApprovalState(source: RunContext<TContext>): void {
+    this.#mergeLiveApprovalInvocations(source.#approvalInvocations);
+    this.#mergeLiveToolApprovals(source.#toolApprovalsByAgent);
     for (const [toolName, incoming] of source.#approvals) {
       this.#setApprovalRecord(toolName, incoming);
     }
@@ -347,6 +722,8 @@ export class RunContext<TContext = UnknownContext> {
     source: RunContext<TContext>,
     exactToolNames: ReadonlySet<string>,
   ): void {
+    this.#mergeLiveApprovalInvocations(source.#approvalInvocations);
+    this.#mergeLiveToolApprovals(source.#toolApprovalsByAgent);
     for (const [toolName, incoming] of source.#approvals) {
       if (exactToolNames.has(toolName) && this.#approvals.has(toolName)) {
         continue;
@@ -625,6 +1002,28 @@ export class RunContext<TContext = UnknownContext> {
           this.#functionApprovalState.legacyApprovals,
         );
       }
+      const approvalInvocations: SerializedApprovalInvocations = [];
+      const approvalAgents = new Set([
+        ...this.#approvalInvocations.keys(),
+        ...this.#toolApprovalsByAgent.keys(),
+      ]);
+      for (const agent of approvalAgents) {
+        const invocations = this.#approvalInvocations.get(agent) ?? new Map();
+        const approvalsByTool =
+          this.#toolApprovalsByAgent.get(agent) ?? new Map();
+        const agentIdentity = agentIdentityKeys.get(agent);
+        if (
+          agentIdentity &&
+          (invocations.size > 0 || approvalsByTool.size > 0)
+        ) {
+          approvalInvocations.push({
+            agentIdentity,
+            invocations: Object.fromEntries(invocations),
+            approvals: Object.fromEntries(approvalsByTool),
+          });
+        }
+      }
+      json.approvalInvocations = approvalInvocations;
     }
     if (typeof this.toolInput !== 'undefined') {
       json.toolInput = this.toolInput;
@@ -697,26 +1096,9 @@ export class RunContext<TContext = UnknownContext> {
     approvalEntries: readonly ApprovalRecord[],
     callId: string,
   ): boolean | undefined {
-    const hasPermanentApproval = approvalEntries.some(
-      (approvalEntry) => approvalEntry.approved === true,
-    );
-    const hasPermanentRejection = approvalEntries.some(
-      (approvalEntry) => approvalEntry.rejected === true,
-    );
-
-    if (hasPermanentApproval && hasPermanentRejection) {
-      logger.warn(
-        'Tool is permanently approved and rejected at the same time. Approval takes precedence',
-      );
-      return true;
-    }
-
-    if (hasPermanentApproval) {
-      return true;
-    }
-
-    if (hasPermanentRejection) {
-      return false;
+    const stickyDecision = this.#resolveStickyApprovalEntries(approvalEntries);
+    if (stickyDecision !== undefined) {
+      return stickyDecision;
     }
 
     const individualCallApproval = approvalEntries.some((approvalEntry) =>
@@ -748,6 +1130,33 @@ export class RunContext<TContext = UnknownContext> {
     return undefined;
   }
 
+  #resolveStickyApprovalEntries(
+    approvalEntries: readonly ApprovalRecord[],
+  ): boolean | undefined {
+    const hasPermanentApproval = approvalEntries.some(
+      (approvalEntry) => approvalEntry.approved === true,
+    );
+    const hasPermanentRejection = approvalEntries.some(
+      (approvalEntry) => approvalEntry.rejected === true,
+    );
+
+    if (hasPermanentApproval && hasPermanentRejection) {
+      logger.warn(
+        'Tool is permanently approved and rejected at the same time. Approval takes precedence',
+      );
+      return true;
+    }
+
+    if (hasPermanentApproval) {
+      return true;
+    }
+
+    if (hasPermanentRejection) {
+      return false;
+    }
+    return undefined;
+  }
+
   #getRejectionMessageFromEntries(
     approvalEntries: readonly ApprovalRecord[],
     callId: string,
@@ -776,15 +1185,17 @@ export class RunContext<TContext = UnknownContext> {
     { alwaysApprove = false }: { alwaysApprove?: boolean } = {},
   ) {
     const toolName = this.#getApprovalItemToolName(approvalItem);
-    const approvals =
-      approvalItem.rawItem.type === 'function_call'
-        ? this.#getFunctionApprovalMap(approvalItem.agent)
-        : this.#approvals;
+    const isFunctionCall = approvalItem.rawItem.type === 'function_call';
+    const approvals = isFunctionCall
+      ? this.#getFunctionApprovalMap(approvalItem.agent)
+      : this.#approvals;
     const approvalKey = this.#getApprovalStorageKey(
       toolName,
-      approvalItem.rawItem.type === 'function_call',
+      isFunctionCall,
       approvals,
     );
+    const callId = this.#getCallId(approvalItem);
+    this.#bindApprovalInvocation(toolName, approvalItem);
     if (alwaysApprove) {
       approvals.set(approvalKey, {
         approved: true,
@@ -793,14 +1204,16 @@ export class RunContext<TContext = UnknownContext> {
       return;
     }
 
-    const approvalEntry = approvals.get(approvalKey) ?? {
-      approved: [],
-      rejected: [],
-    };
-    if (Array.isArray(approvalEntry.approved)) {
-      approvalEntry.approved.push(this.#getCallId(approvalItem));
+    this.#recordPerCallApproval(approvals, approvalKey, callId, true);
+    if (!isFunctionCall) {
+      const scopedApprovals = this.#getToolApprovalMap(approvalItem.agent);
+      const scopedKey = this.#getApprovalStorageKey(
+        toolName,
+        false,
+        scopedApprovals,
+      );
+      this.#recordPerCallApproval(scopedApprovals, scopedKey, callId, true);
     }
-    approvals.set(approvalKey, approvalEntry);
   }
 
   /**
@@ -816,17 +1229,18 @@ export class RunContext<TContext = UnknownContext> {
     }: { alwaysReject?: boolean; message?: string } = {},
   ) {
     const toolName = this.#getApprovalItemToolName(approvalItem);
-    const approvals =
-      approvalItem.rawItem.type === 'function_call'
-        ? this.#getFunctionApprovalMap(approvalItem.agent)
-        : this.#approvals;
+    const isFunctionCall = approvalItem.rawItem.type === 'function_call';
+    const approvals = isFunctionCall
+      ? this.#getFunctionApprovalMap(approvalItem.agent)
+      : this.#approvals;
     const approvalKey = this.#getApprovalStorageKey(
       toolName,
-      approvalItem.rawItem.type === 'function_call',
+      isFunctionCall,
       approvals,
     );
+    const callId = this.#getCallId(approvalItem);
+    this.#bindApprovalInvocation(toolName, approvalItem);
     if (alwaysReject) {
-      const callId = this.#getCallId(approvalItem);
       approvals.set(approvalKey, {
         approved: false,
         rejected: true,
@@ -840,20 +1254,96 @@ export class RunContext<TContext = UnknownContext> {
       return;
     }
 
+    this.#recordPerCallApproval(approvals, approvalKey, callId, false, message);
+    if (!isFunctionCall) {
+      const scopedApprovals = this.#getToolApprovalMap(approvalItem.agent);
+      const scopedKey = this.#getApprovalStorageKey(
+        toolName,
+        false,
+        scopedApprovals,
+      );
+      this.#recordPerCallApproval(
+        scopedApprovals,
+        scopedKey,
+        callId,
+        false,
+        message,
+      );
+    }
+  }
+
+  #recordPerCallApproval(
+    approvals: Map<string, ApprovalRecord>,
+    approvalKey: string,
+    callId: string,
+    approved: boolean,
+    message?: string,
+  ): void {
     const approvalEntry = approvals.get(approvalKey) ?? {
       approved: [] as string[],
       rejected: [] as string[],
     };
-
-    if (Array.isArray(approvalEntry.rejected)) {
-      const callId = this.#getCallId(approvalItem);
-      approvalEntry.rejected.push(callId);
-      if (message !== undefined) {
-        approvalEntry.messages = approvalEntry.messages ?? {};
-        approvalEntry.messages[callId] = message;
-      }
+    const decisions = approved
+      ? approvalEntry.approved
+      : approvalEntry.rejected;
+    if (Array.isArray(decisions) && !decisions.includes(callId)) {
+      decisions.push(callId);
+    }
+    if (!approved && message !== undefined) {
+      approvalEntry.messages = approvalEntry.messages ?? {};
+      approvalEntry.messages[callId] = message;
     }
     approvals.set(approvalKey, approvalEntry);
+  }
+
+  #bindApprovalInvocation(
+    toolName: string,
+    approvalItem: RunToolApprovalItem,
+  ): void {
+    const { callId, fingerprint } = this._validateToolInvocation(
+      approvalItem.agent,
+      toolName,
+      approvalItem.rawItem,
+    );
+    this.#getApprovalInvocations(approvalItem.agent).set(callId, fingerprint);
+  }
+
+  #getApprovalInvocations(agent: Agent<any, any>): Map<string, string> {
+    const existing = this.#approvalInvocations.get(agent);
+    if (existing) {
+      return existing;
+    }
+    const invocations = new Map<string, string>();
+    this.#approvalInvocations.set(agent, invocations);
+    return invocations;
+  }
+
+  #mergeAgentApprovalInvocations(
+    agent: Agent<any, any>,
+    incoming: ReadonlyMap<string, string>,
+  ): void {
+    for (const [callId, fingerprint] of incoming) {
+      this._validateAgentApprovalInvocation(agent, callId, fingerprint);
+      this.#getApprovalInvocations(agent).set(callId, fingerprint);
+    }
+  }
+
+  #mergeLiveApprovalInvocations(
+    incoming: ReadonlyMap<Agent<any, any>, ReadonlyMap<string, string>>,
+  ): void {
+    for (const [agent, invocations] of incoming) {
+      this.#mergeAgentApprovalInvocations(agent, invocations);
+    }
+  }
+
+  #mergeLiveToolApprovals(
+    incoming: ReadonlyMap<Agent<any, any>, ReadonlyMap<string, ApprovalRecord>>,
+  ): void {
+    for (const [agent, approvalsByTool] of incoming) {
+      for (const [toolName, approval] of approvalsByTool) {
+        this.#setToolApprovalRecord(agent, toolName, approval);
+      }
+    }
   }
 
   /**
@@ -883,6 +1373,62 @@ export class RunContext<TContext = UnknownContext> {
     return getApprovalToolNameCandidates(toolName, includeFunctionAliases)
       .map((candidate) => this.#approvals.get(candidate))
       .filter((approval): approval is ApprovalRecord => approval !== undefined);
+  }
+
+  #getToolApprovalEntries(
+    toolName: string,
+    agent: Agent<any, any>,
+  ): ApprovalRecord[] {
+    const approvalsByTool = this.#toolApprovalsByAgent.get(agent);
+    if (!approvalsByTool) {
+      return [];
+    }
+    return getApprovalToolNameCandidates(toolName, false)
+      .map((candidate) => approvalsByTool.get(candidate))
+      .filter((approval): approval is ApprovalRecord => approval !== undefined);
+  }
+
+  #getToolApprovalMap(agent: Agent<any, any>): Map<string, ApprovalRecord> {
+    const existing = this.#toolApprovalsByAgent.get(agent);
+    if (existing) {
+      return existing;
+    }
+    const approvals = new Map<string, ApprovalRecord>();
+    this.#toolApprovalsByAgent.set(agent, approvals);
+    return approvals;
+  }
+
+  #copyPerCallToolApproval(
+    agent: Agent<any, any>,
+    toolName: string,
+    callId: string,
+  ): void {
+    const sourceEntries = this.#getApprovalEntries(toolName, false);
+    const approved = sourceEntries.some(
+      (entry) =>
+        Array.isArray(entry.approved) && entry.approved.includes(callId),
+    );
+    const rejected = sourceEntries.some(
+      (entry) =>
+        Array.isArray(entry.rejected) && entry.rejected.includes(callId),
+    );
+    if (!approved && !rejected) {
+      return;
+    }
+    const approvals = this.#getToolApprovalMap(agent);
+    const approvalKey = this.#getApprovalStorageKey(toolName, false, approvals);
+    if (approved) {
+      this.#recordPerCallApproval(approvals, approvalKey, callId, true);
+    }
+    if (rejected) {
+      this.#recordPerCallApproval(
+        approvals,
+        approvalKey,
+        callId,
+        false,
+        this.#getRejectionMessageFromEntries(sourceEntries, callId),
+      );
+    }
   }
 
   #getFunctionApprovalEntries(
@@ -959,6 +1505,19 @@ export class RunContext<TContext = UnknownContext> {
     incoming: ApprovalRecord,
   ): void {
     const approvalsByTool = this.#getFunctionApprovalMap(agent);
+    const current = approvalsByTool.get(toolName);
+    approvalsByTool.set(
+      toolName,
+      current ? mergeApprovalRecords(current, incoming) : incoming,
+    );
+  }
+
+  #setToolApprovalRecord(
+    agent: Agent<any, any>,
+    toolName: string,
+    incoming: ApprovalRecord,
+  ): void {
+    const approvalsByTool = this.#getToolApprovalMap(agent);
     const current = approvalsByTool.get(toolName);
     approvalsByTool.set(
       toolName,

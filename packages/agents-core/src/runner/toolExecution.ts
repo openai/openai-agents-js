@@ -1531,7 +1531,6 @@ type LocalApprovalDecision = {
 async function resolveToolApproval(options: {
   runContext: RunContext;
   toolName: string;
-  callId: string;
   approvalItem: RunToolApprovalItem;
   needsApproval: () => Promise<boolean>;
   onApproval?:
@@ -1545,18 +1544,17 @@ async function resolveToolApproval(options: {
   const {
     runContext,
     toolName,
-    callId,
     approvalItem,
     needsApproval,
     onApproval,
     isCancelled,
   } = options;
 
-  const existingApproval = runContext.isToolApproved({
+  const existingApproval = runContext._resolveToolInvocationApproval(
+    approvalItem.agent,
     toolName,
-    callId,
-    functionTool: false,
-  });
+    approvalItem.rawItem,
+  );
 
   if (existingApproval === true) {
     return 'approved';
@@ -1600,11 +1598,11 @@ async function resolveToolApproval(options: {
     }
   }
 
-  const approval = runContext.isToolApproved({
+  const approval = runContext._resolveToolInvocationApproval(
+    approvalItem.agent,
     toolName,
-    callId,
-    functionTool: false,
-  });
+    approvalItem.rawItem,
+  );
 
   if (approval === true) {
     return 'approved';
@@ -1622,7 +1620,6 @@ type ApprovalDecisionResult =
 async function handleToolApprovalDecision(options: {
   runContext: RunContext;
   toolName: string;
-  callId: string;
   approvalItem: RunToolApprovalItem;
   needsApproval: () => Promise<boolean>;
   onApproval?:
@@ -1638,7 +1635,6 @@ async function handleToolApprovalDecision(options: {
   const {
     runContext,
     toolName,
-    callId,
     approvalItem,
     needsApproval,
     onApproval,
@@ -1650,7 +1646,6 @@ async function handleToolApprovalDecision(options: {
   const approvalState = await resolveToolApproval({
     runContext,
     toolName,
-    callId,
     approvalItem,
     needsApproval,
     onApproval,
@@ -1800,7 +1795,6 @@ export async function executeShellActions(
     const approvalDecision = await handleToolApprovalDecision({
       runContext,
       toolName: shellTool.name,
-      callId: toolCallKey,
       approvalItem,
       needsApproval: () =>
         shellTool.needsApproval(runContext, toolCall.action, toolCallKey),
@@ -1947,7 +1941,6 @@ export async function executeApplyPatchOperations(
     const approvalDecision = await handleToolApprovalDecision({
       runContext,
       toolName: applyPatchTool.name,
-      callId: toolCallKey,
       approvalItem,
       needsApproval: () =>
         applyPatchTool.needsApproval(
@@ -2151,7 +2144,6 @@ export async function executeComputerActions(
     const approvalDecision = await handleToolApprovalDecision({
       runContext,
       toolName: computerTool.name,
-      callId: toolCall.callId,
       approvalItem,
       needsApproval: async () => {
         if (typeof needsApprovalCandidate !== 'function') {
@@ -2509,6 +2501,8 @@ export async function executeHandoffCalls<
       runner.emit('agent_handoff', runContext, agent, newAgent);
       agent.emit('agent_handoff', runContext, newAgent);
 
+      const toolInvocationCommitItems = [...newStepItems];
+
       if (inputFilter != null) {
         logger.debug('Filtering inputs for handoff');
 
@@ -2534,6 +2528,8 @@ export async function executeHandoffCalls<
         preStepItems,
         newStepItems,
         { type: 'next_step_handoff', newAgent },
+        undefined,
+        toolInvocationCommitItems,
       );
     },
     {
