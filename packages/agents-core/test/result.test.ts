@@ -159,18 +159,38 @@ describe('StreamedRunResult', () => {
     expect(sr.error).toBe(null);
   });
 
-  it('currentTurn reflects the run state turn counter, capped at maxTurns', () => {
-    const state = createState(); // createState uses maxTurns = 1
+  it('currentTurn starts at 0 for a fresh run and stays a writable field', () => {
+    const state = createState();
     const sr = new StreamedRunResult({ state });
     expect(sr.currentTurn).toBe(0);
-    // The runner bumps RunState._currentTurn once per model request; the result
-    // should surface it live rather than stay pinned at its initial 0 -- but
-    // capped at maxTurns, since the counter is bumped before the limit check.
+    // Deliberately a writable data property, not a getter: `currentTurn` is a
+    // released public field, and turning it into a getter-only property would
+    // change the shape callers already depend on. The streaming runner assigns
+    // it once a turn is admitted.
+    sr.currentTurn = 2;
+    expect(sr.currentTurn).toBe(2);
+    const descriptor = Object.getOwnPropertyDescriptor(sr, 'currentTurn');
+    expect(descriptor?.writable).toBe(true);
+    expect(descriptor?.get).toBeUndefined();
+  });
+
+  it('currentTurn is seeded from a resumed state rather than reset to 0', () => {
+    // A state carried in from a serialized run has already spent turns; the
+    // result must not restart the public counter.
+    const state = createState();
     state._currentTurn = 3;
-    expect(sr.currentTurn).toBe(1); // Math.min(3, maxTurns=1)
-    // With no configured limit (maxTurns null), the raw counter is surfaced.
-    state._maxTurns = null;
+    const sr = new StreamedRunResult({ state });
     expect(sr.currentTurn).toBe(3);
+  });
+
+  it('currentTurn does NOT track later mutations of the private state counter', () => {
+    // The private counter is bumped at the START of a turn -- before the maxTurns
+    // check and before blocking input guardrails, either of which can reject that
+    // turn. Tracking it live is exactly the over-reporting this field avoids.
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    state._currentTurn = 7;
+    expect(sr.currentTurn).toBe(0);
   });
 
   it('records errors and rejects completed promise', async () => {

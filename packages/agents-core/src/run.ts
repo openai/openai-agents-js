@@ -1568,6 +1568,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               : undefined,
             agentSpanParent: taskSpan?.span ?? invocationSpanParent,
           });
+          // The turn is now ADMITTED: `prepareTurn` has passed the `maxTurns` check
+          // and awaited any blocking input guardrails, and both of those throw rather
+          // than return. Publishing the count here -- and only here -- is what makes
+          // `currentTurn` mean "turns that reached the model":
+          //   - `maxTurns: 0` throws above, so this never runs and the value stays 0;
+          //   - a first-turn blocking guardrail tripwire likewise throws above.
+          // `RunState._currentTurn` is bumped at the START of the turn (before both
+          // checks), so surfacing it verbatim would over-report by one in each case.
+          result.currentTurn = result.state._currentTurn;
           if (
             preserveTurnPersistenceOnResume &&
             result.state._currentTurn > previousTurn &&

@@ -3564,10 +3564,10 @@ describe('StreamedRunResult.currentTurn (streamed runs)', () => {
     expect(result.currentTurn).toBe(2);
   });
 
-  it('caps currentTurn at maxTurns on a handled max-turn boundary', async () => {
+  it('reports 0 on a handled max-turn boundary (no turn was admitted)', async () => {
     // maxTurns: 0 -- the runner increments _currentTurn to 1 before the limit
     // check, then raises MaxTurnsExceededError without ever calling the model.
-    // The public currentTurn must report 0 (turns the limit admitted), not 1.
+    // currentTurn is written only once a turn is ADMITTED, so it stays 0 here.
     const agent = new Agent({
       name: 'MaxTurnsZeroAgent',
       model: new FakeModel(),
@@ -3578,5 +3578,98 @@ describe('StreamedRunResult.currentTurn (streamed runs)', () => {
       MaxTurnsExceededError,
     );
     expect(result.currentTurn).toBe(0);
+  });
+
+  it('reports 0 when a blocking input guardrail trips before any model request', async () => {
+    // The counter is bumped by beginTurn BEFORE the guardrails run, and the
+    // tripwire path does not roll it back. Publishing the raw state counter would
+    // report 1 for a run that never reached the model -- callers budgeting or
+    // reporting model turns would overcount inputs that were rejected outright.
+    const guardrail = {
+      name: 'block-first-turn',
+      runInParallel: false, // blocking: awaited before the model request
+      execute: vi.fn().mockResolvedValue({
+        tripwireTriggered: true,
+        outputInfo: { reason: 'blocked' },
+      }),
+    };
+
+    const agent = new Agent({
+      name: 'GuardrailBlockedAgent',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('should never run')],
+        usage: new Usage(),
+      }),
+    });
+
+    const runner = new Runner({ inputGuardrails: [guardrail] });
+    const result = await runner.run(agent, 'blocked input', { stream: true });
+
+    await expect(result.completed).rejects.toBeInstanceOf(
+      InputGuardrailTripwireTriggered,
+    );
+    expect(guardrail.execute).toHaveBeenCalledTimes(1);
+    expect(result.currentTurn).toBe(0);
+  });
+
+  it('carries the turn count into a resumed streamed run instead of restarting at 0', async () => {
+    // A run resumed from a serialized state has already spent turns; restarting the
+    // public counter at 0 would under-report them for the rest of the run.
+    class HangingStreamingModel implements Model {
+      async getResponse(): Promise<ModelResponse> {
+        throw new Error('unused');
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const abortError = new Error('aborted');
+        (abortError as any).name = 'AbortError';
+        const signal = (request as any).signal as AbortSignal | undefined;
+        await new Promise((_resolve, reject) => {
+          if (signal?.aborted) {
+            reject(abortError);
+            return;
+          }
+          const onAbort = () => {
+            signal?.removeEventListener('abort', onAbort);
+            reject(abortError);
+          };
+          signal?.addEventListener('abort', onAbort, { once: true });
+        });
+        yield* [] as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'ResumeTurnCountAgent',
+      model: new HangingStreamingModel(),
+    });
+    const runner = new Runner();
+
+    const streaming = await runner.run(agent, 'hello', { stream: true });
+    const reader = (streaming.toStream() as any).getReader();
+    await new Promise((resolve) => setImmediate(resolve));
+    await reader.cancel('stop');
+    await streaming._getStreamLoopPromise();
+
+    // The first turn WAS admitted -- the model request started, then was cancelled.
+    expect(streaming.currentTurn).toBe(1);
+
+    const restored = await RunState.fromString(
+      agent,
+      streaming.state.toString(),
+    );
+    agent.model = new ImmediateStreamingModel({
+      output: [fakeModelMessage('resumed')],
+      usage: new Usage(),
+    });
+
+    const resumed = await runner.run(agent, restored, { stream: true });
+    await resumed.completed;
+
+    expect(resumed.finalOutput).toBe('resumed');
+    // Seeded from the resumed state, NOT reset to 0.
+    expect(resumed.currentTurn).toBeGreaterThanOrEqual(1);
   });
 });

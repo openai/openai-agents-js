@@ -308,20 +308,23 @@ export class StreamedRunResult<
   }
 
   /**
-   * The current turn number, capped at the configured `maxTurns` limit.
+   * The number of model turns admitted so far.
    *
-   * The runner increments `RunState._currentTurn` at the start of a turn,
-   * *before* it checks the `maxTurns` limit, so on a handled max-turn boundary
-   * (e.g. `maxTurns: 0`) the raw counter reads one higher than the number of
-   * turns actually admitted by the limit. Cap the public value at `maxTurns` so
-   * it always reflects the turns the limit allowed to run; when `maxTurns` is
-   * `null` (no limit) the raw counter is surfaced unchanged.
+   * Written by the streaming runner at the point a turn is *admitted* -- after
+   * the `maxTurns` limit check and any blocking input guardrails have passed,
+   * immediately before the model request starts. It therefore counts turns that
+   * actually reached the model, not turns that were merely begun:
+   *
+   * - a handled max-turn boundary (e.g. `maxTurns: 0`) leaves this at `0`,
+   *   because the limit check throws before any turn is admitted;
+   * - a blocking input guardrail that trips on the first turn leaves this at
+   *   `0`, because no model request was made;
+   * - a resumed run starts from the turn count carried in the resumed state.
+   *
+   * `RunState._currentTurn` is incremented at the *start* of a turn, before
+   * either check, so it is deliberately not surfaced verbatim.
    */
-  public get currentTurn(): number {
-    const current = this.state._currentTurn;
-    const max = this.state._maxTurns;
-    return max === null ? current : Math.min(current, max);
-  }
+  public currentTurn = 0;
 
   /**
    * The maximum number of turns that can be run
@@ -350,6 +353,11 @@ export class StreamedRunResult<
     } = {} as any,
   ) {
     super(result.state);
+
+    // Seed from the resumed state so a run continued from a serialized state does
+    // not restart its public turn count at 0. A fresh run carries `_currentTurn = 0`
+    // here, so this is a no-op for the common case.
+    this.currentTurn = result.state?._currentTurn ?? 0;
 
     this.#abortController = new AbortController();
     const { signal: combinedSignal, cleanup: cleanupCombinedSignal } =
