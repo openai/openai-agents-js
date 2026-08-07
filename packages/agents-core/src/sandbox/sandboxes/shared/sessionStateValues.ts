@@ -1,4 +1,4 @@
-import { Manifest } from '../../manifest';
+import type { Manifest } from '../../manifest';
 import { normalizeExposedPort, type ExposedPortEndpoint } from '../../session';
 import {
   isRecord,
@@ -9,7 +9,11 @@ import {
 } from '../../shared/typeGuards';
 import type { LocalSandboxSnapshot, LocalSandboxSnapshotSpec } from '../types';
 import { rehydrateLocalSnapshotSpec } from './localSnapshots';
-import { deserializeHostPathGrantRedactionMetadata } from './manifestPersistence';
+import {
+  deserializeHostPathGrantRedactionMetadata,
+  deserializeManifest,
+  deserializeMountCredentialRedactionMetadata,
+} from './manifestPersistence';
 import { rehydratePersistedEnvironmentForRuntime } from '../../shared/environment';
 
 export type LocalSandboxSessionStateValues = {
@@ -29,7 +33,9 @@ export async function deserializeLocalSandboxSessionStateValues(
   state: Record<string, unknown>,
   configuredSnapshot: LocalSandboxSnapshotSpec | null | undefined,
 ): Promise<LocalSandboxSessionStateValues> {
-  const manifest = new Manifest(state.manifest as Manifest);
+  const manifest = deserializeManifest(
+    state.manifest as Record<string, unknown> | undefined,
+  );
   const persistedEnvironment = readEnvironmentState(state.environment);
   const runtimeEnvironment = Object.fromEntries(
     Object.entries(persistedEnvironment).filter(
@@ -65,6 +71,7 @@ export async function deserializeLocalSandboxSessionStateValues(
     ),
     exposedPorts: readExposedPortsState(state),
     ...deserializeHostPathGrantRedactionMetadata(state),
+    ...deserializeMountCredentialRedactionMetadata(state),
   };
 }
 

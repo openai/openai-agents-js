@@ -697,7 +697,6 @@ describe('ModalSandboxClient', () => {
       ),
     ).rejects.toMatchObject({
       details: {
-        provider: 'modal',
         mountType: 's3_mount',
       },
     });
@@ -726,11 +725,10 @@ describe('ModalSandboxClient', () => {
     );
 
     await expect(createPromise).rejects.toThrow(
-      'Modal GCS bucket mounts require both accessId and secretAccessKey when either is provided.',
+      'gcs_mount requires both accessId and secretAccessKey when either is provided.',
     );
     await expect(createPromise).rejects.toMatchObject({
       details: {
-        provider: 'modal',
         mountType: 'gcs_mount',
       },
     });
@@ -1009,6 +1007,52 @@ describe('ModalSandboxClient', () => {
     expect(session.state.manifest.remoteMountCommandAllowlist).toEqual(['cat']);
     expect(sandboxesFromIdMock).toHaveBeenCalledWith('sbx_test');
     expect(resumed?.state.sandboxId).toBe('sbx_test');
+  });
+
+  test('serializes live mutations and snapshots caller-owned entries', async () => {
+    const client = new ModalSandboxClient();
+    const session = await client.create(new Manifest(), {
+      appName: 'sandbox-tests',
+    });
+    const writeGate = deferred<void>();
+    const writeStarted = deferred<void>();
+    sandboxFilesystemWriteBytesMock.mockImplementationOnce(
+      async (data: Uint8Array | ArrayBuffer | Buffer, path: string) => {
+        writeStarted.resolve();
+        await writeGate.promise;
+        files.set(
+          path,
+          data instanceof Uint8Array ? data : new Uint8Array(data),
+        );
+      },
+    );
+    const entry = { type: 'file' as const, content: 'original' };
+
+    const firstMutation = session.materializeEntry({
+      path: 'first.txt',
+      entry,
+    });
+    await writeStarted.promise;
+    entry.content = 'mutated';
+
+    const secondMutation = session.materializeEntry({
+      path: 'second.txt',
+      entry: { type: 'file', content: 'second' },
+    });
+    await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+      /cannot be inspected while a manifest mutation is in progress/u,
+    );
+    expect(files.get('/workspace/second.txt')).toBeUndefined();
+
+    writeGate.resolve();
+    await Promise.all([firstMutation, secondMutation]);
+    expect(new TextDecoder().decode(files.get('/workspace/first.txt'))).toBe(
+      'original',
+    );
+    expect(new TextDecoder().decode(files.get('/workspace/second.txt'))).toBe(
+      'second',
+    );
+    expect(session.state.manifest.entries).toHaveProperty('second.txt');
   });
 
   test('wraps Modal resume SDK failures as provider errors', async () => {

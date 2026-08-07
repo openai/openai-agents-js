@@ -73,7 +73,7 @@ describe('DockerSandboxClient', () => {
               }),
             },
           },
-        }),
+        }).withInContainerMountCredentialExposureAllowed('mounted'),
       );
       cleanupContainerIds.add(session.state.containerId);
 
@@ -97,7 +97,7 @@ describe('DockerSandboxClient', () => {
               }),
             },
           },
-        }),
+        }).withInContainerMountCredentialExposureAllowed('mounted', 'applied'),
       );
 
       const appliedOutput = await session.execCommand({

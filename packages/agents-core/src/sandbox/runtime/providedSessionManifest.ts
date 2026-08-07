@@ -1,22 +1,70 @@
 import { UserError } from '../../errors';
 import { isDir, isMount, type Entry } from '../entries';
-import { normalizeRelativePath, Manifest } from '../manifest';
+import {
+  cloneManifest,
+  copyManifestMountCredentialExposurePolicy,
+  normalizeRelativePath,
+  Manifest,
+} from '../manifest';
 import type { SandboxSessionLike, SandboxSessionState } from '../session';
 import { arraysEqual, jsonEqual } from '../shared/compare';
-import { serializeManifestEnvironment } from '../shared/environment';
+import {
+  materializeStaticEnvironment,
+  serializeManifestEnvironment,
+} from '../shared/environment';
 import {
   addedOrChangedNamedObjects,
   addedOrChangedPathKeyedObjects,
 } from '../shared/manifestCollections';
 import { isDefaultRemoteMountCommandAllowlist } from '../shared/remoteMountCommandAllowlist';
-import { mergeManifestDelta } from '../sandboxes/shared/manifestPersistence';
+import {
+  mergeManifestDelta,
+  mergeManifestEntryDelta,
+} from '../sandboxes/shared/manifestPersistence';
+import {
+  assertSandboxSessionStateUsable,
+  assertLiveMountCredentialAuthorityMatches,
+  assertLiveMountEnvironmentAuthorityMatches,
+  liveMountCredentialAuthorityMatches,
+  recordLiveMountCredentialAuthority,
+  validateMountCredentialBoundaries,
+  validateMountEnvironmentCredentialBoundaries,
+} from '../mountSecurity';
+
+const providedSessionManifestMutationTails = new WeakMap<
+  object,
+  Promise<void>
+>();
 
 export async function applyManifestToProvidedSession(
   session: SandboxSessionLike<SandboxSessionState>,
   manifest: Manifest,
   runAs?: string,
 ): Promise<void> {
+  return await withExclusiveProvidedSessionManifestMutation(
+    session.state,
+    async () =>
+      applyManifestToProvidedSessionExclusive(session, manifest, runAs),
+  );
+}
+
+async function applyManifestToProvidedSessionExclusive(
+  session: SandboxSessionLike<SandboxSessionState>,
+  manifest: Manifest,
+  runAs?: string,
+): Promise<void> {
+  assertSandboxSessionStateUsable(session.state);
   const currentManifest = session.state.manifest;
+  const currentManifestSnapshot = cloneManifest(currentManifest);
+  const currentEnvironment = {
+    ...materializeStaticEnvironment(currentManifest),
+    ...(session.state.environment ?? {}),
+  };
+  validateMountCredentialBoundaries(currentManifest);
+  validateMountEnvironmentCredentialBoundaries(
+    currentManifest,
+    currentEnvironment,
+  );
   // A provided session may already have long-lived processes, mounts, or provider
   // state, so only additive file materialization is allowed after validation.
   validateProvidedSessionManifestUpdate(currentManifest, manifest);
@@ -24,10 +72,37 @@ export async function applyManifestToProvidedSession(
     currentManifest,
     manifest,
   );
+  const nextManifest = mergeManifestDelta(currentManifest, manifestDelta);
+  if (currentManifest.mountTargets().length > 0) {
+    const nextTrustedManifest = mergeProvidedMountAuthority(
+      nextManifest,
+      currentManifest,
+      manifest,
+    );
+    assertLiveMountCredentialAuthorityMatches(
+      currentManifest,
+      nextTrustedManifest,
+    );
+    const trustedEnvironment = await nextTrustedManifest.resolveEnvironment();
+    validateMountEnvironmentCredentialBoundaries(
+      nextTrustedManifest,
+      trustedEnvironment,
+    );
+    assertLiveMountEnvironmentAuthorityMatches(
+      currentManifest,
+      nextTrustedManifest,
+      trustedEnvironment,
+    );
+  }
   if (isManifestDeltaEmpty(manifestDelta)) {
     return;
   }
-  const nextManifest = mergeManifestDelta(currentManifest, manifestDelta);
+  const nextEnvironment = {
+    ...materializeStaticEnvironment(nextManifest),
+    ...(session.state.environment ?? {}),
+  };
+  validateMountCredentialBoundaries(nextManifest);
+  validateMountEnvironmentCredentialBoundaries(nextManifest, nextEnvironment);
 
   if (session.applyManifest) {
     await session.applyManifest(manifestDelta, runAs);
@@ -48,7 +123,66 @@ export async function applyManifestToProvidedSession(
     }
   }
 
-  session.state.manifest = nextManifest;
+  // The helper owns the logical state commit after provider effects succeed.
+  // Merge through the latest provider-visible state so released side-effect-only
+  // implementations and concurrent additive provider updates remain supported,
+  // while entries present before the callback cannot be dropped by a stale or
+  // destructive provider commit.
+  const committedManifest = mergeManifestDelta(
+    mergeManifestDelta(currentManifestSnapshot, session.state.manifest),
+    manifestDelta,
+  );
+  recordLiveMountCredentialAuthority(committedManifest, session.state.manifest);
+  session.state.manifest = committedManifest;
+}
+
+function mergeProvidedMountAuthority(
+  nextManifest: Manifest,
+  currentManifest: Manifest,
+  targetManifest: Manifest,
+): Manifest {
+  const currentMountPaths = new Set(
+    currentManifest.mountTargets().map(({ logicalPath }) => logicalPath),
+  );
+  let trustedManifest = nextManifest;
+  for (const { logicalPath, entry } of targetManifest.iterEntries()) {
+    if (isMount(entry) && currentMountPaths.has(logicalPath)) {
+      trustedManifest = mergeManifestEntryDelta(
+        trustedManifest,
+        logicalPath,
+        entry,
+      );
+    }
+  }
+  copyManifestMountCredentialExposurePolicy(
+    trustedManifest,
+    nextManifest,
+    targetManifest,
+  );
+  return trustedManifest;
+}
+
+export async function withExclusiveProvidedSessionManifestMutation<T>(
+  state: object,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous =
+    providedSessionManifestMutationTails.get(state) ?? Promise.resolve();
+  let release!: () => void;
+  const turn = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.catch(() => {}).then(() => turn);
+  providedSessionManifestMutationTails.set(state, tail);
+  await previous.catch(() => {});
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (providedSessionManifestMutationTails.get(state) === tail) {
+      providedSessionManifestMutationTails.delete(state);
+    }
+  }
 }
 
 function validateProvidedSessionManifestUpdate(
@@ -96,6 +230,10 @@ function validateProvidedEntryUpdates(
   current: Manifest,
   target: Manifest,
 ): void {
+  const activeMountAuthorityMatches = liveMountCredentialAuthorityMatches(
+    current,
+    target,
+  );
   const currentEntriesByPath = new Map(
     [...current.iterEntries()].map(({ logicalPath, entry }) => [
       logicalPath,
@@ -120,7 +258,7 @@ function validateProvidedEntryUpdates(
       );
     }
     if (isMount(existingEntry) || isMount(entry)) {
-      if (!jsonEqual(existingEntry, entry)) {
+      if (!jsonEqual(existingEntry, entry) && !activeMountAuthorityMatches) {
         throw new UserError(
           `Live sandbox sessions cannot change mount entries: ${logicalPath || '.'}`,
         );

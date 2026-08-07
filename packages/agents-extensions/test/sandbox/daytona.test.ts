@@ -1,14 +1,19 @@
 import {
   Manifest,
+  SandboxMountError,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
 } from '@openai/agents-core/sandbox';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { liveMountCredentialAuthorityMatches } from '@openai/agents-core/sandbox/internal';
 import {
   DaytonaCloudBucketMountStrategy,
   DaytonaSandboxClient,
 } from '../../src/sandbox/daytona';
-import { resolvedRemotePathFromValidationCommand } from './remotePathValidation';
+import {
+  resolvedRemoteEffectivePathFromCommand,
+  resolvedRemotePathFromValidationCommand,
+} from './remotePathValidation';
 
 const createMock = vi.fn();
 const getMock = vi.fn();
@@ -23,6 +28,17 @@ const startMock = vi.fn();
 const stopMock = vi.fn();
 const deleteMock = vi.fn();
 const daytonaConstructorMock = vi.fn();
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
 
 vi.mock('@daytonaio/sdk', () => ({
   Daytona: class Daytona {
@@ -72,7 +88,9 @@ describe('DaytonaSandboxClient', () => {
     createMock.mockResolvedValue(sandbox);
     getMock.mockResolvedValue(sandbox);
     executeCommandMock.mockImplementation(async (command: string) => {
-      const resolvedPath = resolvedRemotePathFromValidationCommand(command);
+      const resolvedPath =
+        resolvedRemotePathFromValidationCommand(command) ??
+        resolvedRemoteEffectivePathFromCommand(command);
       const stdout = resolvedPath ? `${resolvedPath}\n` : 'README.md\n';
       return {
         exitCode: 0,
@@ -677,7 +695,433 @@ describe('DaytonaSandboxClient', () => {
     expect(startMock).toHaveBeenCalledOnce();
   });
 
-  test('rematerializes cloud bucket mounts when resuming auto-stopped sandboxes', async () => {
+  test('rejects raw credentialed resume state before provider calls', async () => {
+    const client = new DaytonaSandboxClient();
+
+    await expect(
+      client.resume({
+        manifest: new Manifest({
+          entries: {
+            data: {
+              type: 's3_mount',
+              bucket: 'agent-logs',
+              accessKeyId: 'access-key',
+              secretAccessKey: 'secret-key',
+              mountPath: 'mounted/logs',
+              mountStrategy: new DaytonaCloudBucketMountStrategy(),
+            },
+          },
+        }),
+        environment: {},
+        sandboxId: 'daytona-test',
+        pauseOnExit: true,
+      } as never),
+    ).rejects.toBeInstanceOf(SandboxMountError);
+
+    expect(getMock).not.toHaveBeenCalled();
+    expect(startMock).not.toHaveBeenCalled();
+  });
+
+  test('keeps the sandbox usable after dynamic mount validation rejects', async () => {
+    const client = new DaytonaSandboxClient();
+    const session = await client.create(new Manifest());
+
+    await expect(
+      session.applyManifest(
+        new Manifest({
+          entries: {
+            remote: {
+              type: 's3_mount',
+              bucket: 'private',
+              mountStrategy: new DaytonaCloudBucketMountStrategy(),
+            },
+          },
+          environment: {
+            AWS_ACCESS_KEY_ID: 'ambient-key',
+            AWS_SECRET_ACCESS_KEY: 'ambient-secret',
+          },
+        }),
+      ),
+    ).rejects.toThrow(/model-controlled sandbox/u);
+    await expect(
+      session.materializeEntry({
+        path: 'other',
+        entry: {
+          type: 's3_mount',
+          bucket: 'private',
+          accessKeyId: 'access-key',
+          secretAccessKey: 'secret-key',
+          mountStrategy: new DaytonaCloudBucketMountStrategy(),
+        },
+      }),
+    ).rejects.toThrow(/model-controlled sandbox/u);
+
+    expect(deleteMock).not.toHaveBeenCalled();
+    await expect(session.execCommand({ cmd: 'pwd' })).resolves.toContain(
+      'Process exited with code 0',
+    );
+  });
+
+  test('rejects active mount replacement without deleting the sandbox', async () => {
+    const client = new DaytonaSandboxClient();
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'original',
+          mountStrategy: new DaytonaCloudBucketMountStrategy(),
+        },
+      },
+    });
+    const session = await client.create(manifest);
+    deleteMock.mockClear();
+
+    await expect(
+      session.materializeEntry({
+        path: 'data',
+        entry: {
+          type: 's3_mount',
+          bucket: 'replacement',
+          mountStrategy: new DaytonaCloudBucketMountStrategy(),
+        },
+      }),
+    ).rejects.toThrow(/cannot be removed or replaced.*data/u);
+
+    expect(deleteMock).not.toHaveBeenCalled();
+    await expect(session.execCommand({ cmd: 'pwd' })).resolves.toContain(
+      'Process exited with code 0',
+    );
+  });
+
+  test('rejects serialization during direct initial materialization', async () => {
+    const client = new DaytonaSandboxClient();
+    const session = await client.create(new Manifest());
+    const uploadStarted = deferred<void>();
+    const uploadGate = deferred<void>();
+    uploadFileMock.mockImplementationOnce(async () => {
+      uploadStarted.resolve();
+      await uploadGate.promise;
+    });
+
+    const materializing = session.materializeInitialManifest(
+      new Manifest({
+        root: session.state.manifest.root,
+        entries: {
+          'direct.txt': { type: 'file', content: 'direct' },
+        },
+      }),
+    );
+    await uploadStarted.promise;
+
+    await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+      /cannot be inspected while a manifest mutation is in progress/u,
+    );
+
+    uploadGate.resolve();
+    await materializing;
+  });
+
+  test('rejects direct rematerialization after mount environment authority changes', async () => {
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'private',
+          mountStrategy: new DaytonaCloudBucketMountStrategy(),
+        },
+      },
+      environment: {
+        AWS_ACCESS_KEY_ID: 'original-access',
+        AWS_SECRET_ACCESS_KEY: 'original-secret',
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+    const client = new DaytonaSandboxClient();
+    const session = await client.create(manifest);
+    executeCommandMock.mockClear();
+    session.state.environment.AWS_ACCESS_KEY_ID = 'mutated-access';
+
+    await expect(session.rematerializeMountEntries()).rejects.toThrow(
+      /environment authority does not match the active session/u,
+    );
+
+    expect(executeCommandMock).not.toHaveBeenCalled();
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  test('replaces the recorded effective path and refreshes live authority', async () => {
+    const originalPath = '/home/daytona/workspace/mounted/logs';
+    const redirectedPath = '/home/daytona/workspace/redirected/logs';
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'private',
+          accessKeyId: 'access-key',
+          secretAccessKey: 'secret-key',
+          mountPath: 'mounted/logs',
+          mountStrategy: new DaytonaCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed(
+      'mounted/logs',
+      'redirected/logs',
+    );
+    const client = new DaytonaSandboxClient();
+    const session = await client.create(manifest);
+    const defaultExecute = executeCommandMock.getMockImplementation()!;
+    executeCommandMock.mockClear();
+    executeCommandMock.mockImplementation(async (command, ...args) => {
+      if (resolvedRemotePathFromValidationCommand(String(command))) {
+        return {
+          exitCode: 0,
+          result: `${redirectedPath}\n`,
+          artifacts: { stdout: `${redirectedPath}\n` },
+        };
+      }
+      return await defaultExecute(command, ...args);
+    });
+
+    await session.rematerializeMountEntries();
+
+    const commands = executeCommandMock.mock.calls.map(([command]) =>
+      String(command),
+    );
+    expect(
+      commands.some(
+        (command) =>
+          command.includes('fusermount3 -u') && command.includes(originalPath),
+      ),
+    ).toBe(true);
+    expect(
+      commands.some(
+        (command) =>
+          command.includes("'rclone' 'mount'") &&
+          command.includes(redirectedPath),
+      ),
+    ).toBe(true);
+
+    const trustedWithoutRedirect = new Manifest({
+      root: session.state.manifest.root,
+      entries: structuredClone(session.state.manifest.entries),
+    }).withInContainerMountCredentialExposureAllowed('mounted/logs');
+    expect(
+      liveMountCredentialAuthorityMatches(
+        session.state.manifest,
+        trustedWithoutRedirect,
+      ),
+    ).toBe(false);
+  });
+
+  test('records the effective mount path during initial materialization', async () => {
+    const originalPath = '/home/daytona/workspace/mounted/logs';
+    const redirectedPath = '/home/daytona/workspace/redirected/logs';
+    const defaultExecute = executeCommandMock.getMockImplementation()!;
+    executeCommandMock.mockImplementation(async (command, ...args) => {
+      if (
+        resolvedRemotePathFromValidationCommand(String(command)) ===
+        originalPath
+      ) {
+        return {
+          exitCode: 0,
+          result: `${redirectedPath}\n`,
+          artifacts: { stdout: `${redirectedPath}\n` },
+        };
+      }
+      return await defaultExecute(command, ...args);
+    });
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'private',
+          accessKeyId: 'access-key',
+          secretAccessKey: 'secret-key',
+          mountPath: 'mounted/logs',
+          mountStrategy: new DaytonaCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed(
+      'mounted/logs',
+      'redirected/logs',
+    );
+    const client = new DaytonaSandboxClient();
+    const session = await client.create(manifest);
+    const trustedWithoutRedirect = new Manifest({
+      root: session.state.manifest.root,
+      entries: structuredClone(session.state.manifest.entries),
+    }).withInContainerMountCredentialExposureAllowed('mounted/logs');
+
+    expect(
+      liveMountCredentialAuthorityMatches(
+        session.state.manifest,
+        trustedWithoutRedirect,
+      ),
+    ).toBe(false);
+  });
+
+  test('tombstones rematerialization when an active mount cannot unmount', async () => {
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'private',
+          mountStrategy: new DaytonaCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+    const client = new DaytonaSandboxClient();
+    const session = await client.create(manifest);
+    const defaultExecute = executeCommandMock.getMockImplementation()!;
+    executeCommandMock.mockClear();
+    executeCommandMock.mockImplementation(async (command, ...args) => {
+      if (String(command).includes('fusermount3 -u')) {
+        throw new Error('unmount transport failed');
+      }
+      return await defaultExecute(command, ...args);
+    });
+
+    await expect(session.rematerializeMountEntries()).rejects.toThrow(
+      /failed while trying to unmount cloud bucket/u,
+    );
+
+    const commands = executeCommandMock.mock.calls.map(([command]) =>
+      String(command),
+    );
+    expect(
+      commands.some((command) => command.includes("'rclone' 'mount'")),
+    ).toBe(false);
+    expect(deleteMock).toHaveBeenCalledOnce();
+    await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+      /privileged manifest transition failed/u,
+    );
+    await expect(session.execCommand({ cmd: 'true' })).rejects.toThrow(
+      /privileged manifest transition failed/u,
+    );
+  });
+
+  test('tombstones rematerialization when detach commands return failure', async () => {
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'private',
+          mountStrategy: new DaytonaCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+    const client = new DaytonaSandboxClient();
+    const session = await client.create(manifest);
+    const defaultExecute = executeCommandMock.getMockImplementation()!;
+    executeCommandMock.mockClear();
+    executeCommandMock.mockImplementation(async (command, ...args) => {
+      if (String(command).includes('fusermount3 -u')) {
+        return { exitCode: 32, result: '', artifacts: { stdout: '' } };
+      }
+      return await defaultExecute(command, ...args);
+    });
+
+    await expect(session.rematerializeMountEntries()).rejects.toThrow(
+      /failed while trying to unmount cloud bucket/u,
+    );
+
+    const commands = executeCommandMock.mock.calls.map(([command]) =>
+      String(command),
+    );
+    expect(
+      commands.some((command) => command.includes("'rclone' 'mount'")),
+    ).toBe(false);
+    expect(deleteMock).toHaveBeenCalledOnce();
+    await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+      /privileged manifest transition failed/u,
+    );
+  });
+
+  test('tombstones direct rematerialization after a partial mount failure', async () => {
+    let manifest = new Manifest({
+      entries: {
+        first: {
+          type: 's3_mount',
+          bucket: 'first',
+          mountStrategy: new DaytonaCloudBucketMountStrategy(),
+        },
+        second: {
+          type: 's3_mount',
+          bucket: 'second',
+          mountStrategy: new DaytonaCloudBucketMountStrategy(),
+        },
+      },
+    });
+    manifest = manifest
+      .withInContainerMountCredentialExposureAllowed('first')
+      .withInContainerMountCredentialExposureAllowed('second');
+    const client = new DaytonaSandboxClient();
+    const session = await client.create(manifest);
+    const defaultExecute = executeCommandMock.getMockImplementation();
+    let mountAttempts = 0;
+    executeCommandMock.mockImplementation(async (command, ...args) => {
+      if (String(command).includes("'rclone' 'mount'")) {
+        mountAttempts += 1;
+        if (mountAttempts === 2) {
+          return {
+            exitCode: 1,
+            result: 'mount failed',
+            artifacts: { stdout: '', stderr: 'mount failed' },
+          };
+        }
+      }
+      return await defaultExecute!(command, ...args);
+    });
+    deleteMock.mockRejectedValueOnce(new Error('delete failed'));
+
+    await expect(session.rematerializeMountEntries()).rejects.toThrow();
+    await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+      /privileged manifest transition failed/u,
+    );
+    await expect(session.execCommand({ cmd: 'true' })).rejects.toThrow(
+      /privileged manifest transition failed/u,
+    );
+    expect(deleteMock).toHaveBeenCalledOnce();
+  });
+
+  test.each([
+    ['relative', 'data'],
+    ['absolute', '/home/daytona/workspace/data'],
+  ])(
+    'records dynamic mount authority using the resolved root for %s paths',
+    async (_pathKind, path) => {
+      const client = new DaytonaSandboxClient();
+      const baseManifest =
+        new Manifest().withInContainerMountCredentialExposureAllowed(
+          'mounted/logs',
+        );
+      const session = await client.create(baseManifest);
+      const entry = {
+        type: 's3_mount' as const,
+        bucket: 'agent-logs',
+        accessKeyId: 'access-key',
+        secretAccessKey: 'secret-key',
+        mountPath: 'mounted/logs',
+        mountStrategy: new DaytonaCloudBucketMountStrategy(),
+      };
+
+      await expect(
+        session.materializeEntry({ path, entry }),
+      ).resolves.toBeUndefined();
+
+      const trustedManifest = new Manifest({
+        entries: { data: entry },
+      }).withInContainerMountCredentialExposureAllowed('mounted/logs');
+      await expect(
+        client.canReusePreservedOwnedSession(session.state, {
+          trustedManifest,
+        }),
+      ).resolves.toBe(true);
+      expect(session.state.manifest.root).toBe('/home/daytona/workspace');
+      expect(session.state.manifest.entries).toHaveProperty('data');
+    },
+  );
+
+  test('rejects auto-stopped resume state containing cloud mounts', async () => {
     const client = new DaytonaSandboxClient();
     const manifest = new Manifest({
       entries: {
@@ -690,30 +1134,18 @@ describe('DaytonaSandboxClient', () => {
           mountStrategy: new DaytonaCloudBucketMountStrategy(),
         },
       },
-    });
+    }).withInContainerMountCredentialExposureAllowed('mounted/logs');
     const session = await client.create(manifest, {
       autoStopInterval: 10,
     });
     executeCommandMock.mockClear();
 
-    await client.resume(session.state);
+    await expect(client.resume(session.state)).rejects.toBeInstanceOf(
+      SandboxMountError,
+    );
 
-    expect(startMock).toHaveBeenCalledOnce();
-    expect(
-      executeCommandMock.mock.calls.some(([command]) =>
-        String(command).includes('fusermount3 -u'),
-      ),
-    ).toBe(true);
-    expect(
-      executeCommandMock.mock.calls.some(([command]) =>
-        String(command).includes("'rclone' 'mount'"),
-      ),
-    ).toBe(true);
-    expect(
-      executeCommandMock.mock.calls.some(([command]) =>
-        String(command).includes('/home/daytona/workspace/mounted/logs'),
-      ),
-    ).toBe(true);
+    expect(startMock).not.toHaveBeenCalled();
+    expect(executeCommandMock).not.toHaveBeenCalled();
   });
 
   test('persists create-time client auth options for serialized resume', async () => {
@@ -1069,7 +1501,7 @@ describe('DaytonaSandboxClient', () => {
             mountStrategy: new DaytonaCloudBucketMountStrategy(),
           },
         },
-      }),
+      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
     );
     await session.close();
 
@@ -1097,7 +1529,42 @@ describe('DaytonaSandboxClient', () => {
     );
   });
 
-  test('rematerializes cloud bucket mounts when resuming paused sandboxes', async () => {
+  test('resolves mount credential files without the configured PATH', async () => {
+    const client = new DaytonaSandboxClient({
+      env: {
+        PATH: '/home/daytona/workspace/model-bin',
+        AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/secrets/aws/token',
+      },
+    });
+
+    const session = await client.create(
+      new Manifest().withInContainerMountCredentialExposureAllowed('data'),
+    );
+    executeCommandMock.mockClear();
+
+    await session.materializeEntry({
+      path: 'data',
+      entry: {
+        type: 's3_mount',
+        bucket: 'agent-logs',
+        mountStrategy: new DaytonaCloudBucketMountStrategy(),
+      },
+    });
+
+    const credentialResolutionCall = executeCommandMock.mock.calls.find(
+      ([command]) =>
+        String(command).includes(
+          "/usr/bin/realpath -m -- '/var/run/secrets/aws/token'",
+        ),
+    );
+    expect(credentialResolutionCall).toEqual([
+      "PATH=/usr/bin:/bin HOME=/root LD_PRELOAD= LD_LIBRARY_PATH= LD_AUDIT= /usr/bin/realpath -m -- '/var/run/secrets/aws/token'",
+      '/home/daytona/workspace',
+      {},
+    ]);
+  });
+
+  test('rejects paused resume state containing cloud mounts', async () => {
     const client = new DaytonaSandboxClient();
     const manifest = new Manifest({
       entries: {
@@ -1110,7 +1577,7 @@ describe('DaytonaSandboxClient', () => {
           mountStrategy: new DaytonaCloudBucketMountStrategy(),
         },
       },
-    });
+    }).withInContainerMountCredentialExposureAllowed('mounted/logs');
 
     const session = await client.create(manifest, {
       pauseOnExit: true,
@@ -1118,19 +1585,12 @@ describe('DaytonaSandboxClient', () => {
     await session.close();
     executeCommandMock.mockClear();
 
-    await client.resume(session.state);
+    await expect(client.resume(session.state)).rejects.toBeInstanceOf(
+      SandboxMountError,
+    );
 
-    expect(startMock).toHaveBeenCalledOnce();
-    expect(
-      executeCommandMock.mock.calls.some(([command]) =>
-        String(command).includes("'rclone' 'mount'"),
-      ),
-    ).toBe(true);
-    expect(
-      executeCommandMock.mock.calls.some(([command]) =>
-        String(command).includes('/home/daytona/workspace/mounted/logs'),
-      ),
-    ).toBe(true);
+    expect(startMock).not.toHaveBeenCalled();
+    expect(executeCommandMock).not.toHaveBeenCalled();
     expect(deleteMock).not.toHaveBeenCalled();
   });
 });

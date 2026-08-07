@@ -1,9 +1,18 @@
 import { type ToolOutputImage } from '@openai/agents-core';
 import {
+  copyManifestMountCredentialExposurePolicy,
+  assertExistingMountTopologyPreserved,
+  captureLiveMountCredentialAuthority,
+  manifestHasInContainerMounts,
+  validateMountCredentialBoundaries,
+  withExclusiveSandboxManifestMutation,
+} from '@openai/agents-core/sandbox/internal';
+import {
+  cloneManifest,
   type Entry,
   type ExecCommandArgs,
   type ExposedPortEndpoint,
-  type Manifest,
+  Manifest,
   type MaterializeEntryArgs,
   type ReadFileArgs,
   type SandboxArchiveLimits,
@@ -30,7 +39,12 @@ import {
   applyLocalSourceManifestToState,
   materializeLocalSourceManifest,
 } from './localSources';
-import type { ManifestMaterializationOptions } from './manifest';
+import {
+  mergeManifestEntryDelta,
+  prepareManifestMounts,
+  prepareMaterializedManifestTransition,
+  type ManifestMaterializationOptions,
+} from './manifest';
 import {
   assertSandboxEntryMetadataSupported,
   assertSandboxManifestMetadataSupported,
@@ -40,6 +54,8 @@ import { imageOutputFromBytes } from './media';
 import { elapsedSeconds, formatExecResponse, truncateOutput } from './output';
 import {
   resolveSandboxAbsolutePath,
+  resolveRemoteSandboxEffectivePath,
+  resolveSandboxRelativePath,
   resolveSandboxWorkdir,
   shellQuote,
   validateRemoteSandboxPathForManifest,
@@ -52,6 +68,11 @@ import {
 } from './ports';
 import { probeRemoteSandboxPathExists } from './pathProbe';
 import { assertRunAsUnsupported } from './session';
+import {
+  assertRemoteSandboxSessionStateUsable,
+  isRemoteSandboxSessionStateUnsafe,
+  markRemoteSandboxSessionStateUnsafe,
+} from './sessionState';
 import type {
   RemoteManifestWriter,
   RemoteSandboxPathOptions,
@@ -65,6 +86,7 @@ export type RemoteSandboxCommandKind =
 export type RemoteSandboxCommandOptions = {
   kind: RemoteSandboxCommandKind;
   workdir: string;
+  environment?: Record<string, string>;
   runAs?: string;
   execArgs?: ExecCommandArgs;
   timeoutMs?: number;
@@ -117,6 +139,7 @@ export abstract class RemoteSandboxSessionBase<
   }
 
   createEditor(runAs?: string): RemoteSandboxEditor {
+    this.assertSessionUsable();
     this.assertFilesystemRunAs(runAs);
     if (runAs) {
       return this.createRunAsEditor(runAs);
@@ -146,6 +169,7 @@ export abstract class RemoteSandboxSessionBase<
   }
 
   async execCommand(args: ExecCommandArgs): Promise<string> {
+    this.assertSessionUsable();
     if (args.tty) {
       return await this.execPtyCommand(args);
     }
@@ -173,6 +197,7 @@ export abstract class RemoteSandboxSessionBase<
   }
 
   async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
+    this.assertSessionUsable();
     this.assertFilesystemRunAs(args.runAs);
     const absolutePath = await this.resolveRemotePath(args.path);
     const bytes = args.runAs
@@ -182,6 +207,7 @@ export abstract class RemoteSandboxSessionBase<
   }
 
   async pathExists(path: string, runAs?: string): Promise<boolean> {
+    this.assertSessionUsable();
     this.assertFilesystemRunAs(runAs);
     const absolutePath = await this.resolveRemotePath(path);
     return await probeRemoteSandboxPathExists({
@@ -198,6 +224,7 @@ export abstract class RemoteSandboxSessionBase<
   }
 
   async readFile(args: ReadFileArgs): Promise<Uint8Array> {
+    this.assertSessionUsable();
     this.assertFilesystemRunAs(args.runAs);
     const absolutePath = await this.resolveRemotePath(args.path);
     const bytes = args.runAs
@@ -210,6 +237,9 @@ export abstract class RemoteSandboxSessionBase<
   }
 
   async running(): Promise<boolean> {
+    if (!this.sessionUsable()) {
+      return false;
+    }
     try {
       const result = await this.runRemoteCommand('true', {
         kind: 'running',
@@ -222,6 +252,7 @@ export abstract class RemoteSandboxSessionBase<
   }
 
   async resolveExposedPort(port: number): Promise<ExposedPortEndpoint> {
+    this.assertSessionUsable();
     const requestedPort = assertConfiguredExposedPort({
       providerName: this.providerName,
       port,
@@ -247,46 +278,155 @@ export abstract class RemoteSandboxSessionBase<
   }
 
   async materializeEntry(args: MaterializeEntryArgs): Promise<void> {
+    const entry = structuredClone(args.entry);
+    return await withExclusiveSandboxManifestMutation(this.state, async () =>
+      this.materializeEntryExclusive({ ...args, entry }),
+    );
+  }
+
+  private async materializeEntryExclusive(
+    args: MaterializeEntryArgs,
+  ): Promise<void> {
+    this.assertSessionUsable();
     this.assertManifestRunAs(args.runAs);
+    const options = this.manifestMaterializationOptionsWithMetadata(args.runAs);
+    const logicalPath = resolveSandboxRelativePath(
+      this.state.manifest.root,
+      args.path,
+    );
+    const nextManifest = mergeManifestEntryDelta(
+      this.state.manifest,
+      logicalPath,
+      args.entry,
+    );
+    assertExistingMountTopologyPreserved(this.state.manifest, nextManifest);
+    validateMountCredentialBoundaries(nextManifest);
+    const mountEnvironment = {
+      ...this.state.environment,
+      ...options.mountEnvironmentOverrides,
+    };
+    options.validateManifest?.(nextManifest, mountEnvironment);
     assertSandboxEntryMetadataSupported(
       this.providerName,
       args.path,
       args.entry,
       this.manifestMetadataSupport(),
     );
-    await this.beforeMaterializeEntry(args);
-    await applyLocalSourceManifestEntryToState(
-      this.state,
-      args.path,
-      args.entry,
-      this.providerId,
-      this.manifestWriter(),
+    const privilegedTransition = manifestHasInContainerMounts(
+      new Manifest({
+        root: this.state.manifest.root,
+        entries: {
+          [resolveSandboxRelativePath(this.state.manifest.root, args.path)]:
+            args.entry,
+        },
+      }),
+    );
+    const entryManifest = new Manifest({
+      root: this.state.manifest.root,
+      entries: { [logicalPath]: args.entry },
+    });
+    copyManifestMountCredentialExposurePolicy(entryManifest, nextManifest);
+    const preparedMounts = await prepareManifestMounts(
+      entryManifest,
       this.remotePathResolver,
-      this.manifestMaterializationOptionsWithMetadata(args.runAs),
+      {
+        credentialBoundaryManifest: nextManifest,
+        environment: mountEnvironment,
+        resolveCredentialPath: options.resolveCredentialPath,
+      },
+    );
+    options.preparedMounts = preparedMounts;
+    let providerEffectsMayHaveStarted =
+      this.beforeMaterializeEntryMayHaveSideEffects();
+    try {
+      await this.beforeMaterializeEntry({
+        ...args,
+        entry: structuredClone(args.entry),
+      });
+      providerEffectsMayHaveStarted = true;
+      await applyLocalSourceManifestEntryToState(
+        this.state,
+        args.path,
+        args.entry,
+        this.providerId,
+        this.manifestWriter(),
+        this.remotePathResolver,
+        options,
+      );
+    } catch (error) {
+      if (privilegedTransition && providerEffectsMayHaveStarted) {
+        await this.invalidateAfterFailedPrivilegedManifestTransition();
+      }
+      throw error;
+    }
+    captureLiveMountCredentialAuthority(this.state.manifest);
+    this.afterManifestMutationCommitted(
+      new Manifest({
+        root: this.state.manifest.root,
+        entries: {
+          [resolveSandboxRelativePath(this.state.manifest.root, args.path)]:
+            args.entry,
+        },
+      }),
     );
   }
 
   async applyManifest(manifest: Manifest, runAs?: string): Promise<void> {
+    const manifestSnapshot = cloneManifest(manifest);
+    return await withExclusiveSandboxManifestMutation(this.state, async () =>
+      this.applyManifestExclusive(manifestSnapshot, runAs),
+    );
+  }
+
+  private async applyManifestExclusive(
+    manifest: Manifest,
+    runAs?: string,
+  ): Promise<void> {
+    this.assertSessionUsable();
     this.assertManifestRunAs(runAs);
-    const resolvedManifest = await this.resolveManifestForApply(manifest);
+    const resolvedManifest = cloneManifest(
+      await this.resolveManifestForApply(manifest),
+    );
+    const options = this.manifestMaterializationOptionsWithMetadata(runAs);
+    const preparedTransition = await prepareMaterializedManifestTransition(
+      this.state,
+      resolvedManifest,
+      options,
+      this.remotePathResolver,
+    );
     assertSandboxManifestMetadataSupported(
       this.providerName,
       resolvedManifest,
       this.manifestMetadataSupport(),
     );
-    await this.beforeApplyManifest(resolvedManifest);
-    await this.provisionManifestAccounts(resolvedManifest);
-    await applyLocalSourceManifestToState(
-      this.state,
-      resolvedManifest,
-      this.providerId,
-      this.manifestWriter(),
-      this.remotePathResolver,
-      this.manifestMaterializationOptionsWithMetadata(runAs),
-    );
+    const privilegedTransition = manifestHasInContainerMounts(resolvedManifest);
+    let providerEffectsMayHaveStarted =
+      this.beforeApplyManifestMayHaveSideEffects();
+    try {
+      await this.beforeApplyManifest(resolvedManifest);
+      providerEffectsMayHaveStarted = true;
+      await this.provisionManifestAccounts(resolvedManifest);
+      await applyLocalSourceManifestToState(
+        this.state,
+        resolvedManifest,
+        this.providerId,
+        this.manifestWriter(),
+        this.remotePathResolver,
+        options,
+        preparedTransition,
+      );
+    } catch (error) {
+      if (privilegedTransition && providerEffectsMayHaveStarted) {
+        await this.invalidateAfterFailedPrivilegedManifestTransition();
+      }
+      throw error;
+    }
+    captureLiveMountCredentialAuthority(this.state.manifest);
+    this.afterManifestMutationCommitted(preparedTransition.deltaManifest);
   }
 
   async persistWorkspace(): Promise<Uint8Array> {
+    this.assertSessionUsable();
     assertTarWorkspacePersistence(
       this.providerName,
       this.workspacePersistence(),
@@ -298,6 +438,7 @@ export abstract class RemoteSandboxSessionBase<
     data: WorkspaceArchiveData,
     options: WorkspaceArchiveOptions = {},
   ): Promise<void> {
+    this.assertSessionUsable();
     assertTarWorkspacePersistence(
       this.providerName,
       this.workspacePersistence(),
@@ -323,6 +464,14 @@ export abstract class RemoteSandboxSessionBase<
 
   protected abstract deleteRemotePath(path: string): Promise<void>;
 
+  protected afterManifestMutationCommitted(
+    _materializedManifest: Manifest,
+  ): void {}
+
+  protected assertSessionUsable(): void {
+    assertRemoteSandboxSessionStateUsable(this.state);
+  }
+
   protected async execPtyCommand(_args: ExecCommandArgs): Promise<string> {
     throw new SandboxUnsupportedFeatureError(
       `${this.providerName} does not support tty=true yet.`,
@@ -330,6 +479,17 @@ export abstract class RemoteSandboxSessionBase<
         provider: this.providerId,
         feature: 'tty',
       },
+    );
+  }
+
+  private sessionUsable(): boolean {
+    return !isRemoteSandboxSessionStateUnsafe(this.state);
+  }
+
+  protected async invalidateAfterFailedPrivilegedManifestTransition(): Promise<void> {
+    markRemoteSandboxSessionStateUnsafe(this.state);
+    await this.forceTerminateAfterFailedPrivilegedManifestTransition().catch(
+      () => {},
     );
   }
 
@@ -353,7 +513,26 @@ export abstract class RemoteSandboxSessionBase<
     _args: MaterializeEntryArgs,
   ): Promise<void> {}
 
+  protected beforeMaterializeEntryMayHaveSideEffects(): boolean {
+    return false;
+  }
+
   protected async beforeApplyManifest(_manifest: Manifest): Promise<void> {}
+
+  protected beforeApplyManifestMayHaveSideEffects(): boolean {
+    return false;
+  }
+
+  protected async forceTerminateAfterFailedPrivilegedManifestTransition(): Promise<void> {
+    const session = this as SandboxSession<TState>;
+    if (session.delete) {
+      await session.delete({
+        reason: 'failed privileged manifest transition',
+      });
+      return;
+    }
+    await session.close?.();
+  }
 
   protected resolveManifestForApply(
     manifest: Manifest,
@@ -419,6 +598,7 @@ export abstract class RemoteSandboxSessionBase<
     path?: string,
     options: RemoteSandboxPathOptions = {},
   ): Promise<string> {
+    this.assertSessionUsable();
     return await validateRemoteSandboxPathForManifest({
       manifest: this.state.manifest,
       path,
@@ -427,6 +607,20 @@ export abstract class RemoteSandboxSessionBase<
         await this.runRemoteCommand(command, {
           kind: 'path',
           workdir: this.state.manifest.root,
+          environment: {},
+        }),
+    });
+  }
+
+  protected async resolveRemoteCredentialPath(path: string): Promise<string> {
+    this.assertSessionUsable();
+    return await resolveRemoteSandboxEffectivePath({
+      path,
+      runCommand: async (command) =>
+        await this.runRemoteCommand(command, {
+          kind: 'path',
+          workdir: this.state.manifest.root,
+          environment: {},
         }),
     });
   }
@@ -619,6 +813,8 @@ export abstract class RemoteSandboxSessionBase<
     const options = {
       ...this.manifestMaterializationOptions(),
       concurrencyLimits: this.concurrencyLimits,
+      resolveCredentialPath: async (path: string) =>
+        await this.resolveRemoteCredentialPath(path),
     };
     const support = this.manifestMetadataSupport();
     if (!support?.entryGroups && !support?.entryPermissions && !runAs) {

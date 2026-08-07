@@ -5,18 +5,14 @@ import {
   type S3Mount,
 } from '@openai/agents-core/sandbox';
 import { validateCredentialPair } from '@openai/agents-core/sandbox/internal';
-import {
-  providerErrorMessage,
-  readOptionalString,
-  shellQuote,
-} from '../shared';
+import { readOptionalString, shellQuote } from '../shared';
 
 const MOUNTPOINT_S3_MINIMUM_VERSION = [1, 21, 0] as const;
 const MOUNTPOINT_S3_PACKAGE = 'mount-s3';
 const MOUNTPOINT_INSTALL_TIMEOUT_MS = 5 * 60_000;
 const MOUNTPOINT_COMMAND_TIMEOUT_MS = 2 * 60_000;
 const MOUNTPOINT_S3_SOURCE = 'mountpoint-s3';
-const MOUNTPOINT_AWS_ENVIRONMENT_NAMES = [
+export const VERCEL_S3_MOUNT_ENVIRONMENT_NAMES = [
   'AWS_ACCESS_KEY_ID',
   'AWS_SECRET_ACCESS_KEY',
   'AWS_SESSION_TOKEN',
@@ -25,6 +21,13 @@ const MOUNTPOINT_AWS_ENVIRONMENT_NAMES = [
   'AWS_ROLE_ARN',
   'AWS_WEB_IDENTITY_TOKEN_FILE',
   'AWS_ROLE_SESSION_NAME',
+] as const;
+
+export const VERCEL_S3_MOUNT_CREDENTIAL_ENVIRONMENT_NAMES = [
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
 ] as const;
 
 /**
@@ -95,7 +98,9 @@ export async function mountVercelCloudBucket(args: {
   mountPath: string;
   runCommand: VercelMountCommand;
   environment?: Record<string, string>;
+  allowAmbientCredentials?: boolean;
   validateMountPath?: () => Promise<void>;
+  revalidateMountAuthority?: () => Promise<void>;
 }): Promise<void> {
   const config = resolveVercelS3MountConfig(args.entry);
   await ensureMountpoint(args.runCommand);
@@ -119,12 +124,18 @@ export async function mountVercelCloudBucket(args: {
       : await resolveMountOwner(args.runCommand);
   await assertEmptyMountDirectory(args.runCommand, args.mountPath);
   await args.validateMountPath?.();
+  await args.revalidateMountAuthority?.();
 
   await runRequiredCommand({
     runCommand: args.runCommand,
     label: 'mount the S3 bucket',
     command: 'mount-s3',
-    commandArgs: mountArguments(config, args.mountPath, owner),
+    commandArgs: mountArguments(
+      config,
+      args.mountPath,
+      owner,
+      args.allowAmbientCredentials === true,
+    ),
     options: {
       env: mountEnvironment(config, args.environment),
       sudo: true,
@@ -227,10 +238,7 @@ export async function isVercelCloudBucketMounted(args: {
     'VercelSandboxClient found an unexpected filesystem at the S3 mount path.',
     {
       provider: 'vercel',
-      command: displayCommand('findmnt', commandArgs),
-      mountPath: args.mountPath,
       expectedSource: MOUNTPOINT_S3_SOURCE,
-      actualSource: actualSource ?? '',
     },
     'mount_failed',
   );
@@ -342,7 +350,6 @@ async function assertMountpointVersion(
       provider: 'vercel',
       minimumVersion: MOUNTPOINT_S3_MINIMUM_VERSION.join('.'),
       supportedMajorVersion: MOUNTPOINT_S3_MINIMUM_VERSION[0],
-      actualVersion: actualVersion ?? '',
     },
     'mount_failed',
   );
@@ -372,7 +379,7 @@ function mountEnvironment(
   configuredEnvironment: Record<string, string> = {},
 ): Record<string, string> | undefined {
   const environment = Object.fromEntries(
-    MOUNTPOINT_AWS_ENVIRONMENT_NAMES.flatMap((name) => {
+    VERCEL_S3_MOUNT_ENVIRONMENT_NAMES.flatMap((name) => {
       const value = configuredEnvironment[name];
       return typeof value === 'string' ? [[name, value]] : [];
     }),
@@ -397,8 +404,15 @@ function mountArguments(
   config: VercelS3MountConfig,
   mountPath: string,
   owner?: VercelMountOwner,
+  allowAmbientCredentials: boolean = false,
 ): string[] {
   const args = [config.mount.bucket, mountPath, '--allow-other'];
+  if (
+    !(config.accessKeyId && config.secretAccessKey) &&
+    !allowAmbientCredentials
+  ) {
+    args.push('--no-sign-request');
+  }
   if (config.mount.readOnly ?? true) {
     args.push('--read-only');
   } else {
@@ -531,20 +545,12 @@ async function invokeCommand(args: {
 }): Promise<VercelMountCommandResult> {
   try {
     return await args.runCommand(args.command, args.commandArgs, args.options);
-  } catch (error) {
-    if (error instanceof SandboxMountError) {
-      throw error;
-    }
-    const sensitiveValues = Object.values(args.options?.env ?? {});
+  } catch {
     throw new SandboxMountError(
       `VercelSandboxClient failed to ${args.label}.`,
       {
         provider: 'vercel',
-        command: displayCommand(args.command, args.commandArgs),
-        cause: redactSensitiveValues(
-          providerErrorMessage(error),
-          sensitiveValues,
-        ),
+        operation: args.label,
       },
       'mount_failed',
     );
@@ -559,15 +565,12 @@ function commandFailure(args: {
   options?: VercelMountCommandOptions;
   details?: Record<string, unknown>;
 }): SandboxMountError {
-  const sensitiveValues = Object.values(args.options?.env ?? {});
   return new SandboxMountError(
     `VercelSandboxClient failed to ${args.label}.`,
     {
       provider: 'vercel',
-      command: displayCommand(args.command, args.commandArgs),
-      exitCode: args.result.status,
-      stderr: redactSensitiveValues(args.result.stderr ?? '', sensitiveValues),
-      ...args.details,
+      operation: args.label,
+      status: args.result.status,
     },
     'mount_failed',
   );
@@ -575,17 +578,4 @@ function commandFailure(args: {
 
 function displayCommand(command: string, args: string[]): string {
   return [command, ...args].map(shellQuote).join(' ');
-}
-
-function redactSensitiveValues(
-  text: string,
-  sensitiveValues: string[],
-): string {
-  let redacted = text;
-  for (const value of sensitiveValues) {
-    if (value) {
-      redacted = redacted.split(value).join('REDACTED');
-    }
-  }
-  return redacted;
 }

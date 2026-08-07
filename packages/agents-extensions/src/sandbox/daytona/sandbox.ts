@@ -1,5 +1,6 @@
 import { UserError, type ToolOutputImage } from '@openai/agents-core';
 import {
+  cloneManifest,
   Manifest,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
@@ -7,6 +8,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxPreservedSessionReuseOptions,
   type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type ExposedPortEndpoint,
@@ -24,9 +26,20 @@ import {
   validateSandboxArchiveLimits,
 } from '@openai/agents-core/sandbox';
 import {
+  assertExistingMountTopologyPreserved,
+  assertLiveMountCredentialAuthorityMatches,
+  captureLiveMountCredentialAuthority,
+  copyManifestMountCredentialExposurePolicy,
+  copyValidatedMountEffectivePaths,
+  manifestHasInContainerMounts,
+  validateMountCredentialBoundaries,
+  withExclusiveSandboxManifestMutation,
+} from '@openai/agents-core/sandbox/internal';
+import {
   appendPtyOutput,
   assertCoreSnapshotUnsupported,
   assertRemoteSandboxSessionStateCanResume,
+  assertRemoteSandboxSessionStateUsable,
   assertTarWorkspacePersistence,
   createPtyProcessEntry,
   imageOutputFromBytes,
@@ -38,12 +51,15 @@ import {
   cloneManifestWithRoot,
   createRunAsRemoteEditor,
   rehydrateRemoteSandboxSessionStateValues,
+  isRemoteSandboxSessionStateUnsafe,
+  markRemoteSandboxSessionStateUnsafe,
   elapsedSeconds,
   formatExecResponse,
   formatPtyExecUpdate,
   hydrateRemoteWorkspaceTar,
   assertResumeRecreateAllowed,
   materializeEnvironment,
+  mergeManifestEntryDelta,
   manifestMaterializationOptionsWithRunAs,
   persistRemoteWorkspaceTar,
   probeRemoteSandboxPathExists,
@@ -52,6 +68,8 @@ import {
   parseExposedPortEndpoint,
   recordResolvedExposedPortEndpoint,
   resolveSandboxAbsolutePath,
+  resolveRemoteSandboxEffectivePath,
+  resolveSandboxRelativePath,
   resolveSandboxWorkdir,
   posixDirname,
   shellQuote,
@@ -71,16 +89,22 @@ import {
   writePtyStdin,
   PtyProcessRegistry,
   type RemoteManifestWriter,
+  type ManifestMountMaterializationContext,
   readRunAsRemoteFile,
   type RemoteSandboxPathOptions,
   type RemoteSandboxPathResolver,
   runAsRemotePathExists,
 } from '../shared';
 import {
+  assertRcloneMountEnvironmentAuthorityMatches,
+  captureRcloneMountEnvironmentAuthorityForManifest,
   mountRcloneCloudBucket,
+  rcloneMountEnvironmentAuthorityMatches,
   rclonePatternFromMountStrategy,
+  validateRcloneMountEnvironmentCredentialExposure,
   unmountRcloneMount,
   type RemoteMountCommand,
+  type RcloneMountHandle,
 } from '../shared/inContainerMounts';
 import { isDaytonaCloudBucketMountEntry } from './mounts';
 import {
@@ -88,6 +112,10 @@ import {
   applyLocalSourceManifestToState,
   materializeLocalSourceManifest,
 } from '../shared/localSources';
+import {
+  prepareManifestMounts,
+  prepareMaterializedManifestTransition,
+} from '../shared/manifest';
 
 const DEFAULT_WORKSPACE_ROOT = '/home/daytona/workspace';
 const DEFAULT_EXPOSED_PORT_URL_TTL_S = 60;
@@ -206,7 +234,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     path,
     options,
   ) => await this.resolveRemotePath(path, options);
-  private readonly activeMountPaths = new Set<string>();
+  private readonly activeMountPaths = new Map<string, RcloneMountHandle>();
   private readonly concurrencyLimits?: SandboxConcurrencyLimits;
   private archiveLimits?: SandboxArchiveLimits | null;
   private stopPromise?: Promise<void>;
@@ -222,6 +250,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     this.sandbox = args.sandbox;
     this.concurrencyLimits = args.concurrencyLimits;
     this.setArchiveLimits(args.archiveLimits);
+    captureRcloneMountEnvironmentAuthorityForManifest(this.state);
   }
 
   setArchiveLimits(limits?: SandboxArchiveLimits | null): void {
@@ -230,6 +259,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   }
 
   createEditor(runAs?: string): RemoteSandboxEditor {
+    this.assertSessionUsable();
     if (runAs) {
       return createRunAsRemoteEditor({
         providerName: 'DaytonaSandboxClient',
@@ -263,6 +293,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   }
 
   async execCommand(args: ExecCommandArgs): Promise<string> {
+    this.assertSessionUsable();
     if (args.tty) {
       return await this.execPtyCommand(args);
     }
@@ -285,6 +316,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   }
 
   async writeStdin(args: WriteStdinArgs): Promise<string> {
+    this.assertSessionUsable();
     return await writePtyStdin({
       providerName: 'DaytonaSandboxClient',
       registry: this.ptyProcesses,
@@ -407,6 +439,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   }
 
   async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
+    this.assertSessionUsable();
     const bytes = args.runAs
       ? await readRunAsRemoteFile({
           providerName: 'DaytonaSandboxClient',
@@ -420,6 +453,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   }
 
   async readFile(args: ReadFileArgs): Promise<Uint8Array> {
+    this.assertSessionUsable();
     const bytes = args.runAs
       ? await readRunAsRemoteFile({
           providerName: 'DaytonaSandboxClient',
@@ -436,6 +470,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   }
 
   async pathExists(path: string, runAs?: string): Promise<boolean> {
+    this.assertSessionUsable();
     const absolutePath = await this.resolveRemotePath(path);
     if (!runAs) {
       return await probeRemoteSandboxPathExists({
@@ -468,6 +503,9 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   }
 
   async running(): Promise<boolean> {
+    if (isRemoteSandboxSessionStateUnsafe(this.state)) {
+      return false;
+    }
     try {
       const result = await this.sandbox.process.executeCommand(
         'true',
@@ -482,6 +520,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   }
 
   async resolveExposedPort(port: number): Promise<ExposedPortEndpoint> {
+    this.assertSessionUsable();
     const requestedPort = assertConfiguredExposedPort({
       providerName: 'DaytonaSandboxClient',
       port,
@@ -521,24 +560,93 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   }
 
   async materializeEntry(args: MaterializeEntryArgs): Promise<void> {
+    const entry = structuredClone(args.entry);
+    return await withExclusiveSandboxManifestMutation(this.state, async () =>
+      this.materializeEntryExclusive({ ...args, entry }),
+    );
+  }
+
+  private async materializeEntryExclusive(
+    args: MaterializeEntryArgs,
+  ): Promise<void> {
+    this.assertSessionUsable();
     assertSandboxEntryMetadataSupported(
       'DaytonaSandboxClient',
       args.path,
       args.entry,
       MOUNT_MANIFEST_METADATA_SUPPORT,
     );
-    await applyLocalSourceManifestEntryToState(
-      this.state,
+    const options = this.manifestMaterializationOptions(args.runAs);
+    const logicalPath = resolveSandboxRelativePath(
+      this.state.manifest.root,
       args.path,
+    );
+    const nextManifest = mergeManifestEntryDelta(
+      this.state.manifest,
+      logicalPath,
       args.entry,
-      'daytona',
-      this.writer(),
+    );
+    assertExistingMountTopologyPreserved(this.state.manifest, nextManifest);
+    validateRcloneMountEnvironmentCredentialExposure(
+      nextManifest,
+      this.state.environment,
+    );
+    const privilegedTransition = manifestHasInContainerMounts(
+      new Manifest({ entries: { [logicalPath]: args.entry } }),
+    );
+    const entryManifest = new Manifest({
+      root: this.state.manifest.root,
+      entries: { [logicalPath]: args.entry },
+    });
+    copyManifestMountCredentialExposurePolicy(entryManifest, nextManifest);
+    options.preparedMounts = await prepareManifestMounts(
+      entryManifest,
       this.remotePathResolver,
-      this.manifestMaterializationOptions(args.runAs),
+      {
+        credentialBoundaryManifest: nextManifest,
+        environment: this.state.environment,
+        resolveCredentialPath: options.resolveCredentialPath,
+      },
+    );
+    let providerEffectsMayHaveStarted = false;
+    try {
+      providerEffectsMayHaveStarted = true;
+      await applyLocalSourceManifestEntryToState(
+        this.state,
+        args.path,
+        args.entry,
+        'daytona',
+        this.writer(),
+        this.remotePathResolver,
+        options,
+      );
+    } catch (error) {
+      if (privilegedTransition && providerEffectsMayHaveStarted) {
+        await this.invalidateAfterFailedPrivilegedManifestTransition();
+      }
+      throw error;
+    }
+    captureRcloneMountEnvironmentAuthorityForManifest(
+      this.state,
+      new Manifest({
+        root: this.state.manifest.root,
+        entries: { [logicalPath]: args.entry },
+      }),
     );
   }
 
   async applyManifest(manifest: Manifest, runAs?: string): Promise<void> {
+    const manifestSnapshot = cloneManifest(manifest);
+    return await withExclusiveSandboxManifestMutation(this.state, async () =>
+      this.applyManifestExclusive(manifestSnapshot, runAs),
+    );
+  }
+
+  private async applyManifestExclusive(
+    manifest: Manifest,
+    runAs?: string,
+  ): Promise<void> {
+    this.assertSessionUsable();
     const resolvedManifest = resolveManifestRoot(manifest);
     if (resolvedManifest.root !== this.state.manifest.root) {
       throw new UserError(
@@ -550,49 +658,137 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
       resolvedManifest,
       MOUNT_MANIFEST_METADATA_SUPPORT,
     );
-    await applyLocalSourceManifestToState(
+    const options = this.manifestMaterializationOptions(runAs);
+    const preparedTransition = await prepareMaterializedManifestTransition(
       this.state,
       resolvedManifest,
-      'daytona',
-      this.writer(),
+      options,
       this.remotePathResolver,
-      this.manifestMaterializationOptions(runAs),
+    );
+    let providerEffectsMayHaveStarted = false;
+    try {
+      providerEffectsMayHaveStarted = true;
+      await applyLocalSourceManifestToState(
+        this.state,
+        resolvedManifest,
+        'daytona',
+        this.writer(),
+        this.remotePathResolver,
+        options,
+        preparedTransition,
+      );
+    } catch (error) {
+      if (
+        manifestHasInContainerMounts(resolvedManifest) &&
+        providerEffectsMayHaveStarted
+      ) {
+        await this.invalidateAfterFailedPrivilegedManifestTransition();
+      }
+      throw error;
+    }
+    captureRcloneMountEnvironmentAuthorityForManifest(
+      this.state,
+      resolvedManifest,
     );
   }
 
   async materializeInitialManifest(manifest: Manifest): Promise<void> {
-    await materializeLocalSourceManifest(
-      this.writer(),
-      manifest,
-      'daytona',
-      this.remotePathResolver,
-      this.manifestMaterializationOptions(),
-    );
+    const manifestSnapshot = cloneManifest(manifest);
+    await withExclusiveSandboxManifestMutation(this.state, async () => {
+      assertLiveMountCredentialAuthorityMatches(
+        this.state.manifest,
+        manifestSnapshot,
+      );
+      assertRcloneMountEnvironmentAuthorityMatches(
+        this.state,
+        manifestSnapshot,
+        this.state.environment,
+      );
+      validateMountCredentialBoundaries(manifestSnapshot);
+      validateRcloneMountEnvironmentCredentialExposure(
+        manifestSnapshot,
+        this.state.environment,
+      );
+      try {
+        await materializeLocalSourceManifest(
+          this.writer(),
+          manifestSnapshot,
+          'daytona',
+          this.remotePathResolver,
+          this.manifestMaterializationOptions(),
+        );
+      } catch (error) {
+        if (manifestHasInContainerMounts(manifestSnapshot)) {
+          await this.invalidateAfterFailedPrivilegedManifestTransition();
+        }
+        throw error;
+      }
+      copyValidatedMountEffectivePaths(this.state.manifest, manifestSnapshot);
+      captureLiveMountCredentialAuthority(
+        this.state.manifest,
+        this.state.environment,
+      );
+      captureRcloneMountEnvironmentAuthorityForManifest(this.state);
+    });
   }
 
   async rematerializeMountEntries(): Promise<void> {
-    const targets: Array<{
-      mountPath: string;
-      entry: Mount | TypedMount;
-      resolvedMountPath: string;
-    }> = [];
-    for (const target of this.state.manifest.mountTargetsForMaterialization()) {
-      targets.push({
-        ...target,
-        resolvedMountPath: await this.resolveMountEntryPath(
-          target.mountPath,
-          target.entry,
-        ),
-      });
-    }
+    await withExclusiveSandboxManifestMutation(this.state, async () => {
+      assertRcloneMountEnvironmentAuthorityMatches(
+        this.state,
+        this.state.manifest,
+        this.state.environment,
+      );
+      validateMountCredentialBoundaries(this.state.manifest);
+      validateRcloneMountEnvironmentCredentialExposure(
+        this.state.manifest,
+        this.state.environment,
+      );
+      await this.rematerializeMountEntriesExclusive();
+    });
+  }
 
-    for (const { resolvedMountPath } of [...targets].reverse()) {
-      await this.unmountMountPath(resolvedMountPath);
-    }
-    this.activeMountPaths.clear();
+  private async rematerializeMountEntriesExclusive(): Promise<void> {
+    const targets = await prepareManifestMounts(
+      this.state.manifest,
+      this.remotePathResolver,
+      {
+        credentialBoundaryManifest: this.state.manifest,
+        environment: this.state.environment,
+        resolveCredentialPath: async (path) =>
+          await this.resolveRemoteCredentialPath(path),
+      },
+    );
 
-    for (const { mountPath, entry } of targets) {
-      await this.materializeMountEntry(mountPath, entry);
+    const previouslyActiveMountPaths = [...this.activeMountPaths.keys()];
+    try {
+      for (const activeMountPath of previouslyActiveMountPaths.reverse()) {
+        await this.unmountMountPath(activeMountPath);
+      }
+      this.activeMountPaths.clear();
+
+      for (const {
+        absolutePath,
+        entry,
+        allowMountCredentialExposure,
+        environment,
+        revalidateMountAuthority,
+      } of targets) {
+        await revalidateMountAuthority();
+        await this.materializeMountEntry(absolutePath, entry, {
+          environment: environment ?? this.state.environment,
+          allowAmbientCredentials: allowMountCredentialExposure,
+          revalidateMountAuthority,
+        });
+      }
+      captureLiveMountCredentialAuthority(
+        this.state.manifest,
+        this.state.environment,
+      );
+      captureRcloneMountEnvironmentAuthorityForManifest(this.state);
+    } catch (error) {
+      await this.invalidateAfterFailedPrivilegedManifestTransition();
+      throw error;
     }
   }
 
@@ -618,6 +814,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   }
 
   async persistWorkspace(): Promise<Uint8Array> {
+    this.assertSessionUsable();
     assertTarWorkspacePersistence('DaytonaSandboxClient', 'tar');
     return await persistRemoteWorkspaceTar({
       providerName: 'DaytonaSandboxClient',
@@ -630,6 +827,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     data: WorkspaceArchiveData,
     options: WorkspaceArchiveOptions = {},
   ): Promise<void> {
+    this.assertSessionUsable();
     assertTarWorkspacePersistence('DaytonaSandboxClient', 'tar');
     await hydrateRemoteWorkspaceTar({
       providerName: 'DaytonaSandboxClient',
@@ -708,6 +906,18 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     };
   }
 
+  private assertSessionUsable(): void {
+    assertRemoteSandboxSessionStateUsable(this.state);
+  }
+
+  private async invalidateAfterFailedPrivilegedManifestTransition(): Promise<void> {
+    markRemoteSandboxSessionStateUnsafe(this.state);
+    await this.ptyProcesses.terminateAll().catch(() => {});
+    await deleteDaytonaSandboxWithRetry(async () => {
+      await this.sandbox.delete();
+    }).catch(() => {});
+  }
+
   private manifestMaterializationOptions(runAs?: string) {
     return manifestMaterializationOptionsWithRunAs({
       providerName: 'DaytonaSandboxClient',
@@ -717,6 +927,9 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
       options: {
         materializeMount: this.materializeMountEntry.bind(this),
         concurrencyLimits: this.concurrencyLimits,
+        resolveCredentialPath: async (path: string) =>
+          await this.resolveRemoteCredentialPath(path),
+        validateManifest: validateRcloneMountEnvironmentCredentialExposure,
       },
       support: MOUNT_MANIFEST_METADATA_SUPPORT,
     });
@@ -725,6 +938,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   private async materializeMountEntry(
     absolutePath: string,
     entry: Mount | TypedMount,
+    context: ManifestMountMaterializationContext,
   ): Promise<void> {
     if (!isDaytonaCloudBucketMountEntry(entry)) {
       throw new SandboxUnsupportedFeatureError(
@@ -738,27 +952,31 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
         },
       );
     }
-    const mountPath = await this.resolveMountEntryPath(absolutePath, entry);
-    await mountRcloneCloudBucket({
+    const mountPath = absolutePath;
+    const handle = await mountRcloneCloudBucket({
       providerName: 'DaytonaSandboxClient',
       providerId: 'daytona',
       strategyType: 'daytona_cloud_bucket',
       entry,
       mountPath,
       pattern: rclonePatternFromMountStrategy(entry.mountStrategy),
-      runCommand: this.mountCommandRunner(),
+      runCommand: this.mountCommandRunner(
+        context.environment ?? this.state.environment,
+      ),
       writeFile: async (path, content) => {
         await this.ensureParentDir(path);
         await this.sandbox.fs.uploadFile(Buffer.from(content), path);
       },
       packageManagers: ['apt', 'apk'],
+      allowAmbientCredentials: context.allowAmbientCredentials,
+      revalidateMountAuthority: context.revalidateMountAuthority,
     });
-    this.activeMountPaths.add(mountPath);
+    this.activeMountPaths.set(mountPath, handle);
   }
 
   private async unmountActiveMounts(): Promise<void> {
-    for (const mountPath of [...this.activeMountPaths].reverse()) {
-      await this.unmountMountPath(mountPath);
+    for (const mountPath of [...this.activeMountPaths.keys()].reverse()) {
+      await this.unmountMountPath(mountPath).catch(() => {});
     }
   }
 
@@ -768,26 +986,20 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
       providerId: 'daytona',
       mountPath,
       runCommand: this.mountCommandRunner(),
-    }).catch(() => {});
+      handle: this.activeMountPaths.get(mountPath),
+    });
     this.activeMountPaths.delete(mountPath);
   }
 
-  private async resolveMountEntryPath(
-    absolutePath: string,
-    entry: Mount | TypedMount,
-  ): Promise<string> {
-    return await this.resolveRemotePath(entry.mountPath ?? absolutePath, {
-      forWrite: true,
-    });
-  }
-
-  private mountCommandRunner(): RemoteMountCommand {
+  private mountCommandRunner(
+    environment: Readonly<Record<string, string>> = this.state.environment,
+  ): RemoteMountCommand {
     return async (command, options = {}) => {
       const commandToRun = commandForDaytonaUser(command, options.user);
       const result = await this.sandbox.process.executeCommand(
         commandToRun,
         this.state.manifest.root,
-        this.state.environment,
+        environment,
         options.timeoutMs ? Math.ceil(options.timeoutMs / 1000) : undefined,
       );
       return {
@@ -969,6 +1181,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     path?: string,
     options: RemoteSandboxPathOptions = {},
   ): Promise<string> {
+    this.assertSessionUsable();
     return await validateRemoteSandboxPathForManifest({
       manifest: this.state.manifest,
       path,
@@ -977,7 +1190,26 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
         const result = await this.sandbox.process.executeCommand(
           command,
           this.state.manifest.root,
-          this.state.environment,
+          {},
+        );
+        return {
+          status: result.exitCode,
+          stdout: result.artifacts?.stdout ?? result.result ?? '',
+          stderr: '',
+        };
+      },
+    });
+  }
+
+  private async resolveRemoteCredentialPath(path: string): Promise<string> {
+    this.assertSessionUsable();
+    return await resolveRemoteSandboxEffectivePath({
+      path,
+      runCommand: async (command) => {
+        const result = await this.sandbox.process.executeCommand(
+          command,
+          this.state.manifest.root,
+          {},
         );
         return {
           status: result.exitCode,
@@ -1035,6 +1267,10 @@ export class DaytonaSandboxClient implements SandboxClient<
     this.options = options;
   }
 
+  resolveTrustedManifestForResume(manifest: Manifest): Manifest {
+    return resolveManifestRoot(manifest);
+  }
+
   async create(
     args?: SandboxClientCreateArgs<DaytonaSandboxClientOptions> | Manifest,
     manifestOptions?: DaytonaSandboxClientOptions,
@@ -1063,6 +1299,10 @@ export class DaytonaSandboxClient implements SandboxClient<
         const environment = await materializeEnvironment(
           resolvedManifest,
           resolvedOptions.env,
+        );
+        validateRcloneMountEnvironmentCredentialExposure(
+          resolvedManifest,
+          environment,
         );
         const sandbox = await withProviderError(
           'DaytonaSandboxClient',
@@ -1149,7 +1389,30 @@ export class DaytonaSandboxClient implements SandboxClient<
   }
 
   canPersistOwnedSessionState(state: DaytonaSandboxSessionState): boolean {
-    return state.pauseOnExit;
+    return !isRemoteSandboxSessionStateUnsafe(state) && state.pauseOnExit;
+  }
+
+  async canReusePreservedOwnedSession(
+    state: DaytonaSandboxSessionState,
+    options: SandboxPreservedSessionReuseOptions<DaytonaSandboxClientOptions> = {},
+  ): Promise<boolean> {
+    if (isRemoteSandboxSessionStateUnsafe(state) || !options.trustedManifest) {
+      return false;
+    }
+    const trustedManifest = resolveManifestRoot(options.trustedManifest);
+    const trustedEnvironment = await materializeEnvironment(
+      trustedManifest,
+      { ...this.options, ...options.clientOptions }.env,
+    );
+    validateRcloneMountEnvironmentCredentialExposure(
+      trustedManifest,
+      trustedEnvironment,
+    );
+    return rcloneMountEnvironmentAuthorityMatches(
+      state,
+      trustedManifest,
+      trustedEnvironment,
+    );
   }
 
   async deserializeSessionState(

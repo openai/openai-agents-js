@@ -3,9 +3,20 @@ import type {
   SandboxSessionState,
 } from '@openai/agents-core/sandbox';
 import {
+  assertMountCredentialsRebound,
+  assertSandboxStateGenerationUnchanged,
+  assertSandboxSessionStateUsable,
+  captureSandboxStateGeneration,
   assertHostPathGrantsRebound,
   deserializeHostPathGrantRedactionMetadata,
+  deserializeMountCredentialRedactionMetadata,
   serializeHostPathGrantRedactionMetadata,
+  serializeMountCredentialRedactionMetadata,
+  validateMountCredentialBoundaries,
+  validateMountEnvironmentCredentialBoundaries,
+  isSandboxSessionStateUnsafe,
+  markSandboxSessionStateUnsafe,
+  sanitizeMountCredentialEnvironmentForPersistence,
 } from '@openai/agents-core/sandbox/internal';
 import {
   deserializePersistedEnvironmentForRuntime,
@@ -13,23 +24,52 @@ import {
   serializeRuntimeEnvironmentForPersistence,
 } from './environment';
 import { deserializeManifest, serializeManifestRecord } from './manifest';
+import { sanitizeRcloneMountEnvironmentForPersistence } from './inContainerMounts';
 
 export type RemoteSandboxSessionStateValues = SandboxSessionState & {
   environment: Record<string, string>;
 };
 
+export function markRemoteSandboxSessionStateUnsafe(
+  state: RemoteSandboxSessionStateValues,
+): void {
+  markSandboxSessionStateUnsafe(state);
+}
+
+export function isRemoteSandboxSessionStateUnsafe(
+  state: RemoteSandboxSessionStateValues,
+): boolean {
+  return isSandboxSessionStateUnsafe(state);
+}
+
+export function assertRemoteSandboxSessionStateUsable(
+  state: RemoteSandboxSessionStateValues,
+): void {
+  assertSandboxSessionStateUsable(state);
+}
+
 export function serializeRemoteSandboxSessionState<
   TState extends RemoteSandboxSessionStateValues,
->(state: TState): Record<string, unknown> {
-  return {
-    ...state,
+>(state: TState, mutationState: object = state): Record<string, unknown> {
+  const stateGeneration = captureSandboxStateGeneration(mutationState);
+  assertRemoteSandboxSessionStateUsable(state);
+  validateMountEnvironmentCredentialBoundaries(
+    state.manifest,
+    state.environment,
+  );
+  const persistent = sanitizeRcloneMountEnvironmentForPersistence(state);
+  const serialized = {
+    ...persistent,
     ...serializeHostPathGrantRedactionMetadata(state),
+    ...serializeMountCredentialRedactionMetadata(state),
     environment: serializeRemoteRuntimeEnvironmentForPersistence(
-      state.manifest,
-      state.environment,
+      persistent.manifest,
+      persistent.environment,
     ),
-    manifest: serializeManifestRecord(state.manifest),
+    manifest: serializeManifestRecord(persistent.manifest),
   };
+  assertSandboxStateGenerationUnchanged(mutationState, stateGeneration);
+  return serialized;
 }
 
 export function deserializeRemoteSandboxSessionStateValues(
@@ -47,6 +87,7 @@ export function deserializeRemoteSandboxSessionStateValues(
       configuredEnvironment,
     ),
     ...deserializeHostPathGrantRedactionMetadata(state),
+    ...deserializeMountCredentialRedactionMetadata(state),
   };
 }
 
@@ -65,12 +106,15 @@ export async function rehydrateRemoteSandboxSessionStateValues(
       configuredEnvironment,
     ),
     ...deserializeHostPathGrantRedactionMetadata(state),
+    ...deserializeMountCredentialRedactionMetadata(state),
   };
 }
 
 export function assertRemoteSandboxSessionStateCanResume(
   state: SandboxSessionState,
 ): void {
+  assertMountCredentialsRebound(state);
+  validateMountCredentialBoundaries(state.manifest);
   assertHostPathGrantsRebound(state);
 }
 
@@ -96,8 +140,14 @@ function deserializeRemotePersistedEnvironmentForRuntime(
   environment: Record<string, string> | undefined,
   configuredEnvironment: Record<string, string> = {},
 ): Record<string, string> {
+  const sanitizedEnvironment = sanitizeMountCredentialEnvironmentForPersistence(
+    {
+      manifest,
+      environment,
+    },
+  ).environment;
   const runtimeEnvironment = Object.fromEntries(
-    Object.entries(environment ?? {}).filter(
+    Object.entries(sanitizedEnvironment).filter(
       ([key, value]) =>
         !(key in manifest.environment) && typeof value === 'string',
     ),
@@ -107,7 +157,7 @@ function deserializeRemotePersistedEnvironmentForRuntime(
     ...runtimeEnvironment,
     ...deserializePersistedEnvironmentForRuntime(
       manifest,
-      environment,
+      sanitizedEnvironment,
       configuredEnvironment,
     ),
   };
@@ -118,8 +168,14 @@ async function rehydrateRemotePersistedEnvironmentForRuntime(
   environment: Record<string, string> | undefined,
   configuredEnvironment: Record<string, string> = {},
 ): Promise<Record<string, string>> {
+  const sanitizedEnvironment = sanitizeMountCredentialEnvironmentForPersistence(
+    {
+      manifest,
+      environment,
+    },
+  ).environment;
   const runtimeEnvironment = Object.fromEntries(
-    Object.entries(environment ?? {}).filter(
+    Object.entries(sanitizedEnvironment).filter(
       ([key, value]) =>
         !(key in manifest.environment) && typeof value === 'string',
     ),
@@ -129,7 +185,7 @@ async function rehydrateRemotePersistedEnvironmentForRuntime(
     ...runtimeEnvironment,
     ...(await rehydratePersistedEnvironmentForRuntime(
       manifest,
-      environment,
+      sanitizedEnvironment,
       configuredEnvironment,
     )),
   };

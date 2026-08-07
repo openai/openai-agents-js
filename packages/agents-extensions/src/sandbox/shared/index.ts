@@ -29,9 +29,13 @@ export {
   manifestContainsLocalSource,
   mergeManifestDelta,
   mergeManifestEntryDelta,
+  prepareManifestMounts,
   serializeManifestRecord,
 } from './manifest';
-export type { ManifestMaterializationOptions } from './manifest';
+export type {
+  ManifestMaterializationOptions,
+  ManifestMountMaterializationContext,
+} from './manifest';
 export {
   assertSandboxEntryMetadataSupported,
   assertSandboxManifestMetadataSupported,
@@ -66,6 +70,7 @@ export {
   writePtyStdin,
 } from './pty';
 export {
+  resolveRemoteSandboxEffectivePath,
   resolveSandboxAbsolutePath,
   resolveSandboxRelativePath,
   resolveSandboxWorkdir,
@@ -107,7 +112,10 @@ export {
 } from './sessionBase';
 export {
   assertRemoteSandboxSessionStateCanResume,
+  assertRemoteSandboxSessionStateUsable,
   deserializeRemoteSandboxSessionStateValues,
+  isRemoteSandboxSessionStateUnsafe,
+  markRemoteSandboxSessionStateUnsafe,
   rehydrateRemoteSandboxSessionStateValues,
   serializeRemoteSandboxSessionState,
 } from './sessionState';

@@ -487,11 +487,28 @@ export function registerRunStateCoreTests(): void {
       );
       expect(restored._sandbox).toEqual(state._sandbox);
 
+      const schema115Payload = structuredClone(serialized) as unknown as {
+        $schemaVersion: string;
+        sandbox: {
+          sessionState: { version: number };
+          sessionsByAgent: Record<
+            string,
+            { sessionState: { version: number } }
+          >;
+        };
+      };
+      schema115Payload.$schemaVersion = '1.15';
+      schema115Payload.sandbox.sessionState.version = 2;
+      for (const entry of Object.values(
+        schema115Payload.sandbox.sessionsByAgent,
+      )) {
+        entry.sessionState.version = 2;
+      }
       const restoredFromSchema115 = await RunState.fromString(
         agent,
-        JSON.stringify({ ...serialized, $schemaVersion: '1.15' }),
+        JSON.stringify(schema115Payload),
       );
-      expect(restoredFromSchema115._sandbox).toEqual(state._sandbox);
+      expect(restoredFromSchema115._sandbox).toEqual(schema115Payload.sandbox);
     });
 
     it('keeps reading schema 1.8 payloads without sandbox state', async () => {
@@ -521,14 +538,14 @@ export function registerRunStateCoreTests(): void {
         backendId: 'unix-local',
         currentAgentKey: 'LegacySandboxEnvelopeAgent',
         currentAgentName: 'LegacySandboxEnvelopeAgent',
-        sessionState: sandboxSessionStateEnvelope(
-          { workspaceId: 'ws_legacy' },
-          { version: 1 },
-        ),
+        sessionState: sandboxSessionStateEnvelope({
+          workspaceId: 'ws_legacy',
+        }),
         sessionsByAgent: {},
       };
       const serialized = state.toJSON();
       serialized.$schemaVersion = '1.14';
+      serialized.sandbox!.sessionState.version = 1;
 
       const restored = await RunState.fromString(
         agent,
@@ -552,12 +569,126 @@ export function registerRunStateCoreTests(): void {
       };
       const serialized = state.toJSON();
       serialized.$schemaVersion = '1.14';
+      serialized.sandbox!.sessionState.version = 2;
 
       await expect(
         RunState.fromString(agent, JSON.stringify(serialized)),
       ).rejects.toThrow(
-        `Run state schema version 1.14 does not support sandbox session state version ${SANDBOX_SESSION_STATE_VERSION}.`,
+        'Run state schema version 1.14 does not support sandbox session state version 2.',
       );
+    });
+
+    it('keeps reading schema 1.17 payloads with sandbox session state version 2', async () => {
+      const agent = new Agent({ name: 'VersionTwoSandboxEnvelopeAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._sandbox = {
+        backendId: 'unix-local',
+        currentAgentKey: 'VersionTwoSandboxEnvelopeAgent',
+        currentAgentName: 'VersionTwoSandboxEnvelopeAgent',
+        sessionState: sandboxSessionStateEnvelope({
+          workspaceId: 'ws_version_two',
+        }),
+        sessionsByAgent: {},
+      };
+      const serialized = state.toJSON();
+      serialized.$schemaVersion = '1.17';
+      serialized.sandbox!.sessionState.version = 2;
+      serialized.sandbox!.sessionState.manifest.environment = {
+        AWS_ACCESS_KEY_ID: {
+          value: 'LEGACY_MANIFEST_SECRET_SENTINEL',
+        },
+      };
+      serialized.sandbox!.sessionState.providerState.environment = {
+        AWS_SECRET_ACCESS_KEY: 'LEGACY_PROVIDER_SECRET_SENTINEL',
+      };
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(restored._sandbox?.sessionState.version).toBe(2);
+      expect(() => restored.toString()).toThrow(
+        /must be resumed through the Runner/u,
+      );
+    });
+
+    it('rejects sandbox session state version 3 under released schema 1.17', async () => {
+      const agent = new Agent({ name: 'VersionThreeSandboxEnvelopeAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._sandbox = {
+        backendId: 'unix-local',
+        currentAgentKey: 'VersionThreeSandboxEnvelopeAgent',
+        currentAgentName: 'VersionThreeSandboxEnvelopeAgent',
+        sessionState: sandboxSessionStateEnvelope({
+          workspaceId: 'ws_version_three',
+        }),
+        sessionsByAgent: {},
+      };
+      const serialized = state.toJSON();
+      serialized.$schemaVersion = '1.17';
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow(
+        'Run state schema version 1.17 does not support sandbox session state version 3.',
+      );
+    });
+
+    it('sanitizes untrusted mount authority from current sandbox envelopes', async () => {
+      const agent = new Agent({ name: 'CurrentSandboxEnvelopeAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._sandbox = {
+        backendId: 'unix-local',
+        currentAgentKey: 'CurrentSandboxEnvelopeAgent',
+        currentAgentName: 'CurrentSandboxEnvelopeAgent',
+        sessionState: sandboxSessionStateEnvelope({
+          workspaceId: 'ws_current_untrusted',
+        }),
+        sessionsByAgent: {},
+      };
+      const serialized = state.toJSON();
+      serialized.sandbox!.backendId = 'docker';
+      serialized.sandbox!.sessionState.backendId = 'docker';
+      serialized.sandbox!.sessionState.manifest.entries = {
+        remote: {
+          type: 's3_mount',
+          bucket: 'private',
+          accessKeyId: 'CURRENT_ACCESS_SENTINEL',
+          secretAccessKey: 'CURRENT_SECRET_SENTINEL',
+          mountStrategy: { type: 'in_container' },
+        },
+      };
+      serialized.sandbox!.sessionState.providerState.environment = {
+        AWS_ACCESS_KEY_ID: 'CURRENT_ENV_ACCESS_SENTINEL',
+        AWS_SECRET_ACCESS_KEY: 'CURRENT_ENV_SECRET_SENTINEL',
+      };
+      serialized.sandbox!.sessionState.providerState.manifest = {
+        entries: {
+          remote: {
+            type: 's3_mount',
+            bucket: 'private',
+            accessKeyId: 'PROVIDER_STATE_ACCESS_SENTINEL',
+            secretAccessKey: 'PROVIDER_STATE_SECRET_SENTINEL',
+          },
+        },
+      };
+      serialized.sandbox!.sessionState.providerState.sessionIdentity =
+        'PROVIDER_STATE_IDENTITY_SENTINEL';
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+      const roundTrip = restored.toString();
+
+      expect(roundTrip).not.toContain('CURRENT_ACCESS_SENTINEL');
+      expect(roundTrip).not.toContain('CURRENT_SECRET_SENTINEL');
+      expect(roundTrip).not.toContain('CURRENT_ENV_ACCESS_SENTINEL');
+      expect(roundTrip).not.toContain('CURRENT_ENV_SECRET_SENTINEL');
+      expect(roundTrip).not.toContain('PROVIDER_STATE_ACCESS_SENTINEL');
+      expect(roundTrip).not.toContain('PROVIDER_STATE_SECRET_SENTINEL');
+      expect(roundTrip).not.toContain('PROVIDER_STATE_IDENTITY_SENTINEL');
     });
 
     it('does not serialize runtime-only agent-tool metadata', async () => {

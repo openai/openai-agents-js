@@ -34,6 +34,7 @@ import type {
   ManifestMaterializationOptions,
   MaterializedManifestEntryState,
   MaterializedManifestState,
+  PreparedMaterializedManifestTransition,
 } from './manifest';
 import type { RemoteManifestWriter } from './types';
 import type { RemoteSandboxPathResolver } from './types';
@@ -81,6 +82,7 @@ export async function applyLocalSourceManifestToState(
   writer: RemoteManifestWriter,
   resolvePath: RemoteSandboxPathResolver,
   options: ManifestMaterializationOptions = {},
+  preparedTransition?: PreparedMaterializedManifestTransition,
 ): Promise<void> {
   const sourceManifest = mergeManifestDelta(state.manifest, manifest);
   await applyMaterializedManifestToState(
@@ -94,6 +96,7 @@ export async function applyLocalSourceManifestToState(
       ...options,
       localSourceGrants: sourceManifest.extraPathGrants,
     },
+    preparedTransition,
   );
 }
 

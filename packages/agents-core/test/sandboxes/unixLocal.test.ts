@@ -14,12 +14,16 @@ import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   EnvValueReference,
+  inContainerMountStrategy,
   Manifest,
   InMemoryRemoteSnapshotStore,
   NoopSnapshotSpec,
   registerEnvValueReference,
+  SandboxMountError,
+  s3Mount,
   skills,
   UnixLocalSandboxClient,
+  UnixLocalSandboxSession,
   urlForExposedPort,
 } from '../../src/sandbox/local';
 import {
@@ -28,6 +32,7 @@ import {
   materializeLocalWorkspaceManifestMounts,
   pathExists,
 } from '../../src/sandbox/sandboxes/shared/localWorkspace';
+import { rebindPersistedMountCredentials } from '../../src/sandbox/internal';
 
 const ONE_BY_ONE_PNG = Uint8Array.from(
   Buffer.from(
@@ -121,6 +126,39 @@ describe('UnixLocalSandboxClient', () => {
     expect(output).toContain('/workspace');
     expect(output).toContain('hello sandbox');
     expect(output).toContain('pixel.png');
+  });
+
+  it('rejects replacing active mounts before local filesystem effects', async () => {
+    const manifest = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'private',
+          mountStrategy: inContainerMountStrategy(),
+        }),
+      },
+    });
+    const session = new UnixLocalSandboxSession({
+      state: {
+        manifest,
+        workspaceRootPath: rootDir,
+        workspaceRootOwned: false,
+        environment: {},
+      },
+    });
+
+    await expect(
+      session.materializeEntry({ path: 'remote', entry: { type: 'dir' } }),
+    ).rejects.toThrow(/cannot be removed or replaced.*remote/u);
+    await expect(
+      session.applyManifest(
+        new Manifest({ entries: { remote: { type: 'dir' } } }),
+      ),
+    ).rejects.toThrow(/cannot be removed or replaced.*remote/u);
+
+    expect(session.state.manifest.entries.remote?.type).toBe('s3_mount');
+    await expect(stat(join(rootDir, 'remote'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   });
 
   it('translates command paths only at the manifest root boundary', async () => {
@@ -601,7 +639,7 @@ describe('UnixLocalSandboxClient', () => {
               mountStrategy: { type: 'in_container' },
             },
           },
-        }),
+        }).withInContainerMountCredentialExposureAllowed('data'),
       ),
     ).rejects.toThrow(/does not support this mount entry: data/);
 
@@ -673,7 +711,10 @@ describe('UnixLocalSandboxClient', () => {
 
     await session.close();
     const resumed = await client.resume(
-      await client.deserializeSessionState(serialized),
+      rebindPersistedMountCredentials(
+        await client.deserializeSessionState(serialized),
+        session.state.manifest,
+      ),
     );
     const initialOutput = await resumed.execCommand({
       cmd: 'cat mounted/external/input.txt',
@@ -961,6 +1002,27 @@ describe('UnixLocalSandboxClient', () => {
     expect(await readFile(join(outsideDir, 'target.txt'), 'utf8')).toBe(
       'outside\n',
     );
+  });
+
+  it('rejects credentialed mount mutations before resolving runAs', async () => {
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(new Manifest());
+
+    await expect(
+      session.materializeEntry({
+        path: 'remote',
+        entry: s3Mount({
+          bucket: 'private',
+          accessKeyId: 'access-key',
+          secretAccessKey: 'secret-key',
+          mountStrategy: inContainerMountStrategy(),
+        }),
+        runAs: 'missing-sandbox-user',
+      }),
+    ).rejects.toBeInstanceOf(SandboxMountError);
+    expect(session.state.manifest.entries).not.toHaveProperty('remote');
   });
 
   it('supports apply_patch and view_image inside the sandbox', async () => {
@@ -1605,7 +1667,7 @@ describe('UnixLocalSandboxClient', () => {
           mountStrategy: { type: 'in_container' },
         },
       },
-    });
+    }).withInContainerMountCredentialExposureAllowed('data');
 
     await materializeLocalWorkspaceManifestMounts(manifest, workspaceRootPath, {
       supportsMount: () => true,
@@ -1646,7 +1708,11 @@ describe('UnixLocalSandboxClient', () => {
           mountStrategy: { type: 'in_container' },
         },
       },
-    });
+    }).withInContainerMountCredentialExposureAllowed(
+      'mounted',
+      'mounted/cache',
+      'other',
+    );
 
     await materializeLocalWorkspaceManifestMounts(manifest, workspaceRootPath, {
       supportsMount: () => true,
@@ -1680,7 +1746,10 @@ describe('UnixLocalSandboxClient', () => {
           mountStrategy: { type: 'in_container' },
         },
       },
-    });
+    }).withInContainerMountCredentialExposureAllowed(
+      'mounted',
+      'mounted/cache',
+    );
 
     await materializeLocalWorkspaceManifest(manifest, workspaceRootPath, {
       supportsMount: () => true,

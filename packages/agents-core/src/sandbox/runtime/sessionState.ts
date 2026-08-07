@@ -1,7 +1,8 @@
 import { UserError } from '../../errors';
+import { SandboxMountError } from '../errors';
 import type { RunState } from '../../runState';
 import type { Agent, AgentOutputType } from '../../agent';
-import type { SandboxClient } from '../client';
+import type { SandboxClient, SandboxClientOptions } from '../client';
 import {
   isEnvValueReference,
   isSerializedEnvValueReference,
@@ -15,13 +16,30 @@ import {
   type SandboxSessionStateEnvelope,
 } from '../session';
 import {
+  assertMountCredentialsRebound,
   assertHostPathGrantsRebound,
+  deserializeManifest,
+  deserializeMountCredentialRedactionMetadata,
   deserializeHostPathGrantRedactionMetadata,
   rebindPersistedPathGrants,
+  rebindPersistedMountCredentials,
   serializeHostPathGrantRedactionMetadata,
+  serializeMountCredentialRedactionMetadata,
   serializeManifest,
   serializeManifestRecord,
 } from '../sandboxes/shared/manifestPersistence';
+import {
+  manifestHasInContainerMounts,
+  persistedManifestRecordHasNonResumableMountAuthority,
+  NON_RESUMABLE_MOUNT_AUTHORITY_KEY,
+  REDACTED_MOUNT_CREDENTIAL_PATHS_KEY,
+  resolveAndValidateMountEnvironment,
+  sanitizePersistedManifestRecord,
+  sanitizeMountCredentialEnvironmentForPersistence,
+  validateMountCredentialRedactionPaths,
+  validateMountCredentialBoundaries,
+  validateMountEnvironmentCredentialBoundaries,
+} from '../mountSecurity';
 import {
   markRunStateSessionState,
   type RunStateSessionTrustedConfig,
@@ -50,12 +68,95 @@ export function getSerializedSandboxState<TContext>(
   return runState?._sandbox as SerializedSandboxState | undefined;
 }
 
+export function sanitizeSerializedSandboxState(
+  state: SerializedSandboxState,
+): SerializedSandboxState {
+  const sessionsByAgent = Object.fromEntries(
+    Object.entries(state.sessionsByAgent).map(([agentKey, entry]) => [
+      agentKey,
+      {
+        ...entry,
+        sessionState: sanitizeSerializedSessionEnvelope(entry.sessionState),
+      },
+    ]),
+  );
+  return {
+    ...state,
+    sessionState: sanitizeSerializedSessionEnvelope(state.sessionState),
+    sessionsByAgent,
+  };
+}
+
+function sanitizeSerializedSessionEnvelope(
+  envelope: SandboxSessionStateEnvelope,
+): SandboxSessionStateEnvelope {
+  const hasNonResumableMountAuthority =
+    persistedManifestRecordHasNonResumableMountAuthority(envelope.manifest);
+  const existingMetadata = deserializeMountCredentialRedactionMetadata(
+    envelope.providerState,
+  );
+  const existingPaths =
+    (existingMetadata[REDACTED_MOUNT_CREDENTIAL_PATHS_KEY] as
+      string[] | undefined) ?? [];
+  const { record, credentialPaths } = sanitizePersistedManifestRecord(
+    envelope.manifest,
+  );
+  const persistedManifest = deserializeManifest(record);
+  const redactedPaths = [...new Set([...existingPaths, ...credentialPaths])];
+  validateMountCredentialRedactionPaths(persistedManifest, redactedPaths);
+
+  const serializedSanitizedManifest = serializeManifestRecord(
+    sanitizeMountCredentialEnvironmentForPersistence({
+      manifest: persistedManifest,
+    }).manifest,
+  );
+  const persistentManifest = {
+    ...record,
+    entries: serializedSanitizedManifest.entries,
+    environment: serializedSanitizedManifest.environment,
+  };
+  const providerState = providerStateWithoutSdkEnvelopeFields(
+    envelope.providerState,
+    envelope.backendId,
+  );
+  const persistedEnvironment = isStringRecord(providerState.environment)
+    ? providerState.environment
+    : undefined;
+  delete providerState.environment;
+  if (persistedEnvironment) {
+    providerState.environment =
+      sanitizeMountCredentialEnvironmentForPersistence({
+        manifest: persistedManifest,
+        environment: persistedEnvironment,
+      }).environment;
+  }
+  if (redactedPaths.length > 0) {
+    providerState[REDACTED_MOUNT_CREDENTIAL_PATHS_KEY] = redactedPaths;
+  } else {
+    delete providerState[REDACTED_MOUNT_CREDENTIAL_PATHS_KEY];
+  }
+  if (hasNonResumableMountAuthority) {
+    providerState[NON_RESUMABLE_MOUNT_AUTHORITY_KEY] = true;
+  }
+  return {
+    ...envelope,
+    manifest: persistentManifest,
+    providerState,
+  };
+}
+
 export function toSessionStateEnvelope(
   backendId: string,
   state: SandboxSessionState,
   providerState: Record<string, unknown>,
 ): SandboxSessionStateEnvelope {
-  const persistentManifest = serializeManifest(state.manifest);
+  validateMountEnvironmentCredentialBoundaries(
+    state.manifest,
+    state.environment ?? {},
+  );
+  const persistentManifest = serializeManifest(
+    sanitizeMountCredentialEnvironmentForPersistence(state).manifest,
+  );
   return {
     version: SANDBOX_SESSION_STATE_VERSION,
     backendId,
@@ -76,6 +177,7 @@ export function toSessionStateEnvelope(
     providerState: {
       ...providerStateWithoutSdkEnvelopeFields(providerState, backendId),
       ...serializeHostPathGrantRedactionMetadata(state),
+      ...serializeMountCredentialRedactionMetadata(state),
     },
   };
 }
@@ -131,7 +233,12 @@ export async function deserializeSandboxSessionStateEntry(
       'RunState sandbox backend does not match the configured sandbox client.',
     );
   }
-  assertTrustedManifestForDockerRunState(client, trustedManifest);
+  const resolvedTrustedManifest = resolveTrustedManifestForResume(
+    client,
+    trustedManifest,
+    trustedConfig.clientOptions,
+  );
+  assertTrustedManifestForDockerRunState(client, resolvedTrustedManifest);
   if (!client.deserializeSessionState) {
     throw new UserError(
       'Sandbox client must implement deserializeSessionState() to resume RunState sandbox state.',
@@ -139,26 +246,74 @@ export async function deserializeSandboxSessionStateEntry(
   }
   const envelope = serializedEntry.sessionState;
   assertSessionStateEnvelope(client, envelope);
-  assertTrustedEnvironmentForPersistedReferences(envelope, trustedManifest);
+  assertTrustedEnvironmentForPersistedReferences(
+    envelope,
+    resolvedTrustedManifest,
+  );
+  if (manifestHasInContainerMounts(deserializeManifest(envelope.manifest))) {
+    throw new SandboxMountError(
+      'Sandbox session state with in-container mounts cannot be resumed safely. Create a fresh sandbox so mount helpers are recreated from current trusted configuration.',
+      undefined,
+      'mount_config_invalid',
+    );
+  }
+  const prevalidatedPersistedState = rebindPersistedMountCredentials(
+    {
+      manifest: deserializeManifest(envelope.manifest),
+      ...deserializeMountCredentialRedactionMetadata(envelope.providerState),
+    },
+    resolvedTrustedManifest,
+  );
+  assertMountCredentialsRebound(prevalidatedPersistedState);
+  const materializedTrustedManifest = resolvedTrustedManifest
+    ? await resolveAndValidateMountEnvironment(resolvedTrustedManifest)
+    : undefined;
   const state = await client.deserializeSessionState(
-    providerStateWithSdkEnvelopeFields(envelope, trustedManifest),
+    providerStateWithSdkEnvelopeFields(
+      envelope,
+      prevalidatedPersistedState.manifest,
+      materializedTrustedManifest,
+    ),
   );
   if (client.backendId === 'docker') {
     delete state.sessionIdentity;
   }
-  const reboundState = rebindPersistedPathGrants(
+  const credentialReboundState = rebindPersistedMountCredentials(
     {
       ...state,
       ...deserializeHostPathGrantRedactionMetadata(envelope.providerState),
+      ...deserializeMountCredentialRedactionMetadata(envelope.providerState),
     },
-    trustedManifest,
+    materializedTrustedManifest,
+  );
+  const reboundState = rebindPersistedPathGrants(
+    credentialReboundState,
+    materializedTrustedManifest,
     {
       replaceWithTrustedManifest:
-        client.backendId === 'docker' && trustedManifest !== undefined,
+        client.backendId === 'docker' &&
+        materializedTrustedManifest !== undefined,
     },
   );
+  assertMountCredentialsRebound(reboundState);
+  validateMountCredentialBoundaries(reboundState.manifest);
   assertHostPathGrantsRebound(reboundState);
   return markRunStateSessionState(reboundState, trustedConfig);
+}
+
+export function resolveTrustedManifestForResume(
+  client: SandboxClient,
+  trustedManifest: Manifest | undefined,
+  clientOptions?: SandboxClientOptions,
+): Manifest | undefined {
+  if (!trustedManifest) {
+    return undefined;
+  }
+  const resolved = client.resolveTrustedManifestForResume
+    ? client.resolveTrustedManifestForResume(trustedManifest, clientOptions)
+    : trustedManifest;
+  validateMountCredentialBoundaries(resolved);
+  return resolved;
 }
 
 export function assertTrustedManifestForDockerRunState(
@@ -174,19 +329,31 @@ export function assertTrustedManifestForDockerRunState(
 
 function providerStateWithSdkEnvelopeFields(
   envelope: SandboxSessionStateEnvelope,
+  persistedManifest: Manifest,
   trustedManifest?: Manifest,
 ): Record<string, unknown> {
+  const providerState = providerStateWithoutSdkEnvelopeFields(
+    envelope.providerState,
+    envelope.backendId,
+  );
+  const persistedEnvironment = isStringRecord(providerState.environment)
+    ? providerState.environment
+    : undefined;
+  const sanitizedEnvironment = persistedEnvironment
+    ? sanitizeMountCredentialEnvironmentForPersistence({
+        manifest: trustedManifest ?? persistedManifest,
+        environment: persistedEnvironment,
+      }).environment
+    : undefined;
   return {
-    ...providerStateWithoutSdkEnvelopeFields(
-      envelope.providerState,
-      envelope.backendId,
-    ),
+    ...providerState,
+    ...(sanitizedEnvironment ? { environment: sanitizedEnvironment } : {}),
     manifest: trustedManifest
       ? {
-          ...envelope.manifest,
+          ...serializeManifestRecord(persistedManifest),
           environment: cloneManifestEnvironment(trustedManifest.environment),
         }
-      : envelope.manifest,
+      : serializeManifestRecord(persistedManifest),
     ...(envelope.snapshot !== undefined ? { snapshot: envelope.snapshot } : {}),
     ...(envelope.snapshotFingerprint !== undefined
       ? { snapshotFingerprint: envelope.snapshotFingerprint }
@@ -201,6 +368,15 @@ function providerStateWithSdkEnvelopeFields(
       ? { exposedPorts: structuredClone(envelope.exposedPorts) }
       : {}),
   };
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((entry) => typeof entry === 'string')
+  );
 }
 
 function assertTrustedEnvironmentForPersistedReferences(
@@ -266,6 +442,26 @@ export function getSerializedSessionEntryForAgent(
           sessionState: sandboxState.sessionState,
         }
       : undefined)
+  );
+}
+
+export function serializedSessionEntryHasInContainerMounts(
+  entry: SerializedSandboxSessionEntry | undefined,
+): boolean {
+  return entry
+    ? manifestHasInContainerMounts(
+        deserializeManifest(entry.sessionState.manifest),
+      )
+    : false;
+}
+
+export function serializedSessionEntryRequiresFreshMountAuthority(
+  entry: SerializedSandboxSessionEntry | undefined,
+): boolean {
+  return (
+    serializedSessionEntryHasInContainerMounts(entry) ||
+    entry?.sessionState.providerState[NON_RESUMABLE_MOUNT_AUTHORITY_KEY] ===
+      true
   );
 }
 

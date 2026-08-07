@@ -1,4 +1,8 @@
-import { Environment, Manifest } from '../manifest';
+import {
+  copyManifestMountCredentialExposurePolicy,
+  Environment,
+  Manifest,
+} from '../manifest';
 import type { SandboxUser } from '../users';
 
 export function sandboxRunAsName(
@@ -22,7 +26,7 @@ export function manifestWithRunAsUser(
     return manifest;
   }
 
-  return new Manifest({
+  const updatedManifest = new Manifest({
     version: manifest.version,
     root: manifest.root,
     entries: structuredClone(manifest.entries),
@@ -37,6 +41,8 @@ export function manifestWithRunAsUser(
     extraPathGrants: structuredClone(manifest.extraPathGrants),
     remoteMountCommandAllowlist: [...manifest.remoteMountCommandAllowlist],
   });
+  copyManifestMountCredentialExposurePolicy(updatedManifest, manifest);
+  return updatedManifest;
 }
 
 function manifestHasUser(manifest: Manifest, name: string): boolean {

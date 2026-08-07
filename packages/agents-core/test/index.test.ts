@@ -60,6 +60,13 @@ describe('index.ts', () => {
     expect(typeof Sandbox.Capabilities.default).toBe('function');
     expect(typeof Sandbox.filesystem).toBe('function');
     expect(typeof Sandbox.shell).toBe('function');
+    expect('manifestAllowsInContainerMountCredentialExposure' in Sandbox).toBe(
+      false,
+    );
+    expect('copyManifestMountCredentialExposurePolicy' in Sandbox).toBe(false);
+    expect('replaceManifestMountCredentialExposurePolicy' in Sandbox).toBe(
+      false,
+    );
     expect('UnixLocalSandboxClient' in Sandbox).toBe(false);
     expect('DockerSandboxClient' in Sandbox).toBe(false);
     expect(typeof LocalSandbox.UnixLocalSandboxClient).toBe('function');

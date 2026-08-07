@@ -228,6 +228,10 @@ export async function validateRemoteSandboxPath({
     ]),
   ];
   const command = [
+    'PATH=/usr/bin:/bin',
+    'HOME=/root',
+    'unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT',
+    'export PATH HOME',
     `helper_dir=${shellQuote(helperDir)}`,
     'helper_path="$helper_dir/resolve-workspace-path.sh"',
     'cleanup() { rm -rf "$helper_dir"; }',
@@ -268,6 +272,37 @@ export async function validateRemoteSandboxPath({
         path: path ?? '',
         forWrite: options.forWrite ?? false,
       },
+    );
+  }
+  return resolvedPath;
+}
+
+export async function resolveRemoteSandboxEffectivePath(args: {
+  path: string;
+  runCommand(command: string): Promise<RemotePathCommandResult>;
+}): Promise<string> {
+  const result = await args.runCommand(
+    `PATH=/usr/bin:/bin HOME=/root LD_PRELOAD= LD_LIBRARY_PATH= LD_AUDIT= /usr/bin/realpath -m -- ${shellQuote(args.path)}`,
+  );
+  const resolvedPathLines = result.stdout?.trim().split(/\r?\n/u) ?? [];
+  const resolvedPath =
+    resolvedPathLines.length === 1 ? resolvedPathLines[0] : undefined;
+  if (
+    result.status !== 0 ||
+    !resolvedPath?.startsWith('/') ||
+    resolvedPath.includes('\n')
+  ) {
+    const message = (
+      result.stderr ||
+      result.stdout ||
+      'effective path resolution failed'
+    )
+      .trim()
+      .split(/\r?\n/u)
+      .join('; ');
+    throw new SandboxPathResolutionError(
+      `Sandbox credential path "${args.path}" failed effective-path resolution: ${message}`,
+      { path: args.path },
     );
   }
   return resolvedPath;
