@@ -1,6 +1,6 @@
 ---
-title: Building Voice Agents
-description: Learn how to build voice agents using the OpenAI Agents SDK, how session behavior works, and which realtime features are available.
+title: Building Realtime Agents
+description: Learn how to build realtime agents using the OpenAI Agents SDK, how session behavior works, and which realtime features are available.
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';
@@ -174,6 +174,8 @@ Because the session stays live, the model for that session does not change durin
 
 Just like regular agents, Realtime Agents can call tools to perform actions. Realtime supports **function tools** (executed locally) and **hosted MCP tools** (executed remotely by the Realtime API). You can define a function tool using the same `tool()` helper you would use for a regular agent.
 
+Responses-only tool options do not carry over to Realtime agents. Function tool `outputSchema` and `allowedCallers` values that include `'programmatic'` are rejected, as are programmatic callers on hosted MCP tools. Use directly callable function or hosted MCP tools in a Realtime session, or delegate work that needs Programmatic Tool Calling to a Responses agent.
+
 <Code lang="typescript" code={defineToolExample} />
 
 #### Function tools
@@ -231,13 +233,13 @@ By default, function-tool input guardrails run after approval, immediately befor
 <Code lang="typescript" code={toolApprovalEventExample} />
 
 <Aside type="note">
-  While the voice agent is waiting for approval for the tool call, the agent
+  While the realtime agent is waiting for approval for the tool call, the agent
   will not be able to process new requests from the user.
 </Aside>
 
 ### Guardrails
 
-Guardrails offer a way to monitor whether what the agent has said violated a set of rules and immediately cut off the response. These checks run against the transcript stream of the agent's response. In audio sessions, the SDK uses output audio transcripts and transcript deltas, so the important prerequisite is transcript availability rather than a separate text output modality.
+Guardrails offer a way to monitor whether what the agent has said violated a set of rules and immediately cut off the response. These checks run against the output stream of the agent's response. In text-only sessions, the SDK evaluates output text deltas. In audio sessions, it uses output audio transcripts and transcript deltas, so the important prerequisite is transcript availability rather than a separate text output modality.
 
 The guardrails you provide run asynchronously as a model response is returned, allowing you to cut off the response based on a predefined classification trigger, for example "mentions a specific banned word".
 

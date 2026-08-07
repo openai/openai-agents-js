@@ -1,6 +1,6 @@
 ---
-title: Voice Agents
-description: Build realtime voice assistants using RealtimeAgent and RealtimeSession
+title: Realtime Agents
+description: Build realtime assistants using RealtimeAgent and RealtimeSession
 ---
 
 import { Aside, LinkCard } from '@astrojs/starlight/components';
@@ -9,9 +9,9 @@ import { Aside, LinkCard } from '@astrojs/starlight/components';
 
 ![Realtime Agents](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
 
-Voice Agents let you build low-latency spoken interfaces on top of OpenAI speech-to-speech models. The SDK keeps the Realtime API mental model intact, but wraps the raw event flow in `RealtimeAgent`, `RealtimeSession`, and transport helpers that make tools, guardrails, handoffs, and session history easier to work with.
+Realtime Agents let you build low-latency spoken interfaces on top of OpenAI speech-to-speech models. The SDK keeps the Realtime API mental model intact, but wraps the raw event flow in `RealtimeAgent`, `RealtimeSession`, and transport helpers that make tools, guardrails, handoffs, and session history easier to work with.
 
-Under the hood, the same Realtime concepts from the official [Realtime API with WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc/), [Realtime conversations](https://developers.openai.com/api/docs/guides/realtime-conversations/), and [voice activity detection](https://developers.openai.com/api/docs/guides/realtime-vad/) guides still apply. The Voice Agents SDK adds a TypeScript-first layer on top of that API so you can stay focused on product logic instead of rebuilding transport and event handling from scratch.
+Under the hood, the same Realtime concepts from the official [Realtime API with WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc/), [Realtime conversations](https://developers.openai.com/api/docs/guides/realtime-conversations/), and [voice activity detection](https://developers.openai.com/api/docs/guides/realtime-vad/) guides still apply. The Realtime Agents SDK adds a TypeScript-first layer on top of that API so you can stay focused on product logic instead of rebuilding transport and event handling from scratch.
 
 <Aside type="note">
   Start with the Quickstart if you are connecting a browser client with WebRTC.
@@ -22,13 +22,13 @@ Under the hood, the same Realtime concepts from the official [Realtime API with 
 ## Start here
 
 <LinkCard
-  title="Voice Agents Quickstart"
+  title="Realtime Agents Quickstart"
   href="/openai-agents-js/guides/voice-agents/quickstart"
   description="Build your first realtime voice assistant using the OpenAI Agents SDK in minutes."
 />
 
 <LinkCard
-  title="Building Voice Agents"
+  title="Building Realtime Agents"
   href="/openai-agents-js/guides/voice-agents/build"
   description="Learn how session lifecycle, VAD, interruptions, multimodal input, tools, and history work in the SDK."
 />
@@ -52,8 +52,8 @@ Under the hood, the same Realtime concepts from the official [Realtime API with 
 
 | If you need to... | Go here |
 | --- | --- |
-| Connect a browser client safely with WebRTC and ephemeral tokens | [Voice Agents Quickstart](/openai-agents-js/guides/voice-agents/quickstart) |
-| Understand session lifecycle, VAD, interruptions, image input, tools, and history | [Building Voice Agents](/openai-agents-js/guides/voice-agents/build) |
+| Connect a browser client safely with WebRTC and ephemeral tokens | [Realtime Agents Quickstart](/openai-agents-js/guides/voice-agents/quickstart) |
+| Understand session lifecycle, VAD, interruptions, image input, tools, and history | [Building Realtime Agents](/openai-agents-js/guides/voice-agents/build) |
 | Decide between WebRTC, WebSocket, SIP, and custom transports | [Realtime Transport Layer](/openai-agents-js/guides/voice-agents/transport) |
 | Run a phone or telephony experience on Twilio | [Realtime Agents on Twilio](/openai-agents-js/extensions/twilio) |
 | Connect from Cloudflare Workers or other workerd runtimes | [Realtime Agents on Cloudflare](/openai-agents-js/extensions/cloudflare) |

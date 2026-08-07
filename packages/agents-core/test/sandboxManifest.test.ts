@@ -1,11 +1,15 @@
+import { tmpdir } from 'node:os';
+import { join, normalize, sep } from 'node:path';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   cloneManifest,
   Environment,
+  EnvValueReference,
   FileMode,
   Manifest,
   normalizeRelativePath,
   Permissions,
+  registerEnvValueReference,
   renderManifestDescription,
   SandboxGitSubpathError,
   type Dir,
@@ -25,6 +29,46 @@ import {
   type S3FilesMount,
   type S3Mount,
 } from '../src/sandbox';
+
+let currentReferencedSecret = 'initial-secret';
+
+class TestSecretReference extends EnvValueReference {
+  static readonly type = 'test.secret_reference';
+
+  constructor(
+    readonly key: string,
+    options: { description?: string; ephemeral?: boolean } = {},
+  ) {
+    super(options);
+  }
+
+  serialize(): Record<string, unknown> {
+    return {
+      type: 'ignored-by-sdk',
+      key: this.key,
+      ...(this.description ? { description: this.description } : {}),
+      ...(this.ephemeral ? { ephemeral: true } : {}),
+    };
+  }
+
+  async resolve(): Promise<string> {
+    return `${currentReferencedSecret}:${this.key}`;
+  }
+}
+
+function parseTestSecretReference(
+  payload: Readonly<Record<string, unknown>>,
+): TestSecretReference {
+  if (typeof payload.key !== 'string') {
+    throw new TypeError('Test secret reference key must be a string.');
+  }
+  return new TestSecretReference(payload.key, {
+    ...(typeof payload.description === 'string'
+      ? { description: payload.description }
+      : {}),
+    ...(payload.ephemeral === true ? { ephemeral: true } : {}),
+  });
+}
 
 describe('Manifest', () => {
   it('infers inline entry types from entry discriminators', () => {
@@ -208,6 +252,160 @@ describe('Manifest', () => {
     expect(manifest.environment.TOKEN.normalized()).toEqual({
       value: '',
     });
+  });
+
+  it('round-trips registered environment references without serializing resolved secrets', async () => {
+    const unregister = registerEnvValueReference(
+      TestSecretReference,
+      parseTestSecretReference,
+    );
+    currentReferencedSecret = 'workflow-secret';
+    try {
+      const manifest = new Manifest({
+        environment: {
+          TOKEN: new TestSecretReference('openai-key', {
+            description: 'Temporal secret reference',
+          }),
+        },
+      });
+
+      expect(() => manifest.environment.TOKEN.normalized()).toThrow(
+        'EnvValueReference cannot be normalized to an EnvValue. Use serializeEnvValueReference() instead.',
+      );
+      const serialized = JSON.stringify(manifest);
+      const payload = JSON.parse(serialized);
+
+      expect(serialized).not.toContain('workflow-secret');
+      expect(payload.environment.TOKEN).toEqual({
+        type: TestSecretReference.type,
+        key: 'openai-key',
+        description: 'Temporal secret reference',
+      });
+
+      currentReferencedSecret = 'replayed-secret';
+      const restored = new Manifest(payload);
+      expect(restored.environment.TOKEN).toBeInstanceOf(TestSecretReference);
+      await expect(restored.resolveEnvironment()).resolves.toEqual({
+        TOKEN: 'replayed-secret:openai-key',
+      });
+
+      const cloned = cloneManifest(restored);
+      expect(cloned.environment.TOKEN).toBeInstanceOf(TestSecretReference);
+      await expect(cloned.resolveEnvironment()).resolves.toEqual({
+        TOKEN: 'replayed-secret:openai-key',
+      });
+    } finally {
+      unregister();
+    }
+  });
+
+  it('rejects unknown, unregistered, duplicate, and inherited environment reference types', () => {
+    class UnregisteredReference extends EnvValueReference {
+      static readonly type = 'test.unregistered';
+
+      constructor() {
+        super();
+      }
+
+      serialize(): Record<string, unknown> {
+        return {};
+      }
+
+      async resolve(): Promise<string> {
+        return 'unused';
+      }
+    }
+
+    class InheritedReference extends TestSecretReference {}
+
+    class ReservedValueReference extends EnvValueReference {
+      static readonly type = 'test.reserved_value';
+
+      constructor() {
+        super();
+      }
+
+      serialize(): Record<string, unknown> {
+        return { value: 'must-not-be-serialized' };
+      }
+
+      async resolve(): Promise<string> {
+        return 'unused';
+      }
+    }
+
+    expect(
+      () =>
+        new Manifest({
+          environment: {
+            TOKEN: {
+              type: 'test.unknown',
+              key: 'openai-key',
+            },
+          },
+        }),
+    ).toThrow('Unknown environment value reference type "test.unknown"');
+    expect(() =>
+      JSON.stringify(
+        new Manifest({
+          environment: {
+            TOKEN: new UnregisteredReference(),
+          },
+        }),
+      ),
+    ).toThrow('must be registered with its own static type');
+    expect(() =>
+      registerEnvValueReference(
+        InheritedReference,
+        (payload) =>
+          new InheritedReference(String(payload.key ?? 'missing-key')),
+      ),
+    ).toThrow('must declare its own static type');
+
+    const unregister = registerEnvValueReference(
+      TestSecretReference,
+      parseTestSecretReference,
+    );
+    try {
+      expect(() =>
+        registerEnvValueReference(
+          TestSecretReference,
+          parseTestSecretReference,
+        ),
+      ).toThrow(
+        `Environment value reference type "${TestSecretReference.type}" is already registered`,
+      );
+    } finally {
+      unregister();
+    }
+
+    const unregisterReserved = registerEnvValueReference(
+      ReservedValueReference,
+      () => new ReservedValueReference(),
+    );
+    try {
+      expect(() => JSON.stringify(new ReservedValueReference())).toThrow(
+        'must not return the reserved "value" field',
+      );
+    } finally {
+      unregisterReserved();
+    }
+  });
+
+  it('preserves legacy environment values with additional type metadata', () => {
+    const entry = {
+      value: 'enabled',
+      type: 'application.metadata',
+    };
+    const manifest = new Manifest({
+      environment: {
+        FEATURE: entry,
+      },
+    });
+
+    expect(manifest.environment.FEATURE).toBeInstanceOf(Environment);
+    expect(manifest.environment.FEATURE).not.toBeInstanceOf(EnvValueReference);
+    expect(manifest.environment.FEATURE.value).toBe('enabled');
   });
 
   it('accepts string shorthand for users and group users', () => {
@@ -580,6 +778,7 @@ describe('Manifest', () => {
   });
 
   it('clones manifests without sharing entries or environment values', () => {
+    const hostPath = join(tmpdir(), 'manifest-clone-data');
     const manifest = new Manifest({
       entries: {
         'notes.txt': {
@@ -597,7 +796,13 @@ describe('Manifest', () => {
       },
       users: [{ name: 'sandbox-user' }],
       groups: [{ name: 'sandbox-group', users: [{ name: 'sandbox-user' }] }],
-      extraPathGrants: [{ path: '/tmp/data', readOnly: true }],
+      extraPathGrants: [
+        {
+          path: '/tmp/data',
+          hostPath,
+          readOnly: true,
+        },
+      ],
       remoteMountCommandAllowlist: ['ls', 'cat'],
     });
     const cloned = cloneManifest(manifest);
@@ -623,6 +828,7 @@ describe('Manifest', () => {
     expect(cloned.extraPathGrants).toEqual([
       {
         path: '/tmp/data',
+        hostPath: normalize(hostPath),
         readOnly: true,
       },
     ]);
@@ -630,6 +836,7 @@ describe('Manifest', () => {
   });
 
   it('normalizes manifest identity, permissions, and path policy fields', () => {
+    const hostPath = join(tmpdir(), 'manifest-normalized-data');
     const manifest = new Manifest({
       users: [{ name: ' sandbox-user ' }],
       groups: [
@@ -641,6 +848,7 @@ describe('Manifest', () => {
       extraPathGrants: [
         {
           path: '/var/tmp/data',
+          hostPath,
           readOnly: true,
           description: 'fixture data',
         },
@@ -680,6 +888,7 @@ describe('Manifest', () => {
     expect(manifest.extraPathGrants).toEqual([
       {
         path: '/var/tmp/data',
+        hostPath: normalize(hostPath),
         readOnly: true,
         description: 'fixture data',
       },
@@ -934,6 +1143,61 @@ describe('Manifest', () => {
     expect(
       () =>
         new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/data',
+              hostPath: 'relative/data',
+            },
+          ],
+        }),
+    ).toThrow(/hostPath must be an absolute host path/i);
+    expect(
+      () =>
+        new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/data',
+              hostPath: `${tmpdir()}${sep}..${sep}data`,
+            },
+          ],
+        }),
+    ).toThrow(/path grant hostPath must not contain parent segments/i);
+    expect(
+      () =>
+        new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/data',
+              host_path: join(tmpdir(), 'data'),
+            } as never,
+          ],
+        }),
+    ).toThrow(/snake_case key "host_path" is not supported/i);
+    expect(
+      () =>
+        new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/data',
+              hostPath: '//server/share/data',
+            },
+          ],
+        }),
+    ).toThrow(/hostPath does not support UNC or device paths/i);
+    expect(
+      () =>
+        new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/data',
+              hostPath: 'C:\\',
+            },
+          ],
+        }),
+    ).toThrow(/hostPath must not be filesystem root/i);
+    expect(
+      () =>
+        new Manifest({
           entries: {
             data: {
               type: 'mount',
@@ -1175,5 +1439,39 @@ describe('Manifest', () => {
     expect(rendered.renderedPaths).toBeLessThan(rendered.totalPaths);
     expect(rendered.text.length).toBeLessThanOrEqual(180);
     expect(rendered.text).toContain('truncated');
+  });
+
+  it('normalizes Windows drive host paths without changing sandbox paths', () => {
+    const manifest = new Manifest({
+      extraPathGrants: [
+        {
+          path: '/mnt/shared-skills',
+          hostPath: 'C:/Users/example/shared-skills',
+          readOnly: true,
+        },
+      ],
+    });
+
+    expect(manifest.extraPathGrants).toEqual([
+      {
+        path: '/mnt/shared-skills',
+        hostPath: 'C:\\Users\\example\\shared-skills',
+        readOnly: true,
+      },
+    ]);
+  });
+
+  it('preserves whitespace in POSIX host paths', () => {
+    const manifest = new Manifest({
+      extraPathGrants: [
+        {
+          path: '/mnt/shared-data',
+          hostPath: '/srv/shared-data ',
+          readOnly: true,
+        },
+      ],
+    });
+
+    expect(manifest.extraPathGrants[0]?.hostPath).toBe('/srv/shared-data ');
   });
 });

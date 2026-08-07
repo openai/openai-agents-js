@@ -6,36 +6,42 @@ export async function runAgents(
   model: AiSdkModel,
   modelSettings: ModelSettings,
 ) {
-  const sleep = (ms: number) =>
-    new Promise((resolve) => setTimeout(resolve, ms));
+  const lookedUpCities: string[] = [];
 
   const getWeatherTool = tool({
     name: 'get_weather',
-    description: 'Get the weather for a given city',
-    parameters: z.object({ city: z.string() }),
-    execute: async (input) => {
-      await sleep(300);
-      return `The weather in ${input.city} is sunny`;
+    description: 'Get the weather for one or more cities.',
+    parameters: z.object({
+      cities: z.array(z.string()).min(1),
+    }),
+    execute: ({ cities }) => {
+      lookedUpCities.push(...cities);
+      return cities.map((city) => `${city}: sunny`).join('\n');
     },
   });
 
   const dataAgent = new Agent({
     name: 'Weather Data Agent',
-    instructions: 'You are a weather data agent.',
-    handoffDescription:
-      'When you are asked about the weather, you will use tools to get the weather.',
+    instructions: 'You answer weather questions.',
+    handoffDescription: 'Looks up weather for one or more cities.',
     tools: [getWeatherTool],
+    toolUseBehavior: 'stop_on_first_tool',
     model, // Using the AI SDK model for this agent
-    modelSettings,
+    modelSettings: {
+      ...modelSettings,
+      toolChoice: 'required',
+    },
   });
 
   const agent = new Agent({
     name: 'Helpful Assistant',
-    instructions:
-      'You are a helpful assistant. When you need to get the weather, you can hand off the task to the Weather Data Agent.',
+    instructions: 'Delegate weather requests to the available specialist.',
     handoffs: [dataAgent],
     model, // Using the AI SDK model for this agent
-    modelSettings,
+    modelSettings: {
+      ...modelSettings,
+      toolChoice: 'required',
+    },
   });
 
   const runner = new Runner({
@@ -46,8 +52,26 @@ export async function runAgents(
   });
   const result = await runner.run(
     agent,
-    'Hello what is the weather in San Francisco and oakland?',
+    'What is the weather in San Francisco and Oakland?',
   );
+
+  if (!result.newItems.some((item) => item.type === 'handoff_call_item')) {
+    throw new Error('Expected the weather request to be handed off.');
+  }
+
+  const normalizedCities = lookedUpCities.map((city) =>
+    city.trim().toLowerCase(),
+  );
+  if (
+    !normalizedCities.includes('san francisco') ||
+    !normalizedCities.includes('oakland')
+  ) {
+    throw new Error(
+      `Expected weather lookups for San Francisco and Oakland, saw: ${lookedUpCities.join(', ')}.`,
+    );
+  }
+
+  console.log(`[workflow] cities=${lookedUpCities.join(',')}`);
   console.log(result.finalOutput);
 }
 

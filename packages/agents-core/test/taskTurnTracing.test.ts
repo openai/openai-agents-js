@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   Agent,
   MemorySession,
+  ModelBehaviorError,
   OutputGuardrailTripwireTriggered,
   RequestUsage,
   Runner,
@@ -13,6 +14,7 @@ import {
   Usage,
   createAgentSpan,
   createGenerationSpan,
+  getAllMcpTools,
   getGlobalTraceProvider,
   handoff,
   retryPolicies,
@@ -38,6 +40,7 @@ import { mergeAgentToolRunConfig } from '../src/agentToolRunConfig';
 import { SandboxRuntimeManager } from '../src/sandbox/runtime';
 import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../src/shims/shims-browser';
 import { fakeModelMessage, FakeModel } from './stubs';
+import logger from '../src/logger';
 
 class RecordingProcessor implements TracingProcessor {
   readonly spansStarted: Span<any>[] = [];
@@ -633,6 +636,144 @@ describe('runner task and turn tracing', () => {
       },
     });
   });
+
+  it.each([false, true])(
+    'uses the Runner workflow name for a task span inside an outer trace (stream=%s)',
+    async (stream) => {
+      const response = responseWithoutUsage();
+      const agent = new Agent({
+        name: 'Nested trace agent',
+        model: stream
+          ? new StreamingModel(response)
+          : new FakeModel([response]),
+      });
+      const runner = new Runner({ workflowName: 'Inner workflow' });
+      let outerTraceId: string | undefined;
+
+      await withTrace('Outer workflow', async (trace) => {
+        outerTraceId = trace.traceId;
+        if (stream) {
+          const result = await runner.run(agent, 'hello', { stream: true });
+          await result.completed;
+        } else {
+          await runner.run(agent, 'hello');
+        }
+      });
+
+      const taskSpan = spanOfType(processor, 'task');
+      expect(taskSpan.spanData.name).toBe('Inner workflow');
+      expect(taskSpan.traceId).toBe(outerTraceId);
+      expect(taskSpan.parentId).toBeNull();
+    },
+  );
+
+  it.each([false, true])(
+    'preserves a restored workflow name for resumed task spans (stream=%s)',
+    async (stream) => {
+      const approvalTool = tool({
+        name: 'restore_workflow_name_tool',
+        description: 'Requires approval.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'approved',
+      });
+      const responses = [
+        approvalResponse(approvalTool.name),
+        responseWithoutUsage(),
+      ];
+      const agent = new Agent({
+        name: 'Restored workflow agent',
+        model: stream
+          ? new StreamingModel(responses)
+          : new FakeModel(responses),
+        tools: [approvalTool],
+      });
+      const firstRunner = new Runner({ workflowName: 'Stored workflow' });
+      const first = stream
+        ? await firstRunner.run(agent, 'hello', { stream: true })
+        : await firstRunner.run(agent, 'hello');
+      if ('completed' in first) {
+        await first.completed;
+      }
+
+      const restoredState = await RunState.fromString(
+        agent,
+        first.state.toString(),
+      );
+      restoredState.approve(restoredState.getInterruptions()[0]);
+      const endedBeforeResume = processor.spansEnded.length;
+      const resumed = stream
+        ? await new Runner().run(agent, restoredState, { stream: true })
+        : await new Runner().run(agent, restoredState);
+      if ('completed' in resumed) {
+        await resumed.completed;
+      }
+
+      const taskSpan = processor.spansEnded
+        .slice(endedBeforeResume)
+        .find((span) => span.spanData.type === 'task');
+      expect(taskSpan?.spanData.name).toBe('Stored workflow');
+      expect(taskSpan?.traceId).toBe(restoredState._trace?.traceId);
+      expect(taskSpan?.parentId).toBeNull();
+    },
+  );
+
+  it.each([false, true])(
+    'uses the Runner workflow name when resumed state has no trace (stream=%s)',
+    async (stream) => {
+      const approvalTool = tool({
+        name: 'resume_without_trace_tool',
+        description: 'Requires approval.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'approved',
+      });
+      const responses = [
+        approvalResponse(approvalTool.name),
+        responseWithoutUsage(),
+      ];
+      const agent = new Agent({
+        name: 'Resume without trace agent',
+        model: stream
+          ? new StreamingModel(responses)
+          : new FakeModel(responses),
+        tools: [approvalTool],
+      });
+      const firstRunner = new Runner({ tracingDisabled: true });
+      const first = stream
+        ? await firstRunner.run(agent, 'hello', { stream: true })
+        : await firstRunner.run(agent, 'hello');
+      if ('completed' in first) {
+        await first.completed;
+      }
+
+      const restoredState = await RunState.fromString(
+        agent,
+        first.state.toString(),
+      );
+      restoredState.approve(restoredState.getInterruptions()[0]);
+      const endedBeforeResume = processor.spansEnded.length;
+      let outerTraceId: string | undefined;
+
+      await withTrace('Outer workflow', async (trace) => {
+        outerTraceId = trace.traceId;
+        const runner = new Runner({ workflowName: 'Inner workflow' });
+        const resumed = stream
+          ? await runner.run(agent, restoredState, { stream: true })
+          : await runner.run(agent, restoredState);
+        if ('completed' in resumed) {
+          await resumed.completed;
+        }
+      });
+
+      const taskSpan = processor.spansEnded
+        .slice(endedBeforeResume)
+        .find((span) => span.spanData.type === 'task');
+      expect(taskSpan?.spanData.name).toBe('Inner workflow');
+      expect(taskSpan?.traceId).toBe(outerTraceId);
+      expect(taskSpan?.parentId).toBeNull();
+    },
+  );
 
   it('omits only task and turn spans when explicitly disabled', async () => {
     const agent = new Agent({
@@ -1253,6 +1394,90 @@ describe('runner task and turn tracing', () => {
       });
     }
   });
+
+  it.each([true, false])(
+    'redacts MCP URL credentials from spans and RunState when traceIncludeSensitiveData=%s',
+    async (traceIncludeSensitiveData) => {
+      const endpoint = new URL(
+        'https://example.test:8443/mcp?token=TRACE_QUERY#TRACE_FRAGMENT',
+      );
+      endpoint.username = 'TRACE_USER';
+      endpoint.password = 'TRACE_PASSWORD';
+      const rawServerName = `streamable-http: ${endpoint.toString()}`;
+      const safeServerName = 'streamable-http: https://example.test:8443/mcp';
+      const server: MCPServer = {
+        name: rawServerName,
+        cacheToolsList: false,
+        connect: async () => {},
+        close: async () => {},
+        invalidateToolsCache: async () => {},
+        listTools: async () => [
+          {
+            name: 'search',
+            description: 'Search documentation.',
+            inputSchema: {
+              type: 'object',
+              properties: { input: { type: 'string' } },
+              required: ['input'],
+              additionalProperties: false,
+            },
+          } as MCPTool,
+        ],
+        callTool: async () => [{ type: 'text', text: 'ok' }],
+      };
+      const [preparedTool] = await getAllMcpTools({
+        mcpServers: [server],
+        includeServerInToolNames: true,
+      });
+      expect(preparedTool).toBeDefined();
+      const agent = new Agent({
+        name: 'MCP URL redaction agent',
+        model: new FakeModel([
+          agentToolCallResponse(preparedTool!.name),
+          responseWithoutUsage(),
+        ]),
+        mcpServers: [server],
+        mcpConfig: { includeServerInToolNames: true },
+      });
+
+      const result = await new Runner({ traceIncludeSensitiveData }).run(
+        agent,
+        'hello',
+      );
+
+      const mcpSpan = processor.spansEnded.find(
+        (span) => span.spanData.type === 'mcp_tools',
+      );
+      const functionSpan = processor.spansEnded.find(
+        (span) => span.spanData.type === 'function',
+      );
+      expect(mcpSpan?.spanData.server).toBe(safeServerName);
+      expect(functionSpan?.spanData).toMatchObject({
+        mcp_data: { server: safeServerName },
+      });
+      expect(server.name).toBe(rawServerName);
+
+      const restoredState = await RunState.fromString(
+        agent,
+        result.state.toString(),
+      );
+      const serializedExternalData = JSON.stringify({
+        spans: processor.spansEnded.map((span) => span.toJSON()),
+        state: result.state.toJSON(),
+        restoredState: restoredState.toJSON(),
+        toolName: preparedTool!.name,
+      });
+      expect(serializedExternalData).toContain('example.test:8443');
+      for (const secret of [
+        'TRACE_USER',
+        'TRACE_PASSWORD',
+        'TRACE_QUERY',
+        'TRACE_FRAGMENT',
+      ]) {
+        expect(serializedExternalData).not.toContain(secret);
+      }
+    },
+  );
 
   it('captures distinct external trace parents for concurrent runs on a shared runner', async () => {
     setTracingContextStorage(new BrowserAsyncLocalStorage());
@@ -2081,9 +2306,214 @@ describe('runner task and turn tracing', () => {
     },
   );
 
+  it.each([
+    ['redacted trace', false, false],
+    ['redacted trace streamed', false, true],
+    ['sensitive trace', true, false],
+    ['sensitive trace streamed', true, true],
+  ] as const)(
+    '%s controls recovered structured-output error details',
+    async (_mode, traceIncludeSensitiveData, stream) => {
+      const secret = 'SECRET_RECOVERED_FINAL_OUTPUT_TRACE_4212';
+      const response: ModelResponse = {
+        output: [fakeModelMessage(JSON.stringify({ summary: secret }))],
+        usage: new Usage(),
+      };
+      const agent = new Agent({
+        name: 'Recovered structured-output tracing agent',
+        outputType: z.object({ summary: z.string() }),
+        model: stream
+          ? new StreamingModel(response)
+          : new FakeModel([response]),
+      });
+      let parserCalls = 0;
+      agent.processFinalOutput = (output: string) => {
+        parserCalls += 1;
+        if (parserCalls === 1) {
+          throw new Error(`Overridden parser rejected ${output}`);
+        }
+        return JSON.parse(output);
+      };
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogModelData', 'get')
+        .mockReturnValue(false);
+      const runner = new Runner({ traceIncludeSensitiveData });
+      const options = {
+        errorHandlers: {
+          invalidFinalOutput: () => ({
+            finalOutput: { summary: 'safe fallback' },
+          }),
+        },
+      };
+
+      try {
+        if (stream) {
+          const result = await runner.run(agent, 'hello', {
+            ...options,
+            stream: true,
+          });
+          await result.completed;
+          expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
+        } else {
+          const result = await runner.run(agent, 'hello', options);
+          expect(result.finalOutput).toEqual({ summary: 'safe fallback' });
+        }
+      } finally {
+        flagSpy.mockRestore();
+      }
+
+      expect(spanOfType(processor, 'task').error).toBeNull();
+      expect(parserCalls).toBeGreaterThanOrEqual(2);
+      const turnError = spanOfType(processor, 'turn').error;
+      const renderedTurnError = JSON.stringify(turnError);
+      if (traceIncludeSensitiveData) {
+        expect(renderedTurnError).toContain(secret);
+      } else {
+        expect(turnError).toEqual({
+          message:
+            'Invalid output type: final assistant output did not match the expected schema.',
+          data: {},
+        });
+        expect(renderedTurnError).not.toContain(secret);
+      }
+    },
+  );
+
+  it.each([
+    ['redacted', true, false],
+    ['redacted streamed', true, true],
+    ['diagnostic', false, false],
+    ['diagnostic streamed', false, true],
+  ] as const)(
+    '%s structured-output errors follow the model-data policy in span callbacks',
+    async (_mode, dontLogModelData, stream) => {
+      const secret = 'SECRET_FINAL_OUTPUT_SPAN_4207';
+      const response: ModelResponse = {
+        output: [fakeModelMessage(JSON.stringify({ summary: secret }))],
+        usage: new Usage(),
+      };
+      const agent = new Agent({
+        name: 'Structured output span agent',
+        outputType: z.object({ summary: z.string() }),
+        model: stream
+          ? new StreamingModel(response)
+          : new FakeModel([response]),
+      });
+      agent.processFinalOutput = (output: string): never => {
+        throw new Error(`Overridden parser rejected ${output}`);
+      };
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogModelData', 'get')
+        .mockReturnValue(dontLogModelData);
+
+      try {
+        if (stream) {
+          const result = await new Runner().run(agent, 'hello', {
+            stream: true,
+          });
+          await expect(result.completed).rejects.toBeInstanceOf(
+            ModelBehaviorError,
+          );
+        } else {
+          await expect(new Runner().run(agent, 'hello')).rejects.toBeInstanceOf(
+            ModelBehaviorError,
+          );
+        }
+      } finally {
+        flagSpy.mockRestore();
+      }
+
+      const renderedErrors = JSON.stringify([
+        ...processor.spanErrorsAtEnd.values(),
+      ]);
+      if (dontLogModelData) {
+        expect(renderedErrors).not.toContain(secret);
+      } else {
+        expect(renderedErrors).toContain(secret);
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'keeps redacted guardrail parser and persistence errors out of span callbacks (stream=%s)',
+    async (stream) => {
+      const parserSecret = 'SECRET_GUARDRAIL_PARSER_SPAN_4210';
+      const persistenceSecret = 'SECRET_GUARDRAIL_PERSISTENCE_SPAN_4211';
+      const response: ModelResponse = {
+        output: [fakeModelMessage(JSON.stringify({ summary: parserSecret }))],
+        usage: new Usage(),
+      };
+      const agent = new Agent({
+        name: 'Guardrail persistence tracing agent',
+        outputType: z.object({ summary: z.string() }),
+        model: stream
+          ? new StreamingModel(response)
+          : new FakeModel([response]),
+      });
+      let parserCalls = 0;
+      agent.processFinalOutput = (output: string) => {
+        parserCalls += 1;
+        if (parserCalls === 1) {
+          return JSON.parse(output);
+        }
+        throw new Error(`Guardrail parser rejected ${output}`);
+      };
+      class RejectingPersistenceSession extends MemorySession {
+        override async applyHistoryTransaction(): Promise<void> {
+          throw new Error(`Persistence rejected ${persistenceSecret}`);
+        }
+      }
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogModelData', 'get')
+        .mockReturnValue(true);
+      const runner = new Runner({
+        outputGuardrails: [
+          {
+            name: 'never runs after parser failure',
+            execute: vi.fn(async () => ({
+              tripwireTriggered: false,
+              outputInfo: {},
+            })),
+          },
+        ],
+      });
+
+      let error: unknown;
+      try {
+        if (stream) {
+          const result = await runner.run(agent, 'hello', {
+            stream: true,
+            session: new RejectingPersistenceSession(),
+          });
+          await result.completed;
+        } else {
+          await runner.run(agent, 'hello', {
+            session: new RejectingPersistenceSession(),
+          });
+        }
+      } catch (caught) {
+        error = caught;
+      } finally {
+        flagSpy.mockRestore();
+      }
+
+      expect(error).toBeInstanceOf(ModelBehaviorError);
+      expect((error as Error & { cause?: unknown }).cause).toBeUndefined();
+      expect(parserCalls).toBe(2);
+      const renderedErrors = JSON.stringify([
+        ...processor.spanErrorsAtEnd.values(),
+      ]);
+      expect(renderedErrors).not.toContain(parserSecret);
+      expect(renderedErrors).not.toContain(persistenceSecret);
+    },
+  );
+
   it.each([false, true])(
     'marks task and turn spans when an error handler fails (stream=%s)',
     async (stream) => {
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogModelData', 'get')
+        .mockReturnValue(false);
       const response: ModelResponse = {
         output: [fakeModelMessage('not valid json')],
         usage: new Usage(),
@@ -2123,6 +2553,7 @@ describe('runner task and turn tracing', () => {
           data: { error: String(handlerError) },
         });
       }
+      flagSpy.mockRestore();
     },
   );
 

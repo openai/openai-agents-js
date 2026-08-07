@@ -91,7 +91,7 @@ export function getRefusalFromOutputMessage(
 }
 
 /**
- * Get the last text from the output message.
+ * Get the final text from the model response.
  * @param output
  * @returns
  */
@@ -100,7 +100,27 @@ export function getOutputText(output: ModelResponse) {
     return '';
   }
 
-  return (
-    getTextFromOutputMessage(output.output[output.output.length - 1]) || ''
-  );
+  const isSegmentedAssistantResponse =
+    output.output.some(
+      (item) =>
+        item.type === 'reasoning' ||
+        item.type === 'tool_search_call' ||
+        item.type === 'tool_search_output',
+    ) &&
+    output.output.every(
+      (item) =>
+        item.type === 'message' ||
+        item.type === 'reasoning' ||
+        item.type === 'tool_search_call' ||
+        item.type === 'tool_search_output',
+    );
+  if (!isSegmentedAssistantResponse) {
+    return (
+      getTextFromOutputMessage(output.output[output.output.length - 1]) ?? ''
+    );
+  }
+
+  return output.output
+    .map((item) => getTextFromOutputMessage(item) ?? '')
+    .join('');
 }

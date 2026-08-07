@@ -1,5 +1,6 @@
 import { UserError, type ToolOutputImage } from '@openai/agents-core';
 import {
+  cloneManifest,
   Manifest,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
@@ -28,10 +29,13 @@ import {
 import {
   normalizePosixPath,
   relativePosixPathWithinRoot,
+  shellQuote,
+  withExclusiveSandboxManifestMutation,
 } from '@openai/agents-core/sandbox/internal';
 import { posix as pathPosix } from 'node:path';
 import {
   assertCoreSnapshotUnsupported,
+  assertRemoteSandboxSessionStateCanResume,
   imageOutputFromBytes,
   RemoteSandboxEditor,
   assertTarWorkspacePersistence,
@@ -41,7 +45,7 @@ import {
   closeRemoteSessionOnManifestError,
   createRunAsRemoteEditor,
   decodeNativeSnapshotRef,
-  deserializeRemoteSandboxSessionStateValues,
+  rehydrateRemoteSandboxSessionStateValues,
   elapsedSeconds,
   encodeNativeSnapshotRef,
   formatExecResponse,
@@ -49,6 +53,7 @@ import {
   manifestMaterializationOptionsWithRunAs,
   materializeEnvironment,
   persistRemoteWorkspaceTar,
+  probeRemoteSandboxPathExists,
   providerErrorMessage,
   assertConfiguredExposedPort,
   getCachedExposedPortEndpoint,
@@ -216,9 +221,7 @@ type ModalCloudBucketMountsProvider = () => Promise<
 >;
 
 export type ModalWorkspacePersistence =
-  | 'tar'
-  | 'snapshot_filesystem'
-  | 'snapshot_directory';
+  'tar' | 'snapshot_filesystem' | 'snapshot_directory';
 
 export type ModalImageSelectorKind = 'image' | 'id' | 'tag';
 
@@ -524,18 +527,44 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
   async pathExists(path: string, runAs?: string): Promise<boolean> {
     const absolutePath = await this.resolveRemotePath(path);
     if (!runAs) {
-      const process = await this.sandbox.exec(['test', '-e', absolutePath], {
-        mode: 'text',
-        workdir: this.state.manifest.root,
-        stdout: 'ignore',
-        stderr: 'pipe',
+      return await probeRemoteSandboxPathExists({
+        providerName: 'ModalSandboxClient',
+        providerId: 'modal',
+        path: absolutePath,
+        runCommand: async (command) => {
+          const argv =
+            command === `test -e ${shellQuote(absolutePath)}`
+              ? ['test', '-e', absolutePath]
+              : ['/bin/sh', '-c', command];
+          const process = await this.sandbox.exec(argv, {
+            mode: 'text',
+            workdir: this.state.manifest.root,
+            stdout: 'ignore',
+            stderr: 'pipe',
+          });
+          let stderr = '';
+          const stderrPump = startTextStreamPump(process.stderr, (chunk) => {
+            stderr += chunk;
+          });
+          try {
+            const status = await process.wait();
+            await stderrPump.promise;
+            return { status, stderr };
+          } catch (error) {
+            await stderrPump.cancel();
+            throw error;
+          }
+        },
       });
-      return (await process.wait()) === 0;
     }
     return await runAsRemotePathExists(
       absolutePath,
       runAs,
       this.runAsCommandRunner.bind(this),
+      {
+        providerName: 'ModalSandboxClient',
+        providerId: 'modal',
+      },
     );
   }
 
@@ -605,45 +634,54 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
   }
 
   async materializeEntry(args: MaterializeEntryArgs): Promise<void> {
-    assertSandboxEntryMetadataSupported(
-      'ModalSandboxClient',
-      args.path,
-      args.entry,
-      MOUNT_MANIFEST_METADATA_SUPPORT,
-    );
-    assertModalLiveEntryMountsUnsupported(
-      args.entry,
-      args.path,
-      this.state.manifest,
-    );
-    await applyLocalSourceManifestEntryToState(
-      this.state,
-      args.path,
-      args.entry,
-      'modal',
-      this.writer(),
-      this.remotePathResolver,
-      this.manifestMaterializationOptions(args.runAs),
-    );
-    this.invalidateCloudBucketMounts();
+    const entry = structuredClone(args.entry);
+    await withExclusiveSandboxManifestMutation(this.state, async () => {
+      assertSandboxEntryMetadataSupported(
+        'ModalSandboxClient',
+        args.path,
+        entry,
+        MOUNT_MANIFEST_METADATA_SUPPORT,
+      );
+      assertModalLiveEntryMountsUnsupported(
+        entry,
+        args.path,
+        this.state.manifest,
+      );
+      await applyLocalSourceManifestEntryToState(
+        this.state,
+        args.path,
+        entry,
+        'modal',
+        this.writer(),
+        this.remotePathResolver,
+        this.manifestMaterializationOptions(args.runAs),
+      );
+      this.invalidateCloudBucketMounts();
+    });
   }
 
   async applyManifest(manifest: Manifest, runAs?: string): Promise<void> {
-    assertSandboxManifestMetadataSupported(
-      'ModalSandboxClient',
-      manifest,
-      MOUNT_MANIFEST_METADATA_SUPPORT,
-    );
-    assertModalLiveManifestMountsUnsupported(manifest, this.state.manifest);
-    await applyLocalSourceManifestToState(
-      this.state,
-      manifest,
-      'modal',
-      this.writer(),
-      this.remotePathResolver,
-      this.manifestMaterializationOptions(runAs),
-    );
-    this.invalidateCloudBucketMounts();
+    const manifestSnapshot = cloneManifest(manifest);
+    await withExclusiveSandboxManifestMutation(this.state, async () => {
+      assertSandboxManifestMetadataSupported(
+        'ModalSandboxClient',
+        manifestSnapshot,
+        MOUNT_MANIFEST_METADATA_SUPPORT,
+      );
+      assertModalLiveManifestMountsUnsupported(
+        manifestSnapshot,
+        this.state.manifest,
+      );
+      await applyLocalSourceManifestToState(
+        this.state,
+        manifestSnapshot,
+        'modal',
+        this.writer(),
+        this.remotePathResolver,
+        this.manifestMaterializationOptions(runAs),
+      );
+      this.invalidateCloudBucketMounts();
+    });
   }
 
   async persistWorkspace(): Promise<Uint8Array> {
@@ -1302,8 +1340,7 @@ export class ModalSandboxClient implements SandboxClient<
         );
         const imageState = modalImageStateFromOptions(resolvedOptions);
         let cloudBucketMounts:
-          | Record<string, ModalCloudBucketMountLike>
-          | undefined;
+          Record<string, ModalCloudBucketMountLike> | undefined;
         let sandbox: ModalSandboxLike;
         if (resolvedOptions.sandbox) {
           sandbox = await withProviderError(
@@ -1429,7 +1466,7 @@ export class ModalSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<ModalSandboxSessionState> {
-    const baseState = deserializeRemoteSandboxSessionStateValues(
+    const baseState = await rehydrateRemoteSandboxSessionStateValues(
       state,
       this.options.env,
     );
@@ -1470,6 +1507,7 @@ export class ModalSandboxClient implements SandboxClient<
   }
 
   async resume(state: ModalSandboxSessionState): Promise<ModalSandboxSession> {
+    assertRemoteSandboxSessionStateCanResume(state);
     if (!state.sandboxId) {
       throw new UserError(
         'Modal sandbox resume requires a persisted sandboxId.',

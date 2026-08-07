@@ -102,7 +102,7 @@ jobs:
         run: echo "Only docs/meta files changed. Marking test checks as successful without running CI."
       - name: Checkout repository
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Install pnpm
@@ -112,7 +112,7 @@ jobs:
           run_install: false
       - name: Setup Node.js
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'pnpm'
@@ -150,7 +150,7 @@ jobs:
         run: echo "Only docs/meta files changed. Marking Windows sandbox path checks as successful without running CI."
       - name: Checkout repository
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Install pnpm
@@ -160,7 +160,7 @@ jobs:
           run_install: false
       - name: Setup Node.js
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 22
           cache: 'pnpm'
@@ -173,7 +173,7 @@ jobs:
       - name: Run Windows sandbox path tests
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         shell: bash
-        run: pnpm exec vitest --run --project "@openai/agents-core" packages/agents-core/test/sandboxWorkspacePaths.test.ts packages/agents-core/test/sandboxManifest.test.ts
+        run: pnpm exec vitest --run --project "@openai/agents-core" packages/agents-core/test/sandboxWorkspacePaths.test.ts packages/agents-core/test/sandboxManifest.test.ts packages/agents-core/test/sandboxNativePathGrants.test.ts
       - name: Run Windows remote path tests
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         shell: bash
@@ -190,7 +190,7 @@ jobs:
         run: echo "Only docs/meta files changed. Marking coverage check as successful without running CI."
       - name: Checkout repository
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Install pnpm
@@ -200,7 +200,7 @@ jobs:
           run_install: false
       - name: Setup Node.js
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 22
           cache: 'pnpm'

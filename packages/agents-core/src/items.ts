@@ -2,8 +2,8 @@ import { Agent } from './agent';
 import { toSmartString } from './utils/smartString';
 import * as protocol from './types/protocol';
 import {
-  getFunctionToolQualifiedName,
-  resolveFunctionToolCallName,
+  getFunctionToolStateKeyForCall,
+  getToolCallQualifiedName,
 } from './toolIdentity';
 import type { ToolOutputCustomData } from './utils/customData';
 
@@ -128,6 +128,7 @@ export class RunToolCallOutputItem extends RunItemBase {
     public agent: Agent<any, any>,
     public output: string | unknown,
     public customData?: ToolOutputCustomData,
+    public executionStatus?: 'executed',
   ) {
     super();
   }
@@ -138,6 +139,7 @@ export class RunToolCallOutputItem extends RunItemBase {
       agent: this.agent.toJSON(),
       output: toSmartString(this.output),
       customData: this.customData,
+      executionStatus: this.executionStatus,
     };
   }
 
@@ -154,6 +156,27 @@ export class RunReasoningItem extends RunItemBase {
 
   constructor(
     public rawItem: protocol.ReasoningItem,
+    public agent: Agent,
+  ) {
+    super();
+  }
+
+  toJSON() {
+    return {
+      ...super.toJSON(),
+      agent: this.agent.toJSON(),
+    };
+  }
+}
+
+/**
+ * A compaction marker returned by a model.
+ */
+export class RunCompactionItem extends RunItemBase {
+  public readonly type = 'compaction_item' as const;
+
+  constructor(
+    public rawItem: protocol.CompactionItem,
     public agent: Agent,
   ) {
     super();
@@ -220,9 +243,13 @@ export class RunToolApprovalItem extends RunItemBase {
      * Explicit tool name to use for approval tracking when not present on the raw item.
      */
     public toolName?: string,
+    /** @internal Canonical function-tool key used by approval and resume state. */
+    public functionToolStateKey?: string,
   ) {
     super();
-    this.toolName = toolName ?? getDefaultApprovalToolName(rawItem, agent);
+    this.toolName = toolName ?? getDefaultApprovalToolName(rawItem);
+    this.functionToolStateKey =
+      functionToolStateKey ?? getDefaultApprovalFunctionToolStateKey(rawItem);
   }
 
   /**
@@ -245,42 +272,36 @@ export class RunToolApprovalItem extends RunItemBase {
       ...super.toJSON(),
       agent: this.agent.toJSON(),
       toolName: this.toolName,
+      functionToolStateKey: this.functionToolStateKey,
     };
   }
 }
 
+function getDefaultApprovalFunctionToolStateKey(
+  rawItem: RunToolApprovalItem['rawItem'],
+): string | undefined {
+  if (rawItem.type !== 'function_call') {
+    return undefined;
+  }
+  return getFunctionToolStateKeyForCall(rawItem);
+}
+
 function getDefaultApprovalToolName(
   rawItem: RunToolApprovalItem['rawItem'],
-  agent: Agent<any, any>,
 ): string | undefined {
   if (rawItem.type !== 'function_call') {
     return (rawItem as any).name;
   }
 
-  const availableFunctionTools = new Map(
-    agent.tools.flatMap((tool) => {
-      if (tool.type !== 'function' || typeof tool.name !== 'string') {
-        return [];
-      }
-      return [[getFunctionToolQualifiedName(tool) ?? tool.name, tool] as const];
-    }),
-  );
-
-  const resolvedToolName = resolveFunctionToolCallName(
-    rawItem,
-    availableFunctionTools,
-  );
-
   if (
     typeof rawItem.name === 'string' &&
     typeof rawItem.namespace === 'string' &&
-    rawItem.namespace === rawItem.name &&
-    !availableFunctionTools.has(`${rawItem.namespace}.${rawItem.name}`)
+    rawItem.namespace === rawItem.name
   ) {
     return rawItem.name;
   }
 
-  return resolvedToolName ?? rawItem.name;
+  return getToolCallQualifiedName(rawItem) ?? rawItem.name;
 }
 
 function getStringProperty(item: object, key: string): string | undefined {
@@ -294,6 +315,7 @@ export type RunItem =
   | RunToolSearchCallItem
   | RunToolSearchOutputItem
   | RunReasoningItem
+  | RunCompactionItem
   | RunHandoffCallItem
   | RunToolCallOutputItem
   | RunHandoffOutputItem

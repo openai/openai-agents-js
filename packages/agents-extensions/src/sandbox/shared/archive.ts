@@ -66,6 +66,11 @@ export async function persistRemoteWorkspaceTar(args: {
   const archivePath = args.archivePath ?? remoteArchivePath(args.providerName);
   assertRemoteWorkspaceTarRoot(args.providerName, root, archivePath, 'persist');
 
+  const protectedPaths = workspaceTarProtectedPaths(args.manifest);
+  if (protectedPaths.includes('')) {
+    return createEmptyWorkspaceTarArchive();
+  }
+
   await validateRemoteSandboxPathForManifest({
     manifest: args.manifest,
     path: root,
@@ -137,6 +142,7 @@ export async function hydrateRemoteWorkspaceTar(args: {
   const archive = toWorkspaceArchiveBytes(args.data);
   validateWorkspaceTarArchive(archive, {
     allowSymlinks: false,
+    rejectRelPaths: workspaceTarProtectedPaths(args.manifest),
     archiveLimits: args.archiveLimits,
   });
 
@@ -247,11 +253,32 @@ export function validateWorkspaceTarArchive(
       }
       offset += Math.ceil(size / TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
 
-      if (rawType === 'x') {
-        pendingPax = parsePaxPayload(payload);
-        continue;
-      }
-      if (rawType === 'g') {
+      if (rawType === 'x' || rawType === 'g') {
+        const pax = parsePaxPayload(payload);
+        if (pax.size !== undefined) {
+          throw tarError(
+            readTarString(header, 0, 100),
+            'PAX size override not allowed',
+          );
+        }
+        if (pax['GNU.sparse.name'] !== undefined) {
+          throw tarError(
+            readTarString(header, 0, 100),
+            'PAX GNU.sparse.name override not allowed',
+          );
+        }
+        if (rawType === 'x') {
+          pendingPax = pax;
+          continue;
+        }
+        for (const key of ['path', 'linkpath'] as const) {
+          if (pax[key] !== undefined) {
+            throw tarError(
+              readTarString(header, 0, 100),
+              `global PAX ${key} override not allowed`,
+            );
+          }
+        }
         continue;
       }
       if (rawType === 'L') {
@@ -363,13 +390,22 @@ export function toWorkspaceArchiveBytes(
 }
 
 export function workspaceTarExcludeArgs(manifest: Manifest): string[] {
-  return [...manifest.ephemeralPersistencePaths()]
+  return workspaceTarProtectedPaths(manifest)
     .filter((path) => path.length > 0)
-    .sort((left, right) => left.localeCompare(right))
     .map(
       (path) =>
         `--exclude=${shellQuote(`./${path.replace(/([*?[\]\\])/gu, '\\$1')}`)}`,
     );
+}
+
+export function workspaceTarProtectedPaths(manifest: Manifest): string[] {
+  return [...manifest.ephemeralPersistencePaths()].sort((left, right) =>
+    left.localeCompare(right),
+  );
+}
+
+export function createEmptyWorkspaceTarArchive(): Uint8Array {
+  return new Uint8Array(TAR_BLOCK_SIZE * 2);
 }
 
 type TarMember = {
@@ -658,25 +694,63 @@ function normalizePosixPathWithoutRoot(path: string): string[] | null {
 }
 
 function parsePaxPayload(payload: Uint8Array): Record<string, string> {
-  const text = decodeBytes(payload);
-  const values: Record<string, string> = {};
+  const values: Record<string, string> = Object.create(null);
   let offset = 0;
-  while (offset < text.length) {
-    const space = text.indexOf(' ', offset);
+  while (offset < payload.byteLength) {
+    const space = payload.indexOf(0x20, offset);
     if (space === -1) {
-      break;
+      throw tarError('<pax>', 'invalid PAX record length');
     }
-    const length = Number(text.slice(offset, space));
-    if (!Number.isInteger(length) || length <= 0) {
-      break;
+    if (space === offset) {
+      throw tarError('<pax>', 'invalid PAX record length');
     }
-    const record = text.slice(space + 1, offset + length);
-    const trimmed = record.endsWith('\n') ? record.slice(0, -1) : record;
-    const equals = trimmed.indexOf('=');
-    if (equals > 0) {
-      values[trimmed.slice(0, equals)] = trimmed.slice(equals + 1);
+
+    let length = 0;
+    for (let index = offset; index < space; index += 1) {
+      const digit = payload[index] - 0x30;
+      if (digit < 0 || digit > 9) {
+        throw tarError('<pax>', 'invalid PAX record length');
+      }
+      length = length * 10 + digit;
+      if (!Number.isSafeInteger(length)) {
+        throw tarError('<pax>', 'invalid PAX record length');
+      }
     }
-    offset += length;
+
+    const recordEnd = offset + length;
+    if (recordEnd > payload.byteLength) {
+      throw tarError('<pax>', 'PAX record exceeds payload');
+    }
+    if (recordEnd < space + 4 || payload[recordEnd - 1] !== 0x0a) {
+      throw tarError('<pax>', 'invalid PAX record framing');
+    }
+
+    let equals = -1;
+    for (let index = space + 1; index < recordEnd - 1; index += 1) {
+      if (payload[index] === 0x3d) {
+        equals = index;
+        break;
+      }
+    }
+    if (equals <= space + 1) {
+      throw tarError('<pax>', 'invalid PAX record framing');
+    }
+
+    let key: string;
+    let value: string;
+    try {
+      const decoder = new TextDecoder('utf-8', { fatal: true });
+      key = decoder.decode(payload.subarray(space + 1, equals));
+      value = decoder.decode(payload.subarray(equals + 1, recordEnd - 1));
+    } catch {
+      throw tarError('<pax>', 'invalid UTF-8 in PAX record');
+    }
+    if (key.includes('\0') || value.includes('\0')) {
+      throw tarError('<pax>', 'NUL byte in PAX record');
+    }
+    values[key] = value;
+
+    offset = recordEnd;
   }
   return values;
 }

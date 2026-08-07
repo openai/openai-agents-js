@@ -17,6 +17,7 @@ import {
 import { applyManifestToProvidedSession } from '../src/sandbox/runtime/providedSessionManifest';
 import { renderRemoteMountPolicyInstructions } from '../src/sandbox/runtime/prompts';
 import { DockerSandboxSession } from '../src/sandbox/sandboxes/docker';
+import { mergeManifestDelta } from '../src/sandbox/internal';
 
 class TestCapability extends Capability {
   public readonly type: string;
@@ -667,6 +668,7 @@ describe('prepareSandboxAgent', () => {
             type: 's3_mount',
             bucket: 'bucket',
             config: { b: 2, a: 1 },
+            mountStrategy: { type: 'modal_cloud_bucket' },
           },
         },
       }),
@@ -681,6 +683,7 @@ describe('prepareSandboxAgent', () => {
               type: 's3_mount',
               bucket: 'bucket',
               config: { a: 1, b: 2 },
+              mountStrategy: { type: 'modal_cloud_bucket' },
             },
           },
         }),
@@ -701,6 +704,109 @@ describe('prepareSandboxAgent', () => {
         }),
       ),
     ).rejects.toThrow('cannot change manifest environment variables');
+  });
+
+  it('allows additive updates that omit existing environment entries', async () => {
+    const session = sessionWithManifest(
+      new Manifest({ environment: { EXISTING: 'value' } }),
+    );
+    session.applyManifest = async (delta) => {
+      session.state.manifest = mergeManifestDelta(
+        session.state.manifest,
+        delta,
+      );
+    };
+
+    await expect(
+      applyManifestToProvidedSession(
+        session,
+        new Manifest({
+          entries: { added: { type: 'file', content: 'added' } },
+        }),
+      ),
+    ).resolves.toBeUndefined();
+    expect(session.state.manifest.entries.added).toMatchObject({
+      type: 'file',
+      content: 'added',
+    });
+    expect(session.state.manifest.environment.EXISTING).toBeDefined();
+  });
+
+  it('preserves concurrent provided-session manifest updates', async () => {
+    const session = sessionWithManifest(new Manifest({ root: '/workspace' }));
+    session.applyManifest = async (delta) => {
+      const staleBase = session.state.manifest;
+      await Promise.resolve();
+      session.state.manifest = mergeManifestDelta(staleBase, delta);
+    };
+
+    const applyingFirst = applyManifestToProvidedSession(
+      session,
+      new Manifest({
+        root: '/workspace',
+        entries: { first: { type: 'file', content: 'first' } },
+      }),
+    );
+    const applyingSecond = applyManifestToProvidedSession(
+      session,
+      new Manifest({
+        root: '/workspace',
+        entries: { second: { type: 'file', content: 'second' } },
+      }),
+    );
+    await Promise.all([applyingFirst, applyingSecond]);
+    expect(session.state.manifest.entries).toMatchObject({
+      first: { type: 'file', content: 'first' },
+      second: { type: 'file', content: 'second' },
+    });
+  });
+
+  it('commits state for released side-effect-only provided sessions', async () => {
+    const session = sessionWithManifest(new Manifest({ root: '/workspace' }));
+    session.applyManifest = async () => {};
+
+    await expect(
+      applyManifestToProvidedSession(
+        session,
+        new Manifest({
+          root: '/workspace',
+          entries: { added: { type: 'file', content: 'added' } },
+        }),
+      ),
+    ).resolves.toBeUndefined();
+    expect(session.state.manifest.entries.added).toMatchObject({
+      type: 'file',
+      content: 'added',
+    });
+  });
+
+  it('preserves prior and provider-added state after a destructive commit', async () => {
+    const session = sessionWithManifest(
+      new Manifest({
+        root: '/workspace',
+        entries: { existing: { type: 'file', content: 'existing' } },
+      }),
+    );
+    session.applyManifest = async () => {
+      session.state.manifest = new Manifest({
+        root: '/workspace',
+        entries: { provider: { type: 'file', content: 'provider' } },
+      });
+    };
+
+    await applyManifestToProvidedSession(
+      session,
+      new Manifest({
+        root: '/workspace',
+        entries: { added: { type: 'file', content: 'added' } },
+      }),
+    );
+
+    expect(session.state.manifest.entries).toMatchObject({
+      existing: { type: 'file', content: 'existing' },
+      provider: { type: 'file', content: 'provider' },
+      added: { type: 'file', content: 'added' },
+    });
   });
 
   it('resolves dynamic base instructions with the run context', async () => {

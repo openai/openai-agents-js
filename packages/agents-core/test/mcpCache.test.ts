@@ -9,6 +9,7 @@ import { RunContext } from '../src/runContext';
 import { Agent } from '../src/agent';
 import { handoff } from '../src/handoff';
 import { z } from 'zod';
+import logger from '../src/logger';
 
 class StubServer extends NodeMCPServerStdio {
   public toolList: any[];
@@ -37,6 +38,74 @@ class StubServer extends NodeMCPServerStdio {
 }
 
 describe('MCP tools cache invalidation', () => {
+  it('suppresses MCP filter diagnostics when tool logging is disabled', async () => {
+    const serverSecret = 'SECRET_MCP_FILTER_PATH_123';
+    const toolSecret = 'SECRET_MCP_FILTER_TOOL_123';
+    const server = new StubServer(
+      `streamable-http: https://example.test/mcp/${serverSecret}`,
+      [
+        {
+          name: toolSecret,
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ],
+    );
+    server.toolFilter = { blockedToolNames: [toolSecret] };
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    const toolFlagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(true);
+
+    try {
+      const result = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'AgentOne' }),
+      });
+
+      expect(result).toEqual([]);
+      expect(debugSpy).not.toHaveBeenCalled();
+    } finally {
+      debugSpy.mockRestore();
+      toolFlagSpy.mockRestore();
+    }
+  });
+
+  it('preserves sanitized MCP filter diagnostics when tool logging is enabled', async () => {
+    const server = new StubServer(
+      'streamable-http: https://example.test/mcp?token=SECRET_MCP_FILTER_QUERY_123',
+      [
+        {
+          name: 'blocked_tool',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ],
+    );
+    server.toolFilter = { blockedToolNames: ['blocked_tool'] };
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    const toolFlagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(false);
+
+    try {
+      const result = await getAllMcpTools({
+        mcpServers: [server],
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'AgentOne' }),
+      });
+
+      expect(result).toEqual([]);
+      expect(debugSpy).toHaveBeenCalledWith(
+        'MCP Tool (server: streamable-http: https://example.test/mcp, tool: blocked_tool) is blocked by the static filter.',
+      );
+    } finally {
+      debugSpy.mockRestore();
+      toolFlagSpy.mockRestore();
+    }
+  });
+
   it('fetches fresh tools after cache invalidation', async () => {
     await withTrace('test', async () => {
       const toolsA = [
@@ -359,6 +428,140 @@ describe('MCP tools uniqueness', () => {
         'mcp_calendar__update',
       ]);
     });
+  });
+
+  it('redacts URL credentials from prefixed tool names while dispatching the original tool name', async () => {
+    const endpoint = new URL(
+      'https://example.test:8443/mcp?token=URL_QUERY#URL_FRAGMENT',
+    );
+    endpoint.username = 'URL_USER';
+    endpoint.password = 'URL_PASSWORD';
+    const rawServerName = `streamable-http: ${endpoint.toString()}`;
+    const server = new StubServer(rawServerName, [
+      {
+        name: 'search',
+        description: '',
+        inputSchema: {
+          type: 'object',
+          properties: { query: { type: 'string' } },
+        },
+      },
+    ]);
+    server.cacheToolsList = false;
+    const callTool = vi.fn(async () => [{ type: 'text', text: 'ok' }]);
+    server.callTool = callTool;
+
+    const tools = (await getAllMcpTools({
+      mcpServers: [server],
+      includeServerInToolNames: true,
+    })) as FunctionTool[];
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0].name).toContain('example_test_8443_mcp');
+    for (const secret of [
+      'URL_USER',
+      'URL_PASSWORD',
+      'URL_QUERY',
+      'URL_FRAGMENT',
+    ]) {
+      expect(tools[0].name).not.toContain(secret);
+    }
+
+    await tools[0].invoke(
+      new RunContext({}),
+      JSON.stringify({ query: 'agents' }),
+    );
+    expect(callTool).toHaveBeenCalledWith('search', { query: 'agents' });
+    expect(server.name).toBe(rawServerName);
+  });
+
+  it('preserves credential-free URL spelling in prefixed tool names', async () => {
+    const server = new StubServer(
+      'streamable-http: https://EXAMPLE.test:443/mcp',
+      [
+        {
+          name: 'search',
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ],
+    );
+    server.cacheToolsList = false;
+
+    const tools = await getAllMcpTools({
+      mcpServers: [server],
+      includeServerInToolNames: true,
+    });
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0].name).toBe(
+      'mcp_streamable_http__https___EXAMPLE_test_443_mcp__search',
+    );
+  });
+
+  it('rejects URL-derived server names that collide after redaction', async () => {
+    const endpointA = new URL(
+      'https://example.test/mcp?token=QUERY_A#FRAGMENT_A',
+    );
+    endpointA.username = 'USER_A';
+    endpointA.password = 'PASSWORD_A';
+    const endpointB = new URL(
+      'https://example.test/mcp?token=QUERY_B#FRAGMENT_B',
+    );
+    endpointB.username = 'USER_B';
+    endpointB.password = 'PASSWORD_B';
+    const rawServerNames = [
+      `streamable-http: ${endpointA.toString()}`,
+      `streamable-http: ${endpointB.toString()}`,
+    ];
+
+    async function getCollisionError(serverNames: string[]): Promise<Error> {
+      const servers = serverNames.map((name) => {
+        const server = new StubServer(name, [
+          {
+            name: 'search',
+            description: '',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ]);
+        server.cacheToolsList = false;
+        return server;
+      });
+
+      try {
+        await getAllMcpTools({
+          mcpServers: servers,
+          includeServerInToolNames: true,
+        });
+      } catch (error) {
+        expect(error).toBeInstanceOf(UserError);
+        return error as Error;
+      }
+      throw new Error('Expected sanitized MCP server name collision.');
+    }
+
+    const forwardError = await getCollisionError(rawServerNames);
+    const reversedError = await getCollisionError(
+      [...rawServerNames].reverse(),
+    );
+    const expectedMessage =
+      "MCP server names are indistinguishable after URL redaction for tool 'search': 'streamable-http: https://example.test/mcp'. Configure unique safe server names when includeServerInToolNames is enabled.";
+
+    expect(forwardError.message).toBe(expectedMessage);
+    expect(reversedError.message).toBe(expectedMessage);
+    for (const secret of [
+      'USER_A',
+      'PASSWORD_A',
+      'QUERY_A',
+      'FRAGMENT_A',
+      'USER_B',
+      'PASSWORD_B',
+      'QUERY_B',
+      'FRAGMENT_B',
+    ]) {
+      expect(forwardError.message).not.toContain(secret);
+      expect(reversedError.message).not.toContain(secret);
+    }
   });
 
   it('sanitizes non-ASCII MCP server and tool names before prefixing', async () => {

@@ -1,5 +1,6 @@
 import {
   Manifest,
+  SandboxMountError,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
 } from '@openai/agents-core/sandbox';
@@ -308,6 +309,103 @@ describe('CloudflareSandboxClient', () => {
         ),
     ).toBe(true);
   });
+
+  test.each([
+    { status: 1, stderr: 'Permission denied' },
+    { status: 2, stderr: 'Input/output error' },
+  ])('preserves failed Cloudflare filesystem probes: %j', async (result) => {
+    const client = new CloudflareSandboxClient();
+    const session = await client.create(new Manifest(), {
+      workerUrl: 'https://worker.example.com',
+    });
+    const originalFetchImplementation = vi
+      .mocked(global.fetch)
+      .getMockImplementation();
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      if (String(input).includes('/exec')) {
+        const payload = JSON.parse(String(init?.body)) as { argv?: string[] };
+        if (payload.argv?.[2]?.startsWith('test -e ')) {
+          return sseExecResponse([
+            {
+              event: 'stderr',
+              data: Buffer.from(result.stderr).toString('base64'),
+            },
+            {
+              event: 'exit',
+              data: JSON.stringify({ exit_code: result.status }),
+            },
+          ]);
+        }
+      }
+      return await originalFetchImplementation!(input, init);
+    });
+
+    await expect(
+      session.pathExists('/workspace/blocked'),
+    ).rejects.toMatchObject({
+      code: 'provider_error',
+      details: {
+        provider: 'cloudflare',
+        path: '/workspace/blocked',
+        status: result.status,
+      },
+    });
+  });
+
+  test.each([undefined, 'root'])(
+    'does not expose Cloudflare path probe stdout for runAs %s',
+    async (runAs) => {
+      const sensitiveOutput = 'sensitive login profile output';
+      const client = new CloudflareSandboxClient();
+      const session = await client.create(new Manifest(), {
+        workerUrl: 'https://worker.example.com',
+      });
+      const originalFetchImplementation = vi
+        .mocked(global.fetch)
+        .getMockImplementation();
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        if (String(input).includes('/exec')) {
+          const payload = JSON.parse(String(init?.body)) as { argv?: string[] };
+          if (payload.argv?.[2]?.includes('test -e ')) {
+            return sseExecResponse([
+              {
+                event: 'stdout',
+                data: Buffer.from(sensitiveOutput).toString('base64'),
+              },
+              {
+                event: 'stderr',
+                data: Buffer.from('Permission denied').toString('base64'),
+              },
+              {
+                event: 'exit',
+                data: JSON.stringify({ exit_code: 1 }),
+              },
+            ]);
+          }
+        }
+        return await originalFetchImplementation!(input, init);
+      });
+
+      let thrown: unknown;
+      try {
+        await session.pathExists('/workspace/blocked', runAs);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(SandboxProviderError);
+      expect(thrown).toMatchObject({
+        details: {
+          provider: 'cloudflare',
+          path: '/workspace/blocked',
+          status: 1,
+          stdoutBytes: sensitiveOutput.length,
+        },
+      });
+      expect((thrown as Error).message).toContain('Permission denied');
+      expect((thrown as Error).message).not.toContain(sensitiveOutput);
+    },
+  );
 
   test('rejects invalid sandbox ids returned by create', async () => {
     vi.mocked(global.fetch).mockResolvedValueOnce(
@@ -852,6 +950,11 @@ describe('CloudflareSandboxClient', () => {
             ),
           },
           { event: 'exit', data: JSON.stringify({ exit_code: 0 }) },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        sseExecResponse([
+          { event: 'exit', data: JSON.stringify({ exit_code: 1 }) },
         ]),
       )
       .mockResolvedValueOnce(
@@ -1585,7 +1688,7 @@ describe('CloudflareSandboxClient', () => {
         sandboxId: 'cf_test',
         environment: {},
       }),
-    ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
+    ).rejects.toBeInstanceOf(SandboxMountError);
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
@@ -1720,6 +1823,60 @@ describe('CloudflareSandboxClient', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  test('rejects ephemeral paths before hydrating workspace archives', async () => {
+    const client = new CloudflareSandboxClient({
+      workerUrl: 'https://worker.example.com',
+    });
+    const session = await client.resume({
+      manifest: new Manifest({
+        entries: {
+          logs: { type: 'dir', ephemeral: true },
+        },
+      }),
+      workerUrl: 'https://worker.example.com',
+      sandboxId: 'cf_test',
+      environment: {},
+    });
+    vi.mocked(global.fetch).mockClear();
+
+    await expect(
+      session.hydrateWorkspace(
+        makeTarArchive([
+          { name: 'logs/events.jsonl', content: 'persisted log' },
+        ]),
+      ),
+    ).rejects.toMatchObject({
+      details: {
+        reason: 'archive member overlaps protected path: logs',
+      },
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('persists an empty tar when the workspace root is ephemeral', async () => {
+    const client = new CloudflareSandboxClient({
+      workerUrl: 'https://worker.example.com',
+    });
+    const session = await client.resume({
+      manifest: new Manifest({
+        entries: {
+          '': { type: 'dir', ephemeral: true },
+        },
+      }),
+      workerUrl: 'https://worker.example.com',
+      sandboxId: 'cf_test',
+      environment: {},
+    });
+    vi.mocked(global.fetch).mockClear();
+
+    await expect(session.persistWorkspace()).resolves.toEqual(
+      makeTarArchive([]),
+    );
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   test('rejects unsupported manifest metadata during resume', async () => {
     const client = new CloudflareSandboxClient({
       workerUrl: 'https://worker.example.com',
@@ -1754,6 +1911,102 @@ describe('CloudflareSandboxClient', () => {
         body: JSON.stringify({ exposedPorts: [3000] }),
       }),
     );
+  });
+
+  test('omits opaque provider mount configuration from persisted state', async () => {
+    const client = new CloudflareSandboxClient();
+
+    const serialized = await client.serializeSessionState({
+      manifest: new Manifest(),
+      workerUrl: 'https://worker.example.com',
+      sandboxId: 'cf_test',
+      environment: {},
+      mounts: [
+        {
+          bucket: 'private',
+          secretAccessKey: 'CLOUDFLARE_MOUNT_SECRET_SENTINEL',
+        },
+      ],
+    } as never);
+
+    expect(serialized).not.toHaveProperty('mounts');
+    expect(serialized).toHaveProperty(
+      '__openaiAgentsNonResumableMountAuthority',
+      true,
+    );
+    expect(JSON.stringify(serialized)).not.toContain(
+      'CLOUDFLARE_MOUNT_SECRET_SENTINEL',
+    );
+  });
+
+  test('reuses opaque provider mounts only with exact current options', () => {
+    const mounts = [{ bucket: 'private', token: 'current-token' }];
+    const client = new CloudflareSandboxClient({
+      workerUrl: 'https://worker.example.com',
+      mounts,
+    });
+    const state = {
+      manifest: new Manifest(),
+      workerUrl: 'https://worker.example.com',
+      sandboxId: 'cf_test',
+      environment: {},
+      mounts,
+    } as never;
+
+    expect(client.canReusePreservedOwnedSession(state)).toBe(true);
+    expect(
+      client.canReusePreservedOwnedSession(state, {
+        clientOptions: {
+          workerUrl: 'https://worker.example.com',
+          mounts: [{ bucket: 'private', token: 'rotated-token' }],
+        },
+      }),
+    ).toBe(false);
+    expect(
+      client.canReusePreservedOwnedSession(state, {
+        clientOptions: {
+          workerUrl: 'https://worker.example.com',
+          mounts: undefined,
+        },
+      }),
+    ).toBe(false);
+  });
+
+  test('rejects serialized opaque mount authority before provider effects', async () => {
+    const client = new CloudflareSandboxClient({
+      workerUrl: 'https://worker.example.com',
+    });
+
+    await expect(
+      client.resume({
+        manifest: new Manifest(),
+        workerUrl: 'https://worker.example.com',
+        sandboxId: 'cf_test',
+        environment: {},
+        __openaiAgentsNonResumableMountAuthority: true,
+      }),
+    ).rejects.toThrow(/non-resumable mount authority/u);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('rejects deserialized state even when an opaque mount marker is deleted', async () => {
+    const client = new CloudflareSandboxClient({
+      workerUrl: 'https://worker.example.com',
+    });
+    const serialized = {
+      manifest: new Manifest(),
+      workerUrl: 'https://worker.example.com',
+      sandboxId: 'cf_test',
+      environment: {},
+      __openaiAgentsNonResumableMountAuthority: true,
+    } as Record<string, unknown>;
+    delete serialized.__openaiAgentsNonResumableMountAuthority;
+    const state = await client.deserializeSessionState(serialized);
+
+    await expect(client.resume(state)).rejects.toThrow(
+      /cannot safely resume persisted session state/u,
+    );
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   test('mounts Cloudflare bucket entries through worker endpoints', async () => {
@@ -1797,6 +2050,59 @@ describe('CloudflareSandboxClient', () => {
         }),
       }),
     );
+  });
+
+  test('uses one validated effective path for Cloudflare bucket mounts', async () => {
+    const client = new CloudflareSandboxClient({
+      workerUrl: 'https://worker.example.com',
+    });
+    const session = await client.create(new Manifest());
+    let pathResolutions = 0;
+    global.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/exec') && init?.method === 'POST') {
+        const payload = JSON.parse(String(init.body)) as { argv?: string[] };
+        if (resolvedRemotePathFromValidationCommand(payload.argv?.[2] ?? '')) {
+          pathResolutions += 1;
+          const resolvedPath =
+            pathResolutions === 1
+              ? '/workspace/trusted-target'
+              : '/workspace/redirected-target';
+          return sseExecResponse([
+            {
+              event: 'stdout',
+              data: Buffer.from(`${resolvedPath}\n`).toString('base64'),
+            },
+            { event: 'exit', data: JSON.stringify({ exit_code: 0 }) },
+          ]);
+        }
+      }
+      if (url.includes('/v1/sandbox/cf_test/mount')) {
+        return new Response(null, { status: 200 });
+      }
+      return new Response(null, { status: 200 });
+    }) as typeof fetch;
+
+    await session.applyManifest(
+      new Manifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'logs',
+            mountPath: 'mounted/logs',
+            mountStrategy: new CloudflareBucketMountStrategy(),
+          },
+        },
+      }),
+    );
+
+    expect(pathResolutions).toBe(1);
+    const mountCall = vi
+      .mocked(global.fetch)
+      .mock.calls.find(([input]) => String(input).includes('/mount'));
+    expect(JSON.parse(String(mountCall?.[1]?.body))).toMatchObject({
+      mountPath: '/workspace/trusted-target',
+    });
   });
 
   test('forwards Cloudflare bucket provider hints for R2 custom domains', async () => {

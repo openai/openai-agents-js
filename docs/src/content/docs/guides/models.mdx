@@ -106,8 +106,10 @@ When you instantiate `OpenAIProvider` directly, these options control client con
 | `useResponses` | Select the Responses API (`true`) or Chat Completions API (`false`) for string model names resolved by this provider. Defaults to the process-wide `setOpenAIAPI(...)` setting. |
 | `useResponsesWebSocket` | Use the WebSocket transport for Responses models resolved by this provider. Defaults to the process-wide `setOpenAIResponsesTransport(...)` setting. |
 | `cacheResponsesWebSocketModels` | Reuse websocket-backed Responses model wrappers for connection reuse. Defaults to `true`; call `provider.close()` during shutdown to close cached wrappers. |
-| `responsesWebSocketOptions` | Advanced options forwarded to websocket-backed Responses model wrappers. |
-| `strictFeatureValidation` | For Chat Completions models, raise `UserError` for Responses-only features such as `previousResponseId`, `conversationId`, and `prompt`. By default those features are warned and ignored. |
+| `responsesWebSocketOptions` | Configure client keepalive with `pingIntervalMs` and `pingTimeoutMs`. |
+| `strictFeatureValidation` | For Chat Completions models, raise `UserError` for Responses-only features such as `previousResponseId`, `conversationId`, `prompt`, and assistant message phases. By default those features are warned and ignored. |
+
+When a Responses assistant message includes a `phase` of `commentary` or `final_answer`, the SDK preserves it as a top-level field on the history item. That phase survives session replay through `OpenAIConversationsSession` and serialized `RunState`. Chat Completions has no equivalent field, so it warns and drops the phase by default; set `strictFeatureValidation: true` to reject that conversion instead.
 
 #### Responses WebSocket transport
 
@@ -132,6 +134,8 @@ Use `withResponsesWebSocketSession(...)` or a custom `OpenAIProvider` / `Runner`
 Despite the name, `withResponsesWebSocketSession(...)` is a transport lifecycle helper and is unrelated to the memory `Session` interface described in the [sessions guide](/openai-agents-js/guides/sessions).
 
 If you use a websocket proxy or gateway, configure `websocketBaseURL` on `OpenAIProvider` or set `OPENAI_WEBSOCKET_BASE_URL`.
+
+In `responsesWebSocketOptions`, `pingIntervalMs` sets the interval between client pings; omit it or set it to `null` to disable pings. `pingTimeoutMs` sets how long to wait for a pong before terminating or closing the socket; omit it or set it to `null` to disable the heartbeat timeout while leaving pings enabled. Keepalive requires a WebSocket implementation that exposes ping and pong support.
 
 If you instantiate `OpenAIProvider` yourself, remember that websocket-backed Responses model wrappers are cached by default for connection reuse. Call `await provider.close()` during shutdown to release those cached connections. `withResponsesWebSocketSession(...)` exists largely to manage that lifecycle for you: it creates a websocket-enabled provider and runner, passes them to your callback, and always closes the provider afterward. Use `providerOptions` for the temporary provider and `runnerConfig` for callback-scoped runner defaults.
 

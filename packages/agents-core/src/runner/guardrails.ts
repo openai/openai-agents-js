@@ -17,6 +17,7 @@ import { RunState } from '../runState';
 import { getTurnInput } from './items';
 import { withGuardrailSpan } from '../tracing';
 import type { GuardrailFunctionOutput } from '../guardrail';
+import { processFinalOutputWithRedaction } from '../utils/finalOutputError';
 
 export type GuardrailTracker = {
   readonly pending: boolean;
@@ -138,9 +139,11 @@ async function runGuardrailsWithTripwire<
     );
   });
 
+  let resultsPublished = false;
   try {
     const results = await Promise.all(guardrailPromises);
     resultsTarget.push(...results);
+    resultsPublished = true;
     for (const result of results) {
       if (result.output.tripwireTriggered) {
         if (state._currentAgentSpan) {
@@ -158,7 +161,14 @@ async function runGuardrailsWithTripwire<
     onErrorObserved?.(finalError);
     // Promise.all rejects immediately, so drain the full batch before the
     // failure is surfaced to prevent sibling guardrails from outliving the run.
-    await Promise.allSettled(guardrailPromises);
+    const settledResults = await Promise.allSettled(guardrailPromises);
+    if (!resultsPublished) {
+      for (const result of settledResults) {
+        if (result.status === 'fulfilled') {
+          resultsTarget.push(result.value);
+        }
+      }
+    }
     throw finalError;
   }
 }
@@ -260,7 +270,12 @@ export async function runOutputGuardrails<
   if (guardrails.length === 0) {
     return;
   }
-  const agentOutput = state._currentAgent.processFinalOutput(output);
+  const agentOutput =
+    state._currentAgent.outputType === 'text'
+      ? state._currentAgent.processFinalOutput(output)
+      : processFinalOutputWithRedaction(() =>
+          state._currentAgent.processFinalOutput(output),
+        );
   const runOutput = getTurnInput(
     [],
     state._generatedItems,

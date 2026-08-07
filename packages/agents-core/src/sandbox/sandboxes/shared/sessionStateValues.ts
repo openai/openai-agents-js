@@ -1,4 +1,4 @@
-import { Manifest } from '../../manifest';
+import type { Manifest } from '../../manifest';
 import { normalizeExposedPort, type ExposedPortEndpoint } from '../../session';
 import {
   isRecord,
@@ -9,6 +9,12 @@ import {
 } from '../../shared/typeGuards';
 import type { LocalSandboxSnapshot, LocalSandboxSnapshotSpec } from '../types';
 import { rehydrateLocalSnapshotSpec } from './localSnapshots';
+import {
+  deserializeHostPathGrantRedactionMetadata,
+  deserializeManifest,
+  deserializeMountCredentialRedactionMetadata,
+} from './manifestPersistence';
+import { rehydratePersistedEnvironmentForRuntime } from '../../shared/environment';
 
 export type LocalSandboxSessionStateValues = {
   manifest: Manifest;
@@ -23,15 +29,30 @@ export type LocalSandboxSessionStateValues = {
   exposedPorts?: Record<string, ExposedPortEndpoint>;
 };
 
-export function deserializeLocalSandboxSessionStateValues(
+export async function deserializeLocalSandboxSessionStateValues(
   state: Record<string, unknown>,
   configuredSnapshot: LocalSandboxSnapshotSpec | null | undefined,
-): LocalSandboxSessionStateValues {
+): Promise<LocalSandboxSessionStateValues> {
+  const manifest = deserializeManifest(
+    state.manifest as Record<string, unknown> | undefined,
+  );
+  const persistedEnvironment = readEnvironmentState(state.environment);
+  const runtimeEnvironment = Object.fromEntries(
+    Object.entries(persistedEnvironment).filter(
+      ([key]) => !(key in manifest.environment),
+    ),
+  );
   return {
-    manifest: new Manifest(state.manifest as Manifest),
+    manifest,
     workspaceRootPath: readString(state, 'workspaceRootPath'),
     workspaceRootOwned: Boolean(state.workspaceRootOwned),
-    environment: readEnvironmentState(state.environment),
+    environment: {
+      ...runtimeEnvironment,
+      ...(await rehydratePersistedEnvironmentForRuntime(
+        manifest,
+        persistedEnvironment,
+      )),
+    },
     snapshotSpec: rehydrateLocalSnapshotSpec(
       state.snapshotSpec,
       configuredSnapshot,
@@ -49,6 +70,8 @@ export function deserializeLocalSandboxSessionStateValues(
       readOptionalNumberArray(state.configuredExposedPorts),
     ),
     exposedPorts: readExposedPortsState(state),
+    ...deserializeHostPathGrantRedactionMetadata(state),
+    ...deserializeMountCredentialRedactionMetadata(state),
   };
 }
 

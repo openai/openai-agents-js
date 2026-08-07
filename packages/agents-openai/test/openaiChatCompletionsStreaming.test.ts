@@ -20,6 +20,67 @@ function makeChunk(delta: any, usage?: any) {
 }
 
 describe('convertChatCompletionsStreamToResponses', () => {
+  it('surfaces an empty content-filter terminal as a refusal', async () => {
+    const response: ChatCompletion = {
+      id: 'filtered-response',
+      created: 0,
+      model: 'gpt-test',
+      object: 'chat.completion',
+      choices: [],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+
+    async function* stream() {
+      yield {
+        id: 'filtered-response',
+        created: 0,
+        model: 'gpt-test',
+        object: 'chat.completion.chunk',
+        choices: [{ index: 0, delta: {}, finish_reason: 'content_filter' }],
+      } as any;
+    }
+
+    const events: any[] = [];
+    for await (const event of convertChatCompletionsStreamToResponses(
+      response,
+      stream() as any,
+    )) {
+      events.push(event);
+    }
+
+    expect(events.at(-1)).toMatchObject({
+      type: 'response_done',
+      response: {
+        output: [
+          {
+            id: 'filtered-response',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'refusal',
+                refusal: "Response withheld by the provider's content filter.",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(response.choices).toEqual([
+      {
+        index: 0,
+        finish_reason: 'content_filter',
+        logprobs: null,
+        message: {
+          role: 'assistant',
+          content: null,
+          refusal: "Response withheld by the provider's content filter.",
+        },
+      },
+    ]);
+  });
+
   it('emits protocol events for streamed chat completions', async () => {
     const response: ChatCompletion = {
       id: 'res1',

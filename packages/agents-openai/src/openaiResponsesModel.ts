@@ -78,6 +78,7 @@ import {
   normalizeHostedMcpRequireApproval,
 } from '@openai/agents-core/utils';
 import {
+  assertValidCompactionItems,
   formatInlineData,
   getInlineMediaType,
 } from '@openai/agents-core/utils/internal';
@@ -1984,6 +1985,7 @@ function getMessageItem(
         'id',
         'role',
         'content',
+        'phase',
       ]),
     };
   }
@@ -1998,6 +2000,7 @@ function getMessageItem(
           'id',
           'role',
           'content',
+          'phase',
         ]),
       };
     }
@@ -2010,23 +2013,37 @@ function getMessageItem(
         'id',
         'role',
         'content',
+        'phase',
       ]),
     };
   }
 
   if (item.role === 'assistant') {
+    const phase =
+      item.phase ?? getProviderDataField<unknown>(item.providerData, ['phase']);
+    if (
+      typeof phase !== 'undefined' &&
+      phase !== 'commentary' &&
+      phase !== 'final_answer'
+    ) {
+      throw new UserError(
+        `Invalid assistant message phase: ${JSON.stringify(phase)}. Expected "commentary" or "final_answer".`,
+      );
+    }
     const assistantMessage: OpenAI.Responses.ResponseOutputMessage = {
       type: 'message',
       id: item.id!,
       role: 'assistant',
       content: item.content.map(getOutputMessageContent),
       status: item.status,
+      ...(typeof phase === 'undefined' ? {} : { phase }),
       ...getSnakeCasedProviderDataWithoutReservedKeys(item.providerData, [
         'type',
         'id',
         'role',
         'content',
         'status',
+        'phase',
       ]),
     };
     return assistantMessage;
@@ -2635,14 +2652,13 @@ function getInputItems(
     if (item.type === 'compaction') {
       const encryptedContent =
         (item as any).encrypted_content ?? (item as any).encryptedContent;
-      if (typeof encryptedContent !== 'string') {
-        throw new UserError('Compaction item missing encrypted_content');
-      }
-      return {
+      const compactionItem = {
         type: 'compaction',
         id: item.id ?? undefined,
         encrypted_content: encryptedContent,
-      } as OpenAI.Responses.ResponseInputItem;
+      } as protocol.CompactionItem;
+      assertValidCompactionItems([compactionItem]);
+      return compactionItem as OpenAI.Responses.ResponseInputItem;
     }
 
     if (item.type === 'unknown') {
@@ -2696,14 +2712,22 @@ function convertToOutputItem(
 ): protocol.OutputModelItem[] {
   return items.map((item) => {
     if (item.type === 'message') {
-      const { id, type, role, content, status, ...providerData } = item;
+      const { id, type, role, content, status, phase, ...providerData } = item;
       return {
         id,
         type,
         role,
         content: content.map(convertToMessageContentItem),
         status,
-        providerData,
+        ...(phase === 'commentary' || phase === 'final_answer'
+          ? { phase }
+          : {}),
+        providerData: {
+          ...providerData,
+          ...(phase === 'commentary' || phase === 'final_answer'
+            ? { phase }
+            : {}),
+        },
       };
     } else if (item.type === 'tool_search_call') {
       const {
@@ -3079,16 +3103,14 @@ function convertToOutputItem(
         created_by?: string;
         id?: string;
       };
-      if (typeof encrypted_content !== 'string') {
-        throw new UserError('Compaction item missing encrypted_content');
-      }
-      const output: protocol.CompactionItem = {
+      const output = {
         type: 'compaction',
         id: item.id ?? undefined,
         encrypted_content,
         created_by,
         providerData,
-      };
+      } as unknown as protocol.CompactionItem;
+      assertValidCompactionItems([output]);
       return output;
     }
 

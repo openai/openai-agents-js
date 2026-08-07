@@ -1,5 +1,90 @@
 # @openai/agents-extensions
 
+## 0.14.3
+
+### Patch Changes
+
+- 6e32cdd: fix: preserve streamed reasoning provider metadata across events
+- 15ac711: fix: resolve ambiguous tool and handoff names consistently with a warning by default and an opt-in error policy, including owner-scoped approvals for nested agents
+- 92a0809: fix: enforce sandbox output budgets across core and extension providers
+- Updated dependencies [31bc820]
+- Updated dependencies [90781d8]
+- Updated dependencies [08169df]
+- Updated dependencies [1154aa0]
+- Updated dependencies [15ac711]
+- Updated dependencies [59fa3fc]
+- Updated dependencies [2d5d040]
+- Updated dependencies [427331f]
+- Updated dependencies [4bb80e4]
+- Updated dependencies [78f8581]
+- Updated dependencies [b4a90f9]
+- Updated dependencies [9416c96]
+- Updated dependencies [f431475]
+- Updated dependencies [9cbba54]
+- Updated dependencies [0f9b12e]
+- Updated dependencies [92a0809]
+- Updated dependencies [1eaa425]
+  - @openai/agents-core@0.14.3
+
+## 0.14.2
+
+### Patch Changes
+
+- 0134edc: fix: reject ephemeral manifest paths during sandbox archive hydration
+- 25e1cf0: feat: preserve sandbox environment secret references
+- Updated dependencies [e8de524]
+- Updated dependencies [b4b8b21]
+- Updated dependencies [7255289]
+- Updated dependencies [25e1cf0]
+  - @openai/agents-core@0.14.2
+
+## 0.14.1
+
+### Patch Changes
+
+- 73abbdc: fix: support native Windows host paths in sandbox path grants (#1537)
+- Updated dependencies [e4158f1]
+- Updated dependencies [73abbdc]
+- Updated dependencies [48094d0]
+- Updated dependencies [58e3a43]
+  - @openai/agents-core@0.14.1
+
+## 0.14.0
+
+### Minor Changes
+
+- 67e9733: feat: disable sensitive model and tool data logging by default with a programmatic opt-in
+
+### Patch Changes
+
+- 929160b: feat: add Vercel S3 bucket mount support
+- f7771c1: feat: add default task and turn tracing with a per-run opt-out
+- b0aaeec: fix: preserve AI SDK v3 image tool outputs as image URLs, data, and file IDs
+- 02ef342: feat: add Programmatic Tool Calling with caller-aware replay, runtime-validated Zod outputs, configuration preflight, examples, and explicit unsupported-adapter errors
+- b04baf0: fix(ai-sdk): flush the pending assistant message before user and system turns
+
+  Provider-executed tool search folds its result into the in-progress assistant message and leaves it pending (no flush). The `user` and `system` message branches in `itemsToLanguageV2Messages` did not flush that pending assistant message before pushing their own, so a server tool-search turn followed by a new user turn emitted the assistant message last — the request ended on an assistant message and Anthropic rejected it as an unintended prefill. Route all turn-boundary branches through a shared `flushCurrentAssistantMessage()` helper so the pending assistant is always flushed first.
+
+- e8a4ffa: fix: support AI SDK v4 models and AI SDK 7 peers (#1499)
+- c939119: fix: preserve refusal messages in AI SDK history
+- fa7c36f: fix: honor sensitive logging flags across runtime error and payload paths
+- a3092ca: fix: distinguish missing sandbox paths from inaccessible files and provider failures
+- d601be6: fix: pin and verify rclone sandbox installs
+- Updated dependencies [f7771c1]
+- Updated dependencies [457166e]
+- Updated dependencies [b907917]
+- Updated dependencies [02ef342]
+- Updated dependencies [b45fd21]
+- Updated dependencies [efdd60e]
+- Updated dependencies [e4f3293]
+- Updated dependencies [fa7c36f]
+- Updated dependencies [67e9733]
+- Updated dependencies [a3092ca]
+- Updated dependencies [68cc86b]
+- Updated dependencies [4461a35]
+- Updated dependencies [84aed6e]
+  - @openai/agents-core@0.14.0
+
 ## 0.13.5
 
 ### Patch Changes

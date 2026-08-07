@@ -11,8 +11,8 @@ import type {
 import {
   FUNCTION_TOOL_NAMESPACE,
   FUNCTION_TOOL_NAMESPACE_DESCRIPTION,
-  getFunctionToolQualifiedName,
-  resolveFunctionToolCallName,
+  getFunctionToolLookupKeyForCall,
+  getFunctionToolLookupKeyForTool,
 } from '../../toolIdentity';
 import * as protocol from '../../types/protocol';
 import { isSandboxAgent } from './agentKeys';
@@ -65,17 +65,16 @@ export function processedResponseRequiresExecutionToolRehydration(
 function hasConfiguredFunctionTool(
   tools: Tool<any>[],
   toolCall: protocol.FunctionCallItem,
-  toolIdentity: string,
 ): boolean {
-  const configuredFunctionTools = new Map(
-    tools
-      .filter((tool) => tool.type === 'function')
-      .map((tool) => [getFunctionToolQualifiedName(tool) ?? tool.name, tool]),
+  const callKey = getFunctionToolLookupKeyForCall(toolCall);
+  return Boolean(
+    callKey &&
+    tools.some(
+      (tool) =>
+        tool.type === 'function' &&
+        getFunctionToolLookupKeyForTool(tool) === callKey,
+    ),
   );
-  const configuredIdentity =
-    resolveFunctionToolCallName(toolCall, configuredFunctionTools) ??
-    toolIdentity;
-  return configuredFunctionTools.has(configuredIdentity);
 }
 
 function hasConfiguredTool(
@@ -158,11 +157,7 @@ export function getSerializedFunctionToolPlaceholder<TContext>(args: {
     !canUseSerializedExecutionToolPlaceholder({
       agent,
       allowSerializedExecutionToolPlaceholder,
-      configuredToolExists: hasConfiguredFunctionTool(
-        baseAgentTools,
-        toolCall,
-        toolIdentity,
-      ),
+      configuredToolExists: hasConfiguredFunctionTool(baseAgentTools, toolCall),
       serializedTool,
       type: 'function',
     })

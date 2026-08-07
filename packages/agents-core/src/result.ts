@@ -21,13 +21,14 @@ import { RunState } from './runState';
 import { RunContext } from './runContext';
 import type { AgentToolInvocation } from './agentToolInvocation';
 import type { InputGuardrailResult, OutputGuardrailResult } from './guardrail';
-import logger from './logger';
+import logger, { logModelAndToolActionDebug } from './logger';
 import { StreamEventTextStream } from './types/protocol';
 import type {
   ToolInputGuardrailResult,
   ToolOutputGuardrailResult,
 } from './toolGuardrail';
 import { combineAbortSignalsWithOptions } from './utils/abortSignals';
+import { processFinalOutputWithRedaction } from './utils/finalOutputError';
 
 type AbortHandlerRef<T extends object> = {
   current?: T;
@@ -268,9 +269,18 @@ class RunResultBase<
    */
   get finalOutput(): ResolvedAgentOutput<TAgent['outputType']> | undefined {
     if (this.state._currentStep?.type === 'next_step_final_output') {
-      return this.state._currentAgent.processFinalOutput(
-        this.state._currentStep.output,
-      ) as ResolvedAgentOutput<TAgent['outputType']>;
+      const output = this.state._currentStep.output;
+      if (this.state._currentAgent.outputType === 'text') {
+        return this.state._currentAgent.processFinalOutput(
+          output,
+        ) as ResolvedAgentOutput<TAgent['outputType']>;
+      }
+      return processFinalOutputWithRedaction(
+        () =>
+          this.state._currentAgent.processFinalOutput(
+            output,
+          ) as ResolvedAgentOutput<TAgent['outputType']>,
+      );
     }
 
     logger.warn('Accessed finalOutput before agent run is completed.');
@@ -300,6 +310,27 @@ export class StreamedRunResult<
   extends RunResultBase<TContext, TAgent>
   implements AsyncIterable<RunStreamEvent>
 {
+  #finalOutputHidden = false;
+
+  override get finalOutput():
+    ResolvedAgentOutput<TAgent['outputType']> | undefined {
+    if (this.#finalOutputHidden) {
+      logger.warn('Accessed finalOutput before agent run is completed.');
+      return undefined;
+    }
+    return super.finalOutput;
+  }
+
+  /** @internal */
+  _hideFinalOutput(): void {
+    this.#finalOutputHidden = true;
+  }
+
+  /** @internal */
+  _revealFinalOutput(): void {
+    this.#finalOutputHidden = false;
+  }
+
   /**
    * The current agent that is running
    */
@@ -353,6 +384,8 @@ export class StreamedRunResult<
     } = {} as any,
   ) {
     super(result.state);
+    this.#finalOutputHidden =
+      result.state?._currentStep?.type === 'next_step_final_output';
 
     // Seed from the resumed state so a run continued from a serialized state does
     // not restart its public turn count at 0. A fresh run carries `_currentTurn = 0`
@@ -365,7 +398,11 @@ export class StreamedRunResult<
         [result.signal, this.#abortController.signal],
         {
           onAbortSignalAnyError: (error) => {
-            logger.debug(`AbortSignal.any failed, falling back: ${error}`);
+            logModelAndToolActionDebug(
+              logger,
+              'AbortSignal.any failed, falling back:',
+              error,
+            );
           },
         },
       );
@@ -426,8 +463,8 @@ export class StreamedRunResult<
     if (!this.cancelled && this.#readableController) {
       this.#readableController.close();
       this.#readableController = undefined;
-      this.#completedPromiseResolve?.();
     }
+    this.#completedPromiseResolve?.();
     this.#detachAbortHandler();
   }
 
@@ -443,7 +480,7 @@ export class StreamedRunResult<
     this.#error = err;
     this.#completedPromiseReject?.(err);
     this.#completedPromise.catch((e) => {
-      logger.debug(`Resulted in an error: ${e}`);
+      logModelAndToolActionDebug(logger, 'Resulted in an error:', e);
     });
     this.#detachAbortHandler();
   }
@@ -559,11 +596,14 @@ export class StreamedRunResult<
       try {
         controller.close();
       } catch (err) {
-        logger.debug(`Failed to close readable stream on abort: ${err}`);
+        logModelAndToolActionDebug(
+          logger,
+          'Failed to close readable stream on abort:',
+          err,
+        );
       }
     }
 
-    this.#completedPromiseResolve?.();
     this.#detachAbortHandler();
   }
 
@@ -576,13 +616,21 @@ export class StreamedRunResult<
       try {
         this.#combinedSignal.removeEventListener('abort', this.#abortHandler);
       } catch (err) {
-        logger.debug(`Failed to remove abort listener: ${err}`);
+        logModelAndToolActionDebug(
+          logger,
+          'Failed to remove abort listener:',
+          err,
+        );
       }
     }
     try {
       this.#combinedSignalCleanup();
     } catch (err) {
-      logger.debug(`Failed to clean up combined abort listeners: ${err}`);
+      logModelAndToolActionDebug(
+        logger,
+        'Failed to clean up combined abort listeners:',
+        err,
+      );
     }
     this.#combinedSignalCleanup = () => {};
     this.#abortHandler = undefined;

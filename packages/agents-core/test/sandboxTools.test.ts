@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ApplyPatchOperation, ApplyPatchResult, Editor } from '../src';
 import { RunContext } from '../src';
 import {
@@ -19,21 +19,21 @@ class FakeEditor implements Editor {
 
   async createFile(
     operation: Extract<ApplyPatchOperation, { type: 'create_file' }>,
-  ): Promise<ApplyPatchResult> {
+  ): Promise<ApplyPatchResult | void> {
     this.calls.push(operation);
     return { output: 'created' };
   }
 
   async updateFile(
     operation: Extract<ApplyPatchOperation, { type: 'update_file' }>,
-  ): Promise<ApplyPatchResult> {
+  ): Promise<ApplyPatchResult | void> {
     this.calls.push(operation);
     return { output: 'updated' };
   }
 
   async deleteFile(
     operation: Extract<ApplyPatchOperation, { type: 'delete_file' }>,
-  ): Promise<ApplyPatchResult> {
+  ): Promise<ApplyPatchResult | void> {
     this.calls.push(operation);
     return { output: 'deleted' };
   }
@@ -321,6 +321,125 @@ describe('sandbox filesystem tools', () => {
     ]);
   });
 
+  it.each([
+    ['Image not found: missing.png', 'image path `missing.png` was not found'],
+    ['Path is not a file', 'image path `missing.png` is not a file'],
+    [
+      'Image exceeds the 10 MB limit',
+      'image path `missing.png` exceeded the allowed size of 10MB; resize or compress the image and try again',
+    ],
+    ['permission denied', 'unable to read image at `missing.png`: Error'],
+  ])(
+    'classifies view_image failures for model consumption: %s',
+    async (message, expected) => {
+      const capability = filesystem();
+      const session = new FailingViewImageSandboxSession(new Error(message));
+      capability
+        .bind(session)
+        .bindModel('gpt-4o', new FakeChatCompletionsModel() as any);
+
+      const [viewImage] = capability.tools();
+      const result = await (viewImage as any).invoke(
+        new RunContext(),
+        JSON.stringify({ path: 'missing.png' }),
+      );
+
+      expect(result).toBe(expected);
+    },
+  );
+
+  it('renders every supported view_image result for text transports', async () => {
+    const capability = filesystem();
+    const session = new FakeSandboxSession();
+    const viewImage = vi.spyOn(session, 'viewImage') as any;
+    viewImage
+      .mockResolvedValueOnce('openai-file-reference')
+      .mockResolvedValueOnce({
+        type: 'image',
+        image: 'data:image/png;base64,a',
+      })
+      .mockResolvedValueOnce({
+        type: 'image',
+        image: { url: 'https://example.com/image.png' },
+      })
+      .mockResolvedValueOnce({
+        type: 'image',
+        image: { fileId: 'file_123' },
+      })
+      .mockResolvedValueOnce({
+        type: 'image',
+        image: { data: 'YWJj' },
+      })
+      .mockResolvedValueOnce({
+        type: 'image',
+        image: { data: Uint8Array.from([97, 98, 99]) },
+      })
+      .mockResolvedValueOnce({ type: 'image', image: null });
+    capability
+      .bind(session)
+      .bindModel('gpt-4o', new FakeChatCompletionsModel() as any);
+
+    const [viewImageTool] = capability.tools();
+    const invoke = () =>
+      (viewImageTool as any).invoke(
+        new RunContext(),
+        JSON.stringify({ path: 'image.png' }),
+      );
+
+    await expect(invoke()).resolves.toBe('openai-file-reference');
+    await expect(invoke()).resolves.toBe('data:image/png;base64,a');
+    await expect(invoke()).resolves.toBe('https://example.com/image.png');
+    await expect(invoke()).resolves.toBe('OpenAI file reference: file_123');
+    await expect(invoke()).resolves.toBe(
+      'data:application/octet-stream;base64,YWJj',
+    );
+    await expect(invoke()).resolves.toBe(
+      'data:application/octet-stream;base64,YWJj',
+    );
+    await expect(invoke()).resolves.toBe(
+      'No image data was returned by the sandbox session.',
+    );
+  });
+
+  it('requires filesystem sessions to provide editor and image handlers', async () => {
+    const noEditor = filesystem().bind({
+      state: { manifest: new Manifest() },
+      viewImage: async () => 'image',
+    } as any);
+    expect(() => noEditor.tools()).toThrow(
+      'Filesystem sandbox sessions must provide createEditor().',
+    );
+
+    const session = new FakeSandboxSession();
+    (session as any).viewImage = undefined;
+    const noViewImage = filesystem();
+    noViewImage
+      .bind(session)
+      .bindModel('gpt-4o', new FakeChatCompletionsModel() as any);
+    const [viewImageTool] = noViewImage.tools();
+
+    await expect(
+      (viewImageTool as any).invoke(
+        new RunContext(),
+        JSON.stringify({ path: 'image.png' }),
+      ),
+    ).resolves.toContain(
+      'Filesystem sandbox sessions must provide viewImage().',
+    );
+  });
+
+  it('allows callers to configure the filesystem tool set', () => {
+    const capability = filesystem({
+      configureTools: (tools) =>
+        tools.filter((candidate) => candidate.name === 'view_image'),
+    });
+    capability.bind(new FakeSandboxSession());
+
+    expect(capability.tools().map((candidate) => candidate.name)).toEqual([
+      'view_image',
+    ]);
+  });
+
   it('exposes function fallbacks after binding to a chat-completions model', async () => {
     const capability = filesystem();
     const session = new FakeSandboxSession();
@@ -385,6 +504,167 @@ describe('sandbox filesystem tools', () => {
         path: 'obsolete.txt',
       },
     ]);
+  });
+
+  it.each([
+    ['not-json', 'Invalid apply_patch JSON:'],
+    [JSON.stringify(null), 'apply_patch input must be an object or array.'],
+    [JSON.stringify([]), 'apply_patch input must include an operation.'],
+    [
+      ['*** Begin Patch', '*** Add File: notes.txt', '*** End Patch'].join(
+        '\n',
+      ),
+      'Add File patch for notes.txt must include at least one + line.',
+    ],
+    [
+      [
+        '*** Begin Patch',
+        '*** Add File: notes.txt',
+        'plain',
+        '*** End Patch',
+      ].join('\n'),
+      'Invalid Add File line: plain',
+    ],
+    [
+      [
+        '*** Begin Patch',
+        '*** Delete File: notes.txt',
+        '+unexpected',
+        '*** End Patch',
+      ].join('\n'),
+      'Delete File patch for notes.txt must not include a diff.',
+    ],
+    [
+      ['*** Begin Patch', '*** Update File: notes.txt', '*** End Patch'].join(
+        '\n',
+      ),
+      'Update File patch for notes.txt must include a hunk.',
+    ],
+    [
+      ['*** Begin Patch', '*** Unknown File: notes.txt', '*** End Patch'].join(
+        '\n',
+      ),
+      'Invalid apply_patch file operation header: *** Unknown File: notes.txt',
+    ],
+    [
+      ['*** Begin Patch', '*** Add File: notes.txt', '+hello'].join('\n'),
+      'apply_patch input must end with "*** End Patch".',
+    ],
+  ])(
+    'returns model-readable apply_patch input errors',
+    async (input, error) => {
+      const capability = filesystem();
+      const session = new FakeSandboxSession();
+      capability
+        .bind(session)
+        .bindModel('gpt-4o', new FakeChatCompletionsModel() as any);
+      const applyPatch = capability.tools()[1];
+
+      await expect(
+        (applyPatch as any).invoke(new RunContext(), input),
+      ).resolves.toContain(error);
+      expect(session.editor.calls).toEqual([]);
+    },
+  );
+
+  it.each([
+    [
+      JSON.stringify([
+        { type: 'create_file', path: 'array.txt', diff: '+array\n' },
+      ]),
+      'array.txt',
+    ],
+    [
+      JSON.stringify({
+        operation: {
+          type: 'create_file',
+          path: 'operation.txt',
+          diff: '+operation\n',
+        },
+      }),
+      'operation.txt',
+    ],
+    [
+      JSON.stringify({
+        operations: [
+          {
+            type: 'create_file',
+            path: 'operations.txt',
+            diff: '+operations\n',
+          },
+        ],
+      }),
+      'operations.txt',
+    ],
+    [
+      JSON.stringify({
+        command: [
+          'apply_patch',
+          [
+            '*** Begin Patch',
+            '*** Add File: command.txt',
+            '+command',
+            '*** End Patch',
+          ].join('\n'),
+        ],
+      }),
+      'command.txt',
+    ],
+  ])(
+    'accepts supported structured apply_patch input forms',
+    async (input, path) => {
+      const capability = filesystem();
+      const session = new FakeSandboxSession();
+      capability
+        .bind(session)
+        .bindModel('gpt-4o', new FakeChatCompletionsModel() as any);
+      const applyPatch = capability.tools()[1];
+
+      await expect(
+        (applyPatch as any).invoke(new RunContext(), input),
+      ).resolves.toBe('created');
+      expect(session.editor.calls).toEqual([
+        expect.objectContaining({ type: 'create_file', path }),
+      ]);
+    },
+  );
+
+  it('returns model-readable editor failures', async () => {
+    const capability = filesystem();
+    const session = new FakeSandboxSession();
+    capability
+      .bind(session)
+      .bindModel('gpt-4o', new FakeChatCompletionsModel() as any);
+    const applyPatch = capability.tools()[1];
+    const input = JSON.stringify({
+      type: 'create_file',
+      path: 'notes.txt',
+      diff: '+hello\n',
+    });
+    const createFile = vi.spyOn(session.editor, 'createFile');
+
+    createFile.mockRejectedValueOnce(new Error('permission denied'));
+    await expect(
+      (applyPatch as any).invoke(new RunContext(), input),
+    ).resolves.toBe('Failed to apply patch: permission denied');
+
+    createFile.mockResolvedValueOnce({
+      status: 'failed',
+      output: 'workspace is read-only',
+    });
+    await expect(
+      (applyPatch as any).invoke(new RunContext(), input),
+    ).resolves.toBe('Patch failed: workspace is read-only');
+
+    createFile.mockResolvedValueOnce({ status: 'failed' });
+    await expect(
+      (applyPatch as any).invoke(new RunContext(), input),
+    ).resolves.toBe('Patch failed.');
+
+    createFile.mockResolvedValueOnce(undefined);
+    await expect(
+      (applyPatch as any).invoke(new RunContext(), input),
+    ).resolves.toBe('Patch applied.');
   });
 
   it('accepts move-only freeform apply_patch updates', async () => {

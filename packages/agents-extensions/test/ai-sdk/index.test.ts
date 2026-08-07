@@ -9,7 +9,22 @@ import {
   toolChoiceToLanguageV2Format,
   toolToLanguageV2Tool,
 } from '../../src/ai-sdk/index';
-import { Agent, protocol, run, withTrace, UserError } from '@openai/agents';
+import {
+  Agent,
+  handoff,
+  protocol,
+  run,
+  RunContext,
+  tool,
+  toolNamespace,
+  withTrace,
+  UserError,
+  setTraceProcessors,
+  setTracingDisabled,
+  type Span,
+  type Trace,
+  type TracingProcessor,
+} from '@openai/agents';
 import { ReadableStream } from 'node:stream/web';
 import {
   APICallError,
@@ -65,6 +80,53 @@ function partsStream(parts: any[]): ReadableStream<any> {
       }
     })(),
   );
+}
+
+async function collectStreamResponse(
+  parts: any[],
+  specificationVersion = 'v2',
+) {
+  const languageModel = stubModel(
+    {
+      async doStream() {
+        return { stream: partsStream(parts) } as any;
+      },
+    },
+    { specificationVersion },
+  );
+  const model = new AiSdkModel(languageModel);
+  let response: any;
+
+  for await (const event of model.getStreamedResponse({
+    input: 'test',
+    tools: [],
+    handoffs: [],
+    modelSettings: {},
+    outputType: 'text',
+    tracing: false,
+  } as any)) {
+    if (event.type === 'response_done') {
+      response = event.response;
+    }
+  }
+
+  if (!response) {
+    throw new Error('Expected a completed streaming response.');
+  }
+  return { languageModel, response };
+}
+
+class RecordingTracingProcessor implements TracingProcessor {
+  readonly spansEnded: Span<any>[] = [];
+
+  async onTraceStart(_trace: Trace): Promise<void> {}
+  async onTraceEnd(_trace: Trace): Promise<void> {}
+  async onSpanStart(_span: Span<any>): Promise<void> {}
+  async onSpanEnd(span: Span<any>): Promise<void> {
+    this.spansEnded.push(span);
+  }
+  async shutdown(): Promise<void> {}
+  async forceFlush(): Promise<void> {}
 }
 
 const structuredOutputType: SerializedOutputType = {
@@ -187,7 +249,101 @@ describe('AiSdkModel end-to-end scenarios', () => {
     expect(result.finalOutput).toEqual({ content: 'structured' });
   });
 
-  test('streams text blocks and tool calls with a stable message ID', async () => {
+  test.each(['generate', 'stream'] as const)(
+    'executes namespaced function tools in %s runs',
+    async (mode) => {
+      let turn = 0;
+      const execute = vi.fn(async () => 'account');
+      const [lookupAccount] = toolNamespace({
+        name: 'crm',
+        description: 'CRM tools.',
+        tools: [
+          tool({
+            name: 'lookup_account',
+            description: 'Look up an account.',
+            parameters: z.object({}),
+            execute,
+          }),
+        ],
+      });
+      const languageModel = stubModel({
+        async doGenerate() {
+          turn += 1;
+          return turn === 1
+            ? ({
+                content: [
+                  {
+                    type: 'tool-call',
+                    toolCallId: 'call_lookup_account',
+                    toolName: 'crm.lookup_account',
+                    input: {},
+                  },
+                ],
+                usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                response: { id: 'response_1' },
+                finishReason: 'tool-calls',
+                warnings: [],
+              } as any)
+            : ({
+                content: [{ type: 'text', text: 'Done.' }],
+                usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                response: { id: 'response_2' },
+                finishReason: 'stop',
+                warnings: [],
+              } as any);
+        },
+        async doStream() {
+          turn += 1;
+          return {
+            stream: partsStream(
+              turn === 1
+                ? [
+                    {
+                      type: 'tool-call',
+                      toolCallId: 'call_lookup_account',
+                      toolName: 'crm.lookup_account',
+                      input: {},
+                    },
+                    {
+                      type: 'finish',
+                      finishReason: 'tool-calls',
+                      usage: { inputTokens: 1, outputTokens: 1 },
+                    },
+                  ]
+                : [
+                    { type: 'text-delta', id: 'text-1', delta: 'Done.' },
+                    {
+                      type: 'finish',
+                      finishReason: 'stop',
+                      usage: { inputTokens: 1, outputTokens: 1 },
+                    },
+                  ],
+            ),
+          } as any;
+        },
+      });
+      const agent = new Agent({
+        name: 'Namespaced tool agent',
+        model: new AiSdkModel(languageModel),
+        tools: [lookupAccount!],
+      });
+
+      let finalOutput: string | undefined;
+      if (mode === 'stream') {
+        const result = await run(agent, 'hi', { stream: true });
+        await result.completed;
+        finalOutput = result.finalOutput;
+      } else {
+        const result = await run(agent, 'hi');
+        finalOutput = result.finalOutput;
+      }
+
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(finalOutput).toBe('Done.');
+    },
+  );
+
+  test('preserves separate text message IDs around tool calls', async () => {
     const parts = [
       { type: 'text-delta', id: 'text-1', delta: 'Hello ' },
       {
@@ -241,7 +397,7 @@ describe('AiSdkModel end-to-end scenarios', () => {
       events.filter((event) => event.type === 'output_text_delta'),
     ).toEqual([
       { type: 'output_text_delta', itemId: 'text-1', delta: 'Hello ' },
-      { type: 'output_text_delta', itemId: 'text-1', delta: 'world' },
+      { type: 'output_text_delta', itemId: 'text-2', delta: 'world' },
     ]);
     expect(final.type).toBe('response_done');
     expect(final.response.output).toEqual([
@@ -249,7 +405,7 @@ describe('AiSdkModel end-to-end scenarios', () => {
         type: 'message',
         id: 'text-1',
         role: 'assistant',
-        content: [{ type: 'output_text', text: 'Hello world' }],
+        content: [{ type: 'output_text', text: 'Hello ' }],
         status: 'completed',
         providerData: { model: 'stub:m', responseId: 'resp-stream' },
       },
@@ -260,6 +416,14 @@ describe('AiSdkModel end-to-end scenarios', () => {
         arguments: '{"q":"a"}',
         status: 'completed',
         providerData: { model: 'stub:m', meta: 1, responseId: 'resp-stream' },
+      },
+      {
+        type: 'message',
+        id: 'text-2',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'world' }],
+        status: 'completed',
+        providerData: { model: 'stub:m', responseId: 'resp-stream' },
       },
       {
         type: 'function_call',
@@ -579,6 +743,63 @@ describe('itemsToLanguageV2Messages', () => {
           },
         ],
         providerOptions: { b: 2 },
+      },
+    ]);
+  });
+
+  test('converts assistant refusals to text content', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'refusal',
+            refusal: 'I cannot help with that.',
+            providerData: { test: { source: 'refusal' } },
+          },
+        ],
+        providerData: { message: { source: 'assistant' } },
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'text',
+            text: 'I cannot help with that.',
+            providerOptions: { test: { source: 'refusal' } },
+          },
+        ],
+        providerOptions: { message: { source: 'assistant' } },
+      },
+    ]);
+  });
+
+  test('preserves the order of assistant text and refusal content', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'output_text', text: 'Visible A' },
+          { type: 'refusal', refusal: 'Blocked B' },
+          { type: 'output_text', text: 'Visible C' },
+        ],
+      } as any,
+    ];
+
+    const msgs = itemsToLanguageV2Messages(stubModel({}), items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Visible A', providerOptions: {} },
+          { type: 'text', text: 'Blocked B', providerOptions: {} },
+          { type: 'text', text: 'Visible C', providerOptions: {} },
+        ],
+        providerOptions: {},
       },
     ]);
   });
@@ -1026,6 +1247,63 @@ describe('itemsToLanguageV2Messages', () => {
         providerOptions: { execution: 'server' },
       },
     ]);
+  });
+
+  test('preserves reasoning order around provider-executed tool search', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'reasoning',
+        content: [{ type: 'input_text', text: 'Find a weather tool.' }],
+        providerData: { anthropic: { signature: 'sig-before-search' } },
+      } as any,
+      {
+        type: 'tool_search_call',
+        callId: 'search_1',
+        execution: 'server',
+        arguments: { query: 'weather' },
+        status: 'completed',
+      },
+      {
+        type: 'tool_search_output',
+        callId: 'search_1',
+        execution: 'server',
+        status: 'completed',
+        tools: [{ type: 'tool_reference', toolName: 'get_weather' }],
+      },
+      {
+        type: 'reasoning',
+        content: [{ type: 'input_text', text: 'Call the weather tool.' }],
+        providerData: { anthropic: { signature: 'sig-after-search' } },
+      } as any,
+      {
+        type: 'function_call',
+        callId: 'weather_1',
+        name: 'get_weather',
+        arguments: '{"city":"Tokyo"}',
+        status: 'completed',
+      },
+    ];
+
+    const messages = itemsToLanguageV2Messages(stubModel({}), items);
+    const assistantContent = messages.flatMap((message) =>
+      message.role === 'assistant' && Array.isArray(message.content)
+        ? message.content
+        : [],
+    );
+
+    expect(assistantContent.map((part) => part.type)).toEqual([
+      'reasoning',
+      'tool-call',
+      'tool-result',
+      'reasoning',
+      'tool-call',
+    ]);
+    expect(assistantContent[0]).toMatchObject({
+      providerOptions: { anthropic: { signature: 'sig-before-search' } },
+    });
+    expect(assistantContent[3]).toMatchObject({
+      providerOptions: { anthropic: { signature: 'sig-after-search' } },
+    });
   });
 
   test('orders provider-executed tool searches before pending client calls', () => {
@@ -1874,21 +2152,310 @@ describe('itemsToLanguageV2Messages', () => {
     );
   });
 
-  test('rejects input_file content', () => {
+  test('converts PDF data URL input_file content and preserves ordering', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'before' },
+          {
+            type: 'input_file',
+            file: 'data:application/pdf;base64,JVBERi0xLjQ=',
+            filename: 'document.pdf',
+          },
+          { type: 'input_text', text: 'after' },
+        ],
+      } as any,
+    ];
+
+    expect(itemsToLanguageV2Messages(stubModel({}), items)).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'before', providerOptions: {} },
+          {
+            type: 'file',
+            data: 'JVBERi0xLjQ=',
+            mediaType: 'application/pdf',
+            filename: 'document.pdf',
+            providerOptions: {},
+          },
+          { type: 'text', text: 'after', providerOptions: {} },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('converts a PDF data URL with a case-variant scheme', () => {
     const items: protocol.ModelItem[] = [
       {
         role: 'user',
         content: [
           {
             type: 'input_file',
-            file: 'file_123',
+            file: 'DATA:application/pdf;base64,JVBERi0xLjQ=',
+          },
+        ],
+      } as any,
+    ];
+
+    expect(itemsToLanguageV2Messages(stubModel({}), items)).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: 'JVBERi0xLjQ=',
+            mediaType: 'application/pdf',
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('converts public PDF URL input_file content for AI SDK v4', () => {
+    const url = 'https://example.com/document.pdf';
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [{ type: 'input_file', file: { url }, filename: 'download' }],
+      } as any,
+    ];
+
+    expect(
+      itemsToLanguageV2Messages(
+        stubModel({}, { specificationVersion: 'v4' }),
+        items,
+      ),
+    ).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: { type: 'url', url: new URL(url) },
+            mediaType: 'application/pdf',
+            filename: 'download',
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('infers PDF media type from a string URL before its filename', () => {
+    const url = 'https://example.com/document.pdf';
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [{ type: 'input_file', file: url, filename: 'download' }],
+      } as any,
+    ];
+
+    expect(itemsToLanguageV2Messages(stubModel({}), items)).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: new URL(url),
+            mediaType: 'application/pdf',
+            filename: 'download',
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('converts raw base64 input_file content with an explicit media type', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: 'JVBERi0xLjQ=',
+            filename: 'document.bin',
+            providerData: { mediaType: 'application/pdf' },
+          },
+        ],
+      } as any,
+    ];
+
+    expect(
+      itemsToLanguageV2Messages(
+        stubModel({}, { specificationVersion: 'v3' }),
+        items,
+      ),
+    ).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: 'JVBERi0xLjQ=',
+            mediaType: 'application/pdf',
+            filename: 'document.bin',
+            providerOptions: { mediaType: 'application/pdf' },
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('infers PDF media type for raw base64 from its filename', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: 'JVBERi0xLjQ=',
+            filename: 'document.pdf',
+          },
+        ],
+      } as any,
+    ];
+
+    expect(itemsToLanguageV2Messages(stubModel({}), items)).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: 'JVBERi0xLjQ=',
+            mediaType: 'application/pdf',
+            filename: 'document.pdf',
+            providerOptions: {},
+          },
+        ],
+        providerOptions: {},
+      },
+    ]);
+  });
+
+  test('does not use media type metadata scoped to a different model', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file: 'JVBERi0xLjQ=',
+            providerData: {
+              model: 'other:model',
+              mediaType: 'application/pdf',
+            },
           },
         ],
       } as any,
     ];
 
     expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow(
-      /File inputs are not supported/,
+      /providerData\.mediaType/,
+    );
+  });
+
+  test.each([
+    {
+      name: 'local path',
+      file: './document.pdf',
+      filename: 'document.pdf',
+    },
+    {
+      name: 'typoed URL',
+      file: 'https//example.com/document.pdf',
+      providerData: { mediaType: 'application/pdf' },
+    },
+    {
+      name: 'string file ID',
+      file: 'file_123',
+      filename: 'document.pdf',
+    },
+    {
+      name: 'empty data',
+      file: '',
+      providerData: { mediaType: 'application/pdf' },
+    },
+    {
+      name: 'invalid base64 length',
+      file: 'abcde',
+      filename: 'document.pdf',
+    },
+  ])(
+    'rejects invalid raw base64 input_file content: $name',
+    ({ file, filename, providerData }) => {
+      const items: protocol.ModelItem[] = [
+        {
+          role: 'user',
+          content: [{ type: 'input_file', file, filename, providerData }],
+        } as any,
+      ];
+
+      expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow(
+        /valid non-empty raw base64 data/,
+      );
+    },
+  );
+
+  test.each([
+    {
+      name: 'OpenAI file ID',
+      file: { id: 'file_123' },
+      error: /OpenAI file IDs are not supported/,
+    },
+    {
+      name: 'private URL scheme',
+      file: 'file:///tmp/document.pdf',
+      error: /public HTTP\(S\) URL/,
+    },
+    {
+      name: 'raw data without media type',
+      file: 'JVBERi0xLjQ=',
+      error: /providerData\.mediaType/,
+    },
+    {
+      name: 'non-base64 data URL',
+      file: 'data:application/pdf,document',
+      error: /base64 data URL/,
+    },
+    {
+      name: 'data URL with a misleading base64 parameter',
+      file: 'data:application/pdf;notbase64,document',
+      error: /base64 data URL/,
+    },
+    {
+      name: 'base64 data URL with invalid characters',
+      file: 'data:application/pdf;base64,@@@@',
+      error: /valid non-empty raw base64 data/,
+    },
+    {
+      name: 'base64 data URL with invalid length',
+      file: 'data:application/pdf;base64,abcde',
+      error: /valid non-empty raw base64 data/,
+    },
+    {
+      name: 'base64 data URL with empty data',
+      file: 'data:application/pdf;base64,',
+      error: /valid non-empty raw base64 data/,
+    },
+  ])('rejects unsupported input_file content: $name', ({ file, error }) => {
+    const items: protocol.ModelItem[] = [
+      {
+        role: 'user',
+        content: [{ type: 'input_file', file }],
+      } as any,
+    ];
+
+    expect(() => itemsToLanguageV2Messages(stubModel({}), items)).toThrow(
+      error,
     );
   });
 
@@ -2235,6 +2802,267 @@ describe('AiSdkModel.getResponse', () => {
     ]);
   });
 
+  test('keeps text contiguous across skipped response content', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              { type: 'text', text: 'Hello ' },
+              {
+                type: 'source',
+                sourceType: 'url',
+                id: 'source-1',
+                url: 'https://example.com/source',
+              },
+              {
+                type: 'file',
+                mediaType: 'image/png',
+                data: 'iVBORw0KGgo=',
+              },
+              { type: 'text', text: 'world' },
+            ],
+            usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const result = await run(
+      new Agent({ name: 'Assistant', model }),
+      'Say hello.',
+    );
+
+    expect(result.finalOutput).toBe('Hello world');
+  });
+
+  test('keeps text contiguous across empty reasoning content', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              { type: 'text', text: 'Hello ' },
+              { type: 'reasoning', text: '' },
+              { type: 'text', text: 'world' },
+            ],
+            usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const result = await run(
+      new Agent({ name: 'Assistant', model }),
+      'Say hello.',
+    );
+
+    expect(result.finalOutput).toBe('Hello world');
+  });
+
+  test('keeps complete final output across interleaved reasoning', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              { type: 'text', text: 'first' },
+              { type: 'reasoning', text: 'thinking' },
+              { type: 'text', text: 'second' },
+              { type: 'reasoning', text: 'checking' },
+            ],
+            usage: { inputTokens: 1, outputTokens: 3, totalTokens: 4 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+
+    const result = await run(
+      new Agent({ name: 'Assistant', model }),
+      'Respond in two parts.',
+    );
+
+    expect(result.newItems.map((item) => item.rawItem?.type)).toEqual([
+      'message',
+      'reasoning',
+      'message',
+      'reasoning',
+    ]);
+    expect(result.finalOutput).toBe('firstsecond');
+  });
+
+  test('transforms complete structured output once across interleaved reasoning', async () => {
+    const transformOutputText = vi.fn((text: string) => {
+      return text.match(/\{[\s\S]*\}/)?.[0] ?? text;
+    });
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              { type: 'text', text: 'Result: {"content":' },
+              { type: 'reasoning', text: 'thinking' },
+              { type: 'text', text: '"structured"}' },
+            ],
+            usage: { inputTokens: 1, outputTokens: 3, totalTokens: 4 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+      { transformOutputText },
+    );
+
+    const result = await run(
+      new Agent({
+        name: 'Structured Assistant',
+        model,
+        outputType: z.object({ content: z.string() }),
+      }),
+      'Respond with structured output.',
+    );
+
+    expect(transformOutputText).toHaveBeenCalledOnce();
+    expect(transformOutputText).toHaveBeenCalledWith(
+      'Result: {"content":"structured"}',
+      expect.objectContaining({ stream: false }),
+    );
+    expect(result.newItems.map((item) => item.rawItem?.type)).toEqual([
+      'message',
+      'reasoning',
+      'message',
+    ]);
+    expect(result.finalOutput).toEqual({ content: 'structured' });
+  });
+
+  test('keeps complete final output when used as an agent tool', async () => {
+    const model = new AiSdkModel(
+      stubModel({
+        async doGenerate() {
+          return {
+            content: [
+              { type: 'text', text: 'first' },
+              { type: 'reasoning', text: 'thinking' },
+              { type: 'text', text: 'second' },
+              { type: 'reasoning', text: 'checking' },
+            ],
+            usage: { inputTokens: 1, outputTokens: 3, totalTokens: 4 },
+            providerMetadata: {},
+            response: { id: 'id' },
+            finishReason: 'stop',
+            warnings: [],
+          } as any;
+        },
+      }),
+    );
+    const agentTool = new Agent({ name: 'Assistant', model }).asTool({
+      toolDescription: 'Respond in two parts.',
+    });
+
+    const output = await agentTool.invoke(
+      new RunContext(),
+      JSON.stringify({ input: 'Respond in two parts.' }),
+    );
+
+    expect(output).toBe('firstsecond');
+  });
+
+  test('transforms text separately around provider-executed tool search', async () => {
+    const transformOutputText = vi.fn((text: string) =>
+      text.replace('wrapped:', ''),
+    );
+    const model = new AiSdkModel(
+      stubModel(
+        {
+          async doGenerate() {
+            return {
+              content: [
+                { type: 'text', text: 'wrapped:first' },
+                {
+                  type: 'reasoning',
+                  text: 'searching',
+                  providerMetadata: {
+                    anthropic: { signature: 'sig-search' },
+                  },
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  input: { query: 'weather' },
+                  providerExecuted: true,
+                },
+                { type: 'text', text: 'wrapped:between-call-and-result' },
+                {
+                  type: 'tool-result',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  result: [{ type: 'tool_reference', toolName: 'get_weather' }],
+                },
+                { type: 'text', text: 'wrapped:after-result' },
+              ],
+              usage: { inputTokens: 1, outputTokens: 5, totalTokens: 6 },
+              providerMetadata: {},
+              response: { id: 'id' },
+              finishReason: 'stop',
+              warnings: [],
+            } as any;
+          },
+        },
+        { provider: 'anthropic.messages', specificationVersion: 'v3' },
+      ),
+      { transformOutputText },
+    );
+
+    const result = await run(
+      new Agent({
+        name: 'Assistant',
+        model,
+        tools: [
+          aiSdkToolSearchTool({
+            type: 'provider',
+            id: 'anthropic.tool_search_regex_20251119',
+          }),
+        ],
+      }),
+      'Search and answer.',
+    );
+
+    expect(result.newItems.map((item) => item.rawItem?.type)).toEqual([
+      'message',
+      'reasoning',
+      'tool_search_call',
+      'message',
+      'tool_search_output',
+      'message',
+    ]);
+    expect(transformOutputText.mock.calls.map(([text]) => text)).toEqual([
+      'wrapped:first',
+      'wrapped:between-call-and-result',
+      'wrapped:after-result',
+    ]);
+    expect(
+      result.newItems
+        .filter((item) => item.rawItem?.type === 'message')
+        .map((item) => (item.rawItem as any).content[0].text),
+    ).toEqual(['first', 'between-call-and-result', 'after-result']);
+    expect(result.finalOutput).toBe('firstbetween-call-and-resultafter-result');
+  });
+
   test('applies transformOutputText to finalized assistant text', async () => {
     const transformOutputText = vi.fn((text: string, context: any) => {
       expect(context.stream).toBe(false);
@@ -2432,7 +3260,8 @@ describe('AiSdkModel.getResponse', () => {
     expect(res.output).toHaveLength(1);
     expect(res.output[0]).toMatchObject({
       type: 'function_call',
-      name: 'crm.lookup_account',
+      name: 'lookup_account',
+      namespace: 'crm',
       arguments: '{}',
     });
     expect(warnSpy).not.toHaveBeenCalled();
@@ -2589,6 +3418,118 @@ describe('AiSdkModel.getResponse', () => {
       type: 'function_call',
       callId: 'weather_1',
       name: 'get_weather',
+    });
+  });
+
+  test('preserves interleaved reasoning and tool order in doGenerate', async () => {
+    const model = new AiSdkModel(
+      stubModel(
+        {
+          async doGenerate() {
+            return {
+              content: [
+                {
+                  type: 'reasoning',
+                  text: 'Find a weather tool.',
+                  providerMetadata: {
+                    anthropic: { signature: 'sig-before-search' },
+                  },
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  input: { query: 'weather' },
+                  providerExecuted: true,
+                },
+                {
+                  type: 'tool-result',
+                  toolCallId: 'search_1',
+                  toolName: 'tool_search',
+                  result: [{ type: 'tool_reference', toolName: 'get_weather' }],
+                },
+                {
+                  type: 'text',
+                  text: 'I found the weather tool.',
+                },
+                {
+                  type: 'reasoning',
+                  text: 'Call the weather tool.',
+                  providerMetadata: {
+                    anthropic: { signature: 'sig-after-search' },
+                  },
+                },
+                {
+                  type: 'text',
+                  text: 'I will call it now.',
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'weather_1',
+                  toolName: 'get_weather',
+                  input: { city: 'Tokyo' },
+                },
+              ],
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              providerMetadata: {},
+              response: { id: 'response_1' },
+              finishReason: 'tool-calls',
+              warnings: [],
+            } as any;
+          },
+        },
+        { provider: 'anthropic.messages', specificationVersion: 'v3' },
+      ),
+    );
+
+    const result = await withTrace('t', () =>
+      model.getResponse({
+        input: 'Find the weather tool and use it.',
+        tools: [
+          aiSdkToolSearchTool({
+            type: 'provider',
+            id: 'anthropic.tool_search_regex_20251119',
+          }),
+          {
+            type: 'function',
+            name: 'get_weather',
+            description: 'Get the weather.',
+            parameters: { type: 'object', properties: {} },
+            strict: true,
+            providerData: { anthropic: { deferLoading: true } },
+          } as any,
+        ],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any),
+    );
+
+    expect(result.output.map((item) => item.type)).toEqual([
+      'reasoning',
+      'tool_search_call',
+      'tool_search_output',
+      'message',
+      'reasoning',
+      'message',
+      'function_call',
+    ]);
+    expect(result.output[0]).toMatchObject({
+      providerData: {
+        anthropic: { signature: 'sig-before-search' },
+      },
+    });
+    expect(result.output[3]).toMatchObject({
+      content: [{ type: 'output_text', text: 'I found the weather tool.' }],
+    });
+    expect(result.output[4]).toMatchObject({
+      providerData: {
+        anthropic: { signature: 'sig-after-search' },
+      },
+    });
+    expect(result.output[5]).toMatchObject({
+      content: [{ type: 'output_text', text: 'I will call it now.' }],
     });
   });
 
@@ -2788,50 +3729,115 @@ describe('AiSdkModel.getResponse', () => {
     expect(doGenerate).not.toHaveBeenCalled();
   });
 
-  test('keeps same-name namespace tool calls distinct from bare tools in doGenerate', async () => {
-    allowConsole(['warn']);
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  test('rejects flattened namespace and handoff name collisions in doGenerate', async () => {
+    const doGenerate = vi.fn();
     const model = new AiSdkModel(
       stubModel({
-        async doGenerate() {
-          return {
-            content: [
-              {
-                type: 'tool-call',
-                toolCallId: 'call-1',
-                toolName: 'lookup_account.lookup_account',
-                input: '',
-              },
-            ],
-            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-            providerMetadata: { meta: true },
-            response: { id: 'id' },
-            finishReason: 'tool-calls',
-            warnings: [],
-          } as any;
+        async doGenerate(...args: any[]) {
+          return doGenerate(...args);
         },
       }),
     );
 
-    const res = await withTrace('t', () =>
-      model.getResponse({
+    await expect(
+      withTrace('t', () =>
+        model.getResponse({
+          input: 'hi',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup',
+              namespace: 'crm',
+              description: 'Look up a CRM record.',
+              parameters: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+              },
+            } as any,
+          ],
+          handoffs: [
+            {
+              toolName: 'crm.lookup',
+              toolDescription: 'Handoff with the same flattened name.',
+              inputJsonSchema: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+              },
+              strictJsonSchema: true,
+            },
+          ],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: false,
+          _internal: { toolNameCollisionPolicy: 'error' },
+        } as any),
+      ),
+    ).rejects.toThrow(
+      'AiSdkModel cannot disambiguate function tools and handoffs with the same flattened name.',
+    );
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  test('rejects flattened deferred and handoff name collisions in doGenerate', async () => {
+    const doGenerate = vi.fn();
+    const model = new AiSdkModel(stubModel({ doGenerate }));
+
+    await expect(
+      withTrace('t', () =>
+        model.getResponse({
+          input: 'hi',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup',
+              description: 'Deferred lookup.',
+              parameters: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+              },
+              deferLoading: true,
+            } as any,
+          ],
+          handoffs: [
+            {
+              toolName: 'lookup',
+              toolDescription: 'Handoff with the same flattened name.',
+              inputJsonSchema: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+              },
+              strictJsonSchema: true,
+            },
+          ],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: false,
+        } as any),
+      ),
+    ).rejects.toThrow(
+      'AiSdkModel cannot disambiguate function tools and handoffs with the same flattened name.',
+    );
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  test.each([false, true])(
+    'redacts flattened collision names from AI SDK span errors (stream: %s)',
+    async (stream) => {
+      const secretNamespace = 'SECRET_AI_SDK_TRACE';
+      const processor = new RecordingTracingProcessor();
+      const model = new AiSdkModel(stubModel({}));
+      const request = {
         input: 'hi',
         tools: [
           {
             type: 'function',
-            name: 'lookup_account',
-            description: 'Top-level lookup tool.',
-            parameters: {
-              type: 'object',
-              properties: {},
-              additionalProperties: false,
-            },
-          } as any,
-          {
-            type: 'function',
-            name: 'lookup_account',
-            namespace: 'lookup_account',
-            description: 'Same-name namespace lookup tool.',
+            name: 'lookup',
+            namespace: secretNamespace,
+            description: 'Look up a record.',
             parameters: {
               type: 'object',
               properties: {},
@@ -2839,21 +3845,324 @@ describe('AiSdkModel.getResponse', () => {
             },
           } as any,
         ],
-        handoffs: [],
+        handoffs: [
+          {
+            toolName: `${secretNamespace}.lookup`,
+            toolDescription: 'Conflicting handoff.',
+            inputJsonSchema: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+            strictJsonSchema: true,
+          },
+        ],
         modelSettings: {},
         outputType: 'text',
-        tracing: false,
-      } as any),
-    );
+        tracing: 'enabled_without_data',
+      } as any;
+      vi.stubEnv('OPENAI_AGENTS_DONT_LOG_TOOL_DATA', '0');
+      vi.stubEnv('OPENAI_AGENTS_DONT_LOG_MODEL_DATA', '0');
+      setTraceProcessors([processor]);
+      setTracingDisabled(false);
 
-    expect(res.output).toHaveLength(1);
-    expect(res.output[0]).toMatchObject({
-      type: 'function_call',
-      name: 'lookup_account.lookup_account',
-      arguments: '{}',
+      try {
+        let callerError: unknown;
+        if (stream) {
+          try {
+            await withTrace('trace-redaction', async () => {
+              for await (const _event of model.getStreamedResponse(request)) {
+                void _event;
+              }
+            });
+          } catch (error) {
+            callerError = error;
+          }
+        } else {
+          try {
+            await withTrace('trace-redaction', () =>
+              model.getResponse(request),
+            );
+          } catch (error) {
+            callerError = error;
+          }
+        }
+
+        expect(callerError).toBeInstanceOf(UserError);
+        expect(String(callerError)).toContain(secretNamespace);
+        const spanErrors = processor.spansEnded
+          .map((span) => span.error)
+          .filter((error) => error !== null);
+        expect(spanErrors.length).toBeGreaterThan(0);
+        expect(JSON.stringify(spanErrors)).not.toContain(secretNamespace);
+      } finally {
+        vi.unstubAllEnvs();
+        setTraceProcessors([]);
+        setTracingDisabled(true);
+      }
+    },
+  );
+
+  test('rejects flattened function and provider tool collisions in doGenerate', async () => {
+    const doGenerate = vi.fn();
+    const model = new AiSdkModel(stubModel({ doGenerate }));
+
+    await expect(
+      withTrace('t', () =>
+        model.getResponse({
+          input: 'hi',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup',
+              namespace: 'crm',
+              description: 'Look up a CRM record.',
+              parameters: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+              },
+            } as any,
+            {
+              type: 'hosted_tool',
+              name: 'crm.lookup',
+              providerData: { type: 'web_search' },
+            } as any,
+          ],
+          handoffs: [],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: false,
+        } as any),
+      ),
+    ).rejects.toThrow(
+      /AiSdkModel cannot disambiguate (?:tools with the same flattened name|the flattened tool name 'crm\.lookup')/,
+    );
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  test('rejects duplicate provider tool names before doGenerate', async () => {
+    const doGenerate = vi.fn();
+    const model = new AiSdkModel(stubModel({ doGenerate }));
+    const providerTool = {
+      type: 'hosted_tool',
+      name: 'search',
+      providerData: { type: 'web_search' },
+    } as any;
+
+    await expect(
+      withTrace('t', () =>
+        model.getResponse({
+          input: 'hi',
+          tools: [providerTool, { ...providerTool }],
+          handoffs: [],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: false,
+        } as any),
+      ),
+    ).rejects.toThrow(
+      /AiSdkModel cannot disambiguate (?:provider tools with the same flattened name|the flattened provider tool name 'search')/,
+    );
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  test('redacts duplicate provider tool names before doGenerate', async () => {
+    const original = process.env.OPENAI_AGENTS_DONT_LOG_TOOL_DATA;
+    process.env.OPENAI_AGENTS_DONT_LOG_TOOL_DATA = '1';
+    const doGenerate = vi.fn();
+    const model = new AiSdkModel(stubModel({ doGenerate }));
+    const secret = 'SECRET_DUPLICATE_PROVIDER_TOOL';
+
+    try {
+      await expect(
+        withTrace('t', () =>
+          model.getResponse({
+            input: 'hi',
+            tools: [
+              {
+                type: 'hosted_tool',
+                name: secret,
+                providerData: { type: 'web_search' },
+              },
+              {
+                type: 'hosted_tool',
+                name: secret,
+                providerData: { type: 'web_search' },
+              },
+            ],
+            handoffs: [],
+            modelSettings: {},
+            outputType: 'text',
+            tracing: false,
+          } as any),
+        ),
+      ).rejects.toThrow(
+        'AiSdkModel cannot disambiguate provider tools with the same flattened name.',
+      );
+      expect(doGenerate).not.toHaveBeenCalled();
+    } finally {
+      if (original === undefined) {
+        delete process.env.OPENAI_AGENTS_DONT_LOG_TOOL_DATA;
+      } else {
+        process.env.OPENAI_AGENTS_DONT_LOG_TOOL_DATA = original;
+      }
+    }
+  });
+
+  test('rejects a default-policy flattened collision before doGenerate', async () => {
+    const doGenerate = vi.fn();
+    const model = new AiSdkModel(stubModel({ doGenerate }));
+    const [lookup] = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Look up a CRM record.',
+          parameters: z.object({}),
+          execute: async () => 'record',
+        }),
+      ],
     });
-    expect(warnSpy).not.toHaveBeenCalled();
-    warnSpy.mockRestore();
+    const lookupHandoff = handoff(new Agent({ name: 'CRM specialist' }), {
+      toolNameOverride: 'crm.lookup',
+    });
+    await expect(
+      run(
+        new Agent({
+          name: 'Routing agent',
+          model,
+          tools: [lookup!],
+          handoffs: [lookupHandoff],
+        }),
+        'hi',
+      ),
+    ).rejects.toThrow(
+      'AiSdkModel cannot disambiguate function tools and handoffs with the same flattened name.',
+    );
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  test('exposes one winner when the same function tool object is repeated in doGenerate', async () => {
+    allowConsole(['warn']);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const doGenerate = vi.fn(async (_options: any): Promise<any> => ({
+      content: [],
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      response: { id: 'id' },
+      providerMetadata: {},
+      finishReason: 'stop',
+      warnings: [],
+    }));
+    const model = new AiSdkModel(stubModel({ doGenerate }));
+    const duplicateTool = {
+      type: 'function',
+      name: 'duplicate',
+      description: 'Repeated tool object.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+    } as any;
+
+    try {
+      await withTrace('t', () =>
+        model.getResponse({
+          input: 'hi',
+          tools: [duplicateTool, duplicateTool],
+          handoffs: [],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: false,
+        } as any),
+      );
+
+      expect(doGenerate.mock.calls[0]![0].tools).toEqual([
+        expect.objectContaining({ name: 'duplicate' }),
+      ]);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test('rejects same-name namespaces before doGenerate', async () => {
+    const doGenerate = vi.fn();
+    const model = new AiSdkModel(stubModel({ doGenerate }));
+
+    await expect(
+      withTrace('t', () =>
+        model.getResponse({
+          input: 'hi',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup_account',
+              namespace: 'lookup_account',
+              description: 'Same-name namespace lookup tool.',
+              parameters: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+              },
+            } as any,
+          ],
+          handoffs: [],
+          modelSettings: {},
+          outputType: 'text',
+          tracing: false,
+        } as any),
+      ),
+    ).rejects.toThrow(
+      /AiSdkModel cannot route (?:a function tool whose namespace matches its name|the function tool 'lookup_account' because its namespace matches its name)/,
+    );
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
+  test('redacts same-name namespaces before doGenerate', async () => {
+    const original = process.env.OPENAI_AGENTS_DONT_LOG_TOOL_DATA;
+    process.env.OPENAI_AGENTS_DONT_LOG_TOOL_DATA = '1';
+    const doGenerate = vi.fn();
+    const model = new AiSdkModel(stubModel({ doGenerate }));
+    const secret = 'SECRET_SAME_NAME_NAMESPACE';
+
+    try {
+      await expect(
+        withTrace('t', () =>
+          model.getResponse({
+            input: 'hi',
+            tools: [
+              {
+                type: 'function',
+                name: secret,
+                namespace: secret,
+                description: 'Same-name namespace tool.',
+                parameters: {
+                  type: 'object',
+                  properties: {},
+                  additionalProperties: false,
+                },
+              } as any,
+            ],
+            handoffs: [],
+            modelSettings: {},
+            outputType: 'text',
+            tracing: false,
+          } as any),
+        ),
+      ).rejects.toThrow(
+        'AiSdkModel cannot route a function tool whose namespace matches its name',
+      );
+      expect(doGenerate).not.toHaveBeenCalled();
+    } finally {
+      if (original === undefined) {
+        delete process.env.OPENAI_AGENTS_DONT_LOG_TOOL_DATA;
+      } else {
+        process.env.OPENAI_AGENTS_DONT_LOG_TOOL_DATA = original;
+      }
+    }
   });
 
   test('normalizes empty string tool input for handoff schemas', async () => {
@@ -3068,10 +4377,71 @@ describe('AiSdkModel.getResponse', () => {
       },
     ]);
     expect(warnSpy).toHaveBeenCalledWith(
-      "Received tool call for unknown tool 'foo'.",
+      'Received tool call for an unknown tool. Tool name is redacted.',
     );
     warnSpy.mockRestore();
   });
+
+  test.each([
+    'OPENAI_AGENTS_DONT_LOG_MODEL_DATA',
+    'OPENAI_AGENTS_DONT_LOG_TOOL_DATA',
+  ] as const)(
+    'redacts unknown tool names when %s is enabled',
+    async (flagName) => {
+      allowConsole(['warn']);
+      const original = process.env[flagName];
+      process.env[flagName] = '1';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const secret = 'SECRET_UNKNOWN_AI_SDK_TOOL_123';
+      const model = new AiSdkModel(
+        stubModel({
+          async doGenerate() {
+            return {
+              content: [
+                {
+                  type: 'tool-call',
+                  toolCallId: 'c1',
+                  toolName: secret,
+                  input: {} as any,
+                },
+              ],
+              usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+              providerMetadata: { p: 1 },
+              response: { id: 'id' },
+              finishReason: 'stop',
+              warnings: [],
+            } as any;
+          },
+        }),
+      );
+
+      try {
+        const res = await withTrace('t', () =>
+          model.getResponse({
+            input: 'hi',
+            tools: [],
+            handoffs: [],
+            modelSettings: {},
+            outputType: 'text',
+            tracing: false,
+          } as any),
+        );
+
+        expect(res.output[0]).toMatchObject({ name: secret });
+        expect(warnSpy).toHaveBeenCalledWith(
+          'Received tool call for an unknown tool. Tool name is redacted.',
+        );
+        expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secret);
+      } finally {
+        warnSpy.mockRestore();
+        if (typeof original === 'undefined') {
+          delete process.env[flagName];
+        } else {
+          process.env[flagName] = original;
+        }
+      }
+    },
+  );
 
   test('preserves per-tool-call providerMetadata (e.g., Gemini thoughtSignature)', async () => {
     const toolCallProviderMetadata = {
@@ -3182,7 +4552,7 @@ describe('AiSdkModel.getResponse', () => {
       ...resultProviderMetadata,
     });
     expect(warnSpy).toHaveBeenCalledWith(
-      "Received tool call for unknown tool 'foo'.",
+      'Received tool call for an unknown tool. Tool name is redacted.',
     );
     warnSpy.mockRestore();
   });
@@ -3346,6 +4716,302 @@ describe('AiSdkModel.getStreamedResponse', () => {
         callId: 'c1',
         name: 'foo',
         arguments: '{"k":"v"}',
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id1',
+        },
+      },
+    ]);
+  });
+
+  test('keeps streamed text contiguous across skipped response content', async () => {
+    const parts = [
+      { type: 'text-delta', id: 'text-1', delta: 'Hello ' },
+      {
+        type: 'source',
+        sourceType: 'url',
+        id: 'source-1',
+        url: 'https://example.com/source',
+      },
+      {
+        type: 'file',
+        mediaType: 'image/png',
+        data: 'iVBORw0KGgo=',
+      },
+      { type: 'text-delta', id: 'text-2', delta: 'world' },
+      { type: 'response-metadata', id: 'id1' },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 2 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return { stream: partsStream(parts) } as any;
+        },
+      }),
+    );
+
+    const events: any[] = [];
+    for await (const event of model.getStreamedResponse({
+      input: 'Say hello.',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      events.push(event);
+    }
+
+    const final = events.at(-1);
+    expect(final.response.output).toEqual([
+      {
+        type: 'message',
+        id: 'text-1',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Hello world' }],
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id1',
+        },
+      },
+    ]);
+  });
+
+  test('keeps streamed text contiguous across empty reasoning frames', async () => {
+    const parts = [
+      { type: 'text-delta', id: 'text-1', delta: 'Hello ' },
+      { type: 'reasoning-start', id: 'reasoning-1' },
+      { type: 'reasoning-end', id: 'reasoning-1' },
+      { type: 'text-delta', id: 'text-2', delta: 'world' },
+      { type: 'response-metadata', id: 'id1' },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 2 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return { stream: partsStream(parts) } as any;
+        },
+      }),
+    );
+
+    const events: any[] = [];
+    for await (const event of model.getStreamedResponse({
+      input: 'Say hello.',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      events.push(event);
+    }
+
+    expect(
+      events.filter((event) => event.type === 'output_text_delta'),
+    ).toEqual([
+      { type: 'output_text_delta', itemId: 'text-1', delta: 'Hello ' },
+      { type: 'output_text_delta', itemId: 'text-1', delta: 'world' },
+    ]);
+    const final = events.at(-1);
+    expect(final.response.output).toEqual([
+      {
+        type: 'message',
+        id: 'text-1',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Hello world' }],
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id1',
+        },
+      },
+    ]);
+  });
+
+  test('keeps complete streamed final output across interleaved reasoning', async () => {
+    const parts = [
+      { type: 'text-delta', id: 'text-1', delta: 'first' },
+      { type: 'reasoning-start', id: 'reasoning-1' },
+      {
+        type: 'reasoning-delta',
+        id: 'reasoning-1',
+        delta: 'thinking',
+      },
+      { type: 'reasoning-end', id: 'reasoning-1' },
+      { type: 'text-delta', id: 'text-2', delta: 'second' },
+      { type: 'reasoning-start', id: 'reasoning-2' },
+      {
+        type: 'reasoning-delta',
+        id: 'reasoning-2',
+        delta: 'checking',
+      },
+      { type: 'reasoning-end', id: 'reasoning-2' },
+      { type: 'response-metadata', id: 'id1' },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 3 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return { stream: partsStream(parts) } as any;
+        },
+      }),
+    );
+
+    const result = await run(
+      new Agent({ name: 'Assistant', model }),
+      'Respond in two parts.',
+      { stream: true },
+    );
+    await result.completed;
+
+    expect(result.newItems.map((item) => item.rawItem?.type)).toEqual([
+      'message',
+      'reasoning',
+      'message',
+      'reasoning',
+    ]);
+    expect(result.finalOutput).toBe('firstsecond');
+  });
+
+  test('transforms complete streamed structured output once across interleaved reasoning', async () => {
+    const transformOutputText = vi.fn((text: string) => {
+      return text.match(/\{[\s\S]*\}/)?.[0] ?? text;
+    });
+    const parts = [
+      {
+        type: 'text-delta',
+        id: 'text-1',
+        delta: 'Result: {"content":',
+      },
+      { type: 'reasoning-start', id: 'reasoning-1' },
+      {
+        type: 'reasoning-delta',
+        id: 'reasoning-1',
+        delta: 'thinking',
+      },
+      { type: 'reasoning-end', id: 'reasoning-1' },
+      { type: 'text-delta', id: 'text-2', delta: '"structured"}' },
+      { type: 'response-metadata', id: 'id1' },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 3 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return { stream: partsStream(parts) } as any;
+        },
+      }),
+      { transformOutputText },
+    );
+
+    const result = await run(
+      new Agent({
+        name: 'Structured Assistant',
+        model,
+        outputType: z.object({ content: z.string() }),
+      }),
+      'Respond with structured output.',
+      { stream: true },
+    );
+    await result.completed;
+
+    expect(transformOutputText).toHaveBeenCalledOnce();
+    expect(transformOutputText).toHaveBeenCalledWith(
+      'Result: {"content":"structured"}',
+      expect.objectContaining({ stream: true }),
+    );
+    expect(result.newItems.map((item) => item.rawItem?.type)).toEqual([
+      'message',
+      'reasoning',
+      'message',
+    ]);
+    expect(result.finalOutput).toEqual({ content: 'structured' });
+  });
+
+  test('keeps streamed text contiguous across replacement tool calls', async () => {
+    const parts = [
+      {
+        type: 'tool-call',
+        toolCallId: 'call-1',
+        toolName: 'lookup',
+        input: '{"version":1}',
+      },
+      { type: 'text-delta', id: 'text-1', delta: 'Hello ' },
+      {
+        type: 'tool-call',
+        toolCallId: 'call-1',
+        toolName: 'lookup',
+        input: '{"version":2}',
+      },
+      { type: 'text-delta', id: 'text-2', delta: 'world' },
+      { type: 'response-metadata', id: 'id1' },
+      {
+        type: 'finish',
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 2 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream() {
+          return { stream: partsStream(parts) } as any;
+        },
+      }),
+    );
+
+    const events: any[] = [];
+    for await (const event of model.getStreamedResponse({
+      input: 'Say hello.',
+      tools: [],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      events.push(event);
+    }
+
+    expect(
+      events.filter((event) => event.type === 'output_text_delta'),
+    ).toEqual([
+      { type: 'output_text_delta', itemId: 'text-1', delta: 'Hello ' },
+      { type: 'output_text_delta', itemId: 'text-1', delta: 'world' },
+    ]);
+    const final = events.at(-1);
+    expect(final.response.output).toEqual([
+      {
+        type: 'function_call',
+        callId: 'call-1',
+        name: 'lookup',
+        arguments: '{"version":2}',
+        status: 'completed',
+        providerData: {
+          model: 'stub:m',
+          responseId: 'id1',
+        },
+      },
+      {
+        type: 'message',
+        id: 'text-1',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Hello world' }],
         status: 'completed',
         providerData: {
           model: 'stub:m',
@@ -3559,8 +5225,149 @@ describe('AiSdkModel.getStreamedResponse', () => {
     warnSpy.mockRestore();
   });
 
-  test('preserves provider-executed tool search call and result order in streaming mode', async () => {
+  test('preserves text transform boundaries and provider-executed tool search order in streaming mode', async () => {
+    const transformOutputText = vi.fn((text: string) =>
+      text.replace('wrapped:', ''),
+    );
     const parts = [
+      { type: 'text-delta', id: 'text-1', delta: 'wrapped:first' },
+      {
+        type: 'tool-call',
+        toolCallId: 'search_1',
+        toolName: 'tool_search',
+        input: { query: 'weather' },
+        providerExecuted: true,
+      },
+      {
+        type: 'text-delta',
+        id: 'text-2',
+        delta: 'wrapped:after-search-call',
+      },
+      {
+        type: 'tool-result',
+        toolCallId: 'search_1',
+        toolName: 'tool_search',
+        result: [{ type: 'tool_reference', toolName: 'get_weather' }],
+      },
+      {
+        type: 'text-delta',
+        id: 'text-3',
+        delta: 'wrapped:after-search-result',
+      },
+      {
+        type: 'tool-call',
+        toolCallId: 'weather_1',
+        toolName: 'get_weather',
+        input: { city: 'Tokyo' },
+      },
+      {
+        type: 'text-delta',
+        id: 'text-4',
+        delta: 'wrapped:after-function-call',
+      },
+      { type: 'response-metadata', id: 'response_stream_1' },
+      {
+        type: 'finish',
+        finishReason: 'tool-calls',
+        usage: { inputTokens: 3, outputTokens: 4 },
+      },
+    ];
+    const model = new AiSdkModel(
+      stubModel(
+        {
+          async doStream() {
+            return { stream: partsStream(parts) } as any;
+          },
+        },
+        { provider: 'anthropic.messages', specificationVersion: 'v3' },
+      ),
+      { transformOutputText },
+    );
+
+    const events: any[] = [];
+    for await (const event of model.getStreamedResponse({
+      input: 'Find the weather tool and use it.',
+      tools: [
+        aiSdkToolSearchTool({
+          type: 'provider',
+          id: 'anthropic.tool_search_regex_20251119',
+        }),
+        {
+          type: 'function',
+          name: 'get_weather',
+          description: 'Get the weather.',
+          parameters: { type: 'object', properties: {} },
+          strict: true,
+          providerData: { anthropic: { deferLoading: true } },
+        } as any,
+      ],
+      handoffs: [],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    } as any)) {
+      events.push(event);
+    }
+
+    const final = events.at(-1);
+    expect(final.response.output.map((item: any) => item.type)).toEqual([
+      'message',
+      'tool_search_call',
+      'message',
+      'tool_search_output',
+      'message',
+      'function_call',
+      'message',
+    ]);
+    expect(final.response.output[1]).toMatchObject({
+      id: 'search_1',
+      execution: 'server',
+    });
+    expect(final.response.output[3]).toMatchObject({
+      callId: 'search_1',
+      execution: 'server',
+      tools: [{ type: 'tool_reference', toolName: 'get_weather' }],
+    });
+    expect(final.response.output[5]).toMatchObject({
+      callId: 'weather_1',
+      name: 'get_weather',
+    });
+    expect(transformOutputText.mock.calls.map(([text]) => text)).toEqual([
+      'wrapped:first',
+      'wrapped:after-search-call',
+      'wrapped:after-search-result',
+      'wrapped:after-function-call',
+    ]);
+    expect(
+      final.response.output
+        .filter((item: any) => item.type === 'message')
+        .map((item: any) => item.content[0].text),
+    ).toEqual([
+      'first',
+      'after-search-call',
+      'after-search-result',
+      'after-function-call',
+    ]);
+  });
+
+  test('preserves interleaved reasoning and tool order in streaming mode', async () => {
+    const parts = [
+      {
+        type: 'reasoning-start',
+        id: 'reasoning_1',
+      },
+      {
+        type: 'reasoning-delta',
+        id: 'reasoning_1',
+        delta: 'Find a weather tool.',
+      },
+      {
+        type: 'reasoning-end',
+        id: 'reasoning_1',
+        providerMetadata: {
+          anthropic: { signature: 'sig-before-search' },
+        },
+      },
       {
         type: 'tool-call',
         toolCallId: 'search_1',
@@ -3573,6 +5380,32 @@ describe('AiSdkModel.getStreamedResponse', () => {
         toolCallId: 'search_1',
         toolName: 'tool_search',
         result: [{ type: 'tool_reference', toolName: 'get_weather' }],
+      },
+      {
+        type: 'text-delta',
+        id: 'text_1',
+        delta: 'I found the weather tool.',
+      },
+      {
+        type: 'reasoning-start',
+        id: 'reasoning_2',
+      },
+      {
+        type: 'reasoning-delta',
+        id: 'reasoning_2',
+        delta: 'Call the weather tool.',
+      },
+      {
+        type: 'reasoning-end',
+        id: 'reasoning_2',
+        providerMetadata: {
+          anthropic: { signature: 'sig-after-search' },
+        },
+      },
+      {
+        type: 'text-delta',
+        id: 'text_2',
+        delta: 'I will call it now.',
       },
       {
         type: 'tool-call',
@@ -3625,22 +5458,31 @@ describe('AiSdkModel.getStreamedResponse', () => {
 
     const final = events.at(-1);
     expect(final.response.output.map((item: any) => item.type)).toEqual([
+      'reasoning',
       'tool_search_call',
       'tool_search_output',
+      'message',
+      'reasoning',
+      'message',
       'function_call',
     ]);
     expect(final.response.output[0]).toMatchObject({
-      id: 'search_1',
-      execution: 'server',
+      providerData: {
+        anthropic: { signature: 'sig-before-search' },
+      },
     });
-    expect(final.response.output[1]).toMatchObject({
-      callId: 'search_1',
-      execution: 'server',
-      tools: [{ type: 'tool_reference', toolName: 'get_weather' }],
+    expect(final.response.output[3]).toMatchObject({
+      id: 'text_1',
+      content: [{ type: 'output_text', text: 'I found the weather tool.' }],
     });
-    expect(final.response.output[2]).toMatchObject({
-      callId: 'weather_1',
-      name: 'get_weather',
+    expect(final.response.output[4]).toMatchObject({
+      providerData: {
+        anthropic: { signature: 'sig-after-search' },
+      },
+    });
+    expect(final.response.output[5]).toMatchObject({
+      id: 'text_2',
+      content: [{ type: 'output_text', text: 'I will call it now.' }],
     });
   });
 
@@ -4086,6 +5928,298 @@ describe('Extended thinking / Reasoning support', () => {
         name: 'search',
       });
     });
+
+    test('preserves Anthropic signatures from empty reasoning deltas', async () => {
+      const { response } = await collectStreamResponse([
+        { type: 'reasoning-start', id: '0' },
+        { type: 'reasoning-delta', id: '0', delta: 'Hidden thought.' },
+        {
+          type: 'reasoning-delta',
+          id: '0',
+          delta: '',
+          providerMetadata: {
+            anthropic: { signature: 'sig_from_signature_delta' },
+          },
+        },
+        { type: 'reasoning-end', id: '0' },
+        { type: 'response-metadata', id: 'resp-signature' },
+      ]);
+
+      expect(response.output).toEqual([
+        {
+          type: 'reasoning',
+          id: '0',
+          content: [{ type: 'input_text', text: 'Hidden thought.' }],
+          rawContent: [{ type: 'reasoning_text', text: 'Hidden thought.' }],
+          providerData: {
+            model: 'stub:m',
+            anthropic: { signature: 'sig_from_signature_delta' },
+            responseId: 'resp-signature',
+          },
+        },
+      ]);
+    });
+
+    test('preserves Anthropic redacted data from reasoning start', async () => {
+      const { response } = await collectStreamResponse([
+        {
+          type: 'reasoning-start',
+          id: '0',
+          providerMetadata: {
+            anthropic: { redactedData: 'redacted_thinking_data' },
+          },
+        },
+        { type: 'reasoning-end', id: '0' },
+      ]);
+
+      expect(response.output[0]).toMatchObject({
+        type: 'reasoning',
+        id: '0',
+        content: [{ type: 'input_text', text: '' }],
+        providerData: {
+          model: 'stub:m',
+          anthropic: { redactedData: 'redacted_thinking_data' },
+        },
+      });
+    });
+
+    test.each(['v2', 'v3', 'v4'])(
+      'merges reasoning metadata from start, delta, and end for %s',
+      async (specificationVersion) => {
+        const { response } = await collectStreamResponse(
+          [
+            {
+              type: 'reasoning-start',
+              id: '0',
+              providerMetadata: {
+                test: { start: true, conflict: 'start' },
+              },
+            },
+            {
+              type: 'reasoning-delta',
+              id: '0',
+              delta: '',
+              providerMetadata: {
+                test: { delta: true, conflict: 'delta' },
+              },
+            },
+            {
+              type: 'reasoning-delta',
+              id: '0',
+              delta: '',
+              providerMetadata: {
+                test: { secondDelta: true },
+              },
+            },
+            {
+              type: 'reasoning-end',
+              id: '0',
+              providerMetadata: {
+                test: { end: true, conflict: 'end' },
+              },
+            },
+          ],
+          specificationVersion,
+        );
+
+        expect(response.output[0].providerData).toEqual({
+          model: 'stub:m',
+          test: {
+            start: true,
+            delta: true,
+            secondDelta: true,
+            end: true,
+            conflict: 'end',
+          },
+        });
+      },
+    );
+
+    test('preserves empty provider metadata namespaces', async () => {
+      const { languageModel, response } = await collectStreamResponse([
+        {
+          type: 'reasoning-start',
+          id: '0',
+          providerMetadata: { vendor: {} },
+        },
+        {
+          type: 'reasoning-delta',
+          id: '0',
+          delta: '',
+          providerMetadata: { vendor: {} },
+        },
+        { type: 'reasoning-end', id: '0' },
+      ]);
+
+      expect(response.output[0].providerData).toEqual({
+        model: 'stub:m',
+        vendor: {},
+      });
+      expect(itemsToLanguageV2Messages(languageModel, response.output)).toEqual(
+        [
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'reasoning',
+                text: '',
+                providerOptions: { vendor: {} },
+              },
+            ],
+            providerOptions: { vendor: {} },
+          },
+        ],
+      );
+    });
+
+    test('preserves ordered metadata for multiple reasoning blocks', async () => {
+      const { response } = await collectStreamResponse([
+        {
+          type: 'reasoning-start',
+          id: '10',
+          providerMetadata: {
+            anthropic: { redactedData: 'redacted_block' },
+          },
+        },
+        { type: 'reasoning-end', id: '10' },
+        { type: 'reasoning-start', id: '2' },
+        { type: 'reasoning-delta', id: '2', delta: 'Visible thought.' },
+        {
+          type: 'reasoning-delta',
+          id: '2',
+          delta: '',
+          providerMetadata: { anthropic: { signature: 'signed_block' } },
+        },
+        { type: 'reasoning-end', id: '2' },
+      ]);
+
+      expect(response.output).toMatchObject([
+        {
+          type: 'reasoning',
+          id: '10',
+          content: [{ type: 'input_text', text: '' }],
+          providerData: {
+            anthropic: { redactedData: 'redacted_block' },
+          },
+        },
+        {
+          type: 'reasoning',
+          id: '2',
+          content: [{ type: 'input_text', text: 'Visible thought.' }],
+          providerData: {
+            anthropic: { signature: 'signed_block' },
+          },
+        },
+      ]);
+    });
+
+    test('replays merged reasoning metadata through AI SDK messages', async () => {
+      const { languageModel, response } = await collectStreamResponse([
+        {
+          type: 'reasoning-start',
+          id: '0',
+          providerMetadata: {
+            anthropic: { redactedData: 'redacted_thinking_data' },
+          },
+        },
+        { type: 'reasoning-end', id: '0' },
+        { type: 'reasoning-start', id: '1' },
+        { type: 'reasoning-delta', id: '1', delta: 'Hidden thought.' },
+        {
+          type: 'reasoning-delta',
+          id: '1',
+          delta: '',
+          providerMetadata: {
+            anthropic: { signature: 'sig_from_signature_delta' },
+          },
+        },
+        { type: 'reasoning-end', id: '1' },
+      ]);
+
+      const messages = itemsToLanguageV2Messages(
+        languageModel,
+        response.output,
+      );
+      expect(messages).toEqual([
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: '',
+              providerOptions: {
+                anthropic: {
+                  redactedData: 'redacted_thinking_data',
+                },
+              },
+            },
+          ],
+          providerOptions: {
+            anthropic: {
+              redactedData: 'redacted_thinking_data',
+            },
+          },
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'Hidden thought.',
+              providerOptions: {
+                anthropic: { signature: 'sig_from_signature_delta' },
+              },
+            },
+          ],
+          providerOptions: {
+            anthropic: { signature: 'sig_from_signature_delta' },
+          },
+        },
+      ]);
+    });
+
+    test.each(['v3', 'v4'])(
+      'replays merged reasoning metadata through AI SDK %s messages',
+      async (specificationVersion) => {
+        const { languageModel, response } = await collectStreamResponse(
+          [
+            { type: 'reasoning-start', id: '0' },
+            {
+              type: 'reasoning-delta',
+              id: '0',
+              delta: '',
+              providerMetadata: {
+                anthropic: { signature: 'sig_from_signature_delta' },
+              },
+            },
+            { type: 'reasoning-end', id: '0' },
+          ],
+          specificationVersion,
+        );
+
+        const messages = itemsToLanguageV2Messages(
+          languageModel,
+          response.output,
+        );
+        expect(messages).toEqual([
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'reasoning',
+                text: '',
+                providerOptions: {
+                  anthropic: { signature: 'sig_from_signature_delta' },
+                },
+              },
+            ],
+            providerOptions: {
+              anthropic: { signature: 'sig_from_signature_delta' },
+            },
+          },
+        ]);
+      },
+    );
 
     test('handles multiple reasoning blocks in streaming', async () => {
       const parts = [
@@ -4868,6 +7002,272 @@ describe('AiSdkModel', () => {
       /cannot disambiguate a hosted tool_search helper from a custom tool or handoff/,
     );
     expect(doStream).not.toHaveBeenCalled();
+  });
+
+  test('rejects flattened namespace and handoff name collisions in streaming mode', async () => {
+    const doStream = vi.fn();
+    const model = new AiSdkModel(
+      stubModel({
+        async doStream(...args: any[]) {
+          return doStream(...args);
+        },
+      }),
+    );
+
+    await expect(async () => {
+      for await (const _event of model.getStreamedResponse({
+        input: 'hi',
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup',
+            namespace: 'crm',
+            description: 'Look up a CRM record.',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+          } as any,
+        ],
+        handoffs: [
+          {
+            toolName: 'crm.lookup',
+            toolDescription: 'Handoff with the same flattened name.',
+            inputJsonSchema: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+            strictJsonSchema: true,
+          },
+        ],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+        _internal: { toolNameCollisionPolicy: 'error' },
+      } as any)) {
+        void _event;
+      }
+    }).rejects.toThrow(
+      'AiSdkModel cannot disambiguate function tools and handoffs with the same flattened name.',
+    );
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  test('rejects flattened deferred and handoff name collisions in streaming mode', async () => {
+    const doStream = vi.fn();
+    const model = new AiSdkModel(stubModel({ doStream }));
+
+    await expect(async () => {
+      for await (const _event of model.getStreamedResponse({
+        input: 'hi',
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup',
+            description: 'Deferred lookup.',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+            deferLoading: true,
+          } as any,
+        ],
+        handoffs: [
+          {
+            toolName: 'lookup',
+            toolDescription: 'Handoff with the same flattened name.',
+            inputJsonSchema: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+            strictJsonSchema: true,
+          },
+        ],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any)) {
+        void _event;
+      }
+    }).rejects.toThrow(
+      'AiSdkModel cannot disambiguate function tools and handoffs with the same flattened name.',
+    );
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  test('rejects flattened function and provider tool collisions in streaming mode', async () => {
+    const doStream = vi.fn();
+    const model = new AiSdkModel(stubModel({ doStream }));
+
+    await expect(async () => {
+      for await (const _event of model.getStreamedResponse({
+        input: 'hi',
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup',
+            namespace: 'crm',
+            description: 'Look up a CRM record.',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+          } as any,
+          {
+            type: 'hosted_tool',
+            name: 'crm.lookup',
+            providerData: { type: 'web_search' },
+          } as any,
+        ],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any)) {
+        void _event;
+      }
+    }).rejects.toThrow(
+      /AiSdkModel cannot disambiguate (?:tools with the same flattened name|the flattened tool name 'crm\.lookup')/,
+    );
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  test('rejects duplicate provider tool names before streaming', async () => {
+    const doStream = vi.fn();
+    const model = new AiSdkModel(stubModel({ doStream }));
+    const providerTool = {
+      type: 'hosted_tool',
+      name: 'search',
+      providerData: { type: 'web_search' },
+    } as any;
+
+    await expect(async () => {
+      for await (const _event of model.getStreamedResponse({
+        input: 'hi',
+        tools: [providerTool, { ...providerTool }],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any)) {
+        void _event;
+      }
+    }).rejects.toThrow(
+      /AiSdkModel cannot disambiguate (?:provider tools with the same flattened name|the flattened provider tool name 'search')/,
+    );
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  test('rejects a default-policy flattened collision before streaming', async () => {
+    const doStream = vi.fn();
+    const model = new AiSdkModel(stubModel({ doStream }));
+    const [lookup] = toolNamespace({
+      name: 'crm',
+      description: 'CRM tools.',
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Look up a CRM record.',
+          parameters: z.object({}),
+          execute: async () => 'record',
+        }),
+      ],
+    });
+    const lookupHandoff = handoff(new Agent({ name: 'CRM specialist' }), {
+      toolNameOverride: 'crm.lookup',
+    });
+    const result = await run(
+      new Agent({
+        name: 'Routing agent',
+        model,
+        tools: [lookup!],
+        handoffs: [lookupHandoff],
+      }),
+      'hi',
+      { stream: true },
+    );
+
+    await expect(result.completed).rejects.toThrow(
+      'AiSdkModel cannot disambiguate function tools and handoffs with the same flattened name.',
+    );
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  test('rejects same-name namespaces before streaming', async () => {
+    const doStream = vi.fn();
+    const model = new AiSdkModel(stubModel({ doStream }));
+
+    await expect(async () => {
+      for await (const _event of model.getStreamedResponse({
+        input: 'hi',
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup_account',
+            namespace: 'lookup_account',
+            description: 'Same-name namespace lookup tool.',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+          } as any,
+        ],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any)) {
+        void _event;
+      }
+    }).rejects.toThrow(
+      /AiSdkModel cannot route (?:a function tool whose namespace matches its name|the function tool 'lookup_account' because its namespace matches its name)/,
+    );
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  test('exposes one winner when the same function tool object is repeated in streaming mode', async () => {
+    allowConsole(['warn']);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const doStream = vi.fn(async (_options: any): Promise<any> => ({
+      stream: partsStream([]),
+    }));
+    const model = new AiSdkModel(stubModel({ doStream }));
+    const duplicateTool = {
+      type: 'function',
+      name: 'duplicate',
+      description: 'Repeated tool object.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+    } as any;
+
+    try {
+      for await (const _event of model.getStreamedResponse({
+        input: 'hi',
+        tools: [duplicateTool, duplicateTool],
+        handoffs: [],
+        modelSettings: {},
+        outputType: 'text',
+        tracing: false,
+      } as any)) {
+        void _event;
+      }
+
+      expect(doStream.mock.calls[0]![0].tools).toEqual([
+        expect.objectContaining({ name: 'duplicate' }),
+      ]);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   describe('parseArguments', () => {

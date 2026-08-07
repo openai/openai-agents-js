@@ -46,12 +46,17 @@ async function main() {
   try {
     const input = 'Hello, can you help me solve for x: 2x + 3 = 11?';
     await run(agent, input);
-    console.log("Guardrail didn't trip - this is unexpected");
+    throw new Error('Expected the math output guardrail to trip.');
   } catch (e) {
     if (e instanceof OutputGuardrailTripwireTriggered) {
       console.log('Math output guardrail tripped');
+      return;
     }
+    throw e;
   }
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

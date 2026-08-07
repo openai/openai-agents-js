@@ -107,7 +107,7 @@ export default function Home() {
   const [mcpTools, setMcpTools] = useState<string[]>([]);
 
   useEffect(() => {
-    session.current = new RealtimeSession(agent, {
+    const createdSession = new RealtimeSession(agent, {
       outputGuardrails: guardrails,
       outputGuardrailSettings: {
         debounceTextLength: 200,
@@ -120,22 +120,23 @@ export default function Home() {
         },
       },
     });
-    session.current.on('transport_event', (event) => {
+    session.current = createdSession;
+    createdSession.on('transport_event', (event) => {
       setEvents((events) => [...events, event]);
     });
-    session.current.on('mcp_tools_changed', (tools) => {
+    createdSession.on('mcp_tools_changed', (tools) => {
       setMcpTools(tools.map((t) => t.name));
     });
-    session.current.on(
+    createdSession.on(
       'guardrail_tripped',
       (_context, _agent, guardrailError) => {
         setOutputGuardrailResult(guardrailError);
       },
     );
-    session.current.on('history_updated', (history) => {
+    createdSession.on('history_updated', (history) => {
       setHistory(history);
     });
-    session.current.on(
+    createdSession.on(
       'tool_approval_requested',
       (_context, _agent, approvalRequest) => {
         // You'll be prompted when making the tool call that requires approval in web browser.
@@ -149,11 +150,18 @@ export default function Home() {
         }
       },
     );
+
+    return () => {
+      createdSession.close();
+      if (session.current === createdSession) {
+        session.current = null;
+      }
+    };
   }, []);
 
   async function connect() {
     if (isConnected) {
-      await session.current?.close();
+      session.current?.close();
       setIsConnected(false);
     } else {
       const token = await getToken();

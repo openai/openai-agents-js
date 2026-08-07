@@ -1,13 +1,17 @@
 import { UserError } from '@openai/agents-core';
 import {
+  cloneManifest,
   Manifest,
   SandboxConfigurationError,
+  SandboxMountError,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
   normalizeSandboxClientCreateArgs,
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxClientResumeOptions,
+  type SandboxPreservedSessionReuseOptions,
   type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type Mount,
@@ -16,9 +20,21 @@ import {
   type WorkspaceArchiveData,
   type WorkspaceArchiveOptions,
 } from '@openai/agents-core/sandbox';
+import {
+  assertLiveMountCredentialAuthorityMatches,
+  captureLiveMountCredentialAuthority,
+  copyManifestMountCredentialExposurePolicy,
+  copyValidatedMountEffectivePaths,
+  isMountCredentialFileEnvironmentName,
+  manifestHasInContainerMounts,
+  validateMountCredentialBoundaries,
+  withExclusiveSandboxManifestMutation,
+} from '@openai/agents-core/sandbox/internal';
 import { posix as pathPosix } from 'node:path';
 import {
   assertCoreSnapshotUnsupported,
+  assertRemoteSandboxSessionStateCanResume,
+  isRemoteSandboxSessionStateUnsafe,
   assertTarWorkspacePersistence,
   assertResumeRecreateAllowed,
   assertRunAsUnsupported,
@@ -28,9 +44,11 @@ import {
   cloneManifestWithRoot,
   decodeNativeSnapshotRef,
   assertShellEnvironmentName,
-  deserializeRemoteSandboxSessionStateValues,
+  rehydrateRemoteSandboxSessionStateValues,
   encodeNativeSnapshotRef,
   materializeEnvironment,
+  manifestWithMaterializedEnvironmentReferences,
+  prepareManifestMounts,
   providerErrorMessage,
   serializeRemoteSandboxSessionState,
   shellQuote,
@@ -44,14 +62,22 @@ import {
   withProviderError,
   withSandboxSpan,
   RemoteSandboxSessionBase,
+  type ManifestMountMaterializationContext,
   type RemoteSandboxCommandOptions,
   type RemoteSandboxCommandResult,
 } from '../shared';
 import {
+  assertRcloneMountEnvironmentAuthorityMatches,
+  captureRcloneMountEnvironmentAuthorityForManifest,
+  manifestUsesRcloneMountCredentialEnvironment,
   mountRcloneCloudBucket,
+  rcloneCredentialEnvironmentForEntry,
+  rcloneMountEnvironmentAuthorityMatches,
   rclonePatternFromMountStrategy,
+  validateRcloneMountEnvironmentCredentialExposure,
   unmountRcloneMount,
   type RemoteMountCommand,
+  type RcloneMountHandle,
 } from '../shared/inContainerMounts';
 import { isRunloopCloudBucketMountEntry } from './mounts';
 
@@ -230,6 +256,8 @@ export interface RunloopSandboxSessionState extends SandboxSessionState {
   mcp?: Record<string, unknown>;
   metadata?: Record<string, string>;
   secretRefs?: Record<string, string>;
+  managedSecrets?: Record<string, string>;
+  trustedSecretRefs?: Record<string, string>;
   pauseOnExit: boolean;
   userParameters?: RunloopUserParameters;
   environment: Record<string, string>;
@@ -238,9 +266,145 @@ export interface RunloopSandboxSessionState extends SandboxSessionState {
   timeouts?: RunloopSandboxTimeouts;
 }
 
+const trustedRunloopMountSecretAuthorityStates =
+  new WeakSet<RunloopSandboxSessionState>();
+
 type RunloopSandboxResolvedOptions = RunloopSandboxClientOptions & {
   secretRefs?: Record<string, string>;
 };
+
+function runloopMountValidationEnvironment(
+  environment: Record<string, string>,
+  secretRefs: Record<string, string> | undefined,
+  managedSecrets: Record<string, string> | undefined,
+): Record<string, string> {
+  return {
+    ...environment,
+    ...Object.fromEntries(
+      Object.entries(
+        unresolvedRunloopSecretRefs(secretRefs, managedSecrets),
+      ).map(([name, reference]) => [name, `runloop-secret-ref:${reference}`]),
+    ),
+    ...(managedSecrets ?? {}),
+  };
+}
+
+function unresolvedRunloopSecretRefs(
+  secretRefs: Record<string, string> | undefined,
+  managedSecrets: Record<string, string> | undefined,
+  trustedSecretRefs: Record<string, string> | undefined = undefined,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(secretRefs ?? {}).filter(([name, reference]) => {
+      if (Object.prototype.hasOwnProperty.call(managedSecrets ?? {}, name)) {
+        return false;
+      }
+      return trustedSecretRefs?.[name] !== reference;
+    }),
+  );
+}
+
+function assertRunloopMountSecretRefsAreResolvable(
+  manifest: Manifest,
+  secretRefs: Record<string, string> | undefined,
+  managedSecrets: Record<string, string> | undefined,
+  trustedSecretRefs: Record<string, string> | undefined,
+): void {
+  const credentialFileSecretRefs = Object.fromEntries(
+    Object.entries(secretRefs ?? {}).filter(
+      ([name]) =>
+        isMountCredentialFileEnvironmentName(name) &&
+        !Object.prototype.hasOwnProperty.call(managedSecrets ?? {}, name),
+    ),
+  );
+  if (
+    manifestUsesRcloneMountCredentialEnvironment(
+      manifest,
+      credentialFileSecretRefs,
+    )
+  ) {
+    throw new SandboxMountError(
+      'Runloop mount credential secretRefs cannot be validated before an in-container mount. Configure managedSecrets with current trusted values, or create the mount without ambient credentials.',
+      { provider: 'runloop' },
+      'mount_config_invalid',
+    );
+  }
+  const unresolvedSecretRefs = unresolvedRunloopSecretRefs(
+    secretRefs,
+    managedSecrets,
+    trustedSecretRefs,
+  );
+  if (
+    !manifestUsesRcloneMountCredentialEnvironment(
+      manifest,
+      unresolvedSecretRefs,
+    )
+  ) {
+    return;
+  }
+  throw new SandboxMountError(
+    'Runloop mount credential secretRefs cannot be validated before an in-container mount. Configure managedSecrets with current trusted values, or create the mount without ambient credentials.',
+    { provider: 'runloop' },
+    'mount_config_invalid',
+  );
+}
+
+function assertRunloopMountSecretAuthorityIsTrusted(trusted: boolean): void {
+  if (trusted) {
+    return;
+  }
+  throw new SandboxMountError(
+    'Runloop in-container mounts cannot be resumed or added on a devbox restored from serialized state because its ambient credential authority cannot be verified. Create a fresh devbox before configuring the mount.',
+    { provider: 'runloop' },
+    'mount_config_invalid',
+  );
+}
+
+function validateRunloopMountRematerializationAuthority(args: {
+  liveState: RunloopSandboxSessionState;
+  configuredState: RunloopSandboxSessionState;
+  manifest: Manifest;
+  mountSecretAuthorityTrusted: boolean;
+}): Record<string, string> {
+  if (manifestHasInContainerMounts(args.manifest)) {
+    assertRunloopMountSecretAuthorityIsTrusted(
+      args.mountSecretAuthorityTrusted,
+    );
+  }
+  assertLiveMountCredentialAuthorityMatches(
+    args.liveState.manifest,
+    args.manifest,
+  );
+  const mountEnvironment = runloopMountValidationEnvironment(
+    args.configuredState.environment,
+    args.configuredState.secretRefs,
+    args.configuredState.managedSecrets,
+  );
+  assertRunloopMountSecretRefsAreResolvable(
+    args.manifest,
+    args.configuredState.secretRefs,
+    args.configuredState.managedSecrets,
+    args.configuredState.trustedSecretRefs,
+  );
+  assertRcloneMountEnvironmentAuthorityMatches(
+    args.liveState,
+    args.manifest,
+    mountEnvironment,
+  );
+  validateMountCredentialBoundaries(args.manifest);
+  validateRcloneMountEnvironmentCredentialExposure(
+    args.manifest,
+    mountEnvironment,
+  );
+  return mountEnvironment;
+}
+
+function resolveRunloopOptions(
+  defaults: RunloopSandboxResolvedOptions,
+  overrides: RunloopSandboxResolvedOptions | undefined,
+): RunloopSandboxResolvedOptions {
+  return { ...defaults, ...overrides };
+}
 
 export class RunloopPlatformBlueprintsClient {
   constructor(private readonly sdk: RunloopClientLike) {}
@@ -626,12 +790,13 @@ export class RunloopPlatformClient {
 export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandboxSessionState> {
   private readonly sdk: RunloopClientLike;
   private devbox: RunloopDevboxLike;
-  private readonly activeMountPaths = new Set<string>();
+  private readonly activeMountPaths = new Map<string, RcloneMountHandle>();
 
   constructor(args: {
     state: RunloopSandboxSessionState;
     sdk: RunloopClientLike;
     devbox: RunloopDevboxLike;
+    mountSecretAuthorityTrusted?: boolean;
     concurrencyLimits?: SandboxConcurrencyLimits;
     archiveLimits?: SandboxArchiveLimits | null;
   }) {
@@ -644,8 +809,20 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         archiveLimits: args.archiveLimits,
       },
     });
+    if (args.mountSecretAuthorityTrusted) {
+      trustedRunloopMountSecretAuthorityStates.add(this.state);
+    }
     this.sdk = args.sdk;
     this.devbox = args.devbox;
+    captureRcloneMountEnvironmentAuthorityForManifest(
+      this.state,
+      this.state.manifest,
+      runloopMountValidationEnvironment(
+        this.state.environment,
+        this.state.secretRefs,
+        this.state.managedSecrets,
+      ),
+    );
   }
 
   override supportsPty(): boolean {
@@ -676,7 +853,12 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
     await this.ensureManifestRoot(manifest.root);
   }
 
+  protected override beforeApplyManifestMayHaveSideEffects(): boolean {
+    return true;
+  }
+
   async persistWorkspace(): Promise<Uint8Array> {
+    this.assertSessionUsable();
     const snapshot = await this.persistWorkspaceViaNativeSnapshot();
     if (snapshot) {
       return snapshot;
@@ -690,6 +872,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
     data: WorkspaceArchiveData,
     options: WorkspaceArchiveOptions = {},
   ): Promise<void> {
+    this.assertSessionUsable();
     const snapshotRef = decodeNativeSnapshotRef(data);
     if (snapshotRef?.provider === 'runloop') {
       await this.replaceDevboxFromSnapshot(snapshotRef.snapshotId);
@@ -819,7 +1002,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
     }
 
     const previousDevbox = this.devbox;
-    const previousActiveMountPaths = new Set(this.activeMountPaths);
+    const previousActiveMountPaths = new Map(this.activeMountPaths);
     let devbox: RunloopDevboxLike;
     try {
       devbox = await this.sdk.devbox.createFromSnapshot(
@@ -850,23 +1033,25 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
       await rematerializeRunloopManifestMounts(this, this.state.manifest);
     } catch (error) {
       let replacementCleanupCause: string | undefined;
-      try {
-        await this.unmountActiveMounts();
-      } catch (unmountError) {
-        replacementCleanupCause = providerErrorMessage(unmountError);
-      }
-      try {
-        await devbox.shutdown();
-      } catch (shutdownError) {
-        replacementCleanupCause = replacementCleanupCause
-          ? `${replacementCleanupCause}; ${providerErrorMessage(shutdownError)}`
-          : providerErrorMessage(shutdownError);
+      if (!isRemoteSandboxSessionStateUnsafe(this.state)) {
+        try {
+          await this.unmountActiveMounts();
+        } catch (unmountError) {
+          replacementCleanupCause = providerErrorMessage(unmountError);
+        }
+        try {
+          await devbox.shutdown();
+        } catch (shutdownError) {
+          replacementCleanupCause = replacementCleanupCause
+            ? `${replacementCleanupCause}; ${providerErrorMessage(shutdownError)}`
+            : providerErrorMessage(shutdownError);
+        }
       }
       this.devbox = previousDevbox;
       this.state.devboxId = previousDevboxId;
       this.activeMountPaths.clear();
-      for (const mountPath of previousActiveMountPaths) {
-        this.activeMountPaths.add(mountPath);
+      for (const [mountPath, handle] of previousActiveMountPaths) {
+        this.activeMountPaths.set(mountPath, handle);
       }
       invalidateRunloopRuntimeCaches(this.state);
       throw new SandboxProviderError(
@@ -901,8 +1086,8 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
       this.devbox = previousDevbox;
       this.state.devboxId = previousDevboxId;
       this.activeMountPaths.clear();
-      for (const mountPath of previousActiveMountPaths) {
-        this.activeMountPaths.add(mountPath);
+      for (const [mountPath, handle] of previousActiveMountPaths) {
+        this.activeMountPaths.set(mountPath, handle);
       }
       invalidateRunloopRuntimeCaches(this.state);
       throw new SandboxProviderError(
@@ -926,7 +1111,52 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
   protected override manifestMaterializationOptions() {
     return {
       materializeMount: this.materializeMountEntry.bind(this),
+      mountEnvironmentOverrides: this.state.managedSecrets,
+      validateManifest: (
+        manifest: Manifest,
+        environment: Record<string, string>,
+      ) => {
+        if (manifestHasInContainerMounts(manifest)) {
+          assertRunloopMountSecretAuthorityIsTrusted(
+            trustedRunloopMountSecretAuthorityStates.has(this.state),
+          );
+        }
+        assertRunloopMountSecretRefsAreResolvable(
+          manifest,
+          this.state.secretRefs,
+          this.state.managedSecrets,
+          this.state.trustedSecretRefs,
+        );
+        validateRcloneMountEnvironmentCredentialExposure(
+          manifest,
+          runloopMountValidationEnvironment(
+            environment,
+            this.state.secretRefs,
+            this.state.managedSecrets,
+          ),
+        );
+      },
     };
+  }
+
+  protected override async forceTerminateAfterFailedPrivilegedManifestTransition(): Promise<void> {
+    await this.devbox.shutdown(
+      runloopRequestOptions(this.state.timeouts?.cleanupTimeoutMs),
+    );
+  }
+
+  protected override afterManifestMutationCommitted(
+    materializedManifest: Manifest,
+  ): void {
+    captureRcloneMountEnvironmentAuthorityForManifest(
+      this.state,
+      materializedManifest,
+      runloopMountValidationEnvironment(
+        this.state.environment,
+        this.state.secretRefs,
+        this.state.managedSecrets,
+      ),
+    );
   }
 
   protected override assertExecRunAs(_runAs?: string): void {
@@ -940,7 +1170,11 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
   private async materializeMountEntry(
     absolutePath: string,
     entry: Mount | TypedMount,
+    context: ManifestMountMaterializationContext,
   ): Promise<void> {
+    assertRunloopMountSecretAuthorityIsTrusted(
+      trustedRunloopMountSecretAuthorityStates.has(this.state),
+    );
     if (!isRunloopCloudBucketMountEntry(entry)) {
       throw new SandboxUnsupportedFeatureError(
         'RunloopSandboxClient only supports RunloopCloudBucketMountStrategy mount entries.',
@@ -953,32 +1187,98 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         },
       );
     }
-    const mountPath = await this.resolveRemotePath(
-      entry.mountPath ?? absolutePath,
-      { forWrite: true },
-    );
-    await mountRcloneCloudBucket({
+    const mountPath = absolutePath;
+    const environment = context.environment ?? this.state.environment;
+    const handle = await mountRcloneCloudBucket({
       providerName: 'RunloopSandboxClient',
       providerId: 'runloop',
       strategyType: 'runloop_cloud_bucket',
       entry,
       mountPath,
       pattern: rclonePatternFromMountStrategy(entry.mountStrategy),
-      runCommand: this.mountCommandRunner(),
+      runCommand: this.mountCommandRunner(
+        environment,
+        currentRunloopManagedMountEnvironment(
+          entry,
+          this.state.managedSecrets,
+          context.environment,
+        ),
+      ),
       writeFile: this.writeRemoteFile.bind(this),
       packageManagers: ['apt'],
       installRcloneViaScript: true,
+      allowAmbientCredentials: context.allowAmbientCredentials,
+      revalidateMountAuthority: context.revalidateMountAuthority,
     });
-    this.activeMountPaths.add(mountPath);
+    this.activeMountPaths.set(mountPath, handle);
   }
 
   async rematerializeManifestMounts(manifest: Manifest): Promise<void> {
-    for (const {
-      absolutePath,
-      entry,
-    } of manifest.mountTargetsForMaterialization()) {
-      await this.materializeMountEntry(absolutePath, structuredClone(entry));
-    }
+    const manifestSnapshot = cloneManifest(manifest);
+    await withExclusiveSandboxManifestMutation(this.state, async () => {
+      const mountEnvironment = validateRunloopMountRematerializationAuthority({
+        liveState: this.state,
+        configuredState: this.state,
+        manifest: manifestSnapshot,
+        mountSecretAuthorityTrusted:
+          trustedRunloopMountSecretAuthorityStates.has(this.state),
+      });
+      const resolvedMounts = await prepareManifestMounts(
+        manifestSnapshot,
+        this.remotePathResolver,
+        {
+          credentialBoundaryManifest: manifestSnapshot,
+          environment: mountEnvironment,
+          resolveCredentialPath: async (path) =>
+            await this.resolveRemoteCredentialPath(path),
+        },
+      );
+      try {
+        for (const mountPath of [...this.activeMountPaths.keys()].reverse()) {
+          await unmountRcloneMount({
+            providerName: 'RunloopSandboxClient',
+            providerId: 'runloop',
+            mountPath,
+            runCommand: this.mountCommandRunner(this.state.environment),
+            handle: this.activeMountPaths.get(mountPath),
+          });
+        }
+        this.activeMountPaths.clear();
+        for (const {
+          absolutePath,
+          entry,
+          allowMountCredentialExposure,
+          environment,
+          revalidateMountAuthority,
+        } of resolvedMounts) {
+          await revalidateMountAuthority();
+          await this.materializeMountEntry(absolutePath, entry, {
+            environment: environment ?? this.state.environment,
+            allowAmbientCredentials: allowMountCredentialExposure,
+            revalidateMountAuthority,
+          });
+        }
+        copyManifestMountCredentialExposurePolicy(
+          this.state.manifest,
+          manifestSnapshot,
+        );
+        copyValidatedMountEffectivePaths(this.state.manifest, manifestSnapshot);
+        captureLiveMountCredentialAuthority(
+          this.state.manifest,
+          mountEnvironment,
+        );
+        captureRcloneMountEnvironmentAuthorityForManifest(
+          this.state,
+          manifestSnapshot,
+          mountEnvironment,
+        );
+      } catch (error) {
+        if (manifestHasInContainerMounts(manifestSnapshot)) {
+          await this.invalidateAfterFailedPrivilegedManifestTransition();
+        }
+        throw error;
+      }
+    });
   }
 
   async cleanupAfterFailedResume(): Promise<void> {
@@ -999,25 +1299,30 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
   }
 
   private async unmountActiveMounts(): Promise<void> {
-    for (const mountPath of [...this.activeMountPaths].reverse()) {
+    for (const mountPath of [...this.activeMountPaths.keys()].reverse()) {
       await unmountRcloneMount({
         providerName: 'RunloopSandboxClient',
         providerId: 'runloop',
         mountPath,
         runCommand: this.mountCommandRunner(),
+        handle: this.activeMountPaths.get(mountPath),
       }).catch(() => {});
       this.activeMountPaths.delete(mountPath);
     }
   }
 
-  private mountCommandRunner(): RemoteMountCommand {
+  private mountCommandRunner(
+    environment: Readonly<Record<string, string>> = this.state.environment,
+    trustedEnvironment: Readonly<Record<string, string>> = {},
+  ): RemoteMountCommand {
     return async (command, options = {}) => {
       const result = await this.execShellWithEnvironment(
         command,
         undefined,
         options.timeoutMs ?? this.state.timeouts?.fastOperationTimeoutMs,
         mountCommandEnvironment(
-          this.state.environment,
+          environment,
+          trustedEnvironment,
           options.user,
           this.state.userParameters,
         ),
@@ -1323,6 +1628,18 @@ export class RunloopSandboxClient implements SandboxClient<
     this.options = options;
   }
 
+  resolveTrustedManifestForResume(
+    manifest: Manifest,
+    options?: RunloopSandboxClientOptions,
+  ): Manifest {
+    const resolvedOptions = resolveRunloopOptions(this.options, options);
+    return resolveRunloopManifestRoot(
+      manifest,
+      resolvedOptions.userParameters,
+      false,
+    );
+  }
+
   async platform(): Promise<RunloopPlatformClient> {
     return new RunloopPlatformClient(await createRunloopClient(this.options));
   }
@@ -1333,10 +1650,10 @@ export class RunloopSandboxClient implements SandboxClient<
   ): Promise<RunloopSandboxSession> {
     const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
     assertCoreSnapshotUnsupported('RunloopSandboxClient', createArgs.snapshot);
-    const resolvedOptions: RunloopSandboxResolvedOptions = {
-      ...this.options,
-      ...createArgs.options,
-    };
+    const resolvedOptions = resolveRunloopOptions(
+      this.options,
+      createArgs.options,
+    );
     const timeouts = resolveRunloopTimeouts(resolvedOptions);
     const manifest = resolveRunloopManifestRoot(
       createArgs.manifest,
@@ -1348,6 +1665,27 @@ export class RunloopSandboxClient implements SandboxClient<
       manifest,
       SANDBOX_MANIFEST_METADATA_SUPPORT,
     );
+    const environment = await materializeEnvironment(
+      manifest,
+      resolvedOptions.env,
+    );
+    const trustedManagedSecrets = resolvedOptions.secretRefs
+      ? undefined
+      : resolvedOptions.managedSecrets;
+    assertRunloopMountSecretRefsAreResolvable(
+      manifest,
+      resolvedOptions.secretRefs,
+      trustedManagedSecrets,
+      resolvedOptions.secretRefs,
+    );
+    validateRcloneMountEnvironmentCredentialExposure(
+      manifest,
+      runloopMountValidationEnvironment(
+        environment,
+        resolvedOptions.secretRefs,
+        trustedManagedSecrets,
+      ),
+    );
     const sdk = await createRunloopClient(resolvedOptions);
 
     return await withSandboxSpan(
@@ -1356,10 +1694,6 @@ export class RunloopSandboxClient implements SandboxClient<
         backend_id: this.backendId,
       },
       async () => {
-        const environment = await materializeEnvironment(
-          manifest,
-          resolvedOptions.env,
-        );
         const createParams: Record<string, unknown> = {
           environment_variables: environment,
         };
@@ -1427,6 +1761,7 @@ export class RunloopSandboxClient implements SandboxClient<
         const session = new RunloopSandboxSession({
           sdk,
           devbox,
+          mountSecretAuthorityTrusted: true,
           concurrencyLimits: createArgs.concurrencyLimits,
           archiveLimits: createArgs.archiveLimits,
           state: {
@@ -1442,6 +1777,8 @@ export class RunloopSandboxClient implements SandboxClient<
             mcp: resolvedOptions.mcp,
             metadata: resolvedOptions.metadata,
             secretRefs: persistedSecretRefs,
+            managedSecrets: trustedManagedSecrets,
+            trustedSecretRefs: resolvedOptions.secretRefs,
             pauseOnExit: resolvedOptions.pauseOnExit ?? false,
             userParameters: resolvedOptions.userParameters,
             environment,
@@ -1465,25 +1802,88 @@ export class RunloopSandboxClient implements SandboxClient<
   async serializeSessionState(
     state: RunloopSandboxSessionState,
   ): Promise<Record<string, unknown>> {
-    const { managedSecrets: _managedSecrets, ...serializableState } =
-      state as RunloopSandboxSessionState & {
-        managedSecrets?: Record<string, string>;
-      };
-    return serializeRemoteSandboxSessionState(serializableState);
+    const {
+      managedSecrets: _managedSecrets,
+      trustedSecretRefs: _trustedSecretRefs,
+      ...serializableState
+    } = state as RunloopSandboxSessionState & {
+      managedSecrets?: Record<string, string>;
+      trustedSecretRefs?: Record<string, string>;
+    };
+    return serializeRemoteSandboxSessionState(serializableState, state);
   }
 
   canPersistOwnedSessionState(state: RunloopSandboxSessionState): boolean {
-    return state.pauseOnExit;
+    return !isRemoteSandboxSessionStateUnsafe(state) && state.pauseOnExit;
+  }
+
+  async canReusePreservedOwnedSession(
+    state: RunloopSandboxSessionState,
+    options: SandboxPreservedSessionReuseOptions<RunloopSandboxClientOptions> = {},
+  ): Promise<boolean> {
+    if (isRemoteSandboxSessionStateUnsafe(state) || !options.trustedManifest) {
+      return false;
+    }
+    const resolvedOptions = resolveRunloopOptions(
+      this.options,
+      options.clientOptions,
+    );
+    const trustedManifest = resolveRunloopManifestRoot(
+      options.trustedManifest,
+      resolvedOptions.userParameters,
+      false,
+    );
+    const trustedEnvironment = await materializeEnvironment(
+      trustedManifest,
+      resolvedOptions.env,
+    );
+    const trustedManagedSecrets = resolvedOptions.secretRefs
+      ? undefined
+      : resolvedOptions.managedSecrets;
+    const trustedMountEnvironment = runloopMountValidationEnvironment(
+      trustedEnvironment,
+      resolvedOptions.secretRefs,
+      trustedManagedSecrets,
+    );
+    validateRcloneMountEnvironmentCredentialExposure(
+      trustedManifest,
+      trustedMountEnvironment,
+    );
+    if (
+      manifestUsesRcloneMountCredentialEnvironment(
+        trustedManifest,
+        trustedMountEnvironment,
+      ) ||
+      manifestUsesRcloneMountCredentialEnvironment(
+        state.manifest,
+        runloopMountValidationEnvironment(
+          state.environment,
+          state.secretRefs,
+          state.managedSecrets,
+        ),
+      )
+    ) {
+      return false;
+    }
+    return rcloneMountEnvironmentAuthorityMatches(
+      state,
+      trustedManifest,
+      trustedEnvironment,
+    );
   }
 
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<RunloopSandboxSessionState> {
-    const baseState = deserializeRemoteSandboxSessionStateValues(
+    const baseState = await rehydrateRemoteSandboxSessionStateValues(
       state,
       this.options.env,
     );
-    const { managedSecrets: _managedSecrets, ...rest } = state;
+    const {
+      managedSecrets: _managedSecrets,
+      trustedSecretRefs: _trustedSecretRefs,
+      ...rest
+    } = state;
     return {
       ...rest,
       ...baseState,
@@ -1521,19 +1921,37 @@ export class RunloopSandboxClient implements SandboxClient<
 
   async resume(
     state: RunloopSandboxSessionState,
+    options: SandboxClientResumeOptions<RunloopSandboxClientOptions> = {},
   ): Promise<RunloopSandboxSession> {
+    assertRemoteSandboxSessionStateCanResume(state);
+    const mountSecretAuthorityTrusted =
+      trustedRunloopMountSecretAuthorityStates.has(state);
+    const resolvedOptions = resolveRunloopOptions(
+      this.options,
+      options.clientOptions,
+    );
     const resumeState: RunloopSandboxSessionState = {
       ...state,
-      baseUrl: this.options.baseUrl,
-      launchParameters: this.options.launchParameters,
-      userParameters: this.options.userParameters,
+      baseUrl: resolvedOptions.baseUrl,
+      launchParameters: resolvedOptions.launchParameters,
+      userParameters: resolvedOptions.userParameters,
+      managedSecrets: resolvedOptions.secretRefs
+        ? undefined
+        : resolvedOptions.managedSecrets,
+      trustedSecretRefs: resolvedOptions.secretRefs,
       manifest: resolveRunloopManifestRoot(
         state.manifest,
-        this.options.userParameters,
+        resolvedOptions.userParameters,
         true,
       ),
     };
-    const sdk = await createRunloopClient(this.options);
+    validateRunloopMountRematerializationAuthority({
+      liveState: state,
+      configuredState: resumeState,
+      manifest: resumeState.manifest,
+      mountSecretAuthorityTrusted,
+    });
+    const sdk = await createRunloopClient(resolvedOptions);
     try {
       const devbox = sdk.devbox.fromId(resumeState.devboxId);
       if (resumeState.pauseOnExit) {
@@ -1546,7 +1964,8 @@ export class RunloopSandboxClient implements SandboxClient<
         state: resumeState,
         sdk,
         devbox,
-        archiveLimits: this.options.archiveLimits,
+        mountSecretAuthorityTrusted,
+        archiveLimits: options.archiveLimits ?? resolvedOptions.archiveLimits,
       });
       try {
         await session.ensureCurrentManifestRoot();
@@ -1562,26 +1981,40 @@ export class RunloopSandboxClient implements SandboxClient<
         provider: 'runloop',
         details: { devboxId: resumeState.devboxId },
       });
-      assertRunloopResumeRecreateSecretRefsTrusted(resumeState, this.options);
+      assertRunloopResumeRecreateSecretRefsTrusted(
+        resumeState,
+        resolvedOptions,
+      );
       const recreateOptions: RunloopSandboxResolvedOptions = {
-        blueprintName: this.options.blueprintName,
-        blueprintId: this.options.blueprintId,
+        blueprintName: resolvedOptions.blueprintName,
+        blueprintId: resolvedOptions.blueprintId,
         name: resumeState.name,
-        launchParameters: this.options.launchParameters,
+        launchParameters: resolvedOptions.launchParameters,
         exposedPorts: resumeState.configuredExposedPorts,
         tunnel: resumeState.tunnel,
         gateways: resumeState.gateways,
         mcp: resumeState.mcp,
         metadata: resumeState.metadata,
-        managedSecrets: this.options.managedSecrets,
+        managedSecrets: resolvedOptions.managedSecrets,
         pauseOnExit: resumeState.pauseOnExit,
-        userParameters: this.options.userParameters,
-        env: this.options.env,
-        baseUrl: this.options.baseUrl,
+        userParameters: resolvedOptions.userParameters,
+        env: resolvedOptions.env,
+        apiKey: resolvedOptions.apiKey,
+        baseUrl: resolvedOptions.baseUrl,
+        archiveLimits: options.archiveLimits ?? resolvedOptions.archiveLimits,
         createTimeoutMs: resumeState.createTimeoutMs,
         timeouts: resumeState.timeouts,
       };
-      return await this.create(resumeState.manifest, recreateOptions);
+      const manifest = resumeState.manifest;
+      const session = await this.create(
+        manifestWithMaterializedEnvironmentReferences(
+          manifest,
+          resumeState.environment,
+        ),
+        recreateOptions,
+      );
+      session.state.manifest = manifest;
+      return session;
     }
   }
 }
@@ -2248,6 +2681,9 @@ function remoteCommandEnvironment(
   environment: Record<string, string>,
   options: RemoteSandboxCommandOptions,
 ): Record<string, string> {
+  if (options.environment !== undefined) {
+    return options.environment;
+  }
   return options.kind === 'exec' ? environment : {};
 }
 
@@ -2259,8 +2695,13 @@ function assertRunloopResumeRecreateSecretRefsTrusted(
     return;
   }
   if (
-    options.managedSecrets &&
-    Object.keys(options.managedSecrets).length > 0
+    Object.keys(state.secretRefs).every(
+      (name) =>
+        Object.prototype.hasOwnProperty.call(
+          options.managedSecrets ?? {},
+          name,
+        ) && typeof options.managedSecrets?.[name] === 'string',
+    )
   ) {
     return;
   }
@@ -2278,11 +2719,28 @@ async function rematerializeRunloopManifestMounts(
 
 function mountCommandEnvironment(
   environment: Record<string, string>,
+  trustedEnvironment: Record<string, string>,
   user?: string,
   userParameters?: RunloopUserParameters,
 ): Record<string, string> {
   const effectiveUser = user ?? effectiveRunloopUsername(userParameters);
-  return effectiveUser === 'root' ? {} : environment;
+  return effectiveUser === 'root'
+    ? trustedEnvironment
+    : { ...environment, ...trustedEnvironment };
+}
+
+function currentRunloopManagedMountEnvironment(
+  entry: Mount | TypedMount,
+  managedSecrets: Readonly<Record<string, string>> | undefined,
+  preparedEnvironment: Readonly<Record<string, string>> | undefined,
+): Record<string, string> {
+  const currentManagedSecrets = { ...managedSecrets };
+  for (const name of Object.keys(currentManagedSecrets)) {
+    if (preparedEnvironment?.[name] !== undefined) {
+      currentManagedSecrets[name] = preparedEnvironment[name];
+    }
+  }
+  return rcloneCredentialEnvironmentForEntry(entry, currentManagedSecrets);
 }
 
 function buildShellCommand(

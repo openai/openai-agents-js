@@ -13,7 +13,7 @@ import helloWorldSandboxExample from '../../../../examples/docs/toppage/sandboxA
 <Hero>
   <Fragment slot="title">OpenAI Agents SDK</Fragment>
   <Fragment slot="description">
-    Build sandbox, text, and voice agents with a small set of primitives.
+    Build text, sandbox, and realtime agents with a small set of primitives.
   </Fragment>
   <Fragment slot="cta">Let's build</Fragment>
 </Hero>
@@ -24,6 +24,7 @@ The [OpenAI Agents SDK for TypeScript](https://github.com/openai/openai-agents-j
 
 - **Agents**, which are LLMs equipped with instructions and tools
 - **Sandbox agents**, which pair agents with isolated filesystem workspaces, shell commands, file editing, snapshots, and sandbox session state
+- **Realtime agents**, which support low-latency spoken interactions with tools, guardrails, handoffs, and conversation history
 - **Agents as tools / Handoffs**, which allow agents to delegate to other agents for specific tasks
 - **Guardrails**, which enable the inputs to agents to be validated
 
@@ -40,6 +41,7 @@ Here are the main features of the SDK:
 
 - **Agent loop**: A built-in agent loop that handles tool invocation, sends results back to the LLM, and continues until the task is complete.
 - **Sandbox execution**: Run agents with isolated filesystem workspaces, shell commands, file editing, snapshots, and sandbox session state when the work needs a workspace.
+- **Realtime Agents**: Build low-latency spoken interactions with features such as automatic interruption detection, context management, guardrails, and more.
 - **TypeScript-first**: Orchestrate and chain agents using native TypeScript language features, without needing to learn new abstractions.
 - **Agents as tools / Handoffs**: A powerful mechanism for coordinating and delegating work across multiple agents.
 - **Guardrails**: Run input validation and safety checks in parallel with agent execution, and fail fast when checks do not pass.
@@ -48,7 +50,6 @@ Here are the main features of the SDK:
 - **Sessions**: A persistent memory layer for maintaining working context within an agent loop.
 - **Human in the loop**: Built-in mechanisms for involving humans across agent runs.
 - **Tracing**: Built-in tracing for visualizing, debugging, and monitoring workflows, with support for the OpenAI suite of evaluation, fine-tuning, and distillation tools.
-- **Realtime Agents**: Build powerful voice agents with features such as automatic interruption detection, context management, guardrails, and more.
 
 ## Installation
 
@@ -64,27 +65,27 @@ Most first-time users only need one of these entry points:
 
 | Start with | Use it when | Notes |
 | --- | --- | --- |
-| `@openai/agents` | You are building most text, sandbox, or voice applications. | Recommended default. It includes the OpenAI provider setup, sandbox agent APIs under `@openai/agents/sandbox`, and voice APIs under `@openai/agents/realtime`. |
-| `@openai/agents-realtime` | You only need the standalone Realtime package. | Useful for browser-only voice apps or when you want a narrower package boundary. |
+| `@openai/agents` | You are building most text, sandbox, or realtime applications. | Recommended default. It includes the OpenAI provider setup, sandbox agent APIs under `@openai/agents/sandbox`, and realtime APIs under `@openai/agents/realtime`. |
+| `@openai/agents-realtime` | You only need the standalone Realtime package. | Useful for browser-only realtime apps or when you want a narrower package boundary. |
 | Lower-level packages (`@openai/agents-core`, `@openai/agents-openai`, `@openai/agents-extensions`) | You need lower-level composition, custom provider wiring, or specific integrations. | Most new users can ignore these until they have a concrete need. |
 
 ## Hello world examples
 
-Start with a sandbox agent when the agent should work in a filesystem. You can still use a regular `Agent` when your workflow does not need a sandbox workspace or sandbox lifecycle.
+Start with a regular `Agent` for text workflows. Use a sandbox agent when the agent should work in a filesystem or carry workspace state across longer tasks.
 
 <Tabs>
+  <TabItem label="Text Agent">
+    <Code
+      lang="typescript"
+      code={helloWorldExample}
+      title="Hello World with a text agent"
+    />
+  </TabItem>
   <TabItem label="Sandbox Agent">
     <Code
       lang="typescript"
       code={helloWorldSandboxExample}
       title="Hello World with a sandbox"
-    />
-  </TabItem>
-  <TabItem label="Without Sandbox">
-    <Code
-      lang="typescript"
-      code={helloWorldExample}
-      title="Hello World without a sandbox"
     />
   </TabItem>
 </Tabs>
@@ -106,15 +107,15 @@ Pick one path first, get it working end to end, then come back for the deeper gu
 />
 
 <LinkCard
-  title="Voice Agents Quickstart"
-  href="/openai-agents-js/guides/voice-agents/quickstart"
-  description="Start with the Realtime voice path when you are building spoken interactions."
-/>
-
-<LinkCard
   title="Sandbox agents"
   href="/openai-agents-js/guides/sandbox-agents"
   description="Start a sandbox agent when the agent needs files, shell commands, patches, or resumable sandbox state."
+/>
+
+<LinkCard
+  title="Realtime Agents Quickstart"
+  href="/openai-agents-js/guides/voice-agents/quickstart"
+  description="Start with Realtime agents when you are building spoken interactions."
 />
 
 ## Choose your path
@@ -130,4 +131,4 @@ Use this table when you know the job you want to do, but not which page explains
 | Keep memory across turns | [Running agents](/openai-agents-js/guides/running-agents) and [Sessions](/openai-agents-js/guides/sessions) |
 | Use OpenAI models, websocket transport, or non-OpenAI providers | [Models](/openai-agents-js/guides/models) |
 | Review outputs, run items, interruptions, and resume state | [Results](/openai-agents-js/guides/results) |
-| Build a low-latency voice agent | [Voice Agents Quickstart](/openai-agents-js/guides/voice-agents/quickstart) |
+| Build a low-latency realtime agent | [Realtime Agents Quickstart](/openai-agents-js/guides/voice-agents/quickstart) |

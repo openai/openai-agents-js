@@ -1,22 +1,30 @@
 import { z } from 'zod';
 import { Agent } from '../agent';
+import type { Handoff } from '../handoff';
 import { ModelBehaviorError, ModelRefusalError } from '../errors';
 import {
+  RunHandoffCallItem,
   RunItem,
   RunMessageOutputItem,
   RunToolApprovalItem,
+  RunToolCallItem,
   RunToolCallOutputItem,
 } from '../items';
-import logger from '../logger';
+import logger, { logToolActionWarning } from '../logger';
 import { ModelResponse } from '../model';
 import type { RunConfig, Runner, ToolErrorFormatter } from '../run';
 import { RunState } from '../runState';
 import {
+  getOutputText,
   getRefusalFromOutputMessage,
   getTextFromOutputMessage,
 } from '../utils/messages';
-import { getSchemaAndParserFromInputType } from '../utils/tools';
 import { safeExecute } from '../utils/safeExecute';
+import {
+  isDataRedactedError,
+  processFinalOutputWithRedaction,
+  REDACTED_FINAL_OUTPUT_ERROR_MESSAGE,
+} from '../utils/finalOutputError';
 import { addErrorToCurrentSpan } from '../tracing/context';
 import { NextStep, SingleStepResult, nextStepSchema } from './steps';
 import type {
@@ -38,22 +46,274 @@ import {
 } from './toolExecution';
 import { getRunStateTurnSpanParent } from './invocationContext';
 import { handleHostedMcpApprovals } from './mcpApprovals';
-import * as ProviderData from '../types/providerData';
 import * as protocol from '../types/protocol';
 import { AgentInputItem } from '../types';
-import type { FunctionToolResult } from '../tool';
-import { getFunctionToolQualifiedName } from '../toolIdentity';
+import type { FunctionTool, FunctionToolResult, Tool } from '../tool';
+import {
+  buildFunctionToolLookupMap,
+  getFunctionToolStateKey,
+  getFunctionToolStateKeyForCall,
+  getFunctionToolStateKeyForResolvedCall,
+  getFunctionToolStateKeys,
+  getToolCallNamespace,
+  resolveFunctionToolCall,
+  getHostedMcpApprovalRequestIdentity,
+  getHostedMcpApprovalRequestKey,
+} from '../toolIdentity';
 import type { RunErrorData, RunErrorHandlers } from './errorHandlers';
 import {
   createRunErrorFinalOutputItem,
   formatRunErrorFinalOutput,
+  preserveInvalidFinalOutputRedaction,
   resolveRunErrorHandler,
   validateRunErrorHandlerFinalOutput,
 } from './errorHandlers';
 import { getTurnInput } from './items';
+import {
+  buildApplyPatchAbortResult,
+  buildFunctionAbortResult,
+  buildShellAbortResult,
+} from './streamReconciliation';
+import { runWithSiblingCancellation } from './siblingCancellation';
+import {
+  getHandoffToolInvocationName,
+  getHostedMcpApprovalToolName,
+  getToolInvocationCallId,
+  getToolInvocationFingerprint,
+  type ApprovalCapableToolCall,
+} from '../toolInvocation';
 
 const DEFAULT_TOOL_NOT_FOUND_MESSAGE = (toolName: string) =>
   `Tool '${toolName}' not found.`;
+
+export function preflightModelResponseToolInvocations<TContext>(
+  agent: Agent<TContext, any>,
+  state: RunState<TContext, Agent<TContext, any>>,
+  modelResponse: ModelResponse,
+  tools: Tool<TContext>[],
+  handoffs: Handoff<any, any>[],
+): void {
+  const functionMap = buildFunctionToolLookupMap(
+    tools.filter(
+      (tool): tool is FunctionTool<TContext> => tool.type === 'function',
+    ),
+  );
+  const handoffMap = new Map(
+    handoffs.map((handoff) => [handoff.toolName, handoff]),
+  );
+  const computer = tools.find((tool) => tool.type === 'computer');
+  const shell = tools.find((tool) => tool.type === 'shell');
+  const applyPatch = tools.find((tool) => tool.type === 'apply_patch');
+  const seen = new Map<string, string>();
+  const validate = (
+    toolName: string | undefined,
+    rawItem: ApprovalCapableToolCall,
+  ) => {
+    if (!toolName) {
+      return;
+    }
+    const { callId, fingerprint } = state._context._validateToolInvocation(
+      agent,
+      toolName,
+      rawItem,
+    );
+    state._preflightToolInvocation(agent, callId, fingerprint);
+    const previous = seen.get(callId);
+    if (previous !== undefined && previous !== fingerprint) {
+      throw new ModelBehaviorError(
+        `Tool call ID ${callId} was reused for different tool invocations in the same model response.`,
+        state,
+      );
+    }
+    seen.set(callId, fingerprint);
+  };
+
+  for (const output of modelResponse.output) {
+    if (output.type === 'function_call') {
+      const handoff = !getToolCallNamespace(output)
+        ? handoffMap.get(output.name)
+        : undefined;
+      if (handoff) {
+        validate(getHandoffToolInvocationName(handoff.toolName), output);
+        continue;
+      }
+      const resolvedTool = resolveFunctionToolCall(output, functionMap);
+      validate(
+        resolvedTool
+          ? getFunctionToolStateKeyForResolvedCall(output, resolvedTool)
+          : getFunctionToolStateKeyForCall(output, output.name),
+        output,
+      );
+      continue;
+    }
+    if (output.type === 'computer_call') {
+      validate(computer?.name ?? 'computer', output);
+      continue;
+    }
+    if (output.type === 'shell_call') {
+      validate(shell?.name ?? 'shell', output);
+      continue;
+    }
+    if (output.type === 'apply_patch_call') {
+      validate(applyPatch?.name ?? 'apply_patch', output);
+      continue;
+    }
+    if (
+      output.type === 'hosted_tool_call' &&
+      (output.providerData?.type === 'mcp_approval_request' ||
+        output.name === 'mcp_approval_request')
+    ) {
+      const providerData = output.providerData as
+        { name?: unknown } | undefined;
+      validate(
+        typeof providerData?.name === 'string'
+          ? providerData.name
+          : output.name,
+        output,
+      );
+    }
+  }
+}
+
+export function preflightToolInvocations<TContext>(
+  agent: Agent<TContext, any>,
+  state: RunState<TContext, Agent<TContext, any>>,
+  processedResponse: ProcessedResponse<TContext>,
+): Set<ApprovalCapableToolCall> {
+  const suppressed = new Set<ApprovalCapableToolCall>();
+  const seen = new Map<string, string>();
+  const observe = (
+    toolName: string | undefined,
+    rawItem: ApprovalCapableToolCall,
+  ) => {
+    if (!toolName) {
+      return undefined;
+    }
+    const { callId, fingerprint } = state._context._validateToolInvocation(
+      agent,
+      toolName,
+      rawItem,
+    );
+    const completed = state._observeToolInvocation(agent, callId, fingerprint);
+    const previous = seen.get(callId);
+    const shouldSuppress = completed || previous === fingerprint;
+    if (shouldSuppress) {
+      suppressed.add(rawItem);
+    }
+    seen.set(callId, fingerprint);
+    return { callId, fingerprint, shouldSuppress };
+  };
+
+  for (const run of processedResponse.functions ?? []) {
+    observe(
+      getFunctionToolStateKey(run.tool) ??
+        getFunctionToolStateKeyForCall(run.toolCall, run.tool.name),
+      run.toolCall,
+    );
+  }
+  for (const run of processedResponse.functionToolsNotFound ?? []) {
+    observe(
+      getFunctionToolStateKeyForCall(run.toolCall, run.toolName),
+      run.toolCall,
+    );
+  }
+  for (const run of processedResponse.computerActions ?? []) {
+    observe(run.computer.name, run.toolCall);
+  }
+  for (const run of processedResponse.shellActions ?? []) {
+    observe(run.shell.name, run.toolCall);
+  }
+  for (const run of processedResponse.applyPatchActions ?? []) {
+    observe(run.applyPatch.name, run.toolCall);
+  }
+  const claimedHostedMcpItems = new Set<ApprovalCapableToolCall>();
+  for (const run of processedResponse.mcpApprovalRequests ?? []) {
+    const toolName = run.requestItem.name;
+    const observation = observe(toolName, run.requestItem.rawItem);
+    if (!toolName || !observation) {
+      continue;
+    }
+    const sourceRawItems: ApprovalCapableToolCall[] = [];
+    for (const item of processedResponse.newItems) {
+      if (
+        !(item instanceof RunToolCallItem) ||
+        item.rawItem.type !== 'hosted_tool_call'
+      ) {
+        continue;
+      }
+      const rawItem = item.rawItem;
+      if (claimedHostedMcpItems.has(rawItem)) {
+        continue;
+      }
+      const providerData = rawItem.providerData as
+        { type?: unknown; id?: unknown } | undefined;
+      const isApprovalRequest =
+        providerData?.type === 'mcp_approval_request' ||
+        rawItem.name === 'mcp_approval_request';
+      const sourceReferenceId =
+        typeof providerData?.id === 'string'
+          ? providerData.id
+          : getToolInvocationCallId(rawItem);
+      if (isApprovalRequest && sourceReferenceId === observation.callId) {
+        sourceRawItems.push(rawItem);
+      }
+    }
+    if (sourceRawItems.length !== 1) {
+      throw new ModelBehaviorError(
+        `Hosted MCP approval request ${observation.callId} does not have exactly one source tool invocation.`,
+      );
+    }
+    const sourceRawItem = sourceRawItems[0];
+    claimedHostedMcpItems.add(sourceRawItem);
+    if (
+      getToolInvocationFingerprint(toolName, sourceRawItem) !==
+      observation.fingerprint
+    ) {
+      throw new ModelBehaviorError(
+        `Hosted MCP approval request ${observation.callId} does not match its source tool invocation.`,
+      );
+    }
+    if (observation.shouldSuppress) {
+      suppressed.add(sourceRawItem);
+    }
+  }
+  for (const run of processedResponse.handoffs ?? []) {
+    observe(getHandoffToolInvocationName(run.handoff.toolName), run.toolCall);
+  }
+
+  return suppressed;
+}
+
+function isSuppressedToolCallItem(
+  item: RunItem,
+  suppressed: ReadonlySet<ApprovalCapableToolCall>,
+): boolean {
+  if (
+    !(item instanceof RunToolCallItem) &&
+    !(item instanceof RunHandoffCallItem) &&
+    !(item instanceof RunToolApprovalItem)
+  ) {
+    return false;
+  }
+  const rawItem = item.rawItem;
+  if (
+    rawItem.type !== 'function_call' &&
+    rawItem.type !== 'computer_call' &&
+    rawItem.type !== 'shell_call' &&
+    rawItem.type !== 'apply_patch_call' &&
+    rawItem.type !== 'hosted_tool_call'
+  ) {
+    return false;
+  }
+  return suppressed.has(rawItem);
+}
+
+export function filterSuppressedToolCallItems(
+  items: readonly RunItem[],
+  suppressed: ReadonlySet<ApprovalCapableToolCall>,
+): RunItem[] {
+  return items.filter((item) => !isSuppressedToolCallItem(item, suppressed));
+}
 
 async function resolveToolNotFoundMessage<TContext>(
   state: RunState<TContext, Agent<TContext, any>>,
@@ -84,9 +344,10 @@ async function resolveToolNotFoundMessage<TContext>(
       );
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.warn(
-      `toolErrorFormatter threw while formatting tool not found: ${message}`,
+    logToolActionWarning(
+      logger,
+      'toolErrorFormatter threw while formatting tool not found:',
+      error,
     );
   }
 
@@ -133,10 +394,7 @@ const APPROVAL_ITEM_TYPES = [
 ] as const;
 
 function isHostedMcpApprovalItem(item: RunToolApprovalItem): boolean {
-  return (
-    item.rawItem.type === 'hosted_tool_call' &&
-    item.rawItem.providerData?.type === 'mcp_approval_request'
-  );
+  return getHostedMcpApprovalRequestIdentity(item) !== undefined;
 }
 
 type ApprovalResolution = 'approved' | 'rejected' | 'pending';
@@ -144,6 +402,7 @@ type ApprovalResolution = 'approved' | 'rejected' | 'pending';
 function resolveApprovalState(
   item: RunToolApprovalItem,
   state: RunState<any, any>,
+  processedResponse: ProcessedResponse<any>,
 ): ApprovalResolution {
   if (isHostedMcpApprovalItem(item)) {
     return 'pending';
@@ -166,7 +425,34 @@ function resolveApprovalState(
     return 'pending';
   }
 
-  const approval = state._context.isToolApproved({ toolName, callId });
+  let toolNames = [toolName];
+  if (rawItem.type === 'function_call') {
+    const functionRun =
+      item.agent === state._currentAgent
+        ? processedResponse.functions.find(
+            (run) => run.toolCall.callId === callId,
+          )
+        : undefined;
+    if (functionRun) {
+      const stateKey = getFunctionToolStateKey(functionRun.tool);
+      toolNames = stateKey ? [stateKey] : toolNames;
+    } else {
+      const stateKey =
+        item.functionToolStateKey ??
+        getFunctionToolStateKeyForCall(rawItem, toolName);
+      toolNames = stateKey ? [stateKey] : toolNames;
+    }
+  }
+
+  const approval = toolNames
+    .map((candidate) =>
+      state._context._resolveToolInvocationApproval(
+        item.agent,
+        candidate,
+        rawItem,
+      ),
+    )
+    .find((decision) => typeof decision !== 'undefined');
   if (approval === true) {
     return 'approved';
   }
@@ -196,23 +482,32 @@ function isApprovalItemLike(value: unknown): value is ApprovalItemLike {
   );
 }
 
-function getApprovalIdentity(approval: ApprovalItemLike): string | undefined {
+type ApprovalIdentity = {
+  agent: Agent<any, any> | undefined;
+  value: string;
+};
+
+function getApprovalIdentity(
+  approval: ApprovalItemLike,
+): ApprovalIdentity | undefined {
   const rawItem = approval.rawItem;
   if (!rawItem) {
     return undefined;
   }
 
+  const agent = 'agent' in approval ? approval.agent : undefined;
+
   if (rawItem.type === 'function_call' && rawItem.callId) {
-    return `function_call:${rawItem.callId}`;
+    return { agent, value: `function_call:${rawItem.callId}` };
   }
 
   if ('callId' in rawItem && rawItem.callId) {
-    return `${rawItem.type}:${rawItem.callId}`;
+    return { agent, value: `${rawItem.type}:${rawItem.callId}` };
   }
 
   const id = 'id' in rawItem ? rawItem.id : undefined;
   if (id) {
-    return `${rawItem.type}:${id}`;
+    return { agent, value: `${rawItem.type}:${id}` };
   }
 
   const providerData =
@@ -220,32 +515,53 @@ function getApprovalIdentity(approval: ApprovalItemLike): string | undefined {
       ? (rawItem.providerData as { id?: string })
       : undefined;
   if (providerData?.id) {
-    return `${rawItem.type}:provider:${providerData.id}`;
+    return { agent, value: `${rawItem.type}:provider:${providerData.id}` };
   }
 
   const agentName =
     'agent' in approval && approval.agent ? approval.agent.name : '';
 
   try {
-    return `${agentName}:${rawItem.type}:${JSON.stringify(rawItem)}`;
+    return {
+      agent,
+      value: `${agentName}:${rawItem.type}:${JSON.stringify(rawItem)}`,
+    };
   } catch {
-    return `${agentName}:${rawItem.type}`;
+    return { agent, value: `${agentName}:${rawItem.type}` };
   }
+}
+
+type ApprovalIdentityMap = Map<Agent<any, any> | undefined, Set<string>>;
+
+function hasApprovalIdentity(
+  identities: ApprovalIdentityMap,
+  identity: ApprovalIdentity,
+): boolean {
+  return identities.get(identity.agent)?.has(identity.value) ?? false;
+}
+
+function addApprovalIdentity(
+  identities: ApprovalIdentityMap,
+  identity: ApprovalIdentity,
+): void {
+  const values = identities.get(identity.agent) ?? new Set<string>();
+  values.add(identity.value);
+  identities.set(identity.agent, values);
 }
 
 type AppendContext = {
   seenItems: Set<RunItem>;
-  seenApprovalIdentities: Set<string>;
+  seenApprovalIdentities: ApprovalIdentityMap;
 };
 
 function buildAppendContext(existingItems: RunItem[]): AppendContext {
   const seenItems = new Set<RunItem>(existingItems);
-  const seenApprovalIdentities = new Set<string>();
+  const seenApprovalIdentities: ApprovalIdentityMap = new Map();
   for (const item of existingItems) {
     if (item instanceof RunToolApprovalItem) {
       const identity = getApprovalIdentity(item);
       if (identity) {
-        seenApprovalIdentities.add(identity);
+        addApprovalIdentity(seenApprovalIdentities, identity);
       }
     }
   }
@@ -263,10 +579,10 @@ function appendRunItemIfNew(
   if (item instanceof RunToolApprovalItem) {
     const identity = getApprovalIdentity(item);
     if (identity) {
-      if (context.seenApprovalIdentities.has(identity)) {
+      if (hasApprovalIdentity(context.seenApprovalIdentities, identity)) {
         return;
       }
-      context.seenApprovalIdentities.add(identity);
+      addApprovalIdentity(context.seenApprovalIdentities, identity);
     }
   }
   context.seenItems.add(item);
@@ -294,7 +610,11 @@ function buildApprovedCallIdSet(
   return callIds;
 }
 
-function collectCompletedCallIds(items: RunItem[], type: string): Set<string> {
+function collectCompletedCallIds(
+  items: RunItem[],
+  type: string,
+  agent?: Agent<any, any>,
+): Set<string> {
   const completed = new Set<string>();
   for (const item of items) {
     const rawItem = item.rawItem;
@@ -302,6 +622,9 @@ function collectCompletedCallIds(items: RunItem[], type: string): Set<string> {
       continue;
     }
     if ((rawItem as { type?: string }).type !== type) {
+      continue;
+    }
+    if (agent && (!('agent' in item) || item.agent !== agent)) {
       continue;
     }
     const callId = (rawItem as { callId?: unknown }).callId;
@@ -483,6 +806,7 @@ async function executeShellAndApplyPatchActionsInOrder<TContext>(args: {
   runner: Runner;
   state: RunState<TContext, Agent<TContext, any>>;
   toolErrorFormatter?: ToolErrorFormatter;
+  signal?: AbortSignal;
 }): Promise<RunItem[]> {
   const results: RunItem[] = [];
   for (const action of orderShellAndApplyPatchActions(
@@ -490,6 +814,14 @@ async function executeShellAndApplyPatchActionsInOrder<TContext>(args: {
     args.shellActions,
     args.applyPatchActions,
   )) {
+    if (args.signal?.aborted) {
+      const rawItem =
+        action.type === 'shell'
+          ? buildShellAbortResult(action.action.toolCall)
+          : buildApplyPatchAbortResult(action.action.toolCall);
+      results.push(new RunToolCallOutputItem(rawItem, args.agent, 'aborted'));
+      continue;
+    }
     const items =
       action.type === 'shell'
         ? await executeShellActions(
@@ -586,32 +918,39 @@ async function resolveInvalidFinalOutput<
   newItems: RunItem[];
   state: RunState<TContext, TAgent>;
 }): Promise<string | undefined> {
-  const handlerResult = await resolveRunErrorHandler({
-    error: args.error,
-    errorKind: 'invalidFinalOutput',
-    errorHandlers: args.errorHandlers,
-    context: args.state._context,
-    runData: buildTurnRunErrorData(
-      args.state,
-      args.agent,
-      args.originalInput,
-      args.preStepItems,
-      args.newItems,
-    ),
-  });
-  if (!handlerResult) {
-    return undefined;
-  }
+  return preserveInvalidFinalOutputRedaction(async (redactFromStart) => {
+    const handlerResult = await resolveRunErrorHandler({
+      error: args.error,
+      errorKind: 'invalidFinalOutput',
+      errorHandlers: args.errorHandlers,
+      context: args.state._context,
+      runData: buildTurnRunErrorData(
+        args.state,
+        args.agent,
+        args.originalInput,
+        args.preStepItems,
+        args.newItems,
+      ),
+    });
+    if (!handlerResult) {
+      return undefined;
+    }
 
-  const outputText = formatRunErrorFinalOutput(
-    args.agent,
-    handlerResult.finalOutput,
-  );
-  validateRunErrorHandlerFinalOutput(args.agent, outputText);
-  if (handlerResult.includeInHistory !== false) {
-    args.newItems.push(createRunErrorFinalOutputItem(args.agent, outputText));
-  }
-  return outputText;
+    const outputText = formatRunErrorFinalOutput(
+      args.agent,
+      handlerResult.finalOutput,
+    );
+    validateRunErrorHandlerFinalOutput(
+      args.agent,
+      outputText,
+      true,
+      redactFromStart,
+    );
+    if (handlerResult.includeInHistory !== false) {
+      args.newItems.push(createRunErrorFinalOutputItem(args.agent, outputText));
+    }
+    return outputText;
+  }, isDataRedactedError(args.error));
 }
 
 /**
@@ -629,12 +968,19 @@ export async function resolveInterruptedTurn<TContext>(
   state: RunState<TContext, Agent<TContext, any>>,
   toolErrorFormatter?: ToolErrorFormatter,
   agentToolParentRunConfig?: Partial<RunConfig>,
+  signal?: AbortSignal,
 ): Promise<SingleStepResult> {
+  const suppressedToolCalls = preflightToolInvocations(
+    agent,
+    state,
+    processedResponse as ProcessedResponse<TContext>,
+  );
   // call_ids for function tools
   const functionCallIds = originalPreStepItems
     .filter(
       (item) =>
         item instanceof RunToolApprovalItem &&
+        item.agent === agent &&
         'callId' in item.rawItem &&
         item.rawItem.type === 'function_call',
     )
@@ -643,6 +989,7 @@ export async function resolveInterruptedTurn<TContext>(
   const completedFunctionCallIds = collectCompletedCallIds(
     originalPreStepItems,
     'function_call_result',
+    agent,
   );
   const completedComputerCallIds = collectCompletedCallIds(
     originalPreStepItems,
@@ -664,7 +1011,7 @@ export async function resolveInterruptedTurn<TContext>(
     .getInterruptions()
     .filter(isApprovalItemLike);
 
-  const pendingApprovalIdentities = new Set<string>();
+  const pendingApprovalIdentities: ApprovalIdentityMap = new Map();
   for (const approval of pendingApprovalItems) {
     if (!(approval instanceof RunToolApprovalItem)) {
       continue;
@@ -675,6 +1022,7 @@ export async function resolveInterruptedTurn<TContext>(
     const rawItem = approval.rawItem;
     if (
       rawItem.type === 'function_call' &&
+      approval.agent === agent &&
       rawItem.callId &&
       completedFunctionCallIds.has(rawItem.callId)
     ) {
@@ -703,22 +1051,27 @@ export async function resolveInterruptedTurn<TContext>(
     }
     const identity = getApprovalIdentity(approval);
     if (identity) {
-      if (resolveApprovalState(approval, state) === 'pending') {
-        pendingApprovalIdentities.add(identity);
+      if (
+        resolveApprovalState(approval, state, processedResponse) === 'pending'
+      ) {
+        addApprovalIdentity(pendingApprovalIdentities, identity);
       }
     }
   }
   // Run function tools that require approval or are resuming a nested agent tool run.
   const functionToolRuns = processedResponse.functions.filter((run) => {
+    if (suppressedToolCalls.has(run.toolCall)) {
+      return false;
+    }
     const callId = run.toolCall.callId;
     if (!callId) {
       return false;
     }
     const isApprovedCall = functionCallIds.includes(callId);
-    const isPendingNested = state.hasPendingAgentToolRun(
-      getFunctionToolQualifiedName(run.tool) ?? run.tool.name,
-      callId,
-    );
+    const isPendingNested = getFunctionToolStateKeys(
+      run.tool,
+      run.availableFunctionTools ?? [run.tool],
+    ).some((stateKey) => state.hasPendingAgentToolRun(stateKey, callId));
     if (!isApprovedCall && !isPendingNested) {
       return false;
     }
@@ -728,7 +1081,9 @@ export async function resolveInterruptedTurn<TContext>(
   const shellRuns = filterPendingActions(
     filterActionsByApproval(
       originalPreStepItems,
-      processedResponse.shellActions,
+      (processedResponse.shellActions ?? []).filter(
+        (run) => !suppressedToolCalls.has(run.toolCall),
+      ),
       'shell_call',
     ),
     {
@@ -739,7 +1094,9 @@ export async function resolveInterruptedTurn<TContext>(
   const pendingComputerActions = filterPendingActions(
     filterActionsByApproval(
       originalPreStepItems,
-      processedResponse.computerActions,
+      (processedResponse.computerActions ?? []).filter(
+        (run) => !suppressedToolCalls.has(run.toolCall),
+      ),
       'computer_call',
     ),
     {
@@ -750,7 +1107,9 @@ export async function resolveInterruptedTurn<TContext>(
   const applyPatchRuns = filterPendingActions(
     filterActionsByApproval(
       originalPreStepItems,
-      processedResponse.applyPatchActions,
+      (processedResponse.applyPatchActions ?? []).filter(
+        (run) => !suppressedToolCalls.has(run.toolCall),
+      ),
       'apply_patch_call',
     ),
     {
@@ -765,6 +1124,7 @@ export async function resolveInterruptedTurn<TContext>(
     state,
     toolErrorFormatter,
     agentToolParentRunConfig,
+    signal,
   );
 
   // Computer actions may require approval; only pending approved actions are executed on resume.
@@ -777,6 +1137,7 @@ export async function resolveInterruptedTurn<TContext>(
           state._context,
           undefined,
           toolErrorFormatter,
+          signal,
         )
       : [];
 
@@ -790,10 +1151,13 @@ export async function resolveInterruptedTurn<TContext>(
           runner,
           state,
           toolErrorFormatter,
+          signal,
         })
       : [];
   const pendingFunctionToolsNotFound = filterPendingActions(
-    processedResponse.functionToolsNotFound ?? [],
+    (processedResponse.functionToolsNotFound ?? []).filter(
+      (run) => !suppressedToolCalls.has(run.toolCall),
+    ),
     {
       completedCallIds: completedFunctionCallIds,
     },
@@ -839,23 +1203,29 @@ export async function resolveInterruptedTurn<TContext>(
   );
 
   const hostedMcpApprovals = await handleHostedMcpApprovals({
-    requests: processedResponse.mcpApprovalRequests,
+    requests: (processedResponse.mcpApprovalRequests ?? []).filter(
+      (run) => !suppressedToolCalls.has(run.requestItem.rawItem),
+    ),
     agent,
     state,
     functionResults,
     appendIfNew,
     resolveApproval: (rawItem) => {
-      const providerData =
-        rawItem.providerData as ProviderData.HostedMCPApprovalRequest;
-      const approvalRequestId = rawItem.id ?? providerData?.id;
-      if (!approvalRequestId) {
+      if (!getHostedMcpApprovalRequestIdentity(rawItem)?.requestId) {
         return undefined;
       }
-      return state._context.isToolApproved({
-        toolName: rawItem.name,
-        callId: approvalRequestId,
-      });
+      return state._context._resolveToolInvocationApproval(
+        agent,
+        getHostedMcpApprovalToolName(rawItem.name, rawItem),
+        rawItem,
+      );
     },
+    resolveRejectionMessage: (rawItem) =>
+      state._context._getToolInvocationRejectionMessage(
+        agent,
+        getHostedMcpApprovalToolName(rawItem.name, rawItem),
+        rawItem,
+      ),
   });
 
   // Server-managed conversations rely on preStepItems to re-surface pending approvals.
@@ -871,16 +1241,16 @@ export async function resolveInterruptedTurn<TContext>(
       if (hostedMcpApprovals.pendingApprovals.has(item)) {
         return true;
       }
-      const approvalRequestId =
-        item.rawItem.id ??
-        (
-          item.rawItem.providerData as
-            ProviderData.HostedMCPApprovalRequest | undefined
-        )?.id;
-      if (approvalRequestId) {
-        return hostedMcpApprovals.pendingApprovalIds.has(approvalRequestId);
+      const approvalIdentity = getHostedMcpApprovalRequestIdentity(
+        item.rawItem,
+      );
+      const approvalRequestKey = approvalIdentity
+        ? getHostedMcpApprovalRequestKey(approvalIdentity)
+        : undefined;
+      if (approvalRequestKey) {
+        return hostedMcpApprovals.pendingApprovalKeys.has(approvalRequestKey);
       }
-      return false;
+      return true;
     }
 
     // Preserve all other approval items so resumptions can continue to reference the
@@ -889,7 +1259,7 @@ export async function resolveInterruptedTurn<TContext>(
     if (!identity) {
       return true;
     }
-    return pendingApprovalIdentities.has(identity);
+    return hasApprovalIdentity(pendingApprovalIdentities, identity);
   });
 
   const keptApprovalItems = new Set<RunToolApprovalItem>();
@@ -955,7 +1325,12 @@ export async function resolveTurnAfterModelResponse<
   toolErrorFormatter?: ToolErrorFormatter,
   agentToolParentRunConfig?: Partial<RunConfig>,
   errorHandlers?: RunErrorHandlers<TContext, TAgent>,
+  signal?: AbortSignal,
+  preflightedToolCalls?: ReadonlySet<ApprovalCapableToolCall>,
 ): Promise<SingleStepResult> {
+  const suppressedToolCalls =
+    preflightedToolCalls ??
+    preflightToolInvocations(agent, state, processedResponse);
   // Reuse the same array reference so we can compare object identity when deciding whether to
   // append new items, ensuring we never double-stream existing RunItems.
   const preStepItems = originalPreStepItems;
@@ -965,46 +1340,86 @@ export async function resolveTurnAfterModelResponse<
     appendRunItemIfNew(item, newItems, appendContext);
 
   for (const item of processedResponse.newItems) {
+    if (isSuppressedToolCallItem(item, suppressedToolCalls)) {
+      continue;
+    }
     appendIfNew(item);
   }
 
   // Run function tools and computer actions in parallel; neither depends on the other's side effects.
   // Shell and apply_patch actions both mutate the sandbox filesystem, so preserve model order.
-  const [functionResults, computerResults] = await Promise.all([
+  const runFunctionTools = (
+    executionSignal = signal,
+    cancelSiblingCategories?: () => void,
+  ) =>
     executeFunctionToolCalls(
       agent,
-      processedResponse.functions,
+      processedResponse.functions.filter(
+        (run) => !suppressedToolCalls.has(run.toolCall),
+      ),
       runner,
       state,
       toolErrorFormatter,
       agentToolParentRunConfig,
-    ),
+      executionSignal,
+      cancelSiblingCategories,
+    );
+  const runComputerActions = (
+    executionSignal = signal,
+    cancelSiblingCategories?: (error?: unknown) => void,
+  ) =>
     executeComputerActions(
       agent,
-      processedResponse.computerActions,
+      processedResponse.computerActions.filter(
+        (run) => !suppressedToolCalls.has(run.toolCall),
+      ),
       runner,
       state._context,
       undefined,
       toolErrorFormatter,
-    ),
-  ]);
+      executionSignal,
+      cancelSiblingCategories,
+    );
+  const [functionResults, computerResults] =
+    processedResponse.functions.some(
+      (run) => !suppressedToolCalls.has(run.toolCall),
+    ) &&
+    processedResponse.computerActions.some(
+      (run) => !suppressedToolCalls.has(run.toolCall),
+    )
+      ? await runWithSiblingCancellation(
+          [runFunctionTools, runComputerActions],
+          signal,
+        )
+      : await Promise.all([runFunctionTools(), runComputerActions()]);
   const shellAndApplyPatchResults =
-    processedResponse.shellActions.length > 0 ||
-    processedResponse.applyPatchActions.length > 0
+    processedResponse.shellActions.some(
+      (run) => !suppressedToolCalls.has(run.toolCall),
+    ) ||
+    processedResponse.applyPatchActions.some(
+      (run) => !suppressedToolCalls.has(run.toolCall),
+    )
       ? await executeShellAndApplyPatchActionsInOrder({
           agent,
           sourceItems: processedResponse.newItems,
-          shellActions: processedResponse.shellActions,
-          applyPatchActions: processedResponse.applyPatchActions,
+          shellActions: processedResponse.shellActions.filter(
+            (run) => !suppressedToolCalls.has(run.toolCall),
+          ),
+          applyPatchActions: processedResponse.applyPatchActions.filter(
+            (run) => !suppressedToolCalls.has(run.toolCall),
+          ),
           runner,
           state,
           toolErrorFormatter,
+          signal,
         })
       : [];
   const toolNotFoundResults = await buildToolNotFoundOutputItems(
     agent,
     state,
-    processedResponse.functionToolsNotFound ?? [],
+    (processedResponse.functionToolsNotFound ?? []).filter(
+      (run) => !suppressedToolCalls.has(run.toolCall),
+    ),
     toolErrorFormatter,
   );
 
@@ -1035,39 +1450,55 @@ export async function resolveTurnAfterModelResponse<
 
   if (processedResponse.mcpApprovalRequests.length > 0) {
     await handleHostedMcpApprovals({
-      requests: processedResponse.mcpApprovalRequests,
+      requests: processedResponse.mcpApprovalRequests.filter(
+        (run) => !suppressedToolCalls.has(run.requestItem.rawItem),
+      ),
       agent,
       state,
       functionResults,
       appendIfNew,
       resolveApproval: (rawItem) => {
-        const providerData =
-          rawItem.providerData as ProviderData.HostedMCPApprovalRequest;
-        const approvalRequestId = rawItem.id ?? providerData?.id;
-        if (!approvalRequestId) {
+        if (!getHostedMcpApprovalRequestIdentity(rawItem)?.requestId) {
           return undefined;
         }
-        return state._context.isToolApproved({
-          toolName: rawItem.name,
-          callId: approvalRequestId,
-        });
+        return state._context._resolveToolInvocationApproval(
+          agent,
+          getHostedMcpApprovalToolName(rawItem.name, rawItem),
+          rawItem,
+        );
       },
+      resolveRejectionMessage: (rawItem) =>
+        state._context._getToolInvocationRejectionMessage(
+          agent,
+          getHostedMcpApprovalToolName(rawItem.name, rawItem),
+          rawItem,
+        ),
     });
   }
 
   // process handoffs
-  if (processedResponse.handoffs.length > 0) {
-    return await executeHandoffCalls(
-      agent,
-      originalInput,
-      preStepItems,
-      newItems,
-      newResponse,
-      processedResponse.handoffs as ToolRunHandoff[],
-      runner,
-      state._context,
-      getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
-    );
+  const handoffRuns = processedResponse.handoffs.filter(
+    (run) => !suppressedToolCalls.has(run.toolCall),
+  );
+  if (handoffRuns.length > 0) {
+    if (signal?.aborted) {
+      for (const { toolCall } of handoffRuns) {
+        const rawItem = buildFunctionAbortResult(toolCall);
+        appendIfNew(new RunToolCallOutputItem(rawItem, agent, rawItem.output));
+      }
+    } else {
+      return await executeHandoffCalls(
+        agent,
+        originalInput,
+        preStepItems,
+        newItems,
+        newResponse,
+        handoffRuns as ToolRunHandoff[],
+        runner,
+        state._context,
+        getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
+      );
+    }
   }
 
   const completedStep = await maybeCompleteTurnFromToolResults({
@@ -1103,11 +1534,17 @@ export async function resolveTurnAfterModelResponse<
     (item) => item instanceof RunMessageOutputItem,
   );
 
-  // we will use the last content output as the final output
-  const potentialFinalOutput =
+  // A model response may split assistant text across multiple messages around
+  // non-message output items such as reasoning. Preserve all of that text while
+  // retaining the last message's refusal semantics.
+  const lastMessageText =
     messageItems.length > 0
       ? getTextFromOutputMessage(messageItems[messageItems.length - 1].rawItem)
       : undefined;
+  const potentialFinalOutput =
+    typeof lastMessageText === 'undefined'
+      ? undefined
+      : getOutputText(newResponse) || lastMessageText;
 
   // Keep looping if any tool output placeholders still require an approval follow-up.
   const hasPendingToolsOrApprovals =
@@ -1213,20 +1650,27 @@ export async function resolveTurnAfterModelResponse<
 
     if (agent.outputType !== 'text' && potentialFinalOutput) {
       // Structured output schema => always leads to a final output if we have text.
-      const { parser } = getSchemaAndParserFromInputType(
-        agent.outputType,
-        'final_output',
+      const [error] = await safeExecute(() =>
+        processFinalOutputWithRedaction(() =>
+          agent.processFinalOutput(potentialFinalOutput),
+        ),
       );
-      const [error] = await safeExecute(() => parser(potentialFinalOutput));
       if (error) {
-        const outputErrorMessage = formatFinalOutputTypeError(error);
+        const redacted = isDataRedactedError(error);
+        const outputErrorMessage = redacted
+          ? error.message
+          : formatFinalOutputTypeError(error);
+        const includeTraceErrorDetails =
+          runner.config.traceIncludeSensitiveData && !redacted;
         addErrorToCurrentSpan({
-          message: outputErrorMessage,
-          data: {
-            error: String(error),
-          },
+          message: includeTraceErrorDetails
+            ? outputErrorMessage
+            : REDACTED_FINAL_OUTPUT_ERROR_MESSAGE,
+          data: includeTraceErrorDetails ? { error: String(error) } : {},
         });
-        const outputError = new ModelBehaviorError(outputErrorMessage);
+        const outputError = redacted
+          ? (error as ModelBehaviorError)
+          : new ModelBehaviorError(outputErrorMessage);
         const handledOutput = await resolveInvalidFinalOutput({
           error: outputError,
           errorHandlers,

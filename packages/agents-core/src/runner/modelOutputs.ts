@@ -2,6 +2,7 @@ import { Agent } from '../agent';
 import { ModelBehaviorError } from '../errors';
 import { Handoff } from '../handoff';
 import {
+  RunCompactionItem,
   RunHandoffCallItem,
   RunItem,
   RunMessageOutputItem,
@@ -25,15 +26,17 @@ import {
   Tool,
   type ToolAllowedCaller,
   getClientToolSearchExecutor,
-  getToolSearchRuntimeToolKey,
+  getToolSearchRuntimeRoutingKey,
 } from '../tool';
 import * as ProviderData from '../types/providerData';
 import { addErrorToCurrentSpan } from '../tracing/context';
 import {
-  getFunctionToolQualifiedName,
+  buildFunctionToolLookupMap,
+  type FunctionToolLookupKey,
   getFunctionToolNamespace,
+  getFunctionToolQualifiedName,
   getToolCallNamespace,
-  resolveFunctionToolCallName,
+  resolveFunctionToolCall,
 } from '../toolIdentity';
 import {
   getToolSearchMatchKey,
@@ -51,6 +54,7 @@ import type {
   ToolRunMCPApprovalRequest,
   ToolRunShell,
 } from './types';
+import { createToolRunFunction } from './types';
 import type { ToolNotFoundBehavior } from '../run';
 import * as protocol from '../types/protocol';
 import {
@@ -59,8 +63,10 @@ import {
   createBuiltInClientToolSearchOutput,
   executeCustomClientToolSearch,
   getClientToolSearchHelper,
+  registerRuntimeToolSearchTools,
 } from './toolSearch';
 import { ensureToolCallerAllowed } from './toolCaller';
+import { assertValidCompactionItems } from './items';
 
 function ensureToolAvailable<T>(
   tool: T | undefined,
@@ -103,6 +109,7 @@ function ensureProgrammaticToolCallingAvailable<TContext>(
 
 type ModelResponseProcessingOptions = {
   allowPromptSuppliedTools?: boolean;
+  beforeClientToolSearch?: () => void;
 };
 
 const MCP_HOSTED_CALL_TYPES = new Set([
@@ -248,42 +255,29 @@ function recordHandoffRequest(
 function resolveFunctionOrHandoff(
   toolCall: protocol.FunctionCallItem,
   handoffMap: Map<string, Handoff<any, any>>,
-  functionMap: Map<string, FunctionTool<any>>,
-  agent: Agent<any, any>,
+  functionMap: Map<FunctionToolLookupKey, FunctionTool<any>>,
 ):
   | { type: 'handoff'; handoff: Handoff<any, any> }
   | { type: 'function'; tool: FunctionTool<any> }
   | { type: 'not_found'; toolName: string } {
-  const resolvedToolName =
-    resolveFunctionToolCallName(toolCall, functionMap) ?? toolCall.name;
   const namespace = getToolCallNamespace(toolCall);
-  if (!namespace && typeof resolvedToolName === 'string') {
-    const functionTool = functionMap.get(resolvedToolName);
+  if (!namespace) {
     const handoff = handoffMap.get(toolCall.name);
-    if (functionTool && handoff && resolvedToolName.includes('.')) {
-      const message = `Ambiguous dotted tool call ${resolvedToolName} in agent ${agent.name}: it matches both a namespaced function tool and a handoff. Rename one of them or emit the function call with explicit namespace metadata.`;
-      addErrorToCurrentSpan({
-        message,
-        data: {
-          tool_name: resolvedToolName,
-          agent_name: agent.name,
-        },
-      });
-      throw new ModelBehaviorError(message);
-    }
-
-    if (functionTool && resolvedToolName.includes('.')) {
-      return { type: 'function', tool: functionTool };
-    }
-
     if (handoff) {
       return { type: 'handoff', handoff };
     }
   }
 
-  const functionTool = functionMap.get(resolvedToolName);
+  const functionTool = resolveFunctionToolCall(toolCall, functionMap);
   if (!functionTool) {
-    return { type: 'not_found', toolName: resolvedToolName };
+    return {
+      type: 'not_found',
+      toolName:
+        getToolCallNamespace(toolCall) &&
+        getToolCallNamespace(toolCall) !== toolCall.name
+          ? `${getToolCallNamespace(toolCall)}.${toolCall.name}`
+          : toolCall.name,
+    };
   }
   return { type: 'function', tool: functionTool };
 }
@@ -453,149 +447,82 @@ function seedHostedMcpToolsFromLoadedDeferredToolState(
 
 function buildFunctionToolMap<TContext>(
   tools: Tool<TContext>[],
-): Map<string, FunctionTool<TContext>> {
-  return new Map(
-    tools
-      .filter((t): t is FunctionTool<TContext> => t.type === 'function')
-      .map((t) => [getFunctionToolQualifiedName(t) ?? t.name, t]),
+): Map<FunctionToolLookupKey, FunctionTool<TContext>> {
+  return buildFunctionToolLookupMap(
+    tools.filter((t): t is FunctionTool<TContext> => t.type === 'function'),
   );
-}
-
-function registerRuntimeToolSearchTools<TContext>(args: {
-  availableTools: Tool<TContext>[];
-  functionMap: Map<string, FunctionTool<TContext>>;
-  mcpToolMap: Map<string, HostedMCPTool>;
-  replaceableRuntimeToolKeys?: Set<string>;
-  runtimeTools: Tool<TContext>[];
-}): Tool<TContext>[] {
-  const {
-    availableTools,
-    functionMap,
-    mcpToolMap,
-    replaceableRuntimeToolKeys,
-    runtimeTools,
-  } = args;
-  const availableToolsByKey = new Map<string, Tool<TContext>>();
-  for (const tool of availableTools) {
-    const key = getToolSearchRuntimeToolKey(tool);
-    if (key) {
-      availableToolsByKey.set(key, tool);
-    }
-  }
-
-  const novelTools: Tool<TContext>[] = [];
-  for (const runtimeTool of runtimeTools) {
-    const runtimeToolKey = getToolSearchRuntimeToolKey(runtimeTool);
-    if (!runtimeToolKey) {
-      throw new ModelBehaviorError(
-        'Client tool_search execute() returned an unsupported tool type.',
-      );
-    }
-
-    const existingTool = availableToolsByKey.get(runtimeToolKey);
-    if (existingTool && existingTool !== runtimeTool) {
-      if (!replaceableRuntimeToolKeys?.has(runtimeToolKey)) {
-        throw new ModelBehaviorError(
-          `Client tool_search execute() returned tool "${runtimeToolKey}" that conflicts with an existing available tool.`,
-        );
-      }
-    } else if (existingTool === runtimeTool) {
-      continue;
-    }
-
-    availableToolsByKey.set(runtimeToolKey, runtimeTool);
-    novelTools.push(runtimeTool);
-    if (runtimeTool.type === 'function') {
-      functionMap.set(
-        getFunctionToolQualifiedName(runtimeTool) ?? runtimeTool.name,
-        runtimeTool,
-      );
-      continue;
-    }
-
-    if (
-      runtimeTool.type === 'hosted_tool' &&
-      runtimeTool.providerData?.type === 'mcp'
-    ) {
-      mcpToolMap.set(
-        runtimeTool.providerData.server_label,
-        runtimeTool as HostedMCPTool,
-      );
-      continue;
-    }
-
-    throw new ModelBehaviorError(
-      'Client tool_search execute() returned an unsupported tool type.',
-    );
-  }
-
-  return novelTools;
 }
 
 type GeneratedClientToolSearchOutput<TContext> = {
   output: protocol.ToolSearchOutputItem;
   runtimeTools: Tool<TContext>[];
+  callbackRuntimeTools: Tool<TContext>[];
 };
+
+function getUnresolvedClientToolSearchCalls(
+  modelResponse: ModelResponse,
+  hasClientToolSearchTool: boolean,
+): protocol.ToolSearchCallItem[] {
+  const clientToolSearchCalls: protocol.ToolSearchCallItem[] = [];
+  const pendingCalls: protocol.ToolSearchCallItem[] = [];
+  const latestCallByMatchKey = new Map<string, protocol.ToolSearchCallItem>();
+  const resolvedCalls = new Set<protocol.ToolSearchCallItem>();
+
+  for (const output of modelResponse.output) {
+    if (output.type === 'tool_search_call') {
+      const execution = getToolSearchExecution(output);
+      if (
+        execution === 'client' ||
+        (typeof execution === 'undefined' && hasClientToolSearchTool)
+      ) {
+        clientToolSearchCalls.push(output);
+        pendingCalls.push(output);
+        const matchKey = getToolSearchMatchKey(output);
+        if (matchKey) {
+          latestCallByMatchKey.set(matchKey, output);
+        }
+      }
+      continue;
+    }
+    if (
+      output.type !== 'tool_search_output' ||
+      getToolSearchExecution(output) === 'server'
+    ) {
+      continue;
+    }
+
+    const explicitCallId = getToolSearchProviderCallId(output);
+    const matchedCall = explicitCallId
+      ? latestCallByMatchKey.get(explicitCallId)
+      : pendingCalls.shift();
+    if (!matchedCall) {
+      continue;
+    }
+    resolvedCalls.add(matchedCall);
+    const pendingIndex = pendingCalls.indexOf(matchedCall);
+    if (pendingIndex >= 0) {
+      pendingCalls.splice(pendingIndex, 1);
+    }
+  }
+
+  return clientToolSearchCalls.filter((call) => !resolvedCalls.has(call));
+}
 
 function buildGeneratedClientToolSearchOutputMap<TContext>(
   modelResponse: ModelResponse,
   tools: Tool<TContext>[],
   hasClientToolSearchTool: boolean,
 ): Map<protocol.ToolSearchCallItem, protocol.ToolSearchOutputItem> {
-  const clientToolSearchCalls: protocol.ToolSearchCallItem[] = [];
-  const pendingClientToolSearchMatchKeys: string[] = [];
-  const resolvedToolSearchCallIds = new Set<string>();
-
-  for (const output of modelResponse.output) {
-    if (output.type === 'tool_search_call') {
-      const toolSearchExecution = getToolSearchExecution(output);
-      if (
-        toolSearchExecution === 'client' ||
-        (typeof toolSearchExecution === 'undefined' && hasClientToolSearchTool)
-      ) {
-        clientToolSearchCalls.push(output);
-        const matchKey = getToolSearchMatchKey(output);
-        if (matchKey) {
-          pendingClientToolSearchMatchKeys.push(matchKey);
-        }
-      }
-      continue;
-    }
-
-    if (output.type !== 'tool_search_output') {
-      continue;
-    }
-
-    const explicitCallId = getToolSearchProviderCallId(output);
-    const toolSearchExecution = getToolSearchExecution(output);
-    if (explicitCallId) {
-      resolvedToolSearchCallIds.add(explicitCallId);
-      const pendingIndex =
-        pendingClientToolSearchMatchKeys.indexOf(explicitCallId);
-      if (pendingIndex >= 0) {
-        pendingClientToolSearchMatchKeys.splice(pendingIndex, 1);
-      }
-      continue;
-    }
-
-    if (toolSearchExecution !== 'server') {
-      const pendingMatchKey = pendingClientToolSearchMatchKeys.shift();
-      if (pendingMatchKey) {
-        resolvedToolSearchCallIds.add(pendingMatchKey);
-      }
-    }
-  }
+  const clientToolSearchCalls = getUnresolvedClientToolSearchCalls(
+    modelResponse,
+    hasClientToolSearchTool,
+  );
 
   const generatedOutputs = new Map<
     protocol.ToolSearchCallItem,
     protocol.ToolSearchOutputItem
   >();
   for (const toolSearchCall of clientToolSearchCalls) {
-    const matchKey = getToolSearchMatchKey(toolSearchCall);
-    if (matchKey && resolvedToolSearchCallIds.has(matchKey)) {
-      continue;
-    }
-
     generatedOutputs.set(
       toolSearchCall,
       createBuiltInClientToolSearchOutput(toolSearchCall, tools),
@@ -607,70 +534,51 @@ function buildGeneratedClientToolSearchOutputMap<TContext>(
 
 async function buildGeneratedClientToolSearchOutputMapAsync<TContext>(args: {
   agent: Agent<any, any>;
+  handoffs: Handoff<any, any>[];
   modelResponse: ModelResponse;
+  replaceableRuntimeToolKeys: Set<string>;
   runContext: RunState<TContext, Agent<any, any>>['_context'];
   tools: Tool<TContext>[];
 }): Promise<
   Map<protocol.ToolSearchCallItem, GeneratedClientToolSearchOutput<TContext>>
 > {
-  const { agent, modelResponse, runContext, tools } = args;
+  const {
+    agent,
+    handoffs,
+    modelResponse,
+    replaceableRuntimeToolKeys,
+    runContext,
+    tools,
+  } = args;
   const clientToolSearchTool = getClientToolSearchHelper(tools);
   const hasClientToolSearchTool = typeof clientToolSearchTool !== 'undefined';
   const executionTools = [...tools];
-  const clientToolSearchCalls: protocol.ToolSearchCallItem[] = [];
-  const pendingClientToolSearchMatchKeys: string[] = [];
-  const resolvedToolSearchCallIds = new Set<string>();
-
-  for (const output of modelResponse.output) {
-    if (output.type === 'tool_search_call') {
-      const toolSearchExecution = getToolSearchExecution(output);
-      if (
-        toolSearchExecution === 'client' ||
-        (typeof toolSearchExecution === 'undefined' && hasClientToolSearchTool)
-      ) {
-        clientToolSearchCalls.push(output);
-        const matchKey = getToolSearchMatchKey(output);
-        if (matchKey) {
-          pendingClientToolSearchMatchKeys.push(matchKey);
-        }
-      }
-      continue;
-    }
-
-    if (output.type !== 'tool_search_output') {
-      continue;
-    }
-
-    const explicitCallId = getToolSearchProviderCallId(output);
-    const toolSearchExecution = getToolSearchExecution(output);
-    if (explicitCallId) {
-      resolvedToolSearchCallIds.add(explicitCallId);
-      const pendingIndex =
-        pendingClientToolSearchMatchKeys.indexOf(explicitCallId);
-      if (pendingIndex >= 0) {
-        pendingClientToolSearchMatchKeys.splice(pendingIndex, 1);
-      }
-      continue;
-    }
-
-    if (toolSearchExecution !== 'server') {
-      const pendingMatchKey = pendingClientToolSearchMatchKeys.shift();
-      if (pendingMatchKey) {
-        resolvedToolSearchCallIds.add(pendingMatchKey);
-      }
-    }
-  }
+  const validationAvailableTools = [...tools];
+  const validationFunctionMap = buildFunctionToolMap(tools);
+  const validationHandoffMap = new Map(
+    handoffs.map((handoff) => [handoff.toolName, handoff]),
+  );
+  const validationMcpToolMap = new Map(
+    tools
+      .filter(
+        (tool): tool is HostedMCPTool<any> =>
+          tool.type === 'hosted_tool' && tool.providerData?.type === 'mcp',
+      )
+      .map((tool) => [tool.providerData!.server_label, tool as HostedMCPTool]),
+  );
+  const validationReplaceableRuntimeToolKeys = new Set(
+    replaceableRuntimeToolKeys,
+  );
+  const clientToolSearchCalls = getUnresolvedClientToolSearchCalls(
+    modelResponse,
+    hasClientToolSearchTool,
+  );
 
   const generatedOutputs = new Map<
     protocol.ToolSearchCallItem,
     GeneratedClientToolSearchOutput<TContext>
   >();
   for (const toolSearchCall of clientToolSearchCalls) {
-    const matchKey = getToolSearchMatchKey(toolSearchCall);
-    if (matchKey && resolvedToolSearchCallIds.has(matchKey)) {
-      continue;
-    }
-
     if (
       clientToolSearchTool &&
       getClientToolSearchExecutor(clientToolSearchTool)
@@ -682,8 +590,16 @@ async function buildGeneratedClientToolSearchOutputMapAsync<TContext>(args: {
         toolSearchTool: clientToolSearchTool,
         tools: executionTools,
       });
+      registerRuntimeToolSearchTools({
+        availableTools: validationAvailableTools,
+        functionMap: validationFunctionMap,
+        handoffMap: validationHandoffMap,
+        mcpToolMap: validationMcpToolMap,
+        replaceableRuntimeToolKeys: validationReplaceableRuntimeToolKeys,
+        runtimeTools: generatedOutput.runtimeTools,
+      });
       generatedOutputs.set(toolSearchCall, generatedOutput);
-      executionTools.push(...generatedOutput.runtimeTools);
+      executionTools.push(...generatedOutput.callbackRuntimeTools);
       continue;
     }
 
@@ -693,6 +609,7 @@ async function buildGeneratedClientToolSearchOutputMapAsync<TContext>(args: {
         executionTools,
       ),
       runtimeTools: [],
+      callbackRuntimeTools: [],
     });
   }
 
@@ -777,6 +694,7 @@ export function processModelResponse<TContext>(
   toolNotFoundBehavior: ToolNotFoundBehavior = 'raise_error',
   processingOptions: ModelResponseProcessingOptions = {},
 ): ProcessedResponse<TContext> {
+  assertValidCompactionItems(modelResponse.output);
   const items: RunItem[] = [];
   const runHandoffs: ToolRunHandoff[] = [];
   const runFunctions: ToolRunFunction<TContext>[] = [];
@@ -789,11 +707,7 @@ export function processModelResponse<TContext>(
   const toolsUsed: string[] = [];
   const handoffMap = new Map(handoffs.map((h) => [h.toolName, h]));
   // Resolve tools upfront so we can look up the concrete handler in O(1) while iterating outputs.
-  const functionMap = new Map(
-    tools
-      .filter((t): t is FunctionTool<TContext> => t.type === 'function')
-      .map((t) => [getFunctionToolQualifiedName(t) ?? t.name, t]),
-  );
+  const functionMap = buildFunctionToolMap(tools);
   const computerTool = tools.find(
     (t): t is ComputerTool<TContext, any> => t.type === 'computer',
   );
@@ -922,6 +836,8 @@ export function processModelResponse<TContext>(
       }
     } else if (output.type === 'reasoning') {
       items.push(new RunReasoningItem(output, agent));
+    } else if (output.type === 'compaction') {
+      items.push(new RunCompactionItem(output, agent));
     } else if (output.type === 'computer_call') {
       handleToolCallAction({
         output,
@@ -1006,12 +922,7 @@ export function processModelResponse<TContext>(
       continue;
     }
 
-    const resolved = resolveFunctionOrHandoff(
-      output,
-      handoffMap,
-      functionMap,
-      agent,
-    );
+    const resolved = resolveFunctionOrHandoff(output, handoffMap, functionMap);
     if (resolved.type === 'not_found') {
       if (toolNotFoundBehavior !== 'return_error_to_model') {
         throwFunctionToolNotFound(resolved.toolName, agent);
@@ -1060,10 +971,13 @@ export function processModelResponse<TContext>(
         getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
       );
       items.push(new RunToolCallItem(normalizedToolCall, agent));
-      runFunctions.push({
-        toolCall: normalizedToolCall,
-        tool: resolved.tool,
-      });
+      runFunctions.push(
+        createToolRunFunction({
+          toolCall: normalizedToolCall,
+          tool: resolved.tool,
+          availableFunctionTools: [...new Set(functionMap.values())],
+        }),
+      );
     }
   }
 
@@ -1103,6 +1017,7 @@ export async function processModelResponseAsync<TContext>(
   toolNotFoundBehavior: ToolNotFoundBehavior = 'raise_error',
   processingOptions: ModelResponseProcessingOptions = {},
 ): Promise<ProcessedResponse<TContext>> {
+  assertValidCompactionItems(modelResponse.output);
   const clientToolSearchTool = getClientToolSearchHelper(tools);
   const hasCustomClientToolSearchExecutor = Boolean(
     clientToolSearchTool && getClientToolSearchExecutor(clientToolSearchTool),
@@ -1125,6 +1040,8 @@ export async function processModelResponseAsync<TContext>(
       processingOptions,
     );
   }
+
+  processingOptions.beforeClientToolSearch?.();
 
   const items: RunItem[] = [];
   const runHandoffs: ToolRunHandoff[] = [];
@@ -1155,7 +1072,7 @@ export async function processModelResponseAsync<TContext>(
   const replaceableRuntimeToolKeys = new Set(
     state
       .getToolSearchRuntimeTools(agent)
-      .map((tool) => getToolSearchRuntimeToolKey(tool))
+      .map((tool) => getToolSearchRuntimeRoutingKey(tool))
       .filter((key): key is string => typeof key === 'string'),
   );
   const loadedDeferredToolState = collectLoadedDeferredToolStateFromHistory(
@@ -1170,7 +1087,9 @@ export async function processModelResponseAsync<TContext>(
   const generatedClientToolSearchOutputsByCall =
     await buildGeneratedClientToolSearchOutputMapAsync({
       agent,
+      handoffs,
       modelResponse,
+      replaceableRuntimeToolKeys,
       runContext: state._context,
       tools,
     });
@@ -1200,17 +1119,23 @@ export async function processModelResponseAsync<TContext>(
             preserveExistingServerLabels: originalMcpServerLabels,
           },
         );
-        const novelRuntimeTools = registerRuntimeToolSearchTools({
+        const replacedRuntimeTools = state.getToolSearchRuntimeToolsForOutput(
+          agent,
+          generatedOutput.output,
+        );
+        const registeredRuntimeTools = registerRuntimeToolSearchTools({
           availableTools,
           functionMap,
+          handoffMap,
           mcpToolMap,
           replaceableRuntimeToolKeys,
+          replacedRuntimeTools,
           runtimeTools: generatedOutput.runtimeTools,
         });
         state.recordToolSearchRuntimeTools(
           agent,
           generatedOutput.output,
-          novelRuntimeTools,
+          registeredRuntimeTools,
         );
         hasGeneratedClientToolSearchOutputs = true;
       }
@@ -1281,6 +1206,8 @@ export async function processModelResponseAsync<TContext>(
       }
     } else if (output.type === 'reasoning') {
       items.push(new RunReasoningItem(output, agent));
+    } else if (output.type === 'compaction') {
+      items.push(new RunCompactionItem(output, agent));
     } else if (output.type === 'computer_call') {
       handleToolCallAction({
         output,
@@ -1361,12 +1288,7 @@ export async function processModelResponseAsync<TContext>(
       continue;
     }
 
-    const resolved = resolveFunctionOrHandoff(
-      output,
-      handoffMap,
-      functionMap,
-      agent,
-    );
+    const resolved = resolveFunctionOrHandoff(output, handoffMap, functionMap);
     if (resolved.type === 'not_found') {
       if (toolNotFoundBehavior !== 'return_error_to_model') {
         throwFunctionToolNotFound(resolved.toolName, agent);
@@ -1415,10 +1337,13 @@ export async function processModelResponseAsync<TContext>(
         getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
       );
       items.push(new RunToolCallItem(normalizedToolCall, agent));
-      runFunctions.push({
-        toolCall: normalizedToolCall,
-        tool: resolved.tool,
-      });
+      runFunctions.push(
+        createToolRunFunction({
+          toolCall: normalizedToolCall,
+          tool: resolved.tool,
+          availableFunctionTools: [...new Set(functionMap.values())],
+        }),
+      );
     }
   }
 

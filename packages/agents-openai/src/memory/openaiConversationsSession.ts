@@ -36,6 +36,8 @@ export class OpenAIConversationsSession
 
   #client: OpenAI;
   #conversationId?: string;
+  #conversationIdOperation: Promise<void> = Promise.resolve();
+  #activeItemOperations = new Set<Promise<void>>();
 
   constructor(options: OpenAIConversationsSessionOptions = {}) {
     this.#client = resolveClient(options);
@@ -47,17 +49,19 @@ export class OpenAIConversationsSession
   }
 
   async getSessionId(): Promise<string> {
-    if (!this.#conversationId) {
-      this.#conversationId = await startOpenAIConversationsSession(
-        this.#client,
-      );
-    }
-
-    return this.#conversationId;
+    return this.#runConversationIdOperation(() => this.#getSessionId());
   }
 
   async getItems(limit?: number): Promise<AgentInputItem[]> {
-    const conversationId = await this.getSessionId();
+    return this.#runItemOperation((conversationId) =>
+      this.#getItems(conversationId, limit),
+    );
+  }
+
+  async #getItems(
+    conversationId: string,
+    limit?: number,
+  ): Promise<AgentInputItem[]> {
     // Convert each API item into the Agent SDK's input shape. Some API payloads expand into multiple items.
     const toAgentItems = (item: APIConversationItem): AgentInputItem[] => {
       if (item.type === 'message' && item.role === 'system') {
@@ -191,6 +195,14 @@ export class OpenAIConversationsSession
     return stripAssistantReplayMetadata(item);
   }
 
+  prepareHistoryItemsForPersistenceComparison(
+    items: AgentInputItem[],
+  ): AgentInputItem[] {
+    return normalizeItemsForConversationPersistence(
+      items,
+    ) as unknown as AgentInputItem[];
+  }
+
   preserveReasoningItemIdsForPersistence(): boolean {
     return true;
   }
@@ -200,49 +212,102 @@ export class OpenAIConversationsSession
       return;
     }
 
-    const conversationId = await this.getSessionId();
-    const normalizedItems = stripProviderModelForConversationPersistence(items);
-    const sanitizedItems = stripConversationPersistenceMetadata(
-      getInputItems(normalizedItems),
-    );
-    if (!sanitizedItems.length) {
-      return;
-    }
-    await this.#client.conversations.items.create(conversationId, {
-      items: sanitizedItems,
+    await this.#runItemOperation(async (conversationId) => {
+      const sanitizedItems = normalizeItemsForConversationPersistence(items);
+      if (!sanitizedItems.length) {
+        return;
+      }
+      await this.#client.conversations.items.create(conversationId, {
+        items: sanitizedItems,
+      });
     });
   }
 
+  async replaceHistoryWithCompaction(items: AgentInputItem[]): Promise<void> {
+    await this.addItems(items);
+  }
+
   async popItem(): Promise<AgentInputItem | undefined> {
-    const conversationId = await this.getSessionId();
-    const [latest] = await this.getItems(1);
-    if (!latest) {
-      return undefined;
-    }
+    return this.#runItemOperation(async (conversationId) => {
+      const [latest] = await this.#getItems(conversationId, 1);
+      if (!latest) {
+        return undefined;
+      }
 
-    const itemId = (latest as { id?: string }).id;
-    if (itemId) {
-      await this.#client.conversations.items.delete(itemId, {
-        conversation_id: conversationId,
-      });
-    }
+      const itemId = (latest as { id?: string }).id;
+      if (itemId) {
+        await this.#client.conversations.items.delete(itemId, {
+          conversation_id: conversationId,
+        });
+      }
 
-    return latest;
+      return latest;
+    });
   }
 
   async clearSession(): Promise<void> {
+    await this.#runConversationIdOperation(async () => {
+      if (!this.#conversationId) {
+        return;
+      }
+
+      await Promise.all(this.#activeItemOperations);
+      await this.#client.conversations.delete(this.#conversationId);
+      this.#conversationId = undefined;
+    });
+  }
+
+  async #getSessionId(): Promise<string> {
     if (!this.#conversationId) {
-      return;
+      this.#conversationId = await startOpenAIConversationsSession(
+        this.#client,
+      );
     }
 
-    await this.#client.conversations.delete(this.#conversationId);
-    this.#conversationId = undefined;
+    return this.#conversationId;
+  }
+
+  async #runItemOperation<T>(
+    operation: (conversationId: string) => Promise<T>,
+  ): Promise<T> {
+    let resolveOperation!: () => void;
+    const operationFinished = new Promise<void>((resolve) => {
+      resolveOperation = resolve;
+    });
+    const conversationId = await this.#runConversationIdOperation(async () => {
+      const conversationId = await this.#getSessionId();
+      this.#activeItemOperations.add(operationFinished);
+      return conversationId;
+    });
+
+    try {
+      return await operation(conversationId);
+    } finally {
+      this.#activeItemOperations.delete(operationFinished);
+      resolveOperation();
+    }
+  }
+
+  #runConversationIdOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.#conversationIdOperation.then(operation);
+    this.#conversationIdOperation = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 }
 
 // --------------------------------------------------------------
 //  Internals
 // --------------------------------------------------------------
+
+function normalizeItemsForConversationPersistence(
+  items: AgentInputItem[],
+): OpenAI.Responses.ResponseInputItem[] {
+  const normalizedItems = stripProviderModelForConversationPersistence(items);
+  return stripConversationPersistenceMetadata(getInputItems(normalizedItems));
+}
 
 function stripProviderModelForConversationPersistence(
   items: AgentInputItem[],
@@ -331,10 +396,19 @@ function stripAssistantReplayMetadata(item: AgentInputItem): AgentInputItem {
 
   const {
     id: _id,
-    providerData: _providerData,
+    providerData,
     provider_data: _provider_data,
     ...rest
   } = record;
+  if (
+    typeof rest.phase === 'undefined' &&
+    providerData &&
+    typeof providerData === 'object' &&
+    !Array.isArray(providerData) &&
+    typeof (providerData as Record<string, unknown>).phase !== 'undefined'
+  ) {
+    rest.phase = (providerData as Record<string, unknown>).phase;
+  }
   return rest as AgentInputItem;
 }
 

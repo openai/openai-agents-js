@@ -2,7 +2,7 @@ import { randomUUID } from '@openai/agents-core/_shims';
 import { z } from 'zod';
 import type { Agent, AgentOutputType } from '../../agent';
 import { UserError } from '../../errors';
-import logger from '../../logger';
+import logger, { logModelAndToolActionWarning } from '../../logger';
 import type { RunState } from '../../runState';
 import type { AgentInputItem } from '../../types';
 import type { Span, Trace } from '../../tracing';
@@ -275,8 +275,11 @@ export class SandboxMemoryGenerationManager {
               await this.persistPhaseOneArtifacts(rolloutId, extraction);
               wroteArtifacts = true;
             } catch (error) {
-              logger.warn(
-                `Sandbox memory phase 1 failed for rollout ${rolloutId}: ${error}`,
+              logModelAndToolActionWarning(
+                logger,
+                'Sandbox memory phase 1 failed:',
+                error,
+                { rolloutId },
               );
             }
           }
@@ -285,7 +288,11 @@ export class SandboxMemoryGenerationManager {
             try {
               await this.runPhaseTwo();
             } catch (error) {
-              logger.warn(`Sandbox memory phase 2 failed: ${error}`);
+              logModelAndToolActionWarning(
+                logger,
+                'Sandbox memory phase 2 failed:',
+                error,
+              );
             }
           }
         },

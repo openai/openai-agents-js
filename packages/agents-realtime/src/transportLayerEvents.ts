@@ -46,20 +46,32 @@ export type InputAudioTranscriptionCompletedEvent = {
   type: 'conversation.item.input_audio_transcription.completed';
   item_id: string;
   transcript: string;
-  usage?: {
-    type: 'tokens';
-    total_tokens: number;
-    input_tokens: number;
-    input_token_details: {
-      text_tokens: number;
-      audio_tokens: number;
-    };
-    output_tokens: number;
-  };
+  usage?:
+    | {
+        type: 'tokens';
+        total_tokens: number;
+        input_tokens: number;
+        input_token_details: {
+          text_tokens: number;
+          audio_tokens: number;
+        };
+        output_tokens: number;
+      }
+    | {
+        type: 'duration';
+        seconds: number;
+      };
 };
 
 export type TransportLayerTranscriptDelta = {
   type: 'transcript_delta';
+  itemId: string;
+  delta: string;
+  responseId: string;
+};
+
+export type TransportLayerOutputTextDelta = {
+  type: 'output_text_delta';
   itemId: string;
   delta: string;
   responseId: string;
@@ -113,6 +125,11 @@ export type RealtimeTransportEventTypes = {
    * Triggered when there is a new text delta of the transcript available.
    */
   audio_transcript_delta: [deltaEvent: TransportLayerTranscriptDelta];
+
+  /**
+   * Triggered when there is a new text output delta available.
+   */
+  output_text_delta: [deltaEvent: TransportLayerOutputTextDelta];
 
   /**
    * Triggered when the audio generation is done.

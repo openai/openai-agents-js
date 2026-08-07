@@ -1,5 +1,9 @@
 import { RuntimeEventEmitter, Usage } from '@openai/agents-core';
 import { normalizeHostedMcpRequireApproval } from '@openai/agents-core/utils';
+import {
+  logModelActionError,
+  logToolActionError,
+} from '@openai/agents-core/utils/internal';
 import type { MessageEvent as WebSocketMessageEvent } from 'ws';
 
 import {
@@ -177,10 +181,7 @@ export abstract class OpenAIRealtimeBase
   }
 
   abstract get status():
-    | 'connected'
-    | 'disconnected'
-    | 'connecting'
-    | 'disconnecting';
+    'connected' | 'disconnected' | 'connecting' | 'disconnecting';
 
   abstract connect(
     options: RealtimeTransportLayerConnectOptions,
@@ -219,12 +220,13 @@ export abstract class OpenAIRealtimeBase
   }
 
   protected _onMessage(event: MessageEvent | WebSocketMessageEvent): void {
-    const { data: parsed, isGeneric } = parseRealtimeEvent(event);
-    if (parsed === null) {
+    const result = parseRealtimeEvent(event);
+    if (result.data === null) {
       return;
     }
+    const { data: parsed, raw, isGeneric } = result;
 
-    this.emit('*', parsed);
+    this.emit('*', structuredClone(raw));
     if (isGeneric) {
       return;
     }
@@ -252,7 +254,11 @@ export abstract class OpenAIRealtimeBase
     if (parsed.type === 'response.done') {
       const response = responseDoneEventSchema.safeParse(parsed);
       if (!response.success) {
-        logger.error('Error parsing response done event', response.error);
+        logModelActionError(
+          logger,
+          'Error parsing response done event',
+          response.error,
+        );
         return;
       }
       const inputTokens = response.data.response.usage?.input_tokens ?? 0;
@@ -326,6 +332,13 @@ export abstract class OpenAIRealtimeBase
           itemId: parsed.item_id,
           responseId: parsed.response_id,
         });
+      } else if (parsed.type === 'response.output_text.delta') {
+        this.emit('output_text_delta', {
+          type: 'output_text_delta',
+          delta: parsed.delta,
+          itemId: parsed.item_id,
+          responseId: parsed.response_id,
+        });
       }
       // no support for partial transcripts yet.
       return;
@@ -349,7 +362,12 @@ export abstract class OpenAIRealtimeBase
             tools,
           });
         } catch (err) {
-          logger.error('Error emitting mcp_tools_listed', err, parsed.item);
+          logToolActionError(
+            logger,
+            'Error emitting mcp_tools_listed',
+            err,
+            parsed.item,
+          );
         }
         // We do not add this item to history; it's a transport-level side-channel.
         return;
@@ -369,7 +387,11 @@ export abstract class OpenAIRealtimeBase
             parsed.item.role,
             parsed.item.content,
           ),
-          status: parsed.item.status,
+          status:
+            parsed.item.status ??
+            (parsed.type === 'conversation.item.added'
+              ? 'in_progress'
+              : 'completed'),
         });
         this.emit('item_update', item);
         return;
@@ -898,7 +920,12 @@ export abstract class OpenAIRealtimeBase
       });
       this.emit('item_update', item);
     } catch (error) {
-      logger.error('Error parsing tool call item', error, toolCall);
+      logToolActionError(
+        logger,
+        'Error parsing tool call item',
+        error,
+        toolCall,
+      );
     }
 
     if (startResponse) {

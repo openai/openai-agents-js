@@ -13,7 +13,13 @@ export {
   ToolUseBehavior,
   ToolUseBehaviorFlags,
 } from './agent';
-export type { CompletedAgentToolInvocationRunResult } from './agent';
+export type {
+  AgentTool,
+  AgentToolOptions,
+  AgentToolOptionsWithDefault,
+  AgentToolOptionsWithParameters,
+  CompletedAgentToolInvocationRunResult,
+} from './agent';
 export { Computer } from './computer';
 export { ShellAction, ShellResult, ShellOutputResult, Shell } from './shell';
 export {
@@ -90,6 +96,7 @@ export {
 export { assistant, system, user } from './helpers/message';
 export {
   extractAllTextOutput,
+  RunCompactionItem,
   RunHandoffCallItem,
   RunHandoffOutputItem,
   RunItem,
@@ -102,12 +109,15 @@ export {
   RunToolSearchOutputItem,
 } from './items';
 export { AgentHooks } from './lifecycle';
+export type { AgentHookEvents, RunHookEvents } from './lifecycle';
 export { getLogger } from './logger';
+export { setSensitiveDataLoggingEnabled } from './config';
 export { applyDiff } from './utils/applyDiff';
 export {
   getAllMcpTools,
   invalidateServerToolsCache,
   mcpToFunctionTool,
+  MCPCallToolOptions,
   MCPBlobResourceContent,
   CallToolResult,
   CallToolResultContent,
@@ -189,6 +199,7 @@ export type {
   ToolErrorFormatter,
   ToolErrorFormatterArgs,
   ToolExecutionConfig,
+  ToolNameCollisionPolicy,
   ToolNotFoundBehavior,
   ToolErrorKind,
   ReasoningItemIdPolicy,
@@ -316,17 +327,25 @@ export { RequestUsage, Usage } from './usage';
 export type { RequestUsageInput, UsageInput } from './usage';
 export type {
   Session,
+  RunContextAwareSession,
   SessionInputCallback,
   SessionHistoryMutation,
   SessionHistoryRewriteArgs,
   SessionHistoryRewriteAwareSession,
+  SessionHistoryAppendItemsTransaction,
+  SessionHistoryReplaceSuffixTransaction,
+  SessionHistoryTransaction,
+  SessionHistoryTransactionArgs,
+  SessionHistoryTransactionAwareSession,
   OpenAIResponsesCompactionArgs,
   OpenAIResponsesCompactionAwareSession,
   OpenAIResponsesCompactionResult,
 } from './memory/session';
 export {
   isOpenAIResponsesCompactionAwareSession,
+  isRunContextAwareSession,
   isSessionHistoryRewriteAwareSession,
+  isSessionHistoryTransactionAwareSession,
 } from './memory/session';
 export { applySessionHistoryMutations } from './memory/historyMutations';
 export { MemorySession } from './memory/memorySession';

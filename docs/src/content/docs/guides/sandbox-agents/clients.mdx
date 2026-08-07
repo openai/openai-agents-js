@@ -59,6 +59,8 @@ There are two lifecycle styles.
 | SDK-owned | `sandbox: { client }` | The runner | The sandbox only needs to live for one run. |
 | Developer-owned | `sandbox: { session }` | Your code | You need to inspect files afterward, reuse the same live session, or coordinate multiple runs. |
 
+On normal completion or failure, the runner closes an SDK-owned session. When a run pauses for an approval interruption, or when an unfinished streamed run is cancelled, the runner instead preserves the owned sandbox state in `RunState` so the same run can continue.
+
 When you create a session yourself, close it yourself:
 
 <Code
@@ -84,6 +86,10 @@ Use `sessionState` when you want to reconnect to the same backend session throug
 
 `RunState` can also preserve runner-managed sandbox state when you pause or resume a larger workflow. Use explicit `sessionState` when the sandbox lifecycle is managed outside a serialized run.
 
+For Docker, resuming the same in-memory `RunState` can reuse the live container only after the SDK verifies its identity and revalidates the current manifest, environment, and path grants. If live reuse is unavailable or rejected, Docker falls back to a restorable snapshot. A `RunState` serialized and reconstructed with `RunState.fromString(...)` does not carry trusted live-container authority, so Docker also restores from a snapshot instead of attaching to the serialized container ID. Resume fails rather than attaching to an unverified container when no restorable snapshot is configured.
+
+For local snapshots with no explicit `baseDir`, set `OPENAI_AGENTS_SANDBOX_SNAPSHOT_DIR` to override the storage directory. Otherwise the SDK uses `~/Library/Application Support/openai-agents-js/sandbox-snapshots` on macOS, `%LOCALAPPDATA%\openai-agents-js\sandbox-snapshots` on Windows, and `$XDG_STATE_HOME/openai-agents-js/sandbox-snapshots` on other platforms, with home-directory and temporary-directory fallbacks when those locations are unavailable.
+
 ### Manifest materialization
 
 Manifest entries are prepared before the agent runs. You can tune materialization concurrency per run or per client create call:
@@ -95,6 +101,10 @@ Manifest entries are prepared before the agent runs. You can tune materializatio
 />
 
 `manifestEntries` limits parallel top-level entry work. `localDirFiles` limits file copy concurrency inside `localDir()` entries.
+
+### Filesystem existence checks
+
+When a session implements `pathExists()`, `false` means the backend confirmed that the path is missing. Permission errors, I/O failures, and provider probe failures reject with a provider error instead of being treated as a missing path. This prevents editor, manifest, and memory flows from overwriting or replacing paths that may exist but are inaccessible.
 
 ## Mounts and remote storage
 
@@ -150,16 +160,22 @@ Install `@openai/agents-extensions` and satisfy its package-level peers. Each pr
 
 Hosted sandbox clients expose provider-specific mount strategies. Choose the backend and mount strategy that best fit your storage provider:
 
+Credential-bearing mounts that run a helper inside the sandbox are rejected by default because model-controlled code can access that helper's process credentials. This includes credentials supplied through supported mount fields, ambient AWS or GCP environment variables, `RCLONE_CONFIG_*` values, and workload identity or managed identity discovery. Credentialless rclone and mountpoint helpers disable ambient or metadata authentication and use anonymous access where the backend supports it. Prefer external or provider-native strategies such as Docker volumes, Modal cloud buckets, or Cloudflare bucket mounts. If an in-sandbox helper is required, acknowledge only the trusted effective mount paths on the application-created manifest with `manifest.withInContainerMountCredentialExposureAllowed('mounted/path')`. Only this exact-path acknowledgement enables ambient or metadata authentication for that helper. The acknowledgement is runtime-only and is never accepted from serialized manifest data. Credential files referenced by a mount cannot resolve directly or through symlinks to serializable manifest entries. Dynamic manifest mutations are serialized per session; if a privileged mount transition or replacement unmount fails after provider effects may have started, the SDK invalidates and terminates that session instead of reusing or persisting ambiguous state.
+
+Serialized sandbox state omits mount credentials, including ambient environment credentials selected by an in-sandbox mount helper. Any persisted mount topology requires a current trusted manifest before resume. For resumable external or provider-native mounts, the SDK restores credentials only after the credential-free current and persisted mount topologies match. Explicit `sessionState` can reconnect an existing provider-native mount only when its unredacted live authority still matches the current trusted manifest; redacted, rotated, or removed authority requires a fresh sandbox. Opaque configuration that cannot be separated into credential-free topology is non-resumable. The Runner never reconnects serialized sessions that use an in-sandbox mount helper; it creates a fresh sandbox from current trusted configuration instead. Direct provider resume rejects such in-container mount state. Runloop credential-file variables supplied through opaque `secretRefs` are rejected for in-container mounts; provide the current trusted path through `managedSecrets` so the SDK can validate its effective path before mounting.
+
 | Backend | Mount notes |
 | --- | --- |
 | Docker | Supports `s3Mount()`, `gcsMount()`, `r2Mount()`, `azureBlobMount()`, `boxMount()`, and `s3FilesMount()` with local strategies such as `inContainerMountStrategy()` and `dockerVolumeMountStrategy()`. |
 | `ModalSandboxClient` | Supports cloud bucket mounts with `ModalCloudBucketMountStrategy` on S3, R2, and HMAC-authenticated GCS mount entries. |
 | `CloudflareSandboxClient` | Supports Cloudflare bucket mounts with `CloudflareBucketMountStrategy` on S3, R2, and HMAC-authenticated GCS mount entries. |
-| `BlaxelSandboxClient` | Supports cloud bucket mounts with `BlaxelCloudBucketMountStrategy` on S3, R2, and GCS mount entries. It also supports persistent Blaxel Drives with `BlaxelDriveMount` and `BlaxelDriveMountStrategy`. |
+| `BlaxelSandboxClient` | Supports cloud bucket mounts with `BlaxelCloudBucketMountStrategy` on S3, R2, and GCS mount entries. Credential-bearing cloud mounts require an SDK-owned sandbox; reused unowned named sandboxes can use credentialless cloud mounts or persistent Blaxel Drives with `BlaxelDriveMount` and `BlaxelDriveMountStrategy`. |
 | `DaytonaSandboxClient` | Supports rclone-backed mounts with `DaytonaCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
 | `E2BSandboxClient` | Supports rclone-backed mounts with `E2BCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
 | `RunloopSandboxClient` | Supports rclone-backed mounts with `RunloopCloudBucketMountStrategy` on S3, GCS, R2, Azure Blob, and Box mount entries. |
-| `VercelSandboxClient` | No hosted-specific mount strategy is currently exposed. Use manifest files, repos, snapshots, or other workspace inputs instead. |
+| `VercelSandboxClient` | Supports create-time S3 mounts with `VercelCloudBucketMountStrategy`. Inline credentials require the trusted exact-path manifest acknowledgement described above; reuse the live mounted session because serialized mount state cannot be resumed directly. |
+
+For E2B and Runloop rclone-backed mounts, the SDK uses an existing `rclone` binary when available. Otherwise it installs an SDK-pinned Linux archive only after verifying its SHA-256 checksum; unsupported architectures and checksum failures abort the mount.
 
 The table below summarizes which remote storage entries each backend can mount directly:
 
@@ -172,7 +188,7 @@ The table below summarizes which remote storage entries each backend can mount d
 | `DaytonaSandboxClient` | yes | yes | yes | yes | yes | no |
 | `E2BSandboxClient` | yes | yes | yes | yes | yes | no |
 | `RunloopSandboxClient` | yes | yes | yes | yes | yes | no |
-| `VercelSandboxClient` | no | no | no | no | no | no |
+| `VercelSandboxClient` | yes | no | no | no | no | no |
 
 ### Exposed ports
 

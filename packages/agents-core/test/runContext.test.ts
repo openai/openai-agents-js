@@ -2,6 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { RunContext } from '../src/runContext';
 import { RunToolApprovalItem as ToolApprovalItem } from '../src/items';
 import { Agent } from '../src/agent';
+import { tool } from '../src/tool';
+import {
+  getFunctionToolLookupKey,
+  getFunctionToolStateKeyForCall,
+} from '../src/toolIdentity';
+import { z } from 'zod';
 
 const agent = new Agent({ name: 'A' });
 const rawItem = {
@@ -26,16 +32,18 @@ function createApproval(callId = '123', toolName = 'toolX') {
 function createRealtimeHostedApproval(
   itemId = 'item-1',
   toolName = 'hostedMcp',
+  serverLabel = 'server-1',
 ) {
   return new ToolApprovalItem(
     {
       type: 'hosted_tool_call',
+      id: 'hosted-output-item',
       name: toolName,
       arguments: '{}',
       status: 'in_progress',
       providerData: {
         itemId,
-        serverLabel: 'server-1',
+        serverLabel,
         type: 'mcp_approval_request',
       },
     } as any,
@@ -44,6 +52,157 @@ function createRealtimeHostedApproval(
 }
 
 describe('RunContext', () => {
+  it.each(['shell', 'apply_patch', 'hosted_mcp'])(
+    'keeps %s approvals separate from same-name function aliases',
+    (toolName) => {
+      const functionKey = getFunctionToolLookupKey(toolName)!;
+      const permanentEntries = [
+        [functionKey, { approved: true, rejected: [] }],
+        [toolName, { approved: false, rejected: true }],
+      ] as const;
+      const perCallEntries = [
+        [
+          functionKey,
+          { approved: ['function-call'], rejected: [] as string[] },
+        ],
+        [
+          toolName,
+          { approved: [] as string[], rejected: ['non-function-call'] },
+        ],
+      ] as const;
+
+      for (const entries of [
+        permanentEntries,
+        [...permanentEntries].reverse(),
+      ]) {
+        const context = new RunContext();
+        context._rebuildApprovals(Object.fromEntries(entries));
+
+        expect(
+          context.isToolApproved({
+            toolName: functionKey,
+            callId: 'future-function-call',
+          }),
+        ).toBe(true);
+        expect(
+          context.isToolApproved({
+            toolName,
+            callId: 'future-non-function-call',
+            functionTool: false,
+          }),
+        ).toBe(false);
+      }
+
+      for (const entries of [perCallEntries, [...perCallEntries].reverse()]) {
+        const context = new RunContext();
+        context._rebuildApprovals(Object.fromEntries(entries));
+
+        expect(
+          context.isToolApproved({
+            toolName: functionKey,
+            callId: 'function-call',
+          }),
+        ).toBe(true);
+        expect(
+          context.isToolApproved({
+            toolName,
+            callId: 'function-call',
+            functionTool: false,
+          }),
+        ).toBeUndefined();
+        expect(
+          context.isToolApproved({
+            toolName,
+            callId: 'non-function-call',
+            functionTool: false,
+          }),
+        ).toBe(false);
+      }
+    },
+  );
+
+  it('keeps same-name bare and deferred approvals distinct', () => {
+    const bare = tool({
+      name: 'lookup',
+      description: 'Immediate lookup.',
+      parameters: z.object({}),
+      execute: async () => 'bare',
+    });
+    const deferred = tool({
+      name: 'lookup',
+      description: 'Deferred lookup.',
+      parameters: z.object({}),
+      deferLoading: true,
+      execute: async () => 'deferred',
+    });
+    const approvalAgent = new Agent({
+      name: 'Approval agent',
+      tools: [bare, deferred],
+    });
+    const deferredApproval = new ToolApprovalItem(
+      {
+        type: 'function_call',
+        name: 'lookup',
+        namespace: 'lookup',
+        callId: 'deferred-call',
+        arguments: '{}',
+      },
+      approvalAgent,
+    );
+    const ctx = new RunContext();
+
+    ctx.approveTool(deferredApproval, { alwaysApprove: true });
+
+    expect(
+      ctx.isToolApproved({
+        toolName: getFunctionToolStateKeyForCall(
+          deferredApproval.rawItem as { name?: string; namespace?: string },
+        )!,
+        callId: 'future-deferred-call',
+      }),
+    ).toBe(true);
+    expect(
+      ctx.isToolApproved({
+        toolName: 'lookup',
+        callId: 'future-bare-call',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('keeps dotted bare and explicit namespace approvals distinct', () => {
+    const namespacedApproval = new ToolApprovalItem(
+      {
+        type: 'function_call',
+        name: 'lookup',
+        namespace: 'crm',
+        callId: 'namespaced-call',
+        arguments: '{}',
+      },
+      agent,
+    );
+    const ctx = new RunContext();
+
+    ctx.approveTool(namespacedApproval, { alwaysApprove: true });
+
+    expect(
+      ctx.isToolApproved({
+        toolName: getFunctionToolStateKeyForCall(
+          namespacedApproval.rawItem as {
+            name?: string;
+            namespace?: string;
+          },
+        )!,
+        callId: 'future-namespaced-call',
+      }),
+    ).toBe(true);
+    expect(
+      ctx.isToolApproved({
+        toolName: 'crm.lookup',
+        callId: 'future-dotted-call',
+      }),
+    ).toBeUndefined();
+  });
+
   it('approves and rejects tool calls', () => {
     const ctx = new RunContext();
     const item = createApproval();
@@ -63,6 +222,53 @@ describe('RunContext', () => {
     expect(ctx.isToolApproved({ toolName: 'toolX', callId: '456' })).toBe(
       false,
     );
+  });
+
+  it('scopes function approval decisions to the owning agent', () => {
+    const otherAgent = new Agent({ name: 'B' });
+    const first = createApproval('shared-call');
+    const second = new ToolApprovalItem(
+      {
+        ...rawItem,
+        callId: 'shared-call',
+      } as any,
+      otherAgent,
+    );
+    const toolName = getFunctionToolStateKeyForCall(
+      first.rawItem as { name?: string; namespace?: string },
+    )!;
+    const ctx = new RunContext();
+
+    ctx.approveTool(first, { alwaysApprove: true });
+    ctx.rejectTool(second, { message: 'Rejected for B.' });
+
+    expect(
+      ctx.isToolApproved({
+        toolName,
+        callId: 'future-call',
+        functionTool: false,
+        agent,
+      }),
+    ).toBe(true);
+    expect(
+      ctx.isToolApproved({
+        toolName,
+        callId: 'shared-call',
+        functionTool: false,
+        agent: otherAgent,
+      }),
+    ).toBe(false);
+    expect(
+      ctx.isToolApproved({
+        toolName,
+        callId: 'future-call',
+        functionTool: false,
+        agent: otherAgent,
+      }),
+    ).toBeUndefined();
+    expect(
+      ctx._getFunctionRejectionMessage(toolName, 'shared-call', otherAgent),
+    ).toBe('Rejected for B.');
   });
 
   it('reuses alwaysReject messages for future call ids', () => {
@@ -90,16 +296,202 @@ describe('RunContext', () => {
 
     ctx.rejectTool(item, { message: 'Denied by policy.' });
 
-    expect(
-      ctx.isToolApproved({ toolName: 'hostedMcp', callId: 'item-1' }),
-    ).toBe(false);
-    expect(ctx.getRejectionMessage('hostedMcp', 'item-1')).toBe(
-      'Denied by policy.',
-    );
-    expect(ctx.toJSON().approvals.hostedMcp.messages).toEqual({
-      'item-1': 'Denied by policy.',
-    });
+    expect(ctx._getHostedMcpApprovalStatus(item)).toBe(false);
+    expect(ctx._getHostedMcpRejectionMessage(item)).toBe('Denied by policy.');
+    expect(ctx.toJSON()).not.toHaveProperty('hostedMcpApprovals');
   });
+
+  it('fails closed for legacy sticky hosted MCP decisions', () => {
+    const ctx = new RunContext();
+    const item = createRealtimeHostedApproval();
+    ctx._rebuildApprovals({
+      hostedMcp: {
+        approved: true,
+        rejected: [],
+      },
+    });
+
+    expect(ctx._getHostedMcpApprovalStatus(item)).toBeUndefined();
+  });
+
+  it('does not treat a colliding aggregate key as hosted MCP state', () => {
+    const ctx = new RunContext();
+    const item = createRealtimeHostedApproval();
+    const collidingLegacyKey = JSON.stringify([
+      'hosted_mcp',
+      'server-1',
+      'hostedMcp',
+    ]);
+    ctx._rebuildApprovals({
+      [collidingLegacyKey]: {
+        approved: true,
+        rejected: [],
+      },
+    });
+
+    expect(ctx._getHostedMcpApprovalStatus(item)).toBeUndefined();
+  });
+
+  it('isolates hosted MCP state from colliding local tool names', () => {
+    const stateKey = JSON.stringify(['hosted_mcp', 'server-1', 'hostedMcp']);
+    const hosted = createRealtimeHostedApproval();
+    const local = new ToolApprovalItem(
+      {
+        type: 'shell_call',
+        callId: 'local-call',
+        name: stateKey,
+        status: 'completed',
+        action: { commands: ['echo ok'] },
+      } as any,
+      agent,
+      stateKey,
+    );
+
+    const hostedContext = new RunContext();
+    hostedContext.approveTool(hosted, { alwaysApprove: true });
+    expect(
+      hostedContext.isToolApproved({
+        toolName: stateKey,
+        callId: 'future-local-call',
+        functionTool: false,
+      }),
+    ).toBeUndefined();
+    expect(
+      hostedContext._resolveToolInvocationApproval(
+        agent,
+        stateKey,
+        local.rawItem,
+      ),
+    ).toBeUndefined();
+
+    const localContext = new RunContext();
+    localContext.approveTool(local, { alwaysApprove: true });
+    expect(localContext._getHostedMcpApprovalStatus(hosted)).toBeUndefined();
+  });
+
+  it('does not consult legacy exact-call hosted MCP decisions at runtime', () => {
+    const ctx = new RunContext();
+    const item = createRealtimeHostedApproval();
+    ctx._rebuildApprovals({
+      hostedMcp: {
+        approved: [],
+        rejected: ['item-1'],
+        messages: { 'item-1': 'Legacy denial.' },
+      },
+    });
+
+    expect(ctx._getHostedMcpApprovalStatus(item)).toBeUndefined();
+    expect(ctx._getHostedMcpRejectionMessage(item)).toBeUndefined();
+  });
+
+  it('keeps generic hosted one-shot approvals with opaque provider data', () => {
+    const ctx = new RunContext();
+    const item = new ToolApprovalItem(
+      {
+        type: 'hosted_tool_call',
+        id: 'opaque-hosted-call',
+        name: 'opaque_hosted_tool',
+        status: 'completed',
+        providerData: { vendor: 'example' },
+      } as any,
+      agent,
+    );
+
+    ctx.approveTool(item);
+
+    expect(
+      ctx.isToolApproved({
+        toolName: 'opaque_hosted_tool',
+        callId: 'opaque-hosted-call',
+        functionTool: false,
+      }),
+    ).toBe(true);
+  });
+
+  it('does not expose hosted MCP rejection messages to local tools', () => {
+    const ctx = new RunContext();
+    const hosted = createRealtimeHostedApproval('item-a', 'shell');
+    const shell = new ToolApprovalItem(
+      {
+        type: 'shell_call',
+        callId: 'shell-call',
+        name: 'shell',
+        status: 'completed',
+        action: { commands: ['echo ok'] },
+      } as any,
+      agent,
+      'shell',
+    );
+
+    ctx.rejectTool(hosted, {
+      alwaysReject: true,
+      message: 'Hosted-only policy.',
+    });
+    ctx.rejectTool(shell);
+
+    expect(
+      ctx.getRejectionMessage('shell', 'shell-call', { functionTool: false }),
+    ).toBeUndefined();
+  });
+
+  it('does not expose ambiguous hosted MCP rejection messages publicly', () => {
+    const ctx = new RunContext();
+    ctx._rebuildApprovals({
+      [JSON.stringify(['hosted_mcp', 'server-a', 'lookup_account'])]: {
+        approved: [],
+        rejected: ['shared-call'],
+        messages: { 'shared-call': 'Denied by server A.' },
+      },
+      [JSON.stringify(['hosted_mcp', 'server-b', 'lookup_account'])]: {
+        approved: [],
+        rejected: ['shared-call'],
+        messages: { 'shared-call': 'Denied by server B.' },
+      },
+    });
+
+    expect(
+      ctx.getRejectionMessage('lookup_account', 'shared-call', {
+        functionTool: false,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('rejects hosted MCP decisions without a server identity', () => {
+    const ctx = new RunContext();
+    const item = createRealtimeHostedApproval();
+    delete (item.rawItem.providerData as any).serverLabel;
+
+    expect(() => ctx.approveTool(item)).toThrow(
+      'Hosted MCP approval decisions require a non-empty server label and tool name.',
+    );
+    expect(() => ctx.rejectTool(item)).toThrow(
+      'Hosted MCP approval decisions require a non-empty server label and tool name.',
+    );
+  });
+
+  it.each([
+    { label: 'missing', providerData: undefined },
+    {
+      label: 'wrong-type',
+      providerData: { type: 'web_search_call', id: 'item-1' },
+    },
+  ])(
+    'rejects hosted MCP decisions with $label provider data',
+    ({ providerData }) => {
+      const ctx = new RunContext();
+      const item = createRealtimeHostedApproval();
+      (item.rawItem as any).providerData = providerData;
+
+      expect(() => ctx.approveTool(item, { alwaysApprove: true })).toThrow(
+        'Persistent hosted approval decisions require valid MCP approval request provider data.',
+      );
+      expect(() => ctx.rejectTool(item, { alwaysReject: true })).toThrow(
+        'Persistent hosted approval decisions require valid MCP approval request provider data.',
+      );
+      expect(ctx.toJSON().approvals).toEqual({});
+      expect(ctx.toJSON()).not.toHaveProperty('hostedMcpApprovals');
+    },
+  );
 
   it('rebuilds approvals map', () => {
     const ctx = new RunContext();

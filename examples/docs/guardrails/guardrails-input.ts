@@ -23,7 +23,7 @@ const mathGuardrail: InputGuardrail = {
     const result = await run(guardrailAgent, input, { context });
     return {
       outputInfo: result.finalOutput,
-      tripwireTriggered: result.finalOutput?.isMathHomework === false,
+      tripwireTriggered: result.finalOutput?.isMathHomework ?? false,
     };
   },
 };
@@ -38,12 +38,17 @@ const agent = new Agent({
 async function main() {
   try {
     await run(agent, 'Hello, can you help me solve for x: 2x + 3 = 11?');
-    console.log("Guardrail didn't trip - this is unexpected");
+    throw new Error('Expected the math homework guardrail to trip.');
   } catch (e) {
     if (e instanceof InputGuardrailTripwireTriggered) {
       console.log('Math homework guardrail tripped');
+      return;
     }
+    throw e;
   }
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

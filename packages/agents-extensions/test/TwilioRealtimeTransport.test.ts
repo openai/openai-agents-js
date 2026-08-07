@@ -158,18 +158,56 @@ describe('TwilioRealtimeTransportLayer', () => {
     transport.on('error', errListener);
     twilio.emit('message', { toString: () => 'bad{' });
     expect(errListener).toHaveBeenCalled();
-    expect(errorSpy).toHaveBeenCalledWith(
-      'Error parsing message:',
-      expect.any(Error),
-      'Message:',
-      expect.any(Object),
-    );
+    expect(errorSpy).toHaveBeenCalledWith('Error parsing message:', 'object');
     errorSpy.mockRestore();
 
     twilio.emit('close');
     expect(closeSpy).toHaveBeenCalled();
     twilio.emit('error', new Error('boom'));
     expect(closeSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test('redacts Twilio message and parse-error data when model logging is disabled', async () => {
+    allowConsole(['error', 'warn']);
+    const original = process.env.OPENAI_AGENTS_DONT_LOG_MODEL_DATA;
+    process.env.OPENAI_AGENTS_DONT_LOG_MODEL_DATA = '1';
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: asTwilioWebSocket(twilio),
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const secret = 'SECRET_TWILIO_MESSAGE_123';
+    const emittedErrors: unknown[] = [];
+    transport.on('error', (error) => emittedErrors.push(error));
+
+    try {
+      twilio.emit('message', {
+        toString: () =>
+          JSON.stringify({ event: 'mark', mark: { name: `u:${secret}` } }),
+      });
+      twilio.emit('message', {
+        secret,
+        toString: () => `bad{${secret}`,
+      });
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Invalid mark name received. Mark data is redacted.',
+      );
+      expect(errorSpy).toHaveBeenCalledWith('Error parsing message:', 'object');
+      expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secret);
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(secret);
+      expect(emittedErrors).toHaveLength(1);
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+      if (typeof original === 'undefined') {
+        delete process.env.OPENAI_AGENTS_DONT_LOG_MODEL_DATA;
+      } else {
+        process.env.OPENAI_AGENTS_DONT_LOG_MODEL_DATA = original;
+      }
+    }
   });
 
   test('_onAudio resets chunk count and emits', async () => {
@@ -321,7 +359,9 @@ describe('TwilioRealtimeTransportLayer', () => {
     twilio.emit('message', {
       toString: () => JSON.stringify({ event: 'mark', mark: { name: 'u:x' } }),
     });
-    expect(warnSpy).toHaveBeenCalledWith('Invalid mark name received:', 'u:x');
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Invalid mark name received. Mark data is redacted.',
+    );
 
     twilio.emit('message', {
       toString: () =>

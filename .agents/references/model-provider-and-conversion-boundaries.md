@@ -15,6 +15,14 @@ Use this reference for model/provider resolution, settings merge, Responses vers
 - Responses and Chat Completions differ in structured output, tool/message shapes, reasoning, hosted tools, conversation state, terminal events, and usage. Enforce unsupported combinations in the owning converter rather than pretending feature parity.
 - Preserve absent versus `null` versus empty values because providers use them differently. Do not pass empty tools, empty tool outputs, or text response formats when the target path rejects them.
 
+## Provider Validation and Error Ownership
+
+Do not duplicate provider-side request validation in the SDK merely to fail earlier. When the provider already rejects an invalid value with an actionable error, preserve that single source of truth instead of copying provider grammar, length limits, enum membership, or other request constraints into SDK runtime code. Duplicated validation can drift as provider contracts evolve, can reject values accepted by another provider, and can turn a provider-neutral SDK type into an accidental provider-specific contract.
+
+Add SDK-side validation only when it enforces an SDK-owned invariant or prevents a concrete risk that provider validation cannot address. Examples include ambiguous local routing, collisions before request serialization, invalid persisted state, unsafe local side effects, or a provider error that cannot identify the offending SDK input. A generic preference for earlier failure or a different error message is not sufficient.
+
+When local validation is justified and the constraint is provider-specific, keep it at the owning adapter boundary and derive it from an authoritative provider contract. Do not apply it to shared `Model` interfaces, provider-neutral tool types, or third-party adapters. Tests should distinguish the SDK-owned invariant from values that are intentionally left for the provider to validate.
+
 ## Provider Data and Raw Events
 
 - Treat `providerData` as namespaced provider extension data. Remove SDK-reserved keys before forwarding unknown options, preserve per-tool-call metadata through replay, and do not drop values needed by third-party providers.
@@ -30,10 +38,11 @@ Use this reference for model/provider resolution, settings merge, Responses vers
 ## Review Checklist
 
 1. Identify provider capability and the exact converter/transport that owns it.
-2. Compare agent, runner, per-run, model-default, and provider-data precedence without mutation.
-3. Test Responses and Chat Completions plus streaming/non-streaming when both are supported.
-4. Preserve IDs, usage, raw events, metadata, terminal status, and absent/null distinctions.
-5. Test retry replay safety and persistent transport ownership with abort and close failures.
+2. Before adding validation, determine whether it protects an SDK-owned invariant or only duplicates an actionable provider error.
+3. Compare agent, runner, per-run, model-default, and provider-data precedence without mutation.
+4. Test Responses and Chat Completions plus streaming/non-streaming when both are supported.
+5. Preserve IDs, usage, raw events, metadata, terminal status, and absent/null distinctions.
+6. Test retry replay safety and persistent transport ownership with abort and close failures.
 
 ## Sources
 

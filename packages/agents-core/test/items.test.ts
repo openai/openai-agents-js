@@ -6,6 +6,7 @@ import {
   RunHandoffCallItem as HandoffCallItem,
   RunHandoffOutputItem as HandoffOutputItem,
   RunMessageOutputItem as MessageOutputItem,
+  RunCompactionItem as CompactionItem,
   RunReasoningItem as ReasoningItem,
   RunToolApprovalItem as ToolApprovalItem,
   RunToolCallItem as ToolCallItem,
@@ -219,6 +220,27 @@ describe('items toJSON()', () => {
     });
   });
 
+  describe('CompactionItem', () => {
+    const item = new CompactionItem(
+      {
+        id: 'cmp_1',
+        type: 'compaction',
+        encrypted_content: 'ciphertext',
+        created_by: 'compaction_endpoint',
+        providerData: { extra: 'value' },
+      },
+      new Agent({ name: 'TestAgent' }),
+    );
+
+    it('returns the correct JSON', () => {
+      expect(item.toJSON()).toEqual({
+        type: 'compaction_item',
+        rawItem: item.rawItem,
+        agent: item.agent.toJSON(),
+      });
+    });
+  });
+
   describe('HandoffCallItem', () => {
     const item = new HandoffCallItem(
       {
@@ -284,6 +306,7 @@ describe('items toJSON()', () => {
         rawItem: item.rawItem,
         agent: item.agent.toJSON(),
         toolName: 'test',
+        functionToolStateKey: '["bare","test"]',
       });
     });
 
@@ -305,39 +328,51 @@ describe('items toJSON()', () => {
       expect(deferredItem.name).toBe('get_shipping_eta');
     });
 
-    it('keeps qualified approval names when agent tools resolve a same-name namespace', () => {
-      const namespacedLookupAccount = createLegacyNamespacedTool(
+    it('does not revalidate disabled agent tools when constructing approval items', () => {
+      const enabledLookupAccount = createLegacyNamespacedTool(
         tool({
           name: 'lookup_account',
           description: 'Look up an account.',
           parameters: z.object({
             accountId: z.string(),
           }),
-          deferLoading: true,
           execute: async () => 'ok',
         }),
-        'lookup_account',
-        'Resolve same-name namespace members.',
+        'crm',
+        'CRM tools.',
+      );
+      const disabledLookupAccount = createLegacyNamespacedTool(
+        tool({
+          name: 'lookup_account',
+          description: 'Disabled duplicate.',
+          parameters: z.object({}),
+          isEnabled: false,
+          execute: async () => 'disabled',
+        }),
+        'crm',
+        'CRM tools.',
       );
 
-      const namespacedItem = new ToolApprovalItem(
+      const approvalItem = new ToolApprovalItem(
         {
           id: 'approval_2',
           type: 'function_call',
           callId: 'call_2',
           name: 'lookup_account',
-          namespace: 'lookup_account',
+          namespace: 'crm',
           arguments: '{}',
           status: 'completed',
         },
         new Agent({
           name: 'NamespacedApprovalAgent',
-          tools: [namespacedLookupAccount],
+          tools: [enabledLookupAccount, disabledLookupAccount],
         }),
       );
 
-      expect(namespacedItem.toolName).toBe('lookup_account.lookup_account');
-      expect(namespacedItem.name).toBe('lookup_account.lookup_account');
+      expect(approvalItem.toolName).toBe('crm.lookup_account');
+      expect(approvalItem.functionToolStateKey).toBe(
+        '["namespaced","crm","lookup_account"]',
+      );
     });
   });
 });

@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { setTracingDisabled, withTrace } from '@openai/agents-core';
+import {
+  Agent,
+  ModelRefusalError,
+  Runner,
+  setTracingDisabled,
+  withTrace,
+} from '@openai/agents-core';
 import * as AgentsCore from '@openai/agents-core';
 import { OpenAIChatCompletionsModel } from '../src/openaiChatCompletionsModel';
 import { HEADERS } from '../src/defaults';
@@ -141,6 +147,46 @@ describe('OpenAIChatCompletionsModel streaming scenarios', () => {
       inputTokensDetails: { cached_tokens: 4 },
       outputTokensDetails: { reasoning_tokens: 6 },
     });
+  });
+
+  it('surfaces an empty content-filter terminal to the runner as a refusal', async () => {
+    const create = vi.fn().mockImplementation(async () => ({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          id: 'filtered-response',
+          created: 0,
+          model: 'gpt-stream',
+          object: 'chat.completion.chunk',
+          choices: [{ index: 0, delta: {}, finish_reason: 'content_filter' }],
+        } as any;
+      },
+    }));
+    const client = {
+      chat: { completions: { create } },
+      baseURL: 'https://example',
+    };
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-stream');
+    const agent = new Agent({ name: 'Filtered agent', model });
+
+    const result = await new Runner().run(agent, 'hello', {
+      stream: true,
+      maxTurns: 2,
+    });
+    const consume = async () => {
+      for await (const _event of result) {
+        // Consume the stream.
+      }
+    };
+
+    const error = await consume().then(
+      () => undefined,
+      (caught) => caught,
+    );
+    expect(error).toBeInstanceOf(ModelRefusalError);
+    expect(error).toMatchObject({
+      refusal: "Response withheld by the provider's content filter.",
+    });
+    expect(create).toHaveBeenCalledTimes(1);
   });
 
   it('preserves usage reported on a non-final chunk when the terminal chunk has no usage', async () => {

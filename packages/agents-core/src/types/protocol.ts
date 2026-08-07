@@ -379,6 +379,11 @@ export const AssistantMessageItem = MessageBase.extend({
   role: z.literal('assistant'),
 
   /**
+   * Whether this assistant message is intermediate commentary or a final answer.
+   */
+  phase: z.enum(['commentary', 'final_answer']).optional(),
+
+  /**
    * The status of the message.
    */
   status: z.enum(['in_progress', 'completed', 'incomplete']),

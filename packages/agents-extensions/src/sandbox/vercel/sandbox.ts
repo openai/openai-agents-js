@@ -1,6 +1,7 @@
 import { UserError } from '@openai/agents-core';
 import { loadEnv } from '@openai/agents-core/_shims';
 import {
+  cloneManifest,
   Environment,
   isMount,
   Manifest,
@@ -14,34 +15,40 @@ import {
   type SandboxClientOptions,
   type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
-  type Entry,
   type MaterializeEntryArgs,
   type S3Mount,
   type SandboxSessionSerializationOptions,
+  type SandboxPreservedSessionReuseOptions,
   type SandboxSessionState,
   type WorkspaceArchiveData,
   type WorkspaceArchiveOptions,
 } from '@openai/agents-core/sandbox';
 import {
   assertCoreSnapshotUnsupported,
+  assertRemoteSandboxSessionStateCanResume,
   assertSandboxManifestMetadataSupported,
   assertRunAsUnsupported,
   cloneManifestWithoutMountEntries,
   cloneManifestWithRoot,
-  deserializeRemoteSandboxSessionStateValues,
+  rehydrateRemoteSandboxSessionStateValues,
   decodeNativeSnapshotRef,
   encodeNativeSnapshotRef,
   hydrateRemoteWorkspaceTar,
   materializeEnvironment,
+  mergeManifestEntryDelta,
   MOUNT_MANIFEST_METADATA_SUPPORT,
   posixDirname,
   persistRemoteWorkspaceTar,
   providerErrorDetails,
   providerErrorMessage,
+  prepareManifestMounts,
+  resolveRemoteSandboxEffectivePath,
   resolveSandboxAbsolutePath,
   resolveSandboxRelativePath,
   shellQuote,
   serializeRemoteSandboxSessionState,
+  isRemoteSandboxSessionStateUnsafe,
+  markRemoteSandboxSessionStateUnsafe,
   toUint8Array,
   readOptionalBoolean,
   readOptionalNumber,
@@ -58,29 +65,49 @@ import {
   type RemoteSandboxCommandOptions,
   type RemoteSandboxCommandResult,
 } from '../shared';
+import type { PreparedManifestMount } from '../shared/manifest';
 import {
-  hasVercelS3Credentials,
+  assertLiveMountCredentialAuthorityMatches,
+  assertLiveMountEnvironmentAuthorityMatches,
+  assertSandboxStateGenerationUnchanged,
+  captureSandboxStateGeneration,
+  captureLiveMountCredentialAuthority,
+  captureLiveMountCredentialAuthorityIfAbsent,
+  recordLiveMountCredentialAuthority,
+  validateMountCredentialBoundaries,
+  withExclusiveSandboxManifestMutation,
+} from '@openai/agents-core/sandbox/internal';
+import {
   isVercelCloudBucketMountEntry,
   mountVercelCloudBucket,
   unmountVercelCloudBucket,
   validateVercelCloudBucketMountEntry,
+  VERCEL_S3_MOUNT_CREDENTIAL_ENVIRONMENT_NAMES,
+  VERCEL_S3_MOUNT_ENVIRONMENT_NAMES,
   type VercelMountCommand,
 } from './mounts';
 
 const DEFAULT_VERCEL_WORKSPACE_ROOT = '/vercel/sandbox';
 const VERCEL_MOUNT_COMMAND_PATH =
   '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
-const VERCEL_S3_CREDENTIAL_ENVIRONMENT_NAMES = [
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_SESSION_TOKEN',
-] as const;
+
+function resolveVercelOptions(
+  defaults: VercelSandboxClientOptions,
+  overrides: VercelSandboxClientOptions | undefined,
+): VercelSandboxClientOptions {
+  return { ...defaults, ...overrides };
+}
 
 type VercelSdkSandboxClass = typeof import('@vercel/sandbox').Sandbox;
 type VercelSdkSandbox = import('@vercel/sandbox').Sandbox;
 type VercelSdkCreateParams = Parameters<VercelSdkSandboxClass['create']>[0];
 type VercelSdkGetParams = Parameters<VercelSdkSandboxClass['get']>[0];
 type VercelSdkRunCommandParams = Parameters<VercelSdkSandbox['runCommand']>[0];
+
+type VercelActiveMount = {
+  logicalPath: string;
+  entry: S3Mount;
+};
 
 type VercelSandboxCreateParams = Record<string, unknown> & {
   source?:
@@ -232,8 +259,8 @@ export interface VercelSandboxClientOptions extends SandboxClientOptions {
   snapshotExpirationMs?: number;
   env?: Record<string, string>;
   /**
-   * Explicitly allows S3 credentials from mount entries to be forwarded to
-   * commands running inside the remote sandbox.
+   * @deprecated Use Manifest.withInContainerMountCredentialExposureAllowed()
+   * with each exact Vercel mount path instead.
    */
   allowS3CredentialExposure?: boolean;
 }
@@ -279,7 +306,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
    * or best-effort reconciliation without a trusted provider primitive that
    * makes those transitions unambiguous.
    */
-  private readonly activeMounts = new Map<string, S3Mount>();
+  private readonly activeMounts = new Map<string, VercelActiveMount>();
   private readonly credentials: Pick<
     VercelSandboxClientOptions,
     'projectId' | 'teamId' | 'token'
@@ -308,6 +335,10 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     this.credentials = args.credentials ?? {};
     this.knownDirs = new Set();
     this.resetKnownDirs();
+    captureLiveMountCredentialAuthorityIfAbsent(
+      this.state.manifest,
+      this.state.environment,
+    );
   }
 
   override supportsPty(): boolean {
@@ -408,26 +439,47 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
   }
 
   async materializeInitialManifest(manifest: Manifest): Promise<void> {
-    this.markWorkspaceMutated();
-    await this.materializeManifestEntries(
-      cloneManifestWithoutMountEntries(manifest),
-    );
-    try {
-      for (const {
-        entry,
-        mountPath,
-      } of manifest.mountTargetsForMaterialization()) {
-        await this.mountInitialEntry(entry, mountPath);
+    const manifestSnapshot = cloneManifest(manifest);
+    await withExclusiveSandboxManifestMutation(this.state, async () => {
+      assertLiveMountCredentialAuthorityMatches(
+        this.state.manifest,
+        manifestSnapshot,
+      );
+      assertLiveMountEnvironmentAuthorityMatches(
+        this.state.manifest,
+        manifestSnapshot,
+        this.state.environment,
+      );
+      validateMountCredentialBoundaries(manifestSnapshot);
+      const preparedMounts = await this.prepareMountCandidates(
+        manifestSnapshot,
+        false,
+      );
+      this.markWorkspaceMutated();
+      await this.materializeManifestEntries(
+        cloneManifestWithoutMountEntries(manifestSnapshot),
+      );
+      try {
+        for (const preparedMount of preparedMounts) {
+          await this.mountInitialEntry(preparedMount);
+        }
+      } catch (error) {
+        const rollbackFailureCount = await this.rollbackInitialMounts();
+        const stopFailed = await this.invalidateAfterFailedInitialMount(error);
+        if (rollbackFailureCount > 0 || stopFailed) {
+          throw new SandboxMountError(
+            'VercelSandboxClient failed to apply the initial S3 mounts and clean up the sandbox.',
+            {
+              provider: 'vercel',
+              rollbackFailureCount,
+              stopFailed,
+            },
+            'mount_failed',
+          );
+        }
+        throw error;
       }
-    } catch (error) {
-      const rollbackErrors = await this.rollbackInitialMounts();
-      if (rollbackErrors.length > 0) {
-        throw new UserError(
-          `Failed to apply the initial Vercel S3 mounts and roll back partial mounts. Mount error: ${providerErrorMessage(error)} Rollback errors: ${rollbackErrors.join('; ')}`,
-        );
-      }
-      throw error;
-    }
+    });
   }
 
   async prepareWorkspaceRoot(): Promise<void> {
@@ -436,6 +488,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
   }
 
   async persistWorkspace(): Promise<Uint8Array> {
+    this.assertSessionUsable();
     if (this.activeMounts.size > 0) {
       return await this.withMountsDetached(async () => {
         return await persistRemoteWorkspaceTar({
@@ -613,15 +666,24 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       }
 
       if (unmountError && stopError) {
-        throw new UserError(
-          `Failed to unmount Vercel S3 buckets and stop the sandbox. Unmount error: ${providerErrorMessage(unmountError)} Stop error: ${providerErrorMessage(stopError)}`,
+        throw new SandboxMountError(
+          'VercelSandboxClient failed to unmount S3 buckets and stop the sandbox.',
+          { provider: 'vercel', unmountFailed: true, stopFailed: true },
+          'mount_failed',
         );
       }
       if (unmountError) {
-        throw unmountError;
+        throw new SandboxMountError(
+          'VercelSandboxClient failed to unmount one or more S3 buckets.',
+          { provider: 'vercel' },
+          'mount_failed',
+        );
       }
       if (stopError) {
-        throw stopError;
+        throw new SandboxLifecycleError(
+          'VercelSandboxClient failed to stop the sandbox after unmounting S3 buckets.',
+          { provider: 'vercel', sandboxId: this.state.sandboxId },
+        );
       }
     });
   }
@@ -635,9 +697,9 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
   }
 
   private async mountInitialEntry(
-    entry: Entry,
-    declaredMountPath: string,
+    preparedMount: PreparedManifestMount,
   ): Promise<void> {
+    const { entry } = preparedMount;
     if (!isVercelCloudBucketMountEntry(entry)) {
       throw new SandboxUnsupportedFeatureError(
         'VercelSandboxClient only supports VercelCloudBucketMountStrategy on S3 mount entries.',
@@ -651,21 +713,25 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       );
     }
 
-    const mountPath = resolveSandboxAbsolutePath(
-      this.state.manifest.root,
-      declaredMountPath,
-    );
+    const mountPath = preparedMount.absolutePath;
     assertNoOverlappingMountPath(this.activeMounts.keys(), mountPath);
     await this.assertCanonicalMountPath(mountPath);
-    this.activeMounts.set(mountPath, entry);
+    this.activeMounts.set(mountPath, {
+      logicalPath: preparedMount.logicalPath,
+      entry,
+    });
     await mountVercelCloudBucket({
       entry,
       mountPath,
       runCommand: this.mountCommand,
-      environment: this.state.environment,
+      environment: preparedMount.environment
+        ? { ...preparedMount.environment }
+        : this.state.environment,
+      allowAmbientCredentials: preparedMount.allowMountCredentialExposure,
       validateMountPath: async () => {
         await this.assertCanonicalMountPath(mountPath);
       },
+      revalidateMountAuthority: preparedMount.revalidateMountAuthority,
     });
   }
 
@@ -702,8 +768,8 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     }
   }
 
-  private async rollbackInitialMounts(): Promise<string[]> {
-    const errors: string[] = [];
+  private async rollbackInitialMounts(): Promise<number> {
+    let failureCount = 0;
     for (const mountPath of [...this.activeMounts.keys()].reverse()) {
       try {
         await unmountVercelCloudBucket({
@@ -711,11 +777,11 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
           runCommand: this.mountCommand,
         });
         this.activeMounts.delete(mountPath);
-      } catch (error) {
-        errors.push(`${mountPath}: ${providerErrorMessage(error)}`);
+      } catch {
+        failureCount += 1;
       }
     }
-    return errors;
+    return failureCount;
   }
 
   private assertMountSessionUsable(): void {
@@ -732,8 +798,29 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     );
   }
 
+  protected override assertSessionUsable(): void {
+    this.assertMountSessionUsable();
+    super.assertSessionUsable();
+  }
+
   private markMountSessionUnusable(error: unknown): void {
-    this.mountFailure ??= providerErrorMessage(error);
+    void error;
+    this.mountFailure ??= 'S3 mount transition failed.';
+    markRemoteSandboxSessionStateUnsafe(this.state);
+  }
+
+  private async invalidateAfterFailedInitialMount(
+    error: unknown,
+  ): Promise<boolean> {
+    this.markMountSessionUnusable(error);
+    try {
+      await stopVercelSandbox(this.sandbox);
+      this.closeCompleted = true;
+      this.activeMounts.clear();
+      return false;
+    } catch {
+      return true;
+    }
   }
 
   /**
@@ -787,24 +874,24 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
   }
 
   private async unmountAll(): Promise<void> {
-    const errors: string[] = [];
+    let failureCount = 0;
     for (const mountPath of [...this.activeMounts.keys()].reverse()) {
       try {
         await unmountVercelCloudBucket({
           mountPath,
           runCommand: this.mountCommand,
         });
-      } catch (error) {
-        errors.push(`${mountPath}: ${providerErrorMessage(error)}`);
+      } catch {
+        failureCount += 1;
       }
     }
-    if (errors.length > 0) {
+    if (failureCount > 0) {
       throw new SandboxMountError(
         'VercelSandboxClient failed to unmount one or more S3 buckets.',
         {
           provider: 'vercel',
           sandboxId: this.state.sandboxId,
-          errors,
+          failureCount,
         },
         'mount_failed',
       );
@@ -812,18 +899,106 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
   }
 
   private async remountAll(): Promise<void> {
-    for (const [mountPath, entry] of this.activeMounts) {
+    let trustedManifest = cloneManifest(this.state.manifest);
+    for (const activeMount of this.activeMounts.values()) {
+      trustedManifest = mergeManifestEntryDelta(
+        trustedManifest,
+        activeMount.logicalPath,
+        activeMount.entry,
+      );
+    }
+    const preparedMounts = await this.prepareMountCandidates(
+      trustedManifest,
+      true,
+    );
+    if (preparedMounts.length !== this.activeMounts.size) {
+      throw new SandboxMountError(
+        'VercelSandboxClient active S3 mount candidates changed during remount.',
+        { provider: 'vercel' },
+        'mount_config_invalid',
+      );
+    }
+    for (const preparedMount of preparedMounts) {
+      const mountPath = preparedMount.absolutePath;
+      if (
+        !this.activeMounts.has(mountPath) ||
+        !isVercelCloudBucketMountEntry(preparedMount.entry)
+      ) {
+        throw new SandboxMountError(
+          'VercelSandboxClient active S3 mount candidates changed during remount.',
+          { provider: 'vercel', mountPath },
+          'mount_config_invalid',
+        );
+      }
       await this.assertCanonicalMountPathDuringTransition(mountPath);
       await mountVercelCloudBucket({
-        entry,
+        entry: preparedMount.entry,
         mountPath,
         runCommand: this.mountCommand,
-        environment: this.state.environment,
+        environment: preparedMount.environment
+          ? { ...preparedMount.environment }
+          : this.state.environment,
+        allowAmbientCredentials: preparedMount.allowMountCredentialExposure,
         validateMountPath: async () => {
           await this.assertCanonicalMountPathDuringTransition(mountPath);
         },
+        revalidateMountAuthority: preparedMount.revalidateMountAuthority,
+      });
+      this.activeMounts.set(mountPath, {
+        logicalPath: preparedMount.logicalPath,
+        entry: preparedMount.entry,
       });
     }
+  }
+
+  private async prepareMountCandidates(
+    manifest: Manifest,
+    duringTransition: boolean,
+  ) {
+    validateVercelMountEnvironmentCredentialExposure(
+      manifest,
+      this.state.environment,
+    );
+    const mountPaths = new Map(
+      manifest
+        .mountTargetsForMaterialization()
+        .map(({ mountPath }) => [
+          resolveSandboxRelativePath(manifest.root, mountPath),
+          mountPath,
+        ]),
+    );
+    const resolvePath = async (
+      path: string,
+      options: { forWrite?: boolean } = {},
+    ): Promise<string> => {
+      try {
+        const resolvedPath = duringTransition
+          ? await this.resolveRemotePathDirect(path, options)
+          : await this.resolveRemotePath(path, options);
+        const mountPath = mountPaths.get(path);
+        if (mountPath !== undefined) {
+          this.assertResolvedMountPath(mountPath, resolvedPath);
+        }
+        return resolvedPath;
+      } catch (error) {
+        if (!mountPaths.has(path)) {
+          throw error;
+        }
+        throw new SandboxMountError(
+          'VercelSandboxClient refuses an S3 mount path that resolves through a symlink.',
+          { provider: 'vercel', mountPath: path },
+          'mount_config_invalid',
+        );
+      }
+    };
+    return await prepareManifestMounts(manifest, resolvePath, {
+      credentialBoundaryManifest: manifest,
+      environment: this.state.environment,
+      resolveCredentialPath: async (path) =>
+        duringTransition
+          ? await this.resolveRemoteCredentialPathDirect(path)
+          : await this.resolveRemoteCredentialPath(path),
+    });
   }
 
   private async stopAfterMountTransitionFailure(
@@ -840,11 +1015,14 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     }
 
     if (stopError) {
-      const precedingErrorMessage = precedingError
-        ? ` Preceding error: ${providerErrorMessage(precedingError)}`
-        : '';
-      throw new UserError(
-        `VercelSandboxClient failed to ${operation} and could not stop the sandbox.${precedingErrorMessage} Transition error: ${providerErrorMessage(transitionError)} Stop error: ${providerErrorMessage(stopError)}`,
+      throw new SandboxMountError(
+        `VercelSandboxClient failed to ${operation} and could not stop the sandbox.`,
+        {
+          provider: 'vercel',
+          stopFailed: true,
+          precedingOperationFailed: precedingError !== undefined,
+        },
+        'mount_failed',
       );
     }
     this.closeCompleted = true;
@@ -854,10 +1032,8 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       {
         provider: 'vercel',
         sandboxId: this.state.sandboxId,
-        cause: providerErrorMessage(transitionError),
-        ...(precedingError
-          ? { precedingCause: providerErrorMessage(precedingError) }
-          : {}),
+        transitionFailed: transitionError !== undefined,
+        precedingOperationFailed: precedingError !== undefined,
       },
     );
   }
@@ -938,6 +1114,21 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
         await this.runRemoteCommandDirect(command, {
           kind: 'path',
           workdir: this.state.manifest.root,
+          environment: {},
+        }),
+    });
+  }
+
+  private async resolveRemoteCredentialPathDirect(
+    path: string,
+  ): Promise<string> {
+    return await resolveRemoteSandboxEffectivePath({
+      path,
+      runCommand: async (command) =>
+        await this.runRemoteCommandDirect(command, {
+          kind: 'path',
+          workdir: this.state.manifest.root,
+          environment: {},
         }),
     });
   }
@@ -959,7 +1150,12 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     command: string,
     options: RemoteSandboxCommandOptions,
   ): Promise<RemoteSandboxCommandResult> {
-    const result = await this.execShell(command, options.workdir, undefined);
+    const result = await this.execShell(
+      command,
+      options.workdir,
+      undefined,
+      options.environment,
+    );
     return {
       status: result.exitCode,
       stdout: result.output,
@@ -991,12 +1187,13 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     command: string,
     cwd: string,
     sudo: boolean | undefined,
+    environment: Record<string, string> = this.state.environment,
   ): Promise<{ exitCode: number; output: string }> {
     const result = await this.sandbox.runCommand({
       cmd: '/bin/sh',
       args: ['-lc', command],
       cwd,
-      env: this.state.environment,
+      env: environment,
       ...(sudo ? { sudo: true } : {}),
     });
     return {
@@ -1298,6 +1495,12 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       }
     });
   }
+
+  protected override async forceTerminateAfterFailedPrivilegedManifestTransition(): Promise<void> {
+    await stopVercelSandbox(this.sandbox);
+    this.closeCompleted = true;
+    this.activeMounts.clear();
+  }
 }
 
 /**
@@ -1316,6 +1519,10 @@ export class VercelSandboxClient implements SandboxClient<
     this.options = options;
   }
 
+  resolveTrustedManifestForResume(manifest: Manifest): Manifest {
+    return resolveManifestRoot(manifest);
+  }
+
   async create(
     args?: SandboxClientCreateArgs<VercelSandboxClientOptions> | Manifest,
     manifestOptions?: VercelSandboxClientOptions,
@@ -1323,20 +1530,26 @@ export class VercelSandboxClient implements SandboxClient<
     const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
     assertCoreSnapshotUnsupported('VercelSandboxClient', createArgs.snapshot);
     const manifest = createArgs.manifest;
-    const resolvedOptions = {
-      ...this.options,
-      ...createArgs.options,
-    };
+    const resolvedOptions = resolveVercelOptions(
+      this.options,
+      createArgs.options,
+    );
     const resolvedManifest = resolveManifestRoot(manifest);
     assertSandboxManifestMetadataSupported(
       'VercelSandboxClient',
       resolvedManifest,
       MOUNT_MANIFEST_METADATA_SUPPORT,
     );
-    assertVercelMountManifest(
+    assertVercelMountManifest(resolvedManifest);
+    const environment = await materializeEnvironment(
       resolvedManifest,
-      resolvedOptions.allowS3CredentialExposure === true,
+      resolvedOptions.env,
     );
+    validateVercelMountEnvironmentCredentialExposure(
+      resolvedManifest,
+      environment,
+    );
+    captureLiveMountCredentialAuthority(resolvedManifest, environment);
     const persistentManifest = sanitizeVercelMountManifest(resolvedManifest);
 
     return await withSandboxSpan(
@@ -1346,10 +1559,6 @@ export class VercelSandboxClient implements SandboxClient<
       },
       async () => {
         const Sandbox = await loadVercelSandboxClass();
-        const environment = await materializeEnvironment(
-          resolvedManifest,
-          resolvedOptions.env,
-        );
         const credentials = resolveVercelCredentials(
           createArgs.options ?? {},
           this.options,
@@ -1412,6 +1621,9 @@ export class VercelSandboxClient implements SandboxClient<
           await session.prepareWorkspaceRoot();
           await session.materializeInitialManifest(resolvedManifest);
         } catch (error) {
+          if (isRemoteSandboxSessionStateUnsafe(session.state)) {
+            throw error;
+          }
           try {
             await stopVercelSandbox(sandbox);
           } catch (stopError) {
@@ -1430,6 +1642,7 @@ export class VercelSandboxClient implements SandboxClient<
     state: VercelSandboxSessionState,
     options?: SandboxSessionSerializationOptions,
   ): Promise<Record<string, unknown>> {
+    const stateGeneration = captureSandboxStateGeneration(state);
     state.manifest = sanitizeVercelMountManifest(state.manifest);
     const credentials = selectVercelSessionCredentials(state, this.options);
     applyVercelCredentials(state, credentials);
@@ -1446,12 +1659,17 @@ export class VercelSandboxClient implements SandboxClient<
         },
       });
     }
-    return serializeRemoteSandboxSessionState({
-      ...state,
-      environment: hasVercelMounts(state.manifest)
-        ? omitVercelS3CredentialEnvironment(state.environment)
-        : state.environment,
-    });
+    const serialized = serializeRemoteSandboxSessionState(
+      {
+        ...state,
+        environment: hasVercelMounts(state.manifest)
+          ? omitVercelS3CredentialEnvironment(state.environment)
+          : state.environment,
+      },
+      state,
+    );
+    assertSandboxStateGenerationUnchanged(state, stateGeneration);
+    return serialized;
   }
 
   canPersistOwnedSessionState(state: VercelSandboxSessionState): boolean {
@@ -1462,9 +1680,15 @@ export class VercelSandboxClient implements SandboxClient<
     );
   }
 
-  canReusePreservedOwnedSession(state: VercelSandboxSessionState): boolean {
+  canReusePreservedOwnedSession(
+    state: VercelSandboxSessionState,
+    options: SandboxPreservedSessionReuseOptions<VercelSandboxClientOptions> = {},
+  ): Promise<boolean> | boolean {
+    if (isRemoteSandboxSessionStateUnsafe(state)) {
+      return false;
+    }
     if (hasVercelMounts(state.manifest)) {
-      return true;
+      return this.canReuseMountedSession(state, options);
     }
     return (
       state.workspacePersistence !== 'snapshot' ||
@@ -1472,10 +1696,31 @@ export class VercelSandboxClient implements SandboxClient<
     );
   }
 
+  private async canReuseMountedSession(
+    state: VercelSandboxSessionState,
+    options: SandboxPreservedSessionReuseOptions<VercelSandboxClientOptions>,
+  ): Promise<boolean> {
+    if (!options.trustedManifest) {
+      return false;
+    }
+    const trustedEnvironment = await materializeEnvironment(
+      options.trustedManifest,
+      resolveVercelOptions(this.options, options.clientOptions).env,
+    );
+    validateVercelMountEnvironmentCredentialExposure(
+      options.trustedManifest,
+      trustedEnvironment,
+    );
+    return vercelMountEnvironmentAuthorityMatches(
+      state.environment,
+      trustedEnvironment,
+    );
+  }
+
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<VercelSandboxSessionState> {
-    const baseState = deserializeRemoteSandboxSessionStateValues(
+    const baseState = await rehydrateRemoteSandboxSessionStateValues(
       state,
       this.options.env,
     );
@@ -1520,6 +1765,7 @@ export class VercelSandboxClient implements SandboxClient<
   async resume(
     state: VercelSandboxSessionState,
   ): Promise<VercelSandboxSession> {
+    assertRemoteSandboxSessionStateCanResume(state);
     if (hasVercelMounts(state.manifest)) {
       // This is an intentional lifecycle boundary, not a missing restore path.
       // A fresh create supplies trusted credentials and mount configuration.
@@ -1713,10 +1959,7 @@ function adaptVercelCommand(
   };
 }
 
-function assertVercelMountManifest(
-  manifest: Manifest,
-  allowS3CredentialExposure: boolean,
-): void {
+function assertVercelMountManifest(manifest: Manifest): void {
   const mountPaths: string[] = [];
   for (const {
     entry,
@@ -1744,21 +1987,6 @@ function assertVercelMountManifest(
     }
     assertNoOverlappingMountPath(mountPaths, absoluteMountPath);
     mountPaths.push(absoluteMountPath);
-
-    if (
-      isVercelCloudBucketMountEntry(entry) &&
-      hasVercelS3Credentials(entry) &&
-      !allowS3CredentialExposure
-    ) {
-      throw new SandboxMountError(
-        'VercelSandboxClient requires allowS3CredentialExposure=true before forwarding S3 credentials into the remote sandbox.',
-        {
-          provider: 'vercel',
-          mountPath: absoluteMountPath,
-        },
-        'mount_config_invalid',
-      );
-    }
   }
 }
 
@@ -1777,7 +2005,7 @@ function sanitizeVercelMountManifest(manifest: Manifest): Manifest {
     entry.ephemeral = true;
   }
   if (mountTargets.length > 0) {
-    for (const name of VERCEL_S3_CREDENTIAL_ENVIRONMENT_NAMES) {
+    for (const name of VERCEL_S3_MOUNT_ENVIRONMENT_NAMES) {
       const environment = sanitized.environment[name];
       if (environment) {
         sanitized.environment[name] = new Environment({
@@ -1787,6 +2015,7 @@ function sanitizeVercelMountManifest(manifest: Manifest): Manifest {
       }
     }
   }
+  recordLiveMountCredentialAuthority(sanitized, manifest);
   return sanitized;
 }
 
@@ -1798,10 +2027,45 @@ function omitVercelS3CredentialEnvironment(
   environment: Record<string, string>,
 ): Record<string, string> {
   const serializedEnvironment = { ...environment };
-  for (const name of VERCEL_S3_CREDENTIAL_ENVIRONMENT_NAMES) {
+  for (const name of VERCEL_S3_MOUNT_ENVIRONMENT_NAMES) {
     delete serializedEnvironment[name];
   }
   return serializedEnvironment;
+}
+
+function validateVercelMountEnvironmentCredentialExposure(
+  manifest: Manifest,
+  environment: Record<string, string>,
+): void {
+  const credentialEnvironment = Object.fromEntries(
+    VERCEL_S3_MOUNT_ENVIRONMENT_NAMES.flatMap((name) =>
+      environment[name] === undefined ? [] : [[name, environment[name]]],
+    ),
+  );
+  const candidate = cloneManifestWithRoot(manifest, manifest.root);
+  if (
+    VERCEL_S3_MOUNT_CREDENTIAL_ENVIRONMENT_NAMES.some(
+      (name) => environment[name] !== undefined,
+    )
+  ) {
+    for (const { entry } of candidate.mountTargetsForMaterialization()) {
+      if (!isVercelCloudBucketMountEntry(entry)) {
+        continue;
+      }
+      (entry.mountStrategy as Record<string, unknown>).credentialEnvironment =
+        credentialEnvironment;
+    }
+  }
+  validateMountCredentialBoundaries(candidate);
+}
+
+function vercelMountEnvironmentAuthorityMatches(
+  live: Record<string, string>,
+  trusted: Record<string, string>,
+): boolean {
+  return VERCEL_S3_MOUNT_ENVIRONMENT_NAMES.every(
+    (name) => live[name] === trusted[name],
+  );
 }
 
 function assertNoOverlappingMountPath(

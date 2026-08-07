@@ -1,5 +1,13 @@
 import { isMount, type Entry } from '../../entries';
-import { Manifest, type EnvValue } from '../../manifest';
+import { UserError } from '../../../errors';
+import {
+  cloneManifest,
+  copyManifestMountCredentialExposurePolicy,
+  isEnvValueReference,
+  Manifest,
+  type EnvValue,
+} from '../../manifest';
+import type { SandboxSessionState } from '../../session';
 import {
   mergeNamedObjects,
   mergePathKeyedObjects,
@@ -13,19 +21,164 @@ import {
   decodeBase64ToUint8Array,
   encodeUint8ArrayToBase64,
 } from '../../../utils/base64';
+import {
+  copyTrustedMountCredentialRebindProvenance,
+  recordPersistedMountTopology,
+  recordPendingMountCredentialPaths,
+  redactMountCredentialsForPersistence,
+  sanitizePersistedManifestRecord,
+  validateMountCredentialBoundaries,
+} from '../../mountSecurity';
+
+export {
+  assertMountCredentialsRebound,
+  deserializeMountCredentialRedactionMetadata,
+  rebindPersistedMountCredentials,
+  serializeMountCredentialRedactionMetadata,
+} from '../../mountSecurity';
 
 type ManifestPersistenceState = {
   manifest: Manifest;
   environment?: Record<string, string>;
 };
 
+const redactedHostPathGrantPathsKey =
+  '__openaiAgentsRedactedHostPathGrantPaths';
+
 export function serializeManifest(manifest: Manifest): Manifest {
   return deserializeManifest(serializeManifestRecord(manifest));
+}
+
+export function serializeHostPathGrantRedactionMetadata(
+  state: SandboxSessionState,
+): Record<string, unknown> {
+  const paths = new Set(readRedactedHostPathGrantPaths(state));
+  for (const grant of state.manifest.extraPathGrants) {
+    if (grant.hostPath !== undefined) {
+      paths.add(grant.path);
+    }
+  }
+  return paths.size > 0 ? { [redactedHostPathGrantPathsKey]: [...paths] } : {};
+}
+
+export function deserializeHostPathGrantRedactionMetadata(
+  state: Record<string, unknown>,
+): Record<string, unknown> {
+  const paths = readRedactedHostPathGrantPaths(state);
+  return paths.length > 0 ? { [redactedHostPathGrantPathsKey]: paths } : {};
+}
+
+export function rebindPersistedPathGrants<TState extends SandboxSessionState>(
+  state: TState,
+  trustedManifest: Manifest | undefined,
+  options: {
+    replaceWithTrustedManifest?: boolean;
+    replaceWithTrustedGrantSet?: boolean;
+  } = {},
+): TState {
+  // Native host paths are runtime authority. Only the current manifest may
+  // reintroduce them after persisted session state has been deserialized.
+  const reboundState: SandboxSessionState = { ...state };
+  if (options.replaceWithTrustedManifest && trustedManifest) {
+    reboundState.manifest = cloneManifest(trustedManifest);
+    copyTrustedMountCredentialRebindProvenance(
+      reboundState.manifest,
+      state.manifest,
+    );
+    delete reboundState[redactedHostPathGrantPathsKey];
+    return reboundState as TState;
+  }
+
+  const trustedGrantsByPath = new Map(
+    (trustedManifest?.extraPathGrants ?? []).map((grant) => [
+      grant.path,
+      grant,
+    ]),
+  );
+  let extraPathGrants: Manifest['extraPathGrants'];
+  if (options.replaceWithTrustedGrantSet && trustedManifest) {
+    extraPathGrants = trustedManifest.extraPathGrants.map((grant) =>
+      structuredClone(grant),
+    );
+  } else {
+    const unmatchedGrantPaths = state.manifest.extraPathGrants
+      .filter((grant) => !trustedGrantsByPath.has(grant.path))
+      .map((grant) => grant.path);
+    if (unmatchedGrantPaths.length > 0) {
+      throw new UserError(
+        `Sandbox session state contains path grants that are not present in the current trusted manifest: ${unmatchedGrantPaths.join(', ')}. Define each grant in the current manifest before resuming.`,
+      );
+    }
+    extraPathGrants = state.manifest.extraPathGrants.map((grant) => {
+      return structuredClone(trustedGrantsByPath.get(grant.path)!);
+    });
+  }
+
+  reboundState.manifest = new Manifest({
+    version: state.manifest.version,
+    root: state.manifest.root,
+    entries: structuredClone(state.manifest.entries),
+    environment: Object.fromEntries(
+      Object.entries(state.manifest.environment).map(([key, value]) => [
+        key,
+        value.init(),
+      ]),
+    ),
+    users: structuredClone(state.manifest.users),
+    groups: structuredClone(state.manifest.groups),
+    extraPathGrants,
+    remoteMountCommandAllowlist: [
+      ...state.manifest.remoteMountCommandAllowlist,
+    ],
+  });
+  copyManifestMountCredentialExposurePolicy(
+    reboundState.manifest,
+    state.manifest,
+  );
+  copyTrustedMountCredentialRebindProvenance(
+    reboundState.manifest,
+    state.manifest,
+  );
+
+  const reboundGrantsByPath = new Map(
+    reboundState.manifest.extraPathGrants.map((grant) => [grant.path, grant]),
+  );
+  const unresolvedPaths = options.replaceWithTrustedGrantSet
+    ? []
+    : readRedactedHostPathGrantPaths(state).filter(
+        (path) => reboundGrantsByPath.get(path)?.hostPath === undefined,
+      );
+  if (unresolvedPaths.length > 0) {
+    reboundState[redactedHostPathGrantPathsKey] = unresolvedPaths;
+  } else {
+    delete reboundState[redactedHostPathGrantPathsKey];
+  }
+  return reboundState as TState;
+}
+
+export function assertHostPathGrantsRebound(state: SandboxSessionState): void {
+  const paths = readRedactedHostPathGrantPaths(state);
+  if (paths.length === 0) {
+    return;
+  }
+  throw new UserError(
+    `Sandbox session state requires trusted hostPath values for these path grants: ${paths.join(', ')}. Resume it through the Runner with a current manifest that defines each hostPath.`,
+  );
+}
+
+function readRedactedHostPathGrantPaths(
+  state: Record<string, unknown>,
+): string[] {
+  const value = state[redactedHostPathGrantPathsKey];
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string')
+    : [];
 }
 
 export function serializeManifestRecord(
   manifest: Manifest,
 ): Record<string, unknown> {
+  validateMountCredentialBoundaries(manifest);
   return {
     version: manifest.version,
     root: manifest.root,
@@ -33,7 +186,11 @@ export function serializeManifestRecord(
     environment: serializePersistentManifestEnvironment(manifest),
     users: structuredClone(manifest.users),
     groups: structuredClone(manifest.groups),
-    extraPathGrants: structuredClone(manifest.extraPathGrants),
+    // Native host paths are rebound from trusted current configuration on resume.
+    extraPathGrants: manifest.extraPathGrants.map((grant) => {
+      const { hostPath: _hostPath, ...persistentGrant } = grant;
+      return structuredClone(persistentGrant);
+    }),
     remoteMountCommandAllowlist: [...manifest.remoteMountCommandAllowlist],
   };
 }
@@ -41,7 +198,13 @@ export function serializeManifestRecord(
 export function deserializeManifest(
   value: Record<string, unknown> | undefined,
 ): Manifest {
-  return new Manifest(deserializeManifestRecord(value ?? {}));
+  const { record, credentialPaths } = sanitizePersistedManifestRecord(
+    value ?? {},
+  );
+  const manifest = new Manifest(deserializeManifestRecord(record));
+  recordPersistedMountTopology(manifest);
+  recordPendingMountCredentialPaths(manifest, credentialPaths);
+  return manifest;
 }
 
 export function sanitizeEnvironmentForPersistence(
@@ -55,13 +218,13 @@ export function sanitizeEnvironmentForPersistence(
 
 export function serializeEnvironmentForPersistence(
   state: ManifestPersistenceState,
-): SerializedManifestEnvironment {
+): Record<string, EnvValue> {
   const runtimeEnvironment = state.environment ?? {};
   const ephemeralKeys = new Set<string>();
-  const serialized: SerializedManifestEnvironment = {};
+  const serialized: Record<string, EnvValue> = {};
 
   for (const [key, value] of Object.entries(state.manifest.environment)) {
-    if (value.ephemeral) {
+    if (value.ephemeral || isEnvValueReference(value)) {
       ephemeralKeys.add(key);
       continue;
     }
@@ -85,7 +248,7 @@ export function serializeEnvironmentForPersistence(
 }
 
 export function mergeManifestDelta(base: Manifest, update: Manifest): Manifest {
-  return new Manifest({
+  const merged = new Manifest({
     version: update.version ?? base.version,
     root: base.root,
     entries: {
@@ -106,6 +269,8 @@ export function mergeManifestDelta(base: Manifest, update: Manifest): Manifest {
       ? update.remoteMountCommandAllowlist
       : base.remoteMountCommandAllowlist,
   });
+  copyManifestMountCredentialExposurePolicy(merged, base, update);
+  return merged;
 }
 
 function cloneManifestEnvironment(
@@ -190,7 +355,12 @@ function sanitizeEntryForPersistence(
   }
 
   if (entry.type !== 'dir' || !entry.children) {
-    return !effectiveEphemeral || isMount(entry) ? { ...entry } : undefined;
+    if (effectiveEphemeral && !isMount(entry)) {
+      return undefined;
+    }
+    return isMount(entry)
+      ? redactMountCredentialsForPersistence(entry)
+      : { ...entry };
   }
 
   const children = sanitizeEntriesForPersistence(
@@ -215,6 +385,18 @@ function deserializeManifestRecord(
     entries: deserializeEntriesForRuntime(
       value.entries as Record<string, Entry> | undefined,
     ),
+    extraPathGrants: Array.isArray(value.extraPathGrants)
+      ? value.extraPathGrants.map((grant) => {
+          if (typeof grant !== 'object' || grant === null) {
+            return grant;
+          }
+          const { hostPath: _hostPath, ...persistentGrant } = grant as Record<
+            string,
+            unknown
+          >;
+          return persistentGrant;
+        })
+      : value.extraPathGrants,
   };
 }
 

@@ -21,6 +21,20 @@ import logger from '../src/logger';
  * shapes expected by OpenAI's Chat Completions API.
  */
 describe('itemsToMessages', () => {
+  test('rejects Responses compaction history before conversion', () => {
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_1',
+      encrypted_content: 'ciphertext',
+    };
+
+    expect(() => itemsToMessages([compaction])).toThrowError(
+      new UserError(
+        'Compaction items are not supported for chat completions. Please use the Responses API when working with compaction.',
+      ),
+    );
+  });
+
   test('converts built-in file_search_call without throwing', () => {
     const items: protocol.ModelItem[] = [
       {
@@ -489,6 +503,119 @@ describe('itemsToMessages', () => {
         ],
       },
       { role: 'assistant', content: [{ type: 'text', text: 'there' }] },
+    ]);
+  });
+
+  test.each(['commentary', 'final_answer'] as const)(
+    'warns before dropping unsupported assistant phase "%s"',
+    (phase) => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      const items: protocol.ModelItem[] = [
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          phase,
+          content: [{ type: 'output_text', text: 'assistant reply' }],
+        },
+      ];
+
+      try {
+        expect(itemsToMessages(items)).toEqual([
+          {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'assistant reply' }],
+          },
+        ]);
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Assistant message phase is not supported'),
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
+  test('rejects unsupported assistant phases in strict validation mode', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        phase: 'commentary',
+        content: [{ type: 'output_text', text: 'assistant reply' }],
+      },
+    ];
+
+    expect(() =>
+      itemsToMessages(items, { strictFeatureValidation: true }),
+    ).toThrow(UserError);
+    expect(() =>
+      itemsToMessages(items, { strictFeatureValidation: true }),
+    ).toThrow('Use the Responses API to preserve assistant message phases.');
+  });
+
+  test('detects and removes assistant phases stored in legacy providerData', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'assistant reply' }],
+        providerData: { phase: 'commentary', custom: 'keep' },
+      },
+    ];
+
+    try {
+      expect(itemsToMessages(items)).toEqual([
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'assistant reply' }],
+          custom: 'keep',
+        },
+      ]);
+      expect(warnSpy).toHaveBeenCalledOnce();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test('rejects invalid assistant phases in Chat Completions conversion', () => {
+    const items = [
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        phase: 'invalid',
+        content: [{ type: 'output_text', text: 'assistant reply' }],
+      },
+    ] as any;
+
+    expect(() => itemsToMessages(items)).toThrow(
+      'Invalid assistant message phase: "invalid". Expected "commentary" or "final_answer".',
+    );
+  });
+
+  test('does not forward assistant-only phase metadata on other message roles', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'message',
+        role: 'system',
+        content: 'instructions',
+        providerData: { phase: 'commentary', custom: 'keep-system' },
+      },
+      {
+        type: 'message',
+        role: 'user',
+        content: 'input',
+        providerData: { phase: 'final_answer', custom: 'keep-user' },
+      },
+    ];
+
+    expect(itemsToMessages(items)).toEqual([
+      { role: 'system', content: 'instructions', custom: 'keep-system' },
+      { role: 'user', content: 'input', custom: 'keep-user' },
     ]);
   });
 

@@ -66,9 +66,7 @@ function resolveWorkingDirectory(): string {
 
 async function main(): Promise<void> {
   const traceId = generateTraceId();
-  log(
-    `View trace: https://platform.openai.com/traces/trace?trace_id=${traceId}`,
-  );
+  log(`View trace: https://platform.openai.com/logs/trace?trace_id=${traceId}`);
 
   await withTrace(
     'Codex same thread example',

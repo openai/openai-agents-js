@@ -18,7 +18,7 @@ async function main() {
   const agent = new Agent({
     name: 'Image generator',
     instructions: 'You are a helpful agent.',
-    tools: [imageGenerationTool({ quality: 'low', inputFidelity: 'high' })],
+    tools: [imageGenerationTool({ quality: 'low' })],
   });
 
   await withTrace('Image generation example', async () => {
@@ -29,48 +29,66 @@ async function main() {
     );
     console.log(result.finalOutput);
 
-    for (const item of result.newItems) {
-      if (
+    const imageCall = result.newItems.find(
+      (item) =>
         item.type === 'tool_call_item' &&
         item.rawItem.type === 'hosted_tool_call' &&
-        item.rawItem.output
-      ) {
-        const buffer = Buffer.from(item.rawItem.output, 'base64');
-        const tmpPath = path.join(os.tmpdir(), `image-${Date.now()}.png`);
-        fs.writeFileSync(tmpPath, buffer);
-        // console.log(`Image saved to ${tmpPath}`);
-        openFile(tmpPath);
-
-        const revisedResult = await run(agent, [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'input_text',
-                text: 'Change only the background of the given image to Japanese style.',
-              },
-              {
-                type: 'input_image',
-                image: 'data:image/png;base64,' + item.rawItem.output,
-              },
-            ],
-          },
-        ]);
-        for (const revisedItem of revisedResult.newItems) {
-          if (
-            revisedItem.type === 'tool_call_item' &&
-            revisedItem.rawItem.type === 'hosted_tool_call' &&
-            revisedItem.rawItem.output
-          ) {
-            const buffer = Buffer.from(revisedItem.rawItem.output, 'base64');
-            const tmpPath = path.join(os.tmpdir(), `image-${Date.now()}.png`);
-            fs.writeFileSync(tmpPath, buffer);
-            // console.log(`Image saved to ${tmpPath}`);
-            openFile(tmpPath);
-          }
-        }
-      }
+        item.rawItem.name === 'image_generation_call' &&
+        item.rawItem.output,
+    );
+    if (
+      !imageCall ||
+      imageCall.rawItem.type !== 'hosted_tool_call' ||
+      !imageCall.rawItem.output
+    ) {
+      throw new Error('Expected the image generation tool to return an image.');
     }
+
+    const buffer = Buffer.from(imageCall.rawItem.output, 'base64');
+    const tmpPath = path.join(os.tmpdir(), `image-${Date.now()}.png`);
+    fs.writeFileSync(tmpPath, buffer);
+    openFile(tmpPath);
+
+    const revisedResult = await run(agent, [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: 'Change only the background of the given image to Japanese style.',
+          },
+          {
+            type: 'input_image',
+            image: 'data:image/png;base64,' + imageCall.rawItem.output,
+          },
+        ],
+      },
+    ]);
+    const revisedImageCall = revisedResult.newItems.find(
+      (item) =>
+        item.type === 'tool_call_item' &&
+        item.rawItem.type === 'hosted_tool_call' &&
+        item.rawItem.name === 'image_generation_call' &&
+        item.rawItem.output,
+    );
+    if (
+      !revisedImageCall ||
+      revisedImageCall.rawItem.type !== 'hosted_tool_call' ||
+      !revisedImageCall.rawItem.output
+    ) {
+      throw new Error('Expected the image edit to return a revised image.');
+    }
+
+    const revisedBuffer = Buffer.from(
+      revisedImageCall.rawItem.output,
+      'base64',
+    );
+    const revisedPath = path.join(
+      os.tmpdir(),
+      `revised-image-${Date.now()}.png`,
+    );
+    fs.writeFileSync(revisedPath, revisedBuffer);
+    openFile(revisedPath);
     // or using result.output works too
     // for (const response of result.output) {
     //   if (

@@ -78,7 +78,9 @@ function _withSpanFactory<
         }
         return result;
       } catch (error: unknown) {
-        setSpanError(span, error);
+        if (span.error === null) {
+          setSpanError(span, error);
+        }
         throw error;
       } finally {
         if (!endDeferred) {

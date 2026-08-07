@@ -1,5 +1,8 @@
 import { RunItem } from '../items';
+import { UserError } from '../errors';
+import { getToolSearchProviderCallId } from '../tooling';
 import { AgentInputItem } from '../types';
+import * as protocol from '../types/protocol';
 import { serializeBinary } from '../utils/binary';
 import {
   getToolResultCorrelationForCall,
@@ -12,6 +15,8 @@ import {
 
 export type AgentInputItemPool = Map<string, AgentInputItem[]>;
 
+export class CompactionItemValidationError extends UserError {}
+
 // Normalizes user-provided input into the structure the model expects. Strings become user messages,
 // arrays are kept as-is so downstream loops can treat both scenarios uniformly.
 export function toAgentInputList(
@@ -22,6 +27,21 @@ export function toAgentInputList(
   }
 
   return [...originalInput];
+}
+
+export function assertValidCompactionItems(
+  items: readonly AgentInputItem[],
+): void {
+  for (const item of items) {
+    if (
+      item.type === 'compaction' &&
+      !protocol.CompactionItem.safeParse(item).success
+    ) {
+      throw new CompactionItemValidationError(
+        'Compaction item missing encrypted_content',
+      );
+    }
+  }
 }
 
 export function getAgentInputItemKey(item: AgentInputItem): string {
@@ -78,6 +98,108 @@ export function removeAgentInputFromPool(
     pool.delete(key);
   }
   return true;
+}
+
+function getAgentInputItemDeduplicationKey(
+  item: AgentInputItem,
+): string | undefined {
+  if (!item || typeof item !== 'object') {
+    return undefined;
+  }
+
+  const candidate = item as {
+    id?: unknown;
+    role?: unknown;
+    type?: unknown;
+  };
+  const itemType = candidate.type;
+  if (typeof candidate.role === 'string' || itemType === 'message') {
+    return undefined;
+  }
+  if (typeof itemType !== 'string') {
+    return undefined;
+  }
+  if (itemType === 'tool_search_call' || itemType === 'tool_search_output') {
+    const callId = getToolSearchProviderCallId(item);
+    if (callId) {
+      return JSON.stringify(['call', itemType, callId]);
+    }
+  }
+
+  const callCorrelation = getToolResultCorrelationForCall(item);
+  if (callCorrelation && callCorrelation.id.length > 0) {
+    return JSON.stringify([
+      'call',
+      itemType,
+      getToolResultCorrelationKey(callCorrelation),
+    ]);
+  }
+
+  const resultCorrelation = getToolResultCorrelationForResult(item);
+  if (resultCorrelation && resultCorrelation.id.length > 0) {
+    return JSON.stringify([
+      'result',
+      itemType,
+      getToolResultCorrelationKey(resultCorrelation),
+    ]);
+  }
+
+  if (typeof candidate.id === 'string' && candidate.id.length > 0) {
+    return JSON.stringify(['item', itemType, candidate.id]);
+  }
+
+  return undefined;
+}
+
+function isCausalPrecursorItem(item: AgentInputItem): boolean {
+  if (!item || typeof item !== 'object') {
+    return false;
+  }
+  return (
+    item.type === 'tool_search_call' ||
+    (item.type === 'hosted_tool_call' &&
+      getToolResultCorrelationForResult(item) === undefined) ||
+    item.type === 'compaction' ||
+    item.type === 'reasoning' ||
+    getToolResultCorrelationForCall(item) !== undefined
+  );
+}
+
+/**
+ * Deduplicates provider-identified items while preserving causal ordering.
+ *
+ * The latest payload wins. Calls, compaction, reasoning, and approval requests stay at their
+ * earliest occurrence so they cannot move behind a required follower; other identified items
+ * stay at their latest occurrence so stale outputs are not moved earlier. Items without stable
+ * provider identity, including ordinary messages, remain untouched.
+ */
+export function deduplicateAgentInputItemsPreferringLatest(
+  items: AgentInputItem[],
+): AgentInputItem[] {
+  const latestByKey = new Map<string, AgentInputItem>();
+  const anchorIndexByKey = new Map<string, number>();
+
+  for (const [index, item] of items.entries()) {
+    const key = getAgentInputItemDeduplicationKey(item);
+    if (!key) {
+      continue;
+    }
+    latestByKey.set(key, item);
+    if (!anchorIndexByKey.has(key) || !isCausalPrecursorItem(item)) {
+      anchorIndexByKey.set(key, index);
+    }
+  }
+
+  const deduplicated: AgentInputItem[] = [];
+  for (const [index, item] of items.entries()) {
+    const key = getAgentInputItemDeduplicationKey(item);
+    if (!key) {
+      deduplicated.push(item);
+    } else if (anchorIndexByKey.get(key) === index) {
+      deduplicated.push(latestByKey.get(key) as AgentInputItem);
+    }
+  }
+  return deduplicated;
 }
 
 export function agentInputSerializationReplacer(
@@ -434,16 +556,15 @@ export function prepareModelInputItems(
     generatedItems,
     reasoningItemIdPolicy,
   );
-  return [...callerItems, ...preparedGeneratedItems];
+  return trimToLatestCompaction([...callerItems, ...preparedGeneratedItems]);
 }
 
 function getContinuationOutputItems(
   generatedItems: RunItem[],
   reasoningItemIdPolicy?: ReasoningItemIdPolicy,
 ): AgentInputItem[] {
-  const generatedOutputItems = extractOutputItemsFromRunItems(
-    generatedItems,
-    reasoningItemIdPolicy,
+  const generatedOutputItems = trimToLatestCompaction(
+    extractOutputItemsFromRunItems(generatedItems, reasoningItemIdPolicy),
   );
   return dropOrphanToolCalls(generatedOutputItems);
 }
@@ -464,5 +585,19 @@ export function getTurnInput(
     generatedItems,
     reasoningItemIdPolicy,
   );
-  return [...toAgentInputList(originalInput), ...outputItems];
+  return trimToLatestCompaction([
+    ...toAgentInputList(originalInput),
+    ...outputItems,
+  ]);
+}
+
+export function trimToLatestCompaction(
+  items: AgentInputItem[],
+): AgentInputItem[] {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.type === 'compaction') {
+      return items.slice(index);
+    }
+  }
+  return items;
 }

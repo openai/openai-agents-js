@@ -9,3 +9,10 @@ export function resolvedRemotePathFromValidationCommand(
   );
   return match?.[1]?.replace(/'\\''/g, "'");
 }
+
+export function resolvedRemoteEffectivePathFromCommand(
+  command: string,
+): string | undefined {
+  const match = command.match(/realpath -m -- '((?:'\\''|[^'])*)'/u);
+  return match?.[1]?.replace(/'\\''/g, "'");
+}

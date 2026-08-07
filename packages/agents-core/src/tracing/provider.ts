@@ -1,7 +1,7 @@
 import { getCurrentSpan, getCurrentTrace } from './context';
 import { supportsProcessLifecycleEvents } from '@openai/agents-core/_shims';
 import { tracing } from '../config';
-import logger from '../logger';
+import logger, { logModelAndToolActionError } from '../logger';
 import { MultiTracingProcessor, TracingProcessor } from './processor';
 import { NoopSpan, Span, SpanData, SpanOptions } from './spans';
 import { NoopTrace, Trace, TraceOptions } from './traces';
@@ -118,7 +118,11 @@ export class TraceProvider {
    */
   async dispatchTrace(trace: Trace): Promise<void> {
     if (this.#disabled) {
-      logger.debug('Tracing is disabled, Not dispatching trace %o', trace);
+      if (logger.dontLogModelData || logger.dontLogToolData) {
+        logger.debug('Tracing is disabled. Not dispatching trace.');
+      } else {
+        logger.debug('Tracing is disabled, Not dispatching trace %o', trace);
+      }
       return;
     }
 
@@ -136,7 +140,11 @@ export class TraceProvider {
     span: Span<TSpanData>,
   ): Promise<void> {
     if (this.#disabled) {
-      logger.debug('Tracing is disabled, Not dispatching span %o', span);
+      if (logger.dontLogModelData || logger.dontLogToolData) {
+        logger.debug('Tracing is disabled. Not dispatching span.');
+      } else {
+        logger.debug('Tracing is disabled, Not dispatching span %o', span);
+      }
       return;
     }
 
@@ -153,7 +161,14 @@ export class TraceProvider {
     span: Span<TSpanData>,
   ): Promise<void> {
     if (this.#disabled) {
-      logger.debug('Tracing is disabled, Not dispatching span start %o', span);
+      if (logger.dontLogModelData || logger.dontLogToolData) {
+        logger.debug('Tracing is disabled. Not dispatching span start.');
+      } else {
+        logger.debug(
+          'Tracing is disabled, Not dispatching span start %o',
+          span,
+        );
+      }
       return;
     }
 
@@ -170,7 +185,11 @@ export class TraceProvider {
     span: Span<TSpanData>,
   ): Promise<void> {
     if (this.#disabled) {
-      logger.debug('Tracing is disabled, Not dispatching span end %o', span);
+      if (logger.dontLogModelData || logger.dontLogToolData) {
+        logger.debug('Tracing is disabled. Not dispatching span end.');
+      } else {
+        logger.debug('Tracing is disabled, Not dispatching span end %o', span);
+      }
       return;
     }
 
@@ -179,14 +198,25 @@ export class TraceProvider {
 
   createTrace(traceOptions: TraceOptions): Trace {
     if (this.#disabled) {
-      logger.debug('Tracing is disabled, Not creating trace %o', traceOptions);
+      if (logger.dontLogModelData || logger.dontLogToolData) {
+        logger.debug('Tracing is disabled. Not creating trace.');
+      } else {
+        logger.debug(
+          'Tracing is disabled, Not creating trace %o',
+          traceOptions,
+        );
+      }
       return new NoopTrace();
     }
 
     const traceId = traceOptions.traceId ?? this.generateTraceId();
     const name = traceOptions.name ?? 'Agent workflow';
 
-    logger.debug('Creating trace %s with name %s', traceId, name);
+    if (logger.dontLogModelData || logger.dontLogToolData) {
+      logger.debug('Creating trace. Trace data is redacted.');
+    } else {
+      logger.debug('Creating trace %s with name %s', traceId, name);
+    }
 
     return new Trace({ ...traceOptions, name, traceId }, this.#multiProcessor);
   }
@@ -196,7 +226,11 @@ export class TraceProvider {
     parent?: Span<any> | Trace,
   ): Span<TSpanData> {
     if (this.#disabled || spanOptions.disabled) {
-      logger.debug('Tracing is disabled, Not creating span %o', spanOptions);
+      if (logger.dontLogModelData || logger.dontLogToolData) {
+        logger.debug('Tracing is disabled. Not creating span.');
+      } else {
+        logger.debug('Tracing is disabled, Not creating span %o', spanOptions);
+      }
       return new NoopSpan(spanOptions.data, this.#multiProcessor);
     }
 
@@ -286,9 +320,13 @@ export class TraceProvider {
       return new NoopSpan(spanOptions.data, this.#multiProcessor);
     }
 
-    logger.debug(
-      `Creating span ${JSON.stringify(spanOptions.data)} with id ${spanId}`,
-    );
+    if (logger.dontLogModelData || logger.dontLogToolData) {
+      logger.debug('Creating span. Span data is redacted.');
+    } else {
+      logger.debug(
+        `Creating span ${JSON.stringify(spanOptions.data)} with id ${spanId}`,
+      );
+    }
 
     return new Span(
       {
@@ -310,7 +348,11 @@ export class TraceProvider {
           logger.debug('Shutting down tracing provider');
           await this.#multiProcessor.shutdown(timeout);
         } catch (error) {
-          logger.error('Error shutting down tracing provider %o', error);
+          logModelAndToolActionError(
+            logger,
+            'Error shutting down tracing provider',
+            error,
+          );
         }
       })();
     }
@@ -368,7 +410,12 @@ export class TraceProvider {
       });
 
       process.on('unhandledRejection', async (reason, promise) => {
-        logger.error('Unhandled rejection', reason, promise);
+        logModelAndToolActionError(
+          logger,
+          'Unhandled rejection',
+          reason,
+          promise,
+        );
         await cleanup();
         if (!hasOtherListenersForEvents('unhandledRejection')) {
           // Only when there are no other listeners, exit the process on this SDK side

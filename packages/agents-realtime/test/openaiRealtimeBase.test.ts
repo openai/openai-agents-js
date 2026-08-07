@@ -14,6 +14,7 @@ import {
   OpenAIRealtimeBase,
 } from '../src/openaiRealtimeBase';
 import logger from '../src/logger';
+import { responseDoneEventSchema } from '../src/openaiRealtimeEvents';
 
 class TestBase extends OpenAIRealtimeBase {
   status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' =
@@ -80,6 +81,44 @@ describe('OpenAIRealtimeBase helpers', () => {
 
     expect(transport).toBeInstanceOf(OpenAIRealtimeBase);
     expectTypeOf(transport).toMatchTypeOf<OpenAIRealtimeBase>();
+  });
+
+  it('isolates typed events from mutations to raw wildcard events', () => {
+    const base = new TestBase();
+    const typedEvents: any[] = [];
+    const payload = {
+      type: 'session.updated',
+      event_id: 'evt_1',
+      session: {
+        id: 'session_1',
+        instructions: 'original instructions',
+        provider_nested: { value: 'original value' },
+      },
+      provider_top_level: 123,
+    };
+    const rawListener = vi.fn((event: any) => {
+      expect(event).toEqual(payload);
+      event.session.instructions = 'mutated by raw listener';
+      event.session.provider_nested.value = 'mutated by raw listener';
+    });
+    base.on('*', rawListener);
+    base.on('session.updated', (event) => typedEvents.push(event));
+
+    (base as any)._onMessage({ data: JSON.stringify(payload) });
+
+    expect(rawListener).toHaveBeenCalledOnce();
+    expect(typedEvents).toEqual([
+      {
+        type: 'session.updated',
+        event_id: 'evt_1',
+        session: {
+          id: 'session_1',
+          instructions: 'original instructions',
+          provider_nested: { value: 'original value' },
+        },
+      },
+    ]);
+    expect((base as any)._rawSessionConfig).toEqual(payload.session);
   });
 
   it('merges session config defaults', () => {
@@ -342,6 +381,81 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(logger.error).toHaveBeenCalled();
   });
 
+  it.each([true, false])(
+    'applies tool-data logging policy to malformed function call items (%s)',
+    (redactToolData) => {
+      const secret = 'SECRET_REALTIME_TOOL_VALUE_123';
+      vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(
+        redactToolData,
+      );
+      const base = new TestBase();
+      const toolCall = {
+        type: 'function_call',
+        id: '1',
+        callId: 'c1',
+        name: 'tool',
+        arguments: 123,
+        secret,
+      } as any;
+
+      base.sendFunctionCallOutput(toolCall, secret, false);
+
+      if (redactToolData) {
+        expect(logger.error).toHaveBeenCalledWith(
+          'Error parsing tool call item',
+          'object',
+        );
+        expect(
+          JSON.stringify(vi.mocked(logger.error).mock.calls),
+        ).not.toContain(secret);
+      } else {
+        expect(logger.error).toHaveBeenCalledWith(
+          'Error parsing tool call item',
+          expect.any(Error),
+          toolCall,
+        );
+      }
+    },
+  );
+
+  it.each([true, false])(
+    'applies model-data logging policy to invalid response events (%s)',
+    (redactModelData) => {
+      const secret = 'SECRET_REALTIME_MODEL_VALUE_123';
+      vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(
+        redactModelData,
+      );
+      vi.spyOn(responseDoneEventSchema, 'safeParse').mockReturnValueOnce({
+        success: false,
+        error: new Error(secret),
+      } as any);
+      const base = new TestBase();
+
+      (base as any)._onMessage({
+        data: JSON.stringify({
+          type: 'response.done',
+          event_id: 'response-invalid',
+          response: { status: 'completed' },
+        }),
+      });
+
+      if (redactModelData) {
+        expect(logger.error).toHaveBeenCalledWith(
+          'Error parsing response done event',
+          'object',
+        );
+        expect(
+          JSON.stringify(vi.mocked(logger.error).mock.calls),
+        ).not.toContain(secret);
+      } else {
+        expect(logger.error).toHaveBeenCalledWith(
+          'Error parsing response done event',
+          expect.any(Error),
+        );
+      }
+    },
+  );
+
   it('sendAudio optionally commits', () => {
     const base = new TestBase();
     const buf = new TextEncoder().encode('a').buffer;
@@ -577,6 +691,75 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(approvals[0]?.serverLabel).toBe('s1');
   });
 
+  it('reaches session history when the server omits status', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const historyEvents: any[][] = [];
+    session.on('history_updated', (history) =>
+      historyEvents.push([...history]),
+    );
+
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.added',
+        event_id: 'e1',
+        item: {
+          id: 'u1',
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'hello' }],
+        },
+        previous_item_id: null,
+      }),
+    });
+
+    expect(session.history.map((item) => item.itemId)).toEqual(['u1']);
+    expect(session.history[0]).toMatchObject({ status: 'in_progress' });
+    expect(historyEvents.at(-1)?.map((item) => item.itemId)).toEqual(['u1']);
+  });
+
+  it('normalizes missing statuses and preserves explicit statuses', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
+
+    const send = (type: string, id: string, status?: string) =>
+      (base as any)._onMessage({
+        data: JSON.stringify({
+          type,
+          event_id: `e_${id}`,
+          item: {
+            id,
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'hi' }],
+            ...(status ? { status } : {}),
+          },
+          previous_item_id: null,
+        }),
+      });
+
+    send('conversation.item.added', 'a1');
+    send('conversation.item.done', 'd1');
+    send('conversation.item.retrieved', 'r1');
+    send('conversation.item.done', 'p1', 'in_progress');
+    send('conversation.item.done', 'i1', 'incomplete');
+
+    expect(updates.map((update) => [update.itemId, update.status])).toEqual([
+      ['a1', 'in_progress'],
+      ['d1', 'completed'],
+      ['r1', 'completed'],
+      ['p1', 'in_progress'],
+      ['i1', 'incomplete'],
+    ]);
+  });
+
   it('emits function_call and mcp call updates on output items', () => {
     const base = new TestBase();
     const funcs: any[] = [];
@@ -755,6 +938,31 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
   });
 
+  it('emits output text delta events', () => {
+    const base = new TestBase();
+    const deltas: any[] = [];
+    base.on('output_text_delta', (delta) => deltas.push(delta));
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'response.output_text.delta',
+        event_id: 'd1',
+        item_id: 'item1',
+        content_index: 0,
+        delta: 'hi',
+        output_index: 0,
+        response_id: 'r1',
+      }),
+    });
+
+    expect(deltas[0]).toMatchObject({
+      type: 'output_text_delta',
+      delta: 'hi',
+      itemId: 'item1',
+      responseId: 'r1',
+    });
+  });
+
   it('emits mcp_tools_listed for completed list tools items', () => {
     const base = new TestBase();
     const listed: any[] = [];
@@ -778,6 +986,51 @@ describe('OpenAIRealtimeBase helpers', () => {
       tools: [{ name: 'tool', description: 'desc' }],
     });
   });
+
+  it.each([true, false])(
+    'applies tool-data logging policy when MCP tool events fail (%s)',
+    (redactToolData) => {
+      const secret = 'SECRET_MCP_EVENT_VALUE_123';
+      vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(
+        redactToolData,
+      );
+      const base = new TestBase();
+      base.on('mcp_tools_listed', () => {
+        throw new Error(secret);
+      });
+
+      (base as any)._onMessage({
+        data: JSON.stringify({
+          type: 'conversation.item.done',
+          event_id: 'mcp-secret-event',
+          item: {
+            id: 'tools1',
+            type: 'mcp_list_tools',
+            server_label: 'srv',
+            tools: [{ name: 'tool', description: secret }],
+          },
+        }),
+      });
+
+      if (redactToolData) {
+        expect(logger.error).toHaveBeenCalledWith(
+          'Error emitting mcp_tools_listed',
+          'object',
+        );
+        expect(
+          JSON.stringify(vi.mocked(logger.error).mock.calls),
+        ).not.toContain(secret);
+      } else {
+        expect(logger.error).toHaveBeenCalledWith(
+          'Error emitting mcp_tools_listed',
+          expect.any(Error),
+          expect.objectContaining({
+            tools: [{ name: 'tool', description: secret }],
+          }),
+        );
+      }
+    },
+  );
 
   it('emits error events when server reports errors', () => {
     const base = new TestBase();

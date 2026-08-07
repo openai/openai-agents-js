@@ -1,4 +1,8 @@
 import { cloneManifest, Manifest, type ManifestInput } from './manifest';
+import {
+  validateMountCredentialBoundaries,
+  validateMountEnvironmentCredentialBoundaries,
+} from './mountSecurity';
 import type { SandboxSessionLike, SandboxSessionState } from './session';
 import { isRecord } from './shared/typeGuards';
 import type { SnapshotSpec } from './snapshot';
@@ -49,8 +53,11 @@ export type NormalizedSandboxClientCreateArgs<
   archiveLimits?: SandboxArchiveLimits | null;
 };
 
-export type SandboxClientResumeOptions = {
+export type SandboxClientResumeOptions<
+  TOptions extends SandboxClientOptions = SandboxClientOptions,
+> = {
   archiveLimits?: SandboxArchiveLimits | null;
+  clientOptions?: TOptions;
 };
 
 export type SandboxClientCreate<
@@ -75,12 +82,29 @@ export type SandboxSessionSerializationOptions = {
   willCloseAfterSerialize?: boolean;
 };
 
+export type SandboxPreservedSessionReuseOptions<
+  TOptions extends SandboxClientOptions = SandboxClientOptions,
+> = {
+  clientOptions?: TOptions;
+  /**
+   * Revalidate the entries materialized when the backend was created before
+   * reusing a same-process preserved session.
+   */
+  revalidateManifestEntries?: boolean;
+  trustedManifest?: Manifest;
+};
+
 export interface SandboxClient<
   TOptions extends SandboxClientOptions = SandboxClientOptions,
   TSessionState extends SandboxSessionState = SandboxSessionState,
 > {
   backendId: string;
   supportsDefaultOptions?: boolean;
+  /**
+   * Persisted provider state cannot authenticate enough backend authority to
+   * reconnect safely, so only a same-process live session may be reused.
+   */
+  serializedSessionStateRequiresFreshCreation?: boolean;
   create?: SandboxClientCreate<TOptions, TSessionState>;
   delete?(state: TSessionState): Promise<void>;
   serializeSessionState?(
@@ -92,13 +116,22 @@ export interface SandboxClient<
   ): Promise<boolean> | boolean;
   canReusePreservedOwnedSession?(
     state: TSessionState,
+    options?: SandboxPreservedSessionReuseOptions<TOptions>,
   ): Promise<boolean> | boolean;
   deserializeSessionState?(
     state: Record<string, unknown>,
   ): Promise<TSessionState>;
+  /**
+   * Resolves the current trusted manifest to the provider-owned root used by
+   * persisted session state before security-sensitive resume validation.
+   */
+  resolveTrustedManifestForResume?(
+    manifest: Manifest,
+    options?: TOptions,
+  ): Manifest;
   resume?(
     state: TSessionState,
-    options?: SandboxClientResumeOptions,
+    options?: SandboxClientResumeOptions<TOptions>,
   ): Promise<SandboxSessionLike<TSessionState>>;
 }
 
@@ -123,8 +156,11 @@ export function normalizeSandboxClientCreateArgs<
   manifestOptions?: TOptions,
 ): NormalizedSandboxClientCreateArgs<TOptions> {
   if (args instanceof Manifest) {
+    const manifest = cloneManifest(args);
+    validateMountCredentialBoundaries(manifest);
+    validateMountEnvironmentCredentialBoundaries(manifest, {});
     return {
-      manifest: args,
+      manifest,
       options: manifestOptions,
       snapshot: readSnapshotOption(manifestOptions),
       concurrencyLimits: readConcurrencyLimitsOption(manifestOptions),
@@ -134,12 +170,14 @@ export function normalizeSandboxClientCreateArgs<
 
   const manifest = args?.manifest;
 
+  const normalizedManifest = manifest
+    ? cloneManifest(manifest)
+    : new Manifest();
+  validateMountCredentialBoundaries(normalizedManifest);
+  validateMountEnvironmentCredentialBoundaries(normalizedManifest, {});
+
   return {
-    manifest: manifest
-      ? manifest instanceof Manifest
-        ? manifest
-        : cloneManifest(manifest)
-      : new Manifest(),
+    manifest: normalizedManifest,
     options: args?.options,
     snapshot: args?.snapshot,
     concurrencyLimits: args?.concurrencyLimits,

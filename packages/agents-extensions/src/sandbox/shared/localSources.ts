@@ -3,6 +3,7 @@ import { type Entry, type Manifest } from '@openai/agents-core/sandbox';
 import {
   isHostPathStrictlyWithinRoot,
   isHostPathWithinRoot,
+  sandboxPathGrantHostPath,
 } from '@openai/agents-core/sandbox/internal';
 import { constants, type Dirent, type Stats } from 'node:fs';
 import {
@@ -33,6 +34,7 @@ import type {
   ManifestMaterializationOptions,
   MaterializedManifestEntryState,
   MaterializedManifestState,
+  PreparedMaterializedManifestTransition,
 } from './manifest';
 import type { RemoteManifestWriter } from './types';
 import type { RemoteSandboxPathResolver } from './types';
@@ -80,6 +82,7 @@ export async function applyLocalSourceManifestToState(
   writer: RemoteManifestWriter,
   resolvePath: RemoteSandboxPathResolver,
   options: ManifestMaterializationOptions = {},
+  preparedTransition?: PreparedMaterializedManifestTransition,
 ): Promise<void> {
   const sourceManifest = mergeManifestDelta(state.manifest, manifest);
   await applyMaterializedManifestToState(
@@ -93,6 +96,7 @@ export async function applyLocalSourceManifestToState(
       ...options,
       localSourceGrants: sourceManifest.extraPathGrants,
     },
+    preparedTransition,
   );
 }
 
@@ -196,7 +200,10 @@ function resolveLocalSourcePath(
   if (
     isHostPathWithinRoot(base, resolvedSourcePath) ||
     (options.localSourceGrants ?? []).some((grant) =>
-      isHostPathWithinRoot(resolve(grant.path), resolvedSourcePath),
+      isHostPathWithinRoot(
+        resolve(sandboxPathGrantHostPath(grant)),
+        resolvedSourcePath,
+      ),
     )
   ) {
     return resolvedSourcePath;

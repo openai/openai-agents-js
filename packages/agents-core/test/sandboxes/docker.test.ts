@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -7,6 +7,7 @@ import {
   DockerSandboxClient,
   inContainerMountStrategy,
   Manifest,
+  NoopSnapshotSpec,
 } from '../../src/sandbox/local';
 
 const ONE_BY_ONE_PNG = Uint8Array.from(
@@ -72,7 +73,7 @@ describe('DockerSandboxClient', () => {
               }),
             },
           },
-        }),
+        }).withInContainerMountCredentialExposureAllowed('mounted'),
       );
       cleanupContainerIds.add(session.state.containerId);
 
@@ -96,7 +97,7 @@ describe('DockerSandboxClient', () => {
               }),
             },
           },
-        }),
+        }).withInContainerMountCredentialExposureAllowed('mounted', 'applied'),
       );
 
       const appliedOutput = await session.execCommand({
@@ -242,6 +243,46 @@ describe('DockerSandboxClient', () => {
         baseDir: rootDir,
       });
       expect(restoredOutput).toContain('after');
+    },
+    DOCKER_TEST_TIMEOUT_MS,
+  );
+
+  itIfDocker(
+    'reuses a running container when bind mount authority is unchanged',
+    async () => {
+      rootDir = await mkdtemp(
+        join(tmpdir(), 'agents-core-docker-sandbox-test-'),
+      );
+      const sharedPath = join(rootDir, 'shared');
+      await mkdir(sharedPath);
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        image: DOCKER_TEST_IMAGE,
+        snapshot: new NoopSnapshotSpec(),
+      });
+      const session = await client.create(
+        new Manifest({
+          extraPathGrants: [{ path: sharedPath, readOnly: true }],
+        }),
+      );
+      cleanupContainerIds.add(session.state.containerId);
+      await session.execCommand({
+        cmd: 'printf retained > /tmp/container-only-state',
+      });
+      const serialized = await client.serializeSessionState(session.state);
+
+      const resumed = await client.resume(
+        await client.deserializeSessionState(
+          JSON.parse(JSON.stringify(serialized)) as Record<string, unknown>,
+        ),
+      );
+
+      expect(resumed.state.containerId).toBe(session.state.containerId);
+      expect(
+        await resumed.execCommand({
+          cmd: 'cat /tmp/container-only-state',
+        }),
+      ).toContain('retained');
     },
     DOCKER_TEST_TIMEOUT_MS,
   );

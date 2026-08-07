@@ -4,7 +4,32 @@ export * from './client';
 export * from './entries';
 export * from './errors';
 export * from './events';
-export * from './manifest';
+export {
+  Environment,
+  EnvValueReference,
+  Manifest,
+  cloneManifest,
+  isEnvValueReference,
+  isSerializedEnvValueReference,
+  normalizeRelativePath,
+  registerEnvValueReference,
+  renderManifestDescription,
+  serializeEnvValueReference,
+} from './manifest';
+export type {
+  EnvEntry,
+  EnvResolver,
+  EnvValue,
+  EnvValueReferenceClass,
+  EnvValueReferenceParser,
+  ManifestEntries,
+  ManifestEnvironment,
+  ManifestInit,
+  ManifestInput,
+  ManifestMountTarget,
+  RenderManifestDescriptionOptions,
+  SerializedEnvValueReference,
+} from './manifest';
 export * from './pathGrants';
 export * from './permissions';
 export * from './session';

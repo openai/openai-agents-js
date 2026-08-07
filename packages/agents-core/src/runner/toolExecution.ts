@@ -6,12 +6,18 @@ import {
 } from '../agentToolRunConfig';
 import { consumeAgentToolRunResult } from '../agentToolRunResults';
 import {
-  InvalidToolInputError,
+  clearToolErrorState,
   InvalidToolOutputError,
+  isToolTimeoutError,
   ToolCallError,
-  ToolTimeoutError,
   UserError,
 } from '../errors';
+import {
+  createInvalidToolInputFailure,
+  type InvalidToolInputFailure,
+  isRedactedInvalidToolInputError,
+  refreshInvalidToolInputFailure,
+} from '../toolInputError';
 import { getTransferMessage, HandoffInputData } from '../handoff';
 import {
   RunHandoffCallItem,
@@ -22,19 +28,24 @@ import {
   RunToolCallOutputItem,
 } from '../items';
 import { assistant } from '../helpers/message';
-import logger, { Logger } from '../logger';
+import logger, { Logger, logToolActionError } from '../logger';
 import { ModelResponse } from '../model';
 import {
   ComputerSafetyCheck,
   ComputerSafetyCheckResult,
   ComputerToolCustomDataContext,
   FunctionTool,
+  type FunctionToolPreparedInput,
   FunctionToolResult,
   FunctionToolCustomDataContext,
   ToolCallDetails,
   FUNCTION_TOOL_PARSED_INPUT_CALLBACK,
   ApplyPatchToolCustomDataContext,
   invokeFunctionTool,
+  prepareFunctionToolInput,
+  hasDynamicFunctionToolApprovalPolicy,
+  hasInspectableFunctionToolArguments,
+  setFunctionToolPreparedInput,
   validateFunctionToolOutput,
   resolveComputer,
   Tool,
@@ -42,8 +53,12 @@ import {
 import type { ShellResult } from '../shell';
 import { RunContext } from '../runContext';
 import type { RunResult } from '../result';
-import { toSmartString } from '../utils/smartString';
+import {
+  isAbortError,
+  isSiblingCancellationSignal,
+} from '../utils/abortSignals';
 import { isZodObject } from '../utils';
+import { toSmartString } from '../utils/smartString';
 import { withFunctionSpan, withHandoffSpan } from '../tracing/createSpans';
 import { getCurrentTrace } from '../tracing/context';
 import type { FunctionSpanData, Span } from '../tracing/spans';
@@ -55,6 +70,8 @@ import type { AgentInputItem, UnknownContext } from '../types';
 import type { RunConfig, Runner, ToolErrorFormatter } from '../run';
 import {
   getFunctionToolQualifiedName,
+  getFunctionToolStateKey,
+  getFunctionToolStateKeys,
   matchesFunctionToolName,
 } from '../toolIdentity';
 import {
@@ -65,7 +82,10 @@ import {
   runToolInputGuardrails,
   runToolOutputGuardrails,
 } from '../utils/toolGuardrails';
-import type { ToolInputGuardrailResult } from '../toolGuardrail';
+import type {
+  ToolInputGuardrailResult,
+  ToolOutputGuardrailResult,
+} from '../toolGuardrail';
 import { maybeExtractToolOutputCustomData } from '../utils/customData';
 import {
   resolveApprovalRejectionMessage,
@@ -84,6 +104,12 @@ import {
   setToolUsageRecorder,
 } from './usageTracking';
 import { getRunStateTurnSpanParent } from './invocationContext';
+import {
+  buildComputerAbortResult,
+  buildFunctionAbortResult,
+  COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
+} from './streamReconciliation';
+import { runWithSiblingCancellation } from './siblingCancellation';
 
 type FunctionToolCallDeps<TContext = UnknownContext> = {
   agent: Agent<TContext, any>;
@@ -91,19 +117,32 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
   state: RunState<TContext, Agent<TContext, any>>;
   toolErrorFormatter?: ToolErrorFormatter;
   agentToolParentRunConfig?: Partial<RunConfig>;
+  signal?: AbortSignal;
 };
 
 const REDACTED_TOOL_ERROR_MESSAGE =
   'Tool execution failed. Error details are redacted.';
-// 1x1 transparent PNG data URL used for rejected computer actions.
-const TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
 
 type ParseToolArgumentsResult =
-  { success: true; args: any } | { success: false; error: Error };
+  | {
+      success: true;
+      approvalArgs: any;
+      preparedInput?: FunctionToolPreparedInput;
+    }
+  | {
+      success: false;
+      error: unknown;
+      approvalArgs?: any;
+      preparedInput?: FunctionToolPreparedInput;
+    };
 
 type ToolInputGuardrailCheckResult =
   { type: 'allow' } | { type: 'reject'; message: string };
+
+type InvalidToolInputRedactionBoundary = {
+  failure: InvalidToolInputFailure;
+  redactedLegacyOutput: string;
+};
 
 function getFunctionToolIdentity<TContext>(
   toolRun: ToolRunFunction<TContext>,
@@ -119,10 +158,44 @@ function cloneForCustomDataContext<T>(value: T): T {
   }
 }
 
+function getFunctionToolCallbackToolCall(
+  toolCall: protocol.FunctionCallItem,
+  redactArguments: boolean,
+): protocol.FunctionCallItem {
+  if (!redactArguments) {
+    return toolCall;
+  }
+  return {
+    type: 'function_call',
+    callId: toolCall.callId,
+    name: toolCall.name,
+    arguments: '',
+    ...(toolCall.id ? { id: toolCall.id } : {}),
+    ...(toolCall.namespace ? { namespace: toolCall.namespace } : {}),
+    ...(toolCall.status ? { status: toolCall.status } : {}),
+    ...(toolCall.caller ? { caller: toolCall.caller } : {}),
+  };
+}
+
 function getFunctionToolTraceName<TContext>(
   toolRun: ToolRunFunction<TContext>,
 ): string {
   return getFunctionToolIdentity(toolRun);
+}
+
+function getFunctionToolApprovalStateKey<TContext>(
+  toolRun: ToolRunFunction<TContext>,
+): string {
+  return (
+    getFunctionToolStateKey(toolRun.tool) ?? getFunctionToolIdentity(toolRun)
+  );
+}
+
+function getFunctionToolPendingStateKeys<TContext>(
+  toolRun: ToolRunFunction<TContext>,
+): string[] {
+  const availableTools = toolRun.availableFunctionTools ?? [toolRun.tool];
+  return getFunctionToolStateKeys(toolRun.tool, availableTools);
 }
 
 const COMPUTER_TRACE_NAME = 'computer';
@@ -232,6 +305,8 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
   state: RunState<TContext, Agent<TContext, any>>,
   toolErrorFormatter?: ToolErrorFormatter,
   agentToolParentRunConfig?: Partial<RunConfig>,
+  signal?: AbortSignal,
+  onFatalFailure?: () => void,
 ): Promise<FunctionToolResult<TContext>[]> {
   const deps: FunctionToolCallDeps<TContext> = {
     agent,
@@ -239,25 +314,127 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     state,
     toolErrorFormatter,
     agentToolParentRunConfig,
+    signal,
   };
 
-  const executeToolRun = async (toolRun: ToolRunFunction<TContext>) => {
-    const parseResult = parseToolArguments(toolRun);
+  const startedInvalidInputFailures: InvalidToolInputFailure[] = [];
 
+  const executeToolRun = async (
+    toolRun: ToolRunFunction<TContext>,
+    executionSignal = signal,
+  ) => {
+    const executionDeps =
+      executionSignal === deps.signal
+        ? deps
+        : { ...deps, signal: executionSignal };
+    if (executionSignal?.aborted) {
+      return buildFunctionCancellationResult(executionDeps, toolRun);
+    }
+    const parseResult = parseToolArguments(toolRun);
+    let failure: InvalidToolInputFailure | undefined;
+    if (!parseResult.success) {
+      failure = createInvalidToolInputFailure({
+        message: `Invalid input for function tool '${getFunctionToolIdentity(toolRun)}'.`,
+        state: deps.state,
+        originalError: parseResult.error,
+        toolInvocation: {
+          runContext: deps.state._context,
+          input: toolRun.toolCall.arguments,
+          details: { toolCall: toolRun.toolCall },
+        },
+        disposition: parseResult.preparedInput?.disposition,
+      });
+      startedInvalidInputFailures.push(failure);
+    }
+
+    const dynamicApprovalPolicy = hasDynamicFunctionToolApprovalPolicy(
+      toolRun.tool,
+    );
     // Handle parse errors gracefully instead of crashing.
     if (!parseResult.success) {
-      return buildParseErrorResult(deps, toolRun, parseResult.error);
+      if (parseResult.preparedInput) {
+        const approvalOutcome = await handleFunctionApproval(
+          executionDeps,
+          toolRun,
+          parseResult.approvalArgs,
+          false,
+          failure,
+        );
+        if (approvalOutcome !== 'approved') {
+          return approvalOutcome;
+        }
+        if (executionSignal?.aborted) {
+          return buildFunctionCancellationResult(executionDeps, toolRun);
+        }
+        try {
+          return await runApprovedFunctionTool(
+            executionDeps,
+            toolRun,
+            parseResult.approvalArgs,
+            parseResult.preparedInput,
+            failure,
+          );
+        } catch (error) {
+          if (
+            executionSignal?.aborted &&
+            (error === executionSignal.reason || isAbortError(error))
+          ) {
+            return buildFunctionCancellationResult(executionDeps, toolRun);
+          }
+          throw error;
+        }
+      } else if (dynamicApprovalPolicy) {
+        const approvalOutcome = await handleFunctionApproval(
+          executionDeps,
+          toolRun,
+          undefined,
+          true,
+          failure,
+        );
+        if (approvalOutcome !== 'approved') {
+          return approvalOutcome;
+        }
+        if (executionSignal?.aborted) {
+          return buildFunctionCancellationResult(executionDeps, toolRun);
+        }
+      }
+      return buildParseErrorResult(
+        executionDeps,
+        toolRun,
+        parseResult.error,
+        failure!,
+      );
     }
 
     const approvalOutcome = await handleFunctionApproval(
-      deps,
+      executionDeps,
       toolRun,
-      parseResult.args,
+      parseResult.approvalArgs,
+      dynamicApprovalPolicy &&
+        !hasInspectableFunctionToolArguments(parseResult.approvalArgs),
     );
     if (approvalOutcome !== 'approved') {
       return approvalOutcome;
     }
-    return runApprovedFunctionTool(deps, toolRun, parseResult.args);
+    if (executionSignal?.aborted) {
+      return buildFunctionCancellationResult(executionDeps, toolRun);
+    }
+    try {
+      return await runApprovedFunctionTool(
+        executionDeps,
+        toolRun,
+        parseResult.approvalArgs,
+        parseResult.preparedInput,
+      );
+    } catch (error) {
+      if (
+        executionSignal?.aborted &&
+        (error === executionSignal.reason || isAbortError(error))
+      ) {
+        return buildFunctionCancellationResult(executionDeps, toolRun);
+      }
+      throw error;
+    }
   };
 
   try {
@@ -267,18 +444,33 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
         agentToolParentRunConfig?.toolExecution ?? runner.config.toolExecution,
       ),
       executeToolRun,
+      signal,
+      onFatalFailure,
     );
     return results;
   } catch (e: unknown) {
-    if (e instanceof ToolTimeoutError) {
-      e.state ??= state;
+    const redactInvalidInputFailure = startedInvalidInputFailures.some(
+      (failure) => refreshInvalidToolInputFailure(failure),
+    );
+    if (redactInvalidInputFailure) {
+      clearToolErrorState(e, state);
+    }
+    if (isToolTimeoutError(e)) {
+      if (redactInvalidInputFailure) {
+        e.state = undefined;
+      } else {
+        e.state ??= state;
+      }
       throw e;
     }
 
+    const surfacedError = e as Error;
     throw new ToolCallError(
-      `Failed to run function tools: ${e}`,
-      e as Error,
-      state,
+      `Failed to run function tools: ${surfacedError}`,
+      surfacedError,
+      redactInvalidInputFailure || isRedactedInvalidToolInputError(e)
+        ? undefined
+        : state,
     );
   }
 }
@@ -300,46 +492,63 @@ function shouldRunPreApprovalInputGuardrails<TContext>(
   );
 }
 
-async function executeToolRunsWithConcurrency<TContext>(
-  toolRuns: ToolRunFunction<TContext>[],
+async function executeToolRunsWithConcurrency<TContext, TToolRun>(
+  toolRuns: TToolRun[],
   maxConcurrency: number | undefined,
   executeToolRun: (
-    toolRun: ToolRunFunction<TContext>,
+    toolRun: TToolRun,
+    signal?: AbortSignal,
   ) => Promise<FunctionToolResult<TContext>>,
+  parentSignal?: AbortSignal,
+  onFatalFailure?: () => void,
 ): Promise<FunctionToolResult<TContext>[]> {
   if (
     maxConcurrency === undefined ||
     maxConcurrency >= toolRuns.length ||
     toolRuns.length <= 1
   ) {
-    return Promise.all(toolRuns.map((toolRun) => executeToolRun(toolRun)));
+    return runWithSiblingCancellation(
+      toolRuns.map(
+        (toolRun) => (signal?: AbortSignal) => executeToolRun(toolRun, signal),
+      ),
+      parentSignal,
+      onFatalFailure,
+    );
   }
 
   const results: FunctionToolResult<TContext>[] = [];
   let nextIndex = 0;
-  let firstError: unknown;
 
-  const worker = async () => {
-    while (nextIndex < toolRuns.length && firstError === undefined) {
+  const worker = async (signal?: AbortSignal, reserveFailure?: () => void) => {
+    while (
+      nextIndex < toolRuns.length &&
+      (!signal?.aborted ||
+        (parentSignal?.aborted && !isSiblingCancellationSignal(parentSignal)))
+    ) {
       const currentIndex = nextIndex;
       nextIndex += 1;
       try {
-        results[currentIndex] = await executeToolRun(toolRuns[currentIndex]);
+        const result = await executeToolRun(toolRuns[currentIndex], signal);
+        results[currentIndex] = result;
       } catch (error) {
-        firstError ??= error;
-        break;
+        reserveFailure?.();
+        throw error;
       }
     }
   };
 
   const workerCount = Math.min(maxConcurrency, toolRuns.length);
-  await Promise.allSettled(
-    Array.from({ length: workerCount }, async () => worker()),
+  // Drain every started worker before returning so no function tool retains
+  // ownership after the run surfaces an error or cancellation.
+  await runWithSiblingCancellation(
+    Array.from(
+      { length: workerCount },
+      () => (signal?: AbortSignal, reserveFailure?: () => void) =>
+        worker(signal, reserveFailure),
+    ),
+    parentSignal,
+    onFatalFailure,
   );
-
-  if (firstError !== undefined) {
-    throw firstError;
-  }
   return results;
 }
 
@@ -348,18 +557,34 @@ function parseToolArguments<TContext>(
 ): ParseToolArgumentsResult {
   const toolName = getFunctionToolIdentity(toolRun);
   try {
-    let parsedArgs: any = toolRun.toolCall.arguments;
+    let approvalArgs: any = toolRun.toolCall.arguments;
     if (toolRun.tool.parameters) {
       if (isZodObject(toolRun.tool.parameters)) {
-        parsedArgs = toolRun.tool.parameters.parse(parsedArgs);
+        approvalArgs = toolRun.tool.parameters.parse(approvalArgs);
       } else {
-        parsedArgs = JSON.parse(parsedArgs);
+        approvalArgs = JSON.parse(approvalArgs);
       }
     }
-    return { success: true, args: parsedArgs };
+    const preparedInput = prepareFunctionToolInput(
+      toolRun.tool,
+      toolRun.toolCall.arguments,
+    );
+    if (preparedInput && !preparedInput.result.success) {
+      return {
+        success: false,
+        error: preparedInput.result.error,
+        approvalArgs,
+        preparedInput,
+      };
+    }
+    return { success: true, approvalArgs, preparedInput };
   } catch (error) {
-    logger.debug(`Failed to parse tool arguments for ${toolName}: ${error}`);
-    return { success: false, error: error as Error };
+    if (logger.dontLogToolData) {
+      logger.debug(`Failed to parse tool arguments for ${toolName}`);
+    } else {
+      logger.debug(`Failed to parse tool arguments for ${toolName}: ${error}`);
+    }
+    return { success: false, error };
   }
 }
 
@@ -374,6 +599,7 @@ function buildApprovalRequestResult<TContext>(
       toolRun.toolCall,
       deps.agent,
       getFunctionToolIdentity(toolRun),
+      getFunctionToolStateKey(toolRun.tool),
     ),
   };
 }
@@ -397,78 +623,189 @@ function buildFunctionFailureResult<TContext>(
   };
 }
 
+function buildFunctionCancellationResult<TContext>(
+  deps: FunctionToolCallDeps<TContext>,
+  toolRun: ToolRunFunction<TContext>,
+): FunctionToolResult<TContext> {
+  const output = 'aborted';
+  const rawItem = buildFunctionAbortResult(toolRun.toolCall);
+  return {
+    type: 'function_output',
+    tool: toolRun.tool,
+    output,
+    runItem: new RunToolCallOutputItem(rawItem, deps.agent, output),
+  };
+}
+
 async function resolveFunctionFailureOutput<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
   error: Error,
   legacyOutput: string,
+  redactionBoundary?: InvalidToolInputRedactionBoundary,
 ): Promise<unknown> {
+  const redactedBeforeCallback = redactionBoundary
+    ? refreshInvalidToolInputFailure(redactionBoundary.failure)
+    : isRedactedInvalidToolInputError(error);
+  const callbackError = redactedBeforeCallback
+    ? (redactionBoundary?.failure.error ?? error)
+    : error;
+  const effectiveLegacyOutput = redactedBeforeCallback
+    ? (redactionBoundary?.redactedLegacyOutput ?? legacyOutput)
+    : legacyOutput;
+
   if (!toolRun.tool.outputSchema) {
-    return legacyOutput;
+    return effectiveLegacyOutput;
   }
 
   if (!toolRun.tool.errorFunction) {
-    throw error;
+    throw callbackError;
   }
 
-  const details: ToolCallDetails = { toolCall: toolRun.toolCall };
-  const output = await toolRun.tool.errorFunction(
-    deps.state._context,
-    error,
-    details,
-  );
-  return validateFunctionToolOutput({
-    tool: toolRun.tool,
-    output,
-    runContext: deps.state._context,
-    details,
-  });
+  const details: ToolCallDetails | undefined = redactedBeforeCallback
+    ? undefined
+    : { toolCall: toolRun.toolCall };
+  try {
+    const output = await toolRun.tool.errorFunction(
+      deps.state._context,
+      callbackError,
+      details,
+    );
+    if (
+      redactionBoundary &&
+      !redactedBeforeCallback &&
+      refreshInvalidToolInputFailure(redactionBoundary.failure)
+    ) {
+      throw redactionBoundary.failure.error;
+    }
+    const validatedOutput = validateFunctionToolOutput({
+      tool: toolRun.tool,
+      output,
+      runContext: deps.state._context,
+      details,
+    });
+    if (
+      redactionBoundary &&
+      !redactedBeforeCallback &&
+      refreshInvalidToolInputFailure(redactionBoundary.failure)
+    ) {
+      throw redactionBoundary.failure.error;
+    }
+    return validatedOutput;
+  } catch (callbackFailure) {
+    if (
+      redactionBoundary &&
+      refreshInvalidToolInputFailure(redactionBoundary.failure)
+    ) {
+      throw redactionBoundary.failure.error;
+    }
+    throw callbackFailure;
+  }
 }
 
 async function buildParseErrorResult<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
-  error: Error,
+  error: unknown,
+  failure: InvalidToolInputFailure,
 ): Promise<FunctionToolResult<TContext>> {
-  const errorMessage = `An error occurred while parsing tool arguments. Please try again with valid JSON. Error: ${error.message}`;
-  const parseError = new InvalidToolInputError(
-    `Invalid input for function tool '${getFunctionToolIdentity(toolRun)}'.`,
-    deps.state,
-    error,
-    {
-      runContext: deps.state._context,
-      input: toolRun.toolCall.arguments,
-      details: { toolCall: toolRun.toolCall },
-    },
-  );
-  const output = await resolveFunctionFailureOutput(
-    deps,
-    toolRun,
-    parseError,
-    errorMessage,
-  );
-  return buildFunctionFailureResult(deps, toolRun, output);
+  const traceToolName = getFunctionToolTraceName(toolRun);
+  return withRunStateToolFunctionSpan(deps, traceToolName, async (span) => {
+    refreshInvalidToolInputFailure(failure);
+    if (
+      span &&
+      deps.runner.config.traceIncludeSensitiveData &&
+      !failure.redacted
+    ) {
+      span.spanData.input = toolRun.toolCall.arguments;
+    }
+    span?.setError({
+      message: 'Error running tool (non-fatal)',
+      data: {
+        tool_name: traceToolName,
+        error: failure.error.toString(),
+      },
+    });
+
+    const baseMessage =
+      'An error occurred while parsing tool arguments. Please try again with valid JSON.';
+    const errorMessage = failure.redacted
+      ? baseMessage
+      : `${baseMessage} Error: ${(error as Error).message}`;
+    let output: unknown;
+    try {
+      output = await resolveFunctionFailureOutput(
+        deps,
+        toolRun,
+        failure.error,
+        errorMessage,
+        { failure, redactedLegacyOutput: baseMessage },
+      );
+    } finally {
+      refreshInvalidToolInputFailure(failure);
+      if (failure.redacted && span) {
+        span.spanData.input = '';
+      }
+    }
+    if (span && deps.runner.config.traceIncludeSensitiveData) {
+      span.spanData.output = toSmartString(output);
+    }
+    return buildFunctionFailureResult(deps, toolRun, output);
+  });
 }
 
 async function buildApprovalRejectionResult<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
+  invalidInputFailure?: InvalidToolInputFailure,
 ): Promise<FunctionToolResult<TContext>> {
   const { runner, state, toolErrorFormatter } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
+  const approvalToolNames = [getFunctionToolApprovalStateKey(toolRun)];
   const traceToolName = getFunctionToolTraceName(toolRun);
   return withRunStateToolFunctionSpan(deps, traceToolName, async (span) => {
     const response = await resolveApprovalRejectionMessage({
       runContext: state._context,
       toolType: 'function',
       toolName,
+      approvalToolNames,
+      approvalAgent: deps.agent,
       callId: toolRun.toolCall.callId,
       toolErrorFormatter,
     });
-    const traceErrorMessage = runner.config.traceIncludeSensitiveData
-      ? response
-      : TOOL_APPROVAL_REJECTION_MESSAGE;
-
+    if (isSiblingCancellationSignal(deps.signal)) {
+      return buildFunctionCancellationResult(deps, toolRun);
+    }
+    const redactDetails = invalidInputFailure
+      ? refreshInvalidToolInputFailure(invalidInputFailure)
+      : false;
+    const traceErrorMessage =
+      runner.config.traceIncludeSensitiveData && !redactDetails
+        ? response
+        : TOOL_APPROVAL_REJECTION_MESSAGE;
+    let output: unknown;
+    let rejectionFallbackFailed = false;
+    let rejectionFallbackError: unknown;
+    try {
+      output = await resolveFunctionFailureOutput(
+        deps,
+        toolRun,
+        new Error(response),
+        response,
+        invalidInputFailure
+          ? {
+              failure: invalidInputFailure,
+              redactedLegacyOutput: TOOL_APPROVAL_REJECTION_MESSAGE,
+            }
+          : undefined,
+      );
+    } catch (error) {
+      rejectionFallbackFailed = true;
+      rejectionFallbackError = error;
+    }
+    if (isSiblingCancellationSignal(deps.signal)) {
+      return buildFunctionCancellationResult(deps, toolRun);
+    }
     span?.setError({
       message: traceErrorMessage,
       data: {
@@ -476,13 +813,16 @@ async function buildApprovalRejectionResult<TContext>(
         error: `Tool execution for ${toolRun.toolCall.callId} was manually rejected by user.`,
       },
     });
-
-    const output = await resolveFunctionFailureOutput(
-      deps,
-      toolRun,
-      new Error(response),
-      response,
-    );
+    if (rejectionFallbackFailed) {
+      throw rejectionFallbackError;
+    }
+    if (
+      invalidInputFailure &&
+      refreshInvalidToolInputFailure(invalidInputFailure) &&
+      span
+    ) {
+      span.spanData.input = '';
+    }
     if (span && runner.config.traceIncludeSensitiveData) {
       span.spanData.output = toSmartString(output);
     }
@@ -494,49 +834,115 @@ async function handleFunctionApproval<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
   parsedArgs: any,
+  forceApproval: boolean = false,
+  invalidInputFailure?: InvalidToolInputFailure,
 ): Promise<'approved' | FunctionToolResult<TContext>> {
   const { agent, state } = deps;
-  const toolName = getFunctionToolIdentity(toolRun);
+  const approvalStateKey = getFunctionToolApprovalStateKey(toolRun);
+  const pendingStateKeys = getFunctionToolPendingStateKeys(toolRun);
   const approval = state._context.isToolApproved({
-    toolName,
+    toolName: approvalStateKey,
     callId: toolRun.toolCall.callId,
+    functionTool: false,
+    agent,
   });
 
   if (approval === false) {
-    state.clearPendingAgentToolRun(toolName, toolRun.toolCall.callId);
-    return await buildApprovalRejectionResult(deps, toolRun);
+    for (const stateKey of pendingStateKeys) {
+      state.clearPendingAgentToolRun(stateKey, toolRun.toolCall.callId);
+    }
+    return await buildApprovalRejectionResult(
+      deps,
+      toolRun,
+      invalidInputFailure,
+    );
   }
 
   if (approval === true) {
     return 'approved';
   }
 
-  const needsApproval = await toolRun.tool.needsApproval(
-    state._context,
-    parsedArgs,
-    toolRun.toolCall.callId,
-  );
+  let needsApproval = forceApproval;
+  if (!needsApproval) {
+    try {
+      needsApproval = await toolRun.tool.needsApproval(
+        state._context,
+        parsedArgs,
+        toolRun.toolCall.callId,
+      );
+    } catch (error) {
+      if (
+        invalidInputFailure &&
+        refreshInvalidToolInputFailure(invalidInputFailure)
+      ) {
+        throw invalidInputFailure.error;
+      }
+      throw error;
+    }
+  }
+
+  if (deps.signal?.aborted) {
+    return buildFunctionCancellationResult(deps, toolRun);
+  }
 
   if (!needsApproval) {
     return 'approved';
   }
 
   if (shouldRunPreApprovalInputGuardrails(deps)) {
-    const inputGuardrailResult = await runFunctionToolInputGuardrails({
-      guardrails: toolRun.tool.inputGuardrails,
-      context: state._context,
-      agent,
-      toolCall: toolRun.toolCall,
-      onResult: (result) => {
-        state._toolInputGuardrailResults.push(result);
-      },
-    });
+    const redactedBeforeGuardrails = invalidInputFailure
+      ? refreshInvalidToolInputFailure(invalidInputFailure)
+      : false;
+    const guardrailResults: ToolInputGuardrailResult[] = [];
+    let inputGuardrailResult: ToolInputGuardrailCheckResult = { type: 'allow' };
+    let guardrailFailed = false;
+    let guardrailError: unknown;
+    try {
+      inputGuardrailResult = await runFunctionToolInputGuardrails({
+        guardrails: toolRun.tool.inputGuardrails,
+        context: state._context,
+        agent,
+        toolCall: getFunctionToolCallbackToolCall(
+          toolRun.toolCall,
+          redactedBeforeGuardrails,
+        ),
+        onResult: (result) => {
+          guardrailResults.push(result);
+        },
+      });
+    } catch (error) {
+      guardrailFailed = true;
+      guardrailError = error;
+    }
+    const redactedAfterGuardrails = invalidInputFailure
+      ? refreshInvalidToolInputFailure(invalidInputFailure)
+      : false;
+    if (redactedBeforeGuardrails || !redactedAfterGuardrails) {
+      state._toolInputGuardrailResults.push(...guardrailResults);
+    }
+    if (isSiblingCancellationSignal(deps.signal)) {
+      return buildFunctionCancellationResult(deps, toolRun);
+    }
+    if (guardrailFailed) {
+      const sdkTripwire = guardrailResults.some(
+        (result) => result.output.behavior?.type === 'throwException',
+      );
+      if (
+        invalidInputFailure &&
+        redactedAfterGuardrails &&
+        (!redactedBeforeGuardrails || !sdkTripwire)
+      ) {
+        throw invalidInputFailure.error;
+      }
+      throw guardrailError;
+    }
 
     if (inputGuardrailResult.type === 'reject') {
       return buildInputGuardrailRejectionResult(
         deps,
         toolRun,
         inputGuardrailResult.message,
+        invalidInputFailure,
       );
     }
   }
@@ -547,12 +953,19 @@ async function buildInputGuardrailRejectionResult<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
   message: string,
+  invalidInputFailure?: InvalidToolInputFailure,
 ): Promise<FunctionToolResult<TContext>> {
   const output = await resolveFunctionFailureOutput(
     deps,
     toolRun,
     new Error(message),
     message,
+    invalidInputFailure
+      ? {
+          failure: invalidInputFailure,
+          redactedLegacyOutput: REDACTED_TOOL_ERROR_MESSAGE,
+        }
+      : undefined,
   );
   return buildFunctionFailureResult(deps, toolRun, output);
 }
@@ -582,115 +995,313 @@ async function runFunctionToolInputGuardrails<TContext>({
 async function runApprovedFunctionTool<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
-  parsedInput: unknown,
+  approvalArgs: unknown,
+  preparedInput: FunctionToolPreparedInput | undefined,
+  invalidInputFailure?: InvalidToolInputFailure,
 ): Promise<FunctionToolResult<TContext>> {
-  const { agent, runner, state, agentToolParentRunConfig } = deps;
+  const { agent, runner, state, agentToolParentRunConfig, signal } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
+  const stateKeys = getFunctionToolPendingStateKeys(toolRun);
   const traceToolName = getFunctionToolTraceName(toolRun);
   return withRunStateToolFunctionSpan(deps, traceToolName, async (span) => {
-    if (span && runner.config.traceIncludeSensitiveData) {
+    let preservedLifecycleError: unknown;
+    const refreshRedaction = () => {
+      const redacted = invalidInputFailure
+        ? refreshInvalidToolInputFailure(invalidInputFailure)
+        : false;
+      if (redacted && span) {
+        span.spanData.input = '';
+      }
+      return redacted;
+    };
+    const throwIfRedactionPromoted = (redactedBefore: boolean) => {
+      if (!redactedBefore && refreshRedaction() && invalidInputFailure) {
+        throw invalidInputFailure.error;
+      }
+    };
+    if (
+      span &&
+      runner.config.traceIncludeSensitiveData &&
+      !refreshRedaction()
+    ) {
       span.spanData.input = toolRun.toolCall.arguments;
     }
 
-    try {
-      const inputGuardrailResult = await runFunctionToolInputGuardrails({
-        guardrails: toolRun.tool.inputGuardrails,
-        context: state._context,
-        agent,
-        toolCall: toolRun.toolCall,
-        onResult: (result) => {
-          state._toolInputGuardrailResults.push(result);
-        },
-      });
+    let toolStarted = false;
+    let invocationPending = false;
+    let cancellationFinalizationAttempted = false;
+    const buildSiblingCancellationResult = () => {
+      if (toolStarted) {
+        toolStarted = false;
+        cancellationFinalizationAttempted = true;
+        if (span && runner.config.traceIncludeSensitiveData) {
+          span.spanData.output = 'aborted';
+        }
+        emitFunctionToolEnd(
+          runner,
+          state._context,
+          agent,
+          toolRun.tool,
+          'aborted',
+          toolRun.toolCall,
+          refreshRedaction,
+          true,
+        );
+      }
+      return buildFunctionCancellationResult(deps, toolRun);
+    };
 
-      emitToolStart(
-        runner,
-        state._context,
-        agent,
-        toolRun.tool,
-        toolRun.toolCall,
-      );
+    try {
+      const redactedBeforeInputGuardrails = refreshRedaction();
+      const inputGuardrailResults: ToolInputGuardrailResult[] = [];
+      let inputGuardrailResult: ToolInputGuardrailCheckResult = {
+        type: 'allow',
+      };
+      let inputGuardrailFailed = false;
+      let inputGuardrailError: unknown;
+      try {
+        inputGuardrailResult = await runFunctionToolInputGuardrails({
+          guardrails: toolRun.tool.inputGuardrails,
+          context: state._context,
+          agent,
+          toolCall: getFunctionToolCallbackToolCall(
+            toolRun.toolCall,
+            redactedBeforeInputGuardrails,
+          ),
+          onResult: (result) => {
+            inputGuardrailResults.push(result);
+          },
+        });
+      } catch (error) {
+        inputGuardrailFailed = true;
+        inputGuardrailError = error;
+        if (
+          inputGuardrailResults.some(
+            (result) => result.output.behavior?.type === 'throwException',
+          )
+        ) {
+          preservedLifecycleError = error;
+        }
+      }
+      const redactedAfterInputGuardrails = refreshRedaction();
+      if (redactedBeforeInputGuardrails || !redactedAfterInputGuardrails) {
+        state._toolInputGuardrailResults.push(...inputGuardrailResults);
+      }
+      if (signal?.aborted) {
+        return buildFunctionCancellationResult(deps, toolRun);
+      }
+      if (inputGuardrailFailed) {
+        if (
+          !redactedBeforeInputGuardrails &&
+          redactedAfterInputGuardrails &&
+          invalidInputFailure
+        ) {
+          throw invalidInputFailure.error;
+        }
+        throw inputGuardrailError;
+      }
+
+      const redactedBeforeToolStart = refreshRedaction();
+      try {
+        emitFunctionToolStart(
+          runner,
+          state._context,
+          agent,
+          toolRun.tool,
+          toolRun.toolCall,
+          refreshRedaction,
+        );
+      } catch (hookError) {
+        if (
+          !redactedBeforeToolStart &&
+          refreshRedaction() &&
+          invalidInputFailure
+        ) {
+          throw invalidInputFailure.error;
+        }
+        throw hookError;
+      }
+      refreshRedaction();
+      toolStarted = true;
 
       let toolOutput: unknown;
-      let executedInput = parsedInput;
+      let executedInput = approvalArgs;
       let toolDetails: ToolCallDetails = { toolCall: toolRun.toolCall };
       let shouldValidateToolOutput = false;
+      let executionStatus: 'executed' | undefined;
       if (inputGuardrailResult.type === 'reject') {
-        toolOutput = await resolveFunctionFailureOutput(
-          deps,
-          toolRun,
-          new Error(inputGuardrailResult.message),
-          inputGuardrailResult.message,
-        );
+        try {
+          toolOutput = await resolveFunctionFailureOutput(
+            deps,
+            toolRun,
+            new Error(inputGuardrailResult.message),
+            inputGuardrailResult.message,
+            invalidInputFailure
+              ? {
+                  failure: invalidInputFailure,
+                  redactedLegacyOutput: REDACTED_TOOL_ERROR_MESSAGE,
+                }
+              : undefined,
+          );
+        } catch (error) {
+          if (isSiblingCancellationSignal(signal)) {
+            return buildSiblingCancellationResult();
+          }
+          throw error;
+        }
+        if (isSiblingCancellationSignal(signal)) {
+          return buildSiblingCancellationResult();
+        }
       } else {
-        const resumeState = state.getPendingAgentToolRun(
-          toolName,
-          toolRun.toolCall.callId,
-        );
+        const resumeState = stateKeys
+          .map((stateKey) =>
+            state.getPendingAgentToolRun(stateKey, toolRun.toolCall.callId),
+          )
+          .find((pendingState) => typeof pendingState !== 'undefined');
+        const redactedBeforeInvocation = refreshRedaction();
         toolDetails = {
-          toolCall: toolRun.toolCall,
+          toolCall: getFunctionToolCallbackToolCall(
+            toolRun.toolCall,
+            redactedBeforeInvocation,
+          ),
           resumeState,
+          ...(signal ? { signal } : {}),
           [FUNCTION_TOOL_PARSED_INPUT_CALLBACK]: (input: unknown) => {
             executedInput = cloneForCustomDataContext(input);
           },
         };
+        if (preparedInput) {
+          setFunctionToolPreparedInput(toolDetails, preparedInput);
+        }
         setToolUsageRecorder(toolDetails, getRunStateUsageRecorder(state));
         setAgentToolParentRunConfigOnDetails(
           toolDetails,
           agentToolParentRunConfig ?? runner.config,
         );
         setToolCallParentSpanOnDetails(toolDetails, span);
+        invocationPending = true;
+        signal?.throwIfAborted();
         const invokedToolOutput = await invokeFunctionTool({
           tool: toolRun.tool,
           runContext: state._context,
           input: toolRun.toolCall.arguments,
           details: toolDetails,
         });
-        toolOutput = await runToolOutputGuardrails({
-          guardrails: toolRun.tool.outputGuardrails,
-          context: state._context,
-          agent,
-          toolCall: toolRun.toolCall,
-          toolOutput: invokedToolOutput,
-          onResult: (result) => {
-            state._toolOutputGuardrailResults.push(result);
-          },
-        });
+        executionStatus = 'executed';
+        invocationPending = false;
+        throwIfRedactionPromoted(redactedBeforeInvocation);
+        if (isSiblingCancellationSignal(signal)) {
+          return buildSiblingCancellationResult();
+        }
+        const redactedBeforeOutputGuardrails = refreshRedaction();
+        const outputGuardrailResults: ToolOutputGuardrailResult[] = [];
+        try {
+          toolOutput = await runToolOutputGuardrails({
+            guardrails: toolRun.tool.outputGuardrails,
+            context: state._context,
+            agent,
+            toolCall: getFunctionToolCallbackToolCall(
+              toolRun.toolCall,
+              redactedBeforeOutputGuardrails,
+            ),
+            toolOutput: invokedToolOutput,
+            onResult: (result) => {
+              outputGuardrailResults.push(result);
+            },
+          });
+        } catch (guardrailError) {
+          if (
+            outputGuardrailResults.some(
+              (result) => result.output.behavior?.type === 'throwException',
+            )
+          ) {
+            preservedLifecycleError = guardrailError;
+          }
+          throw guardrailError;
+        } finally {
+          throwIfRedactionPromoted(redactedBeforeOutputGuardrails);
+          state._toolOutputGuardrailResults.push(...outputGuardrailResults);
+        }
+        if (isSiblingCancellationSignal(signal)) {
+          return buildSiblingCancellationResult();
+        }
         shouldValidateToolOutput = toolOutput !== invokedToolOutput;
       }
       if (shouldValidateToolOutput) {
+        const redactedBeforeOutputValidation = refreshRedaction();
         toolOutput = validateFunctionToolOutput({
           tool: toolRun.tool,
           output: toolOutput,
           runContext: state._context,
           details: toolDetails,
         });
+        throwIfRedactionPromoted(redactedBeforeOutputValidation);
       }
       const stringResult = toSmartString(toolOutput);
 
       const rawItem = getToolCallOutputItem(toolRun.toolCall, toolOutput, {
         outputSchema: toolRun.tool.outputSchema,
       });
-      const customData = await maybeExtractToolOutputCustomData(
-        toolRun.tool.customDataExtractor,
-        {
-          runContext: state._context,
-          tool: toolRun.tool,
-          toolCall: cloneForCustomDataContext(toolRun.toolCall),
-          input: cloneForCustomDataContext(executedInput),
-          output: cloneForCustomDataContext(toolOutput),
-          rawItem: cloneForCustomDataContext(rawItem),
-        } satisfies FunctionToolCustomDataContext<TContext>,
-      );
+      if (refreshRedaction()) {
+        executedInput = undefined;
+      }
+      const redactedBeforeCustomData = refreshRedaction();
+      let customData: Awaited<
+        ReturnType<typeof maybeExtractToolOutputCustomData>
+      >;
+      let customDataFailed = false;
+      let customDataError: unknown;
+      try {
+        customData = await maybeExtractToolOutputCustomData(
+          toolRun.tool.customDataExtractor,
+          {
+            runContext: state._context,
+            tool: toolRun.tool,
+            toolCall: cloneForCustomDataContext(
+              getFunctionToolCallbackToolCall(
+                toolRun.toolCall,
+                redactedBeforeCustomData,
+              ),
+            ),
+            input: cloneForCustomDataContext(executedInput),
+            output: cloneForCustomDataContext(toolOutput),
+            rawItem: cloneForCustomDataContext(rawItem),
+          } satisfies FunctionToolCustomDataContext<TContext>,
+        );
+      } catch (error) {
+        customDataFailed = true;
+        customDataError = error;
+      } finally {
+        try {
+          throwIfRedactionPromoted(redactedBeforeCustomData);
+        } catch (error) {
+          customDataFailed = true;
+          customDataError = error;
+        }
+      }
+      if (isSiblingCancellationSignal(signal)) {
+        return buildSiblingCancellationResult();
+      }
+      if (customDataFailed) {
+        throw customDataError;
+      }
 
-      emitToolEnd(
-        runner,
-        state._context,
-        agent,
-        toolRun.tool,
-        stringResult,
-        toolRun.toolCall,
-      );
+      const redactedBeforeToolEnd = refreshRedaction();
+      try {
+        emitFunctionToolEnd(
+          runner,
+          state._context,
+          agent,
+          toolRun.tool,
+          stringResult,
+          toolRun.toolCall,
+          refreshRedaction,
+        );
+      } catch (hookError) {
+        throwIfRedactionPromoted(redactedBeforeToolEnd);
+        throw hookError;
+      }
+      throwIfRedactionPromoted(redactedBeforeToolEnd);
 
       if (span && runner.config.traceIncludeSensitiveData) {
         span.spanData.output = stringResult;
@@ -705,6 +1316,7 @@ async function runApprovedFunctionTool<TContext>(
           agent,
           toolOutput,
           customData,
+          executionStatus,
         ),
       };
 
@@ -716,36 +1328,66 @@ async function runApprovedFunctionTool<TContext>(
         if (nestedInterruptions.length > 0) {
           functionResult.interruptions = nestedInterruptions;
           const nestedRunStateJson = nestedRunResult.state.toJSON();
+          const [stateKey, ...aliases] =
+            stateKeys.length > 0 ? stateKeys : [toolName];
           state.setPendingAgentToolRun(
-            toolName,
+            stateKey,
             toolRun.toolCall.callId,
             JSON.stringify(nestedRunStateJson),
+            aliases,
           );
         } else {
-          state.clearPendingAgentToolRun(toolName, toolRun.toolCall.callId);
+          for (const stateKey of stateKeys) {
+            state.clearPendingAgentToolRun(stateKey, toolRun.toolCall.callId);
+          }
         }
       }
 
       return functionResult;
     } catch (error) {
+      if (cancellationFinalizationAttempted) {
+        throw error;
+      }
+      if (isSiblingCancellationSignal(signal) && invocationPending) {
+        return buildSiblingCancellationResult();
+      }
+      const redacted = refreshRedaction();
+      const errorResult = redacted
+        ? REDACTED_TOOL_ERROR_MESSAGE
+        : String(error);
       span?.setError({
         message: 'Error running tool',
         data: {
           tool_name: traceToolName,
-          error: String(error),
+          error: errorResult,
         },
       });
 
-      const errorResult = String(error);
-      emitToolEnd(
-        runner,
-        state._context,
-        agent,
-        toolRun.tool,
-        errorResult,
-        toolRun.toolCall,
-      );
+      try {
+        emitFunctionToolEnd(
+          runner,
+          state._context,
+          agent,
+          toolRun.tool,
+          errorResult,
+          toolRun.toolCall,
+          refreshRedaction,
+        );
+      } catch (hookError) {
+        if (refreshRedaction() && invalidInputFailure) {
+          throw invalidInputFailure.error;
+        }
+        throw hookError;
+      }
 
+      if (
+        refreshRedaction() &&
+        invalidInputFailure &&
+        !isToolTimeoutError(error) &&
+        error !== preservedLifecycleError
+      ) {
+        throw invalidInputFailure.error;
+      }
       throw error;
     }
   });
@@ -759,8 +1401,12 @@ async function _runComputerActionAndScreenshot(
   computer: Computer,
   toolCall: protocol.ComputerUseCallItem,
   runContext: RunContext,
-): Promise<string> {
+  signal?: AbortSignal,
+): Promise<{ type: 'completed'; output: string } | { type: 'cancelled' }> {
   for (const action of getComputerToolActions(toolCall)) {
+    if (signal?.aborted) {
+      return { type: 'cancelled' };
+    }
     switch (action.type) {
       case 'click':
         await computer.click(action.x, action.y, action.button, runContext);
@@ -802,12 +1448,21 @@ async function _runComputerActionAndScreenshot(
         action satisfies never;
         break;
     }
+    if (signal?.aborted) {
+      return { type: 'cancelled' };
+    }
   }
 
+  if (signal?.aborted) {
+    return { type: 'cancelled' };
+  }
   if (typeof computer.screenshot === 'function') {
     const screenshot = await computer.screenshot(runContext);
+    if (signal?.aborted) {
+      return { type: 'cancelled' };
+    }
     if (typeof screenshot !== 'undefined') {
-      return screenshot;
+      return { type: 'completed', output: screenshot };
     }
   }
 
@@ -866,7 +1521,7 @@ async function withRunStateToolFunctionSpan<TContext, T>(
   );
 }
 
-type ApprovalResolution = 'approved' | 'rejected' | 'pending';
+type ApprovalResolution = 'approved' | 'rejected' | 'pending' | 'cancelled';
 
 type LocalApprovalDecision = {
   approve?: boolean;
@@ -876,7 +1531,6 @@ type LocalApprovalDecision = {
 async function resolveToolApproval(options: {
   runContext: RunContext;
   toolName: string;
-  callId: string;
   approvalItem: RunToolApprovalItem;
   needsApproval: () => Promise<boolean>;
   onApproval?:
@@ -885,20 +1539,22 @@ async function resolveToolApproval(options: {
         approvalItem: RunToolApprovalItem,
       ) => Promise<LocalApprovalDecision>)
     | undefined;
+  isCancelled?: () => boolean;
 }): Promise<ApprovalResolution> {
   const {
     runContext,
     toolName,
-    callId,
     approvalItem,
     needsApproval,
     onApproval,
+    isCancelled,
   } = options;
 
-  const existingApproval = runContext.isToolApproved({
+  const existingApproval = runContext._resolveToolInvocationApproval(
+    approvalItem.agent,
     toolName,
-    callId,
-  });
+    approvalItem.rawItem,
+  );
 
   if (existingApproval === true) {
     return 'approved';
@@ -907,12 +1563,27 @@ async function resolveToolApproval(options: {
     return 'rejected';
   }
 
-  if (!(await needsApproval())) {
+  let approvalRequired: boolean;
+  try {
+    approvalRequired = await needsApproval();
+  } catch (error) {
+    if (isCancelled?.()) {
+      return 'cancelled';
+    }
+    throw error;
+  }
+  if (isCancelled?.()) {
+    return 'cancelled';
+  }
+  if (!approvalRequired) {
     return 'approved';
   }
 
   if (onApproval) {
     const decision = await onApproval(runContext, approvalItem);
+    if (isCancelled?.()) {
+      return 'cancelled';
+    }
     if (decision.approve === true) {
       runContext.approveTool(approvalItem);
     } else if (decision.approve === false) {
@@ -927,10 +1598,11 @@ async function resolveToolApproval(options: {
     }
   }
 
-  const approval = runContext.isToolApproved({
+  const approval = runContext._resolveToolInvocationApproval(
+    approvalItem.agent,
     toolName,
-    callId,
-  });
+    approvalItem.rawItem,
+  );
 
   if (approval === true) {
     return 'approved';
@@ -942,12 +1614,12 @@ async function resolveToolApproval(options: {
 }
 
 type ApprovalDecisionResult =
-  { status: 'approved' } | { status: 'pending' | 'rejected'; item: RunItem };
+  | { status: 'approved' }
+  | { status: 'pending' | 'rejected' | 'cancelled'; item: RunItem };
 
 async function handleToolApprovalDecision(options: {
   runContext: RunContext;
   toolName: string;
-  callId: string;
   approvalItem: RunToolApprovalItem;
   needsApproval: () => Promise<boolean>;
   onApproval?:
@@ -957,26 +1629,41 @@ async function handleToolApprovalDecision(options: {
       ) => Promise<LocalApprovalDecision>)
     | undefined;
   buildRejectionItem: () => Promise<RunItem> | RunItem;
+  isCancelled?: () => boolean;
+  buildCancellationItem?: () => RunItem;
 }): Promise<ApprovalDecisionResult> {
   const {
     runContext,
     toolName,
-    callId,
     approvalItem,
     needsApproval,
     onApproval,
     buildRejectionItem,
+    isCancelled,
+    buildCancellationItem,
   } = options;
 
   const approvalState = await resolveToolApproval({
     runContext,
     toolName,
-    callId,
     approvalItem,
     needsApproval,
     onApproval,
+    isCancelled,
   });
 
+  if (isCancelled?.()) {
+    return {
+      status: 'cancelled',
+      item: buildCancellationItem?.() ?? approvalItem,
+    };
+  }
+  if (approvalState === 'cancelled') {
+    return {
+      status: 'cancelled',
+      item: buildCancellationItem?.() ?? approvalItem,
+    };
+  }
   if (approvalState === 'rejected') {
     return { status: 'rejected', item: await buildRejectionItem() };
   }
@@ -1010,6 +1697,62 @@ function emitToolEnd(
   runner.emit('agent_tool_end', runContext, agent, tool, output, { toolCall });
   if (typeof agent.emit === 'function') {
     agent.emit('agent_tool_end', runContext, tool, output, { toolCall });
+  }
+}
+
+function emitFunctionToolStart(
+  runner: Runner,
+  runContext: RunContext,
+  agent: Agent<any, any>,
+  tool: FunctionTool<any, any, any>,
+  toolCall: protocol.FunctionCallItem,
+  refreshRedaction: () => boolean,
+): void {
+  runner.emit('agent_tool_start', runContext, agent, tool, {
+    toolCall: getFunctionToolCallbackToolCall(toolCall, refreshRedaction()),
+  });
+  if (typeof agent.emit === 'function') {
+    agent.emit('agent_tool_start', runContext, tool, {
+      toolCall: getFunctionToolCallbackToolCall(toolCall, refreshRedaction()),
+    });
+  }
+}
+
+function emitFunctionToolEnd(
+  runner: Runner,
+  runContext: RunContext,
+  agent: Agent<any, any>,
+  tool: FunctionTool<any, any, any>,
+  output: string,
+  toolCall: protocol.FunctionCallItem,
+  refreshRedaction: () => boolean,
+  redactionSafeOutput = false,
+): void {
+  const redactedBeforeRunnerHook = refreshRedaction();
+  runner.emit('agent_tool_end', runContext, agent, tool, output, {
+    toolCall: getFunctionToolCallbackToolCall(
+      toolCall,
+      redactedBeforeRunnerHook,
+    ),
+  });
+  if (typeof agent.emit === 'function') {
+    const redactedBeforeAgentHook = refreshRedaction();
+    agent.emit(
+      'agent_tool_end',
+      runContext,
+      tool,
+      !redactionSafeOutput &&
+        !redactedBeforeRunnerHook &&
+        redactedBeforeAgentHook
+        ? REDACTED_TOOL_ERROR_MESSAGE
+        : output,
+      {
+        toolCall: getFunctionToolCallbackToolCall(
+          toolCall,
+          redactedBeforeAgentHook,
+        ),
+      },
+    );
   }
 }
 
@@ -1052,7 +1795,6 @@ export async function executeShellActions(
     const approvalDecision = await handleToolApprovalDecision({
       runContext,
       toolName: shellTool.name,
-      callId: toolCallKey,
       approvalItem,
       needsApproval: () =>
         shellTool.needsApproval(runContext, toolCall.action, toolCallKey),
@@ -1133,7 +1875,7 @@ export async function executeShellActions(
               error: traceError,
             },
           });
-          _logger.error('Failed to execute shell action:', err);
+          logToolActionError(_logger, 'Failed to execute shell action:', err);
         }
 
         shellOutputs = shellOutputs ?? [];
@@ -1159,7 +1901,13 @@ export async function executeShellActions(
           rawItem.providerData = providerMeta;
         }
 
-        return new RunToolCallOutputItem(rawItem, agent, rawItem.output);
+        return new RunToolCallOutputItem(
+          rawItem,
+          agent,
+          rawItem.output,
+          undefined,
+          'executed',
+        );
       },
     );
 
@@ -1193,7 +1941,6 @@ export async function executeApplyPatchOperations(
     const approvalDecision = await handleToolApprovalDecision({
       runContext,
       toolName: applyPatchTool.name,
-      callId: toolCallKey,
       approvalItem,
       needsApproval: () =>
         applyPatchTool.needsApproval(
@@ -1288,7 +2035,11 @@ export async function executeApplyPatchOperations(
               error: traceError,
             },
           });
-          _logger.error('Failed to execute apply_patch operation:', err);
+          logToolActionError(
+            _logger,
+            'Failed to execute apply_patch operation:',
+            err,
+          );
         }
 
         const rawItem: protocol.ApplyPatchCallResultItem = {
@@ -1327,7 +2078,13 @@ export async function executeApplyPatchOperations(
           span.spanData.output = output;
         }
 
-        return new RunToolCallOutputItem(rawItem, agent, output, customData);
+        return new RunToolCallOutputItem(
+          rawItem,
+          agent,
+          output,
+          customData,
+          'executed',
+        );
       },
     );
 
@@ -1349,12 +2106,18 @@ export async function executeComputerActions(
   runContext: RunContext,
   customLogger: Logger | undefined = undefined,
   toolErrorFormatter?: ToolErrorFormatter,
+  signal?: AbortSignal,
+  onFatalFailure?: (error?: unknown) => void,
 ): Promise<RunItem[]> {
   const _logger = customLogger ?? logger;
   const results: RunItem[] = [];
   for (const action of actions) {
     const toolCall = action.toolCall;
     const computerTool = action.computer;
+    if (signal?.aborted) {
+      results.push(buildComputerCancellationItem(agent, toolCall));
+      continue;
+    }
     const computerActions = getComputerToolActions(toolCall);
     let cachedRejectionMessage: string | undefined;
     const getRejectionMessage = async () => {
@@ -1381,31 +2144,45 @@ export async function executeComputerActions(
     const approvalDecision = await handleToolApprovalDecision({
       runContext,
       toolName: computerTool.name,
-      callId: toolCall.callId,
       approvalItem,
-      needsApproval: async () =>
-        typeof needsApprovalCandidate === 'function'
-          ? (
-              await Promise.all(
-                computerActions.map((computerAction) =>
-                  (
-                    needsApprovalCandidate as (
-                      runContext: RunContext,
-                      action: protocol.ComputerAction,
-                      callId?: string,
-                    ) => Promise<boolean>
-                  )(runContext, computerAction, toolCall.callId),
-                ),
-              )
-            ).some(Boolean)
-          : typeof needsApprovalCandidate === 'boolean'
+      needsApproval: async () => {
+        if (typeof needsApprovalCandidate !== 'function') {
+          return typeof needsApprovalCandidate === 'boolean'
             ? needsApprovalCandidate
-            : false,
+            : false;
+        }
+        let firstError: { value: unknown } | undefined;
+        const approvalResults = await Promise.allSettled(
+          computerActions.map(async (computerAction) => {
+            try {
+              return await (
+                needsApprovalCandidate as (
+                  runContext: RunContext,
+                  action: protocol.ComputerAction,
+                  callId?: string,
+                ) => Promise<boolean>
+              )(runContext, computerAction, toolCall.callId);
+            } catch (error) {
+              if (!firstError) {
+                firstError = { value: error };
+                onFatalFailure?.(error);
+              }
+              throw error;
+            }
+          }),
+        );
+        if (firstError) {
+          throw firstError.value;
+        }
+        return approvalResults.some(
+          (result) => result.status === 'fulfilled' && result.value,
+        );
+      },
       buildRejectionItem: async () => {
         const rejectionMessage = await getRejectionMessage();
         const rejectionOutput: protocol.ComputerToolOutput = {
           type: 'computer_screenshot',
-          data: TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL,
+          data: COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
           providerData: {
             approvalStatus: 'rejected',
             message: rejectionMessage,
@@ -1419,13 +2196,25 @@ export async function executeComputerActions(
         return new RunToolCallOutputItem(
           rawItem,
           agent,
-          TOOL_APPROVAL_REJECTION_SCREENSHOT_DATA_URL,
+          COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
         );
       },
+      isCancelled: () => isSiblingCancellationSignal(signal),
+      buildCancellationItem: () =>
+        buildComputerCancellationItem(agent, toolCall),
     });
+
+    if (isSiblingCancellationSignal(signal)) {
+      results.push(buildComputerCancellationItem(agent, toolCall));
+      continue;
+    }
 
     if (approvalDecision.status === 'rejected') {
       const rejectionMessage = await getRejectionMessage();
+      if (isSiblingCancellationSignal(signal)) {
+        results.push(buildComputerCancellationItem(agent, toolCall));
+        continue;
+      }
       results.push(approvalDecision.item);
       results.push(
         new RunMessageOutputItem(assistant(rejectionMessage), agent),
@@ -1434,6 +2223,11 @@ export async function executeComputerActions(
     }
 
     if (approvalDecision.status === 'pending') {
+      results.push(approvalDecision.item);
+      continue;
+    }
+
+    if (approvalDecision.status === 'cancelled') {
       results.push(approvalDecision.item);
       continue;
     }
@@ -1448,18 +2242,51 @@ export async function executeComputerActions(
             typeof traceInput === 'undefined' ? '' : JSON.stringify(traceInput);
         }
 
+        if (signal?.aborted) {
+          return buildComputerCancellationItem(agent, toolCall);
+        }
+
         // Hooks: on_tool_start (global + agent)
         emitToolStart(runner, runContext, agent, computerTool, toolCall);
 
-        const acknowledgedSafetyChecks =
-          pendingSafetyChecks && pendingSafetyChecks.length > 0
-            ? await resolveSafetyCheckAcknowledgements({
-                runContext,
-                toolCall,
-                pendingSafetyChecks,
-                onSafetyCheck: computerTool.onSafetyCheck,
-              })
-            : undefined;
+        let cancellationFinalizationAttempted = false;
+        const buildStartedCancellationItem = () => {
+          const item = buildComputerCancellationItem(agent, toolCall);
+          cancellationFinalizationAttempted = true;
+          if (span && runner.config.traceIncludeSensitiveData) {
+            span.spanData.output = 'aborted';
+          }
+          emitToolEnd(
+            runner,
+            runContext,
+            agent,
+            computerTool,
+            'aborted',
+            toolCall,
+          );
+          return item;
+        };
+
+        let acknowledgedSafetyChecks: ComputerSafetyCheck[] | undefined;
+        try {
+          acknowledgedSafetyChecks =
+            pendingSafetyChecks && pendingSafetyChecks.length > 0
+              ? await resolveSafetyCheckAcknowledgements({
+                  runContext,
+                  toolCall,
+                  pendingSafetyChecks,
+                  onSafetyCheck: computerTool.onSafetyCheck,
+                })
+              : undefined;
+        } catch (error) {
+          if (isSiblingCancellationSignal(signal)) {
+            return buildStartedCancellationItem();
+          }
+          throw error;
+        }
+        if (signal?.aborted) {
+          return buildStartedCancellationItem();
+        }
 
         // Run the action and get screenshot.
         let output: string;
@@ -1468,13 +2295,31 @@ export async function executeComputerActions(
             tool: computerTool,
             runContext,
           });
-          output = await _runComputerActionAndScreenshot(
+          if (signal?.aborted) {
+            return buildStartedCancellationItem();
+          }
+          const actionResult = await _runComputerActionAndScreenshot(
             computer,
             toolCall,
             runContext,
+            signal,
           );
+          if (signal?.aborted || actionResult.type === 'cancelled') {
+            return buildStartedCancellationItem();
+          }
+          output = actionResult.output;
         } catch (err) {
-          _logger.error('Failed to execute computer action:', err);
+          if (cancellationFinalizationAttempted) {
+            throw err;
+          }
+          if (signal?.aborted) {
+            return buildStartedCancellationItem();
+          }
+          logToolActionError(
+            _logger,
+            'Failed to execute computer action:',
+            err,
+          );
           output = '';
           const errorText = toErrorMessage(err);
           const traceError = getTraceToolError(
@@ -1502,16 +2347,32 @@ export async function executeComputerActions(
             acknowledgedSafetyChecks,
           };
         }
-        const customData = await maybeExtractToolOutputCustomData(
-          computerTool.customDataExtractor,
-          {
-            runContext,
-            tool: computerTool,
-            toolCall: cloneForCustomDataContext(toolCall),
-            output: imageUrl,
-            rawItem: cloneForCustomDataContext(rawItem),
-          } satisfies ComputerToolCustomDataContext,
-        );
+        let customData: Awaited<
+          ReturnType<typeof maybeExtractToolOutputCustomData>
+        >;
+        let customDataFailed = false;
+        let customDataError: unknown;
+        try {
+          customData = await maybeExtractToolOutputCustomData(
+            computerTool.customDataExtractor,
+            {
+              runContext,
+              tool: computerTool,
+              toolCall: cloneForCustomDataContext(toolCall),
+              output: imageUrl,
+              rawItem: cloneForCustomDataContext(rawItem),
+            } satisfies ComputerToolCustomDataContext,
+          );
+        } catch (error) {
+          customDataFailed = true;
+          customDataError = error;
+        }
+        if (isSiblingCancellationSignal(signal)) {
+          return buildStartedCancellationItem();
+        }
+        if (customDataFailed) {
+          throw customDataError;
+        }
 
         // Hooks: on_tool_end (global + agent)
         emitToolEnd(runner, runContext, agent, computerTool, output, toolCall);
@@ -1520,13 +2381,27 @@ export async function executeComputerActions(
           span.spanData.output = imageUrl;
         }
 
-        return new RunToolCallOutputItem(rawItem, agent, imageUrl, customData);
+        return new RunToolCallOutputItem(
+          rawItem,
+          agent,
+          imageUrl,
+          customData,
+          'executed',
+        );
       },
     );
 
     results.push(computerItem);
   }
   return results;
+}
+
+function buildComputerCancellationItem(
+  agent: Agent<any, any>,
+  toolCall: protocol.ComputerUseCallItem,
+): RunToolCallOutputItem {
+  const rawItem = buildComputerAbortResult(toolCall);
+  return new RunToolCallOutputItem(rawItem, agent, 'aborted');
 }
 
 /**
@@ -1626,6 +2501,8 @@ export async function executeHandoffCalls<
       runner.emit('agent_handoff', runContext, agent, newAgent);
       agent.emit('agent_handoff', runContext, newAgent);
 
+      const toolInvocationCommitItems = [...newStepItems];
+
       if (inputFilter != null) {
         logger.debug('Filtering inputs for handoff');
 
@@ -1651,6 +2528,8 @@ export async function executeHandoffCalls<
         preStepItems,
         newStepItems,
         { type: 'next_step_handoff', newAgent },
+        undefined,
+        toolInvocationCommitItems,
       );
     },
     {
@@ -1743,7 +2622,18 @@ export async function checkForFinalOutputFromTools<
     );
   });
 
-  if (finalizationResults.length === 0) {
+  const isIncompleteFunctionResult = (result: FunctionToolResult<TContext>) => {
+    const rawItem = result.runItem.rawItem;
+    return (
+      result.type === 'function_output' &&
+      rawItem?.type === 'function_call_result' &&
+      rawItem.status === 'incomplete'
+    );
+  };
+  if (
+    finalizationResults.length === 0 ||
+    finalizationResults.some(isIncompleteFunctionResult)
+  ) {
     return NOT_FINAL_OUTPUT;
   }
 

@@ -3,18 +3,29 @@ import type {
   ApplyPatchOperation,
   ApplyPatchResult,
   Editor,
+  EditorInvocationContext,
 } from '../../editor';
 import type { ToolOutputImage } from '../../tool';
 import { applyDiff } from '../../utils/applyDiff';
 import {
   SandboxConfigurationError,
+  SandboxLifecycleError,
   SandboxMountError,
   SandboxUnsupportedFeatureError,
+  SandboxWorkspaceReadNotFoundError,
 } from '../errors';
-import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { isAbsolute, join, resolve } from 'node:path';
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   type AzureBlobMount,
@@ -40,9 +51,16 @@ import type {
   SandboxArchiveLimits,
   SandboxClientResumeOptions,
   SandboxConcurrencyLimits,
+  SandboxPreservedSessionReuseOptions,
+  SandboxSessionSerializationOptions,
 } from '../client';
 import { normalizeSandboxClientCreateArgs } from '../client';
-import { Manifest } from '../manifest';
+import {
+  cloneManifest,
+  copyManifestMountCredentialExposurePolicy,
+  isEnvValueReference,
+  Manifest,
+} from '../manifest';
 import {
   WorkspacePathPolicy,
   type ResolveSandboxPathOptions,
@@ -67,16 +85,39 @@ import {
   assertLocalWorkspaceManifestMetadataSupported,
   joinSandboxLogicalPath,
   materializeLocalWorkspaceManifest,
-  materializeLocalWorkspaceManifestEntry,
   materializeLocalWorkspaceManifestMounts,
   pathExists,
 } from './shared/localWorkspace';
 import {
+  assertHostPathGrantsRebound,
+  assertMountCredentialsRebound,
   mergeManifestEntryDelta,
   mergeManifestDelta,
   sanitizeEnvironmentForPersistence,
+  serializeHostPathGrantRedactionMetadata,
+  serializeMountCredentialRedactionMetadata,
   serializeManifest,
 } from './shared/manifestPersistence';
+import {
+  assertExistingMountTopologyPreserved,
+  assertSandboxSessionStateUsable,
+  assertSandboxStateGenerationUnchanged,
+  captureLiveMountCredentialAuthority,
+  captureSandboxStateGeneration,
+  copyValidatedMountEffectivePaths,
+  isSandboxSessionStateUnsafe,
+  liveMountEnvironmentAuthorityMatches,
+  manifestHasInContainerMounts,
+  mountCredentialFileReferences,
+  markSandboxSessionStateUnsafe,
+  recordLiveMountCredentialAuthority,
+  sanitizeMountCredentialEnvironmentForPersistence,
+  validateMountCredentialBoundariesAtEffectivePath,
+  validateMountCredentialBoundaries,
+  validateMountCredentialFileEffectivePaths,
+  validateMountEnvironmentCredentialBoundaries,
+  withExclusiveSandboxManifestMutation,
+} from '../mountSecurity';
 import { imageOutputFromBytes } from '../shared/media';
 import {
   canReuseLocalSnapshotWorkspace,
@@ -93,6 +134,8 @@ import {
 } from './shared/runProcess';
 import { resolveFallbackShellCommand } from './shared/shellCommand';
 import { shellQuote } from '../shared/shell';
+import { normalizePosixPath } from '../shared/posixPath';
+import { probeSandboxPathExists } from '../shared/pathProbe';
 import {
   deserializeLocalSandboxSessionStateValues,
   normalizeExposedPorts,
@@ -103,6 +146,12 @@ import {
   readStringArray,
 } from '../shared/typeGuards';
 import { validateCredentialPair as validateSandboxCredentialPair } from '../shared/credentials';
+import { sandboxPathGrantHostPath } from '../shared/hostPath';
+import {
+  getRunStateSessionTrustedConfig,
+  isRunStateSessionState,
+} from '../internal/sessionStateTrust';
+import { stableJsonStringify } from '../shared/stableJson';
 
 const DEFAULT_DOCKER_IMAGE = 'python:3.14-slim';
 const DEFAULT_CONTAINER_COMMAND =
@@ -110,6 +159,10 @@ const DEFAULT_CONTAINER_COMMAND =
 const DOCKER_FAST_COMMAND_TIMEOUT_MS = 10_000;
 const DOCKER_CONTAINER_START_TIMEOUT_MS = 2 * 60_000;
 const DOCKER_CONTAINER_REMOVE_TIMEOUT_MS = 30_000;
+const DOCKER_OWNERSHIP_LABEL = 'openai-agents-sandbox';
+const DOCKER_SESSION_IDENTITY_LABEL = 'openai-agents-sandbox.session-identity';
+const DOCKER_MOUNT_AUTHORITY_FINGERPRINT_LABEL =
+  'openai-agents-sandbox.mount-authority-fingerprint';
 
 export interface DockerSandboxClientOptions extends SandboxClientOptions {
   image?: string;
@@ -121,6 +174,13 @@ export interface DockerSandboxClientOptions extends SandboxClientOptions {
 }
 
 export interface DockerSandboxSessionState extends UnixLocalSandboxSessionState {
+  sessionIdentity?: string;
+  /**
+   * Fingerprint of non-mount entries materialized before container creation.
+   * Entries applied later at runtime are intentionally not included. This is
+   * trusted same-process state and must not be serialized.
+   */
+  materializedEntriesFingerprint?: string;
   containerId: string;
   image: string;
   defaultUser?: string;
@@ -131,6 +191,19 @@ export interface DockerSandboxSessionState extends UnixLocalSandboxSessionState 
 
 export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxSessionState> {
   private containerClosed = false;
+  private stagedMountEnvironment?: Record<string, string>;
+  private readonly mountedPathGrants: Manifest['extraPathGrants'];
+
+  constructor(args: {
+    state: DockerSandboxSessionState;
+    defaultShell?: string;
+    archiveLimits?: SandboxArchiveLimits | null;
+  }) {
+    super(args);
+    this.mountedPathGrants = args.state.manifest.extraPathGrants.map(
+      (grant) => ({ ...grant }),
+    );
+  }
 
   override async resolveFilesystemRunAs(runAs?: string): Promise<undefined> {
     if (runAs && runAs.trim().length > 0) {
@@ -142,14 +215,16 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   }
 
   override createEditor(runAs?: string): Editor {
-    if (!runAs) {
-      return super.createEditor();
-    }
-    return new DockerSandboxEditor(this, runAs);
+    this.assertSessionUsable();
+    return new DockerSandboxEditor(
+      this,
+      runAs,
+      runAs ? undefined : super.createEditor(),
+    );
   }
 
   override async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
-    if (!args.runAs) {
+    if (!args.runAs && !this.pathRequiresDockerFilesystem(args.path)) {
       return await super.viewImage(args);
     }
     const bytes = await this.readDockerFileAs(
@@ -163,11 +238,12 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     if (!runAs && !this.pathRequiresDockerFilesystem(path)) {
       return await super.pathExists(path);
     }
-    const result = await this.runDockerFilesystemCommand(
-      `test -e ${shellQuote(this.resolveContainerFilesystemPath(path))}`,
-      { runAs },
-    );
-    return result.status === 0;
+    const absolutePath = this.resolveContainerFilesystemPath(path);
+    return await probeSandboxPathExists({
+      path: absolutePath,
+      runCommand: async (command) =>
+        await this.runDockerFilesystemCommand(command, { runAs }),
+    });
   }
 
   override async readFile(args: ReadFileArgs): Promise<Uint8Array> {
@@ -191,14 +267,19 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       return await super.listDir(args);
     }
     const absolutePath = this.resolveContainerFilesystemPath(args.path);
-    const output = await this.runCheckedDockerFilesystemCommand(
+    const output = await this.runReadableDockerFilesystemCommand(
       [
         `find ${shellQuote(absolutePath)} -mindepth 1 -maxdepth 1 -printf '%y\\t%f\\n'`,
       ].join(' && '),
       { runAs: args.runAs },
       `list directory ${absolutePath}`,
+      absolutePath,
     );
-    const logicalPath = this.resolveLogicalPath(args.path);
+    const resolvedPath = new WorkspacePathPolicy({
+      root: this.state.manifest.root,
+      extraPathGrants: this.state.manifest.extraPathGrants,
+    }).resolve(args.path);
+    const logicalPath = resolvedPath.workspaceRelativePath ?? resolvedPath.path;
     return output
       .split(/\r?\n/u)
       .filter((line) => line.trim().length > 0)
@@ -216,63 +297,51 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
 
   private pathRequiresDockerFilesystem(path?: string): boolean {
     return Boolean(
-      dockerInContainerMountContainingPath(this.state.manifest, path),
+      dockerInContainerMountContainingPath(this.state.manifest, path) ||
+      dockerSplitPathGrantContainingPath(this.state.manifest, path),
+    );
+  }
+
+  pathUsesSplitGrant(path?: string): boolean {
+    return Boolean(
+      dockerSplitPathGrantContainingPath(this.state.manifest, path),
     );
   }
 
   override async materializeEntry(args: MaterializeEntryArgs): Promise<void> {
-    if (isMount(args.entry) && isDockerInContainerMount(args.entry)) {
-      const logicalPath = this.resolveLogicalPath(args.path);
-      assertDockerCanApplyInContainerMounts(
-        this.state.manifest,
-        new Manifest({
-          entries: {
-            [logicalPath]: args.entry,
-          },
-        }),
-      );
-      assertLocalWorkspaceManifestMetadataSupported(
-        'DockerSandboxClient',
-        new Manifest({
-          entries: {
-            [logicalPath]: args.entry,
-          },
-        }),
-        {
-          allowLocalBindMounts: false,
-          allowIdentityMetadata: true,
-          supportsMount: isSupportedDockerApplyMount,
-        },
-      );
-      await materializeDockerMountPoint(
-        this.state.workspaceRootPath,
-        this.state.manifest.root,
-        logicalPath,
-        args.entry,
-      );
-      if (args.runAs) {
-        const mountPath = resolveDockerMountPath(
-          this.state.manifest.root,
-          logicalPath,
-          args.entry,
-        );
-        await this.mkdirDockerPathAs(mountPath, 'root');
-        await this.chownContainerPath(mountPath, args.runAs);
-      }
-      await applyDockerInContainerMount(this, logicalPath, args.entry);
-      this.state.manifest = mergeManifestEntryDelta(
-        this.state.manifest,
-        logicalPath,
-        args.entry,
-      );
+    const entry = structuredClone(args.entry);
+    if (!isMount(entry) || !isDockerInContainerMount(entry)) {
+      await super.materializeEntry({ ...args, entry });
       return;
     }
+    await withExclusiveSandboxManifestMutation(this.state, async () => {
+      await this.materializeDockerInContainerEntry({ ...args, entry });
+    });
+  }
 
-    if (!args.runAs) {
-      await super.materializeEntry(args);
-      return;
-    }
+  private async materializeDockerInContainerEntry(
+    args: Omit<MaterializeEntryArgs, 'entry'> & { entry: Mount | TypedMount },
+  ): Promise<void> {
+    const nextManifest = mergeManifestEntryDelta(
+      this.state.manifest,
+      this.resolveLogicalPath(args.path),
+      args.entry,
+    );
+    assertExistingMountTopologyPreserved(this.state.manifest, nextManifest);
+    validateMountCredentialBoundaries(nextManifest);
+    validateMountEnvironmentCredentialBoundaries(
+      nextManifest,
+      this.state.environment,
+    );
     const logicalPath = this.resolveLogicalPath(args.path);
+    assertDockerCanApplyInContainerMounts(
+      this.state.manifest,
+      new Manifest({
+        entries: {
+          [logicalPath]: args.entry,
+        },
+      }),
+    );
     assertLocalWorkspaceManifestMetadataSupported(
       'DockerSandboxClient',
       new Manifest({
@@ -286,39 +355,82 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
         supportsMount: isSupportedDockerApplyMount,
       },
     );
-    await materializeLocalWorkspaceManifestEntry(
-      this.state.workspaceRootPath,
+    const preparedMount = await prepareDockerInContainerMount(
+      this,
       logicalPath,
       args.entry,
-      {
-        localSourceGrants: this.state.manifest.extraPathGrants,
-      },
+      nextManifest,
     );
-    await this.chownContainerPath(
-      this.resolveContainerFilesystemPath(args.path),
-      args.runAs,
-    );
-    this.state.manifest = mergeManifestEntryDelta(
-      this.state.manifest,
-      logicalPath,
-      args.entry,
-    );
+    try {
+      await materializeDockerMountPoint(
+        this.state.workspaceRootPath,
+        this.state.manifest.root,
+        logicalPath,
+        args.entry,
+      );
+      if (args.runAs) {
+        await this.mkdirDockerPathAs(preparedMount.effectiveMountPath, 'root');
+        await this.chownContainerPath(
+          preparedMount.effectiveMountPath,
+          args.runAs,
+        );
+      }
+      await applyPreparedDockerInContainerMount(this, preparedMount);
+      copyValidatedMountEffectivePaths(
+        nextManifest,
+        this.state.manifest,
+        nextManifest,
+      );
+      this.state.manifest = nextManifest;
+      captureLiveMountCredentialAuthority(
+        this.state.manifest,
+        this.state.environment,
+      );
+    } catch (error) {
+      await this.invalidateAfterFailedPrivilegedManifestTransition();
+      throw error;
+    }
   }
 
   override async applyManifest(
     manifest: Manifest,
     runAs?: string,
   ): Promise<void> {
-    assertDockerManifestDeltaSupported(manifest);
+    const manifestSnapshot = cloneManifest(manifest);
+    await withExclusiveSandboxManifestMutation(this.state, async () => {
+      await this.applyDockerManifestExclusive(manifestSnapshot, runAs);
+    });
+  }
+
+  private async applyDockerManifestExclusive(
+    manifest: Manifest,
+    runAs?: string,
+  ): Promise<void> {
+    const previousManifest = this.state.manifest;
+    const nextManifest = mergeManifestDelta(this.state.manifest, manifest);
+    assertExistingMountTopologyPreserved(this.state.manifest, nextManifest);
+    validateMountCredentialBoundaries(nextManifest);
+    assertDockerManifestDeltaSupported(this.state.manifest, manifest);
     assertDockerCanApplyInContainerMounts(this.state.manifest, manifest);
     const environment = await manifest.resolveEnvironment();
-    const previousEnvironment = this.state.environment;
     const nextEnvironment = {
       ...this.state.environment,
       ...environment,
     };
-    this.state.environment = nextEnvironment;
+    validateMountEnvironmentCredentialBoundaries(nextManifest, nextEnvironment);
+    this.stagedMountEnvironment = nextEnvironment;
+    let providerEffectsMayHaveStarted = false;
     try {
+      const preparedMounts = await prepareDockerInContainerMounts(
+        this,
+        manifest,
+        nextManifest,
+        nextEnvironment,
+      );
+      const preparedMountsByLogicalPath = new Map(
+        preparedMounts.map((prepared) => [prepared.logicalPath, prepared]),
+      );
+      providerEffectsMayHaveStarted = true;
       await provisionDockerAccounts(this.state.containerId, manifest);
       const materializedManifest = stripDockerIdentityMetadata(manifest);
       await materializeLocalWorkspaceManifest(
@@ -341,11 +453,9 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       if (runAs) {
         for (const [path, entry] of Object.entries(manifest.entries)) {
           if (isMount(entry)) {
-            const mountPath = resolveDockerMountPath(
-              this.state.manifest.root,
-              path,
-              entry,
-            );
+            const mountPath =
+              preparedMountsByLogicalPath.get(path)?.effectiveMountPath ??
+              resolveDockerMountPath(this.state.manifest.root, path, entry);
             await this.mkdirDockerPathAs(mountPath, 'root');
             await this.chownContainerPath(mountPath, runAs);
           } else {
@@ -356,20 +466,46 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
           }
         }
       }
-      await applyDockerInContainerMounts(this, manifest);
-      this.state.manifest = mergeDockerIdentityMetadata(
+      await applyDockerInContainerMounts(this, manifest, preparedMounts);
+      const committedManifest = mergeDockerIdentityMetadata(
         mergeManifestDelta(this.state.manifest, materializedManifest),
         manifest,
       );
+      copyValidatedMountEffectivePaths(
+        committedManifest,
+        this.state.manifest,
+        manifest,
+      );
+      this.state.manifest = committedManifest;
+      this.state.environment = nextEnvironment;
+      if (manifestHasInContainerMounts(manifest)) {
+        captureLiveMountCredentialAuthority(
+          this.state.manifest,
+          this.state.environment,
+        );
+      } else {
+        recordLiveMountCredentialAuthority(
+          this.state.manifest,
+          previousManifest,
+        );
+      }
     } catch (error) {
-      this.state.environment = previousEnvironment;
+      if (
+        manifestHasInContainerMounts(manifest) &&
+        providerEffectsMayHaveStarted
+      ) {
+        await this.invalidateAfterFailedPrivilegedManifestTransition();
+      }
       throw error;
+    } finally {
+      this.stagedMountEnvironment = undefined;
     }
   }
 
   override async resolveExposedPort(
     port: number,
   ): Promise<ExposedPortEndpoint> {
+    this.assertSessionUsable();
     const containerPort = normalizeExposedPort(port);
     const configuredPorts = this.state.configuredExposedPorts ?? [];
     if (
@@ -415,6 +551,13 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   }
 
   protected override resolveCommandWorkdir(path?: string): string {
+    const resolvedPath = new WorkspacePathPolicy({
+      root: this.state.manifest.root,
+      extraPathGrants: this.mountedPathGrants,
+    }).resolve(path);
+    if (resolvedPath.grant) {
+      return resolvedPath.path;
+    }
     const logicalPath = this.resolveLogicalPath(path);
     return joinSandboxLogicalPath(this.state.manifest.root, logicalPath);
   }
@@ -519,6 +662,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     path?: string,
     options: ResolveSandboxPathOptions = {},
   ): string {
+    this.assertSessionUsable();
     const resolved = new WorkspacePathPolicy({
       root: this.state.manifest.root,
       extraPathGrants: this.state.manifest.extraPathGrants,
@@ -527,18 +671,52 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   }
 
   async readDockerFileAs(path: string, runAs?: string): Promise<Uint8Array> {
-    const output = await this.runCheckedDockerFilesystemCommand(
+    const output = await this.runReadableDockerFilesystemCommand(
       `base64 -- ${shellQuote(path)}`,
       { runAs },
       `read file ${path}`,
+      path,
     );
     return Buffer.from(output.replace(/\s+/gu, ''), 'base64');
+  }
+
+  private async runReadableDockerFilesystemCommand(
+    command: string,
+    options: { runAs?: string },
+    action: string,
+    path: string,
+  ): Promise<string> {
+    const result = await this.runDockerFilesystemCommand(command, options);
+    if (result.status !== 0) {
+      if (
+        result.status === 1 &&
+        !result.timedOut &&
+        !result.signal &&
+        !result.error
+      ) {
+        const exists = await probeSandboxPathExists({
+          path,
+          runCommand: async (command) =>
+            await this.runDockerFilesystemCommand(command, options),
+        });
+        if (!exists) {
+          throw new SandboxWorkspaceReadNotFoundError(
+            `DockerSandboxClient path does not exist: ${path}`,
+            { path },
+          );
+        }
+      }
+      throw new UserError(
+        `DockerSandboxClient failed to ${action}: ${formatSandboxProcessError(result)}`,
+      );
+    }
+    return result.stdout;
   }
 
   async writeDockerTextFileAs(
     path: string,
     content: string,
-    runAs: string,
+    runAs?: string,
   ): Promise<void> {
     const parent = dockerPosixDirname(path);
     await this.runCheckedDockerFilesystemCommand(
@@ -550,7 +728,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     );
   }
 
-  async deleteDockerPathAs(path: string, runAs: string): Promise<void> {
+  async deleteDockerPathAs(path: string, runAs?: string): Promise<void> {
     await this.runCheckedDockerFilesystemCommand(
       `rm -f -- ${shellQuote(path)}`,
       { runAs },
@@ -558,7 +736,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     );
   }
 
-  async mkdirDockerPathAs(path: string, runAs: string): Promise<void> {
+  async mkdirDockerPathAs(path: string, runAs?: string): Promise<void> {
     await this.runCheckedDockerFilesystemCommand(
       `mkdir -p -- ${shellQuote(path)}`,
       { runAs },
@@ -569,13 +747,27 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   async runDockerMountCommand(
     command: string,
     action: string,
-    options: { input?: string | Uint8Array } = {},
+    options: {
+      input?: string | Uint8Array;
+      environment?: Record<string, string>;
+    } = {},
   ): Promise<string> {
-    return await this.runCheckedDockerFilesystemCommand(
-      command,
-      { runAs: 'root', input: options.input },
-      action,
-    );
+    let result: SandboxProcessResult;
+    try {
+      result = await this.runDockerFilesystemCommand(command, {
+        runAs: 'root',
+        input: options.input,
+        environment: options.environment ?? this.stagedMountEnvironment,
+      });
+    } catch {
+      throw new UserError(`DockerSandboxClient failed to ${action}.`);
+    }
+    if (result.status !== 0) {
+      throw new UserError(
+        `DockerSandboxClient failed to ${action} with exit status ${result.status}.`,
+      );
+    }
+    return result.stdout;
   }
 
   private async chownContainerPath(path: string, runAs: string): Promise<void> {
@@ -588,11 +780,21 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
 
   private async runCheckedDockerFilesystemCommand(
     command: string,
-    options: { runAs?: string; input?: string | Uint8Array } = {},
+    options: {
+      runAs?: string;
+      input?: string | Uint8Array;
+      environment?: Record<string, string>;
+      redactProcessOutput?: boolean;
+    } = {},
     action: string,
   ): Promise<string> {
     const result = await this.runDockerFilesystemCommand(command, options);
     if (result.status !== 0) {
+      if (options.redactProcessOutput) {
+        throw new UserError(
+          `DockerSandboxClient failed to ${action} with exit status ${result.status}.`,
+        );
+      }
       throw new UserError(
         `DockerSandboxClient failed to ${action}: ${formatSandboxProcessError(result)}`,
       );
@@ -602,10 +804,17 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
 
   private async runDockerFilesystemCommand(
     command: string,
-    options: { runAs?: string; input?: string | Uint8Array } = {},
+    options: {
+      runAs?: string;
+      input?: string | Uint8Array;
+      environment?: Record<string, string>;
+    } = {},
   ): Promise<SandboxProcessResult> {
+    this.assertSessionUsable();
     const dockerArgs = ['exec', '-i', '-w', '/'];
-    for (const [key, value] of Object.entries(this.state.environment)) {
+    for (const [key, value] of Object.entries(
+      options.environment ?? this.state.environment,
+    )) {
       dockerArgs.push('-e', `${key}=${value}`);
     }
     const runAs = options.runAs ?? this.state.defaultUser;
@@ -643,15 +852,38 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       throw cleanupError;
     }
   }
+
+  private async invalidateAfterFailedPrivilegedManifestTransition(): Promise<void> {
+    markSandboxSessionStateUnsafe(this.state);
+    try {
+      await removeDockerContainer(this.state.containerId, {
+        ignoreMissing: true,
+      });
+      this.containerClosed = true;
+    } catch {
+      // The tombstone remains authoritative when force termination fails.
+    }
+  }
 }
 
 class DockerSandboxEditor implements Editor {
   constructor(
     private readonly session: DockerSandboxSession,
-    private readonly runAs: string,
+    private readonly runAs?: string,
+    private readonly hostEditor?: Editor,
   ) {}
 
   canAccessPathForEdit(path: string): boolean {
+    if (!this.shouldUseDockerFilesystem(path)) {
+      const canAccessPathForEdit = (
+        this.hostEditor as
+          | (Editor & {
+              canAccessPathForEdit?: (path: string) => boolean;
+            })
+          | undefined
+      )?.canAccessPathForEdit;
+      return canAccessPathForEdit?.call(this.hostEditor, path) ?? false;
+    }
     try {
       this.session.resolveContainerFilesystemPath(path, { forWrite: true });
       return true;
@@ -662,7 +894,11 @@ class DockerSandboxEditor implements Editor {
 
   async createFile(
     operation: Extract<ApplyPatchOperation, { type: 'create_file' }>,
+    context?: EditorInvocationContext,
   ): Promise<ApplyPatchResult> {
+    if (!this.shouldUseDockerFilesystem(operation.path)) {
+      return (await this.hostEditor!.createFile(operation, context)) ?? {};
+    }
     const path = this.session.resolveContainerFilesystemPath(operation.path, {
       forWrite: true,
     });
@@ -682,7 +918,11 @@ class DockerSandboxEditor implements Editor {
 
   async updateFile(
     operation: Extract<ApplyPatchOperation, { type: 'update_file' }>,
+    context?: EditorInvocationContext,
   ): Promise<ApplyPatchResult> {
+    if (!this.shouldUseDockerFilesystem(operation.path, operation.moveTo)) {
+      return (await this.hostEditor!.updateFile(operation, context)) ?? {};
+    }
     const path = this.session.resolveContainerFilesystemPath(operation.path, {
       forWrite: true,
     });
@@ -708,7 +948,11 @@ class DockerSandboxEditor implements Editor {
 
   async deleteFile(
     operation: Extract<ApplyPatchOperation, { type: 'delete_file' }>,
+    context?: EditorInvocationContext,
   ): Promise<ApplyPatchResult> {
+    if (!this.shouldUseDockerFilesystem(operation.path)) {
+      return (await this.hostEditor!.deleteFile(operation, context)) ?? {};
+    }
     await this.session.deleteDockerPathAs(
       this.session.resolveContainerFilesystemPath(operation.path, {
         forWrite: true,
@@ -716,6 +960,13 @@ class DockerSandboxEditor implements Editor {
       this.runAs,
     );
     return {};
+  }
+
+  private shouldUseDockerFilesystem(...paths: Array<string | undefined>) {
+    return (
+      !this.hostEditor ||
+      paths.some((path) => this.session.pathUsesSplitGrant(path))
+    );
   }
 }
 
@@ -726,6 +977,10 @@ export class DockerSandboxClient implements SandboxClient<
   readonly backendId = 'docker';
   readonly supportsDefaultOptions = true;
   private readonly options: DockerSandboxClientOptions;
+  private readonly failedCreateCleanupTokens = new Map<
+    string,
+    StartedDockerCleanupToken
+  >();
 
   constructor(options: DockerSandboxClientOptions = {}) {
     this.options = options;
@@ -738,7 +993,6 @@ export class DockerSandboxClient implements SandboxClient<
     const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
     const manifest = createArgs.manifest;
     assertDockerManifestSupported(manifest);
-    await ensureDockerAvailable();
     const resolvedOptions = {
       ...this.options,
       ...createArgs.options,
@@ -752,6 +1006,10 @@ export class DockerSandboxClient implements SandboxClient<
         ? { archiveLimits: createArgs.archiveLimits }
         : {}),
     };
+    const environment = await manifest.resolveEnvironment();
+    validateMountEnvironmentCredentialBoundaries(manifest, environment);
+    await ensureDockerAvailable();
+    await this.retryFailedCreateCleanups();
     const workspaceRootPath = await mkdtemp(
       join(
         resolvedOptions.workspaceBaseDir ?? tmpdir(),
@@ -775,22 +1033,26 @@ export class DockerSandboxClient implements SandboxClient<
     });
     await prepareDockerWorkspaceRoot(workspaceRootPath, manifest);
     const image = resolvedOptions.image ?? DEFAULT_DOCKER_IMAGE;
-    const environment = await manifest.resolveEnvironment();
     const defaultUser = getHostDockerUser();
     const configuredExposedPorts = normalizeExposedPorts(
       resolvedOptions.exposedPorts,
     );
+    const sessionIdentity = randomUUID();
     const container = await startDockerContainer({
       image,
       manifest,
       manifestRoot: manifest.root,
       workspaceRootPath,
+      sessionIdentity,
       environment,
       defaultUser,
       exposedPorts: configuredExposedPorts,
     });
     const session = new DockerSandboxSession({
       state: {
+        sessionIdentity,
+        materializedEntriesFingerprint:
+          dockerMaterializedEntriesFingerprint(manifest),
         manifest,
         workspaceRootPath,
         workspaceRootOwned: true,
@@ -808,13 +1070,24 @@ export class DockerSandboxClient implements SandboxClient<
     try {
       await provisionDockerAccounts(container.containerId, manifest);
       await applyDockerInContainerMounts(session, manifest);
+      captureLiveMountCredentialAuthority(manifest, environment);
     } catch (error) {
-      await cleanupStartedDockerContainer({
+      const cleanupToken = {
         containerId: container.containerId,
         volumeNames: container.volumeNames,
         workspaceRootPath,
         removeWorkspace: true,
-      });
+      } satisfies StartedDockerCleanupToken;
+      this.failedCreateCleanupTokens.set(container.containerId, cleanupToken);
+      try {
+        await cleanupStartedDockerContainer(cleanupToken);
+        this.failedCreateCleanupTokens.delete(container.containerId);
+      } catch (cleanupError) {
+        throw new SandboxLifecycleError(
+          'Docker sandbox creation failed and cleanup could not complete.',
+          { errors: [error, cleanupError] },
+        );
+      }
       throw error;
     }
 
@@ -825,8 +1098,15 @@ export class DockerSandboxClient implements SandboxClient<
     state: DockerSandboxSessionState,
     options: SandboxClientResumeOptions = {},
   ): Promise<DockerSandboxSession> {
+    assertMountCredentialsRebound(state);
+    assertHostPathGrantsRebound(state);
     assertDockerManifestSupported(state.manifest);
+    validateMountEnvironmentCredentialBoundaries(
+      state.manifest,
+      state.environment,
+    );
     await ensureDockerAvailable();
+    await this.retryFailedCreateCleanups();
     const archiveLimits =
       options.archiveLimits === undefined
         ? this.options.archiveLimits
@@ -839,9 +1119,73 @@ export class DockerSandboxClient implements SandboxClient<
     });
   }
 
+  async canReusePreservedOwnedSession(
+    state: DockerSandboxSessionState,
+    options: SandboxPreservedSessionReuseOptions<DockerSandboxClientOptions> = {},
+  ): Promise<boolean> {
+    if (isSandboxSessionStateUnsafe(state)) {
+      return false;
+    }
+    if (isRunStateSessionState(state)) {
+      return false;
+    }
+    if (
+      !liveMountEnvironmentAuthorityMatches(
+        state.manifest,
+        state.manifest,
+        state.environment,
+      )
+    ) {
+      return false;
+    }
+    const resolvedOptions = {
+      ...this.options,
+      ...options.clientOptions,
+    };
+    if (
+      state.image !== (resolvedOptions.image ?? DEFAULT_DOCKER_IMAGE) ||
+      !dockerExposedPortSetsEqual(
+        state.configuredExposedPorts ?? [],
+        normalizeExposedPorts(resolvedOptions.exposedPorts),
+      )
+    ) {
+      return false;
+    }
+    if (options.revalidateManifestEntries === true) {
+      if (state.materializedEntriesFingerprint === undefined) {
+        return false;
+      }
+      if (
+        state.materializedEntriesFingerprint !==
+        dockerMaterializedEntriesFingerprint(state.manifest)
+      ) {
+        throw new UserError(
+          'Docker sandbox resume cannot apply changes to non-mount manifest entries. Start a fresh sandbox session instead.',
+        );
+      }
+    }
+    let inspection: DockerContainerReuseInspection;
+    try {
+      if (!(await inspectContainerRunning(state.containerId))) {
+        return false;
+      }
+      inspection = await inspectRunningDockerContainerForReuse(state);
+    } catch {
+      return false;
+    }
+    return inspection.reusable;
+  }
+
   async serializeSessionState(
     state: DockerSandboxSessionState,
+    options: SandboxSessionSerializationOptions = {},
   ): Promise<Record<string, unknown>> {
+    assertSandboxSessionStateUsable(state);
+    validateMountEnvironmentCredentialBoundaries(
+      state.manifest,
+      state.environment,
+    );
+    const stateGeneration = captureSandboxStateGeneration(state);
     const snapshotSpec = state.snapshotSpec ?? this.options.snapshot ?? null;
     attachDockerSnapshotExcludedPaths(state);
     const snapshot = await persistLocalSnapshot(
@@ -850,12 +1194,27 @@ export class DockerSandboxClient implements SandboxClient<
       snapshotSpec,
     );
     state.snapshotSpec = snapshotSpec;
+    if (
+      options.preserveOwnedSession === true &&
+      options.reuseLiveSession === false &&
+      options.willCloseAfterSerialize === true &&
+      snapshot === null
+    ) {
+      throw new UserError(
+        'Docker sandbox session cannot be preserved after live reuse was rejected because no restorable snapshot is configured.',
+      );
+    }
 
-    return {
-      manifest: serializeManifest(state.manifest),
+    const sanitizedMountEnvironment =
+      sanitizeMountCredentialEnvironmentForPersistence(state);
+    const serialized = {
+      ...serializeHostPathGrantRedactionMetadata(state),
+      ...serializeMountCredentialRedactionMetadata(state),
+      manifest: serializeManifest(sanitizedMountEnvironment.manifest),
+      sessionIdentity: state.sessionIdentity,
       workspaceRootPath: state.workspaceRootPath,
       workspaceRootOwned: state.workspaceRootOwned,
-      environment: sanitizeEnvironmentForPersistence(state),
+      environment: sanitizeEnvironmentForPersistence(sanitizedMountEnvironment),
       snapshotSpec: serializeLocalSnapshotSpec(snapshotSpec),
       snapshot,
       snapshotFingerprint: state.snapshotFingerprint ?? null,
@@ -867,17 +1226,20 @@ export class DockerSandboxClient implements SandboxClient<
       dockerVolumeNames: state.dockerVolumeNames ?? [],
       exposedPorts: state.exposedPorts ?? null,
     };
+    assertSandboxStateGenerationUnchanged(state, stateGeneration);
+    return serialized;
   }
 
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<DockerSandboxSessionState> {
-    const baseState = deserializeLocalSandboxSessionStateValues(
+    const baseState = await deserializeLocalSandboxSessionStateValues(
       state,
       this.options.snapshot,
     );
     return {
       ...baseState,
+      sessionIdentity: readOptionalString(state, 'sessionIdentity'),
       image: readString(state, 'image'),
       containerId: readString(state, 'containerId'),
       defaultUser:
@@ -891,12 +1253,62 @@ export class DockerSandboxClient implements SandboxClient<
     archiveLimits?: SandboxArchiveLimits | null,
   ): Promise<DockerSandboxSessionState> {
     attachDockerSnapshotExcludedPaths(state);
+    if (isRunStateSessionState(state)) {
+      const trustedConfig = getRunStateSessionTrustedConfig(state);
+      const resolvedOptions: DockerSandboxClientOptions = {
+        ...this.options,
+        ...(trustedConfig?.clientOptions as
+          DockerSandboxClientOptions | undefined),
+      };
+      const trustedState: DockerSandboxSessionState = {
+        ...state,
+        sessionIdentity: undefined,
+        materializedEntriesFingerprint: undefined,
+        image: resolvedOptions.image ?? DEFAULT_DOCKER_IMAGE,
+        environment: await resolveDockerRunStateEnvironment(state),
+        snapshotSpec:
+          (trustedConfig?.snapshot as LocalSandboxSnapshotSpec | undefined) ??
+          resolvedOptions.snapshot ??
+          null,
+        defaultUser: getHostDockerUser(),
+        configuredExposedPorts: normalizeExposedPorts(
+          resolvedOptions.exposedPorts,
+        ),
+        dockerVolumeNames: [],
+        exposedPorts: undefined,
+      };
+      attachDockerSnapshotExcludedPaths(trustedState);
+      if (!(await localSnapshotIsRestorable(trustedState))) {
+        throw new UserError(
+          'Docker sandbox resources are unavailable and no local snapshot could be restored.',
+        );
+      }
+      return await this.restoreSnapshotIntoNewWorkspace(
+        trustedState,
+        archiveLimits,
+        resolvedOptions.workspaceBaseDir,
+      );
+    }
     const containerRunning = await inspectContainerRunning(state.containerId);
     const workspaceExists = await pathExists(state.workspaceRootPath);
 
     if (workspaceExists) {
       if (containerRunning) {
-        return state;
+        const inspection = await inspectRunningDockerContainerForReuse(state);
+        if (inspection.reusable) {
+          return state;
+        }
+        if (!inspection.ownershipVerified) {
+          throw new UserError(
+            'Docker sandbox container identity could not be verified. Refusing to resume or replace the running container.',
+          );
+        }
+        await this.cleanupDockerResources(state);
+        return await this.restartContainer(
+          state,
+          state.workspaceRootPath,
+          archiveLimits,
+        );
       }
       if (await canReuseLocalSnapshotWorkspace(state)) {
         await this.cleanupDockerResources(state);
@@ -921,6 +1333,17 @@ export class DockerSandboxClient implements SandboxClient<
       }
     }
 
+    if (
+      containerRunning &&
+      !dockerContainerIdentityMatches(
+        state.sessionIdentity,
+        await inspectDockerContainerLabels(state.containerId),
+      )
+    ) {
+      throw new UserError(
+        'Docker sandbox container identity could not be verified. Refusing to resume or replace the running container.',
+      );
+    }
     if (!(await localSnapshotIsRestorable(state))) {
       throw new UserError(
         'Docker sandbox resources are unavailable and no local snapshot could be restored.',
@@ -928,27 +1351,38 @@ export class DockerSandboxClient implements SandboxClient<
     }
     await this.cleanupDockerResources(state);
 
-    const workspaceRootPath = await mkdtemp(
-      join(
-        this.options.workspaceBaseDir ?? tmpdir(),
-        'openai-agents-docker-sandbox-',
-      ),
-    );
-    const restoredState = await restoreLocalSnapshotToWorkspace(
-      {
-        ...state,
-        workspaceRootPath,
-        workspaceRootOwned: true,
-      },
-      workspaceRootPath,
-      { archiveLimits },
-    );
+    return await this.restoreSnapshotIntoNewWorkspace(state, archiveLimits);
+  }
 
-    return await this.restartContainer(
-      restoredState,
-      workspaceRootPath,
-      archiveLimits,
+  private async restoreSnapshotIntoNewWorkspace(
+    state: DockerSandboxSessionState,
+    archiveLimits?: SandboxArchiveLimits | null,
+    workspaceBaseDir = this.options.workspaceBaseDir,
+  ): Promise<DockerSandboxSessionState> {
+    const workspaceRootPath = await mkdtemp(
+      join(workspaceBaseDir ?? tmpdir(), 'openai-agents-docker-sandbox-'),
     );
+    try {
+      const restoredState = await restoreLocalSnapshotToWorkspace(
+        {
+          ...state,
+          workspaceRootPath,
+          workspaceRootOwned: true,
+        },
+        workspaceRootPath,
+        { archiveLimits },
+      );
+      return await this.restartContainer(
+        restoredState,
+        workspaceRootPath,
+        archiveLimits,
+      );
+    } catch (error) {
+      await rm(workspaceRootPath, { recursive: true, force: true }).catch(
+        () => undefined,
+      );
+      throw error;
+    }
   }
 
   private async cleanupDockerResources(
@@ -981,17 +1415,23 @@ export class DockerSandboxClient implements SandboxClient<
       },
     );
     await prepareDockerWorkspaceRoot(workspaceRootPath, state.manifest);
+    const sessionIdentity = state.sessionIdentity ?? randomUUID();
     const container = await startDockerContainer({
       image: state.image,
       manifest: state.manifest,
       manifestRoot: state.manifest.root,
       workspaceRootPath,
+      sessionIdentity,
       environment: state.environment,
       defaultUser: state.defaultUser,
       exposedPorts: state.configuredExposedPorts,
     });
     const nextState = {
       ...state,
+      sessionIdentity,
+      materializedEntriesFingerprint: dockerMaterializedEntriesFingerprint(
+        state.manifest,
+      ),
       workspaceRootPath,
       containerId: container.containerId,
       dockerVolumeNames: container.volumeNames,
@@ -1001,41 +1441,88 @@ export class DockerSandboxClient implements SandboxClient<
       state: nextState,
       archiveLimits,
     });
+    const cleanupToken = {
+      containerId: container.containerId,
+      volumeNames: container.volumeNames,
+      workspaceRootPath,
+      removeWorkspace: false,
+    } satisfies StartedDockerCleanupToken;
+    this.failedCreateCleanupTokens.set(container.containerId, cleanupToken);
     try {
       await provisionDockerAccounts(container.containerId, state.manifest);
       await applyDockerInContainerMounts(session, state.manifest);
     } catch (error) {
-      await cleanupStartedDockerContainer({
-        containerId: container.containerId,
-        volumeNames: container.volumeNames,
-        workspaceRootPath,
-        removeWorkspace: false,
-      });
+      try {
+        await cleanupStartedDockerContainer(cleanupToken);
+        this.failedCreateCleanupTokens.delete(container.containerId);
+      } catch (cleanupError) {
+        throw new SandboxLifecycleError(
+          'Docker sandbox restart failed and cleanup could not complete.',
+          { errors: [error, cleanupError] },
+        );
+      }
       throw error;
     }
+    this.failedCreateCleanupTokens.delete(container.containerId);
     return nextState;
+  }
+
+  private async retryFailedCreateCleanups(): Promise<void> {
+    for (const [containerId, cleanupToken] of this.failedCreateCleanupTokens) {
+      await cleanupStartedDockerContainer(cleanupToken);
+      this.failedCreateCleanupTokens.delete(containerId);
+    }
   }
 }
 
-async function cleanupStartedDockerContainer(args: {
+type StartedDockerCleanupToken = {
   containerId: string;
   volumeNames: string[];
   workspaceRootPath: string;
   removeWorkspace: boolean;
-}): Promise<void> {
-  await removeDockerContainer(args.containerId, { ignoreMissing: true }).catch(
-    () => undefined,
-  );
+};
+
+async function cleanupStartedDockerContainer(
+  args: StartedDockerCleanupToken,
+): Promise<void> {
+  let containerRemovalError: unknown;
+  try {
+    await removeDockerContainer(args.containerId, { ignoreMissing: true });
+  } catch (error) {
+    containerRemovalError = error;
+  }
   await removeDockerVolumes(args.volumeNames);
   if (args.removeWorkspace) {
     await rm(args.workspaceRootPath, { recursive: true, force: true }).catch(
       () => undefined,
     );
   }
+  if (containerRemovalError) {
+    throw containerRemovalError;
+  }
+}
+
+async function resolveDockerRunStateEnvironment(
+  state: DockerSandboxSessionState,
+): Promise<Record<string, string>> {
+  return Object.fromEntries(
+    await Promise.all(
+      Object.entries(state.manifest.environment).map(async ([key, value]) => [
+        key,
+        isEnvValueReference(value) && typeof state.environment[key] === 'string'
+          ? state.environment[key]
+          : await value.resolve(),
+      ]),
+    ),
+  );
 }
 
 function assertDockerManifestSupported(manifest: Manifest): void {
+  validateMountCredentialBoundaries(manifest);
   assertDockerManifestRootSupported(manifest);
+  for (const grant of manifest.extraPathGrants) {
+    sandboxPathGrantHostPath(grant);
+  }
   assertLocalWorkspaceManifestMetadataSupported(
     'DockerSandboxClient',
     manifest,
@@ -1047,10 +1534,512 @@ function assertDockerManifestSupported(manifest: Manifest): void {
   );
 }
 
-function assertDockerManifestDeltaSupported(manifest: Manifest): void {
+type DockerContainerReuseInspection = {
+  ownershipVerified: boolean;
+  reusable: boolean;
+};
+
+async function inspectRunningDockerContainerForReuse(
+  state: DockerSandboxSessionState,
+): Promise<DockerContainerReuseInspection> {
+  const labels = await inspectDockerContainerLabels(state.containerId);
+  const sessionIdentity = state.sessionIdentity;
+  if (!labels) {
+    return { ownershipVerified: false, reusable: false };
+  }
+  if (!sessionIdentity) {
+    return await inspectLegacyDockerContainerForReuse(state, labels);
+  }
+  if (!dockerContainerIdentityMatches(sessionIdentity, labels)) {
+    return { ownershipVerified: false, reusable: false };
+  }
+  const workspaceMountBeforeInspect = await resolveDockerWorkspaceMount(
+    state.workspaceRootPath,
+    state.manifest.root,
+  );
+  const pathGrantMountsBeforeInspect = await resolveDockerPathGrantMounts(
+    state.manifest,
+  );
+  const manifestBindMountsBeforeInspect = await resolveDockerManifestBindMounts(
+    state.manifest,
+  );
+  const actualBindMounts = await inspectDockerBindMounts(state.containerId);
+
+  const workspaceMountAfterInspect = await resolveDockerWorkspaceMount(
+    state.workspaceRootPath,
+    state.manifest.root,
+  );
+  const pathGrantMountsAfterInspect = await resolveDockerPathGrantMounts(
+    state.manifest,
+  );
+  const manifestBindMountsAfterInspect = await resolveDockerManifestBindMounts(
+    state.manifest,
+  );
+  if (!actualBindMounts) {
+    return { ownershipVerified: false, reusable: false };
+  }
+
+  const expectedWorkspaceMount = dockerBindMountsFromAuthority([
+    workspaceMountAfterInspect,
+  ])[0]!;
+  const ownershipVerified = actualBindMounts.some((mount) =>
+    dockerBindMountsEqual(mount, expectedWorkspaceMount),
+  );
+  if (!ownershipVerified) {
+    return { ownershipVerified: false, reusable: false };
+  }
+
+  const expectedBindMounts = dockerBindMountsFromAuthority([
+    workspaceMountAfterInspect,
+    ...pathGrantMountsAfterInspect,
+    ...manifestBindMountsAfterInspect,
+  ]);
+  const recordedFingerprint = labels[DOCKER_MOUNT_AUTHORITY_FINGERPRINT_LABEL];
+  if (recordedFingerprint === undefined) {
+    return { ownershipVerified: true, reusable: false };
+  }
+  const fingerprintBeforeInspect = dockerMountAuthorityFingerprint(
+    sessionIdentity,
+    workspaceMountBeforeInspect,
+    pathGrantMountsBeforeInspect,
+    manifestBindMountsBeforeInspect,
+    state.manifest,
+  );
+  const fingerprintAfterInspect = dockerMountAuthorityFingerprint(
+    sessionIdentity,
+    workspaceMountAfterInspect,
+    pathGrantMountsAfterInspect,
+    manifestBindMountsAfterInspect,
+    state.manifest,
+  );
+  return {
+    ownershipVerified: true,
+    reusable:
+      fingerprintBeforeInspect === fingerprintAfterInspect &&
+      recordedFingerprint === fingerprintAfterInspect &&
+      dockerBindMountSetsEqual(actualBindMounts, expectedBindMounts),
+  };
+}
+
+async function inspectLegacyDockerContainerForReuse(
+  state: DockerSandboxSessionState,
+  labels: Record<string, unknown>,
+): Promise<DockerContainerReuseInspection> {
+  if (
+    labels[DOCKER_OWNERSHIP_LABEL] !== 'true' ||
+    labels[DOCKER_SESSION_IDENTITY_LABEL] !== undefined ||
+    labels[DOCKER_MOUNT_AUTHORITY_FINGERPRINT_LABEL] !== undefined
+  ) {
+    return { ownershipVerified: false, reusable: false };
+  }
+
+  const workspaceMountBeforeInspect = await resolveDockerWorkspaceMount(
+    state.workspaceRootPath,
+    state.manifest.root,
+  );
+  const manifestBindMountsBeforeInspect = await resolveDockerManifestBindMounts(
+    state.manifest,
+  );
+  const actualBindMounts = await inspectDockerBindMounts(state.containerId);
+  const workspaceMountAfterInspect = await resolveDockerWorkspaceMount(
+    state.workspaceRootPath,
+    state.manifest.root,
+  );
+  const manifestBindMountsAfterInspect = await resolveDockerManifestBindMounts(
+    state.manifest,
+  );
+  if (!actualBindMounts) {
+    return { ownershipVerified: false, reusable: false };
+  }
+
+  const expectedWorkspaceMount = dockerBindMountsFromAuthority([
+    workspaceMountAfterInspect,
+  ])[0]!;
+  const ownershipVerified = actualBindMounts.some((mount) =>
+    dockerBindMountsEqual(mount, expectedWorkspaceMount),
+  );
+  return {
+    ownershipVerified,
+    reusable:
+      ownershipVerified &&
+      dockerMountAuthoritiesEqual(
+        workspaceMountBeforeInspect,
+        workspaceMountAfterInspect,
+      ) &&
+      dockerMountAuthoritySetsEqual(
+        manifestBindMountsBeforeInspect,
+        manifestBindMountsAfterInspect,
+      ) &&
+      state.manifest.extraPathGrants.length === 0 &&
+      dockerBindMountSetsEqual(actualBindMounts, [
+        expectedWorkspaceMount,
+        ...dockerBindMountsFromAuthority(manifestBindMountsAfterInspect),
+      ]),
+  };
+}
+
+function dockerContainerIdentityMatches(
+  sessionIdentity: string | undefined,
+  labels: Record<string, unknown> | undefined,
+): boolean {
+  return (
+    sessionIdentity !== undefined &&
+    labels?.[DOCKER_OWNERSHIP_LABEL] === 'true' &&
+    labels[DOCKER_SESSION_IDENTITY_LABEL] === sessionIdentity
+  );
+}
+
+function dockerMountAuthoritiesEqual(
+  left: DockerMountAuthority,
+  right: DockerMountAuthority,
+): boolean {
+  return (
+    left.source === right.source &&
+    left.sourceIdentity.device === right.sourceIdentity.device &&
+    left.sourceIdentity.inode === right.sourceIdentity.inode &&
+    left.target === right.target &&
+    left.readOnly === right.readOnly
+  );
+}
+
+function dockerMountAuthoritySetsEqual(
+  left: DockerMountAuthority[],
+  right: DockerMountAuthority[],
+): boolean {
+  const sortedLeft = sortDockerMountAuthorities(left);
+  const sortedRight = sortDockerMountAuthorities(right);
+  return (
+    sortedLeft.length === sortedRight.length &&
+    sortedLeft.every((mount, index) =>
+      dockerMountAuthoritiesEqual(mount, sortedRight[index]!),
+    )
+  );
+}
+
+function sortDockerMountAuthorities(
+  mounts: DockerMountAuthority[],
+): DockerMountAuthority[] {
+  return [...mounts].sort((left, right) => {
+    const targetOrder = left.target.localeCompare(right.target);
+    return targetOrder !== 0
+      ? targetOrder
+      : left.source.localeCompare(right.source);
+  });
+}
+
+type DockerInspectMount = {
+  Type?: unknown;
+  Source?: unknown;
+  Destination?: unknown;
+  RW?: unknown;
+};
+
+type DockerBindMount = {
+  source: string;
+  target: string;
+  readWrite: boolean;
+};
+
+type DockerMountAuthority = {
+  source: string;
+  sourceIdentity: {
+    device: string;
+    inode: string;
+  };
+  target: string;
+  readOnly: boolean;
+};
+
+async function inspectDockerContainerLabels(
+  containerId: string,
+): Promise<Record<string, unknown> | undefined> {
+  const result = await runSandboxProcess(
+    'docker',
+    [
+      'inspect',
+      '--type',
+      'container',
+      '--format',
+      '{{json .Config.Labels}}',
+      containerId,
+    ],
+    {
+      timeoutMs: DOCKER_FAST_COMMAND_TIMEOUT_MS,
+    },
+  );
+  if (result.status !== 0) {
+    return undefined;
+  }
+
+  try {
+    const labels: unknown = JSON.parse(result.stdout);
+    return typeof labels === 'object' &&
+      labels !== null &&
+      !Array.isArray(labels)
+      ? (labels as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function inspectDockerBindMounts(
+  containerId: string,
+): Promise<DockerBindMount[] | undefined> {
+  const result = await runSandboxProcess(
+    'docker',
+    [
+      'inspect',
+      '--type',
+      'container',
+      '--format',
+      '{{json .Mounts}}',
+      containerId,
+    ],
+    {
+      timeoutMs: DOCKER_FAST_COMMAND_TIMEOUT_MS,
+    },
+  );
+  if (result.status !== 0) {
+    return undefined;
+  }
+  try {
+    const mounts: unknown = JSON.parse(result.stdout);
+    if (!Array.isArray(mounts)) {
+      return undefined;
+    }
+    return await Promise.all(
+      mounts
+        .filter(
+          (mount): mount is DockerInspectMount =>
+            typeof mount === 'object' &&
+            mount !== null &&
+            (mount as DockerInspectMount).Type === 'bind',
+        )
+        .map(async (mount): Promise<DockerBindMount> => {
+          if (
+            typeof mount.Source !== 'string' ||
+            typeof mount.Destination !== 'string' ||
+            typeof mount.RW !== 'boolean'
+          ) {
+            throw new Error('Invalid Docker bind mount inspection result.');
+          }
+          return {
+            source: await realpath(mount.Source),
+            target: mount.Destination,
+            readWrite: mount.RW,
+          };
+        }),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+function dockerBindMountsEqual(
+  left: DockerBindMount,
+  right: DockerBindMount,
+): boolean {
+  return (
+    left.source === right.source &&
+    left.target === right.target &&
+    left.readWrite === right.readWrite
+  );
+}
+
+function dockerBindMountsFromAuthority(
+  mounts: DockerMountAuthority[],
+): DockerBindMount[] {
+  return mounts.map((mount) => ({
+    source: mount.source,
+    target: mount.target,
+    readWrite: !mount.readOnly,
+  }));
+}
+
+function dockerBindMountSetsEqual(
+  left: DockerBindMount[],
+  right: DockerBindMount[],
+): boolean {
+  return (
+    JSON.stringify(sortDockerBindMounts(left)) ===
+    JSON.stringify(sortDockerBindMounts(right))
+  );
+}
+
+function sortDockerBindMounts(mounts: DockerBindMount[]): DockerBindMount[] {
+  return [...mounts].sort((left, right) => {
+    const targetOrder = left.target.localeCompare(right.target);
+    return targetOrder !== 0
+      ? targetOrder
+      : left.source.localeCompare(right.source);
+  });
+}
+
+type DockerPathGrantMount = DockerMountAuthority;
+
+async function resolveDockerWorkspaceMount(
+  workspaceRootPath: string,
+  manifestRoot: string,
+): Promise<DockerMountAuthority> {
+  return await resolveDockerMountAuthority(
+    workspaceRootPath,
+    manifestRoot,
+    false,
+  );
+}
+
+async function resolveDockerMountAuthority(
+  sourcePath: string,
+  target: string,
+  readOnly: boolean,
+): Promise<DockerMountAuthority> {
+  const source = await realpath(sourcePath);
+  const sourceStats = await stat(source, { bigint: true });
+  return {
+    source,
+    sourceIdentity: {
+      device: sourceStats.dev.toString(),
+      inode: sourceStats.ino.toString(),
+    },
+    target,
+    readOnly,
+  };
+}
+
+async function resolveDockerPathGrantMounts(
+  manifest: Manifest,
+): Promise<DockerPathGrantMount[]> {
+  return await Promise.all(
+    manifest.extraPathGrants.map(
+      async (grant) =>
+        await resolveDockerMountAuthority(
+          sandboxPathGrantHostPath(grant),
+          grant.path,
+          grant.readOnly,
+        ),
+    ),
+  );
+}
+
+async function resolveDockerManifestBindMounts(
+  manifest: Manifest,
+): Promise<DockerMountAuthority[]> {
+  return await Promise.all(
+    manifest
+      .mountTargetsForMaterialization()
+      .filter(({ entry }) => isDockerBindMount(entry))
+      .map(
+        async ({ mountPath, entry }) =>
+          await resolveDockerMountAuthority(
+            (entry as Mount & { source: string }).source,
+            mountPath,
+            entry.readOnly ?? true,
+          ),
+      ),
+  );
+}
+
+function dockerMountAuthorityFingerprint(
+  sessionIdentity: string,
+  workspaceMount: DockerMountAuthority,
+  pathGrantMounts: DockerPathGrantMount[],
+  manifestBindMounts: DockerMountAuthority[],
+  manifest: Manifest,
+): string {
+  const mountedGrants = [...pathGrantMounts].sort((left, right) =>
+    left.target < right.target ? -1 : left.target > right.target ? 1 : 0,
+  );
+  const mountedManifestBinds = [...manifestBindMounts].sort((left, right) =>
+    left.target < right.target ? -1 : left.target > right.target ? 1 : 0,
+  );
+  return createHash('sha256')
+    .update(
+      stableJsonStringify({
+        sessionIdentity,
+        workspaceMount,
+        mountedGrants,
+        mountedManifestBinds,
+        users: manifest.users,
+        groups: manifest.groups,
+        mountedManifestEntries: manifest
+          .mountTargetsForMaterialization()
+          .map(({ mountPath, entry }) => ({ mountPath, entry }))
+          .sort((left, right) => left.mountPath.localeCompare(right.mountPath)),
+      }),
+    )
+    .digest('hex');
+}
+
+function dockerMaterializedEntriesFingerprint(manifest: Manifest): string {
+  return createHash('sha256')
+    .update(
+      stableJsonStringify({
+        entries: dockerNonMountManifestEntries(manifest),
+      }),
+    )
+    .digest('hex');
+}
+
+function dockerNonMountManifestEntries(
+  manifest: Manifest,
+): Array<{ path: string; entry: Entry }> {
+  const flattened: Array<{ path: string; entry: Entry }> = [];
+  const visit = (children: Record<string, Entry>, parentPath = '') => {
+    for (const [name, entry] of Object.entries(children).sort(
+      ([left], [right]) => left.localeCompare(right),
+    )) {
+      const path = parentPath ? `${parentPath}/${name}` : name;
+      if (isMount(entry)) {
+        continue;
+      }
+      if (entry.type === 'dir') {
+        const { children: nestedChildren, ...directory } = entry;
+        flattened.push({ path, entry: directory as Entry });
+        if (nestedChildren) {
+          visit(nestedChildren, path);
+        }
+        continue;
+      }
+      flattened.push({ path, entry });
+    }
+  };
+  visit(manifest.entries);
+  return flattened;
+}
+
+function dockerExposedPortSetsEqual(left: number[], right: number[]): boolean {
+  return (
+    JSON.stringify([...left].sort((a, b) => a - b)) ===
+    JSON.stringify([...right].sort((a, b) => a - b))
+  );
+}
+
+function assertDockerManifestDeltaSupported(
+  currentManifest: Manifest,
+  deltaManifest: Manifest,
+): void {
+  const currentGrantsByPath = new Map(
+    currentManifest.extraPathGrants.map((grant) => [grant.path, grant]),
+  );
+  const splitGrant = deltaManifest.extraPathGrants.find(
+    (grant) =>
+      grant.hostPath !== undefined ||
+      currentGrantsByPath.get(grant.path)?.hostPath !== undefined,
+  );
+  if (splitGrant) {
+    throw new SandboxUnsupportedFeatureError(
+      `DockerSandboxClient cannot add or change path grant hostPath for "${splitGrant.path}" on an already-running container. Configure it in the manifest passed to create().`,
+      {
+        provider: 'DockerSandboxClient',
+        feature: 'manifest.extraPathGrants.hostPath',
+        path: splitGrant.path,
+      },
+    );
+  }
   assertLocalWorkspaceManifestMetadataSupported(
     'DockerSandboxClient',
-    manifest,
+    deltaManifest,
     {
       allowLocalBindMounts: false,
       allowIdentityMetadata: true,
@@ -1133,7 +2122,7 @@ function dockerAccountProvisionCommands(manifest: Manifest): string[] {
 }
 
 function stripDockerIdentityMetadata(manifest: Manifest): Manifest {
-  return new Manifest({
+  const stripped = new Manifest({
     version: manifest.version,
     root: manifest.root,
     entries: manifest.entries,
@@ -1146,6 +2135,8 @@ function stripDockerIdentityMetadata(manifest: Manifest): Manifest {
     extraPathGrants: manifest.extraPathGrants,
     remoteMountCommandAllowlist: manifest.remoteMountCommandAllowlist,
   });
+  copyManifestMountCredentialExposurePolicy(stripped, manifest);
+  return stripped;
 }
 
 function mergeDockerIdentityMetadata(
@@ -1189,7 +2180,24 @@ async function inspectContainerRunning(containerId: string): Promise<boolean> {
     },
   );
 
-  return result.status === 0 && result.stdout.trim() === 'true';
+  if (result.status !== 0) {
+    if (isMissingDockerContainerError(result)) {
+      return false;
+    }
+    throw new UserError(
+      `Failed to inspect Docker sandbox container: ${formatSandboxProcessError(result)}`,
+    );
+  }
+  const running = result.stdout.trim();
+  if (running === 'true') {
+    return true;
+  }
+  if (running === 'false') {
+    return false;
+  }
+  throw new UserError(
+    `Failed to inspect Docker sandbox container: unexpected running state "${running}".`,
+  );
 }
 
 async function runDockerProcess(
@@ -1260,6 +2268,7 @@ async function startDockerContainer(args: {
   manifest: Manifest;
   manifestRoot: string;
   workspaceRootPath: string;
+  sessionIdentity: string;
   environment: Record<string, string>;
   defaultUser?: string;
   exposedPorts?: number[];
@@ -1274,9 +2283,18 @@ async function startDockerContainer(args: {
     `127.0.0.1::${port}`,
   ]);
   const containerName = `openai-agents-sandbox-${randomUUID().slice(0, 8)}`;
+  const workspaceMount = await resolveDockerWorkspaceMount(
+    args.workspaceRootPath,
+    args.manifestRoot,
+  );
+  const pathGrantMounts = await resolveDockerPathGrantMounts(args.manifest);
+  const manifestBindMounts = await resolveDockerManifestBindMounts(
+    args.manifest,
+  );
   const { mountArgs, volumeNames } = dockerMountArgsForManifest(
     args.manifest,
     containerName,
+    manifestBindMounts,
   );
   const privilegeArgs = dockerInContainerMountPrivilegeArgs(args.manifest);
   const result = await runSandboxProcess(
@@ -1287,10 +2305,14 @@ async function startDockerContainer(args: {
       '--name',
       containerName,
       '--label',
-      'openai-agents-sandbox=true',
+      `${DOCKER_OWNERSHIP_LABEL}=true`,
+      '--label',
+      `${DOCKER_SESSION_IDENTITY_LABEL}=${args.sessionIdentity}`,
+      '--label',
+      `${DOCKER_MOUNT_AUTHORITY_FINGERPRINT_LABEL}=${dockerMountAuthorityFingerprint(args.sessionIdentity, workspaceMount, pathGrantMounts, manifestBindMounts, args.manifest)}`,
       '-v',
-      `${args.workspaceRootPath}:${args.manifestRoot}`,
-      ...dockerExtraPathGrantMountArgs(args.manifest),
+      `${workspaceMount.source}:${args.manifestRoot}`,
+      ...dockerExtraPathGrantMountArgs(pathGrantMounts),
       ...mountArgs,
       ...privilegeArgs,
       '-w',
@@ -1438,6 +2460,25 @@ function dockerInContainerMountContainingPath(
   return dockerMountContainingPath(manifest, path, isDockerInContainerMount);
 }
 
+function dockerSplitPathGrantContainingPath(
+  manifest: Manifest,
+  path?: string,
+): string | undefined {
+  const { grant } = new WorkspacePathPolicy({
+    root: manifest.root,
+    extraPathGrants: manifest.extraPathGrants,
+  }).resolve(path);
+  return grant && sandboxPathGrantUsesDistinctHostPath(grant)
+    ? grant.path
+    : undefined;
+}
+
+function sandboxPathGrantUsesDistinctHostPath(
+  grant: Manifest['extraPathGrants'][number],
+): boolean {
+  return grant.hostPath !== undefined && grant.hostPath !== grant.path;
+}
+
 function dockerMountContainingPath(
   manifest: Manifest,
   path: string | undefined,
@@ -1469,71 +2510,347 @@ function pathWithinDockerMount(path: string, mountPath: string): boolean {
 async function applyDockerInContainerMounts(
   session: DockerSandboxSession,
   manifest: Manifest,
+  preparedMounts?: PreparedDockerInContainerMount[],
 ): Promise<void> {
-  const appliedMountPaths: string[] = [];
-  for (const {
-    logicalPath,
-    entry,
-  } of manifest.mountTargetsForMaterialization()) {
-    if (!isDockerInContainerMount(entry)) {
-      continue;
-    }
+  const mounts =
+    preparedMounts ?? (await prepareDockerInContainerMounts(session, manifest));
+  const appliedMounts: DockerAppliedMountCleanupTarget[] = [];
+  for (const preparedMount of mounts) {
     try {
-      appliedMountPaths.push(
-        await applyDockerInContainerMount(session, logicalPath, entry),
+      const mountPath = await applyPreparedDockerInContainerMount(
+        session,
+        preparedMount,
+      );
+      appliedMounts.push(
+        dockerAppliedMountCleanupTarget(preparedMount, mountPath),
       );
     } catch (error) {
-      await cleanupDockerAppliedMounts(session, appliedMountPaths);
-      throw error;
+      await throwAfterDockerAppliedMountCleanup(session, appliedMounts, error);
     }
   }
 }
 
-async function applyDockerInContainerMount(
+async function prepareDockerInContainerMounts(
+  session: DockerSandboxSession,
+  manifest: Manifest,
+  credentialBoundaryManifest: Manifest = manifest,
+  environment: Record<string, string> = session.state.environment,
+): Promise<PreparedDockerInContainerMount[]> {
+  const preparedMounts: PreparedDockerInContainerMount[] = [];
+  for (const {
+    logicalPath,
+    entry,
+  } of manifest.mountTargetsForMaterialization()) {
+    if (isDockerInContainerMount(entry)) {
+      preparedMounts.push(
+        await prepareDockerInContainerMount(
+          session,
+          logicalPath,
+          entry,
+          manifest,
+          credentialBoundaryManifest,
+          environment,
+        ),
+      );
+    }
+  }
+  return preparedMounts;
+}
+
+type PreparedDockerInContainerMount = {
+  logicalPath: string;
+  entry: Mount | TypedMount;
+  effectiveMountPath: string;
+  pattern: MountPattern;
+  allowAmbientCredentials: boolean;
+  environment: Record<string, string>;
+  revalidateMountAuthority: () => Promise<void>;
+};
+
+async function prepareDockerInContainerMount(
   session: DockerSandboxSession,
   logicalPath: string,
   entry: Mount | TypedMount,
-): Promise<string> {
+  manifest: Manifest,
+  credentialBoundaryManifest: Manifest = manifest,
+  environment: Record<string, string> = session.state.environment,
+): Promise<PreparedDockerInContainerMount> {
   const mountPath = resolveDockerMountPath(
     session.state.manifest.root,
     logicalPath,
     entry,
   );
-  const pattern = dockerInContainerMountPattern(entry);
+  const prepareCandidate = async () => {
+    const effectiveMountPath = await resolveDockerEffectiveMountPath(
+      session,
+      logicalPath,
+      entry,
+      mountPath,
+    );
+    const allowAmbientCredentials =
+      validateMountCredentialBoundariesAtEffectivePath(
+        manifest,
+        logicalPath,
+        entry,
+        effectiveMountPath,
+      );
+    const preparedCredentialFiles = await prepareDockerMountCredentialFiles(
+      session,
+      credentialBoundaryManifest,
+      entry,
+      mountPath,
+      environment,
+    );
+    return {
+      entry: preparedCredentialFiles.entry,
+      effectiveMountPath,
+      pattern: dockerInContainerMountPattern(preparedCredentialFiles.entry),
+      allowAmbientCredentials,
+      environment: preparedCredentialFiles.environment,
+    };
+  };
+  const candidate = await prepareCandidate();
+  return {
+    logicalPath,
+    ...candidate,
+    revalidateMountAuthority: async () => {
+      if (!candidate.allowAmbientCredentials) {
+        return;
+      }
+      const current = await prepareCandidate();
+      if (
+        current.effectiveMountPath !== candidate.effectiveMountPath ||
+        current.allowAmbientCredentials !== candidate.allowAmbientCredentials ||
+        stableJsonStringify(current.entry) !==
+          stableJsonStringify(candidate.entry) ||
+        stableJsonStringify(current.environment) !==
+          stableJsonStringify(candidate.environment) ||
+        stableJsonStringify(current.pattern) !==
+          stableJsonStringify(candidate.pattern)
+      ) {
+        throw new SandboxMountError(
+          'Docker sandbox mount authority changed after validation. Retry from current trusted configuration.',
+          { mountType: entry.type },
+          'mount_config_invalid',
+        );
+      }
+    },
+  };
+}
+
+async function prepareDockerMountCredentialFiles(
+  session: DockerSandboxSession,
+  manifest: Manifest,
+  entry: Mount | TypedMount,
+  mountPath: string,
+  environment: Record<string, string>,
+): Promise<{
+  entry: Mount | TypedMount;
+  environment: Record<string, string>;
+}> {
+  const references = mountCredentialFileReferences(
+    manifest,
+    entry,
+    environment,
+  );
+  if (references.length === 0) {
+    return { entry: structuredClone(entry), environment };
+  }
+  const resolveEffectivePath = async (path: string): Promise<string> => {
+    const candidate = path.startsWith('/')
+      ? normalizePosixPath(path)
+      : joinSandboxLogicalPath(manifest.root, path);
+    const resolvedPath = (
+      await resolveTrustedDockerPath(
+        session,
+        candidate,
+        'resolve Docker mount credential path',
+      )
+    ).trim();
+    if (!resolvedPath.startsWith('/') || resolvedPath.includes('\n')) {
+      throw new SandboxMountError(
+        'DockerSandboxClient failed to resolve an absolute mount credential path.',
+        { mountType: entry.type },
+        'mount_config_invalid',
+      );
+    }
+    return normalizePosixPath(resolvedPath);
+  };
+  const manifestEntries = await Promise.all(
+    [...manifest.iterEntries()]
+      .filter(({ entry }) => !isMount(entry))
+      .map(async ({ absolutePath, entry }) => ({
+        path: await resolveEffectivePath(absolutePath),
+        recursive: entry.type === 'local_dir' || entry.type === 'git_repo',
+      })),
+  );
+  const resolvedReferences = await Promise.all(
+    references.map(async ({ field, path }) => {
+      if (field === 'mountStrategy.pattern.configFilePath') {
+        try {
+          resolveDockerRcloneConfigPath(manifest, path);
+        } catch {
+          throw new SandboxMountError(
+            'DockerSandboxClient failed to resolve the rclone config file.',
+            { mountType: entry.type },
+            'mount_config_invalid',
+          );
+        }
+      }
+      return { field, path: await resolveEffectivePath(path) };
+    }),
+  );
+  validateMountCredentialFileEffectivePaths({
+    entry,
+    mountPath,
+    credentialFiles: resolvedReferences,
+    manifestEntries,
+  });
+  const preparedEntry = structuredClone(entry) as Record<string, unknown>;
+  const preparedEnvironment = { ...environment };
+  for (const reference of resolvedReferences) {
+    if (reference.field.startsWith('environment.')) {
+      preparedEnvironment[reference.field.slice('environment.'.length)] =
+        reference.path;
+      continue;
+    }
+    if (reference.field === 'mountStrategy.pattern.configFilePath') {
+      try {
+        resolveDockerRcloneConfigPath(manifest, reference.path);
+      } catch {
+        throw new SandboxMountError(
+          'DockerSandboxClient failed to resolve the rclone config file.',
+          { mountType: entry.type },
+          'mount_config_invalid',
+        );
+      }
+    }
+    writeDockerNestedField(preparedEntry, reference.field, reference.path);
+  }
+  return {
+    entry: preparedEntry as Mount | TypedMount,
+    environment: preparedEnvironment,
+  };
+}
+
+async function resolveTrustedDockerPath(
+  session: DockerSandboxSession,
+  path: string,
+  action: string,
+): Promise<string> {
+  const dockerArgs = ['exec', '-i', '-w', '/'];
+  const clearedEnvironment = new Set([
+    ...Object.keys(session.state.environment),
+    'LD_PRELOAD',
+    'LD_LIBRARY_PATH',
+    'LD_AUDIT',
+  ]);
+  for (const key of clearedEnvironment) {
+    dockerArgs.push('-e', `${key}=`);
+  }
+  dockerArgs.push(
+    '-e',
+    'PATH=/usr/bin:/bin',
+    '-e',
+    'HOME=/root',
+    '-u',
+    'root',
+    session.state.containerId,
+    '/usr/bin/realpath',
+    '-m',
+    '--',
+    path,
+  );
+  let result: SandboxProcessResult;
+  try {
+    result = await runDockerProcess(dockerArgs);
+  } catch {
+    throw new UserError(`DockerSandboxClient failed to ${action}.`);
+  }
+  if (result.status !== 0) {
+    throw new UserError(
+      `DockerSandboxClient failed to ${action} with exit status ${result.status}.`,
+    );
+  }
+  return result.stdout;
+}
+
+function writeDockerNestedField(
+  record: Record<string, unknown>,
+  field: string,
+  value: unknown,
+): void {
+  const segments = field.split('.');
+  let current = record;
+  for (const segment of segments.slice(0, -1)) {
+    if (
+      typeof current[segment] !== 'object' ||
+      current[segment] === null ||
+      Array.isArray(current[segment])
+    ) {
+      current[segment] = {};
+    }
+    current = current[segment] as Record<string, unknown>;
+  }
+  current[segments.at(-1)!] = value;
+}
+
+async function applyPreparedDockerInContainerMount(
+  session: DockerSandboxSession,
+  prepared: PreparedDockerInContainerMount,
+): Promise<string> {
+  const {
+    entry,
+    effectiveMountPath,
+    pattern,
+    allowAmbientCredentials,
+    environment,
+  } = prepared;
+  await prepared.revalidateMountAuthority();
   try {
     switch (pattern.type) {
       case 'rclone':
         await applyDockerRcloneMount(
           session,
           entry,
-          mountPath,
+          effectiveMountPath,
           pattern as RcloneMountPattern,
+          allowAmbientCredentials,
+          environment,
+          prepared.revalidateMountAuthority,
         );
-        return mountPath;
+        return effectiveMountPath;
       case 'mountpoint':
         await applyDockerMountpointMount(
           session,
           entry,
-          mountPath,
+          effectiveMountPath,
           pattern as MountpointMountPattern,
+          allowAmbientCredentials,
+          environment,
+          prepared.revalidateMountAuthority,
         );
-        return mountPath;
+        return effectiveMountPath;
       case 's3files':
         await applyDockerS3FilesMount(
           session,
           entry,
-          mountPath,
+          effectiveMountPath,
           pattern as S3FilesMountPattern,
+          allowAmbientCredentials,
+          prepared.revalidateMountAuthority,
         );
-        return mountPath;
+        return effectiveMountPath;
       case 'fuse':
         await applyDockerFuseMount(
           session,
           entry,
-          mountPath,
+          effectiveMountPath,
           pattern as FuseMountPattern,
+          allowAmbientCredentials,
+          prepared.revalidateMountAuthority,
         );
-        return mountPath;
+        return effectiveMountPath;
       default:
         throw new SandboxUnsupportedFeatureError(
           'DockerSandboxClient does not support this in-container mount pattern.',
@@ -1546,31 +2863,172 @@ async function applyDockerInContainerMount(
         );
     }
   } catch (error) {
-    await cleanupDockerAppliedMounts(session, [mountPath]);
-    throw error;
+    return await throwAfterDockerAppliedMountCleanup(
+      session,
+      [dockerAppliedMountCleanupTarget(prepared, effectiveMountPath)],
+      error,
+    );
   }
+}
+
+async function resolveDockerEffectiveMountPath(
+  session: DockerSandboxSession,
+  logicalPath: string,
+  entry: Mount | TypedMount,
+  declaredMountPath: string,
+): Promise<string> {
+  const workspaceRelativePath = resolveDockerMountWorkspaceRelativePath(
+    session.state.manifest.root,
+    logicalPath,
+    entry,
+  );
+  if (workspaceRelativePath === null) {
+    const resolvedPath = (
+      await resolveTrustedDockerPath(
+        session,
+        declaredMountPath,
+        'resolve Docker mount path',
+      )
+    ).trim();
+    if (!resolvedPath.startsWith('/') || resolvedPath.includes('\n')) {
+      throw new SandboxMountError(
+        'DockerSandboxClient failed to resolve an absolute mount path.',
+        { mountType: entry.type },
+        'mount_config_invalid',
+      );
+    }
+    return normalizePosixPath(resolvedPath);
+  }
+  const workspaceRoot = await realpath(session.state.workspaceRootPath);
+  const effectiveHostPath = await realpathWithMissingTail(
+    resolve(session.state.workspaceRootPath, workspaceRelativePath),
+  );
+  const effectiveWorkspacePath = relative(workspaceRoot, effectiveHostPath);
+  if (
+    effectiveWorkspacePath === '..' ||
+    effectiveWorkspacePath.startsWith(`..${sep}`) ||
+    isAbsolute(effectiveWorkspacePath)
+  ) {
+    throw new SandboxMountError(
+      'DockerSandboxClient mount path resolves outside the sandbox workspace.',
+      { mountType: entry.type },
+      'mount_config_invalid',
+    );
+  }
+  return joinSandboxLogicalPath(
+    session.state.manifest.root,
+    effectiveWorkspacePath.split(sep).join('/'),
+  );
+}
+
+async function realpathWithMissingTail(path: string): Promise<string> {
+  const missingSegments: string[] = [];
+  let existingPath = path;
+  while (true) {
+    try {
+      return resolve(await realpath(existingPath), ...missingSegments);
+    } catch (error) {
+      if (!isMissingPathError(error)) {
+        throw error;
+      }
+      const parent = dirname(existingPath);
+      if (parent === existingPath) {
+        throw error;
+      }
+      missingSegments.unshift(basename(existingPath));
+      existingPath = parent;
+    }
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    'code' in error &&
+    (error as NodeJS.ErrnoException).code === 'ENOENT'
+  );
+}
+
+type DockerAppliedMountCleanupTarget = {
+  mountPath: string;
+  verifyRcloneNfsTermination: boolean;
+};
+
+function dockerAppliedMountCleanupTarget(
+  prepared: PreparedDockerInContainerMount,
+  mountPath: string,
+): DockerAppliedMountCleanupTarget {
+  return {
+    mountPath,
+    verifyRcloneNfsTermination:
+      prepared.pattern.type === 'rclone' &&
+      (prepared.pattern as RcloneMountPattern).mode === 'nfs',
+  };
 }
 
 async function cleanupDockerAppliedMounts(
   session: DockerSandboxSession,
-  mountPaths: string[],
+  targets: DockerAppliedMountCleanupTarget[],
 ): Promise<void> {
-  for (const mountPath of [...mountPaths].reverse()) {
-    await session
-      .runDockerMountCommand(
+  const cleanupErrors: unknown[] = [];
+  for (const target of [...targets].reverse()) {
+    const mountPath = target.mountPath;
+    try {
+      await session.runDockerMountCommand(
         [
           `fusermount3 -u ${shellQuote(mountPath)} >/dev/null 2>&1 || true`,
           `fusermount -u ${shellQuote(mountPath)} >/dev/null 2>&1 || true`,
           `umount ${shellQuote(mountPath)} >/dev/null 2>&1 || true`,
           `umount -l ${shellQuote(mountPath)} >/dev/null 2>&1 || true`,
-          dockerSafeKillRcloneNfsPidFileCommand(
-            dockerRcloneNfsPidPath(session, mountPath),
-          ),
+          ...(target.verifyRcloneNfsTermination
+            ? [
+                dockerSafeKillRcloneNfsPidFileCommand(
+                  dockerRcloneNfsPidPath(session, mountPath),
+                ),
+              ]
+            : []),
         ].join(' ; '),
         `cleanup Docker mount ${mountPath}`,
-      )
-      .catch(() => undefined);
+      );
+    } catch (error) {
+      if (target.verifyRcloneNfsTermination) {
+        cleanupErrors.push(error);
+      }
+    }
   }
+  if (cleanupErrors.length > 0) {
+    throw new SandboxMountError(
+      'DockerSandboxClient credential-bearing mount cleanup failed.',
+      {
+        provider: 'docker',
+        operation: 'cleanup Docker mounts',
+        cleanupFailed: true,
+        failedMountCount: cleanupErrors.length,
+      },
+      'mount_failed',
+    );
+  }
+}
+
+async function throwAfterDockerAppliedMountCleanup(
+  session: DockerSandboxSession,
+  targets: DockerAppliedMountCleanupTarget[],
+  mountError: unknown,
+): Promise<never> {
+  try {
+    await cleanupDockerAppliedMounts(session, targets);
+  } catch {
+    throw new SandboxMountError(
+      'DockerSandboxClient mount failed and credential cleanup could not complete.',
+      {
+        provider: 'docker',
+        operation: 'mount in-container filesystem',
+        cleanupFailed: true,
+      },
+      'mount_failed',
+    );
+  }
+  throw mountError;
 }
 
 function dockerInContainerMountPattern(
@@ -1632,6 +3090,9 @@ async function applyDockerRcloneMount(
   entry: Mount | TypedMount,
   mountPath: string,
   pattern: RcloneMountPattern,
+  allowAmbientCredentials: boolean,
+  environment: Record<string, string>,
+  revalidateMountAuthority: () => Promise<void>,
 ): Promise<void> {
   const mode = pattern.mode ?? 'fuse';
   if (mode !== 'fuse' && mode !== 'nfs') {
@@ -1649,6 +3110,7 @@ async function applyDockerRcloneMount(
     entry,
     pattern,
     mountPath,
+    allowAmbientCredentials,
   );
   const configDir = `/tmp/openai-agents-docker-mounts-${dockerPathHash(
     `${session.state.containerId}:${mountPath}`,
@@ -1690,13 +3152,14 @@ async function applyDockerRcloneMount(
       'exit 1',
       '}',
     ].join('; ');
+    await revalidateMountAuthority();
     await session.runDockerMountCommand(
       [
         ...baseCommand,
         `(${shellCommand(serverArgs)} & printf %s "$!" > ${shellQuote(pidPath)}) && ${mountCommand}`,
       ].join(' && '),
       `mount rclone ${entry.type}`,
-      { input: config.configText },
+      { input: config.configText, environment },
     );
     return;
   }
@@ -1713,6 +3176,7 @@ async function applyDockerRcloneMount(
     '--daemon',
     ...dockerRclonePatternArgs(pattern),
   ];
+  await revalidateMountAuthority();
   await session.runDockerMountCommand(
     [
       ...baseCommand,
@@ -1721,7 +3185,7 @@ async function applyDockerRcloneMount(
       `rm -rf -- ${shellQuote(configDir)}`,
     ].join(' && '),
     `mount rclone ${entry.type}`,
-    { input: config.configText },
+    { input: config.configText, environment },
   );
 }
 
@@ -1736,9 +3200,11 @@ function dockerRcloneNfsPidPath(
 
 function dockerSafeKillRcloneNfsPidFileCommand(pidPath: string): string {
   return [
-    `pid=$(cat ${shellQuote(pidPath)} 2>/dev/null || true)`,
-    `case "$pid" in ''|0|*[!0-9]*) ;; *) cmdline=$(tr '\\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true); case "$cmdline" in *rclone*serve\\ nfs*) kill "$pid" >/dev/null 2>&1 || true ;; esac ;; esac`,
-    `rm -f -- ${shellQuote(pidPath)}`,
+    `openai_agents_kill_rclone_nfs() { pid=$(cat ${shellQuote(pidPath)} 2>/dev/null || true); case "$pid" in ''|0|*[!0-9]*) return 0 ;; esac; cmdline=$(tr '\\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true); case "$cmdline" in *rclone*serve\\ nfs*) ;; *) return 1 ;; esac; kill "$pid" >/dev/null 2>&1 || return 1; attempts=0; while [ "$attempts" -lt 50 ]; do cmdline=$(tr '\\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true); case "$cmdline" in *rclone*serve\\ nfs*) ;; *) return 0 ;; esac; attempts=$((attempts + 1)); sleep 0.1; done; return 1; }`,
+    'helper_status=0',
+    'openai_agents_kill_rclone_nfs || helper_status=$?',
+    `[ "$helper_status" -eq 0 ] && rm -f -- ${shellQuote(pidPath)}`,
+    '[ "$helper_status" -eq 0 ]',
   ].join('; ');
 }
 
@@ -1760,6 +3226,9 @@ async function applyDockerMountpointMount(
   entry: Mount | TypedMount,
   mountPath: string,
   pattern: MountpointMountPattern,
+  allowAmbientCredentials: boolean,
+  environment: Record<string, string>,
+  revalidateMountAuthority: () => Promise<void>,
 ): Promise<void> {
   if (entry.type !== 's3_mount' && entry.type !== 'gcs_mount') {
     throw new SandboxUnsupportedFeatureError(
@@ -1775,8 +3244,18 @@ async function applyDockerMountpointMount(
     entry.endpointUrl ??
     options.endpointUrl ??
     (entry.type === 'gcs_mount' ? 'https://storage.googleapis.com' : undefined);
+  const hasExplicitCredentials =
+    entry.type === 's3_mount'
+      ? Boolean(entry.accessKeyId && entry.secretAccessKey)
+      : Boolean(
+          readOptionalString(entry, 'accessId') &&
+          readOptionalString(entry, 'secretAccessKey'),
+        );
   const mountArgs = [
     'mount-s3',
+    ...(!hasExplicitCredentials && !allowAmbientCredentials
+      ? ['--no-sign-request']
+      : []),
     ...((entry.readOnly ?? true)
       ? ['--read-only']
       : ['--allow-overwrite', '--allow-delete']),
@@ -1806,29 +3285,70 @@ async function applyDockerMountpointMount(
     `${session.state.containerId}:${mountPath}`,
   )}`;
   const envPath = `${envDir}/credentials.env`;
+  const cleanupEnvCommand = `rm -rf -- ${shellQuote(envDir)}`;
+  const clearInheritedAwsAuthorityCommand =
+    DOCKER_AWS_CREDENTIAL_AUTHORITY_NAMES.join(' ');
   const command = envText
     ? [
-        `rm -rf -- ${shellQuote(envDir)}`,
+        `trap ${shellQuote(cleanupEnvCommand)} EXIT HUP INT TERM`,
+        cleanupEnvCommand,
         `install -d -m 700 -- ${shellQuote(envDir)}`,
         `(umask 077 && cat > ${shellQuote(envPath)})`,
+        `unset ${clearInheritedAwsAuthorityCommand}`,
         `set -a && . ${shellQuote(envPath)} && set +a`,
-        `rm -rf -- ${shellQuote(envDir)}`,
+        cleanupEnvCommand,
         shellCommand(mountArgs),
       ].join(' && ')
     : shellCommand(mountArgs);
+  await revalidateMountAuthority();
   await session.runDockerMountCommand(
     [`mkdir -p -- ${shellQuote(mountPath)}`, command].join(' && '),
     `mount mountpoint ${entry.type}`,
-    envText ? { input: envText } : {},
+    envText
+      ? {
+          input: envText,
+          environment: Object.fromEntries([
+            ...Object.entries(environment),
+            ...DOCKER_AWS_CREDENTIAL_AUTHORITY_NAMES.map(
+              (name) => [name, ''] as const,
+            ),
+          ]),
+        }
+      : { environment },
   );
 }
+
+const DOCKER_AWS_CREDENTIAL_AUTHORITY_NAMES = [
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_SECURITY_TOKEN',
+  'AWS_PROFILE',
+  'AWS_SHARED_CREDENTIALS_FILE',
+  'AWS_CONFIG_FILE',
+  'AWS_ROLE_ARN',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+  'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+  'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+  'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+] as const;
 
 async function applyDockerS3FilesMount(
   session: DockerSandboxSession,
   entry: Mount | TypedMount,
   mountPath: string,
   pattern: S3FilesMountPattern,
+  allowAmbientCredentials: boolean,
+  revalidateMountAuthority: () => Promise<void>,
 ): Promise<void> {
+  if (!allowAmbientCredentials) {
+    throw new SandboxMountError(
+      'DockerSandboxClient s3files mounts require explicit trusted credential exposure for their workload identity provider.',
+      { mountPath, mountType: entry.type },
+      'mount_config_invalid',
+    );
+  }
   if (entry.type !== 's3_files_mount') {
     throw new SandboxUnsupportedFeatureError(
       'DockerSandboxClient s3files mounts require an s3FilesMount() entry.',
@@ -1879,6 +3399,7 @@ async function applyDockerS3FilesMount(
     device,
     mountPath,
   ];
+  await revalidateMountAuthority();
   await session.runDockerMountCommand(
     [`mkdir -p -- ${shellQuote(mountPath)}`, shellCommand(mountArgs)].join(
       ' && ',
@@ -1892,9 +3413,18 @@ async function applyDockerFuseMount(
   entry: Mount | TypedMount,
   mountPath: string,
   pattern: FuseMountPattern,
+  allowAmbientCredentials: boolean,
+  revalidateMountAuthority: () => Promise<void>,
 ): Promise<void> {
   if (entry.type === 'azure_blob_mount') {
-    await applyDockerAzureBlobFuseMount(session, entry, mountPath, pattern);
+    await applyDockerAzureBlobFuseMount(
+      session,
+      entry,
+      mountPath,
+      pattern,
+      allowAmbientCredentials,
+      revalidateMountAuthority,
+    );
     return;
   }
   if (!pattern.command) {
@@ -1909,6 +3439,7 @@ async function applyDockerFuseMount(
   const command = Array.isArray(pattern.command)
     ? shellCommand(pattern.command)
     : pattern.command;
+  await revalidateMountAuthority();
   await session.runDockerMountCommand(
     [
       `mkdir -p -- ${shellQuote(mountPath)}`,
@@ -1929,6 +3460,8 @@ async function applyDockerAzureBlobFuseMount(
   entry: AzureBlobMount,
   mountPath: string,
   pattern: FuseMountPattern,
+  allowAmbientCredentials: boolean,
+  revalidateMountAuthority: () => Promise<void>,
 ): Promise<void> {
   const account = entry.account ?? entry.accountName;
   if (!account) {
@@ -1945,6 +3478,17 @@ async function applyDockerAzureBlobFuseMount(
         provider: 'DockerSandboxClient',
         mountType: entry.type,
       },
+    );
+  }
+  if (
+    !entry.accountKey &&
+    !entry.identityClientId &&
+    !allowAmbientCredentials
+  ) {
+    throw new SandboxMountError(
+      'DockerSandboxClient blobfuse mounts require explicit trusted credential exposure before using managed identity.',
+      { mountPath, mountType: entry.type },
+      'mount_config_invalid',
     );
   }
 
@@ -2026,6 +3570,7 @@ async function applyDockerAzureBlobFuseMount(
     configPath,
     mountPath,
   ];
+  await revalidateMountAuthority();
   await session.runDockerMountCommand(
     [
       'command -v blobfuse2 >/dev/null 2>&1',
@@ -2217,21 +3762,31 @@ function dockerFusePatternBoolean(
 function dockerMountArgsForManifest(
   manifest: Manifest,
   containerName: string,
+  manifestBindMounts: DockerMountAuthority[],
 ): { mountArgs: string[]; volumeNames: string[] } {
   const mountArgs: string[] = [];
   const volumeNames: string[] = [];
+  const bindMountsByTarget = new Map(
+    manifestBindMounts.map((mount) => [mount.target, mount]),
+  );
   for (const {
     mountPath,
     entry,
   } of manifest.mountTargetsForMaterialization()) {
     if (isDockerBindMount(entry)) {
+      const bindMount = bindMountsByTarget.get(mountPath);
+      if (!bindMount) {
+        throw new SandboxConfigurationError(
+          `Docker bind mount authority was not resolved for "${mountPath}".`,
+        );
+      }
       mountArgs.push(
         '--mount',
         dockerMountArg({
           type: 'bind',
-          source: entry.source,
+          source: bindMount.source,
           target: mountPath,
-          readOnly: entry.readOnly ?? true,
+          readOnly: bindMount.readOnly,
         }),
       );
       continue;
@@ -2258,13 +3813,15 @@ function dockerMountArgsForManifest(
   return { mountArgs, volumeNames };
 }
 
-function dockerExtraPathGrantMountArgs(manifest: Manifest): string[] {
-  return manifest.extraPathGrants.flatMap((grant) => [
+function dockerExtraPathGrantMountArgs(
+  pathGrantMounts: DockerPathGrantMount[],
+): string[] {
+  return pathGrantMounts.flatMap((grant) => [
     '--mount',
     dockerMountArg({
       type: 'bind',
-      source: grant.path,
-      target: grant.path,
+      source: grant.source,
+      target: grant.target,
       readOnly: grant.readOnly,
     }),
   ]);
@@ -2371,6 +3928,7 @@ async function dockerRcloneMountConfig(
   entry: Mount | TypedMount,
   pattern: RcloneMountPattern,
   mountPath: string,
+  allowAmbientCredentials: boolean,
 ): Promise<DockerRcloneMountConfig> {
   const remoteName = dockerRcloneRemoteName(entry, pattern, mountPath);
   const withConfigText = async (
@@ -2380,13 +3938,22 @@ async function dockerRcloneMountConfig(
     if (!configFilePath) {
       return config;
     }
-    const sourcePath = resolveDockerRcloneConfigPath(
-      session.state.manifest,
-      configFilePath,
-    );
+    let sourcePath: string;
+    try {
+      sourcePath = resolveDockerRcloneConfigPath(
+        session.state.manifest,
+        configFilePath,
+      );
+    } catch {
+      throw new SandboxMountError(
+        'DockerSandboxClient failed to resolve the rclone config file.',
+        { mountType: entry.type },
+        'mount_config_invalid',
+      );
+    }
     const encodedConfig = await session.runDockerMountCommand(
       `base64 -- ${shellQuote(sourcePath)}`,
-      `read rclone config ${sourcePath}`,
+      'read rclone config',
     );
     const sourceConfigText = Buffer.from(
       encodedConfig.replace(/\s+/gu, ''),
@@ -2413,7 +3980,7 @@ async function dockerRcloneMountConfig(
           `provider = ${entry.s3Provider ?? 'AWS'}`,
           ...(entry.endpointUrl ? [`endpoint = ${entry.endpointUrl}`] : []),
           ...(entry.region ? [`region = ${entry.region}`] : []),
-          ...s3CredentialLines(entry),
+          ...s3CredentialLines(entry, allowAmbientCredentials),
           '',
         ].join('\n'),
         readOnly: entry.readOnly ?? true,
@@ -2447,18 +4014,22 @@ async function dockerRcloneMountConfig(
                 `access_key_id = ${entry.accessKeyId}`,
                 `secret_access_key = ${entry.secretAccessKey}`,
               ]
-            : ['env_auth = true']),
+            : [`env_auth = ${allowAmbientCredentials ? 'true' : 'false'}`]),
           '',
         ].join('\n'),
         readOnly: entry.readOnly ?? true,
       });
     case 'gcs_mount':
       return await withConfigText(
-        dockerGcsRcloneMountConfig(entry, remoteName),
+        dockerGcsRcloneMountConfig(entry, remoteName, allowAmbientCredentials),
       );
     case 'azure_blob_mount':
       return await withConfigText(
-        dockerAzureBlobRcloneMountConfig(entry, remoteName),
+        dockerAzureBlobRcloneMountConfig(
+          entry,
+          remoteName,
+          allowAmbientCredentials,
+        ),
       );
     case 'box_mount':
       return await withConfigText({
@@ -2505,6 +4076,7 @@ async function dockerRcloneMountConfig(
 function dockerAzureBlobRcloneMountConfig(
   entry: AzureBlobMount,
   remoteName: string,
+  allowAmbientCredentials: boolean,
 ): DockerRcloneMountConfig {
   const account = entry.account ?? entry.accountName;
   if (!account) {
@@ -2526,12 +4098,11 @@ function dockerAzureBlobRcloneMountConfig(
         : []),
       ...(entry.accountKey
         ? [`key = ${entry.accountKey}`]
-        : [
-            'use_msi = true',
-            ...(entry.identityClientId
-              ? [`msi_client_id = ${entry.identityClientId}`]
-              : []),
-          ]),
+        : entry.identityClientId
+          ? ['use_msi = true', `msi_client_id = ${entry.identityClientId}`]
+          : allowAmbientCredentials
+            ? ['use_msi = true']
+            : ['use_msi = false', 'env_auth = false']),
       '',
     ].join('\n'),
     readOnly: entry.readOnly ?? true,
@@ -2545,6 +4116,7 @@ function azureBlobEndpoint(entry: AzureBlobMount): string | undefined {
 function dockerGcsRcloneMountConfig(
   entry: GCSMount,
   remoteName: string,
+  allowAmbientCredentials: boolean,
 ): DockerRcloneMountConfig {
   const accessId = readOptionalString(entry, 'accessId');
   const secretAccessKey = readOptionalString(entry, 'secretAccessKey');
@@ -2581,9 +4153,16 @@ function dockerGcsRcloneMountConfig(
       ...(entry.accessToken ? [`access_token = ${entry.accessToken}`] : []),
       entry.serviceAccountFile ||
       entry.serviceAccountCredentials ||
-      entry.accessToken
+      entry.accessToken ||
+      !allowAmbientCredentials
         ? 'env_auth = false'
         : 'env_auth = true',
+      ...(!entry.serviceAccountFile &&
+      !entry.serviceAccountCredentials &&
+      !entry.accessToken &&
+      !allowAmbientCredentials
+        ? ['anonymous = true']
+        : []),
       '',
     ].join('\n'),
     readOnly: entry.readOnly ?? true,
@@ -2634,7 +4213,10 @@ function dockerInContainerMountPrivilege(
   return needsSysAdmin ? 'sys_admin' : 'none';
 }
 
-function s3CredentialLines(entry: S3Mount): string[] {
+function s3CredentialLines(
+  entry: S3Mount,
+  allowAmbientCredentials: boolean,
+): string[] {
   const lines: string[] = [];
   if (entry.accessKeyId && entry.secretAccessKey) {
     lines.push('env_auth = false');
@@ -2644,7 +4226,7 @@ function s3CredentialLines(entry: S3Mount): string[] {
       lines.push(`session_token = ${entry.sessionToken}`);
     }
   } else {
-    lines.push('env_auth = true');
+    lines.push(`env_auth = ${allowAmbientCredentials ? 'true' : 'false'}`);
   }
   return lines;
 }

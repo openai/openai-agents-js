@@ -1,5 +1,79 @@
 # @openai/agents-realtime
 
+## 0.14.3
+
+### Patch Changes
+
+- 00bfb9d: fix: clean up failed Realtime connection attempts
+- a94f376: fix: accept status-less and incomplete Realtime conversation message items (#1571)
+- 73cce94: fix: apply realtime output guardrails to text deltas
+- Updated dependencies [31bc820]
+- Updated dependencies [90781d8]
+- Updated dependencies [08169df]
+- Updated dependencies [1154aa0]
+- Updated dependencies [15ac711]
+- Updated dependencies [59fa3fc]
+- Updated dependencies [2d5d040]
+- Updated dependencies [427331f]
+- Updated dependencies [4bb80e4]
+- Updated dependencies [78f8581]
+- Updated dependencies [b4a90f9]
+- Updated dependencies [9416c96]
+- Updated dependencies [f431475]
+- Updated dependencies [9cbba54]
+- Updated dependencies [0f9b12e]
+- Updated dependencies [92a0809]
+- Updated dependencies [1eaa425]
+  - @openai/agents-core@0.14.3
+
+## 0.14.2
+
+### Patch Changes
+
+- a835a59: fix: preserve raw Realtime server event payloads
+- Updated dependencies [e8de524]
+- Updated dependencies [b4b8b21]
+- Updated dependencies [7255289]
+- Updated dependencies [25e1cf0]
+  - @openai/agents-core@0.14.2
+
+## 0.14.1
+
+### Patch Changes
+
+- Updated dependencies [e4158f1]
+- Updated dependencies [73abbdc]
+- Updated dependencies [48094d0]
+- Updated dependencies [58e3a43]
+  - @openai/agents-core@0.14.1
+
+## 0.14.0
+
+### Minor Changes
+
+- 67e9733: feat: disable sensitive model and tool data logging by default with a programmatic opt-in
+
+### Patch Changes
+
+- 457166e: fix: redact sensitive tool and model data from error logs
+- 02ef342: feat: add Programmatic Tool Calling with caller-aware replay, runtime-validated Zod outputs, configuration preflight, examples, and explicit unsupported-adapter errors
+- efdd60e: fix: fail closed when dynamic tool approval receives invalid arguments
+- fa7c36f: fix: honor sensitive logging flags across runtime error and payload paths
+- Updated dependencies [f7771c1]
+- Updated dependencies [457166e]
+- Updated dependencies [b907917]
+- Updated dependencies [02ef342]
+- Updated dependencies [b45fd21]
+- Updated dependencies [efdd60e]
+- Updated dependencies [e4f3293]
+- Updated dependencies [fa7c36f]
+- Updated dependencies [67e9733]
+- Updated dependencies [a3092ca]
+- Updated dependencies [68cc86b]
+- Updated dependencies [4461a35]
+- Updated dependencies [84aed6e]
+  - @openai/agents-core@0.14.0
+
 ## 0.13.5
 
 ### Patch Changes

@@ -2,6 +2,7 @@ import { UserError } from '@openai/agents-core';
 import { loadEnv, randomUUID } from '@openai/agents-core/_shims';
 import {
   Manifest,
+  SandboxMountError,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
   SandboxWorkspaceArchiveReadError,
@@ -24,6 +25,8 @@ import {
   addPtyWebSocketListener,
   appendPtyOutput,
   assertCoreSnapshotUnsupported,
+  assertRemoteSandboxSessionStateCanResume,
+  isRemoteSandboxSessionStateUnsafe,
   assertResumeRecreateAllowed,
   createPtyProcessEntry,
   assertSandboxManifestMetadataSupported,
@@ -31,9 +34,10 @@ import {
   assertRunAsUnsupported,
   closeRemoteSessionOnManifestError,
   assertShellEnvironmentName,
-  deserializeRemoteSandboxSessionStateValues,
+  rehydrateRemoteSandboxSessionStateValues,
   formatPtyExecUpdate,
   materializeEnvironment,
+  manifestWithMaterializedEnvironmentReferences,
   openPtyWebSocket,
   parseExposedPortEndpoint,
   posixDirname,
@@ -59,8 +63,14 @@ import {
   type RemoteSandboxCommandOptions,
   type RemoteSandboxCommandResult,
   type PtyProcessEntry,
+  type ManifestMountMaterializationContext,
 } from '../shared';
 import {
+  configuredMountCredentialFields,
+  validateMountCredentialBoundaries,
+} from '@openai/agents-core/sandbox/internal';
+import {
+  blaxelFuseMountHandle,
   isBlaxelCloudBucketMountEntry,
   isBlaxelDriveMountEntry,
   mountBlaxelCloudBucket,
@@ -68,6 +78,7 @@ import {
   unmountBlaxelDrive,
   unmountBlaxelFuseMount,
   type BlaxelDriveApi,
+  type BlaxelFuseMountHandle,
 } from './mounts';
 import type { RemoteMountCommand } from '../shared/inContainerMounts';
 
@@ -188,7 +199,10 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
   private ownsSandbox: boolean;
   private closed = false;
   private readonly ptyProcesses = new PtyProcessRegistry();
-  private readonly activeFuseMountPaths = new Set<string>();
+  private readonly activeFuseMountPaths = new Map<
+    string,
+    BlaxelFuseMountHandle
+  >();
   private readonly activeDriveMountPaths = new Set<string>();
 
   constructor(args: {
@@ -219,6 +233,7 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
   }
 
   async writeStdin(args: WriteStdinArgs): Promise<string> {
+    this.assertSessionUsable();
     return await writePtyStdin({
       providerName: 'BlaxelSandboxClient',
       registry: this.ptyProcesses,
@@ -476,7 +491,14 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
         { forWrite: true },
       );
       if (isBlaxelCloudBucketMountEntry(entry)) {
-        this.activeFuseMountPaths.add(mountPath);
+        this.activeFuseMountPaths.set(
+          mountPath,
+          blaxelFuseMountHandle(
+            entry,
+            mountPath,
+            this.ensureMountArtifactScope(),
+          ),
+        );
       } else if (isBlaxelDriveMountEntry(entry)) {
         this.activeDriveMountPaths.add(mountPath);
       }
@@ -490,7 +512,38 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
   protected override manifestMaterializationOptions() {
     return {
       materializeMount: this.materializeMountEntry.bind(this),
+      validateManifest: (manifest: Manifest) => {
+        this.assertUnownedCloudBucketMountsAreCredentialless(manifest);
+      },
     };
+  }
+
+  private assertUnownedCloudBucketMountsAreCredentialless(
+    manifest: Manifest,
+  ): void {
+    if (this.ownsSandbox) {
+      return;
+    }
+    for (const { entry } of manifest.mountTargetsForMaterialization()) {
+      if (
+        isBlaxelCloudBucketMountEntry(entry) &&
+        configuredMountCredentialFields(entry).length > 0
+      ) {
+        throw new SandboxMountError(
+          'BlaxelSandboxClient cannot materialize a credential-bearing in-container cloud bucket mount in a reused sandbox it does not own. Use a Blaxel drive mount or create an owned sandbox.',
+          { provider: 'blaxel', mountType: entry.type },
+          'mount_config_invalid',
+        );
+      }
+    }
+  }
+
+  protected override async forceTerminateAfterFailedPrivilegedManifestTransition(): Promise<void> {
+    await this.ptyProcesses.terminateAll().catch(() => {});
+    if (this.ownsSandbox) {
+      await this.sandbox.delete();
+    }
+    this.closed = true;
   }
 
   protected override assertExecRunAs(_runAs?: string): void {
@@ -504,20 +557,29 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
   private async materializeMountEntry(
     absolutePath: string,
     entry: Mount | TypedMount,
+    context: ManifestMountMaterializationContext,
   ): Promise<void> {
-    const mountPath = await this.resolveRemotePath(
-      entry.mountPath ?? absolutePath,
-      { forWrite: true },
-    );
+    const mountPath = absolutePath;
     if (entry.mountStrategy?.type === 'blaxel_cloud_bucket') {
-      await mountBlaxelCloudBucket({
+      if (
+        !this.ownsSandbox &&
+        configuredMountCredentialFields(entry).length > 0
+      ) {
+        throw new SandboxMountError(
+          'BlaxelSandboxClient cannot materialize a credential-bearing in-container cloud bucket mount in a reused sandbox it does not own. Use a Blaxel drive mount or create an owned sandbox.',
+          { provider: 'blaxel', mountType: entry.type },
+          'mount_config_invalid',
+        );
+      }
+      const handle = await mountBlaxelCloudBucket({
         entry,
         mountPath,
         artifactScope: this.ensureMountArtifactScope(),
         runCommand: this.mountCommandRunner(),
         writeSecretFile: this.writeMountSecretFile.bind(this),
+        revalidateMountAuthority: context.revalidateMountAuthority,
       });
-      this.activeFuseMountPaths.add(mountPath);
+      this.activeFuseMountPaths.set(mountPath, handle);
       return;
     }
     if (entry.mountStrategy?.type === 'blaxel_drive') {
@@ -542,6 +604,21 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
   }
 
   private async unmountActiveMounts(): Promise<void> {
+    let fuseFailureCount = 0;
+    let driveFailureCount = 0;
+    for (const mountPath of [...this.activeFuseMountPaths.keys()].reverse()) {
+      try {
+        await unmountBlaxelFuseMount({
+          mountPath,
+          artifactScope: this.ensureMountArtifactScope(),
+          runCommand: this.mountCommandRunner(),
+          handle: this.activeFuseMountPaths.get(mountPath),
+        });
+        this.activeFuseMountPaths.delete(mountPath);
+      } catch {
+        fuseFailureCount += 1;
+      }
+    }
     for (const mountPath of [...this.activeDriveMountPaths].reverse()) {
       try {
         await unmountBlaxelDrive({
@@ -549,36 +626,24 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
           drives: this.sandbox.drives,
         });
         this.activeDriveMountPaths.delete(mountPath);
-      } catch (error) {
-        throw new SandboxProviderError(
-          'BlaxelSandboxClient failed to unmount an active drive mount.',
-          {
-            provider: 'blaxel',
-            mountPath,
-            cause: providerErrorMessage(error),
-          },
-        );
+      } catch {
+        driveFailureCount += 1;
       }
     }
-    for (const mountPath of [...this.activeFuseMountPaths].reverse()) {
-      try {
-        await unmountBlaxelFuseMount({
-          mountPath,
-          artifactScope: this.ensureMountArtifactScope(),
-          runCommand: this.mountCommandRunner(),
-        });
-        this.activeFuseMountPaths.delete(mountPath);
-      } catch (error) {
-        throw new SandboxProviderError(
-          'BlaxelSandboxClient failed to unmount an active FUSE mount.',
-          {
-            provider: 'blaxel',
-            mountPath,
-            cause: providerErrorMessage(error),
-          },
-        );
-      }
+    if (fuseFailureCount === 0 && driveFailureCount === 0) {
+      return;
     }
+    const message =
+      fuseFailureCount > 0 && driveFailureCount > 0
+        ? 'BlaxelSandboxClient failed to unmount one or more active mounts.'
+        : fuseFailureCount > 0
+          ? 'BlaxelSandboxClient failed to unmount an active FUSE mount.'
+          : 'BlaxelSandboxClient failed to unmount an active drive mount.';
+    throw new SandboxProviderError(message, {
+      provider: 'blaxel',
+      fuseFailureCount,
+      driveFailureCount,
+    });
   }
 
   private mountCommandRunner(): RemoteMountCommand {
@@ -627,7 +692,10 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
     command: string,
     options: RemoteSandboxCommandOptions,
   ): Promise<RemoteSandboxCommandResult> {
-    const shellCommand = buildShellCommand(command, this.state.environment);
+    const shellCommand = buildShellCommand(
+      command,
+      options.environment ?? this.state.environment,
+    );
     const commandForUser = options.runAs
       ? `sudo -n -u ${shellQuote(options.runAs)} -- sh -lc ${shellQuote(shellCommand)}`
       : shellCommand;
@@ -804,6 +872,7 @@ export class BlaxelSandboxClient implements SandboxClient<
       manifest,
       SANDBOX_MANIFEST_METADATA_SUPPORT,
     );
+    validateMountCredentialBoundaries(manifest);
     const SandboxInstance = await loadBlaxelSandboxClass();
 
     return await withSandboxSpan(
@@ -941,13 +1010,18 @@ export class BlaxelSandboxClient implements SandboxClient<
   }
 
   canPersistOwnedSessionState(state: BlaxelSandboxSessionState): boolean {
-    return state.pauseOnExit && state.ownsSandbox && !!state.sandboxIdentity;
+    return (
+      !isRemoteSandboxSessionStateUnsafe(state) &&
+      state.pauseOnExit &&
+      state.ownsSandbox &&
+      !!state.sandboxIdentity
+    );
   }
 
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<BlaxelSandboxSessionState> {
-    const baseState = deserializeRemoteSandboxSessionStateValues(
+    const baseState = await rehydrateRemoteSandboxSessionStateValues(
       state,
       this.options.env,
     );
@@ -984,6 +1058,7 @@ export class BlaxelSandboxClient implements SandboxClient<
   async resume(
     state: BlaxelSandboxSessionState,
   ): Promise<BlaxelSandboxSession> {
+    assertRemoteSandboxSessionStateCanResume(state);
     const SandboxInstance = await loadBlaxelSandboxClass();
     let sandbox: BlaxelSandboxLike;
     try {
@@ -1023,8 +1098,12 @@ export class BlaxelSandboxClient implements SandboxClient<
   private async recreateFromState(
     state: BlaxelSandboxSessionState,
   ): Promise<BlaxelSandboxSession> {
+    const manifest = state.manifest;
     const session = await this.create(
-      state.manifest,
+      manifestWithMaterializedEnvironmentReferences(
+        manifest,
+        state.environment,
+      ),
       {
         image: state.image,
         memory: state.memory,
@@ -1046,6 +1125,7 @@ export class BlaxelSandboxClient implements SandboxClient<
         allowExistingNamedSandbox: !state.ownsSandbox,
       },
     );
+    session.state.manifest = manifest;
     return session;
   }
 }

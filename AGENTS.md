@@ -9,10 +9,13 @@ This guide helps new contributors get started with the OpenAI Agents JS monorepo
 1.  [Policies & Mandatory Rules](#policies--mandatory-rules)
 2.  [Project Structure Guide](#project-structure-guide)
 3.  [Operation Guide](#operation-guide)
+4.  [Code Review Rules](#code-review-rules)
 
 ## Policies & Mandatory Rules
 
 ### Mandatory Skill Usage
+
+Repository skills are stored under `.agents/skills/`. A reference such as `$<skill-name>` in this file is a repository instruction reference, not a request for manual user invocation. When a rule requires a skill, read `.agents/skills/<skill-name>/SKILL.md` completely before taking task actions, follow its instructions, and resolve referenced files relative to that skill directory.
 
 #### `$code-change-verification`
 
@@ -35,7 +38,13 @@ When working on OpenAI API or OpenAI platform integrations in this repo (Respons
 
 #### `$implementation-strategy`
 
-Before changing runtime code, exported APIs, external configuration, persisted schemas, wire protocols, or other user-facing behavior, use `$implementation-strategy` to decide the compatibility boundary and implementation shape. Judge breaking changes against the latest release tag, not unreleased branch-local churn. Interfaces introduced or changed after the latest release tag may be rewritten without compatibility shims unless they already have a released or otherwise supported durable-state consumer, or the user explicitly asks for a migration path.
+Before changing or reviewing runtime code, exported APIs, external configuration, persisted schemas, wire protocols, or other user-facing behavior, use `$implementation-strategy` to decide the compatibility boundary and implementation shape. Before coding, write an implementation scope contract that states the required behavior, compatibility requirements, intentionally unsupported cases and their failure behavior, and an already-supported alternative for those cases or that none exists. Treat this contract as a short, updateable engineering decision record, not as a new public API promise. During review, use the skill before requesting compatibility layers, migrations, new abstractions, or broader refactors.
+
+Repeat the skill before editing each new review-feedback batch; an earlier strategy decision is stale when a comment would widen the supported contract or add another compatibility branch, resolver condition, or test permutation. Judge breaking changes against the latest release tag, not unreleased branch-local churn. Interfaces introduced or changed after the latest release tag may be rewritten without compatibility shims unless they already have a released or otherwise supported durable-state consumer, or the user explicitly asks for a migration path.
+
+#### `$implementation-final-review`
+
+After implementing runtime code, tests, examples, build/test behavior, or behavior-impacting docs and completing focused tests, run `$implementation-final-review` before final `$changeset-validation`, `$code-change-verification`, and `$pr-draft-summary` work and before declaring the task complete. This repository instruction authorizes automatic invocation without a separate user mention. Do not invoke it for planning, investigation, review, or report-only tasks, repo-meta changes, or docs without behavior impact. The skill's clean-review gate does not replace any other mandatory repository skill or verification gate.
 
 #### `$pr-draft-summary`
 
@@ -52,6 +61,18 @@ If isolation or a different checkout is needed, explain why and ask the user bef
 ### pnpm Safety
 
 Use pnpm in the user's selected checkout without changing worktrees or branches. Do not use `CI=1`, `--force`, or `confirmModulesPurge=false` to bypass an incompatible `node_modules` prompt. Stop and diagnose the pnpm configuration mismatch instead of silently recreating dependencies. Keep machine-specific pnpm store and shell configuration outside the repository.
+
+### Scope Discipline and Complexity Reset
+
+- Implement the narrowest explicitly stated set of behaviors that satisfies the request. Do not interpret every shape accepted by TypeScript structural typing, an overloaded or generic API, or a third-party interface unless those shapes are required by the task or supported behavior shipped in the latest release.
+- Prefer adapting the required case into an existing pipeline over creating a parallel contract, resolver, conversion path, or source of truth. Continue to derive schema, validation, identity, documentation, package exports, and invocation from the existing source-of-truth functions, types, or modules.
+- Every new abstraction, state field, cached classification, compatibility branch, or dispatch mode must map to a stated requirement, released contract, supported durable boundary, or verified runtime risk. Remove it if that mapping cannot be stated concretely.
+- Treat a second related review finding that would add another condition, protocol hop, compatibility case, or test permutation to the same abstraction as a mandatory complexity-reset checkpoint, not another item to patch. Continue the design only when concrete evidence shows that the additional case belongs to the supported contract.
+- When that signal appears, stop extending the current design. Re-read the original requirement, group all findings by root cause, compare the complete diff with the merge base of the intended target branch or with the latest release tag when it is the compatibility baseline, and replace branch-local machinery with a narrower contract. Existing unreleased code and tests are not sunk costs. Perform this reset proactively; do not wait for the user or reviewer to request it.
+- A released-version reproducer proves reachability, not a supported contract. Verify the exact shape against documentation, tests, examples, intentional public typing, explicit maintainer intent, or concrete user reliance before adding compatibility machinery.
+- Prefer an actionable error during construction or validation, before a model/tool request, persisted mutation, or other side effect, and an existing supported alternative (for example an explicit function wrapper, typed adapter, configuration, or lower-level API) over partially emulating a broad interface. Do not add another alternative when an adequate supported one already exists.
+- A growing diff is not itself proof of overengineering, but unexpected cross-package spread, duplicated metadata, combinatorial tests, or repeated special cases requires restarting the design review from the original requirement before more code is added.
+- Before handoff, verify that the patch has one source of truth per concern, tests the required behavior and intentionally unsupported cases, and does not accidentally make every constructible type or runtime combination part of the supported SDK behavior.
 
 ### ExecPlans
 
@@ -285,7 +306,17 @@ Before opening a pull request, always run `$changeset-validation` to ensure all 
   pnpm changeset
   ```
 
-### Review Process & What Reviewers Look For
+## Code Review Rules
+
+- Use `$implementation-strategy` to establish the requested outcome and latest released compatibility boundary before judging implementation scope or architecture.
+- Treat added complexity as an actionable finding only when specific machinery is not required by the task, a released contract, supported durable state, or a verified runtime or platform risk. Identify the unnecessary machinery and recommend the smallest safe removal or direct replacement.
+- Do not request speculative abstractions, general-purpose helpers, configuration knobs, dependencies, compatibility layers, feature flags, parallel code paths, or extensibility for hypothetical future consumers.
+- Do not process a sequence of related review comments as independent local fixes when they expose the same missing boundary. Classify them together, decide whether the disputed shapes belong to the supported contract, and prefer one narrowing redesign over accumulating branches.
+- Review the complete diff from the merge base of the intended target branch, or from the latest release tag when it is the compatibility baseline, not only the latest incremental fix. Passing tests do not justify branch-local machinery that no longer matches the original requirement.
+- Keep findings scoped to the patch. Do not block on unrelated cleanup, pre-existing bugs, or optional refactors; report them separately when useful.
+- Require a broader refactor only when concrete evidence shows the focused change would otherwise be incorrect, unsafe, incompatible, or materially harder to maintain.
+
+### Baseline review expectations
 
 - ✅ All automated checks pass (build, tests, lint).
 - ✅ Tests cover new behavior and edge cases.

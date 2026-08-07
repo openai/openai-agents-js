@@ -15,6 +15,7 @@ import agentToolRunContextExample from '../../../../../examples/docs/tools/agent
 import mcpLocalServer from '../../../../../examples/docs/tools/mcpLocalServer.ts?raw';
 import codexToolExample from '../../../../../examples/docs/tools/codexTool.ts?raw';
 import codexRunContextThreadExample from '../../../../../examples/docs/tools/codexRunContextThread.ts?raw';
+import programmaticToolCallingExample from '../../../../../examples/docs/tools/programmaticToolCalling.ts?raw';
 
 Tools let an Agent **take actions** – fetch data, call external APIs, execute code, or even use a computer. The JavaScript/TypeScript SDK supports seven categories:
 
@@ -45,6 +46,7 @@ When you use the `OpenAIResponsesModel` you can add the following built‑in too
 | Code Interpreter | `'code_interpreter'` | Run code in a sandboxed environment. |
 | Image generation | `'image_generation'` | Generate images based on text. |
 | Tool search | `'tool_search'` | Load deferred function tools, namespaces, or searchable MCP tools at runtime. |
+| Programmatic Tool Calling | `'programmatic_tool_calling'` | Run model-generated JavaScript that coordinates eligible tools. |
 
 <Code lang="typescript" code={toolsHostedToolsExample} title="Hosted tools" />
 
@@ -57,8 +59,9 @@ The SDK provides helper functions that return hosted tool definitions:
 | `codeInterpreterTool(options?)` | Defaults to an auto-managed container when no `container` is provided. |
 | `imageGenerationTool(options?)` | Supports image generation configuration such as `model`, `size`, `quality`, `background`, `inputFidelity`, `inputImageMask`, `moderation`, `outputCompression`, `partialImages`, and output format. |
 | `toolSearchTool(options?)` | Adds the built-in `tool_search` helper. Pair it with deferred function tools or hosted MCP tools that set `deferLoading: true`. Supports hosted execution by default or client execution with `execution: 'client'` plus `execute`. |
+| `programmaticToolCallingTool()` | Enables Programmatic Tool Calling. Pair it with tools whose `allowedCallers` includes `'programmatic'`. |
 
-These helpers map JavaScript/TypeScript-friendly option names to the underlying OpenAI Responses API tool payloads. Refer to the official [OpenAI tools guide](https://developers.openai.com/api/docs/guides/tools) for the full tool schemas and advanced options like ranking options or semantic filters, and the official [Tool search guide](https://developers.openai.com/api/docs/guides/tools-tool-search) for the current built-in tool-search flow and model availability.
+These helpers map JavaScript/TypeScript-friendly option names to the underlying OpenAI Responses API tool payloads. Refer to the official [OpenAI tools guide](https://developers.openai.com/api/docs/guides/tools) for the full tool schemas and advanced options like ranking options or semantic filters, the official [Tool search guide](https://developers.openai.com/api/docs/guides/tools-tool-search) for the current built-in tool-search flow and model availability, and the official [Programmatic Tool Calling guide](https://developers.openai.com/api/docs/guides/tools-programmatic-tool-calling) for model support and wire-level behavior.
 
 ---
 
@@ -145,10 +148,12 @@ You can turn **any** function into a tool with the `tool()` helper.
 | `parameters` | Yes | Either a Zod schema or a raw JSON schema object. Zod parameters automatically enable **strict** mode. |
 | `strict` | No | When `true` (default), the SDK returns a model error if the arguments don't validate. Set to `false` for fuzzy matching. |
 | `execute` | Yes | `(args, context, details) => string \| unknown \| Promise<...>` – your business logic. Non-string outputs are serialized for the model. `context` is optional `RunContext`; `details` includes metadata like `toolCall`, `resumeState`, and `signal`. |
-| `errorFunction` | No | Custom handler `(context, error) => string` for transforming internal errors into a user-visible string. |
+| `allowedCallers` | No | Responses-only non-empty list controlling whether the tool can be called directly, programmatically, or both. Use `'direct'`, `'programmatic'`, or both values. |
+| `outputSchema` | No | Responses-only schema for the tool result. A Zod schema constrains the `execute` return type and validates/transforms the runtime result; a raw JSON schema describes the wire contract only. |
+| `errorFunction` | No | Custom handler `(context, error, details) => result` for transforming internal errors into a model-visible result. When `outputSchema` is set, the result must satisfy that schema. The default handler is disabled so the original error is rethrown. |
 | `timeoutMs` | No | Per-call timeout in milliseconds. Must be greater than 0 and less than or equal to `2147483647`. |
-| `timeoutBehavior` | No | Timeout mode: `error_as_result` (default) returns a model-visible timeout message, and `raise_exception` throws `ToolTimeoutError`. |
-| `timeoutErrorFunction` | No | Custom handler `(context, timeoutError) => string` for timeout output when `timeoutBehavior` is `error_as_result`. |
+| `timeoutBehavior` | No | Timeout mode: `error_as_result` returns a model-visible result, and `raise_exception` throws `ToolTimeoutError`. The default is `error_as_result` without `outputSchema` and `raise_exception` with it. |
+| `timeoutErrorFunction` | No | Custom handler `(context, timeoutError, details) => result` for `error_as_result`. When `outputSchema` is set, this handler is required and its result must satisfy the schema. |
 | `customDataExtractor` | No | Callback `(context) => Record<string, unknown> \| null \| undefined` for attaching SDK-only metadata to the emitted `RunToolCallOutputItem.customData`. This data is not sent back to the model. |
 | `needsApproval` | No | Require human approval before execution. See the [human-in-the-loop guide](/openai-agents-js/guides/human-in-the-loop). |
 | `isEnabled` | No | Conditionally expose the tool per run; accepts a boolean or predicate. |
@@ -163,9 +168,10 @@ Use `customDataExtractor` when your application needs renderer hints, internal I
 
 Use `timeoutMs` to bound each function tool invocation.
 
-- `timeoutBehavior: 'error_as_result'` (default) returns `Tool '<name>' timed out after <timeoutMs>ms.` to the model.
+- `timeoutBehavior: 'error_as_result'` returns `Tool '<name>' timed out after <timeoutMs>ms.` to the model. This is the default when `outputSchema` is not set.
 - `timeoutBehavior: 'raise_exception'` throws [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror), which you can catch as part of [run exceptions](/openai-agents-js/guides/running-agents#exceptions).
 - `timeoutErrorFunction` lets you customize timeout text in `error_as_result` mode.
+- When `outputSchema` is set, the default changes to `raise_exception`. Using `error_as_result` requires a `timeoutErrorFunction` that returns a schema-compatible value.
 - Timeouts abort `details.signal`, so long-running tools can stop promptly when they listen for cancellation.
 
 If you invoke a function tool directly, use [`invokeFunctionTool`](/openai-agents-js/openai/agents/functions/invokefunctiontool) to enforce the same timeout behavior as normal agent runs.
@@ -311,6 +317,46 @@ Run-context thread reuse example:
   code={codexRunContextThreadExample}
   title="Codex run-context thread reuse"
 />
+
+---
+
+## Programmatic Tool Calling
+
+Programmatic Tool Calling lets a supported Responses model generate JavaScript that coordinates several tool calls inside a hosted execution environment. Your application still executes client-owned tools, so existing validation, permissions, approvals, guardrails, and side effects continue to apply.
+
+<Code
+  lang="typescript"
+  code={programmaticToolCallingExample}
+  title="Programmatic Tool Calling"
+/>
+
+Setup has two parts:
+
+1. Add `programmaticToolCallingTool()` to the agent.
+2. Set `allowedCallers` on each tool that the generated program may call.
+
+| `allowedCallers` | Behavior |
+| --- | --- |
+| Omitted or `['direct']` | The model can call the tool directly. |
+| `['programmatic']` | Only the generated program can call the tool. |
+| `['direct', 'programmatic']` | Either the model or the generated program can call the tool. |
+
+The SDK supports programmatic callers for tools created with `tool()`, local or hosted `shellTool()`, `applyPatchTool()`, `hostedMcpTool()`, and `codeInterpreterTool()`.
+
+The SDK validates the configuration before sending a request. A programmatic-only tool requires `programmaticToolCallingTool()`. The helper also requires at least one eligible tool unless the request includes tool search or a stored prompt that can provide one.
+
+Use `outputSchema` when a function tool must return structured data. A Zod schema constrains the `execute` return type and validates and transforms the runtime result. A raw JSON schema describes the wire contract but does not add SDK-side result validation. An invalid Zod result raises `InvalidToolOutputError`.
+
+Structured outputs also change failure handling:
+
+- The default `errorFunction` is disabled, so execution errors are rethrown. A custom handler must return a value compatible with `outputSchema`.
+- The default timeout behavior becomes `'raise_exception'`.
+- To use `'error_as_result'`, provide a `timeoutErrorFunction` whose return value satisfies `outputSchema`.
+- A value substituted by an output guardrail must also satisfy `outputSchema`.
+
+Programmatic Tool Calling is Responses-only. Chat Completions, Realtime agents, and the AI SDK model adapter reject these options. When an eligible tool is deferred, tool search must load it before a later generated program can call it.
+
+See [`examples/tools/programmatic-tool-calling.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/tools/programmatic-tool-calling.ts) for a complete example.
 
 ---
 

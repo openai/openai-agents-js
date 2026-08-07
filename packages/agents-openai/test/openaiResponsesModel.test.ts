@@ -10,6 +10,8 @@ import {
   Agent,
   retryPolicies,
   Runner,
+  type AgentInputItem,
+  type Session,
   setDefaultModelProvider,
   setTracingDisabled,
   withTrace,
@@ -125,6 +127,174 @@ describe('OpenAIResponsesModel', () => {
       expect(result.responseId).toBe('res-request-id');
       expect(result.requestId).toBe('req_nonstream_123');
     });
+  });
+
+  it.each(['commentary', 'final_answer'] as const)(
+    'preserves assistant message phase "%s" in requests and responses',
+    async (phase) => {
+      const fakeResponse = {
+        id: 'res-phase',
+        usage: {},
+        output: [
+          {
+            id: 'assistant-output',
+            type: 'message',
+            status: 'completed',
+            role: 'assistant',
+            phase,
+            content: [{ type: 'output_text', text: 'response' }],
+          },
+        ],
+      };
+      const createMock = vi.fn().mockResolvedValue(fakeResponse);
+      const model = new OpenAIResponsesModel(
+        { responses: { create: createMock } } as unknown as OpenAI,
+        'gpt-test',
+      );
+
+      const result = await withTrace('assistant-phase', () =>
+        model.getResponse({
+          input: [
+            {
+              type: 'message',
+              id: 'assistant-input',
+              role: 'assistant',
+              status: 'completed',
+              phase,
+              content: [{ type: 'output_text', text: 'previous reply' }],
+              providerData: {
+                phase: phase === 'commentary' ? 'final_answer' : 'commentary',
+                customMetadata: 'keep',
+              },
+            },
+          ],
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any),
+      );
+
+      expect(createMock.mock.calls[0][0].input[0]).toMatchObject({
+        role: 'assistant',
+        phase,
+        custom_metadata: 'keep',
+      });
+      expect(result.output[0]).toMatchObject({ phase });
+      expect(result.output[0]?.providerData).toMatchObject({ phase });
+    },
+  );
+
+  it('preserves assistant phases stored in legacy providerData', async () => {
+    const createMock = vi.fn().mockResolvedValue({
+      id: 'res-legacy-phase',
+      usage: {},
+      output: [],
+    });
+    const model = new OpenAIResponsesModel(
+      { responses: { create: createMock } } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    await withTrace('assistant-legacy-phase', () =>
+      model.getResponse({
+        input: [
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'previous reply' }],
+            providerData: { phase: 'commentary' },
+          },
+        ],
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      } as any),
+    );
+
+    expect(createMock.mock.calls[0][0].input[0]).toHaveProperty(
+      'phase',
+      'commentary',
+    );
+  });
+
+  it('does not send assistant-only phases on user or system messages', async () => {
+    const createMock = vi.fn().mockResolvedValue({
+      id: 'res-user-phase',
+      usage: {},
+      output: [],
+    });
+    const model = new OpenAIResponsesModel(
+      { responses: { create: createMock } } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    await withTrace('non-assistant-phase', () =>
+      model.getResponse({
+        input: [
+          {
+            type: 'message',
+            role: 'system',
+            content: 'instructions',
+            providerData: { phase: 'commentary', customFlag: true },
+          },
+          {
+            type: 'message',
+            role: 'user',
+            content: 'user input',
+            providerData: { phase: 'final_answer', customFlag: true },
+          },
+        ],
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      } as any),
+    );
+
+    expect(createMock.mock.calls[0][0].input).toEqual([
+      expect.objectContaining({ role: 'system', custom_flag: true }),
+      expect.objectContaining({ role: 'user', custom_flag: true }),
+    ]);
+    expect(createMock.mock.calls[0][0].input[0]).not.toHaveProperty('phase');
+    expect(createMock.mock.calls[0][0].input[1]).not.toHaveProperty('phase');
+  });
+
+  it('rejects invalid assistant message phases before making a request', async () => {
+    const createMock = vi.fn();
+    const model = new OpenAIResponsesModel(
+      { responses: { create: createMock } } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    await expect(
+      withTrace('assistant-invalid-phase', () =>
+        model.getResponse({
+          input: [
+            {
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              phase: 'invalid',
+              content: [{ type: 'output_text', text: 'previous reply' }],
+            },
+          ],
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any),
+      ),
+    ).rejects.toThrow(
+      'Invalid assistant message phase: "invalid". Expected "commentary" or "final_answer".',
+    );
+    expect(createMock).not.toHaveBeenCalled();
   });
 
   it('getRetryAdvice does not suggest retries from transport heuristics alone', () => {
@@ -4182,6 +4352,7 @@ describe('OpenAIResponsesModel', () => {
                 status: 'completed',
                 content: [{ type: 'output_text', text: 'delta' }],
                 role: 'assistant',
+                phase: 'commentary',
               },
             ],
             usage: {},
@@ -4265,7 +4436,13 @@ describe('OpenAIResponsesModel', () => {
       expect(textDelta).toMatchObject({ itemId: 'item-1' });
       expect(completed).toMatchObject({
         response: {
-          output: [expect.objectContaining({ type: 'message', id: 'item-1' })],
+          output: [
+            expect.objectContaining({
+              type: 'message',
+              id: 'item-1',
+              phase: 'commentary',
+            }),
+          ],
         },
       });
     });
@@ -4524,6 +4701,133 @@ describe('OpenAIResponsesModel', () => {
       expect(responseDone).toBeDefined();
       expect((responseDone as any).response.id).toBe('res-stream-request-id');
       expect((responseDone as any).response.requestId).toBe('req_stream_123');
+    });
+  });
+
+  describe('compaction items', () => {
+    function fakeClientWithResponse(response: unknown) {
+      const createMock = vi.fn().mockResolvedValue(response);
+      return {
+        createMock,
+        client: {
+          responses: { create: createMock },
+        } as unknown as OpenAI,
+      };
+    }
+
+    const baseRequest = {
+      systemInstructions: undefined,
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    };
+
+    it('rejects a compaction input item without ciphertext before calling the client', async () => {
+      const { client, createMock } = fakeClientWithResponse({
+        id: 'unused',
+        usage: {},
+        output: [],
+      });
+      const model = new OpenAIResponsesModel(client, 'gpt-test');
+
+      await expect(
+        withTrace('test', () =>
+          model.getResponse({
+            ...baseRequest,
+            input: [
+              {
+                type: 'compaction',
+                providerData: { provider: 'example' },
+              },
+            ],
+          } as any),
+        ),
+      ).rejects.toThrow('Compaction item missing encrypted_content');
+      expect(createMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed provider compaction output item', async () => {
+      const { client } = fakeClientWithResponse({
+        id: 'res-compaction-malformed',
+        usage: {},
+        output: [{ type: 'compaction', id: 'cmp_bad' }],
+      });
+      const model = new OpenAIResponsesModel(client, 'gpt-test');
+
+      await expect(
+        withTrace('test', () =>
+          model.getResponse({ ...baseRequest, input: 'hello' } as any),
+        ),
+      ).rejects.toThrow('Compaction item missing encrypted_content');
+    });
+
+    it('rejects a provider compaction output item with a malformed id', async () => {
+      const { client } = fakeClientWithResponse({
+        id: 'res-compaction-malformed-id',
+        usage: {},
+        output: [
+          { type: 'compaction', id: 7, encrypted_content: 'ciphertext' },
+        ],
+      });
+      const model = new OpenAIResponsesModel(client, 'gpt-test');
+
+      await expect(
+        withTrace('test', () =>
+          model.getResponse({ ...baseRequest, input: 'hello' } as any),
+        ),
+      ).rejects.toThrow('Compaction item missing encrypted_content');
+    });
+
+    it('does not persist session input when streamed provider compaction is malformed', async () => {
+      const completedEvent: OpenAIResponseStreamEvent = {
+        type: 'response.completed',
+        response: {
+          id: 'res-stream-compaction-malformed',
+          output: [{ type: 'compaction', id: 'cmp_bad' }],
+          usage: {},
+        } as any,
+        sequence_number: 0,
+      };
+      async function* fakeStream() {
+        yield completedEvent;
+      }
+      const createMock = vi.fn().mockResolvedValue(fakeStream());
+      const model = new OpenAIResponsesModel(
+        { responses: { create: createMock } } as unknown as OpenAI,
+        'gpt-test',
+      );
+      const addItems = vi.fn(async (_items: AgentInputItem[]) => {});
+      const clearSession = vi.fn(async () => {});
+      const replaceHistoryWithCompaction = vi.fn(
+        async (_items: AgentInputItem[]) => {},
+      );
+      const session: Session = {
+        getSessionId: vi.fn().mockResolvedValue('provider-stream-session'),
+        getItems: vi.fn().mockResolvedValue([]),
+        addItems,
+        popItem: vi.fn().mockResolvedValue(undefined),
+        clearSession,
+        replaceHistoryWithCompaction,
+      };
+      const agent = new Agent({
+        name: 'MalformedProviderStreamingCompactionAgent',
+        model,
+      });
+
+      const result = await new Runner().run(agent, 'persist-me', {
+        stream: true,
+        session,
+      });
+
+      await expect(result.completed).rejects.toThrow(
+        'Compaction item missing encrypted_content',
+      );
+      expect(addItems).not.toHaveBeenCalled();
+      expect(clearSession).not.toHaveBeenCalled();
+      expect(replaceHistoryWithCompaction).not.toHaveBeenCalled();
     });
   });
 

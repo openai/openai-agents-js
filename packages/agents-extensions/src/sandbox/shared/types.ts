@@ -24,6 +24,10 @@ export type RemoteSandboxPathResolver = (
   options?: RemoteSandboxPathOptions,
 ) => Promise<string>;
 
+export type RemoteSandboxCredentialPathResolver = (
+  path: string,
+) => Promise<string>;
+
 export type SandboxManifestMetadataSupport = {
   users?: boolean;
   groups?: boolean;

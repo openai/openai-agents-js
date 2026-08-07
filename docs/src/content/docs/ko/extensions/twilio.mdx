@@ -1,21 +1,21 @@
 ---
 title: Twilio용 Realtime 에이전트
-description: Run Agents SDK voice agents over Twilio phone calls
+description: Run Agents SDK realtime agents over Twilio phone calls
 ---
 
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import twilioBasicExample from '../../../../../../examples/docs/extensions/twilio-basic.ts?raw';
 import twilioServerExample from '../../../../../../examples/realtime-twilio/index.ts?raw';
 
-Twilio는 전화 통화의 원문 오디오를 WebSocket 서버로 전송하는 [Media Streams API](https://www.twilio.com/docs/voice/media-streams)를 제공합니다. 이 설정을 사용하면 [음성 에이전트 개요](/openai-agents-js/ko/guides/voice-agents)를 Twilio에 연결할 수 있습니다. `websocket` 모드에서 기본 Realtime Session 전송 방식을 사용하여 Twilio에서 수신되는 이벤트를 Realtime Session에 연결할 수 있습니다. 하지만 전화 통화는 웹 기반 대화보다 자연스럽게 지연 시간이 길어지므로, 올바른 오디오 형식을 설정하고 인터럽션(중단 처리) 타이밍을 직접 조정해야 합니다.
+Twilio는 전화 통화의 원문 오디오를 WebSocket 서버로 전송하는 [Media Streams API](https://www.twilio.com/docs/voice/media-streams)를 제공합니다. 이 구성을 사용하면 [실시간 에이전트 개요](/openai-agents-js/ko/guides/voice-agents)의 실시간 에이전트를 Twilio에 연결할 수 있습니다. `websocket` 모드의 기본 Realtime Session 전송 방식을 사용하여 Twilio에서 수신되는 이벤트를 Realtime Session에 연결할 수 있습니다. 하지만 전화 통화는 웹 기반 대화보다 자연스럽게 지연 시간이 길어지므로, 올바른 오디오 형식을 설정하고 인터럽션(중단 처리) 타이밍을 직접 조정해야 합니다.
 
-설정 환경을 개선하기 위해 인터럽션(중단 처리) 처리와 오디오 전달을 포함하여 Twilio 연결을 관리하는 전용 전송 계층을 만들었습니다.
+설정 환경을 개선하기 위해 인터럽션(중단 처리)과 오디오 전달을 비롯한 Twilio 연결을 처리하는 전용 전송 계층을 만들었습니다.
 
 <Aside type="caution">
   이 어댑터는 아직 베타 버전입니다. 극단적인 상황에서 문제나 버그가 발생할 수
-  있습니다. 문제가 있으면 [GitHub
+  있습니다. 문제가 발생하면 [GitHub
   이슈](https://github.com/openai/openai-agents-js/issues)를 통해 신고해 주세요.
-  신속하게 수정하겠습니다.
+  빠르게 수정하겠습니다.
 </Aside>
 
 ## 설정
@@ -24,9 +24,9 @@ Twilio는 전화 통화의 원문 오디오를 WebSocket 서버로 전송하는 
 
 1. **Twilio 계정과 Twilio 전화번호가 있는지 확인합니다.**
 
-2. **Twilio의 이벤트를 수신할 수 있는 WebSocket 서버를 설정합니다.**
+2. **Twilio에서 이벤트를 수신할 수 있는 WebSocket 서버를 설정합니다.**
 
-   로컬에서 개발하는 경우 로컬 서버에 Twilio가 접근할 수 있도록 [`ngrok`](https://ngrok.io/) 또는 [Cloudflare Tunnel](https://developers.cloudflare.com/pages/how-to/preview-with-cloudflare-tunnel/) 같은 로컬 터널을 구성해야 합니다. `TwilioRealtimeTransportLayer`를 사용하여 Twilio에 연결할 수 있습니다.
+   로컬에서 개발하는 경우 로컬 서버에 Twilio가 접근할 수 있도록 [`ngrok`](https://ngrok.io/) 또는 [Cloudflare Tunnel](https://developers.cloudflare.com/pages/how-to/preview-with-cloudflare-tunnel/)과 같은 로컬 터널을 구성해야 합니다. `TwilioRealtimeTransportLayer`를 사용하여 Twilio에 연결할 수 있습니다.
 
 3. **확장 패키지를 설치하여 Twilio 어댑터를 설치합니다.**
 
@@ -44,7 +44,7 @@ Twilio는 전화 통화의 원문 오디오를 WebSocket 서버로 전송하는 
      )}
    />
 
-5. **`RealtimeSession`의 Twilio 연결**
+5. **`RealtimeSession`을 Twilio에 연결합니다.**
 
    ```typescript
    session.connect({ apiKey: 'your-openai-api-key' });
@@ -52,25 +52,25 @@ Twilio는 전화 통화의 원문 오디오를 WebSocket 서버로 전송하는 
 
 </Steps>
 
-도구 호출, 가드레일 등을 포함하여 `RealtimeSession`에서 기대하는 모든 이벤트와 동작이 정상적으로 작동합니다. 음성 에이전트에서 `RealtimeSession`을 사용하는 방법에 관한 자세한 내용은 [음성 에이전트 개요](/openai-agents-js/ko/guides/voice-agents)를 참조하세요.
+도구 호출, 가드레일 등을 포함하여 `RealtimeSession`에서 기대하는 모든 이벤트와 동작이 예상대로 작동합니다. 실시간 에이전트와 함께 `RealtimeSession`을 사용하는 방법에 관한 자세한 내용은 [실시간 에이전트 개요](/openai-agents-js/ko/guides/voice-agents)를 참조하세요.
 
 ## 팁 및 고려 사항
 
-1. **속도가 핵심입니다.**
+1. **속도가 가장 중요합니다.**
 
    Twilio에서 필요한 모든 이벤트와 오디오를 수신하려면 WebSocket 연결에 대한 참조를 확보하는 즉시 `TwilioRealtimeTransportLayer` 인스턴스를 생성하고, 바로 이어서 `session.connect()`를 호출해야 합니다.
 
-2. **원문 Twilio 이벤트에 대한 접근**
+2. **Twilio 원문 이벤트에 접근합니다.**
 
-   Twilio가 전송하는 원문 이벤트에 접근하려면 `RealtimeSession` 인스턴스에서 `transport_event` 이벤트를 수신하면 됩니다. Twilio의 모든 이벤트는 `twilio_message` 타입이며 원문 이벤트 데이터를 포함하는 `message` 속성을 갖습니다.
+   Twilio에서 전송되는 원문 이벤트에 접근하려면 `RealtimeSession` 인스턴스의 `transport_event` 이벤트를 수신하면 됩니다. Twilio의 모든 이벤트는 유형이 `twilio_message`이며, 원문 이벤트 데이터를 포함하는 `message` 속성을 갖습니다.
 
-3. **디버그 로그 확인**
+3. **디버그 로그를 확인합니다.**
 
-   때로는 발생 중인 상황에 대해 더 많은 정보가 필요한 문제를 겪을 수 있습니다. `DEBUG=openai-agents*` 환경 변수를 사용하면 Agents SDK의 모든 디버그 로그가 표시됩니다. 또는 `DEBUG=openai-agents:extensions:twilio*`를 사용하여 Twilio 어댑터의 디버그 로그만 활성화할 수 있습니다.
+   진행 상황에 관한 자세한 정보가 필요할 때 문제가 발생할 수 있습니다. `DEBUG=openai-agents*` 환경 변수를 사용하면 Agents SDK의 모든 디버그 로그가 표시됩니다. 또는 `DEBUG=openai-agents:extensions:twilio*`를 사용하여 Twilio 어댑터의 디버그 로그만 활성화할 수 있습니다.
 
 ## 전체 예제 서버
 
-다음은 Twilio의 요청을 수신하여 `RealtimeSession`으로 전달하는 WebSocket 서버의 전체 엔드투엔드 예제입니다.
+다음은 Twilio의 요청을 수신하여 `RealtimeSession`으로 전달하는 WebSocket 서버의 전체 엔드 투 엔드 예제입니다.
 
 <Code
   lang="typescript"

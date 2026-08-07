@@ -17,6 +17,8 @@
     "test:coverage": "NODE_ENV=test vitest run --coverage",
     "test:examples": "pnpm -r build-check",
     "test:integration": "NODE_ENV=test vitest run --config=vitest.integration.config.ts",
+    "test:integration:sdk-core": "NODE_ENV=test vitest run --config=vitest.integration.config.ts integration-tests/node-sdk-behavior.test.ts -t \"core behavior profile\"",
+    "test:integration:sdk-capabilities": "NODE_ENV=test vitest run --config=vitest.integration.config.ts integration-tests/node-sdk-behavior.test.ts -t \"capability behavior profile\"",
     "test:rclone-pin": "node --test scripts/update-rclone-pin.test.mjs",
     "test:watch": "NODE_ENV=test vitest --watch",
     "dev": "tsx scripts/dev.mts",
@@ -102,5 +104,5 @@
     "verdaccio": "^6.7.4",
     "vitest": "^3.2.6"
   },
-  "packageManager": "pnpm@11.15.1+sha512.81350b07e53c9538a02f1f2303b4290fa2d7be04e56e2a970c4cc4b417dc761de196edabd49d55c7dc9580db81007c44143e4e3d7e462b3000d23c255122d065"
+  "packageManager": "pnpm@11.18.0+sha512.33d83c77da82f49fba836925c6f1b841181ec3132b670639bd012f7075f5c7cf634c5f870147c19aae7478fac01df09d8892e880454896edd23ee9b33757563c"
 }

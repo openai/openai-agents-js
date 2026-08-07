@@ -1,12 +1,60 @@
 export {
+  assertHostPathGrantsRebound,
+  deserializeMountCredentialRedactionMetadata,
+  deserializeHostPathGrantRedactionMetadata,
   deserializeManifest,
   mergeManifestEntryDelta,
   mergeManifestDelta,
+  rebindPersistedMountCredentials,
   sanitizeEnvironmentForPersistence,
   serializeEnvironmentForPersistence,
+  serializeHostPathGrantRedactionMetadata,
+  serializeMountCredentialRedactionMetadata,
   serializeManifest,
   serializeManifestRecord,
 } from './sandboxes/shared/manifestPersistence';
+export {
+  assertExistingMountTopologyPreserved,
+  assertLiveMountCredentialAuthorityMatches,
+  assertLiveMountEnvironmentAuthorityMatches,
+  assertMountCredentialsRebound,
+  assertSandboxSessionStateUsable,
+  assertSandboxStateGenerationUnchanged,
+  captureSandboxStateGeneration,
+  captureLiveMountCredentialAuthority,
+  captureLiveMountCredentialAuthorityIfAbsent,
+  captureLiveMountEnvironmentAuthority,
+  copyValidatedMountEffectivePaths,
+  copyTrustedMountCredentialRebindProvenance,
+  configuredMountCredentialFields,
+  liveMountCredentialAuthorityMatches,
+  liveMountEnvironmentAuthorityMatches,
+  manifestHasNonResumableMountAuthority,
+  isSandboxSessionStateUnsafe,
+  isMountCredentialFileEnvironmentName,
+  manifestHasInContainerMounts,
+  mountCredentialFileReferences,
+  NON_RESUMABLE_MOUNT_AUTHORITY_KEY,
+  markSandboxSessionStateUnsafe,
+  recordLiveMountCredentialAuthority,
+  resolveAndValidateMountEnvironment,
+  sanitizeMountCredentialEnvironmentForPersistence,
+  validateMountCredentialBoundariesAtEffectivePath,
+  validateMountCredentialBoundaries,
+  validateMountCredentialFileEffectivePaths,
+  validateMountEnvironmentCredentialBoundaries,
+  withExclusiveSandboxManifestMutation,
+  withExclusiveSandboxStateInspection,
+} from './mountSecurity';
+export type {
+  EffectiveManifestEntryPath,
+  MountCredentialFileReference,
+} from './mountSecurity';
+export { stableJsonStringify } from './shared/stableJson';
+export {
+  copyManifestMountCredentialExposurePolicy,
+  replaceManifestMountCredentialExposurePolicy,
+} from './manifest';
 export {
   elapsedSeconds,
   formatExecResponse,
@@ -17,6 +65,7 @@ export {
   isHostPathWithinRoot,
   relativeHostPathEscapesRoot,
   relativeHostPathEscapesRootOrSelf,
+  sandboxPathGrantHostPath,
 } from './shared/hostPath';
 export {
   hasBackslashPathSeparator,
@@ -34,10 +83,17 @@ export {
   materializeStaticEnvironment,
   mergeMaterializedEnvironment,
   mergeStaticMaterializedEnvironment,
+  rehydratePersistedEnvironmentForRuntime,
+  resolveEnvironmentReferences,
   serializeManifestEnvironment,
   serializeRuntimeEnvironmentForPersistence,
 } from './shared/environment';
 export { shellQuote } from './shared/shell';
+export {
+  isSandboxPathNotFoundError,
+  probeSandboxPathExists,
+  type SandboxPathProbeResult,
+} from './shared/pathProbe';
 export {
   isRecord,
   isStringRecord,
