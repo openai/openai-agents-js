@@ -3,12 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import dotenv from 'dotenv';
 import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
-import {
-  RealtimeAgent,
-  RealtimeSession,
-  backgroundResult,
-  tool,
-} from '@openai/agents/realtime';
+import { RealtimeAgent, RealtimeSession, tool } from '@openai/agents/realtime';
 import { TwilioRealtimeTransportLayer } from '@openai/agents-extensions';
 import { hostedMcpTool } from '@openai/agents';
 import { z } from 'zod';
@@ -59,7 +54,7 @@ const weatherTool = tool({
     location: z.string(),
   }),
   execute: async ({ location }: { location: string }) => {
-    return backgroundResult(`The weather in ${location} is sunny.`);
+    return `The weather in ${location} is sunny.`;
   },
 });
 
