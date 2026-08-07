@@ -60,6 +60,26 @@ export const FAKE_ID = 'FAKE_ID';
 const GPT_56_MODEL_PATTERN =
   /^gpt-5\.6(?:-(?:sol|terra|luna)(?:-\d{4}-\d{2}-\d{2})?)?$/;
 
+type ChatCompletionStreamResult = {
+  stream: Stream<OpenAI.Chat.Completions.ChatCompletionChunk>;
+  requestId?: string;
+};
+
+type ChatCompletionStreamWithRequestId = PromiseLike<
+  Stream<OpenAI.Chat.Completions.ChatCompletionChunk>
+> & {
+  withResponse?: () => Promise<{
+    data: Stream<OpenAI.Chat.Completions.ChatCompletionChunk>;
+    request_id: string | null;
+  }>;
+};
+
+function normalizeRequestId(requestId: unknown): string | undefined {
+  return typeof requestId === 'string' && requestId.length > 0
+    ? requestId
+    : undefined;
+}
+
 // Some Chat Completions API compatible providers return a reasoning property on the message
 // If that's the case we handle them separately
 type OpenAIMessageWithReasoning =
@@ -292,6 +312,9 @@ export class OpenAIChatCompletionsModel implements Model {
           : new Usage({ requests: 1 })),
       output,
       responseId: response.id,
+      requestId: normalizeRequestId(
+        (rawResponse as { _request_id?: unknown })._request_id,
+      ),
       providerData: rawResponse,
       ...(rawUsage !== undefined ? { rawUsage } : {}),
     };
@@ -325,7 +348,11 @@ export class OpenAIChatCompletionsModel implements Model {
         span.start();
         setCurrentSpan(span);
       }
-      const stream = await this.#fetchResponse(request, span, true);
+      const { stream, requestId } = await this.#fetchResponse(
+        request,
+        span,
+        true,
+      );
 
       const response: OpenAI.Chat.Completions.ChatCompletion = {
         id: FAKE_ID,
@@ -368,6 +395,9 @@ export class OpenAIChatCompletionsModel implements Model {
               ? event.response.usage.outputTokensDetails[0]
               : event.response.usage.outputTokensDetails,
           };
+        }
+        if (event.type === 'response_done' && requestId) {
+          event.response.requestId = requestId;
         }
         yield event;
       }
@@ -491,7 +521,7 @@ export class OpenAIChatCompletionsModel implements Model {
     request: ModelRequest,
     span: Span<GenerationSpanData> | undefined,
     stream: true,
-  ): Promise<Stream<OpenAI.Chat.Completions.ChatCompletionChunk>>;
+  ): Promise<ChatCompletionStreamResult>;
   async #fetchResponse(
     request: ModelRequest,
     span: Span<GenerationSpanData> | undefined,
@@ -502,8 +532,7 @@ export class OpenAIChatCompletionsModel implements Model {
     span: Span<GenerationSpanData> | undefined,
     stream: boolean,
   ): Promise<
-    | Stream<OpenAI.Chat.Completions.ChatCompletionChunk>
-    | OpenAI.Chat.Completions.ChatCompletion
+    ChatCompletionStreamResult | OpenAI.Chat.Completions.ChatCompletion
   > {
     const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [];
     if (request.tools) {
@@ -664,17 +693,44 @@ export class OpenAIChatCompletionsModel implements Model {
       requestOptions.maxRetries = 0;
     }
 
-    const completion = await this.#client.chat.completions.create(
+    const completionPromise = this.#client.chat.completions.create(
       requestData,
       requestOptions,
     );
+
+    let completion:
+      | Stream<OpenAI.Chat.Completions.ChatCompletionChunk>
+      | OpenAI.Chat.Completions.ChatCompletion;
+    let requestId: string | undefined;
+    if (stream) {
+      const withResponse = (
+        completionPromise as ChatCompletionStreamWithRequestId
+      ).withResponse;
+      if (typeof withResponse === 'function') {
+        const streamedResponse = await withResponse.call(completionPromise);
+        completion = streamedResponse.data;
+        requestId = normalizeRequestId(streamedResponse.request_id);
+      } else {
+        completion =
+          (await completionPromise) as Stream<OpenAI.Chat.Completions.ChatCompletionChunk>;
+      }
+    } else {
+      completion =
+        (await completionPromise) as OpenAI.Chat.Completions.ChatCompletion;
+    }
 
     if (logger.dontLogModelData) {
       logger.debug('Response received');
     } else {
       logger.debug(`Response received: ${JSON.stringify(completion, null, 2)}`);
     }
-    return completion;
+    return stream
+      ? {
+          stream:
+            completion as Stream<OpenAI.Chat.Completions.ChatCompletionChunk>,
+          ...(requestId ? { requestId } : {}),
+        }
+      : (completion as OpenAI.Chat.Completions.ChatCompletion);
   }
 }
 
