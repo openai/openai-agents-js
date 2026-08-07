@@ -289,7 +289,7 @@ export class OpenAIChatCompletionsModel implements Model {
         preservedUsage ??
         (response.usage
           ? new Usage(toResponseUsage(response.usage))
-          : new Usage()),
+          : new Usage({ requests: 1 })),
       output,
       responseId: response.id,
       providerData: rawResponse,
