@@ -16,6 +16,7 @@ It is intentionally not part of the `pnpm` workspace and instead installs the pa
 - The Node.js published SDK behavior fixture uses `OPENAI_AGENTS_INTEGRATION_MODEL` when set and defaults to `gpt-5.6`. Hosted multi-agent coverage uses `OPENAI_AGENTS_INTEGRATION_HOSTED_MODEL` and defaults to `gpt-5.6-sol`.
 - Hosted MCP coverage uses `OPENAI_AGENTS_INTEGRATION_MCP_SERVER_URL` when set and defaults to the public DeepWiki MCP endpoint. Hosted multi-agent coverage requires API project access to the beta and fails when that access is unavailable.
 - Optional sandbox storage mount coverage requires Docker with FUSE support and is skipped unless `OPENAI_AGENTS_RUN_STORAGE_MOUNT_INTEGRATION=1` is set. It starts local Azurite and MinIO containers and removes them after the test.
+- The React Native fixture copies the Expo example, installs the locally published packages, type-checks it, and creates an Android Metro bundle. Set `OPENAI_AGENTS_RUN_REACT_NATIVE_LIVE=1` to additionally build and run it against the Realtime API on an already-running Android emulator with `adb` available.
 
 2. **Local npm registry**
 

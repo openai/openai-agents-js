@@ -147,6 +147,14 @@ function normalizeRealtimeMessageContent(
   });
 }
 
+function cloneRealtimeEvent<T>(event: T): T {
+  if (typeof globalThis.structuredClone === 'function') {
+    return globalThis.structuredClone(event);
+  }
+
+  return JSON.parse(JSON.stringify(event)) as T;
+}
+
 export abstract class OpenAIRealtimeBase
   extends EventEmitterDelegate<OpenAIRealtimeEventTypes>
   implements RealtimeTransportLayer
@@ -226,7 +234,7 @@ export abstract class OpenAIRealtimeBase
     }
     const { data: parsed, raw, isGeneric } = result;
 
-    this.emit('*', structuredClone(raw));
+    this.emit('*', cloneRealtimeEvent(raw));
     if (isGeneric) {
       return;
     }

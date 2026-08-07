@@ -65,6 +65,11 @@
       "import": "./dist/types/index.mjs"
     },
     "./_shims": {
+      "react-native": {
+        "types": "./dist/shims/shims-react-native.d.ts",
+        "require": "./dist/shims/shims-react-native.js",
+        "import": "./dist/shims/shims-react-native.mjs"
+      },
       "workerd": {
         "types": "./dist/shims/shims-workerd.d.ts",
         "require": "./dist/shims/shims-workerd.js",
@@ -85,6 +90,11 @@
       "import": "./dist/shims/shims.mjs"
     },
     "./_shims/config": {
+      "react-native": {
+        "types": "./dist/shims/config-browser.d.ts",
+        "require": "./dist/shims/config-browser.js",
+        "import": "./dist/shims/config-browser.mjs"
+      },
       "workerd": {
         "types": "./dist/shims/config-workerd.d.ts",
         "require": "./dist/shims/config-workerd.js",

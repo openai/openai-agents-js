@@ -1,0 +1,30 @@
+{
+  "name": "realtime-react-native",
+  "version": "0.0.0",
+  "private": true,
+  "main": "expo/AppEntry",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "bundle:android": "expo export --platform android --output-dir dist --no-bytecode",
+    "build-check": "tsc --noEmit",
+    "token-server": "node scripts/token-server.mjs"
+  },
+  "dependencies": {
+    "@openai/agents-realtime": "workspace:*",
+    "expo": "~55.0.28",
+    "expo-dev-client": "~55.0.37",
+    "expo-device": "~55.0.19",
+    "expo-status-bar": "~55.0.6",
+    "react": "19.2.0",
+    "react-native": "0.83.10",
+    "react-native-webrtc": "124.0.7",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@config-plugins/react-native-webrtc": "14.0.0",
+    "@types/react": "~19.2.2",
+    "typescript": "~5.9.2"
+  }
+}

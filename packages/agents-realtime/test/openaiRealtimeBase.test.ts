@@ -64,6 +64,7 @@ describe('OpenAIRealtimeBase helpers', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -119,6 +120,25 @@ describe('OpenAIRealtimeBase helpers', () => {
       },
     ]);
     expect((base as any)._rawSessionConfig).toEqual(payload.session);
+  });
+
+  it('clones raw events when structuredClone is unavailable', () => {
+    vi.stubGlobal('structuredClone', undefined);
+    const base = new TestBase();
+    const rawListener = vi.fn();
+    base.on('*', rawListener);
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'session.updated',
+        session: { id: 'session_1', instructions: 'hello' },
+      }),
+    });
+
+    expect(rawListener).toHaveBeenCalledWith({
+      type: 'session.updated',
+      session: { id: 'session_1', instructions: 'hello' },
+    });
   });
 
   it('merges session config defaults', () => {

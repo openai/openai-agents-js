@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "Agents Realtime React Native",
+    "slug": "agents-realtime-react-native",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "plugins": [
+      "expo-dev-client",
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "microphonePermission": "Allow Agents Realtime React Native to use your microphone."
+        }
+      ]
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.openai.agents.realtimernexample"
+    },
+    "android": {
+      "package": "com.openai.agents.realtimernexample"
+    }
+  }
+}

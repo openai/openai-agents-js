@@ -10,6 +10,11 @@
   "browser": "./dist/bundle/openai-realtime-agents.umd.cjs",
   "exports": {
     ".": {
+      "react-native": {
+        "types": "./dist/index.d.ts",
+        "require": "./dist/index.js",
+        "import": "./dist/index.mjs"
+      },
       "browser": {
         "types": "./dist/index.d.ts",
         "require": "./dist/index.js",
@@ -20,6 +25,11 @@
       "import": "./dist/index.mjs"
     },
     "./_shims": {
+      "react-native": {
+        "types": "./dist/shims/shims-react-native.d.ts",
+        "require": "./dist/shims/shims-react-native.js",
+        "import": "./dist/shims/shims-react-native.mjs"
+      },
       "workerd": {
         "types": "./dist/shims/shims-workerd.d.ts",
         "require": "./dist/shims/shims-workerd.js",
