@@ -106,6 +106,36 @@ describe('OpenAIChatCompletionsModel', () => {
       },
     ]);
     expect(result.rawUsage).toBeUndefined();
+    expect(result.requestId).toBeUndefined();
+  });
+
+  it('propagates the request ID in a non-streamed response', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [{ message: { content: 'hi' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    Object.defineProperty(response, '_request_id', {
+      value: 'req_nonstreamed_123',
+      enumerable: false,
+    });
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    const result = await withTrace('t', () => model.getResponse(req));
+
+    expect(result.requestId).toBe('req_nonstreamed_123');
+    expect(result.providerData).toBe(response);
   });
 
   it('preserves raw usage field presence before normalization when enabled', async () => {
@@ -1763,6 +1793,56 @@ describe('OpenAIChatCompletionsModel', () => {
     expect(events).toEqual([{ type: 'first' }, { type: 'second' }]);
   });
 
+  it('propagates the request ID in a streamed response', async () => {
+    vi.mocked(convertChatCompletionsStreamToResponses).mockImplementationOnce(
+      async function* () {
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'r',
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            output: [],
+          },
+        } as any;
+      },
+    );
+
+    const client = new FakeClient();
+    async function* fakeStream() {
+      yield { id: 'c' } as any;
+    }
+    const stream = fakeStream();
+    const completionPromise = Promise.resolve(stream);
+    const withResponse = vi.fn().mockResolvedValue({
+      data: stream,
+      request_id: 'req_streamed_456',
+    });
+    Object.assign(completionPromise, { withResponse });
+    client.chat.completions.create.mockReturnValue(completionPromise);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'hi',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+    const events: any[] = [];
+
+    await withTrace('t', async () => {
+      for await (const event of model.getStreamedResponse(req)) {
+        events.push(event);
+      }
+    });
+
+    expect(client.chat.completions.create).toHaveBeenCalledTimes(1);
+    expect(withResponse).toHaveBeenCalledTimes(1);
+    const responseDone = events.find((event) => event.type === 'response_done');
+    expect(responseDone?.response.requestId).toBe('req_streamed_456');
+  });
+
   it('passes strict feature validation to the stream converter', async () => {
     const client = new FakeClient();
     async function* fakeStream() {
@@ -1907,5 +1987,7 @@ describe('OpenAIChatCompletionsModel', () => {
     const responseDone = events.find((e) => e.type === 'response_done');
     expect(responseDone).toBeDefined();
     expect(responseDone.response.usage.totalTokens).toBe(15);
+    expect(responseDone.response.requestId).toBeUndefined();
+    expect(client.chat.completions.create).toHaveBeenCalledTimes(1);
   });
 });
