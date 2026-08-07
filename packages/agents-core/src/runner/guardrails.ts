@@ -234,8 +234,6 @@ export async function runInputGuardrails<
     isTripwireError: (error) =>
       error instanceof InputGuardrailTripwireTriggered,
     onError: (error) => {
-      // roll back the current turn to enable reruns
-      state._currentTurn--;
       return new GuardrailExecutionError(
         `Input guardrail failed to complete: ${error}`,
         error as Error,

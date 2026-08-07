@@ -353,7 +353,8 @@ export class StreamedRunResult<
    * - a resumed run starts from the turn count carried in the resumed state.
    *
    * `RunState._currentTurn` is incremented at the *start* of a turn, before
-   * either check, so it is deliberately not surfaced verbatim.
+   * either check. The runner rolls that increment back if the model request
+   * never starts, so resumed state carries only admitted turns.
    */
   public currentTurn = 0;
 
