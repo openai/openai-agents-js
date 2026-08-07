@@ -2461,7 +2461,7 @@ function getInputItems(
         id: item.id ?? undefined,
         call_id: item.callId,
         status: item.status ?? 'in_progress',
-        operation: item.operation,
+        operation: serializeApplyPatchOperationForResponses(item.operation),
         ...(item.caller ? { caller: toOpenAIToolCaller(item.caller) } : {}),
       };
 
@@ -2986,13 +2986,16 @@ function convertToOutputItem(
             path: operation.path,
           };
           break;
-        case 'update_file':
+        case 'update_file': {
+          const moveTo = getApplyPatchMoveDestination(operation);
           normalizedOperation = {
             type: 'update_file',
             path: operation.path,
             diff: operation.diff,
+            ...(moveTo !== undefined ? { moveTo } : {}),
           };
           break;
+        }
         default:
           throw new UserError('Unknown apply_patch operation type');
       }
@@ -3121,6 +3124,33 @@ function convertToOutputItem(
       providerData: item,
     };
   });
+}
+
+function getApplyPatchMoveDestination(operation: unknown): string | undefined {
+  const moveTo = (operation as { move_to?: unknown }).move_to;
+  if (moveTo === undefined || moveTo === null) {
+    return undefined;
+  }
+  if (typeof moveTo !== 'string' || moveTo.length === 0) {
+    throw new UserError(
+      'apply_patch_call update_file move_to must be a non-empty string',
+    );
+  }
+  return moveTo;
+}
+
+function serializeApplyPatchOperationForResponses(
+  operation: protocol.ApplyPatchOperation,
+): OpenAI.Responses.ResponseInputItem.ApplyPatchCall['operation'] {
+  if (operation.type !== 'update_file' || operation.moveTo === undefined) {
+    return operation;
+  }
+
+  const { moveTo, ...rest } = operation;
+  return {
+    ...rest,
+    move_to: moveTo,
+  } as OpenAI.Responses.ResponseInputItem.ApplyPatchCall['operation'];
 }
 
 export { getToolChoice, convertTool, getInputItems, convertToOutputItem };
