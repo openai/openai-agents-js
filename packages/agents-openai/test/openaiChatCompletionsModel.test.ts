@@ -192,7 +192,7 @@ describe('OpenAIChatCompletionsModel', () => {
     expect(result.usage.inputTokens).toBe(3);
   });
 
-  it('leaves raw usage undefined when the provider omits usage', async () => {
+  it('counts the request when the provider omits usage', async () => {
     const client = new FakeClient();
     client.chat.completions.create.mockResolvedValue({
       id: 'r',
@@ -212,6 +212,7 @@ describe('OpenAIChatCompletionsModel', () => {
     );
 
     expect(result.rawUsage).toBeUndefined();
+    expect(result.usage.requests).toBe(1);
     expect(result.usage.totalTokens).toBe(0);
   });
 
