@@ -141,7 +141,14 @@ async function createConnectedTransport() {
   await connecting;
   emitTwilioMessage(twilio, {
     event: 'start',
-    start: { streamSid: 'stream-1' },
+    start: {
+      streamSid: 'stream-1',
+      mediaFormat: {
+        encoding: 'audio/x-mulaw',
+        sampleRate: 8_000,
+        channels: 1,
+      },
+    },
   });
   return { transport, twilio };
 }
@@ -155,6 +162,30 @@ describe('TwilioRealtimeTransportLayer interruption ownership', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  test('does not clear Twilio before any response playback exists', async () => {
+    const { twilio } = await createConnectedTransport();
+
+    emitOpenAIEvent({
+      type: 'input_audio_buffer.speech_started',
+      event_id: 'speech-started-1',
+      item_id: 'input-item-1',
+      audio_start_ms: 0,
+    });
+
+    expect(payloads(twilio.sent)).not.toContainEqual({
+      event: 'clear',
+      streamSid: 'stream-1',
+    });
+    expect(openAIEvents()).not.toContainEqual({
+      type: 'response.cancel',
+    });
+    expect(
+      openAIEvents().filter(
+        (event) => event.type === 'conversation.item.truncate',
+      ),
+    ).toEqual([]);
   });
 
   test('truncates one item at its last acknowledged playback position', async () => {
@@ -178,6 +209,27 @@ describe('TwilioRealtimeTransportLayer interruption ownership', () => {
       event: 'clear',
       streamSid: 'stream-1',
     });
+  });
+
+  test('claims interruption ownership only once before response completion', async () => {
+    const { transport, twilio } = await createConnectedTransport();
+
+    emitResponseCreated('response-a');
+    emitAudioDelta('item-a', 'response-a');
+    transport.interrupt();
+    transport.interrupt();
+
+    expect(
+      payloads(twilio.sent).filter((payload) => payload.event === 'clear'),
+    ).toHaveLength(1);
+    expect(
+      openAIEvents().filter((event) => event.type === 'response.cancel'),
+    ).toHaveLength(1);
+    expect(
+      openAIEvents().filter(
+        (event) => event.type === 'conversation.item.truncate',
+      ),
+    ).toHaveLength(1);
   });
 
   test('clamps and floors a fully acknowledged fractional duration', async () => {
@@ -369,6 +421,40 @@ describe('TwilioRealtimeTransportLayer interruption ownership', () => {
       },
     ]);
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  test('preserves Twilio input padding capability across OpenAI reconnects', async () => {
+    const { transport, twilio } = await createConnectedTransport();
+
+    transport.close();
+    const reconnecting = transport.connect({
+      apiKey: 'ek_test',
+      model: 'test',
+    });
+    await vi.runAllTimersAsync();
+    await reconnecting;
+
+    openAIWebSocket.sent = [];
+    emitTwilioMessage(twilio, {
+      event: 'media',
+      media: {
+        payload: Buffer.alloc(160).toString('base64'),
+        timestamp: '100',
+      },
+    });
+    emitOpenAIEvent({
+      type: 'input_audio_buffer.speech_started',
+      event_id: 'speech-started-after-reconnect',
+      item_id: 'input-item-after-reconnect',
+      audio_start_ms: 0,
+    });
+    await vi.advanceTimersByTimeAsync(750);
+
+    const inputAppends = openAIEvents().filter(
+      (event) => event.type === 'input_audio_buffer.append',
+    );
+    expect(inputAppends).toHaveLength(2);
+    expect(Buffer.from(inputAppends[1].audio, 'base64')).toHaveLength(8_000);
   });
 
   test('removes a fully played item when Twilio returns its done mark', async () => {

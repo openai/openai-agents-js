@@ -2,4 +2,4 @@
 '@openai/agents-extensions': patch
 ---
 
-fix: keep Twilio interruption truncation aligned with item-owned playback
+fix: align Twilio playback ownership and recover missing input silence

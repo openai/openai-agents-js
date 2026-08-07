@@ -13,3 +13,18 @@ Start the server with:
 ```bash
 pnpm -F realtime-twilio start
 ```
+
+For Twilio's standard 8 kHz mono PCMU media format, the transport fills missing inbound media intervals with silence so Realtime voice activity detection can complete a turn even when the phone connection omits silent audio. While speech is active, it waits 750ms for another media message before adding silence. You can tune or disable this fallback when constructing the transport:
+
+```ts
+const transport = new TwilioRealtimeTransportLayer({
+  twilioWebSocket: connection,
+  inputAudioInactivityTimeoutMs: 500, // Set to null to disable the fallback.
+});
+```
+
+To inspect session events, Twilio media timing and levels, response status, and WebSocket closure details without logging raw audio, start the example with diagnostics enabled:
+
+```bash
+DEBUG=diagnostics pnpm -F realtime-twilio start
+```

@@ -42,6 +42,21 @@ type TwilioTruncationSnapshot = {
   audioEndMs: number;
 };
 
+const TWILIO_MULAW_BYTES_PER_MILLISECOND = 8;
+const TWILIO_MULAW_SILENCE_BYTE = 0xff;
+const MAX_TWILIO_SILENCE_PADDING_MS = 10_000;
+const DEFAULT_TWILIO_INPUT_INACTIVITY_TIMEOUT_MS = 750;
+const TWILIO_INPUT_INACTIVITY_SILENCE_MS = 1_000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+function parseTwilioMediaTimestamp(value: unknown): number | null {
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
+    return null;
+  }
+  const timestamp = Number(value);
+  return Number.isSafeInteger(timestamp) ? timestamp : null;
+}
+
 function withTwilioLegacyAudioDefaults(
   config: LegacyRealtimeAudioConfig = {},
 ): Partial<RealtimeSessionConfig> {
@@ -62,6 +77,12 @@ export type TwilioRealtimeTransportLayerOptions =
      * connection gets passed into your request handler when running your WebSocket server.
      */
     twilioWebSocket: WebSocket | NodeWebSocket;
+    /**
+     * How long to wait for more Twilio input media while speech is active before padding the
+     * missing input with silence. Defaults to 750ms. The maximum supported value is 2,147,483,647ms.
+     * Set to `null` to disable inactivity padding.
+     */
+    inputAudioInactivityTimeoutMs?: number | null;
   };
 
 /**
@@ -100,6 +121,13 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
   #clearedMarkNames = new Set<string>();
   #activeResponseId: string | null = null;
   #discardedResponseIds = new Set<string>();
+  #nextInputTimestampMs: number | null = null;
+  #lastInputMediaAtMs: number | null = null;
+  #inputSpeechActive = false;
+  #inputGapAlreadyPadded = false;
+  #canPadInputAudio = false;
+  #inputInactivityTimer: ReturnType<typeof setTimeout> | null = null;
+  #inputAudioInactivityTimeoutMs: number | null;
   #nextAudioMetadata: {
     responseId: string;
     itemId: string;
@@ -109,6 +137,21 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
 
   constructor(options: TwilioRealtimeTransportLayerOptions) {
     super(options);
+    const inputAudioInactivityTimeoutMs =
+      options.inputAudioInactivityTimeoutMs === undefined
+        ? DEFAULT_TWILIO_INPUT_INACTIVITY_TIMEOUT_MS
+        : options.inputAudioInactivityTimeoutMs;
+    if (
+      inputAudioInactivityTimeoutMs !== null &&
+      (!Number.isFinite(inputAudioInactivityTimeoutMs) ||
+        inputAudioInactivityTimeoutMs <= 0 ||
+        inputAudioInactivityTimeoutMs > MAX_TIMER_DELAY_MS)
+    ) {
+      throw new RangeError(
+        `inputAudioInactivityTimeoutMs must be a positive finite number no greater than ${MAX_TIMER_DELAY_MS}, or null.`,
+      );
+    }
+    this.#inputAudioInactivityTimeoutMs = inputAudioInactivityTimeoutMs;
     this.#twilioWebSocket = options.twilioWebSocket;
     this.#registerEventListeners();
   }
@@ -144,6 +187,9 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
   }
 
   async connect(options: RealtimeTransportLayerConnectOptions) {
+    if (this.status === 'disconnected') {
+      this.#resetInputTiming();
+    }
     options.initialSessionConfig = this._setInputAndOutputAudioFormat(
       options.initialSessionConfig,
     );
@@ -170,7 +216,7 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
           switch (data.event) {
             case 'media':
               if (this.status === 'connected') {
-                this.sendAudio(utils.base64ToArrayBuffer(data.media.payload));
+                this.#sendTwilioAudio(data.media);
               }
               break;
             case 'mark':
@@ -178,6 +224,11 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
               break;
             case 'start':
               this.#streamSid = data.start.streamSid;
+              this.#resetInputTiming();
+              this.#canPadInputAudio =
+                data.start.mediaFormat?.encoding === 'audio/x-mulaw' &&
+                data.start.mediaFormat?.sampleRate === 8_000 &&
+                data.start.mediaFormat?.channels === 1;
               this.#startPlaybackGeneration();
               break;
             default:
@@ -199,6 +250,7 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
       },
     );
     this.#twilioWebSocket.addEventListener('close', () => {
+      this.#resetTwilioStream();
       if (this.status !== 'disconnected') {
         this.close();
       }
@@ -206,6 +258,7 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     this.#twilioWebSocket.addEventListener(
       'error',
       (error: ErrorEvent | NodeErrorEvent) => {
+        this.#resetTwilioStream();
         this.emit('error', {
           type: 'error',
           error,
@@ -238,6 +291,14 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
         this.#activeResponseId = null;
       }
     });
+    this.on('input_audio_buffer.speech_started', () => {
+      this.#inputSpeechActive = true;
+      this.#scheduleInputInactivityPadding();
+    });
+    this.on('input_audio_buffer.speech_stopped', () => {
+      this.#inputSpeechActive = false;
+      this.#clearInputInactivityTimer();
+    });
   }
 
   updateSessionConfig(config: Partial<RealtimeSessionConfig>): void {
@@ -249,7 +310,109 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     this.#clearPlaybackGeneration();
     this.#activeResponseId = null;
     this.#discardedResponseIds.clear();
+    this.#resetInputTiming();
     super._onClose();
+  }
+
+  #sendTwilioAudio(media: { payload: string; timestamp?: unknown }) {
+    this.#clearInputInactivityTimer();
+    const audio = utils.base64ToArrayBuffer(media.payload);
+    const timestamp = this.#canPadInputAudio
+      ? parseTwilioMediaTimestamp(media.timestamp)
+      : null;
+    if (!this.#canPadInputAudio || timestamp === null) {
+      this.#nextInputTimestampMs = null;
+    } else if (
+      this.#nextInputTimestampMs !== null &&
+      timestamp < this.#nextInputTimestampMs
+    ) {
+      this.#nextInputTimestampMs = null;
+    } else {
+      if (
+        !this.#inputGapAlreadyPadded &&
+        this.#nextInputTimestampMs !== null &&
+        timestamp > this.#nextInputTimestampMs
+      ) {
+        const missingDurationMs = Math.floor(
+          timestamp - this.#nextInputTimestampMs,
+        );
+        const paddingDurationMs = Math.min(
+          missingDurationMs,
+          MAX_TWILIO_SILENCE_PADDING_MS,
+        );
+        this.#logger.debug(
+          `Padding ${paddingDurationMs}ms of missing Twilio input audio with silence.`,
+        );
+        this.#sendInputSilence(paddingDurationMs);
+      }
+      this.#nextInputTimestampMs =
+        timestamp + audio.byteLength / TWILIO_MULAW_BYTES_PER_MILLISECOND;
+    }
+    this.#inputGapAlreadyPadded = false;
+    this.sendAudio(audio);
+    this.#lastInputMediaAtMs = Date.now();
+    this.#scheduleInputInactivityPadding();
+  }
+
+  #sendInputSilence(durationMs: number) {
+    const silence = new Uint8Array(
+      durationMs * TWILIO_MULAW_BYTES_PER_MILLISECOND,
+    );
+    silence.fill(TWILIO_MULAW_SILENCE_BYTE);
+    this.sendAudio(silence.buffer);
+  }
+
+  #scheduleInputInactivityPadding() {
+    this.#clearInputInactivityTimer();
+    if (
+      this.#inputAudioInactivityTimeoutMs === null ||
+      !this.#canPadInputAudio ||
+      !this.#inputSpeechActive ||
+      this.#lastInputMediaAtMs === null
+    ) {
+      return;
+    }
+    const delayMs = Math.max(
+      0,
+      this.#inputAudioInactivityTimeoutMs -
+        (Date.now() - this.#lastInputMediaAtMs),
+    );
+    const timer = setTimeout(() => {
+      if (this.#inputInactivityTimer !== timer) {
+        return;
+      }
+      this.#inputInactivityTimer = null;
+      if (this.status !== 'connected' || !this.#inputSpeechActive) {
+        return;
+      }
+      this.#logger.debug(
+        `Padding ${TWILIO_INPUT_INACTIVITY_SILENCE_MS}ms of inactive Twilio input audio with silence.`,
+      );
+      this.#sendInputSilence(TWILIO_INPUT_INACTIVITY_SILENCE_MS);
+      this.#inputGapAlreadyPadded = true;
+    }, delayMs);
+    this.#inputInactivityTimer = timer;
+    (timer as { unref?: () => void }).unref?.();
+  }
+
+  #clearInputInactivityTimer() {
+    if (this.#inputInactivityTimer !== null) {
+      clearTimeout(this.#inputInactivityTimer);
+      this.#inputInactivityTimer = null;
+    }
+  }
+
+  #resetInputTiming() {
+    this.#clearInputInactivityTimer();
+    this.#nextInputTimestampMs = null;
+    this.#lastInputMediaAtMs = null;
+    this.#inputSpeechActive = false;
+    this.#inputGapAlreadyPadded = false;
+  }
+
+  #resetTwilioStream() {
+    this.#resetInputTiming();
+    this.#canPadInputAudio = false;
   }
 
   #startPlaybackGeneration() {
@@ -411,9 +574,14 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     if (this.status !== 'connected') {
       return;
     }
+    if (this.#activeResponseId === null && this.#playbackItems.length === 0) {
+      return;
+    }
+    const activeResponseId = this.#activeResponseId;
+    this.#activeResponseId = null;
     const truncations = this.#createTruncationSnapshots();
-    if (this.#activeResponseId !== null) {
-      this.#discardedResponseIds.add(this.#activeResponseId);
+    if (activeResponseId !== null) {
+      this.#discardedResponseIds.add(activeResponseId);
     }
     for (const item of this.#playbackItems) {
       this.#discardedResponseIds.add(item.responseId);
