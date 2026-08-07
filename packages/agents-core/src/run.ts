@@ -85,7 +85,12 @@ import {
   saveToSession,
   type SessionPersistenceOptions,
 } from './runner/sessionPersistence';
-import { resolveTurnAfterModelResponse } from './runner/turnResolution';
+import {
+  filterSuppressedToolCallItems,
+  preflightModelResponseToolInvocations,
+  preflightToolInvocations,
+  resolveTurnAfterModelResponse,
+} from './runner/turnResolution';
 import { hasBlockedOutputExecutionEffect } from './runner/blockedOutputPersistence';
 import { prepareTurn } from './runner/turnPreparation';
 import { prepareAgentArtifacts } from './runner/modelPreparation';
@@ -1516,10 +1521,23 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               options.toolNotFoundBehavior,
               {
                 allowPromptSuppliedTools: preparedCall.allowPromptSuppliedTools,
+                beforeClientToolSearch: () =>
+                  preflightModelResponseToolInvocations(
+                    state._currentAgent,
+                    state,
+                    state._lastTurnResponse!,
+                    preparedCall.tools,
+                    preparedCall.handoffs,
+                  ),
               },
             );
 
             state._lastProcessedResponse = processedResponse;
+            const suppressedToolCalls = preflightToolInvocations(
+              state._currentAgent,
+              state,
+              processedResponse,
+            );
 
             await guardrailTracker.awaitCompletion();
 
@@ -1535,6 +1553,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               agentToolParentRunConfig,
               options.errorHandlers,
               options.signal,
+              suppressedToolCalls,
             );
 
             applyTurnResult({
@@ -2307,16 +2326,33 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             options.toolNotFoundBehavior,
             {
               allowPromptSuppliedTools: preparedCall.allowPromptSuppliedTools,
+              beforeClientToolSearch: () =>
+                preflightModelResponseToolInvocations(
+                  currentAgent,
+                  result.state,
+                  result.state._lastTurnResponse!,
+                  preparedCall.tools,
+                  preparedCall.handoffs,
+                ),
             },
           );
 
           result.state._lastProcessedResponse = processedResponse;
+          const suppressedToolCalls = preflightToolInvocations(
+            currentAgent,
+            result.state,
+            processedResponse,
+          );
+          const streamableItems = filterSuppressedToolCallItems(
+            processedResponse.newItems,
+            suppressedToolCalls,
+          );
 
           // Record the items emitted directly from the model response so we do not
           // stream them again after tools and other side effects finish.
-          const preToolItems = new Set<RunItem>(processedResponse.newItems);
+          const preToolItems = new Set<RunItem>(streamableItems);
           if (preToolItems.size > 0) {
-            streamStepItemsToRunResult(result, processedResponse.newItems);
+            streamStepItemsToRunResult(result, streamableItems);
           }
 
           const turnResult = await resolveTurnAfterModelResponse(
@@ -2331,6 +2367,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             agentToolParentRunConfig,
             options.errorHandlers,
             options.signal,
+            suppressedToolCalls,
           );
 
           applyTurnResult({

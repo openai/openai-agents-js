@@ -8,6 +8,7 @@ import {
 import { Agent, AgentOutputType } from '../../src/agent';
 import { Computer } from '../../src/computer';
 import { ModelBehaviorError } from '../../src/errors';
+import { handoff } from '../../src/handoff';
 import {
   RunToolApprovalItem as ToolApprovalItem,
   RunToolCallItem as ToolCallItem,
@@ -91,6 +92,79 @@ describe('resolveTurnAfterModelResponse', () => {
     );
 
     expect(result.nextStep.type).toBe('next_step_run_again');
+  });
+
+  it('suppresses an exact committed handoff replay and rejects changed reuse', async () => {
+    const targetAgent = new Agent({ name: 'CommittedHandoffTarget' });
+    const onHandoff = vi.fn();
+    const handoffToTarget = handoff(targetAgent, { onHandoff });
+    const sourceAgent = new Agent({
+      name: 'CommittedHandoffSource',
+      handoffs: [handoffToTarget],
+    });
+    const handoffCall: protocol.FunctionCallItem = {
+      type: 'function_call',
+      name: handoffToTarget.toolName,
+      callId: 'committed-handoff-call',
+      status: 'completed',
+      arguments: '{}',
+    };
+    const modelResponse: ModelResponse = {
+      output: [handoffCall],
+      usage: new Usage(),
+    };
+    const state = new RunState(new RunContext(), 'start', sourceAgent, 3);
+
+    const firstResult = await withTrace('test', () =>
+      resolveTurnAfterModelResponse(
+        sourceAgent,
+        'start',
+        [],
+        modelResponse,
+        processModelResponse(modelResponse, sourceAgent, [], [handoffToTarget]),
+        runner,
+        state,
+      ),
+    );
+    state._commitToolInvocations(firstResult.newStepItems);
+
+    const replayResult = await withTrace('test', () =>
+      resolveTurnAfterModelResponse(
+        sourceAgent,
+        'start',
+        firstResult.generatedItems,
+        modelResponse,
+        processModelResponse(modelResponse, sourceAgent, [], [handoffToTarget]),
+        runner,
+        state,
+      ),
+    );
+    expect(replayResult.nextStep.type).toBe('next_step_run_again');
+    expect(onHandoff).toHaveBeenCalledTimes(1);
+
+    const changedResponse: ModelResponse = {
+      output: [{ ...handoffCall, arguments: '{"changed":true}' }],
+      usage: new Usage(),
+    };
+    await expect(
+      withTrace('test', () =>
+        resolveTurnAfterModelResponse(
+          sourceAgent,
+          'start',
+          replayResult.generatedItems,
+          changedResponse,
+          processModelResponse(
+            changedResponse,
+            sourceAgent,
+            [],
+            [handoffToTarget],
+          ),
+          runner,
+          state,
+        ),
+      ),
+    ).rejects.toThrow(ModelBehaviorError);
+    expect(onHandoff).toHaveBeenCalledTimes(1);
   });
 
   it('runs apply_patch actions only after shell actions finish', async () => {
@@ -348,7 +422,7 @@ describe('resolveTurnAfterModelResponse', () => {
     expect(result.nextStep.type).toBe('next_step_run_again');
   });
 
-  it('runs shell and apply_patch actions without any call key', async () => {
+  it('runs shell and apply_patch actions with distinct call IDs', async () => {
     const shell = new FakeShell();
     const shellToolDef = shellTool({ shell });
     const editor = new FakeEditor();
@@ -359,11 +433,13 @@ describe('resolveTurnAfterModelResponse', () => {
     });
     const shellCall = {
       type: 'shell_call',
+      callId: 'shell-call',
       status: 'completed',
       action: { commands: ['echo hi'] },
     } as protocol.ShellCallItem;
     const patchCall = {
       type: 'apply_patch_call',
+      callId: 'patch-call',
       status: 'completed',
       operation: {
         type: 'update_file',
@@ -425,7 +501,7 @@ describe('resolveTurnAfterModelResponse', () => {
     };
     const approvalItem = new ToolApprovalItem(approvalCall, agent);
     const processedResponse: ProcessedResponse = {
-      newItems: [approvalItem],
+      newItems: [new ToolCallItem(approvalCall, agent), approvalItem],
       handoffs: [],
       functions: [],
       computerActions: [],
@@ -469,6 +545,207 @@ describe('resolveTurnAfterModelResponse', () => {
         }),
       }),
     );
+  });
+
+  it('rejects a hosted MCP approval wrapper without a source item', async () => {
+    const onApproval = vi.fn(async () => ({ approve: true }));
+    const mcpTool = hostedMcpTool({
+      serverLabel: 'server',
+      requireApproval: 'always',
+      onApproval,
+    });
+    const agent = new Agent({
+      name: 'MissingMcpSourceAgent',
+      tools: [mcpTool],
+    });
+    const approvalCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      name: 'mcp_approval_request',
+      id: 'item-missing-mcp-source',
+      status: 'in_progress',
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'server',
+        name: 'lookup',
+        id: 'missing-mcp-source',
+        arguments: '{}',
+      },
+    };
+    const modelResponse: ModelResponse = {
+      output: [approvalCall],
+      usage: new Usage(),
+    };
+    const processedResponse = processModelResponse(
+      modelResponse,
+      agent,
+      [mcpTool],
+      [],
+    );
+    processedResponse.newItems = [];
+
+    await expect(
+      resolveTurnAfterModelResponse(
+        agent,
+        'hello',
+        [],
+        modelResponse,
+        processedResponse,
+        runner,
+        new RunState(new RunContext(), 'hello', agent, 1),
+      ),
+    ).rejects.toThrow(ModelBehaviorError);
+    expect(onApproval).not.toHaveBeenCalled();
+  });
+
+  it('suppresses the original hosted MCP item for an exact committed replay', async () => {
+    const onApproval = vi.fn(async () => ({ approve: true }));
+    const mcpTool = hostedMcpTool({
+      serverLabel: 'server',
+      requireApproval: 'always',
+      onApproval,
+    });
+    const agent = new Agent({
+      name: 'CommittedMcpReplayAgent',
+      tools: [mcpTool],
+    });
+    const approvalCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      name: 'mcp_approval_request',
+      id: 'item-committed-mcp-request',
+      status: 'in_progress',
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'server',
+        name: 'lookup',
+        id: 'committed-mcp-request',
+        arguments: '{"account":"123"}',
+      },
+    };
+    const modelResponse: ModelResponse = {
+      output: [approvalCall],
+      usage: new Usage(),
+    };
+    const localState = new RunState(new RunContext(), 'hello', agent, 3);
+
+    const firstResult = await resolveTurnAfterModelResponse(
+      agent,
+      'hello',
+      [],
+      modelResponse,
+      processModelResponse(modelResponse, agent, [mcpTool], []),
+      runner,
+      localState,
+    );
+    localState._commitToolInvocations(firstResult.newStepItems);
+
+    const replayResult = await resolveTurnAfterModelResponse(
+      agent,
+      'hello',
+      firstResult.generatedItems,
+      modelResponse,
+      processModelResponse(modelResponse, agent, [mcpTool], []),
+      runner,
+      localState,
+    );
+
+    expect(onApproval).toHaveBeenCalledTimes(1);
+    expect(replayResult.newStepItems).toEqual([]);
+
+    const changedSourceResponse: ModelResponse = {
+      output: [
+        {
+          ...approvalCall,
+          arguments: '{"account":"changed"}',
+        },
+      ],
+      usage: new Usage(),
+    };
+    await expect(
+      resolveTurnAfterModelResponse(
+        agent,
+        'hello',
+        firstResult.generatedItems,
+        changedSourceResponse,
+        processModelResponse(changedSourceResponse, agent, [mcpTool], []),
+        runner,
+        localState,
+      ),
+    ).rejects.toThrow(ModelBehaviorError);
+    expect(onApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it('suppresses hosted MCP source and approval items after a HITL commit', async () => {
+    const mcpTool = hostedMcpTool({
+      serverLabel: 'server',
+      requireApproval: 'always',
+    });
+    const agent = new Agent({
+      name: 'CommittedMcpHitlReplayAgent',
+      tools: [mcpTool],
+    });
+    const approvalCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      name: 'mcp_approval_request',
+      id: 'item-committed-mcp-hitl-request',
+      status: 'in_progress',
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'server',
+        name: 'lookup',
+        id: 'committed-mcp-hitl-request',
+        arguments: '{"account":"123"}',
+      },
+    };
+    const modelResponse: ModelResponse = {
+      output: [approvalCall],
+      usage: new Usage(),
+    };
+    const localState = new RunState(new RunContext(), 'hello', agent, 3);
+    const processedResponse = processModelResponse(
+      modelResponse,
+      agent,
+      [mcpTool],
+      [],
+    );
+
+    const firstResult = await resolveTurnAfterModelResponse(
+      agent,
+      'hello',
+      [],
+      modelResponse,
+      processedResponse,
+      runner,
+      localState,
+    );
+    const approvalItem = firstResult.generatedItems.find(
+      (item): item is ToolApprovalItem => item instanceof ToolApprovalItem,
+    );
+    expect(approvalItem).toBeDefined();
+    localState._generatedItems = firstResult.generatedItems;
+    localState._context.approveTool(approvalItem!);
+
+    const resumedResult = await resolveInterruptedTurn(
+      agent,
+      'hello',
+      firstResult.generatedItems,
+      modelResponse,
+      processedResponse,
+      runner,
+      localState,
+    );
+    localState._commitToolInvocations(resumedResult.newStepItems);
+
+    const replayResult = await resolveTurnAfterModelResponse(
+      agent,
+      'hello',
+      resumedResult.generatedItems,
+      modelResponse,
+      processModelResponse(modelResponse, agent, [mcpTool], []),
+      runner,
+      localState,
+    );
+
+    expect(replayResult.newStepItems).toEqual([]);
   });
 
   it('does not finalize when tools are used in the same turn (structured output); runs again', async () => {
@@ -1123,7 +1400,7 @@ describe('resolveInterruptedTurn', () => {
     const originalPreStepItems = [approvalItem];
 
     const processedResponse: ProcessedResponse = {
-      newItems: [approvalItem],
+      newItems: [new ToolCallItem(approvalCall, agent), approvalItem],
       handoffs: [],
       functions: [],
       computerActions: [],
@@ -2047,7 +2324,7 @@ describe('resolveInterruptedTurn', () => {
     const originalPreStepItems = [approvalItem];
 
     const processedResponse: ProcessedResponse = {
-      newItems: [approvalItem],
+      newItems: [new ToolCallItem(approvalCall, agent), approvalItem],
       handoffs: [],
       functions: [],
       computerActions: [],

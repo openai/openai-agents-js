@@ -30,7 +30,7 @@ import { nextStepSchema, NextStep } from './runner/steps';
 import { createToolRunFunction, type ProcessedResponse } from './runner/types';
 import { hasBlockedOutputExecutionEffect } from './runner/blockedOutputPersistence';
 import type { AgentSpanData, Span } from './tracing/spans';
-import { SystemError, UserError } from './errors';
+import { ModelBehaviorError, SystemError, UserError } from './errors';
 import { getGlobalTraceProvider } from './tracing/provider';
 import { Usage } from './usage';
 import { Trace } from './tracing/traces';
@@ -94,6 +94,19 @@ import {
   getSerializedShellToolPlaceholder,
 } from './sandbox/runtime/toolRehydration';
 import {
+  getToolResultCorrelationForCall,
+  getToolResultCorrelationForResult,
+  getToolResultCorrelationKey,
+} from './runner/toolResultCorrelation';
+import {
+  getCanonicalToolCaller,
+  getHandoffToolInvocationName,
+  getToolInvocationCallId,
+  getToolInvocationFingerprint,
+  getToolInvocationNameFromFingerprint,
+  type LocalToolCall,
+} from './toolInvocation';
+import {
   sanitizeSerializedSandboxState,
   type SerializedSandboxState,
 } from './sandbox/runtime/sessionState';
@@ -132,7 +145,8 @@ import {
  * - 1.17: Adds durable local tool execution provenance and blocked-output session
  *   persistence bookkeeping.
  * - 1.18: Adds sandbox session-state envelope version 3 so credential-redacted
- *   mount authority cannot be consumed by older SDKs.
+ *   mount authority cannot be consumed by older SDKs, and binds per-call approvals
+ *   and committed local tool results to canonical invocation fingerprints.
  */
 export const CURRENT_SCHEMA_VERSION = '1.18' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
@@ -159,20 +173,28 @@ const SUPPORTED_SCHEMA_VERSIONS = [
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
 const $schemaVersion = z.enum(SUPPORTED_SCHEMA_VERSIONS);
 
+function schemaVersionSupportsV118State(
+  schemaVersion: SupportedSchemaVersion,
+): boolean {
+  return schemaVersion === CURRENT_SCHEMA_VERSION;
+}
+
 function schemaVersionSupportsV116State(
   schemaVersion: SupportedSchemaVersion,
 ): boolean {
   return (
     schemaVersion === '1.16' ||
     schemaVersion === '1.17' ||
-    schemaVersion === CURRENT_SCHEMA_VERSION
+    schemaVersionSupportsV118State(schemaVersion)
   );
 }
 
 function schemaVersionSupportsV117State(
   schemaVersion: SupportedSchemaVersion,
 ): boolean {
-  return schemaVersion === '1.17' || schemaVersion === CURRENT_SCHEMA_VERSION;
+  return (
+    schemaVersion === '1.17' || schemaVersionSupportsV118State(schemaVersion)
+  );
 }
 
 type ContextOverrideStrategy = 'merge' | 'replace';
@@ -197,6 +219,823 @@ type RunStateContextOverrideOptions<TContext> = {
   contextOverride?: RunContext<TContext>;
   contextStrategy?: ContextOverrideStrategy;
 };
+
+function getLocalToolResultCallId(
+  rawItem: RunToolCallOutputItem['rawItem'],
+): string | undefined {
+  switch (rawItem.type) {
+    case 'function_call_result':
+    case 'computer_call_result':
+    case 'shell_call_output':
+    case 'apply_patch_call_output':
+      return rawItem.callId;
+    default:
+      return undefined;
+  }
+}
+
+function isTrackedLocalToolResult(
+  rawItem: RunToolCallOutputItem['rawItem'],
+): boolean {
+  return (
+    rawItem.type === 'function_call_result' ||
+    rawItem.type === 'computer_call_result' ||
+    rawItem.type === 'shell_call_output' ||
+    rawItem.type === 'apply_patch_call_output'
+  );
+}
+
+function getSerializedLocalToolIdentity(
+  toolCall: LocalToolCall,
+  approvalNames: ReadonlyMap<string, string>,
+  agent: Agent<any, any>,
+): string | undefined {
+  if (toolCall.type === 'function_call') {
+    return getFunctionToolStateKeyForCall(toolCall, toolCall.name);
+  }
+  const callId = getToolInvocationCallId(toolCall);
+  if (callId) {
+    const approvalName = approvalNames.get(callId);
+    if (approvalName) {
+      return approvalName;
+    }
+  }
+  const expectedType =
+    toolCall.type === 'computer_call'
+      ? 'computer'
+      : toolCall.type === 'shell_call'
+        ? 'shell'
+        : 'apply_patch';
+  return agent.tools.find((tool) => tool.type === expectedType)?.name;
+}
+
+function toolResultMatchesCall(
+  toolCall: LocalToolCall,
+  result: RunToolCallOutputItem['rawItem'],
+): boolean {
+  const callCorrelation = getToolResultCorrelationForCall(toolCall);
+  const resultCorrelation = getToolResultCorrelationForResult(result);
+  if (
+    !callCorrelation ||
+    !resultCorrelation ||
+    getToolResultCorrelationKey(callCorrelation) !==
+      getToolResultCorrelationKey(resultCorrelation)
+  ) {
+    return false;
+  }
+  const callCaller = getCanonicalToolCaller(toolCall);
+  const resultCaller = getCanonicalToolCaller(result);
+  if (
+    callCaller.type !== resultCaller.type ||
+    (callCaller.type === 'program' &&
+      (resultCaller.type !== 'program' ||
+        callCaller.callerId !== resultCaller.callerId))
+  ) {
+    return false;
+  }
+  if (toolCall.type !== 'function_call') {
+    return true;
+  }
+  return (
+    result.type === 'function_call_result' &&
+    result.name === toolCall.name &&
+    result.namespace === toolCall.namespace
+  );
+}
+
+function toolItemsHaveSameCaller(left: unknown, right: unknown): boolean {
+  const leftCaller = getCanonicalToolCaller(left);
+  const rightCaller = getCanonicalToolCaller(right);
+  return (
+    leftCaller.type === rightCaller.type &&
+    (leftCaller.type !== 'program' ||
+      (rightCaller.type === 'program' &&
+        leftCaller.callerId === rightCaller.callerId))
+  );
+}
+
+function getAgentInvocationMap<T>(
+  records: Map<Agent<any, any>, Map<string, T>>,
+  agent: Agent<any, any>,
+): Map<string, T> {
+  const existing = records.get(agent);
+  if (existing) {
+    return existing;
+  }
+  const byCallId = new Map<string, T>();
+  records.set(agent, byCallId);
+  return byCallId;
+}
+
+type ToolInvocationCompletionEvidence = {
+  fingerprint: string;
+  items: [RunItem, RunItem];
+};
+
+function getAgentAmbiguousCallIds(
+  records: Map<Agent<any, any>, Set<string>>,
+  agent: Agent<any, any>,
+): Set<string> {
+  const existing = records.get(agent);
+  if (existing) {
+    return existing;
+  }
+  const callIds = new Set<string>();
+  records.set(agent, callIds);
+  return callIds;
+}
+
+function recordObservedToolInvocation(
+  observed: Map<Agent<any, any>, Map<string, string>>,
+  ambiguous: Map<Agent<any, any>, Set<string>>,
+  agent: Agent<any, any>,
+  callId: string,
+  fingerprint: string,
+): void {
+  const agentObserved = getAgentInvocationMap(observed, agent);
+  const previous = agentObserved.get(callId);
+  if (previous !== undefined && previous !== fingerprint) {
+    getAgentAmbiguousCallIds(ambiguous, agent).add(callId);
+    agentObserved.delete(callId);
+  } else if (!ambiguous.get(agent)?.has(callId)) {
+    agentObserved.set(callId, fingerprint);
+  }
+}
+
+function serializeAgentInvocationRecords(
+  records: ReadonlyMap<Agent<any, any>, ReadonlyMap<string, string>>,
+  agentIdentityKeys: ReadonlyMap<Agent<any, any>, string>,
+): Array<{ agentIdentity: string; invocations: Record<string, string> }> {
+  const serialized: Array<{
+    agentIdentity: string;
+    invocations: Record<string, string>;
+  }> = [];
+  for (const [agent, invocations] of records) {
+    const agentIdentity = agentIdentityKeys.get(agent);
+    if (agentIdentity && invocations.size > 0) {
+      serialized.push({
+        agentIdentity,
+        invocations: Object.fromEntries(invocations),
+      });
+    }
+  }
+  return serialized;
+}
+
+function serializeAgentCallIdSets(
+  records: ReadonlyMap<Agent<any, any>, ReadonlySet<string>>,
+  agentIdentityKeys: ReadonlyMap<Agent<any, any>, string>,
+): Array<{ agentIdentity: string; callIds: string[] }> {
+  const serialized: Array<{ agentIdentity: string; callIds: string[] }> = [];
+  for (const [agent, callIds] of records) {
+    const agentIdentity = agentIdentityKeys.get(agent);
+    if (agentIdentity && callIds.size > 0) {
+      serialized.push({ agentIdentity, callIds: [...callIds].sort() });
+    }
+  }
+  return serialized;
+}
+
+function deserializeAgentInvocationRecords(
+  records: ReadonlyArray<{
+    agentIdentity: string;
+    invocations: Record<string, string>;
+  }>,
+  agentsByIdentity: ReadonlyMap<string, Agent<any, any>>,
+): Map<Agent<any, any>, Map<string, string>> {
+  const deserialized = new Map<Agent<any, any>, Map<string, string>>();
+  const seenAgentIdentities = new Set<string>();
+  for (const { agentIdentity, invocations } of records) {
+    const agent = agentsByIdentity.get(agentIdentity);
+    if (!agent || seenAgentIdentities.has(agentIdentity)) {
+      throw new UserError(
+        'RunState contains invalid completed tool invocation ownership for the current agent graph.',
+      );
+    }
+    seenAgentIdentities.add(agentIdentity);
+    deserialized.set(agent, new Map(Object.entries(invocations)));
+  }
+  return deserialized;
+}
+
+function deserializeAgentCallIdSets(
+  records: ReadonlyArray<{ agentIdentity: string; callIds: string[] }>,
+  agentsByIdentity: ReadonlyMap<string, Agent<any, any>>,
+): Map<Agent<any, any>, Set<string>> {
+  const deserialized = new Map<Agent<any, any>, Set<string>>();
+  const seenAgentIdentities = new Set<string>();
+  for (const { agentIdentity, callIds } of records) {
+    const agent = agentsByIdentity.get(agentIdentity);
+    if (!agent || seenAgentIdentities.has(agentIdentity)) {
+      throw new UserError(
+        'RunState contains invalid ambiguous tool invocation ownership for the current agent graph.',
+      );
+    }
+    seenAgentIdentities.add(agentIdentity);
+    deserialized.set(agent, new Set(callIds));
+  }
+  return deserialized;
+}
+
+function inferCompletedToolInvocations(generatedItems: readonly RunItem[]): {
+  completed: Map<Agent<any, any>, Map<string, string>>;
+  ambiguous: Map<Agent<any, any>, Set<string>>;
+  evidence: Map<Agent<any, any>, Map<string, RunItem[]>>;
+} {
+  const approvalNames = new Map<Agent<any, any>, Map<string, string>>();
+  const pendingLocalCalls = new Map<
+    Agent<any, any>,
+    Map<
+      string,
+      {
+        toolCall: LocalToolCall;
+        identityResolved: boolean;
+        evidence: RunItem[];
+      }
+    >
+  >();
+  const pendingHostedMcpCalls = new Map<
+    Agent<any, any>,
+    Map<string, { toolCall: protocol.HostedToolCallItem; evidence: RunItem[] }>
+  >();
+  const observed = new Map<Agent<any, any>, Map<string, string>>();
+  const completed = new Map<Agent<any, any>, Map<string, string>>();
+  const ambiguous = new Map<Agent<any, any>, Set<string>>();
+  const evidence = new Map<Agent<any, any>, Map<string, RunItem[]>>();
+
+  for (const item of generatedItems) {
+    if (item instanceof RunToolApprovalItem) {
+      const callId = getToolInvocationCallId(item.rawItem);
+      if (!callId || !item.name) {
+        throw new UserError(
+          'RunState contains a tool approval request without a canonical invocation identity.',
+        );
+      }
+      const toolName = item.functionToolStateKey ?? item.name;
+      getAgentInvocationMap(approvalNames, item.agent).set(callId, toolName);
+      const pending = pendingLocalCalls.get(item.agent)?.get(callId);
+      if (pending) {
+        if (
+          getToolInvocationFingerprint('', pending.toolCall) !==
+          getToolInvocationFingerprint('', item.rawItem)
+        ) {
+          getAgentAmbiguousCallIds(ambiguous, item.agent).add(callId);
+          observed.get(item.agent)?.delete(callId);
+        } else if (!completed.get(item.agent)?.has(callId)) {
+          observed.get(item.agent)?.delete(callId);
+          recordObservedToolInvocation(
+            observed,
+            ambiguous,
+            item.agent,
+            callId,
+            getToolInvocationFingerprint(toolName, pending.toolCall),
+          );
+        }
+      }
+      recordObservedToolInvocation(
+        observed,
+        ambiguous,
+        item.agent,
+        callId,
+        getToolInvocationFingerprint(toolName, item.rawItem),
+      );
+      if (
+        item.rawItem.type === 'function_call' ||
+        item.rawItem.type === 'computer_call' ||
+        item.rawItem.type === 'shell_call' ||
+        item.rawItem.type === 'apply_patch_call'
+      ) {
+        getAgentInvocationMap(pendingLocalCalls, item.agent).set(callId, {
+          toolCall: item.rawItem,
+          identityResolved: true,
+          evidence: pending ? [...pending.evidence, item] : [item],
+        });
+      }
+      continue;
+    }
+    if (item instanceof RunHandoffCallItem) {
+      const rawItem = item.rawItem;
+      const callId = getToolInvocationCallId(rawItem);
+      if (!callId) {
+        throw new UserError(
+          'RunState contains a handoff call without a non-empty call ID.',
+        );
+      }
+      const fingerprint = getToolInvocationFingerprint(
+        getHandoffToolInvocationName(rawItem.name),
+        rawItem,
+      );
+      recordObservedToolInvocation(
+        observed,
+        ambiguous,
+        item.agent,
+        callId,
+        fingerprint,
+      );
+      getAgentInvocationMap(pendingLocalCalls, item.agent).set(callId, {
+        toolCall: rawItem,
+        identityResolved: true,
+        evidence: [item],
+      });
+      continue;
+    }
+    if (item instanceof RunToolCallItem) {
+      const rawItem = item.rawItem;
+      if (
+        rawItem.type === 'hosted_tool_call' &&
+        (rawItem.providerData?.type === 'mcp_approval_request' ||
+          rawItem.name === 'mcp_approval_request')
+      ) {
+        const providerData = rawItem.providerData as
+          { id?: unknown; name?: unknown } | undefined;
+        if (
+          typeof providerData?.id !== 'string' ||
+          providerData.id.length === 0 ||
+          typeof providerData.name !== 'string' ||
+          providerData.name.length === 0
+        ) {
+          throw new UserError(
+            'RunState contains a hosted MCP approval request without a canonical invocation identity.',
+          );
+        }
+        recordObservedToolInvocation(
+          observed,
+          ambiguous,
+          item.agent,
+          providerData.id,
+          getToolInvocationFingerprint(providerData.name, rawItem),
+        );
+        getAgentInvocationMap(pendingHostedMcpCalls, item.agent).set(
+          providerData.id,
+          { toolCall: rawItem, evidence: [item] },
+        );
+        continue;
+      }
+      if (
+        rawItem.type === 'hosted_tool_call' &&
+        rawItem.name === 'mcp_approval_response'
+      ) {
+        const providerData = rawItem.providerData as
+          { approval_request_id?: unknown } | undefined;
+        const callId = providerData?.approval_request_id;
+        if (typeof callId !== 'string' || callId.length === 0) {
+          throw new UserError(
+            'RunState contains a hosted MCP approval response without a non-empty approval request ID.',
+          );
+        }
+        const pending = pendingHostedMcpCalls.get(item.agent)?.get(callId);
+        if (!pending || !toolItemsHaveSameCaller(pending.toolCall, rawItem)) {
+          getAgentAmbiguousCallIds(ambiguous, item.agent).add(callId);
+          observed.get(item.agent)?.delete(callId);
+        }
+        pendingHostedMcpCalls.get(item.agent)?.delete(callId);
+        const fingerprint = observed.get(item.agent)?.get(callId);
+        if (
+          fingerprint !== undefined &&
+          !ambiguous.get(item.agent)?.has(callId)
+        ) {
+          getAgentInvocationMap(completed, item.agent).set(callId, fingerprint);
+          getAgentInvocationMap(evidence, item.agent).set(callId, [
+            ...(pending?.evidence ?? []),
+            item,
+          ]);
+        }
+        continue;
+      }
+      if (
+        rawItem.type !== 'function_call' &&
+        rawItem.type !== 'computer_call' &&
+        rawItem.type !== 'shell_call' &&
+        rawItem.type !== 'apply_patch_call'
+      ) {
+        continue;
+      }
+      const callId = getToolInvocationCallId(rawItem);
+      if (!callId) {
+        throw new UserError(
+          'RunState contains a local tool call without a non-empty call ID.',
+        );
+      }
+      const toolName = getSerializedLocalToolIdentity(
+        rawItem,
+        approvalNames.get(item.agent) ?? new Map(),
+        item.agent,
+      );
+      const agentPending = getAgentInvocationMap(pendingLocalCalls, item.agent);
+      const previousPending = agentPending.get(callId);
+      if (
+        previousPending &&
+        getToolInvocationFingerprint('', previousPending.toolCall) !==
+          getToolInvocationFingerprint('', rawItem)
+      ) {
+        getAgentAmbiguousCallIds(ambiguous, item.agent).add(callId);
+        agentPending.delete(callId);
+        observed.get(item.agent)?.delete(callId);
+        continue;
+      }
+      if (!ambiguous.get(item.agent)?.has(callId)) {
+        agentPending.set(callId, {
+          toolCall: rawItem,
+          identityResolved: toolName !== undefined,
+          evidence: [item],
+        });
+      }
+      if (!toolName) {
+        continue;
+      }
+      const fingerprint = getToolInvocationFingerprint(toolName, rawItem);
+      recordObservedToolInvocation(
+        observed,
+        ambiguous,
+        item.agent,
+        callId,
+        fingerprint,
+      );
+      continue;
+    }
+    if (
+      item instanceof RunToolCallOutputItem ||
+      item instanceof RunHandoffOutputItem
+    ) {
+      if (item instanceof RunHandoffOutputItem) {
+        const callId = item.rawItem.callId;
+        if (!callId) {
+          throw new UserError(
+            'RunState contains a handoff output without a non-empty call ID.',
+          );
+        }
+        const pending = pendingLocalCalls.get(item.sourceAgent)?.get(callId);
+        if (
+          !pending ||
+          !toolResultMatchesCall(pending.toolCall, item.rawItem)
+        ) {
+          getAgentAmbiguousCallIds(ambiguous, item.sourceAgent).add(callId);
+          observed.get(item.sourceAgent)?.delete(callId);
+        }
+        pendingLocalCalls.get(item.sourceAgent)?.delete(callId);
+        const fingerprint = observed.get(item.sourceAgent)?.get(callId);
+        if (
+          fingerprint !== undefined &&
+          !ambiguous.get(item.sourceAgent)?.has(callId)
+        ) {
+          getAgentInvocationMap(completed, item.sourceAgent).set(
+            callId,
+            fingerprint,
+          );
+          getAgentInvocationMap(evidence, item.sourceAgent).set(callId, [
+            ...(pending?.evidence ?? []),
+            item,
+          ]);
+        }
+        continue;
+      }
+      if (!isTrackedLocalToolResult(item.rawItem)) {
+        continue;
+      }
+      const callId = getLocalToolResultCallId(item.rawItem);
+      if (!callId) {
+        throw new UserError(
+          'RunState contains a local tool output without a non-empty call ID.',
+        );
+      }
+      const pending = pendingLocalCalls.get(item.agent)?.get(callId);
+      if (
+        !pending ||
+        !pending.identityResolved ||
+        !toolResultMatchesCall(pending.toolCall, item.rawItem)
+      ) {
+        getAgentAmbiguousCallIds(ambiguous, item.agent).add(callId);
+        observed.get(item.agent)?.delete(callId);
+      }
+      pendingLocalCalls.get(item.agent)?.delete(callId);
+      const fingerprint = callId
+        ? observed.get(item.agent)?.get(callId)
+        : undefined;
+      if (
+        callId &&
+        fingerprint !== undefined &&
+        !ambiguous.get(item.agent)?.has(callId)
+      ) {
+        getAgentInvocationMap(completed, item.agent).set(callId, fingerprint);
+        getAgentInvocationMap(evidence, item.agent).set(callId, [
+          ...(pending?.evidence ?? []),
+          item,
+        ]);
+      }
+    }
+  }
+  return { completed, ambiguous, evidence };
+}
+
+function rebuildLegacyCompletedToolInvocations(
+  state: RunState<any, Agent<any, any>>,
+  generatedItems: readonly RunItem[],
+): void {
+  const inferred = inferCompletedToolInvocations(generatedItems);
+  state._completedToolInvocations = inferred.completed;
+  state._ambiguousToolInvocationCallIds = inferred.ambiguous;
+}
+
+function getPerCallApprovalIds(record: {
+  approved: boolean | string[];
+  rejected: boolean | string[];
+}): Set<string> {
+  return new Set([
+    ...(Array.isArray(record.approved) ? record.approved : []),
+    ...(Array.isArray(record.rejected) ? record.rejected : []),
+  ]);
+}
+
+function validateCurrentApprovalInvocationRecords(
+  context: z.infer<typeof SerializedRunState>['context'],
+): void {
+  const invocationRecords = new Map(
+    (context.approvalInvocations ?? []).map((record) => [
+      record.agentIdentity,
+      record.invocations,
+    ]),
+  );
+  for (const record of context.functionApprovals ?? []) {
+    const invocations = invocationRecords.get(record.agentIdentity);
+    for (const approval of Object.values(record.approvals)) {
+      for (const callId of getPerCallApprovalIds(approval)) {
+        if (invocations?.[callId] === undefined) {
+          throw new UserError(
+            'RunState contains a per-call function approval without its canonical invocation binding.',
+          );
+        }
+      }
+    }
+  }
+  for (const record of context.approvalInvocations ?? []) {
+    for (const approval of Object.values(record.approvals)) {
+      for (const callId of getPerCallApprovalIds(approval)) {
+        if (record.invocations[callId] === undefined) {
+          throw new UserError(
+            'RunState contains a per-call tool approval without its canonical invocation binding.',
+          );
+        }
+      }
+    }
+  }
+}
+
+function validateToolInvocationCompletionEvidence(
+  agent: Agent<any, any>,
+  callId: string,
+  evidence: ToolInvocationCompletionEvidence,
+): string {
+  const [callItem, outputItem] = evidence.items;
+  const toolName = getToolInvocationNameFromFingerprint(evidence.fingerprint);
+  let toolCall: LocalToolCall | protocol.HostedToolCallItem;
+  let expectedToolName: string | undefined;
+  let evidenceCallId: string | undefined;
+  let correlated = false;
+
+  if (callItem instanceof RunHandoffCallItem) {
+    toolCall = callItem.rawItem;
+    expectedToolName = getHandoffToolInvocationName(toolCall.name);
+    evidenceCallId = toolCall.callId;
+    correlated =
+      callItem.agent === agent &&
+      outputItem instanceof RunHandoffOutputItem &&
+      outputItem.sourceAgent === agent &&
+      toolResultMatchesCall(toolCall, outputItem.rawItem);
+  } else if (
+    callItem instanceof RunToolCallItem ||
+    callItem instanceof RunToolApprovalItem
+  ) {
+    const rawToolCall = callItem.rawItem;
+    if (rawToolCall.type === 'hosted_tool_call') {
+      toolCall = rawToolCall;
+      const providerData = toolCall.providerData as
+        { id?: unknown; name?: unknown } | undefined;
+      expectedToolName =
+        typeof providerData?.name === 'string'
+          ? providerData.name
+          : callItem instanceof RunToolApprovalItem
+            ? callItem.name
+            : undefined;
+      evidenceCallId =
+        typeof providerData?.id === 'string'
+          ? providerData.id
+          : getToolInvocationCallId(toolCall);
+      const outputProviderData =
+        outputItem instanceof RunToolCallItem &&
+        outputItem.rawItem.type === 'hosted_tool_call'
+          ? (outputItem.rawItem.providerData as
+              { approval_request_id?: unknown } | undefined)
+          : undefined;
+      correlated =
+        callItem.agent === agent &&
+        outputItem instanceof RunToolCallItem &&
+        outputItem.agent === agent &&
+        outputItem.rawItem.type === 'hosted_tool_call' &&
+        outputItem.rawItem.name === 'mcp_approval_response' &&
+        outputProviderData?.approval_request_id === callId &&
+        toolItemsHaveSameCaller(toolCall, outputItem.rawItem);
+    } else if (
+      rawToolCall.type === 'function_call' ||
+      rawToolCall.type === 'computer_call' ||
+      rawToolCall.type === 'shell_call' ||
+      rawToolCall.type === 'apply_patch_call'
+    ) {
+      toolCall = rawToolCall;
+      expectedToolName =
+        toolCall.type === 'function_call'
+          ? callItem instanceof RunToolApprovalItem
+            ? (callItem.functionToolStateKey ?? callItem.name)
+            : getFunctionToolLegacyStateKeyFromStateKey(toolName ?? '') ===
+                getFunctionToolLegacyStateKeyFromStateKey(
+                  getFunctionToolStateKeyForCall(toolCall, toolCall.name) ?? '',
+                )
+              ? toolName
+              : undefined
+          : callItem instanceof RunToolApprovalItem
+            ? callItem.name
+            : toolName;
+      evidenceCallId = getToolInvocationCallId(toolCall);
+      correlated =
+        callItem.agent === agent &&
+        outputItem instanceof RunToolCallOutputItem &&
+        outputItem.agent === agent &&
+        isTrackedLocalToolResult(outputItem.rawItem) &&
+        toolResultMatchesCall(toolCall, outputItem.rawItem);
+    } else {
+      throw new UserError(
+        'RunState completed tool invocation evidence contains an unsupported call item.',
+      );
+    }
+  } else {
+    throw new UserError(
+      'RunState completed tool invocation evidence is missing its canonical call item.',
+    );
+  }
+
+  if (
+    !toolName ||
+    !expectedToolName ||
+    expectedToolName !== toolName ||
+    evidenceCallId !== callId ||
+    getToolInvocationFingerprint(toolName, toolCall) !== evidence.fingerprint ||
+    !correlated
+  ) {
+    throw new UserError(
+      'RunState completed tool invocation evidence is not a correlated canonical completion.',
+    );
+  }
+  return evidence.fingerprint;
+}
+
+function findToolInvocationCompletionEvidence(
+  agent: Agent<any, any>,
+  callId: string,
+  fingerprint: string,
+  outputItem: RunItem,
+  candidates: readonly RunItem[],
+): ToolInvocationCompletionEvidence | undefined {
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const candidate = candidates[index];
+    if (candidate === outputItem) {
+      continue;
+    }
+    const evidence: ToolInvocationCompletionEvidence = {
+      fingerprint,
+      items: [candidate, outputItem],
+    };
+    try {
+      validateToolInvocationCompletionEvidence(agent, callId, evidence);
+      return evidence;
+    } catch (error) {
+      if (!(error instanceof UserError)) {
+        throw error;
+      }
+    }
+  }
+  return undefined;
+}
+
+function getCompletionOutputCallId(
+  item: RunItem,
+  agent: Agent<any, any>,
+): string | undefined {
+  if (item instanceof RunHandoffOutputItem) {
+    return item.sourceAgent === agent ? item.rawItem.callId : undefined;
+  }
+  if (item instanceof RunToolCallOutputItem) {
+    return item.agent === agent && isTrackedLocalToolResult(item.rawItem)
+      ? getLocalToolResultCallId(item.rawItem)
+      : undefined;
+  }
+  if (
+    item instanceof RunToolCallItem &&
+    item.agent === agent &&
+    item.rawItem.type === 'hosted_tool_call' &&
+    item.rawItem.name === 'mcp_approval_response'
+  ) {
+    const providerData = item.rawItem.providerData as
+      { approval_request_id?: unknown } | undefined;
+    return typeof providerData?.approval_request_id === 'string'
+      ? providerData.approval_request_id
+      : undefined;
+  }
+  return undefined;
+}
+
+function validateGeneratedHistoryForCompletionEvidence(
+  generatedItems: readonly RunItem[],
+  agent: Agent<any, any>,
+  callId: string,
+  evidence: ToolInvocationCompletionEvidence,
+): void {
+  const outputItems = generatedItems.filter(
+    (item) => getCompletionOutputCallId(item, agent) === callId,
+  );
+  for (const outputItem of outputItems) {
+    if (
+      !findToolInvocationCompletionEvidence(
+        agent,
+        callId,
+        evidence.fingerprint,
+        outputItem,
+        [evidence.items[0], ...generatedItems],
+      )
+    ) {
+      throw new UserError(
+        'RunState generated item history conflicts with completed tool invocation evidence.',
+      );
+    }
+  }
+}
+
+function validateCurrentCompletedToolInvocations(
+  state: RunState<any, Agent<any, any>>,
+  generatedItems: readonly RunItem[],
+): void {
+  const serializedCompleted = state._completedToolInvocations;
+  const inferred = inferCompletedToolInvocations(generatedItems);
+  const inferredCompleted = inferred.completed;
+  const evidenceCompleted = new Map<Agent<any, any>, Map<string, string>>();
+  for (const [agent, invocations] of state._completedToolInvocationEvidence) {
+    for (const [callId, evidence] of invocations) {
+      validateGeneratedHistoryForCompletionEvidence(
+        generatedItems,
+        agent,
+        callId,
+        evidence,
+      );
+      getAgentInvocationMap(evidenceCompleted, agent).set(
+        callId,
+        validateToolInvocationCompletionEvidence(agent, callId, evidence),
+      );
+    }
+  }
+
+  for (const [agent, invocations] of inferredCompleted) {
+    const serializedInvocations = serializedCompleted.get(agent);
+    for (const [callId, fingerprint] of invocations) {
+      if (serializedInvocations?.get(callId) !== fingerprint) {
+        throw new UserError(
+          'RunState completed tool invocation records do not match the generated item history.',
+        );
+      }
+    }
+  }
+  for (const [agent, invocations] of serializedCompleted) {
+    const evidenceInvocations = evidenceCompleted.get(agent);
+    for (const [callId, fingerprint] of invocations) {
+      if (evidenceInvocations?.get(callId) !== fingerprint) {
+        throw new UserError(
+          'RunState completed tool invocation records do not match correlated completion evidence.',
+        );
+      }
+    }
+  }
+  for (const [agent, invocations] of evidenceCompleted) {
+    const serializedInvocations = serializedCompleted.get(agent);
+    for (const [callId, fingerprint] of invocations) {
+      if (serializedInvocations?.get(callId) !== fingerprint) {
+        throw new UserError(
+          'RunState completed tool invocation evidence does not match completed invocation authority.',
+        );
+      }
+    }
+  }
+  const inferredAmbiguous = inferred.ambiguous;
+  for (const [agent, callIds] of inferredAmbiguous) {
+    const serializedCallIds = state._ambiguousToolInvocationCallIds.get(agent);
+    for (const callId of callIds) {
+      if (evidenceCompleted.get(agent)?.has(callId)) {
+        continue;
+      }
+      if (!serializedCallIds?.has(callId)) {
+        throw new UserError(
+          'RunState ambiguous tool invocation records do not match the generated item history.',
+        );
+      }
+    }
+  }
+}
 
 const serializedAgentSchema = z.object({
   name: z.string(),
@@ -321,6 +1160,126 @@ const itemSchema = z.discriminatedUnion('type', [
     functionToolStateKey: z.string().optional(),
   }),
 ]);
+
+const serializedToolInvocationCompletionEvidenceItemSchema = z.union([
+  z
+    .object({
+      generatedItemIndex: z.number().int().min(0),
+    })
+    .strict(),
+  z
+    .object({
+      item: itemSchema,
+    })
+    .strict(),
+]);
+
+const serializedToolInvocationCompletionEvidenceSchema = z
+  .object({
+    fingerprint: z.string(),
+    items: z.tuple([
+      serializedToolInvocationCompletionEvidenceItemSchema,
+      serializedToolInvocationCompletionEvidenceItemSchema,
+    ]),
+  })
+  .strict();
+
+type SerializedToolInvocationCompletionEvidence = z.infer<
+  typeof serializedToolInvocationCompletionEvidenceSchema
+>;
+
+function serializeAgentInvocationEvidence(
+  records: ReadonlyMap<
+    Agent<any, any>,
+    ReadonlyMap<string, ToolInvocationCompletionEvidence>
+  >,
+  agentIdentityKeys: ReadonlyMap<Agent<any, any>, string>,
+  generatedItems: readonly RunItem[],
+): Array<{
+  agentIdentity: string;
+  invocations: Record<string, SerializedToolInvocationCompletionEvidence>;
+}> {
+  const serialized: Array<{
+    agentIdentity: string;
+    invocations: Record<string, SerializedToolInvocationCompletionEvidence>;
+  }> = [];
+  const generatedItemIndexes = new Map(
+    generatedItems.map((item, index) => [item, index]),
+  );
+  for (const [agent, invocations] of records) {
+    const agentIdentity = agentIdentityKeys.get(agent);
+    if (!agentIdentity || invocations.size === 0) {
+      continue;
+    }
+    serialized.push({
+      agentIdentity,
+      invocations: Object.fromEntries(
+        [...invocations].map(([callId, evidence]) => [
+          callId,
+          {
+            fingerprint: evidence.fingerprint,
+            items: evidence.items.map((item) => {
+              const generatedItemIndex = generatedItemIndexes.get(item);
+              return generatedItemIndex === undefined
+                ? { item: serializeRunItem(item, agentIdentityKeys) }
+                : { generatedItemIndex };
+            }) as SerializedToolInvocationCompletionEvidence['items'],
+          },
+        ]),
+      ),
+    });
+  }
+  return serialized;
+}
+
+function deserializeAgentInvocationEvidence(
+  records: ReadonlyArray<{
+    agentIdentity: string;
+    invocations: Record<string, SerializedToolInvocationCompletionEvidence>;
+  }>,
+  agentsByIdentity: Map<string, Agent<any, any>>,
+  generatedItems: readonly RunItem[],
+): Map<Agent<any, any>, Map<string, ToolInvocationCompletionEvidence>> {
+  const deserialized = new Map<
+    Agent<any, any>,
+    Map<string, ToolInvocationCompletionEvidence>
+  >();
+  const seenAgentIdentities = new Set<string>();
+  for (const { agentIdentity, invocations } of records) {
+    const agent = agentsByIdentity.get(agentIdentity);
+    if (!agent || seenAgentIdentities.has(agentIdentity)) {
+      throw new UserError(
+        'RunState contains invalid completed tool invocation evidence ownership for the current agent graph.',
+      );
+    }
+    seenAgentIdentities.add(agentIdentity);
+    deserialized.set(
+      agent,
+      new Map(
+        Object.entries(invocations).map(([callId, evidence]) => [
+          callId,
+          {
+            fingerprint: evidence.fingerprint,
+            items: evidence.items.map((reference) => {
+              if ('generatedItemIndex' in reference) {
+                const generatedItem =
+                  generatedItems[reference.generatedItemIndex];
+                if (!generatedItem) {
+                  throw new UserError(
+                    'RunState completed tool invocation evidence references a missing generated item.',
+                  );
+                }
+                return generatedItem;
+              }
+              return deserializeItem(reference.item, agentsByIdentity);
+            }) as [RunItem, RunItem],
+          },
+        ]),
+      ),
+    );
+  }
+  return deserialized;
+}
 
 const serializedTraceSchema = z.object({
   object: z.literal('trace'),
@@ -528,6 +1487,15 @@ const functionApprovalContextSchema = z.object({
   legacyFunctionApprovals: z
     .record(z.string(), approvalRecordSchema)
     .optional(),
+  approvalInvocations: z
+    .array(
+      z.object({
+        agentIdentity: z.string(),
+        invocations: z.record(z.string(), z.string()),
+        approvals: z.record(z.string(), approvalRecordSchema),
+      }),
+    )
+    .optional(),
 });
 
 export const SerializedRunState = z.object({
@@ -542,6 +1510,15 @@ export const SerializedRunState = z.object({
     functionApprovals: functionApprovalsSchema.optional(),
     legacyFunctionApprovals: z
       .record(z.string(), approvalRecordSchema)
+      .optional(),
+    approvalInvocations: z
+      .array(
+        z.object({
+          agentIdentity: z.string(),
+          invocations: z.record(z.string(), z.string()),
+          approvals: z.record(z.string(), approvalRecordSchema),
+        }),
+      )
       .optional(),
     context: z.record(z.string(), z.any()),
     toolInput: z.any().optional(),
@@ -579,6 +1556,33 @@ export const SerializedRunState = z.object({
   currentTurnSessionInputItems: z.array(protocol.ModelItem).optional(),
   pendingSessionHistoryTransaction:
     pendingSessionHistoryTransactionSchema.optional(),
+  completedToolInvocations: z
+    .array(
+      z.object({
+        agentIdentity: z.string(),
+        invocations: z.record(z.string(), z.string()),
+      }),
+    )
+    .optional(),
+  completedToolInvocationEvidence: z
+    .array(
+      z.object({
+        agentIdentity: z.string(),
+        invocations: z.record(
+          z.string(),
+          serializedToolInvocationCompletionEvidenceSchema,
+        ),
+      }),
+    )
+    .optional(),
+  ambiguousToolInvocationCallIds: z
+    .array(
+      z.object({
+        agentIdentity: z.string(),
+        callIds: z.array(z.string()),
+      }),
+    )
+    .optional(),
   pendingLegacyCompactionSessionItems: z.array(protocol.ModelItem).optional(),
   conversationId: z.string().optional(),
   previousResponseId: z.string().optional(),
@@ -688,6 +1692,26 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * Legacy pending-run keys mapped to their canonical category-aware keys.
    */
   public _pendingAgentToolRunAliases: Map<string, string>;
+  /**
+   * Canonical invocation fingerprints whose local tool outputs are committed to run history.
+   */
+  public _completedToolInvocations: Map<Agent<any, any>, Map<string, string>>;
+  /**
+   * Completed invocations whose supporting run items were removed by a
+   * supported history replacement.
+   */
+  public _completedToolInvocationEvidence: Map<
+    Agent<any, any>,
+    Map<string, ToolInvocationCompletionEvidence>
+  >;
+  /**
+   * Canonical invocations observed in the active run before their outputs are committed.
+   */
+  public _observedToolInvocations: Map<Agent<any, any>, Map<string, string>>;
+  /**
+   * Legacy call IDs whose serialized history cannot identify one canonical invocation.
+   */
+  public _ambiguousToolInvocationCallIds: Map<Agent<any, any>, Set<string>>;
   /**
    * Items generated by the agent during the run.
    */
@@ -828,6 +1852,10 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     this._toolUseTracker = new AgentToolUseTracker();
     this._pendingAgentToolRuns = new Map();
     this._pendingAgentToolRunAliases = new Map();
+    this._completedToolInvocations = new Map();
+    this._completedToolInvocationEvidence = new Map();
+    this._observedToolInvocations = new Map();
+    this._ambiguousToolInvocationCallIds = new Map();
     this._generatedItems = [];
     this._currentTurnPersistedItemCount = 0;
     this._currentTurnDeferredSessionItemIndexes = new Set();
@@ -883,6 +1911,152 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   public clearTrace(): void {
     this._trace = null;
     this._currentAgentSpan = undefined;
+  }
+
+  /**
+   * Validate and observe a canonical local tool invocation before side effects.
+   * @internal
+   * @returns Whether the exact invocation already has a committed output.
+   */
+  _observeToolInvocation(
+    agent: Agent<any, any>,
+    callId: string,
+    fingerprint: string,
+  ): boolean {
+    const completed = this._preflightToolInvocation(agent, callId, fingerprint);
+    if (!completed) {
+      getAgentInvocationMap(this._observedToolInvocations, agent).set(
+        callId,
+        fingerprint,
+      );
+    }
+    return completed;
+  }
+
+  /**
+   * Validate a canonical local tool invocation without recording it.
+   * @internal
+   */
+  _preflightToolInvocation(
+    agent: Agent<any, any>,
+    callId: string,
+    fingerprint: string,
+  ): boolean {
+    this._context._validateAgentApprovalInvocation(agent, callId, fingerprint);
+    const ambiguous = this._ambiguousToolInvocationCallIds.get(agent);
+    if (ambiguous?.has(callId)) {
+      throw new ModelBehaviorError(
+        `Tool call ID ${callId} has ambiguous invocation history and cannot be executed safely.`,
+        this,
+      );
+    }
+    const completed = this._completedToolInvocations.get(agent)?.get(callId);
+    if (completed !== undefined) {
+      if (completed !== fingerprint) {
+        throw new ModelBehaviorError(
+          `Tool call ID ${callId} was reused for a different invocation after its output was committed.`,
+          this,
+        );
+      }
+      return true;
+    }
+    const observed = this._observedToolInvocations.get(agent)?.get(callId);
+    if (observed !== undefined && observed !== fingerprint) {
+      throw new ModelBehaviorError(
+        `Tool call ID ${callId} was reused for different tool invocations in the same run.`,
+        this,
+      );
+    }
+    return false;
+  }
+
+  /**
+   * Commit fingerprints for local tool output items added to run history.
+   * @internal
+   */
+  _commitToolInvocations(items: readonly RunItem[]): void {
+    const evidenceCandidates = [...this._generatedItems, ...items];
+    const commit = (
+      agent: Agent<any, any>,
+      callId: string,
+      outputItem: RunItem,
+    ): void => {
+      const fingerprint = this._observedToolInvocations.get(agent)?.get(callId);
+      if (fingerprint === undefined) {
+        return;
+      }
+      const evidence = findToolInvocationCompletionEvidence(
+        agent,
+        callId,
+        fingerprint,
+        outputItem,
+        evidenceCandidates,
+      );
+      if (!evidence) {
+        return;
+      }
+      getAgentInvocationMap(this._completedToolInvocations, agent).set(
+        callId,
+        fingerprint,
+      );
+      getAgentInvocationMap(this._completedToolInvocationEvidence, agent).set(
+        callId,
+        evidence,
+      );
+    };
+
+    for (const item of items) {
+      if (
+        item instanceof RunToolCallItem &&
+        item.rawItem.type === 'hosted_tool_call' &&
+        item.rawItem.name === 'mcp_approval_response'
+      ) {
+        const providerData = item.rawItem.providerData as
+          { approval_request_id?: unknown } | undefined;
+        const callId = providerData?.approval_request_id;
+        if (typeof callId !== 'string' || callId.length === 0) {
+          throw new ModelBehaviorError(
+            'Hosted MCP approval response is missing a non-empty approval request ID.',
+            this,
+          );
+        }
+        commit(item.agent, callId, item);
+        continue;
+      }
+      if (item instanceof RunHandoffOutputItem) {
+        const callId = item.rawItem.callId;
+        if (!callId) {
+          throw new ModelBehaviorError(
+            'Handoff output is missing a non-empty call ID.',
+            this,
+          );
+        }
+        commit(item.sourceAgent, callId, item);
+        continue;
+      }
+      if (!(item instanceof RunToolCallOutputItem)) {
+        continue;
+      }
+      if (!isTrackedLocalToolResult(item.rawItem)) {
+        continue;
+      }
+      const callId = getLocalToolResultCallId(item.rawItem);
+      if (!callId) {
+        throw new ModelBehaviorError(
+          'Tool output is missing a non-empty call ID.',
+          this,
+        );
+      }
+      commit(item.agent, callId, item);
+    }
+  }
+
+  /**
+   * Replaces generated history after completion evidence has been committed.
+   * @internal
+   */
+  _replaceGeneratedItems(generatedItems: RunItem[]): void {
+    this._generatedItems = generatedItems;
   }
 
   private getOrCreateToolSearchRuntimeToolState(
@@ -1157,6 +2331,112 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   ): z.infer<typeof SerializedRunState> {
     assertSandboxStateUsesCurrentSessionEnvelope(this._sandbox);
     const agentIdentity = buildAgentIdentityMap(this.#startingAgent);
+    const completedToolInvocations = new Map(
+      [...this._completedToolInvocations].map(([agent, invocations]) => [
+        agent,
+        new Map(invocations),
+      ]),
+    );
+    const inferredInvocations = inferCompletedToolInvocations(
+      this._generatedItems,
+    );
+    for (const [agent, invocations] of inferredInvocations.completed) {
+      const completedByAgent = getAgentInvocationMap(
+        completedToolInvocations,
+        agent,
+      );
+      for (const [callId, fingerprint] of invocations) {
+        const existing = completedByAgent.get(callId);
+        if (existing !== undefined && existing !== fingerprint) {
+          throw new UserError(
+            'RunState completed tool invocation records conflict with the generated item history.',
+          );
+        }
+        completedByAgent.set(callId, fingerprint);
+      }
+    }
+    const completedToolInvocationEvidence = new Map(
+      [...this._completedToolInvocationEvidence].map(([agent, invocations]) => [
+        agent,
+        new Map(invocations),
+      ]),
+    );
+    for (const [agent, invocations] of inferredInvocations.completed) {
+      for (const [callId, fingerprint] of invocations) {
+        const evidenceByAgent = getAgentInvocationMap(
+          completedToolInvocationEvidence,
+          agent,
+        );
+        if (!evidenceByAgent.has(callId)) {
+          const inferredEvidence = inferredInvocations.evidence
+            .get(agent)
+            ?.get(callId);
+          const outputItem = inferredEvidence?.at(-1);
+          const evidence =
+            outputItem && inferredEvidence
+              ? findToolInvocationCompletionEvidence(
+                  agent,
+                  callId,
+                  fingerprint,
+                  outputItem,
+                  inferredEvidence,
+                )
+              : undefined;
+          if (evidence) {
+            evidenceByAgent.set(callId, evidence);
+          }
+        }
+      }
+    }
+    for (const [agent, invocations] of completedToolInvocationEvidence) {
+      const completedByAgent = completedToolInvocations.get(agent);
+      for (const [callId, evidence] of invocations) {
+        validateGeneratedHistoryForCompletionEvidence(
+          this._generatedItems,
+          agent,
+          callId,
+          evidence,
+        );
+        const fingerprint = validateToolInvocationCompletionEvidence(
+          agent,
+          callId,
+          evidence,
+        );
+        if (completedByAgent?.get(callId) !== fingerprint) {
+          throw new UserError(
+            'RunState completed tool invocation evidence lacks completed invocation authority.',
+          );
+        }
+      }
+    }
+    for (const [agent, invocations] of completedToolInvocations) {
+      const evidenceByAgent = completedToolInvocationEvidence.get(agent);
+      for (const [callId, fingerprint] of invocations) {
+        if (evidenceByAgent?.get(callId)?.fingerprint !== fingerprint) {
+          throw new UserError(
+            'RunState completed tool invocation records lack correlated completion evidence.',
+          );
+        }
+      }
+    }
+    const ambiguousToolInvocationCallIds = new Map(
+      [...this._ambiguousToolInvocationCallIds].map(([agent, callIds]) => [
+        agent,
+        new Set(callIds),
+      ]),
+    );
+    for (const [agent, callIds] of inferredInvocations.ambiguous) {
+      const ambiguousByAgent = getAgentAmbiguousCallIds(
+        ambiguousToolInvocationCallIds,
+        agent,
+      );
+      for (const callId of callIds) {
+        if (completedToolInvocationEvidence.get(agent)?.has(callId)) {
+          continue;
+        }
+        ambiguousByAgent.add(callId);
+      }
+    }
 
     const includeTracingApiKey = options.includeTracingApiKey === true;
     const contextJson = this._context._toJSONForRunState(agentIdentity.byAgent);
@@ -1227,6 +2507,19 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       ),
       pendingAgentToolRunAliases: Object.fromEntries(
         this._pendingAgentToolRunAliases.entries(),
+      ),
+      completedToolInvocations: serializeAgentInvocationRecords(
+        completedToolInvocations,
+        agentIdentity.byAgent,
+      ),
+      completedToolInvocationEvidence: serializeAgentInvocationEvidence(
+        completedToolInvocationEvidence,
+        agentIdentity.byAgent,
+        this._generatedItems,
+      ),
+      ambiguousToolInvocationCallIds: serializeAgentCallIdSets(
+        ambiguousToolInvocationCallIds,
+        agentIdentity.byAgent,
       ),
       currentTurnPersistedItemCount: this._currentTurnPersistedItemCount,
       currentTurnDeferredSessionItemIndexes:
@@ -1451,7 +2744,7 @@ function assertSchemaVersionSupportsToolSearch(
     schemaVersion === '1.15' ||
     schemaVersion === '1.16' ||
     schemaVersion === '1.17' ||
-    schemaVersion === CURRENT_SCHEMA_VERSION
+    schemaVersionSupportsV118State(schemaVersion)
   ) {
     return;
   }
@@ -1475,7 +2768,7 @@ function assertSchemaVersionSupportsCustomData(
     schemaVersion === '1.15' ||
     schemaVersion === '1.16' ||
     schemaVersion === '1.17' ||
-    schemaVersion === CURRENT_SCHEMA_VERSION
+    schemaVersionSupportsV118State(schemaVersion)
   ) {
     return;
   }
@@ -1501,7 +2794,7 @@ function schemaVersionSupportsAgentIdentity(
     schemaVersion === '1.15' ||
     schemaVersion === '1.16' ||
     schemaVersion === '1.17' ||
-    schemaVersion === CURRENT_SCHEMA_VERSION
+    schemaVersionSupportsV118State(schemaVersion)
   );
 }
 
@@ -1514,7 +2807,7 @@ function assertSchemaVersionSupportsProgrammaticToolCalling(
     schemaVersion === '1.15' ||
     schemaVersion === '1.16' ||
     schemaVersion === '1.17' ||
-    schemaVersion === CURRENT_SCHEMA_VERSION
+    schemaVersionSupportsV118State(schemaVersion)
   ) {
     return;
   }
@@ -1546,14 +2839,14 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
     schemaVersion === '1.15' ||
     schemaVersion === '1.16' ||
     schemaVersion === '1.17' ||
-    schemaVersion === CURRENT_SCHEMA_VERSION;
+    schemaVersionSupportsV118State(schemaVersion);
   if (
     envelopes.every(
       (envelope) =>
         envelope.version === 1 ||
         (envelope.version === 2 && supportsVersion2) ||
         (envelope.version === SANDBOX_SESSION_STATE_VERSION &&
-          schemaVersion === CURRENT_SCHEMA_VERSION),
+          schemaVersionSupportsV118State(schemaVersion)),
     )
   ) {
     return;
@@ -1565,7 +2858,7 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
       !(envelope.version === 2 && supportsVersion2) &&
       !(
         envelope.version === SANDBOX_SESSION_STATE_VERSION &&
-        schemaVersion === CURRENT_SCHEMA_VERSION
+        schemaVersionSupportsV118State(schemaVersion)
       ),
   )?.version;
   throw new UserError(
@@ -3591,6 +4884,20 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   options: RunStateContextOverrideOptions<TContext> = {},
 ): Promise<RunState<TContext, TAgent>> {
   const schemaVersion = stateJson.$schemaVersion as SupportedSchemaVersion;
+  if (
+    schemaVersionSupportsV118State(schemaVersion) &&
+    (stateJson.context.approvalInvocations === undefined ||
+      stateJson.completedToolInvocations === undefined ||
+      stateJson.completedToolInvocationEvidence === undefined ||
+      stateJson.ambiguousToolInvocationCallIds === undefined)
+  ) {
+    throw new UserError(
+      'RunState schema 1.18 requires explicit approval, completed, completion-evidence, and ambiguous invocation records.',
+    );
+  }
+  if (schemaVersionSupportsV118State(schemaVersion)) {
+    validateCurrentApprovalInvocationRecords(stateJson.context);
+  }
   const agentMap = schemaVersionSupportsAgentIdentity(schemaVersion)
     ? buildAgentIdentityMap(initialAgent).byIdentity
     : buildAgentMap(initialAgent);
@@ -3604,13 +4911,19 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   //
   // Rebuild the context
   //
-  const context =
-    contextOverride ??
-    new RunContext<TContext>(stateJson.context.context as TContext);
+  const context = contextOverride
+    ? contextOverride._cloneForRunStateDeserialization()
+    : new RunContext<TContext>(stateJson.context.context as TContext);
   context._validateFunctionApprovalOwners(
     stateJson.context.functionApprovals ?? [],
     agentMap,
   );
+  if (schemaVersionSupportsV118State(schemaVersion)) {
+    context._validateApprovalInvocations(
+      stateJson.context.approvalInvocations ?? [],
+      agentMap,
+    );
+  }
   if (contextOverride) {
     if (contextStrategy === 'merge') {
       if (schemaVersionSupportsV116State(schemaVersion)) {
@@ -3622,6 +4935,12 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
         context._mergeLegacyFunctionApprovals(
           stateJson.context.legacyFunctionApprovals ?? {},
         );
+        if (schemaVersionSupportsV118State(schemaVersion)) {
+          context._mergeApprovalInvocations(
+            stateJson.context.approvalInvocations ?? [],
+            agentMap,
+          );
+        }
       } else {
         deferredLegacyApprovalContext = new RunContext<TContext>(
           stateJson.context.context as TContext,
@@ -3644,6 +4963,12 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
       schemaVersionSupportsV116State(schemaVersion)
         ? (stateJson.context.legacyFunctionApprovals ?? {})
         : stateJson.context.approvals,
+    );
+    context._rebuildApprovalInvocations(
+      schemaVersionSupportsV118State(schemaVersion)
+        ? (stateJson.context.approvalInvocations ?? [])
+        : [],
+      agentMap,
     );
   }
   const shouldRestoreSerializedContext =
@@ -3705,6 +5030,35 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
     Object.entries(stateJson.pendingAgentToolRuns ?? {}),
   );
   state._pendingAgentToolRunAliases = new Map();
+  state._completedToolInvocations = schemaVersionSupportsV118State(
+    schemaVersion,
+  )
+    ? deserializeAgentInvocationRecords(
+        stateJson.completedToolInvocations ?? [],
+        agentMap,
+      )
+    : new Map();
+  state._completedToolInvocationEvidence = schemaVersionSupportsV118State(
+    schemaVersion,
+  )
+    ? deserializeAgentInvocationEvidence(
+        stateJson.completedToolInvocationEvidence ?? [],
+        agentMap,
+        generatedItems,
+      )
+    : new Map();
+  state._observedToolInvocations = new Map();
+  state._ambiguousToolInvocationCallIds = schemaVersionSupportsV118State(
+    schemaVersion,
+  )
+    ? deserializeAgentCallIdSets(
+        stateJson.ambiguousToolInvocationCallIds ?? [],
+        agentMap,
+      )
+    : new Map();
+  if (schemaVersionSupportsV118State(schemaVersion)) {
+    validateCurrentCompletedToolInvocations(state, generatedItems);
+  }
 
   // rebuild current agent span
   if (stateJson.currentAgentSpan) {
@@ -3884,6 +5238,40 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
       deferredLegacyApprovalContext,
       legacyFunctionApprovalKeys,
     );
+  }
+  if (!schemaVersionSupportsV118State(schemaVersion)) {
+    rebuildLegacyCompletedToolInvocations(state, generatedItems);
+    for (const run of state._lastProcessedResponse?.functions ?? []) {
+      const owner = state._lastProcessedResponse?.newItems.find(
+        (item): item is RunToolCallItem =>
+          item instanceof RunToolCallItem && item.rawItem === run.toolCall,
+      )?.agent;
+      context._bindLegacyApprovalInvocation(
+        new RunToolApprovalItem(
+          run.toolCall,
+          owner ?? state._currentAgent,
+          run.tool.name,
+          getFunctionToolStateKey(run.tool) ??
+            getFunctionToolStateKeyForCall(run.toolCall, run.tool.name),
+        ),
+      );
+    }
+    for (const interruption of state.getInterruptions()) {
+      context._bindLegacyApprovalInvocation(interruption);
+    }
+  }
+  if (contextOverride) {
+    const commitCandidate = contextOverride._cloneForRunStateDeserialization();
+    commitCandidate._mergeApprovalState(context);
+    contextOverride._replaceApprovalState(commitCandidate);
+    if (
+      contextStrategy === 'merge' &&
+      contextOverride.toolInput === undefined &&
+      context.toolInput !== undefined
+    ) {
+      contextOverride.toolInput = context.toolInput;
+    }
+    state._context = contextOverride;
   }
   state._serializedCurrentStep = state._currentStep;
   return state;

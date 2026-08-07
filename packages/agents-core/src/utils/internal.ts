@@ -19,3 +19,11 @@ export {
   logToolActionError,
   logToolActionWarning,
 } from '../logger';
+export {
+  getBoundToolInvocationRejectionMessage,
+  getToolInvocationApproval,
+  getToolInvocationRejectionMessage,
+  validateHandoffToolInvocation,
+  validateToolInvocationApproval,
+  validateToolInvocationName,
+} from '../toolInvocation';

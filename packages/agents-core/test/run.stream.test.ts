@@ -29,6 +29,7 @@ import {
   OutputGuardrailTripwireTriggered,
   RunContext,
   RunState,
+  hostedMcpTool,
   shellTool,
 } from '../src';
 import {
@@ -45,6 +46,7 @@ import { ServerConversationTracker } from '../src/runner/conversation';
 import logger from '../src/logger';
 import { getEventListeners } from 'node:events';
 import { InvalidToolInputError, ToolCallError } from '../src/errors';
+import { getToolInvocationFingerprint } from '../src/toolInvocation';
 
 function getFirstTextContent(item: AgentInputItem): string | undefined {
   if (item.type !== 'message') {
@@ -259,6 +261,92 @@ class AbortAfterStreamedProgramToolCallsModel implements Model {
 // Test for unhandled rejection when stream loop throws
 
 describe('Runner.run (streaming)', () => {
+  it('does not stream exact committed hosted MCP replay items', async () => {
+    const approvalCall: protocol.HostedToolCallItem = {
+      type: 'hosted_tool_call',
+      id: 'streamed-replay-source',
+      name: 'mcp_approval_request',
+      status: 'in_progress',
+      providerData: {
+        type: 'mcp_approval_request',
+        server_label: 'streamed-replay-server',
+        name: 'lookup',
+        id: 'streamed-replay-call',
+        arguments: '{"account":"123"}',
+      },
+    };
+    const responses: ModelResponse[] = [
+      { output: [approvalCall], usage: new Usage() },
+      { output: [fakeModelMessage('done')], usage: new Usage() },
+    ];
+    class HostedReplayStreamingModel implements Model {
+      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        throw new Error('Unexpected non-streaming model request');
+      }
+
+      async *getStreamedResponse(
+        _request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const response = responses.shift();
+        if (!response) {
+          throw new Error('No response found');
+        }
+        yield {
+          type: 'response_done',
+          response: {
+            id: `streamed-replay-${responses.length}`,
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: response.output,
+          },
+        } as StreamEvent;
+      }
+    }
+
+    const mcpTool = hostedMcpTool({
+      serverLabel: 'streamed-replay-server',
+      serverUrl: 'https://example.com',
+      requireApproval: 'always',
+    });
+    const agent = new Agent({
+      name: 'StreamedHostedReplayAgent',
+      model: new HostedReplayStreamingModel(),
+      tools: [mcpTool],
+    });
+    const state = new RunState(new RunContext(), 'start', agent, 3);
+    state._completedToolInvocations.set(
+      agent,
+      new Map([
+        [
+          'streamed-replay-call',
+          getToolInvocationFingerprint('lookup', approvalCall),
+        ],
+      ]),
+    );
+
+    const result = await new Runner().run(agent, state, { stream: true });
+    const events: RunStreamEvent[] = [];
+    for await (const event of result) {
+      events.push(event);
+    }
+    await result.completed;
+
+    expect(result.finalOutput).toBe('done');
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'run_item_stream_event' &&
+          ((event.item as any).rawItem?.id === 'streamed-replay-source' ||
+            (event.item as any).rawItem?.providerData?.id ===
+              'streamed-replay-call'),
+      ),
+    ).toBe(false);
+  });
+
   beforeAll(() => {
     setTracingDisabled(true);
     setDefaultModelProvider(new FakeModelProvider());
@@ -3458,7 +3546,7 @@ describe('Runner.run (streaming)', () => {
       ).toBe(false);
     });
 
-    it('acknowledges ignored handoffs when streaming after a reused callId from an earlier turn', async () => {
+    it('rejects an ignored handoff that reuses a committed callId while streaming', async () => {
       const agentBModel = new TrackingStreamingModel([
         buildTurn([fakeModelMessage('done B')], 'resp-b'),
       ]);
@@ -3508,24 +3596,12 @@ describe('Runner.run (streaming)', () => {
         conversationId: 'conv-managed-reused-call-id',
       });
 
-      await drain(result);
-
-      expect(result.finalOutput).toBe('done B');
-      expect(agentBModel.requests).toHaveLength(1);
-      expect(agentCModel.requests).toHaveLength(0);
-      expect(agentBModel.requests[0].conversationId).toBe(
-        'conv-managed-reused-call-id',
+      await expect(drain(result)).rejects.toThrow(
+        'Tool call ID reused-call-id was reused for a different invocation after its output was committed.',
       );
-      expect(agentBModel.requests[0].input).toEqual([
-        expect.objectContaining({
-          type: 'function_call_result',
-          callId: acceptedCall.callId,
-        }),
-        expect.objectContaining({
-          type: 'function_call_result',
-          callId: ignoredCall.callId,
-        }),
-      ]);
+
+      expect(agentBModel.requests).toHaveLength(0);
+      expect(agentCModel.requests).toHaveLength(0);
     });
 
     it('replays managed handoff acknowledgements when resuming before streamed response completion', async () => {

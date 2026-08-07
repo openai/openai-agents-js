@@ -15,12 +15,15 @@ import * as protocol from '../../src/types/protocol';
 
 const TEST_AGENT = new Agent({ name: 'TestAgent', outputType: 'text' });
 
-const buildApprovalRequest = (id = 'mcpr_1'): ToolRunMCPApprovalRequest => {
+const buildApprovalRequest = (
+  id = 'mcpr_1',
+  args = '{}',
+): ToolRunMCPApprovalRequest => {
   const providerData: HostedMCPApprovalRequest = {
     id,
     name: 'list_files',
     server_label: 'stub',
-    arguments: '{}',
+    arguments: args,
   };
 
   const requestItem = new RunToolApprovalItem(
@@ -87,6 +90,138 @@ describe('handleHostedMcpApprovals', () => {
     expect(result.pendingApprovals.size).toBe(0);
     expect(result.pendingApprovalIds.size).toBe(0);
   });
+
+  it('binds callback approval to the exact hosted MCP invocation', async () => {
+    const onApproval = vi.fn().mockResolvedValue({ approve: true });
+    const approvalRequest = buildApprovalRequest(
+      'mcpr_callback_bound',
+      '{"path":"safe"}',
+    );
+    approvalRequest.mcpTool = hostedMcpTool({
+      serverLabel: 'stub',
+      requireApproval: 'always',
+      onApproval,
+    });
+    const resolveApproval = (rawItem: protocol.HostedToolCallItem) =>
+      state._context._resolveToolInvocationApproval(
+        TEST_AGENT,
+        rawItem.name,
+        rawItem,
+      );
+
+    await handleHostedMcpApprovals({
+      requests: [approvalRequest],
+      agent: TEST_AGENT,
+      state,
+      functionResults,
+      appendIfNew: (item) => newItems.push(item),
+      resolveApproval,
+    });
+    newItems = [];
+    await handleHostedMcpApprovals({
+      requests: [approvalRequest],
+      agent: TEST_AGENT,
+      state,
+      functionResults,
+      appendIfNew: (item) => newItems.push(item),
+      resolveApproval,
+    });
+
+    expect(onApproval).toHaveBeenCalledTimes(1);
+    expect(newItems).toHaveLength(1);
+
+    const changedRequest = buildApprovalRequest(
+      'mcpr_callback_bound',
+      '{"path":"changed"}',
+    );
+    changedRequest.mcpTool = approvalRequest.mcpTool;
+    await expect(
+      handleHostedMcpApprovals({
+        requests: [changedRequest],
+        agent: TEST_AGENT,
+        state,
+        functionResults,
+        appendIfNew: (item) => newItems.push(item),
+        resolveApproval,
+      }),
+    ).rejects.toThrow(/reused for a different invocation/);
+    expect(onApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])(
+    'restores committed callback approval suppression from schema %s',
+    async (readAsLegacy) => {
+      const onApproval = vi.fn().mockResolvedValue({ approve: true });
+      const approvalRequest = buildApprovalRequest(
+        'mcpr_callback_committed',
+        '{"path":"safe"}',
+      );
+      approvalRequest.mcpTool = hostedMcpTool({
+        serverLabel: 'stub',
+        requireApproval: 'always',
+        onApproval,
+      });
+      const rawItem = approvalRequest.requestItem
+        .rawItem as protocol.HostedToolCallItem;
+      const invocation = state._context._validateToolInvocation(
+        TEST_AGENT,
+        rawItem.name,
+        rawItem,
+      );
+      state._observeToolInvocation(
+        TEST_AGENT,
+        invocation.callId,
+        invocation.fingerprint,
+      );
+
+      await handleHostedMcpApprovals({
+        requests: [approvalRequest],
+        agent: TEST_AGENT,
+        state,
+        functionResults,
+        appendIfNew: (item) => newItems.push(item),
+        resolveApproval: (item) =>
+          state._context._resolveToolInvocationApproval(
+            TEST_AGENT,
+            item.name,
+            item,
+          ),
+      });
+      const providerData = rawItem.providerData as HostedMCPApprovalRequest;
+      state._generatedItems.push(
+        new RunToolCallItem(
+          {
+            ...rawItem,
+            id: 'mcp-approval-source-item',
+            name: 'mcp_approval_request',
+            providerData,
+          },
+          TEST_AGENT,
+        ),
+        ...newItems,
+      );
+      state._commitToolInvocations(newItems);
+      const serialized = state.toJSON() as any;
+      if (readAsLegacy) {
+        serialized.$schemaVersion = '1.17';
+        delete serialized.context.approvalInvocations;
+        delete serialized.completedToolInvocations;
+      }
+
+      const restored = await RunState.fromString(
+        TEST_AGENT,
+        JSON.stringify(serialized),
+      );
+      expect(
+        restored._observeToolInvocation(
+          TEST_AGENT,
+          invocation.callId,
+          invocation.fingerprint,
+        ),
+      ).toBe(true);
+      expect(onApproval).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('reuses prior approval decisions from context', async () => {
     const approvalRequest = buildApprovalRequest('mcpr_approved');
