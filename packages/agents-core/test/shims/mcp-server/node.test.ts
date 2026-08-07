@@ -93,6 +93,63 @@ function createDeferred() {
   return { promise, resolve };
 }
 
+async function expectCachedToolsInvalidatedImmediately(server: {
+  connect(): Promise<void>;
+  close(): Promise<void>;
+  listTools(): Promise<Array<{ name: string }>>;
+  invalidateToolsCache(): Promise<void>;
+}): Promise<void> {
+  let currentToolName = 'old-tool';
+  listToolsImplementation = async () => ({
+    tools: [createMockTool(currentToolName)],
+  });
+
+  await server.connect();
+  expect((await server.listTools()).map((tool) => tool.name)).toEqual([
+    'old-tool',
+  ]);
+
+  currentToolName = 'new-tool';
+  const invalidation = server.invalidateToolsCache();
+  const crossingListing = server.listTools();
+  await invalidation;
+
+  expect((await crossingListing).map((tool) => tool.name)).toEqual([
+    'new-tool',
+  ]);
+  expect((await server.listTools()).map((tool) => tool.name)).toEqual([
+    'new-tool',
+  ]);
+  await server.close();
+}
+
+async function expectInvalidationClearsListedToolMetadata(server: {
+  connect(): Promise<void>;
+  close(): Promise<void>;
+  listTools(): Promise<Array<{ name: string }>>;
+  invalidateToolsCache(): Promise<void>;
+  callTool(
+    toolName: string,
+    args: Record<string, unknown> | null,
+  ): Promise<unknown>;
+}): Promise<void> {
+  listToolsImplementation = async () => ({
+    tools: [
+      createMockTool('task-tool', {
+        execution: { taskSupport: 'required' },
+      }),
+    ],
+  });
+
+  await server.connect();
+  await server.listTools();
+  await server.invalidateToolsCache();
+
+  await expect(server.callTool('task-tool', {})).resolves.toBeDefined();
+  expect(lastCallToolOptions?.toolDefinition).toBeUndefined();
+  await server.close();
+}
+
 function getErrorGraphText(value: unknown, seen = new Set<object>()): string {
   if (
     value === null ||
@@ -450,6 +507,26 @@ describe('NodeMCPServerStdio', () => {
     await server.close();
   });
 
+  test('should stop serving cached tools when invalidation starts', async () => {
+    await expectCachedToolsInvalidatedImmediately(
+      new NodeMCPServerStdio({
+        name: 'immediate-stdio-invalidation',
+        fullCommand: 'test',
+        cacheToolsList: true,
+      }),
+    );
+  });
+
+  test('should clear listed tool metadata on invalidation', async () => {
+    await expectInvalidationClearsListedToolMetadata(
+      new NodeMCPServerStdio({
+        name: 'stdio-invalidation-metadata',
+        fullCommand: 'test',
+        cacheToolsList: true,
+      }),
+    );
+  });
+
   test('should reject a tool listing from a replaced session', async () => {
     const continuation = createDeferred();
     const continuationStarted = createDeferred();
@@ -705,6 +782,26 @@ class MockSSEClientTransport {
 }
 
 describe('NodeMCPServerSSE', () => {
+  test('should stop serving cached tools when invalidation starts', async () => {
+    await expectCachedToolsInvalidatedImmediately(
+      new NodeMCPServerSSE({
+        url: 'https://example.com/sse',
+        name: 'immediate-sse-invalidation',
+        cacheToolsList: true,
+      }),
+    );
+  });
+
+  test('should clear listed tool metadata on invalidation', async () => {
+    await expectInvalidationClearsListedToolMetadata(
+      new NodeMCPServerSSE({
+        url: 'https://example.com/sse',
+        name: 'sse-invalidation-metadata',
+        cacheToolsList: true,
+      }),
+    );
+  });
+
   test('should forward custom fetch to SSEClientTransport', async () => {
     const customFetch = vi.fn(async (_input, _init) => {
       return new Response('{}', { status: 200 });
@@ -1236,6 +1333,26 @@ class MockStreamableHTTPClientTransport {
 describe('NodeMCPServerStreamableHttp', () => {
   beforeEach(() => {
     MockStreamableHTTPClientTransport.instances = [];
+  });
+
+  test('should stop serving cached tools when invalidation starts', async () => {
+    await expectCachedToolsInvalidatedImmediately(
+      new NodeMCPServerStreamableHttp({
+        url: 'https://example.com/stream',
+        name: 'immediate-streamable-http-invalidation',
+        cacheToolsList: true,
+      }),
+    );
+  });
+
+  test('should clear listed tool metadata on invalidation', async () => {
+    await expectInvalidationClearsListedToolMetadata(
+      new NodeMCPServerStreamableHttp({
+        url: 'https://example.com/stream',
+        name: 'streamable-http-invalidation-metadata',
+        cacheToolsList: true,
+      }),
+    );
   });
 
   test('should apply session timeout when connecting', async () => {
