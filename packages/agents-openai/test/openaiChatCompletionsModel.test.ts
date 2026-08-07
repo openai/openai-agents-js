@@ -105,6 +105,114 @@ describe('OpenAIChatCompletionsModel', () => {
         ],
       },
     ]);
+    expect(result.rawUsage).toBeUndefined();
+  });
+
+  it('preserves raw usage field presence before normalization when enabled', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [{ message: { content: 'hi' } }],
+      usage: {
+        prompt_tokens: 3,
+        completion_tokens: 2,
+        total_tokens: 5,
+        prompt_tokens_details: {
+          cached_tokens: 0,
+          provider_metric: null,
+        },
+      },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const result = await withTrace('t', () =>
+      model.getResponse({
+        input: 'u',
+        modelSettings: { preserveRawUsage: true },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      } as any),
+    );
+
+    response.usage.prompt_tokens_details.cached_tokens = 9;
+
+    expect(result.rawUsage).toEqual({
+      prompt_tokens: 3,
+      completion_tokens: 2,
+      total_tokens: 5,
+      prompt_tokens_details: {
+        cached_tokens: 0,
+        provider_metric: null,
+      },
+    });
+    expect(result.rawUsage?.prompt_tokens_details).not.toHaveProperty(
+      'cache_write_tokens',
+    );
+    expect(result.usage.inputTokensDetails).toEqual([{ cached_tokens: 0 }]);
+  });
+
+  it('captures raw and normalized usage before tracing processors can mutate it', async () => {
+    const client = new FakeClient();
+    client.chat.completions.create.mockResolvedValue({
+      id: 'r',
+      choices: [{ message: { content: 'hi' } }],
+      usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+    } as any);
+    const processor = new RecordingProcessor();
+    processor.onSpanEnd = async (span) => {
+      const response = span.spanData.output?.[0] as any;
+      if (response?.usage) {
+        response.usage.prompt_tokens = 99;
+      }
+      processor.spansEnded.push(span);
+    };
+    setTracingDisabled(false);
+    setTraceProcessors([processor]);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const result = await withTrace('t', () =>
+      model.getResponse({
+        input: 'u',
+        modelSettings: { preserveRawUsage: true },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: true,
+      } as any),
+    );
+
+    expect(result.rawUsage).toEqual({
+      prompt_tokens: 3,
+      completion_tokens: 2,
+      total_tokens: 5,
+    });
+    expect(result.usage.inputTokens).toBe(3);
+  });
+
+  it('leaves raw usage undefined when the provider omits usage', async () => {
+    const client = new FakeClient();
+    client.chat.completions.create.mockResolvedValue({
+      id: 'r',
+      choices: [{ message: { content: 'hi' } }],
+    } as any);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const result = await withTrace('t', () =>
+      model.getResponse({
+        input: 'u',
+        modelSettings: { preserveRawUsage: true },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      } as any),
+    );
+
+    expect(result.rawUsage).toBeUndefined();
+    expect(result.usage.totalTokens).toBe(0);
   });
 
   it('sends placeholder for non-text-only tool output by default', async () => {
@@ -1631,7 +1739,7 @@ describe('OpenAIChatCompletionsModel', () => {
     const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
     const req: any = {
       input: 'hi',
-      modelSettings: {},
+      modelSettings: { preserveRawUsage: true },
       tools: [],
       outputType: 'text',
       handoffs: [],
@@ -1651,7 +1759,7 @@ describe('OpenAIChatCompletionsModel', () => {
     expect(convertChatCompletionsStreamToResponses).toHaveBeenCalled();
     expect(
       vi.mocked(convertChatCompletionsStreamToResponses).mock.calls[0]?.[2],
-    ).toEqual({ strictFeatureValidation: false });
+    ).toEqual({ strictFeatureValidation: false, preserveRawUsage: true });
     expect(events).toEqual([{ type: 'first' }, { type: 'second' }]);
   });
 

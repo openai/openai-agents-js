@@ -5,6 +5,7 @@ export {
   CompactionItemValidationError,
 } from '../runner/items';
 export { normalizeToolAllowedCallers } from './toolCallers';
+export { snapshotRawUsage } from './rawUsage';
 export {
   hasDynamicFunctionToolApprovalPolicy,
   hasInspectableFunctionToolArguments,

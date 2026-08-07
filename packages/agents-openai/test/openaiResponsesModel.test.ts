@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
 import {
   OpenAIResponsesModel,
   OpenAIResponsesWSModel,
@@ -13,6 +13,7 @@ import {
   type AgentInputItem,
   type Session,
   setDefaultModelProvider,
+  setTraceProcessors,
   setTracingDisabled,
   withTrace,
   type ResponseStreamEvent,
@@ -28,6 +29,10 @@ describe('OpenAIResponsesModel', () => {
         throw new Error('not used');
       },
     });
+  });
+  afterEach(() => {
+    setTracingDisabled(true);
+    setTraceProcessors([]);
   });
   it('getResponse returns correct ModelResponse and calls client with right parameters', async () => {
     await withTrace('test', async () => {
@@ -91,7 +96,105 @@ describe('OpenAIResponsesModel', () => {
         },
       ]);
       expect(result.responseId).toBe('res1');
+      expect(result.rawUsage).toBeUndefined();
     });
+  });
+
+  it.each([
+    ['omitted', {}, {}],
+    ['explicit zero', { cached_tokens: 0 }, { cached_tokens: 0 }],
+  ])(
+    'getResponse preserves %s cached token field presence when enabled',
+    async (_label, inputTokensDetails, expectedInputTokensDetails) => {
+      await withTrace('test', async () => {
+        const fakeResponse = {
+          id: 'res-raw-usage',
+          usage: {
+            input_tokens: 3,
+            output_tokens: 2,
+            total_tokens: 5,
+            input_tokens_details: inputTokensDetails,
+            output_tokens_details: { reasoning_tokens: 0 },
+            provider_metric: null,
+          },
+          output: [],
+        };
+        const createMock = vi.fn().mockResolvedValue(fakeResponse);
+        const model = new OpenAIResponsesModel(
+          { responses: { create: createMock } } as unknown as OpenAI,
+          'gpt-test',
+        );
+
+        const result = await model.getResponse({
+          input: 'hello',
+          modelSettings: { preserveRawUsage: true },
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any);
+
+        expect(result.rawUsage).toEqual({
+          input_tokens: 3,
+          output_tokens: 2,
+          total_tokens: 5,
+          input_tokens_details: expectedInputTokensDetails,
+          output_tokens_details: { reasoning_tokens: 0 },
+          provider_metric: null,
+        });
+      });
+    },
+  );
+
+  it('captures raw and normalized usage before tracing processors can mutate it', async () => {
+    const fakeResponse = {
+      id: 'res-traced-raw-usage',
+      usage: {
+        input_tokens: 3,
+        output_tokens: 2,
+        total_tokens: 5,
+      },
+      output: [],
+    };
+    const createMock = vi.fn().mockResolvedValue(fakeResponse);
+    setTracingDisabled(false);
+    setTraceProcessors([
+      {
+        async onTraceStart() {},
+        async onTraceEnd() {},
+        async onSpanStart() {},
+        async onSpanEnd(span: Span<any>) {
+          const response = span.spanData._response as any;
+          if (response?.usage) {
+            response.usage.input_tokens = 99;
+          }
+        },
+        async shutdown() {},
+        async forceFlush() {},
+      },
+    ]);
+    const model = new OpenAIResponsesModel(
+      { responses: { create: createMock } } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    const result = await withTrace('test', () =>
+      model.getResponse({
+        input: 'hello',
+        modelSettings: { preserveRawUsage: true },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: true,
+      } as any),
+    );
+
+    expect(result.rawUsage).toEqual({
+      input_tokens: 3,
+      output_tokens: 2,
+      total_tokens: 5,
+    });
+    expect(result.usage.inputTokens).toBe(3);
   });
 
   it('getResponse exposes the OpenAI request ID on ModelResponse', async () => {
@@ -4594,6 +4697,7 @@ describe('OpenAIResponsesModel', () => {
             total_tokens: 16,
             input_tokens_details: { cached_tokens: 2 },
             output_tokens_details: { reasoning_tokens: 3 },
+            provider_metric: null,
           },
         },
         sequence_number: 1,
@@ -4611,7 +4715,7 @@ describe('OpenAIResponsesModel', () => {
       const request = {
         systemInstructions: undefined,
         input: 'payload',
-        modelSettings: {},
+        modelSettings: { preserveRawUsage: true },
         tools: [],
         outputType: 'text',
         handoffs: [],
@@ -4643,6 +4747,14 @@ describe('OpenAIResponsesModel', () => {
             endpoint: 'responses.create',
           },
         ],
+      });
+      expect((responseDone as any).response.rawUsage).toEqual({
+        input_tokens: 11,
+        output_tokens: 5,
+        total_tokens: 16,
+        input_tokens_details: { cached_tokens: 2 },
+        output_tokens_details: { reasoning_tokens: 3 },
+        provider_metric: null,
       });
     });
   });

@@ -44,6 +44,7 @@ import {
 import {
   formatInlineData,
   getInlineMediaType,
+  snapshotRawUsage,
 } from '@openai/agents-core/utils/internal';
 import { isZodObject } from '@openai/agents/utils';
 import { extractUsage, toTracingUsage } from './usage';
@@ -2201,6 +2202,14 @@ export class AiSdkModel implements Model {
         }
 
         const result = await this.#model.doGenerate(aiSdkRequest);
+        const rawUsage =
+          request.modelSettings.preserveRawUsage === true
+            ? snapshotRawUsage((result as any).usage)
+            : undefined;
+        const preservedUsage =
+          rawUsage !== undefined
+            ? extractUsage((result as any).usage)
+            : undefined;
         const baseProviderData = buildBaseProviderData(
           this.#model,
           (result as any).response?.id,
@@ -2335,18 +2344,20 @@ export class AiSdkModel implements Model {
         }
         flushPendingText();
         await this.#transformOutputTextItems(output, request, false);
+        const usage = preservedUsage ?? extractUsage((result as any).usage);
 
         if (span && request.tracing === true) {
           span.spanData.output = output;
         }
-
-        const usage = extractUsage((result as any).usage);
 
         const response = {
           responseId: (result as any).response?.id ?? 'FAKE_ID',
           usage: new Usage(usage),
           output,
           providerData: result,
+          ...(request.modelSettings.preserveRawUsage === true
+            ? { rawUsage }
+            : {}),
         } as const;
 
         if (span && request.tracing === true) {
@@ -2504,6 +2515,13 @@ export class AiSdkModel implements Model {
       let usageCompletionTokens = 0;
       let usageInputTokensDetails: Record<string, number> | undefined;
       let usageOutputTokensDetails: Record<string, number> | undefined;
+      let rawUsage: Record<string, unknown> | undefined;
+      const recordUsage = (usage: ReturnType<typeof extractUsage>) => {
+        usagePromptTokens = usage.inputTokens;
+        usageCompletionTokens = usage.outputTokens;
+        usageInputTokensDetails = usage.inputTokensDetails;
+        usageOutputTokensDetails = usage.outputTokensDetails;
+      };
       type StreamOutputEntry =
         | { kind: 'reasoning'; reasoningId: string }
         | {
@@ -2587,6 +2605,18 @@ export class AiSdkModel implements Model {
       };
 
       for await (const part of stream) {
+        const preservedFinishUsage =
+          part.type === 'finish' &&
+          request.modelSettings.preserveRawUsage === true
+            ? snapshotRawUsage((part as any).usage)
+            : undefined;
+        if (part.type === 'finish') {
+          rawUsage = preservedFinishUsage;
+          if (preservedFinishUsage !== undefined) {
+            recordUsage(extractUsage(preservedFinishUsage));
+          }
+        }
+
         if (!started) {
           started = true;
           yield { type: 'response_started' };
@@ -2704,11 +2734,9 @@ export class AiSdkModel implements Model {
             break;
           }
           case 'finish': {
-            const usage = extractUsage((part as any).usage);
-            usagePromptTokens = usage.inputTokens;
-            usageCompletionTokens = usage.outputTokens;
-            usageInputTokensDetails = usage.inputTokensDetails;
-            usageOutputTokensDetails = usage.outputTokensDetails;
+            if (preservedFinishUsage === undefined) {
+              recordUsage(extractUsage((part as any).usage));
+            }
             break;
           }
           case 'error': {
@@ -2795,6 +2823,9 @@ export class AiSdkModel implements Model {
                 }
               : {}),
           },
+          ...(request.modelSettings.preserveRawUsage === true && rawUsage
+            ? { rawUsage }
+            : {}),
           output: outputs,
         },
       };

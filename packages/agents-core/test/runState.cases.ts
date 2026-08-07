@@ -422,16 +422,23 @@ export function registerRunStateCoreTests(): void {
           output: [TEST_MODEL_MESSAGE],
           responseId: 'resp_123',
           requestId: 'req_123',
+          rawUsage: { input_tokens: 1, provider_metric: 0 },
         },
       ];
       state._lastTurnResponse = state._modelResponses[0];
+
+      const serialized = state.toJSON() as any;
+      expect(serialized.modelResponses[0]).not.toHaveProperty('rawUsage');
+      expect(serialized.lastModelResponse).not.toHaveProperty('rawUsage');
 
       const restored = await RunState.fromString(agent, state.toString());
 
       expect(restored._modelResponses).toHaveLength(1);
       expect(restored._modelResponses[0].responseId).toBe('resp_123');
       expect(restored._modelResponses[0].requestId).toBe('req_123');
+      expect(restored._modelResponses[0].rawUsage).toBeUndefined();
       expect(restored._lastTurnResponse?.requestId).toBe('req_123');
+      expect(restored._lastTurnResponse?.rawUsage).toBeUndefined();
     });
 
     it('preserves toolInput after serialization', async () => {

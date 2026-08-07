@@ -1007,6 +1007,11 @@ export const StreamEventResponseCompleted = SharedBase.extend({
     usage: UsageData,
 
     /**
+     * Provider usage captured before SDK normalization, when requested.
+     */
+    rawUsage: z.record(z.string(), z.unknown()).optional(),
+
+    /**
      * The output from the model.
      */
     output: z.array(OutputModelItem),

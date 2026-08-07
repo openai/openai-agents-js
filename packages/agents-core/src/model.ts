@@ -357,6 +357,12 @@ export type ModelSettings = {
    * Runtime-only retry configuration for the model request.
    */
   retry?: ModelRetrySettings;
+
+  /**
+   * Whether to preserve a JSON-compatible snapshot of provider usage before
+   * the Agents SDK normalizes it. Defaults to false if not provided.
+   */
+  preserveRawUsage?: boolean;
 };
 
 export type ModelTracing = boolean | 'enabled_without_data';
@@ -615,6 +621,12 @@ export type ModelResponse = {
    * Raw response data from the underlying model provider.
    */
   providerData?: Record<string, any>;
+
+  /**
+   * A detached JSON-compatible snapshot of provider usage captured before
+   * the Agents SDK normalizes missing values. Only populated when requested.
+   */
+  rawUsage?: Record<string, unknown>;
 };
 
 /**

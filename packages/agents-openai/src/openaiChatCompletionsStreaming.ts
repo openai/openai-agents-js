@@ -1,6 +1,7 @@
 import type { Stream } from 'openai/streaming';
 import type { CompletionUsage } from 'openai/resources/completions';
 import { protocol, UserError } from '@openai/agents-core';
+import { snapshotRawUsage } from '@openai/agents-core/utils/internal';
 import { ChatCompletion, ChatCompletionChunk } from 'openai/resources/chat';
 import { FAKE_ID } from './openaiChatCompletionsModel';
 import { OPENAI_CHAT_COMPLETIONS_RAW_MODEL_EVENT_SOURCE } from './rawModelEvents';
@@ -25,9 +26,13 @@ type StreamingState = {
 export async function* convertChatCompletionsStreamToResponses(
   response: ChatCompletion,
   stream: Stream<ChatCompletionChunk>,
-  options: { strictFeatureValidation?: boolean } = {},
+  options: {
+    strictFeatureValidation?: boolean;
+    preserveRawUsage?: boolean;
+  } = {},
 ): AsyncIterable<protocol.StreamEvent> {
   let usage: CompletionUsage | undefined = undefined;
+  let rawUsage: Record<string, unknown> | undefined;
   const state: StreamingState = {
     started: false,
     text_content: null,
@@ -42,6 +47,19 @@ export async function* convertChatCompletionsStreamToResponses(
   const strictFeatureValidation = options.strictFeatureValidation ?? false;
 
   for await (const chunk of stream) {
+    // Usage is not always reported on the final chunk: some OpenAI-compatible
+    // providers or gateways may emit a later chunk without usage after
+    // reporting usage, so only overwrite it when the current chunk actually
+    // carries usage data. Capture raw usage before exposing the chunk to the
+    // consumer so later mutations cannot change the snapshot.
+    if ((chunk as any).usage) {
+      const usagePayload = (chunk as any).usage as CompletionUsage;
+      if (options.preserveRawUsage === true) {
+        rawUsage = snapshotRawUsage(usagePayload);
+      }
+      usage = (rawUsage as CompletionUsage | undefined) ?? usagePayload;
+    }
+
     if (chunk.id && (response.id === FAKE_ID || !response.id)) {
       response.id = chunk.id;
     }
@@ -64,14 +82,6 @@ export async function* convertChatCompletionsStreamToResponses(
         rawModelEventSource: OPENAI_CHAT_COMPLETIONS_RAW_MODEL_EVENT_SOURCE,
       },
     };
-
-    // Usage is not always reported on the final chunk: some OpenAI-compatible
-    // providers or gateways may emit a later chunk without usage after
-    // reporting usage, so only overwrite it when the current chunk actually
-    // carries usage data.
-    if ((chunk as any).usage) {
-      usage = (chunk as any).usage;
-    }
 
     if (!chunk.choices || chunk.choices.length === 0) continue;
 
@@ -260,6 +270,7 @@ export async function* convertChatCompletionsStreamToResponses(
             (usage as any)?.completion_tokens_details?.reasoning_tokens ?? 0,
         },
       },
+      ...(options.preserveRawUsage === true ? { rawUsage } : {}),
       output: outputs,
     },
   };
