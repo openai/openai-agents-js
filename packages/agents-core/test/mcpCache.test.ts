@@ -1137,8 +1137,11 @@ function createStubUnderlying(name: string, initialTools: MCPTool[]) {
   let connection = 0;
   let sessionId: string | undefined;
   let toolsGeneration = 0;
+  let connectionStateVersion = 0;
+  let isClosed = true;
   let connectOperation: (() => Promise<void>) | undefined;
   let closeOperation: (() => Promise<void>) | undefined;
+  let invalidateOperation: (() => Promise<void>) | undefined;
   let listOperation: (() => Promise<void>) | undefined;
   const stub = {
     name,
@@ -1146,13 +1149,22 @@ function createStubUnderlying(name: string, initialTools: MCPTool[]) {
       return sessionId;
     },
     async connect() {
+      const connectStateVersion = connectionStateVersion;
+      isClosed = false;
       await connectOperation?.();
+      if (isClosed || connectStateVersion !== connectionStateVersion) {
+        throw new Error(
+          'Streamable HTTP MCP server was closed during connect.',
+        );
+      }
       connected = true;
       connection += 1;
       sessionId = `${name}-${connection}`;
       cacheDirty = true;
     },
     async close() {
+      isClosed = true;
+      connectionStateVersion += 1;
       connected = false;
       sessionId = undefined;
       cacheDirty = true;
@@ -1180,6 +1192,9 @@ function createStubUnderlying(name: string, initialTools: MCPTool[]) {
       invalidateCalls += 1;
       toolsGeneration += 1;
       cacheDirty = true;
+      if (invalidateOperation) {
+        await invalidateOperation();
+      }
       await invalidateServerToolsCache(name);
     },
     async callToolResult() {
@@ -1199,6 +1214,9 @@ function createStubUnderlying(name: string, initialTools: MCPTool[]) {
     },
     setCloseOperation: (operation: () => Promise<void>) => {
       closeOperation = operation;
+    },
+    setInvalidateOperation: (operation: () => Promise<void>) => {
+      invalidateOperation = operation;
     },
     setListOperation: (operation: () => Promise<void>) => {
       listOperation = operation;
@@ -1461,4 +1479,101 @@ it('starts streamable HTTP close before yielding', async () => {
 
   await closing;
   await toolCallExpectation;
+});
+
+it('keeps close authoritative over a pending streamable HTTP connect', async () => {
+  const serverName = 'streamable-http-connect-close-order';
+  await invalidateServerToolsCache(serverName);
+  const server = new MCPServerStreamableHttp({
+    url: 'http://localhost:1',
+    name: serverName,
+    cacheToolsList: true,
+  });
+  const { stub, setConnectOperation } = createStubUnderlying(serverName, [
+    toolNamed('a'),
+  ]);
+  (server as unknown as { underlying: typeof stub }).underlying = stub;
+  const connectStarted = createDeferredVoid();
+  const resumeConnect = createDeferredVoid();
+  setConnectOperation(async () => {
+    connectStarted.resolve();
+    await resumeConnect.promise;
+  });
+
+  const connecting = server.connect();
+  const connectingExpectation = expect(connecting).rejects.toThrow(
+    'Streamable HTTP MCP server was closed during connect',
+  );
+  const closing = server.close();
+  await connectStarted.promise;
+  resumeConnect.resolve();
+
+  await closing;
+  await connectingExpectation;
+  expect(server.sessionId).toBeUndefined();
+});
+
+it('keeps the lifecycle guard active until all branches settle', async () => {
+  const serverName = 'streamable-http-lifecycle-settlement';
+  await invalidateServerToolsCache(serverName);
+  const server = new MCPServerStreamableHttp({
+    url: 'http://localhost:1',
+    name: serverName,
+    cacheToolsList: true,
+  });
+  const { stub, setConnectOperation, setInvalidateOperation } =
+    createStubUnderlying(serverName, [toolNamed('a')]);
+  (server as unknown as { underlying: typeof stub }).underlying = stub;
+  const connectStarted = createDeferredVoid();
+  const resumeConnect = createDeferredVoid();
+  setConnectOperation(async () => {
+    connectStarted.resolve();
+    await resumeConnect.promise;
+  });
+  setInvalidateOperation(async () => {
+    throw new Error('invalidation failed');
+  });
+
+  const connecting = server.connect();
+  const connectingExpectation = expect(connecting).rejects.toThrow(
+    'invalidation failed',
+  );
+  await connectStarted.promise;
+  const listingExpectation = expect(server.listTools()).rejects.toThrow(
+    'server lifecycle operation is in progress',
+  );
+  resumeConnect.resolve();
+
+  await listingExpectation;
+  await connectingExpectation;
+});
+
+it('observes synchronous failures from both lifecycle branches', async () => {
+  const serverName = 'streamable-http-synchronous-lifecycle-failures';
+  await invalidateServerToolsCache(serverName);
+  const server = new MCPServerStreamableHttp({
+    url: 'http://localhost:1',
+    name: serverName,
+    cacheToolsList: true,
+  });
+  const { stub } = createStubUnderlying(serverName, [toolNamed('a')]);
+  let invalidateCalls = 0;
+  let connectCalls = 0;
+  const syncThrowingStub = {
+    ...stub,
+    invalidateToolsCache() {
+      invalidateCalls += 1;
+      throw new Error('invalidation failed');
+    },
+    connect() {
+      connectCalls += 1;
+      throw new Error('connect failed');
+    },
+  };
+  (server as unknown as { underlying: typeof syncThrowingStub }).underlying =
+    syncThrowingStub;
+
+  await expect(server.connect()).rejects.toThrow('invalidation failed');
+  expect(invalidateCalls).toBe(1);
+  expect(connectCalls).toBe(1);
 });
