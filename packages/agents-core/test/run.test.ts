@@ -3624,6 +3624,82 @@ describe('Runner.run', () => {
       expect(model.calls).toBe(0);
     });
 
+    it('retains an admitted turn when a parallel guardrail fails after the model starts', async () => {
+      let markModelStarted!: () => void;
+      let markGuardrailFailing!: () => void;
+      const modelStarted = new Promise<void>((resolve) => {
+        markModelStarted = resolve;
+      });
+      const guardrailFailing = new Promise<void>((resolve) => {
+        markGuardrailFailing = resolve;
+      });
+      const guardrail = {
+        name: 'late-parallel-guardrail-error',
+        execute: async () => {
+          await modelStarted;
+          markGuardrailFailing();
+          throw new Error('late boom');
+        },
+      };
+
+      class TrackingModel implements Model {
+        calls = 0;
+
+        async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+          this.calls++;
+          markModelStarted();
+          await guardrailFailing;
+          return {
+            output: [fakeModelMessage('unused')],
+            usage: new Usage(),
+          };
+        }
+
+        /* eslint-disable require-yield */
+        async *getStreamedResponse(_request: ModelRequest) {
+          throw new Error('not implemented');
+        }
+        /* eslint-enable require-yield */
+      }
+
+      const model = new TrackingModel();
+      const agent = new Agent({
+        name: 'LateParallelGuardrailFailure',
+        model,
+        inputGuardrails: [guardrail],
+      });
+
+      let caughtError: unknown;
+      try {
+        await run(agent, 'hello');
+      } catch (error) {
+        caughtError = error;
+      }
+
+      expect(caughtError).toBeInstanceOf(GuardrailExecutionError);
+      const guardrailError = caughtError as GuardrailExecutionError;
+      expect(model.calls).toBe(1);
+      expect(guardrailError.state?._currentTurn).toBe(1);
+
+      const restored = await RunState.fromString(
+        agent,
+        guardrailError.state!.toString(),
+      );
+      expect(restored._currentTurn).toBe(1);
+
+      let resumedError: unknown;
+      try {
+        await run(agent, restored, { maxTurns: 1 });
+      } catch (error) {
+        resumedError = error;
+      }
+      expect(resumedError).toBeInstanceOf(MaxTurnsExceededError);
+      expect((resumedError as MaxTurnsExceededError).state?._currentTurn).toBe(
+        1,
+      );
+      expect(model.calls).toBe(1);
+    });
+
     it('throws InputGuardrailTripwireTriggered when parallel guardrail trips with structured output and model returns non-JSON', async () => {
       const fakeModel = new FakeModel([
         {
@@ -4119,9 +4195,96 @@ describe('Runner.run', () => {
           { output: [fakeModelMessage('nope')], usage: new Usage() },
         ]),
       });
-      await expect(run(agent, 'x', { maxTurns: 0 })).rejects.toBeInstanceOf(
-        MaxTurnsExceededError,
+      const error = await run(agent, 'x', { maxTurns: 0 }).catch((err) => err);
+
+      expect(error).toBeInstanceOf(MaxTurnsExceededError);
+      expect((error as MaxTurnsExceededError).state?._currentTurn).toBe(0);
+    });
+
+    it('rolls back a turn when request serialization fails before the model call', async () => {
+      class TrackingModel extends FakeModel {
+        calls = 0;
+
+        override async getResponse(
+          request: ModelRequest,
+        ): Promise<ModelResponse> {
+          this.calls++;
+          return await super.getResponse(request);
+        }
+      }
+
+      const model = new TrackingModel([
+        {
+          output: [fakeModelMessage('{"value":"ok"}')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent: Agent<any, any> = new Agent({
+        name: 'RequestSerializationFailure',
+        model,
+        outputType: z.object({ value: z.custom() }),
+      });
+      const state = new RunState(new RunContext(), 'x', agent, 1);
+
+      const error = await run(agent, state).catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(UserError);
+      expect(model.calls).toBe(0);
+      expect(state._currentTurn).toBe(0);
+
+      const restored = await RunState.fromString(agent, state.toString());
+      agent.outputType = z.object({ value: z.string() });
+      const resumed = await run(agent, restored, { maxTurns: 1 });
+
+      expect(resumed.finalOutput).toEqual({ value: 'ok' });
+      expect(resumed.state._currentTurn).toBe(1);
+      expect(model.calls).toBe(1);
+    });
+
+    it('preserves an in-progress turn when resumed request serialization fails', async () => {
+      class TrackingModel extends FakeModel {
+        calls = 0;
+
+        override async getResponse(
+          request: ModelRequest,
+        ): Promise<ModelResponse> {
+          this.calls++;
+          return await super.getResponse(request);
+        }
+      }
+
+      const model = new TrackingModel([
+        {
+          output: [fakeModelMessage('{"value":"ok"}')],
+          usage: new Usage(),
+        },
+      ]);
+      const agent: Agent<any, any> = new Agent({
+        name: 'ResumedRequestSerializationFailure',
+        model,
+        outputType: z.object({ value: z.custom() }),
+      });
+      const state = new RunState(new RunContext(), 'x', agent, 1);
+      state._currentTurn = 1;
+      state._currentTurnInProgress = true;
+      const restored = await RunState.fromString(agent, state.toString());
+
+      const error = await run(agent, restored, { maxTurns: 1 }).catch(
+        (caught) => caught,
       );
+
+      expect(error).toBeInstanceOf(UserError);
+      expect(model.calls).toBe(0);
+      expect(restored._currentTurn).toBe(1);
+      expect(restored._currentTurnInProgress).toBe(true);
+
+      const retryState = await RunState.fromString(agent, restored.toString());
+      agent.outputType = z.object({ value: z.string() });
+      const resumed = await run(agent, retryState, { maxTurns: 1 });
+
+      expect(resumed.finalOutput).toEqual({ value: 'ok' });
+      expect(resumed.state._currentTurn).toBe(1);
+      expect(model.calls).toBe(1);
     });
 
     it('does not enforce maxTurns when maxTurns is null', async () => {
@@ -4189,6 +4352,7 @@ describe('Runner.run', () => {
         unknown,
         typeof agent
       >;
+      expect(state._currentTurn).toBe(1);
 
       const result = await run(agent, state, {
         maxTurns: null,

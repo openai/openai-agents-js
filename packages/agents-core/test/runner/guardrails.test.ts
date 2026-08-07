@@ -132,7 +132,7 @@ describe('runInputGuardrails', () => {
     expect(state._currentTurn).toBe(0);
   });
 
-  it('wraps execution failures and rolls back the current turn', async () => {
+  it('wraps execution failures without mutating runner-owned turn state', async () => {
     const agent = makeAgent({ name: 'Error' });
     const state = makeState(agent);
     state._currentTurn = 2;
@@ -158,7 +158,7 @@ describe('runInputGuardrails', () => {
     expect(state._inputGuardrailResults.map((r) => r.guardrail.name)).toEqual([
       'success',
     ]);
-    expect(state._currentTurn).toBe(1);
+    expect(state._currentTurn).toBe(2);
   });
 
   it('awaits sibling input guardrails before surfacing execution failures', async () => {

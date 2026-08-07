@@ -21,7 +21,13 @@ import type {
 import { Handoff, HandoffInputFilter } from './handoff';
 import { RunHooks } from './lifecycle';
 import logger, { logModelAndToolActionDebug } from './logger';
-import { Model, ModelProvider, ModelResponse, ModelSettings } from './model';
+import {
+  Model,
+  ModelProvider,
+  ModelResponse,
+  ModelSettings,
+  type ModelRequest,
+} from './model';
 import { getDefaultModelProvider } from './providers';
 import { RunContext } from './runContext';
 import { RunResult, StreamedRunResult } from './result';
@@ -451,6 +457,23 @@ class LazyDefaultModelProvider implements ModelProvider {
 
 function isNoopTrace(trace: Trace | null | undefined): boolean {
   return trace instanceof NoopTrace || trace?.traceId === NOOP_TRACE_OR_SPAN_ID;
+}
+
+type TurnPreparationSnapshot = {
+  currentTurn: number;
+  currentTurnInProgress: boolean;
+};
+
+function rollbackUnstartedTurn(
+  state: RunState<any, any>,
+  snapshot: TurnPreparationSnapshot | undefined,
+): boolean {
+  if (!snapshot) {
+    return false;
+  }
+  state._currentTurn = snapshot.currentTurn;
+  state._currentTurnInProgress = snapshot.currentTurnInProgress;
+  return true;
 }
 
 // --------------------------------------------------------------
@@ -1149,6 +1172,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       let continuingInterruptedTurn = false;
       let runError: unknown;
       let currentTurnSpan: ReturnType<typeof startTurnSpan> | undefined;
+      let turnPendingModelRequest: TurnPreparationSnapshot | undefined;
       const parentUsageRecorder = getRunnerParentUsageRecorder(this);
       const recordUsage = (usage: Usage) => {
         recordRunnerSpanUsage(taskSpan, usage);
@@ -1380,6 +1404,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             continuingInterruptedTurn = false;
             const guardrailTracker = createGuardrailTracker();
             const previousTurn = state._currentTurn;
+            turnPendingModelRequest = {
+              currentTurn: previousTurn,
+              currentTurnInProgress: state._currentTurnInProgress,
+            };
             const previousPersistedCount = state._currentTurnPersistedItemCount;
             const previousGeneratedCount = state._generatedItems.length;
             const { turnInput, parallelGuardrailPromise } = await prepareTurn({
@@ -1456,32 +1484,34 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
             await guardrailTracker.throwIfError();
 
+            const modelRequest: ModelRequest = {
+              systemInstructions: preparedCall.modelInput.instructions,
+              prompt: preparedCall.prompt,
+              // Explicit agent/run config models should take precedence over prompt defaults.
+              ...(preparedCall.explicitlyModelSet
+                ? { overridePromptModel: true }
+                : {}),
+              input: preparedCall.modelInput.input,
+              previousResponseId: preparedCall.previousResponseId,
+              conversationId: preparedCall.conversationId,
+              modelSettings: preparedCall.modelSettings,
+              _internal: preparedCall.modelRequestInternal,
+              tools: preparedCall.serializedTools,
+              toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
+              outputType: convertAgentOutputTypeToSerializable(
+                state._currentAgent.outputType,
+              ),
+              handoffs: preparedCall.serializedHandoffs,
+              tracing: getTracing(
+                this.config.tracingDisabled,
+                this.config.traceIncludeSensitiveData,
+              ),
+              signal: options.signal,
+            };
+            turnPendingModelRequest = undefined;
             state._lastTurnResponse = await getResponseWithRetry(
               preparedCall.model,
-              {
-                systemInstructions: preparedCall.modelInput.instructions,
-                prompt: preparedCall.prompt,
-                // Explicit agent/run config models should take precedence over prompt defaults.
-                ...(preparedCall.explicitlyModelSet
-                  ? { overridePromptModel: true }
-                  : {}),
-                input: preparedCall.modelInput.input,
-                previousResponseId: preparedCall.previousResponseId,
-                conversationId: preparedCall.conversationId,
-                modelSettings: preparedCall.modelSettings,
-                _internal: preparedCall.modelRequestInternal,
-                tools: preparedCall.serializedTools,
-                toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
-                outputType: convertAgentOutputTypeToSerializable(
-                  state._currentAgent.outputType,
-                ),
-                handoffs: preparedCall.serializedHandoffs,
-                tracing: getTracing(
-                  this.config.tracingDisabled,
-                  this.config.traceIncludeSensitiveData,
-                ),
-                signal: options.signal,
-              },
+              modelRequest,
             );
             if (serverConversationTracker) {
               serverConversationTracker.markInputAsSent(
@@ -1616,7 +1646,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
         }
       } catch (err) {
-        state._currentTurnInProgress = false;
+        const restoredPendingTurn = rollbackUnstartedTurn(
+          state,
+          turnPendingModelRequest,
+        );
+        turnPendingModelRequest = undefined;
+        if (!restoredPendingTurn) {
+          state._currentTurnInProgress = false;
+        }
         attachRunStateToError(err, state);
         releaseUnusedSessionHistoryTransactionBinding(state);
         const errorHandled = await prepareRunErrorFinalOutput({
@@ -1788,6 +1825,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       isResumedState && hasPersistedToolOutput(result.state);
     let approvedToolCheckpointModelResponseCount = result.rawResponses.length;
     let currentTurnSpan: ReturnType<typeof startTurnSpan> | undefined;
+    let turnPendingModelRequest: TurnPreparationSnapshot | undefined;
     const parentUsageRecorder = getRunnerParentUsageRecorder(this);
     const recordUsage = (usage: Usage) => {
       recordRunnerSpanUsage(taskSpan, usage);
@@ -2040,6 +2078,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const wasContinuingInterruptedTurn = continuingInterruptedTurn;
           continuingInterruptedTurn = false;
           const previousTurn = result.state._currentTurn;
+          turnPendingModelRequest = {
+            currentTurn: previousTurn,
+            currentTurnInProgress: result.state._currentTurnInProgress,
+          };
           const previousPersistedCount =
             result.state._currentTurnPersistedItemCount;
           const previousGeneratedCount = result.state._generatedItems.length;
@@ -2130,6 +2172,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           // Once a logical turn is established, do not start another model
           // request if cancellation arrives during asynchronous preparation.
           if ((sentInputToModel || isResumedState) && result.cancelled) {
+            rollbackUnstartedTurn(result.state, turnPendingModelRequest);
+            turnPendingModelRequest = undefined;
             return;
           }
 
@@ -2219,34 +2263,40 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
           };
 
+          const modelRequest: ModelRequest = {
+            systemInstructions: preparedCall.modelInput.instructions,
+            prompt: preparedCall.prompt,
+            // Streaming requests should also honor explicitly chosen models.
+            ...(preparedCall.explicitlyModelSet
+              ? { overridePromptModel: true }
+              : {}),
+            input: preparedCall.modelInput.input,
+            previousResponseId: preparedCall.previousResponseId,
+            conversationId: preparedCall.conversationId,
+            modelSettings: preparedCall.modelSettings,
+            _internal: preparedCall.modelRequestInternal,
+            tools: preparedCall.serializedTools,
+            toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
+            handoffs: preparedCall.serializedHandoffs,
+            outputType: convertAgentOutputTypeToSerializable(
+              currentAgent.outputType,
+            ),
+            tracing: getTracing(
+              this.config.tracingDisabled,
+              this.config.traceIncludeSensitiveData,
+            ),
+            signal: options.signal,
+          };
+
+          // Publish the turn only after the complete request is constructed,
+          // immediately before the model request starts.
+          turnPendingModelRequest = undefined;
+          result.currentTurn = result.state._currentTurn;
           sentInputToModel = true;
           try {
             for await (const event of getStreamedResponseWithRetry(
               preparedCall.model,
-              {
-                systemInstructions: preparedCall.modelInput.instructions,
-                prompt: preparedCall.prompt,
-                // Streaming requests should also honor explicitly chosen models.
-                ...(preparedCall.explicitlyModelSet
-                  ? { overridePromptModel: true }
-                  : {}),
-                input: preparedCall.modelInput.input,
-                previousResponseId: preparedCall.previousResponseId,
-                conversationId: preparedCall.conversationId,
-                modelSettings: preparedCall.modelSettings,
-                _internal: preparedCall.modelRequestInternal,
-                tools: preparedCall.serializedTools,
-                toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
-                handoffs: preparedCall.serializedHandoffs,
-                outputType: convertAgentOutputTypeToSerializable(
-                  currentAgent.outputType,
-                ),
-                tracing: getTracing(
-                  this.config.tracingDisabled,
-                  this.config.traceIncludeSensitiveData,
-                ),
-                signal: options.signal,
-              },
+              modelRequest,
             )) {
               await guardrailTracker.throwIfError();
               markInputOnce();
@@ -2425,7 +2475,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
       }
     } catch (error) {
-      result.state._currentTurnInProgress = false;
+      const restoredPendingTurn = rollbackUnstartedTurn(
+        result.state,
+        turnPendingModelRequest,
+      );
+      turnPendingModelRequest = undefined;
+      if (!restoredPendingTurn) {
+        result.state._currentTurnInProgress = false;
+      }
       attachRunStateToError(error, result.state);
       releaseUnusedSessionHistoryTransactionBinding(result.state);
       suppressStreamInputPersistence =

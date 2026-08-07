@@ -27,6 +27,7 @@ import {
   Session,
   InputGuardrailTripwireTriggered,
   OutputGuardrailTripwireTriggered,
+  UserError,
   RunContext,
   RunState,
   hostedMcpTool,
@@ -2568,6 +2569,8 @@ describe('Runner.run (streaming)', () => {
 
     expect(result.cancelled).toBe(true);
     expect(model.callCount).toBe(1);
+    expect(result.currentTurn).toBe(1);
+    expect(result.state._currentTurn).toBe(1);
   });
 
   it('does not call the model when a resumed turn is cancelled during preparation', async () => {
@@ -2631,6 +2634,8 @@ describe('Runner.run (streaming)', () => {
 
     expect(resumed.cancelled).toBe(true);
     expect(model.callCount).toBe(1);
+    expect(resumed.currentTurn).toBe(1);
+    expect(resumed.state._currentTurn).toBe(1);
   });
 
   it('enforces maxTurns across multiple streamed model calls', async () => {
@@ -2703,6 +2708,8 @@ describe('Runner.run (streaming)', () => {
     await expect(result.completed).rejects.toBeInstanceOf(
       MaxTurnsExceededError,
     );
+    expect(result.currentTurn).toBe(1);
+    expect(result.state._currentTurn).toBe(1);
   });
 
   it('does not enforce maxTurns for streamed runs when maxTurns is null', async () => {
@@ -4486,9 +4493,90 @@ describe('Runner.run (streaming)', () => {
     expect(callsBeforeSiblingFinished).toBe(0);
     expect(settledBeforeSiblingFinished).toBe(false);
     expect(model.calls).toBe(0);
+    expect(result.currentTurn).toBe(0);
     expect(result.inputGuardrailResults.map((r) => r.guardrail.name)).toEqual([
       'slow-parallel-guardrail',
     ]);
+  });
+
+  it('retains an admitted streamed turn when a parallel guardrail fails after the model starts', async () => {
+    let markModelStarted!: () => void;
+    let markGuardrailFailing!: () => void;
+    const modelStarted = new Promise<void>((resolve) => {
+      markModelStarted = resolve;
+    });
+    const guardrailFailing = new Promise<void>((resolve) => {
+      markGuardrailFailing = resolve;
+    });
+    const guardrail = {
+      name: 'late-parallel-guardrail-error',
+      execute: async () => {
+        await modelStarted;
+        markGuardrailFailing();
+        throw new Error('late boom');
+      },
+    };
+
+    class TrackingStreamingModel implements Model {
+      calls = 0;
+
+      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+        throw new Error('not implemented');
+      }
+
+      async *getStreamedResponse(
+        _request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        this.calls++;
+        markModelStarted();
+        await guardrailFailing;
+        yield {
+          type: 'response_done',
+          response: {
+            id: 'late-guardrail-response',
+            usage: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+            },
+            output: [
+              protocol.OutputModelItem.parse(fakeModelMessage('unused')),
+            ],
+          },
+        } satisfies StreamEvent;
+      }
+    }
+
+    const model = new TrackingStreamingModel();
+    const agent = new Agent({
+      name: 'LateStreamingParallelGuardrailFailure',
+      model,
+      inputGuardrails: [guardrail],
+    });
+    const runner = new Runner();
+
+    const result = await runner.run(agent, 'hello', { stream: true });
+    await expect(result.completed).rejects.toBeInstanceOf(
+      GuardrailExecutionError,
+    );
+    expect(model.calls).toBe(1);
+    expect(result.currentTurn).toBe(1);
+    expect(result.state._currentTurn).toBe(1);
+
+    const restored = await RunState.fromString(agent, result.state.toString());
+    expect(restored._currentTurn).toBe(1);
+
+    const resumed = await runner.run(agent, restored, {
+      stream: true,
+      maxTurns: 1,
+    });
+    await expect(resumed.completed).rejects.toBeInstanceOf(
+      MaxTurnsExceededError,
+    );
+    expect(resumed.currentTurn).toBe(1);
+    expect(resumed.state._currentTurn).toBe(1);
+    expect(model.calls).toBe(1);
   });
 
   it('persists streaming input through the blocked result save when an output guardrail trips', async () => {
@@ -4939,3 +5027,291 @@ function createSessionMock(): Session {
     clearSession: vi.fn().mockResolvedValue(undefined),
   };
 }
+
+// A streaming model that returns one queued ModelResponse per turn, mirroring
+// the QueueStreamingModel used elsewhere in this file.
+class QueuedTurnStreamingModel implements Model {
+  calls = 0;
+
+  constructor(private readonly responses: ModelResponse[]) {}
+
+  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
+    this.calls++;
+    const response = this.responses.shift();
+    if (!response) {
+      throw new Error('No response found');
+    }
+    return response;
+  }
+
+  async *getStreamedResponse(
+    request: ModelRequest,
+  ): AsyncIterable<StreamEvent> {
+    const response = await this.getResponse(request);
+    yield {
+      type: 'response_done',
+      response: {
+        id: response.responseId ?? 'resp-current-turn',
+        usage: {
+          requests: response.usage.requests,
+          inputTokens: response.usage.inputTokens,
+          outputTokens: response.usage.outputTokens,
+          totalTokens: response.usage.totalTokens,
+        },
+        output: response.output.map((item) =>
+          protocol.OutputModelItem.parse(item),
+        ),
+      },
+    } satisfies StreamEvent;
+  }
+}
+
+describe('StreamedRunResult.currentTurn (streamed runs)', () => {
+  beforeAll(() => {
+    setTracingDisabled(true);
+  });
+
+  it('tracks the real turn count across a multi-turn streamed run', async () => {
+    const lookup = tool({
+      name: 'lookup',
+      description: 'Look something up.',
+      parameters: z.object({ q: z.string() }),
+      execute: async () => 'ok',
+    });
+    const agent = new Agent({
+      name: 'MultiTurnStreamingAgent',
+      model: new QueuedTurnStreamingModel([
+        {
+          output: [
+            {
+              type: 'function_call',
+              id: 'fc_lookup',
+              callId: 'call_lookup',
+              name: 'lookup',
+              status: 'completed',
+              arguments: JSON.stringify({ q: 'x' }),
+            } as protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+        },
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+      ]),
+      tools: [lookup],
+      toolUseBehavior: 'run_llm_again',
+    });
+
+    const result = await run(agent, 'go', { stream: true });
+    await result.completed;
+
+    // Two model requests => two turns. Previously currentTurn was pinned at 0.
+    expect(result.finalOutput).toBe('done');
+    expect(result.currentTurn).toBe(2);
+  });
+
+  it('reports 0 on a handled max-turn boundary (no turn was admitted)', async () => {
+    // maxTurns: 0 -- the runner increments _currentTurn to 1 before the limit
+    // check, then raises MaxTurnsExceededError without ever calling the model.
+    // currentTurn is written only once a turn is ADMITTED, so it stays 0 here.
+    const agent = new Agent({
+      name: 'MaxTurnsZeroAgent',
+      model: new FakeModel(),
+    });
+
+    const result = await run(agent, 'go', { stream: true, maxTurns: 0 });
+    await expect(result.completed).rejects.toBeInstanceOf(
+      MaxTurnsExceededError,
+    );
+    expect(result.currentTurn).toBe(0);
+    expect(result.state._currentTurn).toBe(0);
+
+    const restored = await RunState.fromString(agent, result.state.toString());
+    agent.model = new ImmediateStreamingModel({
+      output: [fakeModelMessage('resumed')],
+      usage: new Usage(),
+    });
+    const resumed = await run(agent, restored, {
+      stream: true,
+      maxTurns: null,
+    });
+    await resumed.completed;
+
+    expect(resumed.finalOutput).toBe('resumed');
+    expect(resumed.currentTurn).toBe(1);
+    expect(resumed.state._currentTurn).toBe(1);
+  });
+
+  it('reports 0 when request serialization fails before the model call', async () => {
+    const model = new QueuedTurnStreamingModel([
+      {
+        output: [fakeModelMessage('{"value":"ok"}')],
+        usage: new Usage(),
+      },
+    ]);
+    const agent: Agent<any, any> = new Agent({
+      name: 'StreamingRequestSerializationFailure',
+      model,
+      outputType: z.object({ value: z.custom() }),
+    });
+
+    const result = await run(agent, 'x', { stream: true });
+    await expect(result.completed).rejects.toBeInstanceOf(UserError);
+
+    expect(model.calls).toBe(0);
+    expect(result.currentTurn).toBe(0);
+    expect(result.state._currentTurn).toBe(0);
+
+    const restored = await RunState.fromString(agent, result.state.toString());
+    agent.outputType = z.object({ value: z.string() });
+    const resumed = await run(agent, restored, {
+      stream: true,
+      maxTurns: 1,
+    });
+    await resumed.completed;
+
+    expect(resumed.finalOutput).toEqual({ value: 'ok' });
+    expect(resumed.currentTurn).toBe(1);
+    expect(resumed.state._currentTurn).toBe(1);
+    expect(model.calls).toBe(1);
+  });
+
+  it('preserves an in-progress turn when resumed request serialization fails', async () => {
+    const model = new QueuedTurnStreamingModel([
+      {
+        output: [fakeModelMessage('{"value":"ok"}')],
+        usage: new Usage(),
+      },
+    ]);
+    const agent: Agent<any, any> = new Agent({
+      name: 'ResumedStreamingRequestSerializationFailure',
+      model,
+      outputType: z.object({ value: z.custom() }),
+    });
+    const state = new RunState(new RunContext(), 'x', agent, 1);
+    state._currentTurn = 1;
+    state._currentTurnInProgress = true;
+    const restored = await RunState.fromString(agent, state.toString());
+
+    const result = await run(agent, restored, {
+      stream: true,
+      maxTurns: 1,
+    });
+    await expect(result.completed).rejects.toBeInstanceOf(UserError);
+
+    expect(model.calls).toBe(0);
+    expect(result.currentTurn).toBe(1);
+    expect(result.state._currentTurn).toBe(1);
+    expect(result.state._currentTurnInProgress).toBe(true);
+
+    const retryState = await RunState.fromString(
+      agent,
+      result.state.toString(),
+    );
+    agent.outputType = z.object({ value: z.string() });
+    const resumed = await run(agent, retryState, {
+      stream: true,
+      maxTurns: 1,
+    });
+    await resumed.completed;
+
+    expect(resumed.finalOutput).toEqual({ value: 'ok' });
+    expect(resumed.currentTurn).toBe(1);
+    expect(resumed.state._currentTurn).toBe(1);
+    expect(model.calls).toBe(1);
+  });
+
+  it('reports 0 when a blocking input guardrail trips before any model request', async () => {
+    // The counter is bumped by beginTurn BEFORE the guardrails run. The runner
+    // must roll it back when the tripwire fires so resumed state does not report
+    // a turn that never reached the model.
+    const guardrail = {
+      name: 'block-first-turn',
+      runInParallel: false, // blocking: awaited before the model request
+      execute: vi.fn().mockResolvedValue({
+        tripwireTriggered: true,
+        outputInfo: { reason: 'blocked' },
+      }),
+    };
+
+    const agent = new Agent({
+      name: 'GuardrailBlockedAgent',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('should never run')],
+        usage: new Usage(),
+      }),
+    });
+
+    const runner = new Runner({ inputGuardrails: [guardrail] });
+    const result = await runner.run(agent, 'blocked input', { stream: true });
+
+    await expect(result.completed).rejects.toBeInstanceOf(
+      InputGuardrailTripwireTriggered,
+    );
+    expect(guardrail.execute).toHaveBeenCalledTimes(1);
+    expect(result.currentTurn).toBe(0);
+    expect(result.state._currentTurn).toBe(0);
+  });
+
+  it('carries the turn count into a resumed streamed run instead of restarting at 0', async () => {
+    // A run resumed from a serialized state has already spent turns; restarting the
+    // public counter at 0 would under-report them for the rest of the run.
+    class HangingStreamingModel implements Model {
+      async getResponse(): Promise<ModelResponse> {
+        throw new Error('unused');
+      }
+
+      async *getStreamedResponse(
+        request: ModelRequest,
+      ): AsyncIterable<StreamEvent> {
+        const abortError = new Error('aborted');
+        (abortError as any).name = 'AbortError';
+        const signal = (request as any).signal as AbortSignal | undefined;
+        await new Promise((_resolve, reject) => {
+          if (signal?.aborted) {
+            reject(abortError);
+            return;
+          }
+          const onAbort = () => {
+            signal?.removeEventListener('abort', onAbort);
+            reject(abortError);
+          };
+          signal?.addEventListener('abort', onAbort, { once: true });
+        });
+        yield* [] as any;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'ResumeTurnCountAgent',
+      model: new HangingStreamingModel(),
+    });
+    const runner = new Runner();
+
+    const streaming = await runner.run(agent, 'hello', { stream: true });
+    const reader = (streaming.toStream() as any).getReader();
+    await new Promise((resolve) => setImmediate(resolve));
+    await reader.cancel('stop');
+    await streaming._getStreamLoopPromise();
+
+    // The first turn WAS admitted -- the model request started, then was cancelled.
+    expect(streaming.currentTurn).toBe(1);
+
+    const restored = await RunState.fromString(
+      agent,
+      streaming.state.toString(),
+    );
+    agent.model = new ImmediateStreamingModel({
+      output: [fakeModelMessage('resumed')],
+      usage: new Usage(),
+    });
+
+    const resumed = await runner.run(agent, restored, { stream: true });
+    await resumed.completed;
+
+    expect(resumed.finalOutput).toBe('resumed');
+    // Seeded from the resumed state, NOT reset to 0.
+    expect(resumed.currentTurn).toBe(1);
+  });
+});

@@ -339,9 +339,24 @@ export class StreamedRunResult<
   }
 
   /**
-   * The current turn number
+   * The number of model turns admitted so far.
+   *
+   * Written by the streaming runner at the point a turn is *admitted* -- after
+   * the `maxTurns` limit check and any blocking input guardrails have passed,
+   * immediately before the model request starts. It therefore counts turns that
+   * actually reached the model, not turns that were merely begun:
+   *
+   * - a handled max-turn boundary (e.g. `maxTurns: 0`) leaves this at `0`,
+   *   because the limit check throws before any turn is admitted;
+   * - a blocking input guardrail that trips on the first turn leaves this at
+   *   `0`, because no model request was made;
+   * - a resumed run starts from the turn count carried in the resumed state.
+   *
+   * `RunState._currentTurn` is incremented at the *start* of a turn, before
+   * either check. The runner rolls that increment back if the model request
+   * never starts, so resumed state carries only admitted turns.
    */
-  public currentTurn: number = 0;
+  public currentTurn = 0;
 
   /**
    * The maximum number of turns that can be run
@@ -372,6 +387,11 @@ export class StreamedRunResult<
     super(result.state);
     this.#finalOutputHidden =
       result.state?._currentStep?.type === 'next_step_final_output';
+
+    // Seed from the resumed state so a run continued from a serialized state does
+    // not restart its public turn count at 0. A fresh run carries `_currentTurn = 0`
+    // here, so this is a no-op for the common case.
+    this.currentTurn = result.state?._currentTurn ?? 0;
 
     this.#abortController = new AbortController();
     const { signal: combinedSignal, cleanup: cleanupCombinedSignal } =
