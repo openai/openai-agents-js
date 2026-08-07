@@ -5,7 +5,7 @@
   "scripts": {
     "clean": "node scripts/clean-package-dists.mjs && tsc-multi --clean",
     "prebuild": "pnpm -F @openai/* -r prebuild",
-    "build": "pnpm clean && tsc-multi",
+    "build": "pnpm clean && tsc-multi --maxWorkers 1",
     "build:ci": "pnpm run prebuild && pnpm clean && tsc-multi --maxWorkers 1 && pnpm run postbuild",
     "postbuild": "pnpm -r -F @openai/* bundle",
     "packages:dev": "tsc-multi --watch",
