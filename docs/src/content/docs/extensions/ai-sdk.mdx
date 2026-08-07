@@ -13,6 +13,7 @@ import aiSdkTransformOutputTextExample from '../../../../../examples/docs/extens
 import aiSdkUiMessageStreamExample from '../../../../../examples/docs/extensions/ai-sdk-ui-message-stream.ts?raw';
 import aiSdkUiMessageStreamResponseExample from '../../../../../examples/docs/extensions/ai-sdk-ui-message-stream-response.ts?raw';
 import aiSdkTextStreamResponseExample from '../../../../../examples/docs/extensions/ai-sdk-text-stream-response.ts?raw';
+import aiSdkPdfFileInputExample from '../../../../../examples/docs/ai-sdk/pdfFileInput.ts?raw';
 
 Out of the box the Agents SDK works with OpenAI models through the Responses API or Chat Completions API. However, if you would like to use another model, the [Vercel AI SDK](https://sdk.vercel.ai/) offers a range of supported models that can be brought into the Agents SDK through this adapter.
 
@@ -69,6 +70,22 @@ would become
 />
 
 when using the AI SDK integration.
+
+## PDF file inputs
+
+The AI SDK adapter converts Agents SDK `input_file` content into the file-part shape expected by AI SDK v2, v3, and v4 models. You can provide a PDF as:
+
+- A base64 data URL such as `data:application/pdf;base64,...`.
+- Non-empty raw base64 with either a `.pdf` filename or `providerData.mediaType`.
+- A public HTTP(S) URL with either a `.pdf` path or `providerData.mediaType`.
+
+When the filename or URL path ends in `.pdf`, the adapter infers `application/pdf`. Otherwise, set `providerData: { mediaType: 'application/pdf' }` explicitly. OpenAI file IDs are not supported through the AI SDK adapter; pass file data or a public URL, or use an OpenAI Responses model directly. Support for reading PDFs still depends on the selected AI SDK provider and model.
+
+<Code
+  lang="typescript"
+  code={aiSdkPdfFileInputExample}
+  title="Send a PDF through an AI SDK model"
+/>
 
 ## Normalizing finalized output text
 

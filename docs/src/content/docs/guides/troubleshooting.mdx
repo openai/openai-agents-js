@@ -14,7 +14,7 @@ The OpenAI Agents SDK is supported on the following server environments:
 ### Limited support
 
 - **Cloudflare Workers**: The Agents SDK can be used in Cloudflare Workers, but currently comes with some limitations:
-  - The SDK current requires `nodejs_compat` to be enabled
+  - The SDK currently requires `nodejs_compat` to be enabled
   - Traces need to be manually flushed at the end of the request. [See the tracing guide](/openai-agents-js/guides/tracing#export-loop-lifecycle) for more details.
   - Due to Cloudflare Workers' limited support for `AsyncLocalStorage` some traces might not be accurate
   - Outbound WebSocket connections must use a fetch-based upgrade (not the global `WebSocket` constructor). For Realtime, use the Cloudflare transport in `@openai/agents-extensions` (`CloudflareRealtimeTransportLayer`).
@@ -25,6 +25,10 @@ The OpenAI Agents SDK is supported on the following server environments:
   - If you see errors mentioning a missing global `WebSocket` implementation or lack of custom-header support, the runtime websocket implementation is not compatible with the Responses WebSocket transport.
 - **Browsers**:
   - The core SDK can be bundled for browser use, but tracing is disabled by default there.
+- **React Native**:
+  - `@openai/agents-core` and `@openai/agents-realtime` provide React Native package conditions for portable shims, but the built-in `OpenAIRealtimeWebRTC` remains browser-only.
+  - Realtime apps must provide an app-owned transport backed by a native WebRTC implementation such as `react-native-webrtc`, and the app remains responsible for permissions, audio routing, and transport lifecycle.
+  - Expo Go cannot load native WebRTC modules. Use an Expo development build or a native React Native project. See the [`examples/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-react-native) example.
 - **v8 isolates**:
   - While you should be able to bundle the SDK for v8 isolates if you use a bundler with the right browser polyfills, tracing will not work
   - v8 isolates have not been extensively tested

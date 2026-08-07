@@ -72,6 +72,7 @@ The additional options are:
 | `sandbox` | – | Sandbox client, live session, session state, snapshot, manifest override, or concurrency limits for `SandboxAgent` runs. See [Sandbox agents](/openai-agents-js/guides/sandbox-agents/concepts). |
 | `toolExecution` | – | SDK-side execution settings for local tool calls. Use `toolExecution.maxFunctionToolConcurrency` to limit how many function tools run at once, and `toolExecution.preApprovalInputGuardrails` to run function-tool input guardrails before pending approval requests. |
 | `toolNotFoundBehavior` | `'raise_error'` | Controls unresolved function tool calls emitted by the model. Use `'return_error_to_model'` to return a model-visible tool error and continue the run. |
+| `toolNameCollisionPolicy` | `'warn'` | Controls collisions between enabled function-tool and handoff names. Use `'error'` to fail before the model request instead of warning and exposing only the current dispatch winner. |
 | `errorHandlers` | – | Handlers for supported runtime errors. See [Error handlers](#error-handlers). |
 | `conversationId` | – | Reuse a server-side conversation (OpenAI Responses API + Conversations API only). |
 | `previousResponseId` | – | Continue from the previous Responses API call without creating a conversation (OpenAI Responses API only). |
@@ -105,10 +106,13 @@ If you are creating your own `Runner` instance, you can pass in a `RunConfig` ob
 | `sandbox` | `SandboxRunConfig` | Default sandbox runtime configuration for `SandboxAgent` runs. |
 | `toolExecution` | `ToolExecutionConfig` | Default SDK-side execution settings for local tool calls. `maxFunctionToolConcurrency` caps local function tool concurrency for each turn; unset or `null` starts all function tool calls emitted in a turn. `preApprovalInputGuardrails` opts in to running function-tool input guardrails before pending approval requests. |
 | `toolNotFoundBehavior` | `ToolNotFoundBehavior` | Default behavior for unresolved function tool calls. `'raise_error'` raises `ModelBehaviorError`; `'return_error_to_model'` returns a model-visible tool error and lets the run continue. |
+| `toolNameCollisionPolicy` | `ToolNameCollisionPolicy` | Default collision policy for enabled function-tool and handoff names. `'warn'` logs and exposes the current dispatch winner; `'error'` raises `UserError` before the model is called. |
 
 `toolExecution.maxFunctionToolConcurrency` must be an integer greater than or equal to `1`. This setting only limits SDK-side execution of local function tools. It does not change provider-side `modelSettings.parallelToolCalls`.
 
 `toolExecution.preApprovalInputGuardrails` is disabled by default. When set to `true`, local function tools that require approval run their input guardrails before the SDK records a pending approval interruption. If the guardrail returns `rejectContent`, the SDK sends that rejection message back as the tool output instead of asking for approval. If the guardrail allows the call, the approval request is still raised, and the same input guardrails run again immediately before tool execution after the approval is resolved.
+
+`toolNameCollisionPolicy` only controls collisions between enabled function tools and handoffs. Existing strict validation for namespaced tools, deferred tools, and duplicate local MCP tool names is unchanged.
 
 ## State and conversation management
 
