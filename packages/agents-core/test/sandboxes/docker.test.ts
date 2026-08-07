@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   DockerSandboxClient,
   inContainerMountStrategy,
@@ -28,14 +28,6 @@ const itIfDocker = dockerAvailable ? it : it.skip;
 describe('DockerSandboxClient', () => {
   let rootDir: string;
   const cleanupContainerIds = new Set<string>();
-
-  beforeAll(() => {
-    if (!dockerAvailable) {
-      console.warn(
-        'Skipping Docker sandbox tests because Docker is unavailable.',
-      );
-    }
-  });
 
   afterEach(async () => {
     for (const containerId of cleanupContainerIds) {

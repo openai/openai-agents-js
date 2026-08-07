@@ -30,7 +30,6 @@ import {
 import * as protocol from '../src/types/protocol';
 import { fakeModelMessage } from './stubs';
 import logger from '../src/logger';
-import { allowConsole } from '../../../helpers/tests/console-guard';
 
 type RunMode = 'non_streamed' | 'streamed';
 
@@ -884,7 +883,7 @@ describe('committed tool output guardrail session persistence', () => {
   );
 
   it('hides streamed error-handler output before the finalizer microtask', async () => {
-    allowConsole(['warn']);
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     let resolveHandler: ((value: { finalOutput: string }) => void) | undefined;
     let resolveGuardrail:
       | ((value: { outputInfo: null; tripwireTriggered: boolean }) => void)
@@ -940,10 +939,15 @@ describe('committed tool output guardrail session persistence', () => {
     expect(observedBeforeFinalizer).toBeUndefined();
     await vi.waitFor(() => expect(resolveGuardrail).toBeDefined());
     expect(result.finalOutput).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Accessed finalOutput before agent run is completed.',
+    );
 
     resolveGuardrail!({ outputInfo: null, tripwireTriggered: false });
     await result.completed;
     expect(result.finalOutput).toBe('guarded fallback');
+    warnSpy.mockRestore();
   });
 
   it.each([

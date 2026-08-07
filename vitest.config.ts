@@ -70,9 +70,18 @@ export default defineConfig({
     projects: [
       {
         root: rootDir,
+        resolve: {
+          alias: testAliases,
+        },
         test: {
+          ...baseTestConfig,
+          alias: testAliases,
           name: 'workspace-test-config',
-          include: ['helpers/vitest/workspacePackageAliases.test.ts'],
+          include: [
+            'helpers/tests/consoleGuard.test.ts',
+            'helpers/vitest/workspacePackageAliases.test.ts',
+            'scripts/update-rclone-pin.test.mjs',
+          ],
         },
       },
       ...packageProjects,
