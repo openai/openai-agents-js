@@ -27,8 +27,10 @@ vi.mock('@openai/agents/realtime', () => {
     this.status = 'connected';
   });
   FakeOpenAIRealtimeWebSocket.prototype.sendAudio = vi.fn();
+  FakeOpenAIRealtimeWebSocket.prototype.sendEvent = vi.fn();
+  FakeOpenAIRealtimeWebSocket.prototype._cancelResponse = vi.fn();
+  FakeOpenAIRealtimeWebSocket.prototype._afterAudioDoneEvent = vi.fn();
   FakeOpenAIRealtimeWebSocket.prototype.close = vi.fn();
-  FakeOpenAIRealtimeWebSocket.prototype._interrupt = vi.fn();
   FakeOpenAIRealtimeWebSocket.prototype.updateSessionConfig = vi.fn();
   return { OpenAIRealtimeWebSocket: FakeOpenAIRealtimeWebSocket, utils };
 });
@@ -119,6 +121,7 @@ describe('TwilioRealtimeTransportLayer', () => {
   });
 
   test('connect handles messages and events', async () => {
+    allowConsole(['error', 'warn']);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
@@ -128,8 +131,8 @@ describe('TwilioRealtimeTransportLayer', () => {
     const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
     const sendAudioSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.sendAudio);
     const closeSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.close);
-    const interruptSpy = vi.mocked(
-      OpenAIRealtimeWebSocket.prototype._interrupt,
+    const cancelSpy = vi.mocked(
+      OpenAIRealtimeWebSocket.prototype._cancelResponse,
     );
 
     const mediaPayload = base64('a');
@@ -147,7 +150,7 @@ describe('TwilioRealtimeTransportLayer', () => {
       toString: () => JSON.stringify({ event: 'mark', mark: { name: 'u:5' } }),
     });
     transport._interrupt(0);
-    expect(interruptSpy).toHaveBeenCalledWith(55, true);
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
     expect(twilio.send).toHaveBeenCalledWith(
       JSON.stringify({ event: 'clear', streamSid: 'sid' }),
     );
@@ -217,6 +220,11 @@ describe('TwilioRealtimeTransportLayer', () => {
     const audioListener = vi.fn();
     transport.on('audio', audioListener);
 
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({ event: 'start', start: { streamSid: 'sid' } }),
+    });
+
     setCurrentItemId(transport, 'a');
     transport['_onAudio']({
       responseId: 'FAKE_ID',
@@ -239,9 +247,9 @@ describe('TwilioRealtimeTransportLayer', () => {
     const marks = sendSpy.mock.calls
       .map((c: any) => JSON.parse(c[0]))
       .filter((d: any) => d.event === 'mark');
-    expect(marks[0].mark.name).toBe('a:1');
-    expect(marks[1].mark.name).toBe('a:3');
-    expect(marks[2].mark.name).toBe('b:1');
+    expect(marks[0].mark.name).toMatch(/^a:1:g\d+:m\d+$/);
+    expect(marks[1].mark.name).toMatch(/^a:3:g\d+:m\d+$/);
+    expect(marks[2].mark.name).toMatch(/^b:1:g\d+:m\d+$/);
     expect(audioListener).toHaveBeenCalledTimes(3);
   });
 
@@ -332,18 +340,14 @@ describe('TwilioRealtimeTransportLayer', () => {
     });
   });
 
-  test('resets counters on new Twilio start and handles invalid marks', async () => {
+  test('resets playback state on new Twilio start and handles invalid marks', async () => {
+    allowConsole(['warn']);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
       twilioWebSocket: asTwilioWebSocket(twilio),
     });
     await transport.connect({ apiKey: 'ek_test' } as any);
-    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
-    const interruptSpy = vi.mocked(
-      OpenAIRealtimeWebSocket.prototype._interrupt,
-    );
-
     twilio.emit('message', {
       toString: () =>
         JSON.stringify({ event: 'start', start: { streamSid: 'sid-1' } }),
@@ -370,42 +374,9 @@ describe('TwilioRealtimeTransportLayer', () => {
 
     transport._interrupt(0);
 
-    // After new start, previous counts are cleared; done mark resets to baseline 0 + 50 buffer.
-    expect(interruptSpy).toHaveBeenCalledWith(50, true);
     expect(twilio.send).toHaveBeenCalledWith(
       JSON.stringify({ event: 'clear', streamSid: 'sid-2' }),
     );
     warnSpy.mockRestore();
-  });
-
-  test('resets chunk count on done marks before interrupting', async () => {
-    const twilio = new FakeTwilioWebSocket();
-    const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: asTwilioWebSocket(twilio),
-    });
-    await transport.connect({ apiKey: 'ek_test' } as any);
-    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
-    const interruptSpy = vi.mocked(
-      OpenAIRealtimeWebSocket.prototype._interrupt,
-    );
-
-    twilio.emit('message', {
-      toString: () =>
-        JSON.stringify({ event: 'start', start: { streamSid: 'sid-1' } }),
-    });
-    twilio.emit('message', {
-      toString: () => JSON.stringify({ event: 'mark', mark: { name: 'u:7' } }),
-    });
-    twilio.emit('message', {
-      toString: () =>
-        JSON.stringify({ event: 'mark', mark: { name: 'done:u' } }),
-    });
-
-    transport._interrupt(0);
-
-    expect(interruptSpy).toHaveBeenCalledWith(50, true);
-    expect(twilio.send).toHaveBeenCalledWith(
-      JSON.stringify({ event: 'clear', streamSid: 'sid-1' }),
-    );
   });
 });
