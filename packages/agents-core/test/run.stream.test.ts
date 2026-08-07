@@ -4905,6 +4905,112 @@ describe('Runner.run (streaming)', () => {
     expect(result.rawResponses[0].requestId).toBe('req_stream_123');
   });
 
+  it.each([
+    ['omitted', undefined, undefined],
+    ['disabled', false, undefined],
+    ['enabled', true, { input_tokens_details: { cached_tokens: 0 } }],
+  ] as const)(
+    'exposes streamed raw usage only when preservation is %s',
+    async (_label, preserveRawUsage, expectedRawUsage) => {
+      const agent = new Agent({
+        name: 'StreamRawUsage',
+        model: new ImmediateStreamingModel({
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+          rawUsage: { input_tokens_details: { cached_tokens: 0 } },
+        }),
+        modelSettings: { preserveRawUsage },
+      });
+
+      const result = await run(agent, 'hello', { stream: true });
+      await result.completed;
+
+      expect(result.rawResponses[0].rawUsage).toEqual(expectedRawUsage);
+    },
+  );
+
+  it('detaches raw usage retained by a streamed result from the terminal event', async () => {
+    const agent = new Agent({
+      name: 'DetachedStreamRawUsage',
+      model: new ImmediateStreamingModel({
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+        rawUsage: { input_tokens_details: { cached_tokens: 0 } },
+      }),
+      modelSettings: { preserveRawUsage: true },
+    });
+
+    const result = await run(agent, 'hello', { stream: true });
+    for await (const event of result.toStream()) {
+      if (
+        event.type === 'raw_model_stream_event' &&
+        event.data.type === 'response_done' &&
+        event.data.response.rawUsage
+      ) {
+        (
+          event.data.response.rawUsage.input_tokens_details as {
+            cached_tokens: number;
+          }
+        ).cached_tokens = 99;
+      }
+    }
+    await result.completed;
+
+    expect(result.rawResponses[0].rawUsage).toEqual({
+      input_tokens_details: { cached_tokens: 0 },
+    });
+  });
+
+  it.each(['non-plain', 'cyclic', 'throwing getter'] as const)(
+    'ignores %s raw usage from a terminal model event',
+    async (variant) => {
+      class InvalidRawUsageStreamingModel implements Model {
+        async getResponse(): Promise<ModelResponse> {
+          throw new Error('Unexpected call to getResponse');
+        }
+
+        async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+          const response: Record<string, unknown> = {
+            id: 'r',
+            usage: {
+              requests: 1,
+              inputTokens: 1,
+              outputTokens: 1,
+              totalTokens: 2,
+            },
+            output: [fakeModelMessage('done')],
+          };
+          if (variant === 'throwing getter') {
+            Object.defineProperty(response, 'rawUsage', {
+              enumerable: true,
+              get() {
+                throw new Error('raw usage is unavailable');
+              },
+            });
+          } else if (variant === 'cyclic') {
+            const rawUsage: Record<string, unknown> = {};
+            rawUsage.self = rawUsage;
+            response.rawUsage = rawUsage;
+          } else {
+            response.rawUsage = new Map([['input_tokens', 1]]);
+          }
+          yield { type: 'response_done', response } as any;
+        }
+      }
+
+      const agent = new Agent({
+        name: 'InvalidRawUsage',
+        model: new InvalidRawUsageStreamingModel(),
+        modelSettings: { preserveRawUsage: true },
+      });
+      const result = await run(agent, 'hello', { stream: true });
+      await result.completed;
+
+      expect(result.finalOutput).toBe('done');
+      expect(result.rawResponses[0].rawUsage).toBeUndefined();
+    },
+  );
+
   it('runs blocking input guardrails before streaming starts', async () => {
     let guardrailFinished = false;
 
@@ -4991,6 +5097,7 @@ class ImmediateStreamingModel implements Model {
           outputTokens: usage.outputTokens,
           totalTokens: usage.totalTokens,
         },
+        rawUsage: this.response.rawUsage,
         output,
       },
     } satisfies StreamEvent;

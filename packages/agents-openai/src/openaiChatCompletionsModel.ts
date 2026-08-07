@@ -44,6 +44,7 @@ import {
   CONTENT_FILTER_REFUSAL_MESSAGE,
   shouldSynthesizeContentFilterRefusal,
 } from './openaiChatCompletionsContentFilter';
+import { snapshotRawUsage } from '@openai/agents-core/utils/internal';
 
 type ModelTracingParent = Parameters<typeof createGenerationSpan>[1];
 
@@ -115,61 +116,72 @@ export class OpenAIChatCompletionsModel implements Model {
     this.#handleUnsupportedPrompt(request);
     this.#handleUnsupportedReasoningSettings(request);
 
-    const { response, rawResponse } = await withGenerationSpan(
-      async (span) => {
-        span.spanData.model = this.#model;
-        span.spanData.model_config = request.modelSettings
-          ? {
-              temperature: request.modelSettings.temperature,
-              top_p: request.modelSettings.topP,
-              frequency_penalty: request.modelSettings.frequencyPenalty,
-              presence_penalty: request.modelSettings.presencePenalty,
-              reasoning_effort: request.modelSettings.reasoning?.effort,
-              verbosity: request.modelSettings.text?.verbosity,
-            }
-          : { base_url: this.#client.baseURL };
-        const rawResponse = await this.#fetchResponse(request, span, false);
-        let response = rawResponse;
-        const firstChoice = rawResponse.choices?.[0];
-        const message = firstChoice?.message;
-        // Some providers signal a filtered completion only through the finish reason.
-        // Normalize that terminal signal before tracing and protocol conversion.
-        if (
-          firstChoice &&
-          message &&
-          shouldSynthesizeContentFilterRefusal({
-            finishReason: firstChoice.finish_reason,
-            hasOutput: Boolean(
-              message.content ||
-              message.refusal ||
-              message.tool_calls?.length ||
-              message.audio,
-            ),
-          })
-        ) {
-          response = {
-            ...rawResponse,
-            choices: [
-              {
-                ...firstChoice,
-                message: {
-                  ...message,
-                  content: null,
-                  refusal: CONTENT_FILTER_REFUSAL_MESSAGE,
+    const { response, rawResponse, rawUsage, preservedUsage } =
+      await withGenerationSpan(
+        async (span) => {
+          span.spanData.model = this.#model;
+          span.spanData.model_config = request.modelSettings
+            ? {
+                temperature: request.modelSettings.temperature,
+                top_p: request.modelSettings.topP,
+                frequency_penalty: request.modelSettings.frequencyPenalty,
+                presence_penalty: request.modelSettings.presencePenalty,
+                reasoning_effort: request.modelSettings.reasoning?.effort,
+                verbosity: request.modelSettings.text?.verbosity,
+              }
+            : { base_url: this.#client.baseURL };
+          const rawResponse = await this.#fetchResponse(request, span, false);
+          const rawUsage =
+            request.modelSettings.preserveRawUsage === true
+              ? snapshotRawUsage(rawResponse.usage)
+              : undefined;
+          const preservedUsage =
+            rawUsage !== undefined
+              ? new Usage(
+                  toResponseUsage(rawUsage as unknown as CompletionUsage),
+                )
+              : undefined;
+          let response = rawResponse;
+          const firstChoice = rawResponse.choices?.[0];
+          const message = firstChoice?.message;
+          // Some providers signal a filtered completion only through the finish reason.
+          // Normalize that terminal signal before tracing and protocol conversion.
+          if (
+            firstChoice &&
+            message &&
+            shouldSynthesizeContentFilterRefusal({
+              finishReason: firstChoice.finish_reason,
+              hasOutput: Boolean(
+                message.content ||
+                message.refusal ||
+                message.tool_calls?.length ||
+                message.audio,
+              ),
+            })
+          ) {
+            response = {
+              ...rawResponse,
+              choices: [
+                {
+                  ...firstChoice,
+                  message: {
+                    ...message,
+                    content: null,
+                    refusal: CONTENT_FILTER_REFUSAL_MESSAGE,
+                  },
                 },
-              },
-              ...rawResponse.choices.slice(1),
-            ],
-          };
-        }
-        if (span && request.tracing === true) {
-          span.spanData.output = [response];
-        }
-        return { response, rawResponse };
-      },
-      undefined,
-      getModelTracingParent(request),
-    );
+                ...rawResponse.choices.slice(1),
+              ],
+            };
+          }
+          if (span && request.tracing === true) {
+            span.spanData.output = [response];
+          }
+          return { response, rawResponse, rawUsage, preservedUsage };
+        },
+        undefined,
+        getModelTracingParent(request),
+      );
 
     const output: protocol.OutputModelItem[] = [];
     if (response.choices && response.choices[0]) {
@@ -273,12 +285,15 @@ export class OpenAIChatCompletionsModel implements Model {
       }
     }
     const modelResponse: ModelResponse = {
-      usage: response.usage
-        ? new Usage(toResponseUsage(response.usage))
-        : new Usage(),
+      usage:
+        preservedUsage ??
+        (response.usage
+          ? new Usage(toResponseUsage(response.usage))
+          : new Usage()),
       output,
       responseId: response.id,
       providerData: rawResponse,
+      ...(rawUsage !== undefined ? { rawUsage } : {}),
     };
 
     return modelResponse;
@@ -327,7 +342,12 @@ export class OpenAIChatCompletionsModel implements Model {
       for await (const event of convertChatCompletionsStreamToResponses(
         response,
         stream,
-        { strictFeatureValidation: this.#strictFeatureValidation },
+        {
+          strictFeatureValidation: this.#strictFeatureValidation,
+          ...(request.modelSettings.preserveRawUsage === true
+            ? { preserveRawUsage: true }
+            : {}),
+        },
       )) {
         if (
           event.type === 'response_done' &&

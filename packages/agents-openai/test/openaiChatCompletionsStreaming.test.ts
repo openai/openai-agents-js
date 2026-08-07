@@ -356,7 +356,15 @@ describe('convertChatCompletionsStreamToResponses', () => {
       // reporting usage)...
       yield makeChunk(
         { content: 'Hello' },
-        { prompt_tokens: 100, completion_tokens: 5, total_tokens: 105 },
+        {
+          prompt_tokens: 100,
+          completion_tokens: 5,
+          total_tokens: 105,
+          prompt_tokens_details: {
+            cached_tokens: 0,
+            provider_metric: null,
+          },
+        },
       );
       // ...and the terminal chunk carries no usage at all.
       yield {
@@ -369,12 +377,26 @@ describe('convertChatCompletionsStreamToResponses', () => {
     }
 
     const resp = { id: 'r' } as any;
-    const events: any[] = [];
-    for await (const e of convertChatCompletionsStreamToResponses(
+    const iterator = convertChatCompletionsStreamToResponses(
       resp,
       stream() as any,
-    )) {
-      events.push(e);
+      { preserveRawUsage: true },
+    )[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    expect(first.done).toBe(false);
+    expect(first.value.type).toBe('response_started');
+    (first.value as any).providerData.usage.prompt_tokens = 999;
+    (
+      first.value as any
+    ).providerData.usage.prompt_tokens_details.cached_tokens = 88;
+
+    const events: any[] = [first.value];
+    for (
+      let next = await iterator.next();
+      !next.done;
+      next = await iterator.next()
+    ) {
+      events.push(next.value);
     }
 
     const final = events[events.length - 1];
@@ -383,6 +405,15 @@ describe('convertChatCompletionsStreamToResponses', () => {
       inputTokens: 100,
       outputTokens: 5,
       totalTokens: 105,
+    });
+    expect(final.response.rawUsage).toEqual({
+      prompt_tokens: 100,
+      completion_tokens: 5,
+      total_tokens: 105,
+      prompt_tokens_details: {
+        cached_tokens: 0,
+        provider_metric: null,
+      },
     });
     expect(resp.usage).toMatchObject({
       prompt_tokens: 100,

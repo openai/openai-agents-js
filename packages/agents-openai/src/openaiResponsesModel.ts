@@ -81,6 +81,7 @@ import {
   assertValidCompactionItems,
   formatInlineData,
   getInlineMediaType,
+  snapshotRawUsage,
 } from '@openai/agents-core/utils/internal';
 
 type ModelTracingParent = Parameters<typeof createResponseSpan>[1];
@@ -3534,9 +3535,15 @@ export class OpenAIResponsesModel implements Model {
    * @returns A promise that resolves to the response from the model.
    */
   async getResponse(request: ModelRequest): Promise<ModelResponse> {
-    const response = await withResponseSpan(
+    const { response, rawUsage, preservedUsage } = await withResponseSpan(
       async (span) => {
         const response = await this._fetchResponse(request, false);
+        const rawUsage =
+          request.modelSettings.preserveRawUsage === true
+            ? snapshotRawUsage(response.usage)
+            : undefined;
+        const preservedUsage =
+          rawUsage !== undefined ? this._getResponseUsage(response) : undefined;
 
         if (request.tracing) {
           span.spanData.response_id = response.id;
@@ -3544,7 +3551,7 @@ export class OpenAIResponsesModel implements Model {
           span.spanData._response = response;
         }
 
-        return response;
+        return { response, rawUsage, preservedUsage };
       },
       undefined,
       getModelTracingParent(request),
@@ -3552,13 +3559,14 @@ export class OpenAIResponsesModel implements Model {
 
     const responseForSDKOutput = this._getResponseForSDKOutput(response);
     const output: ModelResponse = {
-      usage: this._getResponseUsage(response),
+      usage: preservedUsage ?? this._getResponseUsage(response),
       output: this._convertResponseOutputItems(
         responseForSDKOutput.output as Array<Record<string, any>>,
       ),
       responseId: response.id,
       requestId: getOpenAIResponseRequestId(response),
       providerData: response,
+      ...(rawUsage !== undefined ? { rawUsage } : {}),
     };
 
     return output;
@@ -3637,6 +3645,9 @@ export class OpenAIResponsesModel implements Model {
                 responseForSDKOutput.output as Array<Record<string, any>>,
               ),
               usage: this._getStreamedResponseUsage(response),
+              ...(request.modelSettings.preserveRawUsage === true
+                ? { rawUsage: snapshotRawUsage(response.usage) }
+                : {}),
               providerData: remainingResponse,
             },
             providerData: remainingEvent,

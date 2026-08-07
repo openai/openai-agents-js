@@ -47,6 +47,7 @@ import { includeTaskAndTurnSpans, mergeTracingConfig } from './tracing/config';
 import { Usage } from './usage';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
 import { isDataRedactedError } from './utils/finalOutputError';
+import { snapshotRawUsage } from './utils/rawUsage';
 import { DEFAULT_MAX_TURNS } from './runner/constants';
 import { StreamEventResponseCompleted } from './types/protocol';
 import type { Session, SessionInputCallback } from './memory/session';
@@ -2306,12 +2307,36 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               );
               if (event.type === 'response_done') {
                 assertValidCompactionItems(event.response.output);
-                const parsed = StreamEventResponseCompleted.parse(event);
+                let rawUsage: Record<string, unknown> | undefined;
+                if (modelRequest.modelSettings.preserveRawUsage === true) {
+                  try {
+                    rawUsage = snapshotRawUsage(event.response.rawUsage);
+                  } catch {
+                    rawUsage = undefined;
+                  }
+                }
+                const parsed = StreamEventResponseCompleted.parse({
+                  type: event.type,
+                  ...(event.providerData
+                    ? { providerData: event.providerData }
+                    : {}),
+                  response: {
+                    id: event.response.id,
+                    requestId: event.response.requestId,
+                    usage: event.response.usage,
+                    output: event.response.output,
+                    ...(event.response.providerData
+                      ? { providerData: event.response.providerData }
+                      : {}),
+                    ...(rawUsage !== undefined ? { rawUsage } : {}),
+                  },
+                });
                 finalResponse = {
                   usage: new Usage(parsed.response.usage),
                   output: parsed.response.output,
                   responseId: parsed.response.id,
                   requestId: parsed.response.requestId,
+                  ...(rawUsage !== undefined ? { rawUsage } : {}),
                 };
                 result.state._context.usage.add(finalResponse.usage);
                 recordUsage(finalResponse.usage);
