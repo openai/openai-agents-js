@@ -353,6 +353,12 @@ function normalizeSystemMessageContent(
     .join('\n');
 }
 
+const CONVERSATION_ITEM_TYPES_WITH_PRESERVED_IDS = new Set([
+  'reasoning',
+  'program',
+  'program_output',
+]);
+
 function stripConversationPersistenceMetadata(
   items: OpenAI.Responses.ResponseInputItem[],
 ): OpenAI.Responses.ResponseInputItem[] {
@@ -369,7 +375,10 @@ function stripConversationPersistenceMetadata(
       provider_data: _provider_data,
       ...rest
     } = record;
-    if (rest.type !== 'reasoning') {
+    if (
+      typeof rest.type !== 'string' ||
+      !CONVERSATION_ITEM_TYPES_WITH_PRESERVED_IDS.has(rest.type)
+    ) {
       delete rest.id;
     }
     return [rest as unknown as OpenAI.Responses.ResponseInputItem];
