@@ -1616,6 +1616,64 @@ function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null;
 }
 
+function isPlainRecord(value: unknown): value is Record<string, any> {
+  if (!isRecord(value) || Array.isArray(value)) {
+    return false;
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function getAiSdkProviderData(
+  model: LanguageModelCompatible,
+  modelSettings: ModelSettings,
+): Record<string, any> {
+  const providerData = modelSettings.providerData ?? {};
+  const promptCacheRetention = modelSettings.promptCacheRetention;
+
+  if (
+    model.provider !== 'openai.responses' ||
+    promptCacheRetention === undefined
+  ) {
+    return providerData;
+  }
+
+  if (getSpecVersion(model) === 'v2') {
+    throw new UserError(
+      'AI SDK prompt cache retention requires specificationVersion v3 or v4; v2 models do not support this option.',
+    );
+  }
+
+  const providerOptions = providerData.providerOptions;
+  if (providerOptions !== undefined && !isPlainRecord(providerOptions)) {
+    return providerData;
+  }
+
+  const openaiOptions = providerOptions?.openai;
+  if (openaiOptions !== undefined && !isPlainRecord(openaiOptions)) {
+    return providerData;
+  }
+
+  const providerPromptCacheRetention = openaiOptions?.promptCacheRetention;
+
+  return {
+    ...providerData,
+    providerOptions: {
+      ...providerOptions,
+      openai: {
+        ...openaiOptions,
+        promptCacheRetention:
+          providerPromptCacheRetention === undefined
+            ? promptCacheRetention === 'in-memory'
+              ? 'in_memory'
+              : promptCacheRetention
+            : providerPromptCacheRetention,
+      },
+    },
+  };
+}
+
 function getAiSdkToolName(tool: { name: string; namespace?: string }): string {
   return toolQualifiedName(tool.name, tool.namespace) ?? tool.name;
 }
@@ -2192,7 +2250,7 @@ export class AiSdkModel implements Model {
           responseFormat,
           abortSignal: request.signal,
 
-          ...(request.modelSettings.providerData ?? {}),
+          ...getAiSdkProviderData(this.#model, request.modelSettings),
         };
 
         if (this.#logger.dontLogModelData) {
@@ -2493,7 +2551,7 @@ export class AiSdkModel implements Model {
         maxOutputTokens: request.modelSettings.maxTokens,
         responseFormat,
         abortSignal: request.signal,
-        ...(request.modelSettings.providerData ?? {}),
+        ...getAiSdkProviderData(this.#model, request.modelSettings),
       };
       const requestedToolsByName = resolvedRequestedTools.toolsByName;
 

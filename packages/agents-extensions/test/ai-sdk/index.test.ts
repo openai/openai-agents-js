@@ -5692,6 +5692,193 @@ describe('AiSdkModel.getStreamedResponse', () => {
   });
 });
 
+describe('AI SDK prompt cache retention', () => {
+  async function captureRequest(
+    mode: 'generate' | 'stream',
+    provider: string,
+    modelSettings: Record<string, any>,
+    specificationVersion = 'v3',
+  ): Promise<any> {
+    let received: any;
+    const model = new AiSdkModel(
+      stubModel(
+        {
+          async doGenerate(options) {
+            received = options;
+            return {
+              content: [],
+              usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+              providerMetadata: {},
+              response: { id: 'id' },
+              finishReason: 'stop',
+              warnings: [],
+            } as any;
+          },
+          async doStream(options) {
+            received = options;
+            return { stream: partsStream([]) } as any;
+          },
+        },
+        { provider, specificationVersion },
+      ),
+    );
+    const request = {
+      input: 'hi',
+      tools: [],
+      handoffs: [],
+      modelSettings,
+      outputType: 'text',
+      tracing: false,
+    } as any;
+
+    if (mode === 'generate') {
+      await withTrace('prompt-cache-retention', () =>
+        model.getResponse(request),
+      );
+    } else {
+      for await (const _event of model.getStreamedResponse(request)) {
+        // Drain the stream.
+      }
+    }
+
+    return received;
+  }
+
+  test.each([
+    ['generate', 'in-memory', 'in_memory'],
+    ['stream', 'in-memory', 'in_memory'],
+    ['generate', '24h', '24h'],
+    ['stream', '24h', '24h'],
+    ['generate', null, null],
+    ['stream', null, null],
+  ] as const)(
+    'forwards %s prompt cache retention %s to OpenAI Responses',
+    async (mode, retention, expected) => {
+      const request = await captureRequest(mode, 'openai.responses', {
+        promptCacheRetention: retention,
+      });
+
+      expect(request.providerOptions).toEqual({
+        openai: { promptCacheRetention: expected },
+      });
+    },
+  );
+
+  test.each(['24h', null] as const)(
+    'preserves provider options and gives an explicit %s retention precedence',
+    async (providerPromptCacheRetention) => {
+      const request = await captureRequest('generate', 'openai.responses', {
+        promptCacheRetention: 'in-memory',
+        providerData: {
+          providerOptions: {
+            openai: {
+              promptCacheRetention: providerPromptCacheRetention,
+              reasoningEffort: 'low',
+            },
+            vendor: { custom: true },
+          },
+        },
+      });
+
+      expect(request.providerOptions).toEqual({
+        openai: {
+          promptCacheRetention: providerPromptCacheRetention,
+          reasoningEffort: 'low',
+        },
+        vendor: { custom: true },
+      });
+    },
+  );
+
+  test('uses top-level retention when provider override is undefined', async () => {
+    const request = await captureRequest('generate', 'openai.responses', {
+      promptCacheRetention: 'in-memory',
+      providerData: {
+        providerOptions: {
+          openai: {
+            promptCacheRetention: undefined,
+            reasoningEffort: 'low',
+          },
+        },
+      },
+    });
+
+    expect(request.providerOptions.openai).toEqual({
+      promptCacheRetention: 'in_memory',
+      reasoningEffort: 'low',
+    });
+  });
+
+  test('forwards retention for specificationVersion v4', async () => {
+    const request = await captureRequest(
+      'generate',
+      'openai.responses',
+      { promptCacheRetention: 'in-memory' },
+      'v4',
+    );
+
+    expect(request.providerOptions.openai.promptCacheRetention).toBe(
+      'in_memory',
+    );
+  });
+
+  test.each(['generate', 'stream'] as const)(
+    'rejects retention for specificationVersion v2 before %s',
+    async (mode) => {
+      await expect(
+        captureRequest(
+          mode,
+          'openai.responses',
+          { promptCacheRetention: 'in-memory' },
+          'v2',
+        ),
+      ).rejects.toThrow(
+        'AI SDK prompt cache retention requires specificationVersion v3 or v4; v2 models do not support this option.',
+      );
+    },
+  );
+
+  test('preserves specificationVersion v2 requests without retention', async () => {
+    const request = await captureRequest(
+      'generate',
+      'openai.responses',
+      {},
+      'v2',
+    );
+
+    expect(request.providerOptions).toBeUndefined();
+  });
+
+  test('does not add provider options when retention is unset', async () => {
+    const request = await captureRequest('generate', 'openai.responses', {});
+
+    expect(request.providerOptions).toBeUndefined();
+  });
+
+  test.each([[], { openai: [] }])(
+    'preserves malformed provider options for AI SDK validation',
+    async (providerOptions) => {
+      const request = await captureRequest('generate', 'openai.responses', {
+        promptCacheRetention: '24h',
+        providerData: { providerOptions },
+      });
+
+      expect(request.providerOptions).toEqual(providerOptions);
+    },
+  );
+
+  test.each(['custom.responses', 'openai.chat', 'anthropic.messages'])(
+    'does not forward retention to %s',
+    async (provider) => {
+      const request = await captureRequest('generate', provider, {
+        promptCacheRetention: '24h',
+      });
+
+      expect(request.providerOptions).toBeUndefined();
+    },
+  );
+});
+
 describe('toolChoiceToLanguageV2Format', () => {
   test('maps default choices and specific tool', () => {
     expect(toolChoiceToLanguageV2Format(undefined)).toBeUndefined();
