@@ -30,7 +30,10 @@ import {
   validateMountCredentialFileEffectivePaths,
 } from '@openai/agents-core/sandbox/internal';
 import { mergeMaterializedEnvironment } from './environment';
-import { resolveSandboxRelativePath } from './paths';
+import {
+  resolveSandboxAbsolutePath,
+  resolveSandboxRelativePath,
+} from './paths';
 import type { RemoteManifestWriter } from './types';
 import type {
   RemoteSandboxCredentialPathResolver,
@@ -590,7 +593,12 @@ async function prepareMountCredentialFiles(args: {
     [...args.manifest.iterEntries()]
       .filter(({ entry }) => !isMount(entry))
       .map(async ({ logicalPath, entry }) => ({
-        path: await args.resolvePath(logicalPath, { forWrite: true }),
+        path: await args.resolveCredentialPath(
+          resolveSandboxAbsolutePath(args.manifest.root, logicalPath, {
+            forWrite: true,
+            extraPathGrants: args.manifest.extraPathGrants,
+          }),
+        ),
         recursive: entry.type === 'local_dir' || entry.type === 'git_repo',
       })),
   );

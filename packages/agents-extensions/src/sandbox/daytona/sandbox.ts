@@ -1190,7 +1190,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
         const result = await this.sandbox.process.executeCommand(
           command,
           this.state.manifest.root,
-          this.state.environment,
+          {},
         );
         return {
           status: result.exitCode,
@@ -1209,7 +1209,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
         const result = await this.sandbox.process.executeCommand(
           command,
           this.state.manifest.root,
-          this.state.environment,
+          {},
         );
         return {
           status: result.exitCode,

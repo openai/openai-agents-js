@@ -254,7 +254,10 @@ describe('shared sandbox session helpers', () => {
               mountStrategy: { type: 'e2b_cloud_bucket' },
             }),
           },
-          environment: { AWS_ACCESS_KEY_ID: 'untrusted-key' },
+          environment: {
+            AWS_ACCESS_KEY_ID: 'untrusted-key',
+            AWS_SECRET_ACCESS_KEY: 'untrusted-secret',
+          },
         }),
       ),
     ).rejects.toThrow(/model-controlled sandbox/u);
@@ -274,7 +277,10 @@ describe('shared sandbox session helpers', () => {
           mountStrategy: { type: 'e2b_cloud_bucket' },
         }),
       },
-      environment: { AWS_ACCESS_KEY_ID: 'rotated-key' },
+      environment: {
+        AWS_ACCESS_KEY_ID: 'rotated-key',
+        AWS_SECRET_ACCESS_KEY: 'rotated-secret',
+      },
     }).withInContainerMountCredentialExposureAllowed('remote');
 
     await session.applyManifest(update);
@@ -293,7 +299,10 @@ describe('shared sandbox session helpers', () => {
           mountStrategy: { type: 'e2b_cloud_bucket' },
         }),
       },
-      environment: { AWS_ACCESS_KEY_ID: 'trusted-key' },
+      environment: {
+        AWS_ACCESS_KEY_ID: 'trusted-key',
+        AWS_SECRET_ACCESS_KEY: 'trusted-secret',
+      },
     }).withInContainerMountCredentialExposureAllowed('remote');
     await session.applyManifest(mounted);
 
@@ -324,7 +333,10 @@ describe('shared sandbox session helpers', () => {
           mountStrategy: { type: 'e2b_cloud_bucket' },
         }),
       },
-      environment: { AWS_ACCESS_KEY_ID: 'trusted-key' },
+      environment: {
+        AWS_ACCESS_KEY_ID: 'trusted-key',
+        AWS_SECRET_ACCESS_KEY: 'trusted-secret',
+      },
     }).withInContainerMountCredentialExposureAllowed('remote');
 
     const applying = session.applyManifest(manifest);
@@ -355,7 +367,10 @@ describe('shared sandbox session helpers', () => {
           mountStrategy: { type: 'e2b_cloud_bucket' },
         }),
       },
-      environment: { AWS_ACCESS_KEY_ID: 'first-key' },
+      environment: {
+        AWS_ACCESS_KEY_ID: 'first-key',
+        AWS_SECRET_ACCESS_KEY: 'first-secret',
+      },
     }).withInContainerMountCredentialExposureAllowed('first');
     const second = new Manifest({
       entries: {
@@ -364,7 +379,10 @@ describe('shared sandbox session helpers', () => {
           mountStrategy: { type: 'e2b_cloud_bucket' },
         }),
       },
-      environment: { AWS_ACCESS_KEY_ID: 'second-key' },
+      environment: {
+        AWS_ACCESS_KEY_ID: 'second-key',
+        AWS_SECRET_ACCESS_KEY: 'second-secret',
+      },
     }).withInContainerMountCredentialExposureAllowed('second');
 
     const applyingFirst = session.applyManifest(first);
@@ -439,7 +457,10 @@ describe('shared sandbox session helpers', () => {
           mountStrategy: { type: 'e2b_cloud_bucket' },
         }),
       },
-      environment: { AWS_ACCESS_KEY_ID: 'old-key' },
+      environment: {
+        AWS_ACCESS_KEY_ID: 'old-key',
+        AWS_SECRET_ACCESS_KEY: 'old-secret',
+      },
     }).withInContainerMountCredentialExposureAllowed('remote');
     await session.applyManifest(mounted);
 
@@ -468,7 +489,10 @@ describe('shared sandbox session helpers', () => {
           mountStrategy: { type: 'e2b_cloud_bucket' },
         }),
       },
-      environment: { AWS_ACCESS_KEY_ID: 'trusted-key' },
+      environment: {
+        AWS_ACCESS_KEY_ID: 'trusted-key',
+        AWS_SECRET_ACCESS_KEY: 'trusted-secret',
+      },
     }).withInContainerMountCredentialExposureAllowed('remote');
 
     await expect(session.applyManifest(update)).rejects.toThrow('mount failed');

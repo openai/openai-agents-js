@@ -355,6 +355,18 @@ describe('VercelSandboxClient', () => {
 
     expect(writeFilesMock).not.toHaveBeenCalled();
     expect(
+      runCommandMock.mock.calls.find(([params]) =>
+        String(params.args?.[1]).includes(
+          "/usr/bin/realpath -m -- '/var/run/secrets/aws/token'",
+        ),
+      )?.[0],
+    ).toEqual(
+      expect.objectContaining({
+        cmd: '/bin/sh',
+        env: {},
+      }),
+    );
+    expect(
       runCommandMock.mock.calls.some(
         ([params]) => isolatedMountCommand(params)?.command === 'mount-s3',
       ),
@@ -379,6 +391,7 @@ describe('VercelSandboxClient', () => {
     const mountCallsBeforeRemount = runCommandMock.mock.calls.filter(
       ([params]) => isolatedMountCommand(params)?.command === 'mount-s3',
     ).length;
+    const callsBeforeRemount = runCommandMock.mock.calls.length;
     runCommandMock.mockImplementation(
       async (params: MockRunCommandParams = {}) => {
         const command = params.args?.[1] ?? '';
@@ -394,6 +407,15 @@ describe('VercelSandboxClient', () => {
     await expect(session.persistWorkspace()).rejects.toBeInstanceOf(
       SandboxLifecycleError,
     );
+    const remountPathCalls = runCommandMock.mock.calls
+      .slice(callsBeforeRemount)
+      .filter(([params]) =>
+        String(params.args?.[1]).includes('/usr/bin/realpath'),
+      );
+    expect(remountPathCalls.length).toBeGreaterThan(0);
+    for (const [params] of remountPathCalls) {
+      expect(params.env).toEqual({});
+    }
     expect(stopMock).toHaveBeenCalledOnce();
     expect(
       runCommandMock.mock.calls.filter(

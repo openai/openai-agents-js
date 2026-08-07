@@ -678,7 +678,7 @@ describe('DockerSandboxClient unit behavior', () => {
     let mountPathResolutions = 0;
     childProcessMocks.spawn.mockImplementation((_command, args) => {
       const command = (args as string[]).join(' ');
-      if (command.includes("realpath -m -- '/mnt/data'")) {
+      if (command.includes('realpath -m -- /mnt/data')) {
         return dockerSpawnResult({
           stdout:
             mountPathResolutions++ === 0 ? '/mnt/data\n' : '/mnt/redirected\n',
@@ -1563,17 +1563,21 @@ describe('DockerSandboxClient unit behavior', () => {
         }),
         workspaceRootPath: rootDir,
         workspaceRootOwned: false,
-        environment: {},
+        environment: {
+          PATH: '/workspace/model-bin',
+          HOME: '/workspace/model-home',
+          LD_PRELOAD: '/workspace/model-loader.so',
+        },
         containerId: 'container-credential-alias',
         image: 'test:image',
       },
     });
     childProcessMocks.spawn.mockImplementation((_command, args) => {
       const command = (args as string[]).join(' ');
-      if (command.includes("realpath -m -- '/workspace/secret.conf'")) {
+      if (command.includes('realpath -m -- /workspace/secret.conf')) {
         return dockerSpawnResult({ stdout: '/workspace/secret.conf\n' });
       }
-      if (command.includes("realpath -m -- '/workspace/config-link'")) {
+      if (command.includes('realpath -m -- /workspace/config-link')) {
         return dockerSpawnResult({ stdout: '/workspace/secret.conf\n' });
       }
       return dockerSpawnResult({ status: 1, stderr: 'unexpected command' });
@@ -1602,6 +1606,25 @@ describe('DockerSandboxClient unit behavior', () => {
     const commands = childProcessMocks.spawn.mock.calls.map(([, args]) =>
       (args as string[]).join(' '),
     );
+    const resolverArgs = childProcessMocks.spawn.mock.calls
+      .map(([, args]) => args as string[])
+      .filter((args) => args.includes('/usr/bin/realpath'));
+    expect(resolverArgs).not.toHaveLength(0);
+    for (const args of resolverArgs) {
+      expect(args).not.toContain('/bin/sh');
+      expect(args).not.toContain('-lc');
+      expect(args).toEqual(
+        expect.arrayContaining([
+          'PATH=',
+          'HOME=',
+          'LD_PRELOAD=',
+          'LD_LIBRARY_PATH=',
+          'LD_AUDIT=',
+          'PATH=/usr/bin:/bin',
+          'HOME=/root',
+        ]),
+      );
+    }
     expect(commands.some((command) => command.includes('base64 --'))).toBe(
       false,
     );
@@ -4211,7 +4234,7 @@ describe('DockerSandboxClient unit behavior', () => {
     childProcessMocks.spawn.mockClear();
     childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
       const command = (args as string[]).join(' ');
-      if (command.includes("realpath -m -- '/mnt/absolute'")) {
+      if (command.includes('realpath -m -- /mnt/absolute')) {
         return dockerSpawnResult({ stdout: '/mnt/resolved\n', status: 0 });
       }
       if (command.includes("OPENAI_AGENTS_MOUNT_PATH='/workspace/failed'")) {

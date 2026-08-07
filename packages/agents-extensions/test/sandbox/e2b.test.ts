@@ -17,7 +17,10 @@ import {
   decodeNativeSnapshotRef,
   markRemoteSandboxSessionStateUnsafe,
 } from '../../src/sandbox/shared';
-import { resolvedRemotePathFromValidationCommand } from './remotePathValidation';
+import {
+  resolvedRemoteEffectivePathFromCommand,
+  resolvedRemotePathFromValidationCommand,
+} from './remotePathValidation';
 import { makeTarArchive } from './tarFixture';
 
 const processMocks = vi.hoisted(() => ({
@@ -138,7 +141,9 @@ describe('E2BSandboxClient', () => {
       pause: pauseMock,
     });
     runMock.mockImplementation(async (command: string) => {
-      const resolvedPath = resolvedRemotePathFromValidationCommand(command);
+      const resolvedPath =
+        resolvedRemotePathFromValidationCommand(command) ??
+        resolvedRemoteEffectivePathFromCommand(command);
       if (resolvedPath) {
         return {
           stdout: `${resolvedPath}\n`,
@@ -1418,6 +1423,39 @@ describe('E2BSandboxClient', () => {
     ).resolves.toBe(false);
   });
 
+  test('rejects live reuse when exact rclone config authority changes', async () => {
+    const environment = { RCLONE_CONFIG: '/run/rclone-a.conf' };
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'agent-logs',
+          mountStrategy: new E2BCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+    const client = new E2BSandboxClient({ env: environment });
+    const session = await client.create(manifest);
+
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest: manifest,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest: manifest,
+        clientOptions: { env: { RCLONE_CONFIG: '/run/rclone-b.conf' } },
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest: manifest,
+        clientOptions: { env: undefined },
+      }),
+    ).resolves.toBe(false);
+  });
+
   test('uses the installed rclone path when E2B PATH excludes it', async () => {
     let rcloneProbeFailures = 0;
     runMock.mockImplementation(async (command: string) => {
@@ -1486,6 +1524,39 @@ describe('E2BSandboxClient', () => {
         String(command).includes("'/usr/local/bin/rclone' 'mount'"),
       ),
     ).toBe(true);
+  });
+
+  test('resolves mount credential files without the configured PATH', async () => {
+    const client = new E2BSandboxClient({
+      env: {
+        PATH: '/home/user/model-bin',
+        AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/secrets/aws/token',
+      },
+    });
+    const session = await client.create(
+      new Manifest().withInContainerMountCredentialExposureAllowed('data'),
+    );
+    runMock.mockClear();
+
+    await session.materializeEntry({
+      path: 'data',
+      entry: {
+        type: 's3_mount',
+        bucket: 'agent-logs',
+        mountStrategy: new E2BCloudBucketMountStrategy(),
+      },
+    });
+
+    expect(
+      runMock.mock.calls.find(([command]) =>
+        String(command).includes(
+          "/usr/bin/realpath -m -- '/var/run/secrets/aws/token'",
+        ),
+      ),
+    ).toEqual([
+      "PATH=/usr/bin:/bin HOME=/root LD_PRELOAD= LD_LIBRARY_PATH= LD_AUDIT= /usr/bin/realpath -m -- '/var/run/secrets/aws/token'",
+      expect.objectContaining({ envs: {} }),
+    ]);
   });
 
   test('reads images with runAs through remote commands', async () => {

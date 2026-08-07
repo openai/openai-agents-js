@@ -14,12 +14,21 @@ import {
 
 describe('remote mount credential boundaries', () => {
   it.each([
-    ['AWS_ACCESS_KEY_ID', 'access-key'],
-    ['GOOGLE_APPLICATION_CREDENTIALS', '/run/secrets/gcp.json'],
-    ['RCLONE_CONFIG_PASS', 'obscured-password'],
+    [
+      'AWS_ACCESS_KEY_ID',
+      {
+        AWS_ACCESS_KEY_ID: 'access-key',
+        AWS_SECRET_ACCESS_KEY: 'secret-key',
+      },
+    ],
+    [
+      'GOOGLE_APPLICATION_CREDENTIALS',
+      { GOOGLE_APPLICATION_CREDENTIALS: '/run/secrets/gcp.json' },
+    ],
+    ['RCLONE_CONFIG_PASS', { RCLONE_CONFIG_PASS: 'obscured-password' }],
   ])(
     'rejects %s mount authority without an exact trusted path opt-in',
-    (name, value) => {
+    (name, environment) => {
       const entry =
         name === 'GOOGLE_APPLICATION_CREDENTIALS'
           ? {
@@ -34,14 +43,12 @@ describe('remote mount credential boundaries', () => {
       const manifest = new Manifest({ entries: { remote: entry } });
 
       expect(() =>
-        validateRcloneMountEnvironmentCredentialExposure(manifest, {
-          [name]: value,
-        }),
+        validateRcloneMountEnvironmentCredentialExposure(manifest, environment),
       ).toThrow(/model-controlled sandbox/u);
       expect(() =>
         validateRcloneMountEnvironmentCredentialExposure(
           manifest.withInContainerMountCredentialExposureAllowed('remote'),
-          { [name]: value },
+          environment,
         ),
       ).not.toThrow();
     },

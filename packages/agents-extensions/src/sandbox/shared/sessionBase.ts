@@ -86,6 +86,7 @@ export type RemoteSandboxCommandKind =
 export type RemoteSandboxCommandOptions = {
   kind: RemoteSandboxCommandKind;
   workdir: string;
+  environment?: Record<string, string>;
   runAs?: string;
   execArgs?: ExecCommandArgs;
   timeoutMs?: number;
@@ -606,6 +607,7 @@ export abstract class RemoteSandboxSessionBase<
         await this.runRemoteCommand(command, {
           kind: 'path',
           workdir: this.state.manifest.root,
+          environment: {},
         }),
     });
   }
@@ -618,6 +620,7 @@ export abstract class RemoteSandboxSessionBase<
         await this.runRemoteCommand(command, {
           kind: 'path',
           workdir: this.state.manifest.root,
+          environment: {},
         }),
     });
   }

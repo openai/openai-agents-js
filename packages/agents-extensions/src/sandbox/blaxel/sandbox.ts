@@ -692,7 +692,10 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
     command: string,
     options: RemoteSandboxCommandOptions,
   ): Promise<RemoteSandboxCommandResult> {
-    const shellCommand = buildShellCommand(command, this.state.environment);
+    const shellCommand = buildShellCommand(
+      command,
+      options.environment ?? this.state.environment,
+    );
     const commandForUser = options.runAs
       ? `sudo -n -u ${shellQuote(options.runAs)} -- sh -lc ${shellQuote(shellCommand)}`
       : shellCommand;

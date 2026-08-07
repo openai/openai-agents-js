@@ -31,6 +31,7 @@ export {
   liveMountEnvironmentAuthorityMatches,
   manifestHasNonResumableMountAuthority,
   isSandboxSessionStateUnsafe,
+  isMountCredentialFileEnvironmentName,
   manifestHasInContainerMounts,
   mountCredentialFileReferences,
   NON_RESUMABLE_MOUNT_AUTHORITY_KEY,

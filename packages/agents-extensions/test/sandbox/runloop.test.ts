@@ -967,6 +967,22 @@ describe('RunloopSandboxClient', () => {
     });
   });
 
+  test('does not persist current trusted secret refs as runtime authority', async () => {
+    const client = new RunloopSandboxClient();
+    const session = await client.create(runloopManifest(), {
+      secretRefs: { API_KEY: 'trusted-api-key-ref' },
+    });
+
+    expect(session.state.trustedSecretRefs).toEqual({
+      API_KEY: 'trusted-api-key-ref',
+    });
+    const serialized = await client.serializeSessionState(session.state);
+    expect(serialized).toMatchObject({
+      secretRefs: { API_KEY: 'trusted-api-key-ref' },
+    });
+    expect(serialized).not.toHaveProperty('trustedSecretRefs');
+  });
+
   test('rejects managed mount credentials before Runloop provider effects', async () => {
     const client = new RunloopSandboxClient();
     const manifest = runloopManifest({
@@ -988,6 +1004,31 @@ describe('RunloopSandboxClient', () => {
         },
       }),
     ).rejects.toThrow(/model-controlled sandbox/u);
+
+    expect(runloopSdkConstructorMock).not.toHaveBeenCalled();
+    expect(secretCreateMock).not.toHaveBeenCalled();
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects partial managed mount credentials before Runloop provider effects', async () => {
+    const client = new RunloopSandboxClient();
+    const manifest = runloopManifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'private',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+
+    await expect(
+      client.create(manifest, {
+        managedSecrets: {
+          AWS_ACCESS_KEY_ID: 'managed-access',
+        },
+      }),
+    ).rejects.toThrow(/both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY/u);
 
     expect(runloopSdkConstructorMock).not.toHaveBeenCalled();
     expect(secretCreateMock).not.toHaveBeenCalled();
@@ -1079,6 +1120,13 @@ describe('RunloopSandboxClient', () => {
     ).rejects.toThrow(/resolve to a serialized manifest entry/u);
 
     expect(writeMock).not.toHaveBeenCalled();
+    const credentialResolutionCommand = execMock.mock.calls
+      .map(([command]) => String(command))
+      .find((command) => command.includes("'/tmp/gcp-link'"));
+    expect(credentialResolutionCommand).toContain(
+      "/usr/bin/realpath -m -- '/tmp/gcp-link'",
+    );
+    expect(credentialResolutionCommand).not.toContain('export PATH=');
     expect(
       execMock.mock.calls.some(([command]) =>
         String(command).includes("'rclone' 'mount'"),
@@ -1160,50 +1208,64 @@ describe('RunloopSandboxClient', () => {
     );
   });
 
-  test('preserves unmatched persisted rclone refs during dynamic mount validation', async () => {
-    const client = new RunloopSandboxClient({ managedSecrets: {} });
-    const state = await client.deserializeSessionState({
-      manifest: runloopManifest(),
-      devboxId: 'devbox_test',
-      pauseOnExit: false,
-      environment: {},
+  test.each([
+    {
+      name: 'static keys',
       secretRefs: {
-        RCLONE_CONFIG_STALE_TYPE: 'persisted-rclone-config',
+        AWS_ACCESS_KEY_ID: 'persisted-access',
+        AWS_SECRET_ACCESS_KEY: 'persisted-secret',
       },
-    });
-    const session = await client.resume(state);
-    execMock.mockClear();
-
-    await expect(
-      session.materializeEntry({
-        path: 'data',
-        entry: {
-          type: 's3_mount',
-          bucket: 'private',
-          mountStrategy: new RunloopCloudBucketMountStrategy(),
+    },
+    {
+      name: 'rclone remote keys',
+      secretRefs: {
+        RCLONE_CONFIG_STALE_ACCESS_KEY_ID: 'persisted-access',
+        RCLONE_CONFIG_STALE_SECRET_ACCESS_KEY: 'persisted-secret',
+      },
+    },
+  ] satisfies Array<{ name: string; secretRefs: Record<string, string> }>)(
+    'rejects unmatched live $name refs despite exact-path trust',
+    async ({ secretRefs }) => {
+      const client = new RunloopSandboxClient({
+        managedSecrets: { UNRELATED_SECRET: 'trusted-value' },
+      });
+      const created = await client.create(runloopManifest());
+      created.state.secretRefs = Object.fromEntries(
+        Object.entries(secretRefs).filter(
+          (entry): entry is [string, string] => typeof entry[1] === 'string',
+        ),
+      );
+      const session = await client.resume(created.state);
+      execMock.mockClear();
+      const manifest = runloopManifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'private',
+            mountStrategy: new RunloopCloudBucketMountStrategy(),
+          },
         },
-      }),
-    ).rejects.toThrow(/model-controlled sandbox/u);
+      }).withInContainerMountCredentialExposureAllowed('data');
 
-    expect(execMock).not.toHaveBeenCalled();
-  });
+      await expect(session.applyManifest(manifest)).rejects.toThrow(
+        /cannot be validated before an in-container mount/u,
+      );
 
-  test('rejects unmatched persisted credential-file refs before dynamic mount effects', async () => {
+      expect(execMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test('rejects unmatched live credential-file refs before dynamic mount effects', async () => {
     const client = new RunloopSandboxClient({
       managedSecrets: {
         UNRELATED_SECRET: 'trusted-value',
       },
     });
-    const state = await client.deserializeSessionState({
-      manifest: runloopManifest(),
-      devboxId: 'devbox_test',
-      pauseOnExit: false,
-      environment: {},
-      secretRefs: {
-        GOOGLE_APPLICATION_CREDENTIALS: 'persisted-gcp-credentials',
-      },
-    });
-    const session = await client.resume(state);
+    const created = await client.create(runloopManifest());
+    created.state.secretRefs = {
+      GOOGLE_APPLICATION_CREDENTIALS: 'persisted-gcp-credentials',
+    };
+    const session = await client.resume(created.state);
     execMock.mockClear();
     const manifest = runloopManifest({
       entries: {
@@ -1222,6 +1284,62 @@ describe('RunloopSandboxClient', () => {
     expect(execMock).not.toHaveBeenCalled();
   });
 
+  test('rejects dynamic mounts after resuming state with omitted secret authority', async () => {
+    const client = new RunloopSandboxClient({
+      managedSecrets: { UNRELATED_SECRET: 'trusted-value' },
+    });
+    const state = await client.deserializeSessionState({
+      manifest: runloopManifest(),
+      devboxId: 'devbox_test',
+      pauseOnExit: false,
+      environment: {},
+    });
+    const session = await client.resume(state);
+    execMock.mockClear();
+    const manifest = runloopManifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'private',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+
+    await expect(session.applyManifest(manifest)).rejects.toThrow(
+      /ambient credential authority cannot be verified/u,
+    );
+
+    expect(execMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects resumed mounts with omitted secret authority before provider effects', async () => {
+    const client = new RunloopSandboxClient();
+    const manifest = runloopManifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'private',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAllowed('data');
+    const state = await client.deserializeSessionState({
+      manifest,
+      devboxId: 'devbox_test',
+      pauseOnExit: false,
+      environment: {},
+    });
+
+    await expect(client.resume(state)).rejects.toThrow(
+      /cannot be resumed safely/u,
+    );
+
+    expect(runloopSdkConstructorMock).not.toHaveBeenCalled();
+    expect(fromIdMock).not.toHaveBeenCalled();
+    expect(execMock).not.toHaveBeenCalled();
+  });
+
   test.each([
     {
       name: 'default user',
@@ -1234,7 +1352,7 @@ describe('RunloopSandboxClient', () => {
       userParameters: { username: 'root', uid: 0 },
     },
   ])(
-    'exports current managed mount secrets after direct resume for $name',
+    'rejects managed mount secrets after serialized resume for $name',
     async ({ root, userParameters }) => {
       const client = new RunloopSandboxClient({
         managedSecrets: {
@@ -1269,21 +1387,11 @@ describe('RunloopSandboxClient', () => {
         },
       }).withInContainerMountCredentialExposureAllowed('data');
 
-      await session.applyManifest(manifest);
+      await expect(session.applyManifest(manifest)).rejects.toThrow(
+        /ambient credential authority cannot be verified/u,
+      );
 
-      const mountCommand = execMock.mock.calls
-        .map(([command]) => String(command))
-        .find((command) => command.includes("'rclone' 'mount'"));
-      expect(mountCommand).toContain('AWS_ACCESS_KEY_ID');
-      expect(mountCommand).toContain('rotated-access');
-      expect(mountCommand).toContain('AWS_SECRET_ACCESS_KEY');
-      expect(mountCommand).toContain('rotated-secret');
-      expect(mountCommand).not.toContain('persisted-access');
-      expect(mountCommand).not.toContain('persisted-secret');
-      if (userParameters?.username === 'root') {
-        expect(mountCommand).not.toContain('export PATH=');
-        expect(mountCommand).not.toContain('/tmp/attacker-bin');
-      }
+      expect(execMock).not.toHaveBeenCalled();
     },
   );
 
@@ -2134,6 +2242,45 @@ describe('RunloopSandboxClient', () => {
     expect(enableTunnelMock).not.toHaveBeenCalled();
   });
 
+  test('rejects changed mount environment authority before reviving a devbox', async () => {
+    const client = new RunloopSandboxClient();
+    const manifest = runloopManifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'public',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      },
+    });
+    const session = await client.create(manifest, { pauseOnExit: true });
+    await session.close();
+    runloopSdkConstructorMock.mockClear();
+    fromIdMock.mockClear();
+    resumeMock.mockClear();
+    execMock.mockClear();
+    suspendMock.mockClear();
+    shutdownMock.mockClear();
+
+    await expect(
+      client.resume(session.state, {
+        clientOptions: {
+          managedSecrets: {
+            AWS_ACCESS_KEY_ID: 'current-access',
+            AWS_SECRET_ACCESS_KEY: 'current-secret',
+          },
+        },
+      }),
+    ).rejects.toBeInstanceOf(SandboxMountError);
+
+    expect(runloopSdkConstructorMock).not.toHaveBeenCalled();
+    expect(fromIdMock).not.toHaveBeenCalled();
+    expect(resumeMock).not.toHaveBeenCalled();
+    expect(execMock).not.toHaveBeenCalled();
+    expect(suspendMock).not.toHaveBeenCalled();
+    expect(shutdownMock).not.toHaveBeenCalled();
+  });
+
   test('does not resume or suspend state containing cloud mounts', async () => {
     const client = new RunloopSandboxClient();
     const session = await client.create(runloopCloudBucketManifest(), {
@@ -2366,24 +2513,78 @@ describe('RunloopSandboxClient', () => {
     );
   });
 
-  test('rejects persisted secret refs when recreating missing devboxes', async () => {
-    const client = new RunloopSandboxClient();
+  test.each<{
+    name: string;
+    managedSecrets?: Record<string, string>;
+  }>([
+    {
+      name: 'missing managed secrets',
+      managedSecrets: undefined,
+    },
+    {
+      name: 'unrelated managed secrets',
+      managedSecrets: { UNRELATED_SECRET: 'trusted-value' },
+    },
+    {
+      name: 'partial managed secrets',
+      managedSecrets: { API_KEY: 'trusted-api-key' },
+    },
+  ])(
+    'rejects persisted secret refs with $name when recreating missing devboxes',
+    async ({ managedSecrets }) => {
+      const client = new RunloopSandboxClient({ managedSecrets });
+      const state = await client.deserializeSessionState({
+        manifest: runloopManifest(),
+        devboxId: 'devbox_test',
+        pauseOnExit: true,
+        environment: {},
+        secretRefs: {
+          API_KEY: 'persisted-api-key',
+          DB_PASSWORD: 'persisted-db-password',
+        },
+      });
+      resumeMock.mockRejectedValueOnce(new Error('devbox not found'));
+
+      await expect(client.resume(state)).rejects.toThrow(
+        'RunloopSandboxClient cannot recreate a missing devbox with persisted secretRefs.',
+      );
+
+      expect(createMock).not.toHaveBeenCalled();
+      expect(secretCreateMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test('recreates persisted secret refs only with complete managed secret coverage', async () => {
+    const client = new RunloopSandboxClient({
+      managedSecrets: {
+        API_KEY: 'trusted-api-key',
+        DB_PASSWORD: 'trusted-db-password',
+      },
+    });
     const state = await client.deserializeSessionState({
       manifest: runloopManifest(),
       devboxId: 'devbox_test',
       pauseOnExit: true,
       environment: {},
       secretRefs: {
-        API_KEY: 'attacker-secret',
+        API_KEY: 'persisted-api-key',
+        DB_PASSWORD: 'persisted-db-password',
       },
     });
     resumeMock.mockRejectedValueOnce(new Error('devbox not found'));
 
-    await expect(client.resume(state)).rejects.toThrow(
-      'RunloopSandboxClient cannot recreate a missing devbox with persisted secretRefs.',
-    );
+    await client.resume(state);
 
-    expect(createMock).not.toHaveBeenCalled();
+    expect(secretCreateMock).toHaveBeenCalledTimes(2);
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        secrets: {
+          API_KEY: 'API_KEY',
+          DB_PASSWORD: 'DB_PASSWORD',
+        },
+      }),
+      undefined,
+    );
   });
 
   test('fails fast when resume lookup fails with a provider error', async () => {

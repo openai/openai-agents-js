@@ -20,6 +20,7 @@ import {
   liveMountCredentialAuthorityMatches,
   liveMountEnvironmentAuthorityMatches,
   manifestHasNonResumableMountAuthority,
+  mountCredentialFileReferences,
   NON_RESUMABLE_MOUNT_AUTHORITY_KEY,
   recordLiveMountCredentialAuthority,
   rebindPersistedMountCredentials,
@@ -166,6 +167,56 @@ describe('sandbox mount credential boundaries', () => {
     expect(() => validateMountCredentialBoundaries(manifest)).toThrow(
       /complete|both/u,
     );
+  });
+
+  it.each<{
+    label: string;
+    environment: Record<string, string>;
+  }>([
+    {
+      label: 'partial ambient AWS pair',
+      environment: { AWS_ACCESS_KEY_ID: 'access-key' },
+    },
+    {
+      label: 'ambient AWS session token without a key pair',
+      environment: { AWS_SESSION_TOKEN: 'session-token' },
+    },
+    {
+      label: 'partial rclone remote pair',
+      environment: {
+        RCLONE_CONFIG_PRIVATE_ACCESS_KEY_ID: 'access-key',
+      },
+    },
+  ])('rejects $label before provider effects', ({ environment }) => {
+    const manifest = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'private',
+          mountStrategy: inContainerMountStrategy(),
+        }),
+      },
+    }).withInContainerMountCredentialExposureAllowed('remote');
+
+    expect(() =>
+      validateMountEnvironmentCredentialBoundaries(manifest, environment),
+    ).toThrow(/complete|both/u);
+  });
+
+  it('preserves ambient AWS profile credentials without static keys', () => {
+    const manifest = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'private',
+          mountStrategy: inContainerMountStrategy(),
+        }),
+      },
+    }).withInContainerMountCredentialExposureAllowed('remote');
+
+    expect(() =>
+      validateMountEnvironmentCredentialBoundaries(manifest, {
+        AWS_PROFILE: 'trusted-profile',
+      }),
+    ).not.toThrow();
   });
 
   it('requires exact opt-in for implicit workload identity mount patterns', () => {
@@ -743,7 +794,7 @@ describe('sandbox mount credential boundaries', () => {
     ).toThrow(/exact path/u);
   });
 
-  it('redacts opaque in-container strategy credentials as non-resumable', () => {
+  it('rejects opaque rclone args even with exact-path trust', () => {
     const untrusted = new Manifest({
       entries: {
         rclone: s3Mount({
@@ -758,27 +809,113 @@ describe('sandbox mount credential boundaries', () => {
       },
     });
     expect(() => validateMountCredentialBoundaries(untrusted)).toThrow(
-      /model-controlled sandbox/u,
+      /Unsupported rclone mount args/u,
     );
     const trusted =
       untrusted.withInContainerMountCredentialExposureAllowed('rclone');
-    const serializedManifest = serializeManifestRecord(trusted);
-    const serialized = JSON.stringify(serializedManifest);
+    expect(() => validateMountCredentialBoundaries(trusted)).toThrow(
+      /Unsupported rclone mount args/u,
+    );
+  });
 
-    expect(serialized).not.toContain('RCLONE_OPAQUE_SENTINEL');
-    const metadata = serializeMountCredentialRedactionMetadata({
-      manifest: trusted,
-    });
-    expect(metadata[NON_RESUMABLE_MOUNT_AUTHORITY_KEY]).toBe(true);
-    expect(() =>
-      rebindPersistedMountCredentials(
-        {
-          manifest: deserializeManifest(serializedManifest),
-          ...deserializeMountCredentialRedactionMetadata(metadata),
+  it('rejects opaque rclone config selectors but preserves safe extra args', () => {
+    for (const pattern of [
+      { type: 'rclone' as const, args: ['--config', '/run/rclone.conf'] },
+      {
+        type: 'rclone' as const,
+        extraArgs: ['--config=/run/rclone.conf'],
+      },
+      {
+        type: 'rclone' as const,
+        extraArgs: ['--auth', 'opaque-authority'],
+      },
+    ]) {
+      const manifest = new Manifest({
+        entries: {
+          remote: s3Mount({
+            bucket: 'private',
+            mountStrategy: inContainerMountStrategy({ pattern }),
+          }),
         },
-        trusted,
-      ),
-    ).toThrow(/opaque mount authority/u);
+      }).withInContainerMountCredentialExposureAllowed('remote');
+
+      expect(() => validateMountCredentialBoundaries(manifest)).toThrow(
+        /configFilePath/u,
+      );
+    }
+
+    const safe = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'private',
+          mountStrategy: inContainerMountStrategy({
+            pattern: {
+              type: 'rclone',
+              extraArgs: ['--vfs-cache-mode', 'writes'],
+            },
+          }),
+        }),
+      },
+    });
+    expect(() => validateMountCredentialBoundaries(safe)).not.toThrow();
+  });
+
+  it('classifies alternate rclone config environment selectors as files', () => {
+    const manifest = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'private',
+          mountStrategy: inContainerMountStrategy({
+            pattern: { type: 'rclone' },
+          }),
+        }),
+      },
+    });
+    const entry = manifest.entries.remote!;
+
+    expect(
+      mountCredentialFileReferences(manifest, entry, {
+        RCLONE_CONFIG: '/run/rclone.conf',
+        RCLONE_CONFIG_REMOTE_SERVICE_ACCOUNT_FILE: '/run/service.json',
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        {
+          field: 'environment.RCLONE_CONFIG',
+          path: '/run/rclone.conf',
+        },
+        {
+          field: 'environment.RCLONE_CONFIG_REMOTE_SERVICE_ACCOUNT_FILE',
+          path: '/run/service.json',
+        },
+      ]),
+    );
+  });
+
+  it('rejects raw persisted alternate rclone config files from manifest entries', () => {
+    for (const name of [
+      'RCLONE_CONFIG',
+      'RCLONE_CONFIG_REMOTE_SERVICE_ACCOUNT_FILE',
+    ]) {
+      const raw = serializeManifestRecord(
+        new Manifest({
+          entries: {
+            credential: file({ content: 'secret' }),
+            remote: s3Mount({
+              bucket: 'private',
+              mountStrategy: inContainerMountStrategy({
+                pattern: { type: 'rclone' },
+              }),
+            }),
+          },
+        }),
+      );
+      raw.environment = { [name]: '/workspace/credential' };
+
+      expect(() => deserializeManifest(raw)).toThrow(
+        /serialized manifest entry/u,
+      );
+    }
   });
 
   it('marks opaque Docker driver topology as non-resumable', () => {

@@ -403,8 +403,8 @@ export function rcloneCredentialEnvironmentForEntry(
     return {};
   }
   const names = new Set(
-    Object.keys(environment).filter((name) =>
-      name.startsWith('RCLONE_CONFIG_'),
+    Object.keys(environment).filter(
+      (name) => name === 'RCLONE_CONFIG' || name.startsWith('RCLONE_CONFIG_'),
     ),
   );
   const usesEntryCredentialPair = Boolean(

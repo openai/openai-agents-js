@@ -2661,10 +2661,10 @@ async function prepareDockerMountCredentialFiles(
       ? normalizePosixPath(path)
       : joinSandboxLogicalPath(manifest.root, path);
     const resolvedPath = (
-      await session.runDockerMountCommand(
-        `realpath -m -- ${shellQuote(candidate)}`,
+      await resolveTrustedDockerPath(
+        session,
+        candidate,
         'resolve Docker mount credential path',
-        { environment: {} },
       )
     ).trim();
     if (!resolvedPath.startsWith('/') || resolvedPath.includes('\n')) {
@@ -2731,6 +2731,48 @@ async function prepareDockerMountCredentialFiles(
     entry: preparedEntry as Mount | TypedMount,
     environment: preparedEnvironment,
   };
+}
+
+async function resolveTrustedDockerPath(
+  session: DockerSandboxSession,
+  path: string,
+  action: string,
+): Promise<string> {
+  const dockerArgs = ['exec', '-i', '-w', '/'];
+  const clearedEnvironment = new Set([
+    ...Object.keys(session.state.environment),
+    'LD_PRELOAD',
+    'LD_LIBRARY_PATH',
+    'LD_AUDIT',
+  ]);
+  for (const key of clearedEnvironment) {
+    dockerArgs.push('-e', `${key}=`);
+  }
+  dockerArgs.push(
+    '-e',
+    'PATH=/usr/bin:/bin',
+    '-e',
+    'HOME=/root',
+    '-u',
+    'root',
+    session.state.containerId,
+    '/usr/bin/realpath',
+    '-m',
+    '--',
+    path,
+  );
+  let result: SandboxProcessResult;
+  try {
+    result = await runDockerProcess(dockerArgs);
+  } catch {
+    throw new UserError(`DockerSandboxClient failed to ${action}.`);
+  }
+  if (result.status !== 0) {
+    throw new UserError(
+      `DockerSandboxClient failed to ${action} with exit status ${result.status}.`,
+    );
+  }
+  return result.stdout;
 }
 
 function writeDockerNestedField(
@@ -2842,10 +2884,10 @@ async function resolveDockerEffectiveMountPath(
   );
   if (workspaceRelativePath === null) {
     const resolvedPath = (
-      await session.runDockerMountCommand(
-        `realpath -m -- ${shellQuote(declaredMountPath)}`,
+      await resolveTrustedDockerPath(
+        session,
+        declaredMountPath,
         'resolve Docker mount path',
-        { environment: {} },
       )
     ).trim();
     if (!resolvedPath.startsWith('/') || resolvedPath.includes('\n')) {

@@ -1114,6 +1114,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
         await this.runRemoteCommandDirect(command, {
           kind: 'path',
           workdir: this.state.manifest.root,
+          environment: {},
         }),
     });
   }
@@ -1127,6 +1128,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
         await this.runRemoteCommandDirect(command, {
           kind: 'path',
           workdir: this.state.manifest.root,
+          environment: {},
         }),
     });
   }
@@ -1148,7 +1150,12 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     command: string,
     options: RemoteSandboxCommandOptions,
   ): Promise<RemoteSandboxCommandResult> {
-    const result = await this.execShell(command, options.workdir, undefined);
+    const result = await this.execShell(
+      command,
+      options.workdir,
+      undefined,
+      options.environment,
+    );
     return {
       status: result.exitCode,
       stdout: result.output,
@@ -1180,12 +1187,13 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     command: string,
     cwd: string,
     sudo: boolean | undefined,
+    environment: Record<string, string> = this.state.environment,
   ): Promise<{ exitCode: number; output: string }> {
     const result = await this.sandbox.runCommand({
       cmd: '/bin/sh',
       args: ['-lc', command],
       cwd,
-      env: this.state.environment,
+      env: environment,
       ...(sudo ? { sudo: true } : {}),
     });
     return {

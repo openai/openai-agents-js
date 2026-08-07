@@ -2165,7 +2165,9 @@ describe('BlaxelSandboxClient', () => {
   });
 
   test('mounts GCS buckets with service account files through gcsfuse auth', async () => {
-    const client = new BlaxelSandboxClient();
+    const client = new BlaxelSandboxClient({
+      env: { PATH: '/workspace/model-bin' },
+    });
 
     await client.create(
       new Manifest({
@@ -2186,6 +2188,15 @@ describe('BlaxelSandboxClient', () => {
       .find((command) => command.includes('gcsfuse'));
     expect(mountCommand).toContain('--key-file=/var/secrets/gcs.json');
     expect(mountCommand).not.toContain('--anonymous-access');
+    const credentialResolutionCommand = processExecMock.mock.calls
+      .map(([params]) => String(params.command))
+      .find((command) =>
+        command.includes("/usr/bin/realpath -m -- '/var/secrets/gcs.json'"),
+      );
+    expect(credentialResolutionCommand).toBe(
+      "PATH=/usr/bin:/bin HOME=/root LD_PRELOAD= LD_LIBRARY_PATH= LD_AUDIT= /usr/bin/realpath -m -- '/var/secrets/gcs.json'",
+    );
+    expect(credentialResolutionCommand).not.toContain('export PATH=');
   });
 
   test('mounts GCS buckets with service account credentials through secret files', async () => {

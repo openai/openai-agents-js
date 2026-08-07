@@ -25,6 +25,7 @@ import {
   captureLiveMountCredentialAuthority,
   copyManifestMountCredentialExposurePolicy,
   copyValidatedMountEffectivePaths,
+  isMountCredentialFileEnvironmentName,
   manifestHasInContainerMounts,
   validateMountCredentialBoundaries,
   withExclusiveSandboxManifestMutation,
@@ -256,6 +257,7 @@ export interface RunloopSandboxSessionState extends SandboxSessionState {
   metadata?: Record<string, string>;
   secretRefs?: Record<string, string>;
   managedSecrets?: Record<string, string>;
+  trustedSecretRefs?: Record<string, string>;
   pauseOnExit: boolean;
   userParameters?: RunloopUserParameters;
   environment: Record<string, string>;
@@ -264,17 +266,12 @@ export interface RunloopSandboxSessionState extends SandboxSessionState {
   timeouts?: RunloopSandboxTimeouts;
 }
 
+const trustedRunloopMountSecretAuthorityStates =
+  new WeakSet<RunloopSandboxSessionState>();
+
 type RunloopSandboxResolvedOptions = RunloopSandboxClientOptions & {
   secretRefs?: Record<string, string>;
 };
-
-const RUNLOOP_CREDENTIAL_FILE_ENVIRONMENT_NAMES = new Set([
-  'AWS_SHARED_CREDENTIALS_FILE',
-  'AWS_CONFIG_FILE',
-  'AWS_WEB_IDENTITY_TOKEN_FILE',
-  'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
-  'GOOGLE_APPLICATION_CREDENTIALS',
-]);
 
 function runloopMountValidationEnvironment(
   environment: Record<string, string>,
@@ -295,39 +292,111 @@ function runloopMountValidationEnvironment(
 function unresolvedRunloopSecretRefs(
   secretRefs: Record<string, string> | undefined,
   managedSecrets: Record<string, string> | undefined,
+  trustedSecretRefs: Record<string, string> | undefined = undefined,
 ): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(secretRefs ?? {}).filter(
-      ([name]) =>
-        !managedSecrets ||
-        !Object.prototype.hasOwnProperty.call(managedSecrets, name),
-    ),
+    Object.entries(secretRefs ?? {}).filter(([name, reference]) => {
+      if (Object.prototype.hasOwnProperty.call(managedSecrets ?? {}, name)) {
+        return false;
+      }
+      return trustedSecretRefs?.[name] !== reference;
+    }),
   );
 }
 
-function assertRunloopCredentialFileSecretRefsAreResolvable(
+function assertRunloopMountSecretRefsAreResolvable(
   manifest: Manifest,
   secretRefs: Record<string, string> | undefined,
   managedSecrets: Record<string, string> | undefined,
+  trustedSecretRefs: Record<string, string> | undefined,
 ): void {
   const credentialFileSecretRefs = Object.fromEntries(
-    Object.entries(
-      unresolvedRunloopSecretRefs(secretRefs, managedSecrets),
-    ).filter(([name]) => RUNLOOP_CREDENTIAL_FILE_ENVIRONMENT_NAMES.has(name)),
+    Object.entries(secretRefs ?? {}).filter(
+      ([name]) =>
+        isMountCredentialFileEnvironmentName(name) &&
+        !Object.prototype.hasOwnProperty.call(managedSecrets ?? {}, name),
+    ),
+  );
+  if (
+    manifestUsesRcloneMountCredentialEnvironment(
+      manifest,
+      credentialFileSecretRefs,
+    )
+  ) {
+    throw new SandboxMountError(
+      'Runloop mount credential secretRefs cannot be validated before an in-container mount. Configure managedSecrets with current trusted values, or create the mount without ambient credentials.',
+      { provider: 'runloop' },
+      'mount_config_invalid',
+    );
+  }
+  const unresolvedSecretRefs = unresolvedRunloopSecretRefs(
+    secretRefs,
+    managedSecrets,
+    trustedSecretRefs,
   );
   if (
     !manifestUsesRcloneMountCredentialEnvironment(
       manifest,
-      credentialFileSecretRefs,
+      unresolvedSecretRefs,
     )
   ) {
     return;
   }
   throw new SandboxMountError(
-    'Runloop credential-file secretRefs cannot be validated before an in-container mount. Configure managedSecrets with the current trusted file path, or create the mount without ambient credential files.',
+    'Runloop mount credential secretRefs cannot be validated before an in-container mount. Configure managedSecrets with current trusted values, or create the mount without ambient credentials.',
     { provider: 'runloop' },
     'mount_config_invalid',
   );
+}
+
+function assertRunloopMountSecretAuthorityIsTrusted(trusted: boolean): void {
+  if (trusted) {
+    return;
+  }
+  throw new SandboxMountError(
+    'Runloop in-container mounts cannot be resumed or added on a devbox restored from serialized state because its ambient credential authority cannot be verified. Create a fresh devbox before configuring the mount.',
+    { provider: 'runloop' },
+    'mount_config_invalid',
+  );
+}
+
+function validateRunloopMountRematerializationAuthority(args: {
+  liveState: RunloopSandboxSessionState;
+  configuredState: RunloopSandboxSessionState;
+  manifest: Manifest;
+  mountSecretAuthorityTrusted: boolean;
+}): Record<string, string> {
+  if (manifestHasInContainerMounts(args.manifest)) {
+    assertRunloopMountSecretAuthorityIsTrusted(
+      args.mountSecretAuthorityTrusted,
+    );
+  }
+  assertLiveMountCredentialAuthorityMatches(
+    args.liveState.manifest,
+    args.manifest,
+  );
+  const mountEnvironment = runloopMountValidationEnvironment(
+    args.configuredState.environment,
+    args.configuredState.secretRefs,
+    args.configuredState.managedSecrets,
+  );
+  assertRunloopMountSecretRefsAreResolvable(
+    args.manifest,
+    args.configuredState.secretRefs,
+    args.configuredState.managedSecrets,
+    args.configuredState.trustedSecretRefs,
+  );
+  assertRcloneMountEnvironmentAuthorityMatches(
+    args.liveState,
+    args.manifest,
+    mountEnvironment,
+  );
+  validateMountCredentialBoundaries(args.manifest);
+  validateRcloneMountEnvironmentCredentialExposure(
+    args.manifest,
+    mountEnvironment,
+  );
+  return mountEnvironment;
 }
 
 function resolveRunloopOptions(
@@ -727,6 +796,7 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
     state: RunloopSandboxSessionState;
     sdk: RunloopClientLike;
     devbox: RunloopDevboxLike;
+    mountSecretAuthorityTrusted?: boolean;
     concurrencyLimits?: SandboxConcurrencyLimits;
     archiveLimits?: SandboxArchiveLimits | null;
   }) {
@@ -739,6 +809,9 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         archiveLimits: args.archiveLimits,
       },
     });
+    if (args.mountSecretAuthorityTrusted) {
+      trustedRunloopMountSecretAuthorityStates.add(this.state);
+    }
     this.sdk = args.sdk;
     this.devbox = args.devbox;
     captureRcloneMountEnvironmentAuthorityForManifest(
@@ -1043,10 +1116,16 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         manifest: Manifest,
         environment: Record<string, string>,
       ) => {
-        assertRunloopCredentialFileSecretRefsAreResolvable(
+        if (manifestHasInContainerMounts(manifest)) {
+          assertRunloopMountSecretAuthorityIsTrusted(
+            trustedRunloopMountSecretAuthorityStates.has(this.state),
+          );
+        }
+        assertRunloopMountSecretRefsAreResolvable(
           manifest,
           this.state.secretRefs,
           this.state.managedSecrets,
+          this.state.trustedSecretRefs,
         );
         validateRcloneMountEnvironmentCredentialExposure(
           manifest,
@@ -1093,6 +1172,9 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
     entry: Mount | TypedMount,
     context: ManifestMountMaterializationContext,
   ): Promise<void> {
+    assertRunloopMountSecretAuthorityIsTrusted(
+      trustedRunloopMountSecretAuthorityStates.has(this.state),
+    );
     if (!isRunloopCloudBucketMountEntry(entry)) {
       throw new SandboxUnsupportedFeatureError(
         'RunloopSandboxClient only supports RunloopCloudBucketMountStrategy mount entries.',
@@ -1134,30 +1216,13 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
   async rematerializeManifestMounts(manifest: Manifest): Promise<void> {
     const manifestSnapshot = cloneManifest(manifest);
     await withExclusiveSandboxManifestMutation(this.state, async () => {
-      assertLiveMountCredentialAuthorityMatches(
-        this.state.manifest,
-        manifestSnapshot,
-      );
-      const mountEnvironment = runloopMountValidationEnvironment(
-        this.state.environment,
-        this.state.secretRefs,
-        this.state.managedSecrets,
-      );
-      assertRunloopCredentialFileSecretRefsAreResolvable(
-        manifestSnapshot,
-        this.state.secretRefs,
-        this.state.managedSecrets,
-      );
-      assertRcloneMountEnvironmentAuthorityMatches(
-        this.state,
-        manifestSnapshot,
-        mountEnvironment,
-      );
-      validateMountCredentialBoundaries(manifestSnapshot);
-      validateRcloneMountEnvironmentCredentialExposure(
-        manifestSnapshot,
-        mountEnvironment,
-      );
+      const mountEnvironment = validateRunloopMountRematerializationAuthority({
+        liveState: this.state,
+        configuredState: this.state,
+        manifest: manifestSnapshot,
+        mountSecretAuthorityTrusted:
+          trustedRunloopMountSecretAuthorityStates.has(this.state),
+      });
       const resolvedMounts = await prepareManifestMounts(
         manifestSnapshot,
         this.remotePathResolver,
@@ -1607,10 +1672,11 @@ export class RunloopSandboxClient implements SandboxClient<
     const trustedManagedSecrets = resolvedOptions.secretRefs
       ? undefined
       : resolvedOptions.managedSecrets;
-    assertRunloopCredentialFileSecretRefsAreResolvable(
+    assertRunloopMountSecretRefsAreResolvable(
       manifest,
       resolvedOptions.secretRefs,
       trustedManagedSecrets,
+      resolvedOptions.secretRefs,
     );
     validateRcloneMountEnvironmentCredentialExposure(
       manifest,
@@ -1695,6 +1761,7 @@ export class RunloopSandboxClient implements SandboxClient<
         const session = new RunloopSandboxSession({
           sdk,
           devbox,
+          mountSecretAuthorityTrusted: true,
           concurrencyLimits: createArgs.concurrencyLimits,
           archiveLimits: createArgs.archiveLimits,
           state: {
@@ -1711,6 +1778,7 @@ export class RunloopSandboxClient implements SandboxClient<
             metadata: resolvedOptions.metadata,
             secretRefs: persistedSecretRefs,
             managedSecrets: trustedManagedSecrets,
+            trustedSecretRefs: resolvedOptions.secretRefs,
             pauseOnExit: resolvedOptions.pauseOnExit ?? false,
             userParameters: resolvedOptions.userParameters,
             environment,
@@ -1734,10 +1802,14 @@ export class RunloopSandboxClient implements SandboxClient<
   async serializeSessionState(
     state: RunloopSandboxSessionState,
   ): Promise<Record<string, unknown>> {
-    const { managedSecrets: _managedSecrets, ...serializableState } =
-      state as RunloopSandboxSessionState & {
-        managedSecrets?: Record<string, string>;
-      };
+    const {
+      managedSecrets: _managedSecrets,
+      trustedSecretRefs: _trustedSecretRefs,
+      ...serializableState
+    } = state as RunloopSandboxSessionState & {
+      managedSecrets?: Record<string, string>;
+      trustedSecretRefs?: Record<string, string>;
+    };
     return serializeRemoteSandboxSessionState(serializableState, state);
   }
 
@@ -1807,7 +1879,11 @@ export class RunloopSandboxClient implements SandboxClient<
       state,
       this.options.env,
     );
-    const { managedSecrets: _managedSecrets, ...rest } = state;
+    const {
+      managedSecrets: _managedSecrets,
+      trustedSecretRefs: _trustedSecretRefs,
+      ...rest
+    } = state;
     return {
       ...rest,
       ...baseState,
@@ -1848,6 +1924,8 @@ export class RunloopSandboxClient implements SandboxClient<
     options: SandboxClientResumeOptions<RunloopSandboxClientOptions> = {},
   ): Promise<RunloopSandboxSession> {
     assertRemoteSandboxSessionStateCanResume(state);
+    const mountSecretAuthorityTrusted =
+      trustedRunloopMountSecretAuthorityStates.has(state);
     const resolvedOptions = resolveRunloopOptions(
       this.options,
       options.clientOptions,
@@ -1860,17 +1938,19 @@ export class RunloopSandboxClient implements SandboxClient<
       managedSecrets: resolvedOptions.secretRefs
         ? undefined
         : resolvedOptions.managedSecrets,
+      trustedSecretRefs: resolvedOptions.secretRefs,
       manifest: resolveRunloopManifestRoot(
         state.manifest,
         resolvedOptions.userParameters,
         true,
       ),
     };
-    assertRunloopCredentialFileSecretRefsAreResolvable(
-      resumeState.manifest,
-      resumeState.secretRefs,
-      resumeState.managedSecrets,
-    );
+    validateRunloopMountRematerializationAuthority({
+      liveState: state,
+      configuredState: resumeState,
+      manifest: resumeState.manifest,
+      mountSecretAuthorityTrusted,
+    });
     const sdk = await createRunloopClient(resolvedOptions);
     try {
       const devbox = sdk.devbox.fromId(resumeState.devboxId);
@@ -1884,6 +1964,7 @@ export class RunloopSandboxClient implements SandboxClient<
         state: resumeState,
         sdk,
         devbox,
+        mountSecretAuthorityTrusted,
         archiveLimits: options.archiveLimits ?? resolvedOptions.archiveLimits,
       });
       try {
@@ -2600,6 +2681,9 @@ function remoteCommandEnvironment(
   environment: Record<string, string>,
   options: RemoteSandboxCommandOptions,
 ): Record<string, string> {
+  if (options.environment !== undefined) {
+    return options.environment;
+  }
   return options.kind === 'exec' ? environment : {};
 }
 
@@ -2611,8 +2695,13 @@ function assertRunloopResumeRecreateSecretRefsTrusted(
     return;
   }
   if (
-    options.managedSecrets &&
-    Object.keys(options.managedSecrets).length > 0
+    Object.keys(state.secretRefs).every(
+      (name) =>
+        Object.prototype.hasOwnProperty.call(
+          options.managedSecrets ?? {},
+          name,
+        ) && typeof options.managedSecrets?.[name] === 'string',
+    )
   ) {
     return;
   }

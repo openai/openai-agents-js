@@ -228,6 +228,10 @@ export async function validateRemoteSandboxPath({
     ]),
   ];
   const command = [
+    'PATH=/usr/bin:/bin',
+    'HOME=/root',
+    'unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT',
+    'export PATH HOME',
     `helper_dir=${shellQuote(helperDir)}`,
     'helper_path="$helper_dir/resolve-workspace-path.sh"',
     'cleanup() { rm -rf "$helper_dir"; }',
@@ -278,9 +282,11 @@ export async function resolveRemoteSandboxEffectivePath(args: {
   runCommand(command: string): Promise<RemotePathCommandResult>;
 }): Promise<string> {
   const result = await args.runCommand(
-    `realpath -m -- ${shellQuote(args.path)}`,
+    `PATH=/usr/bin:/bin HOME=/root LD_PRELOAD= LD_LIBRARY_PATH= LD_AUDIT= /usr/bin/realpath -m -- ${shellQuote(args.path)}`,
   );
-  const resolvedPath = result.stdout?.trim().split(/\r?\n/u).pop();
+  const resolvedPathLines = result.stdout?.trim().split(/\r?\n/u) ?? [];
+  const resolvedPath =
+    resolvedPathLines.length === 1 ? resolvedPathLines[0] : undefined;
   if (
     result.status !== 0 ||
     !resolvedPath?.startsWith('/') ||

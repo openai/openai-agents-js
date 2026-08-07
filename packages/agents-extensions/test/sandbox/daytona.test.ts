@@ -10,7 +10,10 @@ import {
   DaytonaCloudBucketMountStrategy,
   DaytonaSandboxClient,
 } from '../../src/sandbox/daytona';
-import { resolvedRemotePathFromValidationCommand } from './remotePathValidation';
+import {
+  resolvedRemoteEffectivePathFromCommand,
+  resolvedRemotePathFromValidationCommand,
+} from './remotePathValidation';
 
 const createMock = vi.fn();
 const getMock = vi.fn();
@@ -85,7 +88,9 @@ describe('DaytonaSandboxClient', () => {
     createMock.mockResolvedValue(sandbox);
     getMock.mockResolvedValue(sandbox);
     executeCommandMock.mockImplementation(async (command: string) => {
-      const resolvedPath = resolvedRemotePathFromValidationCommand(command);
+      const resolvedPath =
+        resolvedRemotePathFromValidationCommand(command) ??
+        resolvedRemoteEffectivePathFromCommand(command);
       const stdout = resolvedPath ? `${resolvedPath}\n` : 'README.md\n';
       return {
         exitCode: 0,
@@ -733,6 +738,7 @@ describe('DaytonaSandboxClient', () => {
           },
           environment: {
             AWS_ACCESS_KEY_ID: 'ambient-key',
+            AWS_SECRET_ACCESS_KEY: 'ambient-secret',
           },
         }),
       ),
@@ -1521,6 +1527,41 @@ describe('DaytonaSandboxClient', () => {
     expect(privilegedFuseCommand).toContain(
       'sudo -n -u "$target_user" -- sh -lc',
     );
+  });
+
+  test('resolves mount credential files without the configured PATH', async () => {
+    const client = new DaytonaSandboxClient({
+      env: {
+        PATH: '/home/daytona/workspace/model-bin',
+        AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/secrets/aws/token',
+      },
+    });
+
+    const session = await client.create(
+      new Manifest().withInContainerMountCredentialExposureAllowed('data'),
+    );
+    executeCommandMock.mockClear();
+
+    await session.materializeEntry({
+      path: 'data',
+      entry: {
+        type: 's3_mount',
+        bucket: 'agent-logs',
+        mountStrategy: new DaytonaCloudBucketMountStrategy(),
+      },
+    });
+
+    const credentialResolutionCall = executeCommandMock.mock.calls.find(
+      ([command]) =>
+        String(command).includes(
+          "/usr/bin/realpath -m -- '/var/run/secrets/aws/token'",
+        ),
+    );
+    expect(credentialResolutionCall).toEqual([
+      "PATH=/usr/bin:/bin HOME=/root LD_PRELOAD= LD_LIBRARY_PATH= LD_AUDIT= /usr/bin/realpath -m -- '/var/run/secrets/aws/token'",
+      '/home/daytona/workspace',
+      {},
+    ]);
   });
 
   test('rejects paused resume state containing cloud mounts', async () => {

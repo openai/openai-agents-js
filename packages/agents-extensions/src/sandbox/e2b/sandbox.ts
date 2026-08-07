@@ -675,7 +675,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
   ): Promise<RemoteSandboxCommandResult> {
     const result = await this.runCommandForStatus(command, {
       cwd: options.workdir,
-      envs: this.state.environment,
+      envs: options.environment ?? this.state.environment,
       timeoutMs:
         options.timeoutMs ??
         (options.kind === 'exec' ? this.commandTimeoutMs() : undefined),

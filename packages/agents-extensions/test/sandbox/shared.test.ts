@@ -52,6 +52,7 @@ import {
   requireNativeSnapshotRef,
   recordResolvedExposedPortEndpoint,
   readRunAsRemoteFile,
+  resolveRemoteSandboxEffectivePath,
   resolveSandboxAbsolutePath,
   resolveSandboxRelativePath,
   resolveSandboxWorkdir,
@@ -2551,7 +2552,9 @@ describe('remote sandbox path helpers', () => {
     await writeFile(join(outside, 'secret.txt'), 'secret\n');
     await symlink(outside, join(root, 'escape'));
 
+    const validationCommands: string[] = [];
     const runCommand = async (command: string) => {
+      validationCommands.push(command);
       try {
         const { stdout, stderr } = await execFileAsync('/bin/sh', [
           '-lc',
@@ -2601,7 +2604,47 @@ describe('remote sandbox path helpers', () => {
         runCommand,
       }),
     ).resolves.toBe('/src/app.ts');
+    expect(validationCommands).not.toHaveLength(0);
+    expect(validationCommands).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('PATH=/usr/bin:/bin\nHOME=/root'),
+        expect.stringContaining(
+          'unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT\nexport PATH HOME',
+        ),
+      ]),
+    );
   }, 15_000);
+
+  test('uses an absolute trusted binary for credential path resolution', async () => {
+    const runCommand = vi.fn(async () => ({
+      status: 0,
+      stdout: '/var/run/secrets/aws/token\n',
+    }));
+
+    await expect(
+      resolveRemoteSandboxEffectivePath({
+        path: '/var/run/secrets/aws/token',
+        runCommand,
+      }),
+    ).resolves.toBe('/var/run/secrets/aws/token');
+
+    expect(runCommand).toHaveBeenCalledOnce();
+    expect(runCommand).toHaveBeenCalledWith(
+      "PATH=/usr/bin:/bin HOME=/root LD_PRELOAD= LD_LIBRARY_PATH= LD_AUDIT= /usr/bin/realpath -m -- '/var/run/secrets/aws/token'",
+    );
+  });
+
+  test('rejects extra output from credential path resolution', async () => {
+    await expect(
+      resolveRemoteSandboxEffectivePath({
+        path: '/var/run/secrets/aws/token',
+        runCommand: async () => ({
+          status: 0,
+          stdout: '/var/run/secrets/aws/token\n/tmp/untrusted-override\n',
+        }),
+      }),
+    ).rejects.toThrow(/failed effective-path resolution/u);
+  });
 
   test('rejects remote path validators that do not return absolute paths', async () => {
     await expect(

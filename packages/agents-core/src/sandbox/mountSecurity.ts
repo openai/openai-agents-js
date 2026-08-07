@@ -147,6 +147,15 @@ const CREDENTIAL_FILE_ENVIRONMENT_NAMES = new Set([
   'GOOGLE_APPLICATION_CREDENTIALS',
 ]);
 
+export function isMountCredentialFileEnvironmentName(name: string): boolean {
+  return (
+    CREDENTIAL_FILE_ENVIRONMENT_NAMES.has(name) ||
+    name === 'RCLONE_CONFIG' ||
+    (name.startsWith('RCLONE_CONFIG_') &&
+      (name.endsWith('_FILE') || name.endsWith('_PATH')))
+  );
+}
+
 const pendingMountCredentialPaths = new WeakMap<Manifest, readonly string[]>();
 const persistedMountTopologyManifests = new WeakSet<Manifest>();
 const liveMountCredentialAuthority = new WeakMap<Manifest, Manifest>();
@@ -415,6 +424,7 @@ function mountRecordHasOpaqueConfig(value: Record<string, unknown>): boolean {
 export function validateMountCredentialBoundaries(manifest: Manifest): void {
   for (const { entry, mountPath } of manifest.mountTargets()) {
     validateExplicitMountCredentialPairs(entry);
+    validateRclonePatternArguments(entry, mountPath);
     const credentialFields = [
       ...configuredMountCredentialFields(entry),
       ...implicitWorkloadIdentityCredentialFields(entry),
@@ -458,6 +468,57 @@ export function validateMountCredentialBoundaries(manifest: Manifest): void {
   }
 }
 
+function validateRclonePatternArguments(
+  entry: Mount | TypedMount,
+  mountPath: string,
+): void {
+  const pattern = mountStrategyPattern(entry.mountStrategy);
+  if (pattern?.type !== 'rclone') {
+    return;
+  }
+  const unsupportedFields = ['args', 'extraArgs'].flatMap((field) => {
+    const value = pattern[field];
+    if (value === undefined || isCredentialFreeRcloneArgumentList(value)) {
+      return [];
+    }
+    return [`mountStrategy.pattern.${field}`];
+  });
+  if (unsupportedFields.length === 0) {
+    return;
+  }
+  throw new SandboxMountError(
+    'Unsupported rclone mount args or extraArgs can bypass credential-file validation. Use typed mount options or mountStrategy.pattern.configFilePath instead.',
+    { mountPath, mountType: entry.type, credentialFields: unsupportedFields },
+    'mount_config_invalid',
+  );
+}
+
+function isCredentialFreeRcloneArgumentList(value: unknown): boolean {
+  if (
+    !Array.isArray(value) ||
+    !value.every((item) => typeof item === 'string')
+  ) {
+    return false;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const argument = value[index];
+    if (argument === '--vfs-cache-mode') {
+      const mode = value[index + 1];
+      if (!['off', 'minimal', 'writes', 'full'].includes(mode ?? '')) {
+        return false;
+      }
+      index += 1;
+      continue;
+    }
+    const mode = argument.match(/^--vfs-cache-mode=(.+)$/u)?.[1];
+    if (mode && ['off', 'minimal', 'writes', 'full'].includes(mode)) {
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 function validateExplicitMountCredentialPairs(entry: Mount | TypedMount): void {
   const entryRecord = entry as Record<string, unknown>;
   const accessKeyId = optionalCredentialString(entryRecord.accessKeyId);
@@ -491,6 +552,81 @@ function validateExplicitMountCredentialPairs(entry: Mount | TypedMount): void {
       details: { mountType: entry.type },
       code: 'mount_config_invalid',
     });
+  }
+}
+
+function validateMountCredentialEnvironmentPairs(
+  entry: Mount | TypedMount,
+  environment: Record<string, string>,
+): void {
+  if (
+    entry.type === 's3_mount' ||
+    entry.type === 'r2_mount' ||
+    entry.type === 's3_files_mount'
+  ) {
+    const accessKeyId = optionalCredentialString(environment.AWS_ACCESS_KEY_ID);
+    const secretAccessKey = optionalCredentialString(
+      environment.AWS_SECRET_ACCESS_KEY,
+    );
+    validateCredentialPair({
+      accessKeyId,
+      secretAccessKey,
+      message:
+        'S3 mount environment credentials require both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY when either is provided.',
+      details: { mountType: entry.type },
+      code: 'mount_config_invalid',
+    });
+    if (
+      (optionalCredentialString(environment.AWS_SESSION_TOKEN) !== undefined ||
+        optionalCredentialString(environment.AWS_SECURITY_TOKEN) !==
+          undefined) &&
+      (!accessKeyId || !secretAccessKey)
+    ) {
+      throw new SandboxMountError(
+        'S3 mount environment credentials require a complete AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY pair when a session token is provided.',
+        { mountType: entry.type },
+        'mount_config_invalid',
+      );
+    }
+  }
+
+  const rcloneRemotePrefixes = new Set<string>();
+  for (const name of Object.keys(environment)) {
+    const prefix = name.match(
+      /^(RCLONE_CONFIG_.+)_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|SECURITY_TOKEN)$/u,
+    )?.[1];
+    if (prefix) {
+      rcloneRemotePrefixes.add(prefix);
+    }
+  }
+  for (const prefix of rcloneRemotePrefixes) {
+    const accessKeyId = optionalCredentialString(
+      environment[`${prefix}_ACCESS_KEY_ID`],
+    );
+    const secretAccessKey = optionalCredentialString(
+      environment[`${prefix}_SECRET_ACCESS_KEY`],
+    );
+    validateCredentialPair({
+      accessKeyId,
+      secretAccessKey,
+      message:
+        'Rclone remote environment credentials require both ACCESS_KEY_ID and SECRET_ACCESS_KEY when either is provided.',
+      details: { mountType: entry.type, remote: prefix },
+      code: 'mount_config_invalid',
+    });
+    if (
+      (optionalCredentialString(environment[`${prefix}_SESSION_TOKEN`]) !==
+        undefined ||
+        optionalCredentialString(environment[`${prefix}_SECURITY_TOKEN`]) !==
+          undefined) &&
+      (!accessKeyId || !secretAccessKey)
+    ) {
+      throw new SandboxMountError(
+        'Rclone remote environment credentials require a complete ACCESS_KEY_ID and SECRET_ACCESS_KEY pair when a session token is provided.',
+        { mountType: entry.type, remote: prefix },
+        'mount_config_invalid',
+      );
+    }
   }
 }
 
@@ -529,6 +665,7 @@ export function validateMountEnvironmentCredentialBoundaries(
       entry,
       effectiveEnvironment,
     );
+    validateMountCredentialEnvironmentPairs(entry, credentialEnvironment);
     if (Object.keys(credentialEnvironment).length === 0) {
       continue;
     }
@@ -1132,7 +1269,7 @@ function assertRawPersistedCredentialFilesAreNotManifestEntries(
       }
     }
     for (const [name, value] of Object.entries(credentialEnvironment)) {
-      if (CREDENTIAL_FILE_ENVIRONMENT_NAMES.has(name) && value.trim() !== '') {
+      if (isMountCredentialFileEnvironmentName(name) && value.trim() !== '') {
         credentialFiles.set(`environment.${name}`, value);
       }
     }
@@ -1416,7 +1553,7 @@ export function mountCredentialFileReferences(
     mountEffectiveEnvironment(manifest, environment),
   );
   for (const [name, value] of Object.entries(credentialEnvironment)) {
-    if (CREDENTIAL_FILE_ENVIRONMENT_NAMES.has(name) && value.trim() !== '') {
+    if (isMountCredentialFileEnvironmentName(name) && value.trim() !== '') {
       credentialFiles.set(`environment.${name}`, value);
     }
   }
@@ -1482,7 +1619,7 @@ function mountCredentialEnvironmentForEntry(
   const names = new Set<string>();
   if (mountUsesRcloneEnvironment(entry)) {
     for (const name of Object.keys(environment)) {
-      if (name.startsWith('RCLONE_CONFIG_')) {
+      if (name === 'RCLONE_CONFIG' || name.startsWith('RCLONE_CONFIG_')) {
         names.add(name);
       }
     }
@@ -1585,6 +1722,12 @@ function strategyFieldContainsCredentials(
   field: string,
   value: unknown,
 ): boolean {
+  if (
+    field === 'mountStrategy.pattern.args' ||
+    field === 'mountStrategy.pattern.extraArgs'
+  ) {
+    return !isCredentialFreeRcloneArgumentList(value);
+  }
   if (Array.isArray(value)) {
     return value.length > 0;
   }
