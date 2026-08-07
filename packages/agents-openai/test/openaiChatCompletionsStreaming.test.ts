@@ -19,6 +19,23 @@ function makeChunk(delta: any, usage?: any) {
   } as any;
 }
 
+function urlCitation(
+  url = 'https://example.com/weather',
+  title = 'Weather',
+  startIndex = 0,
+  endIndex = 7,
+) {
+  return {
+    type: 'url_citation',
+    url_citation: {
+      start_index: startIndex,
+      end_index: endIndex,
+      url,
+      title,
+    },
+  };
+}
+
 describe('convertChatCompletionsStreamToResponses', () => {
   it('surfaces an empty content-filter terminal as a refusal', async () => {
     const response: ChatCompletion = {
@@ -305,6 +322,132 @@ describe('convertChatCompletionsStreamToResponses', () => {
     expect(final.response.usage.totalTokens).toBe(3);
   });
 
+  it('preserves URL citations from text and annotation-only deltas once', async () => {
+    const weatherCitation = urlCitation();
+    const forecastCitation = urlCitation(
+      'https://example.com/forecast',
+      'Forecast',
+      8,
+      16,
+    );
+
+    async function* stream(): AsyncGenerator<
+      ChatCompletionChunk,
+      void,
+      unknown
+    > {
+      yield makeChunk({
+        content: 'Weather',
+        annotations: [weatherCitation],
+      });
+      yield makeChunk({
+        annotations: [weatherCitation, forecastCitation],
+      });
+      yield makeChunk({
+        content: ' forecast',
+        annotations: [forecastCitation],
+      });
+    }
+
+    const response = { id: 'r' } as ChatCompletion;
+    const events: any[] = [];
+    for await (const event of convertChatCompletionsStreamToResponses(
+      response,
+      stream() as any,
+    )) {
+      events.push(event);
+    }
+
+    expect(
+      events
+        .filter((event) => event.type === 'output_text_delta')
+        .map((event) => event.delta),
+    ).toEqual(['Weather', ' forecast']);
+    expect(events.at(-1).response.output[0].content[0]).toEqual({
+      type: 'output_text',
+      text: 'Weather forecast',
+      providerData: {
+        annotations: [weatherCitation, forecastCitation],
+      },
+    });
+    expect(response.choices[0].message.annotations).toEqual([
+      weatherCitation,
+      forecastCitation,
+    ]);
+  });
+
+  it('ignores malformed and unsupported streamed annotations', async () => {
+    const validCitation = urlCitation();
+
+    async function* stream(): AsyncGenerator<
+      ChatCompletionChunk,
+      void,
+      unknown
+    > {
+      yield makeChunk({
+        content: 'Weather',
+        annotations: [
+          null,
+          { type: 'file_citation', file_citation: { file_id: 'file-1' } },
+          {
+            type: 'url_citation',
+            url_citation: { url: 'https://example.com/incomplete' },
+          },
+          {
+            type: 'url_citation',
+            url_citation: {
+              start_index: '0',
+              end_index: 7,
+              url: 'https://example.com/wrong-index',
+              title: 'Wrong index',
+            },
+          },
+          validCitation,
+        ],
+      });
+      yield makeChunk({ annotations: 5 });
+    }
+
+    const response = { id: 'r' } as ChatCompletion;
+    const events: any[] = [];
+    for await (const event of convertChatCompletionsStreamToResponses(
+      response,
+      stream() as any,
+    )) {
+      events.push(event);
+    }
+
+    expect(events.at(-1).response.output[0].content[0].providerData).toEqual({
+      annotations: [validCitation],
+    });
+    expect(response.choices[0].message.annotations).toEqual([validCitation]);
+  });
+
+  it('ignores URL citations received before text begins', async () => {
+    async function* stream(): AsyncGenerator<
+      ChatCompletionChunk,
+      void,
+      unknown
+    > {
+      yield makeChunk({ annotations: [urlCitation()] });
+      yield makeChunk({ content: 'Weather' });
+    }
+
+    const response = { id: 'r' } as ChatCompletion;
+    const events: any[] = [];
+    for await (const event of convertChatCompletionsStreamToResponses(
+      response,
+      stream() as any,
+    )) {
+      events.push(event);
+    }
+
+    expect(events.at(-1).response.output[0].content[0].providerData).toEqual({
+      annotations: [],
+    });
+    expect(response.choices[0].message.annotations).toBeUndefined();
+  });
+
   it('uses a response ID received after the first text chunk for the final message', async () => {
     const firstChunk = {
       ...makeChunk({ content: 'hello' }),
@@ -462,7 +605,15 @@ describe('convertChatCompletionsStreamToResponses', () => {
         created: 0,
         model: 'm',
         object: 'chat.completion.chunk',
-        choices: [{ index: 1, delta: { content: 'ignored-first' } }],
+        choices: [
+          {
+            index: 1,
+            delta: {
+              content: 'ignored-first',
+              annotations: [urlCitation('https://example.com/ignored')],
+            },
+          },
+        ],
       } as any,
       {
         id: 'c',
@@ -470,8 +621,17 @@ describe('convertChatCompletionsStreamToResponses', () => {
         model: 'm',
         object: 'chat.completion.chunk',
         choices: [
-          { index: 0, delta: { content: 'kept' } },
-          { index: 1, delta: { content: 'ignored-second' } },
+          {
+            index: 0,
+            delta: { content: 'kept', annotations: [urlCitation()] },
+          },
+          {
+            index: 1,
+            delta: {
+              content: 'ignored-second',
+              annotations: [urlCitation('https://example.com/ignored')],
+            },
+          },
         ],
       } as any,
       {
@@ -505,6 +665,9 @@ describe('convertChatCompletionsStreamToResponses', () => {
     ).toEqual(['kept']);
     const final = events.at(-1);
     expect(final.response.output[0].content[0].text).toBe('kept');
+    expect(
+      final.response.output[0].content[0].providerData.annotations,
+    ).toEqual([urlCitation()]);
     expect(final.response.usage.totalTokens).toBe(3);
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy.mock.calls[0]?.[0]).toContain(

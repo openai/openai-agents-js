@@ -14,6 +14,7 @@ import {
 type StreamingState = {
   started: boolean;
   text_content: protocol.OutputText | null;
+  annotations: ChatCompletionAnnotation[];
   messageItemId: string | undefined;
   refusal_content: protocol.Refusal | null;
   function_calls: Record<number, protocol.FunctionCallItem>;
@@ -22,6 +23,63 @@ type StreamingState = {
   finishReason: ChatCompletion['choices'][number]['finish_reason'] | null;
   hasWarnedUnsupportedChoice: boolean;
 };
+
+type ChatCompletionAnnotation = NonNullable<
+  ChatCompletion['choices'][number]['message']['annotations']
+>[number];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeUrlCitations(
+  rawAnnotations: unknown,
+): ChatCompletionAnnotation[] {
+  if (!Array.isArray(rawAnnotations)) {
+    return [];
+  }
+
+  const annotations: ChatCompletionAnnotation[] = [];
+  for (const annotation of rawAnnotations) {
+    if (
+      !isRecord(annotation) ||
+      annotation.type !== 'url_citation' ||
+      !isRecord(annotation.url_citation)
+    ) {
+      continue;
+    }
+
+    const { start_index, end_index, url, title } = annotation.url_citation;
+    if (
+      typeof start_index !== 'number' ||
+      !Number.isFinite(start_index) ||
+      typeof end_index !== 'number' ||
+      !Number.isFinite(end_index) ||
+      typeof url !== 'string' ||
+      typeof title !== 'string'
+    ) {
+      continue;
+    }
+
+    annotations.push({
+      type: 'url_citation',
+      url_citation: { start_index, end_index, url, title },
+    });
+  }
+  return annotations;
+}
+
+function isSameUrlCitation(
+  left: ChatCompletionAnnotation,
+  right: ChatCompletionAnnotation,
+): boolean {
+  return (
+    left.url_citation.start_index === right.url_citation.start_index &&
+    left.url_citation.end_index === right.url_citation.end_index &&
+    left.url_citation.url === right.url_citation.url &&
+    left.url_citation.title === right.url_citation.title
+  );
+}
 
 export async function* convertChatCompletionsStreamToResponses(
   response: ChatCompletion,
@@ -36,6 +94,7 @@ export async function* convertChatCompletionsStreamToResponses(
   const state: StreamingState = {
     started: false,
     text_content: null,
+    annotations: [],
     messageItemId: undefined,
     refusal_content: null,
     function_calls: {},
@@ -117,7 +176,7 @@ export async function* convertChatCompletionsStreamToResponses(
         state.text_content = {
           text: '',
           type: 'output_text',
-          providerData: { annotations: [] },
+          providerData: { annotations: state.annotations },
         };
         state.messageItemId =
           response.id && response.id !== FAKE_ID ? response.id : undefined;
@@ -131,6 +190,20 @@ export async function* convertChatCompletionsStreamToResponses(
         },
       };
       state.text_content.text += delta.content;
+    }
+
+    // Some providers emit URL citations with text or on a later annotation-only chunk.
+    if (state.text_content) {
+      const deltaAnnotations = (delta as { annotations?: unknown }).annotations;
+      for (const annotation of normalizeUrlCitations(deltaAnnotations)) {
+        if (
+          !state.annotations.some((existing) =>
+            isSameUrlCitation(existing, annotation),
+          )
+        ) {
+          state.annotations.push(annotation);
+        }
+      }
     }
 
     if (
@@ -308,6 +381,9 @@ function buildTraceChoice(
       role: 'assistant',
       content,
       refusal,
+      ...(state.annotations.length > 0
+        ? { annotations: [...state.annotations] }
+        : {}),
       ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
     },
   };
