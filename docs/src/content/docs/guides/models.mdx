@@ -34,7 +34,7 @@ In day‑to‑day work you normally only interact with model **names** and occas
 
 ### Default model
 
-When you don't specify a model when initializing an `Agent`, the default model will be used. The default is currently [`gpt-5.4-mini`](https://developers.openai.com/api/docs/models/gpt-5.4-mini) with `reasoning.effort: "none"` and `text.verbosity: "low"` for a balance of quality and latency.
+When you don't specify a model when initializing an `Agent`, the default model will be used. The default is currently [`gpt-5.6-luna`](https://developers.openai.com/api/docs/models/gpt-5.6-luna) with `reasoning.effort: "none"` and `text.verbosity: "low"` for efficient, high-volume agent workloads.
 
 If you want to switch to another model like `gpt-5.6-sol`, there are two ways to configure your agents.
 
@@ -63,7 +63,7 @@ When you use any GPT-5.x model such as [`gpt-5.6-sol`](https://developers.openai
   title="Customize GPT-5 default settings"
 />
 
-If latency matters, start with the default `gpt-5.4-mini` configuration or use `reasoning.effort: "none"` on another GPT-5.x model, then increase reasoning effort only if your task needs more deliberate reasoning.
+If latency and cost matter, start with the default `gpt-5.6-luna` configuration or use `reasoning.effort: "none"` on another GPT-5.x model, then increase reasoning effort only if your task needs more deliberate reasoning.
 
 #### Non-GPT-5 models
 
