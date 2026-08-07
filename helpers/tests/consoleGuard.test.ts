@@ -10,12 +10,16 @@ const guardPath = join(rootDir, 'helpers/tests/console-guard.ts');
 const guardCorePath = join(rootDir, 'helpers/tests/stdioGuard.ts');
 const vitestPath = join(rootDir, 'node_modules/vitest/vitest.mjs');
 const temporaryDirectories: string[] = [];
+const SUBPROCESS_TIMEOUT_MS = 20_000;
+const SUBPROCESS_FORCE_KILL_MS = 2_000;
+const SUBPROCESS_TEST_TIMEOUT_MS = 30_000;
 
 async function runFixture(
   files: Record<string, string>,
   options: {
     env?: Record<string, string>;
     globalSetup?: string;
+    timeoutMs?: number;
   } = {},
 ) {
   const fixtureDir = await mkdtemp(join(tmpdir(), 'agents-stdio-guard-'));
@@ -51,6 +55,8 @@ async function runFixture(
       ...options.env,
     },
     reject: false,
+    timeout: options.timeoutMs ?? SUBPROCESS_TIMEOUT_MS,
+    forceKillAfterDelay: SUBPROCESS_FORCE_KILL_MS,
   });
 }
 
@@ -65,10 +71,13 @@ afterEach(async () => {
   );
 });
 
-describe('test stdout/stderr guard', () => {
-  it('fails on output from file-scoped fixture cleanup', async () => {
-    const result = await runFixture({
-      'fixture-cleanup.test.ts': `
+describe(
+  'test stdout/stderr guard',
+  { timeout: SUBPROCESS_TEST_TIMEOUT_MS },
+  () => {
+    it('fails on output from file-scoped fixture cleanup', async () => {
+      const result = await runFixture({
+        'fixture-cleanup.test.ts': `
         import { expect, test as base } from 'vitest';
 
         const test = base.extend({
@@ -85,39 +94,39 @@ describe('test stdout/stderr guard', () => {
           expect(resource).toBe('ready');
         });
       `,
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(`${result.stdout}\n${result.stderr}`).toContain(
+        'Unexpected stdout/stderr during test',
+      );
+      expect(`${result.stdout}\n${result.stderr}`).toContain(
+        'FILE_FIXTURE_CLEANUP_OUTPUT',
+      );
     });
 
-    expect(result.exitCode).toBe(1);
-    expect(`${result.stdout}\n${result.stderr}`).toContain(
-      'Unexpected stdout/stderr during test',
-    );
-    expect(`${result.stdout}\n${result.stderr}`).toContain(
-      'FILE_FIXTURE_CLEANUP_OUTPUT',
-    );
-  });
-
-  it('fails on console.dir and console.dirxml output', async () => {
-    const result = await runFixture({
-      'console-methods.test.ts': `
+    it('fails on console.dir and console.dirxml output', async () => {
+      const result = await runFixture({
+        'console-methods.test.ts': `
         import { test } from 'vitest';
         test('dir', () => console.dir({ marker: 'CONSOLE_DIR_OUTPUT' }));
         test('dirxml', () => console.dirxml({ marker: 'CONSOLE_DIRXML_OUTPUT' }));
       `,
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(`${result.stdout}\n${result.stderr}`).toContain(
+        'CONSOLE_DIR_OUTPUT',
+      );
+      expect(`${result.stdout}\n${result.stderr}`).toContain(
+        'CONSOLE_DIRXML_OUTPUT',
+      );
     });
 
-    expect(result.exitCode).toBe(1);
-    expect(`${result.stdout}\n${result.stderr}`).toContain(
-      'CONSOLE_DIR_OUTPUT',
-    );
-    expect(`${result.stdout}\n${result.stderr}`).toContain(
-      'CONSOLE_DIRXML_OUTPUT',
-    );
-  });
-
-  it('fails on output from global setup imports', async () => {
-    const result = await runFixture(
-      {
-        'global-setup.ts': `
+    it('fails on output from global setup imports', async () => {
+      const result = await runFixture(
+        {
+          'global-setup.ts': `
           import { guardGlobalSetup } from './stdioGuard';
           export function setup() {
             return guardGlobalSetup(async () => {
@@ -125,30 +134,30 @@ describe('test stdout/stderr guard', () => {
             });
           }
         `,
-        'actual-global-setup.ts': `
+          'actual-global-setup.ts': `
           import './noisy-global-import';
         `,
-        'noisy-global-import.ts': `
+          'noisy-global-import.ts': `
           console.error('GLOBAL_SETUP_IMPORT_OUTPUT');
         `,
-        'sample.test.ts': `
+          'sample.test.ts': `
           import { test } from 'vitest';
           test('sample', () => {});
         `,
-      },
-      { globalSetup: './global-setup.ts' },
-    );
+        },
+        { globalSetup: './global-setup.ts' },
+      );
 
-    expect(result.exitCode).toBe(1);
-    expect(`${result.stdout}\n${result.stderr}`).toContain(
-      'GLOBAL_SETUP_IMPORT_OUTPUT',
-    );
-  });
+      expect(result.exitCode).toBe(1);
+      expect(`${result.stdout}\n${result.stderr}`).toContain(
+        'GLOBAL_SETUP_IMPORT_OUTPUT',
+      );
+    });
 
-  it('fails on output from global teardown', async () => {
-    const result = await runFixture(
-      {
-        'global-setup.ts': `
+    it('fails on output from global teardown', async () => {
+      const result = await runFixture(
+        {
+          'global-setup.ts': `
           import { guardGlobalSetup } from './stdioGuard';
           export function setup() {
             return guardGlobalSetup(async () => {
@@ -156,74 +165,191 @@ describe('test stdout/stderr guard', () => {
             });
           }
         `,
-        'sample.test.ts': `
+          'sample.test.ts': `
           import { test } from 'vitest';
           test('sample', () => {});
         `,
-      },
-      { globalSetup: './global-setup.ts' },
-    );
+        },
+        { globalSetup: './global-setup.ts' },
+      );
 
-    expect(result.exitCode).toBe(1);
-    expect(`${result.stdout}\n${result.stderr}`).toContain(
-      'GLOBAL_TEARDOWN_OUTPUT',
-    );
-  });
+      expect(result.exitCode).toBe(1);
+      expect(`${result.stdout}\n${result.stderr}`).toContain(
+        'GLOBAL_TEARDOWN_OUTPUT',
+      );
+    });
 
-  it('preserves warn-mode output across test files', async () => {
-    const result = await runFixture(
-      {
-        'first.test.ts': `
+    it('preserves warn-mode output across test files', async () => {
+      const result = await runFixture(
+        {
+          'first.test.ts': `
           import { test } from 'vitest';
           test('first', () => console.warn('FIRST_WARN_OUTPUT'));
         `,
-        'second.test.ts': `
+          'second.test.ts': `
           import { test } from 'vitest';
           test('second', () => console.warn('SECOND_WARN_OUTPUT'));
         `,
-      },
-      { env: { TEST_STDIO_MODE: 'warn' } },
-    );
+        },
+        { env: { TEST_STDIO_MODE: 'warn' } },
+      );
 
-    expect(result.exitCode).toBe(0);
-    const output = `${result.stdout}\n${result.stderr}`;
-    expect(output).toContain('Unexpected stdout/stderr during test: first');
-    expect(output).toContain('console.warn: FIRST_WARN_OUTPUT');
-    expect(output).toContain('Unexpected stdout/stderr during test: second');
-    expect(output).toContain('console.warn: SECOND_WARN_OUTPUT');
-  });
+      expect(result.exitCode).toBe(0);
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(output).toContain('Unexpected stdout/stderr during test: first');
+      expect(output).toContain('console.warn: FIRST_WARN_OUTPUT');
+      expect(output).toContain('Unexpected stdout/stderr during test: second');
+      expect(output).toContain('console.warn: SECOND_WARN_OUTPUT');
+    });
 
-  it('allows output without diagnostics when the guard is off', async () => {
-    const result = await runFixture(
-      {
-        'off.test.ts': `
+    it('allows output without diagnostics when the guard is off', async () => {
+      const result = await runFixture(
+        {
+          'off.test.ts': `
           import { test } from 'vitest';
           test('off', () => console.log('OFF_MODE_OUTPUT'));
         `,
-      },
-      { env: { TEST_STDIO_MODE: 'off' } },
-    );
+        },
+        { env: { TEST_STDIO_MODE: 'off' } },
+      );
 
-    expect(result.exitCode).toBe(0);
-    const output = `${result.stdout}\n${result.stderr}`;
-    expect(output).toContain('OFF_MODE_OUTPUT');
-    expect(output).not.toContain('Unexpected stdout/stderr');
-  });
+      expect(result.exitCode).toBe(0);
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(output).toContain('OFF_MODE_OUTPUT');
+      expect(output).not.toContain('Unexpected stdout/stderr');
+    });
 
-  it('fails on output for an unknown mode', async () => {
-    const result = await runFixture(
-      {
-        'unknown.test.ts': `
+    it('fails on output for an unknown mode', async () => {
+      const result = await runFixture(
+        {
+          'unknown.test.ts': `
           import { test } from 'vitest';
           test('unknown', () => process.stdout.write('UNKNOWN_MODE_OUTPUT'));
         `,
-      },
-      { env: { TEST_STDIO_MODE: 'unknown' } },
-    );
+        },
+        { env: { TEST_STDIO_MODE: 'unknown' } },
+      );
 
-    expect(result.exitCode).toBe(1);
-    const output = `${result.stdout}\n${result.stderr}`;
-    expect(output).toContain('Unexpected stdout/stderr during test: unknown');
-    expect(output).toContain('stdout.write: UNKNOWN_MODE_OUTPUT');
-  });
-});
+      expect(result.exitCode).toBe(1);
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(output).toContain('Unexpected stdout/stderr during test: unknown');
+      expect(output).toContain('stdout.write: UNKNOWN_MODE_OUTPUT');
+    });
+
+    it('fails when test code catches the immediate output error', async () => {
+      const result = await runFixture({
+        'caught-output.test.ts': `
+          import { expect, test } from 'vitest';
+          test('caught output', () => {
+            expect(() => console.warn('CAUGHT_OUTPUT')).toThrow();
+          });
+        `,
+      });
+
+      expect(result.exitCode).toBe(1);
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(output).toContain(
+        'Unexpected stdout/stderr during test: caught output',
+      );
+      expect(output).toContain('console.warn: CAUGHT_OUTPUT');
+    });
+
+    it('fails when file fixture cleanup catches the output error', async () => {
+      const result = await runFixture({
+        'caught-fixture-cleanup.test.ts': `
+          import { expect, test as base } from 'vitest';
+
+          const test = base.extend({
+            resource: [
+              async ({}, use) => {
+                await use('ready');
+                try {
+                  process.stderr.write('CAUGHT_FILE_CLEANUP_OUTPUT');
+                } catch {}
+              },
+              { auto: true, scope: 'file' },
+            ],
+          });
+
+          test('uses the fixture', ({ resource }) => {
+            expect(resource).toBe('ready');
+          });
+        `,
+      });
+
+      expect(result.exitCode).toBe(1);
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(output).toContain('CAUGHT_FILE_CLEANUP_OUTPUT');
+      expect(output).toContain('Unexpected stdout/stderr during test');
+    });
+
+    it('fails when fake timers hide a caught fixture cleanup error', async () => {
+      const result = await runFixture({
+        'fake-timer-fixture-cleanup.test.ts': `
+          import { expect, test as base, vi } from 'vitest';
+
+          vi.useFakeTimers();
+
+          const test = base.extend({
+            resource: [
+              async ({}, use) => {
+                await use('ready');
+                try {
+                  process.stderr.write('FAKE_TIMER_FILE_CLEANUP_OUTPUT');
+                } catch {}
+              },
+              { auto: true, scope: 'file' },
+            ],
+          });
+
+          test('uses the fixture', ({ resource }) => {
+            expect(resource).toBe('ready');
+          });
+        `,
+      });
+
+      expect(result.exitCode).toBe(1);
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(output).toContain('FAKE_TIMER_FILE_CLEANUP_OUTPUT');
+      expect(output).toContain('Unexpected stdout/stderr during test');
+    });
+
+    it('runs stream callbacks when the immediate error is caught', async () => {
+      const result = await runFixture({
+        'stream-callback.test.ts': `
+          import { test } from 'vitest';
+
+          test('stream callback', () => {
+            let callbackCalled = false;
+            try {
+              process.stderr.write('STREAM_CALLBACK_OUTPUT', () => {
+                callbackCalled = true;
+              });
+            } catch {}
+            if (!callbackCalled) {
+              throw new Error('STREAM_CALLBACK_WAS_NOT_CALLED');
+            }
+          });
+        `,
+      });
+
+      expect(result.exitCode).toBe(1);
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(output).toContain('stderr.write: STREAM_CALLBACK_OUTPUT');
+      expect(output).not.toContain('STREAM_CALLBACK_WAS_NOT_CALLED');
+    });
+
+    it('terminates a nested Vitest process that does not settle', async () => {
+      const result = await runFixture(
+        {
+          'hanging.test.ts': `
+            await new Promise(() => {});
+          `,
+        },
+        { timeoutMs: 500 },
+      );
+
+      expect(result.timedOut).toBe(true);
+    });
+  },
+);

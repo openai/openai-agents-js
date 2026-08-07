@@ -1,3 +1,4 @@
+import { setImmediate as scheduleImmediate } from 'node:timers';
 import { format } from 'node:util';
 
 type ConsoleMethod =
@@ -13,6 +14,8 @@ type OutputEvent = {
 
 type GuardOriginals = {
   stderrWrite: typeof process.stderr.write;
+  violations: Error[];
+  violationCheckScheduled: boolean;
 };
 
 type InstallStdioGuardOptions = {
@@ -40,7 +43,11 @@ const originals =
   processWithOriginals[originalsSymbol] ??
   (processWithOriginals[originalsSymbol] = {
     stderrWrite: process.stderr.write.bind(process.stderr),
+    violations: [],
+    violationCheckScheduled: false,
   });
+originals.violations ??= [];
+originals.violationCheckScheduled ??= false;
 
 function normalizeChunk(chunk: unknown, encoding?: BufferEncoding): string {
   if (typeof chunk === 'string') {
@@ -79,6 +86,24 @@ function unexpectedOutput(event: OutputEvent, scope: string): Error {
   );
 }
 
+export function assertNoStdioViolations(): void {
+  const [violation] = originals.violations.splice(0);
+  if (violation) {
+    throw violation;
+  }
+}
+
+function scheduleViolationCheck(): void {
+  if (originals.violationCheckScheduled) {
+    return;
+  }
+  originals.violationCheckScheduled = true;
+  scheduleImmediate(() => {
+    originals.violationCheckScheduled = false;
+    assertNoStdioViolations();
+  });
+}
+
 export function installStdioGuard({
   scope,
 }: InstallStdioGuardOptions): () => void {
@@ -101,6 +126,8 @@ export function installStdioGuard({
       originals.stderrWrite(`${error.message}\n`);
       return;
     }
+    originals.violations.push(error);
+    scheduleViolationCheck();
     throw error;
   }
 
@@ -129,12 +156,15 @@ export function installStdioGuard({
       const resolvedEncoding =
         typeof encoding === 'string' ? (encoding as BufferEncoding) : undefined;
 
-      report({
-        kind,
-        source: 'stream',
-        message: normalizeChunk(chunk, resolvedEncoding),
-      });
-      callback?.();
+      try {
+        report({
+          kind,
+          source: 'stream',
+          message: normalizeChunk(chunk, resolvedEncoding),
+        });
+      } finally {
+        callback?.();
+      }
       return true;
     }) as typeof stream.write;
   }
@@ -167,7 +197,11 @@ export async function guardGlobalSetup(
   try {
     cleanup = await setup();
   } finally {
-    restoreSetup();
+    try {
+      assertNoStdioViolations();
+    } finally {
+      restoreSetup();
+    }
   }
   if (!cleanup) {
     return;
@@ -179,7 +213,11 @@ export async function guardGlobalSetup(
     try {
       await cleanup();
     } finally {
-      restoreCleanup();
+      try {
+        assertNoStdioViolations();
+      } finally {
+        restoreCleanup();
+      }
     }
   };
 }

@@ -1,5 +1,5 @@
-import { beforeEach, expect } from 'vitest';
-import { installStdioGuard } from './stdioGuard';
+import { afterEach, beforeEach, expect } from 'vitest';
+import { assertNoStdioViolations, installStdioGuard } from './stdioGuard';
 
 function install(): void {
   installStdioGuard({
@@ -13,4 +13,8 @@ install();
 beforeEach(() => {
   // Reapply patches in case a previous test restored mocked console methods.
   install();
+});
+
+afterEach(() => {
+  assertNoStdioViolations();
 });

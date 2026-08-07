@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  afterEach,
+  afterAll,
+  vi,
+} from 'vitest';
 
 import {
   timeIso,
@@ -73,6 +81,14 @@ import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../src/shims/shim
 import { supportsProcessLifecycleEvents as workerdSupportsProcessLifecycleEvents } from '../src/shims/shims-workerd';
 
 const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
+const originalProcessMaxListeners = process.getMaxListeners();
+
+// This file intentionally constructs many providers to exercise lifecycle
+// listeners. Raise the limit locally so Node does not report a false leak.
+process.setMaxListeners(originalProcessMaxListeners + 20);
+afterAll(() => {
+  process.setMaxListeners(originalProcessMaxListeners);
+});
 
 class TestExporter implements TracingExporter {
   public exported: Array<(Trace | Span<any>)[]> = [];
