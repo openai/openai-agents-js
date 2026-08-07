@@ -25,11 +25,14 @@ const faqLookupTool = tool({
   }),
   async execute(input: { question: string }) {
     const q = input.question.toLowerCase();
+    const compactQuestion = q.replace(/[\s\p{Pd}_]+/gu, '');
     if (q.includes('bag') || q.includes('baggage')) {
       return (
         'You are allowed to bring one bag on the plane. ' +
         'It must be under 50 pounds and 22 inches x 14 inches x 9 inches.'
       );
+    } else if (compactQuestion.includes('wifi')) {
+      return 'We have free wifi on the plane, join Airline-Wifi';
     } else if (q.includes('seats') || q.includes('plane')) {
       return (
         'There are 120 seats on the plane. ' +
@@ -37,8 +40,6 @@ const faqLookupTool = tool({
         'Exit rows are rows 4 and 16. ' +
         'Rows 5-8 are Economy Plus, with extra legroom. '
       );
-    } else if (q.includes('wifi')) {
-      return 'We have free wifi on the plane, join Airline-Wifi';
     }
     return "I'm sorry, I don't know the answer to that question.";
   },

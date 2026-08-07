@@ -54,9 +54,18 @@ const orchestratorAgent = new Agent({
 
 const synthesizerAgent = new Agent({
   name: 'synthesizer_agent',
-  instructions:
-    'You inspect translations, correct them if needed, and produce a final concatenated response.',
+  instructions: [
+    'You receive translations produced by translation tools.',
+    'Inspect them, correct them if needed, and concatenate them into the final response.',
+    'Do not refuse the request or attempt to call tools.',
+  ].join(' '),
 });
+
+function formatToolOutput(output: unknown): string {
+  return typeof output === 'string'
+    ? output
+    : (JSON.stringify(output) ?? String(output));
+}
 
 async function main() {
   const msg = await rl.question(
@@ -66,22 +75,44 @@ async function main() {
   if (!msg) {
     throw new Error('No message provided');
   }
+  const autoRunRequiredTools =
+    msg === 'Hello to Spanish and French'
+      ? ['translate_to_spanish', 'translate_to_french']
+      : [];
 
   await withTrace('Orchestrator evaluator', async () => {
     const orchestratorResult = await run(orchestratorAgent, msg);
 
-    for (const item of orchestratorResult.newItems) {
-      if (item.type === 'message_output_item') {
-        const text = item.content;
-        if (text) {
-          console.log(`  - Translation step: ${text}`);
-        }
+    const calledTranslationTools = new Set<string>();
+    const translations = orchestratorResult.newItems.flatMap((item) => {
+      if (
+        item.type !== 'tool_call_output_item' ||
+        item.rawItem.type !== 'function_call_result' ||
+        !item.rawItem.name.startsWith('translate_to_')
+      ) {
+        return [];
       }
+      calledTranslationTools.add(item.rawItem.name);
+      return [`${item.rawItem.name}: ${formatToolOutput(item.output)}`];
+    });
+    if (translations.length === 0) {
+      throw new Error('Expected the orchestrator to call a translation tool.');
+    }
+    const missingTranslations = autoRunRequiredTools.filter(
+      (toolName) => !calledTranslationTools.has(toolName),
+    );
+    if (missingTranslations.length > 0) {
+      throw new Error(
+        `Expected the orchestrator to call all requested translation tools. Missing: ${missingTranslations.join(', ')}.`,
+      );
+    }
+    for (const translation of translations) {
+      console.log(`  - Translation step: ${translation}`);
     }
 
     const synthesizerResult = await run(
       synthesizerAgent,
-      orchestratorResult.output,
+      [`Original request: ${msg}`, 'Translations:', ...translations].join('\n'),
     );
 
     console.log(`\n\nFinal response:\n${synthesizerResult.finalOutput}`);

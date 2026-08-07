@@ -169,6 +169,7 @@ rerun_list() {
   local -a server_keywords=("realtime" "nextjs" "server" "vite" "next")
   local -a audio_keywords=("realtime" "voice" "audio")
   local -a external_keywords=("prisma" "redis" "twilio" "dapr" "playwright")
+  local -a external_starts=("ai-sdk:start")
 
   load_auto_skip() {
     node --input-type=module - "$ROOT" <<'NODE'
@@ -221,9 +222,13 @@ NODE
   detect_tags() {
     local name="$1"
     local tags=()
+    local external_start
     if has_keyword "$name" "${server_keywords[@]}"; then tags+=("server"); fi
     if has_keyword "$name" "${audio_keywords[@]}"; then tags+=("audio"); fi
     if has_keyword "$name" "${external_keywords[@]}"; then tags+=("external"); fi
+    for external_start in "${external_starts[@]}"; do
+      if [[ "$name" == "$external_start" ]]; then tags+=("external"); fi
+    done
     printf '%s\n' "${tags[@]:-}"
   }
 
@@ -294,6 +299,7 @@ NODE
           pnpm -C "examples/$pkg" run "${script}"
           rc=$?
         fi
+        exit "$rc"
       } 2>&1 | tee "$LOG_DIR/$log_name"
       rc=${PIPESTATUS[0]}
       if [[ $rc -ne 0 ]]; then

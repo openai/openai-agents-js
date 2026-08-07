@@ -74,6 +74,12 @@ const orchestrator = new Agent<AppContext>({
   ],
 });
 
+function formatToolOutput(output: unknown): string {
+  return typeof output === 'string'
+    ? output
+    : (JSON.stringify(output) ?? String(output));
+}
+
 async function main() {
   const autoMode = process.env.EXAMPLES_INTERACTIVE_MODE === 'auto';
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -124,7 +130,30 @@ async function main() {
       const result = await run(orchestrator, userRequest, {
         context: runContext,
       });
-      console.log(`\nResponse:\n${result.finalOutput}`);
+      const responses: string[] = [];
+      const calledResponseTools = new Set<string>();
+      for (const item of result.newItems) {
+        if (
+          item.type !== 'tool_call_output_item' ||
+          item.rawItem.type !== 'function_call_result' ||
+          !item.rawItem.name.startsWith('respond_')
+        ) {
+          continue;
+        }
+        calledResponseTools.add(item.rawItem.name);
+        responses.push(
+          `${item.rawItem.name}: ${formatToolOutput(item.output)}`,
+        );
+      }
+      const missingTools = availableTools
+        .map((tool) => tool.name)
+        .filter((name) => !calledResponseTools.has(name));
+      if (missingTools.length > 0) {
+        throw new Error(
+          `Expected the orchestrator to call all available response tools. Missing: ${missingTools.join(', ')}.`,
+        );
+      }
+      console.log(`\nResponse:\n${responses.join('\n')}`);
     });
   } finally {
     await rl.close();

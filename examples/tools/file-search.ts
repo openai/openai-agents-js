@@ -33,7 +33,11 @@ async function main() {
 
     const agent = new Agent({
       name: 'File searcher',
-      instructions: 'You are a helpful agent.',
+      instructions:
+        'Always search the uploaded files before answering. Answer only from the file search results.',
+      modelSettings: {
+        toolChoice: 'required',
+      },
       tools: [
         fileSearchTool([vectorStore.id], {
           maxNumResults: 3,
@@ -45,7 +49,7 @@ async function main() {
     await withTrace('File search example', async () => {
       const result = await run(
         agent,
-        'Be concise, and tell me 1 sentence about Arrakis I might not know.',
+        'According to the uploaded file, what inspired Arrakis? Answer in one concise sentence.',
       );
       console.log(result.finalOutput);
 

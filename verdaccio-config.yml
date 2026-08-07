@@ -10,6 +10,10 @@ packages:
     access: $all
     publish: $all
     proxy: npmjs
+  '@openai/codex':
+    access: $all
+    publish: $all
+    proxy: npmjs
   '@openai/*':
     access: $all
     publish: $all

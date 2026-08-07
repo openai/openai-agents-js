@@ -37,6 +37,11 @@ describe('Node.js', () => {
     { timeout: 120_000 },
     async () => {
       const { stdout } = await execa`npm run start:codex`;
+      expect(stdout).toContain('codex thread started:');
+      expect(stdout).toContain('codex turn completed, usage:');
+      expect(stdout).toMatch(
+        /\[CODEX_TOOL_RESPONSE\].*\^0\.147\.0.*\[\/CODEX_TOOL_RESPONSE\]/s,
+      );
       expect(stdout).toContain('[CODEX_RESPONSE]');
     },
   );

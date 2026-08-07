@@ -42,6 +42,7 @@ export const EXTERNAL_COMMAND_KEYWORDS = [
   'dapr',
   'playwright',
 ];
+export const EXTERNAL_STARTS = new Set(['ai-sdk:start']);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -369,7 +370,10 @@ const detectTagsFromName = (name) => {
   if (AUDIO_PATH_KEYWORDS.some((keyword) => lower.includes(keyword))) {
     tags.add('audio');
   }
-  if (EXTERNAL_COMMAND_KEYWORDS.some((keyword) => lower.includes(keyword))) {
+  if (
+    EXTERNAL_STARTS.has(name) ||
+    EXTERNAL_COMMAND_KEYWORDS.some((keyword) => lower.includes(keyword))
+  ) {
     tags.add('external');
   }
   return tags;
@@ -473,6 +477,7 @@ const detectTags = (start) => {
   }
 
   if (
+    EXTERNAL_STARTS.has(getStartName(start)) ||
     EXTERNAL_COMMAND_KEYWORDS.some((keyword) => commandLower.includes(keyword))
   ) {
     tags.add('external');
@@ -1076,7 +1081,8 @@ const main = async () => {
       const outPath = path.isAbsolute(collectOutput)
         ? collectOutput
         : path.resolve(process.cwd(), collectOutput);
-      await fs.writeFile(outPath, list.join('\n'), 'utf-8');
+      const output = list.length > 0 ? `${list.join('\n')}\n` : '';
+      await fs.writeFile(outPath, output, 'utf-8');
       console.log(`Wrote ${list.length} entries to ${outPath}`);
     } else {
       for (const item of list) console.log(item);

@@ -6,12 +6,17 @@ import { Agent, getGlobalTraceProvider, run } from '@openai/agents';
 import { codexTool } from '@openai/agents-extensions/experimental/codex';
 
 const fixtureDirectory = path.dirname(fileURLToPath(import.meta.url));
+const codexRunState = {
+  threadStarted: false,
+  turnCompleted: false,
+};
 
 async function onCodexStream(payload) {
   const event = payload.event;
   const eventType = event.type;
 
   if (event.type === 'thread.started') {
+    codexRunState.threadStarted = true;
     console.log(`codex thread started: ${event.thread_id}`);
     return;
   }
@@ -20,6 +25,7 @@ async function onCodexStream(payload) {
     return;
   }
   if (event.type === 'turn.completed') {
+    codexRunState.turnCompleted = true;
     console.log(`codex turn completed, usage: ${JSON.stringify(event.usage)}`);
     return;
   }
@@ -105,7 +111,6 @@ async function main() {
       env: createCodexEnv(),
     },
     defaultThreadOptions: {
-      model: 'gpt-5.2-codex',
       modelReasoningEffort: 'low',
       networkAccessEnabled: false,
       webSearchEnabled: false,
@@ -120,12 +125,36 @@ async function main() {
       'Use only local workspace files for this task.',
       'Keep the final answer to one short sentence.',
     ].join(' '),
+    modelSettings: {
+      toolChoice: 'required',
+    },
     tools: [codex],
   });
   try {
     const result = await run(
       agent,
-      'Use the codex tool to inspect package.json in the current workspace and tell me the version of @openai/codex-sdk.',
+      'Use the codex tool to inspect package.json in the current workspace and return the exact dependency range for @openai/codex-sdk.',
+    );
+    const codexToolOutput = result.newItems.find(
+      (item) =>
+        item.type === 'tool_call_output_item' &&
+        item.rawItem.type === 'function_call_result' &&
+        item.rawItem.name === 'codex',
+    )?.output;
+    if (
+      !codexRunState.threadStarted ||
+      !codexRunState.turnCompleted ||
+      typeof codexToolOutput !== 'object' ||
+      codexToolOutput === null ||
+      typeof codexToolOutput.response !== 'string' ||
+      codexToolOutput.response.length === 0
+    ) {
+      throw new Error(
+        'Expected the Codex tool to complete a thread and return a response.',
+      );
+    }
+    console.log(
+      `[CODEX_TOOL_RESPONSE]${codexToolOutput.response}[/CODEX_TOOL_RESPONSE]`,
     );
     console.log(`[CODEX_RESPONSE]${result.finalOutput}[/CODEX_RESPONSE]`);
   } finally {
