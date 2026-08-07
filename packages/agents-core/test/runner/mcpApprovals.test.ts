@@ -7,6 +7,7 @@ import { RunState } from '../../src/runState';
 import { handleHostedMcpApprovals } from '../../src/runner/mcpApprovals';
 import type { ToolRunMCPApprovalRequest } from '../../src/runner/types';
 import { hostedMcpTool } from '../../src/tool';
+import { getHostedMcpApprovalToolName } from '../../src/toolInvocation';
 import type {
   HostedMCPApprovalRequest,
   HostedMCPApprovalResponse,
@@ -17,12 +18,15 @@ const TEST_AGENT = new Agent({ name: 'TestAgent', outputType: 'text' });
 
 const buildApprovalRequest = (
   id = 'mcpr_1',
-  args = '{}',
+  argsOrServerLabel = '{}',
+  toolName?: string,
 ): ToolRunMCPApprovalRequest => {
+  const serverLabel = toolName ? argsOrServerLabel : 'stub';
+  const args = toolName ? '{}' : argsOrServerLabel;
   const providerData: HostedMCPApprovalRequest = {
     id,
-    name: 'list_files',
-    server_label: 'stub',
+    name: toolName ?? 'list_files',
+    server_label: serverLabel,
     arguments: args,
   };
 
@@ -41,7 +45,7 @@ const buildApprovalRequest = (
   return {
     requestItem,
     mcpTool: hostedMcpTool({
-      serverLabel: 'stub',
+      serverLabel,
       requireApproval: 'always',
     }),
   };
@@ -63,6 +67,7 @@ describe('handleHostedMcpApprovals', () => {
       .fn()
       .mockResolvedValue({ approve: true, reason: 'ok' });
     const approvalRequest = buildApprovalRequest();
+    approvalRequest.requestItem.rawItem.id = 'raw-request';
     approvalRequest.mcpTool = hostedMcpTool({
       serverLabel: 'stub',
       requireApproval: 'always',
@@ -83,12 +88,16 @@ describe('handleHostedMcpApprovals', () => {
     const response = newItems[0] as RunToolCallItem;
     const raw = response.rawItem as protocol.HostedToolCallItem;
     expect(raw.name).toBe('mcp_approval_response');
+    expect(raw.providerData).toMatchObject({
+      approval_request_id: 'mcpr_1',
+      approve: true,
+    });
     expect(raw.caller).toEqual({
       type: 'program',
       callerId: 'call_prog_1',
     });
     expect(result.pendingApprovals.size).toBe(0);
-    expect(result.pendingApprovalIds.size).toBe(0);
+    expect(result.pendingApprovalKeys.size).toBe(0);
   });
 
   it('binds callback approval to the exact hosted MCP invocation', async () => {
@@ -105,7 +114,7 @@ describe('handleHostedMcpApprovals', () => {
     const resolveApproval = (rawItem: protocol.HostedToolCallItem) =>
       state._context._resolveToolInvocationApproval(
         TEST_AGENT,
-        rawItem.name,
+        getHostedMcpApprovalToolName(rawItem.name, rawItem),
         rawItem,
       );
 
@@ -183,7 +192,7 @@ describe('handleHostedMcpApprovals', () => {
         resolveApproval: (item) =>
           state._context._resolveToolInvocationApproval(
             TEST_AGENT,
-            item.name,
+            getHostedMcpApprovalToolName(item.name, item),
             item,
           ),
       });
@@ -234,14 +243,11 @@ describe('handleHostedMcpApprovals', () => {
       functionResults,
       appendIfNew: (item) => newItems.push(item),
       resolveApproval: (rawItem) =>
-        state._context.isToolApproved({
-          toolName: rawItem.name,
-          callId:
-            rawItem.id ??
-            (rawItem.providerData as HostedMCPApprovalRequest | undefined)
-              ?.id ??
-            '',
-        }),
+        state._context._resolveToolInvocationApproval(
+          TEST_AGENT,
+          getHostedMcpApprovalToolName(rawItem.name, rawItem),
+          rawItem,
+        ),
     });
 
     expect(functionResults).toHaveLength(0);
@@ -258,7 +264,7 @@ describe('handleHostedMcpApprovals', () => {
       callerId: 'call_prog_1',
     });
     expect(result.pendingApprovals.size).toBe(0);
-    expect(result.pendingApprovalIds.size).toBe(0);
+    expect(result.pendingApprovalKeys.size).toBe(0);
   });
 
   it('forwards explicit reject messages into hosted MCP approval responses', async () => {
@@ -274,14 +280,7 @@ describe('handleHostedMcpApprovals', () => {
       functionResults,
       appendIfNew: (item) => newItems.push(item),
       resolveApproval: (rawItem) =>
-        state._context.isToolApproved({
-          toolName: rawItem.name,
-          callId:
-            rawItem.id ??
-            (rawItem.providerData as HostedMCPApprovalRequest | undefined)
-              ?.id ??
-            '',
-        }),
+        state._context._getHostedMcpApprovalStatus(rawItem),
     });
 
     expect(functionResults).toHaveLength(0);
@@ -299,7 +298,7 @@ describe('handleHostedMcpApprovals', () => {
       callerId: 'call_prog_1',
     });
     expect(result.pendingApprovals.size).toBe(0);
-    expect(result.pendingApprovalIds.size).toBe(0);
+    expect(result.pendingApprovalKeys.size).toBe(0);
   });
 
   it('omits hosted MCP rejection reasons by default', async () => {
@@ -313,14 +312,7 @@ describe('handleHostedMcpApprovals', () => {
       functionResults,
       appendIfNew: (item) => newItems.push(item),
       resolveApproval: (rawItem) =>
-        state._context.isToolApproved({
-          toolName: rawItem.name,
-          callId:
-            rawItem.id ??
-            (rawItem.providerData as HostedMCPApprovalRequest | undefined)
-              ?.id ??
-            '',
-        }),
+        state._context._getHostedMcpApprovalStatus(rawItem),
     });
 
     expect(functionResults).toHaveLength(0);
@@ -334,7 +326,7 @@ describe('handleHostedMcpApprovals', () => {
     });
     expect(providerData.reason).toBeUndefined();
     expect(result.pendingApprovals.size).toBe(0);
-    expect(result.pendingApprovalIds.size).toBe(0);
+    expect(result.pendingApprovalKeys.size).toBe(0);
   });
 
   it('surfaces pending approvals when no decision exists', async () => {
@@ -347,21 +339,73 @@ describe('handleHostedMcpApprovals', () => {
       functionResults,
       appendIfNew: (item) => newItems.push(item),
       resolveApproval: (rawItem) =>
-        state._context.isToolApproved({
-          toolName: rawItem.name,
-          callId:
-            rawItem.id ??
-            (rawItem.providerData as HostedMCPApprovalRequest | undefined)
-              ?.id ??
-            '',
-        }),
+        state._context._getHostedMcpApprovalStatus(rawItem),
     });
 
     expect(functionResults).toHaveLength(1);
     expect(functionResults[0].type).toBe('hosted_mcp_tool_approval');
     expect(newItems).toContain(approvalRequest.requestItem);
     expect(result.pendingApprovals.has(approvalRequest.requestItem)).toBe(true);
-    expect(result.pendingApprovalIds.has('mcpr_pending')).toBe(true);
+    expect(
+      result.pendingApprovalKeys.has(
+        JSON.stringify([
+          'hosted_mcp_request',
+          'stub',
+          'list_files',
+          'mcpr_pending',
+        ]),
+      ),
+    ).toBe(true);
+  });
+
+  it('does not reuse persistent decisions across hosted MCP servers', () => {
+    const serverA = buildApprovalRequest(
+      'mcpr_server_a',
+      'server-a',
+      'lookup_account',
+    );
+    const sameServer = buildApprovalRequest(
+      'mcpr_server_a_next',
+      'server-a',
+      'lookup_account',
+    );
+    const serverB = buildApprovalRequest(
+      'mcpr_server_b',
+      'server-b',
+      'lookup_account',
+    );
+
+    state.approve(serverA.requestItem, { alwaysApprove: true });
+
+    expect(
+      state._context._getHostedMcpApprovalStatus(sameServer.requestItem),
+    ).toBe(true);
+    expect(
+      state._context._getHostedMcpApprovalStatus(serverB.requestItem),
+    ).toBeUndefined();
+  });
+
+  it('uses one canonical request ID for approval lookup and response', async () => {
+    const approvalRequest = buildApprovalRequest('provider-request');
+    approvalRequest.requestItem.rawItem.id = 'raw-request';
+    state.approve(approvalRequest.requestItem);
+
+    const result = await handleHostedMcpApprovals({
+      requests: [approvalRequest],
+      agent: TEST_AGENT,
+      state,
+      functionResults,
+      appendIfNew: (item) => newItems.push(item),
+      resolveApproval: (rawItem) =>
+        state._context._getHostedMcpApprovalStatus(rawItem),
+    });
+
+    expect(result.pendingApprovals.size).toBe(0);
+    expect(newItems).toHaveLength(1);
+    expect(newItems[0].rawItem.providerData).toMatchObject({
+      approval_request_id: 'provider-request',
+      approve: true,
+    });
   });
 
   it('ignores non-hosted raw items', async () => {
@@ -389,7 +433,7 @@ describe('handleHostedMcpApprovals', () => {
     expect(functionResults).toHaveLength(0);
     expect(newItems).toHaveLength(0);
     expect(result.pendingApprovals.size).toBe(0);
-    expect(result.pendingApprovalIds.size).toBe(0);
+    expect(result.pendingApprovalKeys.size).toBe(0);
   });
 
   it('ignores hosted approval items that are missing provider data', async () => {
@@ -409,7 +453,7 @@ describe('handleHostedMcpApprovals', () => {
     expect(functionResults).toHaveLength(0);
     expect(newItems).toHaveLength(0);
     expect(result.pendingApprovals.size).toBe(0);
-    expect(result.pendingApprovalIds.size).toBe(0);
+    expect(result.pendingApprovalKeys.size).toBe(0);
   });
 
   it('treats approval requests without ids as pending without tracking an id', async () => {
@@ -432,7 +476,7 @@ describe('handleHostedMcpApprovals', () => {
     expect(functionResults).toHaveLength(1);
     expect(newItems).toContain(approvalRequest.requestItem);
     expect(result.pendingApprovals.has(approvalRequest.requestItem)).toBe(true);
-    expect(result.pendingApprovalIds.size).toBe(0);
+    expect(result.pendingApprovalKeys.size).toBe(0);
   });
 
   it('surfaces pending approvals when no resolver is provided', async () => {
@@ -449,6 +493,15 @@ describe('handleHostedMcpApprovals', () => {
     expect(functionResults).toHaveLength(1);
     expect(newItems).toContain(approvalRequest.requestItem);
     expect(result.pendingApprovals.has(approvalRequest.requestItem)).toBe(true);
-    expect(result.pendingApprovalIds.has('mcpr_no_resolver')).toBe(true);
+    expect(
+      result.pendingApprovalKeys.has(
+        JSON.stringify([
+          'hosted_mcp_request',
+          'stub',
+          'list_files',
+          'mcpr_no_resolver',
+        ]),
+      ),
+    ).toBe(true);
   });
 });

@@ -21,6 +21,7 @@ export {
 } from '../logger';
 export {
   getBoundToolInvocationRejectionMessage,
+  getHostedMcpApprovalToolName,
   getToolInvocationApproval,
   getToolInvocationRejectionMessage,
   validateHandoffToolInvocation,

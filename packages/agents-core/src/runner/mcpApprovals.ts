@@ -2,9 +2,14 @@ import { Agent } from '../agent';
 import { RunItem, RunToolApprovalItem, RunToolCallItem } from '../items';
 import { RunState } from '../runState';
 import { FunctionToolResult } from '../tool';
+import {
+  getHostedMcpApprovalRequestIdentity,
+  getHostedMcpApprovalRequestKey,
+} from '../toolIdentity';
 import * as ProviderData from '../types/providerData';
 import * as protocol from '../types/protocol';
 import type { ToolRunMCPApprovalRequest } from './types';
+import { getHostedMcpApprovalToolName } from '../toolInvocation';
 
 type ResolveApproval = (
   rawItem: protocol.HostedToolCallItem,
@@ -25,7 +30,7 @@ type HandleHostedMcpApprovalsParams<TContext> = {
 
 export type HandleHostedMcpApprovalsResult = {
   pendingApprovals: Set<RunToolApprovalItem>;
-  pendingApprovalIds: Set<string>;
+  pendingApprovalKeys: Set<string>;
 };
 
 /**
@@ -42,7 +47,7 @@ export async function handleHostedMcpApprovals<TContext>({
   resolveRejectionMessage,
 }: HandleHostedMcpApprovalsParams<TContext>): Promise<HandleHostedMcpApprovalsResult> {
   const pendingApprovals = new Set<RunToolApprovalItem>();
-  const pendingApprovalIds = new Set<string>();
+  const pendingApprovalKeys = new Set<string>();
 
   for (const approvalRequest of requests) {
     const rawItem = approvalRequest.requestItem.rawItem;
@@ -58,7 +63,8 @@ export async function handleHostedMcpApprovals<TContext>({
 
     const toolData = approvalRequest.mcpTool.providerData as
       ProviderData.HostedMCPTool<TContext> | undefined;
-    const approvalRequestId = rawItem.id ?? providerData.id;
+    const approvalIdentity = getHostedMcpApprovalRequestIdentity(rawItem);
+    const approvalRequestId = approvalIdentity?.requestId;
 
     const approvalDecision =
       typeof resolveApproval === 'function'
@@ -72,7 +78,7 @@ export async function handleHostedMcpApprovals<TContext>({
             ? resolveRejectionMessage(rawItem)
             : state._context._getToolInvocationRejectionMessage(
                 agent,
-                rawItem.name,
+                getHostedMcpApprovalToolName(rawItem.name, rawItem),
                 rawItem,
               )
           : undefined;
@@ -95,7 +101,7 @@ export async function handleHostedMcpApprovals<TContext>({
       continue;
     }
 
-    if (toolData?.on_approval) {
+    if (toolData?.on_approval && approvalRequestId) {
       const approvalResult = await toolData.on_approval(
         state._context,
         approvalRequest.requestItem,
@@ -109,7 +115,7 @@ export async function handleHostedMcpApprovals<TContext>({
       }
       const approvalResponseData: ProviderData.HostedMCPApprovalResponse = {
         approve: approvalResult.approve,
-        approval_request_id: approvalRequestId ?? providerData.id,
+        approval_request_id: approvalRequestId,
         reason: approvalResult.reason,
       };
       appendIfNew(
@@ -134,10 +140,13 @@ export async function handleHostedMcpApprovals<TContext>({
     appendIfNew(approvalRequest.requestItem);
 
     pendingApprovals.add(approvalRequest.requestItem);
-    if (approvalRequestId) {
-      pendingApprovalIds.add(approvalRequestId);
+    const approvalRequestKey = approvalIdentity
+      ? getHostedMcpApprovalRequestKey(approvalIdentity)
+      : undefined;
+    if (approvalRequestKey) {
+      pendingApprovalKeys.add(approvalRequestKey);
     }
   }
 
-  return { pendingApprovals, pendingApprovalIds };
+  return { pendingApprovals, pendingApprovalKeys };
 }

@@ -267,6 +267,27 @@ function hostedToolCall(
   };
 }
 
+function hostedMcpApprovalRequest(
+  requestId: string,
+  serverLabel: string,
+  toolName: string,
+  rawRequestId = requestId,
+): protocol.HostedToolCallItem {
+  return {
+    id: rawRequestId,
+    type: 'hosted_tool_call',
+    name: 'mcp_approval_request',
+    status: 'completed',
+    providerData: {
+      type: 'mcp_approval_request',
+      id: requestId,
+      server_label: serverLabel,
+      name: toolName,
+      arguments: '{}',
+    },
+  };
+}
+
 function textMessage(content: string): protocol.AssistantMessageItem {
   return {
     type: 'message',
@@ -2959,6 +2980,170 @@ describe('Agent scenarios (examples and docs patterns)', () => {
     });
 
     warnSpy.mockRestore();
+  });
+
+  it.each([
+    { name: 'run', stream: false },
+    { name: 'stream', stream: true },
+  ])(
+    'does not reuse a persistent hosted MCP approval across servers with $name',
+    async ({ stream }) => {
+      const model = new RecordingModel();
+      model.addMultipleTurnOutputs([
+        [hostedMcpApprovalRequest('request-a', 'server-a', 'lookup_account')],
+        [
+          hostedMcpApprovalRequest(
+            'request-b',
+            'server-b',
+            'lookup_account',
+            'conflicting-raw-request-b',
+          ),
+        ],
+      ]);
+      const agent = new Agent({
+        name: 'scoped-mcp-approval',
+        model,
+        tools: [
+          hostedMcpTool({
+            serverLabel: 'server-a',
+            serverUrl: 'https://server-a.example/mcp',
+            requireApproval: 'always',
+          }),
+          hostedMcpTool({
+            serverLabel: 'server-b',
+            serverUrl: 'https://server-b.example/mcp',
+            requireApproval: 'always',
+          }),
+        ],
+      });
+
+      const runWithMode = async (
+        input: string | RunState<unknown, Agent<unknown, 'text'>>,
+      ) => {
+        if (stream) {
+          const result = await run(agent, input, { stream: true });
+          await result.completed;
+          return result;
+        }
+        return run(agent, input);
+      };
+
+      const first = await runWithMode('Lookup the account');
+      expect(first.interruptions).toHaveLength(1);
+      expect(
+        (first.interruptions[0].rawItem.providerData as any).server_label,
+      ).toBe('server-a');
+      first.state.approve(first.interruptions[0], { alwaysApprove: true });
+
+      const restored = await RunState.fromString(agent, first.state.toString());
+      const resumed = await runWithMode(restored);
+
+      expect(resumed.interruptions).toHaveLength(1);
+      expect(
+        (resumed.interruptions[0].rawItem.providerData as any).server_label,
+      ).toBe('server-b');
+    },
+  );
+
+  it('restores a pending schema 1.17 sticky MCP approval as exact-call approval', async () => {
+    const model = new RecordingModel();
+    model.addMultipleTurnOutputs([
+      [hostedMcpApprovalRequest('request-a', 'server-a', 'lookup_account')],
+      [hostedMcpApprovalRequest('request-b', 'server-b', 'lookup_account')],
+    ]);
+    const agent = new Agent({
+      name: 'legacy-scoped-mcp-approval',
+      model,
+      tools: [
+        hostedMcpTool({
+          serverLabel: 'server-a',
+          serverUrl: 'https://server-a.example/mcp',
+          requireApproval: 'always',
+        }),
+        hostedMcpTool({
+          serverLabel: 'server-b',
+          serverUrl: 'https://server-b.example/mcp',
+          requireApproval: 'always',
+        }),
+      ],
+    });
+
+    const first = await run(agent, 'Lookup the account');
+    expect(first.interruptions).toHaveLength(1);
+    first.state.approve(first.interruptions[0], { alwaysApprove: true });
+
+    const serialized = first.state.toJSON() as any;
+    serialized.$schemaVersion = '1.17';
+    serialized.context.approvals = {
+      lookup_account: { approved: true, rejected: [] },
+    };
+    delete serialized.context.hostedMcpApprovals;
+
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(serialized),
+    );
+    const resumed = await run(agent, restored);
+
+    expect(resumed.interruptions).toHaveLength(1);
+    expect(
+      (resumed.interruptions[0].rawItem.providerData as any).server_label,
+    ).toBe('server-b');
+  });
+
+  it('keeps hosted MCP approvals server-scoped in nested agent resumes', async () => {
+    const nestedModel = new RecordingModel();
+    nestedModel.addMultipleTurnOutputs([
+      [hostedMcpApprovalRequest('nested-a', 'server-a', 'lookup_account')],
+      [hostedMcpApprovalRequest('nested-b', 'server-b', 'lookup_account')],
+    ]);
+    const nestedAgent = new Agent({
+      name: 'NestedMcpApprovalAgent',
+      model: nestedModel,
+      tools: [
+        hostedMcpTool({
+          serverLabel: 'server-a',
+          serverUrl: 'https://server-a.example/mcp',
+          requireApproval: 'always',
+        }),
+        hostedMcpTool({
+          serverLabel: 'server-b',
+          serverUrl: 'https://server-b.example/mcp',
+          requireApproval: 'always',
+        }),
+      ],
+    });
+    const nestedTool = nestedAgent.asTool({
+      toolName: 'nested_mcp_agent',
+      toolDescription: 'Run the nested MCP agent.',
+    });
+    const outerModel = new RecordingModel([
+      functionToolCall(
+        'nested_mcp_agent',
+        JSON.stringify({ input: 'lookup' }),
+        'outer-mcp-call',
+      ),
+    ]);
+    const outerAgent = new Agent({
+      name: 'OuterMcpApprovalAgent',
+      model: outerModel,
+      tools: [nestedTool],
+    });
+
+    const first = await run(outerAgent, 'Start');
+    expect(first.interruptions).toHaveLength(1);
+    first.state.approve(first.interruptions[0], { alwaysApprove: true });
+
+    const restored = await RunState.fromString(
+      outerAgent,
+      first.state.toString(),
+    );
+    const resumed = await run(outerAgent, restored);
+
+    expect(resumed.interruptions).toHaveLength(1);
+    expect(
+      (resumed.interruptions[0].rawItem.providerData as any).server_label,
+    ).toBe('server-b');
   });
 
   it('orchestrator calls multiple translation tools then summarizes', async () => {

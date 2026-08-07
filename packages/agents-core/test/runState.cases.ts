@@ -10128,6 +10128,674 @@ export function registerRunStateApprovalTests(): void {
       ).toBe('Blocked everywhere');
     });
 
+    it('round-trips server-scoped hosted MCP approvals', async () => {
+      const context = new RunContext();
+      const agent = new Agent({ name: 'HostedMcpApprovalStateAgent' });
+      const state = new RunState(context, 'input', agent, 1);
+      const approval = new ToolApprovalItem(
+        {
+          type: 'hosted_tool_call',
+          id: 'request-a',
+          name: 'lookup_account',
+          status: 'in_progress',
+          providerData: {
+            type: 'mcp_approval_request',
+            id: 'request-a',
+            server_label: 'server-a',
+            name: 'lookup_account',
+            arguments: '{}',
+          },
+        },
+        agent,
+      );
+      state.approve(approval, { alwaysApprove: true });
+
+      const serialized = state.toJSON() as any;
+      const approvalKey = JSON.stringify([
+        'hosted_mcp',
+        'server-a',
+        'lookup_account',
+      ]);
+      expect(serialized.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+      expect(serialized.context.hostedMcpApprovals).toEqual({
+        [approvalKey]: { approved: true, rejected: [] },
+      });
+      expect(serialized.context.approvals).toEqual({});
+
+      const restored = await RunState.fromString(agent, state.toString());
+      const sameServer = new ToolApprovalItem(
+        {
+          ...approval.rawItem,
+          id: 'request-a-next',
+          providerData: {
+            ...(approval.rawItem.providerData as Record<string, unknown>),
+            id: 'request-a-next',
+          },
+        },
+        agent,
+      );
+      const otherServer = new ToolApprovalItem(
+        {
+          ...sameServer.rawItem,
+          id: 'request-b',
+          providerData: {
+            ...(sameServer.rawItem.providerData as Record<string, unknown>),
+            id: 'request-b',
+            server_label: 'server-b',
+          },
+        },
+        agent,
+      );
+
+      expect(restored._context._getHostedMcpApprovalStatus(sameServer)).toBe(
+        true,
+      );
+      expect(
+        restored._context._getHostedMcpApprovalStatus(otherServer),
+      ).toBeUndefined();
+    });
+
+    it('preserves legacy local approvals whose names resemble hosted keys', async () => {
+      const agent = new Agent({ name: 'LegacyCollidingLocalApprovalAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      const collidingName = JSON.stringify([
+        'hosted_mcp',
+        'server-a',
+        'lookup_account',
+      ]);
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.17';
+      serialized.context.approvals = {
+        [collidingName]: { approved: true, rejected: [] },
+      };
+      delete serialized.context.hostedMcpApprovals;
+      delete serialized.context.approvalInvocations;
+      delete serialized.completedToolInvocations;
+      delete serialized.completedToolInvocationEvidence;
+      delete serialized.ambiguousToolInvocationCallIds;
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+      expect(
+        restored._context.isToolApproved({
+          toolName: collidingName,
+          callId: 'future-local-call',
+          functionTool: false,
+        }),
+      ).toBe(true);
+    });
+
+    it('rejects request-only hosted MCP approvals before serialization', () => {
+      const context = new RunContext();
+      const agent = new Agent({ name: 'HostedMcpRequestApprovalStateAgent' });
+      const state = new RunState(context, 'input', agent, 1);
+      const approval = new ToolApprovalItem(
+        {
+          type: 'hosted_tool_call',
+          id: 'request-only',
+          name: 'lookup_account',
+          status: 'in_progress',
+          providerData: {
+            type: 'mcp_approval_request',
+            id: 'request-only',
+            name: 'lookup_account',
+            arguments: '{}',
+          },
+        },
+        agent,
+      );
+      expect(() => state.approve(approval)).toThrow(
+        'Hosted MCP approval decisions require a non-empty server label and tool name.',
+      );
+      expect(state.toJSON().context.approvals).toEqual({});
+    });
+
+    it('reads schema 1.17 hosted MCP decisions without trusting sticky names', async () => {
+      const agent = new Agent({ name: 'LegacyHostedMcpApprovalStateAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      const pendingStickyApproval = new ToolApprovalItem(
+        {
+          type: 'hosted_tool_call',
+          id: 'pending-sticky-request',
+          name: 'lookup_account',
+          status: 'in_progress',
+          providerData: {
+            type: 'mcp_approval_request',
+            id: 'pending-sticky-request',
+            server_label: 'server-a',
+            name: 'lookup_account',
+            arguments: '{}',
+          },
+        },
+        agent,
+      );
+      state._currentStep = {
+        type: 'next_step_interruption',
+        data: { interruptions: [pendingStickyApproval] },
+      };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.17';
+      serialized.context.approvals = {
+        lookup_account: {
+          approved: true,
+          rejected: ['legacy-request'],
+          messages: { 'legacy-request': 'Legacy exact denial.' },
+        },
+      };
+      serialized.context.hostedMcpApprovals = {
+        [JSON.stringify(['hosted_mcp', 'server-a', 'lookup_account'])]: {
+          approved: true,
+          rejected: [],
+        },
+      };
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+      const merged = await RunState.fromStringWithContext(
+        agent,
+        JSON.stringify(serialized),
+        new RunContext(),
+        { contextStrategy: 'merge' },
+      );
+      const replaced = await RunState.fromStringWithContext(
+        agent,
+        JSON.stringify(serialized),
+        new RunContext(),
+        { contextStrategy: 'replace' },
+      );
+      const buildApproval = (requestId: string) =>
+        new ToolApprovalItem(
+          {
+            type: 'hosted_tool_call',
+            id: requestId,
+            name: 'lookup_account',
+            status: 'in_progress',
+            providerData: {
+              type: 'mcp_approval_request',
+              id: requestId,
+              server_label: 'server-a',
+              name: 'lookup_account',
+              arguments: '{}',
+            },
+          },
+          agent,
+        );
+
+      expect(
+        restored._context._getHostedMcpApprovalStatus(
+          buildApproval('future-request'),
+        ),
+      ).toBeUndefined();
+      expect(
+        restored._context._getHostedMcpApprovalStatus(
+          buildApproval('pending-sticky-request'),
+        ),
+      ).toBe(true);
+      expect(
+        merged._context._getHostedMcpApprovalStatus(
+          buildApproval('pending-sticky-request'),
+        ),
+      ).toBe(true);
+      expect(
+        replaced._context._getHostedMcpApprovalStatus(
+          buildApproval('pending-sticky-request'),
+        ),
+      ).toBeUndefined();
+      const exactLegacyApproval = buildApproval('legacy-request');
+      expect(
+        restored._context._getHostedMcpApprovalStatus(exactLegacyApproval),
+      ).toBeUndefined();
+      expect(
+        restored._context._getHostedMcpRejectionMessage(exactLegacyApproval),
+      ).toBeUndefined();
+      expect(
+        restored.toJSON().context.hostedMcpApprovals?.[
+          JSON.stringify(['hosted_mcp', 'server-a', 'lookup_account'])
+        ],
+      ).toEqual({ approved: ['pending-sticky-request'], rejected: [] });
+    });
+
+    it('restores schema 1.17 sticky rejection only for the pending MCP request', async () => {
+      const agent = new Agent({ name: 'LegacyHostedMcpRejectionStateAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      const buildApproval = (requestId: string) =>
+        new ToolApprovalItem(
+          {
+            type: 'hosted_tool_call',
+            id: requestId,
+            name: 'lookup_account',
+            status: 'in_progress',
+            providerData: {
+              type: 'mcp_approval_request',
+              id: requestId,
+              server_label: 'server-a',
+              name: 'lookup_account',
+              arguments: '{}',
+            },
+          },
+          agent,
+        );
+      state._currentStep = {
+        type: 'next_step_interruption',
+        data: {
+          interruptions: [buildApproval('pending-sticky-rejection')],
+        },
+      };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.17';
+      serialized.context.approvals = {
+        lookup_account: {
+          approved: [],
+          rejected: true,
+          stickyRejectMessage: 'Denied before serialization.',
+        },
+      };
+      delete serialized.context.hostedMcpApprovals;
+      const serializedState = JSON.stringify(serialized);
+
+      const restored = await RunState.fromString(agent, serializedState);
+      const merged = await RunState.fromStringWithContext(
+        agent,
+        serializedState,
+        new RunContext(),
+        { contextStrategy: 'merge' },
+      );
+      const replaced = await RunState.fromStringWithContext(
+        agent,
+        serializedState,
+        new RunContext(),
+        { contextStrategy: 'replace' },
+      );
+      const pendingApproval = buildApproval('pending-sticky-rejection');
+
+      expect(
+        restored._context._getHostedMcpApprovalStatus(pendingApproval),
+      ).toBe(false);
+      expect(
+        restored._context._getHostedMcpRejectionMessage(pendingApproval),
+      ).toBe('Denied before serialization.');
+      expect(
+        restored._context._getHostedMcpApprovalStatus(
+          buildApproval('future-request'),
+        ),
+      ).toBeUndefined();
+      expect(merged._context._getHostedMcpApprovalStatus(pendingApproval)).toBe(
+        false,
+      );
+      expect(
+        replaced._context._getHostedMcpApprovalStatus(pendingApproval),
+      ).toBeUndefined();
+      expect(
+        restored.toJSON().context.hostedMcpApprovals?.[
+          JSON.stringify(['hosted_mcp', 'server-a', 'lookup_account'])
+        ],
+      ).toEqual({
+        approved: [],
+        rejected: ['pending-sticky-rejection'],
+        messages: {
+          'pending-sticky-rejection': 'Denied before serialization.',
+        },
+      });
+    });
+
+    it('preserves schema 1.17 sticky rejection precedence over an exact approval', async () => {
+      const agent = new Agent({ name: 'LegacyHostedMcpPrecedenceAgent' });
+      const pendingApproval = new ToolApprovalItem(
+        {
+          type: 'hosted_tool_call',
+          id: 'pending-mixed-decision',
+          name: 'lookup_account',
+          status: 'in_progress',
+          providerData: {
+            type: 'mcp_approval_request',
+            id: 'pending-mixed-decision',
+            server_label: 'server-a',
+            name: 'lookup_account',
+            arguments: '{}',
+          },
+        },
+        agent,
+      );
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._currentStep = {
+        type: 'next_step_interruption',
+        data: { interruptions: [pendingApproval] },
+      };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.17';
+      serialized.context.approvals = {
+        lookup_account: {
+          approved: ['pending-mixed-decision'],
+          rejected: true,
+          stickyRejectMessage: 'Rejected before serialization.',
+        },
+      };
+      delete serialized.context.hostedMcpApprovals;
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(
+        restored._context._getHostedMcpApprovalStatus(pendingApproval),
+      ).toBe(false);
+      expect(
+        restored._context._getHostedMcpRejectionMessage(pendingApproval),
+      ).toBe('Rejected before serialization.');
+    });
+
+    it('fails closed when a legacy exact approval matches multiple MCP servers', async () => {
+      const agent = new Agent({ name: 'LegacyHostedMcpAmbiguousAgent' });
+      const buildApproval = (serverLabel: string) =>
+        new ToolApprovalItem(
+          {
+            type: 'hosted_tool_call',
+            id: 'shared-legacy-request',
+            name: 'lookup_account',
+            status: 'in_progress',
+            providerData: {
+              type: 'mcp_approval_request',
+              id: 'shared-legacy-request',
+              server_label: serverLabel,
+              name: 'lookup_account',
+              arguments: '{}',
+            },
+          },
+          agent,
+        );
+      const serverA = buildApproval('server-a');
+      const serverB = buildApproval('server-b');
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._currentStep = {
+        type: 'next_step_interruption',
+        data: { interruptions: [serverA, serverB] },
+      };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.17';
+      serialized.context.approvals = {
+        lookup_account: {
+          approved: ['shared-legacy-request'],
+          rejected: [],
+        },
+      };
+      delete serialized.context.hostedMcpApprovals;
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(
+        restored._context._getHostedMcpApprovalStatus(serverA),
+      ).toBeUndefined();
+      expect(
+        restored._context._getHostedMcpApprovalStatus(serverB),
+      ).toBeUndefined();
+      expect(
+        restored.toJSON().context.hostedMcpApprovals?.[
+          JSON.stringify(['hosted_mcp', 'server-a', 'lookup_account'])
+        ],
+      ).toBeUndefined();
+    });
+
+    it('fails closed when a legacy sticky approval matches multiple pending requests', async () => {
+      const agent = new Agent({ name: 'LegacyHostedMcpStickyAmbiguousAgent' });
+      const buildApproval = (requestId: string, serverLabel: string) =>
+        new ToolApprovalItem(
+          {
+            type: 'hosted_tool_call',
+            id: requestId,
+            name: 'lookup_account',
+            status: 'in_progress',
+            providerData: {
+              type: 'mcp_approval_request',
+              id: requestId,
+              server_label: serverLabel,
+              name: 'lookup_account',
+              arguments: '{}',
+            },
+          },
+          agent,
+        );
+      const serverA = buildApproval('request-a', 'server-a');
+      const serverB = buildApproval('request-b', 'server-b');
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._currentStep = {
+        type: 'next_step_interruption',
+        data: { interruptions: [serverA, serverB] },
+      };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.17';
+      serialized.context.approvals = {
+        lookup_account: { approved: true, rejected: [] },
+      };
+      delete serialized.context.hostedMcpApprovals;
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(
+        restored._context._getHostedMcpApprovalStatus(serverA),
+      ).toBeUndefined();
+      expect(
+        restored._context._getHostedMcpApprovalStatus(serverB),
+      ).toBeUndefined();
+    });
+
+    it.each([
+      { approved: true, rejected: [] as string[] },
+      { approved: [] as string[], rejected: true },
+    ])(
+      'fails closed when a legacy sticky decision has a same-tool claimant without an id',
+      async (legacyDecision) => {
+        const agent = new Agent({
+          name: 'LegacyHostedMcpIncompleteStickyAgent',
+        });
+        const complete = new ToolApprovalItem(
+          {
+            type: 'hosted_tool_call',
+            id: 'complete-request',
+            name: 'lookup_account',
+            status: 'in_progress',
+            providerData: {
+              type: 'mcp_approval_request',
+              id: 'complete-request',
+              server_label: 'server-a',
+              name: 'lookup_account',
+              arguments: '{}',
+            },
+          },
+          agent,
+        );
+        const incomplete = new ToolApprovalItem(
+          {
+            type: 'hosted_tool_call',
+            name: 'lookup_account',
+            status: 'in_progress',
+            providerData: {
+              type: 'mcp_approval_request',
+              server_label: 'server-b',
+              name: 'lookup_account',
+              arguments: '{}',
+            },
+          },
+          agent,
+        );
+        const state = new RunState(new RunContext(), 'input', agent, 1);
+        state._currentStep = {
+          type: 'next_step_interruption',
+          data: { interruptions: [complete, incomplete] },
+        };
+        const serialized = state.toJSON() as any;
+        serialized.$schemaVersion = '1.17';
+        serialized.context.approvals = {
+          lookup_account: legacyDecision,
+        };
+        delete serialized.context.hostedMcpApprovals;
+
+        const restored = await RunState.fromString(
+          agent,
+          JSON.stringify(serialized),
+        );
+
+        expect(
+          restored._context._getHostedMcpApprovalStatus(complete),
+        ).toBeUndefined();
+      },
+    );
+
+    it.each(['incomplete hosted MCP', 'same-named shell'] as const)(
+      'fails closed when a legacy exact approval also matches a %s claimant',
+      async (claimantKind) => {
+        const agent = new Agent({ name: 'LegacyHostedMcpClaimantAgent' });
+        const hosted = new ToolApprovalItem(
+          {
+            type: 'hosted_tool_call',
+            id: 'shared-claim',
+            name: 'lookup_account',
+            status: 'in_progress',
+            providerData: {
+              type: 'mcp_approval_request',
+              id: 'shared-claim',
+              server_label: 'server-a',
+              name: 'lookup_account',
+              arguments: '{}',
+            },
+          },
+          agent,
+        );
+        const otherClaimant =
+          claimantKind === 'incomplete hosted MCP'
+            ? new ToolApprovalItem(
+                {
+                  type: 'hosted_tool_call',
+                  id: 'shared-claim',
+                  name: 'lookup_account',
+                  status: 'in_progress',
+                  providerData: {
+                    type: 'mcp_approval_request',
+                    id: 'shared-claim',
+                    name: 'lookup_account',
+                    arguments: '{}',
+                  },
+                },
+                agent,
+              )
+            : new ToolApprovalItem(
+                {
+                  type: 'shell_call',
+                  callId: 'shared-claim',
+                  name: 'lookup_account',
+                  status: 'in_progress',
+                  action: { commands: ['echo test'] },
+                } as any,
+                agent,
+              );
+        const state = new RunState(new RunContext(), 'input', agent, 1);
+        state._currentStep = {
+          type: 'next_step_interruption',
+          data: { interruptions: [hosted, otherClaimant] },
+        };
+        const serialized = state.toJSON() as any;
+        serialized.$schemaVersion = '1.17';
+        serialized.context.approvals = {
+          lookup_account: {
+            approved: ['shared-claim'],
+            rejected: [],
+          },
+        };
+        delete serialized.context.hostedMcpApprovals;
+
+        const restored = await RunState.fromString(
+          agent,
+          JSON.stringify(serialized),
+        );
+
+        expect(
+          restored._context._getHostedMcpApprovalStatus(hosted),
+        ).toBeUndefined();
+      },
+    );
+
+    it('preserves a schema 1.15 exact MCP approval across a function-name collision', async () => {
+      const sameNamedFunction = tool({
+        name: 'lookup_account',
+        description: 'Look up a local account.',
+        parameters: z.object({}),
+        execute: async () => 'local',
+      });
+      const agent = new Agent({
+        name: 'LegacyHostedMcpExactApprovalAgent',
+        tools: [sameNamedFunction],
+      });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      const buildApproval = (requestId: string, serverLabel = 'server-a') =>
+        new ToolApprovalItem(
+          {
+            type: 'hosted_tool_call',
+            id: requestId,
+            name: 'lookup_account',
+            status: 'in_progress',
+            providerData: {
+              type: 'mcp_approval_request',
+              id: requestId,
+              server_label: serverLabel,
+              name: 'lookup_account',
+              arguments: '{}',
+            },
+          },
+          agent,
+        );
+      state._currentStep = {
+        type: 'next_step_interruption',
+        data: { interruptions: [buildApproval('legacy-exact-request')] },
+      };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.15';
+      serialized.context.approvals = {
+        lookup_account: {
+          approved: ['legacy-exact-request'],
+          rejected: [],
+        },
+      };
+      delete serialized.context.hostedMcpApprovals;
+      delete serialized.context.functionApprovals;
+      delete serialized.context.legacyFunctionApprovals;
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(
+        restored._context._getHostedMcpApprovalStatus(
+          buildApproval('legacy-exact-request'),
+        ),
+      ).toBe(true);
+      expect(
+        restored._context._getHostedMcpApprovalStatus(
+          buildApproval('future-request'),
+        ),
+      ).toBeUndefined();
+      expect(
+        restored._context._getHostedMcpApprovalStatus(
+          buildApproval('legacy-exact-request', 'server-b'),
+        ),
+      ).toBeUndefined();
+      expect(
+        restored.toJSON().context.hostedMcpApprovals?.[
+          JSON.stringify(['hosted_mcp', 'server-a', 'lookup_account'])
+        ],
+      ).toEqual({ approved: ['legacy-exact-request'], rejected: [] });
+    });
+
     it('tracks qualified tool names for namespaced approvals', () => {
       const context = new RunContext();
       const agent = new Agent({ name: 'AgentNamespaceApproval' });

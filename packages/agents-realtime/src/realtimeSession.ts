@@ -19,6 +19,7 @@ import { isZodObject, toSmartString } from '@openai/agents-core/utils';
 import {
   getSafeErrorType,
   getBoundToolInvocationRejectionMessage,
+  getHostedMcpApprovalToolName,
   hasDynamicFunctionToolApprovalPolicy,
   hasInspectableFunctionToolArguments,
   getToolInvocationApproval,
@@ -2338,7 +2339,10 @@ export class RealtimeSession<
       const rejectionReason = getBoundToolInvocationRejectionMessage(
         this.#context,
         effectiveApprovalItem.agent,
-        effectiveApprovalItem.toolName ?? effectiveApprovalItem.rawItem.name,
+        getHostedMcpApprovalToolName(
+          effectiveApprovalItem.toolName ?? effectiveApprovalItem.rawItem.name,
+          effectiveApprovalItem.rawItem,
+        ),
         effectiveApprovalItem.rawItem,
       );
       if (issued) {
