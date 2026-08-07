@@ -118,6 +118,17 @@ Implement the `Session` interface to back memory with Redis, DynamoDB, SQLite, o
 
 Custom sessions let you enforce retention policies, add encryption, or attach metadata to each conversation turn before persisting it.
 
+### Make custom persistence atomic and idempotent
+
+For backends that can update history and record an operation identifier atomically, implement the optional `SessionHistoryTransactionAwareSession` interface. Its `applyHistoryTransaction(...)` method receives a stable `operationId` and one of two transaction shapes:
+
+- `append_items` appends a group of history items.
+- `replace_suffix` replaces an expected history suffix only when the currently stored suffix still matches.
+
+Persist the operation identifier and history mutation in the same backend transaction. Repeating an operation identifier with the same transaction must succeed without applying it twice. Reusing the identifier with different content, or applying `replace_suffix` after its expected suffix changed, must fail without changing history. This lets the runner safely reconcile persisted output across retries and resumable output-guardrail flows.
+
+`MemorySession` implements this contract as a reference. Existing `Session` implementations remain valid without it, but they do not opt into transaction-aware persistence paths.
+
 ### Scope custom sessions with the run context
 
 Implement `RunContextAwareSession<TContext>` and set `acceptsRunContext` to `true` when a custom session needs the active `RunContext` for storage routing or metadata. The runner passes the same context instance to all history operations during a run, including streamed persistence and resumed runs. Sessions that only implement `Session` keep the existing method signatures and are called without the additional argument.

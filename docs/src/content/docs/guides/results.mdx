@@ -137,6 +137,10 @@ On normal top-level `run()` results this is usually `undefined`. The metadata is
 - `completed` to wait until the run and all post-processing callbacks finish.
 - `error` and `cancelled` to inspect the terminal streaming state.
 - `currentAgent` to track the active agent mid-run.
+- `currentTurn` to inspect how many model turns have actually reached the request boundary.
+- `maxTurns` to inspect the limit applied to this streamed run (`null` means no limit).
+
+`currentTurn` increments only when a model request is admitted. A max-turn check or blocking input guardrail that prevents the request does not increment it, and a resumed run starts from the count preserved in its `RunState`.
 
 If you need the settled final state of a streamed run, wait for `completed` before reading `finalOutput`, `history`, `interruptions`, or other summary properties. For event-by-event handling, see the [streaming guide](/openai-agents-js/guides/streaming).
 
@@ -151,6 +155,10 @@ The `runContext` property is the supported public view of the run context on the
 ### Raw responses
 
 `rawResponses` contains the raw model responses collected during the run. Multi-step runs can produce more than one response, for example across handoffs or repeated tool/model cycles.
+
+Each response can also include `requestId`, the provider's request identifier when one is available. The OpenAI Responses and Chat Completions models populate it for streamed and non-streamed HTTP requests; treat it as optional because some providers and transports do not expose one.
+
+When `modelSettings.preserveRawUsage` is `true`, each completed response can also expose `rawUsage`, a detached, JSON-compatible snapshot captured before SDK normalization. The normalized `Usage` remains available as `response.usage`; `rawUsage` preserves provider-specific field names and omitted-versus-explicit values where supplied. It can be `undefined` if the provider omits usage or the payload cannot be safely copied. `rawUsage` is runtime-only and is intentionally omitted from serialized `RunState`, so copy any fields you need before persisting and resuming a run.
 
 ### Guardrail results
 
