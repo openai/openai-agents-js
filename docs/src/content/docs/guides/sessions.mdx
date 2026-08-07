@@ -24,9 +24,7 @@ This removes the need to manually call `toInputList()` or stitch history between
 
 > Tip: To run the `OpenAIConversationsSession` examples on this page, set the `OPENAI_API_KEY` environment variable (or provide an `apiKey` when constructing the session) so the SDK can call the Conversations API.
 
-Use sessions when you want the SDK to manage client-side memory for you. If you are already using
-OpenAI server-managed state with `conversationId` or `previousResponseId`, you usually do not also
-need a session for the same conversation history.
+Use sessions when you want the SDK to manage client-side memory for you. If you are already using OpenAI server-managed state with `conversationId` or `previousResponseId`, you usually do not also need a session for the same conversation history.
 
 ---
 
@@ -44,8 +42,7 @@ Use `OpenAIConversationsSession` to sync memory with the [Conversations API](htt
 
 Reusing the same session instance ensures the agent receives the full conversation history before every turn and automatically persists new items. Switching to a different `Session` implementation requires no other code changes.
 
-For local demos, tests, or process-local chat state, `MemorySession` provides the same interface
-without talking to OpenAI:
+For local demos, tests, or process-local chat state, `MemorySession` provides the same interface without talking to OpenAI:
 
 <Code
   lang="typescript"
@@ -55,27 +52,26 @@ without talking to OpenAI:
 
 `OpenAIConversationsSession` constructor options:
 
-| Option           | Type     | Notes                                                          |
-| ---------------- | -------- | -------------------------------------------------------------- |
+| Option | Type | Notes |
+| --- | --- | --- |
 | `conversationId` | `string` | Reuse an existing conversation instead of creating one lazily. |
-| `client`         | `OpenAI` | Pass a preconfigured OpenAI client.                            |
-| `apiKey`         | `string` | API key used when creating an internal OpenAI client.          |
-| `baseURL`        | `string` | Base URL for OpenAI-compatible endpoints.                      |
-| `organization`   | `string` | OpenAI organization ID for requests.                           |
-| `project`        | `string` | OpenAI project ID for requests.                                |
+| `client` | `OpenAI` | Pass a preconfigured OpenAI client. |
+| `apiKey` | `string` | API key used when creating an internal OpenAI client. |
+| `baseURL` | `string` | Base URL for OpenAI-compatible endpoints. |
+| `organization` | `string` | OpenAI organization ID for requests. |
+| `project` | `string` | OpenAI project ID for requests. |
 
 `MemorySession` constructor options:
 
-| Option         | Type               | Notes                                                                    |
-| -------------- | ------------------ | ------------------------------------------------------------------------ |
-| `sessionId`    | `string`           | Stable identifier for logs or tests. Generated automatically by default. |
-| `initialItems` | `AgentInputItem[]` | Seed the session with existing history.                                  |
-| `logger`       | `Logger`           | Override the logger used for debug output.                               |
+| Option | Type | Notes |
+| --- | --- | --- |
+| `sessionId` | `string` | Stable identifier for logs or tests. Generated automatically by default. |
+| `initialItems` | `AgentInputItem[]` | Seed the session with existing history. |
+| `logger` | `Logger` | Override the logger used for debug output. |
 
 `MemorySession` stores everything in local process memory, so it is reset when your process exits.
 
-If you need to pre-create a conversation ID before constructing the session, use
-`startOpenAIConversationsSession(client?)` and pass the returned ID as `conversationId`.
+If you need to pre-create a conversation ID before constructing the session, use `startOpenAIConversationsSession(client?)` and pass the returned ID as `conversationId`.
 
 ---
 
@@ -118,6 +114,17 @@ Implement the `Session` interface to back memory with Redis, DynamoDB, SQLite, o
 
 Custom sessions let you enforce retention policies, add encryption, or attach metadata to each conversation turn before persisting it.
 
+### Make custom persistence atomic and idempotent
+
+For backends that can update history and record an operation identifier atomically, implement the optional `SessionHistoryTransactionAwareSession` interface. Its `applyHistoryTransaction(...)` method receives a stable `operationId` and one of two transaction shapes:
+
+- `append_items` appends a group of history items.
+- `replace_suffix` replaces an expected history suffix only when the currently stored suffix still matches.
+
+Persist the operation identifier and history mutation in the same backend transaction. Repeating an operation identifier with the same transaction must succeed without applying it twice. Reusing the identifier with different content, or applying `replace_suffix` after its expected suffix changed, must fail without changing history. This lets the runner safely reconcile persisted output across retries and resumable output-guardrail flows.
+
+`MemorySession` implements this contract as a reference. Existing `Session` implementations remain valid without it, but they do not opt into transaction-aware persistence paths.
+
 ### Scope custom sessions with the run context
 
 Implement `RunContextAwareSession<TContext>` and set `acceptsRunContext` to `true` when a custom session needs the active `RunContext` for storage routing or metadata. The runner passes the same context instance to all history operations during a run, including streamed persistence and resumed runs. Sessions that only implement `Session` keep the existing method signatures and are called without the additional argument.
@@ -142,13 +149,9 @@ When you pass an array of `AgentInputItem`s as the run input, provide a `session
   title="Truncate history with sessionInputCallback"
 />
 
-For string inputs the runner merges history automatically, so the callback is optional. The callback
-only runs when your turn input is already an item array.
+For string inputs the runner merges history automatically, so the callback is optional. The callback only runs when your turn input is already an item array.
 
-If you are also using `conversationId` or `previousResponseId`, keep at least one new item from the
-current turn in the callback result. Those server-managed APIs depend on the current-turn delta. If
-the callback drops every new item, the SDK restores the original new inputs and logs a warning
-instead of sending an empty delta.
+If you are also using `conversationId` or `previousResponseId`, keep at least one new item from the current turn in the callback result. Those server-managed APIs depend on the current-turn delta. If the callback drops every new item, the SDK restores the original new inputs and logs a warning instead of sending an empty delta.
 
 ---
 
@@ -182,27 +185,24 @@ When you resume from a previous `RunState`, the new turn is appended to the same
 
 `OpenAIResponsesCompactionSession` constructor options:
 
-| Option                    | Type                                          | Notes                                                                                                                                                 |
-| ------------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `client`                  | `OpenAI`                                      | OpenAI client used for `responses.compact`.                                                                                                           |
-| `underlyingSession`       | `Session`                                     | Backing session store to clear/rewrite with compacted items. Defaults to an in-memory session for demos and must not be `OpenAIConversationsSession`. |
-| `model`                   | `OpenAI.ResponsesModel`                       | Model used for compaction requests. Defaults to the SDK's current default OpenAI model.                                                               |
-| `compactionMode`          | `'auto' \| 'previous_response_id' \| 'input'` | Controls whether compaction uses server response chaining or local input items.                                                                       |
-| `shouldTriggerCompaction` | `(context) => boolean \| Promise<boolean>`    | Custom trigger hook based on `responseId`, `compactionMode`, candidate items, and current session items.                                              |
+| Option | Type | Notes |
+| --- | --- | --- |
+| `client` | `OpenAI` | OpenAI client used for `responses.compact`. |
+| `underlyingSession` | `Session` | Backing session store to clear/rewrite with compacted items. Defaults to an in-memory session for demos and must not be `OpenAIConversationsSession`. |
+| `model` | `OpenAI.ResponsesModel` | Model used for compaction requests. Defaults to the SDK's current default OpenAI model. |
+| `compactionMode` | `'auto' \| 'previous_response_id' \| 'input'` | Controls whether compaction uses server response chaining or local input items. |
+| `shouldTriggerCompaction` | `(context) => boolean \| Promise<boolean>` | Custom trigger hook based on `responseId`, `compactionMode`, candidate items, and current session items. |
 
-`compactionMode: 'previous_response_id'` is useful when you are already chaining turns with
-Responses API response IDs. `compactionMode: 'input'` rebuilds compaction requests from the current
-session items instead, which is helpful when the response chain is unavailable or you want the
-underlying session contents to be the source of truth.
+`compactionMode: 'previous_response_id'` is useful when you are already chaining turns with Responses API response IDs. `compactionMode: 'input'` rebuilds compaction requests from the current session items instead, which is helpful when the response chain is unavailable or you want the underlying session contents to be the source of truth.
 
 `runCompaction(args)` options:
 
-| Option           | Type                                          | Notes                                                             |
-| ---------------- | --------------------------------------------- | ----------------------------------------------------------------- |
-| `responseId`     | `string`                                      | Latest Responses API response id for `previous_response_id` mode. |
-| `compactionMode` | `'auto' \| 'previous_response_id' \| 'input'` | Optional per-call override of the configured mode.                |
-| `store`          | `boolean`                                     | Indicates whether the last run stored server state.               |
-| `force`          | `boolean`                                     | Bypass `shouldTriggerCompaction` and compact immediately.         |
+| Option | Type | Notes |
+| --- | --- | --- |
+| `responseId` | `string` | Latest Responses API response id for `previous_response_id` mode. |
+| `compactionMode` | `'auto' \| 'previous_response_id' \| 'input'` | Optional per-call override of the configured mode. |
+| `store` | `boolean` | Indicates whether the last run stored server state. |
+| `force` | `boolean` | Bypass `shouldTriggerCompaction` and compact immediately. |
 
 #### Manual compaction for low-latency streaming
 

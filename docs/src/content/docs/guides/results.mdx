@@ -137,6 +137,10 @@ On normal top-level `run()` results this is usually `undefined`. The metadata is
 - `completed` to wait until the run and all post-processing callbacks finish.
 - `error` and `cancelled` to inspect the terminal streaming state.
 - `currentAgent` to track the active agent mid-run.
+- `currentTurn` to inspect how many model turns have actually reached the request boundary.
+- `maxTurns` to inspect the limit applied to this streamed run (`null` means no limit).
+
+`currentTurn` increments only when a model request is admitted. A max-turn check or blocking input guardrail that prevents the request does not increment it, and a resumed run starts from the count preserved in its `RunState`.
 
 If you need the settled final state of a streamed run, wait for `completed` before reading `finalOutput`, `history`, `interruptions`, or other summary properties. For event-by-event handling, see the [streaming guide](/openai-agents-js/guides/streaming).
 
