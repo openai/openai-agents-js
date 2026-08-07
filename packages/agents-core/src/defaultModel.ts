@@ -72,7 +72,7 @@ export function isGpt5Default(): boolean {
 export function getDefaultModel(): string {
   const env = loadEnv();
   return (
-    env[OPENAI_DEFAULT_MODEL_ENV_VARIABLE_NAME]?.toLowerCase() ?? 'gpt-5.4-mini'
+    env[OPENAI_DEFAULT_MODEL_ENV_VARIABLE_NAME]?.toLowerCase() ?? 'gpt-5.6-luna'
   );
 }
 
