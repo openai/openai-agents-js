@@ -236,6 +236,7 @@ Do not combine this model with SDK handoffs, `reasoning.summary`, or `max_tool_c
 | `reasoning.summary` | `'auto' \| 'concise' \| 'detailed'` | Controls how much reasoning summary the model returns. |
 | `text.verbosity` | `'low' \| 'medium' \| 'high'` | Text verbosity for gpt-5.x etc. |
 | `providerData` | `Record<string, any>` | Provider-specific passthrough options forwarded to the underlying model. |
+| `preserveRawUsage` | `boolean` | Preserve a detached, JSON-compatible snapshot of provider usage before SDK normalization on each completed model response. Disabled by default. |
 | `retry` | `ModelRetrySettings` | Runtime-only opt-in retry config. See [Model retries](#model-retries). |
 
 Attach settings at either level:
@@ -243,6 +244,8 @@ Attach settings at either level:
 <Code lang="typescript" code={modelSettingsExample} title="Model settings" />
 
 `Runner`‑level settings override conflicting per-agent settings. Nested fields in `reasoning`, `text`, `promptCacheOptions`, and `retry` are merged across runner and agent settings unless you explicitly clear an inherited value with `undefined`.
+
+Set `preserveRawUsage: true` when you need provider-specific usage fields or need to distinguish an omitted field from a normalized zero. OpenAI Responses, OpenAI Chat Completions, and AI SDK-backed models support it for streaming and non-streaming runs. Preservation is best-effort: if a provider does not return usage or returns a value that cannot be safely copied as plain JSON-compatible data, `rawUsage` remains `undefined`. See [Raw responses](/openai-agents-js/guides/results#raw-responses) for how to access the preserved payload.
 
 #### GPT-5.6 reasoning and prompt-cache controls
 

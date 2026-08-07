@@ -156,6 +156,8 @@ The `runContext` property is the supported public view of the run context on the
 
 `rawResponses` contains the raw model responses collected during the run. Multi-step runs can produce more than one response, for example across handoffs or repeated tool/model cycles.
 
+When `modelSettings.preserveRawUsage` is `true`, each completed response can also expose `rawUsage`, a detached, JSON-compatible snapshot captured before SDK normalization. The normalized `Usage` remains available as `response.usage`; `rawUsage` preserves provider-specific field names and omitted-versus-explicit values where supplied. It can be `undefined` if the provider omits usage or the payload cannot be safely copied. `rawUsage` is runtime-only and is intentionally omitted from serialized `RunState`, so copy any fields you need before persisting and resuming a run.
+
 ### Guardrail results
 
 The `inputGuardrailResults` and `outputGuardrailResults` properties contain agent-level guardrail results. Tool guardrail results are exposed separately via `toolInputGuardrailResults` and `toolOutputGuardrailResults`.
