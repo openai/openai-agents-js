@@ -20,6 +20,13 @@ import {
   Span,
 } from '@openai/agents-core';
 import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/resources/responses/responses';
+import { FAKE_ID } from '../src/openaiItemIds';
+
+class TestableOpenAIResponsesModel extends OpenAIResponsesModel {
+  buildRequest(request: any, stream: boolean) {
+    return this._buildResponsesCreateRequest(request, stream);
+  }
+}
 
 describe('OpenAIResponsesModel', () => {
   beforeAll(() => {
@@ -34,6 +41,180 @@ describe('OpenAIResponsesModel', () => {
     setTracingDisabled(true);
     setTraceProcessors([]);
   });
+
+  it.each([
+    { label: 'without providerData', stream: false, providerData: undefined },
+    {
+      label: 'with providerData',
+      stream: false,
+      providerData: { customMarker: 'keep' },
+    },
+    { label: 'without providerData', stream: true, providerData: undefined },
+    {
+      label: 'with providerData',
+      stream: true,
+      providerData: { customMarker: 'keep' },
+    },
+  ])(
+    'strips Chat Completions placeholder item IDs $label when stream=$stream',
+    ({ stream, providerData }) => {
+      const model = new TestableOpenAIResponsesModel(
+        { responses: { create: vi.fn() } } as unknown as OpenAI,
+        'gpt-test',
+      );
+      const providerMetadata = providerData ? { providerData } : {};
+      const history = [
+        {
+          id: FAKE_ID,
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'hello' }],
+          status: 'completed',
+          ...providerMetadata,
+        },
+        {
+          id: FAKE_ID,
+          type: 'function_call',
+          callId: 'call_1',
+          name: 'lookup',
+          arguments: '{}',
+          status: 'completed',
+          ...providerMetadata,
+        },
+      ];
+      const originalHistory = structuredClone(history);
+
+      const request = model.buildRequest(
+        {
+          input: history,
+          modelSettings: {},
+          tools: [],
+          handoffs: [],
+          outputType: 'text',
+          tracing: false,
+        },
+        stream,
+      );
+      const input = request.requestData.input as Array<Record<string, unknown>>;
+
+      expect(input[0]).not.toHaveProperty('id');
+      expect(input[1]).not.toHaveProperty('id');
+      expect(input[1]).toMatchObject({
+        type: 'function_call',
+        call_id: 'call_1',
+      });
+      if (providerData) {
+        expect(input[0]).toHaveProperty('custom_marker', 'keep');
+        expect(input[1]).toHaveProperty('custom_marker', 'keep');
+      }
+      expect(history).toEqual(originalHistory);
+    },
+  );
+
+  it('preserves provider item IDs and tool correlation IDs in Responses input', () => {
+    const model = new TestableOpenAIResponsesModel(
+      { responses: { create: vi.fn() } } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    const request = model.buildRequest(
+      {
+        input: [
+          {
+            id: 'msg_real',
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'hello' }],
+            status: 'completed',
+          },
+          {
+            id: 'fc_real',
+            type: 'function_call',
+            callId: 'call_real',
+            name: 'lookup',
+            arguments: '{}',
+            status: 'completed',
+          },
+          {
+            id: 'fco_real',
+            type: 'function_call_result',
+            callId: 'call_real',
+            output: 'result',
+            status: 'completed',
+          },
+          {
+            id: FAKE_ID,
+            type: 'reasoning',
+            content: [],
+          },
+          {
+            id: FAKE_ID,
+            type: 'program',
+            callId: 'program_call_real',
+            code: 'return 1;',
+            fingerprint: 'fingerprint_real',
+          },
+          {
+            id: FAKE_ID,
+            type: 'program_output',
+            callId: 'program_call_real',
+            output: '1',
+            status: 'completed',
+          },
+          {
+            id: FAKE_ID,
+            type: 'computer_call',
+            callId: 'computer_call_real',
+            action: { type: 'wait' },
+            status: 'completed',
+          },
+          {
+            id: FAKE_ID,
+            type: 'unknown',
+            providerData: {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'provider message' }],
+              status: 'completed',
+            },
+          },
+          {
+            id: `${FAKE_ID}-but-not-the-placeholder`,
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'near match' }],
+            status: 'completed',
+          },
+        ],
+        modelSettings: {},
+        tools: [],
+        handoffs: [],
+        outputType: 'text',
+        tracing: false,
+      },
+      false,
+    );
+    const input = request.requestData.input as Array<Record<string, unknown>>;
+
+    expect(input.map((item) => item.id)).toEqual([
+      'msg_real',
+      'fc_real',
+      'fco_real',
+      FAKE_ID,
+      FAKE_ID,
+      FAKE_ID,
+      FAKE_ID,
+      FAKE_ID,
+      `${FAKE_ID}-but-not-the-placeholder`,
+    ]);
+    expect(input[1]).toHaveProperty('call_id', 'call_real');
+    expect(input[2]).toHaveProperty('call_id', 'call_real');
+    expect(input[4]).toHaveProperty('call_id', 'program_call_real');
+    expect(input[5]).toHaveProperty('call_id', 'program_call_real');
+    expect(input[6]).toHaveProperty('call_id', 'computer_call_real');
+    expect(input[7]).toHaveProperty('type', 'message');
+  });
+
   it('getResponse returns correct ModelResponse and calls client with right parameters', async () => {
     await withTrace('test', async () => {
       const fakeResponse = {

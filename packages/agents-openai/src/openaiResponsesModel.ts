@@ -83,6 +83,7 @@ import {
   getInlineMediaType,
   snapshotRawUsage,
 } from '@openai/agents-core/utils/internal';
+import { FAKE_ID } from './openaiItemIds';
 
 type ModelTracingParent = Parameters<typeof createResponseSpan>[1];
 
@@ -2047,7 +2048,7 @@ function getMessageItem(
         'phase',
       ]),
     };
-    return assistantMessage;
+    return stripSdkGeneratedPlaceholderItemId(assistantMessage);
   }
 
   throw new UserError(`Unsupported item ${JSON.stringify(item)}`);
@@ -2121,6 +2122,20 @@ function getPrompt(prompt: ModelRequest['prompt']):
     version: prompt.version,
     variables: transformedVariables,
   };
+}
+
+function stripSdkGeneratedPlaceholderItemId<
+  T extends OpenAI.Responses.ResponseInputItem,
+>(item: T): T {
+  const itemWithOptionalId = item as OpenAI.Responses.ResponseInputItem & {
+    id?: unknown;
+  };
+  if (itemWithOptionalId.id !== FAKE_ID) {
+    return item;
+  }
+
+  const { id: _id, ...itemWithoutId } = itemWithOptionalId;
+  return itemWithoutId as T;
 }
 
 function getInputItems(
@@ -2256,7 +2271,7 @@ function getInputItems(
         ]),
       };
 
-      return entry;
+      return stripSdkGeneratedPlaceholderItemId(entry);
     }
 
     if (item.type === 'function_call_result') {
