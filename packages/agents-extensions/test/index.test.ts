@@ -45,17 +45,6 @@ const asTwilioWebSocket = (
   socket: FakeTwilioWebSocket,
 ): WebSocket | NodeWebSocket => socket as unknown as WebSocket | NodeWebSocket;
 
-const setAudioLengthMs = (
-  transport: TwilioRealtimeTransportLayer,
-  audioLengthMs: number,
-): void => {
-  (
-    transport as unknown as {
-      _audioLengthMs: number;
-    }
-  )._audioLengthMs = audioLengthMs;
-};
-
 describe('TwilioRealtimeTransportLayer', () => {
   test('should be available', () => {
     const transport = new TwilioRealtimeTransportLayer({
@@ -64,16 +53,14 @@ describe('TwilioRealtimeTransportLayer', () => {
     expect(transport).toBeDefined();
   });
 
-  test('malformed mark name does not produce NaN', async () => {
+  test('ignores malformed mark names', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
       twilioWebSocket: asTwilioWebSocket(twilio),
     });
 
-    const sendEventSpy = vi.spyOn(
-      transport as TwilioRealtimeTransportLayer,
-      'sendEvent',
-    );
+    const sendEventSpy = vi.spyOn(transport as any, 'sendEvent');
 
     await transport.connect({ apiKey: 'ek_test' });
     sendEventSpy.mockClear();
@@ -82,39 +69,13 @@ describe('TwilioRealtimeTransportLayer', () => {
     twilio.emit('message', { toString: () => JSON.stringify(payload) });
 
     transport._interrupt(0, false);
-    setAudioLengthMs(transport, 500);
-    transport._interrupt(0, true);
-
-    const call = sendEventSpy.mock.calls
-      .filter((c) => c[0]?.type === 'conversation.item.truncate')
-      .at(-1);
-    expect(call?.[0].audio_end_ms).toBe(50);
-  });
-
-  test('interrupt clamps overshoot and emits integer audio_end_ms', async () => {
-    const twilio = new FakeTwilioWebSocket();
-    const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: asTwilioWebSocket(twilio),
-    });
-
-    const sendEventSpy = vi.spyOn(
-      transport as TwilioRealtimeTransportLayer,
-      'sendEvent',
+    expect(
+      sendEventSpy.mock.calls.filter(
+        (call) => (call[0] as any)?.type === 'conversation.item.truncate',
+      ),
+    ).toHaveLength(0);
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Invalid mark name received. Mark data is redacted.',
     );
-
-    await transport.connect({
-      apiKey: 'ek_test',
-      initialSessionConfig: { speed: 1.1 },
-    });
-    sendEventSpy.mockClear();
-
-    setAudioLengthMs(transport, 20);
-    transport._interrupt(0, true);
-
-    const call = sendEventSpy.mock.calls
-      .filter((c) => c[0]?.type === 'conversation.item.truncate')
-      .at(-1);
-    expect(call?.[0].audio_end_ms).toBe(20);
-    expect(Number.isInteger(call?.[0].audio_end_ms)).toBe(true);
   });
 });

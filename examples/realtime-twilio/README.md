@@ -1,19 +1,30 @@
 # Realtime Twilio Integration
 
-This example demonstrates how to connect the OpenAI Realtime API to a phone call using Twilio's Media Streams.
-The script in `index.ts` starts a Fastify server that serves TwiML for incoming calls and creates a WebSocket
-endpoint for streaming audio. When a call connects, the audio stream is forwarded through a
-`TwilioRealtimeTransportLayer` to a `RealtimeSession` so the `RealtimeAgent` can respond in real time.
+This example demonstrates how to connect the OpenAI Realtime API to a phone call using Twilio's Media Streams. The script in `index.ts` starts a Fastify server that serves TwiML for incoming calls and creates a WebSocket endpoint for streaming audio. When a call connects, the audio stream is forwarded through a `TwilioRealtimeTransportLayer` to a `RealtimeSession` so the `RealtimeAgent` can respond in real time.
 
-The demo agent mirrors the [realtime-next](../realtime-next) example. It includes the same MCP integrations
-(`dnd` and `deepwiki`) as well as local sample tools for weather lookups and a secret number helper. Ask the
-agent to "look that up in Deep Wiki" or "roll a Dungeons and Dragons character" to try the hosted MCP tools.
+The demo uses a friendly voice assistant with a hosted DeepWiki MCP integration and local sample tools for weather lookups and a secret number helper. Ask the agent to "look that up in DeepWiki" to try the hosted MCP tool.
 
-To try it out you must have a Twilio phone number.
-Expose your localhost with a tunneling service such as ngrok and set the phone number's incoming call URL to `https://<your-tunnel-url>/incoming-call`.
+When a call connects, start speaking after the prompt. To try an interruption, ask the agent for a longer answer and speak while it is responding.
+
+To try it out you must have a Twilio phone number. Expose your localhost with a tunneling service such as ngrok and set the phone number's incoming call URL to `https://<your-tunnel-url>/incoming-call`.
 
 Start the server with:
 
 ```bash
 pnpm -F realtime-twilio start
+```
+
+For Twilio's standard 8 kHz mono PCMU media format, the transport fills missing inbound media intervals with silence so Realtime voice activity detection can complete a turn even when the phone connection omits silent audio. While speech is active, it waits 750ms for another media message before adding silence. You can tune or disable this fallback when constructing the transport:
+
+```ts
+const transport = new TwilioRealtimeTransportLayer({
+  twilioWebSocket: connection,
+  inputAudioInactivityTimeoutMs: 500, // Set to null to disable the fallback.
+});
+```
+
+To inspect session events, Twilio media timing and levels, response status, and WebSocket closure details without logging raw audio, start the example with diagnostics enabled:
+
+```bash
+DEBUG=diagnostics pnpm -F realtime-twilio start
 ```

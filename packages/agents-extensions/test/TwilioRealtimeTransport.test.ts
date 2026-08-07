@@ -1,4 +1,4 @@
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { TwilioRealtimeTransportLayer } from '../src/TwilioRealtimeTransport';
 
@@ -24,11 +24,16 @@ vi.mock('@openai/agents/realtime', () => {
   FakeOpenAIRealtimeWebSocket.prototype.connect = vi.fn(async function (
     this: any,
   ) {
+    if (this.status !== 'disconnected') {
+      throw new Error('Transport is already connected.');
+    }
     this.status = 'connected';
   });
   FakeOpenAIRealtimeWebSocket.prototype.sendAudio = vi.fn();
+  FakeOpenAIRealtimeWebSocket.prototype.sendEvent = vi.fn();
+  FakeOpenAIRealtimeWebSocket.prototype._cancelResponse = vi.fn();
+  FakeOpenAIRealtimeWebSocket.prototype._afterAudioDoneEvent = vi.fn();
   FakeOpenAIRealtimeWebSocket.prototype.close = vi.fn();
-  FakeOpenAIRealtimeWebSocket.prototype._interrupt = vi.fn();
   FakeOpenAIRealtimeWebSocket.prototype.updateSessionConfig = vi.fn();
   return { OpenAIRealtimeWebSocket: FakeOpenAIRealtimeWebSocket, utils };
 });
@@ -62,9 +67,30 @@ const setCurrentItemId = (
 
 const base64 = (data: string) => Buffer.from(data).toString('base64');
 
+const startTwilioStream = (
+  twilio: FakeTwilioWebSocket,
+  mediaFormat: unknown = {
+    encoding: 'audio/x-mulaw',
+    sampleRate: 8_000,
+    channels: 1,
+  },
+) => {
+  twilio.emit('message', {
+    toString: () =>
+      JSON.stringify({
+        event: 'start',
+        start: { streamSid: 'sid', mediaFormat },
+      }),
+  });
+};
+
 describe('TwilioRealtimeTransportLayer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   test('_setInputAndOutputAudioFormat defaults g711', () => {
@@ -118,8 +144,28 @@ describe('TwilioRealtimeTransportLayer', () => {
     });
   });
 
+  test('validates the Twilio input inactivity timeout', () => {
+    expect(
+      () =>
+        new TwilioRealtimeTransportLayer({
+          twilioWebSocket: asTwilioWebSocket(new FakeTwilioWebSocket()),
+          inputAudioInactivityTimeoutMs: 0,
+        }),
+    ).toThrow(
+      'inputAudioInactivityTimeoutMs must be a positive finite number no greater than 2147483647, or null.',
+    );
+    expect(
+      () =>
+        new TwilioRealtimeTransportLayer({
+          twilioWebSocket: asTwilioWebSocket(new FakeTwilioWebSocket()),
+          inputAudioInactivityTimeoutMs: 2_147_483_648,
+        }),
+    ).toThrow(RangeError);
+  });
+
   test('connect handles messages and events', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
       twilioWebSocket: asTwilioWebSocket(twilio),
@@ -128,8 +174,8 @@ describe('TwilioRealtimeTransportLayer', () => {
     const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
     const sendAudioSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.sendAudio);
     const closeSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.close);
-    const interruptSpy = vi.mocked(
-      OpenAIRealtimeWebSocket.prototype._interrupt,
+    const cancelSpy = vi.mocked(
+      OpenAIRealtimeWebSocket.prototype._cancelResponse,
     );
 
     const mediaPayload = base64('a');
@@ -146,8 +192,14 @@ describe('TwilioRealtimeTransportLayer', () => {
     twilio.emit('message', {
       toString: () => JSON.stringify({ event: 'mark', mark: { name: 'u:5' } }),
     });
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Invalid mark name received. Mark data is redacted.',
+    );
+    transport.emit('response.created', {
+      response: { id: 'response-1' },
+    } as any);
     transport._interrupt(0);
-    expect(interruptSpy).toHaveBeenCalledWith(55, true);
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
     expect(twilio.send).toHaveBeenCalledWith(
       JSON.stringify({ event: 'clear', streamSid: 'sid' }),
     );
@@ -158,11 +210,393 @@ describe('TwilioRealtimeTransportLayer', () => {
     expect(errListener).toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalledWith('Error parsing message:', 'object');
     errorSpy.mockRestore();
+    warnSpy.mockRestore();
 
     twilio.emit('close');
     expect(closeSpy).toHaveBeenCalled();
     twilio.emit('error', new Error('boom'));
     expect(closeSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test('pads missing Twilio media timestamps with PCMU silence', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: asTwilioWebSocket(twilio),
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const sendAudioSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.sendAudio);
+    startTwilioStream(twilio);
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'media',
+          media: { payload: base64('a'.repeat(160)), timestamp: '100' },
+        }),
+    });
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'media',
+          media: { payload: base64('b'.repeat(160)), timestamp: '140' },
+        }),
+    });
+
+    expect(sendAudioSpy).toHaveBeenCalledTimes(3);
+    expect(new Uint8Array(sendAudioSpy.mock.calls[1][0])).toEqual(
+      new Uint8Array(160).fill(0xff),
+    );
+    expect(Buffer.from(sendAudioSpy.mock.calls[2][0]).toString()).toBe(
+      'b'.repeat(160),
+    );
+  });
+
+  test('does not synthesize silence for unsupported Twilio media formats', async () => {
+    vi.useFakeTimers();
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: asTwilioWebSocket(twilio),
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const sendAudioSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.sendAudio);
+    startTwilioStream(twilio, {
+      encoding: 'audio/pcm',
+      sampleRate: 8_000,
+      channels: 1,
+    });
+
+    for (const [payload, timestamp] of [
+      ['a', '100'],
+      ['b', '10000'],
+    ]) {
+      twilio.emit('message', {
+        toString: () =>
+          JSON.stringify({
+            event: 'media',
+            media: { payload: base64(payload.repeat(160)), timestamp },
+          }),
+      });
+    }
+    transport.emit('input_audio_buffer.speech_started', {} as any);
+    await vi.advanceTimersByTimeAsync(750);
+
+    expect(sendAudioSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test.each([null, '', ' ', 'not-a-number'])(
+    'does not infer silence from an invalid Twilio timestamp %#',
+    async (timestamp) => {
+      const twilio = new FakeTwilioWebSocket();
+      const transport = new TwilioRealtimeTransportLayer({
+        twilioWebSocket: asTwilioWebSocket(twilio),
+      });
+      await transport.connect({ apiKey: 'ek_test' } as any);
+      const { OpenAIRealtimeWebSocket } =
+        await import('@openai/agents/realtime');
+      const sendAudioSpy = vi.mocked(
+        OpenAIRealtimeWebSocket.prototype.sendAudio,
+      );
+      startTwilioStream(twilio);
+
+      twilio.emit('message', {
+        toString: () =>
+          JSON.stringify({
+            event: 'media',
+            media: { payload: base64('a'.repeat(160)), timestamp },
+          }),
+      });
+      twilio.emit('message', {
+        toString: () =>
+          JSON.stringify({
+            event: 'media',
+            media: { payload: base64('b'.repeat(160)), timestamp: '10000' },
+          }),
+      });
+
+      expect(sendAudioSpy).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  test('resets timestamp inference after Twilio media moves backward', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: asTwilioWebSocket(twilio),
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const sendAudioSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.sendAudio);
+    startTwilioStream(twilio);
+
+    for (const [payload, timestamp] of [
+      ['a', '100'],
+      ['b', '80'],
+      ['c', '140'],
+    ]) {
+      twilio.emit('message', {
+        toString: () =>
+          JSON.stringify({
+            event: 'media',
+            media: { payload: base64(payload.repeat(160)), timestamp },
+          }),
+      });
+    }
+
+    expect(sendAudioSpy).toHaveBeenCalledTimes(3);
+  });
+
+  test('caps inferred Twilio timestamp silence at ten seconds', async () => {
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: asTwilioWebSocket(twilio),
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const sendAudioSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.sendAudio);
+    startTwilioStream(twilio);
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'media',
+          media: { payload: base64('a'.repeat(160)), timestamp: '100' },
+        }),
+    });
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'media',
+          media: { payload: base64('b'.repeat(160)), timestamp: '20120' },
+        }),
+    });
+
+    expect(sendAudioSpy).toHaveBeenCalledTimes(3);
+    expect(new Uint8Array(sendAudioSpy.mock.calls[1][0])).toEqual(
+      new Uint8Array(80_000).fill(0xff),
+    );
+  });
+
+  test('pads active speech after Twilio input becomes inactive', async () => {
+    vi.useFakeTimers();
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: asTwilioWebSocket(twilio),
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const sendAudioSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.sendAudio);
+    startTwilioStream(twilio);
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'media',
+          media: { payload: base64('a'.repeat(160)), timestamp: '100' },
+        }),
+    });
+    transport.emit('input_audio_buffer.speech_started', {} as any);
+    await vi.advanceTimersByTimeAsync(749);
+    expect(sendAudioSpy).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(sendAudioSpy).toHaveBeenCalledTimes(2);
+    expect(new Uint8Array(sendAudioSpy.mock.calls[1][0])).toEqual(
+      new Uint8Array(8_000).fill(0xff),
+    );
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'media',
+          media: { payload: base64('b'.repeat(160)), timestamp: '5100' },
+        }),
+    });
+
+    expect(sendAudioSpy).toHaveBeenCalledTimes(3);
+    expect(Buffer.from(sendAudioSpy.mock.calls[2][0]).toString()).toBe(
+      'b'.repeat(160),
+    );
+  });
+
+  test('pads inactivity when speech detection arrives after the deadline', async () => {
+    vi.useFakeTimers();
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: asTwilioWebSocket(twilio),
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const sendAudioSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.sendAudio);
+    startTwilioStream(twilio);
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'media',
+          media: { payload: base64('a'.repeat(160)), timestamp: '100' },
+        }),
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(sendAudioSpy).toHaveBeenCalledTimes(1);
+
+    transport.emit('input_audio_buffer.speech_started', {} as any);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sendAudioSpy).toHaveBeenCalledTimes(2);
+    expect(new Uint8Array(sendAudioSpy.mock.calls[1][0])).toEqual(
+      new Uint8Array(8_000).fill(0xff),
+    );
+  });
+
+  test('cancels inactivity padding when speech stops', async () => {
+    vi.useFakeTimers();
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: asTwilioWebSocket(twilio),
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const sendAudioSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.sendAudio);
+    startTwilioStream(twilio);
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'media',
+          media: { payload: base64('a'.repeat(160)), timestamp: '100' },
+        }),
+    });
+    transport.emit('input_audio_buffer.speech_started', {} as any);
+    await vi.advanceTimersByTimeAsync(749);
+    transport.emit('input_audio_buffer.speech_stopped', {} as any);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(sendAudioSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('uses a configured Twilio input inactivity timeout', async () => {
+    vi.useFakeTimers();
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: asTwilioWebSocket(twilio),
+      inputAudioInactivityTimeoutMs: 250,
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const sendAudioSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.sendAudio);
+    startTwilioStream(twilio);
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'media',
+          media: { payload: base64('a'.repeat(160)), timestamp: '100' },
+        }),
+    });
+    transport.emit('input_audio_buffer.speech_started', {} as any);
+    await vi.advanceTimersByTimeAsync(249);
+    expect(sendAudioSpy).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(sendAudioSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test('can disable Twilio input inactivity padding', async () => {
+    vi.useFakeTimers();
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: asTwilioWebSocket(twilio),
+      inputAudioInactivityTimeoutMs: null,
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const sendAudioSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.sendAudio);
+    startTwilioStream(twilio);
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'media',
+          media: { payload: base64('a'.repeat(160)), timestamp: '100' },
+        }),
+    });
+    transport.emit('input_audio_buffer.speech_started', {} as any);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(sendAudioSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('preserves active input timing when a duplicate connect is rejected', async () => {
+    vi.useFakeTimers();
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: asTwilioWebSocket(twilio),
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const sendAudioSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.sendAudio);
+    startTwilioStream(twilio);
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'media',
+          media: { payload: base64('a'.repeat(160)), timestamp: '100' },
+        }),
+    });
+    transport.emit('input_audio_buffer.speech_started', {} as any);
+
+    await expect(
+      transport.connect({ apiKey: 'ek_test' } as any),
+    ).rejects.toThrow('Transport is already connected.');
+    await vi.advanceTimersByTimeAsync(750);
+
+    expect(sendAudioSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test('resets Twilio input timestamps when a new stream starts', async () => {
+    vi.useFakeTimers();
+    const twilio = new FakeTwilioWebSocket();
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: asTwilioWebSocket(twilio),
+    });
+    await transport.connect({ apiKey: 'ek_test' } as any);
+    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
+    const sendAudioSpy = vi.mocked(OpenAIRealtimeWebSocket.prototype.sendAudio);
+    startTwilioStream(twilio);
+
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'media',
+          media: { payload: base64('a'.repeat(160)), timestamp: '100' },
+        }),
+    });
+    transport.emit('input_audio_buffer.speech_started', {} as any);
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'start',
+          start: {
+            streamSid: 'sid-2',
+            mediaFormat: {
+              encoding: 'audio/x-mulaw',
+              sampleRate: 8_000,
+              channels: 1,
+            },
+          },
+        }),
+    });
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({
+          event: 'media',
+          media: { payload: base64('b'.repeat(160)), timestamp: '1000' },
+        }),
+    });
+
+    await vi.advanceTimersByTimeAsync(750);
+    expect(sendAudioSpy).toHaveBeenCalledTimes(2);
   });
 
   test('redacts Twilio message and parse-error data when model logging is disabled', async () => {
@@ -217,6 +651,11 @@ describe('TwilioRealtimeTransportLayer', () => {
     const audioListener = vi.fn();
     transport.on('audio', audioListener);
 
+    twilio.emit('message', {
+      toString: () =>
+        JSON.stringify({ event: 'start', start: { streamSid: 'sid' } }),
+    });
+
     setCurrentItemId(transport, 'a');
     transport['_onAudio']({
       responseId: 'FAKE_ID',
@@ -239,9 +678,9 @@ describe('TwilioRealtimeTransportLayer', () => {
     const marks = sendSpy.mock.calls
       .map((c: any) => JSON.parse(c[0]))
       .filter((d: any) => d.event === 'mark');
-    expect(marks[0].mark.name).toBe('a:1');
-    expect(marks[1].mark.name).toBe('a:3');
-    expect(marks[2].mark.name).toBe('b:1');
+    expect(marks[0].mark.name).toMatch(/^a:1:g\d+:m\d+$/);
+    expect(marks[1].mark.name).toMatch(/^a:3:g\d+:m\d+$/);
+    expect(marks[2].mark.name).toMatch(/^b:1:g\d+:m\d+$/);
     expect(audioListener).toHaveBeenCalledTimes(3);
   });
 
@@ -332,18 +771,13 @@ describe('TwilioRealtimeTransportLayer', () => {
     });
   });
 
-  test('resets counters on new Twilio start and handles invalid marks', async () => {
+  test('resets playback state on new Twilio start and handles invalid marks', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
       twilioWebSocket: asTwilioWebSocket(twilio),
     });
     await transport.connect({ apiKey: 'ek_test' } as any);
-    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
-    const interruptSpy = vi.mocked(
-      OpenAIRealtimeWebSocket.prototype._interrupt,
-    );
-
     twilio.emit('message', {
       toString: () =>
         JSON.stringify({ event: 'start', start: { streamSid: 'sid-1' } }),
@@ -368,44 +802,14 @@ describe('TwilioRealtimeTransportLayer', () => {
         JSON.stringify({ event: 'mark', mark: { name: 'done:u' } }),
     });
 
+    transport.emit('response.created', {
+      response: { id: 'response-1' },
+    } as any);
     transport._interrupt(0);
 
-    // After new start, previous counts are cleared; done mark resets to baseline 0 + 50 buffer.
-    expect(interruptSpy).toHaveBeenCalledWith(50, true);
     expect(twilio.send).toHaveBeenCalledWith(
       JSON.stringify({ event: 'clear', streamSid: 'sid-2' }),
     );
     warnSpy.mockRestore();
-  });
-
-  test('resets chunk count on done marks before interrupting', async () => {
-    const twilio = new FakeTwilioWebSocket();
-    const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: asTwilioWebSocket(twilio),
-    });
-    await transport.connect({ apiKey: 'ek_test' } as any);
-    const { OpenAIRealtimeWebSocket } = await import('@openai/agents/realtime');
-    const interruptSpy = vi.mocked(
-      OpenAIRealtimeWebSocket.prototype._interrupt,
-    );
-
-    twilio.emit('message', {
-      toString: () =>
-        JSON.stringify({ event: 'start', start: { streamSid: 'sid-1' } }),
-    });
-    twilio.emit('message', {
-      toString: () => JSON.stringify({ event: 'mark', mark: { name: 'u:7' } }),
-    });
-    twilio.emit('message', {
-      toString: () =>
-        JSON.stringify({ event: 'mark', mark: { name: 'done:u' } }),
-    });
-
-    transport._interrupt(0);
-
-    expect(interruptSpy).toHaveBeenCalledWith(50, true);
-    expect(twilio.send).toHaveBeenCalledWith(
-      JSON.stringify({ event: 'clear', streamSid: 'sid-1' }),
-    );
   });
 });
