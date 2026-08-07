@@ -45,6 +45,9 @@ import {
   shouldSynthesizeContentFilterRefusal,
 } from './openaiChatCompletionsContentFilter';
 import { snapshotRawUsage } from '@openai/agents-core/utils/internal';
+import { FAKE_ID } from './openaiItemIds';
+
+export { FAKE_ID };
 
 type ModelTracingParent = Parameters<typeof createGenerationSpan>[1];
 
@@ -56,7 +59,6 @@ function getModelTracingParent(request: ModelRequest): ModelTracingParent {
   )._internal?.tracingParent;
 }
 
-export const FAKE_ID = 'FAKE_ID';
 const GPT_56_MODEL_PATTERN =
   /^gpt-5\.6(?:-(?:sol|terra|luna)(?:-\d{4}-\d{2}-\d{2})?)?$/;
 

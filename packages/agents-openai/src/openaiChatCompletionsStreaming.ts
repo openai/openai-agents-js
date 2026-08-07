@@ -3,7 +3,7 @@ import type { CompletionUsage } from 'openai/resources/completions';
 import { protocol, UserError } from '@openai/agents-core';
 import { snapshotRawUsage } from '@openai/agents-core/utils/internal';
 import { ChatCompletion, ChatCompletionChunk } from 'openai/resources/chat';
-import { FAKE_ID } from './openaiChatCompletionsModel';
+import { FAKE_ID } from './openaiItemIds';
 import { OPENAI_CHAT_COMPLETIONS_RAW_MODEL_EVENT_SOURCE } from './rawModelEvents';
 import logger from './logger';
 import {
