@@ -6,13 +6,15 @@ import { isZodObject } from './typeGuards';
 import type { AgentOutputType } from '../agent';
 import {
   zodJsonSchemaCompat,
+  zodJsonSchemaCompatForOpenAIStrict,
+  assertLosslessOpenAIStrictZodSchemaConversion,
   hasJsonSchemaObjectShape,
   mergeJsonSchemaDescriptions,
 } from './zodJsonSchemaCompat';
 import type { ZodObjectLike } from './zodCompat';
 import { asZodType } from './zodCompat';
 import {
-  stripStrictNullsForJsonSchema,
+  prepareOpenAIStrictToolSchema,
   stripStrictNullsForZodSchema,
   toOpenAIStrictToolSchema,
 } from './strictToolSchema';
@@ -111,18 +113,29 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
 
   if (isZodObject(inputType)) {
     const useFallback = (originalError?: unknown) => {
-      const fallbackSchema = buildJsonSchemaFromZod(inputType);
+      const strictFallback = options.strict
+        ? zodJsonSchemaCompatForOpenAIStrict(inputType)
+        : undefined;
+      if (
+        strictFallback?.loweredObjectIntersection ||
+        strictFallback?.loweredPrimitiveIntersection
+      ) {
+        assertLosslessOpenAIStrictZodSchemaConversion(strictFallback);
+      }
+      const fallbackSchema = options.strict
+        ? strictFallback?.schema
+        : buildJsonSchemaFromZod(inputType);
       if (fallbackSchema) {
         return {
           schema: options.strict
             ? toOpenAIStrictToolSchema(fallbackSchema)
             : fallbackSchema,
           parser: (rawInput: string) =>
-            inputType.parse(
-              options.strict
-                ? stripStrictNullsForZodSchema(inputType, JSON.parse(rawInput))
-                : JSON.parse(rawInput),
-            ),
+            options.strict
+              ? inputType.parse(
+                  stripStrictNullsForZodSchema(inputType, JSON.parse(rawInput)),
+                )
+              : inputType.parse(JSON.parse(rawInput)),
         };
       }
 
@@ -149,18 +162,28 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
     }
 
     if (hasJsonSchemaObjectShape(formattedFunction.parameters)) {
-      const fallbackSchema = buildJsonSchemaFromZod(inputType);
+      const strictFallback = options.strict
+        ? zodJsonSchemaCompatForOpenAIStrict(inputType)
+        : undefined;
+      const fallbackSchema =
+        strictFallback?.schema ?? buildJsonSchemaFromZod(inputType);
       if (fallbackSchema) {
         mergeJsonSchemaDescriptions(
           formattedFunction.parameters as JsonObjectSchema<any>,
           fallbackSchema,
         );
       }
+      const upstreamSchema =
+        formattedFunction.parameters as JsonObjectSchema<any>;
+      const strictSchemaSource =
+        strictFallback?.loweredObjectIntersection ||
+        (strictFallback?.loweredPrimitiveIntersection &&
+          containsJsonSchemaAllOf(upstreamSchema))
+          ? useLosslessStrictFallback(strictFallback)
+          : upstreamSchema;
       return {
         schema: options.strict
-          ? toOpenAIStrictToolSchema(
-              formattedFunction.parameters as JsonObjectSchema<any>,
-            )
+          ? toOpenAIStrictToolSchema(strictSchemaSource)
           : (formattedFunction.parameters as JsonObjectSchema<any>),
         parser: options.strict
           ? (rawInput: string) =>
@@ -173,16 +196,104 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
 
     return useFallback();
   } else if (typeof inputType === 'object' && inputType !== null) {
+    const preparedSchema = options.strict
+      ? prepareOpenAIStrictToolSchema(inputType)
+      : undefined;
     return {
-      schema: options.strict ? toOpenAIStrictToolSchema(inputType) : inputType,
-      parser: options.strict
+      schema: preparedSchema?.schema ?? inputType,
+      parser: preparedSchema
         ? (rawInput: string) =>
-            stripStrictNullsForJsonSchema(inputType, JSON.parse(rawInput))
+            preparedSchema.normalizeInput(JSON.parse(rawInput))
         : parser,
     };
   }
 
   throw new UserError('Input type is not a ZodObject or a valid JSON schema');
+}
+
+function useLosslessStrictFallback(
+  conversion: NonNullable<
+    ReturnType<typeof zodJsonSchemaCompatForOpenAIStrict>
+  >,
+): JsonObjectSchema<any> {
+  assertLosslessOpenAIStrictZodSchemaConversion(conversion);
+  return conversion.schema;
+}
+
+function containsJsonSchemaAllOf(
+  value: unknown,
+  visited: WeakSet<object> = new WeakSet(),
+): boolean {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    visited.has(value)
+  ) {
+    return false;
+  }
+  visited.add(value);
+  const schema = value as Record<string, unknown>;
+  if (Array.isArray(schema.allOf)) {
+    return true;
+  }
+
+  for (const key of [
+    'additionalItems',
+    'additionalProperties',
+    'contains',
+    'contentSchema',
+    'else',
+    'if',
+    'items',
+    'not',
+    'propertyNames',
+    'then',
+    'unevaluatedItems',
+    'unevaluatedProperties',
+  ]) {
+    const nested = schema[key];
+    if (Array.isArray(nested)) {
+      if (nested.some((entry) => containsJsonSchemaAllOf(entry, visited))) {
+        return true;
+      }
+    } else if (containsJsonSchemaAllOf(nested, visited)) {
+      return true;
+    }
+  }
+
+  for (const key of ['anyOf', 'oneOf', 'prefixItems']) {
+    const nested = schema[key];
+    if (
+      Array.isArray(nested) &&
+      nested.some((entry) => containsJsonSchemaAllOf(entry, visited))
+    ) {
+      return true;
+    }
+  }
+
+  for (const key of [
+    '$defs',
+    'definitions',
+    'dependencies',
+    'dependentSchemas',
+    'patternProperties',
+    'properties',
+  ]) {
+    const nested = schema[key];
+    if (
+      typeof nested === 'object' &&
+      nested !== null &&
+      !Array.isArray(nested) &&
+      Object.values(nested).some((entry) =>
+        containsJsonSchemaAllOf(entry, visited),
+      )
+    ) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 /**

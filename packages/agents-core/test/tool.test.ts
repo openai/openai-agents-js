@@ -12,6 +12,7 @@ import {
 } from '../src/tool';
 import type { ShellTool } from '../src/tool';
 import { z } from 'zod';
+import { z as zod3 } from 'zod/v3';
 import { Computer } from '../src';
 import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
@@ -45,6 +46,669 @@ describe('Tool', () => {
     });
     expect(Object.keys(t.parameters.properties).length).toEqual(1);
     expect(t.parameters.required.length).toEqual(1);
+  });
+
+  it('supports strict Zod object intersections', async () => {
+    const execute = vi.fn(() => 'ok');
+    const t = tool({
+      name: 'zod_intersection',
+      description: 'Use a strict Zod object intersection.',
+      parameters: z.object({
+        combined: z.intersection(
+          z.object({ optional: z.string().optional() }),
+          z.object({ required: z.number() }),
+        ),
+      }),
+      execute,
+    });
+
+    expect(serializeTool(t)).toMatchObject({
+      strict: true,
+      parameters: {
+        properties: {
+          combined: {
+            type: 'object',
+            properties: {
+              optional: {
+                anyOf: [{ type: 'string' }, { type: 'null' }],
+              },
+              required: { type: 'number' },
+            },
+            required: ['optional', 'required'],
+            additionalProperties: false,
+          },
+        },
+      },
+    });
+
+    await t.invoke(
+      new RunContext(),
+      JSON.stringify({ combined: { optional: null, required: 1 } }),
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      { combined: { required: 1 } },
+      expect.any(RunContext),
+      undefined,
+    );
+  });
+
+  it('supports strict Zod v3 object intersections', async () => {
+    const execute = vi.fn(() => 'ok');
+    const parameters = zod3.object({
+      combined: zod3.intersection(
+        zod3.object({ optional: zod3.string().optional() }),
+        zod3.object({ required: zod3.number() }),
+      ),
+    });
+    const t = tool({
+      name: 'zod_v3_intersection',
+      description: 'Use a strict Zod v3 object intersection.',
+      parameters: parameters as any,
+      execute,
+    });
+
+    await t.invoke(
+      new RunContext(),
+      JSON.stringify({ combined: { optional: null, required: 1 } }),
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      { combined: { required: 1 } },
+      expect.any(RunContext),
+      undefined,
+    );
+  });
+
+  it('rejects strict Zod v3 strict-object intersections', () => {
+    expect(() =>
+      tool({
+        name: 'strict_zod_v3_intersection',
+        description: 'Reject an incompatible strict Zod v3 intersection.',
+        parameters: zod3.object({
+          combined: zod3.intersection(
+            zod3.object({ left: zod3.string() }).strict(),
+            zod3.object({ right: zod3.number() }).strict(),
+          ),
+        }) as any,
+        execute: async () => 'ok',
+      }),
+    ).toThrow('closed object branches');
+  });
+
+  it.each([
+    [
+      'map-valued patternProperties',
+      {
+        type: 'object',
+        patternProperties: { '^value$': { type: 'string' } },
+        additionalProperties: false,
+      },
+    ],
+    [
+      'singleton contains',
+      {
+        type: 'array',
+        items: { type: 'string' },
+        contains: { type: 'string' },
+      },
+    ],
+    [
+      'array-valued prefixItems',
+      {
+        type: 'array',
+        prefixItems: [{ type: 'string' }],
+      },
+    ],
+  ])('rejects unsupported strict JSON Schema %s', (_, valueSchema) => {
+    expect(() =>
+      tool({
+        name: 'unsupported_strict_schema_container',
+        description: 'Reject an unsupported strict schema container.',
+        parameters: {
+          type: 'object',
+          properties: { value: valueSchema },
+          required: ['value'],
+          additionalProperties: false,
+        } as any,
+        execute: async () => 'ok',
+      }),
+    ).toThrow('unsupported keyword');
+  });
+
+  it.each([
+    [
+      'property schema',
+      {
+        type: 'object',
+        properties: { value: 1 },
+        required: ['value'],
+        additionalProperties: false,
+      },
+    ],
+    [
+      'anyOf branch',
+      {
+        type: 'object',
+        properties: { value: { anyOf: [{ type: 'string' }, 1] } },
+        required: ['value'],
+        additionalProperties: false,
+      },
+    ],
+    [
+      'additionalProperties schema',
+      {
+        type: 'object',
+        properties: { value: { type: 'string', additionalProperties: 1 } },
+        required: ['value'],
+        additionalProperties: false,
+      },
+    ],
+    [
+      '$ref target',
+      {
+        type: 'object',
+        properties: { value: { $ref: '#/required' } },
+        required: ['value'],
+        additionalProperties: false,
+      },
+    ],
+  ])('rejects an invalid strict JSON Schema %s', (_, parameters) => {
+    expect(() =>
+      tool({
+        name: 'invalid_strict_schema_node',
+        description: 'Reject an invalid strict schema node.',
+        parameters: parameters as any,
+        execute: async () => 'ok',
+      }),
+    ).toThrow('non-boolean, non-object schema node');
+  });
+
+  it('preserves upstream support for strict typed Zod intersections', () => {
+    const t = tool({
+      name: 'typed_zod_intersection',
+      description: 'Use a strict typed Zod intersection.',
+      parameters: z.object({
+        value: z.intersection(z.string(), z.string()),
+      }),
+      execute: async () => 'ok',
+    });
+
+    expect((serializeTool(t) as any).parameters.properties.value).toMatchObject(
+      { type: 'string' },
+    );
+  });
+
+  it('supports strict Zod v3 typed intersections without allOf', () => {
+    const t = tool({
+      name: 'typed_zod_v3_intersection',
+      description: 'Use a strict typed Zod v3 intersection.',
+      parameters: zod3.object({
+        value: zod3.intersection(zod3.string(), zod3.string()),
+      }) as any,
+      execute: async () => 'ok',
+    });
+
+    expect((serializeTool(t) as any).parameters.properties.value).toEqual({
+      type: 'string',
+    });
+  });
+
+  it('preserves upstream Zod v4 constraints beside typed intersections', () => {
+    const t = tool({
+      name: 'constrained_typed_zod_v4_intersection',
+      description: 'Preserve upstream strict Zod v4 constraints.',
+      parameters: z.object({
+        value: z.intersection(z.string(), z.string()),
+        constrained: z.string().min(3),
+      }),
+      execute: async () => 'ok',
+    });
+
+    expect(
+      (serializeTool(t) as any).parameters.properties.constrained,
+    ).toMatchObject({ type: 'string', minLength: 3 });
+  });
+
+  it('does not treat a property named allOf as an applicator', () => {
+    const t = tool({
+      name: 'all_of_property',
+      description: 'Keep a regular property named allOf.',
+      parameters: z.object({
+        value: z.intersection(z.string(), z.string()),
+        allOf: z.string().min(3),
+      }),
+      execute: async () => 'ok',
+    });
+
+    expect((serializeTool(t) as any).parameters.properties).toMatchObject({
+      value: { type: 'string' },
+      allOf: { type: 'string', minLength: 3 },
+    });
+  });
+
+  it('does not inspect default values for allOf applicators', () => {
+    const t = tool({
+      name: 'all_of_default_value',
+      description: 'Keep allOf instance data in a default value.',
+      parameters: z.object({
+        value: z.intersection(z.string(), z.string()),
+        config: z
+          .object({ allOf: z.array(z.string()).min(1) })
+          .default({ allOf: ['x'] }),
+      }),
+      execute: async () => 'ok',
+    });
+
+    expect(
+      (serializeTool(t) as any).parameters.properties.config,
+    ).toMatchObject({
+      default: { allOf: ['x'] },
+      properties: {
+        allOf: { type: 'array', minItems: 1 },
+      },
+    });
+  });
+
+  it('preserves constrained strict Zod fallbacks without intersections', () => {
+    const t = tool({
+      name: 'constrained_zod_fallback',
+      description: 'Preserve an existing constrained strict Zod fallback.',
+      parameters: z.object({
+        command: z.string().min(1),
+        retries: z.number().int().min(0).default(0),
+      }),
+      execute: async () => 'ok',
+    });
+
+    expect(serializeTool(t)).toMatchObject({
+      parameters: {
+        properties: {
+          command: { type: 'string' },
+          retries: { type: 'integer' },
+        },
+      },
+    });
+  });
+
+  it('runs Zod callbacks once while stripping a synthetic null', async () => {
+    let transforms = 0;
+    let refinements = 0;
+    let defaults = 0;
+    const execute = vi.fn(() => 'ok');
+    const t = tool({
+      name: 'effectful_zod_fields',
+      description: 'Normalize without repeating Zod callbacks.',
+      parameters: zod3.object({
+        optional: zod3.string().optional(),
+        transformed: zod3.string().transform((value) => {
+          transforms += 1;
+          return value.toUpperCase();
+        }),
+        refined: zod3.string().superRefine(() => {
+          refinements += 1;
+        }),
+        defaulted: zod3.string().default(() => {
+          defaults += 1;
+          return 'default';
+        }),
+      }) as any,
+      execute,
+    });
+
+    await t.invoke(
+      new RunContext(),
+      JSON.stringify({ optional: null, transformed: 'x', refined: 'y' }),
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      { transformed: 'X', refined: 'y', defaulted: 'default' },
+      expect.any(RunContext),
+      undefined,
+    );
+    expect(transforms).toBe(1);
+    expect(refinements).toBe(1);
+    expect(defaults).toBe(1);
+  });
+
+  it.each([
+    [
+      'Zod v4',
+      z.object({
+        combined: z.intersection(
+          z.object({ left: z.string() }),
+          z.object({ right: z.number() }),
+        ),
+        constrained: z.string().min(3),
+      }),
+    ],
+    [
+      'Zod v3',
+      zod3.object({
+        combined: zod3.intersection(
+          zod3.object({ left: zod3.string() }),
+          zod3.object({ right: zod3.number() }),
+        ),
+        constrained: zod3.string().min(3),
+      }),
+    ],
+    [
+      'direct Zod v4 format',
+      z.object({
+        combined: z.intersection(
+          z.object({ left: z.string() }),
+          z.object({ right: z.number() }),
+        ),
+        constrained: z.email(),
+      }),
+    ],
+  ])(
+    'rejects lossy whole-schema %s intersection fallbacks',
+    (_, parameters) => {
+      expect(() =>
+        tool({
+          name: 'constrained_zod_intersection',
+          description: 'Reject a lossy strict Zod intersection fallback.',
+          parameters: parameters as any,
+          execute: async () => 'ok',
+        }),
+      ).toThrow('without losing constraints');
+    },
+  );
+
+  it('supports compatible typed and object intersections together', () => {
+    const t = tool({
+      name: 'mixed_zod_intersections',
+      description: 'Use compatible strict Zod intersections.',
+      parameters: z.object({
+        objectValue: z.intersection(
+          z.object({ left: z.string() }),
+          z.object({ right: z.number() }),
+        ),
+        typedValue: z.intersection(z.string(), z.string()),
+      }),
+      execute: async () => 'ok',
+    });
+
+    expect(serializeTool(t)).toMatchObject({
+      parameters: {
+        properties: {
+          objectValue: {
+            type: 'object',
+            properties: {
+              left: { type: 'string' },
+              right: { type: 'number' },
+            },
+          },
+          typedValue: { type: 'string' },
+        },
+      },
+    });
+  });
+
+  it.each([
+    [
+      'Zod v4 root passthrough',
+      z
+        .object({
+          combined: z.intersection(
+            z.object({ left: z.string() }),
+            z.object({ right: z.number() }),
+          ),
+        })
+        .passthrough(),
+    ],
+    [
+      'Zod v4 root refinement',
+      z
+        .object({
+          combined: z.intersection(
+            z.object({ left: z.string() }),
+            z.object({ right: z.number() }),
+          ),
+        })
+        .refine(() => false),
+    ],
+    [
+      'Zod v3 root catchall',
+      zod3
+        .object({
+          combined: zod3.intersection(
+            zod3.object({ left: zod3.string() }),
+            zod3.object({ right: zod3.number() }),
+          ),
+        })
+        .catchall(zod3.string()),
+    ],
+  ])('rejects lossy %s whole-schema fallbacks', (_, parameters) => {
+    expect(() =>
+      tool({
+        name: 'lossy_root_zod_intersection',
+        description: 'Reject a lossy root strict Zod intersection fallback.',
+        parameters: parameters as any,
+        execute: async () => 'ok',
+      }),
+    ).toThrow('without losing constraints');
+  });
+
+  it('supports nested strict Zod v4 object intersections', async () => {
+    const execute = vi.fn(() => 'ok');
+    const nestedIntersection = z.intersection(
+      z.object({ optional: z.string().optional() }),
+      z.object({ required: z.number() }),
+    );
+    const t = tool({
+      name: 'nested_zod_intersection',
+      description: 'Use nested strict Zod object intersections.',
+      parameters: z.object({
+        nested: z.object({ combined: nestedIntersection }),
+        list: z.array(nestedIntersection),
+      }),
+      execute,
+    });
+
+    expect(serializeTool(t)).toMatchObject({
+      parameters: {
+        properties: {
+          nested: {
+            properties: {
+              combined: {
+                properties: {
+                  optional: {
+                    anyOf: [{ type: 'string' }, { type: 'null' }],
+                  },
+                  required: { type: 'number' },
+                },
+              },
+            },
+          },
+          list: {
+            items: {
+              properties: {
+                optional: {
+                  anyOf: [{ type: 'string' }, { type: 'null' }],
+                },
+                required: { type: 'number' },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    await t.invoke(
+      new RunContext(),
+      JSON.stringify({
+        nested: { combined: { optional: null, required: 1 } },
+        list: [{ optional: null, required: 2 }],
+      }),
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      {
+        nested: { combined: { required: 1 } },
+        list: [{ required: 2 }],
+      },
+      expect.any(RunContext),
+      undefined,
+    );
+  });
+
+  it('preserves strict Zod intersection branch descriptions', () => {
+    const t = tool({
+      name: 'described_zod_intersection',
+      description: 'Preserve Zod intersection descriptions.',
+      parameters: z.object({
+        combined: z.intersection(
+          z.object({ left: z.string() }).describe('Left-side semantics.'),
+          z.object({ right: z.number() }).describe('Right-side semantics.'),
+        ),
+      }),
+      execute: async () => 'ok',
+    });
+
+    expect(
+      ((serializeTool(t) as any).parameters.properties.combined as any)
+        .description,
+    ).toBe('Left-side semantics.\n\nRight-side semantics.');
+  });
+
+  it.each([
+    [
+      'Zod v4',
+      z.object({
+        list: z.array(
+          z
+            .intersection(
+              z.object({ left: z.string() }).describe('Left.'),
+              z.object({ right: z.string() }).describe('Right.'),
+            )
+            .describe('Wrapper.'),
+        ),
+      }),
+    ],
+    [
+      'Zod v3',
+      zod3.object({
+        list: zod3.array(
+          zod3
+            .intersection(
+              zod3.object({ left: zod3.string() }).describe('Left.'),
+              zod3.object({ right: zod3.string() }).describe('Right.'),
+            )
+            .describe('Wrapper.'),
+        ),
+      }),
+    ],
+  ])(
+    'preserves nested %s intersection wrapper descriptions',
+    (_, parameters) => {
+      const t = tool({
+        name: 'nested_described_zod_intersection',
+        description: 'Preserve a nested Zod intersection description.',
+        parameters: parameters as any,
+        execute: async () => 'ok',
+      });
+
+      expect(
+        ((serializeTool(t) as any).parameters.properties.list.items as any)
+          .description,
+      ).toBe('Wrapper.');
+    },
+  );
+
+  it('rejects incompatible strict Zod intersections', () => {
+    expect(() =>
+      tool({
+        name: 'incompatible_zod_intersection',
+        description: 'Reject an incompatible strict Zod intersection.',
+        parameters: z.object({
+          value: z.intersection(
+            z.object({ shared: z.string() }),
+            z.object({ shared: z.number() }),
+          ),
+        }),
+        execute: async () => 'ok',
+      }),
+    ).toThrow('compatible Zod object intersections with distinct properties');
+  });
+
+  it.each([
+    [
+      'Zod v4 passthrough',
+      z.object({
+        value: z.intersection(
+          z.object({ left: z.string() }).passthrough(),
+          z.object({ right: z.string() }),
+        ),
+      }),
+    ],
+    [
+      'Zod v4 catchall',
+      z.object({
+        value: z.intersection(
+          z.object({ left: z.string() }).catchall(z.string()),
+          z.object({ right: z.string() }),
+        ),
+      }),
+    ],
+    [
+      'Zod v3 passthrough',
+      zod3.object({
+        value: zod3.intersection(
+          zod3.object({ left: zod3.string() }).passthrough(),
+          zod3.object({ right: zod3.string() }),
+        ),
+      }),
+    ],
+    [
+      'Zod v3 catchall',
+      zod3.object({
+        value: zod3.intersection(
+          zod3.object({ left: zod3.string() }).catchall(zod3.string()),
+          zod3.object({ right: zod3.string() }),
+        ),
+      }),
+    ],
+    [
+      'decorated Zod v4 passthrough',
+      z.object({
+        value: z.intersection(
+          z.object({ left: z.string() }).passthrough().readonly(),
+          z.object({ right: z.string() }),
+        ),
+      }),
+    ],
+    [
+      'decorated Zod v4 catchall',
+      z.object({
+        value: z.intersection(
+          z
+            .object({ left: z.string() })
+            .catchall(z.string())
+            .default({ left: 'default' }),
+          z.object({ right: z.string() }),
+        ),
+      }),
+    ],
+    [
+      'decorated Zod v3 passthrough',
+      zod3.object({
+        value: zod3.intersection(
+          zod3.object({ left: zod3.string() }).passthrough().readonly(),
+          zod3.object({ right: zod3.string() }),
+        ),
+      }),
+    ],
+  ])('rejects strict intersections with an open %s branch', (_, parameters) => {
+    expect(() =>
+      tool({
+        name: 'open_zod_intersection',
+        description: 'Reject an open strict Zod intersection.',
+        parameters: parameters as any,
+        execute: async () => 'ok',
+      }),
+    ).toThrow('closed object branches');
   });
 
   it('normalizes typeless nested objects in strict JSON schemas', () => {
@@ -140,6 +804,36 @@ describe('Tool', () => {
       strict: false,
       parameters,
     });
+  });
+
+  it('rejects unsupported schemas only for strict tools', () => {
+    const parameters = {
+      type: 'object',
+      properties: {
+        value: { not: { type: 'null' } },
+      },
+      required: [],
+      additionalProperties: false,
+    } as any;
+
+    expect(() =>
+      tool({
+        name: 'strict_unsupported_schema',
+        description: 'Reject an unsupported strict schema.',
+        parameters,
+        execute: async () => 'ok',
+      }),
+    ).toThrow('unsupported keyword `not`');
+
+    expect(
+      tool({
+        name: 'non_strict_unsupported_schema',
+        description: 'Allow an unsupported non-strict schema.',
+        parameters,
+        strict: false,
+        execute: async () => 'ok',
+      }).strict,
+    ).toBe(false);
   });
 
   it('records deferLoading when requested', () => {
@@ -1125,6 +1819,63 @@ describe('tool.invoke', () => {
     });
     const res = await t.invoke(new RunContext(), '{"msg": "there"}');
     expect(res).toBe('hi there');
+  });
+
+  it('normalizes strict input through local JSON Schema references', async () => {
+    const execute = vi.fn(() => 'ok');
+    const t = tool({
+      name: 'local_ref',
+      description: 'Uses a local JSON Schema reference.',
+      parameters: {
+        type: 'object',
+        properties: {
+          payload: { $ref: '#/$defs/payload' },
+          requiredAlias: { $ref: '#/$defs/payload/properties/note' },
+          optionalAlias: { $ref: '#/$defs/payload/properties/note' },
+        },
+        required: ['payload', 'requiredAlias'],
+        $defs: {
+          payload: {
+            type: 'object',
+            properties: {
+              note: { type: 'string' },
+              enumValue: { enum: ['value'] },
+              typedEnumValue: { type: 'string', enum: ['value'] },
+              constValue: { $ref: '#/$defs/constValue' },
+              explicitNull: { $ref: '#/$defs/maybeValue' },
+            },
+            required: [],
+          },
+          constValue: { const: 'value' },
+          maybeValue: {
+            anyOf: [{ type: 'string' }, { $ref: '#/$defs/nullValue' }],
+          },
+          nullValue: { type: 'null' },
+        },
+      } as any,
+      execute,
+    });
+
+    await t.invoke(
+      new RunContext(),
+      JSON.stringify({
+        payload: {
+          note: null,
+          enumValue: null,
+          typedEnumValue: null,
+          constValue: null,
+          explicitNull: null,
+        },
+        requiredAlias: null,
+        optionalAlias: null,
+      }),
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      { payload: { explicitNull: null }, requiredAlias: null },
+      expect.any(RunContext),
+      undefined,
+    );
   });
 
   it('uses errorFunction on parse error', async () => {
