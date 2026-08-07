@@ -91,6 +91,14 @@ function emitOpenAIEvent(event: unknown) {
   openAIWebSocket?.emit('message', { data: JSON.stringify(event) });
 }
 
+function emitResponseCreated(responseId: string) {
+  emitOpenAIEvent({
+    type: 'response.created',
+    event_id: `created-${responseId}`,
+    response: { id: responseId, status: 'in_progress' },
+  });
+}
+
 function emitAudioDelta(
   itemId: string,
   responseId: string,
@@ -250,12 +258,40 @@ describe('TwilioRealtimeTransportLayer interruption ownership', () => {
     });
   });
 
-  test('does not forward late audio for an interrupted item', async () => {
+  test('does not emit or forward late audio for an interrupted item', async () => {
     const { transport, twilio } = await createConnectedTransport();
     const audioListener = vi.fn();
     transport.on('audio', audioListener);
 
+    emitResponseCreated('response-a');
     emitAudioDelta('item-a', 'response-a');
+    transport.interrupt(false);
+    const mediaCountAfterInterrupt = payloads(twilio.sent).filter(
+      (payload) => payload.event === 'media',
+    ).length;
+    emitAudioDelta('item-a', 'response-a');
+    emitAudioDelta('item-b', 'response-a');
+    emitTwilioMessage(twilio, {
+      event: 'start',
+      start: { streamSid: 'stream-2' },
+    });
+    emitAudioDelta('item-c', 'response-a');
+
+    emitResponseCreated('response-b');
+    emitAudioDelta('item-d', 'response-b');
+
+    expect(
+      payloads(twilio.sent).filter((payload) => payload.event === 'media'),
+    ).toHaveLength(mediaCountAfterInterrupt + 1);
+    expect(audioListener).toHaveBeenCalledTimes(2);
+  });
+
+  test('drops an interrupted response before its first audio delta', async () => {
+    const { transport, twilio } = await createConnectedTransport();
+    const audioListener = vi.fn();
+    transport.on('audio', audioListener);
+
+    emitResponseCreated('response-a');
     transport.interrupt(false);
     const mediaCountAfterInterrupt = payloads(twilio.sent).filter(
       (payload) => payload.event === 'media',
@@ -265,7 +301,7 @@ describe('TwilioRealtimeTransportLayer interruption ownership', () => {
     expect(
       payloads(twilio.sent).filter((payload) => payload.event === 'media'),
     ).toHaveLength(mediaCountAfterInterrupt);
-    expect(audioListener).toHaveBeenCalledTimes(2);
+    expect(audioListener).not.toHaveBeenCalled();
   });
 
   test('invalidates playback ownership when locally closed', async () => {

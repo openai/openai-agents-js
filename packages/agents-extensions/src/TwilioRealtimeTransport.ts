@@ -22,6 +22,7 @@ type LegacyRealtimeAudioConfig = Partial<RealtimeSessionConfig> & {
 };
 
 type TwilioPlaybackItem = {
+  responseId: string;
   itemId: string;
   contentIndex: number;
   sentDurationMs: number;
@@ -97,8 +98,13 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
   #playbackItems: TwilioPlaybackItem[] = [];
   #pendingMarks = new Map<string, TwilioPlaybackMark>();
   #clearedMarkNames = new Set<string>();
-  #discardedItemIds = new Set<string>();
-  #nextAudioMetadata: { itemId: string; contentIndex: number } | null = null;
+  #activeResponseId: string | null = null;
+  #discardedResponseIds = new Set<string>();
+  #nextAudioMetadata: {
+    responseId: string;
+    itemId: string;
+    contentIndex: number;
+  } | null = null;
   #logger = getLogger('openai-agents:extensions:twilio');
 
   constructor(options: TwilioRealtimeTransportLayerOptions) {
@@ -208,13 +214,29 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
       },
     );
     this.on('response.output_audio.done', (event) => {
-      this.#sendDoneMark(event.item_id, event.content_index);
+      this.#sendDoneMark(event.response_id, event.item_id, event.content_index);
     });
     this.on('response.output_audio.delta', (event) => {
       this.#nextAudioMetadata = {
+        responseId: event.response_id,
         itemId: event.item_id,
         contentIndex: event.content_index,
       };
+    });
+    this.on('response.created', (event) => {
+      if (typeof event.response.id === 'string') {
+        this.#activeResponseId = event.response.id;
+      }
+    });
+    this.on('response.done', (event) => {
+      const responseId = event.response.id;
+      if (typeof responseId !== 'string') {
+        return;
+      }
+      this.#discardedResponseIds.delete(responseId);
+      if (this.#activeResponseId === responseId) {
+        this.#activeResponseId = null;
+      }
     });
   }
 
@@ -225,7 +247,8 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
 
   protected override _onClose() {
     this.#clearPlaybackGeneration();
-    this.#discardedItemIds.clear();
+    this.#activeResponseId = null;
+    this.#discardedResponseIds.clear();
     super._onClose();
   }
 
@@ -235,7 +258,6 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     this.#playbackItems = [];
     this.#pendingMarks.clear();
     this.#clearedMarkNames.clear();
-    this.#discardedItemIds.clear();
     this.#nextAudioMetadata = null;
   }
 
@@ -249,19 +271,27 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     this.#nextAudioMetadata = null;
   }
 
-  #findPlaybackItem(itemId: string, contentIndex: number) {
+  #findPlaybackItem(responseId: string, itemId: string, contentIndex: number) {
     return this.#playbackItems.find(
-      (item) => item.itemId === itemId && item.contentIndex === contentIndex,
+      (item) =>
+        item.responseId === responseId &&
+        item.itemId === itemId &&
+        item.contentIndex === contentIndex,
     );
   }
 
-  #getOrCreatePlaybackItem(itemId: string, contentIndex: number) {
-    const existing = this.#findPlaybackItem(itemId, contentIndex);
+  #getOrCreatePlaybackItem(
+    responseId: string,
+    itemId: string,
+    contentIndex: number,
+  ) {
+    const existing = this.#findPlaybackItem(responseId, itemId, contentIndex);
     if (existing) {
       return existing;
     }
 
     const item: TwilioPlaybackItem = {
+      responseId,
       itemId,
       contentIndex,
       sentDurationMs: 0,
@@ -301,8 +331,8 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     );
   }
 
-  #sendDoneMark(itemId: string, contentIndex: number) {
-    const item = this.#findPlaybackItem(itemId, contentIndex);
+  #sendDoneMark(responseId: string, itemId: string, contentIndex: number) {
+    const item = this.#findPlaybackItem(responseId, itemId, contentIndex);
     if (!item || item.doneMarkSent) {
       return;
     }
@@ -382,8 +412,11 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
       return;
     }
     const truncations = this.#createTruncationSnapshots();
+    if (this.#activeResponseId !== null) {
+      this.#discardedResponseIds.add(this.#activeResponseId);
+    }
     for (const item of this.#playbackItems) {
-      this.#discardedItemIds.add(item.itemId);
+      this.#discardedResponseIds.add(item.responseId);
     }
     this.#clearPlaybackGeneration();
 
@@ -429,23 +462,28 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     this.#logger.debug(
       `Sending audio to Twilio ${audioEvent.responseId}: (${audioEvent.data.byteLength} bytes)`,
     );
+    const metadata = this.#nextAudioMetadata;
+    this.#nextAudioMetadata = null;
+    if (this.#discardedResponseIds.has(audioEvent.responseId)) {
+      return;
+    }
+
     const itemId = this.currentItemId;
     if (itemId == null) {
       this.#logger.warn('Skipping Twilio audio without an item ID.');
       this.emit('audio', audioEvent);
       return;
     }
-    if (this.#discardedItemIds.has(itemId)) {
-      this.emit('audio', audioEvent);
-      return;
-    }
-
     const contentIndex =
-      this.#nextAudioMetadata?.itemId === itemId
-        ? this.#nextAudioMetadata.contentIndex
+      metadata?.responseId === audioEvent.responseId &&
+      metadata.itemId === itemId
+        ? metadata.contentIndex
         : 0;
-    this.#nextAudioMetadata = null;
-    const item = this.#getOrCreatePlaybackItem(itemId, contentIndex);
+    const item = this.#getOrCreatePlaybackItem(
+      audioEvent.responseId,
+      itemId,
+      contentIndex,
+    );
     item.sentDurationMs += audioEvent.data.byteLength / 8;
 
     const audioDelta = {

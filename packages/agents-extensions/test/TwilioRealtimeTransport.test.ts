@@ -121,8 +121,8 @@ describe('TwilioRealtimeTransportLayer', () => {
   });
 
   test('connect handles messages and events', async () => {
-    allowConsole(['error', 'warn']);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
       twilioWebSocket: asTwilioWebSocket(twilio),
@@ -149,6 +149,9 @@ describe('TwilioRealtimeTransportLayer', () => {
     twilio.emit('message', {
       toString: () => JSON.stringify({ event: 'mark', mark: { name: 'u:5' } }),
     });
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Invalid mark name received. Mark data is redacted.',
+    );
     transport._interrupt(0);
     expect(cancelSpy).toHaveBeenCalledTimes(1);
     expect(twilio.send).toHaveBeenCalledWith(
@@ -161,6 +164,7 @@ describe('TwilioRealtimeTransportLayer', () => {
     expect(errListener).toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalledWith('Error parsing message:', 'object');
     errorSpy.mockRestore();
+    warnSpy.mockRestore();
 
     twilio.emit('close');
     expect(closeSpy).toHaveBeenCalled();
@@ -341,7 +345,6 @@ describe('TwilioRealtimeTransportLayer', () => {
   });
 
   test('resets playback state on new Twilio start and handles invalid marks', async () => {
-    allowConsole(['warn']);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({

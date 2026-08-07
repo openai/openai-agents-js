@@ -1,7 +1,6 @@
 import { describe, test, expect, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { TwilioRealtimeTransportLayer } from '../src';
-import { allowConsole } from '../../../helpers/tests/console-guard';
 import type {
   MessageEvent as NodeMessageEvent,
   WebSocket as NodeWebSocket,
@@ -55,7 +54,7 @@ describe('TwilioRealtimeTransportLayer', () => {
   });
 
   test('ignores malformed mark names', async () => {
-    allowConsole(['warn']);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const twilio = new FakeTwilioWebSocket();
     const transport = new TwilioRealtimeTransportLayer({
       twilioWebSocket: asTwilioWebSocket(twilio),
@@ -75,5 +74,8 @@ describe('TwilioRealtimeTransportLayer', () => {
         (call) => (call[0] as any)?.type === 'conversation.item.truncate',
       ),
     ).toHaveLength(0);
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Invalid mark name received. Mark data is redacted.',
+    );
   });
 });
