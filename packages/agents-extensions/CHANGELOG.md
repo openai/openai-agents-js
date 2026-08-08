@@ -1,5 +1,36 @@
 # @openai/agents-extensions
 
+## 0.15.0
+
+### Patch Changes
+
+- 432b1e3: feat: #630 support PDF file inputs in the AI SDK adapter
+- 4fb5efd: fix(extensions): forward AI SDK prompt cache retention
+- daefc63: fix: preserve complete AI SDK response text and item ordering (#1593)
+- c43354a: fix: align Twilio playback ownership and recover missing input silence
+- 512f340: test: enforce silent unit test output
+- 066a03c: fix: protect credentials used by sandbox mount helpers
+- db484f6: fix: transform complete AI SDK text within tool boundaries
+- c7a91e6: feat: preserve raw provider usage payloads on request
+- Updated dependencies [d1c585d]
+- Updated dependencies [ba85cda]
+- Updated dependencies [daefc63]
+- Updated dependencies [2ce5c25]
+- Updated dependencies [398a592]
+- Updated dependencies [1f617f9]
+- Updated dependencies [442cfe3]
+- Updated dependencies [d308e1d]
+- Updated dependencies [41f5011]
+- Updated dependencies [81e0066]
+- Updated dependencies [c122399]
+- Updated dependencies [5b5a7cb]
+- Updated dependencies [9b97dd2]
+- Updated dependencies [512f340]
+- Updated dependencies [066a03c]
+- Updated dependencies [d48b2b0]
+- Updated dependencies [c7a91e6]
+  - @openai/agents-core@0.15.0
+
 ## 0.14.3
 
 ### Patch Changes
