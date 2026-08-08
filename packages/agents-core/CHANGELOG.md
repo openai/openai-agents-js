@@ -1,5 +1,30 @@
 # @openai/agents-core
 
+## 0.15.0
+
+### Minor Changes
+
+- 442cfe3: feat: require OpenAI Node SDK v7.2 or later
+- 41f5011: feat: switch the default OpenAI model to gpt-5.6-luna when no model is explicitly configured
+- 5b5a7cb: feat: support MCP 2026-07-28 negotiation with legacy fallback
+
+### Patch Changes
+
+- d1c585d: feat: support React Native package conditions for portable core and Realtime shims
+- ba85cda: fix: redact structured final-output errors
+- daefc63: fix: preserve complete AI SDK response text and item ordering (#1593)
+- 2ce5c25: test: cover trusted external rclone config paths
+- 398a592: fix: normalize strict tool arguments without widening unsupported JSON schemas
+- 1f617f9: fix: bind tool approvals and completed replays to canonical invocations
+- d308e1d: fix: make `StreamedRunResult.currentTurn` report only model turns that reach the request boundary, including across resumed runs
+- 81e0066: feat: pass run context to opted-in custom sessions
+- c122399: fix: invalidate MCP tool caches and metadata across lifecycle changes and concurrent listings
+- 9b97dd2: fix: publish completed guardrail results when a sibling fails
+- 512f340: test: enforce silent unit test output
+- 066a03c: fix: protect credentials used by sandbox mount helpers
+- d48b2b0: fix: scope persistent hosted MCP approvals by server and tool identity
+- c7a91e6: feat: preserve raw provider usage payloads on request
+
 ## 0.14.3
 
 ### Patch Changes
