@@ -50,6 +50,8 @@ Classify each finding as a required-behavior defect, supported compatibility req
 
 If a second related finding would add another condition, protocol hop, compatibility case, or test permutation to the same abstraction, stop patching and run the complexity reset. Continue only when concrete evidence puts the exact case in the required or supported contract.
 
+After a reset spec is frozen, classify each later finding as a violation of that spec, an evidence-backed reason to revise it, an intentionally unsupported case, or an unrelated issue. Do not resume incremental patching merely because the new finding is locally fixable.
+
 Example: if successive findings require traversing a direct wrapper, nested wrapper, generic adapter, module interop boundary, and bound method, do not add another hop. Unless arbitrary wrapper graphs are supported, retain the required plain callable behavior and reject ambiguous wrappers before invocation.
 
 ## Core decision rules
@@ -77,11 +79,34 @@ Stop extending the current design when:
 
 When a trigger fires:
 
-1. Stop addressing comments one by one.
-2. Group findings by root cause and re-read the original requirement and scope contract.
-3. Compare the complete diff with the intended merge base or latest release tag.
-4. Delete unnecessary branch-local machinery, narrow the contract, and reject unsupported cases before side effects.
-5. Rebuild tests around required behavior and representative unsupported categories.
+1. Stop editing and freeze the current revision for analysis instead of addressing comments one by one.
+2. Group findings by root cause and re-read the original requirement, scope contract, and supported release or durable boundaries.
+3. Write a candidate finding-derived reset spec using those inputs. Do not treat accumulated review explanations, branch-local machinery, or same-branch tests as requirements.
+4. Audit the candidate spec against every affected entry point and the nearest existing supported paths. Revise it as needed, then freeze it before resuming edits.
+5. Compare the complete diff with the intended merge base or latest release tag, and map each abstraction, branch, and test to the frozen spec as `retain`, `replace`, or `delete`.
+6. Delete machinery with no mapping, narrow the contract, and reject unsupported cases before side effects.
+7. Rebuild tests around required behavior, supported compatibility, cross-entry-point consistency, and representative unsupported categories.
+8. Evaluate later findings against the frozen spec. Stop and record new contract evidence before changing the spec or widening the behavior space.
+
+Use this compact reset spec in the plan or working notes:
+
+```text
+Finding-derived reset spec:
+- Original required outcome:
+- Supported release or durable boundaries:
+- Grouped findings and common root cause:
+- Invariants across affected entry points:
+- Allowed states and behavior:
+- Rejected states, failure timing, and side-effect boundary:
+- Trusted and untrusted boundaries:
+- Single sources of truth:
+- Persistence, resume, cleanup, or other lifecycle semantics:
+- Non-goals and supported alternatives:
+- Representative test categories:
+- Diff reset: retain / replace / delete:
+```
+
+The candidate spec is a falsifiable design hypothesis, not a record of the current implementation. The audit may correct it before it is frozen. Once frozen, require explicit evidence to revise it and re-run the complete diff mapping after any revision.
 
 Do not wait for the user or reviewer to request this reset when the signals are already present.
 
@@ -106,6 +131,7 @@ Before declaring the design complete, answer all of these with concrete evidence
 - Are unsupported neighboring cases rejected before side effects with an existing alternative identified?
 - Do the complete diff and tests cover the contract without making every constructible permutation supported?
 - Does the latest review revision shrink or preserve the behavior space rather than widen it without evidence?
+- When a complexity reset occurred, does every retained abstraction, branch, and test map to the frozen reset spec, with later findings classified against it?
 
 ## When to stop and confirm
 
@@ -122,3 +148,4 @@ When this skill materially affects the implementation approach, state the decisi
 - `Compatibility boundary: latest release tag v0.x.y; branch-local interface rewrite, no shim needed.`
 - `Implementation scope contract: support X; preserve Y; reject Z before side effects; use supported alternative W, or none exists.`
 - `Complexity reset: repeated edge-case combinations show the approach is too broad; redesign from the original requirement instead of adding another branch.`
+- `Finding-derived reset spec: findings F1-F3 expose invariant X across entry points A-C; freeze that contract, delete unmapped machinery, and review later findings against it.`
