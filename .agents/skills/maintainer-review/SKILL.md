@@ -24,7 +24,7 @@ Make a maintainer decision, not a generic diff summary. Separate these questions
 
 Treat an issue's requested field, callback, flag, class, or implementation strategy as a proposed mechanism, not as the accepted requirement. Do not begin by asking how to implement it. First establish either a concrete unmet user outcome or a violated supported contract, then prove that the proposed mechanism is better than the available alternatives.
 
-Lead with the current review state. Use `Preliminary assessment` while runtime approval or evidence is pending, and `Maintainer decision` only when the review can be concluded. Use the diff, issue narrative, and contributor effort as evidence, not as proxies for impact.
+Lead with the current review state. Use `Preliminary assessment` while approval-gated runtime work or decision-relevant evidence is pending, and `Maintainer decision` only when the review can be concluded. Use the diff, issue narrative, and contributor effort as evidence, not as proxies for impact.
 
 ## Workflow
 
@@ -52,13 +52,22 @@ First assign one `Need evidence` status:
 
 Only `Demonstrated` need may receive `Merge-worthy as-is` or `Merge-worthy after focused changes`. For `Plausible but unproven`, prefer `Needs evidence` or `Not worth completing`; for `Already covered` or `Unsupported`, prefer closure or the relevant simpler alternative.
 
+Before assigning `Demonstrated`, require one of these evidence paths:
+
+1. **Observed impact**: A supported scenario, real-path reproduction, or credible user report shows a meaningful user-visible, operational, compatibility, or durable-state consequence.
+2. **Material prevention**: A supported or ordinary failure path can reach the condition, the violated invariant protects against intrinsically material harm, and a complete code-path trace or realistic probe establishes that consequence. A known incident is not required for this path.
+
+For both paths, trace `realistic trigger -> supported execution path -> observable or durable effect`. A local intermediate inconsistency, constructible branch, redundant operation, defensive improvement, or theoretically cleaner invariant is not a demonstrated need without a meaningful downstream effect. A small diff, technically correct patch, or inexpensive test does not lower this threshold. Material preventive outcomes include security or privacy exposure, credential leakage, persistent data or state corruption, duplicate external side effects, unrecoverable compatibility breaks, deadlock or indefinite hangs, and realistically repeatable resource exhaustion.
+
+When a report establishes only a harmless or speculative logic-level improvement, prefer `Not worth completing` or `Close` rather than requesting implementation refinements. Use `Needs evidence` only when a specific missing reproduction or consequence trace could realistically change the practical-impact decision.
+
 1. Restate the desired user outcome without naming the requested API, class, file, option, or implementation. Separate the actual constraint from the reporter's preferred mechanism.
 2. Trace the closest supported ways to achieve that outcome in the current release and current target. Inspect the owning code path, public API, tests, and relevant docs rather than assuming that an unfamiliar capability is missing. Consider configuration, composition, cloning, callbacks, extension points, provider adapters, and caller-owned code.
 3. Determine whether the report shows a capability gap, an ergonomics or discoverability gap, an unsupported use case, or no demonstrated gap. A more convenient spelling is not automatically a missing capability.
 4. Compare the proposed solution against the strongest existing approach and at least one better-design candidate: no code change, clearer documentation or validation, a narrower fix, reuse of an existing abstraction, or enforcement at a more coherent shared boundary.
 5. For each viable approach, compare whether it satisfies the concrete scenario, what new public or internal contract it creates, cross-path consistency, compatibility, and permanent maintenance cost.
 
-Do not treat a test proving that new code can work as evidence that the feature is needed. A `FakeModel` response, manually constructed provider item, mock, or new regression test can establish code-path reachability and implementation correctness; it does not by itself establish realistic provider behavior, user reach, frequency, practical consequence, or demand.
+Do not treat a test proving that new code can work as evidence that the feature is needed. A `FakeModel` response, manually constructed provider item, mock, or new regression test can establish code-path reachability and implementation correctness; it does not by itself establish realistic provider behavior, user reach, frequency, practical consequence, demand, or a material preventive outcome.
 
 API symmetry, naming consistency, and parity with an adjacent tool, provider, or output type are design arguments, not evidence of need. Parity may justify work when it removes existing complexity or enforces a broad demonstrated invariant, but adding branches, tests, documentation, or public behavior requires independent practical justification.
 
@@ -89,9 +98,9 @@ Use this evidence order across the two stages:
 
 1. Trace the closest existing supported capabilities and determine whether they already satisfy the underlying user outcome.
 2. Inspect existing tests and complete the code-path trace, including the mandatory interleaving and ownership pass when triggered, without executing code.
-3. With explicit user approval, run a focused local reproduction of the exact claim when the desk-review rules below require it.
+3. Proactively run a focused local reproduction of the exact claim when the desk-review rules below require it and it stays within the local-probe authorization below.
 4. A comparison with the latest release, base branch, or another known-good control.
-5. A broader runtime matrix only when the maintainer decision remains uncertain and the user approves it.
+5. A broader runtime matrix only when the maintainer decision remains uncertain and the additional cost and scope are justified; request approval when the expansion crosses the authorization boundary below.
 
 #### Stage 1: desk review
 
@@ -114,24 +123,27 @@ If any answer is missing and could change whether code should exist at all, do n
 
 Run this pass before any positive PR assessment when a patch adds, removes, or reorders cleanup, retry, reconnect, cancellation, listeners, shared promises or tasks, sockets or streams, state flags, or mutable state across an `await`, callback, event, or deferred completion.
 
-1. Name each shared resource or state value and the operation that owns it. Include listeners, promises, tasks, connections, streams, locks, caches, state flags, persistence, and telemetry.
-2. Trace at least two overlapping operations, `A` and `B`, across every suspension or re-entry point. Check `A pending -> B starts -> A fails -> B succeeds`, `A pending -> B starts -> B fails -> A succeeds`, close or cancellation between setup and completion, and a stale completion arriving after newer work.
-3. For every cleanup or rollback, identify the exact attempt and resource generation it is allowed to dispose. Treat unconditional cleanup after a suspension point as a regression candidate until the code proves it cannot tear down newer or surviving work.
-4. Compare base and head for the survivor invariant. Replacing duplicated work with missing handlers, a closed shared resource, reverted state, or a rejected surviving promise is a regression, not a successful cleanup.
-5. Inspect tests for controlled interleavings using deferred promises, callbacks, or events. Require assertions about the surviving operation's observable behavior and final resource state, not only listener counts or individual rejection results.
+1. Name each shared resource or state value and enumerate every path that can mutate it, including distinct public methods and wrapper or delegate paths. Include listeners, promises, tasks, connections, streams, locks, caches, state flags, persistence, and telemetry.
+2. Trace at least two overlapping operations, `A` and `B`, across every suspension or re-entry point. Choose `B` from the strongest distinct mutator, not only a second invocation of `A`. Check `A pending -> B starts -> A fails -> B succeeds`, `A pending -> B starts -> B fails -> A succeeds`, close or cancellation between setup and completion, and a stale completion arriving after newer work.
+3. For snapshot-based cleanup or rollback, always trace `A snapshots -> A destructively mutates -> B commits newer state -> A rollback resumes`. Require the pre-`A` state plus `B`'s committed mutation to survive in the correct order, with persisted state, caches, indexes, flags, and related ownership state agreeing.
+4. For every cleanup or rollback, identify the exact attempt and resource generation it is allowed to dispose. Require an ownership token, generation, identity check, compare-and-swap, transaction, proven serialization, or an equivalent invariant at the actual mutation boundary. Do not infer exclusivity from intended usage; treat overlap as unsupported only when an explicit contract or fail-fast validation enforces that restriction.
+5. Compare base and head for the survivor invariant. Replacing duplicated work with missing handlers, a closed shared resource, reverted state, or a rejected surviving promise is a regression, not a successful cleanup. Do not dismiss stale cleanup as pre-existing when the patch newly invokes it for another failure, cancellation, or retry path.
+6. Inspect tests for controlled interleavings using deferred promises, callbacks, or events. Require assertions about the failing and surviving operations' observable behavior and final resource coherence, not only listener counts or individual rejection results.
 
-Do not mark a concurrency-sensitive patch `Merge-worthy as-is` merely because sequential reconnect, retry, failure, and close tests pass. If the code trace proves an unsafe interleaving, conclude from static evidence and request a focused fix and regression test. If ownership remains ambiguous, keep the result preliminary and request approval for the smallest decisive runtime probe.
+Do not mark a concurrency-sensitive patch `Merge-worthy as-is` merely because sequential reconnect, retry, failure, and close tests pass. A triggered ownership pass is incomplete unless the evidence records the complete mutation surface, concrete ownership mechanism, strongest distinct-mutator interleaving, and survivor and coherence result. If the code trace proves an unsafe interleaving, conclude from static evidence and request a focused fix and regression test. If ownership remains ambiguous, keep the result preliminary until the smallest decisive runtime probe or equivalent evidence resolves it.
 
 - If the claim or PR is decisively negative from a complete reachable code-path trace, conclude the review without a runtime probe. Examples include an impossible or unsupported path, duplicated existing handling, a demonstrated no-op, a direct compatibility break, or a clearly wrong abstraction. Do not call an ambiguous result negative merely to avoid a probe.
 - If the initial result is positive and there is no unresolved runtime concern, and any triggered interleaving and ownership pass is complete, the desk review may be sufficient for a final maintainer decision. Do not run a probe only to restate evidence that cannot plausibly change the decision.
-- If the initial result is positive but there is any unresolved runtime concern that could plausibly change claim validity, severity, merge-worthiness, required changes, or the preferred competing PR, stop before executing code. Report a `Preliminary assessment`, name the concern, propose the smallest decisive probe and control, and ask the user for approval to run it.
+- If there is any unresolved runtime concern that could plausibly change claim validity, severity, merge-worthiness, required changes, or the preferred competing PR, run the smallest decisive local probe and control when authorized below. If the probe requires approval or is not practical, report a `Preliminary assessment`, name the concern, and explain the exact evidence still needed.
 - A purely stylistic, documentation, CI-status, or repository-readiness concern does not trigger a runtime probe unless it masks a runtime question.
 
-Do not issue a definitive positive maintainer decision while a decision-relevant runtime concern remains unresolved. If the user declines the probe, keep the result preliminary and state the exact confidence limitation.
+Do not issue a definitive positive maintainer decision while a decision-relevant runtime concern remains unresolved. If an approval-gated probe is declined or a material concern is practically probeable but remains untested, keep the result preliminary and state the exact confidence limitation.
 
-#### Stage 2: approved runtime probe
+#### Stage 2: focused runtime probe
 
-After explicit approval, run only the smallest probe needed to resolve the stated concern. Exercise the real public or internal path and include a base, release, or known-good control when relevant. Do not stop at a happy-path smoke check when failure behavior determines the decision. Return to the user for separate approval before expanding materially beyond the approved probe.
+Invocation of this skill authorizes focused local-only probes that use existing dependencies and temporary or disposable data, do not use credentials, live APIs, or external services, do not modify tracked repository content or persistent external state, and remain narrowly scoped to the review question. Announce the probe before running it, then exercise the real public or internal path and include a base, release, or known-good control when relevant. Do not wait for separate approval for a qualifying local probe, and do not stop at a happy-path smoke check when failure behavior determines the decision.
+
+Ask for explicit approval before using credentials, a live API, or an external service; installing dependencies; modifying tracked repository content or persistent external state; or starting a materially broad, expensive, or long-running probe. Return to the user for separate approval before expanding an authorized local probe across one of those boundaries.
 
 For latency, timeout, buffering, backpressure, or cleanup, measure an observable elapsed-time or state transition where feasible. Do not assume that a mocked unit test exercises real scheduling or provider behavior. Prefer a local probe first; use an approval-gated live-service probe only when local evidence cannot settle the decision.
 
@@ -189,7 +201,7 @@ When multiple plausible semantic scopes, compatibility boundaries, or public API
 
 Choose the assessment language from the current user request and governing repository instructions. Maintainer comment drafts remain English.
 
-Use the matching compact report in the evaluation framework. While runtime approval is pending, use its preliminary-assessment variant and end with the approval request instead of presenting a final recommendation. Keep the report decision-oriented, put unexpected/negative evidence first, and use no more than five evidence bullets by default.
+Use the matching compact report in the evaluation framework. While approval-gated runtime work or decision-relevant evidence is pending, use its preliminary-assessment variant and end with the approval request or evidence limitation instead of presenting a final recommendation. Keep the report decision-oriented, put unexpected/negative evidence first, and use no more than five evidence bullets by default.
 
 For PRs, put `Need evidence` before the code recommendation. When the need is not `Demonstrated`, lead with that result, omit repository readiness, and avoid presenting patch fixes as the primary maintainer action.
 

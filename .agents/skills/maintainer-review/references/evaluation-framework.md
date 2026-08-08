@@ -20,7 +20,7 @@ Use this reference when a claim is ambiguous, severity is disputed, or a technic
 
 ## Decision Model
 
-Treat validity, severity, and merge-worthiness as separate outputs. Also distinguish a `Preliminary assessment`, which may still require approved runtime evidence, from a final `Maintainer decision`. Do not label a provisional positive result as a verdict or final decision.
+Treat validity, severity, and merge-worthiness as separate outputs. Also distinguish a `Preliminary assessment`, which may still require approval-gated runtime work or other decision-relevant evidence, from a final `Maintainer decision`. Do not label a provisional positive result as a verdict or final decision.
 
 | Dimension | Question | Strong evidence |
 | --- | --- | --- |
@@ -29,7 +29,7 @@ Treat validity, severity, and merge-worthiness as separate outputs. Also disting
 | Consequence | What fails, and is it silent or recoverable? | Observed output/error/state and downstream effect |
 | Breadth | Which packages, runtimes, providers, and versions are affected? | Explicit path and compatibility matrix |
 | Frequency | Is it normal, intermittent, or pathological? | Repeats, deterministic preconditions, reports, or telemetry |
-| Need evidence | Is the exact scope demonstrated, merely plausible, already covered, or unsupported? | Same-scope user scenario, real-path reproduction, released compatibility requirement, violated supported contract, repeated demand, or broad consequential invariant |
+| Need evidence | Is the exact scope demonstrated, merely plausible, already covered, or unsupported? | Observed impact or a complete realistic trigger-to-material-consequence trace for prevention |
 | Unmet need | What user outcome cannot be achieved through supported behavior today, or what supported contract is violated? | Concrete scenario plus a trace showing why the closest existing path is insufficient or defective |
 | Existing capability | Can configuration, composition, cloning, callbacks, extension points, or a caller-owned layer already satisfy the outcome? | Current release code, tests, docs, and an exact supported workflow |
 | Compatibility | Is released API, package resolution, protocol, or durable state changed? | Latest release comparison and contract inspection |
@@ -82,6 +82,25 @@ Assign one status before deep implementation review:
 
 Only `Demonstrated` need can support a merge-worthy code recommendation. `Plausible but unproven` maps to `Needs evidence` or `Not worth completing`, even when the patch is technically correct and its remaining fixes are bounded. `Already covered` and `Unsupported` normally map to closure or a simpler non-core alternative.
 
+### Practical-impact gate
+
+Do not accept a change merely because desk review identifies a local logical flaw, defensive improvement, or constructible edge case. Trace the complete consequence chain:
+
+`realistic trigger -> supported execution path -> observable or durable effect`
+
+A local intermediate inconsistency, redundant operation, surprising branch, or theoretically cleaner invariant is not a demonstrated need when it has no meaningful downstream effect. Reachability, a passing new test, a small diff, and low implementation cost establish neither practical impact nor maintenance value.
+
+Use one of these evidence paths:
+
+| Evidence path | Required proof | Insufficient proof |
+| --- | --- | --- |
+| **Observed impact** | A supported scenario, real-path reproduction, or credible user report shows a meaningful user-visible, operational, compatibility, or durable-state consequence. | An internal state difference without a downstream effect, a synthetic branch, or a test that only proves the patch executes. |
+| **Material prevention** | A supported or ordinary failure path reaches the condition; the violated invariant protects against intrinsically material harm; and a complete code-path trace or realistic probe establishes the concrete consequence and how the patch prevents it. | A statement that the condition "could" cause harm, an unsupported or malformed input, a mock-only scenario, or severity language without a complete consequence chain. |
+
+A known incident, user report, frequency estimate, or production reproduction is not required for a material-prevention case. Require credible reachability and a concrete consequence such as security or privacy exposure, credential leakage, persistent data or state corruption, duplicate external side effects, an unrecoverable compatibility break, deadlock or indefinite hangs, or realistically repeatable resource exhaustion. Do not wait for those outcomes to occur before accepting a proportionate preventive fix.
+
+When the trace ends in a harmless intermediate state, fully recoverable behavior without meaningful operational cost, theoretical cleanliness, or an unsupported scenario, classify the need as `Plausible but unproven`, `Unsupported`, or `No demonstrated gap` as appropriate. Prefer `Not worth completing` or `Close` over requesting implementation refinements. Use `Needs evidence` only when one specific missing reproduction or consequence trace could realistically change the practical-impact decision.
+
 Before accepting an issue or recommending a PR, record:
 
 | Question | Required evidence |
@@ -100,7 +119,7 @@ Classify the result:
 - **No demonstrated gap**: no concrete scenario proves that existing functionality is insufficient. Request evidence or close rather than designing from the proposed mechanism.
 - **Defect in supported behavior**: the existing path violates a documented or established correctness, security, compatibility, or lifecycle contract. A workaround may affect priority or solution shape, but does not erase the defect.
 
-Passing tests for a new implementation establish feasibility and correctness, not need. A `FakeModel` response, manually constructed provider item, mock, or synthetic fixture does not establish realistic provider behavior, user reach, frequency, consequence, or demand. API symmetry and parity with an adjacent runtime are design arguments, not need evidence. A technically coherent patch can still be `Not worth completing` when the motivating scenario is hypothetical, already supported, or better solved elsewhere.
+Passing tests for a new implementation establish feasibility and correctness, not need. A `FakeModel` response, manually constructed provider item, mock, or synthetic fixture does not establish realistic provider behavior, user reach, frequency, consequence, demand, or a material preventive outcome. API symmetry and parity with an adjacent runtime are design arguments, not need evidence. A technically coherent patch can still be `Not worth completing` when the motivating scenario is hypothetical, already supported, or better solved elsewhere.
 
 Use the counterfactual maintainer test: if the PR did not already exist, would maintainers choose to file and implement the same work from the available evidence? Contributor effort lowers implementation cost but does not create product need or remove permanent maintenance cost.
 
@@ -122,7 +141,7 @@ Ask only for evidence that could change the disposition.
 
 Assess independently:
 
-1. **Need**: same-scope evidence demonstrates a concrete unmet user outcome or defect in supported behavior, and the closest supported capability cannot reasonably satisfy the scenario as-is. Do not inherit evidence from an adjacent variant or already-fixed scenario.
+1. **Need**: same-scope evidence demonstrates either observed practical impact or a material preventive outcome that the closest supported capability cannot reasonably address. Do not inherit evidence from an adjacent variant or already-fixed scenario.
 2. **Correctness**: the fix covers the claim and meaningful boundaries.
 3. **Placement**: the invariant is enforced once at the owning layer instead of duplicating existing functionality, patching locally, or moving caller- or provider-owned policy into the core SDK.
 4. **Consistency**: equivalent streaming/non-streaming, provider, runtime, serialization, resume, package, and adapter paths stay aligned.
@@ -172,17 +191,21 @@ Use a two-operation interleaving matrix during desk review:
 | `A pending -> B starts -> A fails -> B succeeds` | Can A's cleanup remove or revert anything B needs? |
 | `A pending -> B starts -> B fails -> A succeeds` | Can B's cleanup leave A successful but non-functional? |
 | `A succeeds -> B starts -> stale A completion` | Can stale A overwrite B's newer state or generation? |
+| `A snapshots -> A mutates -> B commits -> A rolls back` | Does A restore only its own state while preserving B's commit, ordering, and derived state? |
 | setup -> close/cancel -> late completion | Can late work resurrect listeners, state, tasks, or connections after teardown? |
 
 For each ordering:
 
+- Enumerate every path that can mutate the resource, including distinct public operations and wrapper or delegate paths. Choose `B` from the strongest distinct mutator rather than assuming a second invocation of `A` is sufficient.
 - Identify the resource owner before and after every suspension point.
 - Distinguish per-attempt resources from shared transport, session, cache, or listener state.
-- Require cleanup to carry an ownership token, generation, identity check, serialization guarantee, or another invariant that prevents cross-attempt disposal.
-- Compare base and head on the survivor invariant. Fewer duplicates do not justify losing the only active handler, connection, task, or state update.
-- Require a controlled interleaving test when the ordering is reachable. The test must assert both the failing operation and the surviving operation's observable behavior after all completions settle.
+- Require cleanup to carry an ownership token, generation, identity check, compare-and-swap, transaction, proven serialization guarantee, or another invariant at the actual mutation boundary that prevents cross-attempt disposal.
+- Compare base and head on the survivor invariant. Fewer duplicates do not justify losing the only active handler, connection, task, or state update. Preserving or restoring `A` does not justify deleting, reverting, reordering, or hiding `B`.
+- Require a controlled interleaving test when the ordering is reachable. The test must assert both the failing operation and the surviving operation's observable behavior after all completions settle, including agreement between persisted state and caches, indexes, flags, or other derived state.
 
 An unscoped `finally`, `catch`, close handler, cancellation callback, or rollback that mutates shared state after a suspension point is merge-blocking when another operation can still own or use that state.
+
+Do not infer exclusive access from intended usage. Treat overlapping operations as unsupported only when documentation, public typing, construction-time validation, or fail-fast runtime enforcement establishes that restriction. Do not dismiss stale cleanup as pre-existing when a patch newly makes that cleanup reachable from another failure, cancellation, retry, or interruption path.
 
 ## Better-Alternative Prompts
 
@@ -278,9 +301,9 @@ I am going to close this <issue/PR> for now. If you can provide <specific scenar
 
 ## Compact Report Variants
 
-Use `Maintainer decision` for a concluded review. Use `Preliminary assessment` when a desk review is tentatively positive but a decision-relevant runtime concern remains. `Verdict` is intentionally avoided in the report headings because it does not communicate whether the result is provisional or final.
+Use `Maintainer decision` for a concluded review. Use `Preliminary assessment` when a desk review is tentatively positive but approval-gated runtime work or another decision-relevant evidence gap remains. `Verdict` is intentionally avoided in the report headings because it does not communicate whether the result is provisional or final.
 
-### Runtime Approval Gate
+### Approval-Gated Runtime Probe
 
 ```markdown
 ## Preliminary assessment
@@ -297,11 +320,11 @@ Use `Maintainer decision` for a concluded review. Use `Preliminary assessment` w
 - Concern: <the uncertainty that could change the decision>
 - Probe: <smallest exact execution path>
 - Control: <base, release, or known-good comparison when relevant>
-- Scope: <local-only or any live-service, cost, mutation, or cleanup implications>
+- Approval boundary: <live API, credentials, external service, dependency installation, tracked repository or persistent external mutation, or materially broad, expensive, or long-running work>
 
 ## Approval request
 
-<Ask whether to run this exact probe. Do not present a final positive recommendation yet.>
+<Ask whether to cross the stated boundary for this exact probe. Do not present a final positive recommendation yet.>
 ```
 
 ### Issue
