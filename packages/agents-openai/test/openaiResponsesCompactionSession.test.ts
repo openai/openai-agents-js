@@ -726,7 +726,7 @@ describe('OpenAIResponsesCompactionSession', () => {
   });
 
   it.each(['addItems', 'popItem', 'clearSession'] as const)(
-    'orders a concurrent wrapper %s mutation after successful compaction',
+    'orders a concurrent wrapper %s mutation after an in-flight compaction request',
     async (operationName) => {
       const compactedItem = {
         type: 'message',
@@ -741,19 +741,13 @@ describe('OpenAIResponsesCompactionSession', () => {
         content: [{ type: 'output_text', text: 'newer reply' }],
       } as AgentInputItem;
 
-      class GatedReplacementSession extends MemorySession {
+      class CountingSession extends MemorySession {
         addCalls = 0;
         clearCalls = 0;
         popCalls = 0;
-        readonly replacementAddStarted = createDeferred();
-        readonly allowReplacementAdd = createDeferred();
 
         async addItems(items: AgentInputItem[]): Promise<void> {
           this.addCalls += 1;
-          if (this.addCalls === 1) {
-            this.replacementAddStarted.resolve();
-            await this.allowReplacementAdd.promise;
-          }
           await super.addItems(items);
         }
 
@@ -768,7 +762,7 @@ describe('OpenAIResponsesCompactionSession', () => {
         }
       }
 
-      const underlyingSession = new GatedReplacementSession({
+      const underlyingSession = new CountingSession({
         initialItems: [
           {
             type: 'message',
@@ -777,13 +771,19 @@ describe('OpenAIResponsesCompactionSession', () => {
           },
         ] as AgentInputItem[],
       });
-      const compact = vi.fn().mockResolvedValue({
-        output: [compactedItem],
-        usage: {
-          input_tokens: 1,
-          output_tokens: 1,
-          total_tokens: 2,
-        },
+      const compactRequestStarted = createDeferred();
+      const allowCompactResponse = createDeferred();
+      const compact = vi.fn(async () => {
+        compactRequestStarted.resolve();
+        await allowCompactResponse.promise;
+        return {
+          output: [compactedItem],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+          },
+        };
       });
       const decisionSnapshots: Array<{
         compactionCandidateItems: AgentInputItem[];
@@ -803,7 +803,7 @@ describe('OpenAIResponsesCompactionSession', () => {
       });
 
       const compaction = session.runCompaction({ force: true });
-      await underlyingSession.replacementAddStarted.promise;
+      await compactRequestStarted.promise;
       const callsBeforeMutation = {
         addCalls: underlyingSession.addCalls,
         clearCalls: underlyingSession.clearCalls,
@@ -823,7 +823,7 @@ describe('OpenAIResponsesCompactionSession', () => {
         popCalls: underlyingSession.popCalls,
       }).toEqual(callsBeforeMutation);
 
-      underlyingSession.allowReplacementAdd.resolve();
+      allowCompactResponse.resolve();
       await compaction;
       const mutationResult = await mutation;
 

@@ -151,6 +151,12 @@ export class OpenAIResponsesCompactionSession
   async runCompaction(
     args: OpenAIResponsesCompactionArgs = {},
   ): Promise<OpenAIResponsesCompactionResult | null> {
+    return this.runMutationOperation(() => this.runCompactionOperation(args));
+  }
+
+  private async runCompactionOperation(
+    args: OpenAIResponsesCompactionArgs,
+  ): Promise<OpenAIResponsesCompactionResult | null> {
     this.responseId = args.responseId ?? this.responseId ?? undefined;
     if (args.store !== undefined) {
       this.lastStore = args.store;
@@ -207,15 +213,13 @@ export class OpenAIResponsesCompactionSession
     const outputItems = normalizeCompactionOutputItems(compacted.output ?? []);
     const outputCompactionCandidateItems =
       selectCompactionCandidateItems(outputItems);
-    await this.runMutationOperation(async () => {
-      const previousItems = await this.getAllUnderlyingSessionItems();
-      await this.replaceUnderlyingSessionItems({
-        outputItems,
-        previousItems,
-      });
-      this.compactionCandidateItems = outputCompactionCandidateItems;
-      this.sessionItems = outputItems;
+    const previousItems = await this.getAllUnderlyingSessionItems();
+    await this.replaceUnderlyingSessionItems({
+      outputItems,
+      previousItems,
     });
+    this.compactionCandidateItems = outputCompactionCandidateItems;
+    this.sessionItems = outputItems;
 
     logger.debug('compact: done %o', {
       responseId: this.responseId,
