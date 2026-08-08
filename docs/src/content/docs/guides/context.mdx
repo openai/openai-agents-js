@@ -9,7 +9,7 @@ import localContextExample from '../../../../../examples/docs/context/localConte
 Context is an overloaded term. There are two main classes of context you might care about:
 
 1. **Local context** that your code can access during a run: dependencies or data needed by tools, callbacks like `onHandoff`, and lifecycle hooks.
-2. **Agent/LLM context** that the language model can see when generating a response.
+2. **LLM-visible context** that the language model can see when generating a response.
 
 ## Local context
 
@@ -60,11 +60,11 @@ If you later serialize a [`RunState`](/openai-agents-js/guides/results#interrupt
 
 If you subclass `RunContext`, verify that nested or derived runs still preserve any subclass-specific instance state you rely on. The SDK creates forked contexts internally during nested runs.
 
-## Agent/LLM context
+## LLM-visible context
 
 When the LLM is called, the only data it can see comes from the conversation history. To make additional information available you have a few options:
 
 1. Add it to the Agent `instructions` – also known as a system or developer message. This can be a static string or a function that receives the context and returns a string.
 2. Include it in the `input` when calling `Runner.run()`. This is similar to the instructions technique but lets you place the message lower in the [chain of command](https://cdn.openai.com/spec/model-spec-2024-05-08.html#follow-the-chain-of-command).
-3. Expose it via function tools so the LLM can fetch data on demand.
+3. Expose the additional information through function tools so the LLM can fetch that information on demand.
 4. Use retrieval or web search tools to ground responses in relevant data from files, databases, or the web.

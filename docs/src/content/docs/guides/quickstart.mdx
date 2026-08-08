@@ -71,7 +71,7 @@ You can give an agent tools to use to look up information or perform actions.
 
 ## Add a few more agents
 
-Additional agents can be defined similarly to break down problems into smaller parts and have your agent be more focused on the task at hand. It also allows you to use different models for different problems by defining the model on the agent.
+Define additional specialist agents to break down problems into smaller parts, keep each specialist focused on one task, and use different models for different problems.
 
 <Code
   lang="typescript"
@@ -81,7 +81,7 @@ Additional agents can be defined similarly to break down problems into smaller p
 
 ## Define your handoffs
 
-In order to orchestrate between multiple agents, you can define `handoffs` for an agent. This will enable the agent to pass the conversation on to the next agent. This will happen automatically during the course of a run.
+To orchestrate multiple agents, define an agent's `handoffs`. When a handoff is selected during a run, the runner automatically transfers the conversation to the target agent.
 
 <Code lang="typescript" code={defineHandoffsExample} title="Define handoffs" />
 
@@ -105,7 +105,7 @@ Let's put it all together into one full example. Place this into your `index.js`
 
 ## View your traces
 
-The Agents SDK will automatically generate traces for you. This allows you to review how your agents are operating, what tools they called or which agent they handed off to.
+The Agents SDK automatically generates traces. You can use these traces to review how your agents are operating, what tools they called, and which agents received handoffs.
 
 To review what happened during your agent run, navigate to the [Trace viewer in the OpenAI Dashboard](https://platform.openai.com/traces).
 

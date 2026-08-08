@@ -231,11 +231,11 @@ Under the hood the SDK:
 - Runs the sub‑agent with that input when the tool is called.
 - Returns either the last message or the output extracted by `customOutputExtractor`.
 
-When you run an agent as a tool, Agents SDK creates a runner with the default settings and run the agent with it within the function execution. If you want to provide any properties of `runConfig` or `runOptions`, you can pass them to the `asTool()` method to customize the runner's behavior.
+When an agent runs as a tool, the Agents SDK creates a `Runner` and uses that runner to execute the agent within the function-tool call. Pass `runConfig` to configure the nested runner and `runOptions` to configure the nested run.
 
 You can also set `needsApproval` and `isEnabled` on the agent tool via `asTool()` options to integrate with human‑in‑the‑loop flows and conditional tool availability.
 
-Inside `customOutputExtractor`, use `result.agentToolInvocation` to inspect the current `Agent.asTool()` invocation. In that callback the result always comes from `Agent.asTool()`, so `agentToolInvocation` is always defined and exposes `toolName`, `toolCallId`, and `toolArguments`. Use `result.runContext` for the regular app context and `toolInput`. This metadata is scoped to the current nested invocation and is not serialized into `RunState`.
+Inside `customOutputExtractor`, use `result.agentToolInvocation` to inspect the current `Agent.asTool()` invocation. In that callback the result always comes from `Agent.asTool()`, so `agentToolInvocation` is always defined and exposes `toolName`, `toolCallId`, and `toolArguments`. Use `result.runContext.context` for the application context. With the default single-`input` schema, `result.runContext.toolInput` is undefined; use `result.agentToolInvocation.toolArguments` to read the invocation arguments instead. When you configure custom `parameters` or an `inputBuilder`, `result.runContext.toolInput` contains the captured structured arguments. The `agentToolInvocation` metadata is scoped to the current nested invocation and is not serialized into `RunState`.
 
 <Code
   lang="typescript"

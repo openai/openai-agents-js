@@ -60,12 +60,12 @@ The `Agent` constructor takes a single configuration object. The most commonlyâ€
 | `model` | no | Model name **or** a custom [`Model`](/openai-agents-js/openai/agents/interfaces/model/) implementation. |
 | `modelSettings` | no | Tuning parameters (temperature, top_p, etc.). See [Models](/openai-agents-js/guides/models#modelsettings). If the properties you need arenâ€™t at the top level, you can include them under `providerData`. |
 | `tools` | no | Array of [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) instances the model can call. See [Tools](/openai-agents-js/guides/tools). |
-| `mcpServers` | no | MCP-backed tools for the agent. See the [MCP guide](/openai-agents-js/guides/mcp). |
+| `mcpServers` | no | MCP servers that provide tools to the agent. See the [MCP guide](/openai-agents-js/guides/mcp). |
 | `mcpConfig` | no | Options for local MCP tools, such as strict schemas, error handling, and server-prefixed tool names. See [Agent-level MCP configuration](/openai-agents-js/guides/mcp#agent-level-mcp-configuration). |
 | `inputGuardrails` | no | Guardrails applied to the first user input for this agent chain. See [Guardrails](/openai-agents-js/guides/guardrails). |
 | `outputGuardrails` | no | Guardrails applied to the final output for this agent. See [Guardrails](/openai-agents-js/guides/guardrails). |
 | `outputType` | no | Return structured output instead of plain text. See [Output types](#output-types) and [Results](/openai-agents-js/guides/results#final-output). |
-| `toolUseBehavior` | no | Control whether function-tool results loop back to the model or finish the run. See [Forcing tool use](#forcing-tool-use). |
+| `toolUseBehavior` | no | Control whether the SDK sends function-tool results back to the model or uses a function-tool result as the run's final output. See [Forcing tool use](#forcing-tool-use). |
 | `resetToolChoice` | no | Reset `toolChoice` to the default after a tool call (default: `true`) to prevent tool-use loops. See [Forcing tool use](#forcing-tool-use). |
 | `handoffOutputTypeWarningEnabled` | no | Emit a warning when handoff output types differ (default: `true`). See [Results](/openai-agents-js/guides/results#final-output). |
 
