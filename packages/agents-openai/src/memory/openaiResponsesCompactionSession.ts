@@ -125,6 +125,7 @@ export class OpenAIResponsesCompactionSession
   ) => boolean | Promise<boolean>;
   private compactionCandidateItems: AgentInputItem[] | undefined;
   private sessionItems: AgentInputItem[] | undefined;
+  private mutationOperation: Promise<void> = Promise.resolve();
 
   constructor(options: OpenAIResponsesCompactionSessionOptions) {
     this.client = resolveClient(options);
@@ -149,6 +150,12 @@ export class OpenAIResponsesCompactionSession
 
   async runCompaction(
     args: OpenAIResponsesCompactionArgs = {},
+  ): Promise<OpenAIResponsesCompactionResult | null> {
+    return this.runMutationOperation(() => this.runCompactionOperation(args));
+  }
+
+  private async runCompactionOperation(
+    args: OpenAIResponsesCompactionArgs,
   ): Promise<OpenAIResponsesCompactionResult | null> {
     this.responseId = args.responseId ?? this.responseId ?? undefined;
     if (args.store !== undefined) {
@@ -204,19 +211,21 @@ export class OpenAIResponsesCompactionSession
     const compacted = await this.client.responses.compact(compactRequest);
 
     const outputItems = normalizeCompactionOutputItems(compacted.output ?? []);
+    const outputCompactionCandidateItems =
+      selectCompactionCandidateItems(outputItems);
     const previousItems = await this.getAllUnderlyingSessionItems();
     await this.replaceUnderlyingSessionItems({
       outputItems,
       previousItems,
     });
-    this.compactionCandidateItems = selectCompactionCandidateItems(outputItems);
+    this.compactionCandidateItems = outputCompactionCandidateItems;
     this.sessionItems = outputItems;
 
     logger.debug('compact: done %o', {
       responseId: this.responseId,
       compactionMode: resolvedMode,
       outputItemCount: outputItems.length,
-      candidateCount: this.compactionCandidateItems.length,
+      candidateCount: outputCompactionCandidateItems.length,
     });
 
     return {
@@ -237,55 +246,70 @@ export class OpenAIResponsesCompactionSession
       return;
     }
 
-    await this.underlyingSession.addItems(items);
-    if (this.compactionCandidateItems) {
-      const candidates = selectCompactionCandidateItems(items);
-      if (candidates.length > 0) {
-        this.compactionCandidateItems = [
-          ...this.compactionCandidateItems,
-          ...candidates,
-        ];
+    await this.runMutationOperation(async () => {
+      await this.underlyingSession.addItems(items);
+      if (this.compactionCandidateItems) {
+        const candidates = selectCompactionCandidateItems(items);
+        if (candidates.length > 0) {
+          this.compactionCandidateItems = [
+            ...this.compactionCandidateItems,
+            ...candidates,
+          ];
+        }
       }
-    }
-    if (this.sessionItems) {
-      this.sessionItems = [...this.sessionItems, ...items];
-    }
+      if (this.sessionItems) {
+        this.sessionItems = [...this.sessionItems, ...items];
+      }
+    });
   }
 
   async popItem() {
-    const popped = await this.underlyingSession.popItem();
-    if (!popped) {
-      return popped;
-    }
-    if (this.sessionItems) {
-      const index = this.sessionItems.lastIndexOf(popped);
-      if (index >= 0) {
-        this.sessionItems.splice(index, 1);
-      } else {
-        this.sessionItems = await this.underlyingSession.getItems();
+    return this.runMutationOperation(async () => {
+      const popped = await this.underlyingSession.popItem();
+      if (!popped) {
+        return popped;
       }
-    }
-    if (this.compactionCandidateItems) {
-      const isCandidate = selectCompactionCandidateItems([popped]).length > 0;
-      if (isCandidate) {
-        const index = this.compactionCandidateItems.indexOf(popped);
+      if (this.sessionItems) {
+        const index = this.sessionItems.lastIndexOf(popped);
         if (index >= 0) {
-          this.compactionCandidateItems.splice(index, 1);
+          this.sessionItems.splice(index, 1);
         } else {
-          // Fallback when the popped item reference differs from stored candidates.
-          this.compactionCandidateItems = selectCompactionCandidateItems(
-            await this.underlyingSession.getItems(),
-          );
+          this.sessionItems = await this.underlyingSession.getItems();
         }
       }
-    }
-    return popped;
+      if (this.compactionCandidateItems) {
+        const isCandidate = selectCompactionCandidateItems([popped]).length > 0;
+        if (isCandidate) {
+          const index = this.compactionCandidateItems.indexOf(popped);
+          if (index >= 0) {
+            this.compactionCandidateItems.splice(index, 1);
+          } else {
+            // Fallback when the popped item reference differs from stored candidates.
+            this.compactionCandidateItems = selectCompactionCandidateItems(
+              await this.underlyingSession.getItems(),
+            );
+          }
+        }
+      }
+      return popped;
+    });
   }
 
   async clearSession() {
-    await this.underlyingSession.clearSession();
-    this.compactionCandidateItems = [];
-    this.sessionItems = [];
+    await this.runMutationOperation(async () => {
+      await this.underlyingSession.clearSession();
+      this.compactionCandidateItems = [];
+      this.sessionItems = [];
+    });
+  }
+
+  private runMutationOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.mutationOperation.then(operation);
+    this.mutationOperation = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   private async getAllUnderlyingSessionItems(): Promise<AgentInputItem[]> {

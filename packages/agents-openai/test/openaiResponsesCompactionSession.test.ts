@@ -9,6 +9,14 @@ import {
 import { OpenAIResponsesCompactionSession } from '../src';
 import { OPENAI_SESSION_API } from '../src/memory/openaiSessionApi';
 
+function createDeferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 class PartiallyFailingReplacementSession extends MemorySession {
   addCalls = 0;
   clearCalls = 0;
@@ -607,6 +615,237 @@ describe('OpenAIResponsesCompactionSession', () => {
     ]);
   });
 
+  it('restores history before a newer wrapper addItems mutation', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const history = [
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'original' }],
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'original reply' }],
+      },
+    ] as AgentInputItem[];
+    const newerItem = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'newer reply' }],
+    } as AgentInputItem;
+
+    class GatedRollbackSession extends MemorySession {
+      addCalls = 0;
+      clearCalls = 0;
+      readonly restoreClearStarted = createDeferred();
+      readonly allowRestoreClear = createDeferred();
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        this.addCalls += 1;
+        if (this.addCalls === 1) {
+          await super.addItems(items.slice(0, 1));
+          throw new Error('replacement failed');
+        }
+        await super.addItems(items);
+      }
+
+      async clearSession(): Promise<void> {
+        this.clearCalls += 1;
+        if (this.clearCalls === 2) {
+          this.restoreClearStarted.resolve();
+          await this.allowRestoreClear.promise;
+        }
+        await super.clearSession();
+      }
+    }
+
+    const underlyingSession = new GatedRollbackSession({
+      initialItems: history,
+    });
+    const compact = vi.fn().mockResolvedValue({
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'compacted' }],
+        },
+      ],
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
+      },
+    });
+    const decisionSnapshots: Array<{
+      compactionCandidateItems: AgentInputItem[];
+      sessionItems: AgentInputItem[];
+    }> = [];
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      underlyingSession,
+      compactionMode: 'input',
+      shouldTriggerCompaction: ({ compactionCandidateItems, sessionItems }) => {
+        decisionSnapshots.push({ compactionCandidateItems, sessionItems });
+        return false;
+      },
+    });
+
+    try {
+      const compaction = session.runCompaction({ force: true });
+      await underlyingSession.restoreClearStarted.promise;
+
+      const newerWrite = session.addItems([newerItem]);
+      expect(underlyingSession.addCalls).toBe(1);
+
+      underlyingSession.allowRestoreClear.resolve();
+
+      await expect(compaction).rejects.toThrow('replacement failed');
+      await newerWrite;
+
+      const expectedItems = [...history, newerItem];
+      await expect(underlyingSession.getItems()).resolves.toEqual(
+        expectedItems,
+      );
+      expect(underlyingSession.clearCalls).toBe(2);
+      expect(underlyingSession.addCalls).toBe(3);
+
+      await expect(session.runCompaction()).resolves.toBeNull();
+      expect(decisionSnapshots).toEqual([
+        {
+          compactionCandidateItems: [history[1], newerItem],
+          sessionItems: expectedItems,
+        },
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each(['addItems', 'popItem', 'clearSession'] as const)(
+    'orders a concurrent wrapper %s mutation after an in-flight compaction request',
+    async (operationName) => {
+      const compactedItem = {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'compacted' }],
+      } as AgentInputItem;
+      const newerItem = {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'newer reply' }],
+      } as AgentInputItem;
+
+      class CountingSession extends MemorySession {
+        addCalls = 0;
+        clearCalls = 0;
+        popCalls = 0;
+
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          this.addCalls += 1;
+          await super.addItems(items);
+        }
+
+        async clearSession(): Promise<void> {
+          this.clearCalls += 1;
+          await super.clearSession();
+        }
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          this.popCalls += 1;
+          return super.popItem();
+        }
+      }
+
+      const underlyingSession = new CountingSession({
+        initialItems: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'original' }],
+          },
+        ] as AgentInputItem[],
+      });
+      const compactRequestStarted = createDeferred();
+      const allowCompactResponse = createDeferred();
+      const compact = vi.fn(async () => {
+        compactRequestStarted.resolve();
+        await allowCompactResponse.promise;
+        return {
+          output: [compactedItem],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+          },
+        };
+      });
+      const decisionSnapshots: Array<{
+        compactionCandidateItems: AgentInputItem[];
+        sessionItems: AgentInputItem[];
+      }> = [];
+      const session = new OpenAIResponsesCompactionSession({
+        client: { responses: { compact } } as any,
+        underlyingSession,
+        compactionMode: 'input',
+        shouldTriggerCompaction: ({
+          compactionCandidateItems,
+          sessionItems,
+        }) => {
+          decisionSnapshots.push({ compactionCandidateItems, sessionItems });
+          return false;
+        },
+      });
+
+      const compaction = session.runCompaction({ force: true });
+      await compactRequestStarted.promise;
+      const callsBeforeMutation = {
+        addCalls: underlyingSession.addCalls,
+        clearCalls: underlyingSession.clearCalls,
+        popCalls: underlyingSession.popCalls,
+      };
+
+      const mutation =
+        operationName === 'addItems'
+          ? session.addItems([newerItem])
+          : operationName === 'popItem'
+            ? session.popItem()
+            : session.clearSession();
+
+      expect({
+        addCalls: underlyingSession.addCalls,
+        clearCalls: underlyingSession.clearCalls,
+        popCalls: underlyingSession.popCalls,
+      }).toEqual(callsBeforeMutation);
+
+      allowCompactResponse.resolve();
+      await compaction;
+      const mutationResult = await mutation;
+
+      const expectedItems =
+        operationName === 'addItems' ? [compactedItem, newerItem] : [];
+      await expect(underlyingSession.getItems()).resolves.toEqual(
+        expectedItems,
+      );
+      if (operationName === 'popItem') {
+        expect(mutationResult).toEqual(compactedItem);
+      }
+
+      await expect(session.runCompaction()).resolves.toBeNull();
+      expect(decisionSnapshots).toEqual([
+        {
+          compactionCandidateItems: expectedItems,
+          sessionItems: expectedItems,
+        },
+      ]);
+    },
+  );
+
   it('restores history when replacement addItems fails', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const history = [
@@ -765,6 +1004,18 @@ describe('OpenAIResponsesCompactionSession', () => {
     expect(await underlyingSession.getItems()).toEqual(history);
     expect(underlyingSession.clearCalls).toBe(1);
     expect(underlyingSession.addCalls).toBe(0);
+
+    const newerItem = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'newer reply' }],
+    } as AgentInputItem;
+    await session.addItems([newerItem]);
+    await expect(underlyingSession.getItems()).resolves.toEqual([
+      ...history,
+      newerItem,
+    ]);
   });
 
   it('restores history when clearSession fails after mutation', async () => {
@@ -947,6 +1198,10 @@ describe('OpenAIResponsesCompactionSession', () => {
       );
       expect(underlyingSession.clearCalls).toBe(2);
       expect(underlyingSession.addCalls).toBe(2);
+
+      await session.clearSession();
+      await expect(underlyingSession.getItems()).resolves.toEqual([]);
+      expect(underlyingSession.clearCalls).toBe(3);
     } finally {
       warn.mockRestore();
     }
