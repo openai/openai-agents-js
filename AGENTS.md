@@ -279,6 +279,7 @@ Before opening a pull request, always run `$changeset-validation` to ensure all 
 
 ### Pull Request & Commit Guidelines
 
+- In copy-ready GitHub text, use native issue and pull-request references: exactly `#123` for this repository and `owner/repo#123` for another repository. Do not qualify same-repository references as `openai/openai-agents-js#123`. Preserve closing forms such as `Fixes #123` or `Resolves #123`. Never wrap these references in Markdown links such as `[PR #123](https://github.com/owner/repo/pull/123)` or `[#123](...)`; those Codex-friendly links require manual cleanup after pasting into GitHub. Use descriptive Markdown links only for external resources or GitHub targets that cannot be expressed as a native issue or pull-request reference.
 - Use **Conventional Commits**:
   - `feat`: new feature
   - `fix`: bug fix

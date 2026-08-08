@@ -37,9 +37,10 @@ Produce the PR-ready summary required in this repository after eligible work is 
 4. Summarize changes in 1–3 short sentences using the top five paths and stats from the committed, staged, and unstaged diffs. Explicitly call out untracked files because `--stat` does not include them. Use commit messages as supporting context, not as a substitute for inspecting the committed diff.
 5. Choose the lead verb for the description: feature → `adds`, bug fix → `fixes`, refactor/perf → `improves` or `updates`, docs-only → `updates`.
 6. Suggest a branch name. If already off `main`, keep it; otherwise propose `feat/<slug>`, `fix/<slug>`, or `docs/<slug>` based on the primary area (for example `docs/pr-draft-summary-guidance`).
-7. If the current branch matches `issue-<number>` (digits only), keep that branch suggestion. When an issue number is present, reference `https://github.com/openai/openai-agents-js/issues/<number>` and include an auto-closing line such as `This pull request resolves #<number>.` Do not block if the issue cannot be fetched.
-8. Draft the PR title and description using the template below.
-9. Output only the block in "Output Format". Keep any surrounding status note minimal and in English.
+7. If the current branch matches `issue-<number>` (digits only), keep that branch suggestion. When an issue number is present, use the native same-repository reference `#<number>` and include an auto-closing line such as `This pull request resolves #<number>.`. Do not add the explicit issue URL or wrap the reference in a Markdown link. Do not block if the issue cannot be fetched.
+8. Draft the PR title and description using the template below. Apply the repository-wide GitHub paste-readiness rule: use exactly `#123` for same-repository issues or PRs and `owner/repo#123` for cross-repository references; never emit `[PR #123](https://github.com/owner/repo/pull/123)`, `[#123](...)`, Codex navigation links, local file links, Codex-only citation markers or footnotes, or app directives in the copy-ready block. Preserve ordinary descriptive links to API docs, design notes, and other targets without native GitHub issue or pull-request syntax.
+9. Normalize references before returning the block: replace every same-repository URL or `openai/openai-agents-js#<number>` reference with `#<number>`, replace every cross-repository issue or pull-request URL with `owner/repo#<number>`, then rescan the full block. Do not return it while a Markdown-linked issue or pull-request label, a same-repository qualified reference, or a bare GitHub issue or pull-request URL remains.
+10. Output only the block in "Output Format". Keep any surrounding status note minimal and in English.
 
 ## Output Format
 

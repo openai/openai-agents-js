@@ -197,6 +197,8 @@ When existing functionality or a better alternative materially affects the decis
 
 When recommending closure, more evidence, focused changes, or superseding a PR, append a polite, complete, copy-paste-ready English maintainer comment. Include only merge-blocking work in its required-action paragraph. Do not produce a line-by-line review unless requested, equate passing tests with merge-worthiness, or equate a logically correct patch with practical value.
 
+Before returning any maintainer comment draft, perform a GitHub paste-readiness pass using the repository-wide rule in `AGENTS.md` and the detailed guidance in `references/evaluation-framework.md`. In the draft, use `#123` for same-repository issues or PRs and `owner/repo#123` for cross-repository references. Remove Markdown-linked issue or PR labels, Codex navigation links, local file links, Codex-only citation markers or footnotes, and app directives from the copy-ready draft. Preserve ordinary descriptive links to API docs, design notes, and other targets without native GitHub issue or pull-request syntax.
+
 For request-changes comments, phrase maintainer-owned semantic decisions as a directive, not as a menu. It is fine to mention the rejected alternative briefly in the rationale, but the requested action must identify the chosen behavior, scope, or compatibility boundary. Use "please do X because..." instead of "either do X or Y" when X versus Y changes the SDK contract or user-visible semantics.
 
 ## Resource
