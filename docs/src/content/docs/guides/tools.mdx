@@ -235,7 +235,7 @@ When an agent runs as a tool, the Agents SDK creates a `Runner` and uses that ru
 
 You can also set `needsApproval` and `isEnabled` on the agent tool via `asTool()` options to integrate with human‑in‑the‑loop flows and conditional tool availability.
 
-Inside `customOutputExtractor`, use `result.agentToolInvocation` to inspect the current `Agent.asTool()` invocation. In that callback the result always comes from `Agent.asTool()`, so `agentToolInvocation` is always defined and exposes `toolName`, `toolCallId`, and `toolArguments`. Use `result.runContext.context` for the application context and `result.runContext.toolInput` for the nested invocation's tool input. The `agentToolInvocation` metadata is scoped to the current nested invocation and is not serialized into `RunState`.
+Inside `customOutputExtractor`, use `result.agentToolInvocation` to inspect the current `Agent.asTool()` invocation. In that callback the result always comes from `Agent.asTool()`, so `agentToolInvocation` is always defined and exposes `toolName`, `toolCallId`, and `toolArguments`. Use `result.runContext.context` for the application context. With the default single-`input` schema, `result.runContext.toolInput` is undefined; use `result.agentToolInvocation.toolArguments` to read the invocation arguments instead. When you configure custom `parameters` or an `inputBuilder`, `result.runContext.toolInput` contains the captured structured arguments. The `agentToolInvocation` metadata is scoped to the current nested invocation and is not serialized into `RunState`.
 
 <Code
   lang="typescript"
