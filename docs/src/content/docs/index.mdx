@@ -25,7 +25,7 @@ The [OpenAI Agents SDK for TypeScript](https://github.com/openai/openai-agents-j
 - **Agents**, which are LLMs equipped with instructions and tools
 - **Sandbox agents**, which pair agents with isolated filesystem workspaces, shell commands, file editing, snapshots, and sandbox session state
 - **Realtime agents**, which support low-latency spoken interactions with tools, guardrails, handoffs, and conversation history
-- **Agents as tools / Handoffs**, which allow agents to delegate to other agents for specific tasks
+- **Agents as tools and handoffs**, which allow agents to delegate to other agents for specific tasks
 - **Guardrails**, which enable the inputs to agents to be validated
 
 In combination with TypeScript, these primitives are powerful enough to express complex relationships between tools and agents, give agents a real workspace when they need one, and allow you to build real-world applications without a steep learning curve. In addition, the SDK comes with built-in **tracing** that lets you visualize and debug your agentic flows, as well as evaluate them and even fine-tune models for your application.
@@ -43,10 +43,10 @@ Here are the main features of the SDK:
 - **Sandbox execution**: Run agents with isolated filesystem workspaces, shell commands, file editing, snapshots, and sandbox session state when the work needs a workspace.
 - **Realtime Agents**: Build low-latency spoken interactions with features such as automatic interruption detection, context management, guardrails, and more.
 - **TypeScript-first**: Orchestrate and chain agents using native TypeScript language features, without needing to learn new abstractions.
-- **Agents as tools / Handoffs**: A powerful mechanism for coordinating and delegating work across multiple agents.
+- **Agents as tools and handoffs**: A powerful mechanism for coordinating and delegating work across multiple agents.
 - **Guardrails**: Run input validation and safety checks in parallel with agent execution, and fail fast when checks do not pass.
 - **Function tools**: Turn any TypeScript function into a tool with automatic schema generation and Zod-powered validation.
-- **MCP server tool calling**: Built-in MCP server tool integration that works the same way as function tools.
+- **MCP server tool calling**: Built-in integration that exposes tools from MCP servers to agents alongside function tools.
 - **Sessions**: A persistent memory layer for maintaining working context within an agent loop.
 - **Human in the loop**: Built-in mechanisms for involving humans across agent runs.
 - **Tracing**: Built-in tracing for visualizing, debugging, and monitoring workflows, with support for the OpenAI suite of evaluation, fine-tuning, and distillation tools.

@@ -78,7 +78,7 @@ The additional options are:
 
 ### Streaming
 
-Streaming allows you to additionally receive streaming events as the LLM runs. Once the stream is started, the `StreamedRunResult` will contain the complete information about the run, including all the new outputs produced. You can iterate over the streaming events using a `for await` loop. Read more in the [streaming guide](/openai-agents-js/guides/streaming).
+Streaming additionally exposes events while the LLM runs. A `StreamedRunResult` accumulates information as the run proceeds. After the result's `completed` promise resolves, the result's summary properties include all newly produced outputs. You can iterate over the streaming events using a `for await` loop. Read more in the [streaming guide](/openai-agents-js/guides/streaming).
 
 ### Run config
 

@@ -19,7 +19,7 @@ import sdkOwnedLifecycleExample from '../../../../../../examples/docs/sandbox-ag
 
 Modern agents work best when they can operate on real files in a filesystem. **Sandbox Agents** can make use of specialized tools and shell commands to search over and manipulate large document sets, edit files, generate artifacts, and run commands. The sandbox provides the model with a persistent workspace that the agent can use to do work on your behalf. Sandbox Agents in the Agents SDK help you run agents paired with a sandbox environment, making it easy to get the right files on the filesystem and orchestrate sandboxes to start, stop, and resume tasks at scale.
 
-You define the workspace around the data the agent needs. It can start from GitHub repos, local files and directories, synthetic task files, remote filesystems such as S3 or Azure Blob Storage, and other sandbox inputs you provide.
+You define the workspace around the data the agent needs. A fresh workspace can be populated from GitHub repos, local files and directories, synthetic task files, remote filesystems such as S3 or Azure Blob Storage, and other sandbox inputs you provide.
 
 <figure class="sandbox-harness-image">
   <img src={harnessWithCompute.src} alt="Sandbox agent harness with compute" />
@@ -153,7 +153,7 @@ Sandbox client choice, sandbox-session reuse, manifest override, and snapshot se
 
 `defaultManifest` is the default workspace used when the runner creates a fresh sandbox session for this agent. Pass either a `Manifest` instance or the same init object you would pass to `new Manifest(...)`. Use it for the files, repos, helper material, output directories, and mounts the agent should usually start with.
 
-This is only the default. A run can override it with `sandbox.manifest`, and a reused or resumed sandbox session keeps its existing workspace state.
+`defaultManifest` provides only the default workspace. A run can override `defaultManifest` with `sandbox.manifest`, and a reused or resumed sandbox session keeps its existing workspace state.
 
 <Code lang="typescript" code={manifestExample} title="Define a manifest" />
 

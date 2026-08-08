@@ -97,7 +97,7 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 ### Repo Structure & Important Files
 
 - `packages/agents-core/`, `packages/agents-openai/`, `packages/agents-realtime/`, `packages/agents-extensions/`: Each has its own `package.json`, `src/`, `test/`, and build scripts.
-- `docs/`: Documentation source; develop with `pnpm docs:dev` or build with `pnpm docs:build`. Translated docs under `docs/src/content/docs/ja`, `docs/src/content/docs/ko`, and `docs/src/content/docs/zh` are generated via `pnpm docs:translate`; do not edit them manually.
+- `docs/`: Documentation source; develop with `pnpm docs:dev` or build with `pnpm docs:build`. Write and review authored English source docs for reliable translation: explicitly name actors, objects, and lifecycle subjects; avoid ambiguous pronouns and slash-compressed concepts; preserve exact API identifiers and established SDK terminology; and do not weaken or strengthen technical claims merely to simplify translation. Translated docs under `docs/src/content/docs/ja`, `docs/src/content/docs/ko`, and `docs/src/content/docs/zh` are generated via `pnpm docs:translate`; do not edit them manually.
 - `examples/`: Subdirectories (e.g. `basic`, `agent-patterns`) with their own `package.json` and start scripts.
 - `scripts/dev.mts`: Runs concurrent build-watchers and the docs dev server (`pnpm dev`).
 - `scripts/embedMeta.ts`: Generates `src/metadata.ts` for each package before build.

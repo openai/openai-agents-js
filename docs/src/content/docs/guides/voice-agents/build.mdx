@@ -97,7 +97,7 @@ The underlying API behavior still matters:
 
 At the SDK layer, `await session.connect()` means "the transport is ready enough to start the conversation", but the exact point differs by transport:
 
-- In the default browser WebRTC transport, the SDK sends the initial `session.update` as soon as the data channel opens and tries to wait for the corresponding `session.updated` event before resolving `connect()`. This is there to avoid audio reaching the server before your instructions, tools, and modalities are applied. If that acknowledgement never arrives, `connect()` falls back to resolving after a short timeout.
+- In the default browser WebRTC transport, the SDK sends the initial `session.update` as soon as the data channel opens and tries to wait for the corresponding `session.updated` event before resolving `connect()`. The WebRTC transport waits for this acknowledgement to avoid audio reaching the server before your instructions, tools, and modalities are applied. If that acknowledgement never arrives, `connect()` falls back to resolving after a short timeout.
 - In the default server-side WebSocket transport, `connect()` resolves once the socket is open and the initial config has been sent. The matching `session.updated` event can therefore arrive after `connect()` has already resolved.
 
 If you need the raw event model, read the official [Realtime conversations guide](https://developers.openai.com/api/docs/guides/realtime-conversations/) alongside this page.
@@ -156,7 +156,7 @@ There are two common cases:
 1. If you disable VAD entirely with `audio.input.turnDetection = null`, you are responsible for committing audio turns and then sending `response.create`.
 2. If you keep VAD enabled but set `turnDetection.interruptResponse = false` and `turnDetection.createResponse = false`, the API still detects turns but leaves response creation up to you.
 
-That second pattern is useful when you want to inspect or moderate user input before the model responds. It matches the official [Realtime conversations guidance on disabling automatic responses](https://developers.openai.com/api/docs/guides/realtime-conversations/#keep-vad-but-disable-automatic-responses).
+Keeping VAD enabled while setting both `turnDetection.interruptResponse` and `turnDetection.createResponse` to `false` is useful when you want to inspect or moderate user input before the model responds. This configuration matches the official [Realtime conversations guidance on disabling automatic responses](https://developers.openai.com/api/docs/guides/realtime-conversations/#keep-vad-but-disable-automatic-responses).
 
 ## Agent capabilities
 
@@ -192,7 +192,7 @@ The current filtered MCP tool list is also available as `session.availableMcpToo
 
 Hosted MCP setup is easiest to reason about if you treat secure server selection, headers, and approvals as pre-connect configuration. Before `RealtimeSession.connect()` opens the transport, the SDK resolves the active agent's hosted MCP tool definitions and includes the supported MCP fields in the initial session config it sends to the Realtime API.
 
-That timing matters most in browser WebRTC apps. The ephemeral client secret is always minted on your server, so any hosted MCP credentials or custom `headers` that must stay secret should be attached in that server-side `POST /v1/realtime/client_secrets` request as part of the initial `session` payload. Do not put long-lived credentials in browser code and plan to add them later after `connect()` starts.
+Providing secure hosted MCP configuration before `connect()` matters most in browser WebRTC apps. The ephemeral client secret is always minted on your server, so any hosted MCP credentials or custom `headers` that must stay secret should be attached in that server-side `POST /v1/realtime/client_secrets` request as part of the initial `session` payload. Do not put long-lived credentials in browser code and plan to add them later after `connect()` starts.
 
 At the Realtime API level, later `session.update` calls can still change tools and other mutable session fields, and the SDK itself sends `session.update` when the active agent changes. In browser apps, though, you should treat secure Hosted MCP initialization as a server-side, pre-connect concern and keep the browser-side `RealtimeSession` config aligned with what your server minted.
 
