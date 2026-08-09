@@ -26,6 +26,7 @@ describe('index.ts', () => {
     expect(agent.name).toEqual('TestAgent');
     expect(typeof AgentsCore.setSensitiveDataLoggingEnabled).toBe('function');
     expect(typeof AgentsCore.RunCompactionItem).toBe('function');
+    expect(typeof AgentsCore.RunInputItem).toBe('function');
     expect(typeof AgentsCore.isSessionHistoryTransactionAwareSession).toBe(
       'function',
     );

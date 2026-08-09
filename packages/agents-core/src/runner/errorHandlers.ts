@@ -20,7 +20,7 @@ import type {
   AgentOutputItem,
   ResolvedAgentOutput,
 } from '../types';
-import { getTurnInput } from './items';
+import { getRunOutput, getTurnInput } from './items';
 import { streamStepItemsToRunResult } from './streaming';
 import { createRedactedErrorDetailsError } from '../utils/finalOutputError';
 
@@ -81,6 +81,8 @@ type TryHandleRunErrorArgs<TContext, TAgent extends Agent<any, any>> = {
   state: RunState<TContext, TAgent>;
   errorHandlers?: RunErrorHandlers<TContext, TAgent>;
   streamResult?: StreamedRunResult<TContext, TAgent>;
+  responseAccepted: boolean;
+  attemptedErrors?: WeakSet<object>;
 };
 
 type ResolveRunErrorHandlerArgs<TContext, TAgent extends Agent<any, any>> = {
@@ -89,6 +91,7 @@ type ResolveRunErrorHandlerArgs<TContext, TAgent extends Agent<any, any>> = {
   errorHandlers?: RunErrorHandlers<TContext, TAgent>;
   context: RunContext<TContext>;
   runData: RunErrorData<TContext, TAgent>;
+  attemptedErrors?: WeakSet<object>;
 };
 
 export async function preserveInvalidFinalOutputRedaction<T>(
@@ -136,7 +139,7 @@ const buildRunData = <TContext, TAgent extends Agent<any, any>>(
     state._generatedItems,
     state._reasoningItemIdPolicy,
   ),
-  output: getTurnInput([], state._generatedItems, state._reasoningItemIdPolicy),
+  output: getRunOutput(state._generatedItems, state._reasoningItemIdPolicy),
   rawResponses: state._modelResponses,
   lastAgent: state._currentAgent,
   state,
@@ -182,6 +185,17 @@ export const formatRunErrorFinalOutput = formatFinalOutput;
 export const createRunErrorFinalOutputItem = createFinalOutputItem;
 export const validateRunErrorHandlerFinalOutput = validateRunErrorFinalOutput;
 
+export function invalidateAcceptedResponseReplayEvidence(
+  state: RunState<any, any> | undefined,
+): void {
+  if (
+    state?._currentStep?.type === 'next_step_interruption' &&
+    state._currentStep.data?.responseAccepted === true
+  ) {
+    state._lastProcessedResponse = undefined;
+  }
+}
+
 export const resolveRunErrorHandler = async <
   TContext,
   TAgent extends Agent<any, any>,
@@ -191,6 +205,7 @@ export const resolveRunErrorHandler = async <
   errorHandlers,
   context,
   runData,
+  attemptedErrors,
 }: ResolveRunErrorHandlerArgs<TContext, TAgent>): Promise<
   RunErrorHandlerResult<TAgent> | undefined
 > => {
@@ -224,6 +239,12 @@ export const resolveRunErrorHandler = async <
     return undefined;
   }
 
+  if (attemptedErrors?.has(typedError)) {
+    return undefined;
+  }
+  attemptedErrors?.add(typedError);
+
+  invalidateAcceptedResponseReplayEvidence(runData.state);
   const handlerResult = await handler({
     error: typedError,
     context,
@@ -240,12 +261,15 @@ export const prepareRunErrorFinalOutput = async <
   state,
   errorHandlers,
   streamResult,
+  responseAccepted,
+  attemptedErrors,
 }: TryHandleRunErrorArgs<TContext, TAgent>): Promise<boolean> => {
   const handlerResult = await resolveRunErrorHandler({
     error,
     errorHandlers,
     context: state._context,
     runData: buildRunData(state),
+    attemptedErrors,
   });
   if (!handlerResult) {
     return false;
@@ -269,6 +293,7 @@ export const prepareRunErrorFinalOutput = async <
   state._currentStep = {
     type: 'next_step_final_output',
     output: outputText,
+    ...(responseAccepted ? { responseAccepted: true } : {}),
   };
   state._finalOutputSource = 'error_handler';
   return true;

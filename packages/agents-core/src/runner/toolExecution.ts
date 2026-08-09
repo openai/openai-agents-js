@@ -25,6 +25,7 @@ import {
   RunItem,
   RunMessageOutputItem,
   RunToolApprovalItem,
+  RunToolCallItem,
   RunToolCallOutputItem,
 } from '../items';
 import { assistant } from '../helpers/message';
@@ -1030,6 +1031,7 @@ async function runApprovedFunctionTool<TContext>(
     let toolStarted = false;
     let invocationPending = false;
     let cancellationFinalizationAttempted = false;
+    let committedOutputOnFailure = false;
     const buildSiblingCancellationResult = () => {
       if (toolStarted) {
         toolStarted = false;
@@ -1286,6 +1288,14 @@ async function runApprovedFunctionTool<TContext>(
         throw customDataError;
       }
 
+      const committedRunItem = new RunToolCallOutputItem(
+        rawItem,
+        agent,
+        toolOutput,
+        customData,
+        executionStatus,
+      );
+
       const redactedBeforeToolEnd = refreshRedaction();
       try {
         emitFunctionToolEnd(
@@ -1297,11 +1307,33 @@ async function runApprovedFunctionTool<TContext>(
           toolRun.toolCall,
           refreshRedaction,
         );
-      } catch (hookError) {
         throwIfRedactionPromoted(redactedBeforeToolEnd);
+      } catch (hookError) {
+        if (
+          state._currentStep?.type !== 'next_step_interruption' ||
+          state._currentStep.data?.responseAccepted !== true
+        ) {
+          throwIfRedactionPromoted(redactedBeforeToolEnd);
+          throw hookError;
+        }
+        const callRunItem = new RunToolCallItem(
+          toolRun.toolCall,
+          agent as Agent<any, any>,
+        );
+        const checkpointItems = state._generatedItems.some(
+          (item) =>
+            item instanceof RunToolCallItem &&
+            item.agent === agent &&
+            item.rawItem.type === 'function_call' &&
+            item.rawItem.callId === toolRun.toolCall.callId,
+        )
+          ? [committedRunItem]
+          : [callRunItem, committedRunItem];
+        state._generatedItems.push(...checkpointItems);
+        state._commitToolInvocations(checkpointItems);
+        committedOutputOnFailure = true;
         throw hookError;
       }
-      throwIfRedactionPromoted(redactedBeforeToolEnd);
 
       if (span && runner.config.traceIncludeSensitiveData) {
         span.spanData.output = stringResult;
@@ -1311,13 +1343,7 @@ async function runApprovedFunctionTool<TContext>(
         type: 'function_output' as const,
         tool: toolRun.tool,
         output: toolOutput,
-        runItem: new RunToolCallOutputItem(
-          rawItem,
-          agent,
-          toolOutput,
-          customData,
-          executionStatus,
-        ),
+        runItem: committedRunItem,
       };
 
       const nestedRunResult = consumeAgentToolRunResult(toolRun.toolCall) as
@@ -1345,6 +1371,9 @@ async function runApprovedFunctionTool<TContext>(
 
       return functionResult;
     } catch (error) {
+      if (committedOutputOnFailure) {
+        throw error;
+      }
       if (cancellationFinalizationAttempted) {
         throw error;
       }

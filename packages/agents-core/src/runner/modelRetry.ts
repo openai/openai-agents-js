@@ -63,6 +63,10 @@ type EvaluateRetryParams = {
   providerAdvice?: ModelRetryAdvice;
 };
 
+type ModelRetryHandlers = {
+  onPossiblyAcceptedRequestFailure?: () => void;
+};
+
 function addFailedRetryAttemptsToUsage(
   usage: Usage,
   failedRetryAttempts: number,
@@ -371,6 +375,14 @@ function createProviderRetryAuthority(
         : 'unknown',
     responseStarted: providerAdvice?.responseStarted,
   });
+}
+
+function requestMayHaveBeenAccepted(
+  authority: ProviderRetryAuthority,
+): boolean {
+  return (
+    authority.replaySafety === 'unsafe' || authority.responseStarted === true
+  );
 }
 
 function withProviderRetryAuthority(
@@ -853,6 +865,7 @@ export const retryPolicies = {
 export async function getResponseWithRetry(
   model: Model,
   request: ModelRequest,
+  handlers: ModelRetryHandlers = {},
 ): Promise<ModelResponse> {
   const maxRetries = request.modelSettings.retry?.maxRetries ?? 0;
   const retryPolicy = request.modelSettings.retry?.policy;
@@ -882,25 +895,43 @@ export async function getResponseWithRetry(
         stream: false,
         attempt,
       });
-      const decision = await evaluateRetry({
-        error,
-        attempt,
-        maxRetries,
-        retryPolicy,
-        retryBackoff,
-        signal: request.signal,
-        stream: false,
-        request,
-        emittedVisibleEvent: false,
-        emittedRawModelEvent: false,
-        providerAdvice,
-      });
+      const authority = createProviderRetryAuthority(providerAdvice);
+      const markPossiblyAcceptedFailure = () => {
+        if (requestMayHaveBeenAccepted(authority)) {
+          handlers.onPossiblyAcceptedRequestFailure?.();
+        }
+      };
+      let decision: ResolvedRetryDecision;
+      try {
+        decision = await evaluateRetry({
+          error,
+          attempt,
+          maxRetries,
+          retryPolicy,
+          retryBackoff,
+          signal: request.signal,
+          stream: false,
+          request,
+          emittedVisibleEvent: false,
+          emittedRawModelEvent: false,
+          providerAdvice,
+        });
+      } catch (retryError) {
+        markPossiblyAcceptedFailure();
+        throw retryError;
+      }
 
       if (!decision.retry) {
+        markPossiblyAcceptedFailure();
         throw error;
       }
 
-      await waitForRetryDelay(request.signal, decision.delayMs ?? 0);
+      try {
+        await waitForRetryDelay(request.signal, decision.delayMs ?? 0);
+      } catch (retryDelayError) {
+        markPossiblyAcceptedFailure();
+        throw retryDelayError;
+      }
       attempt += 1;
     }
   }
@@ -909,6 +940,7 @@ export async function getResponseWithRetry(
 export async function* getStreamedResponseWithRetry(
   model: Model,
   request: ModelRequest,
+  handlers: ModelRetryHandlers = {},
 ): AsyncIterable<StreamEvent> {
   const maxRetries = request.modelSettings.retry?.maxRetries ?? 0;
   const retryPolicy = request.modelSettings.retry?.policy;
@@ -953,25 +985,43 @@ export async function* getStreamedResponseWithRetry(
         stream: true,
         attempt,
       });
-      const decision = await evaluateRetry({
-        error,
-        attempt,
-        maxRetries,
-        retryPolicy,
-        retryBackoff,
-        signal: request.signal,
-        stream: true,
-        request,
-        emittedVisibleEvent,
-        emittedRawModelEvent,
-        providerAdvice,
-      });
+      const authority = createProviderRetryAuthority(providerAdvice);
+      const markPossiblyAcceptedFailure = () => {
+        if (requestMayHaveBeenAccepted(authority)) {
+          handlers.onPossiblyAcceptedRequestFailure?.();
+        }
+      };
+      let decision: ResolvedRetryDecision;
+      try {
+        decision = await evaluateRetry({
+          error,
+          attempt,
+          maxRetries,
+          retryPolicy,
+          retryBackoff,
+          signal: request.signal,
+          stream: true,
+          request,
+          emittedVisibleEvent,
+          emittedRawModelEvent,
+          providerAdvice,
+        });
+      } catch (retryError) {
+        markPossiblyAcceptedFailure();
+        throw retryError;
+      }
 
       if (!decision.retry) {
+        markPossiblyAcceptedFailure();
         throw error;
       }
 
-      await waitForRetryDelay(request.signal, decision.delayMs ?? 0);
+      try {
+        await waitForRetryDelay(request.signal, decision.delayMs ?? 0);
+      } catch (retryDelayError) {
+        markPossiblyAcceptedFailure();
+        throw retryDelayError;
+      }
       attempt += 1;
     }
   }

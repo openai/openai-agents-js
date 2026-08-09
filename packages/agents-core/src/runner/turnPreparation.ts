@@ -1,6 +1,6 @@
 import { Agent, AgentOutputType } from '../agent';
 import { MaxTurnsExceededError } from '../errors';
-import { RunHandoffOutputItem, RunItem } from '../items';
+import { RunHandoffOutputItem, RunInputItem, RunItem } from '../items';
 import logger from '../logger';
 import { RunState } from '../runState';
 import type { AgentInputItem } from '../types';
@@ -21,13 +21,14 @@ import { getToolCallOutputItem } from './toolExecution';
 import type { ProcessedResponse } from './types';
 
 type GuardrailHandlers = {
-  onParallelStart?: () => void;
+  onParallelPromise?: (promise: Promise<InputGuardrailResult[]>) => void;
   onParallelError?: (error: unknown) => void;
 };
 
 type PreparedTurn = {
   turnInput: AgentInputItem[];
-  parallelGuardrailPromise?: Promise<InputGuardrailResult[]>;
+  pendingInputItems: RunInputItem[];
+  pendingInputSourceItems: AgentInputItem[];
 };
 
 type PrepareTurnOptions<
@@ -103,22 +104,28 @@ export async function prepareTurn<
   );
   onAgentSpanReady?.(state._currentTurn, state._currentAgent.name);
 
-  const { parallelGuardrailPromise } = await runInputGuardrailsForTurn(
+  const pendingInputSourceItems = [...state._pendingInput];
+  await runInputGuardrailsForTurn(
     state,
     inputGuardrailDefs,
     isResumingFromInterruption,
     guardrailHandlers,
   );
 
+  const pendingInputItems = pendingInputSourceItems.map(
+    (item) => new RunInputItem(structuredClone(item), state._currentAgent),
+  );
+  const generatedItemsForTurn = generatedItems.concat(pendingInputItems);
+
   const turnInput = serverConversationTracker
     ? serverConversationTracker.prepareInput(
         input,
-        generatedItems,
+        generatedItemsForTurn,
         getManagedConversationSupplementalItems(state),
       )
     : prepareModelInputItems(
         input,
-        generatedItems,
+        generatedItemsForTurn,
         state._reasoningItemIdPolicy,
       );
 
@@ -134,7 +141,8 @@ export async function prepareTurn<
 
   return {
     turnInput,
-    parallelGuardrailPromise,
+    pendingInputItems,
+    pendingInputSourceItems,
   };
 }
 
@@ -194,27 +202,34 @@ async function runInputGuardrailsForTurn<
   runnerGuardrails: InputGuardrailDefinition[],
   isResumingFromInterruption: boolean,
   handlers: GuardrailHandlers = {},
-): Promise<{ parallelGuardrailPromise?: Promise<InputGuardrailResult[]> }> {
-  if (state._currentTurn !== 1 || isResumingFromInterruption) {
-    return {};
+): Promise<void> {
+  const guardrailInput =
+    state._pendingInput.length > 0 ? state.pendingInput : undefined;
+  if (
+    guardrailInput === undefined &&
+    (state._currentTurn !== 1 || isResumingFromInterruption)
+  ) {
+    return;
   }
 
   const guardrailDefs = buildInputGuardrailDefinitions(state, runnerGuardrails);
   const guardrails = splitInputGuardrails(guardrailDefs);
   if (guardrails.blocking.length > 0) {
-    await runInputGuardrails(state, guardrails.blocking);
+    await runInputGuardrails(state, guardrails.blocking, {
+      input: guardrailInput,
+    });
   }
   if (guardrails.parallel.length > 0) {
-    handlers.onParallelStart?.();
     const parallelGuardrailPromise = runInputGuardrails(
       state,
       guardrails.parallel,
-      { onErrorObserved: handlers.onParallelError },
+      {
+        input: guardrailInput,
+        onErrorObserved: handlers.onParallelError,
+      },
     ).catch(() => []);
-    return { parallelGuardrailPromise };
+    handlers.onParallelPromise?.(parallelGuardrailPromise);
   }
-
-  return {};
 }
 
 function beginTurn<TContext, TAgent extends Agent<TContext, AgentOutputType>>(

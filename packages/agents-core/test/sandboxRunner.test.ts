@@ -17,6 +17,7 @@ import { RunContext } from '../src/runContext';
 import {
   run,
   MemorySession,
+  RunInputItem,
   RunItemStreamEvent,
   RunState,
   Runner,
@@ -1060,6 +1061,65 @@ function fakeSandboxSessionStateEnvelope(
 }
 
 describe('sandbox runner integration', () => {
+  it.each([
+    { label: 'local non-streaming', stream: false, serverManaged: false },
+    { label: 'server-managed streaming', stream: true, serverManaged: true },
+  ])(
+    'preserves staged input through cloned sandbox context for $label',
+    async ({ stream, serverManaged }) => {
+      const response = {
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      };
+      const model = stream
+        ? new RecordingStreamingModel([response])
+        : new RecordingFakeModel([response]);
+      const agent = new SandboxAgent({
+        name: 'ClonedPendingInputAgent',
+        model,
+        capabilities: [new CloningContextCapability()],
+      });
+      const state = new RunState(new RunContext(), 'initial', agent, 3);
+      state._currentTurn = 1;
+      state._currentStep = { type: 'next_step_run_again' };
+      state.addInput('staged sandbox input');
+      const session = serverManaged ? undefined : new MemorySession();
+      const conversationId = serverManaged
+        ? 'sandbox-pending-conversation'
+        : undefined;
+      state.setConversationContext(conversationId);
+      const options = {
+        sandbox: { client: new FakeSandboxClient() },
+        ...(session ? { session } : {}),
+        ...(conversationId ? { conversationId } : {}),
+      };
+
+      if (stream) {
+        const result = await run(agent, state, { ...options, stream: true });
+        await result.completed;
+        expect(result.finalOutput).toBe('done');
+      } else {
+        const result = await run(agent, state, options);
+        expect(result.finalOutput).toBe('done');
+      }
+
+      expect(state.pendingInput).toEqual([]);
+      expect(
+        state._generatedItems.filter((item) => item instanceof RunInputItem),
+      ).toHaveLength(1);
+      expect(
+        JSON.stringify(model.requests[0]?.input).match(/staged sandbox input/g),
+      ).toHaveLength(1);
+      if (session) {
+        expect(
+          JSON.stringify(await session.getItems()).match(
+            /staged sandbox input/g,
+          ),
+        ).toHaveLength(1);
+      }
+    },
+  );
+
   it.each([false, true])(
     'persists reordered equal-content session input when a sandbox capability clones context (stream=%s)',
     async (stream) => {
