@@ -47,6 +47,7 @@ import {
   cachedMcpTools as _cachedTools,
 } from './mcpToolCache';
 import { getToolCallParentSpanFromDetails } from './agentToolRunConfig';
+import { assertOpenAIStrictToolSchemaPreservesOpenObjects } from './utils/strictToolSchema';
 
 export {
   BaseMCPServerSSE,
@@ -1230,17 +1231,22 @@ export function mcpToFunctionTool(
     return toolOutput;
   }
 
-  const schema: JsonObjectSchema<any> = {
-    ...mcpTool.inputSchema,
-    type: mcpTool.inputSchema?.type ?? 'object',
-    properties: mcpTool.inputSchema?.properties ?? {},
-    required: mcpTool.inputSchema?.required ?? [],
-    additionalProperties: mcpTool.inputSchema?.additionalProperties ?? false,
-  };
+  const inputSchema = mcpTool.inputSchema ?? {};
+  const inputSchemaIsEmpty = Object.keys(inputSchema).length === 0;
+  const schema = {
+    ...inputSchema,
+    type: inputSchema.type ?? 'object',
+    properties: inputSchema.properties ?? {},
+    required: inputSchema.required ?? [],
+  } as JsonObjectSchema<any>;
+  const strictSchema = (
+    inputSchemaIsEmpty ? { ...schema, additionalProperties: false } : schema
+  ) as JsonObjectSchemaStrict<any>;
+  let preserveSchemaOnFallback = false;
 
   if (convertSchemasToStrict || schema.additionalProperties === true) {
     try {
-      const strictSchema = ensureStrictJsonSchema(schema);
+      assertOpenAIStrictToolSchemaPreservesOpenObjects(strictSchema);
       return tool({
         name: toolName,
         description: mcpTool.description || '',
@@ -1263,6 +1269,7 @@ export function mcpToFunctionTool(
         },
       });
     } catch (e) {
+      preserveSchemaOnFallback = true;
       logToolActionWarning(
         globalLogger,
         'Error converting MCP schema to strict mode:',
@@ -1273,8 +1280,11 @@ export function mcpToFunctionTool(
 
   const nonStrictSchema: JsonObjectSchemaNonStrict<any> = {
     ...schema,
-    additionalProperties: true,
-  };
+    additionalProperties:
+      preserveSchemaOnFallback && 'additionalProperties' in schema
+        ? schema.additionalProperties
+        : true,
+  } as JsonObjectSchemaNonStrict<any>;
   return tool({
     name: toolName,
     description: mcpTool.description || '',
@@ -1318,20 +1328,6 @@ function cloneMcpCustomDataContextValue<T>(value: T): T {
   } catch {
     return value;
   }
-}
-
-/**
- * Ensures the given JSON schema is strict (no additional properties, required fields set).
- */
-function ensureStrictJsonSchema(
-  schema: JsonObjectSchemaNonStrict<any> | JsonObjectSchemaStrict<any>,
-): JsonObjectSchemaStrict<any> {
-  const out: JsonObjectSchemaStrict<any> = {
-    ...schema,
-    additionalProperties: false,
-  };
-  if (!out.required) out.required = [];
-  return out;
 }
 
 /**

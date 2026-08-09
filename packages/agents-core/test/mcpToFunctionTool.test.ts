@@ -8,8 +8,24 @@ import { withTrace } from '../src/tracing';
 import { withCustomSpan } from '../src/tracing/createSpans';
 import { getCurrentSpan } from '../src/tracing';
 
+function convertExpectingStrictFallback(
+  convert: () => ReturnType<typeof mcpToFunctionTool>,
+): ReturnType<typeof mcpToFunctionTool> {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const functionTool = convert();
+    expect(warn).toHaveBeenCalledWith(
+      'Error converting MCP schema to strict mode:',
+      expect.anything(),
+    );
+    return functionTool;
+  } finally {
+    warn.mockRestore();
+  }
+}
+
 describe('mcpToFunctionTool', () => {
-  it('builds strict and non-strict tools based on schema settings', () => {
+  it('preserves non-strict behavior when schema conversion is disabled', () => {
     const server: MCPServer = {
       name: 'stub',
       cacheToolsList: false,
@@ -20,23 +36,25 @@ describe('mcpToFunctionTool', () => {
       invalidateToolsCache: async () => {},
     };
 
-    const strictTool = mcpToFunctionTool(
-      {
-        name: 'strict',
-        description: '',
-        inputSchema: {
-          type: 'object',
-          properties: { foo: { type: 'string' } },
-          required: [],
-          additionalProperties: true,
-        },
-      } as any,
-      server,
-      false,
+    const explicitlyOpenTool = convertExpectingStrictFallback(() =>
+      mcpToFunctionTool(
+        {
+          name: 'strict',
+          description: '',
+          inputSchema: {
+            type: 'object',
+            properties: { foo: { type: 'string' } },
+            required: [],
+            additionalProperties: true,
+          },
+        } as any,
+        server,
+        false,
+      ),
     );
 
-    expect(strictTool.strict).toBe(true);
-    expect(strictTool.parameters.additionalProperties).toBe(false);
+    expect(explicitlyOpenTool.strict).toBe(false);
+    expect(explicitlyOpenTool.parameters.additionalProperties).toBe(true);
 
     const nonStrictTool = mcpToFunctionTool(
       {
@@ -753,7 +771,6 @@ describe('mcpToFunctionTool', () => {
         inputSchema: {
           type: 'object',
           properties: { foo: { type: 'string' } },
-          additionalProperties: true,
         },
       } as any,
       server,
@@ -763,6 +780,161 @@ describe('mcpToFunctionTool', () => {
     expect(strictTool.strict).toBe(true);
     expect(strictTool.parameters.additionalProperties).toBe(false);
     expect(strictTool.parameters.required).toEqual(['foo']);
+  });
+
+  it.each([
+    ['properties omitted', { type: 'object' }],
+    ['empty properties', { type: 'object', properties: {} }],
+    [
+      'explicitly open with declared properties',
+      {
+        type: 'object',
+        properties: { known: { type: 'string' } },
+        additionalProperties: true,
+      },
+    ],
+    [
+      'schema-valued additional properties',
+      {
+        type: 'object',
+        properties: {},
+        additionalProperties: { type: 'string' },
+      },
+    ],
+  ])('falls back for free-form root schemas: %s', (_name, inputSchema) => {
+    const server: MCPServer = {
+      name: 'free-form-root-server',
+      cacheToolsList: false,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool: async () => [],
+      invalidateToolsCache: async () => {},
+    };
+    const inputSchemaRecord = inputSchema as Record<string, any>;
+    const originalSchema = structuredClone(inputSchema);
+
+    const functionTool = convertExpectingStrictFallback(() =>
+      mcpToFunctionTool(
+        {
+          name: 'free_form_root',
+          description: '',
+          inputSchema,
+        } as any,
+        server,
+        true,
+      ),
+    );
+
+    expect(functionTool.strict).toBe(false);
+    expect(functionTool.parameters).toEqual({
+      ...inputSchema,
+      type: 'object',
+      properties: inputSchemaRecord.properties ?? {},
+      required: [],
+      additionalProperties:
+        'additionalProperties' in inputSchema
+          ? inputSchemaRecord.additionalProperties
+          : true,
+    });
+    expect(inputSchema).toEqual(originalSchema);
+  });
+
+  it.each([
+    [
+      'object property',
+      {
+        type: 'object',
+        properties: {
+          payload: { type: 'object', properties: {} },
+        },
+        required: ['payload'],
+        additionalProperties: false,
+      },
+    ],
+    [
+      'array item',
+      {
+        type: 'object',
+        properties: {
+          payload: {
+            type: 'array',
+            items: { type: 'object' },
+          },
+        },
+        required: ['payload'],
+        additionalProperties: false,
+      },
+    ],
+  ])('preserves nested free-form schemas: %s', (_name, inputSchema) => {
+    const server: MCPServer = {
+      name: 'free-form-nested-server',
+      cacheToolsList: false,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool: async () => [],
+      invalidateToolsCache: async () => {},
+    };
+    const originalSchema = structuredClone(inputSchema);
+
+    const functionTool = convertExpectingStrictFallback(() =>
+      mcpToFunctionTool(
+        {
+          name: 'free_form_nested',
+          description: '',
+          inputSchema,
+        } as any,
+        server,
+        true,
+      ),
+    );
+
+    expect(functionTool.strict).toBe(false);
+    expect(functionTool.parameters).toEqual(originalSchema);
+    expect(inputSchema).toEqual(originalSchema);
+  });
+
+  it.each([
+    ['empty input schema', {}],
+    [
+      'explicitly closed empty object',
+      { type: 'object', additionalProperties: false },
+    ],
+    [
+      'declared property',
+      {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+      },
+    ],
+  ])('keeps strict-compatible MCP schemas strict: %s', (_name, inputSchema) => {
+    const server: MCPServer = {
+      name: 'strict-compatible-server',
+      cacheToolsList: false,
+      connect: async () => {},
+      close: async () => {},
+      listTools: async () => [],
+      callTool: async () => [],
+      invalidateToolsCache: async () => {},
+    };
+    const inputSchemaRecord = inputSchema as Record<string, any>;
+
+    const functionTool = mcpToFunctionTool(
+      {
+        name: 'strict_compatible',
+        description: '',
+        inputSchema,
+      } as any,
+      server,
+      true,
+    );
+
+    expect(functionTool.strict).toBe(true);
+    expect(functionTool.parameters.additionalProperties).toBe(false);
+    expect(functionTool.parameters.required).toEqual(
+      Object.keys(inputSchemaRecord.properties ?? {}),
+    );
   });
 
   it('annotates the current span when invoking the tool', async () => {
