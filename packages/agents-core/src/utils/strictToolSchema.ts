@@ -36,6 +36,12 @@ export function prepareOpenAIStrictToolSchema<T extends JsonObjectSchema<any>>(
   return prepareOpenAIStrictToolSchemaInternal(schema, true);
 }
 
+export function assertOpenAIStrictToolSchemaPreservesOpenObjects(
+  schema: JsonObjectSchema<any>,
+): void {
+  validateOpenAIStrictJsonSchema(schema, schema, new WeakSet(), true, true);
+}
+
 function prepareOpenAIStrictToolSchemaInternal<T extends JsonObjectSchema<any>>(
   schema: T,
   requireUnambiguousNormalization: boolean,
@@ -581,6 +587,7 @@ function validateOpenAIStrictJsonSchema(
   rootSchema: unknown,
   visitedSchemas: WeakSet<object> = new WeakSet(),
   requireUnambiguousNormalization = true,
+  rejectOpenObjects = false,
 ): void {
   if (typeof schema === 'boolean') {
     return;
@@ -615,6 +622,7 @@ function validateOpenAIStrictJsonSchema(
       rootSchema,
       visitedSchemas,
       requireUnambiguousNormalization,
+      rejectOpenObjects,
     );
   }
 
@@ -638,6 +646,7 @@ function validateOpenAIStrictJsonSchema(
         rootSchema,
         visitedSchemas,
         requireUnambiguousNormalization,
+        rejectOpenObjects,
       );
     }
     // Plain JSON Schema tools do not have a runtime validator that selects the
@@ -658,6 +667,21 @@ function validateOpenAIStrictJsonSchema(
   const properties = isRecord(schema.properties)
     ? schema.properties
     : undefined;
+  const hasObjectType =
+    schema.type === 'object' ||
+    (Array.isArray(schema.type) && schema.type.includes('object'));
+  const hasDeclaredProperties =
+    properties !== undefined && Object.keys(properties).length > 0;
+  if (
+    rejectOpenObjects &&
+    hasObjectType &&
+    schema.additionalProperties !== false &&
+    (!hasDeclaredProperties || 'additionalProperties' in schema)
+  ) {
+    throw new UserError(
+      'Cannot convert an open JSON schema object to strict mode without changing its accepted values. Set `additionalProperties: false`, declare at least one property, or disable strict mode.',
+    );
+  }
   if (schemaConvertsObjectProperties(schema) && properties) {
     const required = new Set(
       Array.isArray(schema.required) ? schema.required.map(String) : [],
@@ -668,6 +692,7 @@ function validateOpenAIStrictJsonSchema(
         rootSchema,
         visitedSchemas,
         requireUnambiguousNormalization,
+        rejectOpenObjects,
       );
       if (!required.has(key)) {
         getKnownJsonSchemaNullability(propertySchema, rootSchema);
@@ -683,6 +708,7 @@ function validateOpenAIStrictJsonSchema(
         rootSchema,
         visitedSchemas,
         requireUnambiguousNormalization,
+        rejectOpenObjects,
       );
     }
   } else if (typeof items !== 'undefined') {
@@ -691,6 +717,7 @@ function validateOpenAIStrictJsonSchema(
       rootSchema,
       visitedSchemas,
       requireUnambiguousNormalization,
+      rejectOpenObjects,
     );
   }
 
@@ -705,6 +732,7 @@ function validateOpenAIStrictJsonSchema(
         rootSchema,
         visitedSchemas,
         requireUnambiguousNormalization,
+        rejectOpenObjects,
       );
     }
   }
