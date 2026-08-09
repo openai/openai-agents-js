@@ -62,6 +62,10 @@ If isolation or a different checkout is needed, explain why and ask the user bef
 
 Use pnpm in the user's selected checkout without changing worktrees or branches. Do not use `CI=1`, `--force`, or `confirmModulesPurge=false` to bypass an incompatible `node_modules` prompt. Stop and diagnose the pnpm configuration mismatch instead of silently recreating dependencies. Keep machine-specific pnpm store and shell configuration outside the repository.
 
+### Documentation Release Timing
+
+When a feature or bug fix introduces behavior that is not yet available in the latest published release, do not include `docs/` changes that describe that unreleased behavior in the feature or bug-fix pull request, and do not expect those changes as part of that pull request. Handle them in a separate docs-only pull request so maintainers can coordinate its merge timing with the release that makes the documentation accurate. This exception applies only when the documentation would be incorrect for the latest published release; documentation that is already accurate for released behavior remains part of the normal change scope.
+
 ### Scope Discipline and Complexity Reset
 
 - Implement the narrowest explicitly stated set of behaviors that satisfies the request. Do not interpret every shape accepted by TypeScript structural typing, an overloaded or generic API, or a third-party interface unless those shapes are required by the task or supported behavior shipped in the latest release.
@@ -323,5 +327,5 @@ Before opening a pull request, always run `$changeset-validation` to ensure all 
 - ✅ Tests cover new behavior and edge cases.
 - ✅ Code is readable and maintainable.
 - ✅ Examples updated if behavior changes.
-- ✅ Documentation (in `docs/`) updated for user-facing changes.
+- ✅ Documentation (in `docs/`) updated for user-facing changes, except unreleased-behavior documentation that must follow the separate docs-only pull request policy above.
 - ✅ Commit history is clean and follows Conventional Commits.
