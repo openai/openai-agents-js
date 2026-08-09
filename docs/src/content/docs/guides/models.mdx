@@ -111,6 +111,12 @@ When you instantiate `OpenAIProvider` directly, these options control client con
 
 When a Responses assistant message includes a `phase` of `commentary` or `final_answer`, the SDK preserves it as a top-level field on the history item. That phase survives session replay through `OpenAIConversationsSession` and serialized `RunState`. Chat Completions has no equivalent field, so it warns and drops the phase by default; set `strictFeatureValidation: true` to reject that conversion instead.
 
+#### Chat Completions audio
+
+Audio-capable Chat Completions models accept endpoint-specific `modalities` and `audio` request fields through `modelSettings.providerData`. Use an audio-capable model and follow the official [Audio and speech guide](https://developers.openai.com/api/docs/guides/audio#add-audio-to-your-existing-application) for supported request values.
+
+Both non-streamed and streamed calls preserve audio-only assistant output. The normalized `ModelResponse.output` contains an `audio` content part. When that message becomes a run item, `RunMessageOutputItem.rawItem` contains the same part. Its `audio` field contains the base64 data, while `providerData` retains provider metadata such as `id`, `transcript`, `format`, and `expires_at`. When the same choice also contains text or a refusal, the normalized assistant message keeps that text or refusal. For non-streamed calls, the complete provider response, including audio, remains available in `result.rawResponses[].providerData`. For streamed calls, consume source Chat Completions chunks from raw model stream events as they arrive; the reconstructed audio is retained for tracing, not in `result.rawResponses`. Null audio fragments are ignored. Malformed or non-cloneable audio deltas, or a stream that ends without audio data, fail with `ModelBehaviorError`. `toTextStream()` emits only assistant text. Use the [Realtime API](/openai-agents-js/guides/voice-agents) instead when an application needs low-latency, bidirectional audio.
+
 #### Responses WebSocket transport
 
 When you use the OpenAI provider with the Responses API, you can send requests over a WebSocket transport instead of the default HTTP transport.

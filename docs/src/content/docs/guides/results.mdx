@@ -158,6 +158,8 @@ The `runContext` property is the supported public view of the run context on the
 
 Each response can also include `requestId`, the provider's request identifier when one is available. The OpenAI Responses and Chat Completions models populate it for streamed and non-streamed HTTP requests; treat it as optional because some providers and transports do not expose one.
 
+For Chat Completions audio, the normalized model response represents an audio-only assistant message with an `audio` content part. When that message becomes a run item, inspect the `RunMessageOutputItem.rawItem` for the same part. If a non-streamed response contains text or a refusal together with audio, the normalized assistant message keeps the text or refusal, while the complete provider response remains available in `rawResponses[].providerData`. For streamed mixed output, inspect raw model stream events when you need provider audio chunks as they arrive; the completed `rawResponses` entry contains the normalized text or refusal but not the reconstructed audio. The streaming `toTextStream()` helper emits only text.
+
 When `modelSettings.preserveRawUsage` is `true`, each completed response can also expose `rawUsage`, a detached, JSON-compatible snapshot captured before SDK normalization. The normalized `Usage` remains available as `response.usage`; `rawUsage` preserves provider-specific field names and omitted-versus-explicit values where supplied. It can be `undefined` if the provider omits usage or the payload cannot be safely copied. `rawUsage` is runtime-only and is intentionally omitted from serialized `RunState`, so copy any fields you need before persisting and resuming a run.
 
 ### Guardrail results

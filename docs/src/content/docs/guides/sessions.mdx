@@ -215,6 +215,8 @@ underlying session contents to be the source of truth.
 | `store`          | `boolean`                                     | Indicates whether the last run stored server state.               |
 | `force`          | `boolean`                                     | Bypass `shouldTriggerCompaction` and compact immediately.         |
 
+`OpenAIResponsesCompactionSession` serializes mutations issued through the same wrapper instance. Calls to `runCompaction()`, `addItems()`, `popItem()`, and `clearSession()` run in invocation order, and the queue continues after a rejected operation, so later wrapper mutations do not interleave with replacement or rollback. A successful replacement or rollback keeps the wrapper's cached history aligned with the underlying session. If both replacement and restoration fail, recover the underlying session before continuing. This ordering guarantee does not coordinate a different wrapper instance or direct mutation of `underlyingSession`; coordinate those access paths in your application.
+
 #### Manual compaction for low-latency streaming
 
 Compaction clears and rewrites the underlying session, so the SDK waits for it before resolving a streaming run. If compaction is heavy, `result.completed` can stay pending for a few seconds after the last output token. For low-latency streaming or faster turn-taking, disable auto-compaction and call `runCompaction` yourself between turns (or during idle time).
