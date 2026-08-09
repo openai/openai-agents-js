@@ -9,7 +9,12 @@ import {
   setTracingDisabled,
 } from '../src';
 import { mergeAgentToolRunConfig } from '../src/agentToolRunConfig';
-import type { Model, ModelRequest } from '../src/model';
+import type {
+  Model,
+  ModelRequest,
+  RetryPolicy,
+  RetryPolicyContext,
+} from '../src/model';
 import type { StreamEvent } from '../src/types/protocol';
 import { RequestUsage, Usage } from '../src/usage';
 import { fakeModelMessage, FakeModelProvider } from './stubs';
@@ -1054,7 +1059,7 @@ describe('retry policies', () => {
         retry: {
           maxRetries: 1,
           backoff: { initialDelayMs: 0, jitter: false },
-          policy: retryPolicies.httpStatus([503]),
+          policy: () => ({ retry: true, approveUnsafeReplay: true }),
         },
       },
     });
@@ -1100,7 +1105,7 @@ describe('retry policies', () => {
         retry: {
           maxRetries: 1,
           backoff: { initialDelayMs: 0, jitter: false },
-          policy: retryPolicies.httpStatus([503]),
+          policy: () => ({ retry: true, approveUnsafeReplay: true }),
         },
       },
     });
@@ -1198,6 +1203,491 @@ describe('retry policies', () => {
       'request may have been accepted',
     );
     expect(attempts).toBe(1);
+  });
+
+  it('retries a non-streaming unsafe replay only with explicit application approval', async () => {
+    let attempts = 0;
+    const seenContexts: Array<{
+      replaySafety?: string;
+      responseStarted?: boolean;
+      statefulRequest?: boolean;
+    }> = [];
+    const model: Model = {
+      async getResponse() {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error('request may have been accepted');
+        }
+        return {
+          usage: new Usage({ requests: 1 }),
+          output: [fakeModelMessage('Explicitly approved replay')],
+        };
+      },
+      async *getStreamedResponse() {
+        yield* [];
+      },
+      getRetryAdvice() {
+        return {
+          suggested: false,
+          replaySafety: 'unsafe',
+          responseStarted: true,
+          reason: 'request may have been accepted',
+        };
+      },
+    };
+
+    const result = await run(
+      new Agent({
+        name: 'ExplicitUnsafeReplayAgent',
+        model,
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            backoff: { initialDelayMs: 0, jitter: false },
+            policy: (context) => {
+              seenContexts.push(context);
+              return {
+                retry: true,
+                approveUnsafeReplay: true,
+                reason: 'read-only model turn',
+              };
+            },
+          },
+        },
+      }),
+      'hello',
+    );
+
+    expect(result.finalOutput).toBe('Explicitly approved replay');
+    expect(attempts).toBe(2);
+    expect(seenContexts).toHaveLength(1);
+    expect(seenContexts[0]).toMatchObject({
+      replaySafety: 'unsafe',
+      responseStarted: true,
+      statefulRequest: false,
+    });
+  });
+
+  it('does not treat missing response-start evidence as explicit false', async () => {
+    let attempts = 0;
+    const policy = vi.fn((context: RetryPolicyContext) => {
+      expect(context.responseStarted).toBeUndefined();
+      return {
+        retry: true,
+        approveUnsafeReplay: context.responseStarted === false,
+      };
+    });
+    const model: Model = {
+      async getResponse() {
+        attempts += 1;
+        throw new Error('request may have been accepted');
+      },
+      async *getStreamedResponse() {
+        yield* [];
+      },
+      getRetryAdvice() {
+        return {
+          suggested: false,
+          replaySafety: 'unsafe',
+          reason: 'response-start state is unknown',
+        };
+      },
+    };
+
+    await expect(
+      run(
+        new Agent({
+          name: 'UnknownResponseStartAgent',
+          model,
+          modelSettings: {
+            retry: {
+              maxRetries: 1,
+              backoff: { initialDelayMs: 0, jitter: false },
+              policy,
+            },
+          },
+        }),
+        'hello',
+      ),
+    ).rejects.toThrow('request may have been accepted');
+
+    expect(attempts).toBe(1);
+    expect(policy).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows explicit unsafe replay approval for both stateful request forms', async () => {
+    const exercise = async (options: {
+      previousResponseId?: string;
+      conversationId?: string;
+    }) => {
+      let attempts = 0;
+      const seenContexts: Array<{
+        previousResponseId?: string;
+        conversationId?: string;
+        replaySafety?: string;
+        responseStarted?: boolean;
+        statefulRequest?: boolean;
+      }> = [];
+      const model: Model = {
+        async getResponse() {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new Error('stateful request may have been accepted');
+          }
+          return {
+            usage: new Usage({ requests: 1 }),
+            output: [fakeModelMessage('Recovered stateful request')],
+          };
+        },
+        async *getStreamedResponse() {
+          yield* [];
+        },
+        getRetryAdvice() {
+          return {
+            suggested: false,
+            replaySafety: 'unsafe',
+            reason: 'stateful request may have been accepted',
+          };
+        },
+      };
+
+      const result = await run(
+        new Agent({
+          name: 'StatefulUnsafeReplayAgent',
+          model,
+          modelSettings: {
+            retry: {
+              maxRetries: 1,
+              backoff: { initialDelayMs: 0, jitter: false },
+              policy: (context) => {
+                seenContexts.push(context);
+                return { retry: true, approveUnsafeReplay: true };
+              },
+            },
+          },
+        }),
+        'hello',
+        options,
+      );
+
+      return { attempts, finalOutput: result.finalOutput, seenContexts };
+    };
+
+    const previousResponse = await exercise({
+      previousResponseId: 'resp_unsafe',
+    });
+    expect(previousResponse).toMatchObject({
+      attempts: 2,
+      finalOutput: 'Recovered stateful request',
+      seenContexts: [
+        {
+          previousResponseId: 'resp_unsafe',
+          replaySafety: 'unsafe',
+          responseStarted: undefined,
+          statefulRequest: true,
+        },
+      ],
+    });
+
+    const conversation = await exercise({ conversationId: 'conv_unsafe' });
+    expect(conversation).toMatchObject({
+      attempts: 2,
+      finalOutput: 'Recovered stateful request',
+      seenContexts: [
+        {
+          conversationId: 'conv_unsafe',
+          replaySafety: 'unsafe',
+          responseStarted: undefined,
+          statefulRequest: true,
+        },
+      ],
+    });
+  });
+
+  it('does not apply unsafe replay approval to stateful requests with unknown safety', async () => {
+    let attempts = 0;
+    const policy = vi.fn((context) => {
+      expect(context).toMatchObject({
+        previousResponseId: 'resp_unknown',
+        replaySafety: 'unknown',
+        responseStarted: undefined,
+        statefulRequest: true,
+      });
+      return { retry: true, approveUnsafeReplay: true };
+    });
+    const model: Model = {
+      async getResponse() {
+        attempts += 1;
+        throw new Error('unknown stateful failure');
+      },
+      async *getStreamedResponse() {
+        yield* [];
+      },
+    };
+
+    await expect(
+      run(
+        new Agent({
+          name: 'UnknownStatefulReplayAgent',
+          model,
+          modelSettings: {
+            retry: {
+              maxRetries: 1,
+              backoff: { initialDelayMs: 0, jitter: false },
+              policy,
+            },
+          },
+        }),
+        'hello',
+        { previousResponseId: 'resp_unknown' },
+      ),
+    ).rejects.toThrow('unknown stateful failure');
+
+    expect(attempts).toBe(1);
+    expect(policy).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts captured provider-safe evidence for a custom stateful policy', async () => {
+    let attempts = 0;
+    const model: Model = {
+      async getResponse() {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error('safe stateful failure');
+        }
+        return {
+          usage: new Usage({ requests: 1 }),
+          output: [fakeModelMessage('Provider-safe replay')],
+        };
+      },
+      async *getStreamedResponse() {
+        yield* [];
+      },
+      getRetryAdvice() {
+        return {
+          suggested: true,
+          replaySafety: 'safe',
+        };
+      },
+    };
+
+    const result = await run(
+      new Agent({
+        name: 'ProviderSafeCustomPolicyAgent',
+        model,
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            backoff: { initialDelayMs: 0, jitter: false },
+            policy: () => true,
+          },
+        },
+      }),
+      'hello',
+      { previousResponseId: 'resp_safe' },
+    );
+
+    expect(result.finalOutput).toBe('Provider-safe replay');
+    expect(attempts).toBe(2);
+  });
+
+  it('does not let unsafe replay approval override provider-unsafe streaming failures', async () => {
+    let attempts = 0;
+    const policy = vi.fn(() => ({
+      retry: true,
+      approveUnsafeReplay: true,
+    }));
+    const model: Model = {
+      async getResponse() {
+        throw new Error('not used');
+      },
+      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
+        attempts += 1;
+        if (attempts > 0) {
+          throw new Error('unsafe streamed failure');
+        }
+        yield* [];
+      },
+      getRetryAdvice() {
+        return {
+          suggested: false,
+          replaySafety: 'unsafe',
+          reason: 'unsafe streamed failure',
+        };
+      },
+    };
+
+    const result = await run(
+      new Agent({
+        name: 'UnsafeStreamingReplayAgent',
+        model,
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            backoff: { initialDelayMs: 0, jitter: false },
+            policy,
+          },
+        },
+      }),
+      'hello',
+      { stream: true },
+    );
+    const consume = async () => {
+      for await (const _event of result) {
+        // Consume until the stream throws.
+      }
+    };
+
+    await expect(consume()).rejects.toThrow('unsafe streamed failure');
+    expect(attempts).toBe(1);
+    expect(policy).not.toHaveBeenCalled();
+  });
+
+  it('does not let provider normalization clear raw abort evidence', async () => {
+    let attempts = 0;
+    const policy = vi.fn(() => ({
+      retry: true,
+      approveUnsafeReplay: true,
+    }));
+    const model: Model = {
+      async getResponse() {
+        attempts += 1;
+        const error = new Error('cancelled');
+        error.name = 'AbortError';
+        throw error;
+      },
+      async *getStreamedResponse() {
+        yield* [];
+      },
+      getRetryAdvice() {
+        return {
+          suggested: false,
+          replaySafety: 'unsafe',
+          normalized: { isAbort: false },
+        };
+      },
+    };
+
+    await expect(
+      run(
+        new Agent({
+          name: 'ProviderAbortOverrideAgent',
+          model,
+          modelSettings: {
+            retry: {
+              maxRetries: 1,
+              backoff: { initialDelayMs: 0, jitter: false },
+              policy,
+            },
+          },
+        }),
+        'hello',
+      ),
+    ).rejects.toThrow('cancelled');
+
+    expect(attempts).toBe(1);
+    expect(policy).not.toHaveBeenCalled();
+  });
+
+  it('propagates unsafe replay approval through any() and all() in either order', async () => {
+    const createContext = () => ({
+      error: new Error('request may have been accepted'),
+      attempt: 1,
+      maxRetries: 1,
+      stream: false,
+      providerAdvice: {
+        suggested: false,
+        replaySafety: 'unsafe' as const,
+        reason: 'provider veto',
+      },
+      normalized: {
+        isAbort: false,
+        isNetworkError: true,
+      },
+    });
+    const approving = () => ({
+      retry: true,
+      approveUnsafeReplay: true,
+      reason: 'application approval',
+    });
+
+    for (const combinator of ['any', 'all'] as const) {
+      for (const providerFirst of [false, true]) {
+        const providerPolicy = retryPolicies.providerSuggested();
+        const policies = providerFirst
+          ? [providerPolicy, approving]
+          : [approving, providerPolicy];
+        const combined =
+          combinator === 'any'
+            ? retryPolicies.any(...policies)
+            : retryPolicies.all(...policies);
+
+        await expect(combined(createContext())).resolves.toMatchObject({
+          retry: true,
+          approveUnsafeReplay: true,
+          reason: 'application approval',
+        });
+      }
+    }
+  });
+
+  it('keeps provider replay authority stable across composed policy mutation', async () => {
+    for (const combinator of ['any', 'all'] as const) {
+      const providerAdvice = {
+        suggested: false,
+        replaySafety: 'unsafe' as 'safe' | 'unsafe',
+        responseStarted: true,
+        reason: 'provider veto',
+      };
+      const mutateAdvice = (context: RetryPolicyContext) => {
+        expect(context.replaySafety).toBe('unsafe');
+        expect(context.responseStarted).toBe(true);
+        const authority = Object.getOwnPropertySymbols(context)
+          .map(
+            (symbol) => (context as unknown as Record<symbol, unknown>)[symbol],
+          )
+          .find(
+            (value): value is Record<string, unknown> =>
+              typeof value === 'object' &&
+              value !== null &&
+              'replaySafety' in value,
+          );
+        expect(authority).toBeDefined();
+        expect(Object.isFrozen(authority)).toBe(true);
+        expect(Reflect.set(authority!, 'replaySafety', 'safe')).toBe(false);
+        context.providerAdvice!.suggested = true;
+        context.providerAdvice!.replaySafety = 'safe';
+        context.providerAdvice!.responseStarted = false;
+        expect(context.replaySafety).toBe('unsafe');
+        expect(context.responseStarted).toBe(true);
+        return true;
+      };
+      const policies: RetryPolicy[] = [
+        mutateAdvice,
+        retryPolicies.providerSuggested(),
+      ];
+      const combined =
+        combinator === 'any'
+          ? retryPolicies.any(...policies)
+          : retryPolicies.all(...policies);
+
+      await expect(
+        combined({
+          error: new Error('request may have been accepted'),
+          attempt: 1,
+          maxRetries: 1,
+          stream: false,
+          providerAdvice,
+          normalized: {
+            isAbort: false,
+            isNetworkError: true,
+          },
+        }),
+      ).resolves.toMatchObject({
+        retry: false,
+        reason: 'provider veto',
+      });
+    }
   });
 
   it('retries stateful follow-up requests when providerSuggested() approves replay', async () => {
@@ -1418,8 +1908,7 @@ describe('retry policies', () => {
   it('deep merges retry settings between runner and agent configs', async () => {
     const policy = () => true;
     let capturedRetrySettings:
-      | ModelRequest['modelSettings']['retry']
-      | undefined;
+      ModelRequest['modelSettings']['retry'] | undefined;
 
     const model: Model = {
       async getResponse(request: ModelRequest) {
@@ -1474,8 +1963,7 @@ describe('retry policies', () => {
   it('inherits runner retry policy when an agent overrides only backoff', async () => {
     const policy = () => true;
     let capturedRetrySettings:
-      | ModelRequest['modelSettings']['retry']
-      | undefined;
+      ModelRequest['modelSettings']['retry'] | undefined;
 
     const model: Model = {
       async getResponse(request: ModelRequest) {

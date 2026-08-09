@@ -128,6 +128,14 @@ export type RetryDecision =
        * Optional explanation for logging or debugging.
        */
       reason?: string;
+
+      /**
+       * Explicit application approval to repeat provider-side work that may
+       * already have happened. This only applies when the provider marks a
+       * non-streaming replay as unsafe; ordinary retry decisions never bypass
+       * replay protection.
+       */
+      approveUnsafeReplay?: boolean;
     };
 
 export type ModelRetryNormalizedError = {
@@ -181,6 +189,11 @@ export type ModelRetryAdvice = {
   replaySafety?: 'unsafe' | 'safe';
 
   /**
+   * Whether the provider had begun emitting the response when the failure occurred.
+   */
+  responseStarted?: boolean;
+
+  /**
    * Provider-supplied normalized facts that should override generic extraction when present.
    */
   normalized?: Partial<ModelRetryNormalizedError>;
@@ -216,6 +229,38 @@ export type RetryPolicyContext = {
    * Generic normalized facts extracted from the error and provider advice.
    */
   normalized: ModelRetryNormalizedError;
+
+  /**
+   * The previous response identifier carried by the failed request, when present.
+   */
+  readonly previousResponseId?: string;
+
+  /**
+   * The conversation identifier carried by the failed request, when present.
+   */
+  readonly conversationId?: string;
+
+  /**
+   * Stable provider replay classification captured before the policy runs.
+   * The runner always supplies this field; it is optional for compatibility
+   * with code that constructs policy contexts directly.
+   */
+  readonly replaySafety?: 'safe' | 'unsafe' | 'unknown';
+
+  /**
+   * Stable response-start evidence captured before the policy runs.
+   * The runner preserves `undefined` when the provider supplies no evidence.
+   * The field is optional for compatibility with code that constructs policy
+   * contexts directly.
+   */
+  readonly responseStarted?: boolean;
+
+  /**
+   * Whether the failed request carried a previous response or conversation identifier.
+   * The runner always supplies this field; it is optional for compatibility
+   * with code that constructs policy contexts directly.
+   */
+  readonly statefulRequest?: boolean;
 };
 
 export type RetryPolicy = (

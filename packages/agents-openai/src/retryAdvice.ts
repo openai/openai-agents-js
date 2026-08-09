@@ -11,6 +11,10 @@ function isUnsafeToReplayError(error: unknown): boolean {
   return isRecord(error) && error.unsafeToReplay === true;
 }
 
+function didResponseStart(error: unknown): boolean {
+  return isRecord(error) && error.responseStarted === true;
+}
+
 function getHeaderValue(error: unknown, key: string): string | undefined {
   if (!isRecord(error)) {
     return undefined;
@@ -73,6 +77,7 @@ export function getOpenAIRetryAdvice(
       suggested: false,
       replaySafety: 'unsafe',
       reason: error instanceof Error ? error.message : undefined,
+      ...(didResponseStart(error) ? { responseStarted: true } : {}),
     };
   }
 

@@ -24,15 +24,29 @@ type ResolvedRetryDecision = {
   retry: boolean;
   delayMs?: number;
   reason?: string;
+  approveUnsafeReplay?: boolean;
 };
 
-// Marks internal veto decisions that should stop retryPolicies.any() immediately.
+// Marks internal veto and approval decisions without widening the public API.
 const hardVetoSymbol = Symbol('hardRetryVeto');
+const delegableReplayVetoSymbol = Symbol('delegableReplayVeto');
 const replaySafeApprovalSymbol = Symbol('replaySafeApproval');
+const providerRetryAuthoritySymbol = Symbol('providerRetryAuthority');
+
+type ProviderRetryAuthority = Readonly<{
+  suggested?: boolean;
+  replaySafety: 'safe' | 'unsafe' | 'unknown';
+  responseStarted?: boolean;
+}>;
 
 type InternalRetryDecision = ResolvedRetryDecision & {
   [hardVetoSymbol]?: true;
+  [delegableReplayVetoSymbol]?: true;
   [replaySafeApprovalSymbol]?: true;
+};
+
+type InternalRetryPolicyContext = RetryPolicyContext & {
+  [providerRetryAuthoritySymbol]?: ProviderRetryAuthority;
 };
 
 type EvaluateRetryParams = {
@@ -43,7 +57,7 @@ type EvaluateRetryParams = {
   retryBackoff?: ModelRetryBackoffSettings;
   signal?: AbortSignal;
   stream: boolean;
-  replayUnsafeRequest: boolean;
+  request: ModelRequest;
   emittedVisibleEvent: boolean;
   emittedRawModelEvent: boolean;
   providerAdvice?: ModelRetryAdvice;
@@ -335,10 +349,71 @@ function normalizeRetryError(
     normalized.retryAfterMs = providerAdvice.retryAfterMs;
   }
 
+  const providerNormalized = providerAdvice?.normalized;
   return {
     ...normalized,
-    ...(providerAdvice?.normalized ?? {}),
+    ...(providerNormalized ?? {}),
+    // Provider normalization may add abort evidence but cannot clear evidence
+    // inferred from the signal or raw exception.
+    isAbort: normalized.isAbort || providerNormalized?.isAbort === true,
   };
+}
+
+function createProviderRetryAuthority(
+  providerAdvice: ModelRetryAdvice | undefined,
+): ProviderRetryAuthority {
+  const replaySafety = providerAdvice?.replaySafety;
+  return Object.freeze({
+    suggested: providerAdvice?.suggested,
+    replaySafety:
+      replaySafety === 'safe' || replaySafety === 'unsafe'
+        ? replaySafety
+        : 'unknown',
+    responseStarted: providerAdvice?.responseStarted,
+  });
+}
+
+function withProviderRetryAuthority(
+  context: RetryPolicyContext,
+  authority = createProviderRetryAuthority(context.providerAdvice),
+): InternalRetryPolicyContext {
+  const existing = (context as InternalRetryPolicyContext)[
+    providerRetryAuthoritySymbol
+  ];
+  if (existing) {
+    return context as InternalRetryPolicyContext;
+  }
+
+  const internalContext = { ...context } as InternalRetryPolicyContext;
+  Object.defineProperties(internalContext, {
+    replaySafety: {
+      value: authority.replaySafety,
+      enumerable: true,
+    },
+    responseStarted: {
+      value: authority.responseStarted,
+      enumerable: true,
+    },
+    statefulRequest: {
+      value:
+        context.statefulRequest ??
+        Boolean(context.previousResponseId || context.conversationId),
+      enumerable: true,
+    },
+    [providerRetryAuthoritySymbol]: {
+      value: authority,
+    },
+  });
+  return internalContext;
+}
+
+function getProviderRetryAuthority(
+  context: RetryPolicyContext,
+): ProviderRetryAuthority {
+  return (
+    (context as InternalRetryPolicyContext)[providerRetryAuthoritySymbol] ??
+    createProviderRetryAuthority(context.providerAdvice)
+  );
 }
 
 function resolveRetryDecision(decision: RetryDecision): ResolvedRetryDecision {
@@ -365,6 +440,18 @@ function withHardVeto(decision: ResolvedRetryDecision): InternalRetryDecision {
   return markInternalDecision(decision, hardVetoSymbol);
 }
 
+function withDelegableReplayVeto(
+  decision: ResolvedRetryDecision,
+): InternalRetryDecision {
+  const marked = withHardVeto(decision);
+  Object.defineProperty(marked, delegableReplayVetoSymbol, {
+    value: true,
+    enumerable: false,
+    configurable: true,
+  });
+  return marked;
+}
+
 function withReplaySafeApproval(
   decision: ResolvedRetryDecision,
 ): InternalRetryDecision {
@@ -382,6 +469,16 @@ function isHardVeto(
   );
 }
 
+function isDelegableReplayVeto(
+  decision: ResolvedRetryDecision,
+): decision is InternalRetryDecision {
+  return (
+    isHardVeto(decision) &&
+    delegableReplayVetoSymbol in decision &&
+    decision[delegableReplayVetoSymbol] === true
+  );
+}
+
 function isReplaySafeApproval(
   decision: ResolvedRetryDecision,
 ): decision is InternalRetryDecision {
@@ -391,6 +488,42 @@ function isReplaySafeApproval(
     replaySafeApprovalSymbol in decision &&
     decision[replaySafeApprovalSymbol] === true
   );
+}
+
+function withUnsafeReplayApproval(
+  decision: ResolvedRetryDecision,
+  approveUnsafeReplay: boolean,
+): ResolvedRetryDecision {
+  if (!approveUnsafeReplay || decision.approveUnsafeReplay) {
+    return decision;
+  }
+
+  const approved = {
+    ...decision,
+    approveUnsafeReplay: true,
+  };
+  return isReplaySafeApproval(decision)
+    ? withReplaySafeApproval(approved)
+    : approved;
+}
+
+function resolveDelegableReplayVeto(
+  veto: ResolvedRetryDecision,
+  approving: ResolvedRetryDecision,
+): ResolvedRetryDecision {
+  if (!approving.retry || !approving.approveUnsafeReplay) {
+    return veto;
+  }
+
+  const resolved: ResolvedRetryDecision = {
+    retry: true,
+    delayMs: approving.delayMs,
+    reason: approving.reason ?? veto.reason,
+    approveUnsafeReplay: true,
+  };
+  return isReplaySafeApproval(approving)
+    ? withReplaySafeApproval(resolved)
+    : resolved;
 }
 
 function getDefaultDelayMs(
@@ -476,10 +609,6 @@ async function getRetryAdvice(
   return await getModelRetryAdvice.call(model, args);
 }
 
-function isStatefulConversationRequest(request: ModelRequest): boolean {
-  return Boolean(request.conversationId || request.previousResponseId);
-}
-
 async function evaluateRetry({
   error,
   attempt,
@@ -488,7 +617,7 @@ async function evaluateRetry({
   retryBackoff,
   signal,
   stream,
-  replayUnsafeRequest,
+  request,
   emittedVisibleEvent,
   emittedRawModelEvent,
   providerAdvice,
@@ -498,11 +627,28 @@ async function evaluateRetry({
   }
 
   const normalized = normalizeRetryError(error, signal, providerAdvice);
+  const authority = createProviderRetryAuthority(providerAdvice);
+  const context = withProviderRetryAuthority(
+    {
+      error,
+      attempt,
+      maxRetries,
+      stream,
+      providerAdvice,
+      normalized,
+      previousResponseId: request.previousResponseId,
+      conversationId: request.conversationId,
+    },
+    authority,
+  );
+
+  // Aborts and emitted stream events are absolute vetoes. Provider-unsafe
+  // streaming failures also remain blocked before application policy runs.
   if (
     normalized.isAbort ||
     emittedVisibleEvent ||
     emittedRawModelEvent ||
-    providerAdvice?.replaySafety === 'unsafe'
+    (stream && authority.replaySafety === 'unsafe')
   ) {
     return {
       retry: false,
@@ -514,19 +660,31 @@ async function evaluateRetry({
     return { retry: false };
   }
 
-  const context: RetryPolicyContext = {
-    error,
-    attempt,
-    maxRetries,
-    stream,
-    providerAdvice,
-    normalized,
-  };
   const decision = resolveRetryDecision(await retryPolicy(context));
   if (!decision.retry) {
     return decision;
   }
-  if (replayUnsafeRequest && !isReplaySafeApproval(decision)) {
+
+  const statefulRequest = context.statefulRequest === true;
+  const providerMarksReplaySafe = authority.replaySafety === 'safe';
+  const providerMarksReplayUnsafe = authority.replaySafety === 'unsafe';
+  if (
+    statefulRequest &&
+    !(
+      isReplaySafeApproval(decision) ||
+      providerMarksReplaySafe ||
+      (decision.approveUnsafeReplay && providerMarksReplayUnsafe)
+    )
+  ) {
+    return {
+      retry: false,
+      reason: decision.reason ?? providerAdvice?.reason,
+    };
+  }
+  if (
+    providerMarksReplayUnsafe &&
+    !(isReplaySafeApproval(decision) || decision.approveUnsafeReplay)
+  ) {
     return {
       retry: false,
       reason: decision.reason ?? providerAdvice?.reason,
@@ -540,6 +698,7 @@ async function evaluateRetry({
       normalized.retryAfterMs ??
       getDefaultDelayMs(attempt, retryBackoff),
     reason: decision.reason ?? providerAdvice?.reason,
+    approveUnsafeReplay: decision.approveUnsafeReplay,
   };
 }
 
@@ -549,22 +708,28 @@ export const retryPolicies = {
   },
 
   providerSuggested(): RetryPolicy {
-    return ({ providerAdvice, normalized }) => {
-      if (providerAdvice?.suggested === false) {
-        return withHardVeto({
+    return (inputContext) => {
+      const context = withProviderRetryAuthority(inputContext);
+      const authority = getProviderRetryAuthority(context);
+      const { providerAdvice, normalized } = context;
+      if (authority.suggested === false) {
+        const veto = {
           retry: false,
-          reason: providerAdvice.reason,
-        });
+          reason: providerAdvice?.reason,
+        };
+        return authority.replaySafety === 'unsafe'
+          ? withDelegableReplayVeto(veto)
+          : withHardVeto(veto);
       }
-      if (!providerAdvice?.suggested) {
+      if (authority.suggested !== true) {
         return false;
       }
       const decision = {
         retry: true,
-        delayMs: providerAdvice.retryAfterMs ?? normalized.retryAfterMs,
-        reason: providerAdvice.reason,
+        delayMs: providerAdvice?.retryAfterMs ?? normalized.retryAfterMs,
+        reason: providerAdvice?.reason,
       };
-      return providerAdvice.replaySafety === 'safe'
+      return authority.replaySafety === 'safe'
         ? withReplaySafeApproval(decision)
         : decision;
     };
@@ -593,17 +758,27 @@ export const retryPolicies = {
   },
 
   any(...policies: RetryPolicy[]): RetryPolicy {
-    return async (context) => {
+    return async (inputContext) => {
+      const context = withProviderRetryAuthority(inputContext);
       let firstRetryDecision: ResolvedRetryDecision | undefined;
       let lastObjectDecision: ResolvedRetryDecision | undefined;
+      let delegableReplayVeto: ResolvedRetryDecision | undefined;
 
       for (const policy of policies) {
         const rawDecision = await policy(context);
         const decision = resolveRetryDecision(rawDecision);
         if (isHardVeto(decision)) {
+          if (isDelegableReplayVeto(decision)) {
+            delegableReplayVeto ??= decision;
+            continue;
+          }
           return decision;
         }
         if (decision.retry) {
+          const approveUnsafeReplay = Boolean(
+            firstRetryDecision?.approveUnsafeReplay ||
+            decision.approveUnsafeReplay,
+          );
           if (
             firstRetryDecision === undefined ||
             (isReplaySafeApproval(decision) &&
@@ -611,11 +786,20 @@ export const retryPolicies = {
           ) {
             firstRetryDecision = decision;
           }
+          firstRetryDecision = withUnsafeReplayApproval(
+            firstRetryDecision,
+            approveUnsafeReplay,
+          );
           continue;
         }
         if (typeof rawDecision !== 'boolean') {
           lastObjectDecision = decision;
         }
+      }
+      if (delegableReplayVeto) {
+        return firstRetryDecision
+          ? resolveDelegableReplayVeto(delegableReplayVeto, firstRetryDecision)
+          : delegableReplayVeto;
       }
       if (firstRetryDecision) {
         return firstRetryDecision;
@@ -625,15 +809,21 @@ export const retryPolicies = {
   },
 
   all(...policies: RetryPolicy[]): RetryPolicy {
-    return async (context) => {
+    return async (inputContext) => {
+      const context = withProviderRetryAuthority(inputContext);
       if (policies.length === 0) {
         return false;
       }
 
       let merged: ResolvedRetryDecision = { retry: true };
+      let delegableReplayVeto: ResolvedRetryDecision | undefined;
       for (const policy of policies) {
         const decision = resolveRetryDecision(await policy(context));
         if (isHardVeto(decision)) {
+          if (isDelegableReplayVeto(decision)) {
+            delegableReplayVeto ??= decision;
+            continue;
+          }
           return decision;
         }
         if (!decision.retry) {
@@ -645,9 +835,15 @@ export const retryPolicies = {
         if (decision.reason !== undefined) {
           merged.reason = decision.reason;
         }
+        if (decision.approveUnsafeReplay) {
+          merged.approveUnsafeReplay = true;
+        }
         if (isReplaySafeApproval(decision)) {
           merged = withReplaySafeApproval(merged);
         }
+      }
+      if (delegableReplayVeto) {
+        return resolveDelegableReplayVeto(delegableReplayVeto, merged);
       }
       return merged;
     };
@@ -663,7 +859,6 @@ export async function getResponseWithRetry(
   const retryBackoff = request.modelSettings.retry?.backoff;
 
   let attempt = 1;
-  const replayUnsafeRequest = isStatefulConversationRequest(request);
   while (true) {
     const requestForAttempt = shouldDisableProviderManagedRetry(
       request,
@@ -695,7 +890,7 @@ export async function getResponseWithRetry(
         retryBackoff,
         signal: request.signal,
         stream: false,
-        replayUnsafeRequest,
+        request,
         emittedVisibleEvent: false,
         emittedRawModelEvent: false,
         providerAdvice,
@@ -720,7 +915,6 @@ export async function* getStreamedResponseWithRetry(
   const retryBackoff = request.modelSettings.retry?.backoff;
 
   let attempt = 1;
-  const replayUnsafeRequest = isStatefulConversationRequest(request);
   while (true) {
     let emittedVisibleEvent = false;
     let emittedRawModelEvent = false;
@@ -767,7 +961,7 @@ export async function* getStreamedResponseWithRetry(
         retryBackoff,
         signal: request.signal,
         stream: true,
-        replayUnsafeRequest,
+        request,
         emittedVisibleEvent,
         emittedRawModelEvent,
         providerAdvice,

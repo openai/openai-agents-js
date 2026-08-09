@@ -1384,6 +1384,7 @@ describe('OpenAIResponsesModel', () => {
       ),
       {
         unsafeToReplay: true,
+        responseStarted: true,
       },
     );
 
@@ -1406,6 +1407,7 @@ describe('OpenAIResponsesModel', () => {
       replaySafety: 'unsafe',
       reason:
         'Responses websocket connection closed before a terminal response event.',
+      responseStarted: true,
     });
   });
 

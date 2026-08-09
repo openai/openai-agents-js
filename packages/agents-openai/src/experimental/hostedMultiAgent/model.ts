@@ -722,11 +722,14 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     } catch (error) {
       threwError = true;
       if (requestMayHaveReachedServer && error instanceof Error) {
-        (
-          error as Error & {
-            unsafeToReplay?: boolean;
-          }
-        ).unsafeToReplay = true;
+        const replayError = error as Error & {
+          unsafeToReplay?: boolean;
+          responseStarted?: boolean;
+        };
+        replayError.unsafeToReplay = true;
+        if (receivedServerMessage) {
+          replayError.responseStarted = true;
+        }
       }
       if (hadActiveResponse && sentFrameWasReturnedUnsent) {
         const transportOverridesKey = this.#webSocketTransportOverridesKey;

@@ -99,6 +99,10 @@ class TestWebSocket {
     this.emit('message', { data: JSON.stringify(payload) });
   }
 
+  queueRaw(data: unknown) {
+    this.emit('message', { data });
+  }
+
   onSend(handler: (data: string) => void) {
     this.addEventListener('send', (event) => {
       handler(String(event.data));
@@ -965,6 +969,59 @@ describe('OpenAIResponsesWSModel', () => {
     },
   );
 
+  it('marks post-consumption terminal response validation failures as unsafe', async () => {
+    const fakeClient = createFakeClient();
+
+    TestWebSocket.onCreate = (socket) => {
+      socket.onSend(() => {
+        socket.queueJSON({
+          type: 'response.completed',
+          sequence_number: 0,
+        });
+      });
+    };
+
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws');
+    const request = {
+      systemInstructions: undefined,
+      input: 'ping',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    };
+
+    const error = await (model as any)
+      ._fetchResponse(request as any, false)
+      .catch(
+        (err: unknown) =>
+          err as Error & {
+            unsafeToReplay?: boolean;
+            responseStarted?: boolean;
+          },
+      );
+
+    expect(error.message).toBe(
+      'Responses websocket stream ended without a terminal response event.',
+    );
+    expect(error.unsafeToReplay).toBe(true);
+    expect(error.responseStarted).toBe(true);
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: request as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toMatchObject({
+      suggested: false,
+      replaySafety: 'unsafe',
+      responseStarted: true,
+    });
+  });
+
   it('surfaces first-frame websocket error payloads without feature-disabled wrapping', async () => {
     const fakeClient = createFakeClient();
 
@@ -993,12 +1050,80 @@ describe('OpenAIResponsesWSModel', () => {
 
     const error = await (model as any)
       ._fetchResponse(request as any, false)
-      .catch((err: unknown) => err as Error);
+      .catch(
+        (err: unknown) =>
+          err as Error & {
+            unsafeToReplay?: boolean;
+            responseStarted?: boolean;
+          },
+      );
 
     expect(error).toBeInstanceOf(Error);
     expect(error.message).toContain('Responses websocket error:');
     expect(error.message).toContain('invalid request');
     expect(error.message).not.toContain('feature may not be enabled');
+    expect(error.unsafeToReplay).toBe(true);
+    expect(error.responseStarted).toBe(true);
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: request as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toMatchObject({
+      suggested: false,
+      replaySafety: 'unsafe',
+      responseStarted: true,
+    });
+  });
+
+  it('marks a consumed websocket frame unsafe before payload parsing', async () => {
+    const fakeClient = createFakeClient();
+
+    TestWebSocket.onCreate = (socket) => {
+      socket.onSend(() => {
+        socket.queueRaw('{invalid json');
+      });
+    };
+
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws');
+    const request = {
+      systemInstructions: undefined,
+      input: 'ping',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    };
+
+    const error = await (model as any)
+      ._fetchResponse(request as any, false)
+      .catch(
+        (err: unknown) =>
+          err as Error & {
+            unsafeToReplay?: boolean;
+            responseStarted?: boolean;
+          },
+      );
+
+    expect(error).toBeInstanceOf(SyntaxError);
+    expect(error.unsafeToReplay).toBe(true);
+    expect(error.responseStarted).toBe(true);
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: request as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toMatchObject({
+      suggested: false,
+      replaySafety: 'unsafe',
+      responseStarted: true,
+    });
   });
 
   it('marks non-streaming websocket failures as unsafe to replay after any response event', async () => {
@@ -1031,12 +1156,19 @@ describe('OpenAIResponsesWSModel', () => {
 
     const error = await (model as any)
       ._fetchResponse(request as any, false)
-      .catch((err: unknown) => err as Error & { unsafeToReplay?: boolean });
+      .catch(
+        (err: unknown) =>
+          err as Error & {
+            unsafeToReplay?: boolean;
+            responseStarted?: boolean;
+          },
+      );
 
     expect(error.message).toBe(
       'Responses websocket connection closed before a terminal response event.',
     );
     expect(error.unsafeToReplay).toBe(true);
+    expect(error.responseStarted).toBe(true);
   });
 
   it('preserves local websocket setup errors before first event', async () => {
@@ -1824,11 +1956,44 @@ describe('OpenAIResponsesWSModel', () => {
     };
 
     const first = await consumeStream();
-    await expect(consumeStream()).rejects.toThrow(
-      'The request may have been accepted, so the SDK will not automatically retry this websocket request.',
-    );
+    let error:
+      | (Error & { unsafeToReplay?: boolean; responseStarted?: boolean })
+      | undefined;
+    try {
+      await consumeStream();
+    } catch (caught) {
+      error = caught as Error & {
+        unsafeToReplay?: boolean;
+        responseStarted?: boolean;
+      };
+    }
 
     expect(first).toBe('resp_done_1');
+    expect(error).toBeInstanceOf(Error);
+    expect(error?.message).toContain(
+      'The request may have been accepted, so the SDK will not automatically retry this websocket request.',
+    );
+    expect(error?.unsafeToReplay).toBe(true);
+    expect(error?.responseStarted).toBeUndefined();
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: request as any,
+        stream: true,
+        attempt: 1,
+      }),
+    ).toMatchObject({
+      suggested: false,
+      replaySafety: 'unsafe',
+    });
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: request as any,
+        stream: true,
+        attempt: 1,
+      })?.responseStarted,
+    ).toBeUndefined();
     expect(TestWebSocket.instances).toHaveLength(1);
     expect(TestWebSocket.instances[0]?.sent).toHaveLength(2);
   });
