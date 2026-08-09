@@ -9,10 +9,12 @@ from pathlib import Path
 class SkillContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        cls.repo_root = Path(__file__).resolve().parents[4]
         cls.skill_root = Path(__file__).resolve().parent.parent
         cls.skill = (cls.skill_root / "SKILL.md").read_text()
         cls.agent_config = (cls.skill_root / "agents" / "openai.yaml").read_text()
         cls.reviewer_brief = (cls.skill_root / "references" / "reviewer-brief.md").read_text()
+        cls.repo_instructions = (cls.repo_root / "AGENTS.md").read_text()
 
     def test_repo_local_name_is_generic(self) -> None:
         self.assertEqual(self.skill.splitlines()[1], "name: implementation-final-review")
@@ -157,7 +159,7 @@ class SkillContractTest(unittest.TestCase):
             "run `pnpm test:review`",
             "for a leaf subsystem change",
             "plus that subsystem's complete test file or directory",
-            "with `pnpm test <path>`",
+            "with `pnpm exec vitest run <path>`",
             "for cross-cutting core changes",
             "shared test-infrastructure changes",
             "The reduced check earns no final-gate credit",
@@ -169,6 +171,106 @@ class SkillContractTest(unittest.TestCase):
                 self.assertIn(text, self.skill)
 
         self.assertNotIn("pnpm test -- <path>", self.skill)
+        self.assertIn("Do not use `pnpm test <path>`", self.skill)
+
+    def test_reviewers_start_without_inherited_conversation_context(self) -> None:
+        required_text = (
+            'fork_turns:"none"',
+            "Never inherit the implementer's conversation",
+            "parent-prepared implementation scope contract",
+            "must not invoke `$implementation-strategy` again",
+        )
+        combined = self.skill + self.reviewer_brief + self.repo_instructions
+
+        for text in required_text:
+            with self.subTest(text=text):
+                self.assertIn(text, combined)
+
+    def test_semantic_components_preserve_only_justified_clean_evidence(self) -> None:
+        required_text = (
+            "semantic review components",
+            "do not infer component ownership automatically",
+            "only a clean candidate",
+            "does not change its required behavior, assertions, or boundary",
+            "byte-identical prior-clean candidates",
+            "not automatically reusable clean credit",
+        )
+        combined = self.skill + self.reviewer_brief
+
+        for text in required_text:
+            with self.subTest(text=text):
+                self.assertIn(text, combined)
+
+    def test_round_packets_are_base_plus_delta_without_history_accumulation(self) -> None:
+        required_text = (
+            "immutable task evidence in one base packet",
+            "current-fingerprint changes",
+            "Do not append historical round transcripts",
+            "prepare_review_round.py",
+            "exact reviewer instructions and result schema",
+            "Historical round transcripts and superseded verification results are intentionally excluded",
+            "Return exactly one JSON object",
+        )
+        helper = (
+            self.skill_root / "scripts" / "prepare_review_round.py"
+        ).read_text()
+        combined = self.skill + helper + self.reviewer_brief
+
+        for text in required_text:
+            with self.subTest(text=text):
+                self.assertIn(text, combined)
+
+    def test_review_orchestration_uses_long_waits_and_bounded_clarification(self) -> None:
+        required_text = (
+            "180000-300000 millisecond timeout",
+            "interleave `list_agents`",
+            "at most once",
+            "second incomplete response invalidates that review",
+        )
+
+        for text in required_text:
+            with self.subTest(text=text):
+                self.assertIn(text, self.skill)
+
+    def test_repeated_findings_require_repository_wide_closure(self) -> None:
+        required_text = (
+            "root-cause closure record",
+            "repository-wide search commands and complete hits",
+            "`retain`, `replace`, or `delete` disposition",
+            "Do not dispatch reviewers while any hit lacks a disposition",
+            "focused invariant probe",
+        )
+
+        for text in required_text:
+            with self.subTest(text=text):
+                self.assertIn(text, self.skill)
+
+    def test_round_cap_is_task_global(self) -> None:
+        required_text = (
+            "counter is task-global",
+            "renamed `fresh` cycles",
+            "do not reset it",
+            "materially changes the requirement into a separate task",
+        )
+
+        for text in required_text:
+            with self.subTest(text=text):
+                self.assertIn(text, self.skill)
+
+    def test_reviewer_result_is_structured_and_tracks_inspection_budget(self) -> None:
+        required_text = (
+            '"checked_inventory_ids"',
+            '"unchecked_inventory_ids"',
+            '"inspection_budget"',
+            '"sibling_instance_scan"',
+            "target no more than 12 shell inspection calls",
+            "not a hard cap",
+        )
+        combined = self.skill + self.reviewer_brief
+
+        for text in required_text:
+            with self.subTest(text=text):
+                self.assertIn(text, combined)
 
 
 if __name__ == "__main__":
