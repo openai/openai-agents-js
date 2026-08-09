@@ -29,5 +29,10 @@ if [ -z "$CI" ] && [ -z "$GITHUB_ACTIONS" ]; then
     echo "Skipping secrets check due to missing trufflehog."
     exit 1
   fi
-  trufflehog --no-update git file://. --since-commit HEAD --fail
+
+  staged_dir=$(mktemp -d)
+  trap 'rm -rf "$staged_dir"' EXIT HUP INT TERM
+  git diff --cached --name-only --diff-filter=ACMR -z |
+    git checkout-index --stdin -z --prefix="$staged_dir/"
+  trufflehog --no-update --fail filesystem --max-symlink-depth=0 "$staged_dir"
 fi
