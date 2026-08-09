@@ -1322,6 +1322,11 @@ describe('tool invocation replay binding', () => {
     expect(shell.calls).toEqual([{ commands: ['echo once'] }]);
     const serialized = interrupted.state.toJSON() as any;
     serialized.$schemaVersion = '1.17';
+    for (const item of serialized.generatedItems) {
+      if (item.type === 'tool_call_output_item') {
+        item.output = JSON.stringify(item.output);
+      }
+    }
     delete serialized.context.approvalInvocations;
     delete serialized.completedToolInvocations;
 
@@ -1369,6 +1374,11 @@ describe('tool invocation replay binding', () => {
     );
     const serialized = state.toJSON() as any;
     serialized.$schemaVersion = '1.17';
+    for (const item of serialized.generatedItems) {
+      if (item.type === 'tool_call_output_item') {
+        item.output = JSON.stringify(item.output);
+      }
+    }
     delete serialized.context.approvalInvocations;
     delete serialized.completedToolInvocations;
 

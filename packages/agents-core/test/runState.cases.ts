@@ -1195,6 +1195,304 @@ export function registerRunStateCoreTests(): void {
       expect(JSON.parse(str)).toEqual(json);
     });
 
+    it.each([
+      { name: 'null', output: null },
+      { name: 'boolean', output: true },
+      { name: 'number', output: 42 },
+      {
+        name: 'nested object',
+        output: {
+          city: 'sf',
+          readings: [{ temperature: 18 }, null, true],
+        },
+      },
+      {
+        name: 'nested array',
+        output: [{ city: 'sf' }, [18, 19], null],
+      },
+    ])(
+      'round-trips a JSON-compatible $name tool output as structured data',
+      async ({ output }) => {
+        const agent = new Agent({ name: 'StructuredOutputAgent' });
+        const rawItem: protocol.FunctionCallResultItem = {
+          type: 'function_call_result',
+          name: 'weather',
+          callId: 'structured-output',
+          status: 'completed',
+          output: 'model-visible output',
+        };
+        const state = new RunState(new RunContext(), 'input', agent, 1);
+        state._generatedItems.push(
+          new RunToolCallOutputItem(rawItem, agent, output),
+        );
+
+        const serialized = state.toJSON();
+        expect((serialized.generatedItems[0] as any).output).toEqual(output);
+
+        const restoredFromJson = await RunState.fromString(
+          agent,
+          JSON.stringify(serialized),
+        );
+        const restoredFromString = await RunState.fromString(
+          agent,
+          state.toString(),
+        );
+
+        for (const restored of [restoredFromJson, restoredFromString]) {
+          expect(
+            (restored._generatedItems[0] as RunToolCallOutputItem).output,
+          ).toEqual(output);
+          const repeated = await RunState.fromString(
+            agent,
+            restored.toString(),
+          );
+          expect(
+            (repeated._generatedItems[0] as RunToolCallOutputItem).output,
+          ).toEqual(output);
+        }
+      },
+    );
+
+    it('preserves structured output across item carriers without leaking wrapper data', async () => {
+      const agent = new Agent({ name: 'StructuredCarrierAgent' });
+      const rawItem: protocol.FunctionCallResultItem = {
+        type: 'function_call_result',
+        name: 'lookup',
+        callId: 'structured-carrier',
+        status: 'completed',
+        output: 'provider-visible output',
+      };
+      const output = {
+        sdkOnlyMarker: 'wrapper-output-only',
+        nested: [{ value: 1 }],
+      };
+      const customData = { uiMarker: 'custom-data-only' };
+      const outputItem = new RunToolCallOutputItem(
+        rawItem,
+        agent,
+        output,
+        customData,
+      );
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._generatedItems.push(outputItem);
+      state._lastProcessedResponse = {
+        newItems: [outputItem],
+        toolsUsed: [],
+        handoffs: [],
+        functions: [],
+        computerActions: [],
+        shellActions: [],
+        applyPatchActions: [],
+        mcpApprovalRequests: [],
+        hasToolsOrApprovalsToRun: () => false,
+      };
+
+      const serialized = state.toJSON() as any;
+      expect(serialized.generatedItems[0].output).toEqual(output);
+      expect(serialized.lastProcessedResponse.newItems[0].output).toEqual(
+        output,
+      );
+
+      const restored = await RunState.fromString(agent, state.toString());
+      expect(
+        (restored._generatedItems[0] as RunToolCallOutputItem).output,
+      ).toEqual(output);
+      expect(
+        (restored._lastProcessedResponse?.newItems[0] as RunToolCallOutputItem)
+          .output,
+      ).toEqual(output);
+      expect(restored._generatedItems[0].rawItem).toEqual(rawItem);
+      expect(
+        (restored._generatedItems[0] as RunToolCallOutputItem).customData,
+      ).toEqual(customData);
+      expect(JSON.stringify(restored.history)).not.toContain(
+        'wrapper-output-only',
+      );
+      expect(JSON.stringify(restored.history)).not.toContain(
+        'custom-data-only',
+      );
+      expect(restored.history).toContainEqual(rawItem);
+    });
+
+    it('reads schema 1.17 string outputs and reserves structured outputs for 1.18', async () => {
+      const agent = new Agent({ name: 'StructuredOutputVersionAgent' });
+      const rawItem: protocol.FunctionCallResultItem = {
+        type: 'function_call_result',
+        name: 'lookup',
+        callId: 'structured-output-version',
+        status: 'completed',
+        output: 'provider-visible output',
+      };
+      const legacyState = new RunState(new RunContext(), 'input', agent, 1);
+      legacyState._generatedItems.push(
+        new RunToolCallOutputItem(rawItem, agent, 'legacy output'),
+      );
+      const legacySerialized = legacyState.toJSON() as any;
+      legacySerialized.$schemaVersion = '1.17';
+      delete legacySerialized.completedToolInvocations;
+      delete legacySerialized.completedToolInvocationEvidence;
+      delete legacySerialized.ambiguousToolInvocationCallIds;
+
+      const restoredLegacy = await RunState.fromString(
+        agent,
+        JSON.stringify(legacySerialized),
+      );
+      expect(
+        (restoredLegacy._generatedItems[0] as RunToolCallOutputItem).output,
+      ).toBe('legacy output');
+
+      const structuredState = new RunState(new RunContext(), 'input', agent, 1);
+      structuredState._generatedItems.push(
+        new RunToolCallOutputItem(rawItem, agent, { value: 1 }),
+      );
+      const structuredSerialized = structuredState.toJSON() as any;
+      structuredSerialized.$schemaVersion = '1.17';
+      delete structuredSerialized.completedToolInvocations;
+      delete structuredSerialized.completedToolInvocationEvidence;
+      delete structuredSerialized.ambiguousToolInvocationCallIds;
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(structuredSerialized)),
+      ).rejects.toThrow(
+        'Run state schema version 1.17 does not support structured tool output values.',
+      );
+    });
+
+    it('rejects a serialized tool output item with missing output data', async () => {
+      const agent = new Agent({ name: 'MissingOutputAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._generatedItems.push(
+        new RunToolCallOutputItem(
+          {
+            type: 'function_call_result',
+            name: 'lookup',
+            callId: 'missing-output',
+            status: 'completed',
+            output: 'provider-visible output',
+          },
+          agent,
+          'wrapper output',
+        ),
+      );
+      const serialized = state.toJSON() as any;
+      delete serialized.generatedItems[0].output;
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toBeInstanceOf(ZodError);
+    });
+
+    it('keeps unsupported live tool outputs on the released string fallback', async () => {
+      const circular: Record<string, unknown> = {};
+      circular.self = circular;
+      const throwingGetter = Object.defineProperty({}, 'value', {
+        enumerable: true,
+        get() {
+          throw new Error('getter failed');
+        },
+      });
+      class SerializableResult {
+        toJSON() {
+          return { value: 1 };
+        }
+      }
+      const nonEnumerableToJson = Object.defineProperty(
+        { value: 1 },
+        'toJSON',
+        {
+          enumerable: false,
+          value() {
+            return { legacy: true };
+          },
+        },
+      );
+      let arrayToJsonCalls = 0;
+      const arrayWithToJson = Object.defineProperty([1, 2], 'toJSON', {
+        enumerable: false,
+        value() {
+          arrayToJsonCalls += 1;
+          return { call: arrayToJsonCalls };
+        },
+      });
+      let objectGetterReads = 0;
+      const objectWithGetter = Object.defineProperty({}, 'value', {
+        enumerable: true,
+        get() {
+          objectGetterReads += 1;
+          return objectGetterReads;
+        },
+      });
+      let arrayGetterReads = 0;
+      const arrayWithGetter = Object.defineProperty([0], 0, {
+        enumerable: true,
+        get() {
+          arrayGetterReads += 1;
+          return arrayGetterReads;
+        },
+      });
+      const unsupportedOutputs: unknown[] = [
+        circular,
+        BigInt(1),
+        undefined,
+        () => 'value',
+        Symbol('value'),
+        Number.POSITIVE_INFINITY,
+        new Uint8Array([1, 2]),
+        new Map([['value', 1]]),
+        new Set([1]),
+        new Date('2026-08-10T00:00:00.000Z'),
+        new SerializableResult(),
+        nonEnumerableToJson,
+        arrayWithToJson,
+        objectWithGetter,
+        arrayWithGetter,
+        throwingGetter,
+      ];
+
+      for (const [index, output] of unsupportedOutputs.entries()) {
+        const agent = new Agent({ name: `UnsupportedOutputAgent${index}` });
+        const state = new RunState(new RunContext(), 'input', agent, 1);
+        state._generatedItems.push(
+          new RunToolCallOutputItem(
+            {
+              type: 'function_call_result',
+              name: 'lookup',
+              callId: `unsupported-output-${index}`,
+              status: 'completed',
+              output: 'provider-visible output',
+            },
+            agent,
+            output,
+          ),
+        );
+
+        const serialized = state.toJSON() as any;
+        expect(typeof serialized.generatedItems[0].output).toBe('string');
+        if (output === nonEnumerableToJson) {
+          expect(serialized.generatedItems[0].output).toBe('{"legacy":true}');
+        }
+        if (output === arrayWithToJson) {
+          expect(arrayToJsonCalls).toBe(1);
+          expect(serialized.generatedItems[0].output).toBe('{"call":1}');
+        }
+        if (output === objectWithGetter) {
+          expect(objectGetterReads).toBe(1);
+          expect(serialized.generatedItems[0].output).toBe('{"value":1}');
+        }
+        if (output === arrayWithGetter) {
+          expect(arrayGetterReads).toBe(1);
+          expect(serialized.generatedItems[0].output).toBe('[1]');
+        }
+        const restored = await RunState.fromString(
+          agent,
+          JSON.stringify(serialized),
+        );
+        expect(
+          (restored._generatedItems[0] as RunToolCallOutputItem).output,
+        ).toBe(serialized.generatedItems[0].output);
+      }
+    });
+
     it('serializes null maxTurns', async () => {
       const context = new RunContext();
       const agent = new Agent({ name: 'NoMaxTurns' });
@@ -3115,6 +3413,12 @@ export function registerRunStateCompactionTests(): void {
           };
           const serialized = state.toJSON() as any;
           serialized.$schemaVersion = '1.15';
+          const serializedLocalResult = serialized.generatedItems.at(-1);
+          if (typeof serializedLocalResult.output !== 'string') {
+            serializedLocalResult.output = JSON.stringify(
+              serializedLocalResult.output,
+            );
+          }
 
           const restored = await RunState.fromString(
             agent,
