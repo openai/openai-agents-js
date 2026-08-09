@@ -90,7 +90,7 @@ The default `ModelProvider` resolves names using the OpenAI APIs. It supports tw
   title="Set default OpenAI key"
 />
 
-You can also plug your own `OpenAI` client via `setDefaultOpenAIClient(client)` if you need custom networking settings.
+You can also plug your own `OpenAI` client via `setDefaultOpenAIClient(client)` if you need custom networking settings. Directly supplied clients must use `openai` 7.2 or later.
 
 #### Provider options reference
 
@@ -101,7 +101,7 @@ When you instantiate `OpenAIProvider` directly, these options control client con
 | `apiKey` | API key used when the provider creates its own OpenAI client. Defaults to the SDK-wide OpenAI key. |
 | `baseURL` | HTTP base URL for OpenAI-compatible endpoints. Cannot be combined with `openAIClient`. |
 | `websocketBaseURL` | WebSocket base URL for Responses WebSocket transport. Cannot be combined with `openAIClient`. |
-| `openAIClient` | Preconfigured OpenAI client instance. Cannot be combined with `apiKey`, `baseURL`, or `websocketBaseURL`. |
+| `openAIClient` | Preconfigured client from `openai` 7.2 or later. Cannot be combined with `apiKey`, `baseURL`, or `websocketBaseURL`. |
 | `organization` / `project` | Organization and project values passed when the provider creates its own OpenAI client. |
 | `useResponses` | Select the Responses API (`true`) or Chat Completions API (`false`) for string model names resolved by this provider. Defaults to the process-wide `setOpenAIAPI(...)` setting. |
 | `useResponsesWebSocket` | Use the WebSocket transport for Responses models resolved by this provider. Defaults to the process-wide `setOpenAIResponsesTransport(...)` setting. |
