@@ -226,7 +226,7 @@ class SkillContractTest(unittest.TestCase):
         self.assertIn("PYTHONDONTWRITEBYTECODE=1", self.reviewer_brief)
         self.assertIn("create `__pycache__`", self.reviewer_brief)
 
-    def test_round_budget_is_task_global_and_cannot_silently_reset(self) -> None:
+    def test_round_budget_preserves_history_across_feedback_cycles(self) -> None:
         required_text = (
             "Resume or create the task-global review ledger",
             "Use the Codex task or thread ID as the stable task identity when available",
@@ -234,9 +234,14 @@ class SkillContractTest(unittest.TestCase):
             "preserve the same file when work moves to another worktree",
             "Never initialize a new counter merely because the task was paused, compacted, "
             "handed off, renamed, moved to another worktree, or resumed in another context",
-            "default autonomous budget is six fingerprint rounds for the entire task",
-            "Only explicit user authorization may start another bounded budget",
-            "append the new budget to the same ledger rather than replacing its history",
+            "default autonomous budget for the initial implementation cycle is six "
+            "fingerprint rounds",
+            "concrete actionable review feedback starts a post-completion feedback cycle",
+            "feedback message itself as authorization to append a default budget of two "
+            "fingerprint rounds to the same ledger",
+            "A continuation request without concrete new feedback remains in the existing cycle",
+            "append the feedback cycle's default two-round budget to the same ledger without "
+            "another authorization prompt",
             "Persist enough task identity, used and authorized round budgets",
         )
         for text in required_text:
