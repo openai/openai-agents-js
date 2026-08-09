@@ -770,14 +770,14 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
       for (const {
         absolutePath,
         entry,
-        allowMountCredentialExposure,
+        broadCredentialExposureAcknowledged,
         environment,
         revalidateMountAuthority,
       } of targets) {
         await revalidateMountAuthority();
         await this.materializeMountEntry(absolutePath, entry, {
           environment: environment ?? this.state.environment,
-          allowAmbientCredentials: allowMountCredentialExposure,
+          allowAmbientCredentials: broadCredentialExposureAcknowledged,
           revalidateMountAuthority,
         });
       }

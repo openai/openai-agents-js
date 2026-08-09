@@ -47,7 +47,9 @@ describe('remote mount credential boundaries', () => {
       ).toThrow(/model-controlled sandbox/u);
       expect(() =>
         validateRcloneMountEnvironmentCredentialExposure(
-          manifest.withInContainerMountCredentialExposureAllowed('remote'),
+          manifest.withInContainerMountBroadCredentialExposureAcknowledged(
+            'remote',
+          ),
           environment,
         ),
       ).not.toThrow();
@@ -67,7 +69,7 @@ describe('remote mount credential boundaries', () => {
         AWS_SECRET_ACCESS_KEY: 'secret-key',
         KEEP: 'safe',
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
 
     const serialized = serializeRemoteSandboxSessionState({
       manifest,
@@ -98,8 +100,8 @@ describe('remote mount credential boundaries', () => {
         }),
       },
     })
-      .withInContainerMountCredentialExposureAllowed('first')
-      .withInContainerMountCredentialExposureAllowed('second');
+      .withInContainerMountBroadCredentialExposureAcknowledged('first')
+      .withInContainerMountBroadCredentialExposureAcknowledged('second');
     const state = {
       manifest,
       environment: {
@@ -136,7 +138,7 @@ describe('remote mount credential boundaries', () => {
     ).toBe(false);
   });
 
-  it('ignores ambient AWS values for inline credentials but tracks rclone overrides', () => {
+  it('tracks ambient AWS values exposed beside inline credentials', () => {
     const manifest = new Manifest({
       entries: {
         remote: s3Mount({
@@ -146,7 +148,9 @@ describe('remote mount credential boundaries', () => {
           mountStrategy: { type: 'e2b_cloud_bucket' },
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    })
+      .withInContainerMountCredentialExposureAcknowledged('remote')
+      .withInContainerMountBroadCredentialExposureAcknowledged('remote');
     const state = {
       manifest,
       environment: { AWS_ACCESS_KEY_ID: 'ambient-key' },
@@ -161,10 +165,58 @@ describe('remote mount credential boundaries', () => {
       rcloneMountEnvironmentAuthorityMatches(state, manifest, {
         AWS_ACCESS_KEY_ID: 'rotated-ambient-key',
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       rcloneMountEnvironmentAuthorityMatches(state, manifest, {
         RCLONE_CONFIG_PASS: 'new-password',
+      }),
+    ).toBe(false);
+  });
+
+  it('redacts and compares broad AWS authority beside inline credentials', () => {
+    const manifest = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'example',
+          accessKeyId: 'inline-key',
+          secretAccessKey: 'inline-secret',
+          mountStrategy: { type: 'daytona_cloud_bucket' },
+        }),
+      },
+    })
+      .withInContainerMountCredentialExposureAcknowledged('remote')
+      .withInContainerMountBroadCredentialExposureAcknowledged('remote');
+    const state = {
+      manifest,
+      environment: {
+        AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.2/credentials',
+        AWS_CONTAINER_AUTHORIZATION_TOKEN: 'CONTAINER_TOKEN_SENTINEL_A',
+        KEEP: 'safe',
+      },
+    };
+    captureRcloneMountEnvironmentAuthority(
+      state,
+      '/workspace/remote',
+      manifest.entries.remote!,
+    );
+
+    const serialized = serializeRemoteSandboxSessionState(state);
+    expect(serialized.environment).toEqual({ KEEP: 'safe' });
+    expect(JSON.stringify(serialized)).not.toContain(
+      'CONTAINER_TOKEN_SENTINEL_A',
+    );
+    expect(
+      rcloneMountEnvironmentAuthorityMatches(state, manifest, {
+        AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.2/credentials',
+        AWS_CONTAINER_AUTHORIZATION_TOKEN: 'CONTAINER_TOKEN_SENTINEL_A',
+        KEEP: 'safe',
+      }),
+    ).toBe(true);
+    expect(
+      rcloneMountEnvironmentAuthorityMatches(state, manifest, {
+        AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.2/credentials',
+        AWS_CONTAINER_AUTHORIZATION_TOKEN: 'CONTAINER_TOKEN_SENTINEL_B',
+        KEEP: 'safe',
       }),
     ).toBe(false);
   });

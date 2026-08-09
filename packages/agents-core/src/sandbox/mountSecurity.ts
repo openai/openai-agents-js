@@ -4,10 +4,12 @@ import { isMount, type Entry, type Mount, type TypedMount } from './entries';
 import {
   cloneManifest,
   Environment,
-  manifestAllowsInContainerMountCredentialExposure,
+  manifestAcknowledgesInContainerMountCredentialExposure,
   Manifest,
+  MOUNT_CREDENTIAL_EXPOSURE_POLICY_KEYS,
   normalizeRelativePath,
   replaceManifestMountCredentialExposurePolicy,
+  type InContainerMountCredentialExposureAuthority,
 } from './manifest';
 import { stableJsonStringify } from './shared/stableJson';
 import { validateCredentialPair } from './shared/credentials';
@@ -29,12 +31,10 @@ export type EffectiveManifestEntryPath = {
   recursive: boolean;
 };
 
-const POLICY_KEYS = new Set([
-  'in_container_mount_credential_exposure_allowed_paths',
-  '_in_container_mount_credential_exposure_allowed_paths',
-  'inContainerMountCredentialExposureAllowedPaths',
-  '_inContainerMountCredentialExposureAllowedPaths',
-]);
+export type MountCredentialExposureDecision = {
+  credentialExposureAcknowledged: boolean;
+  broadCredentialExposureAcknowledged: boolean;
+};
 
 const CREDENTIAL_FIELDS_BY_MOUNT_TYPE: Readonly<
   Record<string, readonly string[]>
@@ -97,6 +97,176 @@ const OUTSIDE_SANDBOX_STRATEGIES = new Set([
   'blaxel_drive',
 ]);
 
+type InContainerMountCredentialCapability = {
+  strategyTypes: readonly string[];
+  provider: string;
+  patternType?: string;
+  mountScopedCredentialFields: readonly string[];
+  broadCredentialFields: readonly string[];
+  enablesBroadCredentialDiscovery?: boolean;
+};
+
+const RCLONE_STRATEGY_TYPES = [
+  'in_container',
+  'e2b_cloud_bucket',
+  'daytona_cloud_bucket',
+  'runloop_cloud_bucket',
+] as const;
+
+const IN_CONTAINER_MOUNT_CREDENTIAL_CAPABILITIES: readonly InContainerMountCredentialCapability[] =
+  [
+    {
+      strategyTypes: RCLONE_STRATEGY_TYPES,
+      provider: 's3',
+      patternType: 'rclone',
+      mountScopedCredentialFields: [
+        'accessKeyId',
+        'secretAccessKey',
+        'sessionToken',
+      ],
+      broadCredentialFields: [
+        'mountStrategy.credentialEnvironment',
+        'mountStrategy.pattern.configFilePath',
+      ],
+      enablesBroadCredentialDiscovery: true,
+    },
+    {
+      strategyTypes: RCLONE_STRATEGY_TYPES,
+      provider: 'r2',
+      patternType: 'rclone',
+      mountScopedCredentialFields: ['accessKeyId', 'secretAccessKey'],
+      broadCredentialFields: [
+        'mountStrategy.credentialEnvironment',
+        'mountStrategy.pattern.configFilePath',
+      ],
+      enablesBroadCredentialDiscovery: true,
+    },
+    {
+      strategyTypes: RCLONE_STRATEGY_TYPES,
+      provider: 'gcs',
+      patternType: 'rclone',
+      mountScopedCredentialFields: [
+        'accessId',
+        'secretAccessKey',
+        'serviceAccountCredentials',
+        'accessToken',
+      ],
+      broadCredentialFields: [
+        'serviceAccountFile',
+        'mountStrategy.credentialEnvironment',
+        'mountStrategy.pattern.configFilePath',
+      ],
+      enablesBroadCredentialDiscovery: true,
+    },
+    {
+      strategyTypes: RCLONE_STRATEGY_TYPES,
+      provider: 'azure_blob',
+      patternType: 'rclone',
+      mountScopedCredentialFields: ['accountKey'],
+      broadCredentialFields: [
+        'identityClientId',
+        'managedIdentity',
+        'mountStrategy.credentialEnvironment',
+        'mountStrategy.pattern.configFilePath',
+      ],
+      enablesBroadCredentialDiscovery: true,
+    },
+    {
+      strategyTypes: RCLONE_STRATEGY_TYPES,
+      provider: 'box',
+      patternType: 'rclone',
+      mountScopedCredentialFields: [
+        'clientSecret',
+        'accessToken',
+        'token',
+        'configCredentials',
+      ],
+      broadCredentialFields: [
+        'boxConfigFile',
+        'mountStrategy.credentialEnvironment',
+        'mountStrategy.pattern.configFilePath',
+      ],
+    },
+    {
+      strategyTypes: ['in_container'],
+      provider: 's3',
+      patternType: 'mountpoint',
+      mountScopedCredentialFields: [
+        'accessKeyId',
+        'secretAccessKey',
+        'sessionToken',
+      ],
+      broadCredentialFields: ['mountStrategy.credentialEnvironment'],
+      enablesBroadCredentialDiscovery: true,
+    },
+    {
+      strategyTypes: ['in_container'],
+      provider: 'gcs',
+      patternType: 'mountpoint',
+      mountScopedCredentialFields: ['accessId', 'secretAccessKey'],
+      broadCredentialFields: [],
+    },
+    {
+      strategyTypes: ['in_container'],
+      provider: 'azure_blob',
+      patternType: 'fuse',
+      mountScopedCredentialFields: ['accountKey'],
+      broadCredentialFields: ['identityClientId', 'managedIdentity'],
+      enablesBroadCredentialDiscovery: true,
+    },
+    {
+      strategyTypes: ['in_container'],
+      provider: 's3_files',
+      patternType: 's3files',
+      mountScopedCredentialFields: [],
+      broadCredentialFields: [
+        'workloadIdentity',
+        'extraOptions',
+        'config.extraOptions',
+        'mountStrategy.pattern.options.extraOptions',
+      ],
+      enablesBroadCredentialDiscovery: true,
+    },
+    {
+      strategyTypes: ['vercel_cloud_bucket'],
+      provider: 's3',
+      mountScopedCredentialFields: [
+        'accessKeyId',
+        'secretAccessKey',
+        'sessionToken',
+      ],
+      broadCredentialFields: ['mountStrategy.credentialEnvironment'],
+      enablesBroadCredentialDiscovery: true,
+    },
+    {
+      strategyTypes: ['blaxel_cloud_bucket'],
+      provider: 's3',
+      mountScopedCredentialFields: [
+        'accessKeyId',
+        'secretAccessKey',
+        'sessionToken',
+      ],
+      broadCredentialFields: [],
+    },
+    {
+      strategyTypes: ['blaxel_cloud_bucket'],
+      provider: 'r2',
+      mountScopedCredentialFields: ['accessKeyId', 'secretAccessKey'],
+      broadCredentialFields: [],
+    },
+    {
+      strategyTypes: ['blaxel_cloud_bucket'],
+      provider: 'gcs',
+      mountScopedCredentialFields: [
+        'accessId',
+        'secretAccessKey',
+        'serviceAccountCredentials',
+        'accessToken',
+      ],
+      broadCredentialFields: ['serviceAccountFile'],
+    },
+  ];
+
 const S3_MOUNT_ENVIRONMENT_NAMES = [
   'AWS_ACCESS_KEY_ID',
   'AWS_SECRET_ACCESS_KEY',
@@ -127,6 +297,20 @@ const S3_MOUNT_CREDENTIAL_ENVIRONMENT_NAMES = [
   'AWS_CONFIG_FILE',
   'AWS_ROLE_ARN',
   'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+  'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+  'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+  'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+] as const;
+
+const S3_MOUNT_BROAD_CREDENTIAL_ENVIRONMENT_NAMES = [
+  'AWS_PROFILE',
+  'AWS_SHARED_CREDENTIALS_FILE',
+  'AWS_CONFIG_FILE',
+  'AWS_SDK_LOAD_CONFIG',
+  'AWS_ROLE_ARN',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'AWS_ROLE_SESSION_NAME',
   'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
   'AWS_CONTAINER_CREDENTIALS_FULL_URI',
   'AWS_CONTAINER_AUTHORIZATION_TOKEN',
@@ -164,6 +348,10 @@ const validatedMountEffectivePaths = new WeakMap<
   ReadonlyMap<string, string>
 >();
 const liveMountEnvironmentAuthority = new WeakMap<Manifest, string>();
+const liveMountRuntimeAuthority = new WeakMap<
+  Manifest,
+  ReadonlyMap<symbol, string>
+>();
 const trustedCredentialReboundManifests = new WeakSet<Manifest>();
 const unsafeManifestTransitionStates = new WeakSet<object>();
 const pendingManifestMutationCounts = new WeakMap<object, number>();
@@ -272,14 +460,9 @@ export function configuredMountCredentialFields(
   entry: Mount | TypedMount,
 ): string[] {
   const entryRecord = entry as Record<string, unknown>;
-  const fields =
-    CREDENTIAL_FIELDS_BY_MOUNT_TYPE[entry.type] ?? ALL_CREDENTIAL_FIELDS;
-  const configured: string[] = fields
-    .filter(
-      (field) =>
-        entryRecord[field] !== undefined && entryRecord[field] !== null,
-    )
-    .sort();
+  const configured: string[] = ALL_CREDENTIAL_FIELDS.filter(
+    (field) => entryRecord[field] !== undefined && entryRecord[field] !== null,
+  ).sort();
   for (const field of STRATEGY_CREDENTIAL_FIELDS) {
     const value = readNestedField(entryRecord, field);
     if (
@@ -429,43 +612,208 @@ export function validateMountCredentialBoundaries(manifest: Manifest): void {
       ...configuredMountCredentialFields(entry),
       ...implicitWorkloadIdentityCredentialFields(entry),
     ];
-    if (credentialFields.length === 0) {
-      continue;
-    }
-
-    assertMountCredentialFilesAreNotSerializedManifestEntries(
-      manifest,
-      entry,
-      mountPath,
-    );
-
     const strategyType = mountStrategyType(entry);
     if (OUTSIDE_SANDBOX_STRATEGIES.has(strategyType)) {
-      continue;
-    }
-    if (manifestAllowsInContainerMountCredentialExposure(manifest, mountPath)) {
+      if (credentialFields.length > 0) {
+        assertMountCredentialFilesAreNotSerializedManifestEntries(
+          manifest,
+          entry,
+          mountPath,
+        );
+      }
       continue;
     }
 
-    const details = {
+    const acknowledgement = mountCredentialExposureAcknowledgement(
+      manifest,
+      mountPath,
+    );
+    if (
+      credentialFields.length === 0 &&
+      !acknowledgement.mount_scoped &&
+      !acknowledgement.broad
+    ) {
+      continue;
+    }
+
+    const capability = inContainerMountCredentialCapability(entry);
+    const details: Record<string, unknown> = {
       mountPath,
       mountType: entry.type,
       mountStrategy: strategyType,
+      mountProvider: sdkOwnedMountProvider(entry),
+      mountPattern: resolvedInContainerMountPatternType(entry),
       credentialFields,
     };
-    if (INSIDE_SANDBOX_STRATEGIES.has(strategyType)) {
+    if (!capability) {
       throw new SandboxMountError(
-        'Mount credentials cannot be passed to a helper inside a model-controlled sandbox by default. Use an external or provider-native mount strategy, or explicitly acknowledge exposure for this exact path on a trusted Manifest instance.',
+        'Credential-bearing in-container mounts require an SDK-supported strategy, provider, mount type, and pattern combination before exposure can be acknowledged. Use a supported typed mount and strategy, a credentialless helper, or an external or provider-native mount strategy.',
         details,
         'mount_config_invalid',
       );
     }
+
+    const requiredAuthorities = classifyMountCredentialAuthorities(
+      capability,
+      credentialFields,
+      details,
+    );
+    validateAcknowledgementSupportedByCapability(
+      capability,
+      acknowledgement,
+      details,
+    );
+
+    if (credentialFields.length > 0) {
+      assertMountCredentialFilesAreNotSerializedManifestEntries(
+        manifest,
+        entry,
+        mountPath,
+      );
+    }
+    for (const authority of requiredAuthorities) {
+      if (acknowledgement[authority]) {
+        continue;
+      }
+      const broad = authority === 'broad';
+      throw new SandboxMountError(
+        broad
+          ? 'Broad credential authority cannot be exposed to a helper inside a model-controlled sandbox by default. Use a credentialless or external/provider-native strategy, or explicitly acknowledge broad credential exposure for this exact path with Manifest.withInContainerMountBroadCredentialExposureAcknowledged().'
+          : 'Mount-scoped credentials cannot be exposed to a helper inside a model-controlled sandbox by default. Use a credentialless or external/provider-native strategy, or explicitly acknowledge credential exposure for this exact path with Manifest.withInContainerMountCredentialExposureAcknowledged().',
+        details,
+        'mount_config_invalid',
+      );
+    }
+  }
+}
+
+function inContainerMountCredentialCapability(
+  entry: Mount | TypedMount,
+): InContainerMountCredentialCapability | undefined {
+  const strategyType = mountStrategyType(entry);
+  const provider = sdkOwnedMountProvider(entry);
+  if (!provider) {
+    return undefined;
+  }
+  const patternType = resolvedInContainerMountPatternType(entry);
+  return IN_CONTAINER_MOUNT_CREDENTIAL_CAPABILITIES.find(
+    (capability) =>
+      capability.strategyTypes.includes(strategyType) &&
+      capability.provider === provider &&
+      capability.patternType === patternType,
+  );
+}
+
+function sdkOwnedMountProvider(entry: Mount | TypedMount): string | undefined {
+  if (entry.type === 'mount') {
+    return undefined;
+  }
+  const provider = typedMountProviderConfig(entry).provider;
+  return entry.provider === undefined || entry.provider === provider
+    ? provider
+    : undefined;
+}
+
+function resolvedInContainerMountPatternType(
+  entry: Mount | TypedMount,
+): string | undefined {
+  const patternType = mountStrategyPattern(entry.mountStrategy)?.type;
+  if (patternType !== undefined) {
+    return typeof patternType === 'string' ? patternType : undefined;
+  }
+  const strategyType = mountStrategyType(entry);
+  if (
+    strategyType === 'e2b_cloud_bucket' ||
+    strategyType === 'daytona_cloud_bucket' ||
+    strategyType === 'runloop_cloud_bucket'
+  ) {
+    return 'rclone';
+  }
+  if (strategyType !== 'in_container') {
+    return undefined;
+  }
+  return entry.type === 's3_files_mount'
+    ? 's3files'
+    : entry.type === 's3_mount' ||
+        entry.type === 'r2_mount' ||
+        entry.type === 'gcs_mount' ||
+        entry.type === 'azure_blob_mount' ||
+        entry.type === 'box_mount'
+      ? 'rclone'
+      : undefined;
+}
+
+function classifyMountCredentialAuthorities(
+  capability: InContainerMountCredentialCapability,
+  credentialFields: readonly string[],
+  details: Record<string, unknown>,
+): Set<InContainerMountCredentialExposureAuthority> {
+  const mountScopedFields = new Set(capability.mountScopedCredentialFields);
+  const broadFields = new Set(capability.broadCredentialFields);
+  const unsupportedCredentialFields = credentialFields.filter(
+    (field) => !mountScopedFields.has(field) && !broadFields.has(field),
+  );
+  if (unsupportedCredentialFields.length > 0) {
     throw new SandboxMountError(
-      'Mount strategy must declare a trusted credential boundary before it can be used with explicit credentials.',
+      'The selected in-container mount capability does not support exposing these credential fields. Use the credential fields supported by this typed mount and strategy, or choose a credentialless or external/provider-native strategy.',
+      { ...details, unsupportedCredentialFields },
+      'mount_config_invalid',
+    );
+  }
+  const authorities = new Set<InContainerMountCredentialExposureAuthority>();
+  if (credentialFields.some((field) => mountScopedFields.has(field))) {
+    authorities.add('mount_scoped');
+  }
+  if (credentialFields.some((field) => broadFields.has(field))) {
+    authorities.add('broad');
+  }
+  return authorities;
+}
+
+function validateAcknowledgementSupportedByCapability(
+  capability: InContainerMountCredentialCapability,
+  acknowledgement: Record<InContainerMountCredentialExposureAuthority, boolean>,
+  details: Record<string, unknown>,
+): void {
+  if (
+    acknowledgement.mount_scoped &&
+    capability.mountScopedCredentialFields.length === 0
+  ) {
+    throw new SandboxMountError(
+      'The selected in-container mount capability does not support mount-scoped credential exposure acknowledgement.',
       details,
       'mount_config_invalid',
     );
   }
+  if (
+    acknowledgement.broad &&
+    capability.broadCredentialFields.length === 0 &&
+    capability.enablesBroadCredentialDiscovery !== true
+  ) {
+    throw new SandboxMountError(
+      'The selected in-container mount capability does not support broad credential exposure acknowledgement.',
+      details,
+      'mount_config_invalid',
+    );
+  }
+}
+
+function mountCredentialExposureAcknowledgement(
+  manifest: Manifest,
+  mountPath: string,
+): Record<InContainerMountCredentialExposureAuthority, boolean> {
+  return {
+    mount_scoped: manifestAcknowledgesInContainerMountCredentialExposure(
+      manifest,
+      mountPath,
+      'mount_scoped',
+    ),
+    broad: manifestAcknowledgesInContainerMountCredentialExposure(
+      manifest,
+      mountPath,
+      'broad',
+    ),
+  };
 }
 
 function validateRclonePatternArguments(
@@ -564,29 +912,35 @@ function validateMountCredentialEnvironmentPairs(
     entry.type === 'r2_mount' ||
     entry.type === 's3_files_mount'
   ) {
-    const accessKeyId = optionalCredentialString(environment.AWS_ACCESS_KEY_ID);
-    const secretAccessKey = optionalCredentialString(
-      environment.AWS_SECRET_ACCESS_KEY,
-    );
-    validateCredentialPair({
-      accessKeyId,
-      secretAccessKey,
-      message:
-        'S3 mount environment credentials require both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY when either is provided.',
-      details: { mountType: entry.type },
-      code: 'mount_config_invalid',
-    });
-    if (
-      (optionalCredentialString(environment.AWS_SESSION_TOKEN) !== undefined ||
-        optionalCredentialString(environment.AWS_SECURITY_TOKEN) !==
-          undefined) &&
-      (!accessKeyId || !secretAccessKey)
-    ) {
-      throw new SandboxMountError(
-        'S3 mount environment credentials require a complete AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY pair when a session token is provided.',
-        { mountType: entry.type },
-        'mount_config_invalid',
+    const entryRecord = entry as Record<string, unknown>;
+    if (!(entryRecord.accessKeyId && entryRecord.secretAccessKey)) {
+      const accessKeyId = optionalCredentialString(
+        environment.AWS_ACCESS_KEY_ID,
       );
+      const secretAccessKey = optionalCredentialString(
+        environment.AWS_SECRET_ACCESS_KEY,
+      );
+      validateCredentialPair({
+        accessKeyId,
+        secretAccessKey,
+        message:
+          'S3 mount environment credentials require both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY when either is provided.',
+        details: { mountType: entry.type },
+        code: 'mount_config_invalid',
+      });
+      if (
+        (optionalCredentialString(environment.AWS_SESSION_TOKEN) !==
+          undefined ||
+          optionalCredentialString(environment.AWS_SECURITY_TOKEN) !==
+            undefined) &&
+        (!accessKeyId || !secretAccessKey)
+      ) {
+        throw new SandboxMountError(
+          'S3 mount environment credentials require a complete AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY pair when a session token is provided.',
+          { mountType: entry.type },
+          'mount_config_invalid',
+        );
+      }
     }
   }
 
@@ -714,26 +1068,56 @@ export function validateMountCredentialBoundariesAtEffectivePath(
   logicalPath: string,
   entry: Mount | TypedMount,
   effectivePath: string,
-): boolean {
-  const effectivePathAllowed = manifestAllowsInContainerMountCredentialExposure(
+): MountCredentialExposureDecision {
+  const effectiveAcknowledgement = mountCredentialExposureAcknowledgement(
     manifest,
     effectivePath,
   );
   const declaredPath = manifest
     .mountTargets()
     .find((target) => target.logicalPath === logicalPath)?.mountPath;
-  if (
-    declaredPath &&
-    manifestAllowsInContainerMountCredentialExposure(manifest, declaredPath) &&
-    !effectivePathAllowed
-  ) {
-    throw new SandboxMountError(
-      'Mount credentials cannot be passed to a helper inside a model-controlled sandbox because the effective mount path does not match the trusted exact-path opt-in.',
+  const declaredAcknowledgement = declaredPath
+    ? mountCredentialExposureAcknowledgement(manifest, declaredPath)
+    : { mount_scoped: false, broad: false };
+  for (const authority of ['mount_scoped', 'broad'] as const) {
+    if (
+      declaredAcknowledgement[authority] &&
+      !effectiveAcknowledgement[authority]
+    ) {
+      throw new SandboxMountError(
+        'Mount credentials cannot be exposed to a helper inside a model-controlled sandbox because the effective mount path does not match the trusted exact-path acknowledgement.',
+        {
+          mountType: entry.type,
+          mountStrategy: mountStrategyType(entry),
+          credentialAuthority: authority,
+        },
+        'mount_config_invalid',
+      );
+    }
+  }
+  if (effectiveAcknowledgement.mount_scoped || effectiveAcknowledgement.broad) {
+    const capability = inContainerMountCredentialCapability(entry);
+    if (!capability) {
+      throw new SandboxMountError(
+        'Credential-bearing in-container mounts require an SDK-supported strategy, provider, mount type, and pattern combination before exposure can be acknowledged.',
+        {
+          mountType: entry.type,
+          mountStrategy: mountStrategyType(entry),
+          mountProvider: sdkOwnedMountProvider(entry),
+          mountPattern: resolvedInContainerMountPatternType(entry),
+        },
+        'mount_config_invalid',
+      );
+    }
+    validateAcknowledgementSupportedByCapability(
+      capability,
+      effectiveAcknowledgement,
       {
         mountType: entry.type,
         mountStrategy: mountStrategyType(entry),
+        mountProvider: sdkOwnedMountProvider(entry),
+        mountPattern: resolvedInContainerMountPatternType(entry),
       },
-      'mount_config_invalid',
     );
   }
   const effectivePaths = new Map(
@@ -741,7 +1125,11 @@ export function validateMountCredentialBoundariesAtEffectivePath(
   );
   effectivePaths.set(logicalPath, normalizePosixPath(effectivePath));
   validatedMountEffectivePaths.set(manifest, effectivePaths);
-  return effectivePathAllowed;
+  return {
+    credentialExposureAcknowledged:
+      effectiveAcknowledgement.mount_scoped || effectiveAcknowledgement.broad,
+    broadCredentialExposureAcknowledged: effectiveAcknowledgement.broad,
+  };
 }
 
 export function copyValidatedMountEffectivePaths(
@@ -766,13 +1154,9 @@ export function sanitizeMountCredentialEnvironmentForPersistence(state: {
   environment?: Record<string, string>;
 }): { manifest: Manifest; environment: Record<string, string> } {
   const environment = state.environment ?? {};
-  const effectiveEnvironment = mountEffectiveEnvironment(
+  const credentialNames = mountCredentialEnvironmentNamesForPersistence(
     state.manifest,
     environment,
-  );
-  const credentialNames = mountCredentialEnvironmentNames(
-    state.manifest,
-    effectiveEnvironment,
   );
   const sanitizedManifest = cloneManifest(state.manifest);
   const sanitizedEnvironment = { ...environment };
@@ -844,7 +1228,7 @@ export function deserializeMountCredentialRedactionMetadata(
 export function sanitizePersistedManifestRecord(
   value: Record<string, unknown>,
 ): { record: Record<string, unknown>; credentialPaths: string[] } {
-  if ([...POLICY_KEYS].some((key) => key in value)) {
+  if (MOUNT_CREDENTIAL_EXPOSURE_POLICY_KEYS.some((key) => key in value)) {
     throw new TypeError(
       'Persisted sandbox manifest cannot configure mount credential exposure policy.',
     );
@@ -968,6 +1352,28 @@ export function recordLiveMountCredentialAuthority(
   if (environmentAuthority !== undefined) {
     liveMountEnvironmentAuthority.set(target, environmentAuthority);
   }
+  const runtimeAuthority = liveMountRuntimeAuthority.get(source);
+  if (runtimeAuthority !== undefined) {
+    liveMountRuntimeAuthority.set(target, new Map(runtimeAuthority));
+  }
+}
+
+export function captureLiveMountRuntimeAuthority(
+  manifest: Manifest,
+  key: symbol,
+  signature: string,
+): void {
+  const authority = new Map(liveMountRuntimeAuthority.get(manifest) ?? []);
+  authority.set(key, signature);
+  liveMountRuntimeAuthority.set(manifest, authority);
+}
+
+export function liveMountRuntimeAuthorityMatches(
+  manifest: Manifest,
+  key: symbol,
+  signature: string,
+): boolean {
+  return liveMountRuntimeAuthority.get(manifest)?.get(key) === signature;
 }
 
 export function captureLiveMountCredentialAuthority(
@@ -1477,11 +1883,8 @@ function mountCredentialAuthoritySignature(
           path: logicalPath,
           effectivePath,
           credentials,
-          inContainerExposureAllowed:
-            manifestAllowsInContainerMountCredentialExposure(
-              manifest,
-              effectivePath,
-            ),
+          inContainerExposureAcknowledgement:
+            mountCredentialExposureAcknowledgement(manifest, effectivePath),
         };
       }),
   );
@@ -1594,25 +1997,61 @@ function entryIsRecursiveSource(entry: { type?: unknown }): boolean {
   return entry.type === 'local_dir' || entry.type === 'git_repo';
 }
 
-function mountCredentialEnvironmentNames(
+function mountCredentialEnvironmentNamesForPersistence(
   manifest: Manifest,
   environment: Record<string, string>,
 ): Set<string> {
   const names = new Set<string>();
+  const configuredNames = new Set([
+    ...Object.keys(manifest.environment),
+    ...Object.keys(environment),
+  ]);
   for (const { entry } of manifest.mountTargets()) {
-    for (const name of Object.keys(
-      mountCredentialEnvironmentForEntry(entry, environment),
-    )) {
-      names.add(name);
+    if (
+      !isMount(entry) ||
+      !ENVIRONMENT_CREDENTIAL_STRATEGIES.has(mountStrategyType(entry))
+    ) {
+      continue;
+    }
+    if (mountUsesRcloneEnvironment(entry)) {
+      for (const name of configuredNames) {
+        if (name === 'RCLONE_CONFIG' || name.startsWith('RCLONE_CONFIG_')) {
+          names.add(name);
+        }
+      }
+    }
+    if (
+      entry.type === 's3_mount' ||
+      entry.type === 'r2_mount' ||
+      entry.type === 's3_files_mount'
+    ) {
+      for (const name of [
+        ...S3_MOUNT_CREDENTIAL_ENVIRONMENT_NAMES,
+        ...S3_MOUNT_BROAD_CREDENTIAL_ENVIRONMENT_NAMES,
+      ]) {
+        if (configuredNames.has(name)) {
+          names.add(name);
+        }
+      }
+    }
+    if (entry.type === 'gcs_mount') {
+      for (const name of GCS_MOUNT_ENVIRONMENT_NAMES) {
+        if (configuredNames.has(name)) {
+          names.add(name);
+        }
+      }
     }
   }
   return names;
 }
 
-function mountCredentialEnvironmentForEntry(
-  entry: Mount | TypedMount,
+export function mountCredentialEnvironmentForEntry(
+  entry: Entry,
   environment: Record<string, string>,
 ): Record<string, string> {
+  if (!isMount(entry)) {
+    return {};
+  }
   if (!ENVIRONMENT_CREDENTIAL_STRATEGIES.has(mountStrategyType(entry))) {
     return {};
   }
@@ -1625,28 +2064,42 @@ function mountCredentialEnvironmentForEntry(
     }
   }
   const entryRecord = entry as Record<string, unknown>;
-  const usesEntryCredentialPair = Boolean(
+  const usesS3EntryCredentialPair = Boolean(
     entryRecord.accessKeyId && entryRecord.secretAccessKey,
   );
+  const exposesShadowedCredentialEnvironment =
+    mountUsesRcloneEnvironment(entry);
+  const usesS3CredentialEnvironment =
+    ((!usesS3EntryCredentialPair || exposesShadowedCredentialEnvironment) &&
+      S3_MOUNT_CREDENTIAL_ENVIRONMENT_NAMES.some(
+        (name) => environment[name] !== undefined,
+      )) ||
+    S3_MOUNT_BROAD_CREDENTIAL_ENVIRONMENT_NAMES.some(
+      (name) => environment[name] !== undefined,
+    );
   if (
     (entry.type === 's3_mount' ||
       entry.type === 'r2_mount' ||
       entry.type === 's3_files_mount') &&
-    !usesEntryCredentialPair &&
-    S3_MOUNT_CREDENTIAL_ENVIRONMENT_NAMES.some(
-      (name) => environment[name] !== undefined,
-    )
+    usesS3CredentialEnvironment
   ) {
-    for (const name of S3_MOUNT_ENVIRONMENT_NAMES) {
+    const environmentNames =
+      usesS3EntryCredentialPair && !exposesShadowedCredentialEnvironment
+        ? S3_MOUNT_BROAD_CREDENTIAL_ENVIRONMENT_NAMES
+        : S3_MOUNT_ENVIRONMENT_NAMES;
+    for (const name of environmentNames) {
       names.add(name);
     }
   }
+  const usesGcsEntryCredentials = Boolean(
+    (entryRecord.accessId && entryRecord.secretAccessKey) ||
+    entryRecord.serviceAccountCredentials ||
+    entryRecord.serviceAccountFile ||
+    entryRecord.accessToken,
+  );
   if (
     entry.type === 'gcs_mount' &&
-    !usesEntryCredentialPair &&
-    !entryRecord.serviceAccountCredentials &&
-    !entryRecord.serviceAccountFile &&
-    !entryRecord.accessToken &&
+    (!usesGcsEntryCredentials || exposesShadowedCredentialEnvironment) &&
     environment.GOOGLE_APPLICATION_CREDENTIALS !== undefined
   ) {
     for (const name of GCS_MOUNT_ENVIRONMENT_NAMES) {
@@ -1697,16 +2150,16 @@ function mountUsesRcloneEnvironment(entry: Mount | TypedMount): boolean {
   if (strategyType === 'vercel_cloud_bucket') {
     return false;
   }
-  const patternType = mountStrategyPattern(entry.mountStrategy)?.type;
-  if (patternType !== undefined) {
-    return patternType === 'rclone';
-  }
   if (
     strategyType === 'e2b_cloud_bucket' ||
     strategyType === 'daytona_cloud_bucket' ||
     strategyType === 'runloop_cloud_bucket'
   ) {
     return true;
+  }
+  const patternType = mountStrategyPattern(entry.mountStrategy)?.type;
+  if (patternType !== undefined) {
+    return patternType === 'rclone';
   }
   return (
     strategyType === 'in_container' &&

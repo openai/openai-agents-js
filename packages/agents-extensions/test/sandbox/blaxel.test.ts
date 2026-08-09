@@ -959,7 +959,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelDriveMountStrategy(),
           }),
         },
-      }).withInContainerMountCredentialExposureAllowed(
+      }).withInContainerMountCredentialExposureAcknowledged(
         'mounted/gcs-a',
         'mounted/gcs-b',
       ),
@@ -1415,7 +1415,7 @@ describe('BlaxelSandboxClient', () => {
               mountStrategy: new BlaxelCloudBucketMountStrategy(),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('data'),
+        }).withInContainerMountCredentialExposureAcknowledged('data'),
       ),
     ).rejects.toThrow(/reused sandbox it does not own/u);
 
@@ -1601,7 +1601,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
     );
 
     expect(
@@ -1685,7 +1685,7 @@ describe('BlaxelSandboxClient', () => {
         .create(
           new Manifest({
             entries: { data: entry },
-          }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+          }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
         )
         .then(
           () => undefined,
@@ -1745,7 +1745,7 @@ describe('BlaxelSandboxClient', () => {
           mountStrategy: new BlaxelCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('mounted/logs');
+    }).withInContainerMountCredentialExposureAcknowledged('mounted/logs');
 
     const error = await client.create(manifest).then(
       () => undefined,
@@ -1804,7 +1804,7 @@ describe('BlaxelSandboxClient', () => {
               mountStrategy: new BlaxelCloudBucketMountStrategy(),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('mounted/gcs'),
+        }).withInContainerMountCredentialExposureAcknowledged('mounted/gcs'),
       )
       .then(
         () => undefined,
@@ -1843,7 +1843,7 @@ describe('BlaxelSandboxClient', () => {
           mountStrategy: new BlaxelCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('mounted/logs');
+    }).withInContainerMountCredentialExposureAcknowledged('mounted/logs');
     const client = new BlaxelSandboxClient({
       name: 'shared-sandbox',
     } satisfies BlaxelSandboxClientOptions);
@@ -1878,7 +1878,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
     );
 
     const mountCommand = processExecMock.mock.calls
@@ -1911,7 +1911,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
     );
     session.state.environment['INVALID-NAME'] = 'env-value';
     processExecMock.mockClear();
@@ -1941,7 +1941,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
     );
     await session.close();
 
@@ -1990,7 +1990,7 @@ describe('BlaxelSandboxClient', () => {
               mountStrategy: new BlaxelCloudBucketMountStrategy(),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+        }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
       )
       .then(
         () => undefined,
@@ -2044,7 +2044,7 @@ describe('BlaxelSandboxClient', () => {
               mountStrategy: new BlaxelCloudBucketMountStrategy(),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+        }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
       )
       .then(
         () => undefined,
@@ -2109,7 +2109,7 @@ describe('BlaxelSandboxClient', () => {
               mountStrategy: new BlaxelCloudBucketMountStrategy(),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+        }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
       )
       .then(
         () => undefined,
@@ -2153,7 +2153,7 @@ describe('BlaxelSandboxClient', () => {
               mountStrategy: new BlaxelCloudBucketMountStrategy(),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+        }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
       ),
     ).rejects.toThrow(/both accessKeyId and secretAccessKey/u);
 
@@ -2180,7 +2180,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('mounted/gcs'),
+      }).withInContainerMountBroadCredentialExposureAcknowledged('mounted/gcs'),
     );
 
     const mountCommand = processExecMock.mock.calls
@@ -2214,7 +2214,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('mounted/gcs'),
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/gcs'),
     );
 
     const mountCommand = processExecMock.mock.calls
@@ -2243,7 +2243,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('mounted/gcs'),
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/gcs'),
     );
 
     const mountCommand = processExecMock.mock.calls
@@ -2311,7 +2311,7 @@ describe('BlaxelSandboxClient', () => {
               mountStrategy: new BlaxelCloudBucketMountStrategy(),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('mounted/gcs'),
+        }).withInContainerMountCredentialExposureAcknowledged('mounted/gcs'),
       ),
     ).rejects.toThrow('Blaxel cloud bucket mount failed.');
 
@@ -2365,7 +2365,7 @@ describe('BlaxelSandboxClient', () => {
               mountStrategy: new BlaxelCloudBucketMountStrategy(),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('mounted/gcs'),
+        }).withInContainerMountCredentialExposureAcknowledged('mounted/gcs'),
       )
       .then(
         () => undefined,
@@ -2416,7 +2416,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed(
+      }).withInContainerMountCredentialExposureAcknowledged(
         'mounted/gcs-a',
         'mounted/gcs-b',
       ),
@@ -2460,7 +2460,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('mounted/gcs'),
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/gcs'),
     );
     processExecMock.mockClear();
     processExecMock.mockResolvedValue({
@@ -2505,7 +2505,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('a+b', 'a/b'),
+      }).withInContainerMountCredentialExposureAcknowledged('a+b', 'a/b'),
     );
 
     const mountCommands = processExecMock.mock.calls
@@ -2542,7 +2542,7 @@ describe('BlaxelSandboxClient', () => {
             mountStrategy: new BlaxelCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed(longMountPath),
+      }).withInContainerMountCredentialExposureAcknowledged(longMountPath),
     );
 
     const socketPaths = processExecMock.mock.calls.flatMap(([params]) =>

@@ -223,7 +223,8 @@ export type PreparedManifestMount = {
   logicalPath: string;
   absolutePath: string;
   entry: Mount | TypedMount;
-  allowMountCredentialExposure: boolean;
+  credentialExposureAcknowledged: boolean;
+  broadCredentialExposureAcknowledged: boolean;
   environment?: Readonly<Record<string, string>>;
   revalidateMountAuthority: () => Promise<void>;
 };
@@ -238,7 +239,7 @@ type DeferredMountMaterializationOptions = ManifestMaterializationOptions & {
   skipMountEntries?: boolean;
   materializationEnvironment?: Readonly<Record<string, string>>;
   preparedMountEnvironment?: Readonly<Record<string, string>>;
-  allowMountCredentialExposure?: boolean;
+  broadCredentialExposureAcknowledged?: boolean;
   revalidateMountAuthority?: () => Promise<void>;
 };
 
@@ -509,13 +510,12 @@ export async function prepareManifestMounts(
       return {
         absolutePath,
         entry: preparedCredentialFiles.entry,
-        allowMountCredentialExposure:
-          validateMountCredentialBoundariesAtEffectivePath(
-            manifest,
-            logicalPath,
-            entry,
-            absolutePath,
-          ),
+        ...validateMountCredentialBoundariesAtEffectivePath(
+          manifest,
+          logicalPath,
+          entry,
+          absolutePath,
+        ),
         environment: preparedCredentialFiles.environment,
       };
     };
@@ -524,14 +524,16 @@ export async function prepareManifestMounts(
       logicalPath,
       ...candidate,
       revalidateMountAuthority: async () => {
-        if (!candidate.allowMountCredentialExposure) {
+        if (!candidate.credentialExposureAcknowledged) {
           return;
         }
         const current = await prepareCandidate();
         if (
           current.absolutePath !== candidate.absolutePath ||
-          current.allowMountCredentialExposure !==
-            candidate.allowMountCredentialExposure ||
+          current.credentialExposureAcknowledged !==
+            candidate.credentialExposureAcknowledged ||
+          current.broadCredentialExposureAcknowledged !==
+            candidate.broadCredentialExposureAcknowledged ||
           stableJsonStringify(current.entry) !==
             stableJsonStringify(candidate.entry) ||
           stableJsonStringify(current.environment) !==
@@ -695,14 +697,14 @@ export async function materializeManifestEntries<TOptions extends object>(
   for (const {
     absolutePath,
     entry,
-    allowMountCredentialExposure,
+    broadCredentialExposureAcknowledged,
     environment,
     revalidateMountAuthority,
   } of resolvedMounts) {
     await revalidateMountAuthority();
     await materializeEntry(writer, absolutePath, entry, providerLabel, {
       ...options,
-      allowMountCredentialExposure,
+      broadCredentialExposureAcknowledged,
       preparedMountEnvironment: environment,
       revalidateMountAuthority,
     });
@@ -743,13 +745,12 @@ async function preparedMountsForManifest(
     }
     return {
       ...prepared,
-      allowMountCredentialExposure:
-        validateMountCredentialBoundariesAtEffectivePath(
-          manifest,
-          target.logicalPath,
-          target.entry,
-          prepared.absolutePath,
-        ),
+      ...validateMountCredentialBoundariesAtEffectivePath(
+        manifest,
+        target.logicalPath,
+        target.entry,
+        prepared.absolutePath,
+      ),
     };
   });
 }
@@ -821,7 +822,7 @@ export async function materializeInlineManifestEntry(
             .materializationEnvironment,
         allowAmbientCredentials: (
           options as DeferredMountMaterializationOptions
-        ).allowMountCredentialExposure,
+        ).broadCredentialExposureAcknowledged,
         revalidateMountAuthority: (
           options as DeferredMountMaterializationOptions
         ).revalidateMountAuthority,

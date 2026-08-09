@@ -3,4 +3,4 @@
 '@openai/agents-extensions': patch
 ---
 
-fix: protect credentials used by sandbox mount helpers
+fix: restrict sandbox mount credentials and preserve final local process output

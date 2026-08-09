@@ -64,6 +64,7 @@ import {
   NoopSnapshotSpec,
   registerEnvValueReference,
   SandboxMountError,
+  s3Mount,
   skills,
 } from '../../src/sandbox/local';
 
@@ -556,7 +557,7 @@ describe('DockerSandboxClient unit behavior', () => {
     );
   });
 
-  it('starts Docker with fuse privileges and applies in-container command mounts', async () => {
+  it('rejects custom in-container command mounts before Docker effects', async () => {
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
         if (args[0] === 'version') {
@@ -583,38 +584,23 @@ describe('DockerSandboxClient unit behavior', () => {
       workspaceBaseDir: rootDir,
     });
 
-    await client.create(
-      new Manifest({
-        entries: {
-          mounted: {
-            type: 'mount',
-            source: 'memory://fixture',
-            mountStrategy: inContainerMountStrategy({
-              pattern: {
-                type: 'fuse',
-                command:
-                  'printf mounted > "$OPENAI_AGENTS_MOUNT_PATH/marker.txt"',
-              },
-            }),
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            mounted: {
+              type: 'mount',
+              source: 'memory://fixture',
+              mountStrategy: inContainerMountStrategy({
+                pattern: { type: 'fuse', command: 'custom-mount' },
+              }),
+            },
           },
-        },
-      }).withInContainerMountCredentialExposureAllowed('mounted'),
-    );
-
-    const runCall = processMocks.runSandboxProcess.mock.calls.find(
-      ([, args]) => args[0] === 'run',
-    );
-    expect(runCall?.[1]).toEqual(
-      expect.arrayContaining([
-        '--device',
-        '/dev/fuse',
-        '--cap-add',
-        'SYS_ADMIN',
-        '--security-opt',
-        'apparmor:unconfined',
-      ]),
-    );
-    expect(childProcessMocks.spawn).toHaveBeenCalledOnce();
+        }).withInContainerMountCredentialExposureAcknowledged('mounted'),
+      ),
+    ).rejects.toThrow(/SDK-supported strategy/u);
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
   });
 
   it('validates credential opt-ins against symlink-resolved mount paths', async () => {
@@ -648,7 +634,7 @@ describe('DockerSandboxClient unit behavior', () => {
           mountStrategy: inContainerMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
 
     await expect(session.applyManifest(update)).rejects.toThrow(
       /model-controlled sandbox/u,
@@ -700,7 +686,7 @@ describe('DockerSandboxClient unit behavior', () => {
               mountStrategy: inContainerMountStrategy(),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('/mnt/data'),
+        }).withInContainerMountCredentialExposureAcknowledged('/mnt/data'),
       ),
     ).rejects.toThrow(/model-controlled sandbox/u);
 
@@ -748,7 +734,10 @@ describe('DockerSandboxClient unit behavior', () => {
           mountStrategy: inContainerMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('remote', 'redirected');
+    }).withInContainerMountCredentialExposureAcknowledged(
+      'remote',
+      'redirected',
+    );
 
     await session.applyManifest(update);
 
@@ -770,7 +759,7 @@ describe('DockerSandboxClient unit behavior', () => {
 
     const currentWithoutEffectivePathTrust = new Manifest({
       entries: structuredClone(session.state.manifest.entries),
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
     expect(
       liveMountCredentialAuthorityMatches(
         session.state.manifest,
@@ -820,18 +809,14 @@ describe('DockerSandboxClient unit behavior', () => {
     const session = await client.create(
       new Manifest({
         entries: {
-          mounted: {
-            type: 'mount',
-            source: 'memory://fixture',
-            mountStrategy: inContainerMountStrategy({
-              pattern: {
-                type: 'fuse',
-                command: 'true',
-              },
-            }),
-          },
+          mounted: s3Mount({
+            bucket: 'fixture',
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
+            mountStrategy: inContainerMountStrategy(),
+          }),
         },
-      }).withInContainerMountCredentialExposureAllowed('mounted'),
+      }).withInContainerMountCredentialExposureAcknowledged('mounted'),
     );
 
     await expect(session.pathExists('mounted/file.txt')).resolves.toBe(true);
@@ -895,17 +880,15 @@ describe('DockerSandboxClient unit behavior', () => {
         new Manifest({
           entries: {
             mounted: {
-              type: 'mount',
-              source: 'memory://fixture',
-              mountStrategy: inContainerMountStrategy({
-                pattern: {
-                  type: 'fuse',
-                  command: 'false',
-                },
+              ...s3Mount({
+                bucket: 'fixture',
+                accessKeyId: 'access-key',
+                secretAccessKey: 'secret-key',
+                mountStrategy: inContainerMountStrategy(),
               }),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('mounted'),
+        }).withInContainerMountCredentialExposureAcknowledged('mounted'),
       )
       .then(
         () => undefined,
@@ -960,17 +943,15 @@ describe('DockerSandboxClient unit behavior', () => {
         new Manifest({
           entries: {
             mounted: {
-              type: 'mount',
-              source: 'memory://fixture',
-              mountStrategy: inContainerMountStrategy({
-                pattern: {
-                  type: 'fuse',
-                  command: 'false',
-                },
+              ...s3Mount({
+                bucket: 'fixture',
+                accessKeyId: 'access-key',
+                secretAccessKey: 'secret-key',
+                mountStrategy: inContainerMountStrategy(),
               }),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('mounted'),
+        }).withInContainerMountCredentialExposureAcknowledged('mounted'),
       ),
     ).rejects.toThrow(
       'Docker sandbox creation failed and cleanup could not complete.',
@@ -1100,7 +1081,7 @@ describe('DockerSandboxClient unit behavior', () => {
             }),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('azure'),
+      }).withInContainerMountCredentialExposureAcknowledged('azure'),
     );
 
     const configInput = dockerStdinWrites.join('\n');
@@ -1162,6 +1143,7 @@ describe('DockerSandboxClient unit behavior', () => {
               type: 'azure_blob_mount',
               account: 'account-name',
               container: 'container-name',
+              accountKey: 'account-key',
               mountPath: 'azure',
               mountStrategy: inContainerMountStrategy({
                 pattern: {
@@ -1171,7 +1153,7 @@ describe('DockerSandboxClient unit behavior', () => {
               }),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('azure'),
+        }).withInContainerMountCredentialExposureAcknowledged('azure'),
       ),
     ).rejects.toThrow(/cachePath must be outside the mount path/);
     expect(
@@ -1251,6 +1233,7 @@ describe('DockerSandboxClient unit behavior', () => {
               type: 'azure_blob_mount',
               account: 'account-name',
               container: 'container-name',
+              accountKey: 'account-key',
               mountStrategy: inContainerMountStrategy({
                 pattern: {
                   type: 'fuse',
@@ -1259,7 +1242,7 @@ describe('DockerSandboxClient unit behavior', () => {
               }),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('azure'),
+        }).withInContainerMountCredentialExposureAcknowledged('azure'),
       ),
     ).rejects.toThrow(/cachePath must be relative/);
     expect(
@@ -1317,7 +1300,7 @@ describe('DockerSandboxClient unit behavior', () => {
             }),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('s3files'),
+      }).withInContainerMountBroadCredentialExposureAcknowledged('s3files'),
     );
 
     const runCall = processMocks.runSandboxProcess.mock.calls.find(
@@ -1398,7 +1381,7 @@ describe('DockerSandboxClient unit behavior', () => {
           AWS_SESSION_TOKEN: 'inherited-session-token',
           AWS_SECURITY_TOKEN: 'inherited-security-token',
         },
-      }).withInContainerMountCredentialExposureAllowed('s3'),
+      }).withInContainerMountCredentialExposureAcknowledged('s3'),
     );
 
     const runCall = processMocks.runSandboxProcess.mock.calls.find(
@@ -1442,7 +1425,7 @@ describe('DockerSandboxClient unit behavior', () => {
                 mountStrategy: inContainerMountStrategy({ pattern }),
               },
             },
-          }).withInContainerMountCredentialExposureAllowed('s3'),
+          }).withInContainerMountCredentialExposureAcknowledged('s3'),
         ),
       ).rejects.toThrow(/both accessKeyId and secretAccessKey/u);
 
@@ -1498,6 +1481,58 @@ describe('DockerSandboxClient unit behavior', () => {
     expect(childProcessMocks.spawn).toHaveBeenCalledOnce();
   });
 
+  it('removes shadowed GCS credential files from Docker mountpoint helpers', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-123\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      const command = args.join(' ');
+      expect(command).toContain('mount-s3');
+      expect(command).toContain('unset AWS_ACCESS_KEY_ID');
+      expect(command).toContain('GOOGLE_APPLICATION_CREDENTIALS');
+      expect(command).toContain('-e GOOGLE_APPLICATION_CREDENTIALS=');
+      expect(command).not.toContain('/run/secrets/gcp.json');
+      return dockerSpawnResult({ status: 0 });
+    });
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await client.create(
+      new Manifest({
+        entries: {
+          gcs: {
+            type: 'gcs_mount',
+            bucket: 'gcs-logs',
+            accessId: 'inline-access-id',
+            secretAccessKey: 'inline-secret-key',
+            mountStrategy: inContainerMountStrategy({
+              pattern: {
+                type: 'mountpoint',
+              },
+            }),
+          },
+        },
+        environment: {
+          GOOGLE_APPLICATION_CREDENTIALS: '/run/secrets/gcp.json',
+        },
+      }).withInContainerMountCredentialExposureAcknowledged('gcs'),
+    );
+
+    expect(childProcessMocks.spawn).toHaveBeenCalledOnce();
+  });
+
   it('rejects rclone credential config stored in manifest entries', async () => {
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
@@ -1538,7 +1573,7 @@ describe('DockerSandboxClient unit behavior', () => {
               }),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('s3'),
+        }).withInContainerMountCredentialExposureAcknowledged('s3'),
       ),
     ).rejects.toThrow(/serialized manifest entry/u);
     expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
@@ -1599,7 +1634,7 @@ describe('DockerSandboxClient unit behavior', () => {
               }),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('data'),
+        }).withInContainerMountBroadCredentialExposureAcknowledged('data'),
       ),
     ).rejects.toThrow(/resolve to a serialized manifest entry/u);
 
@@ -1661,6 +1696,58 @@ describe('DockerSandboxClient unit behavior', () => {
     expect(childProcessMocks.spawn).not.toHaveBeenCalled();
   });
 
+  it('requires broad acknowledgement for ambient credentials exposed beside inline rclone credentials', async () => {
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            s3: {
+              type: 's3_mount',
+              bucket: 'agent-logs',
+              accessKeyId: 'inline-access-key',
+              secretAccessKey: 'inline-secret-key',
+              mountStrategy: inContainerMountStrategy({
+                pattern: { type: 'rclone' },
+              }),
+            },
+          },
+          environment: {
+            AWS_ACCESS_KEY_ID: 'ambient-access-key',
+            AWS_SECRET_ACCESS_KEY: 'ambient-secret-key',
+            AWS_SESSION_TOKEN: 'ambient-session-token',
+          },
+        }).withInContainerMountCredentialExposureAcknowledged('s3'),
+      ),
+    ).rejects.toThrow(/broad credential authority/iu);
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            gcs: {
+              type: 'gcs_mount',
+              bucket: 'agent-logs',
+              accessToken: 'inline-access-token',
+              mountStrategy: inContainerMountStrategy({
+                pattern: { type: 'rclone' },
+              }),
+            },
+          },
+          environment: {
+            GOOGLE_APPLICATION_CREDENTIALS: '/run/secrets/gcp.json',
+          },
+        }).withInContainerMountCredentialExposureAcknowledged('gcs'),
+      ),
+    ).rejects.toThrow(/broad credential authority/iu);
+
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+  });
+
   it('honors R2 prefixes in Docker in-container rclone mounts', async () => {
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
@@ -1704,7 +1791,7 @@ describe('DockerSandboxClient unit behavior', () => {
             }),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('r2logs'),
+      }).withInContainerMountCredentialExposureAcknowledged('r2logs'),
     );
 
     expect(childProcessMocks.spawn).toHaveBeenCalledOnce();
@@ -1746,7 +1833,7 @@ describe('DockerSandboxClient unit behavior', () => {
               }),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('s3'),
+        }).withInContainerMountBroadCredentialExposureAcknowledged('s3'),
       )
       .then(
         () => undefined,
@@ -1862,7 +1949,7 @@ describe('DockerSandboxClient unit behavior', () => {
               }),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('s3'),
+        }).withInContainerMountCredentialExposureAcknowledged('s3'),
       )
       .then(
         () => undefined,
@@ -2018,7 +2105,7 @@ describe('DockerSandboxClient unit behavior', () => {
             }),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('gcs'),
+      }).withInContainerMountBroadCredentialExposureAcknowledged('gcs'),
     );
 
     expect(childProcessMocks.spawn).toHaveBeenCalledOnce();
@@ -4192,7 +4279,7 @@ describe('DockerSandboxClient unit behavior', () => {
               }),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('s3files'),
+        }).withInContainerMountBroadCredentialExposureAcknowledged('s3files'),
       ),
     ).rejects.toThrow(/requires Docker privileges/);
   });
@@ -4218,18 +4305,14 @@ describe('DockerSandboxClient unit behavior', () => {
     const session = await client.create(
       new Manifest({
         entries: {
-          bootstrap: {
-            type: 'mount',
-            source: 'memory://fixture',
-            mountStrategy: inContainerMountStrategy({
-              pattern: {
-                type: 'fuse',
-                command: 'true',
-              },
-            }),
-          },
+          bootstrap: s3Mount({
+            bucket: 'bootstrap',
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
+            mountStrategy: inContainerMountStrategy(),
+          }),
         },
-      }).withInContainerMountCredentialExposureAllowed('bootstrap'),
+      }).withInContainerMountCredentialExposureAcknowledged('bootstrap'),
     );
     childProcessMocks.spawn.mockClear();
     childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
@@ -4246,19 +4329,15 @@ describe('DockerSandboxClient unit behavior', () => {
     await session.applyManifest(
       new Manifest({
         entries: {
-          mounted: {
-            type: 'mount',
-            source: 'memory://fixture',
+          mounted: s3Mount({
+            bucket: 'mounted',
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
             mountPath: '/mnt/absolute',
-            mountStrategy: inContainerMountStrategy({
-              pattern: {
-                type: 'fuse',
-                command: 'true',
-              },
-            }),
-          },
+            mountStrategy: inContainerMountStrategy(),
+          }),
         },
-      }).withInContainerMountCredentialExposureAllowed(
+      }).withInContainerMountCredentialExposureAcknowledged(
         'bootstrap',
         '/mnt/absolute',
         '/mnt/resolved',
@@ -4275,17 +4354,18 @@ describe('DockerSandboxClient unit behavior', () => {
     const chownIndex = commands.findIndex((command) =>
       command.includes("chown -R 'node':'node' -- '/mnt/resolved'"),
     );
-    const mountIndex = commands.findIndex((command) =>
-      command.includes("OPENAI_AGENTS_MOUNT_PATH='/mnt/resolved'"),
+    const mountIndex = commands.findIndex(
+      (command) =>
+        command.includes('/mnt/resolved') && command.includes('rclone'),
     );
     expect(mkdirIndex).toBeGreaterThanOrEqual(0);
     expect(chownIndex).toBeGreaterThan(mkdirIndex);
     expect(mountIndex).toBeGreaterThan(chownIndex);
 
     const mounted = session.state.manifest.entries.mounted as unknown as {
-      mountStrategy: { pattern: { command: string } };
+      accessKeyId: string;
     };
-    mounted.mountStrategy.pattern.command = 'rotated-command';
+    mounted.accessKeyId = 'rotated-access-key';
     expect(
       liveMountCredentialAuthorityMatches(
         session.state.manifest,
@@ -4311,7 +4391,7 @@ describe('DockerSandboxClient unit behavior', () => {
     );
     childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
       const command = args.join(' ');
-      if (command.includes("OPENAI_AGENTS_MOUNT_PATH='/workspace/second'")) {
+      if (command.includes('/workspace/second') && command.includes('rclone')) {
         return dockerSpawnResult({ stderr: 'second failed', status: 1 });
       }
       return dockerSpawnResult({ status: 0 });
@@ -4322,18 +4402,14 @@ describe('DockerSandboxClient unit behavior', () => {
     const session = await client.create(
       new Manifest({
         entries: {
-          bootstrap: {
-            type: 'mount',
-            source: 'memory://fixture',
-            mountStrategy: inContainerMountStrategy({
-              pattern: {
-                type: 'fuse',
-                command: 'true',
-              },
-            }),
-          },
+          bootstrap: s3Mount({
+            bucket: 'bootstrap',
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
+            mountStrategy: inContainerMountStrategy(),
+          }),
         },
-      }).withInContainerMountCredentialExposureAllowed('bootstrap'),
+      }).withInContainerMountCredentialExposureAcknowledged('bootstrap'),
     );
     childProcessMocks.spawn.mockClear();
 
@@ -4341,28 +4417,20 @@ describe('DockerSandboxClient unit behavior', () => {
       session.applyManifest(
         new Manifest({
           entries: {
-            first: {
-              type: 'mount',
-              source: 'memory://fixture',
-              mountStrategy: inContainerMountStrategy({
-                pattern: {
-                  type: 'fuse',
-                  command: 'true',
-                },
-              }),
-            },
-            second: {
-              type: 'mount',
-              source: 'memory://fixture',
-              mountStrategy: inContainerMountStrategy({
-                pattern: {
-                  type: 'fuse',
-                  command: 'false',
-                },
-              }),
-            },
+            first: s3Mount({
+              bucket: 'first',
+              accessKeyId: 'access-key',
+              secretAccessKey: 'secret-key',
+              mountStrategy: inContainerMountStrategy(),
+            }),
+            second: s3Mount({
+              bucket: 'second',
+              accessKeyId: 'access-key',
+              secretAccessKey: 'secret-key',
+              mountStrategy: inContainerMountStrategy(),
+            }),
           },
-        }).withInContainerMountCredentialExposureAllowed(
+        }).withInContainerMountCredentialExposureAcknowledged(
           'bootstrap',
           'first',
           'second',
@@ -4424,23 +4492,19 @@ describe('DockerSandboxClient unit behavior', () => {
           KEEP: 'old',
         },
         entries: {
-          bootstrap: {
-            type: 'mount',
-            source: 'memory://fixture',
-            mountStrategy: inContainerMountStrategy({
-              pattern: {
-                type: 'fuse',
-                command: 'true',
-              },
-            }),
-          },
+          bootstrap: s3Mount({
+            bucket: 'bootstrap',
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
+            mountStrategy: inContainerMountStrategy(),
+          }),
         },
-      }).withInContainerMountCredentialExposureAllowed('bootstrap'),
+      }).withInContainerMountCredentialExposureAcknowledged('bootstrap'),
     );
     childProcessMocks.spawn.mockClear();
     childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
       const command = (args as string[]).join(' ');
-      if (command.includes("OPENAI_AGENTS_MOUNT_PATH='/workspace/failed'")) {
+      if (command.includes('/workspace/failed') && command.includes('rclone')) {
         return dockerSpawnResult({ stderr: 'mount failed', status: 1 });
       }
       return dockerSpawnResult({ status: 0 });
@@ -4456,18 +4520,17 @@ describe('DockerSandboxClient unit behavior', () => {
             },
           },
           entries: {
-            failed: {
-              type: 'mount',
-              source: 'memory://fixture',
-              mountStrategy: inContainerMountStrategy({
-                pattern: {
-                  type: 'fuse',
-                  command: 'false',
-                },
-              }),
-            },
+            failed: s3Mount({
+              bucket: 'failed',
+              accessKeyId: 'access-key',
+              secretAccessKey: 'secret-key',
+              mountStrategy: inContainerMountStrategy(),
+            }),
           },
-        }).withInContainerMountCredentialExposureAllowed('bootstrap', 'failed'),
+        }).withInContainerMountCredentialExposureAcknowledged(
+          'bootstrap',
+          'failed',
+        ),
       ),
     ).rejects.toThrow(/exit status 1/u);
 
@@ -4613,6 +4676,7 @@ describe('DockerSandboxClient unit behavior', () => {
             type: 'azure_blob_mount',
             account: 'account-name',
             container: 'container-name',
+            accountKey: 'account-key',
             mountStrategy: inContainerMountStrategy({
               pattern: {
                 type: 'fuse',
@@ -4621,7 +4685,7 @@ describe('DockerSandboxClient unit behavior', () => {
             }),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('azure'),
+      }).withInContainerMountCredentialExposureAcknowledged('azure'),
     );
     await mkdir(
       join(session.state.workspaceRootPath, '.sandbox-blobfuse-config'),
@@ -5469,7 +5533,7 @@ describe('DockerSandboxClient unit behavior', () => {
         AWS_SECRET_ACCESS_KEY: 'AMBIENT_SECRET_SENTINEL',
         SAFE_ENV: 'visible',
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
 
     const session = await client.create(manifest);
     const serialized = await client.serializeSessionState(session.state);

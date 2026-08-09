@@ -40,8 +40,8 @@ describe('DockerSandboxClient', () => {
     }
   });
 
-  itIfDocker(
-    'applies in-container command mounts inside Docker',
+  it(
+    'rejects custom command mount credential exposure before Docker side effects',
     async () => {
       rootDir = await mkdtemp(
         join(tmpdir(), 'agents-core-docker-sandbox-test-'),
@@ -50,52 +50,24 @@ describe('DockerSandboxClient', () => {
         workspaceBaseDir: rootDir,
         image: DOCKER_TEST_IMAGE,
       });
-      const session = await client.create(
-        new Manifest({
-          entries: {
-            mounted: {
-              type: 'mount',
-              source: 'memory://initial',
-              mountStrategy: inContainerMountStrategy({
-                pattern: {
-                  type: 'fuse',
-                  command:
-                    'printf initial > "$OPENAI_AGENTS_MOUNT_PATH/marker.txt"',
-                },
-              }),
+      await expect(
+        client.create(
+          new Manifest({
+            entries: {
+              mounted: {
+                type: 'mount',
+                source: 'memory://initial',
+                mountStrategy: inContainerMountStrategy({
+                  pattern: {
+                    type: 'fuse',
+                    command: 'custom-mount',
+                  },
+                }),
+              },
             },
-          },
-        }).withInContainerMountCredentialExposureAllowed('mounted'),
-      );
-      cleanupContainerIds.add(session.state.containerId);
-
-      const initialOutput = await session.execCommand({
-        cmd: 'cat mounted/marker.txt',
-      });
-      expect(initialOutput).toContain('initial');
-
-      await session.applyManifest(
-        new Manifest({
-          entries: {
-            applied: {
-              type: 'mount',
-              source: 'memory://applied',
-              mountStrategy: inContainerMountStrategy({
-                pattern: {
-                  type: 'fuse',
-                  command:
-                    'printf applied > "$OPENAI_AGENTS_MOUNT_PATH/marker.txt"',
-                },
-              }),
-            },
-          },
-        }).withInContainerMountCredentialExposureAllowed('mounted', 'applied'),
-      );
-
-      const appliedOutput = await session.execCommand({
-        cmd: 'cat applied/marker.txt',
-      });
-      expect(appliedOutput).toContain('applied');
+          }).withInContainerMountCredentialExposureAcknowledged('mounted'),
+        ),
+      ).rejects.toThrow(/SDK-supported strategy/u);
     },
     DOCKER_TEST_TIMEOUT_MS,
   );

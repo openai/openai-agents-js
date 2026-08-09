@@ -252,7 +252,9 @@ async function smokeAzureBlobMount() {
         }),
       }),
     },
-  }).withInContainerMountCredentialExposureAllowed('azure');
+  })
+    .withInContainerMountCredentialExposureAcknowledged('azure')
+    .withInContainerMountBroadCredentialExposureAcknowledged('azure');
 
   const client = new DockerSandboxClient({ image: mountImage });
   const session = await client.create(manifest);
@@ -325,7 +327,7 @@ async function smokeS3Mount() {
         }),
       }),
     },
-  }).withInContainerMountCredentialExposureAllowed('s3');
+  }).withInContainerMountCredentialExposureAcknowledged('s3');
 
   const client = new DockerSandboxClient({ image: mountImage });
   const session = await client.create(manifest);

@@ -180,12 +180,9 @@ export class Manifest<
 
   constructor(init: ManifestInit<TEntries, TEnvironment> = {}) {
     if (
-      [
-        'in_container_mount_credential_exposure_allowed_paths',
-        '_in_container_mount_credential_exposure_allowed_paths',
-        'inContainerMountCredentialExposureAllowedPaths',
-        '_inContainerMountCredentialExposureAllowedPaths',
-      ].some((key) => key in (init as Record<string, unknown>))
+      MOUNT_CREDENTIAL_EXPOSURE_POLICY_KEYS.some(
+        (key) => key in (init as Record<string, unknown>),
+      )
     ) {
       throw new TypeError(
         'In-container mount credential exposure must be configured on a trusted Manifest instance, not in a manifest init object.',
@@ -217,27 +214,39 @@ export class Manifest<
   }
 
   /**
-   * Returns a trusted manifest that acknowledges credential exposure for exact
-   * in-container mount paths.
+   * Returns a trusted manifest that acknowledges exposure of mount-scoped
+   * credentials for exact in-container mount paths.
    *
    * This application-side policy is runtime-only. It is not accepted from
    * manifest init objects and is never serialized into sandbox session state.
    */
-  withInContainerMountCredentialExposureAllowed(
+  withInContainerMountCredentialExposureAcknowledged(
     ...mountPaths: string[]
   ): Manifest<TEntries, TEnvironment> {
-    if (mountPaths.length === 0) {
-      throw new TypeError('At least one in-container mount path is required.');
-    }
-    const trusted = cloneManifest(this) as Manifest<TEntries, TEnvironment>;
-    const allowed = new Set(
-      inContainerMountCredentialExposureAllowedPaths.get(this) ?? [],
+    return withInContainerMountCredentialExposureAcknowledgement(
+      this,
+      'mount_scoped',
+      mountPaths,
     );
-    for (const mountPath of mountPaths) {
-      allowed.add(normalizeManifestMountPolicyPath(this.root, mountPath));
-    }
-    inContainerMountCredentialExposureAllowedPaths.set(trusted, allowed);
-    return trusted;
+  }
+
+  /**
+   * Returns a trusted manifest that acknowledges exposure of broad credential
+   * authority for exact in-container mount paths.
+   *
+   * Broad authority includes ambient credentials, workload or managed
+   * identity, and external credential files. This application-side policy is
+   * runtime-only. It is not accepted from manifest init objects and is never
+   * serialized into sandbox session state.
+   */
+  withInContainerMountBroadCredentialExposureAcknowledged(
+    ...mountPaths: string[]
+  ): Manifest<TEntries, TEnvironment> {
+    return withInContainerMountCredentialExposureAcknowledgement(
+      this,
+      'broad',
+      mountPaths,
+    );
   }
 
   validatedEntries(): Record<string, Entry> {
@@ -548,24 +557,48 @@ export type ManifestInput<
   TEnvironment extends ManifestEnvironment = ManifestEnvironment,
 > = Manifest<TEntries, TEnvironment> | ManifestInit<TEntries, TEnvironment>;
 
-const inContainerMountCredentialExposureAllowedPaths = new WeakMap<
+export const MOUNT_CREDENTIAL_EXPOSURE_POLICY_KEYS = [
+  'in_container_mount_credential_exposure_allowed_paths',
+  '_in_container_mount_credential_exposure_allowed_paths',
+  'inContainerMountCredentialExposureAllowedPaths',
+  '_inContainerMountCredentialExposureAllowedPaths',
+  'in_container_mount_credential_exposure_acknowledged_paths',
+  '_in_container_mount_credential_exposure_acknowledged_paths',
+  'inContainerMountCredentialExposureAcknowledgedPaths',
+  '_inContainerMountCredentialExposureAcknowledgedPaths',
+  'in_container_mount_broad_credential_exposure_acknowledged_paths',
+  '_in_container_mount_broad_credential_exposure_acknowledged_paths',
+  'inContainerMountBroadCredentialExposureAcknowledgedPaths',
+  '_inContainerMountBroadCredentialExposureAcknowledgedPaths',
+] as const;
+
+export type InContainerMountCredentialExposureAuthority =
+  'mount_scoped' | 'broad';
+
+type InContainerMountCredentialExposurePolicy = Readonly<
+  Record<InContainerMountCredentialExposureAuthority, ReadonlySet<string>>
+>;
+
+const inContainerMountCredentialExposurePolicy = new WeakMap<
   Manifest,
-  ReadonlySet<string>
+  InContainerMountCredentialExposurePolicy
 >();
 
-export function manifestAllowsInContainerMountCredentialExposure(
+export function manifestAcknowledgesInContainerMountCredentialExposure(
   manifest: Manifest,
   mountPath: string,
+  authority: InContainerMountCredentialExposureAuthority,
 ): boolean {
-  const allowed = inContainerMountCredentialExposureAllowedPaths.get(manifest);
-  if (!allowed) {
+  const acknowledged =
+    inContainerMountCredentialExposurePolicy.get(manifest)?.[authority];
+  if (!acknowledged) {
     return false;
   }
   const normalized = normalizeRoot(mountPath);
   const relative = relativePathWithinRoot(manifest.root, normalized);
   return (
-    (relative !== null && allowed.has(`relative:${relative}`)) ||
-    allowed.has(`absolute:${normalized}`)
+    (relative !== null && acknowledged.has(`relative:${relative}`)) ||
+    acknowledged.has(`absolute:${normalized}`)
   );
 }
 
@@ -573,16 +606,23 @@ export function copyManifestMountCredentialExposurePolicy(
   target: Manifest,
   ...sources: Manifest[]
 ): void {
-  const allowed = new Set<string>();
+  const policy: Record<
+    InContainerMountCredentialExposureAuthority,
+    Set<string>
+  > = {
+    mount_scoped: new Set<string>(),
+    broad: new Set<string>(),
+  };
   for (const source of sources) {
-    for (const path of inContainerMountCredentialExposureAllowedPaths.get(
-      source,
-    ) ?? []) {
-      allowed.add(path);
+    const sourcePolicy = inContainerMountCredentialExposurePolicy.get(source);
+    for (const authority of ['mount_scoped', 'broad'] as const) {
+      for (const path of sourcePolicy?.[authority] ?? []) {
+        policy[authority].add(path);
+      }
     }
   }
-  if (allowed.size > 0) {
-    inContainerMountCredentialExposureAllowedPaths.set(target, allowed);
+  if (policy.mount_scoped.size > 0 || policy.broad.size > 0) {
+    inContainerMountCredentialExposurePolicy.set(target, policy);
   }
 }
 
@@ -590,12 +630,15 @@ export function replaceManifestMountCredentialExposurePolicy(
   target: Manifest,
   source: Manifest,
 ): void {
-  const allowed = inContainerMountCredentialExposureAllowedPaths.get(source);
-  if (!allowed || allowed.size === 0) {
-    inContainerMountCredentialExposureAllowedPaths.delete(target);
+  const policy = inContainerMountCredentialExposurePolicy.get(source);
+  if (!policy || (policy.mount_scoped.size === 0 && policy.broad.size === 0)) {
+    inContainerMountCredentialExposurePolicy.delete(target);
     return;
   }
-  inContainerMountCredentialExposureAllowedPaths.set(target, new Set(allowed));
+  inContainerMountCredentialExposurePolicy.set(target, {
+    mount_scoped: new Set(policy.mount_scoped),
+    broad: new Set(policy.broad),
+  });
 }
 
 export function cloneManifest(manifest: ManifestInput): Manifest {
@@ -642,6 +685,35 @@ function normalizeManifestMountPolicyPath(root: string, path: string): string {
   }
   const relative = relativePathWithinRoot(root, normalized);
   return relative === null ? `absolute:${normalized}` : `relative:${relative}`;
+}
+
+function withInContainerMountCredentialExposureAcknowledgement<
+  TEntries extends ManifestEntries,
+  TEnvironment extends ManifestEnvironment,
+>(
+  manifest: Manifest<TEntries, TEnvironment>,
+  authority: InContainerMountCredentialExposureAuthority,
+  mountPaths: string[],
+): Manifest<TEntries, TEnvironment> {
+  if (mountPaths.length === 0) {
+    throw new TypeError('At least one in-container mount path is required.');
+  }
+  const trusted = cloneManifest(manifest) as Manifest<TEntries, TEnvironment>;
+  const current = inContainerMountCredentialExposurePolicy.get(manifest);
+  const policy: Record<
+    InContainerMountCredentialExposureAuthority,
+    Set<string>
+  > = {
+    mount_scoped: new Set(current?.mount_scoped ?? []),
+    broad: new Set(current?.broad ?? []),
+  };
+  for (const mountPath of mountPaths) {
+    policy[authority].add(
+      normalizeManifestMountPolicyPath(manifest.root, mountPath),
+    );
+  }
+  inContainerMountCredentialExposurePolicy.set(trusted, policy);
+  return trusted;
 }
 
 export function normalizeRelativePath(path: string): string {

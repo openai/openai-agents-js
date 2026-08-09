@@ -20,6 +20,7 @@ import {
   liveMountCredentialAuthorityMatches,
   recordLiveMountCredentialAuthority,
   serializeManifestRecord,
+  validateMountCredentialBoundaries,
   withExclusiveSandboxManifestMutation,
 } from '@openai/agents-core/sandbox/internal';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -345,7 +346,7 @@ describe('VercelSandboxClient', () => {
           mountStrategy: new VercelCloudBucketMountStrategy(),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('bucket');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('bucket');
 
     await expect(
       new VercelSandboxClient({
@@ -384,7 +385,7 @@ describe('VercelSandboxClient', () => {
           mountStrategy: new VercelCloudBucketMountStrategy(),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('bucket');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('bucket');
     const session = await new VercelSandboxClient({
       env: { AWS_WEB_IDENTITY_TOKEN_FILE: credentialPath },
     }).create(manifest);
@@ -449,7 +450,7 @@ describe('VercelSandboxClient', () => {
           mountStrategy: new VercelCloudBucketMountStrategy(),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('bucket');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('bucket');
 
     await expect(
       new VercelSandboxClient({
@@ -467,14 +468,13 @@ describe('VercelSandboxClient', () => {
 
   test('mounts a fixed S3 manifest without persisting its credentials', async () => {
     const client = new VercelSandboxClient();
-    const session = await client.create(
-      vercelS3Manifest('bucket', {
-        accessKeyId: 'access-key',
-        secretAccessKey: 'secret-key',
-        sessionToken: 'session-token',
-        region: 'us-east-1',
-      }).withInContainerMountCredentialExposureAllowed('bucket'),
-    );
+    const trustedManifest = vercelS3Manifest('bucket', {
+      accessKeyId: 'access-key',
+      secretAccessKey: 'secret-key',
+      sessionToken: 'session-token',
+      region: 'us-east-1',
+    }).withInContainerMountCredentialExposureAcknowledged('bucket');
+    const session = await client.create(trustedManifest);
 
     const mountCall = runCommandMock.mock.calls.find(([params]) => {
       return isolatedMountCommand(params)?.command === 'mount-s3';
@@ -512,6 +512,84 @@ describe('VercelSandboxClient', () => {
     expect(JSON.stringify(serialized)).not.toContain('access-key');
     expect(JSON.stringify(serialized)).not.toContain('secret-key');
     expect(JSON.stringify(serialized)).not.toContain('session-token');
+    expect(
+      liveMountCredentialAuthorityMatches(
+        session.state.manifest,
+        client.resolveTrustedManifestForResume(trustedManifest),
+      ),
+    ).toBe(true);
+    expect(
+      liveMountCredentialAuthorityMatches(
+        session.state.manifest,
+        client.resolveTrustedManifestForResume(
+          vercelS3Manifest('bucket', {
+            accessKeyId: 'rotated-access-key',
+            secretAccessKey: 'rotated-secret-key',
+            sessionToken: 'rotated-session-token',
+            region: 'us-east-1',
+          }).withInContainerMountCredentialExposureAcknowledged('bucket'),
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  test('preserves the released Vercel option for explicit S3 mount credentials', async () => {
+    const client = new VercelSandboxClient({
+      allowS3CredentialExposure: true,
+    });
+
+    await client.create(
+      vercelS3Manifest('bucket', {
+        accessKeyId: 'released-access-key',
+        secretAccessKey: 'released-secret-key',
+      }),
+    );
+
+    const mountCall = runCommandMock.mock.calls.find(([params]) => {
+      return isolatedMountCommand(params)?.command === 'mount-s3';
+    });
+    expect(mountCall?.[0].args).toEqual(
+      expect.arrayContaining([
+        'AWS_ACCESS_KEY_ID=released-access-key',
+        'AWS_SECRET_ACCESS_KEY=released-secret-key',
+      ]),
+    );
+  });
+
+  test('uses the per-call released Vercel option for trusted resume manifests', () => {
+    const client = new VercelSandboxClient();
+    const manifest = vercelS3Manifest('bucket', {
+      accessKeyId: 'released-access-key',
+      secretAccessKey: 'released-secret-key',
+    });
+
+    expect(() =>
+      validateMountCredentialBoundaries(
+        client.resolveTrustedManifestForResume(manifest, {
+          allowS3CredentialExposure: true,
+        }),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateMountCredentialBoundaries(
+        client.resolveTrustedManifestForResume(manifest),
+      ),
+    ).toThrow(/Mount-scoped credentials/u);
+  });
+
+  test('does not let the released Vercel option authorize ambient credentials', async () => {
+    const client = new VercelSandboxClient({
+      allowS3CredentialExposure: true,
+      env: {
+        AWS_ACCESS_KEY_ID: 'ambient-access-key',
+        AWS_SECRET_ACCESS_KEY: 'ambient-secret-key',
+      },
+    });
+
+    await expect(client.create(vercelS3Manifest())).rejects.toThrow(
+      /Broad credential authority/u,
+    );
+    expect(createMock).not.toHaveBeenCalled();
   });
 
   test('retains an owned mount entry when the caller mutates its manifest', async () => {
@@ -574,7 +652,7 @@ describe('VercelSandboxClient', () => {
     });
 
     const trustedManifest =
-      vercelS3Manifest().withInContainerMountCredentialExposureAllowed(
+      vercelS3Manifest().withInContainerMountBroadCredentialExposureAcknowledged(
         'bucket',
       );
     const session = await client.create(trustedManifest);
@@ -629,7 +707,7 @@ describe('VercelSandboxClient', () => {
           AWS_REGION: 'us-east-1',
           UNRELATED_ENV: 'keep-me',
         },
-      }).withInContainerMountCredentialExposureAllowed('bucket'),
+      }).withInContainerMountBroadCredentialExposureAcknowledged('bucket'),
     );
 
     const providerState = await client.serializeSessionState(session.state);
@@ -653,6 +731,102 @@ describe('VercelSandboxClient', () => {
     });
   });
 
+  test('does not persist broad AWS authority from client options with inline keys', async () => {
+    const client = new VercelSandboxClient({
+      env: {
+        AWS_ACCESS_KEY_ID: 'shadowed-access-key',
+        AWS_SECRET_ACCESS_KEY: 'shadowed-secret-key',
+        AWS_SESSION_TOKEN: 'shadowed-session-token',
+        AWS_CONTAINER_CREDENTIALS_FULL_URI:
+          'http://169.254.170.2/v2/credentials',
+        AWS_CONTAINER_AUTHORIZATION_TOKEN: 'options-token-sentinel',
+        UNRELATED_ENV: 'keep-me',
+      },
+    });
+    const trustedManifest = vercelS3Manifest('bucket', {
+      accessKeyId: 'inline-access-key',
+      secretAccessKey: 'inline-secret-key',
+    })
+      .withInContainerMountCredentialExposureAcknowledged('bucket')
+      .withInContainerMountBroadCredentialExposureAcknowledged('bucket');
+    const session = await client.create(trustedManifest);
+
+    const serialized = await client.serializeSessionState(session.state);
+
+    expect(serialized.environment).toEqual({ UNRELATED_ENV: 'keep-me' });
+    expect(JSON.stringify(serialized)).not.toContain('shadowed-access-key');
+    expect(JSON.stringify(serialized)).not.toContain('shadowed-secret-key');
+    expect(JSON.stringify(serialized)).not.toContain('shadowed-session-token');
+    expect(JSON.stringify(serialized)).not.toContain('options-token-sentinel');
+    expect(session.state.environment).toMatchObject({
+      AWS_ACCESS_KEY_ID: 'shadowed-access-key',
+      AWS_SECRET_ACCESS_KEY: 'shadowed-secret-key',
+      AWS_SESSION_TOKEN: 'shadowed-session-token',
+      AWS_CONTAINER_AUTHORIZATION_TOKEN: 'options-token-sentinel',
+    });
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest,
+        clientOptions: {
+          env: {
+            AWS_CONTAINER_CREDENTIALS_FULL_URI:
+              'http://169.254.170.2/v2/credentials',
+            AWS_CONTAINER_AUTHORIZATION_TOKEN: 'rotated-token-sentinel',
+            UNRELATED_ENV: 'keep-me',
+          },
+        },
+      }),
+    ).resolves.toBe(false);
+  });
+
+  test('does not persist broad AWS authority from Manifest.environment', async () => {
+    const client = new VercelSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          bucket: s3Mount({
+            bucket: 'example-bucket',
+            accessKeyId: 'inline-access-key',
+            secretAccessKey: 'inline-secret-key',
+            mountStrategy: new VercelCloudBucketMountStrategy(),
+          }),
+        },
+        environment: {
+          AWS_PROFILE: 'manifest-profile-sentinel',
+          AWS_SHARED_CREDENTIALS_FILE:
+            '/run/secrets/manifest-credentials-sentinel',
+          AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE:
+            '/run/secrets/manifest-token-file-sentinel',
+          UNRELATED_ENV: 'keep-me',
+        },
+      })
+        .withInContainerMountCredentialExposureAcknowledged('bucket')
+        .withInContainerMountBroadCredentialExposureAcknowledged('bucket'),
+    );
+
+    const serialized = await client.serializeSessionState(session.state);
+    const envelopeManifest = serializeManifestRecord(session.state.manifest);
+    const serializedJson = JSON.stringify({ envelopeManifest, serialized });
+
+    expect(serializedJson).not.toContain('manifest-profile-sentinel');
+    expect(serializedJson).not.toContain('manifest-credentials-sentinel');
+    expect(serializedJson).not.toContain('manifest-token-file-sentinel');
+    expect(envelopeManifest.environment).toMatchObject({
+      UNRELATED_ENV: { value: 'keep-me' },
+    });
+    expect(session.state.environment).toMatchObject({
+      AWS_PROFILE: 'manifest-profile-sentinel',
+      AWS_SHARED_CREDENTIALS_FILE: '/run/secrets/manifest-credentials-sentinel',
+      AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE:
+        '/run/secrets/manifest-token-file-sentinel',
+    });
+  });
+
   test('does not combine inline static keys with an inherited session token', async () => {
     const client = new VercelSandboxClient({
       env: {
@@ -666,7 +840,7 @@ describe('VercelSandboxClient', () => {
       vercelS3Manifest('bucket', {
         accessKeyId: 'inline-access-key',
         secretAccessKey: 'inline-secret-key',
-      }).withInContainerMountCredentialExposureAllowed('bucket'),
+      }).withInContainerMountCredentialExposureAcknowledged('bucket'),
     );
 
     const mountCall = runCommandMock.mock.calls.find(([params]) => {
@@ -680,6 +854,45 @@ describe('VercelSandboxClient', () => {
     );
     expect(mountCall?.[0].args).not.toContain(
       'AWS_SESSION_TOKEN=environment-session-token',
+    );
+  });
+
+  test('requires broad acknowledgement for workload identity with inline keys', async () => {
+    const client = new VercelSandboxClient({
+      env: {
+        AWS_ROLE_ARN: 'arn:aws:iam::123456789012:role/sandbox',
+        AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/secrets/aws/token',
+        UNRELATED_SECRET: 'do-not-forward',
+      },
+    });
+    const narrowManifest = vercelS3Manifest('bucket', {
+      accessKeyId: 'inline-access-key',
+      secretAccessKey: 'inline-secret-key',
+    }).withInContainerMountCredentialExposureAcknowledged('bucket');
+
+    await expect(client.create(narrowManifest)).rejects.toThrow(
+      /Broad credential authority/u,
+    );
+    expect(createMock).not.toHaveBeenCalled();
+
+    await client.create(
+      narrowManifest.withInContainerMountBroadCredentialExposureAcknowledged(
+        'bucket',
+      ),
+    );
+    const mountCall = runCommandMock.mock.calls.find(([params]) => {
+      return isolatedMountCommand(params)?.command === 'mount-s3';
+    });
+    expect(mountCall?.[0].args).toEqual(
+      expect.arrayContaining([
+        'AWS_ACCESS_KEY_ID=inline-access-key',
+        'AWS_SECRET_ACCESS_KEY=inline-secret-key',
+        'AWS_ROLE_ARN=arn:aws:iam::123456789012:role/sandbox',
+        'AWS_WEB_IDENTITY_TOKEN_FILE=/var/run/secrets/aws/token',
+      ]),
+    );
+    expect(mountCall?.[0].args).not.toContain(
+      'UNRELATED_SECRET=do-not-forward',
     );
   });
 
@@ -697,7 +910,7 @@ describe('VercelSandboxClient', () => {
         accessKeyId: 'inline-access-key',
         secretAccessKey: 'inline-secret-key',
         sessionToken: 'inline-session-token',
-      }).withInContainerMountCredentialExposureAllowed('bucket'),
+      }).withInContainerMountCredentialExposureAcknowledged('bucket'),
     );
 
     const mountCall = runCommandMock.mock.calls.find(([params]) => {
@@ -963,7 +1176,7 @@ describe('VercelSandboxClient', () => {
 
   test('rejects direct initial materialization after mount environment authority changes', async () => {
     const trustedManifest =
-      vercelS3Manifest().withInContainerMountCredentialExposureAllowed(
+      vercelS3Manifest().withInContainerMountBroadCredentialExposureAcknowledged(
         'bucket',
       );
     const client = new VercelSandboxClient({
@@ -981,7 +1194,7 @@ describe('VercelSandboxClient', () => {
         new Manifest({
           root: session.state.manifest.root,
           entries: trustedManifest.entries,
-        }).withInContainerMountCredentialExposureAllowed('bucket'),
+        }).withInContainerMountBroadCredentialExposureAcknowledged('bucket'),
       ),
     ).rejects.toThrow(
       /environment authority does not match the active session/u,
@@ -1008,8 +1221,8 @@ describe('VercelSandboxClient', () => {
       },
     });
     trustedManifest = trustedManifest
-      .withInContainerMountCredentialExposureAllowed('first')
-      .withInContainerMountCredentialExposureAllowed('second');
+      .withInContainerMountCredentialExposureAcknowledged('first')
+      .withInContainerMountCredentialExposureAcknowledged('second');
     const liveManifest = new Manifest({
       root: session.state.manifest.root,
       entries: structuredClone(trustedManifest.entries),
@@ -1089,6 +1302,56 @@ describe('VercelSandboxClient', () => {
       commandNames.indexOf('tar'),
     );
     expect(snapshotMock).not.toHaveBeenCalled();
+  });
+
+  test('captures the routing snapshot passed to a pending remount', async () => {
+    const archive = makeTarArchive([
+      { name: 'README.md', content: 'persisted' },
+    ]);
+    readFileToBufferMock.mockResolvedValue(archive);
+    const trustedManifest = vercelS3Manifest('bucket', {
+      accessKeyId: 'inline-access-key',
+      secretAccessKey: 'inline-secret-key',
+    }).withInContainerMountCredentialExposureAcknowledged('bucket');
+    const client = new VercelSandboxClient({
+      env: { AWS_REGION: 'us-east-1' },
+    });
+    const session = await client.create(trustedManifest);
+    const remountStarted = deferred();
+    const releaseRemount = deferred();
+    let remountCall: MockRunCommandParams | undefined;
+    runCommandMock.mockImplementation(
+      async (params: MockRunCommandParams = {}) => {
+        if (
+          remountCall === undefined &&
+          isolatedMountCommand(params)?.command === 'mount-s3'
+        ) {
+          remountCall = params;
+          remountStarted.resolve();
+          await releaseRemount.promise;
+        }
+        return await defaultRunCommand(params);
+      },
+    );
+
+    const persistence = session.persistWorkspace();
+    await remountStarted.promise;
+    session.state.environment.AWS_REGION = 'us-west-2';
+    releaseRemount.resolve();
+    await expect(persistence).resolves.toEqual(archive);
+
+    expect(remountCall?.args).toContain('AWS_REGION=us-east-1');
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest,
+        clientOptions: { env: { AWS_REGION: 'us-west-2' } },
+      }),
+    ).resolves.toBe(false);
   });
 
   test('serializes mount-detaching persistence and session I/O', async () => {
@@ -3240,15 +3503,17 @@ describe('VercelSandboxClient', () => {
   });
 
   test('revalidates AWS mount environment before live reuse', async () => {
-    const trustedManifest =
-      vercelS3Manifest().withInContainerMountCredentialExposureAllowed(
-        'bucket',
-      );
+    const trustedManifest = vercelS3Manifest('bucket', {
+      accessKeyId: 'inline-access-key',
+      secretAccessKey: 'inline-secret-key',
+    })
+      .withInContainerMountCredentialExposureAcknowledged('bucket')
+      .withInContainerMountBroadCredentialExposureAcknowledged('bucket');
     const client = new VercelSandboxClient({
       env: {
-        AWS_ACCESS_KEY_ID: 'old-access-key',
-        AWS_SECRET_ACCESS_KEY: 'old-secret-key',
-        AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/secrets/aws/old-token',
+        AWS_CONTAINER_CREDENTIALS_FULL_URI:
+          'http://169.254.170.2/v2/credentials',
+        AWS_CONTAINER_AUTHORIZATION_TOKEN: 'old-authorization-token',
       },
     });
     const session = await client.create(trustedManifest, {
@@ -3265,9 +3530,9 @@ describe('VercelSandboxClient', () => {
         trustedManifest,
         clientOptions: {
           env: {
-            AWS_ACCESS_KEY_ID: 'new-access-key',
-            AWS_SECRET_ACCESS_KEY: 'new-secret-key',
-            AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/secrets/aws/new-token',
+            AWS_CONTAINER_CREDENTIALS_FULL_URI:
+              'http://169.254.170.2/v2/credentials',
+            AWS_CONTAINER_AUTHORIZATION_TOKEN: 'new-authorization-token',
           },
         },
       }),
@@ -3286,11 +3551,78 @@ describe('VercelSandboxClient', () => {
     ).resolves.toBe(false);
   });
 
+  test('revalidates AWS mount routing after session serialization', async () => {
+    const trustedManifest = vercelS3Manifest('bucket', {
+      accessKeyId: 'inline-access-key',
+      secretAccessKey: 'inline-secret-key',
+    }).withInContainerMountCredentialExposureAcknowledged('bucket');
+    const initialEnvironment = {
+      AWS_REGION: 'us-east-1',
+      AWS_DEFAULT_REGION: 'us-east-1',
+    };
+    const client = new VercelSandboxClient({ env: initialEnvironment });
+    const session = await client.create(trustedManifest, {
+      workspacePersistence: 'snapshot',
+    });
+
+    const serialized = await client.serializeSessionState(session.state);
+
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest,
+      }),
+    ).resolves.toBe(true);
+    const rotatedCredentials = vercelS3Manifest('bucket', {
+      accessKeyId: 'rotated-access-key',
+      secretAccessKey: 'rotated-secret-key',
+    }).withInContainerMountCredentialExposureAcknowledged('bucket');
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        trustedManifest: rotatedCredentials,
+      }),
+    ).resolves.toBe(false);
+    for (const name of ['AWS_REGION', 'AWS_DEFAULT_REGION'] as const) {
+      await expect(
+        client.canReusePreservedOwnedSession(session.state, {
+          trustedManifest,
+          clientOptions: {
+            env: { ...initialEnvironment, [name]: 'us-west-2' },
+          },
+        }),
+      ).resolves.toBe(false);
+      session.state.environment[name] = 'us-west-2';
+      const publicState = session.state as unknown as Record<
+        PropertyKey,
+        unknown
+      >;
+      for (const symbol of Object.getOwnPropertySymbols(publicState)) {
+        const value = publicState[symbol];
+        if (value instanceof Map) {
+          value.clear();
+          value.set('/vercel/sandbox/bucket', {
+            ...initialEnvironment,
+            [name]: 'us-west-2',
+          });
+        }
+      }
+      await expect(
+        client.canReusePreservedOwnedSession(session.state, {
+          trustedManifest,
+          clientOptions: {
+            env: { ...initialEnvironment, [name]: 'us-west-2' },
+          },
+        }),
+      ).resolves.toBe(false);
+      session.state.environment[name] = initialEnvironment[name];
+    }
+    expect(Object.getOwnPropertySymbols(serialized)).toEqual([]);
+  });
+
   test('preserves an unchanged mounted session through Runner interruption', async () => {
     const trustedManifest = vercelS3Manifest(
       'bucket',
       {},
-    ).withInContainerMountCredentialExposureAllowed('bucket');
+    ).withInContainerMountCredentialExposureAcknowledged('bucket');
     const approvalTool = tool({
       name: 'needs_approval',
       description: 'requires approval',
@@ -3367,7 +3699,7 @@ describe('VercelSandboxClient', () => {
     const original = vercelS3Manifest('bucket', {
       accessKeyId: 'old-access-key',
       secretAccessKey: 'old-secret-key',
-    }).withInContainerMountCredentialExposureAllowed('bucket');
+    }).withInContainerMountCredentialExposureAcknowledged('bucket');
     const session = await client.create(original, {
       workspacePersistence: 'snapshot',
     });
@@ -3375,7 +3707,7 @@ describe('VercelSandboxClient', () => {
     const same = vercelS3Manifest('bucket', {
       accessKeyId: 'old-access-key',
       secretAccessKey: 'old-secret-key',
-    }).withInContainerMountCredentialExposureAllowed('bucket');
+    }).withInContainerMountCredentialExposureAcknowledged('bucket');
     expect(
       liveMountCredentialAuthorityMatches(
         session.state.manifest,
@@ -3393,7 +3725,7 @@ describe('VercelSandboxClient', () => {
     const rotated = vercelS3Manifest('bucket', {
       accessKeyId: 'new-access-key',
       secretAccessKey: 'new-secret-key',
-    }).withInContainerMountCredentialExposureAllowed('bucket');
+    }).withInContainerMountCredentialExposureAcknowledged('bucket');
     expect(
       liveMountCredentialAuthorityMatches(
         session.state.manifest,

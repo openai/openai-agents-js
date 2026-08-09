@@ -1490,6 +1490,7 @@ async function waitForProcessOrTimeout(
   timeoutMs: number,
 ): Promise<void> {
   if (activeProcess.done) {
+    await activeProcess.outputClosedPromise;
     return;
   }
 

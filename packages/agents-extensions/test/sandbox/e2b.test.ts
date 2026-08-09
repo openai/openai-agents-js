@@ -1261,7 +1261,7 @@ describe('E2BSandboxClient', () => {
             mountStrategy: new E2BCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
     );
     await session.close();
 
@@ -1314,7 +1314,7 @@ describe('E2BSandboxClient', () => {
               mountStrategy: new E2BCloudBucketMountStrategy(),
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+        }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
       ),
     ).rejects.toThrow(/model-controlled sandbox/u);
 
@@ -1347,6 +1347,82 @@ describe('E2BSandboxClient', () => {
         }),
       ),
     ).rejects.toThrow(/model-controlled sandbox/u);
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('requires broad acknowledgement for ambient credentials shadowed by inline credentials', async () => {
+    const client = new E2BSandboxClient({
+      env: {
+        AWS_ACCESS_KEY_ID: 'ambient-access-key',
+        AWS_SECRET_ACCESS_KEY: 'ambient-secret-key',
+      },
+    });
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'agent-logs',
+          accessKeyId: 'inline-access-key',
+          secretAccessKey: 'inline-secret-key',
+          mountStrategy: new E2BCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAcknowledged('data');
+
+    await expect(client.create(manifest)).rejects.toThrow(
+      /broad credential authority/iu,
+    );
+    await expect(
+      new E2BSandboxClient({
+        env: {
+          GOOGLE_APPLICATION_CREDENTIALS: '/run/secrets/gcp.json',
+        },
+      }).create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 'gcs_mount',
+              bucket: 'agent-logs',
+              serviceAccountCredentials: 'inline-service-account-credentials',
+              mountStrategy: new E2BCloudBucketMountStrategy(),
+            },
+          },
+        }).withInContainerMountCredentialExposureAcknowledged('data'),
+      ),
+    ).rejects.toThrow(/broad credential authority/iu);
+    await expect(
+      new E2BSandboxClient({
+        env: {
+          GOOGLE_APPLICATION_CREDENTIALS: '/run/secrets/gcp.json',
+        },
+      }).create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 'gcs_mount',
+              bucket: 'agent-logs',
+              mountStrategy: {
+                type: 'e2b_cloud_bucket',
+                pattern: { type: 'mountpoint' },
+              },
+            },
+          },
+        }),
+      ),
+    ).rejects.toThrow(
+      /SDK-supported strategy, provider, mount type, and pattern/iu,
+    );
+    await expect(
+      new E2BSandboxClient({
+        env: {
+          RCLONE_CONFIG_REMOTE_ACCESS_KEY_ID: 'partial-access-key',
+        },
+      }).create(
+        manifest.withInContainerMountBroadCredentialExposureAcknowledged(
+          'data',
+        ),
+      ),
+    ).rejects.toThrow(/both ACCESS_KEY_ID and SECRET_ACCESS_KEY/iu);
     expect(createMock).not.toHaveBeenCalled();
   });
 
@@ -1395,7 +1471,7 @@ describe('E2BSandboxClient', () => {
           mountStrategy: new E2BCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
     const client = new E2BSandboxClient({ env: environment });
     const session = await client.create(manifest);
 
@@ -1433,7 +1509,7 @@ describe('E2BSandboxClient', () => {
           mountStrategy: new E2BCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
     const client = new E2BSandboxClient({ env: environment });
     const session = await client.create(manifest);
 
@@ -1506,7 +1582,7 @@ describe('E2BSandboxClient', () => {
             mountStrategy: new E2BCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
     );
 
     expect(
@@ -1534,7 +1610,9 @@ describe('E2BSandboxClient', () => {
       },
     });
     const session = await client.create(
-      new Manifest().withInContainerMountCredentialExposureAllowed('data'),
+      new Manifest().withInContainerMountBroadCredentialExposureAcknowledged(
+        'data',
+      ),
     );
     runMock.mockClear();
 

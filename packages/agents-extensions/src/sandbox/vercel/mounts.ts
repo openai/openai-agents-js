@@ -30,6 +30,11 @@ export const VERCEL_S3_MOUNT_CREDENTIAL_ENVIRONMENT_NAMES = [
   'AWS_WEB_IDENTITY_TOKEN_FILE',
 ] as const;
 
+export const VERCEL_S3_MOUNT_ROUTING_ENVIRONMENT_NAMES = [
+  'AWS_REGION',
+  'AWS_DEFAULT_REGION',
+] as const;
+
 /**
  * Selects Vercel's create-time-only application of the remote mount policy.
  *
@@ -93,6 +98,23 @@ export function validateVercelCloudBucketMountEntry(entry: Entry): void {
   resolveVercelS3MountConfig(entry);
 }
 
+export function vercelS3MountRoutingEnvironment(
+  entry: Entry,
+  configuredEnvironment: Record<string, string> = {},
+): Record<string, string> {
+  const environment =
+    mountEnvironment(
+      resolveVercelS3MountConfig(entry),
+      configuredEnvironment,
+      false,
+    ) ?? {};
+  return Object.fromEntries(
+    VERCEL_S3_MOUNT_ROUTING_ENVIRONMENT_NAMES.flatMap((name) =>
+      environment[name] === undefined ? [] : [[name, environment[name]]],
+    ),
+  );
+}
+
 export async function mountVercelCloudBucket(args: {
   entry: Entry;
   mountPath: string;
@@ -137,7 +159,11 @@ export async function mountVercelCloudBucket(args: {
       args.allowAmbientCredentials === true,
     ),
     options: {
-      env: mountEnvironment(config, args.environment),
+      env: mountEnvironment(
+        config,
+        args.environment,
+        args.allowAmbientCredentials === true,
+      ),
       sudo: true,
       timeoutMs: MOUNTPOINT_COMMAND_TIMEOUT_MS,
     },
@@ -377,9 +403,13 @@ function isSupportedMountpointVersion(
 function mountEnvironment(
   config: VercelS3MountConfig,
   configuredEnvironment: Record<string, string> = {},
+  allowAmbientCredentials: boolean = false,
 ): Record<string, string> | undefined {
+  const allowedConfiguredNames = allowAmbientCredentials
+    ? VERCEL_S3_MOUNT_ENVIRONMENT_NAMES
+    : VERCEL_S3_MOUNT_ROUTING_ENVIRONMENT_NAMES;
   const environment = Object.fromEntries(
-    VERCEL_S3_MOUNT_ENVIRONMENT_NAMES.flatMap((name) => {
+    allowedConfiguredNames.flatMap((name) => {
       const value = configuredEnvironment[name];
       return typeof value === 'string' ? [[name, value]] : [];
     }),
