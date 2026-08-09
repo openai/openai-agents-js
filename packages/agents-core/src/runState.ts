@@ -150,7 +150,8 @@ import {
  * - 1.18: Adds sandbox session-state envelope version 3 so credential-redacted
  *   mount authority cannot be consumed by older SDKs, and binds per-call approvals
  *   and committed local tool results to canonical invocation fingerprints. It also
- *   scopes persistent hosted MCP approvals by server label and tool name.
+ *   scopes persistent hosted MCP approvals by server label and tool name, and preserves
+ *   JSON-compatible tool outputs as structured data.
  */
 export const CURRENT_SCHEMA_VERSION = '1.18' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
@@ -1103,6 +1104,131 @@ const modelResponseSchema = z.object({
   providerData: z.record(z.string(), z.any()).optional(),
 });
 
+type JsonCompatibleValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonCompatibleValue[]
+  | { [key: string]: JsonCompatibleValue };
+
+const INVALID_JSON_COMPATIBLE_VALUE = Symbol('invalidJsonCompatibleValue');
+
+function normalizeJsonCompatibleValue(
+  value: unknown,
+): JsonCompatibleValue | typeof INVALID_JSON_COMPATIBLE_VALUE {
+  try {
+    return normalizeJsonCompatibleValueInternal(value, new Set<object>());
+  } catch {
+    return INVALID_JSON_COMPATIBLE_VALUE;
+  }
+}
+
+function normalizeJsonCompatibleValueInternal(
+  value: unknown,
+  ancestors: Set<object>,
+): JsonCompatibleValue | typeof INVALID_JSON_COMPATIBLE_VALUE {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value === 'string' || typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      return INVALID_JSON_COMPATIBLE_VALUE;
+    }
+    return Object.is(value, -0) ? 0 : value;
+  }
+  if (typeof value !== 'object' || ancestors.has(value)) {
+    return INVALID_JSON_COMPATIBLE_VALUE;
+  }
+  if (hasUnsupportedToJsonProtocol(value)) {
+    return INVALID_JSON_COMPATIBLE_VALUE;
+  }
+
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (Object.getOwnPropertySymbols(value).length > 0) {
+        return INVALID_JSON_COMPATIBLE_VALUE;
+      }
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+      if (!lengthDescriptor || !('value' in lengthDescriptor)) {
+        return INVALID_JSON_COMPATIBLE_VALUE;
+      }
+      const normalized: JsonCompatibleValue[] = [];
+      for (let index = 0; index < lengthDescriptor.value; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, index);
+        if (!descriptor || !('value' in descriptor)) {
+          return INVALID_JSON_COMPATIBLE_VALUE;
+        }
+        const entry = normalizeJsonCompatibleValueInternal(
+          descriptor.value,
+          ancestors,
+        );
+        if (entry === INVALID_JSON_COMPATIBLE_VALUE) {
+          return INVALID_JSON_COMPATIBLE_VALUE;
+        }
+        normalized.push(entry);
+      }
+      return normalized;
+    }
+
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      return INVALID_JSON_COMPATIBLE_VALUE;
+    }
+    const entries: Array<[string, JsonCompatibleValue]> = [];
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== 'string') {
+        return INVALID_JSON_COMPATIBLE_VALUE;
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor) {
+        return INVALID_JSON_COMPATIBLE_VALUE;
+      }
+      if (!descriptor.enumerable) {
+        continue;
+      }
+      if (!('value' in descriptor)) {
+        return INVALID_JSON_COMPATIBLE_VALUE;
+      }
+      const entry = normalizeJsonCompatibleValueInternal(
+        descriptor.value,
+        ancestors,
+      );
+      if (entry === INVALID_JSON_COMPATIBLE_VALUE) {
+        return INVALID_JSON_COMPATIBLE_VALUE;
+      }
+      entries.push([key, entry]);
+    }
+    return Object.fromEntries(entries);
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function hasUnsupportedToJsonProtocol(value: object): boolean {
+  let current: object | null = value;
+  while (current !== null) {
+    const descriptor = Object.getOwnPropertyDescriptor(current, 'toJSON');
+    if (descriptor) {
+      return !('value' in descriptor) || typeof descriptor.value === 'function';
+    }
+    current = Object.getPrototypeOf(current);
+  }
+  return false;
+}
+
+const jsonCompatibleValueSchema = z.preprocess(
+  normalizeJsonCompatibleValue,
+  z.custom<JsonCompatibleValue>(
+    (value) => value !== INVALID_JSON_COMPATIBLE_VALUE,
+    { message: 'Expected JSON-compatible data.' },
+  ),
+);
+
 const itemSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('message_output_item'),
@@ -1131,7 +1257,7 @@ const itemSchema = z.discriminatedUnion('type', [
       .or(protocol.ApplyPatchCallResultItem)
       .or(protocol.ProgramCallResultItem),
     agent: serializedAgentSchema,
-    output: z.string(),
+    output: jsonCompatibleValueSchema,
     customData: z.record(z.string(), z.any()).optional(),
     executionStatus: z.literal('executed').optional(),
   }),
@@ -2656,6 +2782,10 @@ async function buildRunStateFromString<
     jsonResult,
   );
   const stateJson = SerializedRunState.parse(jsonResult);
+  assertSchemaVersionSupportsStructuredToolOutputs(
+    currentSchemaVersion as SupportedSchemaVersion,
+    stateJson,
+  );
   assertSchemaVersionSupportsToolSearch(
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
@@ -2787,6 +2917,22 @@ function assertSchemaVersionSupportsCustomData(
 
   throw new UserError(
     `Run state schema version ${schemaVersion} does not support tool output customData. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+  );
+}
+
+function assertSchemaVersionSupportsStructuredToolOutputs(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: z.infer<typeof SerializedRunState>,
+): void {
+  if (
+    schemaVersionSupportsV118State(schemaVersion) ||
+    !containsStructuredToolOutputState(stateJson)
+  ) {
+    return;
+  }
+
+  throw new UserError(
+    `Run state schema version ${schemaVersion} does not support structured tool output values. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
   );
 }
 
@@ -3891,6 +4037,44 @@ function containsSerializedToolOutputCustomData(
     containsToolOutputCustomDataRunItems(
       stateJson.lastProcessedResponse?.newItems,
     )
+  );
+}
+
+function containsStructuredToolOutputState(
+  stateJson: z.infer<typeof SerializedRunState>,
+): boolean {
+  if (
+    containsStructuredToolOutputRunItems(stateJson.generatedItems) ||
+    containsStructuredToolOutputRunItems(
+      stateJson.lastProcessedResponse?.newItems,
+    )
+  ) {
+    return true;
+  }
+
+  return Boolean(
+    stateJson.completedToolInvocationEvidence?.some(({ invocations }) =>
+      Object.values(invocations).some(({ items }) =>
+        items.some(
+          (reference) =>
+            'item' in reference &&
+            reference.item.type === 'tool_call_output_item' &&
+            typeof reference.item.output !== 'string',
+        ),
+      ),
+    ),
+  );
+}
+
+function containsStructuredToolOutputRunItems(
+  items: z.infer<typeof itemSchema>[] | undefined,
+): boolean {
+  return Boolean(
+    items?.some(
+      (item) =>
+        item.type === 'tool_call_output_item' &&
+        typeof item.output !== 'string',
+    ),
   );
 }
 
@@ -5426,6 +5610,12 @@ function serializeRunItem(
   agentIdentityKeys: ReadonlyMap<Agent<any, any>, string>,
 ): z.infer<typeof itemSchema> {
   const serialized = item.toJSON() as any;
+  if (item instanceof RunToolCallOutputItem) {
+    const normalizedOutput = jsonCompatibleValueSchema.safeParse(item.output);
+    if (normalizedOutput.success) {
+      serialized.output = normalizedOutput.data;
+    }
+  }
   switch (item.type) {
     case 'handoff_output_item':
       serialized.sourceAgent = serializeAgentReference(
