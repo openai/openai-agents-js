@@ -322,6 +322,411 @@ describe('convertChatCompletionsStreamToResponses', () => {
     expect(final.response.usage.totalTokens).toBe(3);
   });
 
+  it('accumulates streamed audio into the final assistant message', async () => {
+    const chunks = [
+      makeChunk({ audio: { transcript: 'hel' } }),
+      makeChunk({
+        role: 'assistant',
+        content: null,
+        refusal: null,
+        audio: { id: 'audio-test', data: 'abc' },
+      }),
+      makeChunk({
+        audio: { data: 'def', transcript: 'lo', format: 'pcm16' },
+      }),
+      makeChunk({ audio: { expires_at: 2 } }),
+    ];
+
+    async function* stream(): AsyncGenerator<
+      ChatCompletionChunk,
+      void,
+      unknown
+    > {
+      for (const chunk of chunks) {
+        yield chunk;
+      }
+    }
+
+    const response = { id: 'r' } as ChatCompletion;
+    const events: any[] = [];
+    for await (const event of convertChatCompletionsStreamToResponses(
+      response,
+      stream() as any,
+    )) {
+      events.push(event);
+    }
+
+    expect(events.filter((event) => event.type === 'model')).toHaveLength(4);
+    expect(
+      events.filter((event) => event.type === 'output_text_delta'),
+    ).toEqual([]);
+    expect(events.at(-1)).toMatchObject({
+      type: 'response_done',
+      response: {
+        output: [
+          {
+            id: 'r',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'audio',
+                audio: 'abcdef',
+                providerData: {
+                  id: 'audio-test',
+                  transcript: 'hello',
+                  format: 'pcm16',
+                  expires_at: 2,
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(response.choices).toEqual([
+      {
+        index: 0,
+        logprobs: null,
+        finish_reason: 'stop',
+        message: {
+          role: 'assistant',
+          content: null,
+          refusal: null,
+          audio: {
+            id: 'audio-test',
+            data: 'abcdef',
+            transcript: 'hello',
+            format: 'pcm16',
+            expires_at: 2,
+          },
+        },
+      },
+    ]);
+  });
+
+  it('isolates audio snapshots from mutable stream events', async () => {
+    async function* stream() {
+      yield makeChunk({
+        audio: {
+          id: 'audio-snapshot',
+          data: 'ORIGINAL',
+          transcript: 'original',
+          details: { format: 'pcm16' },
+        },
+      });
+    }
+
+    const response = { id: 'r' } as ChatCompletion;
+    const iterator = convertChatCompletionsStreamToResponses(
+      response,
+      stream() as any,
+    )[Symbol.asyncIterator]();
+
+    const started = await iterator.next();
+    const startedAudio = (started.value as any).providerData.choices[0].delta
+      .audio;
+    startedAudio.data = 'MUTATED_STARTED';
+    startedAudio.transcript = 'mutated started';
+    startedAudio.details.format = 'mutated-started';
+
+    const raw = await iterator.next();
+    const rawAudio = (raw.value as any).event.choices[0].delta.audio;
+    rawAudio.data = 'MUTATED_RAW';
+    rawAudio.transcript = 'mutated raw';
+    rawAudio.details.format = 'mutated-raw';
+
+    const completed = await iterator.next();
+    expect(completed.done).toBe(false);
+    expect((completed.value as any).response.output[0].content).toEqual([
+      {
+        type: 'audio',
+        audio: 'ORIGINAL',
+        providerData: {
+          id: 'audio-snapshot',
+          transcript: 'original',
+          details: { format: 'pcm16' },
+        },
+      },
+    ]);
+    (
+      completed.value as any
+    ).response.output[0].content[0].providerData.details.format =
+      'mutated-completed';
+
+    expect((await iterator.next()).done).toBe(true);
+    expect(response.choices[0].message.audio).toEqual({
+      id: 'audio-snapshot',
+      data: 'ORIGINAL',
+      transcript: 'original',
+      details: { format: 'pcm16' },
+    });
+  });
+
+  it('preserves audio from a content-filtered stream', async () => {
+    async function* stream(): AsyncGenerator<
+      ChatCompletionChunk,
+      void,
+      unknown
+    > {
+      yield {
+        ...makeChunk({
+          audio: {
+            id: 'audio-filtered',
+            data: 'AAA=',
+            transcript: 'hello',
+            expires_at: 2,
+          },
+        }),
+        choices: [
+          {
+            index: 0,
+            delta: {
+              audio: {
+                id: 'audio-filtered',
+                data: 'AAA=',
+                transcript: 'hello',
+                expires_at: 2,
+              },
+            },
+            finish_reason: 'content_filter',
+          },
+        ],
+      } as any;
+    }
+
+    const events: any[] = [];
+    for await (const event of convertChatCompletionsStreamToResponses(
+      { id: 'r' } as ChatCompletion,
+      stream() as any,
+    )) {
+      events.push(event);
+    }
+
+    expect(events.at(-1).response.output).toEqual([
+      {
+        id: 'r',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          {
+            type: 'audio',
+            audio: 'AAA=',
+            providerData: {
+              id: 'audio-filtered',
+              transcript: 'hello',
+              expires_at: 2,
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('ignores nullable streamed audio fragments', async () => {
+    async function* stream() {
+      yield makeChunk({ audio: null });
+      yield makeChunk({
+        audio: {
+          id: 'audio-nullable',
+          data: 'abc',
+          transcript: 'hel',
+        },
+      });
+      yield makeChunk({
+        audio: {
+          data: null,
+          transcript: null,
+          expires_at: 2,
+        },
+      });
+      yield makeChunk({
+        audio: {
+          data: 'def',
+          transcript: 'lo',
+        },
+      });
+    }
+
+    const response = { id: 'r' } as ChatCompletion;
+    const events: any[] = [];
+    for await (const event of convertChatCompletionsStreamToResponses(
+      response,
+      stream() as any,
+    )) {
+      events.push(event);
+    }
+
+    expect(events.filter((event) => event.type === 'model')).toHaveLength(4);
+    expect(events.at(-1).response.output[0].content).toEqual([
+      {
+        type: 'audio',
+        audio: 'abcdef',
+        providerData: {
+          id: 'audio-nullable',
+          transcript: 'hello',
+          expires_at: 2,
+        },
+      },
+    ]);
+    expect(response.choices[0].message.audio).toEqual({
+      id: 'audio-nullable',
+      data: 'abcdef',
+      transcript: 'hello',
+      expires_at: 2,
+    });
+  });
+
+  it('rejects audio streams that end without audio data', async () => {
+    async function* stream() {
+      yield makeChunk({
+        audio: { id: 'audio-incomplete', transcript: 'hello' },
+      });
+    }
+
+    await expect(async () => {
+      for await (const _event of convertChatCompletionsStreamToResponses(
+        { id: 'r' } as ChatCompletion,
+        stream() as any,
+      )) {
+        // Consume the stream.
+      }
+    }).rejects.toThrow(
+      'Chat Completions stream ended with audio output but no audio data.',
+    );
+  });
+
+  it('rejects malformed audio deltas', async () => {
+    async function* stream() {
+      yield makeChunk({ audio: 'invalid' });
+    }
+
+    await expect(async () => {
+      for await (const _event of convertChatCompletionsStreamToResponses(
+        { id: 'r' } as ChatCompletion,
+        stream() as any,
+      )) {
+        // Consume the stream.
+      }
+    }).rejects.toThrow(
+      'Chat Completions stream returned malformed audio output: expected delta.audio to be an object.',
+    );
+  });
+
+  it.each([
+    {
+      name: 'numeric data',
+      audio: { data: 42 },
+      message:
+        'Chat Completions stream returned malformed audio output: expected delta.audio.data to be a string.',
+    },
+    {
+      name: 'numeric transcript',
+      audio: { transcript: 42 },
+      message:
+        'Chat Completions stream returned malformed audio output: expected delta.audio.transcript to be a string.',
+    },
+  ])('rejects malformed audio fields: $name', async ({ audio, message }) => {
+    async function* stream() {
+      yield makeChunk({ audio });
+    }
+
+    await expect(async () => {
+      for await (const _event of convertChatCompletionsStreamToResponses(
+        { id: 'r' } as ChatCompletion,
+        stream() as any,
+      )) {
+        // Consume the stream.
+      }
+    }).rejects.toThrow(message);
+  });
+
+  it('does not accept inherited audio data from provider metadata', async () => {
+    const audio = JSON.parse(
+      '{"__proto__":{"data":"forged"},"id":"audio-incomplete"}',
+    );
+
+    async function* stream() {
+      yield makeChunk({ audio });
+    }
+
+    await expect(async () => {
+      for await (const _event of convertChatCompletionsStreamToResponses(
+        { id: 'r' } as ChatCompletion,
+        stream() as any,
+      )) {
+        // Consume the stream.
+      }
+    }).rejects.toThrow(
+      'Chat Completions stream ended with audio output but no audio data.',
+    );
+  });
+
+  it('rejects non-cloneable audio metadata before emitting events', async () => {
+    async function* stream() {
+      yield makeChunk({
+        audio: {
+          data: 'AAA=',
+          unsupported: () => 'not cloneable',
+        },
+      });
+    }
+
+    const iterator = convertChatCompletionsStreamToResponses(
+      { id: 'r' } as ChatCompletion,
+      stream() as any,
+    )[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).rejects.toThrow(
+      'Chat Completions stream returned malformed audio output: expected delta.audio to be cloneable.',
+    );
+  });
+
+  it('uses text output precedence while retaining streamed audio for tracing', async () => {
+    async function* stream() {
+      yield makeChunk({
+        content: 'hello',
+        audio: {
+          id: 'audio-mixed',
+          data: 'AAA=',
+          transcript: 'hello',
+        },
+      });
+    }
+
+    const response = { id: 'r' } as ChatCompletion;
+    const events: any[] = [];
+    for await (const event of convertChatCompletionsStreamToResponses(
+      response,
+      stream() as any,
+    )) {
+      events.push(event);
+    }
+
+    expect(events.at(-1).response.output).toEqual([
+      {
+        id: 'r',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          {
+            type: 'output_text',
+            text: 'hello',
+            providerData: { annotations: [] },
+          },
+        ],
+      },
+    ]);
+    expect(response.choices[0].message.audio).toEqual({
+      id: 'audio-mixed',
+      data: 'AAA=',
+      transcript: 'hello',
+    });
+  });
+
   it('preserves URL citations from text and annotation-only deltas once', async () => {
     const weatherCitation = urlCitation();
     const forecastCitation = urlCitation(
