@@ -18,7 +18,9 @@ from review_state import review_state
 class PrepareReviewRoundTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
+        self.review_directory = tempfile.TemporaryDirectory()
         self.repo = Path(self.temporary_directory.name)
+        self.review_root = Path(self.review_directory.name)
         self._git("init", "-q")
         self._git("config", "user.email", "review-round@example.test")
         self._git("config", "user.name", "Review Round Test")
@@ -49,12 +51,11 @@ class PrepareReviewRoundTest(unittest.TestCase):
         self.round_delta.write_text("Round 2 changes only provider wiring.\n")
 
     def tearDown(self) -> None:
+        self.review_directory.cleanup()
         self.temporary_directory.cleanup()
 
     def _git(self, *args: str) -> str:
-        return subprocess.check_output(
-            ("git", "-C", str(self.repo), *args), text=True
-        )
+        return subprocess.check_output(("git", "-C", str(self.repo), *args), text=True)
 
     def _prepare(
         self, output_dir: Path, prior_clean_state: Path | None = None
@@ -74,7 +75,7 @@ class PrepareReviewRoundTest(unittest.TestCase):
         )
 
     def test_generates_deterministic_current_round_bundle(self) -> None:
-        output_dir = self.repo / "review-output"
+        output_dir = self.review_root / "review-output"
 
         first = self._prepare(output_dir)
         first_packet = (output_dir / "review-packet.md").read_text()
@@ -88,8 +89,12 @@ class PrepareReviewRoundTest(unittest.TestCase):
         self.assertIn("## Current Round Delta", first_packet)
         self.assertIn("Historical round transcripts", first_packet)
         self.assertIn("## Reviewer Contract", first_packet)
+        self.assertIn(
+            "Exact fingerprint revalidation command: `PYTHONDONTWRITEBYTECODE=1 python3 ",
+            first_packet,
+        )
         self.assertIn("Return exactly one JSON object", first_packet)
-        self.assertIn('"fingerprints"', first_packet)
+        self.assertIn('"reviewed_fingerprints"', first_packet)
         self.assertTrue((output_dir / "task.diff").read_text())
         self.assertTrue((output_dir / "task-context.diff").read_text())
         untracked = json.loads((output_dir / "task-untracked.json").read_text())
@@ -97,14 +102,14 @@ class PrepareReviewRoundTest(unittest.TestCase):
         self.assertEqual(untracked[0]["encoding"], "utf-8")
         self.assertIn("newValue", untracked[0]["content"])
 
-    def test_marks_only_byte_identical_prior_clean_components_as_candidates(self) -> None:
+    def test_marks_only_byte_identical_prior_clean_components_as_candidates(
+        self,
+    ) -> None:
         components = {
             "core": ("src",),
             "provider-adapters": ("providers",),
         }
-        before = review_state(
-            self.repo, self.base, ("src", "providers"), components
-        )
+        before = review_state(self.repo, self.base, ("src", "providers"), components)
         prior = self.repo / "prior.json"
         prior.write_text(
             json.dumps(
@@ -120,13 +125,14 @@ class PrepareReviewRoundTest(unittest.TestCase):
             "export const adapter = 3;\n"
         )
 
-        state = self._prepare(self.repo / "review-output", prior)
+        output_dir = self.review_root / "review-output"
+        state = self._prepare(output_dir, prior)
 
         self.assertEqual(state["prior_clean_candidates"], ["core"])
         self.assertEqual(
             state["invalidated_prior_clean_components"], ["provider-adapters"]
         )
-        packet = (self.repo / "review-output" / "review-packet.md").read_text()
+        packet = (output_dir / "review-packet.md").read_text()
         self.assertIn("not automatically reusable clean credit", packet)
 
     def test_malformed_prior_clean_state_fails_closed(self) -> None:

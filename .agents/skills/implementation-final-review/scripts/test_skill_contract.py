@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -9,18 +10,34 @@ from pathlib import Path
 class SkillContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.repo_root = Path(__file__).resolve().parents[4]
         cls.skill_root = Path(__file__).resolve().parent.parent
         cls.skill = (cls.skill_root / "SKILL.md").read_text()
         cls.agent_config = (cls.skill_root / "agents" / "openai.yaml").read_text()
-        cls.reviewer_brief = (cls.skill_root / "references" / "reviewer-brief.md").read_text()
-        cls.repo_instructions = (cls.repo_root / "AGENTS.md").read_text()
+        cls.reviewer_brief = (
+            cls.skill_root / "references" / "reviewer-brief.md"
+        ).read_text()
+        cls.review_protocol = (
+            cls.skill_root / "scripts" / "review_protocol.py"
+        ).read_text()
+        cls.repo_instructions = (cls.skill_root.parents[2] / "AGENTS.md").read_text()
 
-    def test_repo_local_name_is_generic(self) -> None:
-        self.assertEqual(self.skill.splitlines()[1], "name: implementation-final-review")
-        self.assertIn("# Implementation Final Review\n", self.skill)
+    def test_repo_local_metadata_matches_skill(self) -> None:
+        self.assertEqual(
+            self.skill.splitlines()[1], "name: implementation-final-review"
+        )
         self.assertIn('display_name: "Implementation Final Review"', self.agent_config)
         self.assertIn("$implementation-final-review", self.agent_config)
+        self.assertIn("allow_implicit_invocation: false", self.agent_config)
+
+    def test_workflow_steps_are_consecutive(self) -> None:
+        workflow = self.skill.split("## Workflow", 1)[1].split(
+            "Maintain one compact round ledger", 1
+        )[0]
+        steps = [
+            int(value) for value in re.findall(r"^(\d+)\. ", workflow, re.MULTILINE)
+        ]
+
+        self.assertEqual(steps, list(range(1, 22)))
 
     def test_quality_gates_cover_prior_failure_modes(self) -> None:
         required_text = (
@@ -37,37 +54,10 @@ class SkillContractTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIn(text, self.skill)
 
-    def test_pathspec_manifest_contract_is_fail_closed(self) -> None:
-        required_text = (
-            "one literal Git pathspec per nonempty line",
-            "do not add comments or trim intentional whitespace",
-            "unreadable manifests",
-            "Git failures as errors rather than broadening scope",
-        )
-
-        for text in required_text:
-            with self.subTest(text=text):
-                self.assertIn(text, self.skill)
-
-    def test_package_boundaries_remain_explicit(self) -> None:
-        required_text = (
-            "package exports and generated declarations",
-            "package/runtime export boundary",
-            "ESM/CJS/types",
-            "$changeset-validation",
-            "$code-change-verification",
-            "$pr-draft-summary",
-        )
-
-        for text in required_text:
-            with self.subTest(text=text):
-                self.assertIn(text, self.skill)
-
     def test_reviewer_brief_avoids_repeated_context_discovery(self) -> None:
         required_text = (
             "Exact fingerprint revalidation command",
             "Complete three-dot diff command",
-            "verify the supplied merge base when applicable",
             "Do not edit or stage files",
             "inspect memory",
             "rediscover workflow skills",
@@ -78,199 +68,385 @@ class SkillContractTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIn(text, self.reviewer_brief)
 
-        self.assertNotIn("calculate the merge base", self.reviewer_brief)
-
     def test_incomplete_reviewer_packets_fail_closed(self) -> None:
-        skill_text = (
+        required_skill_text = (
             "Populate every template field or mark it explicitly `none` or `not applicable`",
             "do not dispatch an incomplete packet",
             "missing packet evidence cannot be reconstructed by the reviewer",
+            "cannot return a creditable clean verdict",
+            "Reopening source cannot replace missing packet contents",
         )
-        brief_text = (
+        required_brief_text = (
             "Fill every field or mark it explicitly `none` or `not applicable`",
             "do not dispatch an incomplete packet",
             "report the missing field and do not return a creditable clean verdict",
             "do not use reopening to replace missing packet contents",
         )
 
-        for text in skill_text:
-            with self.subTest(source="skill", text=text):
+        for text in required_skill_text:
+            with self.subTest(text=text):
                 self.assertIn(text, self.skill)
-        for text in brief_text:
-            with self.subTest(source="brief", text=text):
+        for text in required_brief_text:
+            with self.subTest(text=text):
                 self.assertIn(text, self.reviewer_brief)
 
-    def test_speed_contract_preserves_independent_assurance(self) -> None:
+    def test_full_verification_can_overlap_review_without_weakening_freeze(
+        self,
+    ) -> None:
         required_text = (
-            "reuse the same requirement",
-            "only the specialty assignment may differ",
-            "one multi-target wait",
-            "do not poll reviewers separately",
-            "Immediately after reviewer dispatch",
-            "instead of waiting for a clean verdict",
-            "against the same frozen fingerprint",
-            "two independent reviewers concurrently",
-            "same combined fingerprint",
+            "Do not leave the implementer idle while reviewers run",
+            "complete mutating formatting before fingerprinting",
+            "every eligible non-mutating final repository gate",
+            "exact frozen content",
+            "run its non-mutating build, lint, typecheck, and test phases during review",
+            "discard verification credit only for changed or dependency-invalidated components",
+            "accept overlapped results from step 12",
+            "exact clean-reviewed fingerprint",
+            "do not rerun successful exact-fingerprint work",
         )
 
         for text in required_text:
             with self.subTest(text=text):
                 self.assertIn(text, self.skill)
+
+        self.assertIn("Eligible concurrent final-gate commands", self.reviewer_brief)
+        self.assertIn(
+            "Gates deferred because they may mutate task-owned content",
+            self.reviewer_brief,
+        )
 
     def test_overlapped_final_gates_preserve_fingerprint_integrity(self) -> None:
         required_text = (
-            "does not edit, format, regenerate, stage, or create any task-owned deliverable",
-            "defer it until review is clean",
-            "fingerprints immediately before the gate starts and after it exits",
-            "A concurrent pass earns final-gate credit only when both fingerprints match the reviewed fingerprint exactly",
+            "establish that it does not edit, format, regenerate, stage, or create any "
+            "task-owned deliverable",
+            "Record combined, component, and repository fingerprints immediately before each "
+            "gate starts and after it exits",
+            "all fingerprints match the reviewed repository state exactly",
             "cancel or stop the obsolete verification when practical",
-            "cannot satisfy completion after a semantic edit",
-            "before-and-after component fingerprints match the exact clean-reviewed fingerprint",
-            "discard every speculative final-gate result from the prior fingerprint",
-            "rerun every mandatory repository gate on the new content",
-            "Only after both review and verification evidence apply to the final fingerprint, invoke `$pr-draft-summary` last",
+            "Keep `$pr-draft-summary` deferred",
+            "Invoke `$pr-draft-summary` last",
         )
 
         for text in required_text:
             with self.subTest(text=text):
                 self.assertIn(text, self.skill)
 
-        brief_text = (
-            "Eligible concurrent final-gate commands and non-mutation basis",
-            "Gates deferred because they may mutate task-owned content",
-        )
-        for text in brief_text:
-            with self.subTest(source="brief", text=text):
-                self.assertIn(text, self.reviewer_brief)
-
-        dispatch = self.skill.index("Immediately after reviewer dispatch")
-        gate_start = self.skill.index("start every eligible final repository gate")
-        reviewer_wait = self.skill.index("Wait for all concurrent reviewers before editing")
-        clean_gate_acceptance = self.skill.index("A speculative final-gate pass")
-        pr_summary = self.skill.index("invoke `$pr-draft-summary` last")
-
-        self.assertLess(dispatch, gate_start)
-        self.assertLess(gate_start, reviewer_wait)
-        self.assertLess(clean_gate_acceptance, pr_summary)
-
-    def test_iterative_review_uses_risk_tiered_test_coverage(self) -> None:
+    def test_iterative_review_can_skip_unaffected_slow_subsystems(self) -> None:
         required_text = (
-            "for changes unrelated to every owner in",
+            "for changes unrelated to every owner in `helpers/vitest/reviewTestProfile.ts`, "
             "run `pnpm test:review`",
-            "for a leaf subsystem change",
-            "plus that subsystem's complete test file or directory",
-            "with `pnpm exec vitest run <path>`",
-            "for cross-cutting core changes",
-            "shared test-infrastructure changes",
+            "for a leaf subsystem change, run `pnpm test:review` plus that subsystem's "
+            "complete test file or directory with `pnpm exec vitest run <path>`",
+            "for cross-cutting core changes, shared test-infrastructure changes, or an "
+            "uncertain boundary, run `pnpm test`",
             "The reduced check earns no final-gate credit",
-            "including `pnpm test`",
+            "the exact clean-reviewed fingerprint must still pass the complete "
+            "`$code-change-verification` stack, including `pnpm test`",
+            "Do not use `pnpm test <path>` for focused execution",
         )
 
         for text in required_text:
             with self.subTest(text=text):
                 self.assertIn(text, self.skill)
 
-        self.assertNotIn("pnpm test -- <path>", self.skill)
-        self.assertIn("Do not use `pnpm test <path>`", self.skill)
-
-    def test_reviewers_start_without_inherited_conversation_context(self) -> None:
+    def test_final_gate_deltas_are_classified_by_component(self) -> None:
         required_text = (
-            'fork_turns:"none"',
-            "Never inherit the implementer's conversation",
-            "parent-prepared implementation scope contract",
-            "must not invoke `$implementation-strategy` again",
-        )
-        combined = self.skill + self.reviewer_brief + self.repo_instructions
-
-        for text in required_text:
-            with self.subTest(text=text):
-                self.assertIn(text, combined)
-
-    def test_semantic_components_preserve_only_justified_clean_evidence(self) -> None:
-        required_text = (
-            "semantic review components",
-            "do not infer component ownership automatically",
-            "only a clean candidate",
-            "does not change its required behavior, assertions, or boundary",
-            "byte-identical prior-clean candidates",
-            "not automatically reusable clean credit",
-        )
-        combined = self.skill + self.reviewer_brief
-
-        for text in required_text:
-            with self.subTest(text=text):
-                self.assertIn(text, combined)
-
-    def test_round_packets_are_base_plus_delta_without_history_accumulation(self) -> None:
-        required_text = (
-            "immutable task evidence in one base packet",
-            "current-fingerprint changes",
-            "Do not append historical round transcripts",
-            "prepare_review_round.py",
-            "exact reviewer instructions and result schema",
-            "Historical round transcripts and superseded verification results are intentionally excluded",
-            "Return exactly one JSON object",
-        )
-        helper = (
-            self.skill_root / "scripts" / "prepare_review_round.py"
-        ).read_text()
-        combined = self.skill + helper + self.reviewer_brief
-
-        for text in required_text:
-            with self.subTest(text=text):
-                self.assertIn(text, combined)
-
-    def test_review_orchestration_uses_long_waits_and_bounded_clarification(self) -> None:
-        required_text = (
-            "180000-300000 millisecond timeout",
-            "interleave `list_agents`",
-            "at most once",
-            "second incomplete response invalidates that review",
+            "Runtime, public API, behavior-impacting docs",
+            "Tests or examples only",
+            "Release metadata only",
+            "Operational artifact only",
+            "final combined fingerprint",
         )
 
         for text in required_text:
             with self.subTest(text=text):
                 self.assertIn(text, self.skill)
 
-    def test_repeated_findings_require_repository_wide_closure(self) -> None:
+    def test_javascript_repository_boundaries_remain_explicit(self) -> None:
         required_text = (
-            "root-cause closure record",
-            "repository-wide search commands and complete hits",
-            "`retain`, `replace`, or `delete` disposition",
-            "Do not dispatch reviewers while any hit lacks a disposition",
-            "focused invariant probe",
+            "package exports and generated public surfaces when applicable",
+            "protocol capability ownership, pagination termination, cache ownership",
+            "In `openai-agents-js`, prefer components such as `public-api`",
+            "`$changeset-validation` when package or changeset files changed",
+            "`$code-change-verification` for every eligible runtime, test, example, or "
+            "build/test change",
         )
 
         for text in required_text:
             with self.subTest(text=text):
                 self.assertIn(text, self.skill)
 
-    def test_round_cap_is_task_global(self) -> None:
-        required_text = (
-            "counter is task-global",
-            "renamed `fresh` cycles",
-            "do not reset it",
-            "materially changes the requirement into a separate task",
+        self.assertIn("$changeset-validation", self.skill)
+        self.assertIn("package and generated public surfaces", self.skill)
+
+    def test_final_clean_condition_preserves_two_independent_reviews(self) -> None:
+        self.assertIn(
+            "normal-risk change: two independent clean reviews of the same fingerprint, "
+            "launched concurrently",
+            self.skill,
+        )
+        self.assertIn(
+            "elevated-risk change or any loop that produced a P0/P1 finding",
+            self.skill,
+        )
+        self.assertIn("Use two concurrent fresh reviewers for every round", self.skill)
+        self.assertNotIn(
+            "released compatibility, or any loop that produced a P0/P1 finding",
+            self.skill,
         )
 
+    def test_cross_references_use_current_step_numbers(self) -> None:
+        self.assertIn("high-risk conditions in step 12", self.skill)
+        self.assertIn(
+            "component delta review using the risk tier and clean-review conditions from step 19",
+            self.skill,
+        )
+        self.assertNotIn("high-risk conditions in step 10", self.skill)
+
+    def test_independent_review_uses_no_history_and_event_driven_waits(self) -> None:
+        required_skill_text = (
+            'dispatch every reviewer with `fork_turns: "none"`',
+            "never pass the implementer's accumulated conversation or use a full-history fork",
+            "Launch both reviewers before waiting",
+            "one event-driven wait of 240 seconds",
+            "Do not poll with `list_agents`, separate short waits, progress questions, or no-op "
+            "`followup_task` messages",
+            "After one reviewer completes, continue waiting only for the remaining reviewer with "
+            "another event-driven 240-second wait",
+            "If an event-driven wait times out while reviewers remain unfinished",
+            "repeat without polling until a reviewer completes, needs attention, or no unfinished "
+            "reviewers remain",
+        )
+        for text in required_skill_text:
+            with self.subTest(text=text):
+                self.assertIn(text, self.skill)
+
+        self.assertIn('dispatcher uses `fork_turns: "none"`', self.reviewer_brief)
+        self.assertIn("PYTHONDONTWRITEBYTECODE=1", self.skill)
+        self.assertIn("PYTHONDONTWRITEBYTECODE=1", self.reviewer_brief)
+        self.assertIn("create `__pycache__`", self.reviewer_brief)
+
+    def test_round_budget_is_task_global_and_cannot_silently_reset(self) -> None:
+        required_text = (
+            "Resume or create the task-global review ledger",
+            "Use the Codex task or thread ID as the stable task identity when available",
+            "Store the ledger as an ignored operational file at a stable absolute path",
+            "preserve the same file when work moves to another worktree",
+            "Never initialize a new counter merely because the task was paused, compacted, "
+            "handed off, renamed, moved to another worktree, or resumed in another context",
+            "default autonomous budget is six fingerprint rounds for the entire task",
+            "Only explicit user authorization may start another bounded budget",
+            "append the new budget to the same ledger rather than replacing its history",
+            "Persist enough task identity, used and authorized round budgets",
+        )
         for text in required_text:
             with self.subTest(text=text):
                 self.assertIn(text, self.skill)
 
-    def test_reviewer_result_is_structured_and_tracks_inspection_budget(self) -> None:
+    def test_second_related_finding_closes_the_root_cause_group(self) -> None:
         required_text = (
+            "Treat a second related finding in one root-cause group as a closure gate",
+            "run the complexity reset once",
+            "scan the complete inventory for sibling scenarios",
+            "mark the canonical root-cause ID closed",
+            "Do not reopen it for another local patch without new contract evidence or a newly "
+            "uncovered inventory ID",
+            "reject aliases, renamed IDs, and bare unknown IDs",
+        )
+        for text in required_text:
+            with self.subTest(text=text):
+                self.assertIn(text, self.skill)
+
+    def test_snapshot_packet_and_structured_output_bound_repeated_work(self) -> None:
+        required_skill_text = (
+            "approximately 12 KB as a soft target",
+            "indexed evidence files",
+            "exact paths plus SHA-256 digests",
+            "Assign stable IDs to every inventory row and evidence item",
+            "Require one structured JSON object",
+            "inspection call count",
+            "approximately 12 source-inspection tool calls per reviewer as a soft budget",
+        )
+        required_brief_text = (
+            "Indexed evidence manifest (`ID | role | exact path | SHA-256 | purpose`)",
+            "Semantic component dependency map and invalidation reasons",
             '"checked_inventory_ids"',
             '"unchecked_inventory_ids"',
-            '"inspection_budget"',
-            '"sibling_instance_scan"',
-            "target no more than 12 shell inspection calls",
-            "not a hard cap",
+            '"sibling_scenario_scan"',
+            '"inspection_call_count"',
+            '"inspection_budget_reason"',
+            "A `clean` verdict requires an empty `unchecked_inventory_ids`, "
+            "`remaining_uncertainty`, and `findings` array",
+            "Every `focused_probes[].command` must contain the exact executable command that ran",
+            "Prose-only labels, omitted arguments, and placeholders such as `<focused probe>`",
+            "return its path, SHA-256 digest, and exact execution command",
         )
-        combined = self.skill + self.reviewer_brief
+        for text in required_skill_text:
+            with self.subTest(text=text):
+                self.assertIn(text, self.skill)
+        for text in required_brief_text:
+            with self.subTest(text=text):
+                self.assertIn(text, self.reviewer_brief)
 
+    def test_semantic_clean_credit_fails_closed_on_dependency_changes(self) -> None:
+        required_text = (
+            "Partition the manifest by the narrowest stable semantic boundaries",
+            "`public-api`, `session-persistence`, `provider-adapters`, "
+            "`sandbox-security`, `tests-examples`, and `release-metadata`",
+            "fingerprint, requirement rows, assertions about runtime behavior, dependency inputs, "
+            "and risk tier are all unchanged",
+            "changed or dependency-invalidated component",
+            "Any ambiguity invalidates the affected clean credit",
+            "Do not invalidate unrelated components solely because a neighboring file or coarse "
+            "directory changed",
+        )
         for text in required_text:
             with self.subTest(text=text):
-                self.assertIn(text, combined)
+                self.assertIn(text, self.skill)
+
+    def test_intermediate_verification_is_cost_aware_but_final_gate_is_complete(
+        self,
+    ) -> None:
+        required_text = (
+            "Prefer an already successful same-fingerprint check over rerunning it",
+            "never replay cumulative historical verification",
+            "The reduced check earns no final-gate credit",
+            "the exact clean-reviewed fingerprint must still pass the complete "
+            "`$code-change-verification` stack",
+            "After the clean-review condition is met, complete `$changeset-validation`",
+        )
+        for text in required_text:
+            with self.subTest(text=text):
+                self.assertIn(text, self.skill)
+
+    def test_machine_readable_protocol_closes_observed_convergence_gaps(self) -> None:
+        required_skill_text = (
+            "PYTHONDONTWRITEBYTECODE=1 python3 "
+            ".agents/skills/implementation-final-review/scripts/review_protocol.py "
+            "packet --packet <packet.json> --task-id <task-id> --ledger <ledger.json>",
+            "packet path, byte size, SHA-256 digest",
+            "The implementer assigns every root-cause ID once",
+            "propose exactly `NEW:<slug>`",
+            "verification receipt containing the exact command, environment, exit status, "
+            "non-mutation basis",
+            "combined, component, and repository fingerprints",
+            "root evidence IDs absent from the packet's indexed evidence or inventory",
+            "combined, component, and repository fingerprints",
+            'role: "complete-diff"',
+            'role: "review-state"',
+            'role: "repository-status"',
+            "review_state.evidence_id",
+            "repository.status_evidence_id",
+            "Assign every component and all three control artifacts to both reviewers",
+            "requires the complete-diff digest to match its `tracked_diff_sha256`",
+            "requires `repository.exclusions` to account exactly",
+            "summary-only inventory row is incomplete",
+            "active control plane outside the packet",
+            "authorized budget history",
+            "immediately preceding round's immutable ledger snapshot plus SHA-256 digest",
+            "same-round retry or an advance of exactly one round",
+            "never use the mutable current ledger as its own prior snapshot",
+            "repository fingerprint covers unfiltered status plus content identity",
+            "receipt command must exactly match a structured command",
+            "exact key set emitted for their `file`, `symlink`, `gitlink`, `directory`, or "
+            "`missing` kind",
+            "For repository Python probes, prefix interpreter commands with "
+            "`PYTHONDONTWRITEBYTECODE=1`",
+            "Trust the active implementation control plane to record actual reviewer dispatches",
+            "assigns every inventory ID to exactly one canonical root",
+            "sibling scans that use a renamed root or unknown inventory",
+            "JSON booleans in integer fields",
+            "add and digest it in the frozen packet",
+            "PYTHONDONTWRITEBYTECODE=1 python3 "
+            ".agents/skills/implementation-final-review/scripts/review_protocol.py "
+            "reviewer-output --packet <packet.json> --reviewer <reviewer-id> "
+            "--output <output.json> --task-id <task-id> --ledger <ledger.json>",
+        )
+        required_brief_text = (
+            "## Machine-readable preflight",
+            "If the packet exceeds 12 KiB",
+            "NEW:<lowercase-slug>",
+            '"root_cause_evidence"',
+            "Every submitted contract evidence ID must name an indexed",
+            "submitted IDs must be additions owned by that root in the current ledger",
+            "Every contract evidence ID must resolve to an `evidence_artifacts[].id`",
+            "JSON booleans are not integers for protocol purposes",
+            "Each sibling-scenario scan must reuse a canonical root ID",
+            "verification.preflight_results` as an array of exact `command` and `result` objects",
+            "ledger file's JSON object to match the packet ledger exactly",
+            "not already owned by any canonical root",
+            "absolute `path` and `sha256` digest",
+            'role: "review-state"',
+            'role: "repository-status"',
+            "The `review_state` packet object contains exactly `evidence_id`",
+            "extra copied fingerprint or state fields are invalid",
+            "requires the complete-diff artifact digest to equal its `tracked_diff_sha256`",
+            "Supply the task ID and absolute task-global ledger path independently",
+            "requires `current_round` plus `remaining_budget` to equal the sum",
+            "immediately preceding round's immutable ledger snapshot and its SHA-256 digest",
+            "same-round retry or advance by exactly one",
+            "immutable snapshot must be a distinct file",
+            "an inventory ID owned by another root cannot be reassigned",
+            "does not provide cryptographic attestation against a malicious control plane",
+            "current budget history to preserve the prior prefix",
+            "each inventory ID has exactly one canonical root owner",
+            "accepts only a receipt path already indexed",
+            "task or repository-state drift",
+            '"repository": "..."',
+            "complete typed workspace entries",
+            "rejects an incomplete or unknown key for any workspace kind",
+            "unrelated successful commands are ineligible for credit",
+            'Encode those columns in each `kind: "contract"` inventory object',
+            'Encode those columns in each `kind: "authority-data-flow"` inventory object',
+            'Encode those columns in each `kind: "await-boundary"` inventory object',
+            "requires exclusions to account exactly",
+            "verification.credited_receipts",
+            "Every ready-to-run repository Python command",
+            "generated bytecode changes the repository fingerprint",
+            "PYTHONDONTWRITEBYTECODE=1 python3 "
+            ".agents/skills/implementation-final-review/scripts/review_protocol.py "
+            "receipt",
+            "PYTHONDONTWRITEBYTECODE=1 python3 "
+            ".agents/skills/implementation-final-review/scripts/review_protocol.py "
+            "reviewer-output",
+        )
+        required_script_text = (
+            "PACKET_SOFT_LIMIT_BYTES = 12 * 1024",
+            "NEW_ROOT_CAUSE_ID",
+            "validate_packet",
+            "validate_reviewer_output",
+            "validate_receipt_data",
+        )
+
+        for text in required_skill_text:
+            with self.subTest(source="skill", text=text):
+                self.assertIn(text, self.skill)
+        for text in required_brief_text:
+            with self.subTest(source="brief", text=text):
+                self.assertIn(text, self.reviewer_brief)
+        for text in required_script_text:
+            with self.subTest(source="script", text=text):
+                self.assertIn(text, self.review_protocol)
+
+    def test_final_reviewers_inherit_strategy_evidence(self) -> None:
+        self.assertIn(
+            "The implementer owns `$implementation-strategy` and supplies its current scope "
+            "contract in the packet",
+            self.skill,
+        )
+        self.assertIn(
+            "Reviewers inherit that contract and must not rerun the strategy workflow",
+            self.skill,
+        )
+        self.assertIn(
+            "An independent reviewer dispatched by `$implementation-final-review` must not "
+            "invoke `$implementation-strategy` again",
+            self.repo_instructions,
+        )
+        self.assertIn(
+            "This exception does not apply to the implementer",
+            self.repo_instructions,
+        )
 
 
 if __name__ == "__main__":

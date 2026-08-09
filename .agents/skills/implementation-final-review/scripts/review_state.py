@@ -107,10 +107,33 @@ def _workspace_entries(
 
 
 def _content_fingerprint(base: str, workspace: list[dict[str, object]]) -> str:
-    # Hash selected content rather than the spelling of pathspecs. Equivalent
-    # manifests that select the same final files must produce the same identity.
     canonical = json.dumps(
         {"base": base, "workspace": workspace},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return _digest(canonical.encode())
+
+
+def _repository_fingerprint(
+    *,
+    content_fingerprint: str,
+    head: str,
+    status_sha256: str,
+    tracked_diff_sha256: str,
+    unfiltered_status_sha256: str,
+    unfiltered_content_fingerprint: str,
+) -> str:
+    canonical = json.dumps(
+        {
+            "content_fingerprint": content_fingerprint,
+            "head": head,
+            "status_sha256": status_sha256,
+            "tracked_diff_sha256": tracked_diff_sha256,
+            "unfiltered_status_sha256": unfiltered_status_sha256,
+            "unfiltered_content_fingerprint": unfiltered_content_fingerprint,
+        },
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -136,6 +159,10 @@ def review_state(
         )
     resolved_base = _git(repo, "rev-parse", f"{base}^{{commit}}").decode().strip()
     head = _git(repo, "rev-parse", "HEAD^{commit}").decode().strip()
+    try:
+        _git(repo, "merge-base", "--is-ancestor", resolved_base, head)
+    except subprocess.CalledProcessError as error:
+        raise ValueError("Base must be an ancestor of HEAD.") from error
     tracked_diff = _git(
         repo,
         "diff",
@@ -155,6 +182,14 @@ def review_state(
         *pathspecs,
     )
     workspace = _workspace_entries(repo, resolved_base, pathspecs)
+    unfiltered_status = _git(
+        repo,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+    )
+    unfiltered_workspace = _workspace_entries(repo, resolved_base, ())
 
     content_fingerprint = _content_fingerprint(resolved_base, workspace)
     component_states: dict[str, dict[str, object]] = {}
@@ -196,10 +231,13 @@ def review_state(
         "status_sha256": _digest(status),
         "tracked_diff_sha256": _digest(tracked_diff),
     }
-    repository_canonical = json.dumps(
-        repository_state, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    repository_fingerprint = _repository_fingerprint(
+        **repository_state,
+        unfiltered_status_sha256=_digest(unfiltered_status),
+        unfiltered_content_fingerprint=_content_fingerprint(
+            resolved_base, unfiltered_workspace
+        ),
     )
-    repository_fingerprint = _digest(repository_canonical.encode())
     return {
         "fingerprint": content_fingerprint,
         "content_fingerprint": content_fingerprint,
@@ -208,6 +246,10 @@ def review_state(
         "pathspecs": list(pathspecs),
         "workspace": workspace,
         "components": component_states,
+        "unfiltered": {
+            "status_sha256": _digest(unfiltered_status),
+            "workspace": unfiltered_workspace,
+        },
         **repository_state,
     }
 
@@ -232,20 +274,20 @@ def _parse_component_files(values: list[str]) -> dict[str, tuple[str, ...]]:
 
 def _component(value: str) -> tuple[str, str]:
     name, separator, pathspec = value.partition("=")
-    if (
-        not separator
-        or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name)
-        or not pathspec
-    ):
+    if not separator or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name) or not pathspec:
         raise argparse.ArgumentTypeError("component must use lowercase NAME=PATHSPEC")
     if "\0" in pathspec:
-        raise argparse.ArgumentTypeError("component pathspec must not contain NUL bytes")
+        raise argparse.ArgumentTypeError(
+            "component pathspec must not contain NUL bytes"
+        )
     return name, pathspec
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base", required=True, help="Resolved merge-base commit or revision.")
+    parser.add_argument(
+        "--base", required=True, help="Resolved merge-base commit or revision."
+    )
     parser.add_argument(
         "--pathspec",
         action="append",
@@ -274,13 +316,21 @@ def main() -> None:
         metavar="NAME=PATHSPEC",
         help="Named component pathspec. Repeat a name to group paths into one fingerprint.",
     )
-    parser.add_argument("--repo", type=Path, default=Path.cwd(), help="Repository worktree path.")
-    parser.add_argument("--pretty", action="store_true", help="Pretty-print the JSON output.")
+    parser.add_argument(
+        "--repo", type=Path, default=Path.cwd(), help="Repository worktree path."
+    )
+    parser.add_argument(
+        "--pretty", action="store_true", help="Pretty-print the JSON output."
+    )
     args = parser.parse_args()
     try:
-        loaded_pathspec_files = [_load_pathspec_file(path) for path in args.pathspec_file]
+        loaded_pathspec_files = [
+            _load_pathspec_file(path) for path in args.pathspec_file
+        ]
         if any(not pathspecs for pathspecs in loaded_pathspec_files):
-            raise ValueError("A supplied pathspec file must contain at least one pathspec.")
+            raise ValueError(
+                "A supplied pathspec file must contain at least one pathspec."
+            )
         file_pathspecs = tuple(
             pathspec for pathspecs in loaded_pathspec_files for pathspec in pathspecs
         )

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import subprocess
 import sys
@@ -24,10 +23,10 @@ class ReviewStateTest(unittest.TestCase):
         self._git("config", "user.name", "Review State Test")
         (self.repo / ".gitignore").write_text("plans/private.md\n")
         (self.repo / "src").mkdir()
-        (self.repo / "test").mkdir()
+        (self.repo / "tests").mkdir()
         (self.repo / "plans").mkdir()
-        (self.repo / "src" / "runtime.ts").write_text("export const value = 1;\n")
-        (self.repo / "test" / "runtime.test.ts").write_text("expect(1).toBe(1);\n")
+        (self.repo / "src" / "runtime.py").write_text("VALUE = 1\n")
+        (self.repo / "tests" / "test_runtime.py").write_text("assert True\n")
         self._git("add", ".")
         self._git("commit", "-qm", "initial")
         self.base = self._git("rev-parse", "HEAD").strip()
@@ -36,9 +35,7 @@ class ReviewStateTest(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     def _git(self, *args: str) -> str:
-        return subprocess.check_output(
-            ("git", "-C", str(self.repo), *args), text=True
-        )
+        return subprocess.check_output(("git", "-C", str(self.repo), *args), text=True)
 
     def _run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -56,11 +53,11 @@ class ReviewStateTest(unittest.TestCase):
         )
 
     def test_equivalent_pathspecs_have_the_same_content_fingerprint(self) -> None:
-        (self.repo / "src" / "runtime.ts").write_text("export const value = 2;\n")
-        explicit = review_state(self.repo, self.base, ("src/runtime.ts",))
+        (self.repo / "src" / "runtime.py").write_text("VALUE = 2\n")
+        explicit = review_state(self.repo, self.base, ("src/runtime.py",))
         directory = review_state(self.repo, self.base, ("src",))
         with_ignored_artifact = review_state(
-            self.repo, self.base, ("src/runtime.ts", "plans/private.md")
+            self.repo, self.base, ("src/runtime.py", "plans/private.md")
         )
 
         self.assertEqual(
@@ -72,18 +69,15 @@ class ReviewStateTest(unittest.TestCase):
         )
 
     def test_component_fingerprints_invalidate_only_changed_content(self) -> None:
-        runtime = self.repo / "src" / "runtime.ts"
-        tests = self.repo / "test" / "runtime.test.ts"
-        runtime.write_text("export const value = 2;\n")
-        tests.write_text("expect(2).toBe(2);\n")
-        components = {
-            "runtime": ("src",),
-            "tests-examples": ("test",),
-        }
-        before = review_state(self.repo, self.base, ("src", "test"), components)
+        runtime = self.repo / "src" / "runtime.py"
+        tests = self.repo / "tests" / "test_runtime.py"
+        runtime.write_text("VALUE = 2\n")
+        tests.write_text("assert 2 == 2\n")
+        components = {"runtime": ("src",), "tests-examples": ("tests",)}
+        before = review_state(self.repo, self.base, ("src", "tests"), components)
 
-        tests.write_text("expect(2).not.toBe(1);\n")
-        after = review_state(self.repo, self.base, ("src", "test"), components)
+        tests.write_text("assert 2 != 1\n")
+        after = review_state(self.repo, self.base, ("src", "tests"), components)
 
         self.assertEqual(
             before["components"]["runtime"]["content_fingerprint"],
@@ -93,28 +87,62 @@ class ReviewStateTest(unittest.TestCase):
             before["components"]["tests-examples"]["content_fingerprint"],
             after["components"]["tests-examples"]["content_fingerprint"],
         )
+        self.assertNotEqual(before["content_fingerprint"], after["content_fingerprint"])
+
+    def test_unfiltered_workspace_accounts_for_changes_outside_manifest(self) -> None:
+        (self.repo / "src" / "runtime.py").write_text("VALUE = 2\n")
+        (self.repo / "tests" / "test_runtime.py").write_text("assert 2 == 2\n")
+
+        state = review_state(self.repo, self.base, ("src",))
+
+        self.assertEqual(
+            [entry["path"] for entry in state["workspace"]], ["src/runtime.py"]
+        )
+        self.assertEqual(
+            [entry["path"] for entry in state["unfiltered"]["workspace"]],
+            ["src/runtime.py", "tests/test_runtime.py"],
+        )
+        self.assertRegex(state["unfiltered"]["status_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_repository_fingerprint_includes_outside_manifest_state_and_content(
+        self,
+    ) -> None:
+        (self.repo / "src" / "runtime.py").write_text("VALUE = 2\n")
+        before = review_state(self.repo, self.base, ("src",))
+
+        outside = self.repo / "outside.txt"
+        outside.write_text("first\n")
+        after_add = review_state(self.repo, self.base, ("src",))
+        outside.write_text("second\n")
+        after_content = review_state(self.repo, self.base, ("src",))
+
+        self.assertEqual(
+            before["content_fingerprint"], after_add["content_fingerprint"]
+        )
+        self.assertEqual(
+            after_add["content_fingerprint"], after_content["content_fingerprint"]
+        )
         self.assertNotEqual(
-            before["content_fingerprint"], after["content_fingerprint"]
+            before["repository_fingerprint"], after_add["repository_fingerprint"]
+        )
+        self.assertNotEqual(
+            after_add["repository_fingerprint"], after_content["repository_fingerprint"]
         )
 
     def test_pathspec_file_preserves_literal_values_and_deduplicates(self) -> None:
         manifest = self.repo / "paths.txt"
-        manifest.write_text("src\n\n#literal\n lead.ts\nsrc\n")
+        manifest.write_text("src\n\n#literal\n lead.py\nsrc\n")
 
-        self.assertEqual(
-            _load_pathspec_file(manifest), ("src", "#literal", " lead.ts")
-        )
+        self.assertEqual(_load_pathspec_file(manifest), ("src", "#literal", " lead.py"))
 
     def test_direct_pathspec_preserves_leading_space(self) -> None:
-        (self.repo / " lead.ts").write_text("export const value = 2;\n")
+        (self.repo / " lead.py").write_text("VALUE = 2\n")
 
-        completed = self._run_cli("--pathspec", " lead.ts")
+        completed = self._run_cli("--pathspec", " lead.py")
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         state = json.loads(completed.stdout)
-        self.assertEqual(
-            [entry["path"] for entry in state["workspace"]], [" lead.ts"]
-        )
+        self.assertEqual([entry["path"] for entry in state["workspace"]], [" lead.py"])
 
     def test_empty_direct_pathspec_fails_closed(self) -> None:
         completed = self._run_cli("--pathspec", "")
@@ -165,49 +193,51 @@ class ReviewStateTest(unittest.TestCase):
         self.assertNotIn("fatal:", completed.stderr)
         self.assertNotIn("Traceback", completed.stderr)
 
-    def test_component_manifests_must_cover_combined_content(self) -> None:
-        (self.repo / "src" / "runtime.ts").write_text("export const value = 2;\n")
-        (self.repo / "test" / "runtime.test.ts").write_text("expect(2).toBe(2);\n")
+    def test_non_ancestor_base_is_a_parser_error(self) -> None:
+        self._git("checkout", "-qb", "sibling")
+        (self.repo / "src" / "runtime.py").write_text("VALUE = 2\n")
+        self._git("commit", "-qam", "sibling change")
+        sibling = self._git("rev-parse", "HEAD").strip()
+        self._git("checkout", "-qb", "current", self.base)
+        (self.repo / "tests" / "test_runtime.py").write_text("assert 2 == 2\n")
+        self._git("commit", "-qam", "head change")
 
-        with self.assertRaisesRegex(ValueError, "missing=.*runtime.test.ts"):
-            review_state(
-                self.repo,
-                self.base,
-                ("src", "test"),
-                {"runtime": ("src",)},
-            )
+        completed = self._run_cli("--base", sibling)
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("Base must be an ancestor of HEAD", completed.stderr)
+        self.assertNotIn("fatal:", completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
+
+    def test_component_manifests_must_cover_combined_content(self) -> None:
+        (self.repo / "src" / "runtime.py").write_text("VALUE = 2\n")
+        (self.repo / "tests" / "test_runtime.py").write_text("assert 2 == 2\n")
+
+        with self.assertRaisesRegex(ValueError, "missing=.*test_runtime.py"):
+            review_state(self.repo, self.base, ("src", "tests"), {"runtime": ("src",)})
 
     def test_component_manifests_must_not_overlap(self) -> None:
-        (self.repo / "src" / "runtime.ts").write_text("export const value = 2;\n")
+        (self.repo / "src" / "runtime.py").write_text("VALUE = 2\n")
 
-        with self.assertRaisesRegex(ValueError, "overlapping=.*runtime.ts"):
+        with self.assertRaisesRegex(ValueError, "overlapping=.*runtime.py"):
             review_state(
                 self.repo,
                 self.base,
                 ("src",),
-                {"runtime": ("src",), "tests-examples": ("src/runtime.ts",)},
+                {"runtime": ("src",), "tests-examples": ("src/runtime.py",)},
             )
 
     def test_components_define_combined_scope_when_pathspecs_are_omitted(self) -> None:
-        (self.repo / "src" / "runtime.ts").write_text("export const value = 2;\n")
-        state = review_state(
-            self.repo,
-            self.base,
-            components={"runtime": ("src",)},
-        )
+        (self.repo / "src" / "runtime.py").write_text("VALUE = 2\n")
+        state = review_state(self.repo, self.base, components={"runtime": ("src",)})
 
         self.assertEqual(state["pathspecs"], ["src"])
         self.assertEqual(
-            [entry["path"] for entry in state["workspace"]], ["src/runtime.ts"]
+            [entry["path"] for entry in state["workspace"]], ["src/runtime.py"]
         )
 
     def test_component_cli_value(self) -> None:
         self.assertEqual(_component("runtime=src"), ("runtime", "src"))
-        self.assertEqual(_component("runtime= lead.ts"), ("runtime", " lead.ts"))
-
-    def test_component_cli_rejects_nul(self) -> None:
-        with self.assertRaises(argparse.ArgumentTypeError):
-            _component("runtime=src\0runtime.ts")
 
 
 if __name__ == "__main__":

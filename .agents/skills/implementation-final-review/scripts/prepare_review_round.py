@@ -114,7 +114,9 @@ def _is_within(path: Path, directory: Path) -> bool:
     return True
 
 
-def _untracked_content(repo: Path, pathspecs: tuple[str, ...]) -> list[dict[str, object]]:
+def _untracked_content(
+    repo: Path, pathspecs: tuple[str, ...]
+) -> list[dict[str, object]]:
     raw_paths = _git(
         repo,
         "ls-files",
@@ -194,9 +196,7 @@ def prepare_review_round(
     stable_packet = _read_required_text(base_packet, "base packet")
     current_delta = _read_required_text(round_delta, "round delta")
     reviewer_contract = _load_reviewer_contract(reviewer_brief)
-    prior_clean = _load_prior_clean_components(
-        prior_clean_state, set(components)
-    )
+    prior_clean = _load_prior_clean_components(prior_clean_state, set(components))
     reusable, invalidated = _component_candidates(state, prior_clean)
 
     resolved_base = str(state["base"])
@@ -229,6 +229,7 @@ def prepare_review_round(
     ]
     revalidation = _shell_command(
         [
+            "PYTHONDONTWRITEBYTECODE=1",
             "python3",
             ".agents/skills/implementation-final-review/scripts/review_state.py",
             "--repo",
@@ -248,8 +249,7 @@ def prepare_review_round(
         "invalidated_prior_clean_components": invalidated,
     }
     state_path.write_text(
-        json.dumps(enriched_state, ensure_ascii=False, indent=2, sort_keys=True)
-        + "\n"
+        json.dumps(enriched_state, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     )
     diff_path.write_bytes(tracked_diff)
     context_path.write_bytes(context_diff)
@@ -261,11 +261,14 @@ def prepare_review_round(
 
     workspace = state["workspace"]
     assert isinstance(workspace, list)
-    changed_paths = "\n".join(
-        f"- `{entry['path']}` ({entry['kind']}, `{entry.get('sha256', 'n/a')}`)"
-        for entry in workspace
-        if isinstance(entry, dict)
-    ) or "- none"
+    changed_paths = (
+        "\n".join(
+            f"- `{entry['path']}` ({entry['kind']}, `{entry.get('sha256', 'n/a')}`)"
+            for entry in workspace
+            if isinstance(entry, dict)
+        )
+        or "- none"
+    )
     candidate_text = ", ".join(f"`{name}`" for name in reusable) or "none"
     invalidated_text = ", ".join(f"`{name}`" for name in invalidated) or "none"
     status_block = raw_status.rstrip() or "(clean)"
@@ -282,9 +285,9 @@ This packet contains stable task evidence plus only the current round delta. His
 ## Machine-Generated State
 
 - Resolved base: `{resolved_base}`
-- HEAD: `{state['head']}`
-- Combined content fingerprint: `{state['content_fingerprint']}`
-- Repository fingerprint: `{state['repository_fingerprint']}`
+- HEAD: `{state["head"]}`
+- Combined content fingerprint: `{state["content_fingerprint"]}`
+- Repository fingerprint: `{state["repository_fingerprint"]}`
 - Exact fingerprint revalidation command: `{revalidation}`
 - Full tracked diff: `{diff_path}`
 - Wide-context tracked diff: `{context_path}`
@@ -333,9 +336,7 @@ def main() -> None:
     parser.add_argument("--base-packet", required=True, type=Path)
     parser.add_argument("--round-delta", required=True, type=Path)
     parser.add_argument("--prior-clean-state", type=Path)
-    parser.add_argument(
-        "--reviewer-brief", type=Path, default=_DEFAULT_REVIEWER_BRIEF
-    )
+    parser.add_argument("--reviewer-brief", type=Path, default=_DEFAULT_REVIEWER_BRIEF)
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
     try:
