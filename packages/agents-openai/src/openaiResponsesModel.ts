@@ -333,6 +333,24 @@ function isAmbiguousWebSocketReplayError(error: unknown): boolean {
   );
 }
 
+function markUnsafeWebSocketReplayError(
+  error: unknown,
+  responseStarted: boolean,
+): void {
+  if (!(error instanceof Error)) {
+    return;
+  }
+
+  const replayError = error as Error & {
+    unsafeToReplay?: boolean;
+    responseStarted?: boolean;
+  };
+  replayError.unsafeToReplay = true;
+  if (responseStarted) {
+    replayError.responseStarted = true;
+  }
+}
+
 function hasSerializedComputerDisplayMetadata(
   tool: SerializedComputerTool,
 ): tool is SerializedComputerTool & {
@@ -3814,11 +3832,13 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
     }
 
     if (isAmbiguousWebSocketReplayError(args.error)) {
-      return {
-        suggested: false,
-        replaySafety: 'unsafe',
-        reason: args.error instanceof Error ? args.error.message : undefined,
-      };
+      return (
+        super.getRetryAdvice(args) ?? {
+          suggested: false,
+          replaySafety: 'unsafe',
+          reason: args.error instanceof Error ? args.error.message : undefined,
+        }
+      );
     }
 
     return super.getRetryAdvice(args);
@@ -3850,37 +3870,33 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
       return this.#iterWebSocketResponseEvents(builtRequest);
     }
 
-    let finalResponse: OpenAI.Responses.Response | undefined;
-    let receivedAnyEvent = false;
+    let receivedResponseEvent = false;
     try {
+      let finalResponse: OpenAI.Responses.Response | undefined;
       for await (const event of this.#iterWebSocketResponseEvents(
         builtRequest,
       )) {
-        receivedAnyEvent = true;
+        receivedResponseEvent = true;
         const eventType = (event as { type?: string }).type;
         if (isTerminalResponsesStreamEventType(eventType)) {
           finalResponse = (event as { response: OpenAI.Responses.Response })
             .response;
         }
       }
+
+      if (!finalResponse) {
+        throw new Error(
+          'Responses websocket stream ended without a terminal response event.',
+        );
+      }
+
+      return finalResponse;
     } catch (error) {
-      if (receivedAnyEvent && error instanceof Error) {
-        (
-          error as Error & {
-            unsafeToReplay?: boolean;
-          }
-        ).unsafeToReplay = true;
+      if (receivedResponseEvent) {
+        markUnsafeWebSocketReplayError(error, true);
       }
       throw error;
     }
-
-    if (!finalResponse) {
-      throw new Error(
-        'Responses websocket stream ended without a terminal response event.',
-      );
-    }
-
-    return finalResponse;
   }
 
   async close(): Promise<void> {
@@ -3897,7 +3913,8 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
       requestTimeoutDeadline,
     );
 
-    let receivedAnyEvent = false;
+    let replayMayBeUnsafe = false;
+    let receivedServerFrame = false;
     let sawTerminalResponseEvent = false;
     try {
       throwIfAborted(builtRequest.signal);
@@ -3951,12 +3968,12 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
           requestTimeoutDeadline,
         );
         if (rawFrame === null) {
-          if (!receivedAnyEvent && reusedConnectionForCurrentAttempt) {
+          if (!receivedServerFrame && reusedConnectionForCurrentAttempt) {
             // The request frame was already sent on a reused socket. If the
             // socket closes before the first response event arrives, the server
             // may still be processing the request, so replaying `response.create`
             // can duplicate model work and tool side effects.
-            receivedAnyEvent = true;
+            replayMayBeUnsafe = true;
             throw new Error(
               'Responses websocket connection closed after sending a request on a reused connection before any response events were received. The request may have been accepted, so the SDK will not automatically retry this websocket request.',
             );
@@ -3966,6 +3983,8 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
           );
         }
 
+        replayMayBeUnsafe = true;
+        receivedServerFrame = true;
         const payloadText = await webSocketFrameToText(rawFrame);
         const payload = JSON.parse(payloadText);
         const eventType =
@@ -3974,7 +3993,6 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
             : undefined;
 
         if (eventType === 'error') {
-          receivedAnyEvent = true;
           throw new Error(
             `Responses websocket error: ${JSON.stringify(payload)}`,
           );
@@ -3985,7 +4003,6 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
           isTerminalResponsesStreamEventType(eventType);
         // Successful websocket responses do not currently expose a transport
         // request ID analogous to the HTTP x-request-id header.
-        receivedAnyEvent = true;
         if (isTerminalResponseEvent) {
           sawTerminalResponseEvent = true;
         }
@@ -3996,8 +4013,11 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
         }
       }
     } catch (error) {
+      if (replayMayBeUnsafe) {
+        markUnsafeWebSocketReplayError(error, receivedServerFrame);
+      }
       if (
-        !receivedAnyEvent &&
+        !replayMayBeUnsafe &&
         !(error instanceof OpenAI.APIUserAbortError) &&
         shouldWrapNoEventWebSocketError(error)
       ) {
