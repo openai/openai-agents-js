@@ -2562,6 +2562,7 @@ type PreparedDockerInContainerMount = {
   entry: Mount | TypedMount;
   effectiveMountPath: string;
   pattern: MountPattern;
+  credentialExposureAcknowledged: boolean;
   allowAmbientCredentials: boolean;
   environment: Record<string, string>;
   revalidateMountAuthority: () => Promise<void>;
@@ -2587,13 +2588,12 @@ async function prepareDockerInContainerMount(
       entry,
       mountPath,
     );
-    const allowAmbientCredentials =
-      validateMountCredentialBoundariesAtEffectivePath(
-        manifest,
-        logicalPath,
-        entry,
-        effectiveMountPath,
-      );
+    const credentialExposure = validateMountCredentialBoundariesAtEffectivePath(
+      manifest,
+      logicalPath,
+      entry,
+      effectiveMountPath,
+    );
     const preparedCredentialFiles = await prepareDockerMountCredentialFiles(
       session,
       credentialBoundaryManifest,
@@ -2605,7 +2605,10 @@ async function prepareDockerInContainerMount(
       entry: preparedCredentialFiles.entry,
       effectiveMountPath,
       pattern: dockerInContainerMountPattern(preparedCredentialFiles.entry),
-      allowAmbientCredentials,
+      credentialExposureAcknowledged:
+        credentialExposure.credentialExposureAcknowledged,
+      allowAmbientCredentials:
+        credentialExposure.broadCredentialExposureAcknowledged,
       environment: preparedCredentialFiles.environment,
     };
   };
@@ -2614,12 +2617,14 @@ async function prepareDockerInContainerMount(
     logicalPath,
     ...candidate,
     revalidateMountAuthority: async () => {
-      if (!candidate.allowAmbientCredentials) {
+      if (!candidate.credentialExposureAcknowledged) {
         return;
       }
       const current = await prepareCandidate();
       if (
         current.effectiveMountPath !== candidate.effectiveMountPath ||
+        current.credentialExposureAcknowledged !==
+          candidate.credentialExposureAcknowledged ||
         current.allowAmbientCredentials !== candidate.allowAmbientCredentials ||
         stableJsonStringify(current.entry) !==
           stableJsonStringify(candidate.entry) ||
@@ -3286,15 +3291,21 @@ async function applyDockerMountpointMount(
   )}`;
   const envPath = `${envDir}/credentials.env`;
   const cleanupEnvCommand = `rm -rf -- ${shellQuote(envDir)}`;
-  const clearInheritedAwsAuthorityCommand =
-    DOCKER_AWS_CREDENTIAL_AUTHORITY_NAMES.join(' ');
+  const clearedInheritedCredentialAuthorityNames = [
+    ...DOCKER_AWS_CREDENTIAL_AUTHORITY_NAMES,
+    ...(entry.type === 'gcs_mount'
+      ? DOCKER_GCS_CREDENTIAL_AUTHORITY_NAMES
+      : []),
+  ];
+  const clearInheritedCredentialAuthorityCommand =
+    clearedInheritedCredentialAuthorityNames.join(' ');
   const command = envText
     ? [
         `trap ${shellQuote(cleanupEnvCommand)} EXIT HUP INT TERM`,
         cleanupEnvCommand,
         `install -d -m 700 -- ${shellQuote(envDir)}`,
         `(umask 077 && cat > ${shellQuote(envPath)})`,
-        `unset ${clearInheritedAwsAuthorityCommand}`,
+        `unset ${clearInheritedCredentialAuthorityCommand}`,
         `set -a && . ${shellQuote(envPath)} && set +a`,
         cleanupEnvCommand,
         shellCommand(mountArgs),
@@ -3309,7 +3320,7 @@ async function applyDockerMountpointMount(
           input: envText,
           environment: Object.fromEntries([
             ...Object.entries(environment),
-            ...DOCKER_AWS_CREDENTIAL_AUTHORITY_NAMES.map(
+            ...clearedInheritedCredentialAuthorityNames.map(
               (name) => [name, ''] as const,
             ),
           ]),
@@ -3332,6 +3343,10 @@ const DOCKER_AWS_CREDENTIAL_AUTHORITY_NAMES = [
   'AWS_CONTAINER_CREDENTIALS_FULL_URI',
   'AWS_CONTAINER_AUTHORIZATION_TOKEN',
   'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+] as const;
+
+const DOCKER_GCS_CREDENTIAL_AUTHORITY_NAMES = [
+  'GOOGLE_APPLICATION_CREDENTIALS',
 ] as const;
 
 async function applyDockerS3FilesMount(

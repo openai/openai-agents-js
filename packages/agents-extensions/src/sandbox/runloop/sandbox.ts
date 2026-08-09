@@ -1247,14 +1247,14 @@ export class RunloopSandboxSession extends RemoteSandboxSessionBase<RunloopSandb
         for (const {
           absolutePath,
           entry,
-          allowMountCredentialExposure,
+          broadCredentialExposureAcknowledged,
           environment,
           revalidateMountAuthority,
         } of resolvedMounts) {
           await revalidateMountAuthority();
           await this.materializeMountEntry(absolutePath, entry, {
             environment: environment ?? this.state.environment,
-            allowAmbientCredentials: allowMountCredentialExposure,
+            allowAmbientCredentials: broadCredentialExposureAcknowledged,
             revalidateMountAuthority,
           });
         }

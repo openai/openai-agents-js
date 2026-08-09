@@ -1,4 +1,5 @@
 import {
+  boxMount,
   Manifest,
   SandboxMountError,
   SandboxProviderError,
@@ -722,6 +723,60 @@ describe('DaytonaSandboxClient', () => {
     expect(startMock).not.toHaveBeenCalled();
   });
 
+  test('requires broad acknowledgement for ambient credentials shadowed by inline credentials', async () => {
+    const client = new DaytonaSandboxClient({
+      env: {
+        AWS_ACCESS_KEY_ID: 'ambient-access-key',
+        AWS_SECRET_ACCESS_KEY: 'ambient-secret-key',
+      },
+    });
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'agent-logs',
+          accessKeyId: 'inline-access-key',
+          secretAccessKey: 'inline-secret-key',
+          mountStrategy: new DaytonaCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAcknowledged('data');
+
+    await expect(client.create(manifest)).rejects.toThrow(
+      /broad credential authority/iu,
+    );
+    await expect(
+      new DaytonaSandboxClient({
+        env: {
+          GOOGLE_APPLICATION_CREDENTIALS: '/run/secrets/gcp.json',
+        },
+      }).create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 'gcs_mount',
+              bucket: 'agent-logs',
+              accessToken: 'inline-access-token',
+              mountStrategy: new DaytonaCloudBucketMountStrategy(),
+            },
+          },
+        }).withInContainerMountCredentialExposureAcknowledged('data'),
+      ),
+    ).rejects.toThrow(/broad credential authority/iu);
+    await expect(
+      new DaytonaSandboxClient({
+        env: {
+          RCLONE_CONFIG_REMOTE_ACCESS_KEY_ID: 'partial-access-key',
+        },
+      }).create(
+        manifest.withInContainerMountBroadCredentialExposureAcknowledged(
+          'data',
+        ),
+      ),
+    ).rejects.toThrow(/both ACCESS_KEY_ID and SECRET_ACCESS_KEY/iu);
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
   test('keeps the sandbox usable after dynamic mount validation rejects', async () => {
     const client = new DaytonaSandboxClient();
     const session = await client.create(new Manifest());
@@ -760,6 +815,80 @@ describe('DaytonaSandboxClient', () => {
     await expect(session.execCommand({ cmd: 'pwd' })).resolves.toContain(
       'Process exited with code 0',
     );
+  });
+
+  test('enforces mount-scoped Box credentials through the provider client', async () => {
+    const client = new DaytonaSandboxClient();
+    const manifest = new Manifest({
+      entries: {
+        box: boxMount({
+          path: '/Shared/Docs',
+          clientId: 'box-client-id',
+          clientSecret: 'BOX_CLIENT_SECRET_SENTINEL',
+          accessToken: 'BOX_ACCESS_TOKEN_SENTINEL',
+          mountStrategy: new DaytonaCloudBucketMountStrategy(),
+        }),
+      },
+    });
+
+    await expect(client.create(manifest)).rejects.toThrow(
+      /Mount-scoped credentials/u,
+    );
+    expect(createMock).not.toHaveBeenCalled();
+
+    await client.create(
+      manifest.withInContainerMountCredentialExposureAcknowledged('box'),
+    );
+
+    const commandText = executeCommandMock.mock.calls
+      .map(([command]) => String(command))
+      .join('\n');
+    const uploadedText = uploadFileMock.mock.calls
+      .map(([content]) =>
+        Buffer.isBuffer(content) ? content.toString('utf8') : String(content),
+      )
+      .join('\n');
+    expect(commandText).toContain("'rclone' 'mount'");
+    expect(commandText).toMatch(/rm -f -- '\/tmp\/openai-agents-.*\.conf'/u);
+    expect(commandText).not.toContain('BOX_CLIENT_SECRET_SENTINEL');
+    expect(commandText).not.toContain('BOX_ACCESS_TOKEN_SENTINEL');
+    expect(uploadedText).toContain(
+      'client_secret = BOX_CLIENT_SECRET_SENTINEL',
+    );
+    expect(uploadedText).toContain('access_token = BOX_ACCESS_TOKEN_SENTINEL');
+  });
+
+  test('requires broad acknowledgement for a Box credential file', async () => {
+    const client = new DaytonaSandboxClient();
+    const manifest = new Manifest({
+      entries: {
+        box: boxMount({
+          path: '/Shared/Docs',
+          boxConfigFile: '/run/secrets/BOX_CONFIG_PATH_SENTINEL.json',
+          mountStrategy: new DaytonaCloudBucketMountStrategy(),
+        }),
+      },
+    }).withInContainerMountCredentialExposureAcknowledged('box');
+
+    let error: unknown;
+    try {
+      await client.create(manifest);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(SandboxMountError);
+    expect((error as Error).message).toMatch(/Broad credential authority/u);
+    expect(JSON.stringify(error)).not.toContain('BOX_CONFIG_PATH_SENTINEL');
+    expect(createMock).not.toHaveBeenCalled();
+
+    await client.create(
+      manifest.withInContainerMountBroadCredentialExposureAcknowledged('box'),
+    );
+    const commandText = executeCommandMock.mock.calls
+      .map(([command]) => String(command))
+      .join('\n');
+    expect(commandText).toContain("'rclone' 'mount'");
+    expect(commandText).toMatch(/rm -f -- '\/tmp\/openai-agents-.*\.conf'/u);
   });
 
   test('rejects active mount replacement without deleting the sandbox', async () => {
@@ -834,7 +963,7 @@ describe('DaytonaSandboxClient', () => {
         AWS_ACCESS_KEY_ID: 'original-access',
         AWS_SECRET_ACCESS_KEY: 'original-secret',
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
     const client = new DaytonaSandboxClient();
     const session = await client.create(manifest);
     executeCommandMock.mockClear();
@@ -862,7 +991,7 @@ describe('DaytonaSandboxClient', () => {
           mountStrategy: new DaytonaCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed(
+    }).withInContainerMountCredentialExposureAcknowledged(
       'mounted/logs',
       'redirected/logs',
     );
@@ -903,7 +1032,7 @@ describe('DaytonaSandboxClient', () => {
     const trustedWithoutRedirect = new Manifest({
       root: session.state.manifest.root,
       entries: structuredClone(session.state.manifest.entries),
-    }).withInContainerMountCredentialExposureAllowed('mounted/logs');
+    }).withInContainerMountCredentialExposureAcknowledged('mounted/logs');
     expect(
       liveMountCredentialAuthorityMatches(
         session.state.manifest,
@@ -940,7 +1069,7 @@ describe('DaytonaSandboxClient', () => {
           mountStrategy: new DaytonaCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed(
+    }).withInContainerMountCredentialExposureAcknowledged(
       'mounted/logs',
       'redirected/logs',
     );
@@ -949,7 +1078,7 @@ describe('DaytonaSandboxClient', () => {
     const trustedWithoutRedirect = new Manifest({
       root: session.state.manifest.root,
       entries: structuredClone(session.state.manifest.entries),
-    }).withInContainerMountCredentialExposureAllowed('mounted/logs');
+    }).withInContainerMountCredentialExposureAcknowledged('mounted/logs');
 
     expect(
       liveMountCredentialAuthorityMatches(
@@ -968,7 +1097,7 @@ describe('DaytonaSandboxClient', () => {
           mountStrategy: new DaytonaCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountCredentialExposureAcknowledged('data');
     const client = new DaytonaSandboxClient();
     const session = await client.create(manifest);
     const defaultExecute = executeCommandMock.getMockImplementation()!;
@@ -1008,7 +1137,7 @@ describe('DaytonaSandboxClient', () => {
           mountStrategy: new DaytonaCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountCredentialExposureAcknowledged('data');
     const client = new DaytonaSandboxClient();
     const session = await client.create(manifest);
     const defaultExecute = executeCommandMock.getMockImplementation()!;
@@ -1052,8 +1181,8 @@ describe('DaytonaSandboxClient', () => {
       },
     });
     manifest = manifest
-      .withInContainerMountCredentialExposureAllowed('first')
-      .withInContainerMountCredentialExposureAllowed('second');
+      .withInContainerMountCredentialExposureAcknowledged('first')
+      .withInContainerMountCredentialExposureAcknowledged('second');
     const client = new DaytonaSandboxClient();
     const session = await client.create(manifest);
     const defaultExecute = executeCommandMock.getMockImplementation();
@@ -1091,7 +1220,7 @@ describe('DaytonaSandboxClient', () => {
     async (_pathKind, path) => {
       const client = new DaytonaSandboxClient();
       const baseManifest =
-        new Manifest().withInContainerMountCredentialExposureAllowed(
+        new Manifest().withInContainerMountCredentialExposureAcknowledged(
           'mounted/logs',
         );
       const session = await client.create(baseManifest);
@@ -1110,7 +1239,7 @@ describe('DaytonaSandboxClient', () => {
 
       const trustedManifest = new Manifest({
         entries: { data: entry },
-      }).withInContainerMountCredentialExposureAllowed('mounted/logs');
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/logs');
       await expect(
         client.canReusePreservedOwnedSession(session.state, {
           trustedManifest,
@@ -1134,7 +1263,7 @@ describe('DaytonaSandboxClient', () => {
           mountStrategy: new DaytonaCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('mounted/logs');
+    }).withInContainerMountCredentialExposureAcknowledged('mounted/logs');
     const session = await client.create(manifest, {
       autoStopInterval: 10,
     });
@@ -1501,7 +1630,7 @@ describe('DaytonaSandboxClient', () => {
             mountStrategy: new DaytonaCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
     );
     await session.close();
 
@@ -1538,7 +1667,9 @@ describe('DaytonaSandboxClient', () => {
     });
 
     const session = await client.create(
-      new Manifest().withInContainerMountCredentialExposureAllowed('data'),
+      new Manifest().withInContainerMountBroadCredentialExposureAcknowledged(
+        'data',
+      ),
     );
     executeCommandMock.mockClear();
 
@@ -1577,7 +1708,7 @@ describe('DaytonaSandboxClient', () => {
           mountStrategy: new DaytonaCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('mounted/logs');
+    }).withInContainerMountCredentialExposureAcknowledged('mounted/logs');
 
     const session = await client.create(manifest, {
       pauseOnExit: true,

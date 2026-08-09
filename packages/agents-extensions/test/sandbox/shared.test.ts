@@ -570,7 +570,7 @@ describe('remote sandbox path helpers', () => {
           type: 's3_mount',
           bucket: 'agent-logs',
           mountStrategy: {
-            type: 'test_cloud_bucket',
+            type: 'daytona_cloud_bucket',
             pattern: {
               type: 'rclone',
               remoteName: 'custom',
@@ -579,7 +579,7 @@ describe('remote sandbox path helpers', () => {
           },
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
 
     await expect(
       prepareManifestMounts(manifest, async (path) => `/workspace/${path}`, {
@@ -598,7 +598,7 @@ describe('remote sandbox path helpers', () => {
           type: 's3_mount',
           bucket: 'agent-logs',
           mountStrategy: {
-            type: 'test_cloud_bucket',
+            type: 'daytona_cloud_bucket',
             pattern: {
               type: 'rclone',
               remoteName: 'custom',
@@ -607,7 +607,7 @@ describe('remote sandbox path helpers', () => {
           },
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
 
     await expect(
       materializeInlineManifest(
@@ -3788,7 +3788,7 @@ describe('remote sandbox path helpers', () => {
             },
           },
         },
-      }).withInContainerMountCredentialExposureAllowed(
+      }).withInContainerMountCredentialExposureAcknowledged(
         'mounted',
         'mounted/cache',
         'mounted/cache/nested',
@@ -3806,7 +3806,7 @@ describe('remote sandbox path helpers', () => {
             src: sourceFile,
           },
         },
-      }).withInContainerMountCredentialExposureAllowed(
+      }).withInContainerMountCredentialExposureAcknowledged(
         'mounted',
         'mounted/cache',
       ),
@@ -3883,7 +3883,6 @@ describe('remote sandbox path helpers', () => {
       new Manifest({
         entries: {
           child: mount({
-            source: 's3://bucket/child',
             mountPath: 'mounted/cache',
             mountStrategy: { type: 'in_container' },
           }),
@@ -3892,23 +3891,17 @@ describe('remote sandbox path helpers', () => {
             children: {
               'note.txt': file({ content: 'note' }),
               nested: mount({
-                source: 's3://bucket/nested',
                 mountPath: 'mounted/cache/nested',
                 mountStrategy: { type: 'in_container' },
               }),
             },
           },
           parent: mount({
-            source: 's3://bucket/parent',
             mountPath: 'mounted',
             mountStrategy: { type: 'in_container' },
           }),
         },
-      }).withInContainerMountCredentialExposureAllowed(
-        'mounted',
-        'mounted/cache',
-        'mounted/cache/nested',
-      ),
+      }),
       'test',
       async (path) => {
         resolvedPaths.push(path);
@@ -3935,9 +3928,6 @@ describe('remote sandbox path helpers', () => {
       'app',
       'app/note.txt',
       'app/nested',
-      'mounted',
-      'mounted/cache',
-      'mounted/cache/nested',
     ]);
   });
 
@@ -3965,7 +3955,7 @@ describe('remote sandbox path helpers', () => {
           mountStrategy: { type: 'in_container' },
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('first', 'second');
+    }).withInContainerMountCredentialExposureAcknowledged('first', 'second');
 
     await expect(
       materializeInlineManifest(
@@ -3996,7 +3986,7 @@ describe('remote sandbox path helpers', () => {
           mountStrategy: { type: 'in_container' },
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountCredentialExposureAcknowledged('data');
 
     await expect(
       materializeInlineManifest(
@@ -4042,7 +4032,6 @@ describe('remote sandbox path helpers', () => {
         extraPathGrants: [{ path: dirname(sourceFile), readOnly: true }],
         entries: {
           child: mount({
-            source: 's3://bucket/child',
             mountPath: 'mounted/cache',
             mountStrategy: { type: 'in_container' },
           }),
@@ -4051,15 +4040,11 @@ describe('remote sandbox path helpers', () => {
             src: sourceFile,
           },
           parent: mount({
-            source: 's3://bucket/parent',
             mountPath: 'mounted',
             mountStrategy: { type: 'in_container' },
           }),
         },
-      }).withInContainerMountCredentialExposureAllowed(
-        'mounted',
-        'mounted/cache',
-      ),
+      }),
       'test',
       async (path) => {
         resolvedPaths.push(path);
@@ -4081,8 +4066,6 @@ describe('remote sandbox path helpers', () => {
       'mounted',
       'mounted/cache',
       'copied/source.txt',
-      'mounted',
-      'mounted/cache',
     ]);
   });
 
@@ -4090,12 +4073,7 @@ describe('remote sandbox path helpers', () => {
     const state = {
       manifest: new Manifest({
         root: '/workspace',
-      }).withInContainerMountCredentialExposureAllowed(
-        'project/mounted',
-        'project/mounted/cache',
-        '/remote/project/mounted',
-        '/remote/project/mounted/cache',
-      ),
+      }),
     };
     const operations: string[] = [];
     const resolvedPaths: string[] = [];
@@ -4115,13 +4093,11 @@ describe('remote sandbox path helpers', () => {
         type: 'dir',
         children: {
           child: mount({
-            source: 's3://bucket/child',
             mountPath: 'project/mounted/cache',
             mountStrategy: { type: 'in_container' },
           }),
           'note.txt': file({ content: 'note' }),
           parent: mount({
-            source: 's3://bucket/parent',
             mountPath: 'project/mounted',
             mountStrategy: { type: 'in_container' },
           }),
@@ -4153,8 +4129,6 @@ describe('remote sandbox path helpers', () => {
       'project/child',
       'project/note.txt',
       'project/parent',
-      'project/mounted',
-      'project/mounted/cache',
     ]);
     expect(state.manifest.entries.project).toMatchObject({
       type: 'dir',

@@ -95,7 +95,7 @@ function runloopCloudBucketManifest(
         ...entryOverrides,
       },
     },
-  }).withInContainerMountCredentialExposureAllowed('mounted/logs');
+  }).withInContainerMountCredentialExposureAcknowledged('mounted/logs');
 }
 
 function execResult(args: {
@@ -1010,6 +1010,65 @@ describe('RunloopSandboxClient', () => {
     expect(createMock).not.toHaveBeenCalled();
   });
 
+  test('requires broad acknowledgement for managed credentials shadowed by inline credentials', async () => {
+    const client = new RunloopSandboxClient();
+    const manifest = runloopManifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'private',
+          accessKeyId: 'inline-access-key',
+          secretAccessKey: 'inline-secret-key',
+          mountStrategy: new RunloopCloudBucketMountStrategy(),
+        },
+      },
+    }).withInContainerMountCredentialExposureAcknowledged('data');
+
+    await expect(
+      client.create(manifest, {
+        managedSecrets: {
+          AWS_ACCESS_KEY_ID: 'managed-access-key',
+          AWS_SECRET_ACCESS_KEY: 'managed-secret-key',
+        },
+      }),
+    ).rejects.toThrow(/broad credential authority/iu);
+    await expect(
+      client.create(
+        runloopManifest({
+          entries: {
+            data: {
+              type: 'gcs_mount',
+              bucket: 'private',
+              accessToken: 'inline-access-token',
+              mountStrategy: new RunloopCloudBucketMountStrategy(),
+            },
+          },
+        }).withInContainerMountCredentialExposureAcknowledged('data'),
+        {
+          managedSecrets: {
+            GOOGLE_APPLICATION_CREDENTIALS: '/run/secrets/gcp.json',
+          },
+        },
+      ),
+    ).rejects.toThrow(/broad credential authority/iu);
+    await expect(
+      client.create(
+        manifest.withInContainerMountBroadCredentialExposureAcknowledged(
+          'data',
+        ),
+        {
+          managedSecrets: {
+            RCLONE_CONFIG_REMOTE_ACCESS_KEY_ID: 'partial-access-key',
+          },
+        },
+      ),
+    ).rejects.toThrow(/both ACCESS_KEY_ID and SECRET_ACCESS_KEY/iu);
+
+    expect(runloopSdkConstructorMock).not.toHaveBeenCalled();
+    expect(secretCreateMock).not.toHaveBeenCalled();
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
   test('rejects partial managed mount credentials before Runloop provider effects', async () => {
     const client = new RunloopSandboxClient();
     const manifest = runloopManifest({
@@ -1020,7 +1079,7 @@ describe('RunloopSandboxClient', () => {
           mountStrategy: new RunloopCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
 
     await expect(
       client.create(manifest, {
@@ -1046,7 +1105,7 @@ describe('RunloopSandboxClient', () => {
           mountStrategy: new RunloopCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
 
     await expect(
       client.create(manifest, {
@@ -1071,7 +1130,7 @@ describe('RunloopSandboxClient', () => {
           mountStrategy: new RunloopCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
 
     await expect(
       client.create(manifest, {
@@ -1096,7 +1155,7 @@ describe('RunloopSandboxClient', () => {
           mountStrategy: new RunloopCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
     const defaultExec = execMock.getMockImplementation()!;
     execMock.mockImplementation(async (command, ...args) => {
       if (
@@ -1145,7 +1204,7 @@ describe('RunloopSandboxClient', () => {
           mountStrategy: new RunloopCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('mounted/logs');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('mounted/logs');
     const session = await client.create(manifest, {
       managedSecrets: {
         AWS_ACCESS_KEY_ID: 'managed-access',
@@ -1245,7 +1304,7 @@ describe('RunloopSandboxClient', () => {
             mountStrategy: new RunloopCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('data');
+      }).withInContainerMountBroadCredentialExposureAcknowledged('data');
 
       await expect(session.applyManifest(manifest)).rejects.toThrow(
         /cannot be validated before an in-container mount/u,
@@ -1275,7 +1334,7 @@ describe('RunloopSandboxClient', () => {
           mountStrategy: new RunloopCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
 
     await expect(session.applyManifest(manifest)).rejects.toThrow(
       /cannot be validated before an in-container mount/u,
@@ -1304,7 +1363,7 @@ describe('RunloopSandboxClient', () => {
           mountStrategy: new RunloopCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
 
     await expect(session.applyManifest(manifest)).rejects.toThrow(
       /ambient credential authority cannot be verified/u,
@@ -1323,7 +1382,7 @@ describe('RunloopSandboxClient', () => {
           mountStrategy: new RunloopCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
     const state = await client.deserializeSessionState({
       manifest,
       devboxId: 'devbox_test',
@@ -1385,7 +1444,7 @@ describe('RunloopSandboxClient', () => {
             mountStrategy: new RunloopCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('data');
+      }).withInContainerMountBroadCredentialExposureAcknowledged('data');
 
       await expect(session.applyManifest(manifest)).rejects.toThrow(
         /ambient credential authority cannot be verified/u,
@@ -1405,7 +1464,7 @@ describe('RunloopSandboxClient', () => {
           mountStrategy: new RunloopCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
     const defaultExec = execMock.getMockImplementation()!;
     execMock.mockImplementation(async (command, ...args) => {
       if (
@@ -1500,7 +1559,7 @@ describe('RunloopSandboxClient', () => {
             mountStrategy: new RunloopCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('data');
+      }).withInContainerMountBroadCredentialExposureAcknowledged('data');
       const client = new RunloopSandboxClient();
       const session = await client.create(manifest, options);
 
@@ -1527,8 +1586,8 @@ describe('RunloopSandboxClient', () => {
     const originalPath = '/home/user/mounted/logs';
     const redirectedPath = '/home/user/redirected/logs';
     const manifest = runloopCloudBucketManifest()
-      .withInContainerMountCredentialExposureAllowed('mounted/logs')
-      .withInContainerMountCredentialExposureAllowed('redirected/logs');
+      .withInContainerMountCredentialExposureAcknowledged('mounted/logs')
+      .withInContainerMountCredentialExposureAcknowledged('redirected/logs');
     const client = new RunloopSandboxClient();
     const session = await client.create(manifest);
     const defaultExec = execMock.getMockImplementation()!;
@@ -1559,7 +1618,7 @@ describe('RunloopSandboxClient', () => {
 
     const trustedWithoutRedirect = runloopManifest({
       entries: structuredClone(session.state.manifest.entries),
-    }).withInContainerMountCredentialExposureAllowed('mounted/logs');
+    }).withInContainerMountCredentialExposureAcknowledged('mounted/logs');
     expect(
       liveMountCredentialAuthorityMatches(
         session.state.manifest,
@@ -1577,7 +1636,7 @@ describe('RunloopSandboxClient', () => {
           mountStrategy: new RunloopCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
     const client = new RunloopSandboxClient();
     const session = await client.create(manifest, {
       managedSecrets: {
@@ -1608,7 +1667,7 @@ describe('RunloopSandboxClient', () => {
           mountStrategy: new RunloopCloudBucketMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
     const defaultExec = execMock.getMockImplementation()!;
     execMock.mockImplementation(async (command, ...args) => {
       if (
@@ -1633,7 +1692,7 @@ describe('RunloopSandboxClient', () => {
         ...structuredClone(baseManifest.entries),
         'gcp.json': { type: 'file', content: '{"private_key":"secret"}' },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('data');
     execMock.mockClear();
 
     await expect(
@@ -1691,8 +1750,8 @@ describe('RunloopSandboxClient', () => {
       },
     });
     manifest = manifest
-      .withInContainerMountCredentialExposureAllowed('first')
-      .withInContainerMountCredentialExposureAllowed('second');
+      .withInContainerMountCredentialExposureAcknowledged('first')
+      .withInContainerMountCredentialExposureAcknowledged('second');
     const client = new RunloopSandboxClient();
     const session = await client.create(manifest);
     const defaultExec = execMock.getMockImplementation();
@@ -2317,7 +2376,7 @@ describe('RunloopSandboxClient', () => {
           },
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('dir/data');
+    }).withInContainerMountCredentialExposureAcknowledged('dir/data');
     const session = await client.create(manifest, { pauseOnExit: true });
     await session.close();
     execMock.mockClear();
@@ -3103,7 +3162,7 @@ describe('RunloopSandboxClient', () => {
             mountStrategy: new RunloopCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
     );
 
     const rootMountCommands = execMock.mock.calls
@@ -3145,7 +3204,7 @@ describe('RunloopSandboxClient', () => {
             mountStrategy: new RunloopCloudBucketMountStrategy(),
           },
         },
-      }).withInContainerMountCredentialExposureAllowed('mounted/logs'),
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
     );
 
     const defaultRootMountCommands = execMock.mock.calls

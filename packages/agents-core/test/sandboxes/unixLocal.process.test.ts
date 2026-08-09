@@ -1,10 +1,19 @@
-import { execFile } from 'node:child_process';
+import {
+  execFile,
+  type ChildProcessWithoutNullStreams,
+} from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { Manifest, UnixLocalSandboxClient } from '../../src/sandbox/local';
+import {
+  Manifest,
+  UnixLocalSandboxClient,
+  UnixLocalSandboxSession,
+} from '../../src/sandbox/local';
 
 const execFileAsync = promisify(execFile);
 const ACTIVE_PROCESS_POLL_MS = 50;
@@ -156,6 +165,59 @@ describe('UnixLocalSandboxClient process sessions', () => {
     expect(started).toContain('Process running with session ID');
     expect(finished).toContain('Process exited with code 0');
     expect(finished).toContain('hello stdin');
+  });
+
+  it('waits for final output after observing process completion', async () => {
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const baseSession = await client.create(new Manifest());
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      stdin,
+      stdout,
+      stderr,
+      kill: () => true,
+    }) as unknown as ChildProcessWithoutNullStreams;
+    class ControlledUnixLocalSandboxSession extends UnixLocalSandboxSession {
+      protected override async spawnShellCommand(): Promise<ChildProcessWithoutNullStreams> {
+        return child;
+      }
+    }
+    const session = new ControlledUnixLocalSandboxSession({
+      state: baseSession.state,
+    });
+
+    const started = await session.execCommand({
+      cmd: 'ignored',
+      tty: true,
+      yieldTimeMs: 0,
+    });
+    const sessionId = Number(
+      started.match(/Process running with session ID (\d+)/)?.[1],
+    );
+    expect(Number.isFinite(sessionId)).toBe(true);
+
+    child.emit('close', 0, null);
+    let settled = false;
+    const finishedPromise = session
+      .writeStdin({ sessionId, yieldTimeMs: 0 })
+      .then((output) => {
+        settled = true;
+        return output;
+      });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    stdout.emit('data', 'late stdout\n');
+    stdout.emit('close');
+    stderr.emit('close');
+
+    const finished = await finishedPromise;
+    expect(finished).toContain('Process exited with code 0');
+    expect(finished).toContain('late stdout');
   });
 
   it('returns buffered PTY output when yielding an active session', async () => {

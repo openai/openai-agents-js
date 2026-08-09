@@ -24,15 +24,18 @@ export {
   captureLiveMountCredentialAuthority,
   captureLiveMountCredentialAuthorityIfAbsent,
   captureLiveMountEnvironmentAuthority,
+  captureLiveMountRuntimeAuthority,
   copyValidatedMountEffectivePaths,
   copyTrustedMountCredentialRebindProvenance,
   configuredMountCredentialFields,
   liveMountCredentialAuthorityMatches,
   liveMountEnvironmentAuthorityMatches,
+  liveMountRuntimeAuthorityMatches,
   manifestHasNonResumableMountAuthority,
   isSandboxSessionStateUnsafe,
   isMountCredentialFileEnvironmentName,
   manifestHasInContainerMounts,
+  mountCredentialEnvironmentForEntry,
   mountCredentialFileReferences,
   NON_RESUMABLE_MOUNT_AUTHORITY_KEY,
   markSandboxSessionStateUnsafe,
@@ -48,6 +51,7 @@ export {
 } from './mountSecurity';
 export type {
   EffectiveManifestEntryPath,
+  MountCredentialExposureDecision,
   MountCredentialFileReference,
 } from './mountSecurity';
 export { stableJsonStringify } from './shared/stableJson';

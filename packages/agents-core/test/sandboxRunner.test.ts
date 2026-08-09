@@ -2842,7 +2842,7 @@ describe('sandbox runner integration', () => {
           mountStrategy: inContainerMountStrategy(),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
       model: new RecordingFakeModel([
@@ -2908,7 +2908,7 @@ describe('sandbox runner integration', () => {
         environment: {
           GOOGLE_APPLICATION_CREDENTIALS: async () => '/workspace/gcp.json',
         },
-      }).withInContainerMountCredentialExposureAllowed('remote'),
+      }).withInContainerMountCredentialExposureAcknowledged('remote'),
       error: /serialized manifest entry/u,
     },
   ])(
@@ -4153,7 +4153,7 @@ describe('sandbox runner integration', () => {
           AWS_ACCESS_KEY_ID: 'TRUSTED_ENV_AK',
           AWS_SECRET_ACCESS_KEY: 'TRUSTED_ENV_SK',
         },
-      }).withInContainerMountCredentialExposureAllowed('remote');
+      }).withInContainerMountCredentialExposureAcknowledged('remote');
 
       await expect(
         deserializeSandboxSessionStateEntry(
@@ -4392,7 +4392,7 @@ describe('sandbox runner integration', () => {
           mountStrategy: inContainerMountStrategy(),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
     captureLiveMountCredentialAuthority(originalManifest);
     const client = new FakeSandboxClient();
     const session = client.makeSession({
@@ -4440,7 +4440,7 @@ describe('sandbox runner integration', () => {
           }),
         },
       }),
-    ).withInContainerMountCredentialExposureAllowed('remote');
+    ).withInContainerMountCredentialExposureAcknowledged('remote');
     await withExclusiveSandboxManifestMutation(session.state, async () => {
       captureLiveMountCredentialAuthority(rotatedManifest);
       session.state.manifest = rotatedManifest;
@@ -7189,7 +7189,7 @@ describe('sandbox runner integration', () => {
               mountStrategy: inContainerMountStrategy(),
             }),
           },
-        }).withInContainerMountCredentialExposureAllowed('remote'),
+        }).withInContainerMountBroadCredentialExposureAcknowledged('remote'),
       targetManifest: (live: Manifest) => live,
       liveEnvironment: {
         AWS_ACCESS_KEY_ID: 'old-access',
@@ -7211,7 +7211,7 @@ describe('sandbox runner integration', () => {
               mountStrategy: inContainerMountStrategy(),
             }),
           },
-        }).withInContainerMountCredentialExposureAllowed('remote');
+        }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
         accessKey = 'new-access';
         return manifest;
       },
@@ -7327,6 +7327,7 @@ describe('sandbox runner integration', () => {
         },
       }),
       environment: {},
+      expectedError: /model-controlled sandbox/u,
     },
     {
       label: 'ambient',
@@ -7342,6 +7343,7 @@ describe('sandbox runner integration', () => {
         AWS_ACCESS_KEY_ID: 'ambient-access',
         AWS_SECRET_ACCESS_KEY: 'ambient-secret',
       },
+      expectedError: /model-controlled sandbox/u,
     },
     {
       label: 'typed opaque config',
@@ -7356,10 +7358,11 @@ describe('sandbox runner integration', () => {
         },
       }),
       environment: {},
+      expectedError: /does not support exposing these credential fields/u,
     },
   ])(
     'rejects $label credentials on provided live sessions',
-    async ({ manifest, environment }) => {
+    async ({ manifest, environment, expectedError }) => {
       const applyManifest = vi.fn();
       const sandboxAgent = new SandboxAgent({
         name: 'SandboxWorker',
@@ -7393,7 +7396,7 @@ describe('sandbox runner integration', () => {
           currentAgent: sandboxAgent as Agent<unknown, any>,
           turnInput: [],
         }),
-      ).rejects.toThrow(/model-controlled sandbox/u);
+      ).rejects.toThrow(expectedError);
       expect(applyManifest).not.toHaveBeenCalled();
     },
   );
@@ -7411,7 +7414,7 @@ describe('sandbox runner integration', () => {
           mountStrategy: inContainerMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
     const applyManifest = vi.fn();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
@@ -7454,7 +7457,7 @@ describe('sandbox runner integration', () => {
           mountStrategy: inContainerMountStrategy(),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
     const applyManifest = vi.fn();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
@@ -7498,7 +7501,7 @@ describe('sandbox runner integration', () => {
           mountStrategy: inContainerMountStrategy(),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
     const liveManifest = new Manifest({
       entries: {
         remote: s3Mount({
@@ -8126,7 +8129,7 @@ describe('sandbox runner integration', () => {
           mountStrategy: inContainerMountStrategy(),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
       model: new RecordingFakeModel([]),
@@ -8192,7 +8195,7 @@ describe('sandbox runner integration', () => {
           mountStrategy: inContainerMountStrategy(),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
       model: new RecordingFakeModel([]),
@@ -8269,7 +8272,7 @@ describe('sandbox runner integration', () => {
             mountStrategy: inContainerMountStrategy(),
           }),
         },
-      }).withInContainerMountCredentialExposureAllowed('remote');
+      }).withInContainerMountCredentialExposureAcknowledged('remote');
       const firstAgent = new SandboxAgent({
         name: 'SandboxWorker',
         model: new RecordingFakeModel([]),
@@ -8289,7 +8292,7 @@ describe('sandbox runner integration', () => {
       const sharedSession = client.makeSession({
         manifest: new Manifest(
           trustedManifest,
-        ).withInContainerMountCredentialExposureAllowed('remote'),
+        ).withInContainerMountCredentialExposureAcknowledged('remote'),
         sessionId: 'shared-session',
       });
       captureLiveMountCredentialAuthority(sharedSession.state.manifest);
@@ -8400,14 +8403,14 @@ describe('sandbox runner integration', () => {
           REMOVED_TOKEN: new LiveSecretReference('removed'),
           REPLACED_TOKEN: new LiveSecretReference('replaced'),
         },
-      }).withInContainerMountCredentialExposureAllowed('remote');
+      }).withInContainerMountCredentialExposureAcknowledged('remote');
       const trustedManifest = new Manifest({
         entries: structuredClone(manifest.entries),
         environment: {
           ROTATING_TOKEN: new LiveSecretReference('rotating'),
           REPLACED_TOKEN: 'configured-value',
         },
-      }).withInContainerMountCredentialExposureAllowed('remote');
+      }).withInContainerMountCredentialExposureAcknowledged('remote');
       const sandboxAgent = new SandboxAgent({
         name: 'SandboxWorker',
         model: new RecordingFakeModel([]),
@@ -8629,7 +8632,7 @@ describe('sandbox runner integration', () => {
         AWS_ACCESS_KEY_ID: 'ambient-access',
         AWS_SECRET_ACCESS_KEY: 'ambient-secret',
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
       model: new RecordingFakeModel([]),
@@ -8685,14 +8688,14 @@ describe('sandbox runner integration', () => {
         AWS_ACCESS_KEY_ID: 'initial-access',
         AWS_SECRET_ACCESS_KEY: 'initial-secret',
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
     const currentManifest = new Manifest({
       entries: structuredClone(initialManifest.entries),
       environment: {
         AWS_ACCESS_KEY_ID: 'rotated-access',
         AWS_SECRET_ACCESS_KEY: 'rotated-secret',
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
       model: new RecordingFakeModel([]),
@@ -9666,7 +9669,7 @@ describe('sandbox runner integration', () => {
           mountStrategy: inContainerMountStrategy(),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
       model: new RecordingFakeModel([]),
@@ -9708,7 +9711,7 @@ describe('sandbox runner integration', () => {
     expect(client.closeCalls).toEqual([liveSession?.state.sessionId]);
   });
 
-  it('recreates live sessions with opaque command environment authority', async () => {
+  it('rejects opaque command authority before session creation', async () => {
     const client = new FakeSandboxClient();
     const manifest = new Manifest({
       entries: {
@@ -9721,45 +9724,23 @@ describe('sandbox runner integration', () => {
         },
       },
       environment: { CUSTOM_SECRET: 'original-secret' },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
       model: new RecordingFakeModel([]),
       defaultManifest: manifest,
     });
-    const state = new RunState<unknown, Agent<unknown, any>>(
-      new RunContext(),
-      'Hello',
-      sandboxAgent as Agent<unknown, any>,
-      1,
-    );
-    const firstManager = new SandboxRuntimeManager({
+    const manager = new SandboxRuntimeManager({
       startingAgent: sandboxAgent as Agent<unknown, any>,
       sandboxConfig: { client },
-      runState: state,
     });
-    await firstManager.prepareAgent({
-      currentAgent: sandboxAgent as Agent<unknown, any>,
-      turnInput: [],
-    });
-    const firstSession = client.createdSessions[0];
-    await firstManager.cleanup(state, { preserveOwnedSessions: true });
-
-    const secondManager = new SandboxRuntimeManager({
-      startingAgent: sandboxAgent as Agent<unknown, any>,
-      sandboxConfig: { client },
-      runState: state,
-    });
-    await secondManager.adoptPreservedOwnedSessions();
-    await secondManager.prepareAgent({
-      currentAgent: sandboxAgent as Agent<unknown, any>,
-      turnInput: [],
-    });
-
-    expect(client.createdSessions).toHaveLength(2);
-    expect(client.resumeCalls).toHaveLength(0);
-    expect(client.closeCalls).toContain(firstSession?.state.sessionId);
-    await secondManager.cleanup(state);
+    await expect(
+      manager.prepareAgent({
+        currentAgent: sandboxAgent as Agent<unknown, any>,
+        turnInput: [],
+      }),
+    ).rejects.toThrow(/SDK-supported strategy/u);
+    expect(client.createdSessions).toHaveLength(0);
   });
 
   it('recreates serialized sessions with in-container mounts instead of resuming them', async () => {
@@ -9773,7 +9754,7 @@ describe('sandbox runner integration', () => {
           mountStrategy: inContainerMountStrategy(),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
       model: new RecordingFakeModel([]),

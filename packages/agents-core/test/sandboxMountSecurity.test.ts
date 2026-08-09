@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  boxMount,
   dockerVolumeMountStrategy,
   file,
   gcsMount,
@@ -30,7 +31,10 @@ import {
   validateMountCredentialBoundaries,
   validateMountEnvironmentCredentialBoundaries,
 } from '../src/sandbox/internal';
-import { assertMountCredentialsRebound } from '../src/sandbox/mountSecurity';
+import {
+  assertMountCredentialsRebound,
+  redactMountCredentialsForPersistence,
+} from '../src/sandbox/mountSecurity';
 import {
   sanitizeSerializedSandboxState,
   toSessionStateEnvelope,
@@ -108,7 +112,7 @@ describe('sandbox mount credential boundaries', () => {
     );
   });
 
-  it('treats an Azure managed identity selector as explicit mount authority', () => {
+  it('requires broad acknowledgement for an Azure managed identity selector', () => {
     const manifest = new Manifest({
       entries: {
         remote: {
@@ -126,7 +130,14 @@ describe('sandbox mount credential boundaries', () => {
     );
     expect(() =>
       validateMountCredentialBoundaries(
-        manifest.withInContainerMountCredentialExposureAllowed('remote'),
+        manifest.withInContainerMountCredentialExposureAcknowledged('remote'),
+      ),
+    ).toThrow(/broad credential authority/iu);
+    expect(() =>
+      validateMountCredentialBoundaries(
+        manifest.withInContainerMountBroadCredentialExposureAcknowledged(
+          'remote',
+        ),
       ),
     ).not.toThrow();
   });
@@ -162,7 +173,7 @@ describe('sandbox mount credential boundaries', () => {
   ])('rejects $label before mount path resolution', ({ entry }) => {
     const manifest = new Manifest({
       entries: { remote: entry },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
 
     expect(() => validateMountCredentialBoundaries(manifest)).toThrow(
       /complete|both/u,
@@ -195,14 +206,14 @@ describe('sandbox mount credential boundaries', () => {
           mountStrategy: inContainerMountStrategy(),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
 
     expect(() =>
       validateMountEnvironmentCredentialBoundaries(manifest, environment),
     ).toThrow(/complete|both/u);
   });
 
-  it('preserves ambient AWS profile credentials without static keys', () => {
+  it('requires separate broad acknowledgement for ambient AWS profiles', () => {
     const manifest = new Manifest({
       entries: {
         remote: s3Mount({
@@ -210,14 +221,110 @@ describe('sandbox mount credential boundaries', () => {
           mountStrategy: inContainerMountStrategy(),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    });
 
     expect(() =>
       validateMountEnvironmentCredentialBoundaries(manifest, {
         AWS_PROFILE: 'trusted-profile',
       }),
+    ).toThrow(/broad credential authority/iu);
+    expect(() =>
+      validateMountEnvironmentCredentialBoundaries(
+        manifest.withInContainerMountCredentialExposureAcknowledged('remote'),
+        { AWS_PROFILE: 'trusted-profile' },
+      ),
+    ).toThrow(/broad credential authority/iu);
+    expect(() =>
+      validateMountEnvironmentCredentialBoundaries(
+        manifest.withInContainerMountBroadCredentialExposureAcknowledged(
+          'remote',
+        ),
+        { AWS_PROFILE: 'trusted-profile' },
+      ),
     ).not.toThrow();
   });
+
+  it('requires separate broad acknowledgement for ambient AWS credentials shadowed by inline credentials', () => {
+    const manifest = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'private',
+          accessKeyId: 'inline-access-key',
+          secretAccessKey: 'inline-secret-key',
+          mountStrategy: {
+            type: 'e2b_cloud_bucket',
+          } as MountStrategy,
+        }),
+      },
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
+    const environment = {
+      AWS_ACCESS_KEY_ID: 'ambient-access-key',
+      AWS_SECRET_ACCESS_KEY: 'ambient-secret-key',
+      AWS_SESSION_TOKEN: 'ambient-session-token',
+    };
+
+    expect(() =>
+      validateMountEnvironmentCredentialBoundaries(manifest, environment),
+    ).toThrow(/broad credential authority/iu);
+    expect(() =>
+      validateMountEnvironmentCredentialBoundaries(
+        manifest.withInContainerMountBroadCredentialExposureAcknowledged(
+          'remote',
+        ),
+        environment,
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    {
+      label: 'an HMAC key pair',
+      credentials: {
+        accessId: 'inline-access-id',
+        secretAccessKey: 'inline-secret-key',
+      },
+    },
+    {
+      label: 'service account credentials',
+      credentials: {
+        serviceAccountCredentials: 'inline-service-account-credentials',
+      },
+    },
+    {
+      label: 'an access token',
+      credentials: { accessToken: 'inline-access-token' },
+    },
+  ])(
+    'requires separate broad acknowledgement for ambient GCS credentials shadowed by $label',
+    ({ credentials }) => {
+      const manifest = new Manifest({
+        entries: {
+          remote: gcsMount({
+            bucket: 'private',
+            ...credentials,
+            mountStrategy: {
+              type: 'e2b_cloud_bucket',
+            } as MountStrategy,
+          }),
+        },
+      }).withInContainerMountCredentialExposureAcknowledged('remote');
+      const environment = {
+        GOOGLE_APPLICATION_CREDENTIALS: '/run/secrets/gcp.json',
+      };
+
+      expect(() =>
+        validateMountEnvironmentCredentialBoundaries(manifest, environment),
+      ).toThrow(/broad credential authority/iu);
+      expect(() =>
+        validateMountEnvironmentCredentialBoundaries(
+          manifest.withInContainerMountBroadCredentialExposureAcknowledged(
+            'remote',
+          ),
+          environment,
+        ),
+      ).not.toThrow();
+    },
+  );
 
   it('requires exact opt-in for implicit workload identity mount patterns', () => {
     const manifests = [
@@ -251,31 +358,36 @@ describe('sandbox mount credential boundaries', () => {
       );
       expect(() =>
         validateMountCredentialBoundaries(
-          manifest.withInContainerMountCredentialExposureAllowed('remote'),
+          manifest.withInContainerMountCredentialExposureAcknowledged('remote'),
+        ),
+      ).toThrow(/broad credential|does not support mount-scoped/u);
+      expect(() =>
+        validateMountCredentialBoundaries(
+          manifest.withInContainerMountBroadCredentialExposureAcknowledged(
+            'remote',
+          ),
         ),
       ).not.toThrow();
     }
   });
 
-  it('requires a trusted exact effective mount path opt-in', () => {
+  it('requires a trusted exact effective mount path acknowledgement', () => {
     const manifest = credentialedS3Manifest(inContainerMountStrategy(), {
       mountPath: '/workspace/data',
     });
     const trusted =
-      manifest.withInContainerMountCredentialExposureAllowed('data');
+      manifest.withInContainerMountCredentialExposureAcknowledged('data');
 
     validateMountCredentialBoundaries(trusted);
     expect(() =>
-      manifest.withInContainerMountCredentialExposureAllowed('other'),
+      manifest.withInContainerMountCredentialExposureAcknowledged('other'),
     ).not.toThrow();
     expect(() =>
       validateMountCredentialBoundaries(
-        manifest.withInContainerMountCredentialExposureAllowed('other'),
+        manifest.withInContainerMountCredentialExposureAcknowledged('other'),
       ),
     ).toThrow(/exact path/u);
-    expect(JSON.stringify(trusted)).not.toContain(
-      'inContainerMountCredentialExposureAllowedPaths',
-    );
+    expect(JSON.stringify(trusted)).not.toContain('CredentialExposure');
   });
 
   it('rejects empty and workspace-root exposure paths', () => {
@@ -283,7 +395,10 @@ describe('sandbox mount credential boundaries', () => {
 
     for (const path of ['', ' ', '.', '/', '/workspace']) {
       expect(() =>
-        manifest.withInContainerMountCredentialExposureAllowed(path),
+        manifest.withInContainerMountCredentialExposureAcknowledged(path),
+      ).toThrow(/non-root path/u);
+      expect(() =>
+        manifest.withInContainerMountBroadCredentialExposureAcknowledged(path),
       ).toThrow(/non-root path/u);
     }
   });
@@ -291,19 +406,29 @@ describe('sandbox mount credential boundaries', () => {
   it('supports trusted exact absolute mount paths outside the workspace root', () => {
     const trusted = credentialedS3Manifest(inContainerMountStrategy(), {
       mountPath: '/mnt/private',
-    }).withInContainerMountCredentialExposureAllowed('/mnt/private');
+    }).withInContainerMountCredentialExposureAcknowledged('/mnt/private');
 
     expect(() => validateMountCredentialBoundaries(trusted)).not.toThrow();
   });
 
-  it('does not accept exposure policy from manifest init objects', () => {
-    expect(
-      () =>
-        new Manifest({
-          inContainerMountCredentialExposureAllowedPaths: ['remote'],
-        } as never),
-    ).toThrow(/credential exposure/u);
-  });
+  it.each([
+    'inContainerMountCredentialExposureAllowedPaths',
+    'inContainerMountCredentialExposureAcknowledgedPaths',
+    'inContainerMountBroadCredentialExposureAcknowledgedPaths',
+  ])(
+    'does not accept %s from manifest init objects or persisted records',
+    (key) => {
+      expect(() => new Manifest({ [key]: ['remote'] } as never)).toThrow(
+        /credential exposure/u,
+      );
+      expect(() =>
+        deserializeManifest({
+          ...serializeManifestRecord(new Manifest()),
+          [key]: ['remote'],
+        }),
+      ).toThrow(/credential exposure policy/u);
+    },
+  );
 
   it('rejects rclone credential config stored in a serialized entry', () => {
     const manifest = new Manifest({
@@ -318,14 +443,14 @@ describe('sandbox mount credential boundaries', () => {
           }),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
 
     expect(() => validateMountCredentialBoundaries(manifest)).toThrow(
       /serialized manifest entry/u,
     );
   });
 
-  it('allows a trusted external rclone config path', () => {
+  it('requires broad acknowledgement for a trusted external rclone config', () => {
     const manifest = new Manifest({
       extraPathGrants: [
         {
@@ -352,7 +477,14 @@ describe('sandbox mount credential boundaries', () => {
     );
     expect(() =>
       validateMountCredentialBoundaries(
-        manifest.withInContainerMountCredentialExposureAllowed('remote'),
+        manifest.withInContainerMountCredentialExposureAcknowledged('remote'),
+      ),
+    ).toThrow(/broad credential authority/iu);
+    expect(() =>
+      validateMountCredentialBoundaries(
+        manifest.withInContainerMountBroadCredentialExposureAcknowledged(
+          'remote',
+        ),
       ),
     ).not.toThrow();
   });
@@ -368,7 +500,7 @@ describe('sandbox mount credential boundaries', () => {
           mountStrategy: inContainerMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
     expect(() => validateMountCredentialBoundaries(explicit)).toThrow(
       /credential files cannot come from a serialized manifest entry/u,
     );
@@ -388,7 +520,7 @@ describe('sandbox mount credential boundaries', () => {
       environment: {
         GOOGLE_APPLICATION_CREDENTIALS: '/workspace/gcp.json',
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
     expect(() =>
       validateMountEnvironmentCredentialBoundaries(ambient, {
         GOOGLE_APPLICATION_CREDENTIALS: '/workspace/gcp.json',
@@ -405,7 +537,7 @@ describe('sandbox mount credential boundaries', () => {
           mountStrategy: inContainerMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
     expect(() => validateMountCredentialBoundaries(recursiveExplicit)).toThrow(
       /credential files cannot come from a serialized manifest entry/u,
     );
@@ -422,7 +554,7 @@ describe('sandbox mount credential boundaries', () => {
           mountStrategy: inContainerMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
     expect(() =>
       validateMountEnvironmentCredentialBoundaries(recursiveAmbient, {
         GOOGLE_APPLICATION_CREDENTIALS:
@@ -486,7 +618,7 @@ describe('sandbox mount credential boundaries', () => {
         AWS_SECRET_ACCESS_KEY: 'AMBIENT_SECRET_SENTINEL',
         SAFE: 'visible',
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
     const environment = {
       AWS_ACCESS_KEY_ID: 'AMBIENT_ACCESS_SENTINEL',
       AWS_SECRET_ACCESS_KEY: 'AMBIENT_SECRET_SENTINEL',
@@ -514,6 +646,42 @@ describe('sandbox mount credential boundaries', () => {
     ).toBe(false);
   });
 
+  it('redacts shadowed credential environment beside inline credentials', () => {
+    const manifest = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'private',
+          accessKeyId: 'INLINE_ACCESS_SENTINEL',
+          secretAccessKey: 'INLINE_SECRET_SENTINEL',
+          mountStrategy: inContainerMountStrategy(),
+        }),
+      },
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
+    const environment = {
+      AWS_ACCESS_KEY_ID: 'SHADOWED_ACCESS_SENTINEL',
+      AWS_SECRET_ACCESS_KEY: 'SHADOWED_SECRET_SENTINEL',
+      AWS_SESSION_TOKEN: 'SHADOWED_SESSION_SENTINEL',
+      SAFE: 'visible',
+    };
+
+    const sanitized = sanitizeMountCredentialEnvironmentForPersistence({
+      manifest,
+      environment,
+    });
+
+    expect(JSON.stringify(sanitized)).not.toContain('SHADOWED_ACCESS_SENTINEL');
+    expect(JSON.stringify(sanitized)).not.toContain('SHADOWED_SECRET_SENTINEL');
+    expect(JSON.stringify(sanitized)).not.toContain(
+      'SHADOWED_SESSION_SENTINEL',
+    );
+    expect(sanitized.environment).toEqual({ SAFE: 'visible' });
+    expect(environment).toMatchObject({
+      AWS_ACCESS_KEY_ID: 'SHADOWED_ACCESS_SENTINEL',
+      AWS_SECRET_ACCESS_KEY: 'SHADOWED_SECRET_SENTINEL',
+      AWS_SESSION_TOKEN: 'SHADOWED_SESSION_SENTINEL',
+    });
+  });
+
   it('redacts manifest-sourced mount credentials from RunState envelopes', () => {
     const manifest = new Manifest({
       environment: {
@@ -526,7 +694,7 @@ describe('sandbox mount credential boundaries', () => {
           mountStrategy: inContainerMountStrategy(),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
 
     const envelope = toSessionStateEnvelope(
       'probe',
@@ -545,6 +713,43 @@ describe('sandbox mount credential boundaries', () => {
     expect(serialized).not.toContain('ENVELOPE_SECRET_SENTINEL');
   });
 
+  it('redacts manifest credentials hidden by an undefined runtime override', () => {
+    const manifest = new Manifest({
+      environment: {
+        AWS_ACCESS_KEY_ID: 'MANIFEST_ACCESS_SENTINEL',
+        AWS_SECRET_ACCESS_KEY: 'MANIFEST_SECRET_SENTINEL',
+      },
+      entries: {
+        remote: s3Mount({
+          bucket: 'private',
+          accessKeyId: 'INLINE_ACCESS_SENTINEL',
+          secretAccessKey: 'INLINE_SECRET_SENTINEL',
+          mountStrategy: inContainerMountStrategy(),
+        }),
+      },
+    })
+      .withInContainerMountCredentialExposureAcknowledged('remote')
+      .withInContainerMountBroadCredentialExposureAcknowledged('remote');
+    const environment = {
+      AWS_ACCESS_KEY_ID: undefined,
+    } as unknown as Record<string, string>;
+
+    const sanitized = sanitizeMountCredentialEnvironmentForPersistence({
+      manifest,
+      environment,
+    });
+    const envelope = toSessionStateEnvelope(
+      'probe',
+      { manifest, environment },
+      {},
+    );
+
+    expect(JSON.stringify(sanitized)).not.toContain('MANIFEST_ACCESS_SENTINEL');
+    expect(JSON.stringify(sanitized)).not.toContain('MANIFEST_SECRET_SENTINEL');
+    expect(JSON.stringify(envelope)).not.toContain('MANIFEST_ACCESS_SENTINEL');
+    expect(JSON.stringify(envelope)).not.toContain('MANIFEST_SECRET_SENTINEL');
+  });
+
   it('rejects resolved credential files before RunState envelope persistence', () => {
     const manifest = new Manifest({
       environment: {
@@ -557,7 +762,7 @@ describe('sandbox mount credential boundaries', () => {
           mountStrategy: inContainerMountStrategy(),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
 
     expect(() =>
       toSessionStateEnvelope(
@@ -576,7 +781,7 @@ describe('sandbox mount credential boundaries', () => {
   it('strips persisted credentials and rebinds only matching trusted topology', () => {
     const trusted = credentialedS3Manifest(
       inContainerMountStrategy(),
-    ).withInContainerMountCredentialExposureAllowed('remote');
+    ).withInContainerMountCredentialExposureAcknowledged('remote');
     const serializedManifest = serializeManifestRecord(trusted);
     const metadata = serializeMountCredentialRedactionMetadata({
       manifest: trusted,
@@ -603,7 +808,7 @@ describe('sandbox mount credential boundaries', () => {
 
     const mismatched = credentialedS3Manifest(
       inContainerMountStrategy(),
-    ).withInContainerMountCredentialExposureAllowed('remote');
+    ).withInContainerMountCredentialExposureAcknowledged('remote');
     (mismatched.entries.remote as { bucket: string }).bucket = 'different';
     expect(() =>
       rebindPersistedMountCredentials(persistedState, mismatched),
@@ -616,16 +821,18 @@ describe('sandbox mount credential boundaries', () => {
           mountStrategy: inContainerMountStrategy(),
         }),
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
     expect(() =>
       rebindPersistedMountCredentials(persistedState, credentialless),
     ).toThrow(/no longer provides credential authority/u);
   });
 
-  it('strips and rebinds opaque generic in-container mount sources', () => {
-    const source =
-      'https://mount-user:SOURCE_SECRET_SENTINEL@example.test/private';
-    const trusted = new Manifest({
+  it('rejects opaque generic in-container mount sources despite acknowledgement', () => {
+    const source = [
+      'https://mount-user',
+      'fixture-value@example.test/private',
+    ].join(':');
+    const manifest = new Manifest({
       entries: {
         remote: {
           type: 'mount',
@@ -633,28 +840,51 @@ describe('sandbox mount credential boundaries', () => {
           mountStrategy: inContainerMountStrategy(),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
-    const serializedManifest = serializeManifestRecord(trusted);
-    const metadata = serializeMountCredentialRedactionMetadata({
-      manifest: trusted,
     });
+    for (const trusted of [
+      manifest.withInContainerMountCredentialExposureAcknowledged('remote'),
+      manifest.withInContainerMountBroadCredentialExposureAcknowledged(
+        'remote',
+      ),
+    ]) {
+      expect(() => validateMountCredentialBoundaries(trusted)).toThrow(
+        /SDK-supported strategy, provider, mount type, and pattern/u,
+      );
+      expect(() => serializeManifestRecord(trusted)).toThrow(
+        /SDK-supported strategy, provider, mount type, and pattern/u,
+      );
+    }
+  });
 
-    expect(JSON.stringify({ serializedManifest, metadata })).not.toContain(
-      'SOURCE_SECRET_SENTINEL',
-    );
-    expect(
-      (serializedManifest.entries as Record<string, unknown>).remote,
-    ).not.toHaveProperty('source');
-
-    const rebound = rebindPersistedMountCredentials(
-      {
-        manifest: deserializeManifest(serializedManifest),
-        ...deserializeMountCredentialRedactionMetadata(metadata),
+  it('supports mount-scoped Box credentials only for a closed capability', () => {
+    const manifest = new Manifest({
+      entries: {
+        remote: boxMount({
+          accessToken: 'BOX_TOKEN_SENTINEL',
+          mountStrategy: inContainerMountStrategy(),
+        }),
       },
-      trusted,
+    });
+    expect(() => validateMountCredentialBoundaries(manifest)).toThrow(
+      /mount-scoped credentials/iu,
     );
-    expect(rebound.manifest.entries.remote).toMatchObject({ source });
-    validateMountCredentialBoundaries(rebound.manifest);
+    expect(() =>
+      validateMountCredentialBoundaries(
+        manifest.withInContainerMountCredentialExposureAcknowledged('remote'),
+      ),
+    ).not.toThrow();
+
+    const custom = new Manifest({
+      entries: {
+        remote: boxMount({
+          accessToken: 'BOX_TOKEN_SENTINEL',
+          mountStrategy: { type: 'custom' },
+        }),
+      },
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
+    expect(() => validateMountCredentialBoundaries(custom)).toThrow(
+      /SDK-supported strategy, provider, mount type, and pattern/u,
+    );
   });
 
   it('treats arbitrary command and external config mount authority as non-resumable', () => {
@@ -669,7 +899,7 @@ describe('sandbox mount credential boundaries', () => {
             mountStrategy: inContainerMountStrategy({ pattern }),
           }),
         },
-      }).withInContainerMountCredentialExposureAllowed('remote');
+      }).withInContainerMountCredentialExposureAcknowledged('remote');
       expect(manifestHasNonResumableMountAuthority(manifest)).toBe(true);
     }
   });
@@ -685,7 +915,7 @@ describe('sandbox mount credential boundaries', () => {
           }),
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('remote');
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
     const sessionState = {
       version: 2 as const,
       backendId: 'fake',
@@ -713,7 +943,7 @@ describe('sandbox mount credential boundaries', () => {
   it('rejects credential rebind when the persisted manifest root changed', () => {
     const trusted = credentialedS3Manifest(
       inContainerMountStrategy(),
-    ).withInContainerMountCredentialExposureAllowed('remote');
+    ).withInContainerMountCredentialExposureAcknowledged('remote');
     const serializedManifest = serializeManifestRecord(trusted);
     serializedManifest.root = '/attacker/workspace';
     const persistedState = {
@@ -731,7 +961,7 @@ describe('sandbox mount credential boundaries', () => {
   it('detects live mount credential, policy, and topology changes', () => {
     const original = credentialedS3Manifest(
       inContainerMountStrategy(),
-    ).withInContainerMountCredentialExposureAllowed('remote');
+    ).withInContainerMountCredentialExposureAcknowledged('remote');
     const liveManifest = deserializeManifest(serializeManifestRecord(original));
     recordLiveMountCredentialAuthority(liveManifest, original);
 
@@ -745,7 +975,7 @@ describe('sandbox mount credential boundaries', () => {
     expect(
       liveMountCredentialAuthorityMatches(
         liveManifest,
-        rotated.withInContainerMountCredentialExposureAllowed('remote'),
+        rotated.withInContainerMountCredentialExposureAcknowledged('remote'),
       ),
     ).toBe(false);
 
@@ -774,10 +1004,10 @@ describe('sandbox mount credential boundaries', () => {
   it('rejects removing or replacing active mount topology', () => {
     const current = credentialedS3Manifest(
       inContainerMountStrategy(),
-    ).withInContainerMountCredentialExposureAllowed('remote');
+    ).withInContainerMountCredentialExposureAcknowledged('remote');
     const sameTopologyWithRotatedCredentials = credentialedS3Manifest(
       inContainerMountStrategy(),
-    ).withInContainerMountCredentialExposureAllowed('remote');
+    ).withInContainerMountCredentialExposureAcknowledged('remote');
     (
       sameTopologyWithRotatedCredentials.entries.remote as {
         accessKeyId: string;
@@ -804,7 +1034,7 @@ describe('sandbox mount credential boundaries', () => {
   it('preserves provider-recorded authority during manager registration', () => {
     const trusted = credentialedS3Manifest(
       inContainerMountStrategy(),
-    ).withInContainerMountCredentialExposureAllowed('remote');
+    ).withInContainerMountCredentialExposureAcknowledged('remote');
     const sanitized = deserializeManifest(serializeManifestRecord(trusted));
     recordLiveMountCredentialAuthority(sanitized, trusted);
 
@@ -816,7 +1046,7 @@ describe('sandbox mount credential boundaries', () => {
   it('does not retain stale exposure trust during credential rebind', () => {
     const stale = credentialedS3Manifest(
       inContainerMountStrategy(),
-    ).withInContainerMountCredentialExposureAllowed('remote');
+    ).withInContainerMountCredentialExposureAcknowledged('remote');
     const currentWithoutTrust = credentialedS3Manifest(
       inContainerMountStrategy(),
     );
@@ -844,7 +1074,7 @@ describe('sandbox mount credential boundaries', () => {
       /Unsupported rclone mount args/u,
     );
     const trusted =
-      untrusted.withInContainerMountCredentialExposureAllowed('rclone');
+      untrusted.withInContainerMountCredentialExposureAcknowledged('rclone');
     expect(() => validateMountCredentialBoundaries(trusted)).toThrow(
       /Unsupported rclone mount args/u,
     );
@@ -869,7 +1099,7 @@ describe('sandbox mount credential boundaries', () => {
             mountStrategy: inContainerMountStrategy({ pattern }),
           }),
         },
-      }).withInContainerMountCredentialExposureAllowed('remote');
+      }).withInContainerMountCredentialExposureAcknowledged('remote');
 
       expect(() => validateMountCredentialBoundaries(manifest)).toThrow(
         /configFilePath/u,
@@ -1021,23 +1251,22 @@ describe('sandbox mount credential boundaries', () => {
     });
 
     expect(() => validateMountCredentialBoundaries(generic)).toThrow(
-      /model-controlled sandbox/u,
+      /SDK-supported strategy, provider, mount type, and pattern/u,
     );
     expect(() => validateMountCredentialBoundaries(s3Files)).toThrow(
-      /model-controlled sandbox/u,
+      /broad credential authority/iu,
     );
 
-    const trusted = new Manifest({
-      entries: {
-        generic: generic.entries.remote!,
-        s3Files: s3Files.entries.remote!,
-      },
-    })
-      .withInContainerMountCredentialExposureAllowed('generic')
-      .withInContainerMountCredentialExposureAllowed('s3Files');
+    expect(() =>
+      validateMountCredentialBoundaries(
+        generic.withInContainerMountCredentialExposureAcknowledged('remote'),
+      ),
+    ).toThrow(/SDK-supported strategy, provider, mount type, and pattern/u);
+
+    const trusted =
+      s3Files.withInContainerMountBroadCredentialExposureAcknowledged('remote');
     const serializedManifest = serializeManifestRecord(trusted);
     const serialized = JSON.stringify(serializedManifest);
-    expect(serialized).not.toContain('GENERIC_CONFIG_SENTINEL');
     expect(serialized).not.toContain('S3_FILES_OPTION_SENTINEL');
 
     const metadata = serializeMountCredentialRedactionMetadata({
@@ -1061,21 +1290,19 @@ describe('sandbox mount credential boundaries', () => {
     );
     const rotated = new Manifest({
       entries: {
-        generic: {
-          ...(trusted.entries.generic as Record<string, unknown>),
-          config: { token: 'ROTATED_GENERIC_CONFIG' },
-        } as never,
-        s3Files: trusted.entries.s3Files!,
+        remote: s3FilesMount({
+          fileSystemId: 'fs-123',
+          extraOptions: { password: 'ROTATED_S3_FILES_OPTION' },
+          mountStrategy: inContainerMountStrategy(),
+        }),
       },
-    })
-      .withInContainerMountCredentialExposureAllowed('generic')
-      .withInContainerMountCredentialExposureAllowed('s3Files');
+    }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
     expect(liveMountCredentialAuthorityMatches(liveManifest, rotated)).toBe(
       false,
     );
   });
 
-  it('default-denies residual config on typed mounts as non-resumable', () => {
+  it('rejects residual config on typed mounts despite acknowledgement', () => {
     const manifest = new Manifest({
       entries: {
         remote: {
@@ -1088,29 +1315,40 @@ describe('sandbox mount credential boundaries', () => {
     });
 
     expect(() => validateMountCredentialBoundaries(manifest)).toThrow(
-      /model-controlled sandbox/u,
+      /does not support exposing these credential fields/u,
     );
 
     const trusted =
-      manifest.withInContainerMountCredentialExposureAllowed('remote');
-    const serializedManifest = serializeManifestRecord(trusted);
-    expect(JSON.stringify(serializedManifest)).not.toContain(
-      'TYPED_CONFIG_SENTINEL',
+      manifest.withInContainerMountCredentialExposureAcknowledged('remote');
+    expect(() => validateMountCredentialBoundaries(trusted)).toThrow(
+      /does not support exposing these credential fields/u,
     );
+    expect(() => serializeManifestRecord(trusted)).toThrow(
+      /does not support exposing these credential fields/u,
+    );
+  });
 
-    const metadata = serializeMountCredentialRedactionMetadata({
-      manifest: trusted,
-    });
-    expect(metadata[NON_RESUMABLE_MOUNT_AUTHORITY_KEY]).toBe(true);
-    expect(() =>
-      rebindPersistedMountCredentials(
-        {
-          manifest: deserializeManifest(serializedManifest),
-          ...deserializeMountCredentialRedactionMetadata(metadata),
-        },
-        trusted,
-      ),
-    ).toThrow(/opaque mount authority/u);
+  it('rejects and defensively redacts cross-provider credential fields', () => {
+    const entry = {
+      ...s3Mount({
+        bucket: 'example',
+        mountStrategy: inContainerMountStrategy(),
+      }),
+      serviceAccountCredentials: 'CROSS_PROVIDER_SECRET_SENTINEL',
+    };
+    const trusted = new Manifest({
+      entries: { remote: entry },
+    }).withInContainerMountCredentialExposureAcknowledged('remote');
+
+    expect(() => validateMountCredentialBoundaries(trusted)).toThrow(
+      /does not support exposing these credential fields/u,
+    );
+    expect(() => serializeManifestRecord(trusted)).toThrow(
+      /does not support exposing these credential fields/u,
+    );
+    expect(
+      JSON.stringify(redactMountCredentialsForPersistence(entry)),
+    ).not.toContain('CROSS_PROVIDER_SECRET_SENTINEL');
   });
 
   it('requires trusted rebind provenance for credential-bearing resume state', () => {
@@ -1143,7 +1381,7 @@ describe('sandbox mount credential boundaries', () => {
 
     const trustedInside = credentialedS3Manifest(
       inContainerMountStrategy(),
-    ).withInContainerMountCredentialExposureAllowed('remote');
+    ).withInContainerMountCredentialExposureAcknowledged('remote');
     const reboundInside = rebindPersistedMountCredentials(
       { manifest: deserializeManifest(serializeManifestRecord(trustedInside)) },
       trustedInside,
@@ -1156,7 +1394,7 @@ describe('sandbox mount credential boundaries', () => {
   it('preserves exact-path trust across host path grant rebinding', () => {
     const trusted = credentialedS3Manifest(
       inContainerMountStrategy(),
-    ).withInContainerMountCredentialExposureAllowed('remote');
+    ).withInContainerMountCredentialExposureAcknowledged('remote');
     const persistedState = {
       manifest: deserializeManifest(serializeManifestRecord(trusted)),
       ...deserializeMountCredentialRedactionMetadata(
@@ -1179,7 +1417,7 @@ describe('sandbox mount credential boundaries', () => {
     const raw = serializeManifestRecord(
       credentialedS3Manifest(
         inContainerMountStrategy(),
-      ).withInContainerMountCredentialExposureAllowed('remote'),
+      ).withInContainerMountCredentialExposureAcknowledged('remote'),
     );
     const rawEntry = (raw.entries as Record<string, Record<string, unknown>>)
       .remote;

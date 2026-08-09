@@ -19,6 +19,7 @@ import { readOptionalString } from './typeGuards';
 import {
   validateCredentialPair as validateSandboxCredentialPair,
   stableJsonStringify,
+  mountCredentialEnvironmentForEntry,
   validateMountCredentialBoundaries,
   validateMountEnvironmentCredentialBoundaries,
 } from '@openai/agents-core/sandbox/internal';
@@ -85,48 +86,6 @@ const RCLONE_CHECKSUM_MISMATCH_STATUS = 86;
 const RCLONE_INSTALL_PATH = '/usr/local/bin/rclone';
 const RCLONE_ON_PATH_CHECK_COMMAND = 'command -v rclone >/dev/null 2>&1';
 const RCLONE_AVAILABLE_CHECK_COMMAND = `${RCLONE_ON_PATH_CHECK_COMMAND} || test -x ${RCLONE_INSTALL_PATH}`;
-
-export const RCLONE_S3_MOUNT_ENVIRONMENT_NAMES = [
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_SESSION_TOKEN',
-  'AWS_SECURITY_TOKEN',
-  'AWS_REGION',
-  'AWS_DEFAULT_REGION',
-  'AWS_PROFILE',
-  'AWS_SHARED_CREDENTIALS_FILE',
-  'AWS_CONFIG_FILE',
-  'AWS_SDK_LOAD_CONFIG',
-  'AWS_ROLE_ARN',
-  'AWS_WEB_IDENTITY_TOKEN_FILE',
-  'AWS_ROLE_SESSION_NAME',
-  'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
-  'AWS_CONTAINER_CREDENTIALS_FULL_URI',
-  'AWS_CONTAINER_AUTHORIZATION_TOKEN',
-  'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
-] as const;
-
-export const RCLONE_S3_MOUNT_CREDENTIAL_ENVIRONMENT_NAMES = [
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_SESSION_TOKEN',
-  'AWS_SECURITY_TOKEN',
-  'AWS_PROFILE',
-  'AWS_SHARED_CREDENTIALS_FILE',
-  'AWS_CONFIG_FILE',
-  'AWS_ROLE_ARN',
-  'AWS_WEB_IDENTITY_TOKEN_FILE',
-  'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
-  'AWS_CONTAINER_CREDENTIALS_FULL_URI',
-  'AWS_CONTAINER_AUTHORIZATION_TOKEN',
-  'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
-] as const;
-
-const RCLONE_GCS_MOUNT_ENVIRONMENT_NAMES = [
-  'GOOGLE_APPLICATION_CREDENTIALS',
-  'GOOGLE_CLOUD_PROJECT',
-  'CLOUDSDK_CORE_PROJECT',
-] as const;
 
 const rcloneMountEnvironmentAuthority = Symbol(
   'openaiAgentsRcloneMountEnvironmentAuthority',
@@ -402,43 +361,7 @@ export function rcloneCredentialEnvironmentForEntry(
   if (!isSharedRcloneMount(entry)) {
     return {};
   }
-  const names = new Set(
-    Object.keys(environment).filter(
-      (name) => name === 'RCLONE_CONFIG' || name.startsWith('RCLONE_CONFIG_'),
-    ),
-  );
-  const usesEntryCredentialPair = Boolean(
-    readOptionalString(entry, 'accessKeyId') &&
-    readOptionalString(entry, 'secretAccessKey'),
-  );
-  if (
-    (entry.type === 's3_mount' || entry.type === 'r2_mount') &&
-    !usesEntryCredentialPair &&
-    RCLONE_S3_MOUNT_CREDENTIAL_ENVIRONMENT_NAMES.some(
-      (name) => environment[name] !== undefined,
-    )
-  ) {
-    for (const name of RCLONE_S3_MOUNT_ENVIRONMENT_NAMES) {
-      names.add(name);
-    }
-  }
-  if (
-    entry.type === 'gcs_mount' &&
-    !usesEntryCredentialPair &&
-    !readOptionalString(entry, 'serviceAccountCredentials') &&
-    !readOptionalString(entry, 'serviceAccountFile') &&
-    !readOptionalString(entry, 'accessToken') &&
-    environment.GOOGLE_APPLICATION_CREDENTIALS !== undefined
-  ) {
-    for (const name of RCLONE_GCS_MOUNT_ENVIRONMENT_NAMES) {
-      names.add(name);
-    }
-  }
-  return Object.fromEntries(
-    [...names].flatMap((name) =>
-      environment[name] === undefined ? [] : [[name, environment[name]]],
-    ),
-  );
+  return mountCredentialEnvironmentForEntry(entry, environment);
 }
 
 export async function mountRcloneCloudBucket(

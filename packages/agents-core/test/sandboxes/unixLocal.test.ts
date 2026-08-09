@@ -639,9 +639,9 @@ describe('UnixLocalSandboxClient', () => {
               mountStrategy: { type: 'in_container' },
             },
           },
-        }).withInContainerMountCredentialExposureAllowed('data'),
+        }).withInContainerMountCredentialExposureAcknowledged('data'),
       ),
-    ).rejects.toThrow(/does not support this mount entry: data/);
+    ).rejects.toThrow(/SDK-supported strategy/u);
 
     const session = await client.create(new Manifest());
     await expect(
@@ -1663,11 +1663,10 @@ describe('UnixLocalSandboxClient', () => {
       entries: {
         data: {
           type: 'mount',
-          source: 's3://bucket/data',
           mountStrategy: { type: 'in_container' },
         },
       },
-    }).withInContainerMountCredentialExposureAllowed('data');
+    });
 
     await materializeLocalWorkspaceManifestMounts(manifest, workspaceRootPath, {
       supportsMount: () => true,
@@ -1679,9 +1678,7 @@ describe('UnixLocalSandboxClient', () => {
       },
     });
 
-    expect(calls).toEqual([
-      { logicalPath: 'data', source: 's3://bucket/data' },
-    ]);
+    expect(calls).toEqual([{ logicalPath: 'data', source: undefined }]);
   });
 
   it('materializes parent mount targets before nested targets', async () => {
@@ -1692,27 +1689,20 @@ describe('UnixLocalSandboxClient', () => {
       entries: {
         parent: {
           type: 'mount',
-          source: 's3://bucket/parent',
           mountPath: 'mounted',
           mountStrategy: { type: 'in_container' },
         },
         child: {
           type: 'mount',
-          source: 's3://bucket/child',
           mountPath: 'mounted/cache',
           mountStrategy: { type: 'in_container' },
         },
         other: {
           type: 'mount',
-          source: 's3://bucket/other',
           mountStrategy: { type: 'in_container' },
         },
       },
-    }).withInContainerMountCredentialExposureAllowed(
-      'mounted',
-      'mounted/cache',
-      'other',
-    );
+    });
 
     await materializeLocalWorkspaceManifestMounts(manifest, workspaceRootPath, {
       supportsMount: () => true,
@@ -1731,7 +1721,6 @@ describe('UnixLocalSandboxClient', () => {
       entries: {
         child: {
           type: 'mount',
-          source: 's3://bucket/child',
           mountPath: 'mounted/cache',
           mountStrategy: { type: 'in_container' },
         },
@@ -1741,15 +1730,11 @@ describe('UnixLocalSandboxClient', () => {
         },
         parent: {
           type: 'mount',
-          source: 's3://bucket/parent',
           mountPath: 'mounted',
           mountStrategy: { type: 'in_container' },
         },
       },
-    }).withInContainerMountCredentialExposureAllowed(
-      'mounted',
-      'mounted/cache',
-    );
+    });
 
     await materializeLocalWorkspaceManifest(manifest, workspaceRootPath, {
       supportsMount: () => true,
