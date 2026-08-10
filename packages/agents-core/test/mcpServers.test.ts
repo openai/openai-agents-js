@@ -163,6 +163,24 @@ class SlowCloseServer extends BaseTestServer {
   }
 }
 
+class SequencedCloseServer extends BaseTestServer {
+  constructor(
+    name: string,
+    private readonly closeGates: Deferred<void>[],
+  ) {
+    super(name);
+  }
+
+  async close(): Promise<void> {
+    const closeGate = this.closeGates[this.closeCalls];
+    this.closeCalls += 1;
+    if (closeGate) {
+      await closeGate.promise;
+    }
+    this.cleaned = true;
+  }
+}
+
 class FlakyCloseServer extends BaseTestServer {
   constructor(
     name: string,
@@ -411,6 +429,209 @@ describe('MCPServers', () => {
     expect(error?.message).not.toContain('password_marker');
     await session.close();
   });
+
+  it.each([false, true])(
+    'serializes overlapping close calls (parallel=%s)',
+    async (connectInParallel) => {
+      const closeGate = createDeferred<void>();
+      const server = new SlowCloseServer('slow', closeGate);
+      const session = await connectMcpServers([server], {
+        connectInParallel,
+        closeTimeoutMs: null,
+      });
+
+      const firstClose = session.close();
+      const secondClose = session.close();
+      await Promise.resolve();
+
+      expect(server.closeCalls).toBe(1);
+
+      closeGate.resolve();
+      await Promise.all([firstClose, secondClose]);
+
+      expect(server.closeCalls).toBe(1);
+      expect(session.errors.size).toBe(0);
+    },
+  );
+
+  it.each([false, true])(
+    'waits for an overlapping close before reconnecting all servers (parallel=%s)',
+    async (connectInParallel) => {
+      const closeGate = createDeferred<void>();
+      const server = new SlowCloseServer('slow', closeGate);
+      const session = await connectMcpServers([server], {
+        connectInParallel,
+        closeTimeoutMs: null,
+      });
+
+      const closePromise = session.close();
+      const reconnectPromise = session.reconnect({ failedOnly: false });
+      await Promise.resolve();
+
+      expect(server.closeCalls).toBe(1);
+      expect(server.connectCalls).toBe(1);
+
+      closeGate.resolve();
+      await closePromise;
+      await expect(reconnectPromise).resolves.toEqual([server]);
+
+      expect(server.closeCalls).toBe(1);
+      expect(server.connectCalls).toBe(2);
+      expect(session.active).toEqual([server]);
+      expect(session.failed).toEqual([]);
+      expect(session.errors.size).toBe(0);
+
+      await session.close();
+    },
+  );
+
+  it.each([false, true])(
+    'serializes overlapping full reconnects across multiple servers (parallel=%s)',
+    async (connectInParallel) => {
+      const lifecycleEvents: string[] = [];
+      const first = new ResourceTrackingServer('first', lifecycleEvents);
+      const second = new ResourceTrackingServer('second', lifecycleEvents);
+      const session = await connectMcpServers([first, second], {
+        connectInParallel,
+        connectTimeoutMs: null,
+        closeTimeoutMs: null,
+      });
+      lifecycleEvents.length = 0;
+
+      const firstReconnect = session.reconnect({ failedOnly: false });
+      const secondReconnect = session.reconnect({ failedOnly: false });
+      await Promise.all([firstReconnect, secondReconnect]);
+
+      expect(lifecycleEvents).toEqual([
+        'second:close',
+        'first:close',
+        'first:connect',
+        'second:connect',
+        'second:close',
+        'first:close',
+        'first:connect',
+        'second:connect',
+      ]);
+      expect(first.connectCalls).toBe(3);
+      expect(second.connectCalls).toBe(3);
+      expect(first.closeCalls).toBe(2);
+      expect(second.closeCalls).toBe(2);
+      expect(session.active).toEqual([first, second]);
+      expect(session.failed).toEqual([]);
+      expect(session.errors.size).toBe(0);
+
+      await session.close();
+    },
+  );
+
+  it.each([false, true])(
+    'bounds later waiters and reconnects after a timed-out close succeeds (parallel=%s)',
+    async (connectInParallel) => {
+      const closeGate = createDeferred<void>();
+      const server = new SlowCloseServer('slow', closeGate);
+      const session = await connectMcpServers([server], {
+        connectInParallel,
+        closeTimeoutMs: 10,
+      });
+
+      await withTimeout(session.close(), 500);
+      expect(session.errors.get(server)?.name).toBe('TimeoutError');
+
+      await expect(
+        withTimeout(session.reconnect({ failedOnly: false }), 500),
+      ).resolves.toEqual([]);
+      expect(server.closeCalls).toBe(1);
+      expect(server.connectCalls).toBe(1);
+      expect(session.active).toEqual([]);
+      expect(session.failed).toEqual([server]);
+      expect(session.errors.get(server)?.name).toBe('TimeoutError');
+
+      closeGate.resolve();
+      await closeGate.promise;
+      await Promise.resolve();
+
+      await expect(session.reconnect({ failedOnly: false })).resolves.toEqual([
+        server,
+      ]);
+      expect(server.closeCalls).toBe(1);
+      expect(server.connectCalls).toBe(2);
+      expect(session.active).toEqual([server]);
+      expect(session.failed).toEqual([]);
+      expect(session.errors.size).toBe(0);
+
+      await session.close();
+    },
+  );
+
+  it.each([false, true])(
+    'preserves a late close failure and permits a later retry (parallel=%s)',
+    async (connectInParallel) => {
+      const firstCloseGate = createDeferred<void>();
+      const secondCloseGate = createDeferred<void>();
+      secondCloseGate.resolve();
+      const server = new SequencedCloseServer('sequenced', [
+        firstCloseGate,
+        secondCloseGate,
+      ]);
+      const session = await connectMcpServers([server], {
+        connectInParallel,
+        closeTimeoutMs: 10,
+      });
+      const lateError = new Error('late close failed');
+
+      await withTimeout(session.close(), 500);
+      expect(session.errors.get(server)?.name).toBe('TimeoutError');
+
+      firstCloseGate.reject(lateError);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(session.errors.get(server)).toBe(lateError);
+
+      await expect(session.reconnect({ failedOnly: false })).resolves.toEqual([
+        server,
+      ]);
+      expect(server.closeCalls).toBe(2);
+      expect(server.connectCalls).toBe(2);
+      expect(session.active).toEqual([server]);
+      expect(session.failed).toEqual([]);
+      expect(session.errors.size).toBe(0);
+
+      await session.close();
+    },
+  );
+
+  it.each([false, true])(
+    'continues queued lifecycle work after a strict reconnect failure (parallel=%s)',
+    async (connectInParallel) => {
+      const lifecycleEvents: string[] = [];
+      const server = new ResourceTrackingServer('strict', lifecycleEvents, {
+        failConnectCall: 2,
+      });
+      const session = await connectMcpServers([server], {
+        connectInParallel,
+        connectTimeoutMs: null,
+        closeTimeoutMs: null,
+        strict: true,
+      });
+
+      const reconnectPromise = session.reconnect({ failedOnly: false });
+      const closePromise = session.close();
+
+      await expect(reconnectPromise).rejects.toThrow(
+        'connect failed after opening resource',
+      );
+      await expect(closePromise).resolves.toBeUndefined();
+
+      expect(server.resourceOpen).toBe(false);
+      expect(server.connectCalls).toBe(2);
+      expect(server.closeCalls).toBe(2);
+      expect(session.failed).toEqual([server]);
+      expect(session.errors.get(server)?.message).toBe(
+        'connect failed after opening resource',
+      );
+    },
+  );
 
   it('reconnects failed servers only by default', async () => {
     const server = new FlakyServer('flaky', 1);
@@ -714,7 +935,7 @@ describe('MCPServers', () => {
   );
 
   it.each([false, true])(
-    'rejects commands while a timed-out close is still in flight (parallel=%s)',
+    'bounds commands while a timed-out close is still in flight (parallel=%s)',
     async (connectInParallel) => {
       const closeGate = createDeferred<void>();
       const server = new SlowCloseServer('slow', closeGate);
@@ -727,7 +948,7 @@ describe('MCPServers', () => {
       const reconnectPromise = session.reconnect({ failedOnly: false });
       await expect(withTimeout(reconnectPromise, 500)).resolves.toEqual([]);
       expect(session.failed).toEqual([server]);
-      expect(session.errors.get(server)?.name).toBe('ClosingError');
+      expect(session.errors.get(server)?.name).toBe('TimeoutError');
       closeGate.resolve();
     },
   );
