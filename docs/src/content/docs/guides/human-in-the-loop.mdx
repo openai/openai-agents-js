@@ -50,16 +50,7 @@ You do not need to resolve every pending approval in the same pass. If you rerun
 
 ### Add input before resuming
 
-Use `RunState.addInput()` when new user input arrives while a run is paused and should be admitted before the next resumed model call. The staged input is part of the serialized state, so it survives `toString()` / `fromString()` even if unresolved approvals or local tool work delay that model call.
-
-```ts
-const state = result.state;
-
-state.addInput('The user also asked for a cost estimate.');
-state.approve(result.interruptions[0]);
-
-const resumed = await runner.run(agent, state);
-```
+Use `RunState.addInput()` when new user input arrives while a run is paused and should be admitted before the next resumed model call. Add the input before resolving approvals and passing the same state back to `Runner.run()`. The staged input is part of the serialized state, so it survives `toString()` / `fromString()` even if unresolved approvals or local tool work delay that model call.
 
 Read `state.pendingInput` to inspect a cloned snapshot of the staged items, or call `state.clearPendingInput()` before resuming to remove all of them. `addInput()` accepts either a string or an array of input items. It raises a `UserError` when the state cannot safely reach another model call, such as a terminal state, a state with no remaining turns, or an interruption whose tool result may end the run.
 
