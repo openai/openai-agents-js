@@ -15,6 +15,7 @@ import agentWithDynamicPrompt from '../../../../../examples/docs/agents/agentWit
 import agentWithLifecycleHooks from '../../../../../examples/docs/agents/agentWithLifecycleHooks.ts?raw';
 import agentCloning from '../../../../../examples/docs/agents/agentCloning.ts?raw';
 import agentForcingToolUse from '../../../../../examples/docs/agents/agentForcingToolUse.ts?raw';
+import toolUseBehaviorExample from '../../../../../examples/docs/agents/toolUseBehavior.ts?raw';
 
 Agents are the main building‑block of the OpenAI Agents SDK. An **Agent** is a Large Language Model (LLM) that has been configured with:
 
@@ -229,12 +230,11 @@ After a tool call the SDK automatically resets `toolChoice` back to `'auto'`. Th
 - `{ stopAtToolNames: ['my_tool'] }` – stop when any of the listed tools is called.
 - `(context, toolResults) => ...` – custom function returning whether the run should finish.
 
-```typescript
-const agent = new Agent({
-  ...,
-  toolUseBehavior: 'stop_on_first_tool',
-});
-```
+<Code
+  lang="typescript"
+  code={toolUseBehaviorExample}
+  title="Stop after the first function tool result"
+/>
 
 Note: `toolUseBehavior` only applies to **function tools**. Hosted tools always return to the model for processing.
 

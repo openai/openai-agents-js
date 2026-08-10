@@ -13,6 +13,9 @@ import streamableHttpExample from '../../../../../examples/docs/mcp/streamableHt
 import stdioExample from '../../../../../examples/docs/mcp/stdio.ts?raw';
 import toolFilterExample from '../../../../../examples/docs/mcp/tool-filter.ts?raw';
 import mcpServersExample from '../../../../../examples/docs/mcp/mcpServers.ts?raw';
+import agentMcpConfigExample from '../../../../../examples/docs/mcp/agentMcpConfig.ts?raw';
+import asyncDisposeExample from '../../../../../examples/docs/mcp/asyncDispose.ts?raw';
+import serverPrefixedToolNamesExample from '../../../../../examples/docs/mcp/serverPrefixedToolNames.ts?raw';
 
 The [**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) is an open protocol that standardizes how applications provide tools and context to LLMs. From the MCP docs:
 
@@ -99,26 +102,7 @@ Set `deferLoading: true` when you want the model to load a hosted MCP server's t
 
 Set `allowedCallers: ['programmatic']` when hosted MCP tools should only be called from model-generated JavaScript, or include both `'direct'` and `'programmatic'` to allow either path. Add `programmaticToolCallingTool()` to the same agent. Existing `requireApproval` and `onApproval` policies still apply when the program invokes an MCP tool. See [Programmatic Tool Calling](/openai-agents-js/guides/tools#programmatic-tool-calling) for the complete setup.
 
-`requireApproval` object form:
-
-```ts
-{
-  always?: { toolNames: string[] };
-  never?: { toolNames: string[] };
-}
-```
-
-`onApproval` signature:
-
-```ts
-async function onApproval(
-  context,
-  item,
-): Promise<{
-  approve: boolean;
-  reason?: string;
-}> {}
-```
+The `requireApproval` object form accepts optional `always` and `never` entries. Each entry can select tools with `toolNames` or by their read-only annotation. The optional `onApproval` callback receives the current run context and approval item, then returns a promise containing `approve` and an optional `reason`.
 
 ### Connector-backed hosted servers
 
@@ -138,20 +122,11 @@ Fully working samples (Hosted tools/Streamable HTTP/stdio + Streaming, HITL, onA
 
 In addition to choosing a transport, you can tune how local MCP tools are prepared by setting `Agent.mcpConfig`.
 
-```ts
-const agent = new Agent({
-  name: 'Assistant',
-  mcpServers: [server],
-  mcpConfig: {
-    // Try to convert MCP tool schemas to strict JSON schema.
-    convertSchemasToStrict: true,
-    // Set to null to raise MCP tool failures instead of returning model-visible error text.
-    errorFunction: null,
-    // Prefix local MCP tool names with their server name.
-    includeServerInToolNames: true,
-  },
-});
-```
+<Code
+  lang="typescript"
+  code={agentMcpConfigExample}
+  title="Configure local MCP tools for an agent"
+/>
 
 Notes:
 
@@ -278,9 +253,11 @@ If your runtime supports `Symbol.asyncDispose`, `MCPServers` also supports the `
 
 Then you can write:
 
-```ts
-await using mcpServers = await connectMcpServers(servers);
-```
+<Code
+  lang="typescript"
+  code={asyncDisposeExample}
+  title="Close connected MCP servers with async disposal"
+/>
 
 ## Other things to know
 
@@ -296,15 +273,11 @@ By default, local MCP tools keep the tool name reported by the MCP server. If tw
 
 To opt in to deterministic server-prefixed names, set `mcpConfig.includeServerInToolNames: true` on the agent:
 
-```ts
-const agent = new Agent({
-  name: 'Assistant',
-  mcpServers: [docsServer, calendarServer],
-  mcpConfig: {
-    includeServerInToolNames: true,
-  },
-});
-```
+<Code
+  lang="typescript"
+  code={serverPrefixedToolNamesExample}
+  title="Prefix local MCP tool names with server names"
+/>
 
 With this setting, a `search` tool from a `docs` server is exposed to the model as `mcp_docs__search`, while a `search` tool from a `calendar` server is exposed as `mcp_calendar__search`. The SDK still invokes the original MCP tool name on the original server.
 
