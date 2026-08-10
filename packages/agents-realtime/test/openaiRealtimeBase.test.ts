@@ -8,7 +8,7 @@ import {
   expectTypeOf,
 } from 'vitest';
 import type { MessageEvent as WebSocketMessageEvent } from 'ws';
-import type { RealtimeClientMessage } from '../src/clientMessages';
+import type { RealtimeClientMessage, RealtimeSessionConfig } from '../src';
 import {
   DEFAULT_OPENAI_REALTIME_SESSION_CONFIG,
   OpenAIRealtimeBase,
@@ -172,6 +172,46 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(config.model).toBe('gpt-realtime-2.1');
     expect(config.parallel_tool_calls).toBe(false);
     expect(config.reasoning).toEqual({ effort: 'low' });
+  });
+
+  it('forwards GA input audio transcription options', () => {
+    const base = new TestBase();
+    const contextualTranscriptionConfig = {
+      audio: {
+        input: {
+          transcription: {
+            model: 'gpt-transcribe',
+            keywords: ['LegalOn', 'TomoniAI'],
+            languages: ['ja', 'en'],
+            prompt: 'A Japanese conversation about LegalOn and TomoniAI.',
+          },
+        },
+      },
+    } satisfies Partial<RealtimeSessionConfig>;
+    const lowLatencyTranscriptionConfig = {
+      audio: {
+        input: {
+          transcription: {
+            model: 'gpt-live-transcribe',
+            delay: 'low',
+          },
+        },
+      },
+    } satisfies Partial<RealtimeSessionConfig>;
+
+    const contextualPayload = base.buildSessionPayload(
+      contextualTranscriptionConfig,
+    );
+    const lowLatencyPayload = base.buildSessionPayload(
+      lowLatencyTranscriptionConfig,
+    );
+
+    expect(contextualPayload.audio?.input?.transcription).toEqual(
+      contextualTranscriptionConfig.audio.input.transcription,
+    );
+    expect(lowLatencyPayload.audio?.input?.transcription).toEqual(
+      lowLatencyTranscriptionConfig.audio.input.transcription,
+    );
   });
 
   it('preserves explicit null audio input config values', () => {

@@ -41,15 +41,11 @@ export type RealtimeAudioFormatDefinition =
  * @deprecated Use a {type: "audio/pcm"} format instead. String shorthands are deprecated.
  */
 export type RealtimeAudioFormatLegacy =
-  | 'pcm16'
-  | 'g711_ulaw'
-  | 'g711_alaw'
-  | (string & {});
+  'pcm16' | 'g711_ulaw' | 'g711_alaw' | (string & {});
 
 // User-facing union (legacy accepted, GA preferred)
 export type RealtimeAudioFormat =
-  | RealtimeAudioFormatLegacy
-  | RealtimeAudioFormatDefinition;
+  RealtimeAudioFormatLegacy | RealtimeAudioFormatDefinition;
 
 export type RealtimeTracingConfig =
   | {
@@ -64,10 +60,18 @@ export type RealtimeInputAudioNoiseReductionConfig = {
 };
 
 export type RealtimeInputAudioTranscriptionConfig = {
+  delay?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+  keywords?: string[];
   language?: string;
+  languages?: string[];
   model?:
+    | 'gpt-transcribe'
+    | 'gpt-live-transcribe'
     | 'gpt-4o-transcribe'
     | 'gpt-4o-mini-transcribe'
+    | 'gpt-4o-mini-transcribe-2025-12-15'
+    | 'gpt-4o-transcribe-diarize'
+    | 'gpt-realtime-whisper'
     | 'whisper-1'
     | (string & {});
   prompt?: string;
@@ -99,8 +103,7 @@ export type RealtimeTurnDetectionConfigCamelCase = {
 };
 
 export type RealtimeTurnDetectionConfig = (
-  | RealtimeTurnDetectionConfigAsIs
-  | RealtimeTurnDetectionConfigCamelCase
+  RealtimeTurnDetectionConfigAsIs | RealtimeTurnDetectionConfigCamelCase
 ) &
   Record<string, any>;
 
@@ -123,11 +126,7 @@ export type RealtimeAudioConfig = {
 };
 
 export type RealtimeReasoningEffort =
-  | 'minimal'
-  | 'low'
-  | 'medium'
-  | 'high'
-  | 'xhigh';
+  'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
 export type RealtimeReasoningConfig = {
   effort?: RealtimeReasoningEffort;
@@ -179,8 +178,7 @@ export type RealtimeSessionConfigDeprecated = RealtimeSessionConfigCommon & {
 
 // Union of configs; users should not mix-and-match; runtime converter will normalize
 export type RealtimeSessionConfig =
-  | RealtimeSessionConfigDefinition
-  | RealtimeSessionConfigDeprecated;
+  RealtimeSessionConfigDefinition | RealtimeSessionConfigDeprecated;
 
 function isDefined(
   key:
@@ -332,8 +330,7 @@ export type HostedMCPToolDefinition = RealtimeHostedMCPSharedFields & {
 };
 
 export type RealtimeToolDefinition =
-  | FunctionToolDefinition
-  | HostedMCPToolDefinition;
+  FunctionToolDefinition | HostedMCPToolDefinition;
 
 // Describes a tool as returned by an MCP server (via mcp_list_tools).
 // Shape mirrors the realtime event payload (with room for extensions).
