@@ -36,21 +36,11 @@ Choose a server type based on your use‑case:
 | Use any Streamable HTTP servers with non-OpenAI-Responses models | **2. Streamable HTTP** |
 | Work with local MCP servers that only support the standard-I/O protocol | **3. Stdio** |
 
-## MCP SDK v2 and v1 compatibility
+## MCP SDK v2 and v1 server compatibility
 
-The Agents SDK client integration uses the split MCP TypeScript SDK v2 package, `@modelcontextprotocol/client`. This package major is separate from the date-based MCP protocol revision negotiated with a server.
+The Agents SDK uses the MCP TypeScript SDK v2 client internally. This does not require your MCP server to migrate to the v2 server package. For stdio and Streamable HTTP connections, the Agents SDK negotiates the protocol automatically and remains compatible with existing servers implemented with the MCP TypeScript SDK v1 when they support a compatible protocol version.
 
-For stdio and Streamable HTTP connections, the client uses automatic protocol negotiation. It first probes for the modern `2026-07-28` protocol era and falls back to the legacy initialization handshake when the server only supports a 2025-era protocol such as `2025-06-18`. Existing servers built with the monolithic `@modelcontextprotocol/sdk` v1 package can therefore remain compatible over the wire; they do not need to share v1 SDK objects or imports with the Agents SDK process.
-
-Use these package names when you work directly with MCP SDK APIs:
-
-| Purpose | MCP TypeScript SDK package |
-| --- | --- |
-| Agents SDK client runtime and new direct client integrations | `@modelcontextprotocol/client` v2 |
-| Existing server integrations that have not migrated | `@modelcontextprotocol/sdk` v1 |
-| New or migrated server integrations | `@modelcontextprotocol/server` v2 plus the appropriate runtime adapter |
-
-MCP SDK v1 and v2 can be installed side by side because their package names differ, but do not pass SDK-created client, server, transport, or error objects across that package boundary. Treat the network or stdio wire protocol as the compatibility boundary. See the MCP TypeScript SDK guides for [protocol-version negotiation](https://github.com/modelcontextprotocol/typescript-sdk/blob/main/docs/protocol-versions.md) and [upgrading from v1 to v2](https://github.com/modelcontextprotocol/typescript-sdk/blob/main/docs/migration/upgrade-to-v2.md).
+If your application only uses the Agents SDK's `MCPServerStdio`, `MCPServerStreamableHttp`, or `MCPServerSSE` classes, you do not need to install or bridge MCP v1 and v2 packages for this compatibility. Migrate application-owned MCP SDK objects separately when you want to adopt the v2 MCP SDK APIs; see the MCP TypeScript SDK's [v1 to v2 migration guide](https://github.com/modelcontextprotocol/typescript-sdk/blob/main/docs/migration/upgrade-to-v2.md).
 
 ## 1. Hosted MCP server tools
 

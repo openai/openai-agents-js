@@ -288,11 +288,12 @@ A retry policy receives a `RetryPolicyContext` with:
 - `error` for raw inspection.
 - `normalized` facts such as `statusCode`, `retryAfterMs`, `errorCode`, `isNetworkError`, and `isAbort`.
 - `providerAdvice` when the underlying model/provider can supply retry guidance.
+- `replaySafety`, `responseStarted`, and `statefulRequest` so application policy can inspect the runner's stable replay classification without reinterpreting provider-specific errors.
 
 The policy can return either:
 
 - `true` / `false` for a simple retry decision.
-- `{ retry, delayMs?, reason? }` when you want to override the delay or attach a diagnostic reason for logging.
+- `{ retry, delayMs?, reason?, approveUnsafeReplay? }` when you want to override the delay, attach a diagnostic reason for logging, or explicitly authorize a non-streaming replay that the provider marked unsafe.
 
 The SDK exports ready-made helpers on `retryPolicies`:
 
@@ -317,6 +318,8 @@ Some failures are never retried automatically:
 - Provider advice that marks replay as unsafe.
 
 Stateful follow-up requests using `previousResponseId` or `conversationId` are also treated more conservatively. For those requests, non-provider predicates such as `networkError()` or `httpStatus([500])` are not enough by themselves. The retry policy must include a replay-safe approval from the provider, typically via `retryPolicies.providerSuggested()`.
+
+An application can override a provider's unsafe classification for a non-streaming request by returning `{ retry: true, approveUnsafeReplay: true }`. This is an explicit acknowledgement that the earlier request may already have been accepted and that retrying can duplicate a response or other provider-side work. Use it only when your application can tolerate that outcome. It does not override abort handling, a streamed request that emitted an event, or an unsafe streamed replay. When you compose policies with `retryPolicies.any(...)` or `retryPolicies.all(...)`, the approval is preserved only when a returned decision explicitly sets `approveUnsafeReplay: true`.
 
 #### Runner and agent merge behavior
 

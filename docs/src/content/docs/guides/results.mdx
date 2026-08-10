@@ -82,6 +82,7 @@ In practice:
 `newItems` gives you the richest view of what happened during the run. Common item types are:
 
 - [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem) for assistant messages.
+- [`RunInputItem`](/openai-agents-js/openai/agents/classes/runinputitem) for input admitted from `RunState.pendingInput` while resuming a run.
 - [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem) for reasoning items.
 - [`RunToolSearchCallItem`](/openai-agents-js/openai/agents/classes/runtoolsearchcallitem) and [`RunToolSearchOutputItem`](/openai-agents-js/openai/agents/classes/runtoolsearchoutputitem) for Responses tool-search requests and the loaded tool definitions they return.
 - [`RunToolCallItem`](/openai-agents-js/openai/agents/classes/runtoolcallitem) and [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem) for tool calls and their results.
@@ -91,6 +92,8 @@ In practice:
 Choose `newItems` over `output` whenever you need to know which agent produced an item or whether it marks a tool, tool-search, handoff, or approval boundary. When you use `toolSearchTool()`, these tool-search items are the easiest way to inspect which deferred tools or namespaces were loaded before the normal tool call happened.
 
 If a local tool or MCP server defines `customDataExtractor`, the corresponding `RunToolCallOutputItem.customData` contains the returned SDK-only metadata. This data is useful for application UI state such as renderer hints or internal IDs. It survives `RunState` serialization, but it is excluded from `history` and is not sent back to the model.
+
+`RunToolCallOutputItem.output` is the SDK-side tool return value. JSON-compatible primitives, arrays, and plain objects preserve their structure across `RunState` serialization. Other live values keep the existing string fallback. This wrapper value remains separate from `rawItem.output`, which is the model-visible tool output used by `history` and replay.
 
 ## Continue or resume the conversation
 
