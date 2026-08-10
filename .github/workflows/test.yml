@@ -12,6 +12,7 @@ permissions:
 jobs:
   changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       run_ci: ${{ steps.filter.outputs.run_ci }}
     steps:
@@ -89,6 +90,7 @@ jobs:
   test:
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       NODE_OPTIONS: "--max_old_space_size=6144"
     strategy:
@@ -141,6 +143,7 @@ jobs:
   windows-sandbox-paths:
     needs: changes
     runs-on: windows-latest
+    timeout-minutes: 15
     env:
       CI: "1"
       NODE_ENV: test
@@ -182,6 +185,7 @@ jobs:
   coverage:
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       NODE_OPTIONS: "--max_old_space_size=6144"
     steps:
