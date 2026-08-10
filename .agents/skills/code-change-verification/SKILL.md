@@ -7,7 +7,7 @@ description: Run the mandatory verification stack when changes affect runtime co
 
 ## Overview
 
-Ensure work is only marked complete after installing dependencies, building, linting, type checking (including generated declarations), and tests pass. Use this skill when changes affect runtime code, tests, or build/test configuration.
+Ensure work is only marked complete after installing dependencies, building, linting, type checking (including generated declarations), and tests pass. Use this skill when changes affect runtime code, tests, or build/test configuration. This is a post-review final gate: when `$implementation-final-review` applies, do not invoke the broad stack until its clean-review condition applies to the stable task diff.
 
 ## Quick start
 
@@ -17,6 +17,13 @@ Ensure work is only marked complete after installing dependencies, building, lin
 4. Windows: `powershell -ExecutionPolicy Bypass -File .agents/skills/code-change-verification/scripts/run.ps1`.
 5. If any command fails, fix the issue, rerun the script, and report the failing output.
 6. Confirm completion only when all commands succeed with no remaining issues.
+
+## Start condition and host capacity
+
+- During iterative review, use only focused tests and a narrowly targeted static check when the changed typing boundary requires one. Defer repository-wide `pnpm -r build-check` and the rest of this complete stack until review is clean.
+- Immediately before starting the complete stack, use available read-only task or process evidence to check whether another repository-wide test, typecheck, build, examples runner, or integration command is already active on the same host.
+- When concrete contention is visible, continue useful non-heavy work such as review, remediation, evidence preparation, or focused checks, then check again later. Do not create or wait on a repository lock, host-wide mutex, or sentinel file.
+- Start automatically once review is clean, the diff is stable, and observable host capacity is available. Do not require a user-triggered `finalize` message. If host telemetry is unavailable, do not block solely because capacity cannot be measured.
 
 ## Manual workflow
 

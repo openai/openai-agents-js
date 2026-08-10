@@ -28,6 +28,8 @@ Run it when you change:
 
 You can skip `$code-change-verification` for docs-only or repo-meta changes (for example, `docs/`, `.agents/`, `README.md`, `AGENTS.md`, `.github/`), unless a user explicitly asks to run the full verification stack.
 
+Treat `$code-change-verification` as the post-review final gate, not as an iterative review check. When `$implementation-final-review` applies, satisfy its clean-review condition before starting the repository-wide install, build, lint, typecheck, test, examples, integration, and format-check stack. Immediately before starting that stack, use available read-only task or process evidence to check for another broad test, typecheck, build, examples, or integration command already running on the same host. When concrete contention is visible, keep making progress on review, remediation, evidence preparation, or focused checks and defer the broad stack until capacity is available. Do not add a repository lock, host-wide mutex, sentinel file, or user-triggered `finalize` step. Lack of host telemetry alone is not a blocker.
+
 #### `$changeset-validation`
 
 When you change anything under `packages/` or touch `.changeset/`, use `$changeset-validation` to create and validate the changeset before you treat the code as final. Codex must ensure an appropriate changeset exists that covers every changed package, and run this skill alongside `$code-change-verification` ahead of handoff. When writing the changeset summary, use a Conventional Commit-style message (for example, `fix: ...` or `feat: ...`) so it can serve as a commit title.
@@ -46,13 +48,19 @@ An independent reviewer dispatched by `$implementation-final-review` must not in
 
 #### `$implementation-final-review`
 
-After implementing runtime code, tests, examples, build/test behavior, or behavior-impacting docs and completing focused tests, run `$implementation-final-review` before final `$changeset-validation`, `$code-change-verification`, and `$pr-draft-summary` work and before declaring the task complete. This repository instruction authorizes automatic invocation without a separate user mention. Do not invoke it for planning, investigation, review, or report-only tasks, repo-meta changes, or docs without behavior impact. The skill's clean-review gate does not replace any other mandatory repository skill or verification gate.
+After implementing runtime code, tests, examples, build/test behavior, or behavior-impacting docs and completing focused tests, run `$implementation-final-review` before final `$changeset-validation`, `$code-change-verification`, and `$pr-draft-summary` work and before declaring the task complete. Do not start repository-wide lint, typecheck, tests, builds, examples, integration suites, or format checks while the independent review is incomplete or finding-bearing. This repository instruction authorizes automatic invocation without a separate user mention. Do not invoke it for planning, investigation, review, or report-only tasks, repo-meta changes, or docs without behavior impact. The skill's clean-review gate does not replace any other mandatory repository skill or verification gate.
 
 #### `$pr-draft-summary`
 
 Before sending the final response for a task, inspect the actual task diff. If it includes runtime code, tests, examples, build/test configuration, or docs with behavior impact, invoke `$pr-draft-summary` to generate the required PR summary block, branch suggestion, title, and draft description. This is a mandatory close-out gate regardless of the perceived size of the change; do not classify an eligible runtime, test, example, or build/test configuration change as trivial. Run it after any required `$code-change-verification` and `$changeset-validation` work.
 
 Skip `$pr-draft-summary` only when no eligible files changed, every change is limited to repo metadata or docs without behavior impact, the task is conversation-only, or the user explicitly says not to include the PR draft block.
+
+### Work Status Reporting
+
+- Use `RUNNING` only in commentary while autonomous work remains and no user action is required. Do not end a turn with a final response that says the task is still running or asks the user to send a generic continuation prompt.
+- Use `COMPLETE` in the final response only when the requested work and every applicable review, verification, and local handoff step are complete.
+- Use `NEEDS_DECISION` in the final response only when progress requires a concrete user choice, expanded authority, or an unresolved external condition. State the exact decision or condition instead of asking the user to say "continue".
 
 ### Git Worktree and Branch Safety
 
