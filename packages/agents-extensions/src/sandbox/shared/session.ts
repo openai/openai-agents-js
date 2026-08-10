@@ -79,10 +79,22 @@ export async function withProviderError<T>(
   operation: string,
   fn: () => Promise<T>,
   context: Record<string, unknown> = {},
+  options: { redactProviderError?: boolean } = {},
 ): Promise<T> {
   try {
     return await fn();
   } catch (error) {
+    if (options.redactProviderError) {
+      throw new SandboxProviderError(
+        `${providerName} failed to ${operation}.`,
+        {
+          provider,
+          operation,
+          ...context,
+          retryable: safelyReadProviderErrorRetryability(error),
+        },
+      );
+    }
     if (error instanceof UserError) {
       throw error;
     }
@@ -158,6 +170,14 @@ export function providerErrorDetails(error: unknown): Record<string, unknown> {
 
 export function providerErrorRetryability(error: unknown): boolean | null {
   return readProviderErrorRetryability(error, new Set<object>(), 0);
+}
+
+function safelyReadProviderErrorRetryability(error: unknown): boolean | null {
+  try {
+    return providerErrorRetryability(error);
+  } catch {
+    return null;
+  }
 }
 
 function errorMessage(error: unknown): string {

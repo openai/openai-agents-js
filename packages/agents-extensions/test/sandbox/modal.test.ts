@@ -804,6 +804,72 @@ describe('ModalSandboxClient', () => {
     });
   });
 
+  test('redacts Modal inline cloud bucket credential failures', async () => {
+    const accessKeyId = 'MODAL_ACCESS_KEY_SENTINEL';
+    const secretAccessKey = 'MODAL_SECRET_KEY_SENTINEL';
+    const providerError = Object.assign(
+      new Error(`secret creation failed for ${accessKeyId}`),
+      {
+        statusCode: 503,
+        requestId: `req_${secretAccessKey}`,
+        response: {
+          status: 503,
+          data: {
+            error: {
+              message: secretAccessKey,
+            },
+          },
+        },
+        cause: new Error(secretAccessKey),
+      },
+    );
+    secretFromObjectMock.mockRejectedValueOnce(providerError);
+    const client = new ModalSandboxClient();
+
+    const caught = await client
+      .create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 's3_mount',
+              bucket: 'logs',
+              accessKeyId,
+              secretAccessKey,
+              mountStrategy: new ModalCloudBucketMountStrategy(),
+            },
+          },
+        }),
+        {
+          appName: 'sandbox-tests',
+        },
+      )
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+    expect(caught).toBeInstanceOf(SandboxProviderError);
+    const exposedError = caught as SandboxProviderError;
+    expect(exposedError.message).toBe(
+      'ModalSandboxClient failed to create cloud bucket secret.',
+    );
+    expect(exposedError.details).toEqual({
+      provider: 'modal',
+      operation: 'create cloud bucket secret',
+      bucketName: 'logs',
+      retryable: true,
+    });
+    expect(secretFromObjectMock).toHaveBeenCalledWith({
+      AWS_ACCESS_KEY_ID: accessKeyId,
+      AWS_SECRET_ACCESS_KEY: secretAccessKey,
+    });
+    expect(String(caught)).not.toContain(accessKeyId);
+    expect(String(caught)).not.toContain(secretAccessKey);
+    expect(JSON.stringify(caught)).not.toContain(accessKeyId);
+    expect(JSON.stringify(caught)).not.toContain(secretAccessKey);
+    expect(sandboxesCreateMock).not.toHaveBeenCalled();
+  });
+
   test('supports image and sandbox selectors without snake_case aliases', async () => {
     const existingSandbox = {
       sandboxId: 'sbx_existing',

@@ -1829,6 +1829,7 @@ async function modalCloudBucketMountSecret(
       'create cloud bucket secret',
       async () => await modal.secrets.fromObject(config.credentials ?? {}),
       { bucketName: config.bucketName },
+      { redactProviderError: true },
     ),
   };
 }
