@@ -3,7 +3,7 @@ import { MCPServerStreamableHttp, connectMcpServers } from '@openai/agents';
 async function main() {
   const servers = [
     new MCPServerStreamableHttp({
-      url: 'https://example.com/mcp',
+      url: 'https://your-mcp-server.invalid/mcp',
       name: 'Docs server',
     }),
   ];

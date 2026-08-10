@@ -281,7 +281,7 @@ To opt in to deterministic server-prefixed names, set `mcpConfig.includeServerIn
 
 With this setting, a `search` tool from a `docs` server is exposed to the model as `mcp_docs__search`, while a `search` tool from a `calendar` server is exposed as `mcp_calendar__search`. The SDK still invokes the original MCP tool name on the original server.
 
-Generated names are ASCII-safe, stay within the name-length limit for `FunctionTool` instances, and do not collide with names of local `FunctionTool` instances or enabled handoffs on the same agent. The setting only affects local Streamable HTTP and stdio MCP tools; hosted MCP tools keep their hosted server labels and tool metadata.
+Generated names are ASCII-safe, stay within the name-length limit for `FunctionTool` instances, and do not collide with names of local `FunctionTool` instances or enabled handoffs on the same agent. The setting affects all local MCP transports, including Streamable HTTP, SSE, and stdio; hosted MCP tools keep their hosted server labels and tool metadata.
 
 ### Tool filtering
 
