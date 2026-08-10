@@ -17,5 +17,3 @@ const agent = new Agent({
     includeServerInToolNames: true,
   },
 });
-
-console.log(agent.name);

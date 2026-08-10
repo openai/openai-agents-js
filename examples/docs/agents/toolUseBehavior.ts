@@ -3,9 +3,9 @@ import { z } from 'zod';
 
 const calculatorTool = tool({
   name: 'calculator',
-  description: 'Evaluate a numeric expression.',
-  parameters: z.object({ expression: z.string() }),
-  execute: async ({ expression }) => expression,
+  description: 'Add two numbers.',
+  parameters: z.object({ left: z.number(), right: z.number() }),
+  execute: async ({ left, right }) => left + right,
 });
 
 const agent = new Agent({
@@ -14,5 +14,3 @@ const agent = new Agent({
   tools: [calculatorTool],
   toolUseBehavior: 'stop_on_first_tool',
 });
-
-console.log(agent.name);
