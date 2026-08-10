@@ -1,7 +1,7 @@
 import { RunItem } from '../items';
 import { UserError } from '../errors';
 import { getToolSearchProviderCallId } from '../tooling';
-import { AgentInputItem } from '../types';
+import { AgentInputItem, AgentOutputItem } from '../types';
 import * as protocol from '../types/protocol';
 import { serializeBinary } from '../utils/binary';
 import {
@@ -567,6 +567,19 @@ function getContinuationOutputItems(
     extractOutputItemsFromRunItems(generatedItems, reasoningItemIdPolicy),
   );
   return dropOrphanToolCalls(generatedOutputItems);
+}
+
+/**
+ * Extracts generated output without including input admitted while resuming a run.
+ */
+export function getRunOutput(
+  generatedItems: RunItem[],
+  reasoningItemIdPolicy?: ReasoningItemIdPolicy,
+): AgentOutputItem[] {
+  return getContinuationOutputItems(
+    generatedItems.filter((item) => item.type !== 'input_item'),
+    reasoningItemIdPolicy,
+  );
 }
 
 /**

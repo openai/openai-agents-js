@@ -14,7 +14,8 @@ import {
   OutputGuardrailMetadata,
 } from '../guardrail';
 import { RunState } from '../runState';
-import { getTurnInput } from './items';
+import type { AgentInputItem } from '../types';
+import { getRunOutput } from './items';
 import { withGuardrailSpan } from '../tracing';
 import type { GuardrailFunctionOutput } from '../guardrail';
 import { processFinalOutputWithRedaction } from '../utils/finalOutputError';
@@ -209,14 +210,17 @@ export async function runInputGuardrails<
 >(
   state: RunState<TContext, TAgent>,
   guardrails: InputGuardrailDefinition[],
-  options: { onErrorObserved?: (error: unknown) => void } = {},
+  options: {
+    onErrorObserved?: (error: unknown) => void;
+    input?: string | AgentInputItem[];
+  } = {},
 ): Promise<InputGuardrailResult[]> {
   if (guardrails.length === 0) {
     return [];
   }
   const guardrailArgs = {
     agent: state._currentAgent,
-    input: state._originalInput,
+    input: options.input ?? state._originalInput,
     context: state._context,
   };
   return await runGuardrailsWithTripwire({
@@ -274,8 +278,7 @@ export async function runOutputGuardrails<
       : processFinalOutputWithRedaction(() =>
           state._currentAgent.processFinalOutput(output),
         );
-  const runOutput = getTurnInput(
-    [],
+  const runOutput = getRunOutput(
     state._generatedItems,
     state._reasoningItemIdPolicy,
   );

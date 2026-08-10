@@ -7,6 +7,7 @@ import { buildAgentIdentityMap } from './runStateIdentity';
 export { buildAgentIdentityMap } from './runStateIdentity';
 import {
   RunMessageOutputItem,
+  RunInputItem,
   RunItem,
   RunToolApprovalItem,
   RunToolCallItem,
@@ -23,8 +24,10 @@ import { RunContext } from './runContext';
 import {
   extractOutputItemsFromRunItems,
   getTurnInput,
+  toAgentInputList,
   type ReasoningItemIdPolicy,
 } from './runner/items';
+import { getServerConversationOwner } from './runner/conversation';
 import { AgentToolUseTracker } from './runner/toolUseTracker';
 import { nextStepSchema, NextStep } from './runner/steps';
 import { createToolRunFunction, type ProcessedResponse } from './runner/types';
@@ -70,6 +73,7 @@ import {
   getFunctionToolStateKeys,
   getHostedMcpApprovalRequestIdentity,
   getHostedMcpApprovalRequestKey,
+  getToolCallName,
   getToolCallNamespace,
   getToolCallDisplayName,
   resolveFunctionToolCall,
@@ -150,8 +154,9 @@ import {
  * - 1.18: Adds sandbox session-state envelope version 3 so credential-redacted
  *   mount authority cannot be consumed by older SDKs, and binds per-call approvals
  *   and committed local tool results to canonical invocation fingerprints. It also
- *   scopes persistent hosted MCP approvals by server label and tool name, and preserves
- *   JSON-compatible tool outputs as structured data.
+ *   scopes persistent hosted MCP approvals by server label and tool name, preserves
+ *   JSON-compatible tool outputs as structured data, and adds durable pending input
+ *   and accepted-response resume state.
  */
 export const CURRENT_SCHEMA_VERSION = '1.18' as const;
 const SUPPORTED_SCHEMA_VERSIONS = [
@@ -1231,6 +1236,12 @@ const jsonCompatibleValueSchema = z.preprocess(
 
 const itemSchema = z.discriminatedUnion('type', [
   z.object({
+    type: z.literal('input_item'),
+    rawItem: protocol.ModelItem,
+    agent: serializedAgentSchema,
+    inputId: z.string().min(1),
+  }),
+  z.object({
     type: z.literal('message_output_item'),
     rawItem: protocol.AssistantMessageItem,
     agent: serializedAgentSchema,
@@ -1636,6 +1647,7 @@ export const SerializedRunState = z.object({
   currentTurn: z.number(),
   currentAgent: serializedAgentSchema,
   originalInput: z.string().or(z.array(protocol.ModelItem)),
+  pendingInput: z.array(protocol.ModelItem).optional(),
   modelResponses: z.array(modelResponseSchema),
   context: z.object({
     usage: usageSchema,
@@ -1774,6 +1786,10 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * Original user input prior to any processing.
    */
   public _originalInput: string | AgentInputItem[];
+  /**
+   * Input staged for admission immediately before the next resumed model call.
+   */
+  public _pendingInput: AgentInputItem[];
   /**
    * Responses from the model so far.
    */
@@ -1978,6 +1994,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     this._context = context;
     this._agentToolInvocation = undefined;
     this._originalInput = structuredClone(originalInput);
+    this._pendingInput = [];
     this._modelResponses = [];
     this._currentAgentSpan = undefined;
     this._currentAgent = startingAgent;
@@ -2330,6 +2347,75 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   }
 
   /**
+   * Returns a copy of input staged for the next resumed model call.
+   */
+  get pendingInput(): AgentInputItem[] {
+    return structuredClone(this._pendingInput);
+  }
+
+  /**
+   * Stages input for admission immediately before the next resumed model call.
+   */
+  addInput(input: string | AgentInputItem[]): void {
+    const currentStep = this._currentStep;
+    if (
+      currentStep?.type !== 'next_step_interruption' &&
+      currentStep?.type !== 'next_step_run_again'
+    ) {
+      throw new UserError('Cannot add input to a terminal RunState', this);
+    }
+    if (
+      this._maxTurns !== null &&
+      this._currentTurn >= this._maxTurns &&
+      !this._currentTurnInProgress
+    ) {
+      throw new UserError(
+        'Cannot add input to a RunState with no remaining model turns',
+        this,
+      );
+    }
+    if (currentStep.type === 'next_step_interruption') {
+      if (currentStep.data?.responseAccepted === true) {
+        throw new UserError(
+          'Cannot add input while an accepted model response is awaiting local processing',
+          this,
+        );
+      }
+      const toolUseBehavior = this._currentAgent.toolUseBehavior;
+      const interruptions = this.getInterruptions();
+      const stopsBeforeNextModel =
+        toolUseBehavior === 'stop_on_first_tool' ||
+        (typeof toolUseBehavior === 'object' &&
+          toolUseBehavior.stopAtToolNames.some((toolName) =>
+            interruptions.some(
+              (item) =>
+                item.name === toolName ||
+                (item.rawItem.type === 'function_call' &&
+                  getToolCallName(item.rawItem) === toolName),
+            ),
+          ));
+      if (stopsBeforeNextModel || typeof toolUseBehavior === 'function') {
+        throw new UserError(
+          'Cannot add input to an interrupted RunState whose tool result may end the run',
+          this,
+        );
+      }
+    }
+
+    const normalized = toAgentInputList(input).map((item) =>
+      protocol.ModelItem.parse(item),
+    );
+    this._pendingInput.push(...structuredClone(normalized));
+  }
+
+  /**
+   * Removes all input staged for the next resumed model call.
+   */
+  clearPendingInput(): void {
+    this._pendingInput = [];
+  }
+
+  /**
    * Returns all interruptions if the current step is an interruption otherwise returns an empty array.
    */
   getInterruptions(): RunToolApprovalItem[] {
@@ -2582,6 +2668,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
         agentIdentity.byAgent,
       ),
       originalInput: this._originalInput as any,
+      pendingInput:
+        this._pendingInput.length > 0 ? this._pendingInput : undefined,
       modelResponses: this._modelResponses.map((response) => {
         return {
           usage: {
@@ -2781,6 +2869,10 @@ async function buildRunStateFromString<
     currentSchemaVersion as SupportedSchemaVersion,
     jsonResult,
   );
+  const hasPendingInputField =
+    jsonResult !== null &&
+    typeof jsonResult === 'object' &&
+    hasOwnProperty(jsonResult, 'pendingInput');
   const stateJson = SerializedRunState.parse(jsonResult);
   assertSchemaVersionSupportsStructuredToolOutputs(
     currentSchemaVersion as SupportedSchemaVersion,
@@ -2809,6 +2901,11 @@ async function buildRunStateFromString<
   assertSchemaVersionSupportsOutputGuardrailSessionPersistence(
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
+  );
+  assertSchemaVersionSupportsPendingInput(
+    currentSchemaVersion as SupportedSchemaVersion,
+    stateJson,
+    hasPendingInputField,
   );
   const normalizedState = rehydrateLegacyCompactionRunItems(
     currentSchemaVersion as SupportedSchemaVersion,
@@ -3095,6 +3192,93 @@ function assertSchemaVersionSupportsOutputGuardrailSessionPersistence(
   throw new UserError(
     `Run state schema version ${schemaVersion} does not support output guardrail session persistence state. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
   );
+}
+
+function assertSchemaVersionSupportsPendingInput(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: z.infer<typeof SerializedRunState>,
+  hasPendingInputField: boolean,
+): void {
+  if (schemaVersionSupportsV118State(schemaVersion)) {
+    validateAcceptedResponseState(stateJson);
+    return;
+  }
+  const hasInputItems = [
+    ...stateJson.generatedItems,
+    ...(stateJson.lastProcessedResponse?.newItems ?? []),
+  ].some((item) => item.type === 'input_item');
+  const hasAcceptedResponseState = hasAcceptedResponseStepFields(
+    stateJson.currentStep,
+  );
+  if (
+    !hasPendingInputField &&
+    (stateJson.pendingInput?.length ?? 0) === 0 &&
+    !hasInputItems &&
+    !hasAcceptedResponseState
+  ) {
+    return;
+  }
+  throw new UserError(
+    `Run state schema version ${schemaVersion} does not support pending input. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+  );
+}
+
+function hasAcceptedResponseStepFields(
+  currentStep: z.infer<typeof nextStepSchema> | undefined,
+): boolean {
+  if (currentStep?.type === 'next_step_interruption') {
+    return (
+      hasOwnProperty(currentStep.data, 'responseAccepted') ||
+      hasOwnProperty(currentStep.data, 'localProcessingStarted')
+    );
+  }
+  return (
+    currentStep?.type === 'next_step_final_output' &&
+    (currentStep.responseAccepted !== undefined ||
+      currentStep.localFinalizationStarted !== undefined)
+  );
+}
+
+function hasOwnProperty(record: object, key: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function validateAcceptedResponseState(
+  stateJson: z.infer<typeof SerializedRunState>,
+): void {
+  const currentStep = stateJson.currentStep;
+  let responseAccepted = false;
+  let invalidProgress = false;
+  if (currentStep?.type === 'next_step_interruption') {
+    const hasAccepted = hasOwnProperty(currentStep.data, 'responseAccepted');
+    const hasStarted = hasOwnProperty(
+      currentStep.data,
+      'localProcessingStarted',
+    );
+    responseAccepted = currentStep.data.responseAccepted === true;
+    invalidProgress =
+      (hasAccepted && !responseAccepted) ||
+      (hasStarted && currentStep.data.localProcessingStarted !== true) ||
+      (hasStarted && !responseAccepted);
+  } else if (currentStep?.type === 'next_step_final_output') {
+    responseAccepted = currentStep.responseAccepted === true;
+    invalidProgress =
+      currentStep.localFinalizationStarted === true && !responseAccepted;
+  }
+  if (invalidProgress) {
+    throw new UserError('RunState accepted response progress is invalid.');
+  }
+  if (
+    responseAccepted &&
+    !getServerConversationOwner(
+      stateJson.conversationId,
+      stateJson.previousResponseId,
+    )
+  ) {
+    throw new UserError(
+      'Accepted model response state requires exactly one server-managed conversation owner.',
+    );
+  }
 }
 
 function validateOutputGuardrailSessionPersistenceState(
@@ -5297,6 +5481,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   state._currentStep = stateJson.currentStep;
 
   state._originalInput = stateJson.originalInput;
+  state._pendingInput = structuredClone(stateJson.pendingInput ?? []);
   state._modelResponses = stateJson.modelResponses.map(
     deserializeModelResponse,
   );
@@ -5753,6 +5938,12 @@ export function deserializeItem(
   agentMap: Map<string, Agent<any, any>>,
 ): RunItem {
   switch (serializedItem.type) {
+    case 'input_item':
+      return new RunInputItem(
+        serializedItem.rawItem,
+        resolveSerializedAgent(serializedItem.agent, agentMap),
+        serializedItem.inputId,
+      );
     case 'message_output_item':
       return new RunMessageOutputItem(
         serializedItem.rawItem,

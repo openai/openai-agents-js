@@ -1,3 +1,4 @@
+import { randomUUID } from '@openai/agents-core/_shims';
 import { Agent } from './agent';
 import { toSmartString } from './utils/smartString';
 import * as protocol from './types/protocol';
@@ -15,6 +16,29 @@ export class RunItemBase {
     return {
       type: this.type,
       rawItem: this.rawItem,
+    };
+  }
+}
+
+/**
+ * An input item admitted while resuming a run.
+ */
+export class RunInputItem extends RunItemBase {
+  public readonly type = 'input_item' as const;
+
+  constructor(
+    public rawItem: protocol.ModelItem,
+    public agent: Agent<any, any>,
+    public inputId: string = randomUUID(),
+  ) {
+    super();
+  }
+
+  toJSON() {
+    return {
+      ...super.toJSON(),
+      agent: this.agent.toJSON(),
+      inputId: this.inputId,
     };
   }
 }
@@ -310,6 +334,7 @@ function getStringProperty(item: object, key: string): string | undefined {
 }
 
 export type RunItem =
+  | RunInputItem
   | RunMessageOutputItem
   | RunToolCallItem
   | RunToolSearchCallItem

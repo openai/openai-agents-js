@@ -1,10 +1,182 @@
 import type { Agent, AgentOutputType } from '../agent';
+import { UserError } from '../errors';
 import type { RunState } from '../runState';
 import type { RunConfig, Runner, ToolErrorFormatter } from '../run';
 import { getFunctionToolStateKeyForCall } from '../toolIdentity';
 import type { SingleStepResult } from './steps';
 import type { ProcessedResponse } from './types';
-import { resolveInterruptedTurn } from './turnResolution';
+import { getServerConversationOwner } from './conversation';
+import {
+  preflightToolInvocations,
+  resolveInterruptedTurn,
+  resolveTurnAfterModelResponse,
+} from './turnResolution';
+
+export function isAcceptedResponseCheckpoint(
+  state: RunState<any, any>,
+): boolean {
+  const isCheckpoint =
+    state._currentStep?.type === 'next_step_interruption' &&
+    state._currentStep.data?.responseAccepted === true;
+  if (isCheckpoint) {
+    assertAcceptedResponseServerOwnership(state);
+  }
+  return isCheckpoint;
+}
+
+function assertAcceptedResponseServerOwnership(
+  state: RunState<any, any>,
+): void {
+  if (
+    getServerConversationOwner(state._conversationId, state._previousResponseId)
+  ) {
+    return;
+  }
+  throw new UserError(
+    'Accepted model response state requires exactly one server-managed conversation owner',
+    state,
+  );
+}
+
+export function assertAcceptedResponseContinuationAuthority(
+  state: RunState<any, any>,
+  requestedConversationId?: string,
+  requestedPreviousResponseId?: string,
+): void {
+  const currentStep = state._currentStep;
+  const responseAccepted =
+    (currentStep?.type === 'next_step_interruption' &&
+      currentStep.data?.responseAccepted === true) ||
+    (currentStep?.type === 'next_step_final_output' &&
+      currentStep.responseAccepted === true);
+  if (!responseAccepted) {
+    return;
+  }
+  assertAcceptedResponseServerOwnership(state);
+  if (
+    (requestedConversationId !== undefined &&
+      requestedConversationId !== state._conversationId) ||
+    (requestedPreviousResponseId !== undefined &&
+      requestedPreviousResponseId !== state._previousResponseId)
+  ) {
+    throw new UserError(
+      'Accepted model response state cannot change its server-managed conversation owner',
+      state,
+    );
+  }
+}
+
+export function markAcceptedResponseProcessingStarted(
+  state: RunState<any, any>,
+): void {
+  const currentStep = state._currentStep;
+  if (
+    currentStep?.type === 'next_step_interruption' &&
+    currentStep.data?.responseAccepted === true
+  ) {
+    assertAcceptedResponseServerOwnership(state);
+    currentStep.data.localProcessingStarted = true;
+  }
+}
+
+export function markAcceptedResponseFinalizationStarted(
+  state: RunState<any, any>,
+): void {
+  const currentStep = state._currentStep;
+  if (
+    currentStep?.type !== 'next_step_final_output' ||
+    currentStep.responseAccepted !== true
+  ) {
+    return;
+  }
+  assertAcceptedResponseServerOwnership(state);
+  if (currentStep.localFinalizationStarted === true) {
+    throw new UserError(
+      'An accepted model response has unfinished local finalization and cannot be resumed safely; start a new run instead',
+      state,
+    );
+  }
+  currentStep.localFinalizationStarted = true;
+}
+
+function hasUncommittedLocalEffects(
+  processedResponse: ProcessedResponse<any>,
+  suppressedToolCalls: ReadonlySet<unknown>,
+): boolean {
+  return [
+    ...processedResponse.functions.map((run) => run.toolCall),
+    ...processedResponse.computerActions.map((run) => run.toolCall),
+    ...processedResponse.shellActions.map((run) => run.toolCall),
+    ...processedResponse.applyPatchActions.map((run) => run.toolCall),
+    ...processedResponse.handoffs.map((run) => run.toolCall),
+  ].some((toolCall) => !suppressedToolCalls.has(toolCall));
+}
+
+/**
+ * Continues local processing for a response that was already accepted by the model provider.
+ */
+export async function resumeAcceptedModelResponse<
+  TContext,
+  TAgent extends Agent<TContext, AgentOutputType>,
+>(options: {
+  state: RunState<TContext, TAgent>;
+  runner: Runner;
+  toolErrorFormatter?: ToolErrorFormatter;
+  agentToolParentRunConfig?: Partial<RunConfig>;
+  signal?: AbortSignal;
+  onStepItems?: (turnResult: SingleStepResult) => void;
+}): Promise<SingleStepResult> {
+  const { state } = options;
+  if (!state._lastTurnResponse || !state._lastProcessedResponse) {
+    throw new UserError(
+      'An accepted model response could not be processed; start a new run instead of retrying it',
+      state,
+    );
+  }
+
+  const suppressedToolCalls = preflightToolInvocations(
+    state._currentAgent,
+    state,
+    state._lastProcessedResponse,
+  );
+  if (
+    state._currentStep?.type === 'next_step_interruption' &&
+    state._currentStep.data?.localProcessingStarted === true &&
+    hasUncommittedLocalEffects(
+      state._lastProcessedResponse,
+      suppressedToolCalls,
+    )
+  ) {
+    throw new UserError(
+      'An accepted model response has unfinished local tool work and cannot be resumed safely; start a new run instead',
+      state,
+    );
+  }
+  markAcceptedResponseProcessingStarted(state);
+  const turnResult = await resolveTurnAfterModelResponse(
+    state._currentAgent,
+    state._originalInput,
+    state._generatedItems,
+    state._lastTurnResponse,
+    state._lastProcessedResponse,
+    options.runner,
+    state,
+    options.toolErrorFormatter,
+    options.agentToolParentRunConfig,
+    undefined,
+    options.signal,
+    suppressedToolCalls,
+  );
+  applyTurnResult({
+    state,
+    turnResult,
+    agent: state._currentAgent,
+    toolsUsed: state._lastProcessedResponse.toolsUsed,
+    resetTurnPersistence: false,
+    onStepItems: options.onStepItems,
+  });
+  return turnResult;
+}
 
 export type InterruptedTurnOutcome = {
   nextStep: SingleStepResult['nextStep'];
@@ -41,6 +213,7 @@ export function applyTurnResult<
     resetTurnPersistence,
     onStepItems,
   } = options;
+  const responseAccepted = isAcceptedResponseCheckpoint(state);
   onStepItems?.(turnResult);
   state._commitToolInvocations(turnResult.toolInvocationCommitItems);
   state._toolUseTracker.addToolUse(agent, toolsUsed);
@@ -52,7 +225,10 @@ export function applyTurnResult<
   ) {
     state.resetTurnPersistence();
   }
-  state._currentStep = turnResult.nextStep;
+  state._currentStep =
+    responseAccepted && turnResult.nextStep.type === 'next_step_final_output'
+      ? { ...turnResult.nextStep, responseAccepted: true }
+      : turnResult.nextStep;
   state._finalOutputSource =
     turnResult.nextStep.type === 'next_step_final_output'
       ? (turnResult.finalOutputSource ?? 'turn_resolution')

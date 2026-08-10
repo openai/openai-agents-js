@@ -14,7 +14,6 @@ import {
 } from './guardrail';
 import type {
   InputGuardrailDefinition,
-  InputGuardrailResult,
   OutputGuardrailDefinition,
   OutputGuardrailMetadata,
 } from './guardrail';
@@ -58,6 +57,7 @@ import type { AgentInputItem } from './types';
 import {
   ServerConversationTracker,
   applyCallModelInputFilter,
+  getServerConversationOwner,
 } from './runner/conversation';
 import {
   createGuardrailTracker,
@@ -100,10 +100,22 @@ import {
 } from './runner/turnResolution';
 import { hasBlockedOutputExecutionEffect } from './runner/blockedOutputPersistence';
 import { prepareTurn } from './runner/turnPreparation';
+import type { NextStep } from './runner/steps';
+import {
+  commitPendingInput,
+  hasUnpersistedRunInput,
+  mapPendingInputAfterContextProcessing,
+  selectPendingInputForAdmission,
+} from './runner/pendingInput';
 import { prepareAgentArtifacts } from './runner/modelPreparation';
 import {
   applyTurnResult,
+  assertAcceptedResponseContinuationAuthority,
   handleInterruptedOutcome,
+  isAcceptedResponseCheckpoint,
+  markAcceptedResponseProcessingStarted,
+  markAcceptedResponseFinalizationStarted,
+  resumeAcceptedModelResponse,
   resumeInterruptedTurn,
 } from './runner/runLoop';
 import {
@@ -143,6 +155,7 @@ import type {
 } from './runner/types';
 import {
   attachRunStateToError,
+  invalidateAcceptedResponseReplayEvidence,
   prepareRunErrorFinalOutput,
 } from './runner/errorHandlers';
 import type { RunErrorHandlers } from './runner/errorHandlers';
@@ -477,6 +490,27 @@ function rollbackUnstartedTurn(
   return true;
 }
 
+function assertPendingInputServerOwnership(
+  state: RunState<any, any>,
+  conversationId: string | undefined,
+  previousResponseId: string | undefined,
+): void {
+  const serverManagesConversation = Boolean(
+    conversationId || previousResponseId,
+  );
+  if (
+    state._pendingInput.length === 0 ||
+    !serverManagesConversation ||
+    getServerConversationOwner(conversationId, previousResponseId)
+  ) {
+    return;
+  }
+  throw new UserError(
+    'Pending RunState input requires exactly one server-managed conversation owner',
+    state,
+  );
+}
+
 // --------------------------------------------------------------
 //  Runner
 // --------------------------------------------------------------
@@ -724,6 +758,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       AgentInputItem[] | undefined;
     if (resumingFromState) {
       const resumedState = input as RunState<TContext, TAgent>;
+      assertAcceptedResponseContinuationAuthority(
+        resumedState,
+        effectiveOptions.conversationId,
+        effectiveOptions.previousResponseId,
+      );
       const hadSessionBinding =
         resumedState._currentTurnSessionHistoryTransactionSessionId !==
         undefined;
@@ -1097,12 +1136,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       const resolvedPreviousResponseId =
         options.previousResponseId ??
         (isResumedState ? state._previousResponseId : undefined);
+      const serverManagesConversation = Boolean(
+        resolvedConversationId || resolvedPreviousResponseId,
+      );
+      assertPendingInputServerOwnership(
+        state,
+        resolvedConversationId,
+        resolvedPreviousResponseId,
+      );
 
       if (!isResumedState) {
         await prepareSessionHistoryTransactionsForRun(options.session, state, {
-          serverManagesConversation: Boolean(
-            resolvedConversationId || resolvedPreviousResponseId,
-          ),
+          serverManagesConversation,
         });
       }
 
@@ -1113,14 +1158,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         );
       }
 
-      const serverConversationTracker =
-        resolvedConversationId || resolvedPreviousResponseId
-          ? new ServerConversationTracker({
-              conversationId: resolvedConversationId,
-              previousResponseId: resolvedPreviousResponseId,
-              reasoningItemIdPolicy: resolvedReasoningItemIdPolicy,
-            })
-          : undefined;
+      const serverConversationTracker = serverManagesConversation
+        ? new ServerConversationTracker({
+            conversationId: resolvedConversationId,
+            previousResponseId: resolvedPreviousResponseId,
+            reasoningItemIdPolicy: resolvedReasoningItemIdPolicy,
+          })
+        : undefined;
 
       if (serverConversationTracker && isResumedState) {
         serverConversationTracker.primeFromState({
@@ -1172,8 +1216,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
       let continuingInterruptedTurn = false;
       let runError: unknown;
+      const attemptedRunErrorHandlers = new WeakSet<object>();
       let currentTurnSpan: ReturnType<typeof startTurnSpan> | undefined;
       let turnPendingModelRequest: TurnPreparationSnapshot | undefined;
+      let guardrailTracker = createGuardrailTracker();
       const parentUsageRecorder = getRunnerParentUsageRecorder(this);
       const recordUsage = (usage: Usage) => {
         recordRunnerSpanUsage(taskSpan, usage);
@@ -1244,6 +1290,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             state,
           );
         }
+        markAcceptedResponseFinalizationStarted(state);
         try {
           await runOutputGuardrails(
             state,
@@ -1320,6 +1367,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           state._currentStep = state._currentStep ?? {
             type: 'next_step_run_again',
           };
+
+          if (isAcceptedResponseCheckpoint(state)) {
+            await resumeAcceptedModelResponse({
+              state,
+              runner: this,
+              toolErrorFormatter,
+              agentToolParentRunConfig,
+              signal: options.signal,
+            });
+          }
 
           if (state._currentStep.type === 'next_step_interruption') {
             await prepareSandboxInterruptedTurnResume({
@@ -1403,7 +1460,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
             const wasContinuingInterruptedTurn = continuingInterruptedTurn;
             continuingInterruptedTurn = false;
-            const guardrailTracker = createGuardrailTracker();
+            guardrailTracker = createGuardrailTracker();
             const previousTurn = state._currentTurn;
             turnPendingModelRequest = {
               currentTurn: previousTurn,
@@ -1411,35 +1468,36 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             };
             const previousPersistedCount = state._currentTurnPersistedItemCount;
             const previousGeneratedCount = state._generatedItems.length;
-            const { turnInput, parallelGuardrailPromise } = await prepareTurn({
-              state,
-              input: state._originalInput,
-              generatedItems: state._generatedItems,
-              isResumedState,
-              preserveTurnPersistenceOnResume,
-              continuingInterruptedTurn: wasContinuingInterruptedTurn,
-              serverConversationTracker,
-              inputGuardrailDefs: this.inputGuardrailDefs,
-              guardrailHandlers: {
-                onParallelStart: guardrailTracker.markPending,
-                onParallelError: guardrailTracker.setError,
-              },
-              emitAgentStart: (context, agent, inputItems) => {
-                this.emit('agent_start', context, agent, inputItems);
-              },
-              onAgentSpanReady: useTaskAndTurnSpans
-                ? (turn, agentName) => {
-                    currentTurnSpan = ensureTurnSpan(
-                      currentTurnSpan,
-                      turn,
-                      agentName,
-                      state._currentAgentSpan,
-                    );
-                    setRunStateTurnSpanParent(state, currentTurnSpan.span);
-                  }
-                : undefined,
-              agentSpanParent: taskSpan?.span ?? invocationSpanParent,
-            });
+            const { turnInput, pendingInputItems, pendingInputSourceItems } =
+              await prepareTurn({
+                state,
+                input: state._originalInput,
+                generatedItems: state._generatedItems,
+                isResumedState,
+                preserveTurnPersistenceOnResume,
+                continuingInterruptedTurn: wasContinuingInterruptedTurn,
+                serverConversationTracker,
+                inputGuardrailDefs: this.inputGuardrailDefs,
+                guardrailHandlers: {
+                  onParallelPromise: guardrailTracker.setPromise,
+                  onParallelError: guardrailTracker.setError,
+                },
+                emitAgentStart: (context, agent, inputItems) => {
+                  this.emit('agent_start', context, agent, inputItems);
+                },
+                onAgentSpanReady: useTaskAndTurnSpans
+                  ? (turn, agentName) => {
+                      currentTurnSpan = ensureTurnSpan(
+                        currentTurnSpan,
+                        turn,
+                        agentName,
+                        state._currentAgentSpan,
+                      );
+                      setRunStateTurnSpanParent(state, currentTurnSpan.span);
+                    }
+                  : undefined,
+                agentSpanParent: taskSpan?.span ?? invocationSpanParent,
+              });
             if (
               preserveTurnPersistenceOnResume &&
               state._currentTurn > previousTurn &&
@@ -1449,7 +1507,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               state._currentTurnPersistedItemCount = previousPersistedCount;
             }
 
-            guardrailTracker.setPromise(parallelGuardrailPromise);
             const sessionPreparedTurnInput = [...turnInput];
             const preparedSandboxAgent = await sandboxRuntime.prepareAgent({
               currentAgent: state._currentAgent,
@@ -1463,6 +1520,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               sessionPreparedTurnInput,
               preparedSandboxAgent.turnInput,
             );
+            const processedPendingInputItems =
+              mapPendingInputAfterContextProcessing(
+                pendingInputItems,
+                sessionPreparedTurnInput,
+                preparedSandboxAgent.turnInput,
+              );
             const artifacts = await prepareAgentArtifacts(
               state,
               preparedSandboxAgent.executionAgent,
@@ -1484,6 +1547,48 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             );
 
             await guardrailTracker.throwIfError();
+
+            const requiresPendingInputAdmissionCheckpoint =
+              pendingInputItems.length > 0 ||
+              (!serverConversationTracker && hasUnpersistedRunInput(state));
+            if (requiresPendingInputAdmissionCheckpoint) {
+              options.signal?.throwIfAborted();
+            }
+            const admittedPendingInput = selectPendingInputForAdmission(
+              processedPendingInputItems,
+              preparedCall,
+            );
+            let localPendingInputCommitted = false;
+            const commitLocalPendingInput = async () => {
+              if (serverConversationTracker || localPendingInputCommitted) {
+                return;
+              }
+              localPendingInputCommitted = true;
+              commitPendingInput(
+                state,
+                pendingInputItems,
+                admittedPendingInput,
+                pendingInputSourceItems,
+              );
+              if (hasUnpersistedRunInput(state)) {
+                await saveToSession(
+                  options.session,
+                  undefined,
+                  new RunResult<TContext, TAgent>(state),
+                  { runCompaction: false },
+                );
+              }
+              if (requiresPendingInputAdmissionCheckpoint) {
+                options.signal?.throwIfAborted();
+              }
+            };
+            const deferLocalPendingInputAdmission =
+              !serverConversationTracker &&
+              pendingInputItems.length > 0 &&
+              guardrailTracker.pending;
+            if (!deferLocalPendingInputAdmission) {
+              await commitLocalPendingInput();
+            }
 
             const modelRequest: ModelRequest = {
               systemInstructions: preparedCall.modelInput.instructions,
@@ -1510,11 +1615,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               signal: options.signal,
             };
             turnPendingModelRequest = undefined;
-            state._lastTurnResponse = await getResponseWithRetry(
-              preparedCall.model,
-              modelRequest,
-            );
-            if (serverConversationTracker) {
+            let serverInputMarked = false;
+            const markServerInputAccepted = (responseAvailable = true) => {
+              if (serverInputMarked || !serverConversationTracker) {
+                return;
+              }
               serverConversationTracker.markInputAsSent(
                 preparedCall.filterApplied
                   ? preparedCall.sourceItems
@@ -1524,6 +1629,63 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   allTurnItems: preparedCall.turnInput,
                 },
               );
+              commitPendingInput(
+                state,
+                pendingInputItems,
+                admittedPendingInput,
+                pendingInputSourceItems,
+              );
+              if (pendingInputItems.length > 0) {
+                if (admittedPendingInput.length > 0) {
+                  serverConversationTracker.markInputAsSent(
+                    admittedPendingInput.map((item) => item.rawItem),
+                  );
+                }
+                if (!responseAvailable) {
+                  state._lastTurnResponse = undefined;
+                }
+                state._lastProcessedResponse = undefined;
+                state._currentStep = {
+                  type: 'next_step_interruption',
+                  data: { interruptions: [], responseAccepted: true },
+                };
+              }
+              serverInputMarked = true;
+            };
+            const pendingModelResponse = getResponseWithRetry(
+              preparedCall.model,
+              modelRequest,
+              serverConversationTracker && pendingInputItems.length > 0
+                ? {
+                    onPossiblyAcceptedRequestFailure: () =>
+                      markServerInputAccepted(false),
+                  }
+                : undefined,
+            );
+            if (deferLocalPendingInputAdmission) {
+              const modelResponseOutcome = pendingModelResponse.then(
+                (response) => ({ status: 'fulfilled' as const, response }),
+                (error: unknown) => ({ status: 'rejected' as const, error }),
+              );
+              try {
+                await guardrailTracker.awaitCompletion();
+                await commitLocalPendingInput();
+              } catch (error) {
+                // The request already started in parallel, so drain it before
+                // surfacing a guardrail or persistence failure.
+                await modelResponseOutcome;
+                throw error;
+              }
+              const outcome = await modelResponseOutcome;
+              if (outcome.status === 'rejected') {
+                throw outcome.error;
+              }
+              state._lastTurnResponse = outcome.response;
+            } else {
+              state._lastTurnResponse = await pendingModelResponse;
+            }
+            if (serverConversationTracker) {
+              markServerInputAccepted();
             }
             state._modelResponses.push(state._lastTurnResponse);
             state._context.usage.add(state._lastTurnResponse.usage);
@@ -1572,6 +1734,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
             await guardrailTracker.awaitCompletion();
 
+            markAcceptedResponseProcessingStarted(state);
+
             const turnResult = await resolveTurnAfterModelResponse(
               state._currentAgent,
               state._originalInput,
@@ -1585,6 +1749,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               options.errorHandlers,
               options.signal,
               suppressedToolCalls,
+              attemptedRunErrorHandlers,
             );
 
             applyTurnResult({
@@ -1605,7 +1770,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
           }
 
-          const currentStep = state._currentStep;
+          const currentStep = state._currentStep as NextStep | undefined;
           if (!currentStep) {
             logger.debug('Running next loop');
             continue;
@@ -1646,7 +1811,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               logger.debug('Running next loop');
           }
         }
-      } catch (err) {
+      } catch (caughtError) {
+        if (guardrailTracker.pending) {
+          await guardrailTracker.awaitCompletion({ suppressErrors: true });
+        }
+        const err = guardrailTracker.failed
+          ? guardrailTracker.error
+          : caughtError;
+        if (guardrailTracker.failed) {
+          invalidateAcceptedResponseReplayEvidence(state);
+        }
         const restoredPendingTurn = rollbackUnstartedTurn(
           state,
           turnPendingModelRequest,
@@ -1661,6 +1835,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           error: err,
           state,
           errorHandlers: options.errorHandlers,
+          responseAccepted: isAcceptedResponseCheckpoint(state),
+          attemptedErrors: attemptedRunErrorHandlers,
         });
         if (errorHandled) {
           try {
@@ -1766,6 +1942,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       options.previousResponseId ?? result.state._previousResponseId;
     const serverManagesConversation =
       Boolean(resolvedConversationId) || Boolean(resolvedPreviousResponseId);
+    assertPendingInputServerOwnership(
+      result.state,
+      resolvedConversationId,
+      resolvedPreviousResponseId,
+    );
     const serverConversationTracker = serverManagesConversation
       ? new ServerConversationTracker({
           conversationId: resolvedConversationId,
@@ -1792,7 +1973,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       streamInputPersisted = true;
       markSessionHistoryTransactionInputPersisted(result.state);
     };
-    let parallelGuardrailPromise: Promise<InputGuardrailResult[]> | undefined;
     const awaitInputGuardrails = async () => {
       await guardrailTracker.awaitCompletion();
       if (guardrailTracker.failed) {
@@ -1820,6 +2000,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
     let continuingInterruptedTurn = false;
     let runError: unknown;
+    const attemptedRunErrorHandlers = new WeakSet<object>();
     let suppressStreamInputPersistence = false;
     let approvedToolCheckpointCompacted = false;
     let approvedToolCheckpointRequiresLocalInputCompaction =
@@ -1827,6 +2008,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     let approvedToolCheckpointModelResponseCount = result.rawResponses.length;
     let currentTurnSpan: ReturnType<typeof startTurnSpan> | undefined;
     let turnPendingModelRequest: TurnPreparationSnapshot | undefined;
+    let commitDeferredLocalPendingInput: (() => Promise<void>) | undefined;
     const parentUsageRecorder = getRunnerParentUsageRecorder(this);
     const recordUsage = (usage: Usage) => {
       recordRunnerSpanUsage(taskSpan, usage);
@@ -1895,6 +2077,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           result.state,
         );
       }
+      markAcceptedResponseFinalizationStarted(result.state);
       result._hideFinalOutput();
       try {
         await runOutputGuardrails(
@@ -1990,6 +2173,19 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           type: 'next_step_run_again',
         };
 
+        if (isAcceptedResponseCheckpoint(result.state)) {
+          await resumeAcceptedModelResponse({
+            state: result.state,
+            runner: this,
+            toolErrorFormatter,
+            agentToolParentRunConfig,
+            signal: options.signal,
+            onStepItems: (turnResult) => {
+              addStepToRunResult(result, turnResult);
+            },
+          });
+        }
+
         if (result.state._currentStep.type === 'next_step_interruption') {
           await prepareSandboxInterruptedTurnResume({
             startingAgent,
@@ -2063,6 +2259,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
 
         if (result.state._currentStep.type === 'next_step_run_again') {
+          commitDeferredLocalPendingInput = undefined;
           if (
             approvedToolCheckpointCompacted &&
             result.state._currentTurnSessionHistoryTransactionSessionId ===
@@ -2074,7 +2271,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               { serverManagesConversation: false },
             );
           }
-          parallelGuardrailPromise = undefined;
           guardrailTracker = createGuardrailTracker();
           const wasContinuingInterruptedTurn = continuingInterruptedTurn;
           continuingInterruptedTurn = false;
@@ -2096,9 +2292,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             serverConversationTracker,
             inputGuardrailDefs: this.inputGuardrailDefs,
             guardrailHandlers: {
-              onParallelStart: () => {
-                guardrailTracker.markPending();
-              },
+              onParallelPromise: guardrailTracker.setPromise,
               onParallelError: (err) => {
                 guardrailTracker.setError(err);
               },
@@ -2128,9 +2322,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             result.state._currentTurnPersistedItemCount =
               previousPersistedCount;
           }
-          const { turnInput } = preparedTurn;
-          parallelGuardrailPromise = preparedTurn.parallelGuardrailPromise;
-          guardrailTracker.setPromise(parallelGuardrailPromise);
+          const { turnInput, pendingInputItems, pendingInputSourceItems } =
+            preparedTurn;
           // If guardrails are still running, defer input persistence until they finish.
           const sessionPreparedTurnInput = [...turnInput];
           const preparedSandboxAgent = await sandboxRuntime.prepareAgent({
@@ -2146,6 +2339,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             sessionPreparedTurnInput,
             preparedSandboxAgent.turnInput,
           );
+          const processedPendingInputItems =
+            mapPendingInputAfterContextProcessing(
+              pendingInputItems,
+              sessionPreparedTurnInput,
+              preparedSandboxAgent.turnInput,
+            );
           const artifacts = await prepareAgentArtifacts(
             result.state,
             preparedSandboxAgent.executionAgent,
@@ -2169,7 +2368,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           await guardrailTracker.throwIfError();
 
-          // Initial request and session-persistence ordering remain unchanged.
           // Once a logical turn is established, do not start another model
           // request if cancellation arrives during asynchronous preparation.
           if ((sentInputToModel || isResumedState) && result.cancelled) {
@@ -2178,18 +2376,57 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             return;
           }
 
+          const admittedPendingInput = selectPendingInputForAdmission(
+            processedPendingInputItems,
+            preparedCall,
+          );
+          let localPendingInputCommitted = false;
+          const commitLocalPendingInput = async () => {
+            if (serverConversationTracker || localPendingInputCommitted) {
+              return;
+            }
+            localPendingInputCommitted = true;
+            commitPendingInput(
+              result.state,
+              pendingInputItems,
+              admittedPendingInput,
+              pendingInputSourceItems,
+            );
+            if (hasUnpersistedRunInput(result.state)) {
+              await saveStreamResultToSession(options.session, result, {
+                runCompaction: false,
+              });
+            }
+          };
+          const deferLocalPendingInputAdmission =
+            !serverConversationTracker &&
+            pendingInputItems.length > 0 &&
+            guardrailTracker.pending;
+          if (deferLocalPendingInputAdmission) {
+            commitDeferredLocalPendingInput = async () => {
+              commitDeferredLocalPendingInput = undefined;
+              await commitLocalPendingInput();
+            };
+          } else {
+            await commitLocalPendingInput();
+            if ((sentInputToModel || isResumedState) && result.cancelled) {
+              rollbackUnstartedTurn(result.state, turnPendingModelRequest);
+              turnPendingModelRequest = undefined;
+              return;
+            }
+          }
+
           let finalResponse: ModelResponse | undefined = undefined;
           const abortReconciliationState =
             createStreamAbortReconciliationState();
           let inputMarked = false;
-          const markInputOnce = () => {
+          const markServerInputAccepted = () => {
             if (inputMarked || !serverConversationTracker) {
               return;
             }
-            // We only mark inputs as sent after receiving the first stream event,
-            // which is the earliest reliable confirmation that the server accepted
-            // the request. If the stream fails before any events, leave inputs
-            // unmarked so a retry can resend safely.
+            // Mark inputs after the first stream event, an explicit abort after
+            // request start, or provider advice that the failed request may have
+            // been accepted.
             // Record the exact input that was sent so the server tracker can advance safely.
             serverConversationTracker.markInputAsSent(
               preparedCall.filterApplied
@@ -2200,6 +2437,25 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 allTurnItems: preparedCall.turnInput,
               },
             );
+            commitPendingInput(
+              result.state,
+              pendingInputItems,
+              admittedPendingInput,
+              pendingInputSourceItems,
+            );
+            if (pendingInputItems.length > 0) {
+              if (admittedPendingInput.length > 0) {
+                serverConversationTracker.markInputAsSent(
+                  admittedPendingInput.map((item) => item.rawItem),
+                );
+              }
+              result.state._lastTurnResponse = undefined;
+              result.state._lastProcessedResponse = undefined;
+              result.state._currentStep = {
+                type: 'next_step_interruption',
+                data: { interruptions: [], responseAccepted: true },
+              };
+            }
             inputMarked = true;
           };
           const reconcileStreamAbortIfNeeded = async () => {
@@ -2298,9 +2554,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             for await (const event of getStreamedResponseWithRetry(
               preparedCall.model,
               modelRequest,
+              serverConversationTracker && pendingInputItems.length > 0
+                ? {
+                    onPossiblyAcceptedRequestFailure: markServerInputAccepted,
+                  }
+                : undefined,
             )) {
+              markServerInputAccepted();
               await guardrailTracker.throwIfError();
-              markInputOnce();
               recordStreamEventForAbortReconciliation(
                 abortReconciliationState,
                 event,
@@ -2338,6 +2599,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   requestId: parsed.response.requestId,
                   ...(rawUsage !== undefined ? { rawUsage } : {}),
                 };
+                result.state._lastTurnResponse = finalResponse;
                 result.state._context.usage.add(finalResponse.usage);
                 recordUsage(finalResponse.usage);
               }
@@ -2345,6 +2607,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 // When the user's code exits a loop to consume the stream, we need to break
                 // this loop to prevent internal false errors and unnecessary processing
                 await awaitInputGuardrails();
+                await commitDeferredLocalPendingInput?.();
                 await reconcileStreamAbortIfNeeded();
                 return;
               }
@@ -2353,9 +2616,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           } catch (error) {
             if (isAbortError(error)) {
               if (sentInputToModel) {
-                markInputOnce();
+                markServerInputAccepted();
               }
               await awaitInputGuardrails();
+              await commitDeferredLocalPendingInput?.();
               await reconcileStreamAbortIfNeeded();
               return;
             }
@@ -2363,10 +2627,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           if (finalResponse) {
-            markInputOnce();
+            markServerInputAccepted();
           }
 
           await awaitInputGuardrails();
+          await commitDeferredLocalPendingInput?.();
 
           if (result.cancelled) {
             return;
@@ -2430,6 +2695,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             streamStepItemsToRunResult(result, streamableItems);
           }
 
+          markAcceptedResponseProcessingStarted(result.state);
+
           const turnResult = await resolveTurnAfterModelResponse(
             currentAgent,
             result.state._originalInput,
@@ -2443,6 +2710,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             options.errorHandlers,
             options.signal,
             suppressedToolCalls,
+            attemptedRunErrorHandlers,
           );
 
           applyTurnResult({
@@ -2499,7 +2767,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             logger.debug('Running next loop');
         }
       }
-    } catch (error) {
+    } catch (caughtError) {
+      if (guardrailTracker.pending) {
+        await guardrailTracker.awaitCompletion({ suppressErrors: true });
+      }
+      if (!guardrailTracker.failed) {
+        await commitDeferredLocalPendingInput?.();
+      }
+      const error = guardrailTracker.failed
+        ? guardrailTracker.error
+        : caughtError;
       const restoredPendingTurn = rollbackUnstartedTurn(
         result.state,
         turnPendingModelRequest,
@@ -2512,14 +2789,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       releaseUnusedSessionHistoryTransactionBinding(result.state);
       suppressStreamInputPersistence =
         error instanceof CompactionItemValidationError;
-      if (guardrailTracker.pending) {
-        await guardrailTracker.awaitCompletion({ suppressErrors: true });
-      }
       const errorHandled = await prepareRunErrorFinalOutput({
         error,
         state: result.state,
         errorHandlers: options.errorHandlers,
         streamResult: result,
+        responseAccepted: isAcceptedResponseCheckpoint(result.state),
+        attemptedErrors: attemptedRunErrorHandlers,
       });
       if (errorHandled) {
         try {
@@ -2820,14 +3096,19 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         artifacts.serializedHandoffs.length === 0
       );
 
-    const { modelInput, sourceItems, persistedItems, filterApplied } =
-      await applyCallModelInputFilter(
-        state._currentAgent,
-        options.callModelInputFilter,
-        state._context,
-        turnInput,
-        systemInstructions,
-      );
+    const {
+      modelInput,
+      sourceItems,
+      persistedItems,
+      sourceMatchKinds,
+      filterApplied,
+    } = await applyCallModelInputFilter(
+      state._currentAgent,
+      options.callModelInputFilter,
+      state._context,
+      turnInput,
+      systemInstructions,
+    );
 
     // Persist normalized clones so session history mirrors the exact model payload. An empty array
     // is intentional when a filter removes everything.
@@ -2851,6 +3132,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       previousResponseId,
       conversationId,
       sourceItems,
+      persistedItems,
+      sourceMatchKinds,
       filterApplied,
       turnInput,
     };

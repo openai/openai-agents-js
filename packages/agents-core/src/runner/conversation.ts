@@ -1,6 +1,6 @@
 import { Agent, AgentOutputType } from '../agent';
 import { UserError } from '../errors';
-import { RunItem } from '../items';
+import { RunInputItem, RunItem } from '../items';
 import { ModelResponse } from '../model';
 import { RunContext } from '../runContext';
 import { AgentInputItem } from '../types';
@@ -53,8 +53,37 @@ export type FilterApplicationResult = {
   modelInput: { input: AgentInputItem[]; instructions?: string };
   sourceItems: (AgentInputItem | undefined)[];
   persistedItems: AgentInputItem[];
+  sourceMatchKinds: Array<'identity' | 'content' | 'fallback' | 'injected'>;
   filterApplied: boolean;
 };
+
+export type ServerConversationOwner =
+  | { type: 'conversation'; id: string }
+  | { type: 'previous_response'; id: string };
+
+/**
+ * Resolves the single server-side continuation owner for an accepted response.
+ */
+export function getServerConversationOwner(
+  conversationId: string | undefined,
+  previousResponseId: string | undefined,
+): ServerConversationOwner | undefined {
+  if (
+    typeof conversationId === 'string' &&
+    conversationId.length > 0 &&
+    previousResponseId === undefined
+  ) {
+    return { type: 'conversation', id: conversationId };
+  }
+  if (
+    typeof previousResponseId === 'string' &&
+    previousResponseId.length > 0 &&
+    conversationId === undefined
+  ) {
+    return { type: 'previous_response', id: previousResponseId };
+  }
+  return undefined;
+}
 
 /**
  * Applies the optional callModelInputFilter and returns the filtered input alongside the original
@@ -98,6 +127,7 @@ export async function applyCallModelInputFilter<TContext>(
         (item) => cloneMap.get(item as object) ?? item,
       ),
       persistedItems: cloneInputItems(normalizedInput),
+      sourceMatchKinds: normalizedInput.map(() => 'identity'),
       filterApplied: false,
     };
   }
@@ -168,6 +198,10 @@ export async function applyCallModelInputFilter<TContext>(
         return original;
       },
     );
+    const sourceMatchKinds: FilterApplicationResult['sourceMatchKinds'] =
+      sourceItems.map((source) =>
+        source === undefined ? 'injected' : 'identity',
+      );
 
     // Reserve all exact clone matches before considering equal-content items. A prepended clone
     // that happens to equal a later unchanged item must remain an injected item.
@@ -187,6 +221,7 @@ export async function applyCallModelInputFilter<TContext>(
       if (matchedByContent) {
         removeFromFallback(matchedByContent);
         sourceItems[index] = matchedByContent;
+        sourceMatchKinds[index] = 'content';
       }
     }
 
@@ -205,6 +240,7 @@ export async function applyCallModelInputFilter<TContext>(
       const fallback = takeFallbackOriginal();
       if (fallback) {
         sourceItems[index] = fallback;
+        sourceMatchKinds[index] = 'fallback';
       }
     }
 
@@ -219,6 +255,7 @@ export async function applyCallModelInputFilter<TContext>(
       },
       sourceItems,
       persistedItems: clonedFilteredInput.map((item) => structuredClone(item)),
+      sourceMatchKinds,
       filterApplied: true,
     };
   } catch (error) {
@@ -379,6 +416,10 @@ export class ServerConversationTracker {
           continue;
         }
         const rawItemKey = getAgentInputItemKey(rawItem as AgentInputItem);
+        if (item instanceof RunInputItem) {
+          this.sentItems.add(rawItem);
+          continue;
+        }
         if (this.serverItems.has(rawItem) || serverItemKeys.has(rawItemKey)) {
           this.sentItems.add(rawItem);
           continue;

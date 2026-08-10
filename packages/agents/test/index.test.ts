@@ -23,6 +23,7 @@ describe('Exports', () => {
     expect(agent.name).toBe('Test');
     expect(typeof Agents.setSensitiveDataLoggingEnabled).toBe('function');
     expect(typeof Agents.RunCompactionItem).toBe('function');
+    expect(typeof Agents.RunInputItem).toBe('function');
     expect(typeof Agents.isSessionHistoryTransactionAwareSession).toBe(
       'function',
     );

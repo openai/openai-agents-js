@@ -64,11 +64,12 @@ import type { RunErrorData, RunErrorHandlers } from './errorHandlers';
 import {
   createRunErrorFinalOutputItem,
   formatRunErrorFinalOutput,
+  invalidateAcceptedResponseReplayEvidence,
   preserveInvalidFinalOutputRedaction,
   resolveRunErrorHandler,
   validateRunErrorHandlerFinalOutput,
 } from './errorHandlers';
-import { getTurnInput } from './items';
+import { getRunOutput, getTurnInput } from './items';
 import {
   buildApplyPatchAbortResult,
   buildFunctionAbortResult,
@@ -899,7 +900,7 @@ function buildTurnRunErrorData<TContext, TAgent extends Agent<TContext, any>>(
       generatedItems,
       state._reasoningItemIdPolicy,
     ),
-    output: getTurnInput([], generatedItems, state._reasoningItemIdPolicy),
+    output: getRunOutput(generatedItems, state._reasoningItemIdPolicy),
     rawResponses: state._modelResponses,
     lastAgent: agent,
     state,
@@ -917,6 +918,7 @@ async function resolveInvalidFinalOutput<
   preStepItems: RunItem[];
   newItems: RunItem[];
   state: RunState<TContext, TAgent>;
+  attemptedErrors?: WeakSet<object>;
 }): Promise<string | undefined> {
   return preserveInvalidFinalOutputRedaction(async (redactFromStart) => {
     const handlerResult = await resolveRunErrorHandler({
@@ -931,8 +933,10 @@ async function resolveInvalidFinalOutput<
         args.preStepItems,
         args.newItems,
       ),
+      attemptedErrors: args.attemptedErrors,
     });
     if (!handlerResult) {
+      invalidateAcceptedResponseReplayEvidence(args.state);
       return undefined;
     }
 
@@ -1327,6 +1331,7 @@ export async function resolveTurnAfterModelResponse<
   errorHandlers?: RunErrorHandlers<TContext, TAgent>,
   signal?: AbortSignal,
   preflightedToolCalls?: ReadonlySet<ApprovalCapableToolCall>,
+  attemptedErrors?: WeakSet<object>,
 ): Promise<SingleStepResult> {
   const suppressedToolCalls =
     preflightedToolCalls ??
@@ -1569,6 +1574,7 @@ export async function resolveTurnAfterModelResponse<
           preStepItems,
           newItems,
         ),
+        attemptedErrors,
       });
       if (!handlerResult) {
         throw refusalError;
@@ -1613,6 +1619,7 @@ export async function resolveTurnAfterModelResponse<
         preStepItems,
         newItems,
         state,
+        attemptedErrors,
       });
       if (typeof handledOutput !== 'undefined') {
         return new SingleStepResult(
@@ -1679,6 +1686,7 @@ export async function resolveTurnAfterModelResponse<
           preStepItems,
           newItems,
           state,
+          attemptedErrors,
         });
         if (typeof handledOutput === 'undefined') {
           throw outputError;

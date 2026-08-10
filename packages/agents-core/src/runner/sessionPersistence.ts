@@ -927,6 +927,21 @@ function mapPreparedSourcesAfterContextProcessing(
   });
 }
 
+/**
+ * Maps selected input occurrences through sandbox capability context processing.
+ */
+export function mapOwnedInputItemsAfterContextProcessing(
+  preparedItems: AgentInputItem[],
+  processedItems: AgentInputItem[],
+  ownedItems: AgentInputItem[],
+): Array<{ item: AgentInputItem; ownerIndex: number }> {
+  return mapPreparedSourcesAfterContextProcessing(
+    preparedItems,
+    processedItems,
+    findOwnedItemIndexes(preparedItems, ownedItems),
+  );
+}
+
 function reconcilePersistableFilteredItems(options: {
   preparedSources: PreparedOwnedSource[];
   sourceItems: (AgentInputItem | undefined)[];

@@ -16,7 +16,7 @@ import {
 } from '@openai/agents-core/_shims';
 import { ReadableStream } from './shims/interface';
 import { RunStreamEvent } from './events';
-import { getTurnInput } from './runner/items';
+import { getRunOutput, getTurnInput } from './runner/items';
 import { RunState } from './runState';
 import { RunContext } from './runContext';
 import type { AgentToolInvocation } from './agentToolInvocation';
@@ -159,7 +159,7 @@ class RunResultBase<
    * For the output including the agents, use the `newItems` property.
    */
   get output(): AgentOutputItem[] {
-    return getTurnInput([], this.newItems, this.state._reasoningItemIdPolicy);
+    return getRunOutput(this.newItems, this.state._reasoningItemIdPolicy);
   }
 
   /**
