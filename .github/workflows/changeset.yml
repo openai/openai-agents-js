@@ -11,6 +11,7 @@ jobs:
     # Use pull_request_target so labels can be updated.
     # Always checkout base and fetch head to avoid executing forked code and reduce skipped checks.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write
