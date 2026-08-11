@@ -17,7 +17,6 @@ import {
   RunMessageOutputItem,
   StreamedRunResult,
   handoff,
-  Model,
   ModelRequest,
   ModelResponse,
   StreamEvent,
@@ -34,8 +33,7 @@ import {
   shellTool,
 } from '../src';
 import {
-  FakeModel,
-  FakeModelProvider,
+  ScriptedModelProvider,
   TEST_MODEL_FUNCTION_CALL,
   fakeModelMessage,
   fakeModelRefusal,
@@ -48,6 +46,14 @@ import logger from '../src/logger';
 import { getEventListeners } from 'node:events';
 import { InvalidToolInputError, ToolCallError } from '../src/errors';
 import { getToolInvocationFingerprint } from '../src/toolInvocation';
+import {
+  ScriptedModel,
+  modelError,
+  modelResponse,
+  modelStream,
+  modelStreamResponder,
+  type ScriptedModelInput,
+} from '../src/testing';
 
 function getFirstTextContent(item: AgentInputItem): string | undefined {
   if (item.type !== 'message') {
@@ -67,160 +73,188 @@ function getRequestInputItems(request: ModelRequest): AgentInputItem[] {
   return Array.isArray(request.input) ? request.input : [];
 }
 
-class CountingFunctionToolStreamModel implements Model {
-  callCount = 0;
+function abortingHangingStream(): ScriptedModelInput {
+  return modelStreamResponder((call) =>
+    (async function* () {
+      const abortError = new Error('aborted');
+      abortError.name = 'AbortError';
+      const signal = call.request.signal;
+      await new Promise((_resolve, reject) => {
+        if (signal?.aborted) {
+          reject(abortError);
+          return;
+        }
+        const onAbort = () => {
+          signal?.removeEventListener('abort', onAbort);
+          reject(abortError);
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
+      });
+      yield* [] as StreamEvent[];
+    })(),
+  );
+}
 
-  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-    throw new Error('Unexpected non-streaming model request');
-  }
-
-  async *getStreamedResponse(
-    _request: ModelRequest,
-  ): AsyncIterable<StreamEvent> {
-    const output =
-      this.callCount++ === 0
-        ? [{ ...TEST_MODEL_FUNCTION_CALL }]
-        : [fakeModelMessage('done')];
-    yield {
+function terminalModelStream(
+  response: ModelResponse,
+  responseId: string,
+): ScriptedModelInput {
+  return modelStream([
+    {
       type: 'response_done',
       response: {
-        id: `resp-${this.callCount}`,
+        id: responseId,
         usage: {
-          requests: 1,
-          inputTokens: 0,
-          outputTokens: 0,
-          totalTokens: 0,
+          requests: response.usage.requests,
+          inputTokens: response.usage.inputTokens,
+          outputTokens: response.usage.outputTokens,
+          totalTokens: response.usage.totalTokens,
         },
-        output,
+        output: response.output,
       },
-    } as StreamEvent;
+    } as StreamEvent,
+  ]);
+}
+
+function parsedTerminalModelStream(
+  response: ModelResponse,
+  responseId: string,
+): ScriptedModelInput {
+  return terminalModelStream(
+    {
+      ...response,
+      output: response.output.map((item) =>
+        protocol.OutputModelItem.parse(item),
+      ),
+    },
+    responseId,
+  );
+}
+
+class CountingFunctionToolStreamModel extends ScriptedModel {
+  constructor() {
+    super([
+      terminalModelStream(
+        {
+          output: [{ ...TEST_MODEL_FUNCTION_CALL }],
+          usage: new Usage(),
+        },
+        'resp-1',
+      ),
+      terminalModelStream(
+        {
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        },
+        'resp-2',
+      ),
+    ]);
+  }
+
+  get callCount(): number {
+    return this.calls.length;
   }
 }
 
-class AbortAfterStreamedFunctionCallModel implements Model {
-  public requests: ModelRequest[] = [];
-
-  constructor(private readonly responseId: string) {}
-
-  async getResponse(request: ModelRequest): Promise<ModelResponse> {
-    this.requests.push(request);
-    return {
+class AbortAfterStreamedFunctionCallModel extends ScriptedModel {
+  constructor(
+    responseId: string,
+    reconciliationStep: ScriptedModelInput = modelResponse({
       output: [fakeModelMessage('reconciled')],
       usage: new Usage(),
       responseId: 'resp-reconciled',
-    };
+    }),
+  ) {
+    super([
+      modelStreamResponder(() =>
+        (async function* () {
+          yield {
+            type: 'model',
+            event: {
+              type: 'response.created',
+              response: { id: responseId },
+            },
+          } as StreamEvent;
+          yield {
+            type: 'model',
+            event: {
+              type: 'response.output_item.done',
+              item: {
+                type: 'function_call',
+                id: 'fc_abort',
+                call_id: 'call_abort',
+                name: 'slow_tool',
+                arguments: '{}',
+                status: 'completed',
+              },
+            },
+          } as StreamEvent;
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          throw error;
+        })(),
+      ),
+      reconciliationStep,
+    ]);
   }
 
-  async *getStreamedResponse(
-    request: ModelRequest,
-  ): AsyncIterable<StreamEvent> {
-    this.requests.push(request);
-    yield {
-      type: 'model',
-      event: {
-        type: 'response.created',
-        response: {
-          id: this.responseId,
-        },
-      },
-    };
-    yield {
-      type: 'model',
-      event: {
-        type: 'response.output_item.done',
-        item: {
-          type: 'function_call',
-          id: 'fc_abort',
-          call_id: 'call_abort',
-          name: 'slow_tool',
-          arguments: '{}',
-          status: 'completed',
-        },
-      },
-    };
-    const error = new Error('aborted');
-    error.name = 'AbortError';
-    throw error;
+  get requests(): readonly Readonly<ModelRequest>[] {
+    return this.calls.map((call) => call.request);
   }
 }
 
 class FailingAbortReconciliationModel extends AbortAfterStreamedFunctionCallModel {
-  constructor(
-    responseId: string,
-    private readonly reconciliationError: unknown,
-  ) {
-    super(responseId);
-  }
-
-  override async getResponse(request: ModelRequest): Promise<ModelResponse> {
-    this.requests.push(request);
-    throw this.reconciliationError;
+  constructor(responseId: string, reconciliationError: unknown) {
+    super(responseId, modelError(reconciliationError));
   }
 }
 
-class AbortAfterStreamedProgramModel implements Model {
-  public requests: ModelRequest[] = [];
-
-  constructor(private readonly responseId: string) {}
-
-  async getResponse(request: ModelRequest): Promise<ModelResponse> {
-    this.requests.push(request);
-    return {
-      output: [fakeModelMessage('reconciled')],
-      usage: new Usage(),
-      responseId: 'resp-reconciled',
-    };
+class AbortAfterStreamedProgramModel extends ScriptedModel {
+  constructor(responseId: string) {
+    super([
+      modelStreamResponder(() =>
+        (async function* () {
+          yield {
+            type: 'model',
+            event: {
+              type: 'response.created',
+              response: { id: responseId },
+            },
+          } as StreamEvent;
+          yield {
+            type: 'model',
+            event: {
+              type: 'response.output_item.done',
+              item: {
+                type: 'program',
+                id: 'prog_abort',
+                call_id: 'call_prog_abort',
+                code: 'text("done");',
+                fingerprint: 'fingerprint:abort',
+              },
+            },
+          } as StreamEvent;
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          throw error;
+        })(),
+      ),
+      modelResponse({
+        output: [fakeModelMessage('reconciled')],
+        usage: new Usage(),
+        responseId: 'resp-reconciled',
+      }),
+    ]);
   }
 
-  async *getStreamedResponse(
-    request: ModelRequest,
-  ): AsyncIterable<StreamEvent> {
-    this.requests.push(request);
-    yield {
-      type: 'model',
-      event: {
-        type: 'response.created',
-        response: {
-          id: this.responseId,
-        },
-      },
-    };
-    yield {
-      type: 'model',
-      event: {
-        type: 'response.output_item.done',
-        item: {
-          type: 'program',
-          id: 'prog_abort',
-          call_id: 'call_prog_abort',
-          code: 'text("done");',
-          fingerprint: 'fingerprint:abort',
-        },
-      },
-    };
-    const error = new Error('aborted');
-    error.name = 'AbortError';
-    throw error;
+  get requests(): readonly Readonly<ModelRequest>[] {
+    return this.calls.map((call) => call.request);
   }
 }
 
-class AbortAfterStreamedProgramToolCallsModel implements Model {
-  public requests: ModelRequest[] = [];
-
-  async getResponse(request: ModelRequest): Promise<ModelResponse> {
-    this.requests.push(request);
-    return {
-      output: [fakeModelMessage('reconciled')],
-      usage: new Usage(),
-      responseId: 'resp-reconciled',
-    };
-  }
-
-  async *getStreamedResponse(
-    request: ModelRequest,
-  ): AsyncIterable<StreamEvent> {
-    this.requests.push(request);
-    for (const item of [
+class AbortAfterStreamedProgramToolCallsModel extends ScriptedModel {
+  constructor() {
+    const items = [
       {
         type: 'program',
         id: 'prog_abort',
@@ -244,18 +278,31 @@ class AbortAfterStreamedProgramToolCallsModel implements Model {
         operation: { type: 'delete_file', path: 'temporary.txt' },
         caller: { type: 'program', caller_id: 'call_prog_abort' },
       },
-    ]) {
-      yield {
-        type: 'model',
-        event: {
-          type: 'response.output_item.done',
-          item,
-        },
-      };
-    }
-    const error = new Error('aborted');
-    error.name = 'AbortError';
-    throw error;
+    ];
+    super([
+      modelStreamResponder(() =>
+        (async function* () {
+          for (const item of items) {
+            yield {
+              type: 'model',
+              event: { type: 'response.output_item.done', item },
+            } as StreamEvent;
+          }
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          throw error;
+        })(),
+      ),
+      modelResponse({
+        output: [fakeModelMessage('reconciled')],
+        usage: new Usage(),
+        responseId: 'resp-reconciled',
+      }),
+    ]);
+  }
+
+  get requests(): readonly Readonly<ModelRequest>[] {
+    return this.calls.map((call) => call.request);
   }
 }
 
@@ -280,34 +327,6 @@ describe('Runner.run (streaming)', () => {
       { output: [approvalCall], usage: new Usage() },
       { output: [fakeModelMessage('done')], usage: new Usage() },
     ];
-    class HostedReplayStreamingModel implements Model {
-      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-        throw new Error('Unexpected non-streaming model request');
-      }
-
-      async *getStreamedResponse(
-        _request: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        const response = responses.shift();
-        if (!response) {
-          throw new Error('No response found');
-        }
-        yield {
-          type: 'response_done',
-          response: {
-            id: `streamed-replay-${responses.length}`,
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: response.output,
-          },
-        } as StreamEvent;
-      }
-    }
-
     const mcpTool = hostedMcpTool({
       serverLabel: 'streamed-replay-server',
       serverUrl: 'https://example.com',
@@ -315,7 +334,14 @@ describe('Runner.run (streaming)', () => {
     });
     const agent = new Agent({
       name: 'StreamedHostedReplayAgent',
-      model: new HostedReplayStreamingModel(),
+      model: new ScriptedModel(
+        responses.map((response, index) =>
+          terminalModelStream(
+            response,
+            `streamed-replay-${responses.length - index - 1}`,
+          ),
+        ),
+      ),
       tools: [mcpTool],
     });
     const state = new RunState(new RunContext(), 'start', agent, 3);
@@ -350,7 +376,7 @@ describe('Runner.run (streaming)', () => {
 
   beforeAll(() => {
     setTracingDisabled(true);
-    setDefaultModelProvider(new FakeModelProvider());
+    setDefaultModelProvider(new ScriptedModelProvider());
   });
 
   afterEach(() => {
@@ -358,7 +384,7 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('does not emit unhandled rejection when stream loop fails', async () => {
-    const agent = new Agent({ name: 'StreamFail', model: new FakeModel() });
+    const agent = new Agent({ name: 'StreamFail', model: new ScriptedModel() });
 
     const rejections: unknown[] = [];
     const handler = (err: unknown) => {
@@ -378,12 +404,17 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('exposes model error to the consumer', async () => {
-    const agent = new Agent({ name: 'StreamError', model: new FakeModel() });
+    const agent = new Agent({
+      name: 'StreamError',
+      model: new ScriptedModel([
+        modelError(new Error('Scripted stream failure')),
+      ]),
+    });
 
     const result = await run(agent, 'hi', { stream: true });
-    await expect(result.completed).rejects.toThrow('Not implemented');
+    await expect(result.completed).rejects.toThrow('Scripted stream failure');
 
-    expect((result.error as Error).message).toBe('Not implemented');
+    expect((result.error as Error).message).toBe('Scripted stream failure');
   });
 
   it('emits a high-level run item event for streamed compaction', async () => {
@@ -393,17 +424,13 @@ describe('Runner.run (streaming)', () => {
       encrypted_content: 'ciphertext',
     };
 
-    class CompactionStreamingModel implements Model {
-      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-        throw new Error('Unexpected non-streaming model request');
-      }
-
-      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-        yield {
+    const model = new ScriptedModel([
+      modelStream([
+        {
           type: 'model',
           event: { type: 'response.output_item.added', item: compaction },
-        } as StreamEvent;
-        yield {
+        } as StreamEvent,
+        {
           type: 'response_done',
           response: {
             id: 'resp-compaction-stream',
@@ -415,13 +442,13 @@ describe('Runner.run (streaming)', () => {
             },
             output: [compaction, fakeModelMessage('streamed done')],
           },
-        } as StreamEvent;
-      }
-    }
+        } as StreamEvent,
+      ]),
+    ]);
 
     const agent = new Agent({
       name: 'StreamingCompactionAgent',
-      model: new CompactionStreamingModel(),
+      model,
     });
     const result = await run(agent, 'hi', { stream: true });
 
@@ -457,13 +484,9 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('does not persist input for a malformed terminal compaction item', async () => {
-    class MalformedCompactionStreamingModel implements Model {
-      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-        throw new Error('Unexpected non-streaming model request');
-      }
-
-      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-        yield {
+    const model = new ScriptedModel([
+      modelStream([
+        {
           type: 'response_done',
           response: {
             id: 'resp-malformed-compaction-stream',
@@ -480,9 +503,9 @@ describe('Runner.run (streaming)', () => {
               },
             ],
           },
-        } as StreamEvent;
-      }
-    }
+        } as StreamEvent,
+      ]),
+    ]);
 
     const addItems = vi.fn(async (_items: AgentInputItem[]) => {});
     const clearSession = vi.fn(async () => {});
@@ -499,7 +522,7 @@ describe('Runner.run (streaming)', () => {
     };
     const agent = new Agent({
       name: 'MalformedStreamingCompactionAgent',
-      model: new MalformedCompactionStreamingModel(),
+      model,
     });
     const defaultErrorHandler = vi.fn(() => ({
       finalOutput: 'not used',
@@ -521,40 +544,6 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('treats prior tool_search outputs in input history as loaded deferred tools', async () => {
-    class QueueStreamingModel implements Model {
-      constructor(private readonly responses: ModelResponse[]) {}
-
-      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-        const response = this.responses.shift();
-        if (!response) {
-          throw new Error('No response found');
-        }
-        return response;
-      }
-
-      async *getStreamedResponse(
-        request: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        const response = await this.getResponse(request);
-        const output = response.output.map((item) =>
-          protocol.OutputModelItem.parse(item),
-        );
-        yield {
-          type: 'response_done',
-          response: {
-            id: response.responseId ?? 'resp-stream-tool-search',
-            usage: {
-              requests: response.usage.requests,
-              inputTokens: response.usage.inputTokens,
-              outputTokens: response.usage.outputTokens,
-              totalTokens: response.usage.totalTokens,
-            },
-            output,
-          },
-        } satisfies StreamEvent;
-      }
-    }
-
     const getShippingEta = tool({
       name: 'get_shipping_eta',
       description: 'Look up a shipping ETA.',
@@ -566,24 +555,30 @@ describe('Runner.run (streaming)', () => {
     });
     const agent = new Agent({
       name: 'StreamingShippingAgent',
-      model: new QueueStreamingModel([
-        {
-          output: [
-            {
-              type: 'function_call',
-              id: 'fc_shipping_eta',
-              callId: 'call_shipping_eta',
-              name: 'get_shipping_eta',
-              status: 'completed',
-              arguments: JSON.stringify({ trackingNumber: 'ZX-123' }),
-            } as protocol.FunctionCallItem,
-          ],
-          usage: new Usage(),
-        },
-        {
-          output: [fakeModelMessage('The package arrives tomorrow.')],
-          usage: new Usage(),
-        },
+      model: new ScriptedModel([
+        parsedTerminalModelStream(
+          {
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_shipping_eta',
+                callId: 'call_shipping_eta',
+                name: 'get_shipping_eta',
+                status: 'completed',
+                arguments: JSON.stringify({ trackingNumber: 'ZX-123' }),
+              } as protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          },
+          'resp-stream-tool-search',
+        ),
+        parsedTerminalModelStream(
+          {
+            output: [fakeModelMessage('The package arrives tomorrow.')],
+            usage: new Usage(),
+          },
+          'resp-stream-tool-search',
+        ),
       ]),
       tools: [getShippingEta],
       toolUseBehavior: 'run_llm_again',
@@ -609,58 +604,28 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('streams through missing function tool errors when opted in', async () => {
-    class RecordingStreamingModel implements Model {
-      readonly requests: ModelRequest[] = [];
-
-      constructor(private readonly responses: ModelResponse[]) {}
-
-      async getResponse(request: ModelRequest): Promise<ModelResponse> {
-        this.requests.push(request);
-        const response = this.responses.shift();
-        if (!response) {
-          throw new Error('No response found');
-        }
-        return response;
-      }
-
-      async *getStreamedResponse(
-        request: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        const response = await this.getResponse(request);
-        yield {
-          type: 'response_done',
-          response: {
-            id: response.responseId ?? 'resp-stream-missing-tool',
-            usage: {
-              requests: response.usage.requests,
-              inputTokens: response.usage.inputTokens,
-              outputTokens: response.usage.outputTokens,
-              totalTokens: response.usage.totalTokens,
+    const model = new ScriptedModel([
+      parsedTerminalModelStream(
+        {
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: 'missing_tool',
+              callId: 'call_missing',
+              arguments: '{}',
             },
-            output: response.output.map((item) =>
-              protocol.OutputModelItem.parse(item),
-            ),
-          },
-        } satisfies StreamEvent;
-      }
-    }
-
-    const model = new RecordingStreamingModel([
-      {
-        output: [
-          {
-            ...TEST_MODEL_FUNCTION_CALL,
-            name: 'missing_tool',
-            callId: 'call_missing',
-            arguments: '{}',
-          },
-        ],
-        usage: new Usage(),
-      },
-      {
-        output: [fakeModelMessage('stream recovered')],
-        usage: new Usage(),
-      },
+          ],
+          usage: new Usage(),
+        },
+        'resp-stream-missing-tool',
+      ),
+      parsedTerminalModelStream(
+        {
+          output: [fakeModelMessage('stream recovered')],
+          usage: new Usage(),
+        },
+        'resp-stream-missing-tool',
+      ),
     ]);
     const agent = new Agent({
       name: 'StreamingMissingToolAgent',
@@ -675,8 +640,8 @@ describe('Runner.run (streaming)', () => {
 
     await result.completed;
     expect(result.finalOutput).toBe('stream recovered');
-    expect(model.requests).toHaveLength(2);
-    const secondInput = model.requests[1].input as AgentInputItem[];
+    expect(model.calls).toHaveLength(2);
+    const secondInput = model.calls[1].request.input as AgentInputItem[];
     expect(secondInput).toContainEqual({
       type: 'function_call_result',
       name: 'missing_tool',
@@ -690,38 +655,20 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('streams a redacted invalid-argument output back to the model', async () => {
-    class InvalidArgumentStreamingModel implements Model {
-      readonly requests: ModelRequest[] = [];
-
-      constructor(private readonly responses: ModelResponse[]) {}
-
-      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-        throw new Error('Unexpected non-streaming model request');
+    class InvalidArgumentStreamingModel extends ScriptedModel {
+      constructor(responses: ModelResponse[]) {
+        super(
+          responses.map((response) =>
+            parsedTerminalModelStream(
+              response,
+              response.responseId ?? 'resp-stream-invalid-argument',
+            ),
+          ),
+        );
       }
 
-      async *getStreamedResponse(
-        request: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        this.requests.push(request);
-        const response = this.responses.shift();
-        if (!response) {
-          throw new Error('No response found');
-        }
-        yield {
-          type: 'response_done',
-          response: {
-            id: response.responseId ?? 'resp-stream-invalid-argument',
-            usage: {
-              requests: response.usage.requests,
-              inputTokens: response.usage.inputTokens,
-              outputTokens: response.usage.outputTokens,
-              totalTokens: response.usage.totalTokens,
-            },
-            output: response.output.map((item) =>
-              protocol.OutputModelItem.parse(item),
-            ),
-          },
-        } satisfies StreamEvent;
+      get requests(): readonly Readonly<ModelRequest>[] {
+        return this.calls.map((call) => call.request);
       }
     }
 
@@ -771,15 +718,9 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('does not retain invalid arguments in streamed Runner errors', async () => {
-    class InvalidArgumentThrowingStreamModel implements Model {
-      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-        throw new Error('Unexpected non-streaming model request');
-      }
-
-      async *getStreamedResponse(
-        _request: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        yield {
+    const model = new ScriptedModel([
+      modelStream([
+        {
           type: 'response_done',
           response: {
             id: 'resp-stream-invalid-argument-error',
@@ -796,15 +737,15 @@ describe('Runner.run (streaming)', () => {
               }),
             ],
           },
-        } satisfies StreamEvent;
-      }
-    }
+        } satisfies StreamEvent,
+      ]),
+    ]);
 
     const secret = 'SECRET_STREAMED_RUN_STATE_123';
     vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(true);
     const agent = new Agent({
       name: 'StreamingInvalidArgumentStateAgent',
-      model: new InvalidArgumentThrowingStreamModel(),
+      model,
       tools: [
         tool({
           name: 'test',
@@ -1004,34 +945,14 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('emits agent_updated_stream_event with new agent on handoff', async () => {
-    class SimpleStreamingModel implements Model {
-      constructor(private resp: ModelResponse) {}
-      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-        return this.resp;
-      }
-      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'r',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: this.resp.output,
-          },
-        } as any;
-      }
-    }
-
     const agentB = new Agent({
       name: 'B',
-      model: new SimpleStreamingModel({
-        output: [fakeModelMessage('done B')],
-        usage: new Usage(),
-      }),
+      model: new ScriptedModel([
+        terminalModelStream(
+          { output: [fakeModelMessage('done B')], usage: new Usage() },
+          'r',
+        ),
+      ]),
     });
 
     const callItem: FunctionCallItem = {
@@ -1045,10 +966,9 @@ describe('Runner.run (streaming)', () => {
 
     const agentA = new Agent({
       name: 'A',
-      model: new SimpleStreamingModel({
-        output: [callItem],
-        usage: new Usage(),
-      }),
+      model: new ScriptedModel([
+        terminalModelStream({ output: [callItem], usage: new Usage() }, 'r'),
+      ]),
       handoffs: [handoff(agentB)],
     });
 
@@ -1067,41 +987,23 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('streams only the accepted handoff when multiple handoffs are emitted', async () => {
-    class SimpleStreamingModel implements Model {
-      constructor(private resp: ModelResponse) {}
-      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-        return this.resp;
-      }
-      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'r',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: this.resp.output,
-          },
-        } as any;
-      }
-    }
-
     const agentB = new Agent({
       name: 'B',
-      model: new SimpleStreamingModel({
-        output: [fakeModelMessage('done B')],
-        usage: new Usage(),
-      }),
+      model: new ScriptedModel([
+        terminalModelStream(
+          { output: [fakeModelMessage('done B')], usage: new Usage() },
+          'r',
+        ),
+      ]),
     });
     const agentC = new Agent({
       name: 'C',
-      model: new SimpleStreamingModel({
-        output: [fakeModelMessage('done C')],
-        usage: new Usage(),
-      }),
+      model: new ScriptedModel([
+        terminalModelStream(
+          { output: [fakeModelMessage('done C')], usage: new Usage() },
+          'r',
+        ),
+      ]),
     });
     const handoffToB = handoff(agentB);
     const handoffToC = handoff(agentC);
@@ -1123,10 +1025,12 @@ describe('Runner.run (streaming)', () => {
     };
     const agentA = new Agent({
       name: 'A',
-      model: new SimpleStreamingModel({
-        output: [acceptedCall, ignoredCall],
-        usage: new Usage(),
-      }),
+      model: new ScriptedModel([
+        terminalModelStream(
+          { output: [acceptedCall, ignoredCall], usage: new Usage() },
+          'r',
+        ),
+      ]),
       handoffs: [handoffToB, handoffToC],
     });
 
@@ -1163,34 +1067,14 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('emits agent_end lifecycle event for streaming agents', async () => {
-    class SimpleStreamingModel implements Model {
-      constructor(private resp: ModelResponse) {}
-      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-        return this.resp;
-      }
-      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'r',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: this.resp.output,
-          },
-        } as any;
-      }
-    }
-
     const agent = new Agent({
       name: 'TestAgent',
-      model: new SimpleStreamingModel({
-        output: [fakeModelMessage('Final output')],
-        usage: new Usage(),
-      }),
+      model: new ScriptedModel([
+        terminalModelStream(
+          { output: [fakeModelMessage('Final output')], usage: new Usage() },
+          'r',
+        ),
+      ]),
     });
 
     // Track agent_end events on both the agent and runner
@@ -1227,34 +1111,14 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('emits turn input on agent_start during streaming runs', async () => {
-    class LifecycleStreamingModel implements Model {
-      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-        return {
-          output: [fakeModelMessage('Final output')],
-          usage: new Usage(),
-        };
-      }
-
-      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'r_lifecycle',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: [fakeModelMessage('Final output')],
-          },
-        } as any;
-      }
-    }
-
     const agent = new Agent({
       name: 'StreamLifecycleAgent',
-      model: new LifecycleStreamingModel(),
+      model: new ScriptedModel([
+        terminalModelStream(
+          { output: [fakeModelMessage('Final output')], usage: new Usage() },
+          'r_lifecycle',
+        ),
+      ]),
     });
     const runner = new Runner();
 
@@ -1289,55 +1153,42 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('applies reasoningItemIdPolicy to follow-up streamed turn input', async () => {
-    class RequestRecordingStreamingModel implements Model {
-      readonly requests: ModelRequest[] = [];
-      #callCount = 0;
-
-      async getResponse(request: ModelRequest): Promise<ModelResponse> {
-        this.requests.push(request);
-        if (this.#callCount++ === 0) {
-          return {
-            output: [
-              {
-                type: 'reasoning',
-                id: 'rs_stream',
-                content: [{ type: 'input_text', text: 'reasoning trace' }],
-              } satisfies protocol.ReasoningItem,
-              {
-                type: 'function_call',
-                id: 'fc_stream',
-                callId: 'call_stream',
-                name: 'echo_tool',
-                status: 'completed',
-                arguments: '{}',
-              } satisfies protocol.FunctionCallItem,
-            ],
-            usage: new Usage(),
-          };
-        }
-        return {
-          output: [fakeModelMessage('stream done')],
-          usage: new Usage(),
-        };
+    class RequestRecordingStreamingModel extends ScriptedModel {
+      constructor() {
+        super([
+          parsedTerminalModelStream(
+            {
+              output: [
+                {
+                  type: 'reasoning',
+                  id: 'rs_stream',
+                  content: [{ type: 'input_text', text: 'reasoning trace' }],
+                } satisfies protocol.ReasoningItem,
+                {
+                  type: 'function_call',
+                  id: 'fc_stream',
+                  callId: 'call_stream',
+                  name: 'echo_tool',
+                  status: 'completed',
+                  arguments: '{}',
+                } satisfies protocol.FunctionCallItem,
+              ],
+              usage: new Usage(),
+            },
+            'stream_1',
+          ),
+          parsedTerminalModelStream(
+            {
+              output: [fakeModelMessage('stream done')],
+              usage: new Usage(),
+            },
+            'stream_2',
+          ),
+        ]);
       }
 
-      async *getStreamedResponse(
-        request: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        const response = await this.getResponse(request);
-        yield {
-          type: 'response_done',
-          response: {
-            id: `stream_${this.#callCount}`,
-            usage: {
-              requests: 1,
-              inputTokens: response.usage.inputTokens,
-              outputTokens: response.usage.outputTokens,
-              totalTokens: response.usage.totalTokens,
-            },
-            output: response.output,
-          },
-        } as any;
+      get requests(): readonly Readonly<ModelRequest>[] {
+        return this.calls.map((call) => call.request);
       }
     }
 
@@ -1399,37 +1250,12 @@ describe('Runner.run (streaming)', () => {
       usage: new Usage({ inputTokens: 20, outputTokens: 10, totalTokens: 30 }),
     };
 
-    class MultiTurnStreamingModel implements Model {
-      #callCount = 0;
-
-      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-        const current = this.#callCount++;
-        return current === 0 ? firstResponse : secondResponse;
-      }
-
-      async *getStreamedResponse(
-        req: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        const response = await this.getResponse(req);
-        yield {
-          type: 'response_done',
-          response: {
-            id: `r_${this.#callCount}`,
-            usage: {
-              requests: 1,
-              inputTokens: response.usage.inputTokens,
-              outputTokens: response.usage.outputTokens,
-              totalTokens: response.usage.totalTokens,
-            },
-            output: response.output,
-          },
-        } as any;
-      }
-    }
-
     const agent = new Agent({
       name: 'UsageTracker',
-      model: new MultiTurnStreamingModel(),
+      model: new ScriptedModel([
+        terminalModelStream(firstResponse, 'r_1'),
+        terminalModelStream(secondResponse, 'r_2'),
+      ]),
       tools: [testTool],
     });
 
@@ -1490,36 +1316,13 @@ describe('Runner.run (streaming)', () => {
       },
     ];
 
-    class ExpensiveStreamingModel implements Model {
-      #callCount = 0;
-
-      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-        return responses[this.#callCount++] ?? responses[responses.length - 1];
-      }
-
-      async *getStreamedResponse(
-        req: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        const response = await this.getResponse(req);
-        yield {
-          type: 'response_done',
-          response: {
-            id: `r_${this.#callCount}`,
-            usage: {
-              requests: 1,
-              inputTokens: response.usage.inputTokens,
-              outputTokens: response.usage.outputTokens,
-              totalTokens: response.usage.totalTokens,
-            },
-            output: response.output,
-          },
-        } as any;
-      }
-    }
-
     const agent = new Agent({
       name: 'ExpensiveAgent',
-      model: new ExpensiveStreamingModel(),
+      model: new ScriptedModel(
+        responses.map((response, index) =>
+          terminalModelStream(response, `r_${index + 1}`),
+        ),
+      ),
       tools: [testTool],
     });
 
@@ -1578,40 +1381,29 @@ describe('Runner.run (streaming)', () => {
         );
       });
 
-    class DelayedStreamingModel implements Model {
-      constructor(private readonly delayMs: number) {}
-
-      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-        return {
-          output: [fakeModelMessage('final')],
-          usage: new Usage(),
-        };
-      }
-
-      async *getStreamedResponse(
-        request: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        yield { type: 'output_text_delta', delta: 'hello' } as any;
-        await waitWithAbort(this.delayMs, request.signal);
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'delayed',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: [fakeModelMessage('final')],
-          },
-        } as any;
-      }
-    }
-
     const agent = new Agent({
       name: 'SlowStream',
-      model: new DelayedStreamingModel(400),
+      model: new ScriptedModel([
+        modelStreamResponder((call) =>
+          (async function* () {
+            yield { type: 'output_text_delta', delta: 'hello' } as StreamEvent;
+            await waitWithAbort(400, call.request.signal);
+            yield {
+              type: 'response_done',
+              response: {
+                id: 'delayed',
+                usage: {
+                  requests: 1,
+                  inputTokens: 0,
+                  outputTokens: 0,
+                  totalTokens: 0,
+                },
+                output: [fakeModelMessage('final')],
+              },
+            } as StreamEvent;
+          })(),
+        ),
+      ]),
     });
 
     const result = await run(agent, 'go', { stream: true });
@@ -1643,36 +1435,34 @@ describe('Runner.run (streaming)', () => {
       releaseModel = resolve;
     });
 
-    class SettlingStreamingModel implements Model {
-      async getResponse(): Promise<ModelResponse> {
-        throw new Error('Unexpected non-streaming model request');
-      }
-
-      async *getStreamedResponse(
-        request: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        yield { type: 'output_text_delta', delta: 'hello' } as StreamEvent;
-        if (!request.signal) {
-          throw new Error('Expected an abort signal');
-        }
-        if (!request.signal.aborted) {
-          await new Promise<void>((resolve) => {
-            request.signal?.addEventListener('abort', () => resolve(), {
-              once: true,
-            });
-          });
-        }
-        markAbortObserved?.();
-        await modelReleased;
-        const error = new Error('Aborted');
-        error.name = 'AbortError';
-        throw error;
-      }
-    }
-
     const agent = new Agent({
       name: 'SettlingStream',
-      model: new SettlingStreamingModel(),
+      model: new ScriptedModel([
+        modelStreamResponder((call) =>
+          (async function* () {
+            yield {
+              type: 'output_text_delta',
+              delta: 'hello',
+            } as StreamEvent;
+            const signal = call.request.signal;
+            if (!signal) {
+              throw new Error('Expected an abort signal');
+            }
+            if (!signal.aborted) {
+              await new Promise<void>((resolve) => {
+                signal.addEventListener('abort', () => resolve(), {
+                  once: true,
+                });
+              });
+            }
+            markAbortObserved?.();
+            await modelReleased;
+            const error = new Error('Aborted');
+            error.name = 'AbortError';
+            throw error;
+          })(),
+        ),
+      ]),
     });
     const result = await run(agent, 'go', { stream: true });
     const reader = (result.toStream() as any).getReader();
@@ -1726,32 +1516,6 @@ describe('Runner.run (streaming)', () => {
       streamStarted = resolve;
     });
 
-    class SlowFirstEventStreamingModel implements Model {
-      async getResponse(): Promise<ModelResponse> {
-        throw new Error('not used');
-      }
-
-      async *getStreamedResponse(
-        request: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        streamStarted?.();
-        await waitWithAbort(500, request.signal);
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'resp-delayed',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: [fakeModelMessage('should not reach')],
-          },
-        } as any;
-      }
-    }
-
     const markSpy = vi.spyOn(
       ServerConversationTracker.prototype,
       'markInputAsSent',
@@ -1759,7 +1523,27 @@ describe('Runner.run (streaming)', () => {
 
     const agent = new Agent({
       name: 'AbortBeforeFirstEvent',
-      model: new SlowFirstEventStreamingModel(),
+      model: new ScriptedModel([
+        modelStreamResponder((call) =>
+          (async function* () {
+            streamStarted?.();
+            await waitWithAbort(500, call.request.signal);
+            yield {
+              type: 'response_done',
+              response: {
+                id: 'resp-delayed',
+                usage: {
+                  requests: 1,
+                  inputTokens: 0,
+                  outputTokens: 0,
+                  totalTokens: 0,
+                },
+                output: [fakeModelMessage('should not reach')],
+              },
+            } as StreamEvent;
+          })(),
+        ),
+      ]),
     });
     const runner = new Runner();
 
@@ -1816,38 +1600,12 @@ describe('Runner.run (streaming)', () => {
       usage: new Usage(),
     };
 
-    class BlockingStreamModel implements Model {
-      #callCount = 0;
-
-      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-        return this.#callCount === 0 ? toolResponse : finalMessageResponse;
-      }
-
-      async *getStreamedResponse(
-        _req: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        const currentCall = this.#callCount++;
-        const response =
-          currentCall === 0 ? toolResponse : finalMessageResponse;
-        yield {
-          type: 'response_done',
-          response: {
-            id: `resp-${currentCall}`,
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: response.output,
-          },
-        } as any;
-      }
-    }
-
     const agent = new Agent({
       name: 'BlockingAgent',
-      model: new BlockingStreamModel(),
+      model: new ScriptedModel([
+        terminalModelStream(toolResponse, 'resp-0'),
+        terminalModelStream(finalMessageResponse, 'resp-1'),
+      ]),
       tools: [blockingTool],
     });
 
@@ -2270,38 +2028,38 @@ describe('Runner.run (streaming)', () => {
     const nestedModelStarted = new Promise<void>((resolve) => {
       markNestedModelStarted = resolve;
     });
-    const nestedModel: Model = {
-      async getResponse() {
-        throw new Error('Unexpected non-streaming nested model request');
-      },
-      async *getStreamedResponse(request) {
-        markNestedModelStarted?.();
-        if (!request.signal) {
-          throw new Error('Expected nested model abort signal');
-        }
-        if (!request.signal.aborted) {
-          await new Promise<void>((resolve) => {
-            request.signal!.addEventListener('abort', () => resolve(), {
-              once: true,
+    const nestedModel = new ScriptedModel([
+      modelStreamResponder((call) =>
+        (async function* () {
+          markNestedModelStarted?.();
+          const signal = call.request.signal;
+          if (!signal) {
+            throw new Error('Expected nested model abort signal');
+          }
+          if (!signal.aborted) {
+            await new Promise<void>((resolve) => {
+              signal.addEventListener('abort', () => resolve(), {
+                once: true,
+              });
             });
-          });
-        }
-        request.signal.throwIfAborted();
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'unexpected-nested-response',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
+          }
+          signal.throwIfAborted();
+          yield {
+            type: 'response_done',
+            response: {
+              id: 'unexpected-nested-response',
+              usage: {
+                requests: 1,
+                inputTokens: 0,
+                outputTokens: 0,
+                totalTokens: 0,
+              },
+              output: [fakeModelMessage('unexpected nested completion')],
             },
-            output: [fakeModelMessage('unexpected nested completion')],
-          },
-        } as StreamEvent;
-      },
-    };
+          } as StreamEvent;
+        })(),
+      ),
+    ]);
     const nestedAgent = new Agent({
       name: 'NestedStreamingAgent',
       model: nestedModel,
@@ -2374,26 +2132,15 @@ describe('Runner.run (streaming)', () => {
         };
       }),
     };
-    const nestedModel: Model = {
-      async getResponse() {
-        throw new Error('Unexpected non-streaming nested model request');
-      },
-      async *getStreamedResponse() {
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'nested-final-response',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: [fakeModelMessage('nested final output')],
-          },
-        } as StreamEvent;
-      },
-    };
+    const nestedModel = new ScriptedModel([
+      terminalModelStream(
+        {
+          output: [fakeModelMessage('nested final output')],
+          usage: new Usage(),
+        },
+        'nested-final-response',
+      ),
+    ]);
     const nestedAgent = new Agent({
       name: 'CommittedNestedStreamingAgent',
       model: nestedModel,
@@ -2667,37 +2414,12 @@ describe('Runner.run (streaming)', () => {
       usage: new Usage(),
     };
 
-    class SimpleStreamingModel implements Model {
-      #callCount = 0;
-
-      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-        const current = this.#callCount++;
-        return current === 0 ? firstResponse : secondResponse;
-      }
-
-      async *getStreamedResponse(
-        req: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        const response = await this.getResponse(req);
-        yield {
-          type: 'response_done',
-          response: {
-            id: `r_${this.#callCount}`,
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: response.output,
-          },
-        } as any;
-      }
-    }
-
     const agent = new Agent({
       name: 'StreamTurnCounter',
-      model: new SimpleStreamingModel(),
+      model: new ScriptedModel([
+        terminalModelStream(firstResponse, 'r_1'),
+        terminalModelStream(secondResponse, 'r_2'),
+      ]),
       tools: [testTool],
       toolUseBehavior: 'run_llm_again',
     });
@@ -2740,40 +2462,13 @@ describe('Runner.run (streaming)', () => {
       },
     ];
 
-    class LongStreamingModel implements Model {
-      #callCount = 0;
-
-      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-        const response = responses[this.#callCount++];
-        if (!response) {
-          throw new Error('No response found');
-        }
-        return response;
-      }
-
-      async *getStreamedResponse(
-        req: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        const response = await this.getResponse(req);
-        yield {
-          type: 'response_done',
-          response: {
-            id: `r_${this.#callCount}`,
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: response.output,
-          },
-        } as any;
-      }
-    }
-
     const agent = new Agent({
       name: 'NoMaxTurnsStream',
-      model: new LongStreamingModel(),
+      model: new ScriptedModel(
+        responses.map((response, index) =>
+          terminalModelStream(response, `r_${index + 1}`),
+        ),
+      ),
       tools: [testTool],
       toolUseBehavior: 'run_llm_again',
     });
@@ -2792,8 +2487,11 @@ describe('Runner.run (streaming)', () => {
   it('handles maxTurns errors with an error handler', async () => {
     const agent = new Agent({
       name: 'MaxTurnsHandlerStream',
-      model: new FakeModel([
-        { output: [fakeModelMessage('nope')], usage: new Usage() },
+      model: new ScriptedModel([
+        modelResponse({
+          output: [fakeModelMessage('nope')],
+          usage: new Usage(),
+        }),
       ]),
     });
     const result = await run(agent, 'x', {
@@ -2838,7 +2536,7 @@ describe('Runner.run (streaming)', () => {
     });
     const agent = new Agent({
       name: 'Pending error-handler guardrail stream',
-      model: new FakeModel([]),
+      model: new ScriptedModel([]),
       outputGuardrails: [
         {
           name: 'suspend error-handler output',
@@ -2872,37 +2570,19 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('handles model refusal errors with an error handler', async () => {
-    class RefusalStreamingModel implements Model {
-      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-        return {
+    const model = new ScriptedModel([
+      terminalModelStream(
+        {
           output: [fakeModelRefusal('I cannot help with that request.')],
           usage: new Usage(),
-        };
-      }
-
-      async *getStreamedResponse(
-        req: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        const response = await this.getResponse(req);
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'r_refusal',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: response.output,
-          },
-        } as any;
-      }
-    }
+        },
+        'r_refusal',
+      ),
+    ]);
 
     const agent = new Agent({
       name: 'RefusalHandlerStream',
-      model: new RefusalStreamingModel(),
+      model,
     });
     const result = await run(agent, 'x', {
       stream: true,
@@ -2932,38 +2612,20 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('handles invalid final output errors with an error handler', async () => {
-    class InvalidFinalOutputStreamingModel implements Model {
-      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-        return {
+    const model = new ScriptedModel([
+      terminalModelStream(
+        {
           output: [fakeModelMessage('not valid json')],
           usage: new Usage(),
-        };
-      }
-
-      async *getStreamedResponse(
-        req: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        const response = await this.getResponse(req);
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'r_invalid_final_output',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: response.output,
-          },
-        } as any;
-      }
-    }
+        },
+        'r_invalid_final_output',
+      ),
+    ]);
 
     const agent = new Agent({
       name: 'InvalidFinalOutputHandlerStream',
       outputType: z.object({ summary: z.string() }),
-      model: new InvalidFinalOutputStreamingModel(),
+      model,
     });
     const result = await run(agent, 'x', {
       stream: true,
@@ -3001,37 +2663,6 @@ describe('Runner.run (streaming)', () => {
       execute: async ({ city }) => `Weather in ${city}`,
     });
 
-    class ApprovalStreamingModel implements Model {
-      constructor(private readonly responses: ModelResponse[]) {}
-
-      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-        const response = this.responses.shift();
-        if (!response) {
-          throw new Error('No response found');
-        }
-        return response;
-      }
-
-      async *getStreamedResponse(
-        req: ModelRequest,
-      ): AsyncIterable<protocol.StreamEvent> {
-        const response = await this.getResponse(req);
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'approval-stream',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: response.output,
-          },
-        } as protocol.StreamEvent;
-      }
-    }
-
     const modelResponses: ModelResponse[] = [
       {
         output: [
@@ -3052,7 +2683,11 @@ describe('Runner.run (streaming)', () => {
 
     const agent = new Agent({
       name: 'ApprovalStreamResume',
-      model: new ApprovalStreamingModel(modelResponses),
+      model: new ScriptedModel(
+        modelResponses.map((response) =>
+          terminalModelStream(response, 'approval-stream'),
+        ),
+      ),
       tools: [approvalTool],
       toolUseBehavior: 'run_llm_again',
     });
@@ -3111,38 +2746,12 @@ describe('Runner.run (streaming)', () => {
       usage: new Usage(),
     };
 
-    class SequencedStreamModel implements Model {
-      #turn = 0;
-
-      async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-        return this.#turn === 0 ? firstTurnResponse : secondTurnResponse;
-      }
-
-      async *getStreamedResponse(
-        _req: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        const response =
-          this.#turn === 0 ? firstTurnResponse : secondTurnResponse;
-        this.#turn += 1;
-        yield {
-          type: 'response_done',
-          response: {
-            id: `resp-${this.#turn}`,
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: response.output,
-          },
-        } as any;
-      }
-    }
-
     const agent = new Agent({
       name: 'SequencedAgent',
-      model: new SequencedStreamModel(),
+      model: new ScriptedModel([
+        terminalModelStream(firstTurnResponse, 'resp-1'),
+        terminalModelStream(secondTurnResponse, 'resp-2'),
+      ]),
       tools: [sequenceTool],
     });
 
@@ -3168,58 +2777,54 @@ describe('Runner.run (streaming)', () => {
   describe('server-managed conversation state', () => {
     type Turn = { output: protocol.ModelItem[]; responseId?: string };
 
-    class TrackingStreamingModel implements Model {
-      public requests: ModelRequest[] = [];
-      public firstRequest: ModelRequest | undefined;
-      public lastRequest: ModelRequest | undefined;
+    class TrackingStreamingModel extends ScriptedModel {
+      public requests: ModelRequest[];
 
-      constructor(private readonly turns: Turn[]) {}
-
-      private recordRequest(request: ModelRequest) {
-        const clonedInput: string | AgentInputItem[] =
-          typeof request.input === 'string'
-            ? request.input
-            : (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[]);
-
-        const recorded: ModelRequest = {
-          ...request,
-          input: clonedInput,
-        };
-
-        this.requests.push(recorded);
-        this.lastRequest = recorded;
-        this.firstRequest ??= recorded;
+      constructor(turns: Turn[]) {
+        const requests: ModelRequest[] = [];
+        super(
+          turns.map((turn) =>
+            modelStreamResponder((call) => {
+              const recorded: ModelRequest = {
+                ...call.request,
+                input:
+                  typeof call.request.input === 'string'
+                    ? call.request.input
+                    : (JSON.parse(
+                        JSON.stringify(call.request.input),
+                      ) as AgentInputItem[]),
+              };
+              requests.push(recorded);
+              const responseId = turn.responseId ?? `resp-${requests.length}`;
+              return [
+                {
+                  type: 'response_done',
+                  response: {
+                    id: responseId,
+                    usage: {
+                      requests: 1,
+                      inputTokens: 0,
+                      outputTokens: 0,
+                      totalTokens: 0,
+                    },
+                    output: JSON.parse(
+                      JSON.stringify(turn.output),
+                    ) as protocol.ModelItem[],
+                  },
+                } as StreamEvent,
+              ];
+            }),
+          ),
+        );
+        this.requests = requests;
       }
 
-      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-        throw new Error('Not implemented');
+      get firstRequest(): ModelRequest | undefined {
+        return this.requests[0];
       }
 
-      async *getStreamedResponse(
-        request: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        this.recordRequest(request);
-        const turn = this.turns.shift();
-        if (!turn) {
-          throw new Error('No response configured');
-        }
-
-        const responseId = turn.responseId ?? `resp-${this.requests.length}`;
-        yield {
-          type: 'response_done',
-          response: {
-            id: responseId,
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: JSON.parse(
-              JSON.stringify(turn.output),
-            ) as protocol.ModelItem[],
-          },
-        } as StreamEvent;
+      get lastRequest(): ModelRequest | undefined {
+        return this.requests.at(-1);
       }
     }
 
@@ -3411,25 +3016,13 @@ describe('Runner.run (streaming)', () => {
     });
 
     it('does not mark streaming inputs as sent when the stream fails before any events', async () => {
-      /* eslint-disable require-yield */
-      class ThrowingStreamingModel implements Model {
-        async getResponse(): Promise<ModelResponse> {
-          throw new Error('not used');
-        }
-
-        async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-          throw new Error('stream failure');
-        }
-      }
-      /* eslint-enable require-yield */
-
       const markSpy = vi.spyOn(
         ServerConversationTracker.prototype,
         'markInputAsSent',
       );
       const agent = new Agent({
         name: 'StreamFail',
-        model: new ThrowingStreamingModel(),
+        model: new ScriptedModel([modelError(new Error('stream failure'))]),
       });
       const runner = new Runner();
 
@@ -3612,58 +3205,65 @@ describe('Runner.run (streaming)', () => {
     });
 
     it('replays managed handoff acknowledgements when resuming before streamed response completion', async () => {
-      class AbortAfterAckStreamingModel implements Model {
-        public requests: ModelRequest[] = [];
-        private attempt = 0;
+      class AbortAfterAckStreamingModel extends ScriptedModel {
+        readonly requests: ModelRequest[];
 
-        async getResponse(): Promise<ModelResponse> {
-          throw new Error('not used');
-        }
-
-        async *getStreamedResponse(
-          request: ModelRequest,
-        ): AsyncIterable<StreamEvent> {
-          this.requests.push({
-            ...request,
-            input: Array.isArray(request.input)
-              ? (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[])
-              : request.input,
-          });
-          this.attempt += 1;
-
-          if (this.attempt === 1) {
-            yield { type: 'output_text_delta', delta: 'ack' } as any;
-            const abortError = new Error('aborted');
-            (abortError as Error & { name: string }).name = 'AbortError';
-            const signal = request.signal as AbortSignal | undefined;
-            await new Promise((_resolve, reject) => {
-              if (signal?.aborted) {
-                reject(abortError);
-                return;
-              }
-              const onAbort = () => {
-                signal?.removeEventListener('abort', onAbort);
-                reject(abortError);
-              };
-              signal?.addEventListener('abort', onAbort, { once: true });
+        constructor() {
+          const requests: ModelRequest[] = [];
+          const record = (request: Readonly<ModelRequest>) => {
+            requests.push({
+              ...request,
+              input: Array.isArray(request.input)
+                ? (JSON.parse(
+                    JSON.stringify(request.input),
+                  ) as AgentInputItem[])
+                : request.input,
             });
-            yield* [] as any;
-            return;
-          }
-
-          yield {
-            type: 'response_done',
-            response: {
-              id: 'resp-b-final',
-              usage: {
-                requests: 1,
-                inputTokens: 0,
-                outputTokens: 0,
-                totalTokens: 0,
-              },
-              output: [fakeModelMessage('done B')],
-            },
-          } as any;
+          };
+          super([
+            modelStreamResponder((call) =>
+              (async function* () {
+                record(call.request);
+                yield {
+                  type: 'output_text_delta',
+                  delta: 'ack',
+                } as StreamEvent;
+                const abortError = new Error('aborted');
+                abortError.name = 'AbortError';
+                const signal = call.request.signal;
+                await new Promise((_resolve, reject) => {
+                  if (signal?.aborted) {
+                    reject(abortError);
+                    return;
+                  }
+                  const onAbort = () => {
+                    signal?.removeEventListener('abort', onAbort);
+                    reject(abortError);
+                  };
+                  signal?.addEventListener('abort', onAbort, { once: true });
+                });
+              })(),
+            ),
+            modelStreamResponder((call) => {
+              record(call.request);
+              return [
+                {
+                  type: 'response_done',
+                  response: {
+                    id: 'resp-b-final',
+                    usage: {
+                      requests: 1,
+                      inputTokens: 0,
+                      outputTokens: 0,
+                      totalTokens: 0,
+                    },
+                    output: [fakeModelMessage('done B')],
+                  },
+                } as StreamEvent,
+              ];
+            }),
+          ]);
+          this.requests = requests;
         }
       }
 
@@ -4155,18 +3755,7 @@ describe('Runner.run (streaming)', () => {
       }),
     };
     const streamError = new Error('model stream failed after compaction');
-    let capturedRequest: ModelRequest | undefined;
-    const model: Model = {
-      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-        throw streamError;
-      },
-      getStreamedResponse(request: ModelRequest): AsyncIterable<StreamEvent> {
-        capturedRequest = request;
-        return new RejectingStreamingModel(streamError).getStreamedResponse(
-          request,
-        );
-      },
-    };
+    const model = new ScriptedModel([modelError(streamError)]);
     const agent = new Agent({ name: 'StreamCompactedInputFailure', model });
     const result = await new Runner().run(
       agent,
@@ -4178,7 +3767,7 @@ describe('Runner.run (streaming)', () => {
       'model stream failed after compaction',
     );
 
-    expect(capturedRequest?.input).toEqual([compaction, retainedInput]);
+    expect(model.firstCall?.request.input).toEqual([compaction, retainedInput]);
     expect(sessionItems).toEqual([compaction, retainedInput]);
   });
 
@@ -4436,34 +4025,15 @@ describe('Runner.run (streaming)', () => {
       },
     };
 
-    class TrackingStreamingModel implements Model {
-      calls = 0;
-
-      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-        throw new Error('not implemented');
-      }
-
-      async *getStreamedResponse(
-        _request: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        this.calls++;
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'stream-response',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: [protocol.OutputModelItem.parse(fakeModelMessage('done'))],
-          },
-        } satisfies StreamEvent;
-      }
-    }
-
-    const model = new TrackingStreamingModel();
+    const model = new ScriptedModel([
+      terminalModelStream(
+        {
+          output: [protocol.OutputModelItem.parse(fakeModelMessage('done'))],
+          usage: new Usage(),
+        },
+        'stream-response',
+      ),
+    ]);
     const agent = new Agent({
       name: 'StreamingParallelGuardrailFailure',
       model,
@@ -4483,7 +4053,7 @@ describe('Runner.run (streaming)', () => {
     );
     await errorThrown;
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const callsBeforeSiblingFinished = model.calls;
+    const callsBeforeSiblingFinished = model.calls.length;
     const settledBeforeSiblingFinished = completionSettled;
     releaseSlowGuardrail();
 
@@ -4492,7 +4062,7 @@ describe('Runner.run (streaming)', () => {
     );
     expect(callsBeforeSiblingFinished).toBe(0);
     expect(settledBeforeSiblingFinished).toBe(false);
-    expect(model.calls).toBe(0);
+    expect(model.calls).toHaveLength(0);
     expect(result.currentTurn).toBe(0);
     expect(result.inputGuardrailResults.map((r) => r.guardrail.name)).toEqual([
       'slow-parallel-guardrail',
@@ -4517,38 +4087,29 @@ describe('Runner.run (streaming)', () => {
       },
     };
 
-    class TrackingStreamingModel implements Model {
-      calls = 0;
-
-      async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-        throw new Error('not implemented');
-      }
-
-      async *getStreamedResponse(
-        _request: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        this.calls++;
-        markModelStarted();
-        await guardrailFailing;
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'late-guardrail-response',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
+    const model = new ScriptedModel([
+      modelStreamResponder(() =>
+        (async function* () {
+          markModelStarted();
+          await guardrailFailing;
+          yield {
+            type: 'response_done',
+            response: {
+              id: 'late-guardrail-response',
+              usage: {
+                requests: 1,
+                inputTokens: 0,
+                outputTokens: 0,
+                totalTokens: 0,
+              },
+              output: [
+                protocol.OutputModelItem.parse(fakeModelMessage('unused')),
+              ],
             },
-            output: [
-              protocol.OutputModelItem.parse(fakeModelMessage('unused')),
-            ],
-          },
-        } satisfies StreamEvent;
-      }
-    }
-
-    const model = new TrackingStreamingModel();
+          } satisfies StreamEvent;
+        })(),
+      ),
+    ]);
     const agent = new Agent({
       name: 'LateStreamingParallelGuardrailFailure',
       model,
@@ -4560,7 +4121,7 @@ describe('Runner.run (streaming)', () => {
     await expect(result.completed).rejects.toBeInstanceOf(
       GuardrailExecutionError,
     );
-    expect(model.calls).toBe(1);
+    expect(model.calls).toHaveLength(1);
     expect(result.currentTurn).toBe(1);
     expect(result.state._currentTurn).toBe(1);
 
@@ -4576,7 +4137,7 @@ describe('Runner.run (streaming)', () => {
     );
     expect(resumed.currentTurn).toBe(1);
     expect(resumed.state._currentTurn).toBe(1);
-    expect(model.calls).toBe(1);
+    expect(model.calls).toHaveLength(1);
   });
 
   it('persists streaming input through the blocked result save when an output guardrail trips', async () => {
@@ -4680,7 +4241,7 @@ describe('Runner.run (streaming)', () => {
     });
     const agent = new Agent({
       name: 'Pre-aborted final output resume',
-      model: new FakeModel([]),
+      model: new ScriptedModel([]),
       outputGuardrails: [
         {
           name: 'should not run after pre-abort',
@@ -4802,37 +4363,9 @@ describe('Runner.run (streaming)', () => {
   });
 
   it('resumes a cancelled in-progress turn without double-counting turns', async () => {
-    class HangingStreamingModel implements Model {
-      async getResponse(): Promise<ModelResponse> {
-        throw new Error('unused');
-      }
-
-      async *getStreamedResponse(
-        request: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        const abortError = new Error('aborted');
-        (abortError as any).name = 'AbortError';
-        const signal = (request as any).signal as AbortSignal | undefined;
-        await new Promise((_resolve, reject) => {
-          if (signal?.aborted) {
-            reject(abortError);
-            return;
-          }
-          const onAbort = () => {
-            signal?.removeEventListener('abort', onAbort);
-            reject(abortError);
-          };
-          signal?.addEventListener('abort', onAbort, { once: true });
-        });
-
-        // Keep the generator shape for the streaming contract while intentionally yielding nothing.
-        yield* [] as any;
-      }
-    }
-
     const agent = new Agent({
       name: 'ResumeAfterCancel',
-      model: new HangingStreamingModel(),
+      model: new ScriptedModel([abortingHangingStream()]),
     });
     const runner = new Runner();
 
@@ -4850,10 +4383,12 @@ describe('Runner.run (streaming)', () => {
     const serialized = streaming.state.toString();
     const restored = await RunState.fromString(agent, serialized);
 
-    agent.model = new ImmediateStreamingModel({
-      output: [fakeModelMessage('resumed')],
-      usage: new Usage(),
-    });
+    agent.model = new ScriptedModel([
+      modelResponse({
+        output: [fakeModelMessage('resumed')],
+        usage: new Usage(),
+      }),
+    ]);
 
     const resumed = await runner.run(agent, restored);
 
@@ -4964,43 +4499,41 @@ describe('Runner.run (streaming)', () => {
   it.each(['non-plain', 'cyclic', 'throwing getter'] as const)(
     'ignores %s raw usage from a terminal model event',
     async (variant) => {
-      class InvalidRawUsageStreamingModel implements Model {
-        async getResponse(): Promise<ModelResponse> {
-          throw new Error('Unexpected call to getResponse');
-        }
-
-        async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-          const response: Record<string, unknown> = {
-            id: 'r',
-            usage: {
-              requests: 1,
-              inputTokens: 1,
-              outputTokens: 1,
-              totalTokens: 2,
-            },
-            output: [fakeModelMessage('done')],
-          };
-          if (variant === 'throwing getter') {
-            Object.defineProperty(response, 'rawUsage', {
-              enumerable: true,
-              get() {
-                throw new Error('raw usage is unavailable');
+      const model = new ScriptedModel([
+        modelStreamResponder(() =>
+          (async function* () {
+            const response: Record<string, unknown> = {
+              id: 'r',
+              usage: {
+                requests: 1,
+                inputTokens: 1,
+                outputTokens: 1,
+                totalTokens: 2,
               },
-            });
-          } else if (variant === 'cyclic') {
-            const rawUsage: Record<string, unknown> = {};
-            rawUsage.self = rawUsage;
-            response.rawUsage = rawUsage;
-          } else {
-            response.rawUsage = new Map([['input_tokens', 1]]);
-          }
-          yield { type: 'response_done', response } as any;
-        }
-      }
+              output: [fakeModelMessage('done')],
+            };
+            if (variant === 'throwing getter') {
+              Object.defineProperty(response, 'rawUsage', {
+                enumerable: true,
+                get() {
+                  throw new Error('raw usage is unavailable');
+                },
+              });
+            } else if (variant === 'cyclic') {
+              const rawUsage: Record<string, unknown> = {};
+              rawUsage.self = rawUsage;
+              response.rawUsage = rawUsage;
+            } else {
+              response.rawUsage = new Map([['input_tokens', 1]]);
+            }
+            yield { type: 'response_done', response } as any;
+          })(),
+        ),
+      ]);
 
       const agent = new Agent({
         name: 'InvalidRawUsage',
-        model: new InvalidRawUsageStreamingModel(),
+        model,
         modelSettings: { preserveRawUsage: true },
       });
       const result = await run(agent, 'hello', { stream: true });
@@ -5027,34 +4560,28 @@ describe('Runner.run (streaming)', () => {
       }),
     };
 
-    class ExpectGuardrailBeforeStreamModel implements Model {
-      getResponse(_request: ModelRequest): Promise<ModelResponse> {
-        throw new Error('Unexpected call to getResponse');
-      }
-
-      async *getStreamedResponse(
-        _request: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        expect(guardrailFinished).toBe(true);
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'stream1',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: [fakeModelMessage('ok')],
-          },
-        } satisfies StreamEvent;
-      }
-    }
-
     const agent = new Agent({
       name: 'BlockingStreamAgent',
-      model: new ExpectGuardrailBeforeStreamModel(),
+      model: new ScriptedModel([
+        modelStreamResponder(() => {
+          expect(guardrailFinished).toBe(true);
+          return [
+            {
+              type: 'response_done',
+              response: {
+                id: 'stream1',
+                usage: {
+                  requests: 1,
+                  inputTokens: 0,
+                  outputTokens: 0,
+                  totalTokens: 0,
+                },
+                output: [fakeModelMessage('ok')],
+              },
+            } satisfies StreamEvent,
+          ];
+        }),
+      ]),
       inputGuardrails: [guardrail],
     });
 
@@ -5072,56 +4599,35 @@ describe('Runner.run (streaming)', () => {
   });
 });
 
-class ImmediateStreamingModel implements Model {
-  constructor(private readonly response: ModelResponse) {}
-
-  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-    return this.response;
-  }
-
-  async *getStreamedResponse(
-    _request: ModelRequest,
-  ): AsyncIterable<StreamEvent> {
-    const usage = this.response.usage;
-    const output = this.response.output.map((item) =>
-      protocol.OutputModelItem.parse(item),
-    );
-    yield {
-      type: 'response_done',
-      response: {
-        id: this.response.responseId ?? 'r',
-        requestId: this.response.requestId,
-        usage: {
-          requests: usage.requests,
-          inputTokens: usage.inputTokens,
-          outputTokens: usage.outputTokens,
-          totalTokens: usage.totalTokens,
-        },
-        rawUsage: this.response.rawUsage,
-        output,
-      },
-    } satisfies StreamEvent;
+class ImmediateStreamingModel extends ScriptedModel {
+  constructor(response: ModelResponse) {
+    super([
+      modelStream([
+        {
+          type: 'response_done',
+          response: {
+            id: response.responseId ?? 'r',
+            requestId: response.requestId,
+            usage: {
+              requests: response.usage.requests,
+              inputTokens: response.usage.inputTokens,
+              outputTokens: response.usage.outputTokens,
+              totalTokens: response.usage.totalTokens,
+            },
+            rawUsage: response.rawUsage,
+            output: response.output.map((item) =>
+              protocol.OutputModelItem.parse(item),
+            ),
+          },
+        } satisfies StreamEvent,
+      ]),
+    ]);
   }
 }
 
-class RejectingStreamingModel implements Model {
-  constructor(private readonly error: Error) {}
-
-  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-    throw this.error;
-  }
-
-  getStreamedResponse(_request: ModelRequest): AsyncIterable<StreamEvent> {
-    const error = this.error;
-    return {
-      [Symbol.asyncIterator]() {
-        return {
-          async next() {
-            throw error;
-          },
-        } satisfies AsyncIterator<StreamEvent>;
-      },
-    } satisfies AsyncIterable<StreamEvent>;
+class RejectingStreamingModel extends ScriptedModel {
+  constructor(error: Error) {
+    super([modelError(error)]);
   }
 }
 
@@ -5137,39 +4643,16 @@ function createSessionMock(): Session {
 
 // A streaming model that returns one queued ModelResponse per turn, mirroring
 // the QueueStreamingModel used elsewhere in this file.
-class QueuedTurnStreamingModel implements Model {
-  calls = 0;
-
-  constructor(private readonly responses: ModelResponse[]) {}
-
-  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-    this.calls++;
-    const response = this.responses.shift();
-    if (!response) {
-      throw new Error('No response found');
-    }
-    return response;
-  }
-
-  async *getStreamedResponse(
-    request: ModelRequest,
-  ): AsyncIterable<StreamEvent> {
-    const response = await this.getResponse(request);
-    yield {
-      type: 'response_done',
-      response: {
-        id: response.responseId ?? 'resp-current-turn',
-        usage: {
-          requests: response.usage.requests,
-          inputTokens: response.usage.inputTokens,
-          outputTokens: response.usage.outputTokens,
-          totalTokens: response.usage.totalTokens,
-        },
-        output: response.output.map((item) =>
-          protocol.OutputModelItem.parse(item),
+class QueuedTurnStreamingModel extends ScriptedModel {
+  constructor(responses: ModelResponse[]) {
+    super(
+      responses.map((response) =>
+        parsedTerminalModelStream(
+          response,
+          response.responseId ?? 'resp-current-turn',
         ),
-      },
-    } satisfies StreamEvent;
+      ),
+    );
   }
 }
 
@@ -5224,7 +4707,7 @@ describe('StreamedRunResult.currentTurn (streamed runs)', () => {
     // currentTurn is written only once a turn is ADMITTED, so it stays 0 here.
     const agent = new Agent({
       name: 'MaxTurnsZeroAgent',
-      model: new FakeModel(),
+      model: new ScriptedModel(),
     });
 
     const result = await run(agent, 'go', { stream: true, maxTurns: 0 });
@@ -5266,7 +4749,7 @@ describe('StreamedRunResult.currentTurn (streamed runs)', () => {
     const result = await run(agent, 'x', { stream: true });
     await expect(result.completed).rejects.toBeInstanceOf(UserError);
 
-    expect(model.calls).toBe(0);
+    expect(model.calls).toHaveLength(0);
     expect(result.currentTurn).toBe(0);
     expect(result.state._currentTurn).toBe(0);
 
@@ -5281,7 +4764,7 @@ describe('StreamedRunResult.currentTurn (streamed runs)', () => {
     expect(resumed.finalOutput).toEqual({ value: 'ok' });
     expect(resumed.currentTurn).toBe(1);
     expect(resumed.state._currentTurn).toBe(1);
-    expect(model.calls).toBe(1);
+    expect(model.calls).toHaveLength(1);
   });
 
   it('preserves an in-progress turn when resumed request serialization fails', async () => {
@@ -5307,7 +4790,7 @@ describe('StreamedRunResult.currentTurn (streamed runs)', () => {
     });
     await expect(result.completed).rejects.toBeInstanceOf(UserError);
 
-    expect(model.calls).toBe(0);
+    expect(model.calls).toHaveLength(0);
     expect(result.currentTurn).toBe(1);
     expect(result.state._currentTurn).toBe(1);
     expect(result.state._currentTurnInProgress).toBe(true);
@@ -5326,7 +4809,7 @@ describe('StreamedRunResult.currentTurn (streamed runs)', () => {
     expect(resumed.finalOutput).toEqual({ value: 'ok' });
     expect(resumed.currentTurn).toBe(1);
     expect(resumed.state._currentTurn).toBe(1);
-    expect(model.calls).toBe(1);
+    expect(model.calls).toHaveLength(1);
   });
 
   it('reports 0 when a blocking input guardrail trips before any model request', async () => {
@@ -5364,35 +4847,9 @@ describe('StreamedRunResult.currentTurn (streamed runs)', () => {
   it('carries the turn count into a resumed streamed run instead of restarting at 0', async () => {
     // A run resumed from a serialized state has already spent turns; restarting the
     // public counter at 0 would under-report them for the rest of the run.
-    class HangingStreamingModel implements Model {
-      async getResponse(): Promise<ModelResponse> {
-        throw new Error('unused');
-      }
-
-      async *getStreamedResponse(
-        request: ModelRequest,
-      ): AsyncIterable<StreamEvent> {
-        const abortError = new Error('aborted');
-        (abortError as any).name = 'AbortError';
-        const signal = (request as any).signal as AbortSignal | undefined;
-        await new Promise((_resolve, reject) => {
-          if (signal?.aborted) {
-            reject(abortError);
-            return;
-          }
-          const onAbort = () => {
-            signal?.removeEventListener('abort', onAbort);
-            reject(abortError);
-          };
-          signal?.addEventListener('abort', onAbort, { once: true });
-        });
-        yield* [] as any;
-      }
-    }
-
     const agent = new Agent({
       name: 'ResumeTurnCountAgent',
-      model: new HangingStreamingModel(),
+      model: new ScriptedModel([abortingHangingStream()]),
     });
     const runner = new Runner();
 

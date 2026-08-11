@@ -1,11 +1,7 @@
 import { z } from 'zod';
 import { Agent } from '../src/agent';
-import {
-  Model,
-  ModelProvider,
-  ModelRequest,
-  ModelResponse,
-} from '../src/model';
+import { Model, ModelProvider, ModelResponse } from '../src/model';
+import { ScriptedModel, assistantMessage, modelResponse } from '../src/testing';
 import { tool } from '../src/tool';
 import type { Computer } from '../src/computer';
 import type { Environment } from '../src/computer';
@@ -20,35 +16,11 @@ import * as protocol from '../src/types/protocol';
 import { Usage } from '../src/usage';
 import { Span, Trace, TracingExporter } from '../src';
 
-export const TEST_MODEL_MESSAGE: protocol.AssistantMessageItem = {
-  id: '123',
-  status: 'completed' as const,
-  type: 'message' as const,
-  role: 'assistant' as const,
-  content: [
-    {
-      type: 'output_text' as const,
-      text: 'Hello World',
-      providerData: {
-        annotations: [],
-      },
-    },
-  ],
-};
+export const TEST_MODEL_MESSAGE: protocol.AssistantMessageItem =
+  assistantMessage('Hello World', { id: '123' });
 
 export function fakeModelMessage(text: string): protocol.AssistantMessageItem {
-  return {
-    ...TEST_MODEL_MESSAGE,
-    content: [
-      {
-        type: 'output_text' as const,
-        text,
-        providerData: {
-          annotations: [],
-        },
-      },
-    ],
-  };
+  return assistantMessage(text, { id: TEST_MODEL_MESSAGE.id });
 }
 
 export function fakeModelRefusal(
@@ -154,28 +126,9 @@ export class FakeComputer implements Computer {
   async wait(): Promise<void> {}
 }
 
-export class FakeModel implements Model {
-  constructor(private _responses: ModelResponse[] = []) {}
-
-  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-    const response = this._responses.shift();
-    if (!response) {
-      throw new Error('No response found');
-    }
-    return response;
-  }
-
-  /* eslint-disable require-yield */
-  async *getStreamedResponse(
-    _request: ModelRequest,
-  ): AsyncIterable<protocol.StreamEvent> {
-    throw new Error('Not implemented');
-  }
-}
-
-export class FakeModelProvider implements ModelProvider {
+export class ScriptedModelProvider implements ModelProvider {
   async getModel(_name: string): Promise<Model> {
-    return new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+    return new ScriptedModel([modelResponse(TEST_MODEL_RESPONSE_BASIC)]);
   }
 }
 

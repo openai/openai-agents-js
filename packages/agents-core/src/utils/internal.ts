@@ -6,6 +6,7 @@ export {
 } from '../runner/items';
 export { normalizeToolAllowedCallers } from './toolCallers';
 export { snapshotRawUsage } from './rawUsage';
+export { snapshotTestingValue } from './testingSnapshot';
 export {
   hasDynamicFunctionToolApprovalPolicy,
   hasInspectableFunctionToolArguments,

@@ -10,11 +10,11 @@ import {
   maybeResetToolChoice,
 } from '../../src/runner/modelSettings';
 import { AgentToolUseTracker } from '../../src/runner/toolUseTracker';
-import { FakeModelProvider } from '../stubs';
+import { ScriptedModelProvider } from '../stubs';
 
 beforeAll(() => {
   setTracingDisabled(true);
-  setDefaultModelProvider(new FakeModelProvider());
+  setDefaultModelProvider(new ScriptedModelProvider());
 });
 
 describe('maybeResetToolChoice', () => {

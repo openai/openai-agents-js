@@ -6,14 +6,14 @@ import {
   setTracingDisabled,
 } from '../src/index';
 import { z } from 'zod';
-import { FakeModelProvider } from './stubs';
+import { ScriptedModelProvider } from './stubs';
 import { getTransferMessage, handoff } from '../src/handoff';
 import { RunContext } from '../src/runContext';
 
 describe('Agent + handoffs', () => {
   beforeAll(() => {
     setTracingDisabled(true);
-    setDefaultModelProvider(new FakeModelProvider());
+    setDefaultModelProvider(new ScriptedModelProvider());
   });
 
   it('should resolve its valid finalOuptut type', async () => {
@@ -43,7 +43,7 @@ describe('Agent + handoffs', () => {
       }),
       handoffs: [agentC],
     });
-    // Note that FakeModel requires "text" output type
+    // The default scripted model returns text output.
     const agentE = Agent.create({
       name: 'Agent E',
       handoffs: [agentD],

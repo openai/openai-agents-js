@@ -50,12 +50,12 @@ import { Usage, RequestUsage } from '../../src/usage';
 import { z } from 'zod';
 import type { AgentInputItem, UnknownContext } from '../../src/types';
 import * as protocol from '../../src/types/protocol';
-import { FakeModelProvider, TEST_AGENT, fakeModelMessage } from '../stubs';
+import { ScriptedModelProvider, TEST_AGENT, fakeModelMessage } from '../stubs';
 import logger from '../../src/logger';
 
 beforeAll(() => {
   setTracingDisabled(true);
-  setDefaultModelProvider(new FakeModelProvider());
+  setDefaultModelProvider(new ScriptedModelProvider());
 });
 
 async function expectLoggerWarnings<T>(

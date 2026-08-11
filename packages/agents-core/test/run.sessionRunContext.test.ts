@@ -8,14 +8,10 @@ import {
   setTracingDisabled,
   tool,
   type AgentInputItem,
-  type Model,
-  type ModelRequest,
-  type ModelResponse,
   type OpenAIResponsesCompactionArgs,
   type RunContextAwareSession,
   type Session,
   type SessionHistoryTransactionArgs,
-  type StreamEvent,
 } from '../src';
 import {
   RunCompactionItem as CompactionItem,
@@ -29,6 +25,7 @@ import { RunState } from '../src/runState';
 import type * as protocol from '../src/types/protocol';
 import { fakeModelMessage } from './stubs';
 import { Usage } from '../src/usage';
+import { ScriptedModel, modelResponse } from '../src/testing';
 
 type TenantContext = {
   tenantId: string;
@@ -39,65 +36,39 @@ type SessionCall = {
   runContext: RunContext<TenantContext> | undefined;
 };
 
-class FinalResponseModel implements Model {
-  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-    return {
-      output: [fakeModelMessage('done')],
-      usage: new Usage(),
-    };
-  }
-
-  async *getStreamedResponse(
-    _request: ModelRequest,
-  ): AsyncIterable<StreamEvent> {
-    yield {
-      type: 'response_done',
-      response: {
-        id: 'response-id',
+class FinalResponseModel extends ScriptedModel {
+  constructor() {
+    super([
+      modelResponse({
         output: [fakeModelMessage('done')],
-        usage: {
-          requests: 1,
-          inputTokens: 0,
-          outputTokens: 0,
-          totalTokens: 0,
-        },
-      },
-    } as StreamEvent;
+        usage: new Usage(),
+        responseId: 'response-id',
+      }),
+    ]);
   }
 }
 
-class ApprovalModel implements Model {
-  private readonly responses: ModelResponse[] = [
-    {
-      output: [
-        {
-          type: 'function_call',
-          id: 'approval-item',
-          callId: 'approval-call',
-          name: 'context_tool',
-          status: 'completed',
-          arguments: '{}',
-        },
-      ],
-      usage: new Usage(),
-    },
-    {
-      output: [fakeModelMessage('done')],
-      usage: new Usage(),
-    },
-  ];
-
-  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-    const response = this.responses.shift();
-    if (!response) {
-      throw new Error('No response found.');
-    }
-    return response;
-  }
-
-  async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-    yield* [];
-    throw new Error('Unexpected streaming request.');
+class ApprovalModel extends ScriptedModel {
+  constructor() {
+    super([
+      modelResponse({
+        output: [
+          {
+            type: 'function_call',
+            id: 'approval-item',
+            callId: 'approval-call',
+            name: 'context_tool',
+            status: 'completed',
+            arguments: '{}',
+          },
+        ],
+        usage: new Usage(),
+      }),
+      modelResponse({
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      }),
+    ]);
   }
 }
 

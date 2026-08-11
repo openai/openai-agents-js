@@ -12,7 +12,7 @@ import {
   tool,
   type AgentInputItem,
 } from '../src';
-import type { Model, ModelRequest, ModelResponse } from '../src/model';
+import type { ModelRequest, ModelResponse } from '../src/model';
 import { RunContext } from '../src/runContext';
 import { RunToolApprovalItem } from '../src/items';
 import { MemorySession } from '../src/memory/memorySession';
@@ -20,147 +20,105 @@ import type { Session } from '../src/memory/session';
 import type * as protocol from '../src/types/protocol';
 import { Usage } from '../src/usage';
 import { fakeModelMessage, fakeModelRefusal } from './stubs';
+import {
+  ScriptedModel,
+  modelError,
+  modelResponder,
+  modelResponse,
+  modelStream,
+  modelStreamResponder,
+} from '../src/testing';
 
-class RecordingModel implements Model {
-  readonly requests: ModelRequest[] = [];
-
-  constructor(private readonly responses: ModelResponse[]) {}
-
-  async getResponse(request: ModelRequest): Promise<ModelResponse> {
-    this.requests.push(structuredClone(request));
-    const response = this.responses.shift();
-    if (!response) {
-      throw new Error('No response found');
-    }
-    return response;
+class RecordingModel extends ScriptedModel {
+  constructor(responses: ModelResponse[]) {
+    super(responses.map(modelResponse));
   }
 
-  async *getStreamedResponse(): AsyncIterable<protocol.StreamEvent> {
-    yield* [];
-    throw new Error('Not implemented');
+  get requests(): readonly Readonly<ModelRequest>[] {
+    return this.calls.map((call) => call.request);
   }
 }
 
-class FailOnceModel implements Model {
-  readonly requests: ModelRequest[] = [];
-  private failed = false;
-
-  constructor(private readonly response: ModelResponse) {}
-
-  async getResponse(request: ModelRequest): Promise<ModelResponse> {
-    this.requests.push(structuredClone(request));
-    if (!this.failed) {
-      this.failed = true;
-      throw new Error('model request failed');
-    }
-    return this.response;
+class FailOnceModel extends ScriptedModel {
+  constructor(response: ModelResponse) {
+    super([
+      modelError(new Error('model request failed')),
+      modelResponse(response),
+    ]);
   }
 
-  async *getStreamedResponse(): AsyncIterable<protocol.StreamEvent> {
-    yield* [];
-    throw new Error('Not implemented');
+  get requests(): readonly Readonly<ModelRequest>[] {
+    return this.calls.map((call) => call.request);
   }
 }
 
-class FailingAcceptedStreamModel implements Model {
-  streamCalls = 0;
-
-  async getResponse(): Promise<ModelResponse> {
-    throw new Error('Not implemented');
-  }
-
-  async *getStreamedResponse(): AsyncIterable<protocol.StreamEvent> {
-    this.streamCalls += 1;
-    yield {
-      type: 'output_text_delta',
-      delta: 'accepted',
-      providerData: {},
-    } as protocol.StreamEvent;
-    throw new Error('stream failed after acceptance');
-  }
-}
-
-class RecordingStreamModel implements Model {
-  readonly requests: ModelRequest[] = [];
-
-  constructor(private readonly responses: ModelResponse[]) {}
-
-  async getResponse(): Promise<ModelResponse> {
-    throw new Error('Not implemented');
-  }
-
-  async *getStreamedResponse(
-    request: ModelRequest,
-  ): AsyncIterable<protocol.StreamEvent> {
-    this.requests.push(structuredClone(request));
-    const response = this.responses.shift();
-    if (!response) {
-      throw new Error('No response found');
-    }
-    yield {
-      type: 'response_done',
-      response: {
-        id: response.responseId,
-        requestId: response.requestId,
-        usage: {
-          requests: response.usage.requests,
-          inputTokens: response.usage.inputTokens,
-          outputTokens: response.usage.outputTokens,
-          totalTokens: response.usage.totalTokens,
-        },
-        output: response.output,
-      },
-    } as protocol.StreamEvent;
-  }
-}
-
-class AbortBeforeEventStreamModel implements Model {
-  streamCalls = 0;
-  started!: Promise<void>;
-  private markStarted!: () => void;
-
+class FailingAcceptedStreamModel extends ScriptedModel {
   constructor() {
-    this.started = new Promise<void>((resolve) => {
-      this.markStarted = resolve;
-    });
+    super([
+      modelStream(
+        (async function* () {
+          yield {
+            type: 'output_text_delta',
+            delta: 'accepted',
+            providerData: {},
+          } as protocol.StreamEvent;
+          throw new Error('stream failed after acceptance');
+        })(),
+      ),
+    ]);
   }
 
-  async getResponse(): Promise<ModelResponse> {
-    throw new Error('Not implemented');
-  }
-
-  async *getStreamedResponse(
-    request: ModelRequest,
-  ): AsyncIterable<protocol.StreamEvent> {
-    this.streamCalls += 1;
-    this.markStarted();
-    await new Promise<void>((_resolve, reject) => {
-      const abort = () => {
-        const error = new Error('aborted before first event');
-        error.name = 'AbortError';
-        reject(error);
-      };
-      if (request.signal?.aborted) {
-        abort();
-        return;
-      }
-      request.signal?.addEventListener('abort', abort, { once: true });
-    });
-    yield* [];
+  get streamCalls(): number {
+    return this.calls.filter((call) => call.streamed).length;
   }
 }
 
-class NeverCalledStreamModel implements Model {
-  streamCalls = 0;
-
-  async getResponse(): Promise<ModelResponse> {
-    throw new Error('Not implemented');
+class RecordingStreamModel extends ScriptedModel {
+  constructor(responses: ModelResponse[]) {
+    super(responses.map(modelResponse));
   }
 
-  async *getStreamedResponse(): AsyncIterable<protocol.StreamEvent> {
-    this.streamCalls += 1;
-    yield* [];
-    throw new Error('Model should not be called');
+  get requests(): readonly Readonly<ModelRequest>[] {
+    return this.calls.map((call) => call.request);
+  }
+}
+
+class AbortBeforeEventStreamModel extends ScriptedModel {
+  readonly started: Promise<void>;
+  constructor() {
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    super([
+      modelResponder(async (call) => {
+        markStarted();
+        await new Promise<void>((_resolve, reject) => {
+          const abort = () => {
+            const error = new Error('aborted before first event');
+            error.name = 'AbortError';
+            reject(error);
+          };
+          if (call.request.signal?.aborted) {
+            abort();
+            return;
+          }
+          call.request.signal?.addEventListener('abort', abort, { once: true });
+        });
+        return [];
+      }),
+    ]);
+    this.started = started;
+  }
+
+  get streamCalls(): number {
+    return this.calls.filter((call) => call.streamed).length;
+  }
+}
+
+class NeverCalledStreamModel extends ScriptedModel {
+  get streamCalls(): number {
+    return this.calls.filter((call) => call.streamed).length;
   }
 }
 
@@ -648,25 +606,18 @@ describe('RunState pending input', () => {
       return { tripwireTriggered: false, outputInfo: {} };
     });
 
-    class ParallelGuardrailModel implements Model {
-      async getResponse(): Promise<ModelResponse> {
-        expect(guardrailCompleted).toBe(false);
-        markModelStarted();
-        return {
-          output: [fakeModelMessage('done')],
-          usage: new Usage(),
-        };
-      }
-
-      async *getStreamedResponse(): AsyncIterable<protocol.StreamEvent> {
-        yield* [];
-        throw new Error('Not implemented');
-      }
-    }
-
     const agent = new Agent({
       name: 'parallel-pending-guardrail',
-      model: new ParallelGuardrailModel(),
+      model: new ScriptedModel([
+        modelResponder(() => {
+          expect(guardrailCompleted).toBe(false);
+          markModelStarted();
+          return {
+            output: [fakeModelMessage('done')],
+            usage: new Usage(),
+          };
+        }),
+      ]),
     });
     const state = createResumableState(agent);
     state.addInput('guard in parallel');
@@ -710,27 +661,28 @@ describe('RunState pending input', () => {
           responseId: `local-guardrail-${modelCalls}`,
         };
       };
-      const model: Model = {
-        async getResponse() {
-          return nextResponse();
-        },
-        async *getStreamedResponse() {
-          const response = nextResponse();
-          yield {
-            type: 'response_done',
-            response: {
-              id: response.responseId,
-              usage: {
-                requests: response.usage.requests,
-                inputTokens: response.usage.inputTokens,
-                outputTokens: response.usage.outputTokens,
-                totalTokens: response.usage.totalTokens,
-              },
-              output: response.output,
-            },
-          } as protocol.StreamEvent;
-        },
-      };
+      const nextStep = () =>
+        stream
+          ? modelStreamResponder(() => {
+              const response = nextResponse();
+              return [
+                {
+                  type: 'response_done',
+                  response: {
+                    id: response.responseId,
+                    usage: {
+                      requests: response.usage.requests,
+                      inputTokens: response.usage.inputTokens,
+                      outputTokens: response.usage.outputTokens,
+                      totalTokens: response.usage.totalTokens,
+                    },
+                    output: response.output,
+                  },
+                } as protocol.StreamEvent,
+              ];
+            })
+          : modelResponder(() => nextResponse());
+      const model = new ScriptedModel([nextStep(), nextStep()]);
       const guardrail = vi
         .fn(async () => ({ tripwireTriggered: false, outputInfo: {} }))
         .mockImplementationOnce(async () => {
@@ -762,7 +714,7 @@ describe('RunState pending input', () => {
         ).rejects.toBeInstanceOf(InputGuardrailTripwireTriggered);
       }
 
-      expect(modelCalls).toBe(1);
+      expect(model.calls).toHaveLength(1);
       expect(guardrail).toHaveBeenCalledTimes(1);
       expect(state.pendingInput).toEqual([message('guard local staged input')]);
       expect(
@@ -802,24 +754,16 @@ describe('RunState pending input', () => {
     const modelFailed = new Promise<void>((resolve) => {
       markModelFailed = resolve;
     });
-    let modelCalls = 0;
-    const model: Model = {
-      async getResponse() {
-        modelCalls += 1;
-        if (modelCalls === 1) {
-          markModelFailed();
-          throw new Error('model failed before guardrail completion');
-        }
-        return {
-          output: [fakeModelMessage('done')],
-          usage: new Usage(),
-        };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-        throw new Error('Not implemented');
-      },
-    };
+    const model = new ScriptedModel([
+      modelResponder(() => {
+        markModelFailed();
+        throw new Error('model failed before guardrail completion');
+      }),
+      modelResponse({
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      }),
+    ]);
     const guardrail = vi.fn(async () => {
       await guardrailCanFinish;
       return { tripwireTriggered: false, outputInfo: {} };
@@ -862,7 +806,7 @@ describe('RunState pending input', () => {
 
     const completed = await runner.run(agent, state, { session });
     expect(completed.finalOutput).toBe('done');
-    expect(modelCalls).toBe(2);
+    expect(model.calls).toHaveLength(2);
     expect(guardrail).toHaveBeenCalledTimes(1);
     expect(await session.getItems()).toEqual([
       message('persist after guardrail success'),
@@ -886,16 +830,12 @@ describe('RunState pending input', () => {
         outputInfo: { reason: 'blocked after model failure' },
       };
     });
-    const model: Model = {
-      async getResponse() {
+    const model = new ScriptedModel([
+      modelResponder(() => {
         markModelFailed();
         throw new ModelRefusalError('refused before guardrail completion');
-      },
-      async *getStreamedResponse() {
-        yield* [];
-        throw new Error('Not implemented');
-      },
-    };
+      }),
+    ]);
     const agent = new Agent({ name: 'guardrail-before-refusal', model });
     const state = createResumableState(agent);
     state.addInput('guard before fallback');
@@ -1048,35 +988,34 @@ describe('RunState pending input', () => {
     'retries a failed local admission write before the $label model request',
     async ({ stream }) => {
       const session = new FailOnceSession();
-      let modelCalls = 0;
       const response: ModelResponse = {
         output: [fakeModelMessage('done')],
         usage: new Usage(),
       };
-      const model: Model = {
-        async getResponse() {
-          modelCalls += 1;
-          expect(session.addAttempts).toBe(2);
-          return response;
-        },
-        async *getStreamedResponse() {
-          modelCalls += 1;
-          expect(session.addAttempts).toBe(2);
-          yield {
-            type: 'response_done',
-            response: {
-              id: 'response-local-session-retry',
-              usage: {
-                requests: response.usage.requests,
-                inputTokens: response.usage.inputTokens,
-                outputTokens: response.usage.outputTokens,
-                totalTokens: response.usage.totalTokens,
-              },
-              output: response.output,
-            },
-          } as protocol.StreamEvent;
-        },
-      };
+      const step = stream
+        ? modelStreamResponder(() => {
+            expect(session.addAttempts).toBe(2);
+            return [
+              {
+                type: 'response_done',
+                response: {
+                  id: 'response-local-session-retry',
+                  usage: {
+                    requests: response.usage.requests,
+                    inputTokens: response.usage.inputTokens,
+                    outputTokens: response.usage.outputTokens,
+                    totalTokens: response.usage.totalTokens,
+                  },
+                  output: response.output,
+                },
+              } as protocol.StreamEvent,
+            ];
+          })
+        : modelResponder(() => {
+            expect(session.addAttempts).toBe(2);
+            return response;
+          });
+      const model = new ScriptedModel([step]);
       const agent = new Agent({ name: 'local-session-retry', model });
       const state = createResumableState(agent);
       state.addInput('retry durable input');
@@ -1094,7 +1033,7 @@ describe('RunState pending input', () => {
         );
       }
 
-      expect(modelCalls).toBe(0);
+      expect(model.calls).toHaveLength(0);
       expect(session.addAttempts).toBe(1);
       expect(state.pendingInput).toEqual([]);
       expect(
@@ -1113,7 +1052,7 @@ describe('RunState pending input', () => {
         expect(completed.finalOutput).toBe('done');
       }
 
-      expect(modelCalls).toBe(1);
+      expect(model.calls).toHaveLength(1);
       expect(await session.getItems()).toEqual([
         message('retry durable input'),
         fakeModelMessage('done'),
@@ -1167,20 +1106,12 @@ describe('RunState pending input', () => {
   ])(
     'fails closed after a server-managed request reports $label',
     async ({ advice, conversationId, previousResponseId }) => {
-      let modelCalls = 0;
-      const model: Model = {
-        async getResponse() {
-          modelCalls += 1;
-          throw new Error('request may have been accepted');
-        },
-        getRetryAdvice() {
-          return { suggested: false, ...advice };
-        },
-        async *getStreamedResponse() {
-          yield* [];
-          throw new Error('Not implemented');
-        },
-      };
+      const model = new ScriptedModel([
+        modelError(new Error('request may have been accepted'), {
+          suggested: false,
+          ...advice,
+        }),
+      ]);
       const agent = new Agent({ name: 'unsafe-server-failure', model });
       const state = createResumableState(agent);
       state.setConversationContext(conversationId, previousResponseId);
@@ -1203,36 +1134,23 @@ describe('RunState pending input', () => {
       await expect(run(agent, restored, options)).rejects.toThrow(
         /accepted model response could not be processed/i,
       );
-      expect(modelCalls).toBe(1);
+      expect(model.calls).toHaveLength(1);
     },
   );
 
   it('keeps server-managed input replayable when the application approves an unsafe retry', async () => {
-    let modelCalls = 0;
-    const model: Model = {
-      async getResponse() {
-        modelCalls += 1;
-        if (modelCalls === 1) {
-          throw new Error('request may have been accepted');
-        }
-        return {
-          output: [fakeModelMessage('done')],
-          usage: new Usage(),
-          responseId: 'approved-retry-response',
-        };
-      },
-      getRetryAdvice() {
-        return {
-          suggested: false,
-          replaySafety: 'unsafe',
-          responseStarted: true,
-        };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-        throw new Error('Not implemented');
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(new Error('request may have been accepted'), {
+        suggested: false,
+        replaySafety: 'unsafe',
+        responseStarted: true,
+      }),
+      modelResponse({
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+        responseId: 'approved-retry-response',
+      }),
+    ]);
     const agent = new Agent({
       name: 'approved-unsafe-server-retry',
       model,
@@ -1253,7 +1171,7 @@ describe('RunState pending input', () => {
     });
 
     expect(result.finalOutput).toBe('done');
-    expect(modelCalls).toBe(2);
+    expect(model.calls).toHaveLength(2);
     expect(state.pendingInput).toEqual([]);
     expect(
       state._generatedItems.filter((item) => item instanceof RunInputItem),
@@ -1262,24 +1180,13 @@ describe('RunState pending input', () => {
 
   it('fails closed when an approved unsafe retry is aborted before the next attempt', async () => {
     const controller = new AbortController();
-    let modelCalls = 0;
-    const model: Model = {
-      async getResponse() {
-        modelCalls += 1;
-        throw new Error('request may have been accepted');
-      },
-      getRetryAdvice() {
-        return {
-          suggested: false,
-          replaySafety: 'unsafe',
-          responseStarted: true,
-        };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-        throw new Error('Not implemented');
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(new Error('request may have been accepted'), {
+        suggested: false,
+        replaySafety: 'unsafe',
+        responseStarted: true,
+      }),
+    ]);
     const agent = new Agent({
       name: 'aborted-approved-unsafe-server-retry',
       model,
@@ -1304,7 +1211,7 @@ describe('RunState pending input', () => {
         signal: controller.signal,
       }),
     ).rejects.toMatchObject({ name: 'AbortError' });
-    expect(modelCalls).toBe(1);
+    expect(model.calls).toHaveLength(1);
     expect(state.pendingInput).toEqual([]);
     expect(
       state._generatedItems.filter((item) => item instanceof RunInputItem),
@@ -1320,7 +1227,7 @@ describe('RunState pending input', () => {
         conversationId: 'aborted-approved-retry-conversation',
       }),
     ).rejects.toThrow(/accepted model response could not be processed/i);
-    expect(modelCalls).toBe(1);
+    expect(model.calls).toHaveLength(1);
   });
 
   it('preserves input appended while a server-managed request is in flight', async () => {
@@ -1340,29 +1247,26 @@ describe('RunState pending input', () => {
       arguments: '{}',
     };
     const requests: ModelRequest[] = [];
-    const model: Model = {
-      async getResponse(request) {
-        requests.push(structuredClone(request));
-        if (requests.length === 1) {
-          markFirstRequestStarted();
-          await firstRequestCanFinish;
-          return {
-            output: [functionCall],
-            usage: new Usage(),
-            responseId: 'append-first-response',
-          };
-        }
+    const model = new ScriptedModel([
+      modelResponder(async (call) => {
+        requests.push(structuredClone(call.request) as ModelRequest);
+        markFirstRequestStarted();
+        await firstRequestCanFinish;
+        return {
+          output: [functionCall],
+          usage: new Usage(),
+          responseId: 'append-first-response',
+        };
+      }),
+      modelResponder((call) => {
+        requests.push(structuredClone(call.request) as ModelRequest);
         return {
           output: [fakeModelMessage('done')],
           usage: new Usage(),
           responseId: 'append-second-response',
         };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-        throw new Error('Not implemented');
-      },
-    };
+      }),
+    ]);
     const continueTurn = tool({
       name: 'continue_turn',
       description: 'Continues the current run.',
@@ -2153,15 +2057,10 @@ describe('RunState pending input', () => {
       'shared refusal',
       createResumableState(errorStateAgent),
     );
-    const model: Model = {
-      async getResponse() {
-        throw sharedError;
-      },
-      async *getStreamedResponse() {
-        yield* [];
-        throw new Error('Not implemented');
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(sharedError),
+      modelError(sharedError),
+    ]);
     const agent = new Agent({ name: 'shared-refusal-error', model });
     let handlerCalls = 0;
     const options = {
@@ -2525,32 +2424,17 @@ describe('RunState pending input', () => {
   });
 
   it('keeps one local occurrence across an explicitly approved unsafe replay', async () => {
-    let attempts = 0;
-    const requestInputs: AgentInputItem[][] = [];
-    const model: Model = {
-      async getResponse(request) {
-        attempts += 1;
-        requestInputs.push(structuredClone(request.input as AgentInputItem[]));
-        if (attempts === 1) {
-          throw new Error('request may have been accepted');
-        }
-        return {
-          output: [fakeModelMessage('done')],
-          usage: new Usage(),
-        };
-      },
-      getRetryAdvice() {
-        return {
-          suggested: false,
-          replaySafety: 'unsafe',
-          responseStarted: true,
-        };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-        throw new Error('Not implemented');
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(new Error('request may have been accepted'), {
+        suggested: false,
+        replaySafety: 'unsafe',
+        responseStarted: true,
+      }),
+      modelResponse({
+        output: [fakeModelMessage('done')],
+        usage: new Usage(),
+      }),
+    ]);
     const agent = new Agent({
       name: 'unsafe-replay-pending-input',
       model,
@@ -2569,8 +2453,8 @@ describe('RunState pending input', () => {
     const completed = await run(agent, state, { session });
 
     expect(completed.finalOutput).toBe('done');
-    expect(attempts).toBe(2);
-    expect(requestInputs[0]).toEqual(requestInputs[1]);
+    expect(model.calls).toHaveLength(2);
+    expect(model.calls[0].request.input).toEqual(model.calls[1].request.input);
     expect(
       state._generatedItems.filter((item) => item instanceof RunInputItem),
     ).toHaveLength(1);
@@ -2645,20 +2529,12 @@ describe('RunState pending input', () => {
   ])(
     'fails closed before the first server-managed stream event after $label',
     async ({ advice, conversationId, previousResponseId }) => {
-      let streamCalls = 0;
-      const model: Model = {
-        async getResponse() {
-          throw new Error('Not implemented');
-        },
-        async *getStreamedResponse() {
-          streamCalls += 1;
-          yield* [];
-          throw new Error('stream request may have been accepted');
-        },
-        getRetryAdvice() {
-          return { suggested: false, ...advice };
-        },
-      };
+      const model = new ScriptedModel([
+        modelError(new Error('stream request may have been accepted'), {
+          suggested: false,
+          ...advice,
+        }),
+      ]);
       const agent = new Agent({ name: 'unsafe-server-stream', model });
       const state = createResumableState(agent);
       state.setConversationContext(conversationId, previousResponseId);
@@ -2685,25 +2561,17 @@ describe('RunState pending input', () => {
       await expect(run(agent, restored, options)).rejects.toThrow(
         /accepted model response could not be processed/i,
       );
-      expect(streamCalls).toBe(1);
+      expect(model.calls).toHaveLength(1);
     },
   );
 
   it('keeps staged input replayable after a provider-safe pre-event stream failure', async () => {
-    let streamCalls = 0;
-    const model: Model = {
-      async getResponse() {
-        throw new Error('Not implemented');
-      },
-      async *getStreamedResponse() {
-        streamCalls += 1;
-        yield* [];
-        throw new Error('safe stream failure');
-      },
-      getRetryAdvice() {
-        return { suggested: false, replaySafety: 'safe' };
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(new Error('safe stream failure'), {
+        suggested: false,
+        replaySafety: 'safe',
+      }),
+    ]);
     const agent = new Agent({ name: 'safe-server-stream', model });
     const state = createResumableState(agent);
     state.setConversationContext('safe-stream-conversation');
@@ -2720,7 +2588,7 @@ describe('RunState pending input', () => {
     expect(
       state._generatedItems.filter((item) => item instanceof RunInputItem),
     ).toHaveLength(0);
-    expect(streamCalls).toBe(1);
+    expect(model.calls).toHaveLength(1);
   });
 
   it('checkpoints server acceptance before surfacing a parallel staged-input guardrail failure', async () => {
@@ -2732,22 +2600,19 @@ describe('RunState pending input', () => {
     const modelStarted = new Promise<void>((resolve) => {
       markModelStarted = resolve;
     });
-    let streamCalls = 0;
-    const model: Model = {
-      async getResponse() {
-        throw new Error('Not implemented');
-      },
-      async *getStreamedResponse() {
-        streamCalls += 1;
-        markModelStarted();
-        await firstEventCanArrive;
-        yield {
-          type: 'output_text_delta',
-          delta: 'accepted but guarded',
-          providerData: {},
-        } as protocol.StreamEvent;
-      },
-    };
+    const model = new ScriptedModel([
+      modelStreamResponder(() =>
+        (async function* () {
+          markModelStarted();
+          await firstEventCanArrive;
+          yield {
+            type: 'output_text_delta',
+            delta: 'accepted but guarded',
+            providerData: {},
+          } as protocol.StreamEvent;
+        })(),
+      ),
+    ]);
     const agent = new Agent({ name: 'accepted-guardrail-stream', model });
     const state = createResumableState(agent);
     state.setConversationContext('accepted-guardrail-conversation');
@@ -2806,7 +2671,7 @@ describe('RunState pending input', () => {
         conversationId: 'accepted-guardrail-conversation',
       }),
     ).rejects.toThrow(/accepted model response could not be processed/i);
-    expect(streamCalls).toBe(1);
+    expect(model.calls).toHaveLength(1);
   });
 
   it('treats an explicit server-managed stream abort as an unsafe accepted request', async () => {

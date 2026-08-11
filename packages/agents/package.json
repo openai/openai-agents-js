@@ -13,6 +13,11 @@
       "require": "./dist/index.js",
       "import": "./dist/index.mjs"
     },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "require": "./dist/testing/index.js",
+      "import": "./dist/testing/index.mjs"
+    },
     "./sandbox": {
       "types": "./dist/sandbox/index.d.ts",
       "require": "./dist/sandbox/index.js",
@@ -27,6 +32,21 @@
       "types": "./dist/realtime/index.d.ts",
       "require": "./dist/realtime/index.js",
       "import": "./dist/realtime/index.mjs"
+    },
+    "./realtime/testing": {
+      "react-native": {
+        "types": "./dist/realtime/testing/index.d.ts",
+        "require": "./dist/realtime/testing/index.js",
+        "import": "./dist/realtime/testing/index.mjs"
+      },
+      "browser": {
+        "types": "./dist/realtime/testing/index.d.ts",
+        "require": "./dist/realtime/testing/index.js",
+        "import": "./dist/realtime/testing/index.mjs"
+      },
+      "types": "./dist/realtime/testing/index.d.ts",
+      "require": "./dist/realtime/testing/index.js",
+      "import": "./dist/realtime/testing/index.mjs"
     },
     "./utils": {
       "types": "./dist/utils/index.d.ts",
@@ -66,6 +86,9 @@
   ],
   "typesVersions": {
     "*": {
+      "testing": [
+        "dist/testing/index.d.ts"
+      ],
       "sandbox": [
         "dist/sandbox/index.d.ts"
       ],
@@ -74,6 +97,9 @@
       ],
       "realtime": [
         "dist/realtime/index.d.ts"
+      ],
+      "realtime/testing": [
+        "dist/realtime/testing/index.d.ts"
       ],
       "utils": [
         "dist/utils/index.d.ts"

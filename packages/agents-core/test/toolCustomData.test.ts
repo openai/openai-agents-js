@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import { Agent } from '../src/agent';
 import { RunToolCallOutputItem } from '../src/items';
-import type { ModelRequest, ModelResponse } from '../src/model';
+import type { ModelRequest } from '../src/model';
 import type { MCPServer, MCPTool } from '../src/mcp';
 import { mcpToFunctionTool } from '../src/mcp';
 import { run, Runner } from '../src/run';
@@ -17,14 +17,12 @@ import {
 import * as protocol from '../src/types/protocol';
 import { ToolCallError, UserError } from '../src/errors';
 import { Usage } from '../src/usage';
-import { FakeComputer, FakeEditor, FakeModel, fakeModelMessage } from './stubs';
+import { FakeComputer, FakeEditor, fakeModelMessage } from './stubs';
+import { ScriptedModel, modelResponse } from '../src/testing';
 
-class RecordingModel extends FakeModel {
-  readonly requests: ModelRequest[] = [];
-
-  async getResponse(request: ModelRequest): Promise<ModelResponse> {
-    this.requests.push(request);
-    return super.getResponse(request);
+class RecordingModel extends ScriptedModel {
+  get requests(): readonly Readonly<ModelRequest>[] {
+    return this.calls.map((call) => call.request);
   }
 }
 
@@ -39,7 +37,7 @@ function toolOutputItem(items: unknown[]): RunToolCallOutputItem {
 describe('tool output customData', () => {
   it('attaches function tool customData without replaying it to the model', async () => {
     const model = new RecordingModel([
-      {
+      modelResponse({
         output: [
           {
             type: 'function_call',
@@ -50,11 +48,11 @@ describe('tool output customData', () => {
           },
         ],
         usage: new Usage(),
-      },
-      {
+      }),
+      modelResponse({
         output: [fakeModelMessage('done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const getData = tool({
       name: 'get_data',
@@ -97,7 +95,7 @@ describe('tool output customData', () => {
 
   it('rejects non-JSON-compatible customData', async () => {
     const model = new RecordingModel([
-      {
+      modelResponse({
         output: [
           {
             type: 'function_call',
@@ -108,7 +106,7 @@ describe('tool output customData', () => {
           },
         ],
         usage: new Usage(),
-      },
+      }),
     ]);
     const badData = tool({
       name: 'bad_data',
@@ -144,7 +142,7 @@ describe('tool output customData', () => {
     const rawServerName = `streamable-http: ${endpoint.toString()}`;
     let capturedServerName: string | undefined;
     const model = new RecordingModel([
-      {
+      modelResponse({
         output: [
           {
             type: 'function_call',
@@ -155,11 +153,11 @@ describe('tool output customData', () => {
           },
         ],
         usage: new Usage(),
-      },
-      {
+      }),
+      modelResponse({
         output: [fakeModelMessage('done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const server: MCPServer = {
       name: rawServerName,

@@ -7,68 +7,16 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   skills,
   type Entry,
-  type MaterializeEntryArgs,
-  type SandboxSession,
-  type SandboxSessionState,
   Manifest,
   SandboxSkillsConfigError,
   SandboxWorkspaceReadNotFoundError,
 } from '../src/sandbox';
 import { localDirLazySkillSource } from '../src/sandbox/local';
-
-class FakeSkillsSession implements SandboxSession {
-  readonly state: SandboxSessionState;
-  readonly existingPaths = new Set<string>();
-  readonly materializeCalls: MaterializeEntryArgs[] = [];
-  readonly files = new Map<string, string | Uint8Array>();
-
-  constructor(manifest: Manifest = new Manifest()) {
-    this.state = {
-      manifest,
-    };
-  }
-
-  async pathExists(path: string): Promise<boolean> {
-    return this.existingPaths.has(path);
-  }
-
-  async materializeEntry(args: MaterializeEntryArgs): Promise<void> {
-    this.materializeCalls.push(args);
-    this.existingPaths.add(`${args.path}/SKILL.md`);
-  }
-
-  async listDir(args: { path: string }) {
-    const childNames = new Set<string>();
-    for (const path of this.files.keys()) {
-      if (!path.startsWith(`${args.path}/`)) {
-        continue;
-      }
-      const childName = path.slice(args.path.length + 1).split('/')[0];
-      if (childName) {
-        childNames.add(childName);
-      }
-    }
-    return [...childNames].sort().map((name) => ({
-      name,
-      path: `${args.path}/${name}`,
-      type: 'dir' as const,
-    }));
-  }
-
-  async readFile(args: { path: string }): Promise<string | Uint8Array> {
-    const content = this.files.get(args.path);
-    if (typeof content === 'undefined') {
-      throw new SandboxWorkspaceReadNotFoundError(
-        `file not found: ${args.path}`,
-      );
-    }
-    return content;
-  }
-}
+import { scriptedSandboxSession } from '../src/testing';
 
 describe('Skills', () => {
   it('requires exactly one source', () => {
@@ -286,7 +234,11 @@ describe('Skills', () => {
         ],
       },
     });
-    const session = new FakeSkillsSession();
+    const session = scriptedSandboxSession([
+      { method: 'pathExists', result: false },
+      { method: 'materializeEntry', result: undefined },
+      { method: 'pathExists', result: true },
+    ]);
     capability.bind(session);
 
     const tools = capability.tools();
@@ -312,16 +264,20 @@ describe('Skills', () => {
       skill_name: 'dynamic-skill',
       path: '.agents/dynamic-skill',
     });
-    expect(session.materializeCalls).toEqual([
-      {
-        path: '.agents/dynamic-skill',
-        entry: {
-          type: 'local_dir',
-          src: 'skills/dynamic-skill',
+    expect(session.calls[1]).toMatchObject({
+      method: 'materializeEntry',
+      args: [
+        {
+          path: '.agents/dynamic-skill',
+          entry: {
+            type: 'local_dir',
+            src: 'skills/dynamic-skill',
+          },
+          runAs: undefined,
         },
-        runAs: undefined,
-      },
-    ]);
+      ],
+    });
+    session.assertComplete();
   });
 
   it('discovers lazy local directory skill metadata from SKILL.md frontmatter', async () => {
@@ -354,7 +310,11 @@ describe('Skills', () => {
         '- spreadsheet-review: Review spreadsheets quickly (file: .agents/sheet-tools)',
       );
 
-      const session = new FakeSkillsSession(manifest);
+      const session = scriptedSandboxSession([
+        { method: 'pathExists', result: false },
+        { method: 'materializeEntry', result: undefined },
+      ]);
+      session.state.manifest = manifest;
       capability.bind(session);
       const [tool] = capability.tools();
 
@@ -368,16 +328,20 @@ describe('Skills', () => {
         skill_name: 'spreadsheet-review',
         path: '.agents/sheet-tools',
       });
-      expect(session.materializeCalls).toEqual([
-        {
-          path: '.agents/sheet-tools',
-          entry: {
-            type: 'local_dir',
-            src: `${skillsRoot}/sheet-tools`,
+      expect(session.calls[1]).toMatchObject({
+        method: 'materializeEntry',
+        args: [
+          {
+            path: '.agents/sheet-tools',
+            entry: {
+              type: 'local_dir',
+              src: `${skillsRoot}/sheet-tools`,
+            },
+            runAs: undefined,
           },
-          runAs: undefined,
-        },
-      ]);
+        ],
+      });
+      session.assertComplete();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -540,7 +504,10 @@ describe('Skills', () => {
           baseDir: root,
         }),
       });
-      const session = new FakeSkillsSession();
+      const session = scriptedSandboxSession([
+        { method: 'pathExists', result: false },
+        { method: 'materializeEntry', result: undefined },
+      ]);
       capability.bind(session);
       const [tool] = capability.tools();
 
@@ -554,16 +521,20 @@ describe('Skills', () => {
         skill_name: 'relative-skill',
         path: '.agents/relative-skill',
       });
-      expect(session.materializeCalls).toEqual([
-        {
-          path: '.agents/relative-skill',
-          entry: {
-            type: 'local_dir',
-            src: `${root}/skills/relative-skill`,
+      expect(session.calls[1]).toMatchObject({
+        method: 'materializeEntry',
+        args: [
+          {
+            path: '.agents/relative-skill',
+            entry: {
+              type: 'local_dir',
+              src: `${root}/skills/relative-skill`,
+            },
+            runAs: undefined,
           },
-          runAs: undefined,
-        },
-      ]);
+        ],
+      });
+      session.assertComplete();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -576,17 +547,28 @@ describe('Skills', () => {
         children: {},
       },
     });
-    const session = new FakeSkillsSession();
-    session.files.set(
-      '.agents/sheet-tools/SKILL.md',
-      [
-        '---',
-        'name: "spreadsheet-review"',
-        "description: 'Review spreadsheets quickly'",
-        '---',
-        '# Spreadsheet review',
-      ].join('\n'),
-    );
+    const session = scriptedSandboxSession([
+      {
+        method: 'listDir',
+        result: [
+          {
+            name: 'sheet-tools',
+            path: '.agents/sheet-tools',
+            type: 'dir',
+          },
+        ],
+      },
+      {
+        method: 'readFile',
+        result: [
+          '---',
+          'name: "spreadsheet-review"',
+          "description: 'Review spreadsheets quickly'",
+          '---',
+          '# Spreadsheet review',
+        ].join('\n'),
+      },
+    ]);
     capability.bind(session);
 
     const instructions = await capability.instructions(new Manifest());
@@ -594,45 +576,59 @@ describe('Skills', () => {
     expect(instructions).toContain(
       '- spreadsheet-review: Review spreadsheets quickly (file: .agents/sheet-tools)',
     );
+    session.assertComplete();
   });
 
   it('ignores missing skill directories while preserving access failures', async () => {
     const capability = skills({ from: { type: 'dir', children: {} } });
-    const session = new FakeSkillsSession();
+    const denied = Object.assign(new Error('Permission denied'), {
+      code: 'EACCES',
+    });
+    const session = scriptedSandboxSession([
+      {
+        method: 'listDir',
+        error: new SandboxWorkspaceReadNotFoundError('missing skill directory'),
+      },
+      { method: 'listDir', error: denied },
+    ]);
+    session.readFile = async () => 'unused';
     capability.bind(session);
 
-    vi.spyOn(session, 'listDir').mockRejectedValueOnce(
-      new SandboxWorkspaceReadNotFoundError('missing skill directory'),
-    );
     await expect(capability.instructions(new Manifest())).resolves.toContain(
       '.agents',
     );
 
-    const denied = Object.assign(new Error('Permission denied'), {
-      code: 'EACCES',
-    });
-    vi.spyOn(session, 'listDir').mockRejectedValueOnce(denied);
     await expect(capability.instructions(new Manifest())).rejects.toBe(denied);
+    session.assertComplete();
   });
 
   it('skips missing skill files without suppressing unreadable files', async () => {
     const capability = skills({ from: { type: 'dir', children: {} } });
-    const session = new FakeSkillsSession();
-    session.files.set('.agents/blocked/SKILL.md', '# Placeholder');
+    const denied = Object.assign(new Error('Permission denied'), {
+      code: 'EACCES',
+    });
+    const directory = {
+      name: 'blocked',
+      path: '.agents/blocked',
+      type: 'dir' as const,
+    };
+    const session = scriptedSandboxSession([
+      { method: 'listDir', result: [directory] },
+      {
+        method: 'readFile',
+        error: new SandboxWorkspaceReadNotFoundError('missing skill file'),
+      },
+      { method: 'listDir', result: [directory] },
+      { method: 'readFile', error: denied },
+    ]);
     capability.bind(session);
 
-    vi.spyOn(session, 'readFile').mockRejectedValueOnce(
-      new SandboxWorkspaceReadNotFoundError('missing skill file'),
-    );
     await expect(capability.instructions(new Manifest())).resolves.toContain(
       '.agents',
     );
 
-    const denied = Object.assign(new Error('Permission denied'), {
-      code: 'EACCES',
-    });
-    vi.spyOn(session, 'readFile').mockRejectedValueOnce(denied);
     await expect(capability.instructions(new Manifest())).rejects.toBe(denied);
+    session.assertComplete();
   });
 
   it('does not materialize lazy skills when their existence cannot be determined', async () => {
@@ -642,11 +638,15 @@ describe('Skills', () => {
         index: [{ name: 'dynamic-skill', description: 'dynamic' }],
       },
     });
-    const session = new FakeSkillsSession();
     const denied = Object.assign(new Error('Permission denied'), {
       code: 'EACCES',
     });
-    vi.spyOn(session, 'pathExists').mockRejectedValue(denied);
+    const session = scriptedSandboxSession([
+      { method: 'pathExists', error: denied },
+    ]);
+    session.materializeEntry = async () => {
+      throw new Error('materializeEntry must not be called');
+    };
     capability.bind(session);
 
     await expect(
@@ -655,7 +655,8 @@ describe('Skills', () => {
         JSON.stringify({ skill_name: 'dynamic-skill' }),
       ),
     ).resolves.toContain('Permission denied');
-    expect(session.materializeCalls).toEqual([]);
+    expect(session.calls.map((call) => call.method)).toEqual(['pathExists']);
+    session.assertComplete();
   });
 
   it('renders lazy loading guidance for lazy skill sources', async () => {
@@ -698,7 +699,10 @@ describe('Skills', () => {
         },
       ],
     });
-    const session = new FakeSkillsSession();
+    const session = scriptedSandboxSession([
+      { method: 'pathExists', result: false },
+      { method: 'materializeEntry', result: undefined },
+    ]);
     capability.bind(session);
 
     const instructions = await capability.instructions(new Manifest());
@@ -716,6 +720,7 @@ describe('Skills', () => {
       skill_name: 'dynamic-skill',
       path: '.agents/dynamic-skill',
     });
+    session.assertComplete();
   });
 
   it('materializes lazy skills from GitRepo subpaths', async () => {
@@ -735,7 +740,10 @@ describe('Skills', () => {
         ],
       },
     });
-    const session = new FakeSkillsSession();
+    const session = scriptedSandboxSession([
+      { method: 'pathExists', result: false },
+      { method: 'materializeEntry', result: undefined },
+    ]);
     capability.bind(session);
 
     const tools = capability.tools();
@@ -744,17 +752,21 @@ describe('Skills', () => {
       JSON.stringify({ skill_name: 'dynamic-skill' }),
     );
 
-    expect(session.materializeCalls).toEqual([
-      {
-        path: '.agents/dynamic-skill',
-        entry: {
-          type: 'git_repo',
-          repo: 'openai/skills',
-          ref: 'main',
-          subpath: 'bundled/dynamic-skill',
+    expect(session.calls[1]).toMatchObject({
+      method: 'materializeEntry',
+      args: [
+        {
+          path: '.agents/dynamic-skill',
+          entry: {
+            type: 'git_repo',
+            repo: 'openai/skills',
+            ref: 'main',
+            subpath: 'bundled/dynamic-skill',
+          },
+          runAs: undefined,
         },
-        runAs: undefined,
-      },
-    ]);
+      ],
+    });
+    session.assertComplete();
   });
 });

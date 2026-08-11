@@ -28,39 +28,15 @@ import { FUNCTION_TOOL_NAMESPACE } from '../../src/toolIdentity';
 import { prepareAgentArtifacts } from '../../src/runner/modelPreparation';
 import { withTrace } from '../../src/tracing/context';
 import {
-  FakeModel,
   TEST_MODEL_FUNCTION_CALL,
   TEST_MODEL_RESPONSE_BASIC,
-  FakeModelProvider,
+  ScriptedModelProvider,
 } from '../stubs';
+import { ScriptedModel, modelResponse } from '../../src/testing';
 
-class RecordingModel extends FakeModel {
-  readonly requests: ModelRequest[] = [];
-
-  override async getResponse(request: ModelRequest) {
-    this.requests.push(request);
-    return super.getResponse(request);
-  }
-
-  override async *getStreamedResponse(
-    request: ModelRequest,
-  ): AsyncIterable<protocol.StreamEvent> {
-    const response = await this.getResponse(request);
-    yield {
-      type: 'response_done',
-      response: {
-        id: response.responseId ?? 'recording-response',
-        usage: {
-          requests: response.usage.requests,
-          inputTokens: response.usage.inputTokens,
-          outputTokens: response.usage.outputTokens,
-          totalTokens: response.usage.totalTokens,
-        },
-        output: response.output.map((item) =>
-          protocol.OutputModelItem.parse(item),
-        ),
-      },
-    };
+class RecordingModel extends ScriptedModel {
+  get requests(): readonly Readonly<ModelRequest>[] {
+    return this.calls.map((call) => call.request);
   }
 }
 
@@ -98,7 +74,7 @@ async function expectRejectedBeforeModelRequest(args: {
   expectedMessage: string;
   policy?: ToolNameCollisionPolicy;
 }): Promise<void> {
-  const model = new RecordingModel([TEST_MODEL_RESPONSE_BASIC]);
+  const model = new RecordingModel([modelResponse(TEST_MODEL_RESPONSE_BASIC)]);
   const agent = new Agent({
     name: 'Collision agent',
     model,
@@ -119,7 +95,7 @@ async function expectRejectedBeforeModelRequest(args: {
 
 describe('model-visible tool name validation', () => {
   setTracingDisabled(true);
-  setDefaultModelProvider(new FakeModelProvider());
+  setDefaultModelProvider(new ScriptedModelProvider());
 
   beforeEach(() => {
     vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(false);
@@ -138,7 +114,9 @@ describe('model-visible tool name validation', () => {
     async (stream) => {
       const secretToolName = 'SECRET_COLLISION_TRACE';
       const processor = new RecordingTracingProcessor();
-      const model = new RecordingModel([TEST_MODEL_RESPONSE_BASIC]);
+      const model = new RecordingModel([
+        modelResponse(TEST_MODEL_RESPONSE_BASIC),
+      ]);
       const agent = new Agent({
         name: 'Trace collision agent',
         model,
@@ -214,7 +192,9 @@ describe('model-visible tool name validation', () => {
     const bare = functionTool('lookup');
     const deferred = functionTool('lookup');
     deferred.deferLoading = true;
-    const model = new RecordingModel([TEST_MODEL_RESPONSE_BASIC]);
+    const model = new RecordingModel([
+      modelResponse(TEST_MODEL_RESPONSE_BASIC),
+    ]);
     const agent = new Agent({
       name: 'Category-aware function agent',
       model,
@@ -274,7 +254,9 @@ describe('model-visible tool name validation', () => {
   });
 
   it('warns by default and exposes only the last function tool', async () => {
-    const model = new RecordingModel([TEST_MODEL_RESPONSE_BASIC]);
+    const model = new RecordingModel([
+      modelResponse(TEST_MODEL_RESPONSE_BASIC),
+    ]);
     const agent = new Agent({
       name: 'Last function wins agent',
       model,
@@ -302,7 +284,7 @@ describe('model-visible tool name validation', () => {
     const firstExecute = vi.fn(async () => 'first');
     const secondExecute = vi.fn(async () => 'second');
     const model = new RecordingModel([
-      {
+      modelResponse({
         output: [
           {
             ...TEST_MODEL_FUNCTION_CALL,
@@ -311,8 +293,8 @@ describe('model-visible tool name validation', () => {
           },
         ],
         usage: new Usage(),
-      },
-      TEST_MODEL_RESPONSE_BASIC,
+      }),
+      modelResponse(TEST_MODEL_RESPONSE_BASIC),
     ]);
     const agent = new Agent({
       name: 'Dispatch winner agent',
@@ -341,7 +323,9 @@ describe('model-visible tool name validation', () => {
       toolNameOverride: 'duplicate',
       toolDescriptionOverride: 'Second handoff',
     });
-    const model = new RecordingModel([TEST_MODEL_RESPONSE_BASIC]);
+    const model = new RecordingModel([
+      modelResponse(TEST_MODEL_RESPONSE_BASIC),
+    ]);
     const agent = new Agent({
       name: 'Handoff wins agent',
       model,
@@ -372,7 +356,9 @@ describe('model-visible tool name validation', () => {
       toolNameOverride: 'handoff_duplicate',
       isEnabled: false,
     });
-    const model = new RecordingModel([TEST_MODEL_RESPONSE_BASIC]);
+    const model = new RecordingModel([
+      modelResponse(TEST_MODEL_RESPONSE_BASIC),
+    ]);
     const agent = new Agent({
       name: 'Filtered capabilities agent',
       model,
@@ -398,7 +384,9 @@ describe('model-visible tool name validation', () => {
   it('filters disabled runtime-loaded function tools before validation', async () => {
     const configured = functionTool('lookup');
     const disabledRuntime = functionTool('lookup', false);
-    const model = new RecordingModel([TEST_MODEL_RESPONSE_BASIC]);
+    const model = new RecordingModel([
+      modelResponse(TEST_MODEL_RESPONSE_BASIC),
+    ]);
     const agent = new Agent({
       name: 'Runtime filtering agent',
       model,
@@ -472,7 +460,9 @@ describe('model-visible tool name validation', () => {
       description: 'Billing tools',
       tools: [functionTool('lookup')],
     });
-    const model = new RecordingModel([TEST_MODEL_RESPONSE_BASIC]);
+    const model = new RecordingModel([
+      modelResponse(TEST_MODEL_RESPONSE_BASIC),
+    ]);
     const dottedHandoff = handoff(new Agent({ name: 'Dotted target' }), {
       toolNameOverride: 'crm.lookup',
     });
@@ -500,7 +490,7 @@ describe('model-visible tool name validation', () => {
     const duplicateHandoff = handoff(new Agent({ name: 'Stream target' }), {
       toolNameOverride: 'duplicate',
     });
-    const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+    const model = new ScriptedModel([modelResponse(TEST_MODEL_RESPONSE_BASIC)]);
     const getResponse = vi.spyOn(model, 'getResponse');
     const getStreamedResponse = vi.spyOn(model, 'getStreamedResponse');
     const agent = new Agent({
@@ -545,7 +535,9 @@ describe('model-visible tool name validation', () => {
 
   it('redacts warning details while keeping remediation actionable', async () => {
     vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(true);
-    const model = new RecordingModel([TEST_MODEL_RESPONSE_BASIC]);
+    const model = new RecordingModel([
+      modelResponse(TEST_MODEL_RESPONSE_BASIC),
+    ]);
     const agent = new Agent({
       name: 'Redacted warning agent',
       model,

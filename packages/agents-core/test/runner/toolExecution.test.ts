@@ -73,7 +73,7 @@ import {
   TEST_MODEL_MESSAGE,
   TEST_MODEL_RESPONSE_WITH_FUNCTION,
   TEST_TOOL,
-  FakeModelProvider,
+  ScriptedModelProvider,
   FakeShell,
   FakeEditor,
 } from '../stubs';
@@ -187,7 +187,7 @@ function getEndedHandoffSpan(processor: RecordingProcessor): Span<any> {
 
 beforeAll(() => {
   setTracingDisabled(true);
-  setDefaultModelProvider(new FakeModelProvider());
+  setDefaultModelProvider(new ScriptedModelProvider());
 });
 
 describe('getToolCallOutputItem', () => {
@@ -940,7 +940,7 @@ describe('AgentToolUseTracker', () => {
 
 describe('executeComputerActions', () => {
   it('runs action and returns screenshot output', async () => {
-    setDefaultModelProvider(new FakeModelProvider());
+    setDefaultModelProvider(new ScriptedModelProvider());
     const fakeComputer = {
       environment: 'mac',
       dimensions: [1, 1] as [number, number],

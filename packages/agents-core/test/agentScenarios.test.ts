@@ -46,176 +46,43 @@ import { user } from '../src/helpers/message';
 import * as protocol from '../src/types/protocol';
 import logger from '../src/logger';
 import { getFunctionToolStateKey } from '../src/toolIdentity';
+import {
+  ScriptedModel,
+  modelError,
+  type ScriptedModelInput,
+} from '../src/testing';
 
 /**
- * Fake model for scenario-style tests. It queues per-turn outputs (or errors),
- * records the request args, and can emit streaming events including text deltas
- * and a final response_done event.
+ * Compatibility wrapper for the scenario tests' existing queue helpers.
  */
-class RecordingModel implements Model {
-  #turnOutputs: Array<ModelResponse | ModelResponse['output'] | Error> = [];
-  #hardcodedUsage: Usage | undefined;
-  public lastTurnArgs: Partial<ModelRequest> | undefined;
-  public firstTurnArgs: Partial<ModelRequest> | undefined;
-  public calls: Partial<ModelRequest>[] = [];
-  #responseCounter = 0;
-
+class RecordingModel extends ScriptedModel {
   constructor(initial?: ModelResponse | ModelResponse['output'] | Error) {
-    if (initial) {
-      this.#turnOutputs.push(initial);
-    }
+    super(typeof initial === 'undefined' ? [] : [toScriptedInput(initial)]);
   }
 
-  setHardcodedUsage(usage: Usage) {
-    this.#hardcodedUsage = usage;
+  get lastTurnArgs(): Readonly<ModelRequest> | undefined {
+    return this.lastCall?.request;
+  }
+
+  get firstTurnArgs(): Readonly<ModelRequest> | undefined {
+    return this.firstCall?.request;
   }
 
   setNextOutput(output: ModelResponse | ModelResponse['output'] | Error) {
-    this.#turnOutputs.push(output);
+    this.enqueue(toScriptedInput(output));
   }
 
   addMultipleTurnOutputs(
     outputs: Array<ModelResponse | ModelResponse['output'] | Error>,
   ) {
-    this.#turnOutputs.push(...outputs);
-  }
-
-  #getNextOutput(): ModelResponse | ModelResponse['output'] | Error {
-    if (this.#turnOutputs.length === 0) {
-      throw new Error('No queued output');
-    }
-    return this.#turnOutputs.shift() as
-      ModelResponse | ModelResponse['output'] | Error;
-  }
-
-  #recordArgs(request: ModelRequest) {
-    const recordedArgs: Partial<ModelRequest> = {
-      systemInstructions: request.systemInstructions,
-      input: request.input,
-      modelSettings: request.modelSettings,
-      tools: request.tools,
-      outputType: request.outputType,
-      handoffs: request.handoffs,
-      previousResponseId: request.previousResponseId,
-      conversationId: request.conversationId,
-      prompt: request.prompt,
-      overridePromptModel: request.overridePromptModel,
-    };
-    this.lastTurnArgs = recordedArgs;
-    this.calls.push(recordedArgs);
-    if (!this.firstTurnArgs) {
-      this.firstTurnArgs = this.lastTurnArgs;
-    }
-  }
-
-  async getResponse(request: ModelRequest): Promise<ModelResponse> {
-    this.#recordArgs(request);
-    const output = this.#getNextOutput();
-    if (output instanceof Error) {
-      throw output;
-    }
-    const { normalizedOutput, usage, responseId } = normalizeTurnOutput(
-      output,
-      this.#hardcodedUsage,
-    );
-    const finalResponseId = responseId ?? `resp-${++this.#responseCounter}`;
-    if (responseId) {
-      this.#responseCounter += 1;
-    }
-    return { output: normalizedOutput, usage, responseId: finalResponseId };
-  }
-
-  async *getStreamedResponse(
-    request: ModelRequest,
-  ): AsyncIterable<protocol.StreamEvent> {
-    this.#recordArgs(request);
-    const output = this.#getNextOutput();
-    if (output instanceof Error) {
-      throw output;
-    }
-    const { normalizedOutput, usage, responseId } = normalizeTurnOutput(
-      output,
-      this.#hardcodedUsage,
-    );
-    const finalResponseId =
-      responseId ?? `resp-stream-${++this.#responseCounter}`;
-    if (responseId) {
-      this.#responseCounter += 1;
-    }
-
-    const signal = request.signal;
-
-    const throwIfAborted = () => {
-      if (signal?.aborted) {
-        const err = new Error('Aborted');
-        err.name = 'AbortError';
-        throw err;
-      }
-    };
-
-    throwIfAborted();
-
-    yield* streamFromOutput(normalizedOutput, throwIfAborted);
-
-    throwIfAborted();
-
-    yield {
-      type: 'response_done',
-      response: {
-        id: finalResponseId,
-        usage: {
-          requests: usage.requests,
-          inputTokens: usage.inputTokens,
-          outputTokens: usage.outputTokens,
-          totalTokens: usage.totalTokens,
-          inputTokensDetails: usage.inputTokensDetails,
-          outputTokensDetails: usage.outputTokensDetails,
-        },
-        output: normalizedOutput,
-      },
-    } as protocol.StreamEvent;
+    this.enqueue(...outputs.map(toScriptedInput));
   }
 }
 
-function normalizeTurnOutput(
-  turn: ModelResponse | ModelResponse['output'],
-  hardcodedUsage: Usage | undefined,
-): {
-  normalizedOutput: ModelResponse['output'];
-  usage: Usage;
-  responseId?: string;
-} {
-  const responseLike = turn as Partial<ModelResponse>;
-  const normalizedOutput = (responseLike.output ??
-    turn) as ModelResponse['output'];
-  const usage =
-    hardcodedUsage !== undefined
-      ? new Usage(hardcodedUsage)
-      : responseLike.usage
-        ? new Usage(responseLike.usage)
-        : new Usage();
-  return { normalizedOutput, usage, responseId: responseLike.responseId };
-}
-
-async function* streamFromOutput(
-  output: ModelResponse['output'],
-  throwIfAborted: () => void,
-): AsyncIterable<protocol.StreamEvent> {
-  for (const item of output) {
-    throwIfAborted();
-    if (item.type !== 'message') {
-      continue;
-    }
-    const content = Array.isArray(item.content) ? item.content : [];
-    for (const part of content) {
-      if (part.type === 'output_text') {
-        yield {
-          type: 'output_text_delta',
-          delta: part.text,
-        } as protocol.StreamEvent;
-      }
-    }
-  }
+function toScriptedInput(
+  output: ModelResponse | ModelResponse['output'] | Error,
+): ScriptedModelInput {
+  return output instanceof Error ? modelError(output) : output;
 }
 
 /**
@@ -1374,7 +1241,7 @@ describe('Agent scenarios (examples and docs patterns)', () => {
     const second = await run(agent, 'Follow up', { session });
     expect(second.finalOutput).toBe('Second reply');
 
-    const secondInput = model.calls[1]?.input;
+    const secondInput = model.calls[1]?.request.input;
     expect(Array.isArray(secondInput)).toBe(true);
     if (Array.isArray(secondInput)) {
       const assistantMessages = secondInput.filter(
@@ -1433,15 +1300,15 @@ describe('Agent scenarios (examples and docs patterns)', () => {
       previousResponseId: 'seed-resp',
     });
     expect(first.finalOutput).toBe('First turn');
-    expect(model.calls[0]?.previousResponseId).toBe('seed-resp');
+    expect(model.calls[0]?.request.previousResponseId).toBe('seed-resp');
 
     const followUp = await run(agent, 'Follow up', {
       previousResponseId: first.rawResponses[0]?.responseId,
     });
     expect(followUp.finalOutput).toBe('Second turn');
-    expect(model.calls[1]?.previousResponseId).toBe('resp-100');
+    expect(model.calls[1]?.request.previousResponseId).toBe('resp-100');
 
-    const secondInput = model.calls[1]?.input;
+    const secondInput = model.calls[1]?.request.input;
     expect(Array.isArray(secondInput)).toBe(true);
     if (Array.isArray(secondInput)) {
       expect(secondInput.length).toBe(1);
@@ -1578,7 +1445,7 @@ describe('Agent scenarios (examples and docs patterns)', () => {
     expect(translationModel.calls.length).toBe(3);
     expect(
       translationModel.calls.every(
-        (call) => extractUserText(call.input) === 'Hello',
+        (call) => extractUserText(call.request.input) === 'Hello',
       ),
     ).toBe(true);
     expect(pickerResult.finalOutput).toBe('Pick: Dos');
@@ -2275,7 +2142,7 @@ describe('Agent scenarios (examples and docs patterns)', () => {
     expect(executed).toHaveLength(1);
     expect(executed[0].commands).toEqual(['echo hi']);
 
-    const secondInput = model.calls[1]?.input;
+    const secondInput = model.calls[1]?.request.input;
     expect(Array.isArray(secondInput)).toBe(true);
     if (Array.isArray(secondInput)) {
       const shellOutputs = secondInput.filter(
@@ -2327,7 +2194,7 @@ describe('Agent scenarios (examples and docs patterns)', () => {
     expect(result.finalOutput).toBe('patched');
     expect(operations).toHaveLength(1);
 
-    const secondInput = model.calls[1]?.input;
+    const secondInput = model.calls[1]?.request.input;
     expect(Array.isArray(secondInput)).toBe(true);
     if (Array.isArray(secondInput)) {
       const patchOutputs = secondInput.filter(

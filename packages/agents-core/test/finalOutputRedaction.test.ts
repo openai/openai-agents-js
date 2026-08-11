@@ -10,7 +10,6 @@ import {
   setTracingDisabled,
   type AgentInputItem,
   type Model,
-  type ModelRequest,
   type ModelResponse,
   type ReasoningItem,
   type Session,
@@ -24,11 +23,11 @@ import { runOutputGuardrails } from '../src/runner/guardrails';
 import { RunState } from '../src/runState';
 import { Usage } from '../src/usage';
 import {
-  FakeModel,
-  FakeModelProvider,
+  ScriptedModelProvider,
   fakeModelMessage,
   fakeModelRefusal,
 } from './stubs';
+import { ScriptedModel, modelResponse, modelStream } from '../src/testing';
 
 const MODEL_OUTPUT_SECRET = 'SECRET_STRUCTURED_FINAL_OUTPUT_4207';
 const MISSING_OUTPUT_SECRET = 'SECRET_MISSING_STRUCTURED_OUTPUT_4208';
@@ -68,24 +67,20 @@ function responseWithMissingOutput(): ModelResponse {
   };
 }
 
-class StreamingModel implements Model {
-  constructor(private readonly response: ModelResponse) {}
-
-  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-    throw new Error('Use getStreamedResponse for this model.');
-  }
-
-  async *getStreamedResponse(
-    _request: ModelRequest,
-  ): AsyncIterable<StreamEvent> {
-    yield {
-      type: 'response_done',
-      response: {
-        id: 'redacted-final-output-response',
-        output: this.response.output,
-        usage: this.response.usage,
-      },
-    } as StreamEvent;
+class StreamingModel extends ScriptedModel {
+  constructor(response: ModelResponse) {
+    super([
+      modelStream([
+        {
+          type: 'response_done',
+          response: {
+            id: 'redacted-final-output-response',
+            output: response.output,
+            usage: response.usage,
+          },
+        } as StreamEvent,
+      ]),
+    ]);
   }
 }
 
@@ -141,7 +136,9 @@ function createRejectingSession(secret: string): Session {
 async function captureRunError(stream: boolean): Promise<unknown> {
   const response = responseWithInvalidOutput();
   const agent = createAgent(
-    stream ? new StreamingModel(response) : new FakeModel([response]),
+    stream
+      ? new StreamingModel(response)
+      : new ScriptedModel([modelResponse(response)]),
   );
 
   try {
@@ -168,7 +165,9 @@ async function captureOverriddenParserRunError(
   };
   const agent = overrideFinalOutputParser(
     createAgent(
-      stream ? new StreamingModel(response) : new FakeModel([response]),
+      stream
+        ? new StreamingModel(response)
+        : new ScriptedModel([modelResponse(response)]),
     ),
   );
 
@@ -194,7 +193,7 @@ async function captureOverriddenParserRunErrorWithAgent(
 
 beforeAll(() => {
   setTracingDisabled(true);
-  setDefaultModelProvider(new FakeModelProvider());
+  setDefaultModelProvider(new ScriptedModelProvider());
 });
 
 afterEach(() => {
@@ -255,7 +254,7 @@ describe('structured final-output redaction', () => {
         outputType: z.object({ summary: z.string() }),
         model: stream
           ? new StreamingModel(response)
-          : new FakeModel([response]),
+          : new ScriptedModel([modelResponse(response)]),
       });
       const errorHandlers =
         kind === 'max-turn'
@@ -364,7 +363,7 @@ describe('structured final-output redaction', () => {
       };
       const agent = new Agent({
         name: `${kind} text override agent`,
-        model: new FakeModel([response]),
+        model: new ScriptedModel([modelResponse(response)]),
       }) as Agent<unknown, any>;
       agent.processFinalOutput = (): never => {
         throw new Error(TEXT_OVERRIDE_SECRET);
@@ -433,7 +432,9 @@ describe('structured final-output redaction', () => {
       );
       const response = responseWithInvalidOutput();
       const agent = createAgent(
-        stream ? new StreamingModel(response) : new FakeModel([response]),
+        stream
+          ? new StreamingModel(response)
+          : new ScriptedModel([modelResponse(response)]),
       );
       agent.processFinalOutput = (): never => {
         throw hostileError;
@@ -479,7 +480,7 @@ describe('structured final-output redaction', () => {
         () => dontLogModelData,
       );
       const response = responseWithInvalidOutput();
-      const agent = createAgent(new FakeModel([response]));
+      const agent = createAgent(new ScriptedModel([modelResponse(response)]));
 
       let error: unknown;
       try {
@@ -515,7 +516,9 @@ describe('structured final-output redaction', () => {
         usage: new Usage(),
       };
       const agent = createAgent(
-        stream ? new StreamingModel(response) : new FakeModel([response]),
+        stream
+          ? new StreamingModel(response)
+          : new ScriptedModel([modelResponse(response)]),
       );
       let parserCalls = 0;
       agent.processFinalOutput = (output: string) => {
@@ -630,7 +633,9 @@ describe('structured final-output redaction', () => {
         usage: new Usage(),
       };
       const agent = createAgent(
-        stream ? new StreamingModel(response) : new FakeModel([response]),
+        stream
+          ? new StreamingModel(response)
+          : new ScriptedModel([modelResponse(response)]),
       );
       agent.processFinalOutput = (output: string): never => {
         dontLogModelData = false;
@@ -663,7 +668,9 @@ describe('structured final-output redaction', () => {
         usage: new Usage(),
       };
       const agent = createAgent(
-        stream ? new StreamingModel(response) : new FakeModel([response]),
+        stream
+          ? new StreamingModel(response)
+          : new ScriptedModel([modelResponse(response)]),
       );
       agent.processFinalOutput = (output: string): never => {
         dontLogModelData = false;
@@ -758,7 +765,7 @@ describe('structured final-output redaction', () => {
     vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(true);
     const retainedErrors: ModelBehaviorError[] = [];
     const response = responseWithInvalidOutput();
-    const agent = createAgent(new FakeModel([response]));
+    const agent = createAgent(new ScriptedModel([modelResponse(response)]));
 
     const result = await new Runner().run(agent, 'go', {
       errorHandlers: {
@@ -787,7 +794,7 @@ describe('structured final-output redaction', () => {
         dontLogModelData,
       );
       const response = responseWithInvalidOutput();
-      const agent = createAgent(new FakeModel([response]));
+      const agent = createAgent(new ScriptedModel([modelResponse(response)]));
 
       let error: unknown;
       try {
@@ -828,7 +835,9 @@ describe('structured final-output redaction', () => {
       const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
       const response = responseWithMissingOutput();
       const agent = createAgent(
-        stream ? new StreamingModel(response) : new FakeModel([response]),
+        stream
+          ? new StreamingModel(response)
+          : new ScriptedModel([modelResponse(response)]),
       );
 
       let error: unknown;

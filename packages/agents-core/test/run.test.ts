@@ -70,11 +70,10 @@ import {
 import logger from '../src/logger';
 import { getGlobalTraceProvider } from '../src/tracing/provider';
 import {
-  FakeModel,
   fakeModelRefusal,
   fakeModelMessageWithRefusal,
   fakeModelMessage,
-  FakeModelProvider,
+  ScriptedModelProvider,
   FakeTracingExporter,
   TEST_MODEL_MESSAGE,
   TEST_MODEL_RESPONSE_BASIC,
@@ -90,6 +89,12 @@ import {
   ModelRequest,
   ModelSettings,
 } from '../src/model';
+import {
+  ScriptedModel,
+  modelError,
+  modelResponder,
+  modelResponse,
+} from '../src/testing';
 
 const PROGRAMMATIC_TOOL_CALLING_TOOL: HostedTool = {
   type: 'hosted_tool',
@@ -115,10 +120,51 @@ function getRequestInputItems(request: ModelRequest): AgentInputItem[] {
   return Array.isArray(request.input) ? request.input : [];
 }
 
+function cloneModelRequest(request: Readonly<ModelRequest>): ModelRequest {
+  return {
+    ...request,
+    input: Array.isArray(request.input)
+      ? (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[])
+      : request.input,
+  };
+}
+
+function createReasoningPolicyModel(options: {
+  reasoningId: string;
+  functionId: string;
+  callId: string;
+  toolName: string;
+}): ScriptedModel {
+  return new ScriptedModel([
+    modelResponse({
+      output: [
+        {
+          type: 'reasoning',
+          id: options.reasoningId,
+          content: [{ type: 'input_text', text: 'reasoning trace' }],
+        } satisfies protocol.ReasoningItem,
+        {
+          type: 'function_call',
+          id: options.functionId,
+          callId: options.callId,
+          name: options.toolName,
+          status: 'completed',
+          arguments: '{}',
+        } satisfies protocol.FunctionCallItem,
+      ],
+      usage: new Usage(),
+    }),
+    modelResponse({
+      output: [fakeModelMessage('done')],
+      usage: new Usage(),
+    }),
+  ]);
+}
+
 describe('Runner.run', () => {
   beforeAll(() => {
     setTracingDisabled(true);
-    setDefaultModelProvider(new FakeModelProvider());
+    setDefaultModelProvider(new ScriptedModelProvider());
   });
 
   describe('basic', () => {
@@ -141,8 +187,8 @@ describe('Runner.run', () => {
       const flagSpy = vi
         .spyOn(logger, 'dontLogToolData', 'get')
         .mockReturnValue(true);
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [
             {
               ...TEST_MODEL_FUNCTION_CALL,
@@ -150,11 +196,11 @@ describe('Runner.run', () => {
             },
           ],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [fakeModelMessage('recovered')],
           usage: new Usage(),
-        },
+        }),
       ]);
       const getResponseSpy = vi.spyOn(model, 'getResponse');
       const agent = new Agent({
@@ -195,8 +241,8 @@ describe('Runner.run', () => {
         const flagSpy = vi
           .spyOn(logger, 'dontLogToolData', 'get')
           .mockReturnValue(dontLogToolData);
-        const model = new FakeModel([
-          {
+        const model = new ScriptedModel([
+          modelResponse({
             output: [
               {
                 ...TEST_MODEL_FUNCTION_CALL,
@@ -204,7 +250,7 @@ describe('Runner.run', () => {
               },
             ],
             usage: new Usage(),
-          },
+          }),
         ]);
         const structuredTool = tool({
           name: 'test',
@@ -272,15 +318,15 @@ describe('Runner.run', () => {
           return 'cancelled after cleanup';
         },
       });
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [{ ...TEST_MODEL_FUNCTION_CALL }],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [fakeModelMessage('unexpected second response')],
           usage: new Usage(),
-        },
+        }),
       ]);
       const getResponseSpy = vi.spyOn(model, 'getResponse');
       const agent = new Agent({
@@ -329,11 +375,11 @@ describe('Runner.run', () => {
           return 'unexpected tool output';
         },
       });
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [{ ...TEST_MODEL_FUNCTION_CALL }],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'AbortReasonAgent',
@@ -412,8 +458,8 @@ describe('Runner.run', () => {
           return 'sibling complete';
         },
       });
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [
             {
               ...TEST_MODEL_FUNCTION_CALL,
@@ -429,7 +475,7 @@ describe('Runner.run', () => {
             },
           ],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'ParallelCancellationAgent',
@@ -534,8 +580,8 @@ describe('Runner.run', () => {
           button: 'left',
         },
       };
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [
             {
               ...TEST_MODEL_FUNCTION_CALL,
@@ -546,7 +592,7 @@ describe('Runner.run', () => {
             computerCall,
           ],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'ParallelActionCancellationAgent',
@@ -638,8 +684,8 @@ describe('Runner.run', () => {
           ],
         },
       };
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [
             {
               ...TEST_MODEL_FUNCTION_CALL,
@@ -650,7 +696,7 @@ describe('Runner.run', () => {
             computerCall,
           ],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'SiblingCategoryFailureAgent',
@@ -751,8 +797,8 @@ describe('Runner.run', () => {
           { type: 'move', x: 3, y: 4 },
         ],
       };
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [
             {
               ...TEST_MODEL_FUNCTION_CALL,
@@ -763,7 +809,7 @@ describe('Runner.run', () => {
             computerCall,
           ],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'BatchedComputerApprovalFailureAgent',
@@ -829,8 +875,8 @@ describe('Runner.run', () => {
           ],
         },
       };
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [
             {
               ...TEST_MODEL_FUNCTION_CALL,
@@ -841,7 +887,7 @@ describe('Runner.run', () => {
             computerCall,
           ],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'PostInvocationDrainAgent',
@@ -961,8 +1007,8 @@ describe('Runner.run', () => {
         status: 'completed',
         action: { type: 'screenshot' },
       };
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [
             {
               ...TEST_MODEL_FUNCTION_CALL,
@@ -980,7 +1026,7 @@ describe('Runner.run', () => {
             secondComputerCall,
           ],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'FunctionFailureStopsComputerAgent',
@@ -1112,8 +1158,8 @@ describe('Runner.run', () => {
           ],
         },
       };
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [
             {
               ...TEST_MODEL_FUNCTION_CALL,
@@ -1137,7 +1183,7 @@ describe('Runner.run', () => {
             computerCall,
           ],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'RejectedSafetyCheckCancellationAgent',
@@ -1217,8 +1263,8 @@ describe('Runner.run', () => {
       });
       const shell = new FakeShell();
       const editor = new FakeEditor();
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [
             {
               ...TEST_MODEL_FUNCTION_CALL,
@@ -1250,7 +1296,7 @@ describe('Runner.run', () => {
             },
           ],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'MixedActionCancellationAgent',
@@ -1340,8 +1386,8 @@ describe('Runner.run', () => {
         parameters: z.object({ test: z.string() }),
         execute: queuedExecute,
       });
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [
             {
               ...TEST_MODEL_FUNCTION_CALL,
@@ -1357,7 +1403,7 @@ describe('Runner.run', () => {
             },
           ],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'QueuedCancellationAgent',
@@ -1412,15 +1458,15 @@ describe('Runner.run', () => {
           return 'approved tool cleanup complete';
         },
       });
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [{ ...TEST_MODEL_FUNCTION_CALL }],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [fakeModelMessage('unexpected second response')],
           usage: new Usage(),
-        },
+        }),
       ]);
       const getResponseSpy = vi.spyOn(model, 'getResponse');
       const agent = new Agent({
@@ -1500,8 +1546,8 @@ describe('Runner.run', () => {
           return 'approved sibling complete';
         },
       });
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [
             {
               ...TEST_MODEL_FUNCTION_CALL,
@@ -1517,7 +1563,7 @@ describe('Runner.run', () => {
             },
           ],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'ApprovedSiblingCancellationAgent',
@@ -1607,7 +1653,9 @@ describe('Runner.run', () => {
     });
 
     it('rejects an invalid per-run tool name collision policy before model calls', async () => {
-      const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+      const model = new ScriptedModel([
+        modelResponse(TEST_MODEL_RESPONSE_BASIC),
+      ]);
       const getResponse = vi.spyOn(model, 'getResponse');
       const agent = new Agent({ name: 'Invalid policy agent', model });
 
@@ -1622,7 +1670,9 @@ describe('Runner.run', () => {
     });
 
     it('rejects a null per-run tool name collision policy before model calls', async () => {
-      const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+      const model = new ScriptedModel([
+        modelResponse(TEST_MODEL_RESPONSE_BASIC),
+      ]);
       const getResponse = vi.spyOn(model, 'getResponse');
       const agent = new Agent({ name: 'Null policy agent', model });
 
@@ -1637,7 +1687,9 @@ describe('Runner.run', () => {
     });
 
     it('keeps the default provider lazy until a string model needs it', async () => {
-      const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+      const model = new ScriptedModel([
+        modelResponse(TEST_MODEL_RESPONSE_BASIC),
+      ]);
       const provider = {
         getModel: vi.fn(() => model),
       } satisfies ModelProvider;
@@ -1655,19 +1707,25 @@ describe('Runner.run', () => {
 
         expect(provider.getModel).toHaveBeenCalledWith('default-model');
       } finally {
-        setDefaultModelProvider(new FakeModelProvider());
+        setDefaultModelProvider(new ScriptedModelProvider());
       }
     });
 
     it("keeps a runner's resolved default provider stable", async () => {
       const firstProvider = {
         getModel: vi.fn(
-          () => new FakeModel([{ ...TEST_MODEL_RESPONSE_BASIC }]),
+          () =>
+            new ScriptedModel([
+              modelResponse({ ...TEST_MODEL_RESPONSE_BASIC }),
+            ]),
         ),
       } satisfies ModelProvider;
       const laterProvider = {
         getModel: vi.fn(
-          () => new FakeModel([{ ...TEST_MODEL_RESPONSE_BASIC }]),
+          () =>
+            new ScriptedModel([
+              modelResponse({ ...TEST_MODEL_RESPONSE_BASIC }),
+            ]),
         ),
       } satisfies ModelProvider;
       setDefaultModelProvider(firstProvider);
@@ -1685,12 +1743,14 @@ describe('Runner.run', () => {
         expect(firstProvider.getModel).toHaveBeenCalledTimes(2);
         expect(laterProvider.getModel).not.toHaveBeenCalled();
       } finally {
-        setDefaultModelProvider(new FakeModelProvider());
+        setDefaultModelProvider(new ScriptedModelProvider());
       }
     });
 
     it('does not require a modelProvider when the selected model is a Model object', async () => {
-      const model = new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
+      const model = new ScriptedModel([
+        modelResponse(TEST_MODEL_RESPONSE_BASIC),
+      ]);
       const provider = {
         getModel: vi.fn(() => {
           throw new Error('default provider should not be used');
@@ -1708,7 +1768,7 @@ describe('Runner.run', () => {
 
         expect(provider.getModel).not.toHaveBeenCalled();
       } finally {
-        setDefaultModelProvider(new FakeModelProvider());
+        setDefaultModelProvider(new ScriptedModelProvider());
       }
     });
 
@@ -1744,17 +1804,14 @@ describe('Runner.run', () => {
     });
 
     it('returns missing function tool errors to the model when opted in', async () => {
-      class RecordingModel extends FakeModel {
-        readonly requests: ModelRequest[] = [];
-
-        async getResponse(request: ModelRequest): Promise<ModelResponse> {
-          this.requests.push(request);
-          return super.getResponse(request);
+      class RecordingModel extends ScriptedModel {
+        get requests(): readonly Readonly<ModelRequest>[] {
+          return this.calls.map((call) => call.request);
         }
       }
 
       const model = new RecordingModel([
-        {
+        modelResponse({
           output: [
             {
               ...TEST_MODEL_FUNCTION_CALL,
@@ -1764,11 +1821,11 @@ describe('Runner.run', () => {
             },
           ],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [fakeModelMessage('recovered')],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'MissingToolAgent',
@@ -1799,17 +1856,14 @@ describe('Runner.run', () => {
     });
 
     it('uses toolErrorFormatter for missing function tool errors', async () => {
-      class RecordingModel extends FakeModel {
-        readonly requests: ModelRequest[] = [];
-
-        async getResponse(request: ModelRequest): Promise<ModelResponse> {
-          this.requests.push(request);
-          return super.getResponse(request);
+      class RecordingModel extends ScriptedModel {
+        get requests(): readonly Readonly<ModelRequest>[] {
+          return this.calls.map((call) => call.request);
         }
       }
 
       const model = new RecordingModel([
-        {
+        modelResponse({
           output: [
             {
               ...TEST_MODEL_FUNCTION_CALL,
@@ -1819,11 +1873,11 @@ describe('Runner.run', () => {
             },
           ],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [fakeModelMessage('formatter recovered')],
           usage: new Usage(),
-        },
+        }),
       ]);
       const seenKinds: string[] = [];
       const agent = new Agent({
@@ -1859,17 +1913,14 @@ describe('Runner.run', () => {
     });
 
     it('redacts hostile tool-not-found formatter errors and keeps the fallback result', async () => {
-      class RecordingModel extends FakeModel {
-        readonly requests: ModelRequest[] = [];
-
-        async getResponse(request: ModelRequest): Promise<ModelResponse> {
-          this.requests.push(request);
-          return super.getResponse(request);
+      class RecordingModel extends ScriptedModel {
+        get requests(): readonly Readonly<ModelRequest>[] {
+          return this.calls.map((call) => call.request);
         }
       }
 
       const model = new RecordingModel([
-        {
+        modelResponse({
           output: [
             {
               ...TEST_MODEL_FUNCTION_CALL,
@@ -1879,11 +1930,11 @@ describe('Runner.run', () => {
             },
           ],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [fakeModelMessage('formatter fallback recovered')],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'MissingToolFormatterFallbackAgent',
@@ -1933,7 +1984,7 @@ describe('Runner.run', () => {
       const agent = new Agent({
         name: 'ReusedNestedStateAgent',
         instructions: 'Finish the run.',
-        model: new FakeModel([TEST_MODEL_RESPONSE_BASIC]),
+        model: new ScriptedModel([modelResponse(TEST_MODEL_RESPONSE_BASIC)]),
       });
       const nestedState = new RunState(new RunContext(), 'input', agent, 1);
       nestedState._agentToolInvocation = {
@@ -1957,7 +2008,7 @@ describe('Runner.run', () => {
       const agent = new Agent({
         name: 'ReusedInMemoryNestedStateAgent',
         instructions: 'Finish the run.',
-        model: new FakeModel([TEST_MODEL_RESPONSE_BASIC]),
+        model: new ScriptedModel([modelResponse(TEST_MODEL_RESPONSE_BASIC)]),
       });
       const nestedState = new RunState(new RunContext(), 'input', agent, 1);
       nestedState._agentToolInvocation = {
@@ -2034,13 +2085,9 @@ describe('Runner.run', () => {
     });
 
     it('rejects custom client tool_search parameters without execute before calling the model', async () => {
-      const getResponse = vi.fn().mockResolvedValue(TEST_MODEL_RESPONSE_BASIC);
-      const model: Model = {
-        getResponse,
-        async *getStreamedResponse() {
-          yield* [];
-        },
-      };
+      const model = new ScriptedModel([
+        modelResponse(TEST_MODEL_RESPONSE_BASIC),
+      ]);
       const agent = new Agent({
         name: 'ClientToolSearchValidationAgent',
         model,
@@ -2073,7 +2120,7 @@ describe('Runner.run', () => {
       await expect(runPromise).rejects.toThrow(
         /require toolSearchTool\(\{ execution: "client", execute \}\)/,
       );
-      expect(getResponse).not.toHaveBeenCalled();
+      expect(model.calls).toHaveLength(0);
     });
 
     it('loads runtime tools from custom client tool_search execute callbacks across turns', async () => {
@@ -2108,8 +2155,8 @@ describe('Runner.run', () => {
         },
         execute,
       );
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [
             {
               type: 'tool_search_call',
@@ -2124,8 +2171,8 @@ describe('Runner.run', () => {
             } as protocol.ToolSearchCallItem,
           ],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [
             {
               type: 'function_call',
@@ -2137,11 +2184,11 @@ describe('Runner.run', () => {
             } as protocol.FunctionCallItem,
           ],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [fakeModelMessage('Account loaded.')],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'CustomClientToolSearchAgent',
@@ -2201,8 +2248,8 @@ describe('Runner.run', () => {
         },
         execute,
       );
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [
             {
               type: 'tool_search_call',
@@ -2217,8 +2264,8 @@ describe('Runner.run', () => {
             } as protocol.ToolSearchCallItem,
           ],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [
             {
               type: 'function_call',
@@ -2230,11 +2277,11 @@ describe('Runner.run', () => {
             } as protocol.FunctionCallItem,
           ],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [fakeModelMessage('Account loaded.')],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'SerializedCustomClientToolSearchAgent',
@@ -2295,7 +2342,7 @@ describe('Runner.run', () => {
       } as const;
       const agent = new Agent({
         name: 'MissingExecutorToolSearchAgent',
-        model: new FakeModel(),
+        model: new ScriptedModel(),
         tools: [toolSearch as any],
       });
       const state = new RunState(new RunContext(), 'hello', agent, 10);
@@ -2365,7 +2412,7 @@ describe('Runner.run', () => {
       });
       const agent = new Agent({
         name: 'BuiltInClientToolSearchResumeAgent',
-        model: new FakeModel(),
+        model: new ScriptedModel(),
         tools: [getShippingEta],
       });
       const state = new RunState(new RunContext(), 'hello', agent, 10);
@@ -2432,8 +2479,8 @@ describe('Runner.run', () => {
         deferLoading: true,
         execute: async () => 'tomorrow',
       });
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [
             {
               type: 'function_call',
@@ -2445,11 +2492,11 @@ describe('Runner.run', () => {
             } as protocol.FunctionCallItem,
           ],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [fakeModelMessage('The package arrives tomorrow.')],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'ShippingAgent',
@@ -2484,8 +2531,8 @@ describe('Runner.run', () => {
     });
 
     it('exposes aggregated usage on run results', async () => {
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [fakeModelMessage('hi there')],
           usage: new Usage({
             requests: 1,
@@ -2494,7 +2541,7 @@ describe('Runner.run', () => {
             totalTokens: 5,
           }),
           responseId: 'usage-res',
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'UsageAgent',
@@ -2518,11 +2565,11 @@ describe('Runner.run', () => {
     });
 
     it('emits turn input on agent_start lifecycle hooks', async () => {
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [fakeModelMessage('Acknowledged')],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'LifecycleInputAgent',
@@ -2553,16 +2600,10 @@ describe('Runner.run', () => {
     });
 
     it('applies toolChoice updates from agent_tool_end before the next model call', async () => {
-      class ToolChoiceTrackingModel implements Model {
-        requests: ModelRequest[] = [];
-        private callCount = 0;
-
-        async getResponse(request: ModelRequest): Promise<ModelResponse> {
-          this.requests.push(request);
-          this.callCount += 1;
-
-          if (this.callCount === 1) {
-            return {
+      class ToolChoiceTrackingModel extends ScriptedModel {
+        constructor() {
+          super([
+            modelResponse({
               output: [
                 {
                   ...TEST_MODEL_FUNCTION_CALL,
@@ -2573,20 +2614,16 @@ describe('Runner.run', () => {
                 },
               ],
               usage: new Usage(),
-            };
-          }
-
-          return {
-            output: [fakeModelMessage('finished')],
-            usage: new Usage(),
-          };
+            }),
+            modelResponse({
+              output: [fakeModelMessage('finished')],
+              usage: new Usage(),
+            }),
+          ]);
         }
 
-        async *getStreamedResponse(
-          _request: ModelRequest,
-        ): AsyncIterable<protocol.StreamEvent> {
-          yield* [];
-          throw new Error('Not implemented');
+        get requests(): readonly ModelRequest[] {
+          return this.calls.map((call) => call.request);
         }
       }
 
@@ -2611,13 +2648,10 @@ describe('Runner.run', () => {
     });
 
     it('continues Programmatic Tool Calling through nested calls and program output', async () => {
-      class ProgrammaticToolCallingModel implements Model {
-        requests: ModelRequest[] = [];
-
-        async getResponse(request: ModelRequest): Promise<ModelResponse> {
-          this.requests.push(request);
-          if (this.requests.length === 1) {
-            return {
+      class ProgrammaticToolCallingModel extends ScriptedModel {
+        constructor() {
+          super([
+            modelResponse({
               output: [
                 {
                   type: 'program',
@@ -2644,10 +2678,8 @@ describe('Runner.run', () => {
                 },
               ],
               usage: new Usage(),
-            };
-          }
-          if (this.requests.length === 2) {
-            return {
+            }),
+            modelResponse({
               output: [
                 {
                   type: 'program_output',
@@ -2658,17 +2690,16 @@ describe('Runner.run', () => {
                 },
               ],
               usage: new Usage(),
-            };
-          }
-          return {
-            output: [fakeModelMessage('Program completed.')],
-            usage: new Usage(),
-          };
+            }),
+            modelResponse({
+              output: [fakeModelMessage('Program completed.')],
+              usage: new Usage(),
+            }),
+          ]);
         }
 
-        async *getStreamedResponse(): AsyncIterable<protocol.StreamEvent> {
-          yield* [];
-          throw new Error('Not implemented');
+        get requests(): readonly ModelRequest[] {
+          return this.calls.map((call) => call.request);
         }
       }
 
@@ -2743,8 +2774,8 @@ describe('Runner.run', () => {
       });
       const agent = new Agent({
         name: 'PromptProgramAgent',
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [
               {
                 type: 'program',
@@ -2766,8 +2797,8 @@ describe('Runner.run', () => {
               },
             ],
             usage: new Usage(),
-          },
-          {
+          }),
+          modelResponse({
             output: [
               {
                 type: 'program_output',
@@ -2779,7 +2810,7 @@ describe('Runner.run', () => {
               fakeModelMessage('Prompt program completed.'),
             ],
             usage: new Usage(),
-          },
+          }),
         ]),
         prompt: { promptId: 'pmpt_programmatic_tool_calling' },
         tools: [lookup],
@@ -2800,8 +2831,8 @@ describe('Runner.run', () => {
     it('rejects prompt-supplied Programmatic Tool Calling when tools are explicitly disabled', async () => {
       const agent = new Agent({
         name: 'PromptProgramAgent',
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [
               {
                 type: 'program',
@@ -2812,7 +2843,7 @@ describe('Runner.run', () => {
               },
             ],
             usage: new Usage(),
-          },
+          }),
         ]),
         prompt: { promptId: 'pmpt_programmatic_tool_calling' },
         tools: [],
@@ -2824,11 +2855,11 @@ describe('Runner.run', () => {
     });
 
     it('sholuld handle structured output', async () => {
-      const fakeModel = new FakeModel([
-        {
+      const fakeModel = new ScriptedModel([
+        modelResponse({
           ...TEST_MODEL_RESPONSE_BASIC,
           output: [fakeModelMessage('{"city": "San Francisco"}')],
-        },
+        }),
       ]);
 
       const runner = new Runner();
@@ -2949,26 +2980,31 @@ describe('Runner.run', () => {
     });
 
     it('propagates model errors', async () => {
-      const agent = new Agent({ name: 'Fail', model: new FakeModel() });
+      const agent = new Agent({
+        name: 'Fail',
+        model: new ScriptedModel([
+          modelError(new Error('Scripted model failure')),
+        ]),
+      });
 
-      await expect(run(agent, 'fail')).rejects.toThrow('No response found');
+      await expect(run(agent, 'fail')).rejects.toThrow(
+        'Scripted model failure',
+      );
     });
 
     it('sets overridePromptModel when agent supplies a prompt and explicit model', async () => {
-      class CapturingModel implements Model {
-        lastRequest?: ModelRequest;
-        async getResponse(request: ModelRequest): Promise<ModelResponse> {
-          this.lastRequest = request;
-          return {
-            output: [fakeModelMessage('override')],
-            usage: new Usage(),
-          };
+      class CapturingModel extends ScriptedModel {
+        constructor() {
+          super([
+            modelResponse({
+              output: [fakeModelMessage('override')],
+              usage: new Usage(),
+            }),
+          ]);
         }
-        async *getStreamedResponse(
-          _request: ModelRequest,
-        ): AsyncIterable<protocol.StreamEvent> {
-          yield* [];
-          throw new Error('Not implemented');
+
+        get lastRequest(): Readonly<ModelRequest> | undefined {
+          return this.lastCall?.request;
         }
       }
 
@@ -2988,22 +3024,18 @@ describe('Runner.run', () => {
     });
 
     it('serializes GA computer tools without requiring display metadata', async () => {
-      class CapturingModel implements Model {
-        lastRequest?: ModelRequest;
-
-        async getResponse(request: ModelRequest): Promise<ModelResponse> {
-          this.lastRequest = request;
-          return {
-            output: [fakeModelMessage('computer ok')],
-            usage: new Usage(),
-          };
+      class CapturingModel extends ScriptedModel {
+        constructor() {
+          super([
+            modelResponse({
+              output: [fakeModelMessage('computer ok')],
+              usage: new Usage(),
+            }),
+          ]);
         }
 
-        async *getStreamedResponse(
-          _request: ModelRequest,
-        ): AsyncIterable<protocol.StreamEvent> {
-          yield* [];
-          throw new Error('Not implemented');
+        get lastRequest(): Readonly<ModelRequest> | undefined {
+          return this.lastCall?.request;
         }
       }
 
@@ -3076,8 +3108,11 @@ describe('Runner.run', () => {
     });
 
     it('emits agent_end once when final output comes from tool results', async () => {
-      const model = new FakeModel([
-        { output: [{ ...TEST_MODEL_FUNCTION_CALL }], usage: new Usage() },
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [{ ...TEST_MODEL_FUNCTION_CALL }],
+          usage: new Usage(),
+        }),
       ]);
       const agent = new Agent({
         name: 'ToolAgent',
@@ -3119,8 +3154,11 @@ describe('Runner.run', () => {
       const computer = computerTool({
         computer: { create, dispose },
       });
-      const model = new FakeModel([
-        { output: [fakeModelMessage('done')], usage: new Usage() },
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        }),
       ]);
       const agent = new Agent({
         name: 'ComputerAgent',
@@ -3162,12 +3200,15 @@ describe('Runner.run', () => {
         callId: 'call-1',
         arguments: '{}',
       };
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [functionCall, fakeModelMessage('pending')],
           usage: new Usage(),
-        },
-        { output: [fakeModelMessage('all done')], usage: new Usage() },
+        }),
+        modelResponse({
+          output: [fakeModelMessage('all done')],
+          usage: new Usage(),
+        }),
       ]);
 
       const agent = new Agent({
@@ -3195,9 +3236,15 @@ describe('Runner.run', () => {
       const computer = computerTool({
         computer: computerInstance,
       });
-      const model = new FakeModel([
-        { output: [fakeModelMessage('done once')], usage: new Usage() },
-        { output: [fakeModelMessage('done twice')], usage: new Usage() },
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [fakeModelMessage('done once')],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [fakeModelMessage('done twice')],
+          usage: new Usage(),
+        }),
       ]);
       const agent = new Agent({
         name: 'ComputerAgent',
@@ -3227,8 +3274,11 @@ describe('Runner.run', () => {
 
       const agentB = new Agent({
         name: 'HandoffB',
-        model: new FakeModel([
-          { output: [fakeModelMessage('done B')], usage: new Usage() },
+        model: new ScriptedModel([
+          modelResponse({
+            output: [fakeModelMessage('done B')],
+            usage: new Usage(),
+          }),
         ]),
         tools: [toolB],
       });
@@ -3243,7 +3293,9 @@ describe('Runner.run', () => {
       };
       const agentA = new Agent({
         name: 'HandoffA',
-        model: new FakeModel([{ output: [callItem], usage: new Usage() }]),
+        model: new ScriptedModel([
+          modelResponse({ output: [callItem], usage: new Usage() }),
+        ]),
         handoffs: [handoffToB],
         tools: [toolA],
       });
@@ -3278,12 +3330,15 @@ describe('Runner.run', () => {
         callId: 'call-1',
         arguments: '{}',
       };
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [functionCall, fakeModelMessage('pending')],
           usage: new Usage(),
-        },
-        { output: [fakeModelMessage('all done')], usage: new Usage() },
+        }),
+        modelResponse({
+          output: [fakeModelMessage('all done')],
+          usage: new Usage(),
+        }),
       ]);
 
       const agent = new Agent({
@@ -3316,34 +3371,28 @@ describe('Runner.run', () => {
   });
 
   describe('additional scenarios', () => {
-    class StreamingModel extends FakeModel {
+    class StreamingModel extends ScriptedModel {
       constructor(resp: protocol.AssistantMessageItem) {
-        super([{ output: [resp], usage: new Usage() }]);
-        this._resp = resp;
-      }
-      private _resp: protocol.AssistantMessageItem;
-      override async *getStreamedResponse(): AsyncIterable<protocol.StreamEvent> {
-        yield {
-          type: 'output_text_delta',
-          delta: 'hi',
-          providerData: {},
-        } as any;
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'r1',
-            usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-            output: [this._resp],
-          },
-        } as any;
+        super(
+          Array.from({ length: 3 }, (_, index) =>
+            modelResponse({
+              output: [resp],
+              usage: new Usage(),
+              responseId: `r${index + 1}`,
+            }),
+          ),
+        );
       }
     }
 
     it('resumes from serialized RunState', async () => {
       const agent = new Agent({
         name: 'Resume',
-        model: new FakeModel([
-          { output: [fakeModelMessage('hi')], usage: new Usage() },
+        model: new ScriptedModel([
+          modelResponse({
+            output: [fakeModelMessage('hi')],
+            usage: new Usage(),
+          }),
         ]),
       });
       const first = await run(agent, 'hi');
@@ -3357,8 +3406,11 @@ describe('Runner.run', () => {
     it('resumes from schema 1.0 RunState', async () => {
       const agent = new Agent({
         name: 'ResumeV1',
-        model: new FakeModel([
-          { output: [fakeModelMessage('hi')], usage: new Usage() },
+        model: new ScriptedModel([
+          modelResponse({
+            output: [fakeModelMessage('hi')],
+            usage: new Usage(),
+          }),
         ]),
       });
       const first = await run(agent, 'hi');
@@ -3381,8 +3433,11 @@ describe('Runner.run', () => {
       const provider = getGlobalTraceProvider();
       const agent = new Agent({
         name: 'ResumeTraceOverrides',
-        model: new FakeModel([
-          { output: [fakeModelMessage('hi')], usage: new Usage() },
+        model: new ScriptedModel([
+          modelResponse({
+            output: [fakeModelMessage('hi')],
+            usage: new Usage(),
+          }),
         ]),
       });
       const runner = new Runner({
@@ -3431,8 +3486,11 @@ describe('Runner.run', () => {
         const provider = getGlobalTraceProvider();
         const agent = new Agent({
           name: 'ResumeAmbientTrace',
-          model: new FakeModel([
-            { output: [fakeModelMessage('hi')], usage: new Usage() },
+          model: new ScriptedModel([
+            modelResponse({
+              output: [fakeModelMessage('hi')],
+              usage: new Usage(),
+            }),
           ]),
         });
         const state = new RunState(new RunContext(), 'hi', agent, 1);
@@ -3496,7 +3554,10 @@ describe('Runner.run', () => {
       });
       const agent = new Agent({
         name: 'Guard',
-        model: new FakeModel([firstResponse, secondResponse]),
+        model: new ScriptedModel([
+          modelResponse(firstResponse),
+          modelResponse(secondResponse),
+        ]),
         tools: [TEST_TOOL],
       });
       const result = await runner.run(agent, 'start');
@@ -3516,23 +3577,18 @@ describe('Runner.run', () => {
         }),
       };
 
-      class ExpectGuardrailFirstModel implements Model {
-        calls = 0;
-
-        async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-          this.calls++;
-          expect(guardrailCompleted).toBe(true);
-          return {
-            output: [fakeModelMessage('done')],
-            usage: new Usage(),
-          };
+      class ExpectGuardrailFirstModel extends ScriptedModel {
+        constructor() {
+          super([
+            modelResponder(() => {
+              expect(guardrailCompleted).toBe(true);
+              return {
+                output: [fakeModelMessage('done')],
+                usage: new Usage(),
+              };
+            }),
+          ]);
         }
-
-        /* eslint-disable require-yield */
-        async *getStreamedResponse(_request: ModelRequest) {
-          throw new Error('not implemented');
-        }
-        /* eslint-enable require-yield */
       }
 
       const agent = new Agent({
@@ -3577,22 +3633,15 @@ describe('Runner.run', () => {
         },
       };
 
-      class TrackingModel implements Model {
-        calls = 0;
-
-        async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-          this.calls++;
-          return {
-            output: [fakeModelMessage('should not run')],
-            usage: new Usage(),
-          };
+      class TrackingModel extends ScriptedModel {
+        constructor() {
+          super([
+            modelResponse({
+              output: [fakeModelMessage('should not run')],
+              usage: new Usage(),
+            }),
+          ]);
         }
-
-        /* eslint-disable require-yield */
-        async *getStreamedResponse(_request: ModelRequest) {
-          throw new Error('not implemented');
-        }
-        /* eslint-enable require-yield */
       }
 
       const model = new TrackingModel();
@@ -3614,14 +3663,14 @@ describe('Runner.run', () => {
       );
       await errorThrown;
       await new Promise((resolve) => setTimeout(resolve, 0));
-      const callsBeforeSiblingFinished = model.calls;
+      const callsBeforeSiblingFinished = model.calls.length;
       const settledBeforeSiblingFinished = runSettled;
       releaseSlowGuardrail();
 
       await expect(runPromise).rejects.toBeInstanceOf(GuardrailExecutionError);
       expect(callsBeforeSiblingFinished).toBe(0);
       expect(settledBeforeSiblingFinished).toBe(false);
-      expect(model.calls).toBe(0);
+      expect(model.calls).toHaveLength(0);
     });
 
     it('retains an admitted turn when a parallel guardrail fails after the model starts', async () => {
@@ -3642,24 +3691,19 @@ describe('Runner.run', () => {
         },
       };
 
-      class TrackingModel implements Model {
-        calls = 0;
-
-        async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-          this.calls++;
-          markModelStarted();
-          await guardrailFailing;
-          return {
-            output: [fakeModelMessage('unused')],
-            usage: new Usage(),
-          };
+      class TrackingModel extends ScriptedModel {
+        constructor() {
+          super([
+            modelResponder(async () => {
+              markModelStarted();
+              await guardrailFailing;
+              return {
+                output: [fakeModelMessage('unused')],
+                usage: new Usage(),
+              };
+            }),
+          ]);
         }
-
-        /* eslint-disable require-yield */
-        async *getStreamedResponse(_request: ModelRequest) {
-          throw new Error('not implemented');
-        }
-        /* eslint-enable require-yield */
       }
 
       const model = new TrackingModel();
@@ -3678,7 +3722,7 @@ describe('Runner.run', () => {
 
       expect(caughtError).toBeInstanceOf(GuardrailExecutionError);
       const guardrailError = caughtError as GuardrailExecutionError;
-      expect(model.calls).toBe(1);
+      expect(model.calls).toHaveLength(1);
       expect(guardrailError.state?._currentTurn).toBe(1);
 
       const restored = await RunState.fromString(
@@ -3697,15 +3741,15 @@ describe('Runner.run', () => {
       expect((resumedError as MaxTurnsExceededError).state?._currentTurn).toBe(
         1,
       );
-      expect(model.calls).toBe(1);
+      expect(model.calls).toHaveLength(1);
     });
 
     it('throws InputGuardrailTripwireTriggered when parallel guardrail trips with structured output and model returns non-JSON', async () => {
-      const fakeModel = new FakeModel([
-        {
+      const fakeModel = new ScriptedModel([
+        modelResponse({
           output: [fakeModelMessage('I am sorry, this is plain text not JSON')],
           usage: new Usage(),
-        },
+        }),
       ]);
 
       const agent = new Agent({
@@ -3734,11 +3778,11 @@ describe('Runner.run', () => {
 
     it('keeps the current agent span attached when an input guardrail trips', async () => {
       setTracingDisabled(false);
-      const fakeModel = new FakeModel([
-        {
+      const fakeModel = new ScriptedModel([
+        modelResponse({
           output: [fakeModelMessage('plain text')],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'GuardrailSpan',
@@ -3778,8 +3822,11 @@ describe('Runner.run', () => {
       });
       const agent = new Agent({
         name: 'Out',
-        model: new FakeModel([
-          { output: [fakeModelMessage('hi')], usage: new Usage() },
+        model: new ScriptedModel([
+          modelResponse({
+            output: [fakeModelMessage('hi')],
+            usage: new Usage(),
+          }),
         ]),
       });
       const result = await runner.run(agent, 'input');
@@ -3814,8 +3861,11 @@ describe('Runner.run', () => {
       });
       const agent = new Agent({
         name: 'Out',
-        model: new FakeModel([
-          { output: [fakeModelMessage('hi')], usage: new Usage() },
+        model: new ScriptedModel([
+          modelResponse({
+            output: [fakeModelMessage('hi')],
+            usage: new Usage(),
+          }),
         ]),
       });
       let caughtError: unknown;
@@ -3846,8 +3896,11 @@ describe('Runner.run', () => {
       });
       const agent = new Agent({
         name: 'Out',
-        model: new FakeModel([
-          { output: [fakeModelMessage('x')], usage: new Usage() },
+        model: new ScriptedModel([
+          modelResponse({
+            output: [fakeModelMessage('x')],
+            usage: new Usage(),
+          }),
         ]),
       });
       await expect(runner.run(agent, 'input')).rejects.toBeInstanceOf(
@@ -3899,7 +3952,7 @@ describe('Runner.run', () => {
       ];
       const agent = new Agent({
         name: 'Out',
-        model: new FakeModel(responses),
+        model: new ScriptedModel(Array.from(responses, modelResponse)),
         tools: [queryPerson],
       });
 
@@ -3961,7 +4014,7 @@ describe('Runner.run', () => {
       };
       const agent = new Agent({
         name: 'Tool',
-        model: new FakeModel([first, second]),
+        model: new ScriptedModel([modelResponse(first), modelResponse(second)]),
         tools: [TEST_TOOL],
       });
       const result = await run(agent, 'do');
@@ -3975,8 +4028,11 @@ describe('Runner.run', () => {
     it('switches agents via handoff', async () => {
       const agentB = new Agent({
         name: 'B',
-        model: new FakeModel([
-          { output: [fakeModelMessage('done B')], usage: new Usage() },
+        model: new ScriptedModel([
+          modelResponse({
+            output: [fakeModelMessage('done B')],
+            usage: new Usage(),
+          }),
         ]),
       });
       const callItem: protocol.FunctionCallItem = {
@@ -3989,7 +4045,9 @@ describe('Runner.run', () => {
       };
       const agentA = new Agent({
         name: 'A',
-        model: new FakeModel([{ output: [callItem], usage: new Usage() }]),
+        model: new ScriptedModel([
+          modelResponse({ output: [callItem], usage: new Usage() }),
+        ]),
         handoffs: [handoff(agentB)],
       });
       const runner = new Runner();
@@ -4025,14 +4083,20 @@ describe('Runner.run', () => {
 
       const agentB = new Agent({
         name: 'B',
-        model: new FakeModel([
-          { output: [fakeModelMessage('done B')], usage: new Usage() },
+        model: new ScriptedModel([
+          modelResponse({
+            output: [fakeModelMessage('done B')],
+            usage: new Usage(),
+          }),
         ]),
       });
       const agentC = new Agent({
         name: 'C',
-        model: new FakeModel([
-          { output: [fakeModelMessage('done C')], usage: new Usage() },
+        model: new ScriptedModel([
+          modelResponse({
+            output: [fakeModelMessage('done C')],
+            usage: new Usage(),
+          }),
         ]),
       });
       const handoffToB = handoff(agentB);
@@ -4056,8 +4120,11 @@ describe('Runner.run', () => {
       const session = new RecordingSession();
       const agentA = new Agent({
         name: 'A',
-        model: new FakeModel([
-          { output: [acceptedCall, ignoredCall], usage: new Usage() },
+        model: new ScriptedModel([
+          modelResponse({
+            output: [acceptedCall, ignoredCall],
+            usage: new Usage(),
+          }),
         ]),
         handoffs: [handoffToB, handoffToC],
       });
@@ -4120,13 +4187,13 @@ describe('Runner.run', () => {
       };
       const agent = new Agent({
         name: 'Record',
-        model: new FakeModel([first, second]),
+        model: new ScriptedModel([modelResponse(first), modelResponse(second)]),
         tools: [TEST_TOOL],
       });
       const result = await run(agent, 'go');
       expect(result.state._modelResponses).toHaveLength(2);
-      expect(result.state._modelResponses[0]).toBe(first);
-      expect(result.state._modelResponses[1]).toBe(second);
+      expect(result.state._modelResponses[0]).toStrictEqual(first);
+      expect(result.state._modelResponses[1]).toStrictEqual(second);
     });
 
     it('records one model response per turn for streaming runs', async () => {
@@ -4147,32 +4214,9 @@ describe('Runner.run', () => {
         output: [fakeModelMessage('final')],
         usage: new Usage(),
       };
-      class SimpleStreamingModel implements Model {
-        constructor(private resps: ModelResponse[]) {}
-        async getResponse(_req: ModelRequest): Promise<ModelResponse> {
-          const r = this.resps.shift();
-          if (!r) {
-            throw new Error('No response found');
-          }
-          return r;
-        }
-        async *getStreamedResponse(
-          req: ModelRequest,
-        ): AsyncIterable<protocol.StreamEvent> {
-          const r = await this.getResponse(req);
-          yield {
-            type: 'response_done',
-            response: {
-              id: 'r',
-              usage: {
-                requests: 1,
-                inputTokens: 0,
-                outputTokens: 0,
-                totalTokens: 0,
-              },
-              output: r.output,
-            },
-          } as any;
+      class SimpleStreamingModel extends ScriptedModel {
+        constructor(responses: ModelResponse[]) {
+          super(responses.map(modelResponse));
         }
       }
       const agent = new Agent({
@@ -4191,8 +4235,11 @@ describe('Runner.run', () => {
     it('max turn exceeded throws', async () => {
       const agent = new Agent({
         name: 'Max',
-        model: new FakeModel([
-          { output: [fakeModelMessage('nope')], usage: new Usage() },
+        model: new ScriptedModel([
+          modelResponse({
+            output: [fakeModelMessage('nope')],
+            usage: new Usage(),
+          }),
         ]),
       });
       const error = await run(agent, 'x', { maxTurns: 0 }).catch((err) => err);
@@ -4202,22 +4249,17 @@ describe('Runner.run', () => {
     });
 
     it('rolls back a turn when request serialization fails before the model call', async () => {
-      class TrackingModel extends FakeModel {
-        calls = 0;
-
-        override async getResponse(
-          request: ModelRequest,
-        ): Promise<ModelResponse> {
-          this.calls++;
-          return await super.getResponse(request);
+      class TrackingModel extends ScriptedModel {
+        get callCount(): number {
+          return this.calls.length;
         }
       }
 
       const model = new TrackingModel([
-        {
+        modelResponse({
           output: [fakeModelMessage('{"value":"ok"}')],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent: Agent<any, any> = new Agent({
         name: 'RequestSerializationFailure',
@@ -4229,7 +4271,7 @@ describe('Runner.run', () => {
       const error = await run(agent, state).catch((caught) => caught);
 
       expect(error).toBeInstanceOf(UserError);
-      expect(model.calls).toBe(0);
+      expect(model.callCount).toBe(0);
       expect(state._currentTurn).toBe(0);
 
       const restored = await RunState.fromString(agent, state.toString());
@@ -4238,26 +4280,21 @@ describe('Runner.run', () => {
 
       expect(resumed.finalOutput).toEqual({ value: 'ok' });
       expect(resumed.state._currentTurn).toBe(1);
-      expect(model.calls).toBe(1);
+      expect(model.callCount).toBe(1);
     });
 
     it('preserves an in-progress turn when resumed request serialization fails', async () => {
-      class TrackingModel extends FakeModel {
-        calls = 0;
-
-        override async getResponse(
-          request: ModelRequest,
-        ): Promise<ModelResponse> {
-          this.calls++;
-          return await super.getResponse(request);
+      class TrackingModel extends ScriptedModel {
+        get callCount(): number {
+          return this.calls.length;
         }
       }
 
       const model = new TrackingModel([
-        {
+        modelResponse({
           output: [fakeModelMessage('{"value":"ok"}')],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent: Agent<any, any> = new Agent({
         name: 'ResumedRequestSerializationFailure',
@@ -4274,7 +4311,7 @@ describe('Runner.run', () => {
       );
 
       expect(error).toBeInstanceOf(UserError);
-      expect(model.calls).toBe(0);
+      expect(model.callCount).toBe(0);
       expect(restored._currentTurn).toBe(1);
       expect(restored._currentTurnInProgress).toBe(true);
 
@@ -4284,7 +4321,7 @@ describe('Runner.run', () => {
 
       expect(resumed.finalOutput).toEqual({ value: 'ok' });
       expect(resumed.state._currentTurn).toBe(1);
-      expect(model.calls).toBe(1);
+      expect(model.callCount).toBe(1);
     });
 
     it('does not enforce maxTurns when maxTurns is null', async () => {
@@ -4301,9 +4338,12 @@ describe('Runner.run', () => {
       }));
       const agent = new Agent({
         name: 'NoMaxTurns',
-        model: new FakeModel([
-          ...toolResponses,
-          { output: [fakeModelMessage('done')], usage: new Usage() },
+        model: new ScriptedModel([
+          ...toolResponses.map(modelResponse),
+          modelResponse({
+            output: [fakeModelMessage('done')],
+            usage: new Usage(),
+          }),
         ]),
         tools: [TEST_TOOL],
       });
@@ -4343,7 +4383,7 @@ describe('Runner.run', () => {
       ];
       const agent = new Agent({
         name: 'NoMaxTurnsResume',
-        model: new FakeModel(responses),
+        model: new ScriptedModel(Array.from(responses, modelResponse)),
         tools: [TEST_TOOL],
       });
       const error = await run(agent, 'x', { maxTurns: 1 }).catch((err) => err);
@@ -4365,8 +4405,11 @@ describe('Runner.run', () => {
     it('max turn handler returns final output', async () => {
       const agent = new Agent({
         name: 'MaxSummary',
-        model: new FakeModel([
-          { output: [fakeModelMessage('nope')], usage: new Usage() },
+        model: new ScriptedModel([
+          modelResponse({
+            output: [fakeModelMessage('nope')],
+            usage: new Usage(),
+          }),
         ]),
       });
       const result = await run(agent, 'x', {
@@ -4384,8 +4427,11 @@ describe('Runner.run', () => {
     it('max turn handler can skip history updates', async () => {
       const agent = new Agent({
         name: 'MaxSummaryNoHistory',
-        model: new FakeModel([
-          { output: [fakeModelMessage('nope')], usage: new Usage() },
+        model: new ScriptedModel([
+          modelResponse({
+            output: [fakeModelMessage('nope')],
+            usage: new Usage(),
+          }),
         ]),
       });
       const result = await run(agent, 'x', {
@@ -4404,11 +4450,11 @@ describe('Runner.run', () => {
     it('throws model refusal errors instead of retrying refusal-only messages', async () => {
       const agent = new Agent({
         name: 'Refusal',
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [fakeModelRefusal('I cannot help with that request.')],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
       await expect(run(agent, 'x', { maxTurns: 3 })).rejects.toMatchObject({
@@ -4421,11 +4467,11 @@ describe('Runner.run', () => {
       const agent = new Agent({
         name: 'StructuredRefusalError',
         outputType: z.object({ summary: z.string() }),
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [fakeModelRefusal('I cannot help with that request.')],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
       await expect(run(agent, 'x')).rejects.toBeInstanceOf(ModelRefusalError);
@@ -4434,8 +4480,8 @@ describe('Runner.run', () => {
     it('uses assistant text when a message also contains refusal content', async () => {
       const agent = new Agent({
         name: 'MixedTextRefusal',
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [
               fakeModelMessageWithRefusal(
                 'valid answer',
@@ -4443,7 +4489,7 @@ describe('Runner.run', () => {
               ),
             ],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
       const result = await run(agent, 'x');
@@ -4454,8 +4500,8 @@ describe('Runner.run', () => {
       const agent = new Agent({
         name: 'MixedStructuredRefusal',
         outputType: z.object({ summary: z.string() }),
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [
               fakeModelMessageWithRefusal(
                 '{"summary":"valid answer"}',
@@ -4463,7 +4509,7 @@ describe('Runner.run', () => {
               ),
             ],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
       const result = await run(agent, 'x');
@@ -4474,11 +4520,11 @@ describe('Runner.run', () => {
       const agent = new Agent({
         name: 'StructuredRefusal',
         outputType: z.object({ summary: z.string() }),
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [fakeModelRefusal('I cannot help with that request.')],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
       const result = await run(agent, 'x', {
@@ -4502,11 +4548,11 @@ describe('Runner.run', () => {
     it('model refusal handler can skip history updates', async () => {
       const agent = new Agent({
         name: 'RefusalNoHistory',
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [fakeModelRefusal('I cannot help with that request.')],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
       const result = await run(agent, 'x', {
@@ -4524,11 +4570,11 @@ describe('Runner.run', () => {
     it('default error handler can handle model refusals', async () => {
       const agent = new Agent({
         name: 'DefaultRefusal',
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [fakeModelRefusal('I cannot help with that request.')],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
       const result = await run(agent, 'x', {
@@ -4546,11 +4592,11 @@ describe('Runner.run', () => {
       const agent = new Agent({
         name: 'InvalidStructuredOutput',
         outputType: z.object({ summary: z.string() }),
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [fakeModelMessage('not valid json')],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
 
@@ -4561,11 +4607,11 @@ describe('Runner.run', () => {
       const agent = new Agent({
         name: 'InvalidStructuredOutputHandler',
         outputType: z.object({ summary: z.string() }),
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [fakeModelMessage('not valid json')],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
 
@@ -4592,11 +4638,11 @@ describe('Runner.run', () => {
       const agent = new Agent({
         name: 'InvalidStructuredOutputNoHistory',
         outputType: z.object({ summary: z.string() }),
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [fakeModelMessage('not valid json')],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
 
@@ -4617,11 +4663,11 @@ describe('Runner.run', () => {
       const agent = new Agent({
         name: 'InvalidStructuredOutputDeclined',
         outputType: z.object({ summary: z.string() }),
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [fakeModelMessage('not valid json')],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
 
@@ -4638,11 +4684,11 @@ describe('Runner.run', () => {
       const agent = new Agent({
         name: 'InvalidStructuredOutputBadFallback',
         outputType: z.object({ summary: z.string() }),
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [fakeModelMessage('not valid json')],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
 
@@ -4661,11 +4707,11 @@ describe('Runner.run', () => {
       const agent = new Agent({
         name: 'DefaultInvalidStructuredOutput',
         outputType: z.object({ summary: z.string() }),
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [fakeModelMessage('not valid json')],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
 
@@ -4687,22 +4733,13 @@ describe('Runner.run', () => {
     ])(
       'empty structured output handler avoids another model turn for $name',
       async ({ output }) => {
-        class CountingModel implements Model {
-          public requests: ModelRequest[] = [];
-
-          constructor(private responses: ModelResponse[]) {}
-
-          async getResponse(request: ModelRequest): Promise<ModelResponse> {
-            this.requests.push(request);
-            const response = this.responses.shift();
-            if (!response) {
-              throw new Error('No response found');
-            }
-            return response;
+        class CountingModel extends ScriptedModel {
+          constructor(responses: ModelResponse[]) {
+            super(responses.map(modelResponse));
           }
 
-          getStreamedResponse(_request: ModelRequest): AsyncIterable<any> {
-            throw new Error('Not implemented');
+          get requests(): readonly ModelRequest[] {
+            return this.calls.map((call) => call.request);
           }
         }
 
@@ -4751,8 +4788,8 @@ describe('Runner.run', () => {
         name: 'InvalidStructuredOutputAfterTool',
         outputType: z.object({ summary: z.string() }),
         tools: [recordSideEffect],
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [
               {
                 type: 'function_call',
@@ -4765,12 +4802,12 @@ describe('Runner.run', () => {
               } as protocol.FunctionCallItem,
             ],
             usage: new Usage(),
-          },
-          {
+          }),
+          modelResponse({
             output: [fakeModelMessage('not valid json')],
             usage: new Usage(),
-          },
-          {
+          }),
+          modelResponse({
             output: [
               {
                 type: 'function_call',
@@ -4783,11 +4820,11 @@ describe('Runner.run', () => {
               } as protocol.FunctionCallItem,
             ],
             usage: new Usage(),
-          },
-          {
+          }),
+          modelResponse({
             output: [fakeModelMessage('{"summary":"unexpected retry"}')],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
 
@@ -4807,11 +4844,11 @@ describe('Runner.run', () => {
       const nestedAgent = new Agent({
         name: 'NestedRecoverer',
         outputType: z.object({ summary: z.string() }),
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [fakeModelMessage('not valid json')],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
       const nestedTool = nestedAgent.asTool({
@@ -4828,8 +4865,8 @@ describe('Runner.run', () => {
       const parentAgent = new Agent({
         name: 'ParentAgent',
         tools: [nestedTool],
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [
               {
                 type: 'function_call',
@@ -4842,11 +4879,11 @@ describe('Runner.run', () => {
               } as protocol.FunctionCallItem,
             ],
             usage: new Usage(),
-          },
-          {
+          }),
+          modelResponse({
             output: [fakeModelMessage('parent done')],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
 
@@ -4881,9 +4918,8 @@ describe('Runner.run', () => {
 
       const agent = new Agent({
         name: 'TurnCounter',
-        model: new FakeModel([
-          // First call: tool call
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [
               {
                 type: 'function_call',
@@ -4896,9 +4932,11 @@ describe('Runner.run', () => {
               } as protocol.FunctionCallItem,
             ],
             usage: new Usage(),
-          },
-          // Second call: should be blocked by maxTurns=1
-          { output: [fakeModelMessage('second')], usage: new Usage() },
+          }),
+          modelResponse({
+            output: [fakeModelMessage('second')],
+            usage: new Usage(),
+          }),
         ]),
         tools: [testTool],
         toolUseBehavior: 'run_llm_again',
@@ -4924,9 +4962,8 @@ describe('Runner.run', () => {
 
       const agent = new Agent({
         name: 'ResumeTurnCounter',
-        model: new FakeModel([
-          // First post-interruption call: should NOT advance turn (still turn 1)
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [
               {
                 type: 'function_call',
@@ -4939,9 +4976,11 @@ describe('Runner.run', () => {
               } as protocol.FunctionCallItem,
             ],
             usage: new Usage(),
-          },
-          // Second call: SHOULD advance turn to 2, then maxTurns=1 should throw
-          { output: [fakeModelMessage('second')], usage: new Usage() },
+          }),
+          modelResponse({
+            output: [fakeModelMessage('second')],
+            usage: new Usage(),
+          }),
         ]),
         tools: [testTool],
         toolUseBehavior: 'run_llm_again',
@@ -4985,8 +5024,8 @@ describe('Runner.run', () => {
         execute: async ({ city }) => `Weather in ${city}`,
       });
 
-      const model = new FakeModel([
-        {
+      const model = new ScriptedModel([
+        modelResponse({
           output: [
             {
               type: 'function_call',
@@ -4999,8 +5038,11 @@ describe('Runner.run', () => {
             } as protocol.FunctionCallItem,
           ],
           usage: new Usage(),
-        },
-        { output: [fakeModelMessage('All set.')], usage: new Usage() },
+        }),
+        modelResponse({
+          output: [fakeModelMessage('All set.')],
+          usage: new Usage(),
+        }),
       ]);
 
       const agent = new Agent({
@@ -5027,8 +5069,11 @@ describe('Runner.run', () => {
       setTraceProcessors([new BatchTraceProcessor(new FakeTracingExporter())]);
       const agent = new Agent({
         name: 'NoIG',
-        model: new FakeModel([
-          { output: [fakeModelMessage('ok')], usage: new Usage() },
+        model: new ScriptedModel([
+          modelResponse({
+            output: [fakeModelMessage('ok')],
+            usage: new Usage(),
+          }),
         ]),
       });
       const result = await run(agent, 'hi');
@@ -5041,8 +5086,11 @@ describe('Runner.run', () => {
       setTracingDisabled(false);
       const agent = new Agent({
         name: 'NoOG',
-        model: new FakeModel([
-          { output: [fakeModelMessage('ok')], usage: new Usage() },
+        model: new ScriptedModel([
+          modelResponse({
+            output: [fakeModelMessage('ok')],
+            usage: new Usage(),
+          }),
         ]),
       });
       const spy = vi.spyOn(agent, 'processFinalOutput');
@@ -5078,44 +5126,12 @@ describe('Runner.run', () => {
     });
 
     it('uses runner-level reasoningItemIdPolicy when building follow-up turn input', async () => {
-      class RequestRecordingModel implements Model {
-        readonly requests: ModelRequest[] = [];
-        #callCount = 0;
-
-        async getResponse(request: ModelRequest): Promise<ModelResponse> {
-          this.requests.push(request);
-          if (this.#callCount++ === 0) {
-            return {
-              output: [
-                {
-                  type: 'reasoning',
-                  id: 'rs_first',
-                  content: [{ type: 'input_text', text: 'reasoning trace' }],
-                } satisfies protocol.ReasoningItem,
-                {
-                  type: 'function_call',
-                  id: 'fc_first',
-                  callId: 'call_first',
-                  name: 'echo_tool',
-                  status: 'completed',
-                  arguments: '{}',
-                } satisfies protocol.FunctionCallItem,
-              ],
-              usage: new Usage(),
-            };
-          }
-          return {
-            output: [fakeModelMessage('done')],
-            usage: new Usage(),
-          };
-        }
-
-        getStreamedResponse(_request: ModelRequest): AsyncIterable<any> {
-          throw new Error('Not implemented');
-        }
-      }
-
-      const model = new RequestRecordingModel();
+      const model = createReasoningPolicyModel({
+        reasoningId: 'rs_first',
+        functionId: 'fc_first',
+        callId: 'call_first',
+        toolName: 'echo_tool',
+      });
       const echoTool = tool({
         name: 'echo_tool',
         description: 'Echoes a static payload.',
@@ -5133,10 +5149,10 @@ describe('Runner.run', () => {
 
       const result = await runner.run(agent, 'hello');
       expect(result.finalOutput).toBe('done');
-      expect(model.requests).toHaveLength(2);
+      expect(model.calls).toHaveLength(2);
 
       const secondRequestReasoning = getRequestInputItems(
-        model.requests[1],
+        model.calls[1].request,
       ).find(
         (item): item is protocol.ReasoningItem => item.type === 'reasoning',
       );
@@ -5151,44 +5167,12 @@ describe('Runner.run', () => {
     });
 
     it('allows per-run reasoningItemIdPolicy to override runner defaults', async () => {
-      class RequestRecordingModel implements Model {
-        readonly requests: ModelRequest[] = [];
-        #callCount = 0;
-
-        async getResponse(request: ModelRequest): Promise<ModelResponse> {
-          this.requests.push(request);
-          if (this.#callCount++ === 0) {
-            return {
-              output: [
-                {
-                  type: 'reasoning',
-                  id: 'rs_override',
-                  content: [{ type: 'input_text', text: 'reasoning trace' }],
-                } satisfies protocol.ReasoningItem,
-                {
-                  type: 'function_call',
-                  id: 'fc_override',
-                  callId: 'call_override',
-                  name: 'echo_tool',
-                  status: 'completed',
-                  arguments: '{}',
-                } satisfies protocol.FunctionCallItem,
-              ],
-              usage: new Usage(),
-            };
-          }
-          return {
-            output: [fakeModelMessage('done')],
-            usage: new Usage(),
-          };
-        }
-
-        getStreamedResponse(_request: ModelRequest): AsyncIterable<any> {
-          throw new Error('Not implemented');
-        }
-      }
-
-      const model = new RequestRecordingModel();
+      const model = createReasoningPolicyModel({
+        reasoningId: 'rs_override',
+        functionId: 'fc_override',
+        callId: 'call_override',
+        toolName: 'echo_tool',
+      });
       const echoTool = tool({
         name: 'echo_tool',
         description: 'Echoes a static payload.',
@@ -5209,7 +5193,7 @@ describe('Runner.run', () => {
       });
 
       const secondRequestReasoning = getRequestInputItems(
-        model.requests[1],
+        model.calls[1].request,
       ).find(
         (item): item is protocol.ReasoningItem => item.type === 'reasoning',
       );
@@ -5218,44 +5202,12 @@ describe('Runner.run', () => {
     });
 
     it('passes reasoningItemIdPolicy through the run() helper', async () => {
-      class RequestRecordingModel implements Model {
-        readonly requests: ModelRequest[] = [];
-        #callCount = 0;
-
-        async getResponse(request: ModelRequest): Promise<ModelResponse> {
-          this.requests.push(request);
-          if (this.#callCount++ === 0) {
-            return {
-              output: [
-                {
-                  type: 'reasoning',
-                  id: 'rs_helper',
-                  content: [{ type: 'input_text', text: 'reasoning trace' }],
-                } satisfies protocol.ReasoningItem,
-                {
-                  type: 'function_call',
-                  id: 'fc_helper',
-                  callId: 'call_helper',
-                  name: 'echo_tool',
-                  status: 'completed',
-                  arguments: '{}',
-                } satisfies protocol.FunctionCallItem,
-              ],
-              usage: new Usage(),
-            };
-          }
-          return {
-            output: [fakeModelMessage('done')],
-            usage: new Usage(),
-          };
-        }
-
-        getStreamedResponse(_request: ModelRequest): AsyncIterable<any> {
-          throw new Error('Not implemented');
-        }
-      }
-
-      const model = new RequestRecordingModel();
+      const model = createReasoningPolicyModel({
+        reasoningId: 'rs_helper',
+        functionId: 'fc_helper',
+        callId: 'call_helper',
+        toolName: 'echo_tool',
+      });
       const echoTool = tool({
         name: 'echo_tool',
         description: 'Echoes a static payload.',
@@ -5273,7 +5225,7 @@ describe('Runner.run', () => {
       });
 
       const secondRequestReasoning = getRequestInputItems(
-        model.requests[1],
+        model.calls[1].request,
       ).find(
         (item): item is protocol.ReasoningItem => item.type === 'reasoning',
       );
@@ -5282,44 +5234,12 @@ describe('Runner.run', () => {
     });
 
     it('uses serialized reasoningItemIdPolicy when resuming without override', async () => {
-      class RequestRecordingModel implements Model {
-        readonly requests: ModelRequest[] = [];
-        #callCount = 0;
-
-        async getResponse(request: ModelRequest): Promise<ModelResponse> {
-          this.requests.push(request);
-          if (this.#callCount++ === 0) {
-            return {
-              output: [
-                {
-                  type: 'reasoning',
-                  id: 'rs_resume',
-                  content: [{ type: 'input_text', text: 'reasoning trace' }],
-                } satisfies protocol.ReasoningItem,
-                {
-                  type: 'function_call',
-                  id: 'fc_resume',
-                  callId: 'call_resume',
-                  name: 'approval_tool',
-                  status: 'completed',
-                  arguments: '{}',
-                } satisfies protocol.FunctionCallItem,
-              ],
-              usage: new Usage(),
-            };
-          }
-          return {
-            output: [fakeModelMessage('done')],
-            usage: new Usage(),
-          };
-        }
-
-        getStreamedResponse(_request: ModelRequest): AsyncIterable<any> {
-          throw new Error('Not implemented');
-        }
-      }
-
-      const model = new RequestRecordingModel();
+      const model = createReasoningPolicyModel({
+        reasoningId: 'rs_resume',
+        functionId: 'fc_resume',
+        callId: 'call_resume',
+        toolName: 'approval_tool',
+      });
       const approvalTool = tool({
         name: 'approval_tool',
         description: 'Requires approval before execution.',
@@ -5348,9 +5268,9 @@ describe('Runner.run', () => {
       const resumedRun = await run(agent, restoredState, { maxTurns: 1 });
 
       expect(resumedRun.finalOutput).toBe('done');
-      expect(model.requests).toHaveLength(2);
+      expect(model.calls).toHaveLength(2);
       const secondRequestReasoning = getRequestInputItems(
-        model.requests[1],
+        model.calls[1].request,
       ).find(
         (item): item is protocol.ReasoningItem => item.type === 'reasoning',
       );
@@ -5411,23 +5331,18 @@ describe('Runner.run', () => {
         }
       }
 
-      class RecordingModel extends FakeModel {
-        lastRequest: ModelRequest | undefined;
-
-        override async getResponse(
-          request: ModelRequest,
-        ): Promise<ModelResponse> {
-          this.lastRequest = request;
-          return super.getResponse(request);
+      class RecordingModel extends ScriptedModel {
+        get lastRequest(): Readonly<ModelRequest> | undefined {
+          return this.lastCall?.request;
         }
       }
 
       it('uses session history and stores run results', async () => {
         const model = new RecordingModel([
-          {
+          modelResponse({
             ...TEST_MODEL_RESPONSE_BASIC,
             output: [fakeModelMessage('response')],
-          },
+          }),
         ]);
         const agent = new Agent({ name: 'SessionAgent', model });
         const historyItem = fakeModelMessage(
@@ -5457,7 +5372,7 @@ describe('Runner.run', () => {
         const firstPart = Array.isArray(savedAssistant.content)
           ? (savedAssistant.content[0] as { providerData?: unknown })
           : undefined;
-        expect(firstPart?.providerData).toEqual({ annotations: [] });
+        expect(firstPart?.providerData).toBeUndefined();
       });
 
       it('persists accepted tool results before surfacing cancellation', async () => {
@@ -5481,11 +5396,11 @@ describe('Runner.run', () => {
             return 'completed tool result';
           },
         });
-        const model = new FakeModel([
-          {
+        const model = new ScriptedModel([
+          modelResponse({
             output: [{ ...TEST_MODEL_FUNCTION_CALL }],
             usage: new Usage(),
-          },
+          }),
         ]);
         const agent = new Agent({
           name: 'SessionCancellationAgent',
@@ -5534,15 +5449,15 @@ describe('Runner.run', () => {
             return 'completed tool result';
           },
         });
-        const model = new FakeModel([
-          {
+        const model = new ScriptedModel([
+          modelResponse({
             output: [{ ...TEST_MODEL_FUNCTION_CALL }],
             usage: new Usage(),
-          },
-          {
+          }),
+          modelResponse({
             output: [fakeModelMessage('resumed response')],
             usage: new Usage(),
-          },
+          }),
         ]);
         const agent = new Agent({
           name: 'SessionCancellationResumeAgent',
@@ -5607,11 +5522,11 @@ describe('Runner.run', () => {
         });
         const agentB = new Agent({
           name: 'SessionCancellationHandoffTarget',
-          model: new FakeModel([
-            {
+          model: new ScriptedModel([
+            modelResponse({
               output: [fakeModelMessage('handoff response')],
               usage: new Usage(),
-            },
+            }),
           ]),
         });
         const onHandoff = vi.fn();
@@ -5626,15 +5541,15 @@ describe('Runner.run', () => {
         };
         const agentA = new Agent({
           name: 'SessionCancellationHandoffSource',
-          model: new FakeModel([
-            {
+          model: new ScriptedModel([
+            modelResponse({
               output: [{ ...TEST_MODEL_FUNCTION_CALL }, handoffCall],
               usage: new Usage(),
-            },
-            {
+            }),
+            modelResponse({
               output: [fakeModelMessage('resumed source response')],
               usage: new Usage(),
-            },
+            }),
           ]),
           tools: [abortableTool],
           handoffs: [handoffToB],
@@ -5692,10 +5607,10 @@ describe('Runner.run', () => {
         }
 
         const model = new RecordingModel([
-          {
+          modelResponse({
             ...TEST_MODEL_RESPONSE_BASIC,
             output: [fakeModelMessage('response')],
-          },
+          }),
         ]);
         const agent = new Agent({ name: 'SessionReasoningAgent', model });
         const session = new ReasoningPreservingSession([
@@ -5721,10 +5636,10 @@ describe('Runner.run', () => {
 
       it('allows list inputs with session history and no session input callback', async () => {
         const model = new RecordingModel([
-          {
+          modelResponse({
             ...TEST_MODEL_RESPONSE_BASIC,
             output: [fakeModelMessage('list response')],
-          },
+          }),
         ]);
         const agent = new Agent({ name: 'ListSession', model });
         const historyItem = user('History stays');
@@ -5750,10 +5665,10 @@ describe('Runner.run', () => {
 
       it('allows list inputs when session input callback is provided', async () => {
         const model = new RecordingModel([
-          {
+          modelResponse({
             ...TEST_MODEL_RESPONSE_BASIC,
             output: [fakeModelMessage('response')],
-          },
+          }),
         ]);
         const agent = new Agent({ name: 'SessionCallbackAgent', model });
         const sessionHistory: AgentInputItem[] = [
@@ -5797,10 +5712,10 @@ describe('Runner.run', () => {
 
       it('supports async session input callback', async () => {
         const model = new RecordingModel([
-          {
+          modelResponse({
             ...TEST_MODEL_RESPONSE_BASIC,
             output: [fakeModelMessage('response')],
-          },
+          }),
         ]);
         const agent = new Agent({ name: 'AsyncSessionCallback', model });
         const session = new MemorySession([
@@ -5826,10 +5741,10 @@ describe('Runner.run', () => {
 
       it('persists transformed session input from callback', async () => {
         const model = new RecordingModel([
-          {
+          modelResponse({
             ...TEST_MODEL_RESPONSE_BASIC,
             output: [fakeModelMessage('session response')],
-          },
+          }),
         ]);
         const agent = new Agent({ name: 'SessionTransform', model });
         const session = new MemorySession();
@@ -5863,40 +5778,41 @@ describe('Runner.run', () => {
       });
 
       it('does not persist duplicate user input when a model retry succeeds in the same run', async () => {
-        class RetryRecordingModel extends FakeModel {
-          requests: ModelRequest[] = [];
-          attempts = 0;
+        class RetryRecordingModel extends ScriptedModel {
+          readonly requests: ModelRequest[];
 
-          override async getResponse(
-            request: ModelRequest,
-          ): Promise<ModelResponse> {
-            this.requests.push({
-              ...request,
-              input: Array.isArray(request.input)
-                ? (JSON.parse(
-                    JSON.stringify(request.input),
-                  ) as AgentInputItem[])
-                : request.input,
-            });
-            this.attempts += 1;
+          constructor(response: ModelResponse) {
+            const requests: ModelRequest[] = [];
+            const record = (request: Readonly<ModelRequest>) => {
+              requests.push(cloneModelRequest(request));
+            };
+            super([
+              modelResponder((call) => {
+                record(call.request);
+                const error = new Error('temporary failure') as Error & {
+                  statusCode?: number;
+                };
+                error.statusCode = 503;
+                throw error;
+              }),
+              modelResponder((call) => {
+                record(call.request);
+                return response;
+              }),
+            ]);
+            this.requests = requests;
+          }
 
-            if (this.attempts === 1) {
-              const error = new Error('temporary failure');
-              (error as Error & { statusCode?: number }).statusCode = 503;
-              throw error;
-            }
-
-            return await super.getResponse(request);
+          get attempts(): number {
+            return this.calls.length;
           }
         }
 
-        const model = new RetryRecordingModel([
-          {
-            ...TEST_MODEL_RESPONSE_BASIC,
-            output: [fakeModelMessage('retry response')],
-            usage: new Usage({ requests: 1 }),
-          },
-        ]);
+        const model = new RetryRecordingModel({
+          ...TEST_MODEL_RESPONSE_BASIC,
+          output: [fakeModelMessage('retry response')],
+          usage: new Usage({ requests: 1 }),
+        });
         const agent = new Agent({
           name: 'RetrySessionAgent',
           model,
@@ -5935,10 +5851,10 @@ describe('Runner.run', () => {
 
       it('does not duplicate history when callback clones entries', async () => {
         const model = new RecordingModel([
-          {
+          modelResponse({
             ...TEST_MODEL_RESPONSE_BASIC,
             output: [fakeModelMessage('clone response')],
-          },
+          }),
         ]);
         const history = [user('Existing history item')];
         const session = new MemorySession(history);
@@ -5976,11 +5892,14 @@ describe('Runner.run', () => {
         async ({ stream }) => {
           const model = stream
             ? new StreamingModel(fakeModelMessage('assistant'))
-            : new FakeModel(
-                Array.from({ length: 3 }, (_, turn) => ({
-                  ...TEST_MODEL_RESPONSE_BASIC,
-                  output: [fakeModelMessage(`assistant ${turn}`)],
-                })),
+            : new ScriptedModel(
+                Array.from(
+                  Array.from({ length: 3 }, (_, turn) => ({
+                    ...TEST_MODEL_RESPONSE_BASIC,
+                    output: [fakeModelMessage(`assistant ${turn}`)],
+                  })),
+                  modelResponse,
+                ),
               );
           const agent = new Agent({ name: 'RepeatedHistorySession', model });
           const session = new MemorySession();
@@ -6024,10 +5943,10 @@ describe('Runner.run', () => {
 
       it('persists reordered new items ahead of matching history', async () => {
         const model = new RecordingModel([
-          {
+          modelResponse({
             ...TEST_MODEL_RESPONSE_BASIC,
             output: [fakeModelMessage('reordered response')],
-          },
+          }),
         ]);
         const historyMessage = user('Repeatable message');
         const newMessage = user('Repeatable message');
@@ -6053,10 +5972,10 @@ describe('Runner.run', () => {
 
       it('persists binary payloads that share prefixes with history', async () => {
         const model = new RecordingModel([
-          {
+          modelResponse({
             ...TEST_MODEL_RESPONSE_BASIC,
             output: [fakeModelMessage('binary response')],
-          },
+          }),
         ]);
         const historyPayload = new Uint8Array(32);
         const newPayload = new Uint8Array(32);
@@ -6106,10 +6025,10 @@ describe('Runner.run', () => {
 
       it('throws when session input callback returns invalid data', async () => {
         const model = new RecordingModel([
-          {
+          modelResponse({
             ...TEST_MODEL_RESPONSE_BASIC,
             output: [fakeModelMessage('response')],
-          },
+          }),
         ]);
         const agent = new Agent({ name: 'InvalidCallback', model });
         const session = new MemorySession([user('history')]);
@@ -6136,15 +6055,15 @@ describe('Runner.run', () => {
           providerData: { source: 'openai' },
         } as protocol.FunctionCallItem;
 
-        const model = new FakeModel([
-          {
+        const model = new ScriptedModel([
+          modelResponse({
             output: [functionCall],
             usage: new Usage(),
-          },
-          {
+          }),
+          modelResponse({
             output: [fakeModelMessage('Weather retrieved.')],
             usage: new Usage(),
-          },
+          }),
         ]);
 
         const weatherTool = tool({
@@ -6205,11 +6124,11 @@ describe('Runner.run', () => {
           },
         } as protocol.HostedToolCallItem;
 
-        const model = new FakeModel([
-          {
+        const model = new ScriptedModel([
+          modelResponse({
             output: [hostedCall],
             usage: new Usage(),
-          },
+          }),
         ]);
 
         const hostedTool = hostedMcpTool({
@@ -6270,9 +6189,8 @@ describe('Runner.run', () => {
           execute: async ({ city }) => `Sunny, 72°F in ${city}`,
         });
 
-        const model = new FakeModel([
-          // First response: tool call that requires approval
-          {
+        const model = new ScriptedModel([
+          modelResponse({
             output: [
               {
                 type: 'function_call',
@@ -6285,12 +6203,11 @@ describe('Runner.run', () => {
               } as protocol.FunctionCallItem,
             ],
             usage: new Usage(),
-          },
-          // Second response: after approval, final answer
-          {
+          }),
+          modelResponse({
             output: [fakeModelMessage('The weather is sunny in Oakland.')],
             usage: new Usage(),
-          },
+          }),
         ]);
 
         const agent = new Agent({
@@ -6364,9 +6281,8 @@ describe('Runner.run', () => {
           execute: async ({ city }) => `12:00PM in ${city}`,
         });
 
-        const model = new FakeModel([
-          // First response: tool call that requires approval.
-          {
+        const model = new ScriptedModel([
+          modelResponse({
             output: [
               {
                 type: 'function_call',
@@ -6379,9 +6295,8 @@ describe('Runner.run', () => {
               } as protocol.FunctionCallItem,
             ],
             usage: new Usage(),
-          },
-          // Second response: after approval, request another tool call without approval.
-          {
+          }),
+          modelResponse({
             output: [
               {
                 type: 'function_call',
@@ -6394,14 +6309,13 @@ describe('Runner.run', () => {
               } as protocol.FunctionCallItem,
             ],
             usage: new Usage(),
-          },
-          // Third response: final answer after tool results are available.
-          {
+          }),
+          modelResponse({
             output: [
               fakeModelMessage('It is sunny in Oakland and it is noon.'),
             ],
             usage: new Usage(),
-          },
+          }),
         ]);
 
         const agent = new Agent({
@@ -6453,53 +6367,28 @@ describe('Runner.run', () => {
   });
 
   describe('callModelInputFilter', () => {
-    class FilterTrackingModel extends FakeModel {
-      lastRequest?: ModelRequest;
-
-      override async getResponse(
-        request: ModelRequest,
-      ): Promise<ModelResponse> {
-        this.lastRequest = request;
-        return await super.getResponse(request);
+    class FilterTrackingModel extends ScriptedModel {
+      get lastRequest(): Readonly<ModelRequest> | undefined {
+        return this.lastCall?.request;
       }
     }
 
-    class FilterStreamingModel implements Model {
-      lastRequest?: ModelRequest;
-
-      constructor(private readonly response: ModelResponse) {}
-
-      async getResponse(request: ModelRequest): Promise<ModelResponse> {
-        this.lastRequest = request;
-        return this.response;
+    class FilterStreamingModel extends ScriptedModel {
+      constructor(response: ModelResponse) {
+        super([modelResponse({ ...response, responseId: 'stream-filter' })]);
       }
 
-      async *getStreamedResponse(
-        request: ModelRequest,
-      ): AsyncIterable<protocol.StreamEvent> {
-        this.lastRequest = request;
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'stream-filter',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: this.response.output,
-          },
-        } as protocol.StreamEvent;
+      get lastRequest(): Readonly<ModelRequest> | undefined {
+        return this.lastCall?.request;
       }
     }
 
     it('modifies model input for non-streaming runs', async () => {
       const model = new FilterTrackingModel([
-        {
+        modelResponse({
           ...TEST_MODEL_RESPONSE_BASIC,
           output: [fakeModelMessage('filtered result')],
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'FilterAgent',
@@ -6534,10 +6423,10 @@ describe('Runner.run', () => {
 
     it('keeps duplicate calls before their outputs in non-streaming runs', async () => {
       const model = new FilterTrackingModel([
-        {
+        modelResponse({
           ...TEST_MODEL_RESPONSE_BASIC,
           output: [fakeModelMessage('deduplicated result')],
-        },
+        }),
       ]);
       const agent = new Agent({ name: 'DeduplicateCallAgent', model });
       const oldCall: protocol.FunctionCallItem = {
@@ -6576,7 +6465,7 @@ describe('Runner.run', () => {
         execute: async () => 'done',
       });
       const model = new FilterTrackingModel([
-        {
+        modelResponse({
           output: [
             {
               type: 'function_call',
@@ -6586,11 +6475,11 @@ describe('Runner.run', () => {
             },
           ],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [fakeModelMessage('done')],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'LaterInjectionAgent',
@@ -6647,10 +6536,10 @@ describe('Runner.run', () => {
 
     it('persists an earlier duplicate explicitly selected by the filter', async () => {
       const model = new FilterTrackingModel([
-        {
+        modelResponse({
           output: [fakeModelMessage('done')],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({ name: 'EarlierDuplicateAgent', model });
       const oldCall: protocol.FunctionCallItem = {
@@ -6690,10 +6579,10 @@ describe('Runner.run', () => {
 
     it('persists a repeated current clone separately from equal-content history', async () => {
       const model = new FilterTrackingModel([
-        {
+        modelResponse({
           output: [fakeModelMessage('done')],
           usage: new Usage(),
-        },
+        }),
       ]);
       const agent = new Agent({ name: 'RepeatedCurrentCloneAgent', model });
       const sameMessage = user('same');
@@ -6817,9 +6706,9 @@ describe('Runner.run', () => {
 
     it('does not mutate run history when filter mutates input items', async () => {
       const model = new FilterTrackingModel([
-        {
+        modelResponse({
           ...TEST_MODEL_RESPONSE_BASIC,
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'HistoryFilterAgent',
@@ -6894,9 +6783,9 @@ describe('Runner.run', () => {
       }
 
       const model = new FilterTrackingModel([
-        {
+        modelResponse({
           ...TEST_MODEL_RESPONSE_BASIC,
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'FilterSessionAgent',
@@ -6964,9 +6853,9 @@ describe('Runner.run', () => {
       }
 
       const model = new FilterTrackingModel([
-        {
+        modelResponse({
           ...TEST_MODEL_RESPONSE_BASIC,
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'EmptyFilterAgent',
@@ -7026,9 +6915,15 @@ describe('Runner.run', () => {
         }
       }
 
-      const model = new FakeModel([
-        { output: [fakeModelMessage('first turn')], usage: new Usage() },
-        { output: [fakeModelMessage('second turn')], usage: new Usage() },
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [fakeModelMessage('first turn')],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [fakeModelMessage('second turn')],
+          usage: new Usage(),
+        }),
       ]);
 
       const agent = new Agent({ name: 'PersistCounterAgent', model });
@@ -7059,8 +6954,11 @@ describe('Runner.run', () => {
     });
 
     it('does not double-count turns when resuming an in-progress turn', async () => {
-      const model = new FakeModel([
-        { output: [fakeModelMessage('done')], usage: new Usage() },
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        }),
       ]);
 
       const agent = new Agent({ name: 'TurnResumeAgent', model });
@@ -7104,9 +7002,15 @@ describe('Runner.run', () => {
         }
       }
 
-      const model = new FakeModel([
-        { output: [{ ...TEST_MODEL_FUNCTION_CALL }], usage: new Usage() },
-        { output: [fakeModelMessage('second turn')], usage: new Usage() },
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [{ ...TEST_MODEL_FUNCTION_CALL }],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [fakeModelMessage('second turn')],
+          usage: new Usage(),
+        }),
       ]);
 
       const agent = new Agent({
@@ -7162,9 +7066,15 @@ describe('Runner.run', () => {
         }
       }
 
-      const model = new FakeModel([
-        { output: [{ ...TEST_MODEL_FUNCTION_CALL }], usage: new Usage() },
-        { output: [fakeModelMessage('second turn')], usage: new Usage() },
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [{ ...TEST_MODEL_FUNCTION_CALL }],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [fakeModelMessage('second turn')],
+          usage: new Usage(),
+        }),
       ]);
 
       const agent = new Agent({
@@ -7227,9 +7137,9 @@ describe('Runner.run', () => {
       }
 
       const model = new FilterTrackingModel([
-        {
+        modelResponse({
           ...TEST_MODEL_RESPONSE_BASIC,
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'PrependedFilterAgent',
@@ -7258,9 +7168,9 @@ describe('Runner.run', () => {
 
     it('throws when filter returns invalid data', async () => {
       const model = new FilterTrackingModel([
-        {
+        modelResponse({
           ...TEST_MODEL_RESPONSE_BASIC,
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'InvalidFilterAgent',
@@ -7280,9 +7190,9 @@ describe('Runner.run', () => {
 
     it('prefers per-run callModelInputFilter over runner config', async () => {
       const model = new FilterTrackingModel([
-        {
+        modelResponse({
           ...TEST_MODEL_RESPONSE_BASIC,
-        },
+        }),
       ]);
       const agent = new Agent({
         name: 'OverrideFilterAgent',
@@ -7324,20 +7234,20 @@ describe('Runner.run', () => {
     });
 
     it('allows callModelInputFilter to override omitted reasoning IDs', async () => {
-      class ReasoningTrackingModel extends FakeModel {
-        requests: ModelRequest[] = [];
+      class ReasoningTrackingModel extends ScriptedModel {
+        readonly requests: ModelRequest[];
 
-        override async getResponse(
-          request: ModelRequest,
-        ): Promise<ModelResponse> {
-          const cloned: ModelRequest = {
-            ...request,
-            input: Array.isArray(request.input)
-              ? (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[])
-              : request.input,
-          };
-          this.requests.push(cloned);
-          return await super.getResponse(request);
+        constructor(responses: ModelResponse[]) {
+          const requests: ModelRequest[] = [];
+          super(
+            responses.map((response) =>
+              modelResponder((call) => {
+                requests.push(cloneModelRequest(call.request));
+                return response;
+              }),
+            ),
+          );
+          this.requests = requests;
         }
       }
 
@@ -7412,30 +7322,20 @@ describe('Runner.run', () => {
     });
 
     it('keeps server conversation tracking aligned with filtered inputs', async () => {
-      class ConversationTrackingModel implements Model {
-        requests: ModelRequest[] = [];
+      class ConversationTrackingModel extends ScriptedModel {
+        readonly requests: ModelRequest[];
 
-        constructor(private readonly responses: ModelResponse[]) {}
-
-        async getResponse(request: ModelRequest): Promise<ModelResponse> {
-          const cloned: ModelRequest = {
-            ...request,
-            input: Array.isArray(request.input)
-              ? (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[])
-              : request.input,
-          };
-          this.requests.push(cloned);
-          const response = this.responses.shift();
-          if (!response) {
-            throw new Error('No response configured');
-          }
-          return response;
-        }
-
-        getStreamedResponse(
-          _request: ModelRequest,
-        ): AsyncIterable<protocol.StreamEvent> {
-          throw new Error('Not implemented');
+        constructor(responses: ModelResponse[]) {
+          const requests: ModelRequest[] = [];
+          super(
+            responses.map((response) =>
+              modelResponder((call) => {
+                requests.push(cloneModelRequest(call.request));
+                return response;
+              }),
+            ),
+          );
+          this.requests = requests;
         }
       }
 
@@ -7523,30 +7423,20 @@ describe('Runner.run', () => {
     });
 
     it('stops requeuing sanitized inputs when filters replace them', async () => {
-      class RedactionTrackingModel implements Model {
-        requests: ModelRequest[] = [];
+      class RedactionTrackingModel extends ScriptedModel {
+        readonly requests: ModelRequest[];
 
-        constructor(private readonly responses: ModelResponse[]) {}
-
-        async getResponse(request: ModelRequest): Promise<ModelResponse> {
-          const cloned: ModelRequest = {
-            ...request,
-            input: Array.isArray(request.input)
-              ? (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[])
-              : request.input,
-          };
-          this.requests.push(cloned);
-          const response = this.responses.shift();
-          if (!response) {
-            throw new Error('No response configured');
-          }
-          return response;
-        }
-
-        getStreamedResponse(
-          _request: ModelRequest,
-        ): AsyncIterable<protocol.StreamEvent> {
-          throw new Error('Not implemented');
+        constructor(responses: ModelResponse[]) {
+          const requests: ModelRequest[] = [];
+          super(
+            responses.map((response) =>
+              modelResponder((call) => {
+                requests.push(cloneModelRequest(call.request));
+                return response;
+              }),
+            ),
+          );
+          this.requests = requests;
         }
       }
 
@@ -7639,30 +7529,20 @@ describe('Runner.run', () => {
     });
 
     it('does not requeue filtered tool outputs in server-managed conversations', async () => {
-      class ConversationTrackingModel implements Model {
-        requests: ModelRequest[] = [];
+      class ConversationTrackingModel extends ScriptedModel {
+        readonly requests: ModelRequest[];
 
-        constructor(private readonly responses: ModelResponse[]) {}
-
-        async getResponse(request: ModelRequest): Promise<ModelResponse> {
-          const cloned: ModelRequest = {
-            ...request,
-            input: Array.isArray(request.input)
-              ? (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[])
-              : request.input,
-          };
-          this.requests.push(cloned);
-          const response = this.responses.shift();
-          if (!response) {
-            throw new Error('No response configured');
-          }
-          return response;
-        }
-
-        getStreamedResponse(
-          _request: ModelRequest,
-        ): AsyncIterable<protocol.StreamEvent> {
-          throw new Error('Not implemented');
+        constructor(responses: ModelResponse[]) {
+          const requests: ModelRequest[] = [];
+          super(
+            responses.map((response) =>
+              modelResponder((call) => {
+                requests.push(cloneModelRequest(call.request));
+                return response;
+              }),
+            ),
+          );
+          this.requests = requests;
         }
       }
 
@@ -7762,29 +7642,9 @@ describe('Runner.run', () => {
     });
 
     it('preserves providerData when saving streaming session items', async () => {
-      class MetadataStreamingModel implements Model {
-        constructor(private readonly response: ModelResponse) {}
-
-        async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-          return this.response;
-        }
-
-        async *getStreamedResponse(
-          _request: ModelRequest,
-        ): AsyncIterable<protocol.StreamEvent> {
-          yield {
-            type: 'response_done',
-            response: {
-              id: 'meta-stream',
-              usage: {
-                requests: 1,
-                inputTokens: 0,
-                outputTokens: 0,
-                totalTokens: 0,
-              },
-              output: this.response.output,
-            },
-          } as protocol.StreamEvent;
+      class MetadataStreamingModel extends ScriptedModel {
+        constructor(response: ModelResponse) {
+          super([modelResponse({ ...response, responseId: 'meta-stream' })]);
         }
       }
 
@@ -7854,18 +7714,13 @@ describe('Runner.run', () => {
   });
 
   describe('gpt-5 default model adjustments', () => {
-    class InspectableModel extends FakeModel {
-      lastRequest: ModelRequest | undefined;
-
+    class InspectableModel extends ScriptedModel {
       constructor(response: ModelResponse) {
-        super([response]);
+        super([modelResponse(response)]);
       }
 
-      override async getResponse(
-        request: ModelRequest,
-      ): Promise<ModelResponse> {
-        this.lastRequest = request;
-        return await super.getResponse(request);
+      get lastRequest(): Readonly<ModelRequest> | undefined {
+        return this.lastCall?.request;
       }
     }
 
@@ -8031,8 +7886,6 @@ describe('Runner.run', () => {
   });
 
   describe('server-managed conversation state', () => {
-    type TurnResponse = ModelResponse;
-
     class RecordingSession implements Session {
       public added: AgentInputItem[][] = [];
 
@@ -8057,42 +7910,28 @@ describe('Runner.run', () => {
       }
     }
 
-    class TrackingModel implements Model {
-      public requests: ModelRequest[] = [];
-      public firstRequest: ModelRequest | undefined;
-      public lastRequest: ModelRequest | undefined;
+    class TrackingModel extends ScriptedModel {
+      public requests: ModelRequest[];
 
-      constructor(private readonly responses: TurnResponse[]) {}
-
-      private recordRequest(request: ModelRequest) {
-        const clonedInput: string | AgentInputItem[] =
-          typeof request.input === 'string'
-            ? request.input
-            : (JSON.parse(JSON.stringify(request.input)) as AgentInputItem[]);
-
-        const recorded: ModelRequest = {
-          ...request,
-          input: clonedInput,
-        };
-
-        this.requests.push(recorded);
-        this.lastRequest = recorded;
-        this.firstRequest ??= recorded;
+      constructor(responses: Array<ReturnType<typeof modelResponse>>) {
+        const requests: ModelRequest[] = [];
+        super(
+          responses.map((step) =>
+            modelResponder((call) => {
+              requests.push(cloneModelRequest(call.request));
+              return step.response;
+            }),
+          ),
+        );
+        this.requests = requests;
       }
 
-      async getResponse(request: ModelRequest): Promise<ModelResponse> {
-        this.recordRequest(request);
-        const response = this.responses.shift();
-        if (!response) {
-          throw new Error('No response configured');
-        }
-        return response;
+      get firstRequest(): ModelRequest | undefined {
+        return this.requests[0];
       }
 
-      getStreamedResponse(
-        _request: ModelRequest,
-      ): AsyncIterable<protocol.StreamEvent> {
-        throw new Error('Not implemented');
+      get lastRequest(): ModelRequest | undefined {
+        return this.requests.at(-1);
       }
     }
 
@@ -8125,21 +7964,15 @@ describe('Runner.run', () => {
     });
 
     it('marks server-managed inputs as sent only after a successful response', async () => {
-      /* eslint-disable require-yield */
-      class SingleResponseModel implements Model {
-        public readonly requests: ModelRequest[] = [];
-        constructor(private readonly response: ModelResponse) {}
-
-        async getResponse(request: ModelRequest): Promise<ModelResponse> {
-          this.requests.push(request);
-          return this.response;
+      class SingleResponseModel extends ScriptedModel {
+        constructor(response: ModelResponse) {
+          super([modelResponse(response)]);
         }
 
-        async *getStreamedResponse(): AsyncIterable<protocol.StreamEvent> {
-          throw new Error('not used');
+        get requests(): readonly ModelRequest[] {
+          return this.calls.map((call) => call.request);
         }
       }
-      /* eslint-enable require-yield */
 
       const markSpy = vi.spyOn(
         ServerConversationTracker.prototype,
@@ -8165,25 +7998,13 @@ describe('Runner.run', () => {
     });
 
     it('does not mark server inputs as sent when the model call fails before sending', async () => {
-      /* eslint-disable require-yield */
-      class ThrowingModel implements Model {
-        async getResponse(): Promise<ModelResponse> {
-          throw new Error('boom');
-        }
-
-        async *getStreamedResponse(): AsyncIterable<protocol.StreamEvent> {
-          throw new Error('not used');
-        }
-      }
-      /* eslint-enable require-yield */
-
       const markSpy = vi.spyOn(
         ServerConversationTracker.prototype,
         'markInputAsSent',
       );
       const agent = new Agent({
         name: 'MarkFailure',
-        model: new ThrowingModel(),
+        model: new ScriptedModel([modelError(new Error('boom'))]),
       });
       const runner = new Runner();
 
@@ -8199,10 +8020,10 @@ describe('Runner.run', () => {
 
     it('skips persisting turns when the server manages conversation history via conversationId', async () => {
       const model = new TrackingModel([
-        {
+        modelResponse({
           ...TEST_MODEL_RESPONSE_BASIC,
           output: [fakeModelMessage('response')],
-        },
+        }),
       ]);
       const agent = new Agent({ name: 'ServerManagedConversation', model });
       // Deliberately combine session with conversationId to ensure callbacks and state helpers remain usable without duplicating remote history.
@@ -8220,10 +8041,10 @@ describe('Runner.run', () => {
 
     it('skips persisting turns when the server manages conversation history via previousResponseId', async () => {
       const model = new TrackingModel([
-        {
+        modelResponse({
           ...TEST_MODEL_RESPONSE_BASIC,
           output: [fakeModelMessage('response')],
-        },
+        }),
       ]);
       const agent = new Agent({ name: 'ServerManagedPrevious', model });
       // Deliberately combine session with previousResponseId to ensure we honor server-side transcripts while keeping session utilities available.
@@ -8241,10 +8062,10 @@ describe('Runner.run', () => {
 
     it('preserves user input when the session callback only reuses history with conversationId', async () => {
       const model = new TrackingModel([
-        {
+        modelResponse({
           ...TEST_MODEL_RESPONSE_BASIC,
           output: [fakeModelMessage('response')],
-        },
+        }),
       ]);
       const agent = new Agent({ name: 'ServerManagedReuse', model });
       const persistedHistory: AgentInputItem[] = [
@@ -8289,15 +8110,19 @@ describe('Runner.run', () => {
 
     it('only sends new items when using conversationId across turns', async () => {
       const model = new TrackingModel([
-        buildResponse(
-          [fakeModelMessage('a_message'), buildToolCall('call-1', 'foo')],
-          'resp-1',
+        modelResponse(
+          buildResponse(
+            [fakeModelMessage('a_message'), buildToolCall('call-1', 'foo')],
+            'resp-1',
+          ),
         ),
-        buildResponse(
-          [fakeModelMessage('b_message'), buildToolCall('call-2', 'bar')],
-          'resp-2',
+        modelResponse(
+          buildResponse(
+            [fakeModelMessage('b_message'), buildToolCall('call-2', 'bar')],
+            'resp-2',
+          ),
         ),
-        buildResponse([fakeModelMessage('done')], 'resp-3'),
+        modelResponse(buildResponse([fakeModelMessage('done')], 'resp-3')),
       ]);
 
       const agent = new Agent({
@@ -8346,20 +8171,17 @@ describe('Runner.run', () => {
     });
 
     it('does not retry a failed server-managed request before the server ack is recorded', async () => {
-      class RetryTrackingModel extends TrackingModel {
-        attempts = 0;
+      class RetryTrackingModel extends ScriptedModel {
+        constructor() {
+          const error = new Error('temporary conversation failure') as Error & {
+            statusCode?: number;
+          };
+          error.statusCode = 503;
+          super([modelError(error)]);
+        }
 
-        override async getResponse(
-          request: ModelRequest,
-        ): Promise<ModelResponse> {
-          this.attempts += 1;
-          if (this.attempts === 1) {
-            this['recordRequest'](request);
-            const error = new Error('temporary conversation failure');
-            (error as Error & { statusCode?: number }).statusCode = 503;
-            throw error;
-          }
-          return await super.getResponse(request);
+        get requests(): readonly Readonly<ModelRequest>[] {
+          return this.calls.map((call) => call.request);
         }
       }
 
@@ -8367,10 +8189,7 @@ describe('Runner.run', () => {
         ServerConversationTracker.prototype,
         'markInputAsSent',
       );
-      const model = new RetryTrackingModel([
-        buildResponse([buildToolCall('call-retry', 'foo')], 'resp-retry-1'),
-        buildResponse([fakeModelMessage('done')], 'resp-retry-2'),
-      ]);
+      const model = new RetryTrackingModel();
 
       const agent = new Agent({
         name: 'RetryConversationAgent',
@@ -8403,11 +8222,13 @@ describe('Runner.run', () => {
 
     it('only sends new items and updates previousResponseId across turns', async () => {
       const model = new TrackingModel([
-        buildResponse(
-          [fakeModelMessage('a_message'), buildToolCall('call-1', 'foo')],
-          'resp-789',
+        modelResponse(
+          buildResponse(
+            [fakeModelMessage('a_message'), buildToolCall('call-1', 'foo')],
+            'resp-789',
+          ),
         ),
-        buildResponse([fakeModelMessage('done')], 'resp-900'),
+        modelResponse(buildResponse([fakeModelMessage('done')], 'resp-900')),
       ]);
 
       const agent = new Agent({
@@ -8439,10 +8260,10 @@ describe('Runner.run', () => {
 
     it('acknowledges ignored handoffs when continuing a managed previousResponseId run', async () => {
       const agentBModel = new TrackingModel([
-        buildResponse([fakeModelMessage('done B')], 'resp-b'),
+        modelResponse(buildResponse([fakeModelMessage('done B')], 'resp-b')),
       ]);
       const agentCModel = new TrackingModel([
-        buildResponse([fakeModelMessage('done C')], 'resp-c'),
+        modelResponse(buildResponse([fakeModelMessage('done C')], 'resp-c')),
       ]);
       const agentB = new Agent({
         name: 'ManagedB',
@@ -8473,7 +8294,7 @@ describe('Runner.run', () => {
       const agentA = new Agent({
         name: 'ManagedA',
         model: new TrackingModel([
-          buildResponse([acceptedCall, ignoredCall], 'resp-a'),
+          modelResponse(buildResponse([acceptedCall, ignoredCall], 'resp-a')),
         ]),
         handoffs: [handoffToB, handoffToC],
       });
@@ -8505,10 +8326,10 @@ describe('Runner.run', () => {
 
     it('rejects an ignored handoff that reuses a committed callId', async () => {
       const agentBModel = new TrackingModel([
-        buildResponse([fakeModelMessage('done B')], 'resp-b'),
+        modelResponse(buildResponse([fakeModelMessage('done B')], 'resp-b')),
       ]);
       const agentCModel = new TrackingModel([
-        buildResponse([fakeModelMessage('done C')], 'resp-c'),
+        modelResponse(buildResponse([fakeModelMessage('done C')], 'resp-c')),
       ]);
       const agentB = new Agent({
         name: 'ManagedReuseB',
@@ -8540,8 +8361,12 @@ describe('Runner.run', () => {
       const agentA = new Agent({
         name: 'ManagedReuseA',
         model: new TrackingModel([
-          buildResponse([buildToolCall(reusedCallId, 'warmup')], 'resp-tool'),
-          buildResponse([acceptedCall, ignoredCall], 'resp-handoff'),
+          modelResponse(
+            buildResponse([buildToolCall(reusedCallId, 'warmup')], 'resp-tool'),
+          ),
+          modelResponse(
+            buildResponse([acceptedCall, ignoredCall], 'resp-handoff'),
+          ),
         ]),
         tools: [serverTool],
         handoffs: [handoffToB, handoffToC],
@@ -8561,7 +8386,7 @@ describe('Runner.run', () => {
 
     it('replays pending managed handoff acknowledgements when resuming in non-stream mode', async () => {
       const agentBModel = new TrackingModel([
-        buildResponse([fakeModelMessage('done B')], 'resp-b'),
+        modelResponse(buildResponse([fakeModelMessage('done B')], 'resp-b')),
       ]);
       const agentB = new Agent({
         name: 'ManagedResumeNonStreamB',
@@ -8570,7 +8395,7 @@ describe('Runner.run', () => {
       const agentC = new Agent({
         name: 'ManagedResumeNonStreamC',
         model: new TrackingModel([
-          buildResponse([fakeModelMessage('done C')], 'resp-c'),
+          modelResponse(buildResponse([fakeModelMessage('done C')], 'resp-c')),
         ]),
       });
       const handoffToB = handoff(agentB);
@@ -8664,10 +8489,10 @@ describe('Runner.run', () => {
 
     it('does not append ignored handoff acknowledgements after removeAllTools filters the handoff input', async () => {
       const agentBModel = new TrackingModel([
-        buildResponse([fakeModelMessage('done B')], 'resp-b'),
+        modelResponse(buildResponse([fakeModelMessage('done B')], 'resp-b')),
       ]);
       const agentCModel = new TrackingModel([
-        buildResponse([fakeModelMessage('done C')], 'resp-c'),
+        modelResponse(buildResponse([fakeModelMessage('done C')], 'resp-c')),
       ]);
       const agentB = new Agent({
         name: 'ManagedFilteredB',
@@ -8700,7 +8525,7 @@ describe('Runner.run', () => {
       const agentA = new Agent({
         name: 'ManagedFilteredA',
         model: new TrackingModel([
-          buildResponse([acceptedCall, ignoredCall], 'resp-a'),
+          modelResponse(buildResponse([acceptedCall, ignoredCall], 'resp-a')),
         ]),
         handoffs: [handoffToB, handoffToC],
       });
@@ -8721,18 +8546,22 @@ describe('Runner.run', () => {
         environment: { type: 'container_auto' },
       });
       const model = new TrackingModel([
-        buildResponse(
-          [
-            {
-              type: 'shell_call',
-              callId: 'call-shell-1',
-              status: 'completed',
-              action: { commands: ['echo hi'] },
-            } satisfies protocol.ShellCallItem,
-          ],
-          'resp-shell-1',
+        modelResponse(
+          buildResponse(
+            [
+              {
+                type: 'shell_call',
+                callId: 'call-shell-1',
+                status: 'completed',
+                action: { commands: ['echo hi'] },
+              } satisfies protocol.ShellCallItem,
+            ],
+            'resp-shell-1',
+          ),
         ),
-        buildResponse([fakeModelMessage('done')], 'resp-shell-2'),
+        modelResponse(
+          buildResponse([fakeModelMessage('done')], 'resp-shell-2'),
+        ),
       ]);
 
       const agent = new Agent({
@@ -8763,25 +8592,33 @@ describe('Runner.run', () => {
         environment: { type: 'container_auto' },
       });
       const model = new TrackingModel([
-        buildResponse(
-          [
-            {
-              type: 'shell_call',
-              callId: 'call-shell-1',
-              status: 'completed',
-              action: { commands: ['echo hi'] },
-            } satisfies protocol.ShellCallItem,
-          ],
-          'resp-shell-1',
+        modelResponse(
+          buildResponse(
+            [
+              {
+                type: 'shell_call',
+                callId: 'call-shell-1',
+                status: 'completed',
+                action: { commands: ['echo hi'] },
+              } satisfies protocol.ShellCallItem,
+            ],
+            'resp-shell-1',
+          ),
         ),
-        buildResponse([fakeModelMessage('done')], 'resp-shell-2'),
-        buildResponse(
-          [fakeModelMessage('continued from result')],
-          'resp-shell-3',
+        modelResponse(
+          buildResponse([fakeModelMessage('done')], 'resp-shell-2'),
         ),
-        buildResponse(
-          [fakeModelMessage('continued from state')],
-          'resp-shell-4',
+        modelResponse(
+          buildResponse(
+            [fakeModelMessage('continued from result')],
+            'resp-shell-3',
+          ),
+        ),
+        modelResponse(
+          buildResponse(
+            [fakeModelMessage('continued from state')],
+            'resp-shell-4',
+          ),
         ),
       ]);
 
@@ -8822,18 +8659,22 @@ describe('Runner.run', () => {
         environment: { type: 'container_auto' },
       });
       const model = new TrackingModel([
-        buildResponse(
-          [
-            {
-              type: 'shell_call',
-              callId: 'call-shell-pending',
-              status: 'in_progress',
-              action: { commands: ['echo hi'] },
-            } satisfies protocol.ShellCallItem,
-          ],
-          'resp-shell-pending-1',
+        modelResponse(
+          buildResponse(
+            [
+              {
+                type: 'shell_call',
+                callId: 'call-shell-pending',
+                status: 'in_progress',
+                action: { commands: ['echo hi'] },
+              } satisfies protocol.ShellCallItem,
+            ],
+            'resp-shell-pending-1',
+          ),
         ),
-        buildResponse([fakeModelMessage('done')], 'resp-shell-pending-2'),
+        modelResponse(
+          buildResponse([fakeModelMessage('done')], 'resp-shell-pending-2'),
+        ),
       ]);
 
       const agent = new Agent({
@@ -8862,30 +8703,28 @@ describe('Runner.run', () => {
     });
 
     it('does not retry a failed previousResponseId request before the server ack is recorded', async () => {
-      class RetryTrackingModel extends TrackingModel {
-        attempts = 0;
+      class RetryTrackingModel extends ScriptedModel {
+        readonly error: Error & { statusCode?: number };
 
-        override async getResponse(
-          request: ModelRequest,
-        ): Promise<ModelResponse> {
-          this.attempts += 1;
-          if (this.attempts === 1) {
-            this['recordRequest'](request);
-            const error = new Error('temporary previousResponseId failure');
-            (error as Error & { statusCode?: number }).statusCode = 503;
-            throw error;
-          }
-          return await super.getResponse(request);
+        constructor() {
+          const error = new Error(
+            'temporary previousResponseId failure',
+          ) as Error & { statusCode?: number };
+          error.statusCode = 503;
+          super([modelError(error)]);
+          this.error = error;
+        }
+
+        get requests(): readonly Readonly<ModelRequest>[] {
+          return this.calls.map((call) => call.request);
+        }
+
+        get attempts(): number {
+          return this.calls.length;
         }
       }
 
-      const model = new RetryTrackingModel([
-        buildResponse(
-          [buildToolCall('call-prev-retry', 'foo')],
-          'resp-prev-retry-1',
-        ),
-        buildResponse([fakeModelMessage('done')], 'resp-prev-retry-2'),
-      ]);
+      const model = new RetryTrackingModel();
 
       const agent = new Agent({
         name: 'RetryPreviousResponseAgent',
@@ -8915,34 +8754,23 @@ describe('Runner.run', () => {
     });
 
     it('does not retry a streamed server-managed request before the server ack is recorded', async () => {
-      /* eslint-disable require-yield */
-      class RetryStreamingTrackingModel implements Model {
-        public requests: ModelRequest[] = [];
-        attempts = 0;
-
-        async getResponse(): Promise<ModelResponse> {
-          throw new Error('not used');
+      class RetryStreamingTrackingModel extends ScriptedModel {
+        constructor() {
+          const error = new Error(
+            'temporary streamed conversation failure',
+          ) as Error & { statusCode?: number };
+          error.statusCode = 503;
+          super([modelError(error)]);
         }
 
-        async *getStreamedResponse(
-          request: ModelRequest,
-        ): AsyncIterable<protocol.StreamEvent> {
-          this.requests.push({
-            ...request,
-            input:
-              typeof request.input === 'string'
-                ? request.input
-                : (JSON.parse(
-                    JSON.stringify(request.input),
-                  ) as AgentInputItem[]),
-          });
-          this.attempts += 1;
-          const error = new Error('temporary streamed conversation failure');
-          (error as Error & { statusCode?: number }).statusCode = 503;
-          throw error;
+        get requests(): readonly Readonly<ModelRequest>[] {
+          return this.calls.map((call) => call.request);
+        }
+
+        get attempts(): number {
+          return this.calls.length;
         }
       }
-      /* eslint-enable require-yield */
 
       const model = new RetryStreamingTrackingModel();
       const markSpy = vi.spyOn(
@@ -8991,8 +8819,10 @@ describe('Runner.run', () => {
       });
 
       const model = new TrackingModel([
-        buildResponse([buildToolCall('call-approved', 'foo')], 'resp-1'),
-        buildResponse([fakeModelMessage('done')], 'resp-2'),
+        modelResponse(
+          buildResponse([buildToolCall('call-approved', 'foo')], 'resp-1'),
+        ),
+        modelResponse(buildResponse([fakeModelMessage('done')], 'resp-2')),
       ]);
 
       const agent = new Agent({
@@ -9051,11 +8881,15 @@ describe('Runner.run', () => {
       };
 
       const model = new TrackingModel([
-        buildResponse(
-          [buildToolCall('call-approved', 'foo'), missingToolCall],
-          'resp-mixed-missing-1',
+        modelResponse(
+          buildResponse(
+            [buildToolCall('call-approved', 'foo'), missingToolCall],
+            'resp-mixed-missing-1',
+          ),
         ),
-        buildResponse([fakeModelMessage('done')], 'resp-mixed-missing-2'),
+        modelResponse(
+          buildResponse([fakeModelMessage('done')], 'resp-mixed-missing-2'),
+        ),
       ]);
 
       const agent = new Agent({
@@ -9113,8 +8947,10 @@ describe('Runner.run', () => {
       });
 
       const model = new TrackingModel([
-        buildResponse([buildToolCall('call-prev', 'foo')], 'resp-prev-1'),
-        buildResponse([fakeModelMessage('done')], 'resp-prev-2'),
+        modelResponse(
+          buildResponse([buildToolCall('call-prev', 'foo')], 'resp-prev-1'),
+        ),
+        modelResponse(buildResponse([fakeModelMessage('done')], 'resp-prev-2')),
       ]);
 
       const agent = new Agent({
@@ -9161,9 +8997,19 @@ describe('Runner.run', () => {
         execute: async ({ test }) => `result:${test}`,
       });
       const model = new TrackingModel([
-        buildResponse([buildToolCall('call-serialized-1', 'first')], 'resp-1'),
-        buildResponse([buildToolCall('call-serialized-2', 'second')], 'resp-2'),
-        buildResponse([fakeModelMessage('done')], 'resp-3'),
+        modelResponse(
+          buildResponse(
+            [buildToolCall('call-serialized-1', 'first')],
+            'resp-1',
+          ),
+        ),
+        modelResponse(
+          buildResponse(
+            [buildToolCall('call-serialized-2', 'second')],
+            'resp-2',
+          ),
+        ),
+        modelResponse(buildResponse([fakeModelMessage('done')], 'resp-3')),
       ]);
       const agent = new Agent({
         name: 'SerializedConsecutiveApprovalAgent',
@@ -9226,9 +9072,13 @@ describe('Runner.run', () => {
         },
       });
       const model = new TrackingModel([
-        buildResponse([buildMcpApproval('approval-1')], 'resp-mcp-1'),
-        buildResponse([buildMcpApproval('approval-2')], 'resp-mcp-2'),
-        buildResponse([fakeModelMessage('done')], 'resp-mcp-3'),
+        modelResponse(
+          buildResponse([buildMcpApproval('approval-1')], 'resp-mcp-1'),
+        ),
+        modelResponse(
+          buildResponse([buildMcpApproval('approval-2')], 'resp-mcp-2'),
+        ),
+        modelResponse(buildResponse([fakeModelMessage('done')], 'resp-mcp-3')),
       ]);
       const agent = new Agent({
         name: 'ConsecutiveHostedMcpApprovalAgent',
@@ -9276,8 +9126,12 @@ describe('Runner.run', () => {
       });
 
       const model = new TrackingModel([
-        buildResponse([buildToolCall('call-repeat', 'foo')], 'resp-repeat-1'),
-        buildResponse([fakeModelMessage('done')], 'resp-repeat-2'),
+        modelResponse(
+          buildResponse([buildToolCall('call-repeat', 'foo')], 'resp-repeat-1'),
+        ),
+        modelResponse(
+          buildResponse([fakeModelMessage('done')], 'resp-repeat-2'),
+        ),
       ]);
 
       const agent = new Agent({
@@ -9319,8 +9173,12 @@ describe('Runner.run', () => {
       });
 
       const model = new TrackingModel([
-        buildResponse([buildToolCall('call-extra', 'foo')], 'resp-extra-1'),
-        buildResponse([fakeModelMessage('done')], 'resp-extra-2'),
+        modelResponse(
+          buildResponse([buildToolCall('call-extra', 'foo')], 'resp-extra-1'),
+        ),
+        modelResponse(
+          buildResponse([fakeModelMessage('done')], 'resp-extra-2'),
+        ),
       ]);
 
       const agent = new Agent({
@@ -9398,11 +9256,15 @@ describe('Runner.run', () => {
       } as protocol.HostedToolCallItem;
 
       const model = new TrackingModel([
-        buildResponse(
-          [mcpApprovalCall, buildToolCall('call-mixed', 'foo')],
-          'resp-mixed-1',
+        modelResponse(
+          buildResponse(
+            [mcpApprovalCall, buildToolCall('call-mixed', 'foo')],
+            'resp-mixed-1',
+          ),
         ),
-        buildResponse([fakeModelMessage('still waiting')], 'resp-mixed-2'),
+        modelResponse(
+          buildResponse([fakeModelMessage('still waiting')], 'resp-mixed-2'),
+        ),
       ]);
 
       const agent = new Agent({
@@ -9475,8 +9337,10 @@ describe('Runner.run', () => {
       } as protocol.HostedToolCallItem;
 
       const model = new TrackingModel([
-        buildResponse([mcpApprovalCall], 'resp-mcp-reject-1'),
-        buildResponse([fakeModelMessage('done')], 'resp-mcp-reject-2'),
+        modelResponse(buildResponse([mcpApprovalCall], 'resp-mcp-reject-1')),
+        modelResponse(
+          buildResponse([fakeModelMessage('done')], 'resp-mcp-reject-2'),
+        ),
       ]);
 
       const agent = new Agent({
@@ -9528,11 +9392,13 @@ describe('Runner.run', () => {
 
     it('sends full history when no server-managed state is provided', async () => {
       const model = new TrackingModel([
-        buildResponse(
-          [fakeModelMessage('a_message'), buildToolCall('call-1', 'foo')],
-          'resp-789',
+        modelResponse(
+          buildResponse(
+            [fakeModelMessage('a_message'), buildToolCall('call-1', 'foo')],
+            'resp-789',
+          ),
         ),
-        buildResponse([fakeModelMessage('done')], 'resp-900'),
+        modelResponse(buildResponse([fakeModelMessage('done')], 'resp-900')),
       ]);
 
       const agent = new Agent({
@@ -9565,14 +9431,9 @@ describe('Runner.run', () => {
   });
 
   describe('inline compaction items', () => {
-    class RecordingModel extends FakeModel {
-      readonly requests: ModelRequest[] = [];
-
-      override async getResponse(
-        request: ModelRequest,
-      ): Promise<ModelResponse> {
-        this.requests.push(request);
-        return super.getResponse(request);
+    class RecordingModel extends ScriptedModel {
+      get requests(): readonly Readonly<ModelRequest>[] {
+        return this.calls.map((call) => call.request);
       }
     }
 
@@ -9592,7 +9453,7 @@ describe('Runner.run', () => {
         execute: async () => 'tool result payload',
       });
       const model = new RecordingModel([
-        {
+        modelResponse({
           output: [
             COMPACTION_ITEM,
             {
@@ -9603,8 +9464,11 @@ describe('Runner.run', () => {
             },
           ],
           usage: new Usage(),
-        },
-        { output: [fakeModelMessage('done')], usage: new Usage() },
+        }),
+        modelResponse({
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        }),
       ]);
       const agent = new Agent({
         name: 'CompactionAgent',
@@ -9642,11 +9506,14 @@ describe('Runner.run', () => {
       });
       const clearSession = vi.spyOn(session, 'clearSession');
       const model = new RecordingModel([
-        {
+        modelResponse({
           output: [COMPACTION_ITEM, fakeModelMessage('first turn done')],
           usage: new Usage(),
-        },
-        { output: [fakeModelMessage('second turn done')], usage: new Usage() },
+        }),
+        modelResponse({
+          output: [fakeModelMessage('second turn done')],
+          usage: new Usage(),
+        }),
       ]);
       const agent = new Agent({
         name: 'SessionCompactionAgent',
@@ -9687,13 +9554,13 @@ describe('Runner.run', () => {
     });
 
     it("returns the agent's model when it is a Model instance and no override is provided", () => {
-      const fakeModel = new FakeModel();
+      const fakeModel = new ScriptedModel();
       const result = selectModel(fakeModel, undefined);
       expect(result).toBe(fakeModel);
     });
 
     it("returns the agent's model when it is a Model instance even when an override is provided", () => {
-      const fakeModel = new FakeModel();
+      const fakeModel = new ScriptedModel();
       const result = selectModel(fakeModel, MODEL_B);
       expect(result).toBe(fakeModel);
     });

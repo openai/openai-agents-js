@@ -72,6 +72,8 @@ CI=1 pnpm test
 
 Tests use Vitest and are located alongside source files in each package under `packages/*/test`.
 
+For provider-neutral agent workflow tests, prefer `ScriptedModel` from the Core testing utilities instead of adding a new mock or fake `Model`. Use `ScriptedRealtimeTransport` for Realtime session tests and `scriptedSandboxSession()` for deterministic Sandbox session calls. Keep a specialized test double only when the test specifically requires provider-wire conversion, malformed streams, controlled suspension or concurrency, or an exact abort or lifecycle boundary that the scripted utilities cannot preserve; document that boundary in the test.
+
 During an iterative review, `pnpm test:review` skips the slow subsystem-specific tests listed in `helpers/vitest/reviewTestProfile.ts`. Choose review coverage by impact:
 
 - For changes unrelated to every review-optional owner, run `pnpm test:review`.

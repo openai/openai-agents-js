@@ -22,11 +22,11 @@ import {
 } from '../../src/errors';
 import { Usage } from '../../src/usage';
 import { RunMessageOutputItem } from '../../src/items';
-import { FakeModelProvider } from '../stubs';
+import { ScriptedModelProvider } from '../stubs';
 
 beforeAll(() => {
   setTracingDisabled(true);
-  setDefaultModelProvider(new FakeModelProvider());
+  setDefaultModelProvider(new ScriptedModelProvider());
 });
 
 type AnyAgent = Agent<unknown, AgentOutputType<unknown>>;

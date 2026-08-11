@@ -7,14 +7,14 @@ import { z } from 'zod';
 import { JsonSchemaDefinition, setDefaultModelProvider } from '../src';
 import type { AgentInputItem } from '../src/types';
 import {
-  FakeModel,
-  FakeModelProvider,
+  ScriptedModelProvider,
   TEST_MODEL_RESPONSE_BASIC,
   TEST_MODEL_RESPONSE_WITH_FUNCTION,
 } from './stubs';
 import { Runner, RunConfig } from '../src/run';
 import { RunState } from '../src/runState';
 import logger from '../src/logger';
+import { ScriptedModel, modelResponse } from '../src/testing';
 
 describe('Agent', () => {
   afterEach(() => {
@@ -696,7 +696,7 @@ describe('Agent', () => {
     expect(result1).toBe(
       'An error occurred while running the tool. Please try again. Error: InvalidToolInputError: Invalid JSON input for tool',
     );
-    setDefaultModelProvider(new FakeModelProvider());
+    setDefaultModelProvider(new ScriptedModelProvider());
     const result2 = await tool.invoke(
       {} as any,
       JSON.stringify({ input: 'hey how are you?' }),
@@ -1065,7 +1065,7 @@ describe('Agent', () => {
       toolDescription: 'You act as a tool.',
       customOutputExtractor: () => 'ok',
     });
-    const inheritedProvider = new FakeModelProvider();
+    const inheritedProvider = new ScriptedModelProvider();
     const parentInputGuardrail = {
       name: 'parent-input',
       execute: vi.fn().mockResolvedValue({
@@ -1127,7 +1127,7 @@ describe('Agent', () => {
       customOutputExtractor: () => 'ok',
     });
     const parentRunner = new Runner({
-      modelProvider: new FakeModelProvider(),
+      modelProvider: new ScriptedModelProvider(),
       modelSettings: {
         temperature: 0.2,
         toolChoice: 'required',
@@ -1164,7 +1164,7 @@ describe('Agent', () => {
     const runSpy = vi
       .spyOn(Runner.prototype, 'run')
       .mockResolvedValue({ rawResponses: [] } as any);
-    const childProvider = new FakeModelProvider();
+    const childProvider = new ScriptedModelProvider();
     const tool = agent.asTool({
       toolDescription: 'You act as a tool.',
       customOutputExtractor: () => 'ok',
@@ -1172,7 +1172,7 @@ describe('Agent', () => {
         modelProvider: childProvider,
       },
     });
-    const parentProvider = new FakeModelProvider();
+    const parentProvider = new ScriptedModelProvider();
     const parentRunner = new Runner({
       modelProvider: parentProvider,
       model: 'parent-model',
@@ -1212,7 +1212,7 @@ describe('Agent', () => {
       },
     });
     const parentRunner = new Runner({
-      modelProvider: new FakeModelProvider(),
+      modelProvider: new ScriptedModelProvider(),
       modelSettings: {
         reasoning: { effort: 'medium' },
         providerData: { tenant: 'acme' },
@@ -1254,7 +1254,7 @@ describe('Agent', () => {
       },
     });
     const parentRunner = new Runner({
-      modelProvider: new FakeModelProvider(),
+      modelProvider: new ScriptedModelProvider(),
       modelSettings: {
         reasoning: { effort: 'medium', summary: 'auto' },
         text: { verbosity: 'medium' },
@@ -1298,7 +1298,7 @@ describe('Agent', () => {
       },
     });
     const parentRunner = new Runner({
-      modelProvider: new FakeModelProvider(),
+      modelProvider: new ScriptedModelProvider(),
       modelSettings: {
         providerData: {
           extra_query: { tenant: 'acme' },
@@ -1349,7 +1349,7 @@ describe('Agent', () => {
       },
     });
     const parentRunner = new Runner({
-      modelProvider: new FakeModelProvider(),
+      modelProvider: new ScriptedModelProvider(),
       modelSettings: {
         providerData: {
           extra_headers: { 'X-Parent': '1', 'X-Shared': 'parent' },
@@ -1408,7 +1408,7 @@ describe('Agent', () => {
       },
     });
     const parentRunner = new Runner({
-      modelProvider: new FakeModelProvider(),
+      modelProvider: new ScriptedModelProvider(),
       modelSettings: {
         providerData: {
           extraQuery: { parentTenant: 'acme' },
@@ -1772,7 +1772,7 @@ describe('Agent', () => {
     const agent = new Agent({
       name: 'MaxTurnsTool',
       instructions: 'Short runs.',
-      model: new FakeModel([TEST_MODEL_RESPONSE_BASIC]),
+      model: new ScriptedModel([modelResponse(TEST_MODEL_RESPONSE_BASIC)]),
     });
     const tool = agent.asTool({
       toolDescription: 'desc',
@@ -1802,9 +1802,9 @@ describe('Agent', () => {
     const agent = new Agent({
       name: 'MaxTurnsToolAfterResponse',
       instructions: 'Short runs.',
-      model: new FakeModel([
-        TEST_MODEL_RESPONSE_WITH_FUNCTION,
-        TEST_MODEL_RESPONSE_BASIC,
+      model: new ScriptedModel([
+        modelResponse(TEST_MODEL_RESPONSE_WITH_FUNCTION),
+        modelResponse(TEST_MODEL_RESPONSE_BASIC),
       ]),
       tools: [testTool],
       toolUseBehavior: 'run_llm_again',
@@ -1850,7 +1850,7 @@ describe('Agent', () => {
   });
 
   it('returns the full concatenated assistant text from nested agent tools', async () => {
-    setDefaultModelProvider(new FakeModelProvider());
+    setDefaultModelProvider(new ScriptedModelProvider());
     const agent = new Agent({
       name: 'Segmented Streamer',
       instructions: 'Return segmented output.',
@@ -1886,7 +1886,7 @@ describe('Agent', () => {
   });
 
   it('returns the full concatenated structured output text from nested agent tools', async () => {
-    setDefaultModelProvider(new FakeModelProvider());
+    setDefaultModelProvider(new ScriptedModelProvider());
     const agent = new Agent({
       name: 'Structured Streamer',
       instructions: 'Return segmented structured output.',

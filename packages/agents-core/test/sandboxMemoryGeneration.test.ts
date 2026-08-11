@@ -38,7 +38,12 @@ import {
 } from '../src/sandbox/memory/rollouts';
 import { SandboxMemoryStorage } from '../src/sandbox/memory/storage';
 import { Usage } from '../src/usage';
-import { FakeModel, FakeModelProvider, fakeModelMessage } from './stubs';
+import { ScriptedModelProvider, fakeModelMessage } from './stubs';
+import {
+  ScriptedModel,
+  modelResponse,
+  scriptedSandboxSession,
+} from '../src/testing';
 
 const PROGRAMMATIC_TOOL_CALLING_TOOL: HostedTool = {
   type: 'hosted_tool',
@@ -52,8 +57,8 @@ class MemoryPhaseModelProvider implements ModelProvider {
   async getModel(modelName: string): Promise<Model> {
     this.calls.push(modelName);
     if (modelName === 'phase-one-model') {
-      return new FakeModel([
-        {
+      return new ScriptedModel([
+        modelResponse({
           output: [
             fakeModelMessage(
               JSON.stringify({
@@ -64,49 +69,47 @@ class MemoryPhaseModelProvider implements ModelProvider {
             ),
           ],
           usage: new Usage(),
-        },
+        }),
       ]);
     }
     if (modelName === 'phase-two-model') {
-      return new FakeModel([
-        {
+      return new ScriptedModel([
+        modelResponse({
           output: [fakeModelMessage('Consolidated memory.')],
           usage: new Usage(),
-        },
+        }),
       ]);
     }
     throw new Error(`Unexpected model lookup: ${modelName}`);
   }
 }
 
-class RecordingFakeModel extends FakeModel {
-  readonly requests: Parameters<Model['getResponse']>[0][] = [];
-
-  override async getResponse(
-    request: Parameters<Model['getResponse']>[0],
-  ): ReturnType<Model['getResponse']> {
-    this.requests.push(request);
-    return await super.getResponse(request);
+class RecordingModel extends ScriptedModel {
+  get requests(): readonly Readonly<Parameters<Model['getResponse']>[0]>[] {
+    return this.calls.map((call) => call.request);
   }
 }
 
 function createNoopMemoryGenerationConfig(count = 1) {
   return {
-    phaseOneModel: new FakeModel(
-      Array.from({ length: count }, () => ({
-        output: [
-          fakeModelMessage(
-            JSON.stringify({
-              rollout_summary: '',
-              rollout_slug: '',
-              raw_memory: '',
-            }),
-          ),
-        ],
-        usage: new Usage(),
-      })),
+    phaseOneModel: new ScriptedModel(
+      Array.from(
+        Array.from({ length: count }, () => ({
+          output: [
+            fakeModelMessage(
+              JSON.stringify({
+                rollout_summary: '',
+                rollout_slug: '',
+                raw_memory: '',
+              }),
+            ),
+          ],
+          usage: new Usage(),
+        })),
+        modelResponse,
+      ),
     ),
-    phaseTwoModel: new FakeModel([]),
+    phaseTwoModel: new ScriptedModel([]),
   };
 }
 
@@ -253,56 +256,18 @@ class MemorySession implements SandboxSessionLike<SandboxSessionState> {
   }
 }
 
-class ShellReadOnlySession implements SandboxSessionLike<SandboxSessionState> {
-  readonly execCalls: ExecCommandArgs[] = [];
-  state: SandboxSessionState = {
-    manifest: new Manifest(),
-  };
-
-  constructor(private readonly content: string) {}
-
-  async execCommand(args: ExecCommandArgs): Promise<string> {
-    this.execCalls.push(args);
-    return (
-      'Process exited with code 0\n' +
-      'Output:\n' +
-      `__OPENAI_AGENTS_MEMORY_READ_BEGIN__\n${this.content}` +
-      '__OPENAI_AGENTS_MEMORY_READ_STATUS__0' +
-      '__OPENAI_AGENTS_MEMORY_READ_END__'
-    );
-  }
-}
-
-class ShellAppendSession implements SandboxSessionLike<SandboxSessionState> {
-  readonly execCalls: ExecCommandArgs[] = [];
-  state: SandboxSessionState = {
-    manifest: new Manifest(),
-  };
-
-  async execCommand(args: ExecCommandArgs): Promise<string> {
-    this.execCalls.push(args);
-    return 'Process exited with code 0\nOutput:\n';
-  }
-}
-
-class BrokenShellReadSession implements SandboxSessionLike<SandboxSessionState> {
-  state: SandboxSessionState = {
-    manifest: new Manifest(),
-  };
-
-  async execCommand(_args: ExecCommandArgs): Promise<string> {
-    return 'Process exited with code 0\nOutput:\nread failed before markers';
-  }
-}
-
-class MissingShellReadSession implements SandboxSessionLike<SandboxSessionState> {
-  state: SandboxSessionState = {
-    manifest: new Manifest(),
-  };
-
-  async execCommand(_args: ExecCommandArgs): Promise<string> {
-    return 'Process exited with code 0\nOutput:\n__OPENAI_AGENTS_MEMORY_READ_MISSING__';
-  }
+function scriptedShellReadSession(content: string) {
+  return scriptedSandboxSession([
+    {
+      method: 'execCommand',
+      result:
+        'Process exited with code 0\n' +
+        'Output:\n' +
+        `__OPENAI_AGENTS_MEMORY_READ_BEGIN__\n${content}` +
+        '__OPENAI_AGENTS_MEMORY_READ_STATUS__0' +
+        '__OPENAI_AGENTS_MEMORY_READ_END__',
+    },
+  ]);
 }
 
 class MemorySnapshotClient {
@@ -326,28 +291,10 @@ class MemorySnapshotClient {
   }
 }
 
-class ReadFileOnlyMissingSession implements SandboxSessionLike<SandboxSessionState> {
-  state: SandboxSessionState = {
-    manifest: new Manifest(),
-  };
-
-  async readFile(args: { path: string }): Promise<string> {
-    const error = new Error(`Missing file: ${args.path}`) as Error & {
-      code: string;
-    };
-    error.code = 'ENOENT';
-    throw error;
-  }
-
-  async materializeEntry(args: MaterializeEntryArgs): Promise<void> {
-    this.state.manifest = new Manifest({
-      ...this.state.manifest,
-      entries: {
-        ...this.state.manifest.entries,
-        [args.path]: args.entry,
-      },
-    });
-  }
+function missingFileError(path: string): Error & { code: string } {
+  const error = new Error(`Missing file: ${path}`) as Error & { code: string };
+  error.code = 'ENOENT';
+  return error;
 }
 
 function sha256(value: string): string {
@@ -356,7 +303,7 @@ function sha256(value: string): string {
 
 describe('Sandbox memory generation', () => {
   beforeEach(() => {
-    setDefaultModelProvider(new FakeModelProvider());
+    setDefaultModelProvider(new ScriptedModelProvider());
   });
 
   it('validates Python-compatible rollout ids', () => {
@@ -701,8 +648,8 @@ describe('Sandbox memory generation', () => {
 
   it('persists rollout artifacts and invokes consolidation during cleanup', async () => {
     const session = new MemorySession();
-    const phaseOneModel = new RecordingFakeModel([
-      {
+    const phaseOneModel = new RecordingModel([
+      modelResponse({
         output: [
           fakeModelMessage(
             JSON.stringify({
@@ -713,19 +660,19 @@ describe('Sandbox memory generation', () => {
           ),
         ],
         usage: new Usage(),
-      },
+      }),
     ]);
-    const phaseTwoModel = new RecordingFakeModel([
-      {
+    const phaseTwoModel = new RecordingModel([
+      modelResponse({
         output: [fakeModelMessage('Consolidated memory.')],
         usage: new Usage(),
-      },
+      }),
     ]);
-    const agentModel = new FakeModel([
-      {
+    const agentModel = new ScriptedModel([
+      modelResponse({
         output: [fakeModelMessage('done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const agent = new SandboxAgent({
       name: 'sandbox',
@@ -810,8 +757,8 @@ describe('Sandbox memory generation', () => {
       memory: memory({
         read: false,
         generate: {
-          phaseOneModel: new FakeModel([]),
-          phaseTwoModel: new FakeModel([]),
+          phaseOneModel: new ScriptedModel([]),
+          phaseTwoModel: new ScriptedModel([]),
         },
       }),
       runAgent,
@@ -843,8 +790,8 @@ describe('Sandbox memory generation', () => {
 
   it('flushes generated memory before serializing owned sessions', async () => {
     const client = new MemorySnapshotClient();
-    const phaseOneModel = new FakeModel([
-      {
+    const phaseOneModel = new ScriptedModel([
+      modelResponse({
         output: [
           fakeModelMessage(
             JSON.stringify({
@@ -855,21 +802,21 @@ describe('Sandbox memory generation', () => {
           ),
         ],
         usage: new Usage(),
-      },
+      }),
     ]);
-    const phaseTwoModel = new FakeModel([
-      {
+    const phaseTwoModel = new ScriptedModel([
+      modelResponse({
         output: [fakeModelMessage('Consolidated serialized memory.')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const agent = new SandboxAgent({
       name: 'sandbox',
-      model: new FakeModel([
-        {
+      model: new ScriptedModel([
+        modelResponse({
           output: [fakeModelMessage('done')],
           usage: new Usage(),
-        },
+        }),
       ]),
       capabilities: [
         memory({
@@ -895,8 +842,8 @@ describe('Sandbox memory generation', () => {
 
   it('flushes and continues recording memory on a reused provided session', async () => {
     const session = new MemorySession();
-    const phaseOneModel = new FakeModel([
-      {
+    const phaseOneModel = new ScriptedModel([
+      modelResponse({
         output: [
           fakeModelMessage(
             JSON.stringify({
@@ -907,8 +854,8 @@ describe('Sandbox memory generation', () => {
           ),
         ],
         usage: new Usage(),
-      },
-      {
+      }),
+      modelResponse({
         output: [
           fakeModelMessage(
             JSON.stringify({
@@ -919,29 +866,29 @@ describe('Sandbox memory generation', () => {
           ),
         ],
         usage: new Usage(),
-      },
+      }),
     ]);
-    const phaseTwoModel = new FakeModel([
-      {
+    const phaseTwoModel = new ScriptedModel([
+      modelResponse({
         output: [fakeModelMessage('Consolidated first memory.')],
         usage: new Usage(),
-      },
-      {
+      }),
+      modelResponse({
         output: [fakeModelMessage('Consolidated second memory.')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const agent = new SandboxAgent({
       name: 'sandbox',
-      model: new FakeModel([
-        {
+      model: new ScriptedModel([
+        modelResponse({
           output: [fakeModelMessage('first done')],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [fakeModelMessage('second done')],
           usage: new Usage(),
-        },
+        }),
       ]),
       capabilities: [
         memory({
@@ -981,8 +928,8 @@ describe('Sandbox memory generation', () => {
     const session = new MemorySession();
     const agent = new SandboxAgent({
       name: 'sandbox',
-      model: new FakeModel([
-        {
+      model: new ScriptedModel([
+        modelResponse({
           output: [
             {
               type: 'reasoning',
@@ -995,7 +942,7 @@ describe('Sandbox memory generation', () => {
             fakeModelMessage('ASSISTANT_KEEP'),
           ],
           usage: new Usage(),
-        },
+        }),
       ]),
       capabilities: [
         memory({
@@ -1047,8 +994,8 @@ describe('Sandbox memory generation', () => {
     const session = new MemorySession();
     const agent = new SandboxAgent({
       name: 'sandbox',
-      model: new FakeModel([
-        {
+      model: new ScriptedModel([
+        modelResponse({
           output: [
             {
               type: 'program',
@@ -1067,7 +1014,7 @@ describe('Sandbox memory generation', () => {
             fakeModelMessage('Program completed.'),
           ],
           usage: new Usage(),
-        },
+        }),
       ]),
       tools: [PROGRAMMATIC_TOOL_CALLING_TOOL],
       capabilities: [
@@ -1105,18 +1052,18 @@ describe('Sandbox memory generation', () => {
     const session = new MemorySession();
     const nonSandboxAgent = new Agent({
       name: 'non-sandbox',
-      model: new FakeModel([
-        {
+      model: new ScriptedModel([
+        modelResponse({
           output: [fakeModelMessage('done outside sandbox')],
           usage: new Usage(),
-        },
+        }),
       ]),
     });
     const handoffToNonSandbox = handoff(nonSandboxAgent);
     const sandboxAgent = new SandboxAgent({
       name: 'sandbox',
-      model: new FakeModel([
-        {
+      model: new ScriptedModel([
+        modelResponse({
           output: [
             {
               type: 'function_call',
@@ -1128,7 +1075,7 @@ describe('Sandbox memory generation', () => {
             },
           ],
           usage: new Usage(),
-        },
+        }),
       ]),
       handoffs: [handoffToNonSandbox],
       capabilities: [
@@ -1153,8 +1100,8 @@ describe('Sandbox memory generation', () => {
     session.state.manifest = new Manifest({
       root: '/repo',
     });
-    const phaseOneModel = new FakeModel([
-      {
+    const phaseOneModel = new ScriptedModel([
+      modelResponse({
         output: [
           fakeModelMessage(
             JSON.stringify({
@@ -1165,19 +1112,19 @@ describe('Sandbox memory generation', () => {
           ),
         ],
         usage: new Usage(),
-      },
+      }),
     ]);
-    const phaseTwoModel = new FakeModel([
-      {
+    const phaseTwoModel = new ScriptedModel([
+      modelResponse({
         output: [fakeModelMessage('Consolidated memory.')],
         usage: new Usage(),
-      },
+      }),
     ]);
-    const agentModel = new FakeModel([
-      {
+    const agentModel = new ScriptedModel([
+      modelResponse({
         output: [fakeModelMessage('done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const agent = new SandboxAgent({
       name: 'sandbox',
@@ -1208,11 +1155,11 @@ describe('Sandbox memory generation', () => {
   it('uses the invoking Runner model provider for memory generation phases', async () => {
     const session = new MemorySession();
     const provider = new MemoryPhaseModelProvider();
-    const agentModel = new FakeModel([
-      {
+    const agentModel = new ScriptedModel([
+      modelResponse({
         output: [fakeModelMessage('done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const agent = new SandboxAgent({
       name: 'sandbox',
@@ -1263,8 +1210,8 @@ describe('Sandbox memory generation', () => {
       },
       async clearSession() {},
     };
-    const phaseOneModel = new FakeModel([
-      {
+    const phaseOneModel = new ScriptedModel([
+      modelResponse({
         output: [
           fakeModelMessage(
             JSON.stringify({
@@ -1275,19 +1222,19 @@ describe('Sandbox memory generation', () => {
           ),
         ],
         usage: new Usage(),
-      },
+      }),
     ]);
-    const phaseTwoModel = new FakeModel([
-      {
+    const phaseTwoModel = new ScriptedModel([
+      modelResponse({
         output: [fakeModelMessage('Consolidated memory.')],
         usage: new Usage(),
-      },
+      }),
     ]);
-    const agentModel = new FakeModel([
-      {
+    const agentModel = new ScriptedModel([
+      modelResponse({
         output: [fakeModelMessage('done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const agent = new SandboxAgent({
       name: 'sandbox',
@@ -1329,8 +1276,8 @@ describe('Sandbox memory generation', () => {
       },
       async clearSession() {},
     };
-    const phaseOneModel = new FakeModel([
-      {
+    const phaseOneModel = new ScriptedModel([
+      modelResponse({
         output: [
           fakeModelMessage(
             JSON.stringify({
@@ -1341,19 +1288,19 @@ describe('Sandbox memory generation', () => {
           ),
         ],
         usage: new Usage(),
-      },
+      }),
     ]);
-    const phaseTwoModel = new FakeModel([
-      {
+    const phaseTwoModel = new ScriptedModel([
+      modelResponse({
         output: [fakeModelMessage('Consolidated memory.')],
         usage: new Usage(),
-      },
+      }),
     ]);
-    const agentModel = new FakeModel([
-      {
+    const agentModel = new ScriptedModel([
+      modelResponse({
         output: [fakeModelMessage('done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const agent = new SandboxAgent({
       name: 'sandbox',
@@ -1386,15 +1333,15 @@ describe('Sandbox memory generation', () => {
     const session = new MemorySession();
     const agent = new SandboxAgent({
       name: 'sandbox',
-      model: new FakeModel([
-        {
+      model: new ScriptedModel([
+        modelResponse({
           output: [fakeModelMessage('first')],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [fakeModelMessage('second')],
           usage: new Usage(),
-        },
+        }),
       ]),
       capabilities: [
         memory({
@@ -1436,21 +1383,29 @@ describe('Sandbox memory generation', () => {
   });
 
   it('appends rollout JSONL with shell append when direct reads are unavailable', async () => {
-    const session = new ShellAppendSession();
+    const session = scriptedSandboxSession([
+      {
+        method: 'execCommand',
+        result: 'Process exited with code 0\nOutput:\n',
+      },
+    ]);
     const storage = new SandboxMemoryStorage({ session });
 
     await storage.appendJsonl('sessions/large.jsonl', { next: true });
 
-    expect(session.execCalls).toHaveLength(1);
-    expect(session.execCalls[0]?.cmd).toContain(
+    const [call] = session.calls;
+    expect(call?.method).toBe('execCommand');
+    const [args] = call?.args ?? [];
+    expect((args as ExecCommandArgs).cmd).toContain(
       "printf '%s\\n' '{\"next\":true}' >> 'sessions/large.jsonl'",
     );
-    expect(session.execCalls[0]?.cmd).not.toContain(
+    expect((args as ExecCommandArgs).cmd).not.toContain(
       "cat 'sessions/large.jsonl'",
     );
-    expect(session.execCalls[0]?.cmd).not.toContain(
+    expect((args as ExecCommandArgs).cmd).not.toContain(
       "head -c 1000000 'sessions/large.jsonl'",
     );
+    session.assertComplete();
   });
 
   it('serializes concurrent rollout JSONL appends to the same file', async () => {
@@ -1499,22 +1454,24 @@ describe('Sandbox memory generation', () => {
   });
 
   it('preserves exact shell-read text without synthetic marker newlines', async () => {
-    const session = new ShellReadOnlySession('  leading\ntrailing');
+    const session = scriptedShellReadSession('  leading\ntrailing');
     const storage = new SandboxMemoryStorage({ session });
 
     await expect(storage.readText('memories/raw.txt')).resolves.toBe(
       '  leading\ntrailing',
     );
-    expect(session.execCalls[0]?.cmd).toContain(
+    const [args] = session.calls[0]?.args ?? [];
+    expect((args as ExecCommandArgs).cmd).toContain(
       "printf '%s' '__OPENAI_AGENTS_MEMORY_READ_END__'",
     );
-    expect(session.execCalls[0]?.cmd).not.toContain(
+    expect((args as ExecCommandArgs).cmd).not.toContain(
       "printf '\\n%s\\n' '__OPENAI_AGENTS_MEMORY_READ_END__'",
     );
+    session.assertComplete();
   });
 
   it('does not treat memory content as exec truncation metadata', async () => {
-    const session = new ShellReadOnlySession(
+    const session = scriptedShellReadSession(
       'Original token count: 123\nmemory content',
     );
     const storage = new SandboxMemoryStorage({ session });
@@ -1522,22 +1479,37 @@ describe('Sandbox memory generation', () => {
     await expect(storage.readText('memories/raw.txt')).resolves.toBe(
       'Original token count: 123\nmemory content',
     );
+    session.assertComplete();
   });
 
   it('treats explicit shell-read missing markers as absent files', async () => {
-    const session = new MissingShellReadSession();
+    const session = scriptedSandboxSession([
+      {
+        method: 'execCommand',
+        result:
+          'Process exited with code 0\nOutput:\n__OPENAI_AGENTS_MEMORY_READ_MISSING__',
+      },
+    ]);
     const storage = new SandboxMemoryStorage({ session });
 
     await expect(storage.readText('memories/missing.txt')).resolves.toBeNull();
+    session.assertComplete();
   });
 
   it('fails shell-backed reads when framing markers are missing', async () => {
-    const session = new BrokenShellReadSession();
+    const session = scriptedSandboxSession([
+      {
+        method: 'execCommand',
+        result:
+          'Process exited with code 0\nOutput:\nread failed before markers',
+      },
+    ]);
     const storage = new SandboxMemoryStorage({ session });
 
     await expect(storage.readText('memories/raw.txt')).rejects.toThrow(
       'Failed to read memory file "memories/raw.txt" from shell output.',
     );
+    session.assertComplete();
   });
 
   it('hydrates memory from an external store and mirrors writes back', async () => {
@@ -1572,7 +1544,22 @@ describe('Sandbox memory generation', () => {
   });
 
   it('falls back to the external store when direct sandbox reads miss', async () => {
-    const session = new ReadFileOnlyMissingSession();
+    const session = scriptedSandboxSession([
+      {
+        method: 'readFile',
+        error: missingFileError('memories/raw_memories/rollout.md'),
+      },
+      {
+        method: 'readFile',
+        error: missingFileError('sessions/from-store.jsonl'),
+      },
+      { method: 'materializeEntry', result: undefined },
+      {
+        method: 'readFile',
+        error: missingFileError('sessions/from-store.jsonl'),
+      },
+      { method: 'materializeEntry', result: undefined },
+    ]);
     const store = new InMemoryMemoryStore();
     await store.write(
       'memories/raw_memories/rollout.md',
@@ -1591,13 +1578,14 @@ describe('Sandbox memory generation', () => {
         (await store.read('sessions/from-store.jsonl'))!,
       ),
     ).toBe(`${JSON.stringify({ turn: 1 })}\n${JSON.stringify({ turn: 2 })}\n`);
+    session.assertComplete();
   });
 
   it('uses runner group id and generated fallback rollout ids when no session id exists', async () => {
     const groupedSession = new MemorySession();
     const fallbackSession = new MemorySession();
-    const phaseOneModel = new FakeModel([
-      {
+    const phaseOneModel = new ScriptedModel([
+      modelResponse({
         output: [
           fakeModelMessage(
             JSON.stringify({
@@ -1608,8 +1596,8 @@ describe('Sandbox memory generation', () => {
           ),
         ],
         usage: new Usage(),
-      },
-      {
+      }),
+      modelResponse({
         output: [
           fakeModelMessage(
             JSON.stringify({
@@ -1621,17 +1609,17 @@ describe('Sandbox memory generation', () => {
           ),
         ],
         usage: new Usage(),
-      },
+      }),
     ]);
-    const phaseTwoModel = new FakeModel([
-      {
+    const phaseTwoModel = new ScriptedModel([
+      modelResponse({
         output: [fakeModelMessage('Consolidated grouped memory.')],
         usage: new Usage(),
-      },
-      {
+      }),
+      modelResponse({
         output: [fakeModelMessage('Consolidated fallback memory.')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const createAgent = (model: Model) =>
       new SandboxAgent({
@@ -1650,11 +1638,11 @@ describe('Sandbox memory generation', () => {
 
     await new Runner({ groupId: 'runner-group' }).run(
       createAgent(
-        new FakeModel([
-          {
+        new ScriptedModel([
+          modelResponse({
             output: [fakeModelMessage('done')],
             usage: new Usage(),
-          },
+          }),
         ]),
       ),
       'Remember group fallback.',
@@ -1668,11 +1656,11 @@ describe('Sandbox memory generation', () => {
 
     await run(
       createAgent(
-        new FakeModel([
-          {
+        new ScriptedModel([
+          modelResponse({
             output: [fakeModelMessage('done')],
             usage: new Usage(),
-          },
+          }),
         ]),
       ),
       'Remember generated fallback.',
@@ -1691,8 +1679,8 @@ describe('Sandbox memory generation', () => {
 
   it('supports multiple independent memory layouts in one sandbox session', async () => {
     const session = new MemorySession();
-    const phaseOneModel = new FakeModel([
-      {
+    const phaseOneModel = new ScriptedModel([
+      modelResponse({
         output: [
           fakeModelMessage(
             JSON.stringify({
@@ -1703,8 +1691,8 @@ describe('Sandbox memory generation', () => {
           ),
         ],
         usage: new Usage(),
-      },
-      {
+      }),
+      modelResponse({
         output: [
           fakeModelMessage(
             JSON.stringify({
@@ -1715,17 +1703,17 @@ describe('Sandbox memory generation', () => {
           ),
         ],
         usage: new Usage(),
-      },
+      }),
     ]);
-    const phaseTwoModel = new FakeModel([
-      {
+    const phaseTwoModel = new ScriptedModel([
+      modelResponse({
         output: [fakeModelMessage('Consolidated agent A memory.')],
         usage: new Usage(),
-      },
-      {
+      }),
+      modelResponse({
         output: [fakeModelMessage('Consolidated agent B memory.')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const createAgent = (
       name: string,
@@ -1734,11 +1722,11 @@ describe('Sandbox memory generation', () => {
     ) =>
       new SandboxAgent({
         name,
-        model: new FakeModel([
-          {
+        model: new ScriptedModel([
+          modelResponse({
             output: [fakeModelMessage('done')],
             usage: new Usage(),
-          },
+          }),
         ]),
         capabilities: [
           memory({
@@ -1785,8 +1773,8 @@ describe('Sandbox memory generation', () => {
       needsApproval: true,
       execute: async () => 'approved',
     });
-    const phaseOneModel = new RecordingFakeModel([
-      {
+    const phaseOneModel = new RecordingModel([
+      modelResponse({
         output: [
           fakeModelMessage(
             JSON.stringify({
@@ -1797,18 +1785,18 @@ describe('Sandbox memory generation', () => {
           ),
         ],
         usage: new Usage(),
-      },
+      }),
     ]);
-    const phaseTwoModel = new FakeModel([
-      {
+    const phaseTwoModel = new ScriptedModel([
+      modelResponse({
         output: [fakeModelMessage('Consolidated memory.')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const agent = new SandboxAgent({
       name: 'sandbox',
-      model: new FakeModel([
-        {
+      model: new ScriptedModel([
+        modelResponse({
           output: [
             {
               type: 'function_call',
@@ -1820,7 +1808,7 @@ describe('Sandbox memory generation', () => {
             },
           ],
           usage: new Usage(),
-        },
+        }),
       ]),
       tools: [approvalTool],
       capabilities: [
@@ -1848,8 +1836,8 @@ describe('Sandbox memory generation', () => {
 
   it('skips phase two when phase one returns a no-op extraction', async () => {
     const session = new MemorySession();
-    const phaseOneModel = new FakeModel([
-      {
+    const phaseOneModel = new ScriptedModel([
+      modelResponse({
         output: [
           fakeModelMessage(
             JSON.stringify({
@@ -1860,14 +1848,14 @@ describe('Sandbox memory generation', () => {
           ),
         ],
         usage: new Usage(),
-      },
+      }),
     ]);
-    const phaseTwoModel = new FakeModel([]);
-    const agentModel = new FakeModel([
-      {
+    const phaseTwoModel = new ScriptedModel([]);
+    const agentModel = new ScriptedModel([
+      modelResponse({
         output: [fakeModelMessage('done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const agent = new SandboxAgent({
       name: 'sandbox',
@@ -1932,8 +1920,8 @@ describe('Sandbox memory generation', () => {
         2,
       )}\n`,
     );
-    const phaseOneModel = new FakeModel([
-      {
+    const phaseOneModel = new ScriptedModel([
+      modelResponse({
         output: [
           fakeModelMessage(
             JSON.stringify({
@@ -1944,19 +1932,19 @@ describe('Sandbox memory generation', () => {
           ),
         ],
         usage: new Usage(),
-      },
+      }),
     ]);
-    const phaseTwoModel = new RecordingFakeModel([
-      {
+    const phaseTwoModel = new RecordingModel([
+      modelResponse({
         output: [fakeModelMessage('Consolidated memory.')],
         usage: new Usage(),
-      },
+      }),
     ]);
-    const agentModel = new FakeModel([
-      {
+    const agentModel = new ScriptedModel([
+      modelResponse({
         output: [fakeModelMessage('done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const agent = new SandboxAgent({
       name: 'sandbox',
