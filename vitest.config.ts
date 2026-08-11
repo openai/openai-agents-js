@@ -113,6 +113,7 @@ export default defineConfig({
             'helpers/vitest/testConcurrency.test.ts',
             'helpers/vitest/workspacePackageAliases.test.ts',
             'scripts/update-rclone-pin.test.mjs',
+            'scripts/released-api-contract.test.mjs',
           ],
         },
       },
