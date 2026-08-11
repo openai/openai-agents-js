@@ -82,6 +82,10 @@ type LanguageModelV2ProviderTool = {
 type LanguageModelV2ProviderToolCompat =
   LanguageModelV2ProviderDefinedTool | LanguageModelV2ProviderTool;
 
+type LanguageModelV2FunctionToolCompat = LanguageModelV2FunctionTool & {
+  strict: boolean;
+};
+
 /**
  * Provider tool definition returned by an AI SDK provider tool factory.
  */
@@ -1903,7 +1907,7 @@ function getHostedToolArgs(providerData: unknown): Record<string, any> {
 export function toolToLanguageV2Tool(
   model: LanguageModelCompatible,
   tool: SerializedTool,
-): LanguageModelV2FunctionTool | LanguageModelV2ProviderToolCompat {
+): LanguageModelV2FunctionToolCompat | LanguageModelV2ProviderToolCompat {
   if (
     (tool.type === 'function' ||
       tool.type === 'shell' ||
@@ -1931,6 +1935,7 @@ export function toolToLanguageV2Tool(
       name: getSerializedFunctionToolName(tool),
       description: tool.description,
       inputSchema: tool.parameters as JSONSchema7,
+      strict: tool.strict,
       ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
     };
   }

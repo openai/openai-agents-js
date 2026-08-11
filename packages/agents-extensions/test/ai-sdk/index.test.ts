@@ -2470,18 +2470,20 @@ describe('itemsToLanguageV2Messages', () => {
 
 describe('toolToLanguageV2Tool', () => {
   const model = stubModel({});
-  test('maps function tools', () => {
+  test.each([true, false])('maps function tools with strict: %s', (strict) => {
     const tool = {
       type: 'function',
       name: 'foo',
       description: 'd',
       parameters: {} as any,
+      strict,
     } as any;
     expect(toolToLanguageV2Tool(model, tool)).toEqual({
       type: 'function',
       name: 'foo',
       description: 'd',
       inputSchema: {},
+      strict,
     });
   });
 
