@@ -62,6 +62,7 @@ class ReviewProtocolTest(unittest.TestCase):
             head=head,
             status_sha256=status_sha256,
             tracked_diff_sha256=tracked_diff_sha256,
+            complete_diff_sha256=tracked_diff_sha256,
             unfiltered_status_sha256=status_sha256,
             unfiltered_content_fingerprint=_content_fingerprint(base, workspace),
         )
@@ -74,6 +75,8 @@ class ReviewProtocolTest(unittest.TestCase):
             "repository_fingerprint": self.repository,
             "status_sha256": status_sha256,
             "tracked_diff_sha256": tracked_diff_sha256,
+            "complete_diff_sha256": tracked_diff_sha256,
+            "complete_diff_paths": ["src/example.py"],
             "pathspecs": ["src/example.py"],
             "components": {
                 "api-contract": {
@@ -199,7 +202,7 @@ class ReviewProtocolTest(unittest.TestCase):
                 "eligible_concurrent_gates": "none",
                 "deferred_gates": (
                     "pnpm i --frozen-lockfile; pnpm build; pnpm -r build-check; "
-                    "pnpm -r -F \"@openai/*\" dist:check; pnpm lint; pnpm test; "
+                    'pnpm -r -F "@openai/*" dist:check; pnpm lint; pnpm test; '
                     "pnpm format:check:changed"
                 ),
                 "credited_receipts": [],
@@ -635,6 +638,7 @@ class ReviewProtocolTest(unittest.TestCase):
             head=state["head"],
             status_sha256=state["status_sha256"],
             tracked_diff_sha256=state["tracked_diff_sha256"],
+            complete_diff_sha256=state["complete_diff_sha256"],
             unfiltered_status_sha256=state["unfiltered"]["status_sha256"],
             unfiltered_content_fingerprint=_content_fingerprint(
                 state["base"], state["unfiltered"]["workspace"]
@@ -728,7 +732,17 @@ class ReviewProtocolTest(unittest.TestCase):
         self._write_packet(self.packet_path, packet)
 
         with self.assertRaisesRegex(
-            ProtocolError, "must match review_state.tracked_diff_sha256"
+            ProtocolError, "must match review_state.complete_diff_sha256"
+        ):
+            self._validate_packet()
+
+    def test_complete_diff_paths_must_match_task_workspace(self) -> None:
+        state = copy.deepcopy(self.review_state)
+        state["complete_diff_paths"] = []
+        self._write_review_state(state)
+
+        with self.assertRaisesRegex(
+            ProtocolError, "must exactly match the task workspace"
         ):
             self._validate_packet()
 
@@ -1044,6 +1058,7 @@ class ReviewProtocolTest(unittest.TestCase):
             head=state["head"],
             status_sha256=changed_status_sha256,
             tracked_diff_sha256=state["tracked_diff_sha256"],
+            complete_diff_sha256=state["complete_diff_sha256"],
             unfiltered_status_sha256=changed_status_sha256,
             unfiltered_content_fingerprint=self.combined,
         )

@@ -16,7 +16,7 @@ Use this skill as the explicit transition from an agreed implementation scope to
 
 ## 1. Establish the task boundary
 
-Record the original requirement, success criteria, intended target (`origin/main` unless the user states otherwise), task-owned paths, compatibility boundary, intentionally unsupported cases, and required repository skills. For a multi-step task, create and maintain the repository's required ExecPlan, but keep operational artifacts out of the shipped-path manifest unless they are intended deliverables.
+Record the original requirement, success criteria, intended target (`origin/main` unless the user states otherwise), task-owned paths, compatibility boundary, intentionally unsupported cases, and required repository skills. For a multi-step task, create and maintain the repository's required ExecPlan. An ExecPlan, review packet, ledger, trace, or temporary report is operational-only by default even when repository policy requires creating it; do not add it to the shipped-path manifest unless the original requirement or repository policy explicitly makes that exact path a committed deliverable.
 
 If the current directory is a worktree previously created for this same task in the current conversation, resume it. Otherwise, continue from the user's current checkout only long enough to create a new worktree.
 
@@ -33,7 +33,7 @@ Do not create the final branch yet. A detached worktree makes the eventual `$pr-
 
 ## 3. Implement without task commits
 
-Keep the task diff uncommitted through implementation, focused tests, formatting, and review fixes. Track new files explicitly because ordinary diff statistics omit untracked files. Use the applicable repository skills and references, including `$implementation-strategy` before user-facing or runtime changes.
+Keep the task diff uncommitted through implementation, focused tests, formatting, and review fixes. Track new files explicitly because ordinary diff statistics omit untracked files. Maintain one canonical shipped-path manifest separately from operational artifacts and require a concrete deliverable reason for every path in it. Use the applicable repository skills and references, including `$implementation-strategy` before user-facing or runtime changes.
 
 Do not create checkpoint commits. If an external interruption requires extra protection, leave the dedicated worktree intact or use a clearly named temporary stash; restore the changes before continuing and do not treat the stash as a deliverable.
 
@@ -62,7 +62,7 @@ Record this observed `origin/main` commit as the final-base candidate. Do not ca
 
 ## 5. Complete final review and verification
 
-Run the repository's applicable completion gates against the complete task-owned diff on the final-base candidate. For runtime code, tests, examples, build or test behavior, or behavior-impacting docs, run `$implementation-final-review` and follow its frozen-fingerprint review and final-gate orchestration. Run `$changeset-validation` when anything under `packages/` or `.changeset/` changed, and run `$code-change-verification` for every eligible runtime, test, example, or build/test change. Honor every skill's fingerprint, ordering, and invalidation rules.
+Run the repository's applicable completion gates against the complete task-owned diff on the final-base candidate. Before freezing the first review fingerprint, inspect the actual final commit-hook configuration and run the exact safe, non-committing equivalent of every hook step that can rewrite a shipped path. Repeat rewriting steps until content-idempotent, and verify generated-file hashes or provenance after normalization. Generate final-review evidence with `review_state.py --complete-diff-output <complete.diff>` so ordinary task-owned untracked files are present in the reviewed diff without staging them. For runtime code, tests, examples, build or test behavior, or behavior-impacting docs, run `$implementation-final-review` and follow its frozen-fingerprint review and final-gate orchestration. Run `$changeset-validation` when anything under `packages/` or `.changeset/` changed, and run `$code-change-verification` for every eligible runtime, test, example, or build/test change. Honor every skill's fingerprint, ordering, and invalidation rules.
 
 Skip those skills only when their own repository rules say the task is ineligible, such as a repo-meta-only change. Do not weaken an eligible gate merely because the diff is small.
 
@@ -80,11 +80,11 @@ If the diff, scope, base, behavior claim, issue relationship, or provenance chan
 
 ## 7. Recheck main and create one commit
 
-Fetch `origin main` once more immediately before creating the branch. If it differs from the final-base candidate, return to section 4 and repeat replay, affected checks, final review, verification, and PR handoff. Once stable:
+Fetch `origin main` once more immediately before creating the branch. If it differs from the final-base candidate, return to section 4 and replay onto the new base. Then apply `$implementation-final-review` step 20: preserve clean-review credit only when the verified base-advance closure proves an identical task diff and component workspace plus a complete, non-overlapping upstream dependency/tooling audit. Even when that closure applies, rerun every mandatory final verification gate on the new base and regenerate the PR handoff. If any closure condition is missing or ambiguous, repeat affected checks, fresh independent review, verification, and PR handoff. Once stable:
 
 1. Check whether the suggested branch exists locally, remotely, or in another worktree. Ask `$pr-draft-summary` for the next available numeric suffix and regenerate the handoff before creating a colliding branch.
 2. Create the exact suggested branch in the task worktree.
-3. Stage only the task-owned shipped-path manifest, including intended new files. Inspect the staged diff before committing.
+3. Stage only the task-owned shipped-path manifest, including intended new files. Compare the staged changed-path set byte-for-byte with the canonical shipped manifest before committing; any missing or unexpected path is a hard stop. In particular, do not stage an ignored ExecPlan or review artifact merely because it was required during implementation.
 4. Use the PR draft title as the commit subject.
 5. For a takeover, add the verified original PR author as `Co-authored-by: Name <email>`, retain distinct valid co-author trailers from the imported commits, and deduplicate identities.
 6. Create exactly one commit. Let repository hooks run normally.
@@ -93,7 +93,7 @@ Branch creation and committing identical content are repository bookkeeping and 
 
 ## 8. Validate and hand off
 
-Run `python3 .agents/skills/implementation-kickoff/scripts/validate_handoff.py --repo <worktree> --base <final-base> --expected-branch <branch>`. For a takeover, also pass `--required-trailer-email <verified-email>` for each identity that must be credited.
+Run `python3 .agents/skills/implementation-kickoff/scripts/validate_handoff.py --repo <worktree> --base <final-base> --expected-branch <branch> --shipped-path-manifest <manifest>`. For a takeover, also pass `--required-trailer-email <verified-email>` for each identity that must be credited. The manifest contains one exact repository-relative shipped path per line and excludes operational artifacts.
 
 Independently confirm that the committed diff has the reviewed content fingerprint when final review supplied one. The validator checks Git topology and repository cleanliness; it does not replace semantic review or fingerprint verification.
 
@@ -105,5 +105,5 @@ Leave the worktree in place. Report the worktree path, final observed base commi
 - Worktree or branch collision: preserve the existing target and choose a new unused path or regenerated branch suggestion.
 - Replay conflict: retain recoverable task changes and ask for direction when the correct resolution is ambiguous.
 - Review or verification failure: leave the detached task worktree for continuation; do not package a commit as ready.
-- Commit-hook mutation: invalidate affected evidence and repeat the required gates.
+- Commit-hook mutation: invalidate affected evidence, fix the missing hook-parity preflight or generated-file normalization, and repeat the required gates.
 - Non-clean or multi-commit final state: do not hand off as complete until corrected without discarding user-owned work.

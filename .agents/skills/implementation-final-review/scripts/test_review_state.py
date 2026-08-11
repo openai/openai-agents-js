@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -103,6 +104,95 @@ class ReviewStateTest(unittest.TestCase):
             ["src/runtime.py", "tests/test_runtime.py"],
         )
         self.assertRegex(state["unfiltered"]["status_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_complete_diff_includes_task_owned_untracked_files(self) -> None:
+        new_test = self.repo / "tests" / "test_new.py"
+        new_test.write_text("assert 2 == 2\n")
+        complete_diff = self.repo / "complete.diff"
+
+        state = review_state(
+            self.repo,
+            self.base,
+            ("tests",),
+            complete_diff_output=complete_diff,
+        )
+
+        diff = complete_diff.read_bytes()
+        self.assertIn(b"diff --git a/tests/test_new.py b/tests/test_new.py", diff)
+        self.assertIn(b"+assert 2 == 2", diff)
+        self.assertEqual(
+            state["complete_diff_sha256"], hashlib.sha256(diff).hexdigest()
+        )
+        self.assertEqual(
+            state["complete_diff_paths"],
+            ["tests/test_new.py"],
+        )
+        self.assertNotEqual(state["complete_diff_sha256"], state["tracked_diff_sha256"])
+
+    def test_exact_manifest_path_includes_ignored_untracked_file(self) -> None:
+        ignored = self.repo / "plans" / "private.md"
+        ignored.write_text("shipped fixture\n")
+        complete_diff = self.repo / "complete.diff"
+
+        state = review_state(
+            self.repo,
+            self.base,
+            ("plans/private.md",),
+            {"release-metadata": ("plans/private.md",)},
+            complete_diff_output=complete_diff,
+        )
+
+        self.assertEqual(state["complete_diff_paths"], ["plans/private.md"])
+        self.assertEqual(state["unfiltered"]["workspace"], state["workspace"])
+        self.assertEqual(
+            state["components"]["release-metadata"]["workspace"],
+            state["workspace"],
+        )
+        self.assertIn(b"+shipped fixture", complete_diff.read_bytes())
+
+    def test_directory_pathspec_does_not_promote_ignored_operational_files(
+        self,
+    ) -> None:
+        (self.repo / "plans" / "private.md").write_text("operational plan\n")
+
+        state = review_state(self.repo, self.base, ("plans",))
+
+        self.assertEqual(state["workspace"], [])
+        self.assertEqual(state["complete_diff_paths"], [])
+
+    def test_literal_filename_with_pathspec_metacharacters_is_exact(self) -> None:
+        (self.repo / "plans" / "[a].md").write_text("literal\n")
+        (self.repo / "plans" / "a.md").write_text("glob match\n")
+
+        state = review_state(self.repo, self.base, ("plans/[a].md",))
+
+        self.assertEqual(state["complete_diff_paths"], ["plans/[a].md"])
+
+    def test_explicit_glob_magic_preserves_pattern_semantics(self) -> None:
+        (self.repo / "plans" / "[a].md").write_text("literal\n")
+        (self.repo / "plans" / "a.md").write_text("glob match\n")
+
+        state = review_state(self.repo, self.base, (":(glob)plans/[a].md",))
+
+        self.assertEqual(state["complete_diff_paths"], ["plans/[a].md", "plans/a.md"])
+
+    def test_cli_writes_complete_diff_output(self) -> None:
+        (self.repo / "tests" / "test_new.py").write_text("assert True\n")
+        complete_diff = self.repo / "complete.diff"
+
+        completed = self._run_cli(
+            "--pathspec",
+            "tests",
+            "--complete-diff-output",
+            str(complete_diff),
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        state = json.loads(completed.stdout)
+        self.assertEqual(
+            state["complete_diff_sha256"],
+            hashlib.sha256(complete_diff.read_bytes()).hexdigest(),
+        )
 
     def test_repository_fingerprint_includes_outside_manifest_state_and_content(
         self,

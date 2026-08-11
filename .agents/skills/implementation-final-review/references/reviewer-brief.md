@@ -2,6 +2,8 @@
 
 Use this template to prepare one self-contained, factual snapshot packet per fingerprint round. Fill every field or mark it explicitly `none` or `not applicable`; do not dispatch an incomplete packet. Fill it once, reuse the shared body byte-for-byte for every reviewer, and vary only the final specialty assignment. Keep this control-plane brief near 12 KB when practical. Store larger evidence in indexed files and reference each file by exact path and SHA-256 digest. Do not omit decision-relevant evidence merely to meet the soft size target. Do not include implementer conclusions, suspected bugs, prior findings, or intended fixes.
 
+The verified final-gate base-advance closure defined in `SKILL.md` step 20 does not create a fingerprint round, reviewer packet, or reviewer assignment. Record the old and new base, head, fingerprints, byte-identical task and component workspace evidence, identical tracked-diff digest, complete upstream changed-path list and diff digest, exact dependency-input pathspecs, and focused integration checks in the task-global ledger and final verification evidence. If every condition for the exception is not mechanically established, prepare the normal delta-review packet instead.
+
 ## Shared evidence
 
 - Original requirement:
@@ -17,15 +19,15 @@ Use this template to prepare one self-contained, factual snapshot packet per fin
 - Risk tier and reason:
 - Task-global ledger path, task identity, current round, and remaining authorized budget:
 - Canonical root-cause ledger (`ID | open/closed | inventory IDs | contract evidence IDs`):
-- Canonical task manifest:
+- Canonical task manifest (an exact normalized file entry remains authoritative when ignored; directory and glob entries do not promote ignored files):
 - Component manifests:
-- Semantic component dependency map and invalidation reasons:
+- Semantic component dependency map (`component | exact base pathspecs | invalidation reason`):
 - Combined, component, and repository fingerprints:
 - Exact fingerprint revalidation command:
 - Unfiltered repository-status artifact and explicit exclusions outside the task manifest:
-- Complete three-dot diff command:
+- Complete three-dot diff command using `review_state.py --complete-diff-output` so task-owned untracked files are included:
 - Indexed evidence manifest (`ID | role | exact path | SHA-256 | purpose`):
-- Focused preflight commands and results:
+- Focused preflight commands and results, including idempotent commit-hook parity with the exact executable hook-inspection commands plus second-pass results for every content-rewriting step before this fingerprint freeze:
 - Same-fingerprint verification already credited, or `none`:
 - Verification receipt path and SHA-256 descriptors for credited checks, or `none`:
 - Eligible concurrent final-gate commands: `none`
@@ -42,7 +44,7 @@ Every ready-to-run repository Python command, including fingerprint revalidation
 
 The active implementation control plane is trusted to record real reviewer dispatches, waits, outputs, and verification executions. The local helper validates completeness, digests, identity, state transitions, and reuse against those records; it does not provide cryptographic attestation against a malicious control plane that fabricates every input. Platform-issued signed execution provenance is intentionally unsupported here and requires a separate trusted service.
 
-The packet object uses integer `schema_version: 1` and contains these required top-level fields: `packet_overage_reason`, `task`, `scope_contract`, `repository`, `ledger`, `manifests`, `review_state`, `verification`, `architecture_references`, `evidence_artifacts`, `inventory`, `selected_high_risk_dimensions`, and `reviewer_assignments`. Mirror the factual fields above rather than adding conclusions. Encode `verification.preflight_results` as an array of exact `command` and `result` objects; use an empty array when no focused preflight ran. Set `verification.eligible_concurrent_gates` to the exact string `none`, and list the repository-wide install, build, lint, typecheck, test, format-check, examples, and integration gates that remain applicable in `verification.deferred_gates`; packet preflight rejects any attempt to overlap a broad final gate with review. Store exactly one evidence artifact with `role: "review-state"` containing the unmodified `review_state.py` JSON, exactly one with `role: "complete-diff"`, and exactly one with `role: "repository-status"` containing unfiltered porcelain-v1 `-z` status. The `review_state` packet object contains exactly `evidence_id`, which names the review-state artifact, and the exact `revalidation_command`; extra copied fingerprint or state fields are invalid. The repository object names the status artifact with `status_evidence_id` and lists every changed path outside the task manifest in `exclusions` with a concrete reason. Use two reviewer assignments whose combined IDs cover every inventory row and selected high-risk dimension. Every reviewer assignment must include every component boundary and all three control artifacts; supporting evidence may remain specialty-specific. The validator derives fingerprints from the digested review-state artifact, requires repository base and head to match it, requires the task and component manifests to match its pathspecs exactly, requires the complete-diff artifact digest to equal its `tracked_diff_sha256`, requires the status digest to equal its unfiltered status fingerprint, and requires exclusions to account exactly for every unfiltered changed path outside the task workspace. It reports the packet's actual path, byte size, SHA-256 digest, review-state path, fingerprint, components, inventory IDs, and reviewer IDs; copy that output into the dispatch record. If the packet exceeds 12 KiB, replace `packet_overage_reason: "none"` with the decision-relevant reason it could not be split further.
+The packet object uses integer `schema_version: 1` and contains these required top-level fields: `packet_overage_reason`, `task`, `scope_contract`, `repository`, `ledger`, `manifests`, `review_state`, `verification`, `architecture_references`, `evidence_artifacts`, `inventory`, `selected_high_risk_dimensions`, and `reviewer_assignments`. Mirror the factual fields above rather than adding conclusions. Encode `verification.preflight_results` as an array of exact `command` and `result` objects; use an empty array when no focused preflight ran. Set `verification.eligible_concurrent_gates` to the exact string `none`, and list the repository-wide install, build, lint, typecheck, test, format-check, examples, and integration gates that remain applicable in `verification.deferred_gates`; packet preflight rejects any attempt to overlap a broad final gate with review. Store exactly one evidence artifact with `role: "review-state"` containing the unmodified `review_state.py` JSON, exactly one with `role: "complete-diff"` generated by the same command's `--complete-diff-output`, and exactly one with `role: "repository-status"` containing unfiltered porcelain-v1 `-z` status. The `review_state` packet object contains exactly `evidence_id`, which names the review-state artifact, and the exact revalidation command; extra copied fingerprint or state fields are invalid. The repository object names the status artifact with `status_evidence_id` and lists every changed path outside the task manifest in `exclusions` with a concrete reason. `manifests.dependency_map` must name each component, list exact base pathspecs for every semantic, generated-surface, hook, and build/test configuration input that can invalidate it, and state why; a prose-only claim that a component has no dependencies cannot support a later base-advance closure. Use two reviewer assignments whose combined IDs cover every inventory row and selected high-risk dimension. Every reviewer assignment must include every component boundary and all three control artifacts; supporting evidence may remain specialty-specific. The validator derives fingerprints from the digested review-state artifact, requires repository base and head to match it, requires the task and component manifests to match its pathspecs exactly, requires `complete_diff_paths` to match the task workspace exactly, requires the complete-diff artifact digest to equal its `complete_diff_sha256`, requires the status digest to equal its unfiltered status fingerprint, and requires exclusions to account exactly for every unfiltered changed path outside the task workspace. It reports the packet's actual path, byte size, SHA-256 digest, review-state path, fingerprint, components, inventory IDs, and reviewer IDs; copy that output into the dispatch record. If the packet exceeds 12 KiB, replace `packet_overage_reason: "none"` with the decision-relevant reason it could not be split further.
 
 The ledger contains `task_id`, `authorized_round_budgets`, `current_round`, `remaining_budget`, and `root_causes`. Supply the task ID and absolute task-global ledger path independently on every validator command. For every round after round 1, also supply the immediately preceding round's immutable ledger snapshot and its SHA-256 digest from the control plane; never derive either argument from the packet under validation. The immutable snapshot must be a distinct file, not the mutable current ledger under another argument. The validator requires the packet, current ledger, and prior ledger identity to match those control-plane arguments. It requires `current_round` plus `remaining_budget` to equal the sum of the positive integer budget history, the current budget history to preserve the prior prefix, the current round to equal the prior round for a same-round retry or advance by exactly one, every prior canonical root and its ownership to remain present, and the current ledger file's JSON object to match the packet ledger exactly. Each `ledger.root_causes` entry contains `id`, `status`, `inventory_ids`, and `contract_evidence_ids`. Every root must own at least one inventory ID, and each inventory ID has exactly one canonical root owner. Every contract evidence ID must resolve to an `evidence_artifacts[].id`; the ledger cannot establish evidence authority with an unindexed string. The implementer owns canonical IDs. Reviewers must reuse one supplied ID or propose `NEW:<lowercase-slug>` with evidence or inventory not already owned by any canonical root; reviewers must not mint a renamed bare ID. Only the implementer promotes a proposal into the ledger.
 
@@ -93,13 +95,13 @@ Return exactly one JSON object with this shape and no prose outside it:
   "verdict": "clean | findings require fixes | complexity reset required | incomplete packet",
   "reviewed_fingerprints": {
     "combined": "...",
-    "components": {"component-name": "..."},
+    "components": { "component-name": "..." },
     "repository": "..."
   },
   "checked_inventory_ids": ["..."],
-  "unchecked_inventory_ids": [{"id": "...", "reason": "..."}],
+  "unchecked_inventory_ids": [{ "id": "...", "reason": "..." }],
   "high_risk_dimensions_checked": ["..."],
-  "focused_probes": [{"command": "...", "result": "..."}],
+  "focused_probes": [{ "command": "...", "result": "..." }],
   "remaining_uncertainty": ["..."],
   "findings": [
     {
@@ -118,7 +120,9 @@ Return exactly one JSON object with this shape and no prose outside it:
       }
     }
   ],
-  "sibling_scenario_scan": [{"root_cause_id": "...", "inventory_ids": ["..."], "result": "..."}],
+  "sibling_scenario_scan": [
+    { "root_cause_id": "...", "inventory_ids": ["..."], "result": "..." }
+  ],
   "inspection_call_count": 0,
   "inspection_budget_reason": "none | ..."
 }

@@ -23,6 +23,15 @@ class SkillContractTest(unittest.TestCase):
         cls.code_change_verification = (
             cls.skill_root.parent / "code-change-verification" / "SKILL.md"
         ).read_text()
+        cls.implementation_kickoff = (
+            cls.skill_root.parent / "implementation-kickoff" / "SKILL.md"
+        ).read_text()
+        cls.handoff_validator = (
+            cls.skill_root.parent
+            / "implementation-kickoff"
+            / "scripts"
+            / "validate_handoff.py"
+        ).read_text()
 
     def test_repo_local_metadata_matches_skill(self) -> None:
         self.assertEqual(
@@ -135,7 +144,112 @@ class SkillContractTest(unittest.TestCase):
                 self.assertIn("user-triggered `finalize`", source)
 
         self.assertIn("If host telemetry is unavailable", self.skill)
-        self.assertIn("Lack of host telemetry alone is not a blocker", self.repo_instructions)
+        self.assertIn(
+            "Lack of host telemetry alone is not a blocker", self.repo_instructions
+        )
+
+    def test_commit_hook_parity_runs_before_review(self) -> None:
+        required_skill_text = (
+            "Inspect the actual final commit-hook configuration",
+            "exact safe, non-committing equivalent",
+            "until a second execution is content-idempotent",
+            "Normalize generated files before computing embedded hashes or provenance",
+            "before every fingerprint freeze, including post-fix and delta-review rounds",
+            "exact executable inspection and rewriting commands plus their results",
+        )
+        required_kickoff_text = (
+            "Before freezing the first review fingerprint",
+            "Repeat rewriting steps until content-idempotent",
+            "verify generated-file hashes or provenance after normalization",
+        )
+        for text in required_skill_text:
+            with self.subTest(source="skill", text=text):
+                self.assertIn(text, self.skill)
+        for text in required_kickoff_text:
+            with self.subTest(source="kickoff", text=text):
+                self.assertIn(text, self.implementation_kickoff)
+        self.assertIn("idempotent commit-hook parity", self.reviewer_brief)
+
+    def test_reviewer_infrastructure_failure_stays_in_the_same_round(self) -> None:
+        required_text = (
+            "fails before producing a protocol-valid output",
+            "has produced neither a finding nor clean credit",
+            "does not advance `ledger.current_round` or consume another fingerprint round",
+            "Replace only that reviewer on the same frozen packet and assignment",
+            "The original two-reviewer concurrent dispatch satisfies the round's concurrency "
+            "requirement",
+            "the accepted peer output plus one independently launched replacement output",
+            "report the gate as unavailable instead of counting an infrastructure failure as "
+            "review evidence",
+        )
+        for text in required_text:
+            with self.subTest(text=text):
+                self.assertIn(text, self.skill)
+
+    def test_complete_diff_includes_untracked_task_deliverables(self) -> None:
+        required_text = (
+            "--complete-diff-output <complete.diff>",
+            "a standalone `git diff` omits ordinary untracked deliverables",
+            "`complete_diff_paths` to equal the task workspace exactly",
+            "`complete_diff_sha256`",
+        )
+        for text in required_text:
+            with self.subTest(text=text):
+                self.assertIn(text, self.skill)
+        self.assertIn("task-owned untracked files are included", self.reviewer_brief)
+        self.assertIn(
+            "ordinary task-owned untracked files are present",
+            self.implementation_kickoff,
+        )
+        self.assertIn(
+            "authoritative even when ignore rules match that file", self.skill
+        )
+        self.assertIn("literal precedence over Git pathspec metacharacters", self.skill)
+        self.assertIn("use explicit `:(glob)` magic", self.skill)
+        self.assertIn(
+            "directory or glob pathspec never promotes ignored operational files",
+            self.skill,
+        )
+
+    def test_verified_base_advance_closure_is_strict_and_keeps_final_verification(
+        self,
+    ) -> None:
+        required_text = (
+            "Verified base-advance closure",
+            "byte-identical task and component `workspace` arrays",
+            "their `tracked_diff_sha256` values are identical",
+            "complete upstream delta from old base to new base",
+            "dependency-input path",
+            "applicable build, test, lint, format, hook, lockfile, or package configuration input",
+            "This closure consumes no fingerprint round and creates no reviewer packet",
+            "falls through to a fresh review round on the new base",
+            "rerun every mandatory final gate on the replayed fingerprint",
+        )
+        for text in required_text:
+            with self.subTest(text=text):
+                self.assertIn(text, self.skill)
+        self.assertIn("verified base-advance closure", self.implementation_kickoff)
+        self.assertIn(
+            "rerun every mandatory final verification gate", self.implementation_kickoff
+        )
+        self.assertIn("exact base pathspecs", self.reviewer_brief)
+        self.assertIn("prose-only claim", self.reviewer_brief)
+
+    def test_operational_artifacts_are_excluded_from_the_handoff_manifest(self) -> None:
+        required_kickoff_text = (
+            "operational-only by default",
+            "Compare the staged changed-path set byte-for-byte with the canonical shipped manifest",
+            "do not stage an ignored ExecPlan or review artifact",
+            "--shipped-path-manifest <manifest>",
+        )
+        for text in required_kickoff_text:
+            with self.subTest(text=text):
+                self.assertIn(text, self.implementation_kickoff)
+        self.assertIn('"--shipped-path-manifest"', self.handoff_validator)
+        self.assertIn(
+            "Committed paths do not match the shipped-path manifest",
+            self.handoff_validator,
+        )
 
     def test_work_status_reporting_distinguishes_running_and_final_states(
         self,
@@ -290,7 +404,8 @@ class SkillContractTest(unittest.TestCase):
         )
         required_brief_text = (
             "Indexed evidence manifest (`ID | role | exact path | SHA-256 | purpose`)",
-            "Semantic component dependency map and invalidation reasons",
+            "Semantic component dependency map (`component | exact base pathspecs | "
+            "invalidation reason`)",
             '"checked_inventory_ids"',
             '"unchecked_inventory_ids"',
             '"sibling_scenario_scan"',
@@ -359,7 +474,7 @@ class SkillContractTest(unittest.TestCase):
             "review_state.evidence_id",
             "repository.status_evidence_id",
             "Assign every component and all three control artifacts to both reviewers",
-            "requires the complete-diff digest to match its `tracked_diff_sha256`",
+            "requires the complete-diff digest to match its `complete_diff_sha256`",
             "requires `repository.exclusions` to account exactly",
             "summary-only inventory row is incomplete",
             "active control plane outside the packet",
@@ -401,7 +516,7 @@ class SkillContractTest(unittest.TestCase):
             'role: "repository-status"',
             "The `review_state` packet object contains exactly `evidence_id`",
             "extra copied fingerprint or state fields are invalid",
-            "requires the complete-diff artifact digest to equal its `tracked_diff_sha256`",
+            "requires the complete-diff artifact digest to equal its `complete_diff_sha256`",
             "Supply the task ID and absolute task-global ledger path independently",
             "requires `current_round` plus `remaining_budget` to equal the sum",
             "immediately preceding round's immutable ledger snapshot and its SHA-256 digest",

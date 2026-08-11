@@ -9,13 +9,28 @@ import json
 import os
 import re
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 def _git(repo: Path, *args: str) -> bytes:
     return subprocess.check_output(
         ("git", "-C", os.fspath(repo), *args), stderr=subprocess.PIPE
     )
+
+
+def _git_diff(repo: Path, *args: str) -> bytes:
+    completed = subprocess.run(
+        ("git", "-C", os.fspath(repo), *args),
+        capture_output=True,
+    )
+    if completed.returncode not in {0, 1}:
+        raise subprocess.CalledProcessError(
+            completed.returncode,
+            completed.args,
+            output=completed.stdout,
+            stderr=completed.stderr,
+        )
+    return completed.stdout
 
 
 def _digest(data: bytes) -> str:
@@ -79,6 +94,7 @@ def _workspace_entry(repo: Path, relative_path: str) -> dict[str, object]:
 def _workspace_entries(
     repo: Path, base: str, pathspecs: tuple[str, ...]
 ) -> list[dict[str, object]]:
+    git_pathspecs = _git_pathspecs(repo, pathspecs)
     tracked_paths = _git(
         repo,
         "diff",
@@ -87,23 +103,99 @@ def _workspace_entries(
         "-z",
         base,
         "--",
-        *pathspecs,
+        *git_pathspecs,
     )
-    untracked_paths = _git(
+    untracked_paths = _untracked_paths(repo, pathspecs)
+    paths = {
+        os.fsdecode(raw_path)
+        for raw_path in (*tracked_paths.split(b"\0"), *untracked_paths)
+        if raw_path
+    }
+    return [_workspace_entry(repo, relative_path) for relative_path in sorted(paths)]
+
+
+def _untracked_paths(repo: Path, pathspecs: tuple[str, ...]) -> tuple[bytes, ...]:
+    literal_pathspecs = _literal_pathspecs(repo, pathspecs)
+    raw_paths = _git(
         repo,
         "ls-files",
         "--others",
         "--exclude-standard",
         "-z",
         "--",
-        *pathspecs,
+        *_git_pathspecs(repo, pathspecs, literal_pathspecs),
     )
-    paths = {
-        os.fsdecode(raw_path)
-        for raw_path in (*tracked_paths.split(b"\0"), *untracked_paths.split(b"\0"))
-        if raw_path
-    }
-    return [_workspace_entry(repo, relative_path) for relative_path in sorted(paths)]
+    paths = {raw_path for raw_path in raw_paths.split(b"\0") if raw_path}
+    for pathspec in literal_pathspecs:
+        raw_path = os.fsencode(pathspec)
+        tracked_paths = _git(repo, "ls-files", "-z", "--", f":(literal){pathspec}")
+        if raw_path not in tracked_paths.split(b"\0"):
+            paths.add(raw_path)
+    return tuple(sorted(paths))
+
+
+def _literal_pathspecs(repo: Path, pathspecs: tuple[str, ...]) -> frozenset[str]:
+    literal_pathspecs: set[str] = set()
+    for pathspec in pathspecs:
+        if pathspec.startswith(":("):
+            continue
+        relative_path = PurePosixPath(pathspec)
+        if (
+            relative_path.is_absolute()
+            or pathspec != relative_path.as_posix()
+            or any(part in {".", ".."} for part in relative_path.parts)
+        ):
+            continue
+        candidate = repo.joinpath(*relative_path.parts)
+        raw_path = os.fsencode(pathspec)
+        tracked_paths = _git(repo, "ls-files", "-z", "--", f":(literal){pathspec}")
+        if (
+            candidate.is_file()
+            or candidate.is_symlink()
+            or raw_path in tracked_paths.split(b"\0")
+        ):
+            literal_pathspecs.add(pathspec)
+    return frozenset(literal_pathspecs)
+
+
+def _git_pathspecs(
+    repo: Path,
+    pathspecs: tuple[str, ...],
+    literal_pathspecs: frozenset[str] | None = None,
+) -> tuple[str, ...]:
+    literal_pathspecs = literal_pathspecs or _literal_pathspecs(repo, pathspecs)
+    return tuple(
+        f":(literal){pathspec}" if pathspec in literal_pathspecs else pathspec
+        for pathspec in pathspecs
+    )
+
+
+def _complete_diff(repo: Path, base: str, pathspecs: tuple[str, ...]) -> bytes:
+    chunks = [
+        _git(
+            repo,
+            "diff",
+            "--binary",
+            "--full-index",
+            base,
+            "--",
+            *_git_pathspecs(repo, pathspecs),
+        )
+    ]
+    for raw_path in _untracked_paths(repo, pathspecs):
+        chunks.append(
+            _git_diff(
+                repo,
+                "diff",
+                "--no-index",
+                "--binary",
+                "--full-index",
+                "--",
+                "/dev/null",
+                os.fsdecode(raw_path),
+            )
+        )
+    return b"".join(chunks)
 
 
 def _content_fingerprint(base: str, workspace: list[dict[str, object]]) -> str:
@@ -122,6 +214,7 @@ def _repository_fingerprint(
     head: str,
     status_sha256: str,
     tracked_diff_sha256: str,
+    complete_diff_sha256: str,
     unfiltered_status_sha256: str,
     unfiltered_content_fingerprint: str,
 ) -> str:
@@ -131,6 +224,7 @@ def _repository_fingerprint(
             "head": head,
             "status_sha256": status_sha256,
             "tracked_diff_sha256": tracked_diff_sha256,
+            "complete_diff_sha256": complete_diff_sha256,
             "unfiltered_status_sha256": unfiltered_status_sha256,
             "unfiltered_content_fingerprint": unfiltered_content_fingerprint,
         },
@@ -146,6 +240,7 @@ def review_state(
     base: str,
     pathspecs: tuple[str, ...] = (),
     components: dict[str, tuple[str, ...]] | None = None,
+    complete_diff_output: Path | None = None,
 ) -> dict[str, object]:
     repo = repo.resolve()
     pathspecs = _canonical_pathspecs(pathspecs)
@@ -170,8 +265,9 @@ def review_state(
         "--full-index",
         resolved_base,
         "--",
-        *pathspecs,
+        *_git_pathspecs(repo, pathspecs),
     )
+    complete_diff = _complete_diff(repo, resolved_base, pathspecs)
     status = _git(
         repo,
         "status",
@@ -179,7 +275,7 @@ def review_state(
         "-z",
         "--untracked-files=all",
         "--",
-        *pathspecs,
+        *_git_pathspecs(repo, pathspecs),
     )
     workspace = _workspace_entries(repo, resolved_base, pathspecs)
     unfiltered_status = _git(
@@ -190,6 +286,12 @@ def review_state(
         "--untracked-files=all",
     )
     unfiltered_workspace = _workspace_entries(repo, resolved_base, ())
+    unfiltered_by_path = {str(entry["path"]): entry for entry in unfiltered_workspace}
+    for entry in workspace:
+        unfiltered_by_path.setdefault(str(entry["path"]), entry)
+    unfiltered_workspace = [
+        unfiltered_by_path[path] for path in sorted(unfiltered_by_path)
+    ]
 
     content_fingerprint = _content_fingerprint(resolved_base, workspace)
     component_states: dict[str, dict[str, object]] = {}
@@ -230,6 +332,7 @@ def review_state(
         "head": head,
         "status_sha256": _digest(status),
         "tracked_diff_sha256": _digest(tracked_diff),
+        "complete_diff_sha256": _digest(complete_diff),
     }
     repository_fingerprint = _repository_fingerprint(
         **repository_state,
@@ -238,6 +341,8 @@ def review_state(
             resolved_base, unfiltered_workspace
         ),
     )
+    if complete_diff_output is not None:
+        complete_diff_output.write_bytes(complete_diff)
     return {
         "fingerprint": content_fingerprint,
         "content_fingerprint": content_fingerprint,
@@ -245,6 +350,7 @@ def review_state(
         "base": resolved_base,
         "pathspecs": list(pathspecs),
         "workspace": workspace,
+        "complete_diff_paths": [str(entry["path"]) for entry in workspace],
         "components": component_states,
         "unfiltered": {
             "status_sha256": _digest(unfiltered_status),
@@ -320,6 +426,11 @@ def main() -> None:
         "--repo", type=Path, default=Path.cwd(), help="Repository worktree path."
     )
     parser.add_argument(
+        "--complete-diff-output",
+        type=Path,
+        help="Write the complete binary diff, including task-owned untracked files, to this path.",
+    )
+    parser.add_argument(
         "--pretty", action="store_true", help="Pretty-print the JSON output."
     )
     args = parser.parse_args()
@@ -346,7 +457,13 @@ def main() -> None:
             name: _canonical_pathspecs(tuple(component_pathspecs))
             for name, component_pathspecs in component_values.items()
         }
-        state = review_state(args.repo, args.base, pathspecs, components)
+        state = review_state(
+            args.repo,
+            args.base,
+            pathspecs,
+            components,
+            complete_diff_output=args.complete_diff_output,
+        )
     except ValueError as error:
         parser.error(str(error))
     except subprocess.CalledProcessError as error:

@@ -343,7 +343,17 @@ def _review_state(
     tracked_diff = _sha256(
         state.get("tracked_diff_sha256"), "review_state.tracked_diff_sha256"
     )
+    complete_diff = _sha256(
+        state.get("complete_diff_sha256"), "review_state.complete_diff_sha256"
+    )
     workspace = _workspace_entries(state.get("workspace"), "review_state.workspace")
+    complete_diff_paths = _strings(
+        state.get("complete_diff_paths"), "review_state.complete_diff_paths"
+    )
+    if complete_diff_paths != sorted(workspace):
+        raise ProtocolError(
+            "review_state.complete_diff_paths must exactly match the task workspace."
+        )
     actual_combined = _content_fingerprint(base, list(workspace.values()))
     if combined != actual_combined:
         raise ProtocolError(
@@ -408,6 +418,7 @@ def _review_state(
         head=head,
         status_sha256=status,
         tracked_diff_sha256=tracked_diff,
+        complete_diff_sha256=complete_diff,
         unfiltered_status_sha256=unfiltered_status,
         unfiltered_content_fingerprint=unfiltered_content,
     )
@@ -591,10 +602,10 @@ def validate_packet(
         if artifact["role"] == "complete-diff"
     }
     complete_diff_id = next(iter(complete_diff_ids))
-    if artifacts[complete_diff_id]["digest"] != state["tracked_diff_sha256"]:
+    if artifacts[complete_diff_id]["digest"] != state["complete_diff_sha256"]:
         raise ProtocolError(
             f"Complete-diff artifact {complete_diff_id} must match "
-            "review_state.tracked_diff_sha256."
+            "review_state.complete_diff_sha256."
         )
 
     ledger = _object(packet.get("ledger"), "ledger")
