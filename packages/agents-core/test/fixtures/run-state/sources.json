@@ -1,0 +1,353 @@
+{
+  "formatVersion": 1,
+  "currentSchemaAtCreation": "1.18",
+  "schemas": [
+    {
+      "schemaVersion": "1.0",
+      "status": "published_writer",
+      "packageVersion": "0.0.3",
+      "tag": "v0.0.3",
+      "commit": "be52a88cece8d8ea062b17441d94a6e93b690b83",
+      "npmIntegrity": "sha512-sgJkum0BiNUjXvTu1yFrzQ5jp2+R4C2JzDvoOg3pvOMxMDMxf3gu83mYmDC1YB/275JT1tHu9krtWdp0+1ANZA==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.0-minimal.json",
+          "sha256": "19efcb016d1e6ed31d2fde2379b9960f8eed814e293f3eb8c37800793262b159"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.1",
+      "status": "published_writer",
+      "packageVersion": "0.3.8",
+      "tag": "v0.3.8",
+      "commit": "6041edc4cddb29e0ec168a658cadf410c4380ebf",
+      "npmIntegrity": "sha512-TGvbVNHqiskLB+h4fBI9k7lERDxtUtKQYVzoX9eZGEDDPxPl6UcHkGjerXknDLtkodZlWG7cTOFQcx1cz5jbNQ==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.1-minimal.json",
+          "sha256": "01a1b35006f3e7fca3b44586652acf848f5e8f45f0d7e10ff2f24ccca3c59a4c"
+        },
+        {
+          "scenario": "server-continuation",
+          "kind": "feature",
+          "path": "historical/v1.1-server-continuation.json",
+          "sha256": "9fa2dad5f1245eccc890d56de4c786d72f07cd8f798800b7cab04cfec9cb9980"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.2",
+      "status": "published_writer",
+      "packageVersion": "0.4.4",
+      "tag": "v0.4.4",
+      "commit": "871d933e004d39fd8553d085afe8115035f1b79e",
+      "npmIntegrity": "sha512-M3WqK4meb/FdHwS0xNJ4JU+WA8j8fX1n/0z42gtg3zOHF7Bayq10xtCHXMQWOTcmNQNlJyl3OgXRhZJVJZlJog==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.2-minimal.json",
+          "sha256": "c7279b0d0fcb6b67f5c459807a712d78c4664ecdb00bc526f657137e7ff4682c"
+        },
+        {
+          "scenario": "nested-approval",
+          "kind": "resume",
+          "path": "historical/v1.2-nested-approval.json",
+          "sha256": "8364cae7dee515fe5ca8da870b5e52e138e85de9adf085af3bceead8acde5f4c"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.3",
+      "status": "published_reader_only",
+      "firstReaderPackageVersion": "0.4.5",
+      "tag": "v0.4.5",
+      "commit": "eae0df646bc6f52b39d2be50222d0277860e3b23",
+      "reason": "No published package emitted schema 1.3; v0.4.5 emitted schema 1.4."
+    },
+    {
+      "schemaVersion": "1.4",
+      "status": "published_writer",
+      "packageVersion": "0.4.5",
+      "tag": "v0.4.5",
+      "commit": "eae0df646bc6f52b39d2be50222d0277860e3b23",
+      "npmIntegrity": "sha512-/eaXhWykCvlq9IPDfpeMREj9QK7uyOzMbg/4rWXdQF7wwCRQqRhhK8sQy6mbXZowAivurjtb0hdQDHMhbRYnBA==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.4-minimal.json",
+          "sha256": "ea1b7097f5ebf39eeeb6ad6d2c2c665daee51f3b7bd6d388bac62b4d9a2d535a"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.5",
+      "status": "published_writer",
+      "packageVersion": "0.4.13",
+      "tag": "v0.4.13",
+      "commit": "2de7fbf54ee718d0030312a4d0035b914f279bf0",
+      "npmIntegrity": "sha512-/tHxtkbI9btI3Rdvpct4YbCt+LrvLI1dgwtL/JpleKW6JgracsStYnKdhnNE1rtQEtZVAJWbCWRtORfvnJl9cA==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.5-minimal.json",
+          "sha256": "a4c9b39bad63e77fdf4acaa6977bcd9b8ab6aca674cbce5a9294ce629bc0107f"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.6",
+      "status": "published_writer",
+      "packageVersion": "0.5.2",
+      "tag": "v0.5.2",
+      "commit": "322d2a815b7f96393f97bcd0103754b754766f6c",
+      "npmIntegrity": "sha512-9B6Ndo8/jyD32ZRfFc9j7JGdGRyh89gSMV281LHewoJ8Py4zopQBjiYDn3kBmREvHoO/kaPXgf8yHPtwT3OoDw==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.6-minimal.json",
+          "sha256": "f6524e4cdcc15513c370365d992595c20f117e5b7c818c8c55890ac5273bb881"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.7",
+      "status": "published_writer",
+      "packageVersion": "0.5.4",
+      "tag": "v0.5.4",
+      "commit": "50e8db0cbdb82ede419b2ca0b7ea9f4d15316573",
+      "npmIntegrity": "sha512-qAT9zGIIM7GT5/WGkLpp8Fuar7NL5qu30b5+o2jP3mE6aMfx9OZjdj0za/iYLeV5kzQ5pOcbvRXenfzHrhvd/A==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.7-minimal.json",
+          "sha256": "a52123b50ce48f2adaf2a46a400862172ffe46db8f4ca3284d17347b4efe3c4d"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.8",
+      "status": "published_writer",
+      "packageVersion": "0.6.0",
+      "tag": "v0.6.0",
+      "commit": "ec90b9014840bfc33596e2f025a02d61152c1855",
+      "npmIntegrity": "sha512-uR2isgbukRL7AX1OMYo81o0P3A7cDmJVca8He3H2jRan4m2StHVZ7rslD1m4gcl2EfRXCFVXkmuOyTvcWjdaIA==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.8-minimal.json",
+          "sha256": "ab82a6920ce440ce8b536380f7dc2c10e1358af4fa9579c38228c794c8e1243b"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.9",
+      "status": "published_writer",
+      "packageVersion": "0.9.0",
+      "tag": "v0.9.0",
+      "commit": "84ba9f1b530b87c3425d881d31e0d0a7982b9e7b",
+      "npmIntegrity": "sha512-t4XMlDqK7YxrroV57+lGEEiQ7GM4tnrDzJNIuetU6SZqXAUJD365nqm1W/ejnpUyxXpsr7rxA2BmPscT8Qa4mw==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.9-minimal.json",
+          "sha256": "8cf77fe31cb42da4feffb7006e003b69323cf021f62c3dbd9f3678028aaa28c9"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.10",
+      "status": "published_writer",
+      "packageVersion": "0.9.1",
+      "tag": "v0.9.1",
+      "commit": "cc8f41374db99ea609c5ab0f6a19e3e030fc646f",
+      "npmIntegrity": "sha512-WSH7S46qopzNCGfHrJxeDVeZCKU0pK9gqhVevRfHdlrcWUcjm7Sj58SiTdGi3v/v1sw2xKDzVN08C4K8qxjNoQ==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.10-minimal.json",
+          "sha256": "2fe8dbcb0cd416ae6c8e7130b9f60fff5a4dfe813b00e2a3e9db58acdb7bf23a"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.11",
+      "status": "published_writer",
+      "packageVersion": "0.10.0",
+      "tag": "v0.10.0",
+      "commit": "df71db2509517582ec9ea0bf4e3e8aeb8524a7ea",
+      "npmIntegrity": "sha512-qtsv9dtLQe/hoUzT19RfnnM6JW9kcF5zLMtU26FNV4C4981F/5n6m9TQCQWKAs6Rb/Aex/lHyqK1cB1XFLvLIg==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.11-minimal.json",
+          "sha256": "56b87d2ef78b3ab60bdc1b3b6c98f37b1754a1728e30fb370c487672e0da5db1"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.12",
+      "status": "published_writer",
+      "packageVersion": "0.11.5",
+      "tag": "v0.11.5",
+      "commit": "42b2276df2121c3f358c63447c470448998feac5",
+      "npmIntegrity": "sha512-djqc3VUMw6wZlGOHa/+1jqIcEJnzI6PBNKPuf6tXO1MoE+o4NuTYgMpZ+pDUDvV6cor8+dEdmF5bsuqhb2dOMw==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.12-minimal.json",
+          "sha256": "eeec97983bb68a2740eb9eabb1b08bbb5a059496237a9feb5d080177b447f340"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.13",
+      "status": "published_writer",
+      "packageVersion": "0.11.8",
+      "tag": "v0.11.8",
+      "commit": "7e73145758cf1314ffa4a3804527574c509cc44c",
+      "npmIntegrity": "sha512-TrE34RXXPoWYv2PjXf5hq3Eq+uvRJMNiY+Q5WBgEPjAg60yt2hya8cS2I8qkO6i25MjNJl37a25X0vL/gs5Wdg==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.13-minimal.json",
+          "sha256": "6321f44bd3b2951abd3370530138689dfb546b6ca2ac9366ee53c1aa2916882c"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.14",
+      "status": "published_writer",
+      "packageVersion": "0.14.0",
+      "tag": "v0.14.0",
+      "commit": "5f54ddc1e1389a6e419c93056b2d46aaae998da4",
+      "npmIntegrity": "sha512-jnxFllprHk6OI0l5vKssIrPYerng+DR3tM4HLT5/ze7c6juotf8T/dmhOhsqcqT5fE0B74j9CsiFZ4AGXEn7SA==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.14-minimal.json",
+          "sha256": "e86e3ebb5e239254080dfb45d0ce015909967046011be375a9249bafb706f558"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.15",
+      "status": "published_writer",
+      "packageVersion": "0.14.2",
+      "tag": "v0.14.2",
+      "commit": "4d806abaacfbd0434cfa1454b2284ad4b2fdfcc9",
+      "npmIntegrity": "sha512-THeFCwm45ajgh62PigjQMpc+DyABGdtF/x8iHRcevpGnkFW1zCckQrlFPO7Hpn+fOHiJZueS7KPgBM30grMYqA==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.15-minimal.json",
+          "sha256": "4c1863618034ec3d917dda7c2f566040b5878f0d7823e29d0f2a7719b820e89c"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.16",
+      "status": "published_reader_only",
+      "firstReaderPackageVersion": "0.14.3",
+      "tag": "v0.14.3",
+      "commit": "94a3edc3e5318fdbc4ceb045df4dad934ca4ab2b",
+      "reason": "No published package emitted schema 1.16; v0.14.3 emitted schema 1.17."
+    },
+    {
+      "schemaVersion": "1.17",
+      "status": "published_writer",
+      "packageVersion": "0.14.3",
+      "tag": "v0.14.3",
+      "commit": "94a3edc3e5318fdbc4ceb045df4dad934ca4ab2b",
+      "npmIntegrity": "sha512-5tJnFL4Ei34GtArVatM9TUtILDYUXJ2/H0+9jIU8B7y5eINjrQtajmeaudFHmxA4/t7blRgG1SuKQfoA0FPy7A==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.17-minimal.json",
+          "sha256": "a5e0ed7c1a65deecfc771e6fa9ea3c60de38c976773531b442b4c2ecf8cd5d28"
+        },
+        {
+          "scenario": "side-effect-committed",
+          "kind": "resume",
+          "path": "historical/v1.17-side-effect-committed.json",
+          "sha256": "8cc382d6532b4421f564488b03dfaedf65f3a3960b5ebc084aa2a4475611ca93"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.18",
+      "status": "current_unreleased",
+      "commit": "49fe593b603410e713f67cf853a578e61d480b48",
+      "reason": "Supported on main but not emitted by the latest released package v0.14.3."
+    }
+  ],
+  "expectedNormalizedFixtures": [
+    {
+      "sourceSchemaVersion": "1.0",
+      "path": "expected/v1.0-normalized-current.json",
+      "sha256": "114f59b4c2a6a52fa1597a61c9cbfed52f003e8d57e7c55dfa5a31586416515f"
+    }
+  ],
+  "negativeFixtures": [
+    {
+      "scenario": "missing-schema",
+      "path": "negative/missing-schema.json",
+      "sha256": "e04b9a21f11a373d753edbba13974eeb352e2028bae21c9070ec1d05f5d0315d",
+      "expectedError": "schema version"
+    },
+    {
+      "scenario": "future-schema",
+      "path": "negative/future-schema.json",
+      "sha256": "e7c10a0950ab76e2cefcab9377e27c1dd6c679df654d494af4642bb96b6ba9de",
+      "expectedError": "schema version"
+    },
+    {
+      "scenario": "malformed-schema",
+      "path": "negative/malformed-schema.json",
+      "sha256": "55bf752f9aeb49a288019e7b3d8b24cd304d3a56261e0bc22dbb2f677f9dff4c",
+      "expectedError": "schema version"
+    },
+    {
+      "scenario": "pre-1.8-tool-search",
+      "path": "negative/pre-1.8-tool-search.json",
+      "sha256": "371b05068f2961cba458761caceebcf5f4de7ccb7c36ad45a11ea99fd4478606",
+      "expectedError": "does not support tool_search items"
+    },
+    {
+      "scenario": "v1.14-sandbox-v2",
+      "path": "negative/v1.14-sandbox-v2.json",
+      "sha256": "00df8d036ae318f6dde2c3c98d94edc16ee95e4e92fecb1ebbff86f8d4c842a4",
+      "expectedError": "does not support sandbox session state version 2"
+    },
+    {
+      "scenario": "v1.17-sandbox-v3",
+      "path": "negative/v1.17-sandbox-v3.json",
+      "sha256": "686c6b8e7deafce9afcb306acbeebef180e74fa9921e9cebcac74186981dce0c",
+      "expectedError": "does not support sandbox session state version 3"
+    },
+    {
+      "scenario": "prototype-key",
+      "path": "negative/prototype-key.json",
+      "sha256": "ff0860ddeaa6ffd8e590fcf2e6b3fb17c58c3986bfd57862b5199ee93159e347",
+      "expectedError": ""
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "$schemaVersion": "1.0",
+  "currentTurn": 0,
+  "currentAgent": {
+    "name": "HistoricalAgent"
+  },
+  "originalInput": "hello",
+  "modelResponses": [],
+  "context": {
+    "usage": {
+      "requests": 0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "totalTokens": 0
+    },
+    "approvals": {},
+    "context": {
+      "fixture": "minimal"
+    }
+  },
+  "toolUseTracker": {},
+  "maxTurns": 3,
+  "noActiveAgentRun": true,
+  "inputGuardrailResults": [],
+  "outputGuardrailResults": [],
+  "generatedItems": [],
+  "trace": null
+}

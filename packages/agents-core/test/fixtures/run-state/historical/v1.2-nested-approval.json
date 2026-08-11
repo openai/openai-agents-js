@@ -1,0 +1,178 @@
+{
+  "$schemaVersion": "1.2",
+  "currentTurn": 1,
+  "currentAgent": {
+    "name": "OuterAgent"
+  },
+  "originalInput": "start",
+  "modelResponses": [
+    {
+      "usage": {
+        "requests": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "inputTokensDetails": [],
+        "outputTokensDetails": []
+      },
+      "output": [
+        {
+          "providerData": {},
+          "id": "fc_outer-call",
+          "type": "function_call",
+          "callId": "outer-call",
+          "name": "nested_tool",
+          "status": "completed",
+          "arguments": "{\"input\":\"hello\"}"
+        }
+      ],
+      "responseId": "fixture-response"
+    }
+  ],
+  "context": {
+    "usage": {
+      "requests": 0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "totalTokens": 0,
+      "inputTokensDetails": [],
+      "outputTokensDetails": []
+    },
+    "approvals": {},
+    "context": {}
+  },
+  "toolUseTracker": {
+    "OuterAgent": ["nested_tool"]
+  },
+  "maxTurns": 10,
+  "noActiveAgentRun": false,
+  "inputGuardrailResults": [],
+  "outputGuardrailResults": [],
+  "toolInputGuardrailResults": [],
+  "toolOutputGuardrailResults": [],
+  "currentTurnInProgress": true,
+  "currentStep": {
+    "type": "next_step_interruption",
+    "data": {
+      "interruptions": [
+        {
+          "type": "tool_approval_item",
+          "rawItem": {
+            "id": "fc_nested-call",
+            "type": "function_call",
+            "name": "secure_tool",
+            "callId": "nested-call",
+            "status": "completed",
+            "arguments": "{\"text\":\"sentinel\"}",
+            "providerData": {}
+          },
+          "agent": {
+            "name": "NestedAgent"
+          },
+          "toolName": "secure_tool"
+        }
+      ]
+    }
+  },
+  "lastModelResponse": {
+    "usage": {
+      "requests": 0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "totalTokens": 0,
+      "inputTokensDetails": [],
+      "outputTokensDetails": []
+    },
+    "output": [
+      {
+        "providerData": {},
+        "id": "fc_outer-call",
+        "type": "function_call",
+        "callId": "outer-call",
+        "name": "nested_tool",
+        "status": "completed",
+        "arguments": "{\"input\":\"hello\"}"
+      }
+    ],
+    "responseId": "fixture-response"
+  },
+  "generatedItems": [
+    {
+      "type": "tool_call_item",
+      "rawItem": {
+        "providerData": {},
+        "id": "fc_outer-call",
+        "type": "function_call",
+        "callId": "outer-call",
+        "name": "nested_tool",
+        "status": "completed",
+        "arguments": "{\"input\":\"hello\"}"
+      },
+      "agent": {
+        "name": "OuterAgent"
+      }
+    }
+  ],
+  "pendingAgentToolRuns": {
+    "nested_tool:outer-call": "{\"$schemaVersion\":\"1.2\",\"currentTurn\":1,\"currentAgent\":{\"name\":\"NestedAgent\"},\"originalInput\":\"hello\",\"modelResponses\":[{\"usage\":{\"requests\":0,\"inputTokens\":0,\"outputTokens\":0,\"totalTokens\":0,\"inputTokensDetails\":[],\"outputTokensDetails\":[]},\"output\":[{\"providerData\":{},\"id\":\"fc_nested-call\",\"type\":\"function_call\",\"callId\":\"nested-call\",\"name\":\"secure_tool\",\"status\":\"completed\",\"arguments\":\"{\\\"text\\\":\\\"sentinel\\\"}\"}],\"responseId\":\"fixture-response\"}],\"context\":{\"usage\":{\"requests\":0,\"inputTokens\":0,\"outputTokens\":0,\"totalTokens\":0,\"inputTokensDetails\":[],\"outputTokensDetails\":[]},\"approvals\":{},\"context\":{\"nested\":true}},\"toolUseTracker\":{\"NestedAgent\":[\"secure_tool\"]},\"maxTurns\":10,\"noActiveAgentRun\":false,\"inputGuardrailResults\":[],\"outputGuardrailResults\":[],\"toolInputGuardrailResults\":[],\"toolOutputGuardrailResults\":[],\"currentTurnInProgress\":true,\"currentStep\":{\"type\":\"next_step_interruption\",\"data\":{\"interruptions\":[{\"type\":\"tool_approval_item\",\"rawItem\":{\"id\":\"fc_nested-call\",\"type\":\"function_call\",\"name\":\"secure_tool\",\"callId\":\"nested-call\",\"status\":\"completed\",\"arguments\":\"{\\\"text\\\":\\\"sentinel\\\"}\",\"providerData\":{}},\"agent\":{\"name\":\"NestedAgent\"},\"toolName\":\"secure_tool\"}]}},\"lastModelResponse\":{\"usage\":{\"requests\":0,\"inputTokens\":0,\"outputTokens\":0,\"totalTokens\":0,\"inputTokensDetails\":[],\"outputTokensDetails\":[]},\"output\":[{\"providerData\":{},\"id\":\"fc_nested-call\",\"type\":\"function_call\",\"callId\":\"nested-call\",\"name\":\"secure_tool\",\"status\":\"completed\",\"arguments\":\"{\\\"text\\\":\\\"sentinel\\\"}\"}],\"responseId\":\"fixture-response\"},\"generatedItems\":[{\"type\":\"tool_call_item\",\"rawItem\":{\"providerData\":{},\"id\":\"fc_nested-call\",\"type\":\"function_call\",\"callId\":\"nested-call\",\"name\":\"secure_tool\",\"status\":\"completed\",\"arguments\":\"{\\\"text\\\":\\\"sentinel\\\"}\"},\"agent\":{\"name\":\"NestedAgent\"}},{\"type\":\"tool_approval_item\",\"rawItem\":{\"providerData\":{},\"id\":\"fc_nested-call\",\"type\":\"function_call\",\"callId\":\"nested-call\",\"name\":\"secure_tool\",\"status\":\"completed\",\"arguments\":\"{\\\"text\\\":\\\"sentinel\\\"}\"},\"agent\":{\"name\":\"NestedAgent\"},\"toolName\":\"secure_tool\"}],\"pendingAgentToolRuns\":{},\"lastProcessedResponse\":{\"newItems\":[{\"type\":\"tool_call_item\",\"rawItem\":{\"providerData\":{},\"id\":\"fc_nested-call\",\"type\":\"function_call\",\"callId\":\"nested-call\",\"name\":\"secure_tool\",\"status\":\"completed\",\"arguments\":\"{\\\"text\\\":\\\"sentinel\\\"}\"},\"agent\":{\"name\":\"NestedAgent\"}}],\"toolsUsed\":[\"secure_tool\"],\"handoffs\":[],\"functions\":[{\"toolCall\":{\"id\":\"fc_nested-call\",\"type\":\"function_call\",\"name\":\"secure_tool\",\"callId\":\"nested-call\",\"status\":\"completed\",\"arguments\":\"{\\\"text\\\":\\\"sentinel\\\"}\",\"providerData\":{}},\"tool\":{\"type\":\"function\",\"name\":\"secure_tool\",\"description\":\"Requires approval.\",\"parameters\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"],\"additionalProperties\":false},\"strict\":true,\"inputGuardrails\":[],\"outputGuardrails\":[]}}],\"computerActions\":[],\"shellActions\":[],\"applyPatchActions\":[],\"mcpApprovalRequests\":[]},\"currentTurnPersistedItemCount\":0,\"trace\":null}"
+  },
+  "lastProcessedResponse": {
+    "newItems": [
+      {
+        "type": "tool_call_item",
+        "rawItem": {
+          "providerData": {},
+          "id": "fc_outer-call",
+          "type": "function_call",
+          "callId": "outer-call",
+          "name": "nested_tool",
+          "status": "completed",
+          "arguments": "{\"input\":\"hello\"}"
+        },
+        "agent": {
+          "name": "OuterAgent"
+        }
+      }
+    ],
+    "toolsUsed": ["nested_tool"],
+    "handoffs": [],
+    "functions": [
+      {
+        "toolCall": {
+          "id": "fc_outer-call",
+          "type": "function_call",
+          "name": "nested_tool",
+          "callId": "outer-call",
+          "status": "completed",
+          "arguments": "{\"input\":\"hello\"}",
+          "providerData": {}
+        },
+        "tool": {
+          "type": "function",
+          "name": "nested_tool",
+          "description": "Nested agent tool.",
+          "parameters": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "string"
+              }
+            },
+            "required": ["input"],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "inputGuardrails": [],
+          "outputGuardrails": []
+        }
+      }
+    ],
+    "computerActions": [],
+    "shellActions": [],
+    "applyPatchActions": [],
+    "mcpApprovalRequests": []
+  },
+  "currentTurnPersistedItemCount": 0,
+  "trace": null
+}

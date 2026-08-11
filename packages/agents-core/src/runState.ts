@@ -159,7 +159,7 @@ import {
  *   and accepted-response resume state.
  */
 export const CURRENT_SCHEMA_VERSION = '1.18' as const;
-const SUPPORTED_SCHEMA_VERSIONS = [
+export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
   '1.2',
