@@ -282,6 +282,51 @@ describe('realtime utils', () => {
     }
   });
 
+  it('seeds a placeholder user message when a tool call pre-empts item seeding', () => {
+    const history: RealtimeMessageItem[] = [];
+
+    const event: InputAudioTranscriptionCompletedEvent = {
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'u-tool-call',
+      transcript: 'book a flight to paris',
+    };
+
+    const updated = updateRealtimeHistory(history, event, true);
+    expect(updated).toHaveLength(1);
+    const seeded = updated[0] as RealtimeMessageItem;
+    expect(seeded.itemId).toBe('u-tool-call');
+    expect(seeded.role).toBe('user');
+    expect(seeded.status).toBe('completed');
+    expect((seeded.content[0] as any).type).toBe('input_audio');
+    expect((seeded.content[0] as any).transcript).toBe('book a flight to paris');
+  });
+
+  it('keeps the user transcript when the item is not yet in history', () => {
+    const history: RealtimeMessageItem[] = [
+      {
+        itemId: 'a1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'hi' }],
+      },
+    ];
+
+    const event: InputAudioTranscriptionCompletedEvent = {
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'u1',
+      transcript: 'call the tool',
+    };
+
+    const updated = updateRealtimeHistory(history, event, true);
+    expect(updated).toHaveLength(2);
+    const seeded = updated.find(
+      (item) => item.itemId === 'u1',
+    ) as RealtimeMessageItem;
+    expect(seeded.role).toBe('user');
+    expect((seeded.content[0] as any).transcript).toBe('call the tool');
+  });
+
   it('appends items when previousItemId is missing', () => {
     const history: RealtimeMessageItem[] = [
       {

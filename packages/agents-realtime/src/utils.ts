@@ -239,6 +239,28 @@ export function updateRealtimeHistory(
 ): RealtimeItem[] {
   // Merge transcript into placeholder input_audio message
   if (event.type === 'conversation.item.input_audio_transcription.completed') {
+    const hasUserItem = history.some(
+      (item) =>
+        item.itemId === event.item_id &&
+        item.type === 'message' &&
+        'role' in item &&
+        item.role === 'user',
+    );
+
+    if (!hasUserItem) {
+      // The user item has not been committed to history yet (e.g. the utterance
+      // triggered a tool call before the transcript was emitted). Seed a
+      // placeholder user message so the transcript is not dropped.
+      const seededItem: RealtimeMessageItem = {
+        itemId: event.item_id,
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [{ type: 'input_audio', transcript: event.transcript }],
+      };
+      return [...history, seededItem];
+    }
+
     return history.map((item) => {
       if (
         item.itemId === event.item_id &&
