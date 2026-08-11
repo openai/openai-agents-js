@@ -47,7 +47,10 @@ import {
   cachedMcpTools as _cachedTools,
 } from './mcpToolCache';
 import { getToolCallParentSpanFromDetails } from './agentToolRunConfig';
-import { assertOpenAIStrictToolSchemaPreservesOpenObjects } from './utils/strictToolSchema';
+import {
+  assertOpenAIStrictToolSchemaPreservesOpenObjects,
+  isJsonSchemaDepthError,
+} from './utils/strictToolSchema';
 
 export {
   BaseMCPServerSSE,
@@ -1269,6 +1272,9 @@ export function mcpToFunctionTool(
         },
       });
     } catch (e) {
+      if (convertSchemasToStrict && isJsonSchemaDepthError(e)) {
+        throw e;
+      }
       preserveSchemaOnFallback = true;
       logToolActionWarning(
         globalLogger,

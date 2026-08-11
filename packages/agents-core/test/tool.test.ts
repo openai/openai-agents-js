@@ -31,6 +31,106 @@ interface Bar {
   bar: string;
 }
 
+const SCHEMA_DEPTH_ERROR =
+  'JSON schema is too deeply nested to process safely. Simplify or flatten the schema, or disable strict mode.';
+
+function createNestedObjectSchema(depth: number): Record<string, any> {
+  const root = {
+    type: 'object',
+    properties: {},
+    required: [],
+  } as Record<string, any>;
+  let current = root;
+
+  for (let index = 0; index < depth; index += 1) {
+    const child = {
+      type: 'object',
+      properties: {},
+      required: [],
+    };
+    current.properties.child = child;
+    current = child;
+  }
+
+  return root;
+}
+
+function createSegmentedReferenceSchema(): Record<string, any> {
+  const definitions: Record<string, Record<string, unknown>> = {
+    terminal: { type: 'string' },
+  };
+  const properties: Record<string, Record<string, unknown>> = {};
+  const required: string[] = [];
+  let previousReference = '#/$defs/terminal';
+
+  for (let segment = 0; segment < 2; segment += 1) {
+    for (let index = 0; index < 60; index += 1) {
+      const name = `segment${segment}_${index}`;
+      definitions[name] = {
+        $ref:
+          index < 59
+            ? `#/$defs/segment${segment}_${index + 1}`
+            : previousReference,
+      };
+    }
+    previousReference = `#/$defs/segment${segment}_0`;
+    const checkpoint = `checkpoint${segment}`;
+    properties[checkpoint] = { $ref: previousReference };
+    required.push(checkpoint);
+  }
+
+  return { type: 'object', properties, required, $defs: definitions };
+}
+
+function createRecursiveDefinitionSchema(): Record<string, any> {
+  return {
+    type: 'object',
+    properties: {
+      root: { $ref: '#/$defs/node' },
+    },
+    required: ['root'],
+    additionalProperties: false,
+    $defs: {
+      node: {
+        type: 'object',
+        properties: {
+          value: { type: 'string' },
+          children: {
+            type: 'array',
+            items: { $ref: '#/$defs/node' },
+          },
+        },
+        required: ['value', 'children'],
+        additionalProperties: false,
+      },
+    },
+  };
+}
+
+function createWideRecursiveDefinitionSchema(): Record<string, any> {
+  const definitions: Record<string, Record<string, unknown>> = {};
+  for (let index = 0; index < 100; index += 1) {
+    definitions[`node${index}`] = { $ref: '#' };
+  }
+
+  return {
+    type: 'object',
+    properties: {},
+    required: [],
+    additionalProperties: false,
+    $defs: definitions,
+  };
+}
+
+function captureToolConstructionError(callback: () => unknown): unknown {
+  try {
+    callback();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
 describe('Tool', () => {
   it('create a tool with zod definition', () => {
     const t = tool({
@@ -755,6 +855,90 @@ describe('Tool', () => {
     });
     expect(parameters.properties.nested).not.toHaveProperty('type');
   });
+
+  it('preserves recursive local definitions in strict tools', () => {
+    const parameters = createRecursiveDefinitionSchema();
+    const original = structuredClone(parameters);
+    const execute = vi.fn(async () => 'ok');
+
+    const recursiveTool = tool({
+      name: 'recursive_schema',
+      description: 'Accept a recursive strict schema.',
+      parameters: parameters as any,
+      execute,
+    });
+
+    expect(recursiveTool.strict).toBe(true);
+    expect(recursiveTool.parameters.properties.root).toEqual({
+      $ref: '#/$defs/node',
+    });
+    expect(
+      (recursiveTool.parameters as any).$defs.node.properties.children.items,
+    ).toEqual({ $ref: '#/$defs/node' });
+    expect(parameters).toEqual(original);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('preserves wide shallow recursive definitions in strict tools', () => {
+    const parameters = createWideRecursiveDefinitionSchema();
+    const original = structuredClone(parameters);
+    const execute = vi.fn(async () => 'ok');
+
+    const recursiveTool = tool({
+      name: 'wide_recursive_schema',
+      description: 'Accept a wide recursive strict schema.',
+      parameters: parameters as any,
+      execute,
+    });
+
+    expect(recursiveTool.strict).toBe(true);
+    expect((recursiveTool.parameters as any).$defs.node0).toEqual({
+      $ref: '#',
+    });
+    expect((recursiveTool.parameters as any).$defs.node99).toEqual({
+      $ref: '#',
+    });
+    expect(parameters).toEqual(original);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['physical nesting', () => createNestedObjectSchema(1_000)],
+    ['required-only shared reference suffixes', createSegmentedReferenceSchema],
+  ])(
+    'rejects overly deep strict schemas from %s and preserves non-strict schemas',
+    (_name, createSchema) => {
+      const parameters = createSchema();
+      const execute = vi.fn(async () => 'ok');
+
+      const error = captureToolConstructionError(() =>
+        tool({
+          name: 'overly_deep_strict_schema',
+          description: 'Reject an overly deep strict schema.',
+          parameters: parameters as any,
+          execute,
+        }),
+      );
+
+      expect(error).toBeInstanceOf(UserError);
+      expect(error).not.toBeInstanceOf(RangeError);
+      expect((error as Error).message).toBe(SCHEMA_DEPTH_ERROR);
+      expect(execute).not.toHaveBeenCalled();
+      expect(parameters).not.toHaveProperty('additionalProperties');
+
+      const nonStrictTool = tool({
+        name: 'overly_deep_non_strict_schema',
+        description: 'Preserve an overly deep non-strict schema.',
+        parameters: parameters as any,
+        strict: false,
+        execute,
+      });
+
+      expect(nonStrictTool.strict).toBe(false);
+      expect(nonStrictTool.parameters).toBe(parameters);
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects typeless open objects when constructing strict tools', () => {
     const parameters: JsonObjectSchema<any> = {
