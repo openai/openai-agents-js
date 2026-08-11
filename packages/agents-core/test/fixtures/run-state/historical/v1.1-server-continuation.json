@@ -1,0 +1,36 @@
+{
+  "$schemaVersion": "1.1",
+  "currentTurn": 0,
+  "currentAgent": {
+    "name": "HistoricalAgent"
+  },
+  "originalInput": "continue",
+  "modelResponses": [],
+  "context": {
+    "usage": {
+      "requests": 0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "totalTokens": 0,
+      "inputTokensDetails": [],
+      "outputTokensDetails": []
+    },
+    "approvals": {},
+    "context": {
+      "fixture": "continuation"
+    }
+  },
+  "toolUseTracker": {},
+  "maxTurns": 4,
+  "noActiveAgentRun": true,
+  "inputGuardrailResults": [],
+  "outputGuardrailResults": [],
+  "toolInputGuardrailResults": [],
+  "toolOutputGuardrailResults": [],
+  "currentTurnInProgress": true,
+  "generatedItems": [],
+  "currentTurnPersistedItemCount": 0,
+  "conversationId": "conversation-historical",
+  "previousResponseId": "response-historical",
+  "trace": null
+}

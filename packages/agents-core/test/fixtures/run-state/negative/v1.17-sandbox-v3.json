@@ -1,0 +1,49 @@
+{
+  "$schemaVersion": "1.17",
+  "currentTurn": 0,
+  "currentAgent": {
+    "name": "HistoricalAgent"
+  },
+  "originalInput": "hello",
+  "modelResponses": [],
+  "context": {
+    "usage": {
+      "requests": 0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "totalTokens": 0,
+      "inputTokensDetails": [],
+      "outputTokensDetails": []
+    },
+    "approvals": {},
+    "context": {
+      "fixture": "minimal"
+    }
+  },
+  "toolUseTracker": {},
+  "maxTurns": 3,
+  "noActiveAgentRun": true,
+  "inputGuardrailResults": [],
+  "outputGuardrailResults": [],
+  "toolInputGuardrailResults": [],
+  "toolOutputGuardrailResults": [],
+  "currentTurnInProgress": false,
+  "generatedItems": [],
+  "pendingAgentToolRuns": {},
+  "pendingAgentToolRunAliases": {},
+  "currentTurnPersistedItemCount": 0,
+  "trace": null,
+  "sandbox": {
+    "backendId": "fixture-sandbox",
+    "currentAgentKey": "HistoricalAgent",
+    "currentAgentName": "HistoricalAgent",
+    "sessionState": {
+      "version": 3,
+      "backendId": "fixture-sandbox",
+      "manifest": {},
+      "workspaceReady": true,
+      "providerState": {}
+    },
+    "sessionsByAgent": {}
+  }
+}

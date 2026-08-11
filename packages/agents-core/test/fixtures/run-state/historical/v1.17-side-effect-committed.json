@@ -1,0 +1,114 @@
+{
+  "$schemaVersion": "1.17",
+  "currentTurn": 1,
+  "currentAgent": {
+    "name": "SideEffectAgent"
+  },
+  "originalInput": "run once",
+  "modelResponses": [
+    {
+      "usage": {
+        "requests": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "inputTokensDetails": [],
+        "outputTokensDetails": []
+      },
+      "output": [
+        {
+          "providerData": {},
+          "id": "fc_side-effect-call",
+          "type": "function_call",
+          "callId": "side-effect-call",
+          "name": "side_effect_tool",
+          "status": "completed",
+          "arguments": "{}"
+        }
+      ],
+      "responseId": "side-effect-response"
+    }
+  ],
+  "context": {
+    "usage": {
+      "requests": 0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "totalTokens": 0,
+      "inputTokensDetails": [],
+      "outputTokensDetails": []
+    },
+    "approvals": {},
+    "context": {
+      "fixture": "side-effect"
+    }
+  },
+  "toolUseTracker": {},
+  "maxTurns": 3,
+  "noActiveAgentRun": false,
+  "inputGuardrailResults": [],
+  "outputGuardrailResults": [],
+  "toolInputGuardrailResults": [],
+  "toolOutputGuardrailResults": [],
+  "currentTurnInProgress": true,
+  "currentStep": {
+    "type": "next_step_run_again"
+  },
+  "lastModelResponse": {
+    "usage": {
+      "requests": 0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "totalTokens": 0,
+      "inputTokensDetails": [],
+      "outputTokensDetails": []
+    },
+    "output": [
+      {
+        "providerData": {},
+        "id": "fc_side-effect-call",
+        "type": "function_call",
+        "callId": "side-effect-call",
+        "name": "side_effect_tool",
+        "status": "completed",
+        "arguments": "{}"
+      }
+    ],
+    "responseId": "side-effect-response"
+  },
+  "generatedItems": [
+    {
+      "type": "tool_call_item",
+      "rawItem": {
+        "providerData": {},
+        "id": "fc_side-effect-call",
+        "type": "function_call",
+        "callId": "side-effect-call",
+        "name": "side_effect_tool",
+        "status": "completed",
+        "arguments": "{}"
+      },
+      "agent": {
+        "name": "SideEffectAgent"
+      }
+    },
+    {
+      "type": "tool_call_output_item",
+      "rawItem": {
+        "type": "function_call_result",
+        "name": "side_effect_tool",
+        "callId": "side-effect-call",
+        "status": "completed",
+        "output": "side effect completed"
+      },
+      "agent": {
+        "name": "SideEffectAgent"
+      },
+      "output": "side effect completed"
+    }
+  ],
+  "pendingAgentToolRuns": {},
+  "pendingAgentToolRunAliases": {},
+  "currentTurnPersistedItemCount": 0,
+  "trace": null
+}
