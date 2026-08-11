@@ -13,25 +13,29 @@ OpenAI Agents SDK 支持以下服务器环境：
 
 ### 有限支持
 
-- **Cloudflare Workers**：Agents SDK 可在 Cloudflare Workers 中使用，但目前存在一些限制：
-  - SDK 当前要求启用 `nodejs_compat`
-  - 必须在请求结束时手动刷新追踪数据。有关更多详细信息，请参阅[追踪](/openai-agents-js/zh/guides/tracing#export-loop-lifecycle)。
-  - 由于 Cloudflare Workers 对 `AsyncLocalStorage` 的支持有限，某些追踪数据可能不准确
-  - 出站 WebSocket 连接必须使用基于 fetch 的升级机制（而不是全局 `WebSocket` 构造函数）。对于 Realtime，请使用 `@openai/agents-extensions` 中的 Cloudflare 传输层（`CloudflareRealtimeTransportLayer`）。
+- **Cloudflare Workers**：Agents SDK 可用于 Cloudflare Workers，但目前存在一些限制：
+  - SDK 目前要求启用 `nodejs_compat`
+  - 需要在请求结束时手动刷新追踪。有关更多详细信息，请参阅[追踪指南](/openai-agents-js/zh/guides/tracing#export-loop-lifecycle)。
+  - 由于 Cloudflare Workers 对 `AsyncLocalStorage` 的支持有限，部分追踪可能不准确
+  - 出站 WebSocket 连接必须使用基于 fetch 的升级方式（而非全局 `WebSocket` 构造函数）。对于实时应用，请使用 `@openai/agents-extensions` 中的 Cloudflare 传输层（`CloudflareRealtimeTransportLayer`）。
 - **Responses API WebSocket 传输**：
   - 需要全局 `WebSocket` 实现。
-  - `WebSocket` 实现必须支持在握手时使用自定义标头。
-  - 许多浏览器风格的 WebSocket API（以及一些边缘运行时）不支持自定义出站标头。在这些环境中，请改用默认的 HTTP Responses 传输。
-  - 如果出现错误，提示缺少全局 `WebSocket` 实现或不支持自定义标头，则说明运行时的 WebSocket 实现与 Responses WebSocket 传输不兼容。
+  - `WebSocket` 实现必须支持为握手设置自定义标头。
+  - 许多浏览器风格的 WebSocket API（以及部分边缘运行时）不支持自定义出站标头。在这些环境中，请改用默认的 HTTP Responses 传输。
+  - 如果看到错误提示缺少全局 `WebSocket` 实现或不支持自定义标头，则表示运行时的 WebSocket 实现与 Responses WebSocket 传输不兼容。
 - **浏览器**：
-  - 核心 SDK 可以打包后在浏览器中使用，但浏览器环境默认禁用追踪。
-- **v8 隔离实例**：
-  - 如果使用带有适当浏览器 polyfill 的打包工具，应该能够为 v8 隔离实例打包 SDK，但追踪将无法工作
-  - v8 隔离实例尚未经过广泛测试
+  - 核心 SDK 可以打包供浏览器使用，但默认会禁用追踪。
+- **React Native**：
+  - `@openai/agents-core` 和 `@openai/agents-realtime` 为可移植 shim 提供 React Native 包条件，但内置的 `OpenAIRealtimeWebRTC` 仍仅支持浏览器。
+  - 实时应用必须提供由原生 WebRTC 实现（例如 `react-native-webrtc`）支持的应用自有传输层，并且应用仍需负责权限、音频路由和传输生命周期。
+  - Expo Go 无法加载原生 WebRTC 模块。请使用 Expo 开发构建或原生 React Native 项目。请参阅 [`examples/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-react-native) 代码示例。
+- **v8 隔离环境**：
+  - 如果使用带有适当浏览器 polyfill 的打包工具，应该可以为 v8 隔离环境打包 SDK，但追踪将无法正常工作
+  - v8 隔离环境尚未经过广泛测试
 
 ## 调试日志
 
-如果您在使用 SDK 时遇到问题，可以启用调试日志，以获取有关当前状况的更多信息。
+如果您在使用 SDK 时遇到问题，可以启用调试日志以获取有关当前情况的更多信息。
 
 将 `DEBUG` 环境变量设置为 `openai-agents:*`，即可启用调试日志。
 
@@ -39,10 +43,10 @@ OpenAI Agents SDK 支持以下服务器环境：
 DEBUG=openai-agents:*
 ```
 
-默认情况下，模型和工具数据仍会被隐去。如果需要这些详细信息，请参阅[日志中的敏感数据](/openai-agents-js/zh/guides/config#sensitive-data-in-logs)，并且仅在日志得到安全处理时选择启用。
+默认情况下，模型和工具数据仍会被遮蔽。如果需要查看这些详细信息，请参阅[日志中的敏感数据](/openai-agents-js/zh/guides/config#sensitive-data-in-logs)，并且仅在能够安全处理日志的环境中选择启用。
 
-您也可以将调试范围限定到 SDK 的特定部分：
+或者，您可以将调试范围限定到 SDK 的特定部分：
 
-- `openai-agents:core` — 用于 SDK 的主要执行逻辑
-- `openai-agents:openai` — 用于 OpenAI API 调用
-- `openai-agents:realtime` — 用于 Realtime Agents 组件
+- `openai-agents:core` —— 用于 SDK 的主要执行逻辑
+- `openai-agents:openai` —— 用于 OpenAI API 调用
+- `openai-agents:realtime` —— 用于实时智能体组件

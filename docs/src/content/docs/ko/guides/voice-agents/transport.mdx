@@ -11,69 +11,78 @@ import transportEventsExample from '../../../../../../../examples/docs/voice-age
 import thinClientExample from '../../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
 import cloudflareTransportExample from '../../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-세션이 실행되는 위치와 원문 미디어 또는 이벤트를 얼마나 세밀하게 제어해야 하는지에 따라 전송 방식을 선택하세요.
+세션이 실행되는 위치와 원문 미디어 또는 이벤트를 어느 정도까지 제어해야 하는지에 따라 전송 방식을 선택합니다.
 
 | 시나리오 | 권장 전송 방식 | 이유 |
 | --- | --- | --- |
-| 브라우저 음성 대 음성 앱 | `OpenAIRealtimeWebRTC` | 가장 간편한 경로입니다. SDK가 마이크 캡처, 재생, WebRTC 연결을 대신 관리합니다. |
-| 서버 측 음성 루프 또는 사용자 지정 오디오 파이프라인 | `OpenAIRealtimeWebSocket` | 오디오 캡처와 재생을 이미 제어하고 있으며 이벤트에 직접 액세스하려는 경우에 적합합니다. |
-| SIP 또는 전화 통신 브리지 | `OpenAIRealtimeSIP` | `callId`를 사용하여 기존 SIP 기반 Realtime 통화에 `RealtimeSession`을 연결합니다. |
-| Cloudflare Workers / workerd | Cloudflare 확장 전송 방식 | workerd는 전역 `WebSocket` 생성자로 아웃바운드 WebSocket을 열 수 없습니다. |
-| Twilio의 제공업체별 전화 흐름 | Twilio 확장 전송 방식 | Twilio 오디오 전달과 인터럽션(중단 처리) 동작을 대신 처리합니다. |
+| 브라우저 음성 대 음성 앱 | `OpenAIRealtimeWebRTC` | 가장 간편한 방식입니다. SDK가 마이크 캡처, 재생, WebRTC 연결을 대신 관리합니다. |
+| React Native 모바일 앱 | 네이티브 WebRTC 기반의 앱 소유 `RealtimeTransportLayer` | SDK는 React Native 패키지 조건을 제공하며, 앱이 네이티브 WebRTC, 권한, 오디오 라우팅, 수명 주기를 관리합니다. |
+| 서버 측 음성 루프 또는 사용자 정의 오디오 파이프라인 | `OpenAIRealtimeWebSocket` | 오디오 캡처와 재생을 이미 직접 제어하고 있으며 이벤트에 직접 접근하려는 경우에 적합합니다. |
+| SIP 또는 전화 통신 브리지 | `OpenAIRealtimeSIP` | `callId`를 통해 `RealtimeSession`을 기존 SIP 시작 Realtime 통화에 연결합니다. |
+| Cloudflare Workers / workerd | Cloudflare 확장 전송 방식 | workerd에서는 전역 `WebSocket` 생성자로 아웃바운드 WebSocket을 열 수 없습니다. |
+| Twilio의 공급자별 전화 통화 흐름 | Twilio 확장 전송 방식 | Twilio 오디오 전달과 인터럽션(중단 처리) 동작을 대신 처리합니다. |
 
 <Aside type="note">
-  브라우저 제품을 구축 중이고 원문 오디오를 직접 관리해야 할 이유가 없다면
-  WebRTC로 시작하세요. 서버에서 실행하거나 다른 미디어 시스템을 브리지하는
-  경우에는 WebSocket 또는 SIP로 시작하세요.
+  브라우저 제품을 구축하면서 원문 오디오를 직접 관리해야 할 이유가 없다면
+  WebRTC로 시작합니다. 서버에서 실행하거나 다른 미디어 시스템을 브리지하는 경우
+  WebSocket 또는 SIP로 시작합니다.
 </Aside>
 
 ## 기본 전송 계층
 
 ### 브라우저 기본 선택지인 WebRTC
 
-기본 브라우저 전송 방식은 WebRTC를 사용합니다. 마이크의 오디오가 자동으로 캡처되고 재생되므로 [빠른 시작](/openai-agents-js/ko/guides/voice-agents/quickstart)에서는 임시 토큰과 `session.connect(...)`만으로 연결할 수 있습니다.
+기본 브라우저 전송 방식은 WebRTC를 사용합니다. 마이크에서 오디오를 캡처하고 자동으로 재생하므로 [빠른 시작](/openai-agents-js/ko/guides/voice-agents/quickstart)에서는 임시 토큰과 `session.connect(...)`만으로 연결할 수 있습니다.
 
-이 경로에서 `session.connect()`는 resolve되기 전에 초기 세션 설정이 `session.updated`로 확인될 때까지 대기하려고 하므로 오디오 흐름이 시작되기 전에 instructions와 tools가 적용됩니다. 해당 확인이 도착하지 않는 경우를 위한 타임아웃 대체 처리도 제공됩니다.
+이 방식에서 `session.connect()`는 완료되기 전에 초기 세션 설정이 `session.updated`로 확인될 때까지 기다리려고 하므로 오디오 스트리밍이 시작되기 전에 instructions와 tools가 적용됩니다. 확인 응답이 도착하지 않는 경우를 위한 시간 초과 대체 동작도 있습니다.
 
-자체 미디어 스트림이나 오디오 요소를 사용하려면 세션을 생성할 때 `OpenAIRealtimeWebRTC` 인스턴스를 제공하세요.
+자체 미디어 스트림이나 오디오 요소를 사용하려면 세션을 생성할 때 `OpenAIRealtimeWebRTC` 인스턴스를 제공합니다.
 
 <Code lang="typescript" code={customWebRTCTransportExample} />
 
-더 낮은 수준의 사용자 지정을 위해 `OpenAIRealtimeWebRTC`는 `changePeerConnection`도 허용합니다. 이를 통해 offer가 생성되기 전에 새로 생성된 `RTCPeerConnection`을 검사하거나 교체할 수 있습니다.
+`OpenAIRealtimeWebRTC`에 전달한 `mediaStream`의 소유권은 애플리케이션에 유지됩니다. 전송 방식을 닫아도 해당 스트림의 트랙은 중지되지 않으므로 레벨 미터, 레코더 또는 재연결에 계속 사용할 수 있습니다. 애플리케이션에서 스트림 사용을 실제로 마쳤을 때 트랙의 `stop()`을 호출합니다. 전송 방식이 기본 마이크를 직접 열었다면 `close()`를 호출할 때 SDK가 소유한 해당 트랙은 계속 중지됩니다.
+
+더 낮은 수준에서 사용자 정의하려는 경우 `OpenAIRealtimeWebRTC`는 `changePeerConnection`도 허용하므로 offer가 생성되기 전에 새로 생성된 `RTCPeerConnection`을 검사하거나 교체할 수 있습니다.
+
+### 앱 소유 전송 방식을 사용하는 React Native
+
+`@openai/agents-core`와 `@openai/agents-realtime`은 React Native 패키지 조건을 게시하므로 Metro가 Node.js 내장 기능 없이 이식 가능한 SDK shim을 해석할 수 있습니다. 내장 `OpenAIRealtimeWebRTC`는 브라우저 WebRTC 전역 객체와 DOM 오디오 요소에 의존하므로 브라우저 전송 방식으로 유지됩니다. React Native에서는 네이티브 WebRTC 구현을 설치하고 직접 관리한 다음, 사용자 정의 `RealtimeTransportLayer`를 통해 `RealtimeSession`에 연결합니다.
+
+[`examples/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-react-native) Expo 개발 빌드 예제에서는 앱 소유 `react-native-webrtc` 전송 방식, 마이크 권한, 오디오 라우팅, 서버 측 임시 토큰 엔드포인트를 보여 줍니다. `react-native-webrtc`에 네이티브 코드가 포함되어 있으므로 Expo Go는 지원되지 않습니다. 표준 OpenAI API 키는 서버에 보관하고 수명이 짧은 임시 클라이언트 토큰만 모바일 앱에 전달합니다.
 
 ### 서버 기본 선택지인 WebSocket
 
-WebRTC 대신 WebSocket 연결을 사용하려면 세션을 생성할 때 `transport: 'websocket'` 또는 `OpenAIRealtimeWebSocket` 인스턴스를 전달하세요. 서버 측 사용 사례, 전화 통신 브리지, 사용자 지정 오디오 파이프라인에 적합합니다.
+세션을 생성할 때 `transport: 'websocket'` 또는 `OpenAIRealtimeWebSocket` 인스턴스를 전달하면 WebRTC 대신 WebSocket 연결을 사용합니다. 이 방식은 서버 측 사용 사례, 전화 통신 브리지, 사용자 정의 오디오 파이프라인에 적합합니다.
 
-WebSocket 경로에서 `session.connect()`는 소켓이 열리고 초기 설정이 전송되면 resolve됩니다. 이에 대응하는 `session.updated` 이벤트는 약간 나중에 도착할 수 있으므로 `connect()`가 완료되었다고 해서 해당 업데이트가 이미 반환되었다고 가정하지 마세요.
+WebSocket 방식에서 `session.connect()`는 소켓이 열리고 초기 설정이 전송되면 완료됩니다. 이에 대응하는 `session.updated` 이벤트는 약간 늦게 도착할 수 있으므로 `connect()`가 완료되었다고 해서 해당 업데이트가 이미 되돌아왔다고 가정해서는 안 됩니다.
 
 <Code lang="typescript" code={websocketSessionExample} />
 
-원문 PCM16 오디오 바이트를 처리하려면 원하는 녹음/재생 라이브러리를 사용하세요.
+원문 PCM16 오디오 바이트는 원하는 녹음 및 재생 라이브러리로 처리합니다.
 
-고급 연동을 위해 `OpenAIRealtimeWebSocket`은 자체 소켓 구현을 제공할 수 있는 `createWebSocket()`과 사용자 지정 커넥터가 소켓을 연결 상태로 전환하는 역할을 담당할 때 사용하는 `skipOpenEventListeners`를 지원합니다. `@openai/agents-extensions`의 Cloudflare 전송 방식은 이러한 훅을 기반으로 구축되었습니다.
+고급 연동을 위해 `OpenAIRealtimeWebSocket`은 자체 소켓 구현을 제공할 수 있는 `createWebSocket()`과 사용자 정의 커넥터가 소켓을 연결된 상태로 전환하는 역할을 담당할 때 사용하는 `skipOpenEventListeners`를 허용합니다. `@openai/agents-extensions`의 Cloudflare 전송 방식은 이러한 훅을 기반으로 구축되었습니다.
 
-### 통화 제공업체와 전화 통신 브리지용 SIP
+### 통화 공급자와 전화 통신 브리지용 SIP
 
-기존 SIP 기반 Realtime 통화에 `RealtimeSession`을 연결하려면 `OpenAIRealtimeSIP`를 사용하세요. 이는 SIP를 인식하는 경량 전송 방식입니다. 오디오는 SIP 통화 자체에서 처리되며 `callId`로 SDK 세션을 연결합니다.
+기존 SIP 시작 Realtime 통화에 `RealtimeSession`을 연결하려면 `OpenAIRealtimeSIP`를 사용합니다. 이는 SIP를 인식하는 경량 전송 방식입니다. 오디오는 SIP 통화 자체에서 처리되며, `callId`를 통해 SDK 세션을 연결합니다.
 
 1. `OpenAIRealtimeSIP.buildInitialConfig()`로 초기 세션 설정을 생성하여 수신 통화를 수락합니다. 이렇게 하면 SIP 초대와 이후 SDK 세션이 동일한 기본값으로 시작됩니다.
-2. `OpenAIRealtimeSIP` 전송 방식을 사용하는 `RealtimeSession`을 연결하고 제공업체 웹훅에서 발급한 `callId`로 접속합니다.
-3. 제공업체별 미디어 전달이나 이벤트 브리징이 필요한 경우 Twilio 확장과 같은 연동 전송 방식을 사용하세요.
+2. `OpenAIRealtimeSIP` 전송 방식을 사용하는 `RealtimeSession`을 연결하고 공급자 웹훅에서 발급한 `callId`로 연결합니다.
+3. 공급자별 미디어 전달 또는 이벤트 브리징이 필요한 경우 Twilio 확장과 같은 연동 전송 방식을 사용합니다.
 
 <Aside type="caution">
-  SIP 통화 수락은 Realtime 턴 감지 필드의 일부만 지원합니다. Realtime Calls
-  API가 SIP 세션의 `session.audio.input.turn_detection` 속성을 거부하므로 설정에
-  `threshold`, `prefixPaddingMs`, `silenceDurationMs` 또는 이에 해당하는
-  snake_case 속성이 포함되어 있으면 `OpenAIRealtimeSIP.buildInitialConfig()`가
-  로컬에서 예외를 발생시킵니다.
+  SIP 통화 수락은 Realtime 턴 감지 필드의 일부만 지원합니다. 설정에 `threshold`,
+  `prefixPaddingMs`, `silenceDurationMs` 또는 이에 대응하는 snake_case 필드가
+  포함된 경우 `OpenAIRealtimeSIP.buildInitialConfig()`는 로컬에서 예외를
+  발생시킵니다. Realtime Calls API가 SIP 세션에서 해당
+  `session.audio.input.turn_detection` 속성을 거부하기 때문입니다.
 </Aside>
 
 <Code lang="typescript" code={sipTransportExample} />
 
 ### Cloudflare Workers와 workerd
 
-Cloudflare Workers와 기타 workerd 런타임은 전역 `WebSocket` 생성자를 사용하여 아웃바운드 WebSocket을 열 수 없습니다. 내부적으로 `fetch()` 기반 업그레이드를 수행하는 확장 패키지의 Cloudflare 전송 방식을 사용하세요.
+Cloudflare Workers와 기타 workerd 런타임에서는 전역 `WebSocket` 생성자를 사용하여 아웃바운드 WebSocket을 열 수 없습니다. 내부적으로 `fetch()` 기반 업그레이드를 수행하는 확장 패키지의 Cloudflare 전송 방식을 사용합니다.
 
 <Code lang="typescript" code={cloudflareTransportExample} />
 
@@ -85,24 +94,24 @@ Cloudflare Workers와 기타 workerd 런타임은 전역 `WebSocket` 생성자�
 
 전체 설정은 [Twilio용 Realtime 에이전트](/openai-agents-js/ko/extensions/twilio)를 참조하세요.
 
-### 자체 전송 방식 사용
+### 자체 전송 방식
 
-다른 음성 대 음성 API 또는 자체 사용자 지정 전송 메커니즘을 사용하려면 `RealtimeTransportLayer` 인터페이스를 구현하고 `RealtimeTransportEventTypes` 이벤트를 직접 내보낼 수 있습니다.
+다른 음성 대 음성 API를 사용하거나 자체 사용자 정의 전송 메커니즘이 있는 경우 `RealtimeTransportLayer` 인터페이스를 구현하고 `RealtimeTransportEventTypes` 이벤트를 직접 발생시킬 수 있습니다.
 
-## 필요시 원문 Realtime 이벤트 액세스
+## 필요시 원문 Realtime 이벤트 접근
 
-기반 Realtime API에 더 직접 액세스하려면 두 가지 옵션이 있습니다.
+기반 Realtime API에 더 직접적으로 접근하려는 경우 두 가지 옵션이 있습니다.
 
-### 옵션 1 - 전송 계층 액세스
+### 옵션 1 - 전송 계층 접근
 
-`RealtimeSession`의 모든 기능을 계속 활용하면서 `session.transport`를 통해 전송 계층에 액세스할 수 있습니다.
+`RealtimeSession`의 모든 기능을 계속 활용하면서 `session.transport`를 통해 전송 계층에 접근할 수 있습니다.
 
-전송 계층은 수신하는 모든 이벤트를 `*` 이벤트로 내보내며 `sendEvent()`를 사용하여 원문 이벤트를 전송할 수 있습니다. `*` 리스너는 현재 SDK 스키마가 인식하지 못하는 필드를 포함하여 파싱된 원본 JSON 페이로드의 구조화된 복제본을 수신합니다. 명명된 이벤트 리스너와 파생 이벤트 리스너는 계속해서 검증되고 정규화된 이벤트 객체를 수신합니다. 이는 `session.update`, `response.create`, `response.cancel`과 같은 낮은 수준의 작업을 위한 비상 수단입니다.
+전송 계층은 수신하는 모든 이벤트를 `*` 이벤트로 발생시키며, `sendEvent()`를 사용해 원문 이벤트를 전송할 수 있습니다. `*` 리스너는 현재 SDK 스키마가 인식하지 못하는 필드를 포함하여 원래 파싱된 JSON 페이로드의 구조화된 복제본을 수신합니다. 명명된 이벤트 리스너와 파생 이벤트 리스너는 검증되고 정규화된 이벤트 객체를 계속 수신합니다. 이는 `session.update`, `response.create`, `response.cancel`과 같은 낮은 수준의 작업을 위한 우회 수단입니다.
 
 <Code lang="typescript" code={transportEventsExample} />
 
 ### 옵션 2 - 전송 계층만 사용
 
-자동 도구 실행, 가드레일 또는 로컬 기록 관리가 필요하지 않다면 연결과 인터럽션(중단 처리)만 관리하는 "경량" 클라이언트로 전송 계층을 사용할 수도 있습니다.
+도구 자동 실행, 가드레일 또는 로컬 기록 관리가 필요하지 않은 경우 전송 계층을 연결과 인터럽션(중단 처리)만 관리하는 "경량" 클라이언트로 사용할 수도 있습니다.
 
 <Code lang="typescript" code={thinClientExample} />

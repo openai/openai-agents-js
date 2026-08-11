@@ -14,25 +14,25 @@ import aiSdkUiMessageStreamExample from '../../../../../../examples/docs/extensi
 import aiSdkUiMessageStreamResponseExample from '../../../../../../examples/docs/extensions/ai-sdk-ui-message-stream-response.ts?raw';
 import aiSdkTextStreamResponseExample from '../../../../../../examples/docs/extensions/ai-sdk-text-stream-response.ts?raw';
 
-Agents SDK は標準で、Responses API または Chat Completions API を介して OpenAI モデルと連携します。ただし、別のモデルを使用したい場合は、[Vercel AI SDK](https://sdk.vercel.ai/) がさまざまな対応モデルを提供しており、このアダプターを介して Agents SDK に導入できます。
+Agents SDK は標準で、Responses API または Chat Completions API を介して OpenAI モデルと連携します。ただし、別のモデルを使用する場合は、[Vercel AI SDK](https://sdk.vercel.ai/) がサポートする各種モデルを、このアダプターを介して Agents SDK に導入できます。
 
-## 設定
+## セットアップ
 
 <Steps>
 
-1. extensions パッケージをインストールして、AI SDK アダプターを追加します。
+1. extensions パッケージをインストールして、AI SDK アダプターをインストールします。
 
    ```bash
    npm install @openai/agents-extensions
    ```
 
-2. [Vercel の AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models) から目的のモデルパッケージを選択し、インストールします。
+2. [Vercel の AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models) から使用するモデルパッケージを選択し、インストールします。
 
    ```bash
    npm install @ai-sdk/openai
    ```
 
-3. アダプターとモデルをインポートし、エージェントに接続します。
+3. アダプターとモデルをインポートして、エージェントに接続します。
 
    <Code
      lang="typescript"
@@ -40,7 +40,7 @@ Agents SDK は標準で、Responses API または Chat Completions API を介し
      title="アダプターのインポート"
    />
 
-4. エージェントで使用するモデルのインスタンスを初期化します。
+4. エージェントが使用するモデルのインスタンスを初期化します。
 
    <Code lang="typescript" code={aiSdkModelExample} title="モデルの作成" />
 
@@ -48,11 +48,15 @@ Agents SDK は標準で、Responses API または Chat Completions API を介し
 
 ## コード例
 
-<Code lang="typescript" code={aiSdkSetupExample} title="AI SDK の設定" />
+<Code
+  lang="typescript"
+  code={aiSdkSetupExample}
+  title="AI SDK のセットアップ"
+/>
 
-## プロバイダーメタデータの受け渡し
+## プロバイダーのメタデータの受け渡し
 
-メッセージとともにプロバイダー固有のオプションを送信する必要がある場合は、`providerMetadata` を介して渡します。値は、基盤となる AI SDK モデルへ直接転送されます。たとえば、Agents SDK で次の `providerData` を指定すると、
+メッセージとともにプロバイダー固有のオプションを送信する必要がある場合は、`providerMetadata` を介して渡します。値は基盤となる AI SDK モデルに直接転送されます。たとえば、Agents SDK の次の `providerData` は、
 
 <Code
   lang="typescript"
@@ -60,7 +64,7 @@ Agents SDK は標準で、Responses API または Chat Completions API を介し
   title="Agents SDK の providerData"
 />
 
-AI SDK 連携を使用する場合は、次のようになります。
+AI SDK 連携を使用すると、次のようになります。
 
 <Code
   lang="typescript"
@@ -68,67 +72,85 @@ AI SDK 連携を使用する場合は、次のようになります。
   title="AI SDK の providerMetadata"
 />
 
-## 確定した出力テキストの正規化
+## プロンプトキャッシュの保持
 
-一部のプロバイダーは、JSON コードフェンスなどの余分な囲みを付けたプレーンテキストとして、構造化出力を返します。Agents ランタイムが最終出力を検証する前にプロバイダー固有のクリーンアップが必要な場合は、アダプターの作成時に `transformOutputText` を渡します。
+プロバイダーが `openai.responses` である AI SDK モデルでは、モデルが AI SDK 仕様バージョン v3 または v4 を使用している場合、アダプターはストリーミングリクエストと非ストリーミングリクエストの両方で `modelSettings.promptCacheRetention` を転送します。Agents SDK の値 `'in-memory'` は AI SDK プロバイダーの値 `'in_memory'` に変換され、`'24h'` と `null` は変更されずに転送されます。
+
+AI SDK v2 モデルはこのオプションをサポートしていないため、このオプションが設定されている場合、アダプターはモデルリクエストを行う前に `UserError` を発生させます。明示的な `modelSettings.providerData.providerOptions.openai.promptCacheRetention` の値は `modelSettings.promptCacheRetention` より優先され、アダプターはこの設定を他の AI SDK プロバイダーには転送しません。
+
+この設定は従来の最大保持ポリシーを制御するもので、一部のモデルでのみサポートされています。現在のモデル互換性と新しいキャッシュ有効期間の制御については、[プロンプトキャッシュの保持](https://developers.openai.com/api/docs/guides/prompt-caching#prompt-cache-retention)を参照してください。
+
+## PDF ファイル入力
+
+AI SDK アダプターは、Agents SDK の `input_file` コンテンツを、AI SDK v2、v3、v4 モデルが想定するファイルパート形式に変換します。PDF は次の形式で指定できます。
+
+- `data:application/pdf;base64,...` のような Base64 データ URL
+- `.pdf` ファイル名または `providerData.mediaType` のいずれかを伴う、空でない元の Base64
+- `.pdf` パスまたは `providerData.mediaType` のいずれかを伴う、公開 HTTP(S) URL
+
+ファイル名または URL パスが `.pdf` で終わる場合、アダプターは `application/pdf` と推論します。それ以外の場合は、`providerData: { mediaType: 'application/pdf' }` を明示的に設定してください。アダプターは公開 URL をダウンロードせずに AI SDK モデルへ直接転送するため、選択したプロバイダーとモデルが URL ベースの PDF ファイルパートをサポートしている必要があります。サポートしていない場合は、Base64 表現を使用してください。OpenAI のファイル ID は AI SDK アダプター経由ではサポートされていません。ファイルデータまたは公開 URL を渡すか、OpenAI Responses モデルを直接使用してください。
+
+## 確定済み出力テキストの正規化
+
+一部のプロバイダーは、JSON コードフェンスなどの余分なラッピングを含むプレーンテキストとして構造化出力を返します。Agents ランタイムが最終出力を検証する前にプロバイダー固有のクリーンアップが必要な場合は、アダプターの作成時に `transformOutputText` を渡します。
 
 <Code
   lang="typescript"
   code={aiSdkTransformOutputTextExample}
-  title="確定した出力テキストの正規化"
+  title="確定済み出力テキストの正規化"
 />
 
-`transformOutputText` は、非ストリーミングレスポンスでは確定したアシスタントテキストに対して、ストリーミングレスポンスでは最後の `response_done` イベントに対して実行されます。段階的な `output_text_delta` イベントは変更しません。
+`transformOutputText` は、非ストリーミングレスポンスでは確定済みのアシスタントテキストに対して、ストリーミングレスポンスでは最後の `response_done` イベントに対して実行されます。増分の `output_text_delta` イベントは変更しません。
 
-## 再試行
+## リトライ
 
-`modelSettings.retry` は AI SDK ベースのモデルでも機能します。これは、再試行がデフォルトの OpenAI プロバイダーだけでなく、Agents ランタイムによって実装されているためです。
+`modelSettings.retry` は AI SDK ベースのモデルでも機能します。これは、リトライがデフォルトの OpenAI プロバイダーだけでなく、Agents ランタイムによって実装されているためです。
 
-つまり、ほかの場所で使用するものと同じ再試行設定を適用できます。
+つまり、他の場所で使用するものと同じリトライ設定を適用できます。
 
 - `Agent`、`Runner`、またはその両方に `modelSettings.retry` を設定します。
 - `networkError()`、`httpStatus([...])`、`providerSuggested()` などの `retryPolicies` を組み合わせます。
-- `providerSuggested()` が役立つのは、ラップされた AI SDK モデルがアダプターを介して再試行に関する推奨情報を公開できる場合に限られることに注意してください。
+- `providerSuggested()` が有効なのは、ラップされた AI SDK モデルがアダプターを介してリトライに関する推奨情報を提示できる場合に限られることに注意してください。
 
-`aisdk(openai(...))` を使用する完全な例については、[`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts) を参照してください。ストリーミングおよびステートフルな後続リクエストの安全境界を含む再試行 API 自体については、[モデル](/openai-agents-js/ja/guides/models#model-retries)を参照してください。
+`aisdk(openai(...))` を使用した完全な例については、[`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts)を参照してください。ストリーミングとステートフルなフォローアップリクエストの安全境界を含むリトライ API 自体については、[モデル](/openai-agents-js/ja/guides/models#model-retries)を参照してください。
 
 ## 適切な連携の選択
 
 `@openai/agents-extensions` には、関連する 2 つの連携があります。
 
-- `@openai/agents-extensions/ai-sdk` は、`Agent` が AI SDK モデル上で実行できるように、そのモデルを適合させます。
-- `@openai/agents-extensions/ai-sdk-ui` は、ストリーミングされる Agents SDK の実行を適合させ、AI SDK UI ルートが標準のストリーミング `Response` を返せるようにします。
+- `@openai/agents-extensions/ai-sdk` は AI SDK モデルを適応させ、そのモデル上で `Agent` を実行できるようにします。
+- `@openai/agents-extensions/ai-sdk-ui` は、ストリーミングされる Agents SDK の実行を適応させ、AI SDK UI ルートが標準のストリーミング `Response` を返せるようにします。
 
 ### AI SDK モデルに関する注意事項
 
 - `@openai/agents-extensions/ai-sdk` アダプターはまだベータ版であるため、選択したプロバイダー、特に小規模なプロバイダーでは慎重にテストすることをおすすめします。
 - OpenAI モデルを使用する場合は、このアダプターではなく、デフォルトの OpenAI モデルプロバイダーを使用してください。
-- 対応する AI SDK プロバイダーは、`specificationVersion` の `v2`、`v3`、または `v4` を公開する必要があります。旧形式の v1 プロバイダーが必要な場合は、[examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1) のモジュールをプロジェクトにコピーしてください。
-- このアダプターを介してコンピューターツールを使用する場合は、表示メタデータが必要です。ツールに `environment` と `dimensions` の両方のメタデータが含まれていることを確認してください。
-- Responses の遅延ツール読み込みフローは、ここではサポートされていません。これには、`toolNamespace()`、`deferLoading: true` を指定した関数ツール、`toolSearchTool()` が含まれます。ツール検索が必要な場合は、OpenAI Responses モデルを直接使用してください。[ツール](/openai-agents-js/ja/guides/tools#deferred-tool-loading-with-tool-search)および[モデル](/openai-agents-js/ja/guides/models#responses-only-deferred-tool-loading)を参照してください。
-- Programmatic Tool Calling は、AI SDK モデルアダプターではサポートされていません。このアダプターは、`programmaticToolCallingTool()`、`allowedCallers` に `'programmatic'` を含むツール、Programmatic Tool Calling の履歴項目、および Responses の `outputSchema` を拒否します。これらの機能には、OpenAI Responses モデルを直接使用してください。
+- サポートされる AI SDK プロバイダーは、`specificationVersion` として `v2`、`v3`、または `v4` を公開する必要があります。以前の v1 プロバイダー形式が必要な場合は、[examples/ai-sdk-v1](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk-v1)からモジュールをプロジェクトにコピーしてください。
+- このアダプター経由でコンピューターツールを使用する場合は、ディスプレイのメタデータが必要です。ツールに `environment` と `dimensions` の両方のメタデータが含まれていることを確認してください。
+- Responses の遅延ツール読み込みフローは、ここではサポートされていません。これには、`toolNamespace()`、`deferLoading: true` を指定した関数ツール、`toolSearchTool()` が含まれます。ツール検索が必要な場合は、OpenAI Responses モデルを直接使用してください。[ツール](/openai-agents-js/ja/guides/tools#deferred-tool-loading-with-tool-search)と[モデル](/openai-agents-js/ja/guides/models#responses-only-deferred-tool-loading)を参照してください。
+- Programmatic Tool Calling は AI SDK モデルアダプターではサポートされていません。`programmaticToolCallingTool()`、`allowedCallers` に `'programmatic'` を含むツール、Programmatic Tool Calling の履歴項目、Responses の `outputSchema` は拒否されます。これらの機能を使用するには、OpenAI Responses モデルを直接使用してください。
 
-### 画像ツール出力
+### 画像ツールの出力
 
-このアダプターは、関数ツールが返す `ToolOutputImage` の値を保持します。これには、リモート URL、base64 データ、OpenAI ファイル ID が含まれます。AI SDK v2 モデルは `media` パーツを受け取ります。AI SDK v3 モデルは、`image-url`、`image-data`、または `image-file-id` パーツを受け取ります。AI SDK v4 モデルは、データが URL、インラインデータ、またはファイル ID のプロバイダー参照として表現された `file` パーツを受け取ります。これにより、対応する各モデルバージョンで元の画像表現を利用できます。
+アダプターは、リモート URL、Base64 データ、OpenAI のファイル ID を含め、関数ツールから返された `ToolOutputImage` の値を保持します。AI SDK v2 モデルは `media` パートを受け取ります。AI SDK v3 モデルは `image-url`、`image-data`、または `image-file-id` パートを受け取ります。AI SDK v4 モデルは、データが URL、インラインデータ、またはファイル ID のプロバイダー参照として表現された `file` パートを受け取ります。これにより、サポートされる各モデルバージョンは元の画像表現を利用できます。
 
-完全な例については、[`examples/ai-sdk/image-tool-output.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/image-tool-output.ts) を参照してください。
+完全な例については、[`examples/ai-sdk/image-tool-output.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/image-tool-output.ts)を参照してください。
 
 ## AI SDK UI ストリームヘルパー
 
 `@openai/agents-extensions/ai-sdk-ui` は、Agents SDK のストリームを AI SDK UI ルートに接続するためのレスポンスヘルパーを提供します。
 
-- プレーンテキストのストリーミングレスポンス用の `createAiSdkTextStreamResponse(source, options?)`
-- より低レベルの `ReadableStream<UIMessageChunk>` 用の `createAiSdkUiMessageStream(source)`
-- `UIMessageChunk` のストリーミングレスポンス用の `createAiSdkUiMessageStreamResponse(source, options?)`
+- プレーンテキストのストリーミングレスポンスには `createAiSdkTextStreamResponse(source, options?)`
+- 低レベルの `ReadableStream<UIMessageChunk>` には `createAiSdkUiMessageStream(source)`
+- `UIMessageChunk` のストリーミングレスポンスには `createAiSdkUiMessageStreamResponse(source, options?)`
 
-これらのヘルパーは、`StreamedRunResult`、ストリームに似たソース、または互換性のあるラッパーオブジェクトを受け取ります。レスポンスヘルパーは、ストリーミングに適したヘッダーを持つ `Response` を返します。
+これらのヘルパーは、`StreamedRunResult`、ストリームに似たソース、または互換性のあるラッパーオブジェクトを受け付けます。レスポンスヘルパーは、ストリーミングに適したヘッダーを持つ `Response` を返します。
 
-ルートから AI SDK のレスポンスを直接返す場合は、`createAiSdkUiMessageStreamResponse(...)` を使用します。メンテナンスされている Agents SDK から AI SDK の `UIMessageChunk` への変換を引き続き使用しながら、レスポンスまたはレンダリングレイヤーを独自に制御する場合は、`createAiSdkUiMessageStream(...)` を使用します。プレーンテキストだけが必要な場合は、`createAiSdkTextStreamResponse(...)` を使用します。
+ルートから AI SDK レスポンスを直接返す場合は、`createAiSdkUiMessageStreamResponse(...)` を使用します。保守されている Agents SDK から AI SDK の `UIMessageChunk` への変換を引き続き利用しながら、レスポンスまたはレンダリングレイヤーを独自に管理する場合は、`createAiSdkUiMessageStream(...)` を使用します。プレーンテキストのみが必要な場合は、`createAiSdkTextStreamResponse(...)` を使用します。
 
-UI ストリームヘルパーは、AI SDK モデルアダプターがそのフローを開始できない場合でも、Programmatic Tool Calling を使用するストリーミングされた OpenAI Responses の実行をラップできます。プログラム項目は `programmatic_tool_calling` ツール入力として出力され、対応するプログラム結果は `program_output` ツール出力として出力されます。
+AI SDK モデルアダプター自体は Programmatic Tool Calling のフローを開始できませんが、UI ストリームヘルパーは、Programmatic Tool Calling を使用するストリーミングされた OpenAI Responses の実行をラップできます。プログラム項目は `programmatic_tool_calling` ツール入力として出力され、対応するプログラム実行結果は `program_output` ツール出力として出力されます。
 
-レスポンスヘルパーは、`options` を介して任意のレスポンス設定も受け取ります。
+レスポンスヘルパーでは、`options` を介してオプションのレスポンス設定も指定できます。
 
 - `headers`: ストリーミングレスポンスにマージする追加のレスポンスヘッダー
 - `status`: 返される `Response` の HTTP ステータスコード

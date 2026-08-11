@@ -11,60 +11,68 @@ import transportEventsExample from '../../../../../../../examples/docs/voice-age
 import thinClientExample from '../../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
 import cloudflareTransportExample from '../../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-请根据会话的运行位置，以及您对原始媒体或事件控制的需求程度选择传输机制。
+请根据会话运行的位置，以及您需要对原始媒体或事件进行多大程度的控制来选择传输机制。
 
 | 场景 | 推荐的传输机制 | 原因 |
 | --- | --- | --- |
-| 浏览器语音到语音应用 | `OpenAIRealtimeWebRTC` | 最简便的方案。SDK 会为您管理麦克风采集、播放和 WebRTC 连接。 |
-| 服务器端语音循环或自定义音频管道 | `OpenAIRealtimeWebSocket` | 当您已经能够控制音频采集和播放，并希望直接访问事件时，这种方式非常适合。 |
+| 浏览器端语音到语音应用 | `OpenAIRealtimeWebRTC` | 最便捷的方案。SDK 会为您管理麦克风采集、播放和 WebRTC 连接。 |
+| React Native 移动应用 | 由应用自行管理、基于原生 WebRTC 的 `RealtimeTransportLayer` | SDK 提供 React Native 包条件，而应用负责管理原生 WebRTC、权限、音频路由和生命周期。 |
+| 服务器端语音循环或自定义音频管线 | `OpenAIRealtimeWebSocket` | 适合已经自行控制音频采集和播放，并希望直接访问事件的场景。 |
 | SIP 或电话桥接 | `OpenAIRealtimeSIP` | 通过 `callId` 将 `RealtimeSession` 附加到现有的 SIP 发起的 Realtime 通话。 |
-| Cloudflare Workers / workerd | Cloudflare 扩展传输 | workerd 无法使用全局 `WebSocket` 构造函数建立出站 WebSocket 连接。 |
-| Twilio 上特定于提供商的电话流程 | Twilio 扩展传输 | 为您处理 Twilio 音频转发和中断行为。 |
+| Cloudflare Workers / workerd | Cloudflare 扩展传输层 | workerd 无法使用全局 `WebSocket` 构造函数建立出站 WebSocket 连接。 |
+| Twilio 上特定于提供商的电话流程 | Twilio 扩展传输层 | 为您处理 Twilio 音频转发和打断行为。 |
 
 <Aside type="note">
-  如果您正在构建浏览器产品，并且没有理由自行管理原始音频， 请从 WebRTC
-  开始。如果您在服务器上运行，或要桥接其他媒体系统， 请从 WebSocket 或 SIP
-  开始。
+  如果您正在构建浏览器产品，并且没有理由自行管理原始音频，请从 WebRTC
+  开始。如果在服务器上运行，或要桥接其他媒体系统，请从 WebSocket 或 SIP 开始。
 </Aside>
 
 ## 默认传输层
 
 ### 浏览器的默认选择：WebRTC
 
-默认的浏览器传输使用 WebRTC。系统会自动从麦克风采集并播放音频，因此[快速开始](/openai-agents-js/zh/guides/voice-agents/quickstart)只需一个临时令牌并调用 `session.connect(...)` 即可建立连接。
+默认的浏览器传输层使用 WebRTC。系统会自动从麦克风采集并播放音频，因此[快速开始](/openai-agents-js/zh/guides/voice-agents/quickstart)只需一个临时令牌和 `session.connect(...)` 即可建立连接。
 
-在此路径中，`session.connect()` 会尝试等待初始会话配置通过 `session.updated` 得到确认后再完成，以确保您的指令和工具在音频开始传输之前生效。如果始终未收到确认，仍有超时回退机制。
+在此路径中，`session.connect()` 会尝试等待初始会话配置通过 `session.updated` 得到确认后再完成，因此您的指令和工具会在音频开始传输前生效。如果始终未收到确认，仍会使用超时回退机制。
 
 如需使用您自己的媒体流或音频元素，请在创建会话时提供一个 `OpenAIRealtimeWebRTC` 实例。
 
 <Code lang="typescript" code={customWebRTCTransportExample} />
 
-对于更底层的自定义，`OpenAIRealtimeWebRTC` 还接受 `changePeerConnection`，以便您在生成 offer 之前检查或替换新创建的 `RTCPeerConnection`。
+传递给 `OpenAIRealtimeWebRTC` 的 `mediaStream` 仍由您的应用拥有。关闭传输层不会停止该流的轨道，因此您可以继续将其用于电平表、录音器或重新连接。当应用确实不再使用该流时，请对其轨道调用 `stop()`。当传输层自行打开默认麦克风时，`close()` 仍会停止这些由 SDK 管理的轨道。
+
+对于更底层的自定义，`OpenAIRealtimeWebRTC` 还接受 `changePeerConnection`，让您可以在生成 offer 之前检查或替换刚创建的 `RTCPeerConnection`。
+
+### React Native 中由应用自行管理的传输层
+
+`@openai/agents-core` 和 `@openai/agents-realtime` 会发布 React Native 包条件，使 Metro 能够解析不依赖 Node.js 内置模块的可移植 SDK shim。内置的 `OpenAIRealtimeWebRTC` 仍是浏览器传输层，因为它依赖浏览器 WebRTC 全局对象和 DOM 音频元素。在 React Native 中，请安装并自行管理原生 WebRTC 实现，然后通过自定义 `RealtimeTransportLayer` 将其连接到 `RealtimeSession`。
+
+[`examples/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-react-native) Expo 开发构建代码示例展示了由应用自行管理的 `react-native-webrtc` 传输层、麦克风权限、音频路由，以及服务器端临时令牌端点。由于 `react-native-webrtc` 包含原生代码，因此不支持 Expo Go。请将标准 OpenAI API 密钥保留在服务器上，只向移动应用传递短期有效的临时客户端令牌。
 
 ### 服务器的默认选择：WebSocket
 
-创建会话时传入 `transport: 'websocket'` 或 `OpenAIRealtimeWebSocket` 实例，即可使用 WebSocket 连接代替 WebRTC。这种方式非常适合服务器端用例、电话桥接和自定义音频管道。
+创建会话时传入 `transport: 'websocket'` 或 `OpenAIRealtimeWebSocket` 实例，即可使用 WebSocket 连接代替 WebRTC。这非常适合服务器端用例、电话桥接和自定义音频管线。
 
-在 WebSocket 路径中，套接字打开并发送初始配置后，`session.connect()` 就会完成。对应的 `session.updated` 事件可能稍后才会到达，因此不要认为 `connect()` 完成就意味着该更新已经回传。
+在 WebSocket 路径中，套接字打开且初始配置发送后，`session.connect()` 即会完成。对应的 `session.updated` 事件可能稍后才会到达，因此不要假定 `connect()` 完成就意味着该更新已回传。
 
 <Code lang="typescript" code={websocketSessionExample} />
 
-可以使用任意录音和播放库来处理原始 PCM16 音频字节。
+可以使用任意录制或播放库来处理原始 PCM16 音频字节。
 
-对于高级集成，`OpenAIRealtimeWebSocket` 接受 `createWebSocket()`，以便您提供自己的套接字实现；当自定义连接器负责将套接字转换为已连接状态时，还可以使用 `skipOpenEventListeners`。`@openai/agents-extensions` 中的 Cloudflare 传输就是基于这些钩子构建的。
+对于高级集成，`OpenAIRealtimeWebSocket` 接受 `createWebSocket()`，让您可以提供自己的套接字实现；如果由自定义连接器负责将套接字切换到已连接状态，还可以使用 `skipOpenEventListeners`。`@openai/agents-extensions` 中的 Cloudflare 传输层就是基于这些钩子构建的。
 
-### 通话提供商和电话桥接使用的 SIP
+### 用于通话提供商和电话桥接的 SIP
 
-如果您希望将 `RealtimeSession` 附加到现有的 SIP 发起的 Realtime 通话，请使用 `OpenAIRealtimeSIP`。它是一个支持 SIP 的轻量传输层：音频由 SIP 通话本身处理，您可以通过 `callId` 连接 SDK 会话。
+如果您希望将 `RealtimeSession` 附加到现有的 SIP 发起的 Realtime 通话，请使用 `OpenAIRealtimeSIP`。它是一个轻量的 SIP 感知传输层：音频由 SIP 通话本身处理，您可以通过 `callId` 连接 SDK 会话。
 
-1. 使用 `OpenAIRealtimeSIP.buildInitialConfig()` 生成初始会话配置，以接受传入的通话。这可确保 SIP 邀请和后续 SDK 会话使用相同的默认值。
-2. 附加一个使用 `OpenAIRealtimeSIP` 传输的 `RealtimeSession`，并使用提供商 Webhook 签发的 `callId` 建立连接。
-3. 如果您需要特定于提供商的媒体转发或事件桥接，请使用 Twilio 扩展等集成传输。
+1. 使用 `OpenAIRealtimeSIP.buildInitialConfig()` 生成初始会话配置，以接受传入的通话。这可确保 SIP 邀请和后续 SDK 会话使用相同的默认配置。
+2. 附加一个使用 `OpenAIRealtimeSIP` 传输层的 `RealtimeSession`，并通过提供商 Webhook 发出的 `callId` 建立连接。
+3. 如果需要特定于提供商的媒体转发或事件桥接，请使用 Twilio 扩展等集成传输层。
 
 <Aside type="caution">
-  SIP 通话接受仅支持部分 Realtime 轮次检测字段。 如果配置中包含
-  `threshold`、`prefixPaddingMs` 或 `silenceDurationMs`（或其 snake_case
-  等效字段），`OpenAIRealtimeSIP.buildInitialConfig()` 会在本地抛出错误， 因为
+  SIP 通话接受操作仅支持部分 Realtime 轮次检测字段。如果配置中包含
+  `threshold`、`prefixPaddingMs` 或 `silenceDurationMs`（或其对应的 snake_case
+  形式），`OpenAIRealtimeSIP.buildInitialConfig()` 会在本地抛出错误， 因为
   Realtime Calls API 会拒绝 SIP 会话中的这些
   `session.audio.input.turn_detection` 属性。
 </Aside>
@@ -73,7 +81,7 @@ import cloudflareTransportExample from '../../../../../../../examples/docs/exten
 
 ### Cloudflare Workers 和 workerd
 
-Cloudflare Workers 和其他 workerd 运行时无法使用全局 `WebSocket` 构造函数建立出站 WebSocket 连接。请使用扩展包中的 Cloudflare 传输，它会在内部执行基于 `fetch()` 的升级。
+Cloudflare Workers 和其他 workerd 运行时无法使用全局 `WebSocket` 构造函数建立出站 WebSocket 连接。请使用扩展包中的 Cloudflare 传输层，它会在内部执行基于 `fetch()` 的升级。
 
 <Code lang="typescript" code={cloudflareTransportExample} />
 
@@ -81,28 +89,28 @@ Cloudflare Workers 和其他 workerd 运行时无法使用全局 `WebSocket` 构
 
 ### Twilio 电话通话
 
-您可以使用原始 WebSocket 或 `@openai/agents-extensions` 中专用的 Twilio 传输，将 `RealtimeSession` 连接到 Twilio。如果您希望 SDK 为 Twilio Media Streams 处理中断时机和音频转发，专用传输是更合适的默认选择。
+您可以使用原始 WebSocket 或 `@openai/agents-extensions` 中专用的 Twilio 传输层，将 `RealtimeSession` 连接到 Twilio。如果您希望 SDK 为 Twilio Media Streams 处理打断时机和音频转发，专用传输层是更好的默认选择。
 
 有关完整设置，请阅读 [Twilio 上的实时智能体](/openai-agents-js/zh/extensions/twilio)。
 
-### 自定义传输
+### 自定义传输机制
 
-如果您想使用不同的语音到语音 API，或拥有自定义传输机制，可以实现 `RealtimeTransportLayer` 接口并自行发出 `RealtimeTransportEventTypes` 事件。
+如果您希望使用其他语音到语音 API，或拥有自己的自定义传输机制，可以实现 `RealtimeTransportLayer` 接口，并自行发出 `RealtimeTransportEventTypes` 事件。
 
-## 原始 Realtime 事件的访问
+## 原始 Realtime 事件访问
 
-如果您希望更直接地访问底层 Realtime API，有以下两种选择。
+如果您希望更直接地访问底层 Realtime API，有两种选择。
 
 ### 选项 1——传输层访问
 
-如果您仍希望使用 `RealtimeSession` 的全部功能，可以通过 `session.transport` 访问传输层。
+如果您仍希望利用 `RealtimeSession` 的全部功能，可以通过 `session.transport` 访问传输层。
 
-传输层会在 `*` 事件下发出它收到的每个事件，您也可以使用 `sendEvent()` 发送原始事件。`*` 监听器接收原始已解析 JSON 载荷的结构化克隆，其中包括当前 SDK 架构尚不了解的字段。具名和派生事件监听器则会继续接收经过验证和规范化的事件对象。这为 `session.update`、`response.create` 或 `response.cancel` 等底层操作提供了直接入口。
+传输层会通过 `*` 事件发出它收到的每个事件，您还可以使用 `sendEvent()` 发送原始事件。`*` 监听器会收到原始已解析 JSON 载荷的结构化克隆，其中包括当前 SDK 架构无法识别的字段。具名事件监听器和派生事件监听器仍会收到经过验证和规范化的事件对象。这为 `session.update`、`response.create` 或 `response.cancel` 等底层操作提供了扩展途径。
 
 <Code lang="typescript" code={transportEventsExample} />
 
 ### 选项 2——仅使用传输层
 
-如果您不需要自动执行工具、护栏或本地历史记录管理，也可以将传输层用作仅管理连接和中断的"轻量"客户端。
+如果您不需要自动执行工具、护栏或本地历史记录管理，也可以将传输层用作仅管理连接和打断的"轻量"客户端。
 
 <Code lang="typescript" code={thinClientExample} />

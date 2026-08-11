@@ -3,9 +3,9 @@ title: トラブルシューティング
 description: Learn how to troubleshoot issues with the OpenAI Agents SDK.
 ---
 
-## サポート対象環境
+## 対応環境
 
-OpenAI Agents SDK は、次のサーバー環境でサポートされています。
+OpenAI Agents SDK は、以下のサーバー環境でサポートされています。
 
 - Node.js 22+
 - Deno 2.35+
@@ -13,21 +13,25 @@ OpenAI Agents SDK は、次のサーバー環境でサポートされていま�
 
 ### 制限付きサポート
 
-- **Cloudflare Workers**：Agents SDK は Cloudflare Workers で使用できますが、現時点ではいくつかの制限があります。
+- **Cloudflare Workers**：Agents SDK は Cloudflare Workers で使用できますが、現在はいくつかの制限があります。
   - 現在、SDK では `nodejs_compat` を有効にする必要があります
-  - リクエストの終了時に、トレースを手動でフラッシュする必要があります。詳細については、[トレーシングガイド](/openai-agents-js/ja/guides/tracing#export-loop-lifecycle)を参照してください。
+  - リクエストの終了時に、トレースを手動でフラッシュする必要があります。詳細は[トレーシング](/openai-agents-js/ja/guides/tracing#export-loop-lifecycle)を参照してください。
   - Cloudflare Workers では `AsyncLocalStorage` のサポートが限定的なため、一部のトレースが正確でない可能性があります
   - 外向きの WebSocket 接続では、グローバルな `WebSocket` コンストラクターではなく、fetch ベースのアップグレードを使用する必要があります。Realtime では、`@openai/agents-extensions` の Cloudflare トランスポート（`CloudflareRealtimeTransportLayer`）を使用してください。
 - **Responses API WebSocket トランスポート**：
   - グローバルな `WebSocket` 実装が必要です。
   - `WebSocket` 実装は、ハンドシェイク用のカスタムヘッダーをサポートしている必要があります。
-  - 多くのブラウザースタイルの WebSocket API（および一部のエッジランタイム）は、外向きのカスタムヘッダーをサポートしていません。そのような環境では、代わりにデフォルトの HTTP Responses トランスポートを使用してください。
-  - グローバルな `WebSocket` 実装が見つからない、またはカスタムヘッダーがサポートされていないことを示すエラーが表示された場合、そのランタイムの WebSocket 実装は Responses WebSocket トランスポートと互換性がありません。
+  - 多くのブラウザースタイルの WebSocket API、および一部のエッジランタイムでは、カスタム送信ヘッダーがサポートされていません。そのような環境では、代わりにデフォルトの HTTP Responses トランスポートを使用してください。
+  - グローバルな `WebSocket` 実装が見つからない、またはカスタムヘッダーがサポートされていないというエラーが表示される場合、そのランタイムの WebSocket 実装は Responses WebSocket トランスポートと互換性がありません。
 - **ブラウザー**：
   - コア SDK はブラウザー向けにバンドルできますが、ブラウザーではデフォルトでトレーシングが無効になっています。
-- **v8 isolates**：
-  - 適切なブラウザーポリフィルを備えたバンドラーを使用すれば、v8 isolates 向けに SDK をバンドルできるはずですが、トレーシングは機能しません
-  - v8 isolates は十分にテストされていません
+- **React Native**：
+  - `@openai/agents-core` と `@openai/agents-realtime` は、移植可能な shim のための React Native パッケージ条件を提供しますが、組み込みの `OpenAIRealtimeWebRTC` は引き続きブラウザー専用です。
+  - Realtime アプリでは、`react-native-webrtc` などのネイティブ WebRTC 実装を基盤とする、アプリ側で管理するトランスポートを提供する必要があります。また、権限、音声ルーティング、トランスポートのライフサイクルについては、引き続きアプリ側が責任を負います。
+  - Expo Go ではネイティブ WebRTC モジュールを読み込めません。Expo 開発ビルドまたはネイティブ React Native プロジェクトを使用してください。[`examples/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-react-native)のコード例を参照してください。
+- **v8 isolate**：
+  - 適切なブラウザーポリフィルを備えたバンドラーを使用すれば、v8 isolate 向けに SDK をバンドルできるはずですが、トレーシングは機能しません
+  - v8 isolate は十分にテストされていません
 
 ## デバッグログ
 
@@ -39,10 +43,10 @@ SDK で問題が発生した場合は、デバッグログを有効にすると�
 DEBUG=openai-agents:*
 ```
 
-モデルおよびツールのデータは、デフォルトでマスキングされたままです。これらの詳細が必要な場合は、[ログ内の機密データ](/openai-agents-js/ja/guides/config#sensitive-data-in-logs)を参照し、ログが安全に処理される場合にのみオプトインしてください。
+モデルとツールのデータは、デフォルトでは引き続き編集済みとして伏せられます。これらの詳細が必要な場合は、[ログ内の機密データ](/openai-agents-js/ja/guides/config#sensitive-data-in-logs)を参照し、ログが安全に処理される場合にのみオプトインしてください。
 
-また、デバッグの対象を SDK の特定の部分に限定することもできます。
+または、デバッグの対象を SDK の特定部分に限定できます。
 
-- `openai-agents:core` — SDK の主要な実行ロジック用
-- `openai-agents:openai` — OpenAI API 呼び出し用
-- `openai-agents:realtime` — リアルタイムエージェントのコンポーネント用
+- `openai-agents:core` — SDK の主要な実行ロジック
+- `openai-agents:openai` — OpenAI API 呼び出し
+- `openai-agents:realtime` — リアルタイムエージェントのコンポーネント

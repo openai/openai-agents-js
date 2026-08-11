@@ -10,42 +10,42 @@ import usageExample from '../../../../../../examples/docs/results/usage.ts?raw';
 
 当您[运行智能体](/openai-agents-js/zh/guides/running-agents)时，将收到以下结果之一：
 
-- 如果调用 `run` 时未设置 `stream: true`，则返回 [`RunResult`](/openai-agents-js/openai/agents/classes/runresult)
-- 如果调用 `run` 时设置了 `stream: true`，则返回 [`StreamedRunResult`](/openai-agents-js/openai/agents/classes/streamedrunresult)。有关流式传输的详细信息，另请参阅[流式传输](/openai-agents-js/zh/guides/streaming)。
+- 如果调用 `run` 时未指定 `stream: true`，则返回 [`RunResult`](/openai-agents-js/openai/agents/classes/runresult)
+- 如果调用 `run` 时指定了 `stream: true`，则返回 [`StreamedRunResult`](/openai-agents-js/openai/agents/classes/streamedrunresult)。有关流式传输的详细信息，另请参阅[流式传输](/openai-agents-js/zh/guides/streaming)。
 
-这两种结果类型都会公开相同的核心结果字段，例如 `finalOutput`、`newItems`、`interruptions` 和 `state`。`StreamedRunResult` 还提供 `completed`、`toStream()`、`toTextStream()` 和 `currentAgent` 等流式传输控制功能。
+这两种结果类型都提供相同的核心结果属性，例如 `finalOutput`、`newItems`、`interruptions` 和 `state`。`StreamedRunResult` 还提供 `completed`、`toStream()`、`toTextStream()` 和 `currentAgent` 等流式传输控制功能。
 
-## 合适结果字段的选择
+## 结果属性的选择
 
-大多数应用只需要使用少数几个属性：
+大多数应用程序只需要少数几个属性：
 
 | 如果您需要...... | 使用 |
 | --- | --- |
 | 向用户显示最终答案 | `finalOutput` |
-| 包含完整本地记录、可直接用于下一轮重放的输入 | `history` |
-| 仅获取本次运行中新生成的模型格式条目 | `output` |
+| 包含完整本地记录、可供下一轮重放的输入 | `history` |
+| 仅包含本次运行中新生成的模型格式条目 | `output` |
 | 包含智能体、工具和交接元数据的丰富运行条目 | `newItems` |
 | 通常应处理下一轮用户输入的智能体 | `lastAgent` 或 `activeAgent` |
 | 使用 `previousResponseId` 进行 OpenAI Responses API 链式调用 | `lastResponseId` |
-| 待处理的审批和可恢复快照 | `interruptions` 和 `state` |
+| 待审批项和可恢复的快照 | `interruptions` 和 `state` |
 | 应用上下文、审批、用量和嵌套智能体工具输入 | `runContext` |
-| 当前嵌套 `Agent.asTool()` 调用的元数据，例如在 `customOutputExtractor` 内部 | `agentToolInvocation` |
+| 当前嵌套 `Agent.asTool()` 调用的元数据，例如在 `customOutputExtractor` 中 | `agentToolInvocation` |
 | 原始模型调用或护栏诊断信息 | `rawResponses` 和护栏结果数组 |
 
 ## 最终输出
 
-`finalOutput` 属性包含最后一个运行智能体的最终输出。此结果可以是：
+`finalOutput` 属性包含最后一个运行的智能体所生成的最终输出。此结果可能是：
 
-- `string` —— 未定义 `outputType` 的任何智能体的默认类型
-- `unknown` —— 如果智能体将 JSON schema 定义为输出类型。在这种情况下，JSON 已完成解析，但您仍需手动验证其类型。
-- `z.infer<outputType>` —— 如果智能体将 Zod schema 定义为输出类型。输出将自动依据此 schema 进行解析。
-- `undefined` —— 如果智能体未生成输出（例如在能够生成输出之前停止）
+- `string`——未定义 `outputType` 的任何智能体的默认类型
+- `unknown`——智能体将 JSON schema 定义为输出类型时的类型。在这种情况下，JSON 已被解析，但您仍需手动验证其类型。
+- `z.infer<outputType>`——智能体将 Zod schema 定义为输出类型时的类型。系统会根据此 schema 自动解析输出。
+- `undefined`——智能体未生成输出时的类型（例如，在能够生成输出前就已停止）
 
-当流式运行仍在进行中，或者运行在产生最终输出前因审批中断而暂停时，`finalOutput` 也会是 `undefined`。
+当流式运行仍在进行时，或者运行因审批中断而暂停、尚未得到最终输出时，`finalOutput` 也为 `undefined`。
 
 如果您使用具有不同输出类型的交接，应使用 `Agent.create()` 方法而不是 `new Agent()` 构造函数来创建智能体。
 
-这样，SDK 就能推断所有可能交接的输出类型，并为 `finalOutput` 属性提供联合类型。
+这样一来，SDK 就能推断所有可能交接中的输出类型，并为 `finalOutput` 属性提供联合类型。
 
 例如：
 
@@ -55,113 +55,130 @@ import usageExample from '../../../../../../examples/docs/results/usage.ts?raw';
   title="交接的最终输出类型"
 />
 
-## 输入和输出字段
+## 输入与输出属性
 
-这些属性分别用于回答不同的问题：
+以下属性分别回答不同的问题：
 
 | 属性 | 包含的内容 | 最适合 |
 | --- | --- | --- |
-| `input` | 本次运行的基础输入。如果交接输入过滤器重写了历史记录，则此属性反映运行继续执行时使用的已过滤输入。 | 审核本次运行实际使用的输入 |
+| `input` | 本次运行的基础输入。如果交接输入过滤器重写了历史记录，此属性会反映运行继续执行时所使用的过滤后输入。 | 审核本次运行实际使用的输入 |
 | `output` | 仅包含本次运行中生成的模型格式条目，不含智能体元数据。 | 仅存储或重放新生成的模型增量 |
 | `newItems` | 包含智能体、工具和交接元数据的丰富 [`RunItem`](/openai-agents-js/openai/agents/type-aliases/runitem) 包装器。 | 日志、UI、审核和调试 |
-| `history` | 根据 `input + newItems` 构建、可直接用于下一轮重放的输入。 | 手动聊天循环和客户端管理的对话状态 |
+| `history` | 由 `input + newItems` 构建、可供下一轮重放的输入。 | 手动聊天循环和客户端管理的对话状态 |
 
 在实践中：
 
-- 当您在应用中手动维护完整对话时，请使用 `history`。
-- 当您已在其他位置存储之前的历史记录，只需要本次运行中新生成的条目时，请使用 `output`。
-- 当您需要智能体关联信息、工具输出、交接边界或审批条目时，请使用 `newItems`。
-- 如果您使用 `conversationId` 或 `previousResponseId`，通常无需将 `history` 传回 `run()`。应只传入新的用户输入，并复用由服务器管理的 ID。完整对比请参阅[运行智能体](/openai-agents-js/zh/guides/running-agents#state-and-conversation-management)。
+- 如果您在应用程序中手动维护完整对话，请使用 `history`。
+- 如果您已在其他位置存储先前的历史记录，并且只需要本次运行中新生成的条目，请使用 `output`。
+- 如果您需要智能体关联、工具输出、交接边界或审批条目，请使用 `newItems`。
+- 如果您使用 `conversationId` 或 `previousResponseId`，通常无需将 `history` 传回 `run()`。只需传入新的用户输入并复用服务器管理的 ID。有关完整对比，请参阅[运行智能体](/openai-agents-js/zh/guides/running-agents#state-and-conversation-management)。
 
-在类似聊天的使用场景中，`history` 是维护完整历史记录的便捷方式：
+在聊天类用例中，`history` 是维护完整历史记录的便捷方式：
 
 <Code lang="typescript" code={historyLoop} title="历史记录循环" />
 
 ## 新条目
 
-`newItems` 可提供本次运行期间所发生事件的最丰富视图。常见的条目类型包括：
+`newItems` 为您提供本次运行中所发生事件的最丰富视图。常见的条目类型包括：
 
-- [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem)，用于表示助手消息。
-- [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem)，用于表示推理条目。
-- [`RunToolSearchCallItem`](/openai-agents-js/openai/agents/classes/runtoolsearchcallitem) 和 [`RunToolSearchOutputItem`](/openai-agents-js/openai/agents/classes/runtoolsearchoutputitem)，用于表示 Responses 工具搜索请求及其返回的已加载工具定义。
-- [`RunToolCallItem`](/openai-agents-js/openai/agents/classes/runtoolcallitem) 和 [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem)，用于表示工具调用及其结果。
-- [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem)，用于表示因等待审批而暂停的工具调用。
-- [`RunHandoffCallItem`](/openai-agents-js/openai/agents/classes/runhandoffcallitem) 和 [`RunHandoffOutputItem`](/openai-agents-js/openai/agents/classes/runhandoffoutputitem)，用于表示交接请求和已完成的转移。
+- [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem)，用于助手消息。
+- [`RunInputItem`](/openai-agents-js/openai/agents/classes/runinputitem)，用于恢复运行时从 `RunState.pendingInput` 接收的输入。
+- [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem)，用于推理条目。
+- [`RunToolSearchCallItem`](/openai-agents-js/openai/agents/classes/runtoolsearchcallitem) 和 [`RunToolSearchOutputItem`](/openai-agents-js/openai/agents/classes/runtoolsearchoutputitem)，用于 Responses 工具搜索请求及其返回的已加载工具定义。
+- [`RunToolCallItem`](/openai-agents-js/openai/agents/classes/runtoolcallitem) 和 [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem)，用于工具调用及其结果。
+- [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem)，用于因等待审批而暂停的工具调用。
+- [`RunHandoffCallItem`](/openai-agents-js/openai/agents/classes/runhandoffcallitem) 和 [`RunHandoffOutputItem`](/openai-agents-js/openai/agents/classes/runhandoffoutputitem)，用于交接请求和已完成的移交。
 
-只要您需要知道哪个智能体生成了某个条目，或者该条目是否表示工具、工具搜索、交接或审批边界，就应选择 `newItems` 而不是 `output`。使用 `toolSearchTool()` 时，这些工具搜索条目是检查在常规工具调用发生前加载了哪些延迟工具或命名空间的最简便方式。
+只要您需要知道哪个智能体生成了某个条目，或者该条目是否标志着工具、工具搜索、交接或审批边界，就应选择 `newItems` 而不是 `output`。使用 `toolSearchTool()` 时，通过这些工具搜索条目，可以最方便地查看在常规工具调用发生前加载了哪些延迟工具或命名空间。
 
-如果本地工具或 MCP 服务器定义了 `customDataExtractor`，相应的 `RunToolCallOutputItem.customData` 将包含其返回的仅供 SDK 使用的元数据。这些数据可用于应用 UI 状态，例如渲染器提示或内部 ID。它们会在 `RunState` 序列化后保留，但不会包含在 `history` 中，也不会发送回模型。
+如果本地工具或 MCP 服务器定义了 `customDataExtractor`，则相应的 `RunToolCallOutputItem.customData` 会包含返回的仅供 SDK 使用的元数据。这些数据可用于应用程序 UI 状态，例如渲染器提示或内部 ID。它们会在 `RunState` 序列化后保留，但不会包含在 `history` 中，也不会发回模型。
 
-## 对话的继续或恢复
+`RunToolCallOutputItem.output` 是 SDK 侧的工具返回值。与 JSON 兼容的基本类型、数组和普通对象会在 `RunState` 序列化过程中保留其结构。其他运行时值则继续采用现有的字符串回退形式。此包装值与 `rawItem.output` 保持分离；后者是模型可见的工具输出，供 `history` 和重放使用。
+
+## 对话的继续与恢复
 
 ### 活跃智能体
 
-`lastAgent` 属性包含最后一个运行的智能体。在交接后，它通常是下一轮用户输入最适合复用的智能体。`activeAgent` 是同一值的别名。
+`lastAgent` 属性包含最后一个运行过的智能体。完成交接后，通常最适合在下一轮用户输入中复用该智能体。`activeAgent` 是同一值的别名。
 
 在流式传输模式下，运行仍在进行时，`currentAgent` 会指示当前处于活跃状态的智能体。
 
-### 中断和可恢复状态
+### 中断与可恢复状态
 
-如果工具需要审批，运行会暂停，而 `interruptions` 将包含待处理的 [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem) 条目。这可能包括直接工具触发的审批、交接后调用的工具所触发的审批，或嵌套 `agent.asTool()` 运行所触发的审批。
+如果工具需要审批，运行会暂停，`interruptions` 中会包含待处理的 [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem) 条目。这些审批可能由直接工具、交接后访问的工具或嵌套 `agent.asTool()` 运行触发。
 
-通过 `result.state.approve(...)` / `result.state.reject(...)` 处理审批，然后将同一个 `state` 传回 `run()` 以恢复运行。您无需一次性处理所有中断。如果只处理部分条目后重新运行，已处理的调用可以继续执行，而未处理的调用会保持待处理状态并再次暂停运行。
+通过 `result.state.approve(...)` / `result.state.reject(...)` 处理审批，然后将同一个 `state` 传回 `run()` 以恢复运行。您无需一次处理所有中断。如果只处理部分条目后重新运行，已处理的调用可以继续执行，而未处理的调用仍保持待处理状态，并再次暂停运行。
 
-`state` 属性是结果背后的可序列化快照。它适用于[人机协作](/openai-agents-js/zh/guides/human-in-the-loop)、重试流程，以及需要稍后恢复已暂停运行的任何场景。
+`state` 属性是结果背后的可序列化快照。它适用于[人机协作](/openai-agents-js/zh/guides/human-in-the-loop)、重试流程，或任何需要稍后恢复已暂停运行的场景。
 
 ### 服务器管理的续接
 
-使用 OpenAI Responses API 链式调用时，`lastResponseId` 是下一轮应作为 `previousResponseId` 传入的值。
+使用 OpenAI Responses API 链式调用时，`lastResponseId` 是下一轮中要作为 `previousResponseId` 传入的值。
 
-如果您已经通过 `history`、`session` 或 `conversationId` 继续对话，通常不需要使用 `lastResponseId`。如果需要获取多步骤运行中的每个原始模型响应，请改为检查 `rawResponses`。
+如果您已使用 `history`、`session` 或 `conversationId` 继续对话，通常不需要 `lastResponseId`。如果您需要多步骤运行中的每个原始模型响应，请改为检查 `rawResponses`。
 
 ## 嵌套智能体工具元数据
 
-`agentToolInvocation` 用于嵌套 `Agent.asTool()` 的结果，尤其适用于您位于 `customOutputExtractor` 内部，并希望获取当前工具调用元数据的情况。它不是用于汇总"整个运行已完成"的通用字段。
+`agentToolInvocation` 用于嵌套的 `Agent.asTool()` 结果，尤其适合在 `customOutputExtractor` 内部需要获取当前工具调用元数据的情况。它不是用于概括"整个运行已完成"的通用字段。
 
-在这种嵌套上下文中，`agentToolInvocation` 会公开：
+在该嵌套上下文中，`agentToolInvocation` 提供：
 
 - `toolName`
 - `toolCallId`
 - `toolArguments`
 
-如果您还需要传入该嵌套智能体工具运行的结构化输入，可以将它与 `result.runContext.toolInput` 结合使用。
+如果您还需要传入该嵌套智能体工具运行的结构化输入，请将其与 `result.runContext.toolInput` 搭配使用。
 
-在普通的顶层 `run()` 结果中，此属性通常为 `undefined`。这些元数据仅在运行时可用，不会被序列化到 `RunState` 中。有关相关模式，请参阅 [Agents as tools](/openai-agents-js/zh/guides/tools#4-agents-as-tools)。
+在普通的顶层 `run()` 结果中，此属性通常为 `undefined`。这些元数据仅存在于运行时，不会序列化到 `RunState` 中。有关相关模式，请参阅 [Agents as tools](/openai-agents-js/zh/guides/tools#4-agents-as-tools)。
 
-## 流式传输结果
+## 流式结果
 
-`StreamedRunResult` 继承上述相同的结果字段，但增加了流式传输专用的控制功能：
+`StreamedRunResult` 继承上述相同的结果属性，同时添加以下流式传输专用控制功能：
 
 - `toTextStream()`，仅用于助手文本。
 - `toStream()` 或 `for await ... of stream`，用于完整事件流。
-- `completed`，用于等待运行和所有后处理回调完成。
+- `completed`，用于等待运行及所有后处理回调完成。
 - `error` 和 `cancelled`，用于检查流式传输的终止状态。
-- `currentAgent`，用于在运行过程中跟踪活跃智能体。
+- `currentAgent`，用于在运行期间追踪活跃智能体。
+- `currentTurn`，用于检查实际已到达请求边界的模型轮次数。
+- `maxTurns`，用于检查本次流式运行所应用的轮次限制（`null` 表示无限制）。
 
-如果需要流式运行完成后的最终状态，请先等待 `completed`，再读取 `finalOutput`、`history`、`interruptions` 或其他汇总属性。有关逐事件处理，请参阅[流式传输](/openai-agents-js/zh/guides/streaming)。
+只有模型请求被接收时，`currentTurn` 才会递增。阻止请求的最大轮次检查或阻断式输入护栏不会使其递增；恢复的运行则从其 `RunState` 中保留的计数开始。
 
-如果流式运行被取消，`completed` 仍会在清理完成后兑现，且 `cancelled` 会变为 `true`，但由于当前轮次从未完成，`finalOutput` 等轮次结束字段可能仍未设置。应使用 `result.state`（如果使用了 `session`，还需使用同一个 `session`）恢复该未完成轮次，而不是追加一条新的用户消息。
+如果您需要流式运行完成后的最终状态，请先等待 `completed`，再读取 `finalOutput`、`history`、`interruptions` 或其他摘要属性。有关逐事件处理方式，请参阅[流式传输](/openai-agents-js/zh/guides/streaming)。
 
-## 诊断和高级字段
+如果流式运行被取消，`completed` 仍会在清理完成后兑现，且 `cancelled` 会变为 `true`；但由于当前轮次从未完成，`finalOutput` 等轮次结束字段可能仍未设置。请使用 `result.state`（如果使用了 `session`，还需使用同一个 `session`）恢复该未完成轮次，而不是追加一条新的用户消息。
+
+## 诊断与高级字段
 
 ### 运行上下文
 
-`runContext` 属性是在结果中查看运行上下文的受支持公共接口。`result.runContext.context` 是您的应用上下文，同一对象还包含由 SDK 管理的运行时元数据，例如审批、用量和嵌套 `toolInput`。完整结构请参阅[上下文管理](/openai-agents-js/zh/guides/context)。
+`runContext` 属性是结果中受支持的公开运行上下文视图。`result.runContext.context` 是您的应用上下文，同一个对象还包含由 SDK 管理的运行时元数据，例如审批、用量和嵌套的 `toolInput`。有关完整结构，请参阅[上下文管理](/openai-agents-js/zh/guides/context)。
 
 ### 原始响应
 
-`rawResponses` 包含运行期间收集的原始模型响应。多步骤运行可能产生多个响应，例如跨交接或重复的工具与模型循环。
+`rawResponses` 包含运行期间收集的原始模型响应。多步骤运行可能产生多个响应，例如跨交接或重复的工具/模型循环。
+
+每个响应还可以包含 `requestId`，即提供方的请求标识符（如果存在）。对于流式和非流式 HTTP 请求，OpenAI Responses 和 Chat Completions 模型都会填充该字段；由于某些提供方和传输机制不会公开请求标识符，因此应将其视为可选字段。
+
+对于 Chat Completions 文本输出，可检查规范化 `output_text` 部分的 `providerData.annotations` 以读取 URL 引用。非流式响应会保留提供方的消息注释。流式响应会保留随文本收到的有效 `url_citation` 注释、对重复引用进行去重，并忽略格式错误或不受支持的注释结构。
+
+对于 Chat Completions 音频，规范化模型响应会将其表示为仅含音频的助手消息，其中包含一个 `audio` 内容部分。当该消息成为运行条目时，可检查 `RunMessageOutputItem.rawItem` 中的相同部分。如果非流式响应同时包含文本或拒绝内容以及音频，规范化助手消息会保留文本或拒绝内容，而完整的提供方响应仍可在 `rawResponses[].providerData` 中获取。对于流式混合输出，如果您需要在提供方音频分块到达时获取它们，请检查原始模型流事件；完成后的 `rawResponses` 条目包含规范化的文本或拒绝内容，但不包含重建后的音频。流式传输的 `toTextStream()` 辅助方法仅输出文本。
+
+当 `modelSettings.preserveRawUsage` 为 `true` 时，每个已完成响应还可以提供 `rawUsage`，它是在 SDK 规范化之前捕获的独立 JSON 兼容快照。规范化后的 `Usage` 仍可通过 `response.usage` 获取；在提供相关信息的情况下，`rawUsage` 会保留提供方特定的字段名称，并保留字段省略与显式赋值之间的差异。如果提供方未提供用量信息，或无法安全复制载荷，则该属性可能为 `undefined`。`rawUsage` 仅存在于运行时，并会有意从序列化的 `RunState` 中省略，因此请在持久化和恢复运行前复制所需字段。
 
 ### 护栏结果
 
 `inputGuardrailResults` 和 `outputGuardrailResults` 属性包含智能体级护栏结果。工具护栏结果则分别通过 `toolInputGuardrailResults` 和 `toolOutputGuardrailResults` 提供。
 
-如果您希望记录护栏决策、检查护栏函数返回的额外元数据，或调试运行被阻止的原因，请使用这些数组。
+如果您需要记录护栏决策、检查护栏函数返回的额外元数据，或调试运行被阻止的原因，请使用这些数组。
 
 如果某个护栏执行失败，其他已成功完成的同级护栏结果仍会保留在运行状态中。对于流式运行，请在 `completed` 被拒绝后检查结果数组；对于非流式运行，`GuardrailExecutionError` 会携带相同的最终 `state`。
 
 ### 用量
 
-令牌用量汇总在 `result.state.usage` 中，其中会跟踪本次运行的请求次数和令牌总数。也可以通过 `result.runContext.usage` 获取同一个用量对象。对于流式运行，这些数据会随着响应到达而更新。
+令牌用量汇总在 `result.state.usage` 中，其中追踪本次运行的请求次数和令牌总数。同一个用量对象也可以通过 `result.runContext.usage` 获取。对于流式运行，这些数据会随着响应到达而更新。
+
+已完成的流式或非流式 Chat Completions 调用都会计为一次请求，即使提供方省略了其用量对象。在这种情况下，由于提供方未报告令牌用量，令牌总数会保持为零。
 
 <Code lang="typescript" code={usageExample} title="从 RunState 读取用量" />
