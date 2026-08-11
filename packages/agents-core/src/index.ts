@@ -214,6 +214,10 @@ export type {
 export { RunContext } from './runContext';
 export type { AgentToolInvocation } from './agentToolInvocation';
 export { RunState } from './runState';
+export type {
+  ApproveRunToolOptions,
+  RunToolApprovalArguments,
+} from './runState';
 export type { TracingConfig } from './tracing';
 export {
   HostedTool,
@@ -333,6 +337,7 @@ export type {
   SessionHistoryMutation,
   SessionHistoryRewriteArgs,
   SessionHistoryRewriteAwareSession,
+  SessionHistoryExpectedRewriteAwareSession,
   SessionHistoryAppendItemsTransaction,
   SessionHistoryReplaceSuffixTransaction,
   SessionHistoryTransaction,
@@ -346,6 +351,7 @@ export {
   isOpenAIResponsesCompactionAwareSession,
   isRunContextAwareSession,
   isSessionHistoryRewriteAwareSession,
+  isSessionHistoryExpectedRewriteAwareSession,
   isSessionHistoryTransactionAwareSession,
 } from './memory/session';
 export { applySessionHistoryMutations } from './memory/historyMutations';

@@ -171,7 +171,7 @@ describe('tool invocation replay binding', () => {
       1,
     ).toJSON() as any;
 
-    expect(serialized.$schemaVersion).toBe('1.18');
+    expect(serialized.$schemaVersion).toBe('1.19');
     expect(serialized.context.approvalInvocations).toEqual([]);
     expect(serialized.completedToolInvocations).toEqual([]);
     expect(serialized.completedToolInvocationEvidence).toEqual([]);
@@ -838,7 +838,7 @@ describe('tool invocation replay binding', () => {
       expect(calls).toEqual(['first']);
 
       const serialized = secondInterruption.state.toJSON() as any;
-      expect(serialized.$schemaVersion).toBe('1.18');
+      expect(serialized.$schemaVersion).toBe('1.19');
       expect(
         serialized.context.approvalInvocations[0].invocations[firstCallId],
       ).toBeTypeOf('string');

@@ -13,10 +13,17 @@ export type SessionInputCallback = (
 export type SessionHistoryReplaceFunctionCallMutation = {
   type: 'replace_function_call';
   callId: string;
+  expected?: Extract<AgentInputItem, { type: 'function_call' }>;
   replacement: Extract<AgentInputItem, { type: 'function_call' }>;
 };
 
 export type SessionHistoryMutation = SessionHistoryReplaceFunctionCallMutation;
+
+/** @internal */
+export type SessionHistoryExpectedFunctionCallMutation =
+  SessionHistoryReplaceFunctionCallMutation & {
+    expected: Extract<AgentInputItem, { type: 'function_call' }>;
+  };
 
 export type SessionHistoryRewriteArgs = {
   mutations: SessionHistoryMutation[];
@@ -52,7 +59,9 @@ export interface Session {
    * them.
    *
    * Session implementations can use this to remove backend-assigned metadata while preserving
-   * their public `getItems()` shape.
+   * their public `getItems()` shape. This hook does not replace the atomic comparison required by
+   * {@link SessionHistoryExpectedRewriteAwareSession}; an expected-rewrite implementation must
+   * apply any required normalization inside its atomic compare-and-replace operation.
    */
   prepareHistoryItemsForPersistenceComparison?(
     items: AgentInputItem[],
@@ -128,6 +137,27 @@ export interface RunContextAwareSession<TContext = unknown> extends Session {
 
 export interface SessionHistoryRewriteAwareSession extends Session {
   applyHistoryMutations(args: SessionHistoryRewriteArgs): Promise<void> | void;
+}
+
+/**
+ * Session capability for identity-aware function-call history rewrites.
+ *
+ * Implementations must apply each request as an atomic compare-and-replace batch. They must compare
+ * every expected function call against one consistent history version before making any replacement
+ * and leave history unchanged if any expected call does not match. Each mutation replaces only the
+ * latest matching occurrence, and retrying a replacement that is already applied must be idempotent.
+ * Any session-specific comparison normalization must happen inside the same atomic operation.
+ *
+ * If the session also implements {@link RunContextAwareSession}, the same run context used for
+ * history reads and writes must select the rewrite target.
+ */
+export interface SessionHistoryExpectedRewriteAwareSession extends SessionHistoryRewriteAwareSession {
+  readonly supportsExpectedHistoryMutations: true;
+
+  applyHistoryMutations(
+    args: SessionHistoryRewriteArgs,
+    runContext?: RunContext<any>,
+  ): Promise<void> | void;
 }
 
 export type SessionHistoryAppendItemsTransaction = {
@@ -248,6 +278,22 @@ export function isSessionHistoryRewriteAwareSession(
     !!session &&
     typeof (session as SessionHistoryRewriteAwareSession)
       .applyHistoryMutations === 'function'
+  );
+}
+
+/**
+ * Checks whether a session advertises atomic expected-call history rewrites.
+ *
+ * Applications may use this as an advisory capability check before offering durable function-call
+ * argument overrides. The resume path still performs the authoritative rewrite and validation.
+ */
+export function isSessionHistoryExpectedRewriteAwareSession(
+  session: Session | undefined,
+): session is SessionHistoryExpectedRewriteAwareSession {
+  return (
+    isSessionHistoryRewriteAwareSession(session) &&
+    (session as Partial<SessionHistoryExpectedRewriteAwareSession>)
+      .supportsExpectedHistoryMutations === true
   );
 }
 

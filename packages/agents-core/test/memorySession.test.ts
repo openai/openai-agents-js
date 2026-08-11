@@ -147,6 +147,14 @@ describe('MemorySession', () => {
         },
       ],
     });
+    const expected = {
+      type: 'function_call',
+      id: 'call-old-2',
+      callId: 'call-1',
+      name: 'lookup',
+      status: 'completed',
+      arguments: '{"duplicate":true}',
+    } satisfies AgentInputItem;
     const replacement = {
       type: 'function_call',
       id: 'call-new',
@@ -161,6 +169,7 @@ describe('MemorySession', () => {
         {
           type: 'replace_function_call',
           callId: 'call-1',
+          expected,
           replacement,
         },
       ],
@@ -168,8 +177,111 @@ describe('MemorySession', () => {
 
     expect(await session.getItems()).toEqual([
       createUserMessage('start'),
+      {
+        type: 'function_call',
+        id: 'call-old-1',
+        callId: 'call-1',
+        name: 'lookup',
+        status: 'completed',
+        arguments: '{"ok":false}',
+      },
       replacement,
     ]);
+  });
+
+  test('leaves history unchanged when an expected mutation batch does not match', async () => {
+    const firstCall = {
+      type: 'function_call',
+      callId: 'call-1',
+      name: 'lookup',
+      status: 'completed',
+      arguments: '{"value":1}',
+    } satisfies AgentInputItem;
+    const secondCall = {
+      type: 'function_call',
+      callId: 'call-2',
+      name: 'lookup',
+      status: 'completed',
+      arguments: '{"value":2}',
+    } satisfies AgentInputItem;
+    const initialItems = [createUserMessage('start'), firstCall, secondCall];
+    const session = new MemorySession({
+      sessionId: 'session-atomic-mismatch',
+      initialItems,
+    });
+
+    await expect(
+      session.applyHistoryMutations({
+        mutations: [
+          {
+            type: 'replace_function_call',
+            callId: firstCall.callId,
+            expected: firstCall,
+            replacement: {
+              ...firstCall,
+              arguments: '{"value":10}',
+            },
+          },
+          {
+            type: 'replace_function_call',
+            callId: secondCall.callId,
+            expected: {
+              ...secondCall,
+              arguments: '{"value":999}',
+            },
+            replacement: {
+              ...secondCall,
+              arguments: '{"value":20}',
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow('Session history items could not be compared safely');
+
+    expect(await session.getItems()).toEqual(initialItems);
+  });
+
+  test('validates an expected mutation batch against one history version', async () => {
+    const originalCall = {
+      type: 'function_call',
+      callId: 'call-dependent',
+      name: 'lookup',
+      status: 'completed',
+      arguments: '{"value":1}',
+    } satisfies AgentInputItem;
+    const intermediateCall = {
+      ...originalCall,
+      arguments: '{"value":2}',
+    };
+    const finalCall = {
+      ...originalCall,
+      arguments: '{"value":3}',
+    };
+    const session = new MemorySession({
+      sessionId: 'session-dependent-mutations',
+      initialItems: [originalCall],
+    });
+
+    await expect(
+      session.applyHistoryMutations({
+        mutations: [
+          {
+            type: 'replace_function_call',
+            callId: originalCall.callId,
+            expected: originalCall,
+            replacement: intermediateCall,
+          },
+          {
+            type: 'replace_function_call',
+            callId: originalCall.callId,
+            expected: intermediateCall,
+            replacement: finalCall,
+          },
+        ],
+      }),
+    ).rejects.toThrow('Session history mutation could not find');
+
+    expect(await session.getItems()).toEqual([originalCall]);
   });
 
   test('applies append transactions idempotently', async () => {

@@ -1,10 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import {
+  Agent,
+  applySessionHistoryMutations,
   MemorySession,
+  RunContext,
+  run,
+  tool,
+  Usage,
   UserError,
   type AgentInputItem,
+  type RunContextAwareSession,
+  type SessionHistoryExpectedRewriteAwareSession,
+  type SessionHistoryRewriteArgs,
 } from '@openai/agents-core';
+import {
+  ScriptedModel,
+  assistantMessage,
+  functionCall,
+  modelResponse,
+} from '@openai/agents-core/testing';
 
 import { OpenAIResponsesCompactionSession } from '../src';
 import { OPENAI_SESSION_API } from '../src/memory/openaiSessionApi';
@@ -91,6 +107,144 @@ class FailingRestoreSession extends MemorySession {
     this.clearCalls += 1;
     await super.clearSession();
   }
+}
+
+class BackendMetadataSession extends MemorySession {
+  override async getItems(limit?: number): Promise<AgentInputItem[]> {
+    const items = await super.getItems(limit);
+    return items.map((item) =>
+      item.type === 'function_call'
+        ? {
+            ...item,
+            id: 'backend-assigned-id',
+            providerData: { loadedAt: new Date() },
+          }
+        : item,
+    );
+  }
+
+  prepareHistoryItemsForPersistenceComparison(
+    items: AgentInputItem[],
+  ): AgentInputItem[] {
+    return items.map((item) => {
+      if (item.type !== 'function_call') {
+        return item;
+      }
+      const {
+        id: _backendId,
+        providerData: _backendProviderData,
+        ...functionCall
+      } = item;
+      return functionCall;
+    });
+  }
+}
+
+class CommitThenFailRewriteSession extends MemorySession {
+  readonly rewriteError = new Error('rewrite outcome is unknown');
+
+  override async applyHistoryMutations(
+    args: SessionHistoryRewriteArgs,
+  ): Promise<void> {
+    await super.applyHistoryMutations(args);
+    throw this.rewriteError;
+  }
+}
+
+type TenantContext = { tenantId: string };
+
+class ContextAwareRewriteSession
+  implements
+    RunContextAwareSession<TenantContext>,
+    SessionHistoryExpectedRewriteAwareSession
+{
+  readonly acceptsRunContext = true;
+  readonly supportsExpectedHistoryMutations = true;
+  readonly itemsByTenant = new Map<string, AgentInputItem[]>([['default', []]]);
+  readonly rewriteContexts: Array<RunContext<TenantContext> | undefined> = [];
+
+  async getSessionId(): Promise<string> {
+    return 'context-aware-compaction-session';
+  }
+
+  async getItems(
+    limit?: number,
+    runContext?: RunContext<TenantContext>,
+  ): Promise<AgentInputItem[]> {
+    const items = this.getTenantItems(runContext);
+    return limit === undefined ? [...items] : items.slice(-limit);
+  }
+
+  async addItems(
+    items: AgentInputItem[],
+    runContext?: RunContext<TenantContext>,
+  ): Promise<void> {
+    this.getTenantItems(runContext).push(...structuredClone(items));
+  }
+
+  async popItem(
+    runContext?: RunContext<TenantContext>,
+  ): Promise<AgentInputItem | undefined> {
+    return this.getTenantItems(runContext).pop();
+  }
+
+  async clearSession(runContext?: RunContext<TenantContext>): Promise<void> {
+    this.itemsByTenant.set(this.getTenantId(runContext), []);
+  }
+
+  async applyHistoryMutations(
+    args: SessionHistoryRewriteArgs,
+    runContext?: RunContext<TenantContext>,
+  ): Promise<void> {
+    this.rewriteContexts.push(runContext);
+    const items = this.getTenantItems(runContext);
+    this.itemsByTenant.set(
+      this.getTenantId(runContext),
+      applySessionHistoryMutations(items, args.mutations),
+    );
+  }
+
+  private getTenantItems(
+    runContext: RunContext<TenantContext> | undefined,
+  ): AgentInputItem[] {
+    const tenantId = this.getTenantId(runContext);
+    const items = this.itemsByTenant.get(tenantId) ?? [];
+    this.itemsByTenant.set(tenantId, items);
+    return items;
+  }
+
+  private getTenantId(
+    runContext: RunContext<TenantContext> | undefined,
+  ): string {
+    return runContext?.context.tenantId ?? 'default';
+  }
+}
+
+function createApprovalModel(): ScriptedModel {
+  return new ScriptedModel([
+    modelResponse({
+      usage: new Usage(),
+      output: [
+        functionCall(
+          'lookup',
+          { query: 'old' },
+          {
+            callId: 'call_compaction_override',
+          },
+        ),
+      ],
+    }),
+  ]);
+}
+
+function createResponseIdModel(): ScriptedModel {
+  return new ScriptedModel([
+    modelResponse({
+      usage: new Usage(),
+      responseId: 'resp_manual_compaction',
+      output: [assistantMessage('done')],
+    }),
+  ]);
 }
 
 describe('OpenAIResponsesCompactionSession', () => {
@@ -204,6 +358,283 @@ describe('OpenAIResponsesCompactionSession', () => {
 
     expect(candidateSnapshots).toEqual([[assistantItem], [assistantItem], []]);
     await expect(session.getItems()).resolves.toEqual([]);
+  });
+
+  it('forwards history rewrites and invalidates cached compaction input', async () => {
+    const originalCall = {
+      type: 'function_call',
+      name: 'lookup',
+      callId: 'call_rewrite',
+      status: 'completed',
+      arguments: JSON.stringify({ query: 'old' }),
+    } as Extract<AgentInputItem, { type: 'function_call' }>;
+    const replacementCall = {
+      ...originalCall,
+      arguments: JSON.stringify({ query: 'new' }),
+    };
+    const candidateSnapshots: AgentInputItem[][] = [];
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact: vi.fn() } } as any,
+      underlyingSession: new MemorySession({ initialItems: [originalCall] }),
+      shouldTriggerCompaction: ({ compactionCandidateItems }) => {
+        candidateSnapshots.push(compactionCandidateItems);
+        return false;
+      },
+    });
+
+    await session.runCompaction();
+    await session.applyHistoryMutations({
+      mutations: [
+        {
+          type: 'replace_function_call',
+          callId: 'call_rewrite',
+          expected: originalCall,
+          replacement: replacementCall,
+        },
+      ],
+    });
+    await session.runCompaction();
+
+    expect(candidateSnapshots).toEqual([[originalCall], [replacementCall]]);
+    await expect(session.getItems()).resolves.toEqual([replacementCall]);
+  });
+
+  it('invalidates cached history when a rewrite commits and then rejects', async () => {
+    const originalCall = {
+      type: 'function_call',
+      name: 'lookup',
+      callId: 'call_uncertain_rewrite',
+      arguments: JSON.stringify({ query: 'old' }),
+    } as Extract<AgentInputItem, { type: 'function_call' }>;
+    const replacementCall = {
+      ...originalCall,
+      arguments: JSON.stringify({ query: 'new' }),
+    };
+    const toolResult = {
+      type: 'function_call_result',
+      name: 'lookup',
+      callId: 'call_uncertain_rewrite',
+      status: 'completed',
+      output: 'new result',
+    } as Extract<AgentInputItem, { type: 'function_call_result' }>;
+    const underlyingSession = new CommitThenFailRewriteSession({
+      initialItems: [originalCall],
+    });
+    const candidateSnapshots: AgentInputItem[][] = [];
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact: vi.fn() } } as any,
+      underlyingSession,
+      shouldTriggerCompaction: ({ compactionCandidateItems }) => {
+        candidateSnapshots.push(compactionCandidateItems);
+        return false;
+      },
+    });
+
+    await session.runCompaction();
+    await expect(
+      session.applyHistoryMutations({
+        mutations: [
+          {
+            type: 'replace_function_call',
+            callId: 'call_uncertain_rewrite',
+            expected: originalCall,
+            replacement: replacementCall,
+          },
+        ],
+      }),
+    ).rejects.toBe(underlyingSession.rewriteError);
+    await session.addItems([toolResult]);
+    await session.runCompaction();
+
+    expect(candidateSnapshots).toEqual([
+      [originalCall],
+      [replacementCall, toolResult],
+    ]);
+    await expect(session.getItems()).resolves.toEqual([
+      replacementCall,
+      toolResult,
+    ]);
+  });
+
+  it('delegates persistence comparison normalization before a resumed rewrite', async () => {
+    let executedQuery: string | undefined;
+    const lookup = tool({
+      name: 'lookup',
+      description: 'Looks up a query after approval.',
+      parameters: z.object({ query: z.string() }),
+      needsApproval: async () => true,
+      execute: async ({ query }) => {
+        executedQuery = query;
+        return query;
+      },
+    });
+    const underlyingSession = new BackendMetadataSession();
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact: vi.fn() } } as any,
+      underlyingSession,
+    });
+    const agent = new Agent({
+      name: 'CompactionOverrideAgent',
+      model: createApprovalModel(),
+      tools: [lookup],
+      toolUseBehavior: 'stop_on_first_tool',
+    });
+    const firstResult = await run(agent, 'query', { session });
+    firstResult.state.approve(firstResult.interruptions[0]!, {
+      overrideArguments: { query: 'new' },
+    });
+
+    const resumed = await run(agent, firstResult.state, { session });
+
+    expect(resumed.finalOutput).toBe('new');
+    expect(executedQuery).toBe('new');
+    await expect(session.getItems()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'function_call',
+          id: 'backend-assigned-id',
+          providerData: { loadedAt: expect.any(Date) },
+          callId: 'call_compaction_override',
+          arguments: JSON.stringify({ query: 'new' }),
+        }),
+      ]),
+    );
+  });
+
+  it('forwards the active run context through a resumed history rewrite', async () => {
+    let executedQuery: string | undefined;
+    const lookup = tool({
+      name: 'lookup',
+      description: 'Looks up a query after approval.',
+      parameters: z.object({ query: z.string() }),
+      needsApproval: async () => true,
+      execute: async ({ query }) => {
+        executedQuery = query;
+        return query;
+      },
+    });
+    const underlyingSession = new ContextAwareRewriteSession();
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact: vi.fn() } } as any,
+      underlyingSession,
+      shouldTriggerCompaction: () => false,
+    });
+    const agent = new Agent<TenantContext>({
+      name: 'ContextAwareCompactionOverrideAgent',
+      model: createApprovalModel(),
+      tools: [lookup],
+      toolUseBehavior: 'stop_on_first_tool',
+    });
+    const firstResult = await run(agent, 'query', {
+      session,
+      context: { tenantId: 'tenant-a' },
+    });
+    firstResult.state.approve(firstResult.interruptions[0]!, {
+      overrideArguments: { query: 'new' },
+    });
+
+    const resumed = await run(agent, firstResult.state, { session });
+
+    expect(resumed.finalOutput).toBe('new');
+    expect(executedQuery).toBe('new');
+    expect(underlyingSession.rewriteContexts).toHaveLength(1);
+    expect(underlyingSession.rewriteContexts[0]?.context).toEqual({
+      tenantId: 'tenant-a',
+    });
+    expect(underlyingSession.itemsByTenant.get('default')).toEqual([]);
+    expect(underlyingSession.itemsByTenant.get('tenant-a')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'function_call',
+          callId: 'call_compaction_override',
+          arguments: JSON.stringify({ query: 'new' }),
+        }),
+      ]),
+    );
+  });
+
+  it('invalidates compaction caches when the active run context changes', async () => {
+    const tenantACall = {
+      type: 'function_call',
+      name: 'lookup',
+      callId: 'call_tenant_a',
+      arguments: '{}',
+    } as Extract<AgentInputItem, { type: 'function_call' }>;
+    const tenantBCall = {
+      ...tenantACall,
+      callId: 'call_tenant_b',
+    };
+    const underlyingSession = new ContextAwareRewriteSession();
+    const candidateSnapshots: AgentInputItem[][] = [];
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact: vi.fn() } } as any,
+      underlyingSession,
+      shouldTriggerCompaction: ({ compactionCandidateItems }) => {
+        candidateSnapshots.push(compactionCandidateItems);
+        return false;
+      },
+    });
+    const tenantAContext = new RunContext<TenantContext>({
+      tenantId: 'tenant-a',
+    });
+    const tenantBContext = new RunContext<TenantContext>({
+      tenantId: 'tenant-b',
+    });
+
+    await session.addItems([tenantACall], tenantAContext);
+    await session.runCompaction({}, tenantAContext);
+    await session.addItems([tenantBCall], tenantBContext);
+    await session.runCompaction({}, tenantBContext);
+
+    expect(candidateSnapshots).toEqual([[tenantACall], [tenantBCall]]);
+    expect(underlyingSession.itemsByTenant.get('default')).toEqual([]);
+  });
+
+  it('preserves the response ID for manual compaction with a context-insensitive session', async () => {
+    const compact = vi.fn().mockResolvedValue({
+      output: [],
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
+      },
+    });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      underlyingSession: new MemorySession(),
+      compactionMode: 'previous_response_id',
+      shouldTriggerCompaction: () => false,
+    });
+    const agent = new Agent({
+      name: 'ManualCompactionAgent',
+      model: createResponseIdModel(),
+    });
+
+    await run(agent, 'hello', { session });
+    await session.runCompaction({ force: true });
+
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(compact).toHaveBeenCalledWith({
+      model: 'gpt-5.6-luna',
+      previous_response_id: 'resp_manual_compaction',
+    });
+  });
+
+  it('rejects history rewrites when the underlying session cannot rewrite', async () => {
+    const underlyingSession = new MemorySession();
+    Object.defineProperty(underlyingSession, 'applyHistoryMutations', {
+      value: undefined,
+    });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact: vi.fn() } } as any,
+      underlyingSession,
+    });
+
+    await expect(
+      session.applyHistoryMutations({ mutations: [] }),
+    ).rejects.toThrow(
+      'requires its underlying session to support expected function-call history rewrites',
+    );
   });
 
   it('uses the default compaction threshold for candidate items', async () => {

@@ -11,6 +11,8 @@ import {
   type OpenAIResponsesCompactionArgs,
   type RunContextAwareSession,
   type Session,
+  type SessionHistoryExpectedRewriteAwareSession,
+  type SessionHistoryRewriteArgs,
   type SessionHistoryTransactionArgs,
 } from '../src';
 import {
@@ -19,6 +21,7 @@ import {
   RunToolCallOutputItem as ToolCallOutputItem,
 } from '../src/items';
 import logger from '../src/logger';
+import { applySessionHistoryMutations } from '../src/memory/historyMutations';
 import { saveToSession } from '../src/runner/sessionPersistence';
 import { RunResult } from '../src/result';
 import { RunState } from '../src/runState';
@@ -146,6 +149,26 @@ class ContextAwareTransactionSession extends TenantSession {
       suffixStart,
       args.transaction.expectedSuffix.length,
       ...structuredClone(args.transaction.replacement),
+    );
+  }
+}
+
+class ContextAwareRewriteSession
+  extends TenantSession
+  implements SessionHistoryExpectedRewriteAwareSession
+{
+  readonly supportsExpectedHistoryMutations = true;
+  readonly rewriteContexts: Array<RunContext<TenantContext> | undefined> = [];
+
+  async applyHistoryMutations(
+    args: SessionHistoryRewriteArgs,
+    runContext?: RunContext<TenantContext>,
+  ): Promise<void> {
+    this.rewriteContexts.push(runContext);
+    const items = this.getTenantItems(runContext);
+    this.itemsByTenant.set(
+      this.getTenantId(runContext),
+      applySessionHistoryMutations(items, args.mutations),
     );
   }
 }
@@ -285,6 +308,40 @@ describe('run context aware sessions', () => {
     ).toBe(true);
     expect(session.itemsByTenant.get('default')).toEqual([]);
     expect(session.itemsByTenant.get('tenant-a')).toHaveLength(4);
+  });
+
+  it('passes the restored run context to session history rewrites', async () => {
+    const context: TenantContext = { tenantId: 'tenant-a' };
+    const session = new ContextAwareRewriteSession();
+    const defaultItem = fakeModelMessage('default history');
+    session.itemsByTenant.set('default', [defaultItem]);
+    const contextTool = tool({
+      name: 'context_tool',
+      description: 'Return a context-aware result.',
+      parameters: z.object({ value: z.string().optional() }),
+      needsApproval: true,
+      execute: async ({ value }) => value ?? 'approved',
+    });
+    const agent = new Agent({
+      name: 'Context-aware history rewrite',
+      model: new ApprovalModel(),
+      tools: [contextTool],
+    });
+
+    const interrupted = await run(agent, 'hello', { context, session });
+    interrupted.state.approve(interrupted.interruptions[0]!, {
+      overrideArguments: { value: 'updated' },
+    });
+    const resumed = await run(agent, interrupted.state, { session });
+
+    expect(resumed.finalOutput).toBe('done');
+    expect(session.rewriteContexts).toEqual([interrupted.runContext]);
+    expect(session.itemsByTenant.get('default')).toEqual([defaultItem]);
+    expect(
+      session.itemsByTenant
+        .get('tenant-a')
+        ?.find((item) => item.type === 'function_call'),
+    ).toMatchObject({ arguments: JSON.stringify({ value: 'updated' }) });
   });
 
   it('passes the run context to an opted-in compaction hook', async () => {

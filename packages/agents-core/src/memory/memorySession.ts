@@ -2,8 +2,8 @@ import { randomUUID } from '@openai/agents-core/_shims';
 
 import type { AgentInputItem } from '../types';
 import type {
+  SessionHistoryExpectedRewriteAwareSession,
   SessionHistoryRewriteArgs,
-  SessionHistoryRewriteAwareSession,
   SessionHistoryTransaction,
   SessionHistoryTransactionArgs,
   SessionHistoryTransactionAwareSession,
@@ -24,9 +24,11 @@ export type MemorySessionOptions = {
  */
 export class MemorySession
   implements
-    SessionHistoryRewriteAwareSession,
+    SessionHistoryExpectedRewriteAwareSession,
     SessionHistoryTransactionAwareSession
 {
+  readonly supportsExpectedHistoryMutations = true;
+
   private readonly sessionId: string;
   private readonly logger: Logger;
 

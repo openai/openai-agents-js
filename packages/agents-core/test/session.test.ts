@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   isOpenAIResponsesCompactionAwareSession,
+  isSessionHistoryExpectedRewriteAwareSession,
   isSessionHistoryRewriteAwareSession,
   isSessionHistoryTransactionAwareSession,
   type OpenAIResponsesCompactionAwareSession,
   type Session,
+  type SessionHistoryExpectedRewriteAwareSession,
   type SessionHistoryRewriteAwareSession,
   type SessionHistoryTransactionAwareSession,
 } from '../src/memory/session';
@@ -45,6 +47,25 @@ describe('session type guards', () => {
     expect(isSessionHistoryRewriteAwareSession(historyRewriteSession)).toBe(
       true,
     );
+  });
+
+  it('detects expected history rewrite-aware sessions explicitly', () => {
+    const legacyRewriteSession: SessionHistoryRewriteAwareSession = {
+      ...makeSession(),
+      applyHistoryMutations: () => {},
+    };
+    const expectedRewriteSession: SessionHistoryExpectedRewriteAwareSession = {
+      ...legacyRewriteSession,
+      supportsExpectedHistoryMutations: true,
+    };
+
+    expect(isSessionHistoryExpectedRewriteAwareSession(undefined)).toBe(false);
+    expect(
+      isSessionHistoryExpectedRewriteAwareSession(legacyRewriteSession),
+    ).toBe(false);
+    expect(
+      isSessionHistoryExpectedRewriteAwareSession(expectedRewriteSession),
+    ).toBe(true);
   });
 
   it('detects history transaction-aware sessions', () => {

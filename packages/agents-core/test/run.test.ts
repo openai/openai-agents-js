@@ -23,6 +23,7 @@ import {
   Session,
   UserError,
   ModelInputData,
+  type SessionHistoryRewriteArgs,
   type OutputGuardrailFunctionArgs,
   type AgentInputItem,
   extractAllTextOutput,
@@ -53,6 +54,7 @@ import {
   RunToolSearchOutputItem,
 } from '../src/items';
 import { MemorySession as CoreMemorySession } from '../src/memory/memorySession';
+import { applySessionHistoryMutations } from '../src/memory/historyMutations';
 import { getTurnInput, selectModel } from '../src/run';
 import { RunContext } from '../src/runContext';
 import { RunState } from '../src/runState';
@@ -8807,6 +8809,696 @@ describe('Runner.run', () => {
       expect(model.requests).toHaveLength(1);
       expect(markSpy).not.toHaveBeenCalled();
       markSpy.mockRestore();
+    });
+
+    it('executes approved override arguments and replays the corrected function call', async () => {
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => `result:${test}`,
+      });
+      const model = new TrackingModel([
+        modelResponse(
+          buildResponse(
+            [buildToolCall('call-local-override', 'foo')],
+            'resp-local-1',
+          ),
+        ),
+        modelResponse(
+          buildResponse([fakeModelMessage('done')], 'resp-local-2'),
+        ),
+      ]);
+      const agent = new Agent({
+        name: 'ApprovalLocalOverrideAgent',
+        model,
+        tools: [approvalTool],
+      });
+      const runner = new Runner();
+      const firstResult = await runner.run(agent, 'user_message');
+
+      firstResult.state.approve(firstResult.interruptions[0]!, {
+        overrideArguments: { test: 'bar' },
+      });
+      const secondResult = await runner.run(agent, firstResult.state);
+
+      expect(secondResult.finalOutput).toBe('done');
+      const secondItems = model.requests[1]!.input as AgentInputItem[];
+      expect(secondItems).toEqual([
+        expect.objectContaining({ role: 'user', content: 'user_message' }),
+        expect.objectContaining({
+          type: 'function_call',
+          callId: 'call-local-override',
+          arguments: JSON.stringify({ test: 'bar' }),
+        }),
+        expect.objectContaining({
+          type: 'function_call_result',
+          callId: 'call-local-override',
+          output: expect.objectContaining({ text: 'result:bar' }),
+        }),
+      ]);
+    });
+
+    it('rewrites MemorySession history before executing approved override arguments', async () => {
+      class LegacyRewriteSession extends CoreMemorySession {
+        readonly rewriteArgumentCounts: number[] = [];
+
+        override async applyHistoryMutations(
+          args: SessionHistoryRewriteArgs,
+        ): Promise<void> {
+          this.rewriteArgumentCounts.push(arguments.length);
+          await super.applyHistoryMutations(args);
+        }
+      }
+
+      let executions = 0;
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => {
+          executions += 1;
+          return `result:${test}`;
+        },
+      });
+      const model = new TrackingModel([
+        modelResponse(
+          buildResponse(
+            [buildToolCall('call-session-override', 'foo')],
+            'resp-session-1',
+          ),
+        ),
+      ]);
+      const agent = new Agent({
+        name: 'ApprovalSessionOverrideAgent',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const olderCall: protocol.FunctionCallItem = {
+        ...buildToolCall('call-session-override', 'older'),
+        id: 'older-session-call',
+      };
+      const optionalMetadataMessage = {
+        type: 'message',
+        role: 'user',
+        content: 'optional metadata',
+        providerData: undefined,
+      } as AgentInputItem;
+      const binaryMetadataMessage = {
+        type: 'message',
+        role: 'user',
+        content: 'binary metadata',
+        providerData: { bytes: new Uint8Array([1, 2, 3]) },
+      } as AgentInputItem;
+      const session = new LegacyRewriteSession({
+        initialItems: [
+          optionalMetadataMessage,
+          binaryMetadataMessage,
+          olderCall,
+        ],
+      });
+      const firstResult = await run(agent, 'user_message', { session });
+
+      const approvalItem = firstResult.interruptions[0]!;
+      firstResult.state.approve(approvalItem, {
+        overrideArguments: { test: 'bar' },
+      });
+      firstResult.state.approve(approvalItem, {
+        overrideArguments: { test: 'bar' },
+      });
+      const resumed = await run(agent, firstResult.state, { session });
+      const history = await session.getItems();
+      const persistedCalls = history.filter(
+        (item) =>
+          item.type === 'function_call' &&
+          item.callId === 'call-session-override',
+      );
+
+      expect(resumed.finalOutput).toBe('result:bar');
+      expect(executions).toBe(1);
+      expect(session.rewriteArgumentCounts).toEqual([1]);
+      expect(history).toEqual(
+        expect.arrayContaining([
+          optionalMetadataMessage,
+          binaryMetadataMessage,
+        ]),
+      );
+      expect(persistedCalls).toEqual([
+        olderCall,
+        expect.objectContaining({
+          arguments: JSON.stringify({ test: 'bar' }),
+        }),
+      ]);
+      expect(firstResult.state._getSessionHistoryMutations()).toEqual([]);
+    });
+
+    it('requires the persisted session when resuming an argument override', async () => {
+      let executions = 0;
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => {
+          executions += 1;
+          return `result:${test}`;
+        },
+      });
+      const model = new TrackingModel([
+        modelResponse(
+          buildResponse(
+            [buildToolCall('call-persisted-session-required', 'foo')],
+            'resp-persisted-session-required',
+          ),
+        ),
+      ]);
+      const agent = new Agent({
+        name: 'PersistedSessionRequiredAgent',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const session = new CoreMemorySession();
+      const firstResult = await run(agent, 'user_message', { session });
+      const originalHistory = await session.getItems();
+      expect(firstResult.state._currentTurnPersistedItemCount).toBeGreaterThan(
+        0,
+      );
+      firstResult.state.approve(firstResult.interruptions[0]!, {
+        overrideArguments: { test: 'bar' },
+      });
+
+      await expect(run(agent, firstResult.state)).rejects.toThrow(
+        'must resume with the session that contains the persisted function call',
+      );
+      expect(executions).toBe(0);
+      expect(await session.getItems()).toEqual(originalHistory);
+      expect(firstResult.state._getSessionHistoryMutations()).toHaveLength(1);
+
+      const resumed = await run(agent, firstResult.state, { session });
+
+      expect(resumed.finalOutput).toBe('result:bar');
+      expect(executions).toBe(1);
+      expect(firstResult.state._getSessionHistoryMutations()).toEqual([]);
+      expect(await session.getItems()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'function_call',
+            callId: 'call-persisted-session-required',
+            arguments: JSON.stringify({ test: 'bar' }),
+          }),
+        ]),
+      );
+    });
+
+    it('rejects non-writable mutation storage before rewriting session history', async () => {
+      let executions = 0;
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => {
+          executions += 1;
+          return `result:${test}`;
+        },
+      });
+      const model = new TrackingModel([
+        modelResponse(
+          buildResponse(
+            [buildToolCall('call-non-writable-mutations', 'foo')],
+            'resp-non-writable-mutations',
+          ),
+        ),
+      ]);
+      const agent = new Agent({
+        name: 'NonWritableMutationStorageAgent',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const session = new CoreMemorySession();
+      const firstResult = await run(agent, 'user_message', { session });
+      const historyBeforeResume = await session.getItems();
+      firstResult.state.approve(firstResult.interruptions[0]!, {
+        overrideArguments: { test: 'bar' },
+      });
+      const mutations = firstResult.state._sessionHistoryMutations;
+      Object.defineProperty(firstResult.state, '_sessionHistoryMutations', {
+        configurable: true,
+        enumerable: true,
+        writable: false,
+        value: mutations,
+      });
+
+      await expect(run(agent, firstResult.state, { session })).rejects.toThrow(
+        'RunState contains invalid function-call history mutation storage',
+      );
+      expect(executions).toBe(0);
+      expect(await session.getItems()).toEqual(historyBeforeResume);
+      expect(mutations).toHaveLength(1);
+
+      Object.defineProperty(firstResult.state, '_sessionHistoryMutations', {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: mutations,
+      });
+      const resumed = await run(agent, firstResult.state, { session });
+
+      expect(resumed.finalOutput).toBe('result:bar');
+      expect(executions).toBe(1);
+      expect(firstResult.state._getSessionHistoryMutations()).toEqual([]);
+    });
+
+    it('redacts accessor errors while validating persisted override history', async () => {
+      const secret = 'SECRET_PERSISTED_HISTORY_GETTER';
+      let executions = 0;
+      class AccessorHistorySession implements Session {
+        readonly supportsExpectedHistoryMutations = true;
+        readonly items: AgentInputItem[] = [];
+        rewriteCalls = 0;
+
+        async getSessionId(): Promise<string> {
+          return 'accessor-history-session';
+        }
+
+        async getItems(): Promise<AgentInputItem[]> {
+          return [...this.items];
+        }
+
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          this.items.push(...structuredClone(items));
+        }
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          return this.items.pop();
+        }
+
+        async clearSession(): Promise<void> {
+          this.items.splice(0);
+        }
+
+        async applyHistoryMutations(
+          args: SessionHistoryRewriteArgs,
+        ): Promise<void> {
+          this.rewriteCalls += 1;
+          this.items.splice(
+            0,
+            this.items.length,
+            ...applySessionHistoryMutations(this.items, args.mutations),
+          );
+        }
+      }
+
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async () => {
+          executions += 1;
+          return 'executed';
+        },
+      });
+      const model = new TrackingModel([
+        modelResponse(
+          buildResponse(
+            [buildToolCall('call-accessor-history', 'foo')],
+            'resp-accessor-history',
+          ),
+        ),
+      ]);
+      const agent = new Agent({
+        name: 'AccessorHistoryOverrideAgent',
+        model,
+        tools: [approvalTool],
+      });
+      const session = new AccessorHistorySession();
+      const firstResult = await run(agent, 'user_message', { session });
+      firstResult.state.approve(firstResult.interruptions[0]!, {
+        overrideArguments: { test: 'bar' },
+      });
+      const historyBeforeResume = [...session.items];
+      const persistedCall = session.items.find(
+        (item) =>
+          item.type === 'function_call' &&
+          item.callId === 'call-accessor-history',
+      );
+      expect(persistedCall).toBeDefined();
+      Object.defineProperty(persistedCall!, 'providerData', {
+        enumerable: true,
+        get() {
+          throw new Error(secret);
+        },
+      });
+
+      let error: unknown;
+      try {
+        await run(agent, firstResult.state, { session });
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(UserError);
+      expect(String(error)).toContain(
+        'Session history items could not be compared safely',
+      );
+      expect(String(error)).not.toContain(secret);
+      expect(executions).toBe(0);
+      expect(session.rewriteCalls).toBe(1);
+      expect(session.items).toEqual(historyBeforeResume);
+      expect(firstResult.state._getSessionHistoryMutations()).toHaveLength(1);
+    });
+
+    it.each([
+      [
+        'replacement call ID',
+        (serialized: any) => {
+          serialized.sessionHistoryMutations[0].replacement.callId =
+            'call-tampered';
+        },
+        'invalid function-call history mutation',
+      ],
+      [
+        'expected arguments',
+        (serialized: any) => {
+          serialized.sessionHistoryMutations[0].expected.arguments =
+            JSON.stringify({ test: 'tampered' });
+        },
+        'not bound to exactly one original model function call',
+      ],
+      [
+        'replacement arguments',
+        (serialized: any) => {
+          serialized.sessionHistoryMutations[0].replacement.arguments =
+            JSON.stringify({ test: 'tampered' });
+        },
+        'not bound to exactly one pending function_call approval',
+      ],
+    ] as const)(
+      'rejects a restored override with a mismatched %s before changing session history',
+      async (_description, tamper, expectedError) => {
+        let executions = 0;
+        const approvalTool = tool({
+          name: 'test',
+          description: 'tool that requires approval',
+          parameters: z.object({ test: z.string() }),
+          needsApproval: async () => true,
+          execute: async () => {
+            executions += 1;
+            return 'executed';
+          },
+        });
+        const model = new TrackingModel([
+          modelResponse(
+            buildResponse(
+              [buildToolCall('call-restored-override', 'foo')],
+              'resp-restored-override',
+            ),
+          ),
+        ]);
+        const agent = new Agent({
+          name: 'RestoredApprovalOverrideAgent',
+          model,
+          tools: [approvalTool],
+        });
+        const session = new CoreMemorySession();
+        const firstResult = await run(agent, 'user_message', { session });
+        const historyBeforeResume = await session.getItems();
+        firstResult.state.approve(firstResult.interruptions[0]!, {
+          overrideArguments: { test: 'bar' },
+        });
+        const serialized = firstResult.state.toJSON() as any;
+        tamper(serialized);
+        const restored = await RunState.fromString(
+          agent,
+          JSON.stringify(serialized),
+        );
+
+        await expect(run(agent, restored, { session })).rejects.toThrow(
+          expectedError,
+        );
+        expect(executions).toBe(0);
+        expect(await session.getItems()).toEqual(historyBeforeResume);
+      },
+    );
+
+    it('rejects legacy rewrite sessions before tool execution', async () => {
+      class LegacyRewriteSession implements Session {
+        readonly items: AgentInputItem[] = [];
+        rewriteCalls = 0;
+
+        async getSessionId(): Promise<string> {
+          return 'plain-override-session';
+        }
+
+        async getItems(): Promise<AgentInputItem[]> {
+          return structuredClone(this.items);
+        }
+
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          this.items.push(...structuredClone(items));
+        }
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          return this.items.pop();
+        }
+
+        async clearSession(): Promise<void> {
+          this.items.splice(0);
+        }
+
+        async applyHistoryMutations(
+          args: SessionHistoryRewriteArgs,
+        ): Promise<void> {
+          this.rewriteCalls += 1;
+          const legacyMutations = args.mutations.map(
+            ({ type, callId, replacement }) => ({
+              type,
+              callId,
+              replacement,
+            }),
+          );
+          this.items.splice(
+            0,
+            this.items.length,
+            ...applySessionHistoryMutations(this.items, legacyMutations),
+          );
+        }
+      }
+
+      let executions = 0;
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async () => {
+          executions += 1;
+          return 'executed';
+        },
+      });
+      const model = new TrackingModel([
+        modelResponse(
+          buildResponse(
+            [buildToolCall('call-unsupported-override', 'foo')],
+            'resp-unsupported-1',
+          ),
+        ),
+      ]);
+      const agent = new Agent({
+        name: 'UnsupportedApprovalOverrideAgent',
+        model,
+        tools: [approvalTool],
+      });
+      const session = new LegacyRewriteSession();
+      const firstResult = await run(agent, 'user_message', { session });
+      firstResult.state.approve(firstResult.interruptions[0]!, {
+        overrideArguments: { test: 'bar' },
+      });
+
+      await expect(run(agent, firstResult.state, { session })).rejects.toThrow(
+        'requires a session that supports expected function-call history rewrites',
+      );
+      expect(executions).toBe(0);
+      expect(session.rewriteCalls).toBe(0);
+      expect(firstResult.state._getSessionHistoryMutations()).toHaveLength(1);
+
+      await expect(
+        run(agent, firstResult.state, {
+          previousResponseId: 'resp-server-managed',
+        }),
+      ).rejects.toThrow('cannot rewrite server-managed conversation history');
+      expect(executions).toBe(0);
+    });
+
+    it('can retry an override with a valid session after rewrite preflight rejects another session', async () => {
+      class TransactionOnlySession implements Session {
+        async getSessionId(): Promise<string> {
+          return 'transaction-only-override-session';
+        }
+
+        async getItems(): Promise<AgentInputItem[]> {
+          return [];
+        }
+
+        async addItems(): Promise<void> {}
+
+        async popItem(): Promise<AgentInputItem | undefined> {
+          return undefined;
+        }
+
+        async clearSession(): Promise<void> {}
+
+        async applyHistoryTransaction(): Promise<void> {}
+      }
+
+      let executions = 0;
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => {
+          executions += 1;
+          return `result:${test}`;
+        },
+      });
+      const model = new TrackingModel([
+        modelResponse(
+          buildResponse(
+            [buildToolCall('call-retry-override', 'foo')],
+            'resp-retry-override',
+          ),
+        ),
+      ]);
+      const agent = new Agent({
+        name: 'RetryApprovalOverrideAgent',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const firstResult = await run(agent, 'user_message');
+      firstResult.state.approve(firstResult.interruptions[0]!, {
+        overrideArguments: { test: 'bar' },
+      });
+
+      await expect(
+        run(agent, firstResult.state, {
+          session: new TransactionOnlySession(),
+        }),
+      ).rejects.toThrow(
+        'requires a session that supports expected function-call history rewrites',
+      );
+
+      const originalCall = firstResult.rawResponses[0]?.output.find(
+        (item): item is protocol.FunctionCallItem =>
+          item.type === 'function_call' &&
+          item.callId === 'call-retry-override',
+      );
+      expect(originalCall).toBeDefined();
+      const { id: _originalCallId, ...persistedOriginalCall } = originalCall!;
+      const validSession = new CoreMemorySession({
+        sessionId: 'valid-override-session',
+        initialItems: [
+          { type: 'message', role: 'user', content: 'user_message' },
+          persistedOriginalCall,
+        ],
+      });
+      const resumed = await run(agent, firstResult.state, {
+        session: validSession,
+      });
+
+      expect(resumed.finalOutput).toBe('result:bar');
+      expect(executions).toBe(1);
+      expect(
+        (await validSession.getItems()).find(
+          (item) =>
+            item.type === 'function_call' &&
+            item.callId === 'call-retry-override',
+        ),
+      ).toMatchObject({ arguments: JSON.stringify({ test: 'bar' }) });
+    });
+
+    it('validates retained session ownership before rewriting approved arguments', async () => {
+      let executions = 0;
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => {
+          executions += 1;
+          return `result:${test}`;
+        },
+      });
+      const model = new TrackingModel([
+        modelResponse(
+          buildResponse(
+            [buildToolCall('call-bound-session-override', 'foo')],
+            'resp-bound-session-override',
+          ),
+        ),
+      ]);
+      const agent = new Agent({
+        name: 'BoundSessionApprovalOverrideAgent',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const firstResult = await run(agent, 'user_message');
+      const originalCall = firstResult.rawResponses[0]?.output.find(
+        (item): item is protocol.FunctionCallItem =>
+          item.type === 'function_call' &&
+          item.callId === 'call-bound-session-override',
+      );
+      expect(originalCall).toBeDefined();
+      const { id: _originalCallId, ...persistedOriginalCall } = originalCall!;
+      firstResult.state.approve(firstResult.interruptions[0]!, {
+        overrideArguments: { test: 'bar' },
+      });
+      firstResult.state._currentTurnSessionHistoryTransactionSessionId =
+        'bound-override-session';
+
+      const initialItems: AgentInputItem[] = [
+        { type: 'message', role: 'user', content: 'user_message' },
+        persistedOriginalCall,
+      ];
+      const wrongSession = new CoreMemorySession({
+        sessionId: 'wrong-override-session',
+        initialItems,
+      });
+      await expect(
+        run(agent, firstResult.state, { session: wrongSession }),
+      ).rejects.toThrow(
+        'Output guardrail session persistence belongs to a different session',
+      );
+      expect(await wrongSession.getItems()).toEqual(initialItems);
+      expect(firstResult.state._getSessionHistoryMutations()).toHaveLength(1);
+      expect(executions).toBe(0);
+
+      const boundSession = new CoreMemorySession({
+        sessionId: 'bound-override-session',
+        initialItems,
+      });
+      const resumed = await run(agent, firstResult.state, {
+        session: boundSession,
+      });
+
+      expect(resumed.finalOutput).toBe('result:bar');
+      expect(executions).toBe(1);
+      expect(
+        (await boundSession.getItems()).find(
+          (item) =>
+            item.type === 'function_call' &&
+            item.callId === 'call-bound-session-override',
+        ),
+      ).toMatchObject({ arguments: JSON.stringify({ test: 'bar' }) });
+      expect(firstResult.state._getSessionHistoryMutations()).toEqual([]);
     });
 
     it('does not resend prior items when resuming with conversationId', async () => {
