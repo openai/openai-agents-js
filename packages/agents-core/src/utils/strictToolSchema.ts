@@ -8,6 +8,17 @@ type SyntheticNullableSchema = {
 
 type JsonSchemaNullability = 'allows' | 'disallows' | 'unknown';
 
+const MAX_JSON_SCHEMA_DEPTH = 100;
+const JSON_SCHEMA_DEPTH_ERROR =
+  'JSON schema is too deeply nested to process safely. Simplify or flatten the schema, or disable strict mode.';
+
+class JsonSchemaDepthError extends UserError {}
+
+type JsonSchemaTraversalState = {
+  activeSchemas: WeakSet<object>;
+  visitedDepths: WeakMap<object, number>;
+};
+
 type StrictSchemaPreparationContext = {
   originalRoot: unknown;
   preparedRoot: unknown;
@@ -24,6 +35,80 @@ type PreparedOpenAIStrictToolSchema<T> = {
   normalizeInput: (value: unknown) => unknown;
 };
 
+function assertSafeJsonSchemaDepth(depth: number): void {
+  if (depth > MAX_JSON_SCHEMA_DEPTH) {
+    throw new JsonSchemaDepthError(JSON_SCHEMA_DEPTH_ERROR);
+  }
+}
+
+function createJsonSchemaTraversalState(): JsonSchemaTraversalState {
+  return {
+    activeSchemas: new WeakSet(),
+    visitedDepths: new WeakMap(),
+  };
+}
+
+function enterJsonSchemaTraversal(
+  schema: object,
+  state: JsonSchemaTraversalState,
+  depth: number,
+): boolean {
+  if (state.activeSchemas.has(schema)) {
+    return false;
+  }
+
+  const visitedDepth = state.visitedDepths.get(schema);
+  if (typeof visitedDepth === 'number' && visitedDepth >= depth) {
+    return false;
+  }
+
+  assertSafeJsonSchemaDepth(depth);
+  state.visitedDepths.set(schema, depth);
+  state.activeSchemas.add(schema);
+  return true;
+}
+
+function leaveJsonSchemaTraversal(
+  schema: object,
+  state: JsonSchemaTraversalState,
+): void {
+  state.activeSchemas.delete(schema);
+}
+
+function assertJsonSchemaDepth(schema: unknown): void {
+  assertJsonSchemaPhysicalDepth(schema);
+}
+
+function assertJsonSchemaPhysicalDepth(schema: unknown): void {
+  const pending: Array<{ value: object; depth: number }> = [];
+  const visitedDepths = new WeakMap<object, number>();
+
+  if (typeof schema === 'object' && schema !== null) {
+    pending.push({ value: schema, depth: 1 });
+  }
+
+  while (pending.length > 0) {
+    const { value, depth } = pending.pop()!;
+    assertSafeJsonSchemaDepth(depth);
+
+    const visitedDepth = visitedDepths.get(value);
+    if (typeof visitedDepth === 'number' && visitedDepth >= depth) {
+      continue;
+    }
+    visitedDepths.set(value, depth);
+
+    for (const child of Object.values(value)) {
+      if (typeof child === 'object' && child !== null) {
+        pending.push({ value: child, depth: depth + 1 });
+      }
+    }
+  }
+}
+
+export function isJsonSchemaDepthError(error: unknown): error is UserError {
+  return error instanceof JsonSchemaDepthError;
+}
+
 export function toOpenAIStrictToolSchema<T extends JsonObjectSchema<any>>(
   schema: T,
 ): T {
@@ -39,18 +124,26 @@ export function prepareOpenAIStrictToolSchema<T extends JsonObjectSchema<any>>(
 export function assertOpenAIStrictToolSchemaPreservesOpenObjects(
   schema: JsonObjectSchema<any>,
 ): void {
-  validateOpenAIStrictJsonSchema(schema, schema, new WeakSet(), true, true);
+  assertJsonSchemaDepth(schema);
+  validateOpenAIStrictJsonSchema(
+    schema,
+    schema,
+    createJsonSchemaTraversalState(),
+    true,
+    true,
+  );
 }
 
 function prepareOpenAIStrictToolSchemaInternal<T extends JsonObjectSchema<any>>(
   schema: T,
   requireUnambiguousNormalization: boolean,
 ): PreparedOpenAIStrictToolSchema<T> {
+  assertJsonSchemaDepth(schema);
   validateOpenAIStrictProviderSchema(schema, schema);
   validateOpenAIStrictJsonSchema(
     schema,
     schema,
-    new WeakSet(),
+    createJsonSchemaTraversalState(),
     requireUnambiguousNormalization,
   );
   const preparedSchemas = new WeakMap<object, object>();
@@ -482,9 +575,11 @@ const anyOfMetadataKeywords = new Set([...referenceMetadataKeywords, 'anyOf']);
 function validateOpenAIStrictProviderSchema(
   schema: unknown,
   rootSchema: unknown,
-  visitedSchemas: WeakSet<object> = new WeakSet(),
+  state: JsonSchemaTraversalState = createJsonSchemaTraversalState(),
+  depth = 1,
 ): void {
   if (typeof schema === 'boolean') {
+    assertSafeJsonSchemaDepth(depth);
     return;
   }
   if (!isRecord(schema)) {
@@ -492,10 +587,9 @@ function validateOpenAIStrictProviderSchema(
       'Cannot convert a JSON schema containing a non-boolean, non-object schema node to strict mode. Replace the invalid node with a JSON schema object or boolean, or disable strict mode.',
     );
   }
-  if (visitedSchemas.has(schema)) {
+  if (!enterJsonSchemaTraversal(schema, state, depth)) {
     return;
   }
-  visitedSchemas.add(schema);
 
   if (schema !== rootSchema && '$id' in schema) {
     throw new UserError(
@@ -523,7 +617,7 @@ function validateOpenAIStrictProviderSchema(
         `Cannot convert unresolved or external JSON schema reference \`${schema.$ref}\` to strict mode. Use a local reference or disable strict mode.`,
       );
     }
-    validateOpenAIStrictProviderSchema(resolved, rootSchema, visitedSchemas);
+    validateOpenAIStrictProviderSchema(resolved, rootSchema, state, depth + 1);
   }
 
   if ('anyOf' in schema) {
@@ -533,7 +627,7 @@ function validateOpenAIStrictProviderSchema(
       );
     }
     for (const branch of schema.anyOf) {
-      validateOpenAIStrictProviderSchema(branch, rootSchema, visitedSchemas);
+      validateOpenAIStrictProviderSchema(branch, rootSchema, state, depth + 1);
     }
   }
 
@@ -545,7 +639,8 @@ function validateOpenAIStrictProviderSchema(
       validateOpenAIStrictProviderSchema(
         propertySchema,
         rootSchema,
-        visitedSchemas,
+        state,
+        depth + 1,
       );
     }
   }
@@ -553,17 +648,18 @@ function validateOpenAIStrictProviderSchema(
   const items = schema.items;
   if (Array.isArray(items)) {
     for (const item of items) {
-      validateOpenAIStrictProviderSchema(item, rootSchema, visitedSchemas);
+      validateOpenAIStrictProviderSchema(item, rootSchema, state, depth + 1);
     }
   } else if (typeof items !== 'undefined') {
-    validateOpenAIStrictProviderSchema(items, rootSchema, visitedSchemas);
+    validateOpenAIStrictProviderSchema(items, rootSchema, state, depth + 1);
   }
 
   if ('additionalProperties' in schema) {
     validateOpenAIStrictProviderSchema(
       schema.additionalProperties,
       rootSchema,
-      visitedSchemas,
+      state,
+      depth + 1,
     );
   }
 
@@ -576,26 +672,30 @@ function validateOpenAIStrictProviderSchema(
       validateOpenAIStrictProviderSchema(
         definition,
         rootSchema,
-        visitedSchemas,
+        state,
+        depth + 1,
       );
     }
   }
+
+  leaveJsonSchemaTraversal(schema, state);
 }
 
 function validateOpenAIStrictJsonSchema(
   schema: unknown,
   rootSchema: unknown,
-  visitedSchemas: WeakSet<object> = new WeakSet(),
+  state: JsonSchemaTraversalState = createJsonSchemaTraversalState(),
   requireUnambiguousNormalization = true,
   rejectOpenObjects = false,
+  depth = 1,
 ): void {
   if (typeof schema === 'boolean') {
+    assertSafeJsonSchemaDepth(depth);
     return;
   }
-  if (!isRecord(schema) || visitedSchemas.has(schema)) {
+  if (!isRecord(schema) || !enterJsonSchemaTraversal(schema, state, depth)) {
     return;
   }
-  visitedSchemas.add(schema);
 
   if ('$ref' in schema) {
     if (typeof schema.$ref !== 'string') {
@@ -620,9 +720,10 @@ function validateOpenAIStrictJsonSchema(
     validateOpenAIStrictJsonSchema(
       resolved,
       rootSchema,
-      visitedSchemas,
+      state,
       requireUnambiguousNormalization,
       rejectOpenObjects,
+      depth + 1,
     );
   }
 
@@ -644,9 +745,10 @@ function validateOpenAIStrictJsonSchema(
       validateOpenAIStrictJsonSchema(
         branch,
         rootSchema,
-        visitedSchemas,
+        state,
         requireUnambiguousNormalization,
         rejectOpenObjects,
+        depth + 1,
       );
     }
     // Plain JSON Schema tools do not have a runtime validator that selects the
@@ -655,7 +757,12 @@ function validateOpenAIStrictJsonSchema(
     if (
       requireUnambiguousNormalization &&
       schema.anyOf.some((branch) =>
-        jsonSchemaRequiresSyntheticNullStripping(branch, rootSchema),
+        jsonSchemaRequiresSyntheticNullStripping(
+          branch,
+          rootSchema,
+          createJsonSchemaTraversalState(),
+          depth + 1,
+        ),
       )
     ) {
       throw new UserError(
@@ -690,12 +797,13 @@ function validateOpenAIStrictJsonSchema(
       validateOpenAIStrictJsonSchema(
         propertySchema,
         rootSchema,
-        visitedSchemas,
+        state,
         requireUnambiguousNormalization,
         rejectOpenObjects,
+        depth + 1,
       );
       if (!required.has(key)) {
-        getKnownJsonSchemaNullability(propertySchema, rootSchema);
+        getKnownJsonSchemaNullability(propertySchema, rootSchema, depth + 1);
       }
     }
   }
@@ -706,18 +814,20 @@ function validateOpenAIStrictJsonSchema(
       validateOpenAIStrictJsonSchema(
         item,
         rootSchema,
-        visitedSchemas,
+        state,
         requireUnambiguousNormalization,
         rejectOpenObjects,
+        depth + 1,
       );
     }
   } else if (typeof items !== 'undefined') {
     validateOpenAIStrictJsonSchema(
       items,
       rootSchema,
-      visitedSchemas,
+      state,
       requireUnambiguousNormalization,
       rejectOpenObjects,
+      depth + 1,
     );
   }
 
@@ -730,19 +840,28 @@ function validateOpenAIStrictJsonSchema(
       validateOpenAIStrictJsonSchema(
         definition,
         rootSchema,
-        visitedSchemas,
+        state,
         requireUnambiguousNormalization,
         rejectOpenObjects,
+        depth + 1,
       );
     }
   }
+
+  leaveJsonSchemaTraversal(schema, state);
 }
 
 function getKnownJsonSchemaNullability(
   schema: unknown,
   rootSchema: unknown,
+  depth = 1,
 ): Exclude<JsonSchemaNullability, 'unknown'> {
-  const nullability = getJsonSchemaNullability(schema, rootSchema);
+  const nullability = getJsonSchemaNullability(
+    schema,
+    rootSchema,
+    new Set(),
+    depth,
+  );
   if (nullability === 'unknown') {
     throw new UserError(
       'Cannot determine whether an optional JSON schema property accepts `null`. Make its nullability explicit with a supported schema form, make the property required, or disable strict mode.',
@@ -755,7 +874,9 @@ function getJsonSchemaNullability(
   schema: unknown,
   rootSchema: unknown,
   visitedReferences: ReadonlySet<string> = new Set(),
+  depth = 1,
 ): JsonSchemaNullability {
+  assertSafeJsonSchemaDepth(depth);
   if (schema === true) {
     return 'allows';
   }
@@ -794,6 +915,7 @@ function getJsonSchemaNullability(
       schema.$ref,
       rootSchema,
       visitedReferences,
+      depth + 1,
     );
     if (referencedNullability !== 'allows') {
       return referencedNullability;
@@ -805,7 +927,7 @@ function getJsonSchemaNullability(
       return 'unknown';
     }
     const entries = schema.anyOf.map((entry) =>
-      getJsonSchemaNullability(entry, rootSchema, visitedReferences),
+      getJsonSchemaNullability(entry, rootSchema, visitedReferences, depth + 1),
     );
     if (entries.includes('allows')) {
       return 'allows';
@@ -828,74 +950,87 @@ function getJsonSchemaNullability(
 function jsonSchemaRequiresSyntheticNullStripping(
   schema: unknown,
   rootSchema: unknown,
-  visitedSchemas: WeakSet<object> = new WeakSet(),
+  state: JsonSchemaTraversalState = createJsonSchemaTraversalState(),
+  depth = 1,
 ): boolean {
-  if (!isRecord(schema) || visitedSchemas.has(schema)) {
+  if (!isRecord(schema) || !enterJsonSchemaTraversal(schema, state, depth)) {
     return false;
   }
-  visitedSchemas.add(schema);
 
-  if (typeof schema.$ref === 'string') {
-    const resolved = resolveLocalJsonSchemaReference(schema.$ref, rootSchema);
-    return jsonSchemaRequiresSyntheticNullStripping(
-      resolved,
-      rootSchema,
-      visitedSchemas,
-    );
-  }
-
-  if (Array.isArray(schema.anyOf)) {
-    return schema.anyOf.some((branch) =>
-      jsonSchemaRequiresSyntheticNullStripping(
-        branch,
+  try {
+    if (typeof schema.$ref === 'string') {
+      const resolved = resolveLocalJsonSchemaReference(schema.$ref, rootSchema);
+      return jsonSchemaRequiresSyntheticNullStripping(
+        resolved,
         rootSchema,
-        visitedSchemas,
-      ),
-    );
-  }
-
-  const properties =
-    schemaConvertsObjectProperties(schema) && isRecord(schema.properties)
-      ? schema.properties
-      : {};
-  const required = new Set(
-    Array.isArray(schema.required) ? schema.required.map(String) : [],
-  );
-  for (const [key, propertySchema] of Object.entries(properties)) {
-    if (
-      (!required.has(key) &&
-        getKnownJsonSchemaNullability(propertySchema, rootSchema) ===
-          'disallows') ||
-      jsonSchemaRequiresSyntheticNullStripping(
-        propertySchema,
-        rootSchema,
-        visitedSchemas,
-      )
-    ) {
-      return true;
-    }
-  }
-
-  const items = schema.items;
-  return Array.isArray(items)
-    ? items.some((item) =>
-        jsonSchemaRequiresSyntheticNullStripping(
-          item,
-          rootSchema,
-          visitedSchemas,
-        ),
-      )
-    : jsonSchemaRequiresSyntheticNullStripping(
-        items,
-        rootSchema,
-        visitedSchemas,
+        state,
+        depth + 1,
       );
+    }
+
+    if (Array.isArray(schema.anyOf)) {
+      return schema.anyOf.some((branch) =>
+        jsonSchemaRequiresSyntheticNullStripping(
+          branch,
+          rootSchema,
+          state,
+          depth + 1,
+        ),
+      );
+    }
+
+    const properties =
+      schemaConvertsObjectProperties(schema) && isRecord(schema.properties)
+        ? schema.properties
+        : {};
+    const required = new Set(
+      Array.isArray(schema.required) ? schema.required.map(String) : [],
+    );
+    for (const [key, propertySchema] of Object.entries(properties)) {
+      if (
+        (!required.has(key) &&
+          getKnownJsonSchemaNullability(
+            propertySchema,
+            rootSchema,
+            depth + 1,
+          ) === 'disallows') ||
+        jsonSchemaRequiresSyntheticNullStripping(
+          propertySchema,
+          rootSchema,
+          state,
+          depth + 1,
+        )
+      ) {
+        return true;
+      }
+    }
+
+    const items = schema.items;
+    return Array.isArray(items)
+      ? items.some((item) =>
+          jsonSchemaRequiresSyntheticNullStripping(
+            item,
+            rootSchema,
+            state,
+            depth + 1,
+          ),
+        )
+      : jsonSchemaRequiresSyntheticNullStripping(
+          items,
+          rootSchema,
+          state,
+          depth + 1,
+        );
+  } finally {
+    leaveJsonSchemaTraversal(schema, state);
+  }
 }
 
 function getReferencedJsonSchemaNullability(
   reference: unknown,
   rootSchema: unknown,
   visitedReferences: ReadonlySet<string>,
+  depth: number,
 ): JsonSchemaNullability {
   if (typeof reference !== 'string' || visitedReferences.has(reference)) {
     return 'unknown';
@@ -909,6 +1044,7 @@ function getReferencedJsonSchemaNullability(
     resolved,
     rootSchema,
     new Set([...visitedReferences, reference]),
+    depth,
   );
 }
 

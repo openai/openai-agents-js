@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
+import { UserError } from '../../src/errors';
 import {
   prepareOpenAIStrictToolSchema,
   stripStrictNullsForJsonSchema,
@@ -8,7 +9,316 @@ import {
   toOpenAIStrictToolSchema,
 } from '../../src/utils/strictToolSchema';
 
+const SCHEMA_DEPTH_ERROR =
+  'JSON schema is too deeply nested to process safely. Simplify or flatten the schema, or disable strict mode.';
+
+function createNestedObjectSchema(depth: number): Record<string, any> {
+  const root = {
+    type: 'object',
+    properties: {},
+    required: [],
+  } as Record<string, any>;
+  let current = root;
+
+  for (let index = 0; index < depth; index += 1) {
+    const child = {
+      type: 'object',
+      properties: {},
+      required: [],
+    };
+    current.properties.child = child;
+    current = child;
+  }
+
+  return root;
+}
+
+function createChainedReferenceSchema(depth: number): Record<string, any> {
+  const definitions: Record<string, Record<string, unknown>> = {};
+  for (let index = 0; index < depth; index += 1) {
+    definitions[`level${index}`] = {
+      $ref: `#/$defs/level${index + 1}`,
+    };
+  }
+  definitions[`level${depth}`] = { type: 'string' };
+
+  return {
+    type: 'object',
+    properties: {
+      value: { $ref: '#/$defs/level0' },
+    },
+    required: ['value'],
+    $defs: definitions,
+  };
+}
+
+function createSegmentedReferenceSchema(
+  segmentCount: number,
+  segmentLength: number,
+  includeOptionalProperty = true,
+): Record<string, any> {
+  const definitions: Record<string, Record<string, unknown>> = {
+    terminal: { type: 'string' },
+  };
+  const properties: Record<string, Record<string, unknown>> = {};
+  const required: string[] = [];
+  let previousReference = '#/$defs/terminal';
+
+  for (let segment = 0; segment < segmentCount; segment += 1) {
+    for (let index = 0; index < segmentLength; index += 1) {
+      const name = `segment${segment}_${index}`;
+      const nextReference =
+        index + 1 < segmentLength
+          ? `#/$defs/segment${segment}_${index + 1}`
+          : previousReference;
+      definitions[name] = { $ref: nextReference };
+    }
+
+    previousReference = `#/$defs/segment${segment}_0`;
+    const checkpoint = `checkpoint${segment}`;
+    properties[checkpoint] = { $ref: previousReference };
+    required.push(checkpoint);
+  }
+
+  if (includeOptionalProperty) {
+    properties.optional = { $ref: previousReference };
+  }
+  return {
+    type: 'object',
+    properties,
+    required,
+    $defs: definitions,
+  };
+}
+
+function createRecursiveDefinitionSchema(): Record<string, any> {
+  return {
+    type: 'object',
+    properties: {
+      root: { $ref: '#/$defs/node' },
+    },
+    required: ['root'],
+    additionalProperties: false,
+    $defs: {
+      node: {
+        type: 'object',
+        properties: {
+          value: { type: 'string' },
+          children: {
+            type: 'array',
+            items: { $ref: '#/$defs/node' },
+          },
+        },
+        required: ['value', 'children'],
+        additionalProperties: false,
+      },
+    },
+  };
+}
+
+function createWideRecursiveDefinitionSchema(
+  definitionCount: number,
+): Record<string, any> {
+  const definitions: Record<string, Record<string, unknown>> = {};
+  for (let index = 0; index < definitionCount; index += 1) {
+    definitions[`node${index}`] = { $ref: '#' };
+  }
+
+  return {
+    type: 'object',
+    properties: {},
+    required: [],
+    additionalProperties: false,
+    $defs: definitions,
+  };
+}
+
+function createCyclicReferenceSchema(length: number): Record<string, any> {
+  const definitions: Record<string, Record<string, unknown>> = {};
+  for (let index = 0; index < length; index += 1) {
+    definitions[`node${index}`] = {
+      $ref: `#/$defs/node${(index + 1) % length}`,
+    };
+  }
+
+  return {
+    type: 'object',
+    properties: {
+      value: { $ref: '#/$defs/node0' },
+    },
+    required: ['value'],
+    $defs: definitions,
+  };
+}
+
+function createHybridRecursiveReferenceSchema(): Record<string, any> {
+  const definitions: Record<string, Record<string, unknown>> = {
+    terminal: { type: 'string' },
+  };
+
+  for (let index = 0; index < 20; index += 1) {
+    definitions[`tail${index}`] = {
+      $ref: index < 19 ? `#/$defs/tail${index + 1}` : '#/$defs/terminal',
+    };
+  }
+
+  for (const prefix of ['a', 'b']) {
+    for (let index = 0; index < 80; index += 1) {
+      definitions[`${prefix}${index}`] = {
+        $ref: index < 79 ? `#/$defs/${prefix}${index + 1}` : '#/$defs/shared',
+      };
+    }
+  }
+
+  definitions.shared = { $ref: '#/$defs/recursive' };
+  definitions.recursive = {
+    anyOf: [{ $ref: '#/$defs/a0' }, { $ref: '#/$defs/tail0' }],
+  };
+
+  return {
+    type: 'object',
+    properties: {
+      alternate: { $ref: '#/$defs/b0' },
+      checkpoint: { $ref: '#/$defs/recursive' },
+    },
+    required: ['checkpoint', 'alternate'],
+    additionalProperties: false,
+    $defs: definitions,
+  };
+}
+
+function captureError(callback: () => unknown): unknown {
+  try {
+    callback();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
+function expectSchemaDepthError(error: unknown): void {
+  expect(error).toBeInstanceOf(UserError);
+  expect(error).not.toBeInstanceOf(RangeError);
+  expect((error as Error).message).toBe(SCHEMA_DEPTH_ERROR);
+}
+
 describe('utils/strictToolSchema', () => {
+  it('rejects schemas that exceed the safe container depth', () => {
+    const input = createNestedObjectSchema(1_000);
+
+    const error = captureError(() => toOpenAIStrictToolSchema(input as any));
+
+    expectSchemaDepthError(error);
+    expect(input).not.toHaveProperty('additionalProperties');
+    expect(input.properties.child).not.toHaveProperty('additionalProperties');
+  });
+
+  it('rejects schemas that exceed the safe local reference depth', () => {
+    const input = createChainedReferenceSchema(1_000);
+
+    const error = captureError(() => toOpenAIStrictToolSchema(input as any));
+
+    expectSchemaDepthError(error);
+    expect(input.properties.value).toEqual({ $ref: '#/$defs/level0' });
+  });
+
+  it('rejects shared reference suffixes reached beyond the safe depth', () => {
+    const input = createSegmentedReferenceSchema(100, 60);
+
+    const error = captureError(() => toOpenAIStrictToolSchema(input as any));
+
+    expectSchemaDepthError(error);
+    expect(input.properties.optional).toEqual({
+      $ref: '#/$defs/segment99_0',
+    });
+  });
+
+  it('rejects required-only shared reference suffixes reached beyond the safe depth', () => {
+    const input = createSegmentedReferenceSchema(2, 60, false);
+    const original = structuredClone(input);
+
+    const error = captureError(() => toOpenAIStrictToolSchema(input as any));
+
+    expectSchemaDepthError(error);
+    expect(input).toEqual(original);
+  });
+
+  it('enforces the safe local reference depth boundary', () => {
+    expect(() =>
+      toOpenAIStrictToolSchema(createChainedReferenceSchema(97) as any),
+    ).not.toThrow();
+
+    const error = captureError(() =>
+      toOpenAIStrictToolSchema(createChainedReferenceSchema(98) as any),
+    );
+    expectSchemaDepthError(error);
+  });
+
+  it('preserves direct root recursion at the safe depth boundary', () => {
+    const accepted = createChainedReferenceSchema(97);
+    accepted.$defs.level97 = { $ref: '#' };
+    expect(() => toOpenAIStrictToolSchema(accepted as any)).not.toThrow();
+
+    const rejected = createChainedReferenceSchema(98);
+    rejected.$defs.level98 = { $ref: '#' };
+    const error = captureError(() => toOpenAIStrictToolSchema(rejected as any));
+
+    expectSchemaDepthError(error);
+  });
+
+  it('preserves recursive local definitions without mutating the input', () => {
+    const input = createRecursiveDefinitionSchema();
+    const original = structuredClone(input);
+
+    const result = toOpenAIStrictToolSchema(input as any);
+
+    expect(result.properties.root).toEqual({ $ref: '#/$defs/node' });
+    expect(result.$defs.node.properties.children.items).toEqual({
+      $ref: '#/$defs/node',
+    });
+    expect(input).toEqual(original);
+  });
+
+  it('preserves wide shallow recursive definitions without mutating the input', () => {
+    const input = createWideRecursiveDefinitionSchema(100);
+    const original = structuredClone(input);
+
+    const result = toOpenAIStrictToolSchema(input as any);
+
+    expect(result.$defs.node0).toEqual({ $ref: '#' });
+    expect(result.$defs.node99).toEqual({ $ref: '#' });
+    expect(input).toEqual(original);
+  });
+
+  it('enforces the safe depth boundary for recursive components', () => {
+    expect(() =>
+      toOpenAIStrictToolSchema(createCyclicReferenceSchema(98) as any),
+    ).not.toThrow();
+
+    const error = captureError(() =>
+      toOpenAIStrictToolSchema(createCyclicReferenceSchema(99) as any),
+    );
+    expectSchemaDepthError(error);
+  });
+
+  it('rejects over-depth paths leaving recursive components', () => {
+    const input = createHybridRecursiveReferenceSchema();
+
+    const error = captureError(() => toOpenAIStrictToolSchema(input as any));
+
+    expectSchemaDepthError(error);
+  });
+
+  it('continues to convert reasonably nested schemas without mutation', () => {
+    const input = createNestedObjectSchema(10);
+
+    const result = toOpenAIStrictToolSchema(input as any);
+
+    expect(result.additionalProperties).toBe(false);
+    expect(input).not.toHaveProperty('additionalProperties');
+    expect(input.properties.child).not.toHaveProperty('additionalProperties');
+  });
+
   it('converts nested JSON schemas into OpenAI strict-compatible schemas', () => {
     const input = {
       type: 'object',
@@ -944,14 +1254,6 @@ describe('utils/strictToolSchema', () => {
   });
 
   it.each([
-    [
-      'cyclic',
-      '#/$defs/first',
-      {
-        first: { $ref: '#/$defs/second' },
-        second: { $ref: '#/$defs/first' },
-      },
-    ],
     ['unresolved', '#/$defs/missing', {}],
     ['external', 'https://example.com/schema.json#/$defs/payload', {}],
   ])('rejects indeterminate %s references', (_name, $ref, $defs) => {

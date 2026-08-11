@@ -6,6 +6,35 @@ import { z } from 'zod';
 import logger from '../src/logger';
 import { RunContext } from '../src/runContext';
 
+function createSegmentedReferenceSchema(): Record<string, any> {
+  const definitions: Record<string, Record<string, unknown>> = {
+    terminal: { type: 'string' },
+  };
+  const properties: Record<string, Record<string, unknown>> = {};
+  const required: string[] = [];
+  let previousReference = '#/$defs/terminal';
+
+  for (let segment = 0; segment < 2; segment += 1) {
+    for (let index = 59; index >= 0; index -= 1) {
+      const name = `segment${segment}_${index}`;
+      definitions[name] = { $ref: previousReference };
+      previousReference = `#/$defs/${name}`;
+    }
+
+    const checkpoint = `checkpoint${segment}`;
+    properties[checkpoint] = { $ref: previousReference };
+    required.push(checkpoint);
+  }
+
+  return {
+    type: 'object',
+    properties,
+    required,
+    additionalProperties: false,
+    $defs: definitions,
+  };
+}
+
 const agent = new Agent({ name: 'A' });
 
 describe('handoff()', () => {
@@ -13,6 +42,27 @@ describe('handoff()', () => {
     expect(() => handoff(agent, { inputType: z.object({}) })).toThrow(
       UserError,
     );
+  });
+
+  it('rejects required-only over-depth schemas before constructing a handoff', () => {
+    const inputType = createSegmentedReferenceSchema();
+    const original = structuredClone(inputType);
+    const onHandoff = vi.fn();
+    let thrown: unknown;
+
+    try {
+      handoff(agent, { inputType: inputType as any, onHandoff });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(UserError);
+    expect(thrown).not.toBeInstanceOf(RangeError);
+    expect((thrown as Error).message).toContain(
+      'JSON schema is too deeply nested to process safely.',
+    );
+    expect(inputType).toEqual(original);
+    expect(onHandoff).not.toHaveBeenCalled();
   });
 
   it('allows onHandoff without inputType', async () => {
