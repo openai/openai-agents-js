@@ -1,5 +1,51 @@
 # @openai/agents-openai
 
+## 0.15.0
+
+### Minor Changes
+
+- 442cfe3: feat: require OpenAI Node SDK v7.2 or later
+- 41f5011: feat: switch the default OpenAI model to gpt-5.6-luna when no model is explicitly configured
+
+### Patch Changes
+
+- 00def07: feat: allow applications to explicitly approve unsafe model request replays
+- 1d454ba: fix(openai): preserve streamed Chat Completions citations
+- 8554f7f: fix: propagate Chat Completions request IDs
+- fb73edd: fix(openai): preserve streamed Chat Completions audio
+- 7f8140d: fix: count completed Chat Completions requests when providers omit usage
+- 3743a7d: fix(openai): preserve apply_patch move destinations
+- 460c892: fix: preserve program item IDs in OpenAI Conversations
+- e57768b: fix(openai): omit parallel_tool_calls when Chat Completions has no tools
+- f7aca85: fix: serialize OpenAI Responses compaction session mutations
+- 055de13: fix(openai): strip placeholder item IDs from Responses input
+- c7a91e6: feat: preserve raw provider usage payloads on request
+- Updated dependencies [00def07]
+- Updated dependencies [d1c585d]
+- Updated dependencies [ba85cda]
+- Updated dependencies [daefc63]
+- Updated dependencies [2ce5c25]
+- Updated dependencies [398a592]
+- Updated dependencies [75af3ee]
+- Updated dependencies [1f617f9]
+- Updated dependencies [442cfe3]
+- Updated dependencies [d308e1d]
+- Updated dependencies [09d5065]
+- Updated dependencies [41f5011]
+- Updated dependencies [81e0066]
+- Updated dependencies [c122399]
+- Updated dependencies [5b5a7cb]
+- Updated dependencies [9b97dd2]
+- Updated dependencies [8249c45]
+- Updated dependencies [e006790]
+- Updated dependencies [512f340]
+- Updated dependencies [066a03c]
+- Updated dependencies [b7cb351]
+- Updated dependencies [d48b2b0]
+- Updated dependencies [96201ba]
+- Updated dependencies [c7a91e6]
+  - @openai/agents-core@0.15.0
+
 ## 0.14.3
 
 ### Patch Changes

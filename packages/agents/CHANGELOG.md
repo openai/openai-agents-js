@@ -1,5 +1,55 @@
 # @openai/agents
 
+## 0.15.0
+
+### Minor Changes
+
+- 442cfe3: feat: require OpenAI Node SDK v7.2 or later
+- 41f5011: feat: switch the default OpenAI model to gpt-5.6-luna when no model is explicitly configured
+
+### Patch Changes
+
+- 75af3ee: feat: add durable pending input to resumable run state
+- Updated dependencies [00def07]
+- Updated dependencies [d1c585d]
+- Updated dependencies [ba85cda]
+- Updated dependencies [daefc63]
+- Updated dependencies [2ce5c25]
+- Updated dependencies [1d454ba]
+- Updated dependencies [398a592]
+- Updated dependencies [8554f7f]
+- Updated dependencies [fb73edd]
+- Updated dependencies [7f8140d]
+- Updated dependencies [75af3ee]
+- Updated dependencies [1f617f9]
+- Updated dependencies [442cfe3]
+- Updated dependencies [3743a7d]
+- Updated dependencies [460c892]
+- Updated dependencies [d308e1d]
+- Updated dependencies [49fe593]
+- Updated dependencies [09d5065]
+- Updated dependencies [41f5011]
+- Updated dependencies [81e0066]
+- Updated dependencies [1a3d6e6]
+- Updated dependencies [c122399]
+- Updated dependencies [5b5a7cb]
+- Updated dependencies [e57768b]
+- Updated dependencies [9b97dd2]
+- Updated dependencies [8249c45]
+- Updated dependencies [e006790]
+- Updated dependencies [512f340]
+- Updated dependencies [21ec503]
+- Updated dependencies [f7aca85]
+- Updated dependencies [066a03c]
+- Updated dependencies [b7cb351]
+- Updated dependencies [d48b2b0]
+- Updated dependencies [055de13]
+- Updated dependencies [96201ba]
+- Updated dependencies [c7a91e6]
+  - @openai/agents-core@0.15.0
+  - @openai/agents-openai@0.15.0
+  - @openai/agents-realtime@0.15.0
+
 ## 0.14.3
 
 ### Patch Changes
