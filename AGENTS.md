@@ -112,6 +112,7 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 
 - `packages/agents-core/`, `packages/agents-openai/`, `packages/agents-realtime/`, `packages/agents-extensions/`: Each has its own `package.json`, `src/`, `test/`, and build scripts.
 - `docs/`: Documentation source; develop with `pnpm docs:dev` or build with `pnpm docs:build`. Write and review authored English source docs for reliable translation: explicitly name actors, objects, and lifecycle subjects; avoid ambiguous pronouns and slash-compressed concepts; preserve exact API identifiers and established SDK terminology; and do not weaken or strengthen technical claims merely to simplify translation. Translated docs under `docs/src/content/docs/ja`, `docs/src/content/docs/ko`, and `docs/src/content/docs/zh` are generated via `pnpm docs:translate`; do not edit them manually.
+- Every TypeScript or TSX snippet shown in authored docs must come from a compilable source file under `examples/docs/`, be imported into MDX with `?raw`, and pass `pnpm -F docs-code build-check`. Do not add ad hoc TypeScript or TSX fenced blocks directly to MDX. If an example is not useful enough to maintain and build-check as a complete source file, explain the behavior in prose instead. Do not add artificial runtime side effects, such as `console.log`, solely to mark declarations as used; the `examples/docs/` TypeScript project permits unused declarations so documentation examples can stay focused on the behavior they teach.
 - `examples/`: Subdirectories (e.g. `basic`, `agent-patterns`) with their own `package.json` and start scripts.
 - `scripts/dev.mts`: Runs concurrent build-watchers and the docs dev server (`pnpm dev`).
 - `scripts/embedMeta.ts`: Generates `src/metadata.ts` for each package before build.
@@ -157,7 +158,7 @@ Use this checklist when the touched code is in the relevant area. Add focused re
 - Session, RunState, and compaction changes: check serialization/deserialization, resume, OpenAI Conversations sessions, local sessions, session callbacks, public history replay, and storage replacement order. Clear or replace persisted history only after the replacement payload is normalized and validated.
 - Sandbox provider changes: treat persisted session state as untrusted, prefer trusted configuration on resume/recreate, verify credential refresh and expiry behavior, separate cleanup from preservation, account for remote timeout operations that can complete late, clean up mount secrets on every failure path, and validate real paths and privileged command environments.
 - Provider-specific behavior changes: do not rely only on docs when field names, timeout units, lifecycle defaults, credential behavior, or generated SDK surfaces are involved. Compare docs, generated types, and a small live probe when practical.
-- Docs and examples changes: typecheck or otherwise verify sample imports against real package exports. In translated docs, preserve locale-prefixed links and localized anchors.
+- Docs and examples changes: typecheck or otherwise verify sample imports against real package exports. TypeScript and TSX snippets rendered in docs must originate from `examples/docs/` and pass `pnpm -F docs-code build-check`; inline MDX snippets are not an exception. In translated docs, preserve locale-prefixed links and localized anchors.
 
 ## Operation Guide
 

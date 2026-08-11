@@ -82,6 +82,7 @@ In practice:
 `newItems` gives you the richest view of what happened during the run. Common item types are:
 
 - [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem) for assistant messages.
+- [`RunInputItem`](/openai-agents-js/openai/agents/classes/runinputitem) for input admitted from `RunState.pendingInput` while resuming a run.
 - [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem) for reasoning items.
 - [`RunToolSearchCallItem`](/openai-agents-js/openai/agents/classes/runtoolsearchcallitem) and [`RunToolSearchOutputItem`](/openai-agents-js/openai/agents/classes/runtoolsearchoutputitem) for Responses tool-search requests and the loaded tool definitions they return.
 - [`RunToolCallItem`](/openai-agents-js/openai/agents/classes/runtoolcallitem) and [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem) for tool calls and their results.
@@ -91,6 +92,8 @@ In practice:
 Choose `newItems` over `output` whenever you need to know which agent produced an item or whether it marks a tool, tool-search, handoff, or approval boundary. When you use `toolSearchTool()`, these tool-search items are the easiest way to inspect which deferred tools or namespaces were loaded before the normal tool call happened.
 
 If a local tool or MCP server defines `customDataExtractor`, the corresponding `RunToolCallOutputItem.customData` contains the returned SDK-only metadata. This data is useful for application UI state such as renderer hints or internal IDs. It survives `RunState` serialization, but it is excluded from `history` and is not sent back to the model.
+
+`RunToolCallOutputItem.output` is the SDK-side tool return value. JSON-compatible primitives, arrays, and plain objects preserve their structure across `RunState` serialization. Other live values keep the existing string fallback. This wrapper value remains separate from `rawItem.output`, which is the model-visible tool output used by `history` and replay.
 
 ## Continue or resume the conversation
 
@@ -137,6 +140,10 @@ On normal top-level `run()` results this is usually `undefined`. The metadata is
 - `completed` to wait until the run and all post-processing callbacks finish.
 - `error` and `cancelled` to inspect the terminal streaming state.
 - `currentAgent` to track the active agent mid-run.
+- `currentTurn` to inspect how many model turns have actually reached the request boundary.
+- `maxTurns` to inspect the limit applied to this streamed run (`null` means no limit).
+
+`currentTurn` increments only when a model request is admitted. A max-turn check or blocking input guardrail that prevents the request does not increment it, and a resumed run starts from the count preserved in its `RunState`.
 
 If you need the settled final state of a streamed run, wait for `completed` before reading `finalOutput`, `history`, `interruptions`, or other summary properties. For event-by-event handling, see the [streaming guide](/openai-agents-js/guides/streaming).
 
@@ -152,6 +159,14 @@ The `runContext` property is the supported public view of the run context on the
 
 `rawResponses` contains the raw model responses collected during the run. Multi-step runs can produce more than one response, for example across handoffs or repeated tool/model cycles.
 
+Each response can also include `requestId`, the provider's request identifier when one is available. The OpenAI Responses and Chat Completions models populate it for streamed and non-streamed HTTP requests; treat it as optional because some providers and transports do not expose one.
+
+For Chat Completions text output, inspect the normalized `output_text` part's `providerData.annotations` to read URL citations. Non-streamed responses preserve the provider's message annotations. Streamed responses retain valid `url_citation` annotations received with text, deduplicate repeated citations, and ignore malformed or unsupported annotation shapes.
+
+For Chat Completions audio, the normalized model response represents an audio-only assistant message with an `audio` content part. When that message becomes a run item, inspect the `RunMessageOutputItem.rawItem` for the same part. If a non-streamed response contains text or a refusal together with audio, the normalized assistant message keeps the text or refusal, while the complete provider response remains available in `rawResponses[].providerData`. For streamed mixed output, inspect raw model stream events when you need provider audio chunks as they arrive; the completed `rawResponses` entry contains the normalized text or refusal but not the reconstructed audio. The streaming `toTextStream()` helper emits only text.
+
+When `modelSettings.preserveRawUsage` is `true`, each completed response can also expose `rawUsage`, a detached, JSON-compatible snapshot captured before SDK normalization. The normalized `Usage` remains available as `response.usage`; `rawUsage` preserves provider-specific field names and omitted-versus-explicit values where supplied. It can be `undefined` if the provider omits usage or the payload cannot be safely copied. `rawUsage` is runtime-only and is intentionally omitted from serialized `RunState`, so copy any fields you need before persisting and resuming a run.
+
 ### Guardrail results
 
 The `inputGuardrailResults` and `outputGuardrailResults` properties contain agent-level guardrail results. Tool guardrail results are exposed separately via `toolInputGuardrailResults` and `toolOutputGuardrailResults`.
@@ -163,5 +178,7 @@ If one guardrail fails to execute, results from sibling guardrails that complete
 ### Usage
 
 Token usage is aggregated in `result.state.usage`, which tracks request counts and token totals for the run. The same usage object is also available through `result.runContext.usage`. For streaming runs this data updates as responses arrive.
+
+A completed streamed or non-streamed Chat Completions call counts as one request even when the provider omits its usage object. In that case, token totals remain zero because the provider did not report them.
 
 <Code lang="typescript" code={usageExample} title="Read usage from RunState" />

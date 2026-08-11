@@ -17,7 +17,12 @@ const session = new RealtimeSession(agent, {
       input: {
         format: 'pcm16',
         transcription: {
-          model: 'gpt-4o-mini-transcribe',
+          model: 'gpt-live-transcribe',
+          delay: 'low',
+          prompt:
+            'A software support conversation about the OpenAI Agents SDK.',
+          keywords: ['OpenAI Agents SDK', 'RealtimeSession'],
+          languages: ['en', 'ja'],
         },
       },
       output: {

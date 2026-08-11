@@ -70,6 +70,24 @@ would become
 
 when using the AI SDK integration.
 
+## Prompt cache retention
+
+For AI SDK models whose provider is `openai.responses`, the adapter forwards `modelSettings.promptCacheRetention` on streamed and non-streamed requests when the model uses AI SDK specification version v3 or v4. It maps the Agents SDK value `'in-memory'` to the AI SDK provider value `'in_memory'`; `'24h'` and `null` are forwarded unchanged.
+
+AI SDK v2 models do not support this option, so the adapter raises a `UserError` before making a model request when it is set. An explicit `modelSettings.providerData.providerOptions.openai.promptCacheRetention` value takes precedence over `modelSettings.promptCacheRetention`, and the adapter does not forward the setting to other AI SDK providers.
+
+This setting controls the legacy maximum-retention policy and is only supported by certain models. See [Prompt cache retention](https://developers.openai.com/api/docs/guides/prompt-caching#prompt-cache-retention) for current model compatibility and the newer cache-lifetime controls.
+
+## PDF file inputs
+
+The AI SDK adapter converts Agents SDK `input_file` content into the file-part shape expected by AI SDK v2, v3, and v4 models. You can provide a PDF as:
+
+- A base64 data URL such as `data:application/pdf;base64,...`.
+- Non-empty raw base64 with either a `.pdf` filename or `providerData.mediaType`.
+- A public HTTP(S) URL with either a `.pdf` path or `providerData.mediaType`.
+
+When the filename or URL path ends in `.pdf`, the adapter infers `application/pdf`. Otherwise, set `providerData: { mediaType: 'application/pdf' }` explicitly. The adapter forwards public URLs directly to the AI SDK model without downloading them, so the selected provider and model must support URL-based PDF file parts; use a base64 representation when they do not. OpenAI file IDs are not supported through the AI SDK adapter; pass file data or a public URL, or use an OpenAI Responses model directly.
+
 ## Normalizing finalized output text
 
 Some providers return structured output as plain text with extra wrapping, such as JSON code fences. If you need provider-specific cleanup before the Agents runtime validates the final output, pass `transformOutputText` when creating the adapter:

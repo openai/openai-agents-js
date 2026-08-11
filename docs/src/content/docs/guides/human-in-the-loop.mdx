@@ -48,6 +48,14 @@ If you do not provide `message`, the SDK falls back to the configured `toolError
 
 You do not need to resolve every pending approval in the same pass. If you rerun after approving or rejecting only some items, those resolved calls can continue while unresolved ones remain in `interruptions` and pause the run again.
 
+### Add input before resuming
+
+Use `RunState.addInput()` when new user input arrives while a run is paused and should be admitted before the next resumed model call. Add the input before resolving approvals and passing the same state back to `Runner.run()`. The staged input is part of the serialized state, so it survives `toString()` / `fromString()` even if unresolved approvals or local tool work delay that model call.
+
+Read `state.pendingInput` to inspect a cloned snapshot of the staged items, or call `state.clearPendingInput()` before resuming to remove all of them. `addInput()` accepts either a string or an array of input items. It raises a `UserError` when the state cannot safely reach another model call, such as a terminal state, a state with no remaining turns, or an interruption whose tool result may end the run.
+
+Once admitted, each staged occurrence becomes a [`RunInputItem`](/openai-agents-js/openai/agents/classes/runinputitem) in the run's `newItems`, while its raw input item is included in `history`. With a local `session`, the SDK persists admitted input once before starting the model request. With `conversationId` or `previousResponseId`, it remains pending until the server accepts the response, so a failure known to occur before acceptance can be resumed without losing the input. If the provider reports that the request may already have been accepted, the SDK checkpoints that occurrence and fails closed instead of silently replaying it. See [Model retries](/openai-agents-js/guides/models#model-retries) for the separate, explicit unsafe-replay override.
+
 ### Automatic approval decisions
 
 Manual `interruptions` are the most general pattern, but they are not the only one:

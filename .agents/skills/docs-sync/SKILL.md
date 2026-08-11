@@ -51,8 +51,9 @@ Identify doc coverage gaps and inaccuracies by comparing main branch features an
    - Exclude `docs/src/content/docs/openai` from review and updates.
    - Do **not** edit `docs/src/content/docs/ja`, `docs/src/content/docs/ko`, or `docs/src/content/docs/zh`.
    - Keep changes aligned with the existing docs style and navigation.
-   - Place any code snippets under `examples/docs/<doc-filename>/` so the directory name matches the target doc file, mirroring existing patterns.
-   - Verify doc code snippets build successfully with `pnpm -F docs-code build-check` and fix issues before handoff.
+   - Do not add TypeScript or TSX fenced blocks directly to MDX. Place every TypeScript or TSX snippet in a compilable source file under `examples/docs/<doc-area>/`, import it into MDX with `?raw`, and render that imported source using the existing docs pattern.
+   - If code is not useful enough to maintain as a complete example, explain the behavior in prose instead of adding an unverified snippet.
+   - Verify all TypeScript and TSX snippets rendered by the docs with `pnpm -F docs-code build-check` and fix issues before handoff.
 
 ## Output format
 

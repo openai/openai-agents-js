@@ -55,6 +55,8 @@ Prefer the newer SDK config shape with `outputModalities`, `audio.input`, and `a
 
 For reasoning-capable Realtime models such as `gpt-realtime-2.1`, set `reasoning.effort` on the session config. Higher reasoning effort can increase latency and token usage. You can also set `parallelToolCalls` when you want to control whether the model may call multiple tools in parallel.
 
+For input transcription, `audio.input.transcription` accepts the GA transcription models and their context options. Use `gpt-live-transcribe` for low-latency streaming transcription; its `delay` setting trades faster partial transcripts against final transcript quality. Both `gpt-live-transcribe` and `gpt-transcribe` accept a free-form `prompt`, literal `keywords`, and a `languages` array. These models use `languages`; older transcription models that accept one language hint continue to use the singular `language` field. See the official [transcription context guidance](https://developers.openai.com/api/docs/guides/transcription/#improve-transcription-quality) and [Realtime transcription guide](https://developers.openai.com/api/docs/guides/realtime-transcription/) for model-specific workflows.
+
 For speech-to-speech sessions, the usual choice is `outputModalities: ['audio']`, which gives you audio output plus transcripts. Switch to `['text']` only when you want text-only responses.
 
 For parameters that are new and do not have a matching parameter in [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/), you can use `providerData`. Anything passed in `providerData` is forwarded as part of the raw `session` object.
