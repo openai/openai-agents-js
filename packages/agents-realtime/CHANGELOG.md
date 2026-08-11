@@ -1,5 +1,46 @@
 # @openai/agents-realtime
 
+## 0.15.0
+
+### Patch Changes
+
+- d1c585d: feat: support React Native package conditions for portable core and Realtime shims
+- 1f617f9: fix: bind tool approvals and completed replays to canonical invocations
+- 49fe593: feat: support GA Realtime transcription options in session configuration
+- 1a3d6e6: fix(agents-realtime): accept `{ type: "duration", seconds }` usage on `conversation.item.input_audio_transcription.completed` so `whisper-1` (duration-billed) transcripts no longer fall through to the generic-event path and skip the typed emit and retrieve fallback
+- 21ec503: fix(realtime): keep a caller-supplied WebRTC media stream alive on close
+
+  `OpenAIRealtimeWebRTC.close()` no longer stops the tracks of a `mediaStream` passed in through the transport options. That stream now stays owned by the application, so it remains usable for a level meter, a recorder, or a later reconnect, and the application is responsible for calling `stop()` on its tracks when it is done with it. A microphone the transport opens itself, when `mediaStream` is omitted, is still stopped by `close()` as before.
+
+  `close()` leaves the mute state alone. A caller-supplied track keeps whatever `enabled` value it had, and `muted` keeps reporting what it reported before the close, matching the default microphone path.
+
+- d48b2b0: fix: scope persistent hosted MCP approvals by server and tool identity
+- Updated dependencies [00def07]
+- Updated dependencies [d1c585d]
+- Updated dependencies [ba85cda]
+- Updated dependencies [daefc63]
+- Updated dependencies [2ce5c25]
+- Updated dependencies [398a592]
+- Updated dependencies [75af3ee]
+- Updated dependencies [1f617f9]
+- Updated dependencies [442cfe3]
+- Updated dependencies [d308e1d]
+- Updated dependencies [09d5065]
+- Updated dependencies [41f5011]
+- Updated dependencies [81e0066]
+- Updated dependencies [c122399]
+- Updated dependencies [5b5a7cb]
+- Updated dependencies [9b97dd2]
+- Updated dependencies [8249c45]
+- Updated dependencies [e006790]
+- Updated dependencies [512f340]
+- Updated dependencies [066a03c]
+- Updated dependencies [b7cb351]
+- Updated dependencies [d48b2b0]
+- Updated dependencies [96201ba]
+- Updated dependencies [c7a91e6]
+  - @openai/agents-core@0.15.0
+
 ## 0.14.3
 
 ### Patch Changes
