@@ -588,15 +588,7 @@ export class OpenAIChatCompletionsModel implements Model {
       }
     }
     const responseFormat = getResponseFormat(request.outputType);
-
-    let parallelToolCalls: boolean | undefined = undefined;
-    if (typeof request.modelSettings.parallelToolCalls === 'boolean') {
-      if (request.modelSettings.parallelToolCalls && tools.length === 0) {
-        throw new Error('Parallel tool calls are not supported without tools');
-      }
-
-      parallelToolCalls = request.modelSettings.parallelToolCalls;
-    }
+    const parallelToolCalls = request.modelSettings.parallelToolCalls;
 
     const messages = itemsToMessages(request.input, {
       strictFeatureValidation: this.#strictFeatureValidation,
@@ -654,7 +646,9 @@ export class OpenAIChatCompletionsModel implements Model {
         request.modelSettings.toolChoice,
         tools,
       ),
-      parallel_tool_calls: parallelToolCalls,
+      ...(tools.length > 0 && typeof parallelToolCalls === 'boolean'
+        ? { parallel_tool_calls: parallelToolCalls }
+        : {}),
       stream: stream ? true : false,
       stream_options: stream ? { include_usage: true } : undefined,
       store: request.modelSettings.store,
@@ -664,6 +658,10 @@ export class OpenAIChatCompletionsModel implements Model {
       prompt_cache_options: request.modelSettings.promptCacheOptions,
       ...providerData,
     };
+
+    if (!requestData.tools?.length) {
+      delete requestData.parallel_tool_calls;
+    }
 
     if (responseFormat) {
       requestData.response_format = responseFormat;

@@ -51,6 +51,61 @@ class RecordingProcessor implements TracingProcessor {
   async forceFlush(): Promise<void> {}
 }
 
+type ChatCompletionsRequestMode = 'non-streaming' | 'streaming';
+
+async function callModel(
+  model: OpenAIChatCompletionsModel,
+  request: any,
+  mode: ChatCompletionsRequestMode,
+): Promise<void> {
+  if (mode === 'non-streaming') {
+    await withTrace('test', () => model.getResponse(request));
+    return;
+  }
+
+  await withTrace('test', async () => {
+    for await (const event of model.getStreamedResponse(request)) {
+      void event;
+    }
+  });
+}
+
+const parallelToolCallRequestCases = (
+  ['non-streaming', 'streaming'] as const
+).flatMap((mode) =>
+  (['none', 'function', 'handoff'] as const).flatMap((toolSource) =>
+    ([true, false, undefined] as const).map((parallelToolCalls) => ({
+      mode,
+      toolSource,
+      parallelToolCalls,
+    })),
+  ),
+);
+
+const functionTool = {
+  type: 'function',
+  name: 'lookup',
+  description: 'Look up a record.',
+  parameters: {
+    type: 'object',
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  strict: true,
+};
+
+const handoffTool = {
+  toolName: 'transfer_to_specialist',
+  toolDescription: 'Transfer to a specialist.',
+  inputJsonSchema: {
+    type: 'object',
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+};
+
 describe('OpenAIChatCompletionsModel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1744,20 +1799,178 @@ describe('OpenAIChatCompletionsModel', () => {
     });
   });
 
-  it('throws when parallelToolCalls set without tools', async () => {
+  it.each(parallelToolCallRequestCases)(
+    '$mode request with $toolSource tools and parallelToolCalls=$parallelToolCalls',
+    async ({ mode, toolSource, parallelToolCalls }) => {
+      const client = new FakeClient();
+      const response = {
+        id: 'r',
+        choices: [{ message: { content: 'done' } }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      } as any;
+      client.chat.completions.create.mockResolvedValue(
+        mode === 'streaming'
+          ? (async function* () {
+              yield { id: 'c' } as any;
+            })()
+          : response,
+      );
+
+      const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+      const modelSettings =
+        parallelToolCalls === undefined ? {} : { parallelToolCalls };
+      const request: any = {
+        input: 'u',
+        modelSettings,
+        tools: toolSource === 'function' ? [functionTool] : [],
+        outputType: 'text',
+        handoffs: toolSource === 'handoff' ? [handoffTool] : [],
+        tracing: false,
+      };
+
+      await callModel(model, request, mode);
+
+      expect(client.chat.completions.create).toHaveBeenCalledTimes(1);
+      const [requestData] = client.chat.completions.create.mock.calls[0];
+      if (toolSource === 'none' || parallelToolCalls === undefined) {
+        expect(requestData).not.toHaveProperty('parallel_tool_calls');
+      } else {
+        expect(requestData.parallel_tool_calls).toBe(parallelToolCalls);
+      }
+      if (toolSource === 'none') {
+        expect(requestData.tools).toBeUndefined();
+      } else {
+        expect(requestData.tools).toHaveLength(1);
+      }
+    },
+  );
+
+  it.each(['non-streaming', 'streaming'] as const)(
+    'omits providerData parallel_tool_calls without tools for %s requests',
+    async (mode) => {
+      const client = new FakeClient();
+      const response = {
+        id: 'r',
+        choices: [{ message: { content: 'done' } }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      } as any;
+      client.chat.completions.create.mockResolvedValue(
+        mode === 'streaming'
+          ? (async function* () {
+              yield { id: 'c' } as any;
+            })()
+          : response,
+      );
+
+      const providerData = {
+        parallel_tool_calls: true,
+        custom_option: 'keep',
+      };
+      const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+      await callModel(
+        model,
+        {
+          input: 'u',
+          modelSettings: { providerData },
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        },
+        mode,
+      );
+
+      const [requestData] = client.chat.completions.create.mock.calls[0];
+      expect(requestData).not.toHaveProperty('parallel_tool_calls');
+      expect(requestData.custom_option).toBe('keep');
+      expect(providerData).toEqual({
+        parallel_tool_calls: true,
+        custom_option: 'keep',
+      });
+    },
+  );
+
+  it.each(['non-streaming', 'streaming'] as const)(
+    'preserves providerData parallel_tool_calls with providerData tools for %s requests',
+    async (mode) => {
+      const client = new FakeClient();
+      const response = {
+        id: 'r',
+        choices: [{ message: { content: 'done' } }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      } as any;
+      client.chat.completions.create.mockResolvedValue(
+        mode === 'streaming'
+          ? (async function* () {
+              yield { id: 'c' } as any;
+            })()
+          : response,
+      );
+
+      const rawTools = [
+        {
+          type: 'function',
+          function: {
+            name: 'raw_lookup',
+            description: 'Look up a record.',
+            parameters: { type: 'object', properties: {} },
+          },
+        },
+      ];
+      const providerData = {
+        tools: rawTools,
+        parallel_tool_calls: true,
+      };
+      const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+      await callModel(
+        model,
+        {
+          input: 'u',
+          modelSettings: { providerData },
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        },
+        mode,
+      );
+
+      const [requestData] = client.chat.completions.create.mock.calls[0];
+      expect(requestData.tools).toEqual(rawTools);
+      expect(requestData.parallel_tool_calls).toBe(true);
+      expect(providerData).toEqual({
+        tools: rawTools,
+        parallel_tool_calls: true,
+      });
+    },
+  );
+
+  it('preserves providerData parallel_tool_calls precedence with tools', async () => {
     const client = new FakeClient();
+    client.chat.completions.create.mockResolvedValue({
+      id: 'r',
+      choices: [{ message: { content: 'done' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    });
+    const providerData = { parallel_tool_calls: true };
     const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
-    const req: any = {
-      input: 'u',
-      modelSettings: { parallelToolCalls: true },
-      tools: [],
-      outputType: 'text',
-      handoffs: [],
-      tracing: false,
-    };
-    await expect(withTrace('t', () => model.getResponse(req))).rejects.toThrow(
-      'Parallel tool calls are not supported without tools',
+
+    await callModel(
+      model,
+      {
+        input: 'u',
+        modelSettings: { parallelToolCalls: false, providerData },
+        tools: [functionTool],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      },
+      'non-streaming',
     );
+
+    const [requestData] = client.chat.completions.create.mock.calls[0];
+    expect(requestData.parallel_tool_calls).toBe(true);
+    expect(providerData).toEqual({ parallel_tool_calls: true });
   });
 
   it('getStreamedResponse propagates streamed events', async () => {
