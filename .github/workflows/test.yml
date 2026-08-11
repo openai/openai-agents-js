@@ -90,7 +90,7 @@ jobs:
   test:
     needs: changes
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       NODE_OPTIONS: "--max_old_space_size=6144"
     strategy:
@@ -121,12 +121,18 @@ jobs:
       - name: Install dependencies
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm install
+      - name: Check released API against current source
+        if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.node-version == '22' }}
+        run: pnpm api-contract:source
       - name: Build all packages
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm build:ci
       - name: Check generated declarations
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm -r -F "@openai/*" dist:check
+      - name: Check released API against build output
+        if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.node-version == '22' }}
+        run: pnpm api-contract:dist
       - name: Run linter
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm lint
@@ -139,6 +145,35 @@ jobs:
       - name: Run tests
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm test
+      - name: Check locally published API contract
+        if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.node-version == '22' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm local-npm:reset
+          pnpm local-npm:start > /tmp/agents-verdaccio.log 2>&1 &
+          verdaccio_pid=$!
+          cleanup() {
+            kill "$verdaccio_pid" 2>/dev/null || true
+            wait "$verdaccio_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://localhost:4873/ > /dev/null; then
+              break
+            fi
+            if ! kill -0 "$verdaccio_pid" 2>/dev/null; then
+              cat /tmp/agents-verdaccio.log
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://localhost:4873/ > /dev/null
+          pnpm local-npm:publish
+          pnpm test:integration:api-contract
+          cleanup
+          trap - EXIT
+          node -e "const net=require('node:net');const server=net.createServer();server.once('error',()=>process.exit(1));server.listen(4873,'127.0.0.1',()=>server.close());"
 
   windows-sandbox-paths:
     needs: changes

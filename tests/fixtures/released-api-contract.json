@@ -1,0 +1,285 @@
+{
+  "schemaVersion": 1,
+  "baseline": {
+    "tag": "v0.14.3",
+    "commit": "94a3edc3e5318fdbc4ceb045df4dad934ca4ab2b"
+  },
+  "packages": {
+    "@openai/agents-core": {
+      "version": "0.14.3",
+      "integrity": "sha512-5tJnFL4Ei34GtArVatM9TUtILDYUXJ2/H0+9jIU8B7y5eINjrQtajmeaudFHmxA4/t7blRgG1SuKQfoA0FPy7A==",
+      "exports": {
+        ".": {
+          "types": "./dist/index.d.ts",
+          "require": "./dist/index.js",
+          "import": "./dist/index.mjs"
+        },
+        "./model": {
+          "types": "./dist/model.d.ts",
+          "require": "./dist/model.js",
+          "import": "./dist/model.mjs"
+        },
+        "./utils": {
+          "types": "./dist/utils/index.d.ts",
+          "require": "./dist/utils/index.js",
+          "import": "./dist/utils/index.mjs"
+        },
+        "./utils/internal": {
+          "types": "./dist/utils/internal.d.ts",
+          "require": "./dist/utils/internal.js",
+          "import": "./dist/utils/internal.mjs"
+        },
+        "./extensions": {
+          "types": "./dist/extensions/index.d.ts",
+          "require": "./dist/extensions/index.js",
+          "import": "./dist/extensions/index.mjs"
+        },
+        "./sandbox": {
+          "types": "./dist/sandbox/index.d.ts",
+          "require": "./dist/sandbox/index.js",
+          "import": "./dist/sandbox/index.mjs"
+        },
+        "./sandbox/local": {
+          "types": "./dist/sandbox/local.d.ts",
+          "require": "./dist/sandbox/local.js",
+          "import": "./dist/sandbox/local.mjs"
+        },
+        "./sandbox/internal": {
+          "types": "./dist/sandbox/internal.d.ts",
+          "require": "./dist/sandbox/internal.js",
+          "import": "./dist/sandbox/internal.mjs"
+        },
+        "./sandbox/internal/process": {
+          "types": "./dist/sandbox/internal/process.d.ts",
+          "require": "./dist/sandbox/internal/process.js",
+          "import": "./dist/sandbox/internal/process.mjs"
+        },
+        "./types": {
+          "types": "./dist/types/index.d.ts",
+          "require": "./dist/types/index.js",
+          "import": "./dist/types/index.mjs"
+        },
+        "./_shims": {
+          "workerd": {
+            "types": "./dist/shims/shims-workerd.d.ts",
+            "require": "./dist/shims/shims-workerd.js",
+            "import": "./dist/shims/shims-workerd.mjs"
+          },
+          "browser": {
+            "types": "./dist/shims/shims-browser.d.ts",
+            "require": "./dist/shims/shims-browser.js",
+            "import": "./dist/shims/shims-browser.mjs"
+          },
+          "node": {
+            "types": "./dist/shims/shims-node.d.ts",
+            "require": "./dist/shims/shims-node.js",
+            "import": "./dist/shims/shims-node.mjs"
+          },
+          "types": "./dist/shims/shims.d.ts",
+          "require": "./dist/shims/shims.js",
+          "import": "./dist/shims/shims.mjs"
+        },
+        "./_shims/config": {
+          "workerd": {
+            "types": "./dist/shims/config-workerd.d.ts",
+            "require": "./dist/shims/config-workerd.js",
+            "import": "./dist/shims/config-workerd.mjs"
+          },
+          "browser": {
+            "types": "./dist/shims/config-browser.d.ts",
+            "require": "./dist/shims/config-browser.js",
+            "import": "./dist/shims/config-browser.mjs"
+          },
+          "node": {
+            "types": "./dist/shims/config-node.d.ts",
+            "require": "./dist/shims/config-node.js",
+            "import": "./dist/shims/config-node.mjs"
+          },
+          "types": "./dist/shims/config-node.d.ts",
+          "require": "./dist/shims/config-node.js",
+          "import": "./dist/shims/config-node.mjs"
+        }
+      },
+      "optionalPeers": ["zod"]
+    },
+    "@openai/agents-openai": {
+      "version": "0.14.3",
+      "integrity": "sha512-ctJhe/scinyUGtv+MCkkHH+QEza96UmeeUPGNKT3ZFWlz1OCj+xC6YxvwX0WBaZQz0BYAgl6m0aIRnfTgBMO9A==",
+      "exports": {
+        ".": {
+          "types": "./dist/index.d.ts",
+          "require": "./dist/index.js",
+          "import": "./dist/index.mjs"
+        },
+        "./experimental/hosted-multi-agent": {
+          "types": "./dist/experimental/hostedMultiAgent/index.d.ts",
+          "require": "./dist/experimental/hostedMultiAgent/index.js",
+          "import": "./dist/experimental/hostedMultiAgent/index.mjs"
+        }
+      },
+      "optionalPeers": []
+    },
+    "@openai/agents-realtime": {
+      "version": "0.14.3",
+      "integrity": "sha512-eeoc49ti7Pi+GPrivUE7M6PGOQAI6jK3UG82aZtwhi6IHj0uHxzNEK33NQODKag1W40ZJm/R0JWxMWS+lQrjDQ==",
+      "exports": {
+        ".": {
+          "browser": {
+            "types": "./dist/index.d.ts",
+            "require": "./dist/index.js",
+            "import": "./dist/index.mjs"
+          },
+          "types": "./dist/index.d.ts",
+          "require": "./dist/index.js",
+          "import": "./dist/index.mjs"
+        },
+        "./_shims": {
+          "workerd": {
+            "types": "./dist/shims/shims-workerd.d.ts",
+            "require": "./dist/shims/shims-workerd.js",
+            "import": "./dist/shims/shims-workerd.mjs"
+          },
+          "browser": {
+            "types": "./dist/shims/shims-browser.d.ts",
+            "require": "./dist/shims/shims-browser.js",
+            "import": "./dist/shims/shims-browser.mjs"
+          },
+          "node": {
+            "types": "./dist/shims/shims-node.d.ts",
+            "require": "./dist/shims/shims-node.js",
+            "import": "./dist/shims/shims-node.mjs"
+          },
+          "types": "./dist/shims/shims.d.ts",
+          "require": "./dist/shims/shims.js",
+          "import": "./dist/shims/shims.mjs"
+        }
+      },
+      "optionalPeers": []
+    },
+    "@openai/agents-extensions": {
+      "version": "0.14.3",
+      "integrity": "sha512-PshChfePcfQq73Pnket9g5gP4HFG2KuctWf1+oF99vASrU3nirJyLgHsmSeWw1ZF9cQcwFeDycafuah7jRCzVg==",
+      "exports": {
+        ".": {
+          "types": "./dist/index.d.ts",
+          "require": "./dist/index.js",
+          "import": "./dist/index.mjs"
+        },
+        "./ai-sdk": {
+          "types": "./dist/ai-sdk/index.d.ts",
+          "require": "./dist/ai-sdk/index.js",
+          "import": "./dist/ai-sdk/index.mjs"
+        },
+        "./ai-sdk-ui": {
+          "types": "./dist/ai-sdk-ui/index.d.ts",
+          "require": "./dist/ai-sdk-ui/index.js",
+          "import": "./dist/ai-sdk-ui/index.mjs"
+        },
+        "./sandbox/blaxel": {
+          "types": "./dist/sandbox/blaxel/index.d.ts",
+          "require": "./dist/sandbox/blaxel/index.js",
+          "import": "./dist/sandbox/blaxel/index.mjs"
+        },
+        "./sandbox/cloudflare": {
+          "types": "./dist/sandbox/cloudflare/index.d.ts",
+          "require": "./dist/sandbox/cloudflare/index.js",
+          "import": "./dist/sandbox/cloudflare/index.mjs"
+        },
+        "./sandbox/daytona": {
+          "types": "./dist/sandbox/daytona/index.d.ts",
+          "require": "./dist/sandbox/daytona/index.js",
+          "import": "./dist/sandbox/daytona/index.mjs"
+        },
+        "./sandbox/e2b": {
+          "types": "./dist/sandbox/e2b/index.d.ts",
+          "require": "./dist/sandbox/e2b/index.js",
+          "import": "./dist/sandbox/e2b/index.mjs"
+        },
+        "./sandbox/modal": {
+          "types": "./dist/sandbox/modal/index.d.ts",
+          "require": "./dist/sandbox/modal/index.js",
+          "import": "./dist/sandbox/modal/index.mjs"
+        },
+        "./sandbox/runloop": {
+          "types": "./dist/sandbox/runloop/index.d.ts",
+          "require": "./dist/sandbox/runloop/index.js",
+          "import": "./dist/sandbox/runloop/index.mjs"
+        },
+        "./sandbox/vercel": {
+          "types": "./dist/sandbox/vercel/index.d.ts",
+          "require": "./dist/sandbox/vercel/index.js",
+          "import": "./dist/sandbox/vercel/index.mjs"
+        },
+        "./experimental/codex": {
+          "types": "./dist/experimental/codex/index.d.ts",
+          "require": "./dist/experimental/codex/index.js",
+          "import": "./dist/experimental/codex/index.mjs"
+        }
+      },
+      "optionalPeers": [
+        "@ai-sdk/provider",
+        "@blaxel/core",
+        "@daytonaio/sdk",
+        "@e2b/code-interpreter",
+        "@openai/codex-sdk",
+        "@runloop/api-client",
+        "@vercel/sandbox",
+        "ai",
+        "e2b",
+        "modal"
+      ]
+    },
+    "@openai/agents": {
+      "version": "0.14.3",
+      "integrity": "sha512-mhAPpDz+CeEoViMsYxPcHEMUonPQnGIgP2yCch/SXhXQkhb/53ojO2bUIXW3NSD5lIDyyV6sTIkO+O5WWJrVDA==",
+      "exports": {
+        ".": {
+          "types": "./dist/index.d.ts",
+          "require": "./dist/index.js",
+          "import": "./dist/index.mjs"
+        },
+        "./sandbox": {
+          "types": "./dist/sandbox/index.d.ts",
+          "require": "./dist/sandbox/index.js",
+          "import": "./dist/sandbox/index.mjs"
+        },
+        "./sandbox/local": {
+          "types": "./dist/sandbox/local.d.ts",
+          "require": "./dist/sandbox/local.js",
+          "import": "./dist/sandbox/local.mjs"
+        },
+        "./realtime": {
+          "types": "./dist/realtime/index.d.ts",
+          "require": "./dist/realtime/index.js",
+          "import": "./dist/realtime/index.mjs"
+        },
+        "./utils": {
+          "types": "./dist/utils/index.d.ts",
+          "require": "./dist/utils/index.js",
+          "import": "./dist/utils/index.mjs"
+        }
+      },
+      "optionalPeers": []
+    }
+  },
+  "selectedPublicProperties": [
+    {
+      "package": "@openai/agents-extensions",
+      "subpath": "./sandbox/runloop",
+      "export": "RunloopPlatformClient",
+      "properties": [
+        "blueprints",
+        "benchmarks",
+        "secrets",
+        "networkPolicies",
+        "axons"
+      ]
+    },
+    {
+      "package": "@openai/agents-extensions",
+      "subpath": "./sandbox/runloop",
+      "export": "RunloopSandboxClient",
+      "properties": ["platform"]
+    }
+  ]
+}
