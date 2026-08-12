@@ -18,7 +18,6 @@ import {
   defineToolInputGuardrail,
   type AgentInputItem,
   type CallModelInputFilterArgs,
-  type Model,
   type ModelRequest,
   type ModelResponse,
   type OpenAIResponsesCompactionArgs,
@@ -30,6 +29,11 @@ import {
 import * as protocol from '../src/types/protocol';
 import { fakeModelMessage } from './stubs';
 import logger from '../src/logger';
+import {
+  ScriptedModel,
+  modelResponder,
+  modelStreamResponder,
+} from '../src/testing';
 
 type RunMode = 'non_streamed' | 'streamed';
 
@@ -86,32 +90,21 @@ class FailingCheckpointCompactionSession extends CompactionTrackingSession {
   }
 }
 
-class ApprovalSessionModel implements Model {
-  readonly requests: ModelRequest[] = [];
-
-  constructor(private readonly responses: ModelResponse[]) {}
-
-  async getResponse(request: ModelRequest): Promise<ModelResponse> {
-    this.requests.push(request);
-    const response = this.responses.shift();
-    if (!response) {
-      throw new Error('No response found.');
-    }
-    return response;
+class ApprovalSessionModel extends ScriptedModel {
+  constructor(responses: ModelResponse[]) {
+    super(
+      responses.map((response) =>
+        modelResponder((call) =>
+          call.streamed
+            ? { ...response, responseId: 'stream-response' }
+            : response,
+        ),
+      ),
+    );
   }
 
-  async *getStreamedResponse(
-    request: ModelRequest,
-  ): AsyncIterable<StreamEvent> {
-    const response = await this.getResponse(request);
-    yield {
-      type: 'response_done',
-      response: {
-        id: response.responseId ?? 'stream-response',
-        output: response.output,
-        usage: response.usage,
-      },
-    } as StreamEvent;
+  get requests(): readonly Readonly<ModelRequest>[] {
+    return this.calls.map((call) => call.request);
   }
 }
 
@@ -200,23 +193,22 @@ describe('committed tool output guardrail session persistence', () => {
     const modelCanFinish = new Promise<void>((resolve) => {
       releaseModel = resolve;
     });
-    const model: Model = {
-      async getResponse(): Promise<ModelResponse> {
-        throw new Error('Unexpected non-streaming request.');
-      },
-      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-        markModelStarted();
-        await modelCanFinish;
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'bound-stream-response',
-            output: [fakeModelMessage('done')],
-            usage: new Usage(),
-          },
-        } as StreamEvent;
-      },
-    };
+    const model = new ScriptedModel([
+      modelStreamResponder(() =>
+        (async function* () {
+          markModelStarted();
+          await modelCanFinish;
+          yield {
+            type: 'response_done',
+            response: {
+              id: 'bound-stream-response',
+              output: [fakeModelMessage('done')],
+              usage: new Usage(),
+            },
+          } as StreamEvent;
+        })(),
+      ),
+    ]);
     const agent = new Agent({ name: 'Bound streaming state agent', model });
     const session = new DeferredSessionIdSession({
       sessionId: 'bound-stream-session',

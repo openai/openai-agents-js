@@ -24,6 +24,11 @@
       "require": "./dist/model.js",
       "import": "./dist/model.mjs"
     },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "require": "./dist/testing/index.js",
+      "import": "./dist/testing/index.mjs"
+    },
     "./utils": {
       "types": "./dist/utils/index.d.ts",
       "require": "./dist/utils/index.js",
@@ -141,6 +146,9 @@
     "*": {
       "model": [
         "dist/model.d.ts"
+      ],
+      "testing": [
+        "dist/testing/index.d.ts"
       ],
       "utils": [
         "dist/utils/index.d.ts"

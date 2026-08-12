@@ -1,10 +1,5 @@
-import {
-  Runner,
-  tool,
-  Usage,
-  type Model,
-  type ModelResponse,
-} from '@openai/agents-core';
+import { Runner, tool, Usage, type ModelResponse } from '@openai/agents-core';
+import { ScriptedModel, modelResponse } from '@openai/agents-core/testing';
 import {
   Manifest,
   SandboxArchiveError,
@@ -51,20 +46,9 @@ const domainMock = vi.fn();
 const remoteFilePaths = new Set<string>();
 const mountedPaths = new Set<string>();
 
-class SequenceModel implements Model {
-  constructor(private readonly responses: ModelResponse[]) {}
-
-  async getResponse(): Promise<ModelResponse> {
-    const response = this.responses.shift();
-    if (!response) {
-      throw new Error('No model response remains.');
-    }
-    return response;
-  }
-
-  // eslint-disable-next-line require-yield
-  async *getStreamedResponse(): AsyncIterable<never> {
-    throw new Error('Streaming is not used by this test.');
+class SequenceModel extends ScriptedModel {
+  constructor(responses: ModelResponse[]) {
+    super(responses.map(modelResponse));
   }
 }
 

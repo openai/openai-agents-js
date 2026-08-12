@@ -73,12 +73,13 @@ import { Agent } from '../src/agent';
 import { StreamedRunResult } from '../src/result';
 import { RunContext } from '../src/runContext';
 import { RunState } from '../src/runState';
-import { FakeModel, fakeModelMessage, FakeModelProvider } from './stubs';
+import { fakeModelMessage, ScriptedModelProvider } from './stubs';
 import { Usage } from '../src/usage';
-import * as protocol from '../src/types/protocol';
 import { setDefaultModelProvider } from '../src/providers';
 import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../src/shims/shims-browser';
 import { supportsProcessLifecycleEvents as workerdSupportsProcessLifecycleEvents } from '../src/shims/shims-workerd';
+import { ScriptedModel, modelResponse, modelStream } from '../src/testing';
+import type { StreamEvent } from '../src/types/protocol';
 
 const ALS_SYMBOL = Symbol.for('openai.agents.core.asyncLocalStorage');
 const originalProcessMaxListeners = process.getMaxListeners();
@@ -647,7 +648,7 @@ describe('Span creation inherits tracing fields from parents', () => {
 
 describe('Runner tracing configuration', () => {
   beforeEach(() => {
-    setDefaultModelProvider(new FakeModelProvider());
+    setDefaultModelProvider(new ScriptedModelProvider());
     setTracingDisabled(false);
   });
 
@@ -662,11 +663,11 @@ describe('Runner tracing configuration', () => {
 
     const agent = new Agent({
       name: 'TestAgent',
-      model: new FakeModel([
-        {
+      model: new ScriptedModel([
+        modelResponse({
           output: [fakeModelMessage('hi')],
           usage: new Usage(),
-        },
+        }),
       ]),
     });
 
@@ -1537,7 +1538,7 @@ describe('withTrace & span helpers (integration)', () => {
 
   it('streaming run waits for stream loop to complete before calling onTraceEnd', async () => {
     // Set up model provider
-    setDefaultModelProvider(new FakeModelProvider());
+    setDefaultModelProvider(new ScriptedModelProvider());
 
     const traceStartTimes: number[] = [];
     const traceEndTimes: number[] = [];
@@ -1567,35 +1568,24 @@ describe('withTrace & span helpers (integration)', () => {
     const orderProcessor = new OrderTrackingProcessor();
     setTraceProcessors([orderProcessor]);
 
-    // Create a fake model that supports streaming
-    class StreamingFakeModel extends FakeModel {
-      async *getStreamedResponse(
-        _request: any,
-      ): AsyncIterable<protocol.StreamEvent> {
-        const response = await this.getResponse(_request);
-        yield {
-          type: 'response_done',
-          response: {
-            id: 'resp-1',
-            usage: {
-              requests: 1,
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-            output: response.output,
-          },
-        } as any;
-      }
-    }
-
     const agent = new Agent({
       name: 'TestAgent',
-      model: new StreamingFakeModel([
-        {
-          output: [fakeModelMessage('Final output')],
-          usage: new Usage(),
-        },
+      model: new ScriptedModel([
+        modelStream([
+          {
+            type: 'response_done',
+            response: {
+              id: 'resp-1',
+              usage: {
+                requests: 1,
+                inputTokens: 0,
+                outputTokens: 0,
+                totalTokens: 0,
+              },
+              output: [fakeModelMessage('Final output')],
+            },
+          } as StreamEvent,
+        ]),
       ]),
     });
 

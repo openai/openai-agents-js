@@ -188,6 +188,7 @@ Before submitting changes, ensure all checks pass and augment tests when you tou
 When `$code-change-verification` applies (see Mandatory Skill Usage), invoke it to run the required verification stack from the repository root. Rerun the full stack after fixes.
 
 - Add or update unit tests for any code change unless it is truly infeasible; if something prevents adding tests, explain why in the PR.
+- For provider-neutral agent workflow tests, prefer `ScriptedModel` over adding a new mock or fake `Model`. Prefer `ScriptedRealtimeTransport` for Realtime session tests and `scriptedSandboxSession()` for deterministic Sandbox session calls. Keep a specialized double only for a boundary the scripted utilities cannot preserve, such as provider-wire conversion, malformed streams, controlled suspension or concurrency, or exact abort or lifecycle delivery, and document that reason in the test.
 
 #### Build and Type Checking
 

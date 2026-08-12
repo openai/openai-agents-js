@@ -30,6 +30,15 @@ describe('React Native shims', () => {
     expect(realtimePackage.exports['./_shims'].import).toBe(
       './dist/shims/shims.mjs',
     );
+    expect(corePackage.exports['./testing'].import).toBe(
+      './dist/testing/index.mjs',
+    );
+    expect(realtimePackage.exports['./testing']['react-native'].import).toBe(
+      './dist/testing/index.mjs',
+    );
+    expect(realtimePackage.exports['./testing'].import).toBe(
+      './dist/testing/index.mjs',
+    );
   });
 
   it('emits events without DOM event globals', () => {

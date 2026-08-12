@@ -6,11 +6,11 @@ import { RunContext } from '../../src/runContext';
 import { applyCallModelInputFilter } from '../../src/runner/conversation';
 import type { AgentInputItem } from '../../src/types';
 import { UserError } from '../../src/errors';
-import { FakeModelProvider } from '../stubs';
+import { ScriptedModelProvider } from '../stubs';
 
 beforeAll(() => {
   setTracingDisabled(true);
-  setDefaultModelProvider(new FakeModelProvider());
+  setDefaultModelProvider(new ScriptedModelProvider());
 });
 
 const makeAgent = (name: string) =>

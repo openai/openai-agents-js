@@ -24,6 +24,21 @@
       "require": "./dist/index.js",
       "import": "./dist/index.mjs"
     },
+    "./testing": {
+      "react-native": {
+        "types": "./dist/testing/index.d.ts",
+        "require": "./dist/testing/index.js",
+        "import": "./dist/testing/index.mjs"
+      },
+      "browser": {
+        "types": "./dist/testing/index.d.ts",
+        "require": "./dist/testing/index.js",
+        "import": "./dist/testing/index.mjs"
+      },
+      "types": "./dist/testing/index.d.ts",
+      "require": "./dist/testing/index.js",
+      "import": "./dist/testing/index.mjs"
+    },
     "./_shims": {
       "react-native": {
         "types": "./dist/shims/shims-react-native.d.ts",
@@ -52,6 +67,9 @@
   },
   "typesVersions": {
     "*": {
+      "testing": [
+        "dist/testing/index.d.ts"
+      ],
       "_shims": [
         "dist/shims/shims-node.d.ts"
       ]

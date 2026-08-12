@@ -100,13 +100,15 @@ import type {
 } from '../src/sandbox';
 import { Usage } from '../src/usage';
 import * as protocol from '../src/types/protocol';
-import {
-  FakeModel,
-  FakeModelProvider,
-  FakeShell,
-  fakeModelMessage,
-} from './stubs';
+import { ScriptedModelProvider, FakeShell, fakeModelMessage } from './stubs';
 import { AsyncLocalStorage as BrowserAsyncLocalStorage } from '../src/shims/shims-browser';
+import {
+  ScriptedModel,
+  modelResponder,
+  modelResponse,
+  modelStreamResponder,
+  scriptedSandboxSession,
+} from '../src/testing';
 
 class StubEditor implements Editor {
   async createFile(
@@ -128,49 +130,41 @@ class StubEditor implements Editor {
   }
 }
 
-class RecordingFakeModel extends FakeModel {
-  public readonly requests: ModelRequest[] = [];
-
-  override async getResponse(request: ModelRequest) {
-    this.requests.push(request);
-    return await super.getResponse(request);
+class RecordingModel extends ScriptedModel {
+  get requests(): readonly Readonly<ModelRequest>[] {
+    return this.calls.map((call) => call.request);
   }
 }
 
-class RecordingStreamingModel implements Model {
-  public readonly requests: ModelRequest[] = [];
-
-  constructor(private readonly responses: ModelResponse[]) {}
-
-  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-    throw new Error('Use getStreamedResponse for this test model.');
+class RecordingStreamingModel extends ScriptedModel {
+  constructor(responses: ModelResponse[]) {
+    super(
+      responses.map((response) =>
+        modelStreamResponder((call) => [
+          {
+            type: 'response_done',
+            response: {
+              id: `stream-${call.index}`,
+              usage: {
+                requests: 1,
+                inputTokens: 0,
+                outputTokens: 0,
+                totalTokens: 0,
+              },
+              output: response.output,
+            },
+          } as protocol.StreamEvent,
+        ]),
+      ),
+    );
   }
 
-  async *getStreamedResponse(
-    request: ModelRequest,
-  ): AsyncIterable<protocol.StreamEvent> {
-    this.requests.push(request);
-    const response = this.responses.shift();
-    if (!response) {
-      throw new Error('No response found');
-    }
-    yield {
-      type: 'response_done',
-      response: {
-        id: `stream-${this.requests.length}`,
-        usage: {
-          requests: 1,
-          inputTokens: 0,
-          outputTokens: 0,
-          totalTokens: 0,
-        },
-        output: response.output,
-      },
-    } as protocol.StreamEvent;
+  get requests(): readonly Readonly<ModelRequest>[] {
+    return this.calls.map((call) => call.request);
   }
 }
 
-class OpenAIChatCompletionsModel extends RecordingFakeModel {}
+class OpenAIChatCompletionsModel extends RecordingModel {}
 
 class RecordingTracingProcessor implements TracingProcessor {
   public readonly tracesStarted: Trace[] = [];
@@ -1073,7 +1067,7 @@ describe('sandbox runner integration', () => {
       };
       const model = stream
         ? new RecordingStreamingModel([response])
-        : new RecordingFakeModel([response]);
+        : new RecordingModel([modelResponse(response)]);
       const agent = new SandboxAgent({
         name: 'ClonedPendingInputAgent',
         model,
@@ -1130,7 +1124,7 @@ describe('sandbox runner integration', () => {
       };
       const model = stream
         ? new RecordingStreamingModel([response])
-        : new RecordingFakeModel([response]);
+        : new RecordingModel([modelResponse(response)]);
       const agent = new SandboxAgent({
         name: 'CloningContextPersistenceAgent',
         model,
@@ -1222,7 +1216,7 @@ describe('sandbox runner integration', () => {
       };
       const model = stream
         ? new RecordingStreamingModel([response])
-        : new RecordingFakeModel([response]);
+        : new RecordingModel([modelResponse(response)]);
       const agent = new SandboxAgent({
         name: 'CloningPrefixPersistenceAgent',
         model,
@@ -1277,7 +1271,7 @@ describe('sandbox runner integration', () => {
       };
       const model = stream
         ? new RecordingStreamingModel([response])
-        : new RecordingFakeModel([response]);
+        : new RecordingModel([modelResponse(response)]);
       const agent = new SandboxAgent({
         name: 'CloningHistoryPrefixPersistenceAgent',
         model,
@@ -1335,7 +1329,7 @@ describe('sandbox runner integration', () => {
       };
       const model = stream
         ? new RecordingStreamingModel([response])
-        : new RecordingFakeModel([response]);
+        : new RecordingModel([modelResponse(response)]);
       const agent = new SandboxAgent({
         name: 'RedactingCloningContextPersistenceAgent',
         model,
@@ -1375,7 +1369,7 @@ describe('sandbox runner integration', () => {
       };
       const model = stream
         ? new RecordingStreamingModel([response])
-        : new RecordingFakeModel([response]);
+        : new RecordingModel([modelResponse(response)]);
       const agent = new SandboxAgent({
         name: 'RewritingCurrentCloningContextPersistenceAgent',
         model,
@@ -1424,7 +1418,7 @@ describe('sandbox runner integration', () => {
       };
       const model = stream
         ? new RecordingStreamingModel([response])
-        : new RecordingFakeModel([response]);
+        : new RecordingModel([modelResponse(response)]);
       const agent = new SandboxAgent({
         name: 'ReplacingHistoryCloningContextPersistenceAgent',
         model,
@@ -1469,7 +1463,7 @@ describe('sandbox runner integration', () => {
       };
       const model = stream
         ? new RecordingStreamingModel([response])
-        : new RecordingFakeModel([response]);
+        : new RecordingModel([modelResponse(response)]);
       const agent = new SandboxAgent({
         name: 'PrependingCloningContextPersistenceAgent',
         model,
@@ -1527,7 +1521,7 @@ describe('sandbox runner integration', () => {
       };
       const model = stream
         ? new RecordingStreamingModel([response])
-        : new RecordingFakeModel([response]);
+        : new RecordingModel([modelResponse(response)]);
       const agent = new SandboxAgent({
         name: 'PrependingEqualCloningContextPersistenceAgent',
         model,
@@ -1586,7 +1580,7 @@ describe('sandbox runner integration', () => {
       };
       const model = stream
         ? new RecordingStreamingModel([response])
-        : new RecordingFakeModel([response]);
+        : new RecordingModel([modelResponse(response)]);
       const agent = new SandboxAgent({
         name: 'ReplacingCurrentContextPersistenceAgent',
         model,
@@ -1657,7 +1651,7 @@ describe('sandbox runner integration', () => {
       ];
       const model = stream
         ? new RecordingStreamingModel(responses)
-        : new RecordingFakeModel(responses);
+        : new RecordingModel(Array.from(responses, modelResponse));
       const agent = new SandboxAgent({
         name: 'LaterClonedContextPersistenceAgent',
         model,
@@ -1749,7 +1743,7 @@ describe('sandbox runner integration', () => {
       ];
       const model = stream
         ? new RecordingStreamingModel(responses)
-        : new RecordingFakeModel(responses);
+        : new RecordingModel(Array.from(responses, modelResponse));
       const agent = new SandboxAgent({
         name: 'SubsetClonedContextPersistenceAgent',
         model,
@@ -1834,7 +1828,7 @@ describe('sandbox runner integration', () => {
       ];
       const model = stream
         ? new RecordingStreamingModel(responses)
-        : new RecordingFakeModel(responses);
+        : new RecordingModel(Array.from(responses, modelResponse));
       const agent = new Agent({
         name: 'RepeatedFilterInjectionAgent',
         model,
@@ -1881,7 +1875,7 @@ describe('sandbox runner integration', () => {
       };
       const model = stream
         ? new RecordingStreamingModel([response])
-        : new RecordingFakeModel([response]);
+        : new RecordingModel([modelResponse(response)]);
       const agent = new SandboxAgent({
         name: 'CompactionPersistenceAgent',
         model,
@@ -1962,7 +1956,7 @@ describe('sandbox runner integration', () => {
       ];
       const model = stream
         ? new RecordingStreamingModel(responses)
-        : new RecordingFakeModel(responses);
+        : new RecordingModel(Array.from(responses, modelResponse));
       const agent = new SandboxAgent({
         name: 'LaterCompactionPersistenceAgent',
         model,
@@ -2010,7 +2004,7 @@ describe('sandbox runner integration', () => {
 
   beforeAll(() => {
     setTracingDisabled(true);
-    setDefaultModelProvider(new FakeModelProvider());
+    setDefaultModelProvider(new ScriptedModelProvider());
   });
 
   afterEach(() => {
@@ -2020,19 +2014,19 @@ describe('sandbox runner integration', () => {
   });
 
   it('requires RunConfig.sandbox when execution reaches a SandboxAgent', async () => {
-    const sandboxModel = new RecordingFakeModel([
-      {
+    const sandboxModel = new RecordingModel([
+      modelResponse({
         output: [fakeModelMessage('sandbox done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'SandboxWorker',
       model: sandboxModel,
     });
     const handoffToSandbox = handoff(sandboxAgent);
-    const rootModel = new RecordingFakeModel([
-      {
+    const rootModel = new RecordingModel([
+      modelResponse({
         output: [
           {
             id: 'handoff-1',
@@ -2044,7 +2038,7 @@ describe('sandbox runner integration', () => {
           },
         ],
         usage: new Usage(),
-      },
+      }),
     ]);
     const rootAgent = new Agent({
       name: 'RootAgent',
@@ -2059,11 +2053,11 @@ describe('sandbox runner integration', () => {
 
   it('hands off from a plain agent to a sandbox agent and prepares sandbox instructions', async () => {
     const client = new FakeSandboxClient();
-    const sandboxModel = new RecordingFakeModel([
-      {
+    const sandboxModel = new RecordingModel([
+      modelResponse({
         output: [fakeModelMessage('sandbox done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
@@ -2071,8 +2065,8 @@ describe('sandbox runner integration', () => {
       defaultManifest: new Manifest({ root: '/workspace' }),
     });
     const handoffToSandbox = handoff(sandboxAgent);
-    const rootModel = new RecordingFakeModel([
-      {
+    const rootModel = new RecordingModel([
+      modelResponse({
         output: [
           {
             id: 'handoff-1',
@@ -2084,7 +2078,7 @@ describe('sandbox runner integration', () => {
           },
         ],
         usage: new Usage(),
-      },
+      }),
     ]);
     const rootAgent = new Agent({
       name: 'RootAgent',
@@ -2108,11 +2102,11 @@ describe('sandbox runner integration', () => {
 
   it('does not pass an implicit default manifest when creating sessions', async () => {
     const client = new FakeSandboxClient();
-    const sandboxModel = new RecordingFakeModel([
-      {
+    const sandboxModel = new RecordingModel([
+      modelResponse({
         output: [fakeModelMessage('sandbox done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
@@ -2155,11 +2149,11 @@ describe('sandbox runner integration', () => {
     ] as const) {
       const sandboxAgent = new SandboxAgent({
         name: `SandboxWorker-${name}`,
-        model: new RecordingFakeModel([
-          {
+        model: new RecordingModel([
+          modelResponse({
             output: [fakeModelMessage(`${name} sandbox done`)],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
 
@@ -2271,8 +2265,8 @@ describe('sandbox runner integration', () => {
       parameters: z.object({}),
       execute: async () => 'tool result',
     });
-    const model = new RecordingFakeModel([
-      {
+    const model = new RecordingModel([
+      modelResponse({
         output: [
           {
             type: 'compaction',
@@ -2288,8 +2282,11 @@ describe('sandbox runner integration', () => {
           } as protocol.FunctionCallItem,
         ],
         usage: new Usage(),
-      },
-      { output: [fakeModelMessage('sandbox done')], usage: new Usage() },
+      }),
+      modelResponse({
+        output: [fakeModelMessage('sandbox done')],
+        usage: new Usage(),
+      }),
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
@@ -2315,15 +2312,15 @@ describe('sandbox runner integration', () => {
     const client = new FakeSandboxClient();
     const samplingRecorder = new SamplingRecorderCapability();
     const runConfigModel = Object.assign(
-      new RecordingFakeModel([
-        {
+      new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
       { model: 'gpt-5-mini' },
     ) satisfies Model;
@@ -2350,11 +2347,11 @@ describe('sandbox runner integration', () => {
   it('passes string RunConfig model names into sandbox capability sampling', async () => {
     const client = new FakeSandboxClient();
     const samplingRecorder = new SamplingRecorderCapability();
-    const runConfigModel = new RecordingFakeModel([
-      {
+    const runConfigModel = new RecordingModel([
+      modelResponse({
         output: [fakeModelMessage('sandbox done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
@@ -2385,10 +2382,10 @@ describe('sandbox runner integration', () => {
   it('resolves string RunConfig models before adding default sandbox tools', async () => {
     const client = new FakeSandboxClient();
     const chatModel = new OpenAIChatCompletionsModel([
-      {
+      modelResponse({
         output: [fakeModelMessage('sandbox done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const runner = new Runner({
       model: 'chat-model',
@@ -2419,11 +2416,11 @@ describe('sandbox runner integration', () => {
 
   it('preserves resolved model instances for string sandbox agent models', async () => {
     const client = new FakeSandboxClient();
-    const responsesModel = new RecordingFakeModel([
-      {
+    const responsesModel = new RecordingModel([
+      modelResponse({
         output: [fakeModelMessage('sandbox done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const runner = new Runner({
       modelProvider: {
@@ -2454,15 +2451,15 @@ describe('sandbox runner integration', () => {
   it('uses the sandbox agent model before runner defaults for capability sampling', async () => {
     const client = new FakeSandboxClient();
     const samplingRecorder = new SamplingRecorderCapability();
-    const runConfigModel = Object.assign(new RecordingFakeModel([]), {
+    const runConfigModel = Object.assign(new RecordingModel([]), {
       model: 'runner-model',
     }) satisfies Model;
     const agentModel = Object.assign(
-      new RecordingFakeModel([
-        {
+      new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
       { model: 'agent-model' },
     ) satisfies Model;
@@ -2485,18 +2482,18 @@ describe('sandbox runner integration', () => {
       model: 'agent-model',
       modelInstance: agentModel,
     });
-    expect((runConfigModel as RecordingFakeModel).requests).toHaveLength(0);
+    expect((runConfigModel as RecordingModel).requests).toHaveLength(0);
   });
 
   it('processes capability manifests before creating sandbox sessions', async () => {
     const client = new FakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
       capabilities: [
         filesystem(),
@@ -2529,18 +2526,18 @@ describe('sandbox runner integration', () => {
     const client = new FakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('nested sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
       capabilities: [],
     });
     const outerAgent = new Agent({
       name: 'OuterAgent',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [
             {
               id: 'call-1',
@@ -2552,11 +2549,11 @@ describe('sandbox runner integration', () => {
             } as any,
           ],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [fakeModelMessage('outer done')],
           usage: new Usage(),
-        },
+        }),
       ]),
       tools: [
         sandboxAgent.asTool({
@@ -2587,11 +2584,11 @@ describe('sandbox runner integration', () => {
     const liveSession = client.makeSession(liveSessionState);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
       defaultManifest: new Manifest({
         entries: {
@@ -2720,11 +2717,11 @@ describe('sandbox runner integration', () => {
     const liveSession = client.makeSession(liveSessionState);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
       defaultManifest: new Manifest({
         entries: {
@@ -2758,11 +2755,11 @@ describe('sandbox runner integration', () => {
 
   it('passes run-level snapshot and resource settings through sandbox client options', async () => {
     const client = new FakeSandboxClient();
-    const sandboxModel = new RecordingFakeModel([
-      {
+    const sandboxModel = new RecordingModel([
+      modelResponse({
         output: [fakeModelMessage('sandbox done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
@@ -2808,15 +2805,15 @@ describe('sandbox runner integration', () => {
     const plainClient = new FakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [fakeModelMessage('sandbox done again')],
           usage: new Usage(),
-        },
+        }),
       ]),
       defaultManifest: new Manifest({ root: '/workspace' }),
     });
@@ -2842,11 +2839,11 @@ describe('sandbox runner integration', () => {
     const client = new DefaultSnapshotFakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
       defaultManifest: new Manifest({ root: '/workspace' }),
     });
@@ -2869,11 +2866,11 @@ describe('sandbox runner integration', () => {
     const client = new FakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
       defaultManifest: new Manifest({ root: '/workspace' }),
       runAs: { name: ' sandbox-user ' },
@@ -2905,11 +2902,11 @@ describe('sandbox runner integration', () => {
     }).withInContainerMountCredentialExposureAcknowledged('remote');
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
       defaultManifest: manifest,
       runAs: 'sandbox-user',
@@ -2981,7 +2978,7 @@ describe('sandbox runner integration', () => {
       };
       const sandboxAgent = new SandboxAgent({
         name: 'SandboxWorker',
-        model: new RecordingFakeModel([]),
+        model: new RecordingModel([]),
         defaultManifest: manifest,
       });
 
@@ -2998,7 +2995,7 @@ describe('sandbox runner integration', () => {
     const client = new FakeSandboxClient();
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({
         environment: {
           TOKEN: {
@@ -3038,15 +3035,15 @@ describe('sandbox runner integration', () => {
 
   it('serializes sandbox session state and resumes it on the next run', async () => {
     const client = new ManifestSerializingFakeSandboxClient();
-    const sandboxModel = new RecordingFakeModel([
-      {
+    const sandboxModel = new RecordingModel([
+      modelResponse({
         output: [fakeModelMessage('turn one')],
         usage: new Usage(),
-      },
-      {
+      }),
+      modelResponse({
         output: [fakeModelMessage('turn two')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
@@ -3165,7 +3162,7 @@ describe('sandbox runner integration', () => {
     const client = new FakeSandboxClient();
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({
         extraPathGrants: [
           {
@@ -3251,7 +3248,7 @@ describe('sandbox runner integration', () => {
     });
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: trustedManifest,
     });
     const sessionState: FakeSandboxSessionState = {
@@ -3292,7 +3289,7 @@ describe('sandbox runner integration', () => {
     const client = new FakeSandboxClient();
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const runState = new RunState<
       unknown,
@@ -3381,7 +3378,7 @@ describe('sandbox runner integration', () => {
       });
       const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
         name: 'SandboxWorker',
-        model: new RecordingFakeModel([]),
+        model: new RecordingModel([]),
         defaultManifest: trustedManifest,
       });
       const runState = new RunState<
@@ -3415,7 +3412,7 @@ describe('sandbox runner integration', () => {
     Object.defineProperty(client, 'backendId', { value: 'docker' });
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({
         environment: {
           SECRET_ENV: {
@@ -3474,7 +3471,7 @@ describe('sandbox runner integration', () => {
     Object.defineProperty(client, 'backendId', { value: 'docker' });
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const sessionState: FakeSandboxSessionState = {
       manifest: new Manifest({
@@ -3516,11 +3513,11 @@ describe('sandbox runner integration', () => {
     const client = new FakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
       defaultManifest: new Manifest({
         entries: {
@@ -3605,11 +3602,11 @@ describe('sandbox runner integration', () => {
     const client = new RuntimeEnvironmentFakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
       defaultManifest: new Manifest({
         environment: {
@@ -3655,8 +3652,8 @@ describe('sandbox runner integration', () => {
         return 'approved';
       },
     });
-    const sandboxModel = new RecordingFakeModel([
-      {
+    const sandboxModel = new RecordingModel([
+      modelResponse({
         output: [
           {
             type: 'function_call',
@@ -3676,11 +3673,11 @@ describe('sandbox runner integration', () => {
           } satisfies protocol.FunctionCallItem,
         ],
         usage: new Usage(),
-      },
-      {
+      }),
+      modelResponse({
         output: [fakeModelMessage('done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
@@ -3723,7 +3720,7 @@ describe('sandbox runner integration', () => {
     Object.defineProperty(client, 'resume', {
       value: undefined,
     });
-    const sandboxModel = new RecordingFakeModel([]);
+    const sandboxModel = new RecordingModel([]);
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'SandboxWorker',
       model: sandboxModel,
@@ -3770,7 +3767,7 @@ describe('sandbox runner integration', () => {
 
   it('rejects unsupported serialized sandbox session state versions', async () => {
     const client = new FakeSandboxClient();
-    const sandboxModel = new RecordingFakeModel([]);
+    const sandboxModel = new RecordingModel([]);
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'SandboxWorker',
       model: sandboxModel,
@@ -4550,8 +4547,8 @@ describe('sandbox runner integration', () => {
 
   it('resets required tool choice after a sandbox agent uses a tool', async () => {
     const client = new FakeSandboxClient();
-    const sandboxModel = new RecordingFakeModel([
-      {
+    const sandboxModel = new RecordingModel([
+      modelResponse({
         output: [
           {
             id: 'tool-1',
@@ -4563,11 +4560,11 @@ describe('sandbox runner integration', () => {
           },
         ],
         usage: new Usage(),
-      },
-      {
+      }),
+      modelResponse({
         output: [fakeModelMessage('sandbox done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
@@ -4592,8 +4589,8 @@ describe('sandbox runner integration', () => {
 
   it('resets required tool choice after a sandbox agent uses a shell tool', async () => {
     const client = new FakeSandboxClient();
-    const sandboxModel = new RecordingFakeModel([
-      {
+    const sandboxModel = new RecordingModel([
+      modelResponse({
         output: [
           {
             id: 'shell-1',
@@ -4606,11 +4603,11 @@ describe('sandbox runner integration', () => {
           },
         ],
         usage: new Usage(),
-      },
-      {
+      }),
+      modelResponse({
         output: [fakeModelMessage('sandbox done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
@@ -4634,11 +4631,11 @@ describe('sandbox runner integration', () => {
   });
 
   it('allows reserved function tool names returned from sandbox capabilities', async () => {
-    const sandboxModel = new RecordingFakeModel([
-      {
+    const sandboxModel = new RecordingModel([
+      modelResponse({
         output: [fakeModelMessage('sandbox done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
@@ -4677,8 +4674,8 @@ describe('sandbox runner integration', () => {
       parameters: z.object({}).strict(),
       execute: async () => 'tool result',
     });
-    const sandboxModel = new RecordingFakeModel([
-      {
+    const sandboxModel = new RecordingModel([
+      modelResponse({
         output: [
           {
             id: 'fc_sandbox_tool',
@@ -4690,11 +4687,11 @@ describe('sandbox runner integration', () => {
           } satisfies protocol.FunctionCallItem,
         ],
         usage: new Usage(),
-      },
-      {
+      }),
+      modelResponse({
         output: [fakeModelMessage('sandbox done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
@@ -5038,7 +5035,7 @@ describe('sandbox runner integration', () => {
     const client = new FakeSandboxClient();
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({ root: '/workspace' }),
     });
     const state = new RunState<unknown, Agent<unknown, AgentOutputType>>(
@@ -5124,11 +5121,11 @@ describe('sandbox runner integration', () => {
 
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
     });
 
@@ -5166,20 +5163,20 @@ describe('sandbox runner integration', () => {
       const waitForClosePeers = createSandboxBarrier(2);
       const agentA = new SandboxAgent({
         name: `Parallel Sandbox Worker A ${includeTaskAndTurnSpans}`,
-        model: new RecordingFakeModel([
-          {
+        model: new RecordingModel([
+          modelResponse({
             output: [fakeModelMessage('sandbox A done')],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
       const agentB = new SandboxAgent({
         name: `Parallel Sandbox Worker B ${includeTaskAndTurnSpans}`,
-        model: new RecordingFakeModel([
-          {
+        model: new RecordingModel([
+          modelResponse({
             output: [fakeModelMessage('sandbox B done')],
             usage: new Usage(),
-          },
+          }),
         ]),
       });
 
@@ -5272,8 +5269,8 @@ describe('sandbox runner integration', () => {
     const createAgent = (label: string) =>
       new SandboxAgent({
         name: `Parallel sandbox capability agent ${label}`,
-        model: new RecordingFakeModel([
-          {
+        model: new RecordingModel([
+          modelResponse({
             output: [
               {
                 id: `tool-${label}`,
@@ -5285,11 +5282,11 @@ describe('sandbox runner integration', () => {
               },
             ],
             usage: new Usage(),
-          },
-          {
+          }),
+          modelResponse({
             output: [fakeModelMessage(`sandbox ${label} done`)],
             usage: new Usage(),
-          },
+          }),
         ]),
         capabilities: [
           shell({
@@ -5360,11 +5357,11 @@ describe('sandbox runner integration', () => {
       };
       return new SandboxAgent({
         name: `Parallel sandbox memory agent ${label}`,
-        model: new RecordingFakeModel([
-          {
+        model: new RecordingModel([
+          modelResponse({
             output: [fakeModelMessage(`sandbox ${label} done`)],
             usage: new Usage(),
-          },
+          }),
         ]),
         capabilities: [
           shell(),
@@ -5411,8 +5408,8 @@ describe('sandbox runner integration', () => {
     setTracingDisabled(false);
     const sandboxAgent = new SandboxAgent({
       name: 'Tracing-disabled sandbox agent',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [
             {
               id: 'tool-disabled',
@@ -5424,11 +5421,11 @@ describe('sandbox runner integration', () => {
             },
           ],
           usage: new Usage(),
-        },
-        {
+        }),
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
       capabilities: [shell()],
     });
@@ -5444,22 +5441,19 @@ describe('sandbox runner integration', () => {
 
   it('rejects concurrent reuse of the same SandboxAgent across runs', async () => {
     let releaseFirstRun: (() => void) | undefined;
-    const blockingModel = {
-      async getResponse(request: ModelRequest) {
+    const blockingModel = new ScriptedModel([
+      modelResponder(async (call) => {
         await new Promise<void>((resolve) => {
           releaseFirstRun = resolve;
         });
         return {
           output: [
-            fakeModelMessage(String(request.systemInstructions ?? 'done')),
+            fakeModelMessage(String(call.request.systemInstructions ?? 'done')),
           ],
           usage: new Usage(),
         };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+      }),
+    ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
       model: blockingModel,
@@ -5490,11 +5484,11 @@ describe('sandbox runner integration', () => {
     const client = new FakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
     });
 
@@ -5515,11 +5509,11 @@ describe('sandbox runner integration', () => {
     });
     const firstAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const secondAgent = new SandboxAgent({
       name: 'SandboxReviewer',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -5561,11 +5555,11 @@ describe('sandbox runner integration', () => {
     const client = new StartableFakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
     });
 
@@ -5593,7 +5587,7 @@ describe('sandbox runner integration', () => {
     const clientOptions = { resumeAs: 'current-user' };
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({ root: '/workspace' }),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
@@ -5665,11 +5659,11 @@ describe('sandbox runner integration', () => {
     client.startCalls.length = 0;
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
     });
 
@@ -5690,11 +5684,11 @@ describe('sandbox runner integration', () => {
     });
     const firstAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const secondAgent = new SandboxAgent({
       name: 'SandboxReviewer',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -5734,11 +5728,11 @@ describe('sandbox runner integration', () => {
     const client = new FakeSandboxClient();
     const startingAgent = new Agent({
       name: 'Router',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     }) as Agent<unknown, AgentOutputType>;
     const firstAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'RuntimeWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({
         entries: {
           'first.txt': {
@@ -5750,7 +5744,7 @@ describe('sandbox runner integration', () => {
     });
     const secondAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'RuntimeWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({
         entries: {
           'second.txt': {
@@ -5802,11 +5796,11 @@ describe('sandbox runner integration', () => {
     const client = new RedactedHostPathSerializedResumeFakeSandboxClient();
     const startingAgent = new Agent({
       name: 'Router',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     }) as Agent<unknown, AgentOutputType>;
     const firstAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'RuntimeWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({
         extraPathGrants: [
           {
@@ -5819,7 +5813,7 @@ describe('sandbox runner integration', () => {
     });
     const secondAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'RuntimeWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({
         extraPathGrants: [
           {
@@ -5887,11 +5881,11 @@ describe('sandbox runner integration', () => {
     });
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
     });
 
@@ -5914,11 +5908,11 @@ describe('sandbox runner integration', () => {
     const client = new ShutdownOnlyFakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
     });
 
@@ -5939,18 +5933,20 @@ describe('sandbox runner integration', () => {
 
   it('keeps lifecycle preStop when managed pre-stop hooks are installed', async () => {
     const calls: string[] = [];
-    const session: SandboxSessionLike<FakeSandboxSessionState> = {
-      state: {
-        manifest: new Manifest(),
-        sessionId: 'session-1',
+    const session = scriptedSandboxSession([
+      {
+        method: 'preStop',
+        respond: (call) => {
+          calls.push(`preStop:${call.args[0]?.reason}`);
+        },
       },
-      preStop: async (options) => {
-        calls.push(`preStop:${options?.reason}`);
+      {
+        method: 'close',
+        respond: () => {
+          calls.push('close');
+        },
       },
-      close: async () => {
-        calls.push('close');
-      },
-    };
+    ]);
 
     registerSandboxPreStopHook(session, () => {
       calls.push('hook');
@@ -5959,45 +5955,43 @@ describe('sandbox runner integration', () => {
     await cleanupSandboxSession(session);
 
     expect(calls).toEqual(['hook', 'preStop:cleanup', 'close']);
+    session.assertComplete();
   });
 
   it('passes preserveOwnedSessions through standardized lifecycle cleanup', async () => {
-    const calls: unknown[] = [];
-    const session: SandboxSessionLike<FakeSandboxSessionState> = {
-      state: {
-        manifest: new Manifest(),
-        sessionId: 'session-1',
+    const session = scriptedSandboxSession([
+      {
+        method: 'shutdown',
+        match: (options) => {
+          expect(options).toEqual({
+            reason: 'cleanup',
+            preserveOwnedSessions: true,
+          });
+        },
+        result: undefined,
       },
-      shutdown: async (options) => {
-        calls.push(options);
-      },
-    };
+    ]);
 
     await cleanupSandboxSession(session, { preserveOwnedSessions: true });
 
-    expect(calls).toEqual([
-      {
-        reason: 'cleanup',
-        preserveOwnedSessions: true,
-      },
-    ]);
+    session.assertComplete();
   });
 
   it('runs managed provider pre-stop hooks before serialization', async () => {
     const calls: string[] = [];
     const providerHooks = new Set<() => Promise<void> | void>();
-    const session: SandboxSessionLike<FakeSandboxSessionState> = {
-      state: {
-        manifest: new Manifest(),
-        sessionId: 'session-1',
+    const session = scriptedSandboxSession([
+      {
+        method: 'registerPreStopHook',
+        respond: (call) => {
+          const hook = call.args[0];
+          providerHooks.add(hook);
+          return () => {
+            providerHooks.delete(hook);
+          };
+        },
       },
-      registerPreStopHook: (hook) => {
-        providerHooks.add(hook);
-        return () => {
-          providerHooks.delete(hook);
-        };
-      },
-    };
+    ]);
 
     const unregister = registerSandboxPreStopHook(session, () => {
       calls.push('hook');
@@ -6014,23 +6008,24 @@ describe('sandbox runner integration', () => {
 
     unregister();
     expect(providerHooks.size).toBe(0);
+    session.assertComplete();
   });
 
   it('cleans up sessions that only expose provider pre-stop hooks', async () => {
     const calls: string[] = [];
     const providerHooks = new Set<() => Promise<void> | void>();
-    const session: SandboxSessionLike<FakeSandboxSessionState> = {
-      state: {
-        manifest: new Manifest(),
-        sessionId: 'session-1',
+    const session = scriptedSandboxSession([
+      {
+        method: 'registerPreStopHook',
+        respond: (call) => {
+          const hook = call.args[0];
+          providerHooks.add(hook);
+          return () => {
+            providerHooks.delete(hook);
+          };
+        },
       },
-      registerPreStopHook: (hook) => {
-        providerHooks.add(hook);
-        return () => {
-          providerHooks.delete(hook);
-        };
-      },
-    };
+    ]);
 
     registerSandboxPreStopHook(session, () => {
       calls.push('hook');
@@ -6039,17 +6034,18 @@ describe('sandbox runner integration', () => {
     await cleanupSandboxSession(session);
 
     expect(calls).toEqual(['hook']);
+    session.assertComplete();
   });
 
   it('runs standardized lifecycle cleanup hooks in order', async () => {
     const client = new StandardLifecycleFakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
     });
 
@@ -6088,11 +6084,11 @@ describe('sandbox runner integration', () => {
     const client = new FailingStopLifecycleFakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
     });
 
@@ -6135,11 +6131,11 @@ describe('sandbox runner integration', () => {
     );
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [fakeModelMessage('sandbox done')],
           usage: new Usage(),
-        },
+        }),
       ]),
     });
 
@@ -6161,7 +6157,7 @@ describe('sandbox runner integration', () => {
     );
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -6249,8 +6245,8 @@ describe('sandbox runner integration', () => {
       execute: async () => 'approved',
       needsApproval: true,
     });
-    const sandboxModel = new RecordingFakeModel([
-      {
+    const sandboxModel = new RecordingModel([
+      modelResponse({
         output: [
           {
             id: 'approval-1',
@@ -6262,11 +6258,11 @@ describe('sandbox runner integration', () => {
           } as any,
         ],
         usage: new Usage(),
-      },
-      {
+      }),
+      modelResponse({
         output: [fakeModelMessage('sandbox done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
@@ -6315,8 +6311,8 @@ describe('sandbox runner integration', () => {
 
   it('rebinds interrupted sandbox capability tools after resuming a closed preserved session', async () => {
     const client = new ClosedHandleSerializedResumeFakeSandboxClient();
-    const sandboxModel = new RecordingFakeModel([
-      {
+    const sandboxModel = new RecordingModel([
+      modelResponse({
         output: [
           {
             id: 'shell-approval-1',
@@ -6328,11 +6324,11 @@ describe('sandbox runner integration', () => {
           } satisfies protocol.FunctionCallItem,
         ],
         usage: new Usage(),
-      },
-      {
+      }),
+      modelResponse({
         output: [fakeModelMessage('sandbox done')],
         usage: new Usage(),
-      },
+      }),
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
@@ -6397,8 +6393,8 @@ describe('sandbox runner integration', () => {
     });
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [
             {
               id: 'approval-1',
@@ -6410,7 +6406,7 @@ describe('sandbox runner integration', () => {
             } as any,
           ],
           usage: new Usage(),
-        },
+        }),
       ]),
       tools: [approvalTool],
       toolUseBehavior: 'stop_on_first_tool',
@@ -6445,7 +6441,7 @@ describe('sandbox runner integration', () => {
   it('clears preserved sandbox state for non-sandbox interruption resumes without a client', async () => {
     const plainAgent = new Agent({
       name: 'PlainAgent',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     }) as Agent<unknown, AgentOutputType>;
     const state = new RunState<unknown, Agent<unknown, AgentOutputType>>(
       new RunContext(),
@@ -6513,12 +6509,12 @@ describe('sandbox runner integration', () => {
     const client = new FakeSandboxClient();
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({ root: '/workspace' }),
     });
     const plainAgent = new Agent({
       name: 'PlainAgent',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     }) as Agent<unknown, AgentOutputType>;
     const state = new RunState<unknown, Agent<unknown, AgentOutputType>>(
       new RunContext(),
@@ -6584,17 +6580,17 @@ describe('sandbox runner integration', () => {
     );
     const firstSandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'FirstSandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({ root: '/workspace' }),
     });
     const secondSandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'SecondSandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({ root: '/workspace' }),
     });
     const plainAgent = new Agent({
       name: 'PlainAgent',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     }) as Agent<unknown, AgentOutputType>;
     const state = new RunState<unknown, Agent<unknown, AgentOutputType>>(
       new RunContext(),
@@ -6679,12 +6675,12 @@ describe('sandbox runner integration', () => {
     const client = new FakeSandboxClient();
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({ root: '/workspace' }),
     });
     const plainAgent = new Agent({
       name: 'PlainAgent',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     }) as Agent<unknown, AgentOutputType>;
     const state = new RunState<unknown, Agent<unknown, AgentOutputType>>(
       new RunContext(),
@@ -6762,7 +6758,7 @@ describe('sandbox runner integration', () => {
     const client = new FakeSandboxClient();
     const plainAgent = new Agent({
       name: 'PlainAgent',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     }) as Agent<unknown, AgentOutputType>;
     const state = new RunState<unknown, Agent<unknown, AgentOutputType>>(
       new RunContext(),
@@ -6836,7 +6832,7 @@ describe('sandbox runner integration', () => {
   it('preserves sandbox state when interruption resume setup cannot adopt preserved sessions', async () => {
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({ root: '/workspace' }),
     });
     const state = new RunState<unknown, Agent<unknown, AgentOutputType>>(
@@ -6908,7 +6904,7 @@ describe('sandbox runner integration', () => {
     const client = new NonPersistentFakeSandboxClient();
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({ root: '/workspace' }),
     });
     const state = new RunState<unknown, Agent<unknown, AgentOutputType>>(
@@ -6990,8 +6986,8 @@ describe('sandbox runner integration', () => {
     });
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([
-        {
+      model: new RecordingModel([
+        modelResponse({
           output: [
             {
               id: 'approval-1',
@@ -7003,7 +6999,7 @@ describe('sandbox runner integration', () => {
             } as any,
           ],
           usage: new Usage(),
-        },
+        }),
       ]),
       tools: [approvalTool],
       defaultManifest: new Manifest({ root: '/workspace' }),
@@ -7136,7 +7132,7 @@ describe('sandbox runner integration', () => {
     const applyManifest = vi.fn();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({
         root: '/workspace',
         entries: {
@@ -7426,7 +7422,7 @@ describe('sandbox runner integration', () => {
       const applyManifest = vi.fn();
       const sandboxAgent = new SandboxAgent({
         name: 'SandboxWorker',
-        model: new RecordingFakeModel([]),
+        model: new RecordingModel([]),
         defaultManifest: manifest,
       });
       const providedSession: SandboxSessionLike<FakeSandboxSessionState> = {
@@ -7478,7 +7474,7 @@ describe('sandbox runner integration', () => {
     const applyManifest = vi.fn();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: manifest,
     });
     const providedSession: SandboxSessionLike<FakeSandboxSessionState> = {
@@ -7521,7 +7517,7 @@ describe('sandbox runner integration', () => {
     const applyManifest = vi.fn();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: manifest,
     });
     const providedSession: SandboxSessionLike<FakeSandboxSessionState> = {
@@ -7574,7 +7570,7 @@ describe('sandbox runner integration', () => {
     const applyManifest = vi.fn();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: trustedManifest,
     });
     const providedSession: SandboxSessionLike<FakeSandboxSessionState> = {
@@ -7639,7 +7635,7 @@ describe('sandbox runner integration', () => {
       const applyManifest = vi.fn();
       const sandboxAgent = new SandboxAgent({
         name: 'SandboxWorker',
-        model: new RecordingFakeModel([]),
+        model: new RecordingModel([]),
         defaultManifest: manifest,
       });
       const providedSession: SandboxSessionLike<FakeSandboxSessionState> = {
@@ -7673,7 +7669,7 @@ describe('sandbox runner integration', () => {
   it('bases implicit provided-session manifests on the live session root', async () => {
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       capabilities: [new ManifestFileCapability()],
     });
     const state: FakeSandboxSessionState = {
@@ -7722,7 +7718,7 @@ describe('sandbox runner integration', () => {
   it('applies metadata-only manifest deltas to provided sessions', async () => {
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({
         root: '/workspace',
         extraPathGrants: [{ path: '/tmp/data', readOnly: true }],
@@ -7775,7 +7771,7 @@ describe('sandbox runner integration', () => {
   it('applies missing nested manifest entries to a provided session', async () => {
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({
         root: '/workspace',
         entries: {
@@ -7845,7 +7841,7 @@ describe('sandbox runner integration', () => {
     const applyManifest = vi.fn();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({
         root: '/workspace',
         entries: {
@@ -7906,7 +7902,7 @@ describe('sandbox runner integration', () => {
     const materializeEntry = vi.fn();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({
         root: '/workspace',
         entries: {
@@ -7977,7 +7973,7 @@ describe('sandbox runner integration', () => {
     const applyManifest = vi.fn();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: new Manifest({
         root: '/workspace',
         environment: {
@@ -8050,7 +8046,7 @@ describe('sandbox runner integration', () => {
     });
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -8133,7 +8129,7 @@ describe('sandbox runner integration', () => {
     const manifest = new Manifest();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -8192,7 +8188,7 @@ describe('sandbox runner integration', () => {
     }).withInContainerMountCredentialExposureAcknowledged('remote');
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -8258,7 +8254,7 @@ describe('sandbox runner integration', () => {
     }).withInContainerMountCredentialExposureAcknowledged('remote');
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -8335,12 +8331,12 @@ describe('sandbox runner integration', () => {
       }).withInContainerMountCredentialExposureAcknowledged('remote');
       const firstAgent = new SandboxAgent({
         name: 'SandboxWorker',
-        model: new RecordingFakeModel([]),
+        model: new RecordingModel([]),
         defaultManifest: trustedManifest,
       });
       const secondAgent = new SandboxAgent({
         name: 'SandboxReviewer',
-        model: new RecordingFakeModel([]),
+        model: new RecordingModel([]),
         defaultManifest: trustedManifest,
       });
       const state = new RunState<unknown, Agent<unknown, any>>(
@@ -8473,7 +8469,7 @@ describe('sandbox runner integration', () => {
       }).withInContainerMountCredentialExposureAcknowledged('remote');
       const sandboxAgent = new SandboxAgent({
         name: 'SandboxWorker',
-        model: new RecordingFakeModel([]),
+        model: new RecordingModel([]),
       });
       const state = new RunState<unknown, Agent<unknown, any>>(
         new RunContext(),
@@ -8579,7 +8575,7 @@ describe('sandbox runner integration', () => {
     });
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -8695,7 +8691,7 @@ describe('sandbox runner integration', () => {
     }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -8758,7 +8754,7 @@ describe('sandbox runner integration', () => {
     }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -8809,7 +8805,7 @@ describe('sandbox runner integration', () => {
     });
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -8865,7 +8861,7 @@ describe('sandbox runner integration', () => {
     const client = new RevalidatingLiveProcessFakeSandboxClient([true, false]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -8929,7 +8925,7 @@ describe('sandbox runner integration', () => {
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -9032,7 +9028,7 @@ describe('sandbox runner integration', () => {
     const client = new DockerRejectingManifestEntriesFakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -9104,7 +9100,7 @@ describe('sandbox runner integration', () => {
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -9172,7 +9168,7 @@ describe('sandbox runner integration', () => {
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -9231,7 +9227,7 @@ describe('sandbox runner integration', () => {
     const client = new FailingBeforeLiveCleanupFakeSandboxClient(2);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -9297,7 +9293,7 @@ describe('sandbox runner integration', () => {
     ]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -9341,7 +9337,7 @@ describe('sandbox runner integration', () => {
     const client = new FailingLiveCleanupFakeSandboxClient([true, true, true]);
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -9412,7 +9408,7 @@ describe('sandbox runner integration', () => {
     (client as unknown as { resume?: undefined }).resume = undefined;
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -9464,7 +9460,7 @@ describe('sandbox runner integration', () => {
     const client = new RecoverableCloseFakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -9507,11 +9503,11 @@ describe('sandbox runner integration', () => {
     const client = new DelayedSelectiveCloseFailureFakeSandboxClient();
     const firstSandboxAgent = new SandboxAgent({
       name: 'FirstSandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const secondSandboxAgent = new SandboxAgent({
       name: 'SecondSandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -9570,7 +9566,7 @@ describe('sandbox runner integration', () => {
     client.shouldFailClose = false;
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -9622,7 +9618,7 @@ describe('sandbox runner integration', () => {
     const client = new SerializedShutdownOnlyFakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -9660,7 +9656,7 @@ describe('sandbox runner integration', () => {
     const client = new SerializedResumeFakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -9732,7 +9728,7 @@ describe('sandbox runner integration', () => {
     }).withInContainerMountCredentialExposureAcknowledged('remote');
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: manifest,
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
@@ -9787,7 +9783,7 @@ describe('sandbox runner integration', () => {
     }).withInContainerMountCredentialExposureAcknowledged('remote');
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
       defaultManifest: manifest,
     });
     const manager = new SandboxRuntimeManager({
@@ -9817,7 +9813,7 @@ describe('sandbox runner integration', () => {
     }).withInContainerMountCredentialExposureAcknowledged('remote');
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -9884,7 +9880,7 @@ describe('sandbox runner integration', () => {
     const client = new SerializedResumeFakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -9930,7 +9926,7 @@ describe('sandbox runner integration', () => {
     const client = new SerializedResumeFakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -10012,7 +10008,7 @@ describe('sandbox runner integration', () => {
     );
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),
@@ -10062,7 +10058,7 @@ describe('sandbox runner integration', () => {
       }
       const sandboxAgent = new SandboxAgent({
         name: 'SandboxWorker',
-        model: new RecordingFakeModel([]),
+        model: new RecordingModel([]),
       });
       const state = new RunState<unknown, Agent<unknown, any>>(
         new RunContext(),
@@ -10122,7 +10118,7 @@ describe('sandbox runner integration', () => {
     const client = new NonPersistentFakeSandboxClient();
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
-      model: new RecordingFakeModel([]),
+      model: new RecordingModel([]),
     });
     const state = new RunState<unknown, Agent<unknown, any>>(
       new RunContext(),

@@ -3,11 +3,12 @@ import { Agent, run, setDefaultModelProvider } from '../src';
 import { mcpToFunctionTool } from '../src/mcp';
 import { NodeMCPServerStdio } from '../src/shims/mcp-server/node';
 import { createMCPToolStaticFilter } from '../src/mcpUtil';
-import { FakeModel, FakeModelProvider } from './stubs';
+import { ScriptedModelProvider } from './stubs';
 import { Usage } from '../src/usage';
 import type { ModelResponse } from '../src';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { ScriptedModel, modelResponse } from '../src/testing';
 
 class StubFilesystemServer extends NodeMCPServerStdio {
   private dir: string;
@@ -86,7 +87,7 @@ class StubFilesystemServer extends NodeMCPServerStdio {
 
 describe('MCP tool filter integration', () => {
   beforeAll(() => {
-    setDefaultModelProvider(new FakeModelProvider());
+    setDefaultModelProvider(new ScriptedModelProvider());
   });
   const samplesDir = path.join(__dirname, '../../../examples/mcp/sample_files');
   const filter = createMCPToolStaticFilter({
@@ -115,7 +116,7 @@ describe('MCP tool filter integration', () => {
     const agent = new Agent({
       name: 'Lister',
       toolUseBehavior: 'stop_on_first_tool',
-      model: new FakeModel(modelResponses),
+      model: new ScriptedModel(Array.from(modelResponses, modelResponse)),
       tools,
     });
     const result = await run(agent, 'List files');
@@ -142,7 +143,7 @@ describe('MCP tool filter integration', () => {
     const agent = new Agent({
       name: 'Writer',
       toolUseBehavior: 'stop_on_first_tool',
-      model: new FakeModel(modelResponses),
+      model: new ScriptedModel(Array.from(modelResponses, modelResponse)),
       tools,
     });
     const result = await run(agent, 'write');

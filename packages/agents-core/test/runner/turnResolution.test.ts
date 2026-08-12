@@ -36,7 +36,7 @@ import {
 import { Usage } from '../../src/usage';
 import {
   FakeEditor,
-  FakeModelProvider,
+  ScriptedModelProvider,
   FakeShell,
   TEST_AGENT,
   TEST_MODEL_RESPONSE_BASIC,
@@ -52,7 +52,7 @@ import type { UnknownContext } from '../../src/types';
 
 beforeAll(() => {
   setTracingDisabled(true);
-  setDefaultModelProvider(new FakeModelProvider());
+  setDefaultModelProvider(new ScriptedModelProvider());
 });
 
 describe('resolveTurnAfterModelResponse', () => {
@@ -60,7 +60,7 @@ describe('resolveTurnAfterModelResponse', () => {
   let state: RunState<any, any>;
 
   beforeAll(() => {
-    setDefaultModelProvider(new FakeModelProvider());
+    setDefaultModelProvider(new ScriptedModelProvider());
   });
 
   beforeEach(() => {

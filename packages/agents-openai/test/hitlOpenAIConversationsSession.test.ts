@@ -3,17 +3,15 @@ import { z } from 'zod';
 
 import {
   Agent,
-  type Model,
   type ModelRequest,
-  type ModelResponse,
   type ModelProvider,
-  type ResponseStreamEvent,
   Usage,
   protocol,
   run,
   setDefaultModelProvider,
   tool,
 } from '@openai/agents-core';
+import { ScriptedModel, modelResponder } from '@openai/agents-core/testing';
 
 import { OpenAIConversationsSession } from '../src';
 
@@ -60,45 +58,38 @@ type ScenarioStep = {
   expectedOutput: string;
 };
 
-class ScenarioModel implements Model {
-  #counter = 0;
+function createScenarioModel(): ScriptedModel {
+  return new ScriptedModel(
+    USER_MESSAGES.map(() =>
+      modelResponder((call) => {
+        const request = call.request;
+        const toolName =
+          typeof request.modelSettings.toolChoice === 'string'
+            ? request.modelSettings.toolChoice
+            : TOOL_ECHO;
+        const callId = `call_${call.index}`;
+        const query = extractUserMessage(request.input);
+        const toolCall: protocol.FunctionCallItem = {
+          id: `fc_${callId}`,
+          type: 'function_call',
+          name: toolName,
+          callId,
+          status: 'completed',
+          arguments: JSON.stringify({ query }),
+          providerData: {},
+        };
 
-  async getResponse(request: ModelRequest): Promise<ModelResponse> {
-    const toolName =
-      typeof request.modelSettings.toolChoice === 'string'
-        ? request.modelSettings.toolChoice
-        : TOOL_ECHO;
-    const callId = `call_${(this.#counter += 1)}`;
-    const query = extractUserMessage(request.input);
-    const toolCall: protocol.FunctionCallItem = {
-      id: `fc_${callId}`,
-      type: 'function_call',
-      name: toolName,
-      callId,
-      status: 'completed',
-      arguments: JSON.stringify({ query }),
-      providerData: {},
-    };
-
-    return {
-      usage: new Usage(),
-      output: [toolCall],
-    };
-  }
-
-  // eslint-disable-next-line require-yield -- this scenario does not stream.
-  async *getStreamedResponse(
-    _request: ModelRequest,
-  ): AsyncIterable<ResponseStreamEvent> {
-    throw new Error('Streaming is not supported in this scenario.');
-  }
+        return { usage: new Usage(), output: [toolCall] };
+      }),
+    ),
+  );
 }
 
 describe('OpenAIConversationsSession HITL scenario', () => {
   beforeAll(() => {
     const provider: ModelProvider = {
       getModel() {
-        return new ScenarioModel();
+        return createScenarioModel();
       },
     };
     setDefaultModelProvider(provider);
@@ -139,7 +130,7 @@ describe('OpenAIConversationsSession HITL scenario', () => {
       client,
     });
 
-    const model = new ScenarioModel();
+    const model = createScenarioModel();
     const steps: ScenarioStep[] = [
       {
         label: 'turn 1',
@@ -186,7 +177,7 @@ describe('OpenAIConversationsSession HITL scenario', () => {
 
 async function runScenarioStep(
   session: OpenAIConversationsSession,
-  model: ScenarioModel,
+  model: ScriptedModel,
   step: ScenarioStep,
 ): Promise<{ approvalItem: protocol.FunctionCallItem }> {
   const agent = new Agent({

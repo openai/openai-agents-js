@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { Agent } from '../src/agent';
-import type { Model, ModelRequest, ModelResponse } from '../src/model';
+import type { ModelRequest, ModelResponse } from '../src/model';
 import { Runner } from '../src/run';
 import {
   CURRENT_SCHEMA_VERSION,
@@ -15,6 +15,7 @@ import {
 import { setDefaultModelProvider } from '../src/providers';
 import { tool } from '../src/tool';
 import { Usage } from '../src/usage';
+import { ScriptedModel, modelResponse } from '../src/testing';
 
 type FixtureRecord = {
   scenario: string;
@@ -65,23 +66,15 @@ const fixtureRoot = join(
 );
 const manifest = readJson<CorpusManifest>('sources.json');
 
-class QueueModel implements Model {
-  readonly requests: ModelRequest[] = [];
-
-  constructor(private readonly outputs: ModelResponse['output'][]) {}
-
-  async getResponse(request: ModelRequest): Promise<ModelResponse> {
-    this.requests.push(request);
-    const output = this.outputs.shift();
-    if (!output) {
-      throw new Error('No queued compatibility-test model output.');
-    }
-    return { output, usage: new Usage() };
+class QueueModel extends ScriptedModel {
+  constructor(outputs: ModelResponse['output'][]) {
+    super(
+      outputs.map((output) => modelResponse({ output, usage: new Usage() })),
+    );
   }
 
-  async *getStreamedResponse(): AsyncIterable<never> {
-    yield* [];
-    throw new Error('Compatibility tests do not stream.');
+  get requests(): readonly Readonly<ModelRequest>[] {
+    return this.calls.map((call) => call.request);
   }
 }
 
@@ -301,18 +294,13 @@ describe('historical RunState compatibility corpus', () => {
   it.each(manifest.negativeFixtures.filter((fixture) => fixture.expectedError))(
     'rejects negative fixture $scenario before side effects',
     async (fixture) => {
-      let modelCalls = 0;
       let toolCalls = 0;
-      const model: Model = {
-        async getResponse() {
-          modelCalls += 1;
-          return { output: [message('unexpected')], usage: new Usage() };
-        },
-        async *getStreamedResponse() {
-          yield* [];
-          throw new Error('Compatibility tests do not stream.');
-        },
-      };
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [message('unexpected')],
+          usage: new Usage(),
+        }),
+      ]);
       const agent = new Agent({
         name: 'HistoricalAgent',
         model,
@@ -332,7 +320,7 @@ describe('historical RunState compatibility corpus', () => {
       await expect(
         RunState.fromString(agent, readFixture(fixture.path)),
       ).rejects.toThrow(fixture.expectedError);
-      expect(modelCalls).toBe(0);
+      expect(model.calls).toHaveLength(0);
       expect(toolCalls).toBe(0);
     },
   );

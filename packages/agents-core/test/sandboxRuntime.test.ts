@@ -18,6 +18,7 @@ import { applyManifestToProvidedSession } from '../src/sandbox/runtime/providedS
 import { renderRemoteMountPolicyInstructions } from '../src/sandbox/runtime/prompts';
 import { DockerSandboxSession } from '../src/sandbox/sandboxes/docker';
 import { mergeManifestDelta } from '../src/sandbox/internal';
+import { ScriptedModel } from '../src/testing';
 
 class TestCapability extends Capability {
   public readonly type: string;
@@ -79,25 +80,9 @@ class StubEditor implements Editor {
   }
 }
 
-class OpenAIChatCompletionsModel {
-  async getResponse() {
-    throw new Error('not used');
-  }
+class OpenAIChatCompletionsModel extends ScriptedModel {}
 
-  async *getStreamedResponse() {
-    yield* [];
-  }
-}
-
-class OpenAIResponsesModel {
-  async getResponse() {
-    throw new Error('not used');
-  }
-
-  async *getStreamedResponse() {
-    yield* [];
-  }
-}
+class OpenAIResponsesModel extends ScriptedModel {}
 
 function sessionWithManifest(manifest: Manifest): SandboxSessionLike {
   return {

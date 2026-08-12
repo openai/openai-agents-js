@@ -26,13 +26,8 @@ import {
 import { getFunctionToolStateKey } from '../src/toolIdentity';
 import type * as protocol from '../src/types/protocol';
 import { Usage } from '../src/usage';
-import {
-  FakeComputer,
-  FakeEditor,
-  FakeModel,
-  FakeShell,
-  fakeModelMessage,
-} from './stubs';
+import { FakeComputer, FakeEditor, FakeShell, fakeModelMessage } from './stubs';
+import { ScriptedModel, modelResponse } from '../src/testing';
 
 function response(output: protocol.ModelItem[]): ModelResponse {
   return { output, usage: new Usage() };
@@ -447,14 +442,16 @@ describe('tool invocation replay binding', () => {
         ...functionCall('numeric-execution-call', localTool.name, {}),
         arguments: `{"n":${first}}`,
       };
-      const model = new FakeModel([
-        response([firstCall]),
-        response([
-          {
-            ...firstCall,
-            arguments: `{"n":${changed}}`,
-          },
-        ]),
+      const model = new ScriptedModel([
+        modelResponse(response([firstCall])),
+        modelResponse(
+          response([
+            {
+              ...firstCall,
+              arguments: `{"n":${changed}}`,
+            },
+          ]),
+        ),
       ]);
       const agent = new Agent({
         name: 'NumericExecutionAgent',
@@ -482,18 +479,20 @@ describe('tool invocation replay binding', () => {
       ...functionCall('program-owned-call', localTool.name, { value: 'safe' }),
       caller: { type: 'program', callerId: 'program-call-a' },
     };
-    const model = new FakeModel([
-      response([firstCall]),
-      response([firstCall]),
-      response([
-        {
-          ...firstCall,
-          caller: {
-            type: 'program' as const,
-            callerId: 'program-call-b',
+    const model = new ScriptedModel([
+      modelResponse(response([firstCall])),
+      modelResponse(response([firstCall])),
+      modelResponse(
+        response([
+          {
+            ...firstCall,
+            caller: {
+              type: 'program' as const,
+              callerId: 'program-call-b',
+            },
           },
-        },
-      ]),
+        ]),
+      ),
     ]);
     const agent = new Agent({
       name: 'ProgramOwnedExecutionAgent',
@@ -515,11 +514,13 @@ describe('tool invocation replay binding', () => {
       parameters: z.object({ value: z.string() }),
       execute,
     });
-    const model = new FakeModel([
-      response([
-        functionCall('', localTool.name, { value: 'first' }),
-        functionCall('', localTool.name, { value: 'changed' }),
-      ]),
+    const model = new ScriptedModel([
+      modelResponse(
+        response([
+          functionCall('', localTool.name, { value: 'first' }),
+          functionCall('', localTool.name, { value: 'changed' }),
+        ]),
+      ),
     ]);
     const agent = new Agent({
       name: 'EmptyCallIdAgent',
@@ -582,12 +583,16 @@ describe('tool invocation replay binding', () => {
       execute: siblingExecute,
     });
     const callId = 'reused-arguments';
-    const model = new FakeModel([
-      response([functionCall(callId, approvedTool.name, { value: 'safe' })]),
-      response([
-        functionCall(callId, approvedTool.name, { value: 'changed' }),
-        functionCall('sibling-call', siblingTool.name, {}),
-      ]),
+    const model = new ScriptedModel([
+      modelResponse(
+        response([functionCall(callId, approvedTool.name, { value: 'safe' })]),
+      ),
+      modelResponse(
+        response([
+          functionCall(callId, approvedTool.name, { value: 'changed' }),
+          functionCall('sibling-call', siblingTool.name, {}),
+        ]),
+      ),
     ]);
     const agent = new Agent({
       name: 'ChangedArgumentsAgent',
@@ -634,20 +639,24 @@ describe('tool invocation replay binding', () => {
       toolSearchExecute,
     );
     const callId = 'tool-search-preflight-call';
-    const model = new FakeModel([
-      response([
-        functionCall(callId, approvedTool.name, { value: 'approved' }),
-      ]),
-      response([
-        functionCall(callId, approvedTool.name, { value: 'changed' }),
-        {
-          type: 'tool_search_call',
-          id: 'tool-search-preflight-item',
-          status: 'completed',
-          arguments: {},
-          providerData: { call_id: 'tool-search-preflight-search' },
-        } as protocol.ToolSearchCallItem,
-      ]),
+    const model = new ScriptedModel([
+      modelResponse(
+        response([
+          functionCall(callId, approvedTool.name, { value: 'approved' }),
+        ]),
+      ),
+      modelResponse(
+        response([
+          functionCall(callId, approvedTool.name, { value: 'changed' }),
+          {
+            type: 'tool_search_call',
+            id: 'tool-search-preflight-item',
+            status: 'completed',
+            arguments: {},
+            providerData: { call_id: 'tool-search-preflight-search' },
+          } as protocol.ToolSearchCallItem,
+        ]),
+      ),
     ]);
     const agent = new Agent({
       name: 'ToolSearchPreflightAgent',
@@ -682,9 +691,9 @@ describe('tool invocation replay binding', () => {
       execute: secondExecute,
     });
     const callId = 'reused-tool';
-    const model = new FakeModel([
-      response([functionCall(callId, firstTool.name, {})]),
-      response([functionCall(callId, secondTool.name, {})]),
+    const model = new ScriptedModel([
+      modelResponse(response([functionCall(callId, firstTool.name, {})])),
+      modelResponse(response([functionCall(callId, secondTool.name, {})])),
     ]);
     const agent = new Agent({
       name: 'ChangedToolAgent',
@@ -713,11 +722,17 @@ describe('tool invocation replay binding', () => {
       execute,
     });
     const callId = 'reused-rejection';
-    const model = new FakeModel([
-      response([
-        functionCall(callId, rejectedTool.name, { value: 'rejected' }),
-      ]),
-      response([functionCall(callId, rejectedTool.name, { value: 'changed' })]),
+    const model = new ScriptedModel([
+      modelResponse(
+        response([
+          functionCall(callId, rejectedTool.name, { value: 'rejected' }),
+        ]),
+      ),
+      modelResponse(
+        response([
+          functionCall(callId, rejectedTool.name, { value: 'changed' }),
+        ]),
+      ),
     ]);
     const agent = new Agent({
       name: 'ChangedRejectionAgent',
@@ -745,14 +760,18 @@ describe('tool invocation replay binding', () => {
       execute,
     });
     const callId = 'exact-replay';
-    const model = new FakeModel([
-      response([
-        functionCall(callId, approvalTool.name, { first: 1, second: 2 }),
-      ]),
-      response([
-        functionCall(callId, approvalTool.name, { second: 2, first: 1 }),
-      ]),
-      response([fakeModelMessage('done')]),
+    const model = new ScriptedModel([
+      modelResponse(
+        response([
+          functionCall(callId, approvalTool.name, { first: 1, second: 2 }),
+        ]),
+      ),
+      modelResponse(
+        response([
+          functionCall(callId, approvalTool.name, { second: 2, first: 1 }),
+        ]),
+      ),
+      modelResponse(response([fakeModelMessage('done')])),
     ]);
     const agent = new Agent({
       name: 'ExactReplayAgent',
@@ -785,17 +804,23 @@ describe('tool invocation replay binding', () => {
       });
       const firstCallId = 'serialized-first';
       const secondCallId = 'serialized-second';
-      const model = new FakeModel([
-        response([
-          functionCall(firstCallId, approvalTool.name, { value: 'first' }),
-        ]),
-        response([
-          functionCall(secondCallId, approvalTool.name, { value: 'second' }),
-        ]),
-        response([
-          functionCall(firstCallId, approvalTool.name, { value: 'first' }),
-        ]),
-        response([fakeModelMessage('done')]),
+      const model = new ScriptedModel([
+        modelResponse(
+          response([
+            functionCall(firstCallId, approvalTool.name, { value: 'first' }),
+          ]),
+        ),
+        modelResponse(
+          response([
+            functionCall(secondCallId, approvalTool.name, { value: 'second' }),
+          ]),
+        ),
+        modelResponse(
+          response([
+            functionCall(firstCallId, approvalTool.name, { value: 'first' }),
+          ]),
+        ),
+        modelResponse(response([fakeModelMessage('done')])),
       ]);
       const agent = new Agent({
         name: 'SerializedReplayAgent',
@@ -859,11 +884,15 @@ describe('tool invocation replay binding', () => {
       execute: async () => 'unused',
     });
     const completedCallId = 'tampered-completed-call';
-    const model = new FakeModel([
-      response([
-        functionCall(completedCallId, executedTool.name, { value: 'once' }),
-      ]),
-      response([functionCall('tampered-pause', pauseTool.name, {})]),
+    const model = new ScriptedModel([
+      modelResponse(
+        response([
+          functionCall(completedCallId, executedTool.name, { value: 'once' }),
+        ]),
+      ),
+      modelResponse(
+        response([functionCall('tampered-pause', pauseTool.name, {})]),
+      ),
     ]);
     const agent = new Agent({
       name: 'TamperedCompletionAgent',
@@ -1212,10 +1241,12 @@ describe('tool invocation replay binding', () => {
     });
     const targetAgent = new Agent({
       name: 'FilteredCompletionTarget',
-      model: new FakeModel([
-        response([
-          functionCall('filtered-completion-pause', pauseTool.name, {}),
-        ]),
+      model: new ScriptedModel([
+        modelResponse(
+          response([
+            functionCall('filtered-completion-pause', pauseTool.name, {}),
+          ]),
+        ),
       ]),
       tools: [pauseTool],
     });
@@ -1227,11 +1258,13 @@ describe('tool invocation replay binding', () => {
     });
     const sourceAgent = new Agent({
       name: 'FilteredCompletionSource',
-      model: new FakeModel([
-        response([
-          completedCall,
-          functionCall('filtered-completion-handoff', transfer.toolName, {}),
-        ]),
+      model: new ScriptedModel([
+        modelResponse(
+          response([
+            completedCall,
+            functionCall('filtered-completion-handoff', transfer.toolName, {}),
+          ]),
+        ),
       ]),
       tools: [executedTool],
       handoffs: [transfer],
@@ -1274,9 +1307,9 @@ describe('tool invocation replay binding', () => {
     const shell = new FakeShell();
     const localShell = shellTool({ shell, needsApproval: true });
     const callId = 'reused-shell';
-    const model = new FakeModel([
-      response([shellCall(callId, ['echo safe'])]),
-      response([shellCall(callId, ['echo changed'])]),
+    const model = new ScriptedModel([
+      modelResponse(response([shellCall(callId, ['echo safe'])])),
+      modelResponse(response([shellCall(callId, ['echo changed'])])),
     ]);
     const agent = new Agent({
       name: 'ChangedShellAgent',
@@ -1305,11 +1338,11 @@ describe('tool invocation replay binding', () => {
       execute: async () => 'approved',
     });
     const shellCallId = 'legacy-shell';
-    const model = new FakeModel([
-      response([shellCall(shellCallId, ['echo once'])]),
-      response([functionCall('pause-call', pauseTool.name, {})]),
-      response([shellCall(shellCallId, ['echo once'])]),
-      response([fakeModelMessage('done')]),
+    const model = new ScriptedModel([
+      modelResponse(response([shellCall(shellCallId, ['echo once'])])),
+      modelResponse(response([functionCall('pause-call', pauseTool.name, {})])),
+      modelResponse(response([shellCall(shellCallId, ['echo once'])])),
+      modelResponse(response([fakeModelMessage('done')])),
     ]);
     const agent = new Agent({
       name: 'LegacyShellReplayAgent',
@@ -1413,11 +1446,13 @@ describe('tool invocation replay binding', () => {
       execute: async () => 'approved',
     });
     const callId = 'legacy-computer';
-    const model = new FakeModel([
-      response([computerCall(callId)]),
-      response([functionCall('pause-computer', pauseTool.name, {})]),
-      response([computerCall(callId)]),
-      response([fakeModelMessage('done')]),
+    const model = new ScriptedModel([
+      modelResponse(response([computerCall(callId)])),
+      modelResponse(
+        response([functionCall('pause-computer', pauseTool.name, {})]),
+      ),
+      modelResponse(response([computerCall(callId)])),
+      modelResponse(response([fakeModelMessage('done')])),
     ]);
     const agent = new Agent({
       name: 'LegacyComputerReplayAgent',
@@ -1455,11 +1490,13 @@ describe('tool invocation replay binding', () => {
       execute: async () => 'approved',
     });
     const callId = 'legacy-apply-patch';
-    const model = new FakeModel([
-      response([applyPatchCall(callId)]),
-      response([functionCall('pause-patch', pauseTool.name, {})]),
-      response([applyPatchCall(callId)]),
-      response([fakeModelMessage('done')]),
+    const model = new ScriptedModel([
+      modelResponse(response([applyPatchCall(callId)])),
+      modelResponse(
+        response([functionCall('pause-patch', pauseTool.name, {})]),
+      ),
+      modelResponse(response([applyPatchCall(callId)])),
+      modelResponse(response([fakeModelMessage('done')])),
     ]);
     const agent = new Agent({
       name: 'LegacyApplyPatchReplayAgent',

@@ -17,7 +17,15 @@ import type {
 } from '../src/model';
 import type { StreamEvent } from '../src/types/protocol';
 import { RequestUsage, Usage } from '../src/usage';
-import { fakeModelMessage, FakeModelProvider } from './stubs';
+import {
+  ScriptedModel,
+  modelError,
+  modelResponder,
+  modelResponse,
+  modelStream,
+  modelStreamResponder,
+} from '../src/testing';
+import { fakeModelMessage, ScriptedModelProvider } from './stubs';
 
 function createDoneEvent(text: string): StreamEvent {
   return {
@@ -30,32 +38,28 @@ function createDoneEvent(text: string): StreamEvent {
   };
 }
 
+function errorWith<T extends Record<string, unknown>>(
+  message: string,
+  properties: T,
+): Error & T {
+  return Object.assign(new Error(message), properties);
+}
+
+function textResponse(text: string, usage = new Usage({ requests: 1 })) {
+  return modelResponse({ usage, output: [fakeModelMessage(text)] });
+}
+
 beforeAll(() => {
   setTracingDisabled(true);
-  setDefaultModelProvider(new FakeModelProvider());
+  setDefaultModelProvider(new ScriptedModelProvider());
 });
 
 describe('retry policies', () => {
   it('retries non-streaming requests only when the user policy opts in', async () => {
-    let attempts = 0;
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        if (attempts === 1) {
-          const error = new Error('Rate limited');
-          (error as Error & { statusCode?: number }).statusCode = 429;
-          throw error;
-        }
-
-        return {
-          usage: new Usage({ requests: 1 }),
-          output: [fakeModelMessage('Recovered')],
-        };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(errorWith('Rate limited', { statusCode: 429 })),
+      textResponse('Recovered'),
+    ]);
 
     const agent = new Agent({
       name: 'RetryingAgent',
@@ -75,34 +79,26 @@ describe('retry policies', () => {
     const result = await run(agent, 'hello');
 
     expect(result.finalOutput).toBe('Recovered');
-    expect(attempts).toBe(2);
+    expect(model.calls).toHaveLength(2);
     expect(result.state.usage.requests).toBe(2);
     expect(result.rawResponses[0]?.usage.requests).toBe(2);
   });
 
   it('preserves provider-managed retries on the first runner attempt and disables them on replay', async () => {
     const seenRunnerManagedRetry: Array<boolean | undefined> = [];
-    let attempts = 0;
-
-    const model: Model = {
-      async getResponse(request: ModelRequest) {
-        attempts += 1;
-        seenRunnerManagedRetry.push(request._internal?.runnerManagedRetry);
-        if (attempts === 1) {
-          const error = new Error('Rate limited');
-          (error as Error & { statusCode?: number }).statusCode = 429;
-          throw error;
-        }
-
+    const model = new ScriptedModel([
+      modelResponder((call) => {
+        seenRunnerManagedRetry.push(call.request._internal?.runnerManagedRetry);
+        throw errorWith('Rate limited', { statusCode: 429 });
+      }),
+      modelResponder((call) => {
+        seenRunnerManagedRetry.push(call.request._internal?.runnerManagedRetry);
         return {
           usage: new Usage({ requests: 1 }),
           output: [fakeModelMessage('Recovered')],
         };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+      }),
+    ]);
 
     const agent = new Agent({
       name: 'ProviderRetryOwnershipAgent',
@@ -125,18 +121,15 @@ describe('retry policies', () => {
   it('preserves provider-managed retries on the first stateful attempt', async () => {
     const seenRunnerManagedRetry: Array<boolean | undefined> = [];
 
-    const model: Model = {
-      async getResponse(request: ModelRequest) {
-        seenRunnerManagedRetry.push(request._internal?.runnerManagedRetry);
+    const model = new ScriptedModel([
+      modelResponder((call) => {
+        seenRunnerManagedRetry.push(call.request._internal?.runnerManagedRetry);
         return {
           usage: new Usage({ requests: 1 }),
           output: [fakeModelMessage('ok')],
         };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+      }),
+    ]);
 
     const result = await run(
       new Agent({
@@ -161,18 +154,9 @@ describe('retry policies', () => {
   });
 
   it('does not retry without a retry policy even when maxRetries is configured', async () => {
-    let attempts = 0;
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        const error = new Error('Rate limited');
-        (error as Error & { statusCode?: number }).statusCode = 429;
-        throw error;
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(errorWith('Rate limited', { statusCode: 429 })),
+    ]);
 
     const agent = new Agent({
       name: 'NoPolicyAgent',
@@ -185,23 +169,20 @@ describe('retry policies', () => {
     });
 
     await expect(run(agent, 'hello')).rejects.toThrow('Rate limited');
-    expect(attempts).toBe(1);
+    expect(model.calls).toHaveLength(1);
   });
 
   it('preserves provider-managed retry metadata on the first attempt when maxRetries is set without a policy', async () => {
     const seenRequests: ModelRequest[] = [];
-    const model: Model = {
-      async getResponse(request) {
-        seenRequests.push(request);
+    const model = new ScriptedModel([
+      modelResponder((call) => {
+        seenRequests.push(call.request as ModelRequest);
         return {
           usage: new Usage({ requests: 1 }),
           output: [fakeModelMessage('ok')],
         };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+      }),
+    ]);
 
     const result = await run(
       new Agent({
@@ -223,18 +204,15 @@ describe('retry policies', () => {
 
   it('preserves provider-managed retry metadata on the first attempt when maxRetries is zero', async () => {
     const seenRequests: ModelRequest[] = [];
-    const model: Model = {
-      async getResponse(request) {
-        seenRequests.push(request);
+    const model = new ScriptedModel([
+      modelResponder((call) => {
+        seenRequests.push(call.request as ModelRequest);
         return {
           usage: new Usage({ requests: 1 }),
           output: [fakeModelMessage('ok')],
         };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+      }),
+    ]);
 
     const result = await run(
       new Agent({
@@ -256,38 +234,26 @@ describe('retry policies', () => {
   });
 
   it('preserves per-request usage entries when a retried request succeeds', async () => {
-    let attempts = 0;
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        if (attempts === 1) {
-          const error = new Error('Rate limited');
-          (error as Error & { statusCode?: number }).statusCode = 429;
-          throw error;
-        }
-
-        return {
-          usage: new Usage({
-            requests: 1,
-            inputTokens: 11,
-            outputTokens: 7,
-            totalTokens: 18,
-            requestUsageEntries: [
-              new RequestUsage({
-                inputTokens: 11,
-                outputTokens: 7,
-                totalTokens: 18,
-                endpoint: 'responses.create',
-              }),
-            ],
-          }),
-          output: [fakeModelMessage('Recovered with usage entries')],
-        };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(errorWith('Rate limited', { statusCode: 429 })),
+      modelResponse({
+        usage: new Usage({
+          requests: 1,
+          inputTokens: 11,
+          outputTokens: 7,
+          totalTokens: 18,
+          requestUsageEntries: [
+            new RequestUsage({
+              inputTokens: 11,
+              outputTokens: 7,
+              totalTokens: 18,
+              endpoint: 'responses.create',
+            }),
+          ],
+        }),
+        output: [fakeModelMessage('Recovered with usage entries')],
+      }),
+    ]);
 
     const result = await run(
       new Agent({
@@ -304,7 +270,7 @@ describe('retry policies', () => {
       'hello',
     );
 
-    expect(attempts).toBe(2);
+    expect(model.calls).toHaveLength(2);
     expect(result.state.usage.requests).toBe(2);
     expect(result.state.usage.requestUsageEntries).toEqual([
       {
@@ -345,22 +311,10 @@ describe('retry policies', () => {
   });
 
   it('honors explicit retry decisions that set delayMs', async () => {
-    let attempts = 0;
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        if (attempts === 1) {
-          throw new Error('Retry me');
-        }
-        return {
-          usage: new Usage({ requests: 1 }),
-          output: [fakeModelMessage('Recovered with explicit delay')],
-        };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(new Error('Retry me')),
+      textResponse('Recovered with explicit delay'),
+    ]);
     const policy = vi.fn().mockResolvedValue({ retry: true, delayMs: 0 });
 
     const agent = new Agent({
@@ -377,24 +331,17 @@ describe('retry policies', () => {
     const result = await run(agent, 'hello');
 
     expect(result.finalOutput).toBe('Recovered with explicit delay');
-    expect(attempts).toBe(2);
+    expect(model.calls).toHaveLength(2);
     expect(policy).toHaveBeenCalledTimes(1);
   });
 
   it('retries until maxRetries is exhausted, then throws the last error', async () => {
-    let attempts = 0;
     const policy = vi.fn().mockReturnValue(true);
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        const error = new Error(`failure ${attempts}`);
-        (error as Error & { statusCode?: number }).statusCode = 503;
-        throw error;
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(errorWith('failure 1', { statusCode: 503 })),
+      modelError(errorWith('failure 2', { statusCode: 503 })),
+      modelError(errorWith('failure 3', { statusCode: 503 })),
+    ]);
 
     const agent = new Agent({
       name: 'ExhaustedRetriesAgent',
@@ -409,32 +356,21 @@ describe('retry policies', () => {
     });
 
     await expect(run(agent, 'hello')).rejects.toThrow('failure 3');
-    expect(attempts).toBe(3);
+    expect(model.calls).toHaveLength(3);
     expect(policy).toHaveBeenCalledTimes(2);
   });
 
   it('passes incrementing attempt numbers to the retry policy', async () => {
-    let attempts = 0;
     const seenAttempts: number[] = [];
     const policy = vi.fn().mockImplementation(({ attempt }) => {
       seenAttempts.push(attempt);
       return true;
     });
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        if (attempts < 3) {
-          throw new Error(`retry ${attempts}`);
-        }
-        return {
-          usage: new Usage({ requests: 1 }),
-          output: [fakeModelMessage('Recovered on third attempt')],
-        };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(new Error('retry 1')),
+      modelError(new Error('retry 2')),
+      textResponse('Recovered on third attempt'),
+    ]);
 
     const agent = new Agent({
       name: 'AttemptTrackingAgent',
@@ -451,40 +387,22 @@ describe('retry policies', () => {
     const result = await run(agent, 'hello');
 
     expect(result.finalOutput).toBe('Recovered on third attempt');
-    expect(attempts).toBe(3);
+    expect(model.calls).toHaveLength(3);
     expect(seenAttempts).toEqual([1, 2]);
   });
 
   it('prefers retry-after delays over backoff when a policy opts in without delayMs', async () => {
     vi.useFakeTimers();
-    let attempts = 0;
-
     try {
-      const model: Model = {
-        async getResponse() {
-          attempts += 1;
-          if (attempts === 1) {
-            const error = new Error('Rate limited');
-            (
-              error as Error & {
-                statusCode?: number;
-                responseHeaders?: Headers;
-              }
-            ).statusCode = 429;
-            (error as Error & { responseHeaders?: Headers }).responseHeaders =
-              new Headers([['retry-after-ms', '0']]);
-            throw error;
-          }
-
-          return {
-            usage: new Usage({ requests: 1 }),
-            output: [fakeModelMessage('Recovered after retry-after')],
-          };
-        },
-        async *getStreamedResponse() {
-          yield* [];
-        },
-      };
+      const model = new ScriptedModel([
+        modelError(
+          errorWith('Rate limited', {
+            statusCode: 429,
+            responseHeaders: new Headers([['retry-after-ms', '0']]),
+          }),
+        ),
+        textResponse('Recovered after retry-after'),
+      ]);
 
       const agent = new Agent({
         name: 'RetryAfterPreferredAgent',
@@ -503,7 +421,7 @@ describe('retry policies', () => {
       const result = await resultPromise;
 
       expect(result.finalOutput).toBe('Recovered after retry-after');
-      expect(attempts).toBe(2);
+      expect(model.calls).toHaveLength(2);
     } finally {
       vi.useRealTimers();
     }
@@ -511,34 +429,16 @@ describe('retry policies', () => {
 
   it('honors retry-after-ms zero without falling back to backoff delays', async () => {
     vi.useFakeTimers();
-    let attempts = 0;
-
     try {
-      const model: Model = {
-        async getResponse() {
-          attempts += 1;
-          if (attempts === 1) {
-            const error = new Error('retry immediately');
-            (
-              error as Error & {
-                statusCode?: number;
-                responseHeaders?: Headers;
-              }
-            ).statusCode = 429;
-            (error as Error & { responseHeaders?: Headers }).responseHeaders =
-              new Headers([['retry-after-ms', '0']]);
-            throw error;
-          }
-
-          return {
-            usage: new Usage({ requests: 1 }),
-            output: [fakeModelMessage('Recovered immediately')],
-          };
-        },
-        async *getStreamedResponse() {
-          yield* [];
-        },
-      };
+      const model = new ScriptedModel([
+        modelError(
+          errorWith('retry immediately', {
+            statusCode: 429,
+            responseHeaders: new Headers([['retry-after-ms', '0']]),
+          }),
+        ),
+        textResponse('Recovered immediately'),
+      ]);
 
       const resultPromise = run(
         new Agent({
@@ -557,7 +457,7 @@ describe('retry policies', () => {
 
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(attempts).toBe(2);
+      expect(model.calls).toHaveLength(2);
       await expect(resultPromise).resolves.toMatchObject({
         finalOutput: 'Recovered immediately',
       });
@@ -568,26 +468,12 @@ describe('retry policies', () => {
 
   it('uses exponential backoff delays when no explicit delay or retry-after is provided', async () => {
     vi.useFakeTimers();
-    let attempts = 0;
-
     try {
-      const model: Model = {
-        async getResponse() {
-          attempts += 1;
-          if (attempts < 3) {
-            const error = new Error(`temporary failure ${attempts}`);
-            (error as Error & { statusCode?: number }).statusCode = 503;
-            throw error;
-          }
-          return {
-            usage: new Usage({ requests: 1 }),
-            output: [fakeModelMessage('Recovered after backoff')],
-          };
-        },
-        async *getStreamedResponse() {
-          yield* [];
-        },
-      };
+      const model = new ScriptedModel([
+        modelError(errorWith('temporary failure 1', { statusCode: 503 })),
+        modelError(errorWith('temporary failure 2', { statusCode: 503 })),
+        textResponse('Recovered after backoff'),
+      ]);
 
       const resultPromise = run(
         new Agent({
@@ -610,18 +496,18 @@ describe('retry policies', () => {
       );
 
       await vi.advanceTimersByTimeAsync(99);
-      expect(attempts).toBe(1);
+      expect(model.calls).toHaveLength(1);
 
       await vi.advanceTimersByTimeAsync(1);
-      expect(attempts).toBe(2);
+      expect(model.calls).toHaveLength(2);
 
       await vi.advanceTimersByTimeAsync(149);
-      expect(attempts).toBe(2);
+      expect(model.calls).toHaveLength(2);
 
       await vi.advanceTimersByTimeAsync(1);
       const result = await resultPromise;
 
-      expect(attempts).toBe(3);
+      expect(model.calls).toHaveLength(3);
       expect(result.finalOutput).toBe('Recovered after backoff');
     } finally {
       vi.useRealTimers();
@@ -629,25 +515,14 @@ describe('retry policies', () => {
   });
 
   it('retries from retry-after seconds headers exposed as plain objects', async () => {
-    let attempts = 0;
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        if (attempts === 1) {
-          throw Object.assign(new Error('retry after seconds header'), {
-            responseHeaders: { 'retry-after': '0' },
-          });
-        }
-
-        return {
-          usage: new Usage({ requests: 1 }),
-          output: [fakeModelMessage('Recovered from seconds header')],
-        };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(
+        errorWith('retry after seconds header', {
+          responseHeaders: { 'retry-after': '0' },
+        }),
+      ),
+      textResponse('Recovered from seconds header'),
+    ]);
 
     const agent = new Agent({
       name: 'RetryAfterSecondsAgent',
@@ -663,28 +538,16 @@ describe('retry policies', () => {
     const result = await run(agent, 'hello');
 
     expect(result.finalOutput).toBe('Recovered from seconds header');
-    expect(attempts).toBe(2);
+    expect(model.calls).toHaveLength(2);
   });
 
   it('preserves provider vetoes when providerSuggested() is composed with any()', async () => {
-    let attempts = 0;
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        const error = new Error('Provider said no');
-        (error as Error & { statusCode?: number }).statusCode = 429;
-        throw error;
-      },
-      getRetryAdvice() {
-        return {
-          suggested: false,
-          reason: 'provider veto',
-        };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(errorWith('Provider said no', { statusCode: 429 }), {
+        suggested: false,
+        reason: 'provider veto',
+      }),
+    ]);
 
     const agent = new Agent({
       name: 'ProviderVetoAgent',
@@ -702,7 +565,7 @@ describe('retry policies', () => {
     });
 
     await expect(run(agent, 'hello')).rejects.toThrow('Provider said no');
-    expect(attempts).toBe(1);
+    expect(model.calls).toHaveLength(1);
   });
 
   it('preserves provider vetoes in any() even when an earlier policy opts in', async () => {
@@ -795,33 +658,15 @@ describe('retry policies', () => {
 
   it('retries when providerSuggested() opts in with a delay hint', async () => {
     vi.useFakeTimers();
-    let attempts = 0;
-
     try {
-      const model: Model = {
-        async getResponse() {
-          attempts += 1;
-          if (attempts === 1) {
-            const error = new Error('Provider suggested retry');
-            (error as Error & { statusCode?: number }).statusCode = 429;
-            throw error;
-          }
-          return {
-            usage: new Usage({ requests: 1 }),
-            output: [fakeModelMessage('Recovered from provider advice')],
-          };
-        },
-        getRetryAdvice() {
-          return {
-            suggested: true,
-            retryAfterMs: 50,
-            reason: 'provider requested retry',
-          };
-        },
-        async *getStreamedResponse() {
-          yield* [];
-        },
-      };
+      const model = new ScriptedModel([
+        modelError(errorWith('Provider suggested retry', { statusCode: 429 }), {
+          suggested: true,
+          retryAfterMs: 50,
+          reason: 'provider requested retry',
+        }),
+        textResponse('Recovered from provider advice'),
+      ]);
 
       const resultPromise = run(
         new Agent({
@@ -838,12 +683,12 @@ describe('retry policies', () => {
       );
 
       await vi.advanceTimersByTimeAsync(49);
-      expect(attempts).toBe(1);
+      expect(model.calls).toHaveLength(1);
 
       await vi.advanceTimersByTimeAsync(1);
       const result = await resultPromise;
 
-      expect(attempts).toBe(2);
+      expect(model.calls).toHaveLength(2);
       expect(result.finalOutput).toBe('Recovered from provider advice');
     } finally {
       vi.useRealTimers();
@@ -905,20 +750,13 @@ describe('retry policies', () => {
 
   it('stops retrying when the signal aborts during retry delay', async () => {
     vi.useFakeTimers();
-    let attempts = 0;
     const controller = new AbortController();
     const policy = vi.fn().mockResolvedValue({ retry: true, delayMs: 100 });
 
     try {
-      const model: Model = {
-        async getResponse() {
-          attempts += 1;
-          throw new Error('retry me until aborted');
-        },
-        async *getStreamedResponse() {
-          yield* [];
-        },
-      };
+      const model = new ScriptedModel([
+        modelError(new Error('retry me until aborted')),
+      ]);
 
       const resultPromise = new Runner().run(
         new Agent({
@@ -941,7 +779,7 @@ describe('retry policies', () => {
       await expect(resultPromise).rejects.toMatchObject({
         name: 'AbortError',
       });
-      expect(attempts).toBe(1);
+      expect(model.calls).toHaveLength(1);
       expect(policy).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
@@ -949,27 +787,10 @@ describe('retry policies', () => {
   });
 
   it('treats websocket transport error codes as network errors', async () => {
-    let attempts = 0;
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        if (attempts === 1) {
-          const error = new Error('socket not open');
-          (error as Error & { code?: string }).code = 'socket_not_open';
-          throw error;
-        }
-
-        return {
-          usage: new Usage({ requests: 1 }),
-          output: [
-            fakeModelMessage('Recovered from websocket transport error'),
-          ],
-        };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(errorWith('socket not open', { code: 'socket_not_open' })),
+      textResponse('Recovered from websocket transport error'),
+    ]);
 
     const agent = new Agent({
       name: 'WebSocketTransportRetryAgent',
@@ -986,27 +807,17 @@ describe('retry policies', () => {
     const result = await run(agent, 'hello');
 
     expect(result.finalOutput).toBe('Recovered from websocket transport error');
-    expect(attempts).toBe(2);
+    expect(model.calls).toHaveLength(2);
   });
 
   it('retries streaming requests when the stream fails before any visible event', async () => {
-    let attempts = 0;
-    const model: Model = {
-      async getResponse() {
-        throw new Error('not used');
-      },
-      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-        attempts += 1;
-        if (attempts === 1) {
-          const error = new Error('temporary stream failure');
-          (error as Error & { statusCode?: number }).statusCode = 503;
-          throw error;
-        }
-
-        yield { type: 'response_started' };
-        yield createDoneEvent('Stream recovered');
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(errorWith('temporary stream failure', { statusCode: 503 })),
+      modelStream([
+        { type: 'response_started' },
+        createDoneEvent('Stream recovered'),
+      ]),
+    ]);
 
     const agent = new Agent({
       name: 'StreamingRetryAgent',
@@ -1026,31 +837,24 @@ describe('retry policies', () => {
     }
 
     expect(result.finalOutput).toBe('Stream recovered');
-    expect(attempts).toBe(2);
+    expect(model.calls).toHaveLength(2);
     expect(result.state.usage.requests).toBe(2);
     expect(result.rawResponses[0]?.usage.requests).toBe(2);
   });
 
   it('does not retry streaming requests after raw model events are emitted', async () => {
-    let attempts = 0;
     const seenEvents: RunStreamEvent[] = [];
-    const model: Model = {
-      async getResponse() {
-        throw new Error('not used');
-      },
-      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-        attempts += 1;
-        if (attempts === 1) {
+    const model = new ScriptedModel([
+      modelStreamResponder(() =>
+        (async function* () {
           yield {
             type: 'model',
             event: { type: 'provider.debug', detail: 'pre-output' } as any,
           };
-          const error = new Error('temporary stream failure');
-          (error as Error & { statusCode?: number }).statusCode = 503;
-          throw error;
-        }
-      },
-    };
+          throw errorWith('temporary stream failure', { statusCode: 503 });
+        })(),
+      ),
+    ]);
 
     const agent = new Agent({
       name: 'StreamingRetryAfterModelEventAgent',
@@ -1072,7 +876,7 @@ describe('retry policies', () => {
     };
 
     await expect(consume()).rejects.toThrow('temporary stream failure');
-    expect(attempts).toBe(1);
+    expect(model.calls).toHaveLength(1);
     expect(seenEvents).toHaveLength(1);
     expect(seenEvents[0]).toMatchObject({
       type: 'raw_model_stream_event',
@@ -1084,19 +888,14 @@ describe('retry policies', () => {
   });
 
   it('does not retry streaming requests after a visible event was emitted', async () => {
-    let attempts = 0;
-    const model: Model = {
-      async getResponse() {
-        throw new Error('not used');
-      },
-      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-        attempts += 1;
-        yield { type: 'response_started' };
-        const error = new Error('stream broke after start');
-        (error as Error & { statusCode?: number }).statusCode = 503;
-        throw error;
-      },
-    };
+    const model = new ScriptedModel([
+      modelStreamResponder(() =>
+        (async function* () {
+          yield { type: 'response_started' } satisfies StreamEvent;
+          throw errorWith('stream broke after start', { statusCode: 503 });
+        })(),
+      ),
+    ]);
 
     const agent = new Agent({
       name: 'VisibleEventAgent',
@@ -1118,27 +917,22 @@ describe('retry policies', () => {
     };
 
     await expect(consume()).rejects.toThrow('stream broke after start');
-    expect(attempts).toBe(1);
+    expect(model.calls).toHaveLength(1);
   });
 
   it('does not retry streaming requests after a text delta was emitted', async () => {
-    let attempts = 0;
-    const model: Model = {
-      async getResponse() {
-        throw new Error('not used');
-      },
-      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-        attempts += 1;
-        yield { type: 'response_started' };
-        yield {
-          type: 'output_text_delta',
-          delta: 'hel',
-        };
-        const error = new Error('stream broke after delta');
-        (error as Error & { statusCode?: number }).statusCode = 503;
-        throw error;
-      },
-    };
+    const model = new ScriptedModel([
+      modelStreamResponder(() =>
+        (async function* () {
+          yield { type: 'response_started' } satisfies StreamEvent;
+          yield {
+            type: 'output_text_delta',
+            delta: 'hel',
+          } satisfies StreamEvent;
+          throw errorWith('stream broke after delta', { statusCode: 503 });
+        })(),
+      ),
+    ]);
 
     const result = await run(
       new Agent({
@@ -1163,29 +957,20 @@ describe('retry policies', () => {
     };
 
     await expect(consume()).rejects.toThrow('stream broke after delta');
-    expect(attempts).toBe(1);
+    expect(model.calls).toHaveLength(1);
   });
 
   it('does not retry non-streaming requests when provider advice marks replay as unsafe', async () => {
-    let attempts = 0;
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        const error = new Error('request may have been accepted');
-        (error as Error & { statusCode?: number }).statusCode = 503;
-        throw error;
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-      getRetryAdvice() {
-        return {
+    const model = new ScriptedModel([
+      modelError(
+        errorWith('request may have been accepted', { statusCode: 503 }),
+        {
           suggested: false,
           replaySafety: 'unsafe',
           reason: 'request may have been accepted',
-        };
-      },
-    };
+        },
+      ),
+    ]);
 
     const agent = new Agent({
       name: 'UnsafeReplayAgent',
@@ -1202,39 +987,24 @@ describe('retry policies', () => {
     await expect(run(agent, 'hello')).rejects.toThrow(
       'request may have been accepted',
     );
-    expect(attempts).toBe(1);
+    expect(model.calls).toHaveLength(1);
   });
 
   it('retries a non-streaming unsafe replay only with explicit application approval', async () => {
-    let attempts = 0;
     const seenContexts: Array<{
       replaySafety?: string;
       responseStarted?: boolean;
       statefulRequest?: boolean;
     }> = [];
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        if (attempts === 1) {
-          throw new Error('request may have been accepted');
-        }
-        return {
-          usage: new Usage({ requests: 1 }),
-          output: [fakeModelMessage('Explicitly approved replay')],
-        };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-      getRetryAdvice() {
-        return {
-          suggested: false,
-          replaySafety: 'unsafe',
-          responseStarted: true,
-          reason: 'request may have been accepted',
-        };
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(new Error('request may have been accepted'), {
+        suggested: false,
+        replaySafety: 'unsafe',
+        responseStarted: true,
+        reason: 'request may have been accepted',
+      }),
+      textResponse('Explicitly approved replay'),
+    ]);
 
     const result = await run(
       new Agent({
@@ -1259,7 +1029,7 @@ describe('retry policies', () => {
     );
 
     expect(result.finalOutput).toBe('Explicitly approved replay');
-    expect(attempts).toBe(2);
+    expect(model.calls).toHaveLength(2);
     expect(seenContexts).toHaveLength(1);
     expect(seenContexts[0]).toMatchObject({
       replaySafety: 'unsafe',
@@ -1269,7 +1039,6 @@ describe('retry policies', () => {
   });
 
   it('does not treat missing response-start evidence as explicit false', async () => {
-    let attempts = 0;
     const policy = vi.fn((context: RetryPolicyContext) => {
       expect(context.responseStarted).toBeUndefined();
       return {
@@ -1277,22 +1046,13 @@ describe('retry policies', () => {
         approveUnsafeReplay: context.responseStarted === false,
       };
     });
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        throw new Error('request may have been accepted');
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-      getRetryAdvice() {
-        return {
-          suggested: false,
-          replaySafety: 'unsafe',
-          reason: 'response-start state is unknown',
-        };
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(new Error('request may have been accepted'), {
+        suggested: false,
+        replaySafety: 'unsafe',
+        reason: 'response-start state is unknown',
+      }),
+    ]);
 
     await expect(
       run(
@@ -1311,7 +1071,7 @@ describe('retry policies', () => {
       ),
     ).rejects.toThrow('request may have been accepted');
 
-    expect(attempts).toBe(1);
+    expect(model.calls).toHaveLength(1);
     expect(policy).toHaveBeenCalledTimes(1);
   });
 
@@ -1320,7 +1080,6 @@ describe('retry policies', () => {
       previousResponseId?: string;
       conversationId?: string;
     }) => {
-      let attempts = 0;
       const seenContexts: Array<{
         previousResponseId?: string;
         conversationId?: string;
@@ -1328,28 +1087,14 @@ describe('retry policies', () => {
         responseStarted?: boolean;
         statefulRequest?: boolean;
       }> = [];
-      const model: Model = {
-        async getResponse() {
-          attempts += 1;
-          if (attempts === 1) {
-            throw new Error('stateful request may have been accepted');
-          }
-          return {
-            usage: new Usage({ requests: 1 }),
-            output: [fakeModelMessage('Recovered stateful request')],
-          };
-        },
-        async *getStreamedResponse() {
-          yield* [];
-        },
-        getRetryAdvice() {
-          return {
-            suggested: false,
-            replaySafety: 'unsafe',
-            reason: 'stateful request may have been accepted',
-          };
-        },
-      };
+      const model = new ScriptedModel([
+        modelError(new Error('stateful request may have been accepted'), {
+          suggested: false,
+          replaySafety: 'unsafe',
+          reason: 'stateful request may have been accepted',
+        }),
+        textResponse('Recovered stateful request'),
+      ]);
 
       const result = await run(
         new Agent({
@@ -1370,7 +1115,11 @@ describe('retry policies', () => {
         options,
       );
 
-      return { attempts, finalOutput: result.finalOutput, seenContexts };
+      return {
+        attempts: model.calls.length,
+        finalOutput: result.finalOutput,
+        seenContexts,
+      };
     };
 
     const previousResponse = await exercise({
@@ -1405,7 +1154,6 @@ describe('retry policies', () => {
   });
 
   it('does not apply unsafe replay approval to stateful requests with unknown safety', async () => {
-    let attempts = 0;
     const policy = vi.fn((context) => {
       expect(context).toMatchObject({
         previousResponseId: 'resp_unknown',
@@ -1415,15 +1163,9 @@ describe('retry policies', () => {
       });
       return { retry: true, approveUnsafeReplay: true };
     });
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        throw new Error('unknown stateful failure');
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(new Error('unknown stateful failure')),
+    ]);
 
     await expect(
       run(
@@ -1443,33 +1185,18 @@ describe('retry policies', () => {
       ),
     ).rejects.toThrow('unknown stateful failure');
 
-    expect(attempts).toBe(1);
+    expect(model.calls).toHaveLength(1);
     expect(policy).toHaveBeenCalledTimes(1);
   });
 
   it('accepts captured provider-safe evidence for a custom stateful policy', async () => {
-    let attempts = 0;
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        if (attempts === 1) {
-          throw new Error('safe stateful failure');
-        }
-        return {
-          usage: new Usage({ requests: 1 }),
-          output: [fakeModelMessage('Provider-safe replay')],
-        };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-      getRetryAdvice() {
-        return {
-          suggested: true,
-          replaySafety: 'safe',
-        };
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(new Error('safe stateful failure'), {
+        suggested: true,
+        replaySafety: 'safe',
+      }),
+      textResponse('Provider-safe replay'),
+    ]);
 
     const result = await run(
       new Agent({
@@ -1488,34 +1215,21 @@ describe('retry policies', () => {
     );
 
     expect(result.finalOutput).toBe('Provider-safe replay');
-    expect(attempts).toBe(2);
+    expect(model.calls).toHaveLength(2);
   });
 
   it('does not let unsafe replay approval override provider-unsafe streaming failures', async () => {
-    let attempts = 0;
     const policy = vi.fn(() => ({
       retry: true,
       approveUnsafeReplay: true,
     }));
-    const model: Model = {
-      async getResponse() {
-        throw new Error('not used');
-      },
-      async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-        attempts += 1;
-        if (attempts > 0) {
-          throw new Error('unsafe streamed failure');
-        }
-        yield* [];
-      },
-      getRetryAdvice() {
-        return {
-          suggested: false,
-          replaySafety: 'unsafe',
-          reason: 'unsafe streamed failure',
-        };
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(new Error('unsafe streamed failure'), {
+        suggested: false,
+        replaySafety: 'unsafe',
+        reason: 'unsafe streamed failure',
+      }),
+    ]);
 
     const result = await run(
       new Agent({
@@ -1539,34 +1253,24 @@ describe('retry policies', () => {
     };
 
     await expect(consume()).rejects.toThrow('unsafe streamed failure');
-    expect(attempts).toBe(1);
+    expect(model.calls).toHaveLength(1);
     expect(policy).not.toHaveBeenCalled();
   });
 
   it('does not let provider normalization clear raw abort evidence', async () => {
-    let attempts = 0;
     const policy = vi.fn(() => ({
       retry: true,
       approveUnsafeReplay: true,
     }));
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        const error = new Error('cancelled');
-        error.name = 'AbortError';
-        throw error;
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-      getRetryAdvice() {
-        return {
-          suggested: false,
-          replaySafety: 'unsafe',
-          normalized: { isAbort: false },
-        };
-      },
-    };
+    const abortError = new Error('cancelled');
+    abortError.name = 'AbortError';
+    const model = new ScriptedModel([
+      modelError(abortError, {
+        suggested: false,
+        replaySafety: 'unsafe',
+        normalized: { isAbort: false },
+      }),
+    ]);
 
     await expect(
       run(
@@ -1585,7 +1289,7 @@ describe('retry policies', () => {
       ),
     ).rejects.toThrow('cancelled');
 
-    expect(attempts).toBe(1);
+    expect(model.calls).toHaveLength(1);
     expect(policy).not.toHaveBeenCalled();
   });
 
@@ -1691,34 +1395,17 @@ describe('retry policies', () => {
   });
 
   it('retries stateful follow-up requests when providerSuggested() approves replay', async () => {
-    let attempts = 0;
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        if (attempts === 1) {
-          const error = new Error('connection closed before opening');
-          (error as Error & { statusCode?: number }).statusCode = 503;
-          throw error;
-        }
-
-        return {
-          usage: new Usage({ requests: 1 }),
-          output: [
-            fakeModelMessage('Recovered after provider-approved replay'),
-          ],
-        };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-      getRetryAdvice() {
-        return {
+    const model = new ScriptedModel([
+      modelError(
+        errorWith('connection closed before opening', { statusCode: 503 }),
+        {
           suggested: true,
           replaySafety: 'safe',
           reason: 'request never left the client',
-        };
-      },
-    };
+        },
+      ),
+      textResponse('Recovered after provider-approved replay'),
+    ]);
 
     const agent = new Agent({
       name: 'ProviderApprovedStatefulRetryAgent',
@@ -1740,36 +1427,21 @@ describe('retry policies', () => {
     });
 
     expect(result.finalOutput).toBe('Recovered after provider-approved replay');
-    expect(attempts).toBe(2);
+    expect(model.calls).toHaveLength(2);
   });
 
   it('retries stateful follow-up requests when all() includes providerSuggested()', async () => {
-    let attempts = 0;
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        if (attempts === 1) {
-          const error = new Error('connection closed before opening');
-          (error as Error & { statusCode?: number }).statusCode = 429;
-          throw error;
-        }
-
-        return {
-          usage: new Usage({ requests: 1 }),
-          output: [fakeModelMessage('Recovered after all() replay approval')],
-        };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-      getRetryAdvice() {
-        return {
+    const model = new ScriptedModel([
+      modelError(
+        errorWith('connection closed before opening', { statusCode: 429 }),
+        {
           suggested: true,
           replaySafety: 'safe',
           reason: 'request never left the client',
-        };
-      },
-    };
+        },
+      ),
+      textResponse('Recovered after all() replay approval'),
+    ]);
 
     const agent = new Agent({
       name: 'ProviderApprovedStatefulAllRetryAgent',
@@ -1791,28 +1463,16 @@ describe('retry policies', () => {
     });
 
     expect(result.finalOutput).toBe('Recovered after all() replay approval');
-    expect(attempts).toBe(2);
+    expect(model.calls).toHaveLength(2);
   });
 
   it('does not retry stateful follow-up requests from non-provider policies alone', async () => {
-    let attempts = 0;
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        const error = new Error('temporary stateful failure');
-        (error as Error & { statusCode?: number }).statusCode = 503;
-        throw error;
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-      getRetryAdvice() {
-        return {
-          suggested: true,
-          reason: 'provider would allow retry',
-        };
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(errorWith('temporary stateful failure', { statusCode: 503 }), {
+        suggested: true,
+        reason: 'provider would allow retry',
+      }),
+    ]);
 
     const agent = new Agent({
       name: 'StatefulNonProviderPolicyAgent',
@@ -1831,7 +1491,7 @@ describe('retry policies', () => {
         previousResponseId: 'resp-no-provider-policy',
       }),
     ).rejects.toThrow('temporary stateful failure');
-    expect(attempts).toBe(1);
+    expect(model.calls).toHaveLength(1);
   });
 
   it('deep merges inherited agent tool retry settings', () => {
@@ -1910,18 +1570,15 @@ describe('retry policies', () => {
     let capturedRetrySettings:
       ModelRequest['modelSettings']['retry'] | undefined;
 
-    const model: Model = {
-      async getResponse(request: ModelRequest) {
-        capturedRetrySettings = request.modelSettings.retry;
+    const model = new ScriptedModel([
+      modelResponder((call) => {
+        capturedRetrySettings = call.request.modelSettings.retry;
         return {
           usage: new Usage({ requests: 1 }),
           output: [fakeModelMessage('Merged retry settings')],
         };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+      }),
+    ]);
 
     const runner = new Runner({
       modelSettings: {
@@ -1965,18 +1622,15 @@ describe('retry policies', () => {
     let capturedRetrySettings:
       ModelRequest['modelSettings']['retry'] | undefined;
 
-    const model: Model = {
-      async getResponse(request: ModelRequest) {
-        capturedRetrySettings = request.modelSettings.retry;
+    const model = new ScriptedModel([
+      modelResponder((call) => {
+        capturedRetrySettings = call.request.modelSettings.retry;
         return {
           usage: new Usage({ requests: 1 }),
           output: [fakeModelMessage('Merged retry settings')],
         };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+      }),
+    ]);
 
     const runner = new Runner({
       modelSettings: {
@@ -2015,25 +1669,14 @@ describe('retry policies', () => {
   });
 
   it('retries when responseHeaders is a Headers instance', async () => {
-    let attempts = 0;
-    const model: Model = {
-      async getResponse() {
-        attempts += 1;
-        if (attempts === 1) {
-          throw Object.assign(new Error('retry after header'), {
-            responseHeaders: new Headers([['retry-after-ms', '0']]),
-          });
-        }
-
-        return {
-          usage: new Usage({ requests: 1 }),
-          output: [fakeModelMessage('Recovered from headers')],
-        };
-      },
-      async *getStreamedResponse() {
-        yield* [];
-      },
-    };
+    const model = new ScriptedModel([
+      modelError(
+        Object.assign(new Error('retry after header'), {
+          responseHeaders: new Headers([['retry-after-ms', '0']]),
+        }),
+      ),
+      textResponse('Recovered from headers'),
+    ]);
 
     const agent = new Agent({
       name: 'RetryAfterHeadersAgent',
@@ -2049,6 +1692,6 @@ describe('retry policies', () => {
     const result = await run(agent, 'hello');
 
     expect(result.finalOutput).toBe('Recovered from headers');
-    expect(attempts).toBe(2);
+    expect(model.calls).toHaveLength(2);
   });
 });

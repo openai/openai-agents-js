@@ -3,12 +3,8 @@ import { z } from 'zod';
 import {
   Agent,
   MaxTurnsExceededError,
-  Model,
-  ModelRequest,
-  ModelResponse,
   RunContext,
   RunState,
-  StreamEvent,
   ToolCallError,
   ToolGuardrailFunctionOutputFactory,
   ToolInputGuardrailTripwireTriggered,
@@ -23,52 +19,21 @@ import {
 } from '../src';
 import { attachRunStateToError } from '../src/runner/errorHandlers';
 import * as protocol from '../src/types/protocol';
+import { ScriptedModel, modelResponse } from '../src/testing';
 
 type GuardrailKind = 'input' | 'output';
 
-class QueuedToolCallModel implements Model {
-  readonly #outputs: ModelResponse['output'][];
-  #responseCount = 0;
-
+class QueuedToolCallModel extends ScriptedModel {
   constructor(turns: number) {
-    this.#outputs = Array.from({ length: turns }, (_, index) => [
-      functionToolCall(index + 1),
-    ]);
-  }
-
-  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-    return this.#nextResponse();
-  }
-
-  async *getStreamedResponse(
-    _request: ModelRequest,
-  ): AsyncIterable<StreamEvent> {
-    const response = this.#nextResponse();
-    yield {
-      type: 'response_done',
-      response: {
-        id: response.responseId,
-        usage: {
-          requests: response.usage.requests,
-          inputTokens: response.usage.inputTokens,
-          outputTokens: response.usage.outputTokens,
-          totalTokens: response.usage.totalTokens,
-        },
-        output: response.output,
-      },
-    } as StreamEvent;
-  }
-
-  #nextResponse(): ModelResponse {
-    const output = this.#outputs.shift();
-    if (!output) {
-      throw new Error('No queued model output');
-    }
-    return {
-      output,
-      usage: new Usage(),
-      responseId: `response-${++this.#responseCount}`,
-    };
+    super(
+      Array.from({ length: turns }, (_, index) =>
+        modelResponse({
+          output: [functionToolCall(index + 1)],
+          usage: new Usage(),
+          responseId: `response-${index + 1}`,
+        }),
+      ),
+    );
   }
 }
 

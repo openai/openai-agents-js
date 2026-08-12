@@ -1,14 +1,6 @@
-import {
-  Agent,
-  Model,
-  ModelProvider,
-  ModelRequest,
-  ModelResponse,
-  protocol,
-  tool,
-  Usage,
-} from '@openai/agents-core';
+import { protocol, tool } from '@openai/agents-core';
 import { RuntimeEventEmitter } from '@openai/agents-core/_shims';
+import { assistantMessage } from '@openai/agents-core/testing';
 import { EventEmitterDelegate } from '@openai/agents-core/utils';
 import { z } from 'zod';
 import type {
@@ -24,67 +16,14 @@ import type {
 import type { TransportToolCallEvent } from '../src/transportLayerEvents';
 import { RealtimeTransportEventTypes } from '../src/transportLayerEvents';
 
-export const TEST_MODEL_MESSAGE: protocol.AssistantMessageItem = {
-  id: '123',
-  status: 'completed' as const,
-  type: 'message' as const,
-  role: 'assistant' as const,
-  content: [
-    {
-      type: 'output_text' as const,
-      text: 'Hello World',
-      providerData: {
-        annotations: [],
-      },
-    },
-  ],
-};
+const TEST_MODEL_MESSAGE: protocol.AssistantMessageItem = assistantMessage(
+  'Hello World',
+  { id: '123' },
+);
 
 export function fakeModelMessage(text: string): protocol.AssistantMessageItem {
-  return {
-    ...TEST_MODEL_MESSAGE,
-    content: [
-      {
-        type: 'output_text' as const,
-        text,
-        providerData: {
-          annotations: [],
-        },
-      },
-    ],
-  };
+  return assistantMessage(text, { id: TEST_MODEL_MESSAGE.id });
 }
-
-export const TEST_MODEL_FUNCTION_CALL: protocol.FunctionCallItem = {
-  id: '123',
-  type: 'function_call' as const,
-  name: 'test',
-  callId: '123',
-  status: 'completed',
-  arguments: '{"test": "test"}',
-};
-
-export const TEST_MODEL_RESPONSE_WITH_FUNCTION: ModelResponse = {
-  output: [{ ...TEST_MODEL_FUNCTION_CALL }, { ...TEST_MODEL_MESSAGE }],
-  usage: new Usage(),
-};
-
-export const TEST_MODEL_RESPONSE_BASIC: ModelResponse = {
-  output: [{ ...TEST_MODEL_MESSAGE }],
-  usage: new Usage(),
-};
-
-export const TEST_AGENT = new Agent({
-  name: 'TestAgent',
-  instructions: 'Test instructions',
-  handoffDescription: 'Test handoff description',
-  handoffs: [],
-  model: 'gpt-4o',
-  modelSettings: {
-    temperature: 0.5,
-    maxTokens: 100,
-  },
-});
 
 export const TEST_TOOL = tool({
   name: 'test',
@@ -96,31 +35,6 @@ export const TEST_TOOL = tool({
     return 'Hello World';
   },
 });
-
-export class FakeModel implements Model {
-  constructor(private _responses: ModelResponse[] = []) {}
-
-  async getResponse(_request: ModelRequest): Promise<ModelResponse> {
-    const response = this._responses.shift();
-    if (!response) {
-      throw new Error('No response found');
-    }
-    return response;
-  }
-
-  /* eslint-disable require-yield */
-  async *getStreamedResponse(
-    _request: ModelRequest,
-  ): AsyncIterable<protocol.StreamEvent> {
-    throw new Error('Not implemented');
-  }
-}
-
-export class FakeModelProvider implements ModelProvider {
-  async getModel(_name: string): Promise<Model> {
-    return new FakeModel([TEST_MODEL_RESPONSE_BASIC]);
-  }
-}
 
 export class FakeTransport
   extends EventEmitterDelegate<RealtimeTransportEventTypes>

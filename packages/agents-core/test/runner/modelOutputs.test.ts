@@ -40,7 +40,7 @@ import {
 import { Usage } from '../../src/usage';
 import {
   FakeEditor,
-  FakeModelProvider,
+  ScriptedModelProvider,
   FakeShell,
   TEST_AGENT,
   TEST_MODEL_FUNCTION_CALL,
@@ -53,7 +53,7 @@ import { z } from 'zod';
 
 beforeAll(() => {
   setTracingDisabled(true);
-  setDefaultModelProvider(new FakeModelProvider());
+  setDefaultModelProvider(new ScriptedModelProvider());
 });
 
 const PROGRAMMATIC_TOOL_CALLING_TOOL: HostedTool = {
