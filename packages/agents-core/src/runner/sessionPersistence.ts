@@ -308,14 +308,14 @@ export async function applySessionHistoryMutationsBeforeRun(
       state,
     );
   }
-  if (!session) {
-    if (state._currentTurnPersistedItemCount > 0) {
-      throw new UserError(
-        'overrideArguments must resume with the session that contains the persisted function call.',
-        state,
-      );
-    }
+  if (state._currentTurnPersistedItemCount === 0) {
     return;
+  }
+  if (!session) {
+    throw new UserError(
+      'overrideArguments must resume with the session that contains the persisted function call.',
+      state,
+    );
   }
   if (!isSessionHistoryExpectedRewriteAwareSession(session)) {
     throw new UserError(

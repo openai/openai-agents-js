@@ -86,6 +86,7 @@ describe('applySessionHistoryMutationsBeforeRun', () => {
     } as unknown as Session;
     const state = {
       _context: new RunContext(),
+      _currentTurnPersistedItemCount: 1,
       _getValidatedSessionHistoryMutations: () => mutations,
     } as unknown as RunState<any, any>;
 
@@ -94,6 +95,30 @@ describe('applySessionHistoryMutationsBeforeRun', () => {
     });
 
     expect(receivedMutations).toEqual(mutations);
+  });
+
+  it('skips rewrites when the interrupted turn has no persisted items', async () => {
+    const expected = functionCall('call_unpersisted');
+    const mutations = [
+      {
+        type: 'replace_function_call' as const,
+        callId: expected.callId,
+        expected,
+        replacement: { ...expected, arguments: '{"ok":true}' },
+      },
+    ];
+    const session = {} as Session;
+    const state = {
+      _context: new RunContext(),
+      _currentTurnPersistedItemCount: 0,
+      _getValidatedSessionHistoryMutations: () => mutations,
+    } as unknown as RunState<any, any>;
+
+    await expect(
+      applySessionHistoryMutationsBeforeRun(session, state, {
+        serverManagesConversation: false,
+      }),
+    ).resolves.toBeUndefined();
   });
 });
 

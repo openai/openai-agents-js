@@ -9336,7 +9336,61 @@ describe('Runner.run', () => {
       expect(executions).toBe(0);
     });
 
-    it('can retry an override with a valid session after rewrite preflight rejects another session', async () => {
+    it('persists an overridden call when a session is attached on resume', async () => {
+      let executions = 0;
+      const approvalTool = tool({
+        name: 'test',
+        description: 'tool that requires approval',
+        parameters: z.object({ test: z.string() }),
+        needsApproval: async () => true,
+        execute: async ({ test }) => {
+          executions += 1;
+          return `result:${test}`;
+        },
+      });
+      const model = new TrackingModel([
+        modelResponse(
+          buildResponse(
+            [buildToolCall('call-session-on-resume', 'foo')],
+            'resp-session-on-resume',
+          ),
+        ),
+      ]);
+      const agent = new Agent({
+        name: 'SessionOnResumeApprovalOverrideAgent',
+        model,
+        tools: [approvalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const firstResult = await run(agent, 'user_message');
+      expect(firstResult.state._currentTurnPersistedItemCount).toBe(0);
+      firstResult.state.approve(firstResult.interruptions[0]!, {
+        overrideArguments: { test: 'bar' },
+      });
+      const session = new CoreMemorySession();
+
+      const resumed = await run(agent, firstResult.state, { session });
+      const history = await session.getItems();
+
+      expect(resumed.finalOutput).toBe('result:bar');
+      expect(executions).toBe(1);
+      expect(history).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'function_call',
+            callId: 'call-session-on-resume',
+            arguments: JSON.stringify({ test: 'bar' }),
+          }),
+          expect.objectContaining({
+            type: 'function_call_result',
+            callId: 'call-session-on-resume',
+          }),
+        ]),
+      );
+      expect(firstResult.state._getSessionHistoryMutations()).toEqual([]);
+    });
+
+    it('can retry a persisted override after rewrite preflight rejects another session', async () => {
       class TransactionOnlySession implements Session {
         async getSessionId(): Promise<string> {
           return 'transaction-only-override-session';
@@ -9383,6 +9437,7 @@ describe('Runner.run', () => {
         toolUseBehavior: 'stop_on_first_tool',
       });
       const firstResult = await run(agent, 'user_message');
+      firstResult.state._currentTurnPersistedItemCount = 1;
       firstResult.state.approve(firstResult.interruptions[0]!, {
         overrideArguments: { test: 'bar' },
       });
@@ -9461,6 +9516,7 @@ describe('Runner.run', () => {
       firstResult.state.approve(firstResult.interruptions[0]!, {
         overrideArguments: { test: 'bar' },
       });
+      firstResult.state._currentTurnPersistedItemCount = 1;
       firstResult.state._currentTurnSessionHistoryTransactionSessionId =
         'bound-override-session';
 
