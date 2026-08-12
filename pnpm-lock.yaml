@@ -299,12 +299,18 @@ importers:
       '@openai/agents-realtime':
         specifier: workspace:*
         version: link:../../packages/agents-realtime
+      '@valibot/to-json-schema':
+        specifier: ^1.5.0
+        version: 1.7.1(valibot@1.4.2(typescript@5.9.3))
       openai:
         specifier: ^7.2.0
         version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.0)(zod@4.3.5)
       server-only:
         specifier: ^0.0.1
         version: 0.0.1
+      valibot:
+        specifier: ^1.4.0
+        version: 1.4.2(typescript@5.9.3)
       zod:
         specifier: ^4.0.0
         version: 4.3.5

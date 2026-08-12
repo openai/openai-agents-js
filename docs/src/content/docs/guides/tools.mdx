@@ -145,7 +145,7 @@ You can turn **any** function into a tool with the `tool()` helper.
 | --- | --- | --- |
 | `name` | No | Defaults to the function name (e.g., `get_weather`). |
 | `description` | Yes | Clear, human-readable description shown to the LLM. |
-| `parameters` | Yes | Either a Zod schema or a raw JSON schema object. Zod parameters automatically enable **strict** mode. |
+| `parameters` | Yes | A Zod schema, supported Standard Schema value, or raw JSON Schema object. Validation schemas automatically enable **strict** mode. |
 | `strict` | No | When `true` (default), the SDK returns a model error if the arguments don't validate. Set to `false` for fuzzy matching. |
 | `execute` | Yes | `(args, context, details) => string \| unknown \| Promise<...>` – your business logic. Non-string outputs are serialized for the model. `context` is optional `RunContext`; `details` includes metadata like `toolCall`, `resumeState`, and `signal`. |
 | `allowedCallers` | No | Responses-only non-empty list controlling whether the tool can be called directly, programmatically, or both. Use `'direct'`, `'programmatic'`, or both values. |
@@ -159,6 +159,8 @@ You can turn **any** function into a tool with the `tool()` helper.
 | `isEnabled` | No | Conditionally expose the tool per run; accepts a boolean or predicate. |
 | `inputGuardrails` | No | Guardrails that run before the tool executes; can reject or throw. See [Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails). |
 | `outputGuardrails` | No | Guardrails that run after the tool executes; can reject or throw. See [Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails). |
+
+Supported Standard Schema parameters are converted to JSON Schema for the model and validated locally before `execute` runs. The validation output type, including library transforms and defaults, becomes the inferred `execute` argument type. See [Schema validation](/openai-agents-js/guides/schemas) for a Valibot example and current limitations.
 
 #### SDK-only custom data
 
@@ -245,6 +247,7 @@ Inside `customOutputExtractor`, use `result.agentToolInvocation` to inspect the 
 
 Advanced structured-input options for `agent.asTool()`:
 
+- `parameters`: replaces the default `{ input: string }` shape with a Zod schema, supported Standard Schema value, or raw JSON Schema.
 - `inputBuilder`: maps structured tool args to the nested agent input payload.
 - `includeInputSchema`: includes the input JSON schema in the nested run for stronger schema-aware behavior.
 - `resumeState`: controls context reconciliation strategy when resuming nested serialized `RunState`: `'merge'` (default) merges live approval/context state into the serialized state, `'replace'` uses the current run context instead, and `'preferSerialized'` resumes with the serialized context unchanged.
@@ -371,7 +374,7 @@ Refer to the [Agents guide](/openai-agents-js/guides/agents#forcing-tool-use) fo
 ### Best practices
 
 - **Short, explicit descriptions** – describe _what_ the tool does _and when to use it_.
-- **Validate inputs** – use Zod schemas for strict JSON validation where possible.
+- **Validate inputs** – use Zod or supported Standard Schema values for strict JSON validation where possible.
 - **Avoid side‑effects in error handlers** – `errorFunction` should return a helpful string, not throw.
 - **One responsibility per tool** – small, composable tools lead to better model reasoning.
 

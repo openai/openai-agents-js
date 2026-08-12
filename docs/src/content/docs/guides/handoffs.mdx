@@ -67,7 +67,7 @@ Choose a different mechanism when the goal is different:
 - Put existing application state in `RunContext`.
 - Use `inputFilter` if you want to change what history the receiving agent sees.
 - Register one handoff per destination if there are multiple possible specialists. `inputType` can add metadata to the chosen handoff, but it does not dispatch between destinations.
-- Prefer a Zod schema when you want the SDK to validate the parsed payload before `onHandoff` runs; a raw JSON Schema only defines the tool contract sent to the model.
+- Prefer a Zod schema or supported Standard Schema value when you want the SDK to validate the parsed payload before `onHandoff` runs; a raw JSON Schema only defines the tool contract sent to the model. See [Schema validation](/openai-agents-js/guides/schemas) for a Standard Schema example.
 
 ## Input filters
 
