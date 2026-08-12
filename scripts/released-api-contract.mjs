@@ -36,7 +36,7 @@ const repoRoot = path.resolve(
 );
 const defaultContractPath = path.join(
   repoRoot,
-  'tests/fixtures/released-api-contract.json',
+  'scripts/released-api-contract.json',
 );
 const typeFormatFlags =
   ts.TypeFormatFlags.NoTruncation |

@@ -47,7 +47,7 @@ It is intentionally not part of the `pnpm` workspace and instead installs the pa
 
 ### Released package API contract
 
-The released API contract uses the package versions and npm integrity hashes in `tests/fixtures/released-api-contract.json` as its immutable baseline. It validates current source separately from build output:
+The released API contract uses the package versions and npm integrity hashes in `scripts/released-api-contract.json` as its immutable baseline. It validates current source separately from build output:
 
 ```sh
 pnpm api-contract:source
