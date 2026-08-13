@@ -9500,7 +9500,7 @@ describe('Runner.run', () => {
       expect(result.history[0]).toEqual(COMPACTION_ITEM);
     });
 
-    it('rewrites ordinary session history from the latest compaction marker', async () => {
+    it('preserves the full session transcript while replaying from compaction', async () => {
       const session = new CoreMemorySession({
         initialItems: [user('earlier stored input')],
       });
@@ -9522,20 +9522,67 @@ describe('Runner.run', () => {
 
       await run(agent, 'new user input', { session });
 
-      expect(clearSession).toHaveBeenCalledOnce();
+      expect(clearSession).not.toHaveBeenCalled();
       const stored = await session.getItems();
-      expect(stored[0]).toEqual(COMPACTION_ITEM);
-      expect(stored).toHaveLength(2);
+      expect(stored).toEqual([
+        user('earlier stored input'),
+        {
+          type: 'message',
+          role: 'user',
+          content: 'new user input',
+        },
+        COMPACTION_ITEM,
+        fakeModelMessage('first turn done'),
+      ]);
 
       await run(agent, 'later user input', { session });
       const laterInput = getRequestInputItems(model.requests[1]);
       expect(laterInput[0]).toEqual(COMPACTION_ITEM);
+      expect(laterInput).toContainEqual(fakeModelMessage('first turn done'));
       expect(laterInput).not.toContainEqual(
         expect.objectContaining({ content: 'earlier stored input' }),
+      );
+      expect(laterInput).not.toContainEqual(
+        expect.objectContaining({ content: 'new user input' }),
       );
       expect(getFirstTextContent(laterInput[laterInput.length - 1])).toBe(
         'later user input',
       );
+    });
+
+    it('preserves explicit input before compaction while replaying only its suffix', async () => {
+      const previousSessionItem = user('previous session');
+      const prefixInput = user('prefix input');
+      const retainedInput = user('retained input');
+      const session = new CoreMemorySession({
+        initialItems: [previousSessionItem],
+      });
+      const model = new RecordingModel([
+        modelResponse({
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'ExplicitInputCompactionAgent',
+        model,
+      });
+
+      await run(agent, [prefixInput, COMPACTION_ITEM, retainedInput], {
+        session,
+      });
+
+      expect(getRequestInputItems(model.requests[0])).toEqual([
+        COMPACTION_ITEM,
+        retainedInput,
+      ]);
+      expect(await session.getItems()).toEqual([
+        previousSessionItem,
+        prefixInput,
+        COMPACTION_ITEM,
+        retainedInput,
+        fakeModelMessage('done'),
+      ]);
     });
   });
 

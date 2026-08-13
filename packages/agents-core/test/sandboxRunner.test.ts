@@ -1924,7 +1924,7 @@ describe('sandbox runner integration', () => {
   );
 
   it.each([false, true])(
-    'replaces current session input when a later sandbox turn compacts it away (stream=%s)',
+    'preserves current session input when a later sandbox turn compacts it (stream=%s)',
     async (stream) => {
       const client = new FakeSandboxClient();
       const continueTool = tool({
@@ -1982,23 +1982,18 @@ describe('sandbox runner integration', () => {
       }
 
       const persisted = await session.getItems();
-      expect(persisted[0]).toMatchObject({
+      expect(persisted).toContainEqual(current);
+      expect(persisted).toContainEqual({
         type: 'compaction',
         encrypted_content: 'later compacted history',
       });
-      expect(
-        persisted.filter(
-          (item) =>
-            item.type === 'message' &&
-            item.role === 'user' &&
-            Array.isArray(item.content) &&
-            item.content.some(
-              (content) =>
-                content.type === 'input_text' &&
-                content.text === 'current input',
-            ),
-        ),
-      ).toHaveLength(0);
+      expect(model.requests).toHaveLength(2);
+      const secondInput = model.requests[1]?.input as AgentInputItem[];
+      expect(secondInput[0]).toMatchObject({
+        type: 'compaction',
+        encrypted_content: 'later compacted history',
+      });
+      expect(secondInput).not.toContainEqual(current);
     },
   );
 

@@ -444,6 +444,36 @@ function buildRunItemPersistencePlan(
   });
 }
 
+function validateSessionItemsBeforeSessionPreparation(options: {
+  session: Session | undefined;
+  state: RunState<any, any>;
+  runItems: RunItem[];
+  sessionInputItems: AgentInputItem[] | undefined;
+  outputBlocked: boolean;
+}): void {
+  const { session, state, runItems, sessionInputItems, outputBlocked } =
+    options;
+  const persistencePlan = buildRunItemPersistencePlan(
+    state,
+    runItems,
+    outputBlocked,
+    isSessionHistoryTransactionAwareSession(session),
+  );
+  const itemsToValidate =
+    outputBlocked && !persistencePlan.useHistoryTransaction
+      ? (sessionInputItems ?? [])
+      : [
+          ...(sessionInputItems ?? []),
+          ...extractOutputItemsFromRunItems(
+            persistencePlan.runItemsToPersist,
+            state._reasoningItemIdPolicy ?? 'preserve',
+          ),
+        ];
+  assertPersistableCompactionBoundary(
+    normalizeItemsForSessionPersistence(itemsToValidate),
+  );
+}
+
 class SessionReconciliationRecoveryError extends Error {
   readonly errors: readonly [unknown, unknown];
   readonly cause: unknown;
@@ -507,6 +537,7 @@ export function createSessionPersistenceTracker(options: {
     private readonly hasCallModelInputFilter: boolean;
     private readonly persistInput?: typeof saveStreamInputToSession;
     private originalSnapshot: AgentInputItem[] | undefined;
+    private replayTrimmedInputPrefix: AgentInputItem[] = [];
     private filteredSnapshot: AgentInputItem[] | undefined;
     private preparedSources: PreparedOwnedSource[] | undefined;
     private initialPreparedItems: AgentInputItem[] | undefined;
@@ -542,6 +573,13 @@ export function createSessionPersistenceTracker(options: {
           : []);
       this.originalSnapshot = cloneItems(
         deduplicateAgentInputItemsPreferringLatest(sessionItems),
+      );
+      const replaySnapshot = trimToLatestCompaction(this.originalSnapshot);
+      this.replayTrimmedInputPrefix = cloneItems(
+        this.originalSnapshot.slice(
+          0,
+          this.originalSnapshot.length - replaySnapshot.length,
+        ),
       );
       if (Array.isArray(preparedInput)) {
         this.preparedSources = undefined;
@@ -624,7 +662,7 @@ export function createSessionPersistenceTracker(options: {
 
     getItemsForPersistence = () => {
       if (this.filteredSnapshot !== undefined) {
-        return this.filteredSnapshot;
+        return [...this.replayTrimmedInputPrefix, ...this.filteredSnapshot];
       }
       if (this.hasCallModelInputFilter) {
         return undefined;
@@ -1060,6 +1098,13 @@ export async function saveToSession(
   options: SessionPersistenceOptions = {},
 ): Promise<void> {
   const state = result.state;
+  validateSessionItemsBeforeSessionPreparation({
+    session,
+    state,
+    runItems: result.newItems,
+    sessionInputItems,
+    outputBlocked: options.outputBlocked === true,
+  });
   await prepareSessionHistoryTransactionsForRun(session, state, {
     serverManagesConversation: false,
   });
@@ -1118,18 +1163,7 @@ export async function saveStreamInputToSession(
     return;
   }
   const sanitizedInput = normalizeItemsForSessionPersistence(sessionInputItems);
-  const compactedInput = trimToLatestCompaction(sanitizedInput);
-  assertPersistableCompactionBoundary(compactedInput);
-  if (compactedInput[0]?.type === 'compaction') {
-    const previousItems = await getSessionItems(session, runContext);
-    await replaceSessionItemsWithRecovery(
-      session,
-      previousItems,
-      compactedInput,
-      runContext,
-    );
-    return;
-  }
+  assertPersistableCompactionBoundary(sanitizedInput);
   await addSessionItems(session, sanitizedInput, runContext);
 }
 
@@ -1140,6 +1174,13 @@ export async function saveStreamResultToSession(
   sessionInputItems?: AgentInputItem[],
 ): Promise<void> {
   const state = result.state;
+  validateSessionItemsBeforeSessionPreparation({
+    session,
+    state,
+    runItems: result.newItems,
+    sessionInputItems,
+    outputBlocked: options.outputBlocked === true,
+  });
   await prepareSessionHistoryTransactionsForRun(session, state, {
     serverManagesConversation: false,
   });
@@ -1611,8 +1652,6 @@ async function persistRunItemsToSession(options: {
     return;
   }
 
-  await reconcileLegacyCompactionSessionBeforeResume(session, state);
-
   const effectiveReasoningItemIdPolicy =
     getEffectiveSessionReasoningItemIdPolicy(session, state);
   const frozenReasoningItemIdPolicy = useHistoryTransaction
@@ -1633,6 +1672,11 @@ async function persistRunItemsToSession(options: {
     ...extraInputItems,
     ...extractOutputItemsFromRunItems(newRunItems, frozenReasoningItemIdPolicy),
   ];
+  const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
+  assertPersistableCompactionBoundary(sanitizedItems);
+
+  await reconcileLegacyCompactionSessionBeforeResume(session, state);
+
   const commitPersistenceState = () => {
     state._currentTurnPersistedItemCount =
       alreadyPersistedCount + processedRunItemCount;
@@ -1662,7 +1706,6 @@ async function persistRunItemsToSession(options: {
     return;
   }
 
-  const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
   if (useHistoryTransaction) {
     if (
       !isSessionHistoryTransactionAwareSession(session) ||
@@ -1724,19 +1767,7 @@ async function persistRunItemsToSession(options: {
     }
     return;
   }
-  const compactedItems = trimToLatestCompaction(sanitizedItems);
-  assertPersistableCompactionBoundary(compactedItems);
-  if (compactedItems[0]?.type === 'compaction') {
-    const previousItems = await getSessionItems(session, state._context);
-    await replaceSessionItemsWithRecovery(
-      session,
-      previousItems,
-      compactedItems,
-      state._context,
-    );
-  } else {
-    await addSessionItems(session, sanitizedItems, state._context);
-  }
+  await addSessionItems(session, sanitizedItems, state._context);
   commitPersistenceState();
   if (runCompaction) {
     await runCompactionOnSession(

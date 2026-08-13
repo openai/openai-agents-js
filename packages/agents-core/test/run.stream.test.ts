@@ -3733,9 +3733,9 @@ describe('Runner.run (streaming)', () => {
     });
   });
 
-  it('replaces session history from explicit compaction input when streaming fails', async () => {
+  it('preserves complete explicit compaction input when streaming fails', async () => {
     const previousSessionItem = user('previous session');
-    const discardedInput = user('discarded input');
+    const prefixInput = user('prefix input');
     const retainedInput = user('retained input');
     const compaction: protocol.CompactionItem = {
       type: 'compaction',
@@ -3759,7 +3759,7 @@ describe('Runner.run (streaming)', () => {
     const agent = new Agent({ name: 'StreamCompactedInputFailure', model });
     const result = await new Runner().run(
       agent,
-      [discardedInput, compaction, retainedInput],
+      [prefixInput, compaction, retainedInput],
       { stream: true, session },
     );
 
@@ -3768,7 +3768,12 @@ describe('Runner.run (streaming)', () => {
     );
 
     expect(model.firstCall?.request.input).toEqual([compaction, retainedInput]);
-    expect(sessionItems).toEqual([compaction, retainedInput]);
+    expect(sessionItems).toEqual([
+      previousSessionItem,
+      prefixInput,
+      compaction,
+      retainedInput,
+    ]);
   });
 
   it('does not retry streamed input after combined persistence reaches compaction', async () => {

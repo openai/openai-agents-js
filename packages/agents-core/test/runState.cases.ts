@@ -3859,6 +3859,7 @@ export function registerRunStateCompactionTests(): void {
           runCompaction: false,
         });
         expect((await session.getItems()).map((item) => item.type)).toEqual([
+          'function_call',
           'compaction',
         ]);
       });
@@ -4030,6 +4031,7 @@ export function registerRunStateCompactionTests(): void {
           runCompaction: false,
         });
         expect((await session.getItems()).map((item) => item.type)).toEqual([
+          'hosted_tool_call',
           'compaction',
         ]);
       });

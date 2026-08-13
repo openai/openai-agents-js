@@ -138,7 +138,7 @@ describe('sessionPersistence tracker (extended)', () => {
     expect(tracker.getItemsForPersistence()).toEqual([current]);
   });
 
-  it('remaps owned input after turn preparation trims a compaction prefix', () => {
+  it('preserves owned input after turn preparation trims a compaction prefix', () => {
     const session = makeSession();
     const tracker = createSessionPersistenceTracker({
       session,
@@ -171,7 +171,11 @@ describe('sessionPersistence tracker (extended)', () => {
     tracker.setPreparedTurnItems(preparedTurnInput, preparedTurnInput);
     tracker.recordTurnItems(preparedTurnInput, preparedTurnInput);
 
-    expect(tracker.getItemsForPersistence()).toEqual([compacted, current]);
+    expect(tracker.getItemsForPersistence()).toEqual([
+      discarded,
+      compacted,
+      current,
+    ]);
   });
 
   it('keeps current input ownership when context processing clones items', () => {

@@ -3612,8 +3612,11 @@ describe('saveToSession', () => {
       return 'session';
     }
 
-    async getItems(): Promise<AgentInputItem[]> {
-      return [...this.items];
+    async getItems(limit?: number): Promise<AgentInputItem[]> {
+      if (limit === undefined) {
+        return [...this.items];
+      }
+      return this.items.slice(Math.max(this.items.length - limit, 0));
     }
 
     async addItems(items: AgentInputItem[]): Promise<void> {
@@ -3629,33 +3632,62 @@ describe('saveToSession', () => {
     }
   }
 
-  it('uses a session compaction replacement capability without clearing identity', async () => {
+  class RecordingSession extends MemorySession {
+    getItemsLimits: Array<number | undefined> = [];
+    addedBatches: AgentInputItem[][] = [];
+    replacementBatches: AgentInputItem[][] = [];
+    clearCount = 0;
+
+    override async getItems(limit?: number): Promise<AgentInputItem[]> {
+      this.getItemsLimits.push(limit);
+      return super.getItems(limit);
+    }
+
+    override async addItems(items: AgentInputItem[]): Promise<void> {
+      this.addedBatches.push(structuredClone(items));
+      await super.addItems(items);
+    }
+
+    async replaceHistoryWithCompaction(items: AgentInputItem[]): Promise<void> {
+      this.replacementBatches.push(structuredClone(items));
+    }
+
+    override async clearSession(): Promise<void> {
+      this.clearCount += 1;
+      await super.clearSession();
+    }
+  }
+
+  class TransactionRecordingSession extends RecordingSession {
+    sessionIdCalls = 0;
+    transactionCalls = 0;
+
+    override async getSessionId(): Promise<string> {
+      this.sessionIdCalls += 1;
+      return super.getSessionId();
+    }
+
+    async applyHistoryTransaction(
+      _args: SessionHistoryTransactionArgs,
+    ): Promise<void> {
+      this.transactionCalls += 1;
+    }
+  }
+
+  it('appends the complete ordinary batch without replacing session history', async () => {
     const previousItem = fakeModelMessage('previous history');
+    const earlierGeneratedItem = fakeModelMessage('earlier generated history');
     const compaction: protocol.CompactionItem = {
       type: 'compaction',
       id: 'cmp_identity_preserving_session',
       encrypted_content: 'ciphertext',
     };
     const retainedItem = fakeModelMessage('retained history');
-    class IdentityPreservingSession extends MemorySession {
-      clearCount = 0;
-      replacementItems: AgentInputItem[] | undefined;
-
-      async replaceHistoryWithCompaction(
-        items: AgentInputItem[],
-      ): Promise<void> {
-        this.replacementItems = structuredClone(items);
-      }
-
-      async clearSession(): Promise<void> {
-        this.clearCount += 1;
-        await super.clearSession();
-      }
-    }
-    const session = new IdentityPreservingSession();
+    const session = new RecordingSession();
     session.items = [previousItem];
     const state = new RunState(new RunContext(), 'input', TEST_AGENT, 1);
     state._generatedItems = [
+      new MessageOutputItem(earlierGeneratedItem, TEST_AGENT),
       new CompactionItem(compaction, TEST_AGENT),
       new MessageOutputItem(retainedItem, TEST_AGENT),
     ];
@@ -3664,27 +3696,95 @@ describe('saveToSession', () => {
       runCompaction: false,
     });
 
-    expect(session.replacementItems).toEqual([compaction, retainedItem]);
+    expect(session.getItemsLimits).toEqual([]);
+    expect(session.addedBatches).toEqual([
+      [earlierGeneratedItem, compaction, retainedItem],
+    ]);
+    expect(session.replacementBatches).toEqual([]);
     expect(session.clearCount).toBe(0);
-    expect(session.items).toEqual([previousItem]);
+    expect(session.items).toEqual([
+      previousItem,
+      earlierGeneratedItem,
+      compaction,
+      retainedItem,
+    ]);
   });
 
   it('rejects malformed streaming compaction before mutating session history', async () => {
     const previousItem = fakeModelMessage('previous history');
-    const session = new MemorySession();
+    const session = new RecordingSession();
     session.items = [previousItem];
     const malformedCompaction = {
       type: 'compaction',
       id: 'cmp_missing_ciphertext',
     } as AgentInputItem;
+    const validCompaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_valid_after_malformed',
+      encrypted_content: 'ciphertext',
+    };
 
     await expect(
       saveStreamInputToSession(session, [
         malformedCompaction,
+        validCompaction,
         fakeModelMessage('new history'),
       ]),
     ).rejects.toThrow('Compaction item missing encrypted_content');
+    expect(session.getItemsLimits).toEqual([]);
+    expect(session.addedBatches).toEqual([]);
+    expect(session.clearCount).toBe(0);
+    expect(session.replacementBatches).toEqual([]);
     expect(session.items).toEqual([previousItem]);
+  });
+
+  it('appends the complete streaming input batch around a compaction marker', async () => {
+    const previousItem = fakeModelMessage('previous history');
+    const beforeCompaction = fakeModelMessage('before compaction');
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_stream_input_batch',
+      encrypted_content: 'ciphertext',
+    };
+    const afterCompaction = fakeModelMessage('after compaction');
+    const session = new RecordingSession();
+    session.items = [previousItem];
+
+    await saveStreamInputToSession(session, [
+      beforeCompaction,
+      compaction,
+      afterCompaction,
+    ]);
+
+    expect(session.addedBatches).toEqual([
+      [beforeCompaction, compaction, afterCompaction],
+    ]);
+    expect(session.replacementBatches).toEqual([]);
+    expect(session.clearCount).toBe(0);
+    expect(session.items).toEqual([
+      previousItem,
+      beforeCompaction,
+      compaction,
+      afterCompaction,
+    ]);
+  });
+
+  it('appends distinct identical streaming compaction batches', async () => {
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_repeated_stream_input',
+      encrypted_content: 'ciphertext',
+    };
+    const retainedItem = fakeModelMessage('repeated retained history');
+    const batch = [compaction, retainedItem];
+    const session = new RecordingSession();
+
+    await saveStreamInputToSession(session, batch);
+    await saveStreamInputToSession(session, batch);
+
+    expect(session.getItemsLimits).toEqual([]);
+    expect(session.addedBatches).toEqual([batch, batch]);
+    expect(session.items).toEqual([...batch, ...batch]);
   });
 
   it('rejects malformed result compaction before mutating session history', async () => {
@@ -3708,46 +3808,77 @@ describe('saveToSession', () => {
     expect(session.items).toEqual([previousItem]);
   });
 
-  it('does not reappend an accepted compaction replacement on retry', async () => {
-    const compaction: protocol.CompactionItem = {
+  it('validates current result compaction before legacy session reconciliation', async () => {
+    const call = functionCall('call_legacy_validation_order');
+    const legacyCompaction: protocol.CompactionItem = {
       type: 'compaction',
-      id: 'cmp_accepted_then_throw',
+      id: 'cmp_legacy_validation_order',
       encrypted_content: 'ciphertext',
     };
-    const retainedItem = fakeModelMessage('retained history');
-    class AcceptedThenThrowSession extends MemorySession {
-      replacementCount = 0;
-
-      async replaceHistoryWithCompaction(
-        items: AgentInputItem[],
-      ): Promise<void> {
-        this.replacementCount += 1;
-        this.items.push(...structuredClone(items));
-        throw new Error('write outcome unknown');
-      }
-    }
-    const session = new AcceptedThenThrowSession();
-    session.items = [fakeModelMessage('old history')];
+    const malformedCurrentCompaction = {
+      type: 'compaction',
+      id: 'cmp_malformed_current_validation_order',
+    } as protocol.CompactionItem;
     const state = new RunState(new RunContext(), 'input', TEST_AGENT, 1);
     state._generatedItems = [
-      new CompactionItem(compaction, TEST_AGENT),
-      new MessageOutputItem(retainedItem, TEST_AGENT),
+      new CompactionItem(legacyCompaction, TEST_AGENT),
+      new ToolCallItem(call, TEST_AGENT),
+      new CompactionItem(malformedCurrentCompaction, TEST_AGENT),
     ];
-    const result = new RunResult(state as any);
+    state._pendingLegacyCompactionSessionItems = [legacyCompaction, call];
+    state._currentTurnPersistedItemCount = 2;
+    const session = new RecordingSession();
+    session.items = [call];
 
     await expect(
-      saveToSession(session, [], result, { runCompaction: false }),
-    ).rejects.toThrow('write outcome unknown');
-    await expect(
-      saveToSession(session, [], result, { runCompaction: false }),
-    ).resolves.toBeUndefined();
-
-    expect(session.replacementCount).toBe(1);
-    expect(session.items.filter((item) => item.type === 'compaction')).toEqual([
-      compaction,
+      saveToSession(session, [], new RunResult(state as any), {
+        runCompaction: false,
+      }),
+    ).rejects.toThrow('Compaction item missing encrypted_content');
+    expect(session.getItemsLimits).toEqual([]);
+    expect(session.addedBatches).toEqual([]);
+    expect(session.replacementBatches).toEqual([]);
+    expect(session.clearCount).toBe(0);
+    expect(session.items).toEqual([call]);
+    expect(state._pendingLegacyCompactionSessionItems).toEqual([
+      legacyCompaction,
+      call,
     ]);
-    expect(state._currentTurnPersistedItemCount).toBe(2);
   });
+
+  it.each(['completed', 'streamed'] as const)(
+    'rejects malformed %s result before transaction-aware session access',
+    async (resultKind) => {
+      const malformedCompaction = {
+        type: 'compaction',
+        id: `cmp_malformed_${resultKind}_transaction`,
+      } as protocol.CompactionItem;
+      const state = new RunState(new RunContext(), 'input', TEST_AGENT, 1);
+      state._generatedItems = [
+        new CompactionItem(malformedCompaction, TEST_AGENT),
+      ];
+      const session = new TransactionRecordingSession();
+
+      const save =
+        resultKind === 'completed'
+          ? saveToSession(session, [], new RunResult(state as any), {
+              runCompaction: false,
+            })
+          : saveStreamResultToSession(
+              session,
+              new StreamedRunResult({ state: state as any }),
+              { runCompaction: false },
+            );
+
+      await expect(save).rejects.toThrow(
+        'Compaction item missing encrypted_content',
+      );
+      expect(session.sessionIdCalls).toBe(0);
+      expect(session.getItemsLimits).toEqual([]);
+      expect(session.transactionCalls).toBe(0);
+      expect(session.addedBatches).toEqual([]);
+    },
+  );
 
   it('retries a blocked-output transaction without duplicating committed tool effects', async () => {
     class AcceptedBlockedThenThrowSession extends TransactionMemorySession {
