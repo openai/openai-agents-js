@@ -90,6 +90,99 @@ describe('applyDiff', () => {
     );
   });
 
+  it('applies stacked anchors in sequence', () => {
+    const input =
+      [
+        'class BaseClass',
+        '    def search():',
+        '        pass',
+        '',
+        'class Subclass',
+        '    def search():',
+        '        pass',
+      ].join('\n') + '\n';
+    const diff = [
+      '@@ class BaseClass',
+      '@@     def search():',
+      '-        pass',
+      '+        raise NotImplementedError()',
+      '@@ class Subclass',
+      '@@     def search():',
+      '-        pass',
+      '+        raise NotImplementedError()',
+    ].join('\n');
+
+    expect(applyDiff(input, diff)).toBe(
+      [
+        'class BaseClass',
+        '    def search():',
+        '        raise NotImplementedError()',
+        '',
+        'class Subclass',
+        '    def search():',
+        '        raise NotImplementedError()',
+      ].join('\n') + '\n',
+    );
+  });
+
+  it('uses each stacked anchor to narrow the target', () => {
+    const input =
+      [
+        'class First',
+        '    def target():',
+        '        return 0',
+        '',
+        'class Second',
+        '    def helper():',
+        '        pass',
+        '',
+        '    def target():',
+        '        pass',
+      ].join('\n') + '\n';
+    const diff = [
+      '@@ class Second',
+      '@@     def target():',
+      '-        pass',
+      '+        return 1',
+    ].join('\n');
+
+    expect(applyDiff(input, diff)).toBe(
+      [
+        'class First',
+        '    def target():',
+        '        return 0',
+        '',
+        'class Second',
+        '    def helper():',
+        '        pass',
+        '',
+        '    def target():',
+        '        return 1',
+      ].join('\n') + '\n',
+    );
+  });
+
+  it('keeps unmatched stacked anchors advisory', () => {
+    const input = 'a\nb\n';
+    const diff = ['@@ nope', '@@ also-nope', '-b', '+B'].join('\n');
+
+    expect(applyDiff(input, diff)).toBe('a\nB\n');
+  });
+
+  it('accepts a trailing bare anchor in a stack', () => {
+    const input = 'class Only\n    def run():\n        pass\n';
+    const diff = [
+      '@@ class Only',
+      '@@',
+      '-        pass',
+      '+        return 1',
+    ].join('\n');
+
+    expect(applyDiff(input, diff)).toBe(
+      'class Only\n    def run():\n        return 1\n',
+    );
+  });
+
   it('treats line-number markers as context anchors', () => {
     const input = 'one\ntwo\n';
     const diff = ['@@ -1,2 +1,2 @@', ' one', '-two', '+2'].join('\n');
