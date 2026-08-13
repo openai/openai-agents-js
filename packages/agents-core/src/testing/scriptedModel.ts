@@ -733,20 +733,20 @@ async function* streamResponse(
     for (const part of item.content) {
       if (part.type === 'output_text') {
         throwIfAborted(signal, callIndex);
-        yield {
+        yield snapshotTestingValue<StreamEvent>({
           type: 'output_text_delta',
           itemId: item.id,
           delta: part.text,
           ...(typeof part.providerData === 'undefined'
             ? {}
             : { providerData: part.providerData }),
-        };
+        });
       }
     }
   }
 
   throwIfAborted(signal, callIndex);
-  yield {
+  yield snapshotTestingValue<StreamEvent>({
     type: 'response_done',
     response: {
       id: response.responseId!,
@@ -779,7 +779,7 @@ async function* streamResponse(
       providerData: response.providerData,
       output: response.output,
     },
-  } as StreamEvent;
+  } as StreamEvent);
 }
 
 function throwIfAborted(signal?: AbortSignal, callIndex?: number): void {
