@@ -12,7 +12,10 @@ import type {
   Session,
 } from '@openai/agents-core';
 import type { OpenAIResponsesCompactionResult } from '@openai/agents-core';
-import { logModelAndToolActionWarning } from '@openai/agents-core/utils/internal';
+import {
+  logModelAndToolActionWarning,
+  trimToLatestCompaction,
+} from '@openai/agents-core/utils/internal';
 import { DEFAULT_OPENAI_MODEL, getDefaultOpenAIClient } from '../defaults';
 import { getInputItems } from '../openaiResponsesModel';
 import {
@@ -205,7 +208,9 @@ export class OpenAIResponsesCompactionSession
     if (resolvedMode === 'previous_response_id') {
       compactRequest.previous_response_id = this.responseId!;
     } else {
-      compactRequest.input = getInputItems(sessionItems);
+      compactRequest.input = getInputItems(
+        trimToLatestCompaction(sessionItems),
+      );
     }
 
     const compacted = await this.client.responses.compact(compactRequest);

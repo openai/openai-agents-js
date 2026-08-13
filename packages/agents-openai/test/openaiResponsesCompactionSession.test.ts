@@ -297,6 +297,69 @@ describe('OpenAIResponsesCompactionSession', () => {
     });
   });
 
+  it('uses the latest logical compaction window in input mode', async () => {
+    const latestCompaction = {
+      type: 'compaction',
+      id: 'cmp_latest',
+      encrypted_content: 'encrypted-latest',
+    } as AgentInputItem;
+    const retainedItem = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'retained' }],
+    } as AgentInputItem;
+    const completeHistory = [
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'prefix' }],
+      },
+      {
+        type: 'compaction',
+        id: 'cmp_earlier',
+        encrypted_content: 'encrypted-earlier',
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'stale' }],
+      },
+      latestCompaction,
+      retainedItem,
+    ] as AgentInputItem[];
+    const compact = vi.fn().mockResolvedValue({
+      output: [],
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      },
+    });
+    let decisionSessionItems: AgentInputItem[] | undefined;
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      underlyingSession: new MemorySession({ initialItems: completeHistory }),
+      compactionMode: 'input',
+      shouldTriggerCompaction: ({ sessionItems }) => {
+        decisionSessionItems = sessionItems;
+        return true;
+      },
+    });
+
+    await expect(session.getItems()).resolves.toEqual(completeHistory);
+    await session.runCompaction();
+
+    expect(decisionSessionItems).toEqual(completeHistory);
+    expect(compact).toHaveBeenCalledTimes(1);
+    const [request] = compact.mock.calls[0] ?? [];
+    expect(request.previous_response_id).toBeUndefined();
+    expect(request.input).toHaveLength(2);
+    expect(request.input).toMatchObject([latestCompaction, retainedItem]);
+  });
+
   it('defaults to auto compaction and uses input without a response id', async () => {
     const compact = vi.fn().mockResolvedValue({
       output: [],

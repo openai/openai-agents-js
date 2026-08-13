@@ -3,6 +3,7 @@ export { recordToolUsage } from '../runner/usageTracking';
 export {
   assertValidCompactionItems,
   CompactionItemValidationError,
+  trimToLatestCompaction,
 } from '../runner/items';
 export { normalizeToolAllowedCallers } from './toolCallers';
 export { snapshotRawUsage } from './rawUsage';
