@@ -7,6 +7,7 @@ import {
 import { z } from 'zod';
 import { UserError } from '../../src/errors';
 import { JsonObjectSchema, JsonSchemaDefinitionEntry } from '../../src/types';
+import type { StandardSchemaWithJSON } from '../../src';
 
 describe('utils/tools', () => {
   it('normalizes function tool names', () => {
@@ -36,6 +37,54 @@ describe('utils/tools', () => {
     const res = getSchemaAndParserFromInputType(zodSchema, 'tool');
     expect(res.schema).toHaveProperty('type', 'object');
     expect(res.parser('{"bar":2}')).toEqual({ bar: 2 });
+  });
+
+  it('converts and validates Standard Schema tool input', () => {
+    const schema: StandardSchemaWithJSON<
+      { optional?: string | null },
+      { optional: string }
+    > = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        types: undefined as unknown as {
+          input: { optional?: string | null };
+          output: { optional: string };
+        },
+        jsonSchema: {
+          input: () => ({
+            type: 'object',
+            properties: { optional: { type: 'string' } },
+            additionalProperties: false,
+          }),
+          output: () => ({ type: 'object' }),
+        },
+        validate: (value) => ({
+          value: {
+            optional:
+              (value as { optional?: string } | undefined)?.optional ??
+              'default',
+          },
+        }),
+      },
+    };
+
+    const result = getSchemaAndParserFromInputType(schema, 'standard', {
+      strict: true,
+    });
+    expect(result.schema).toMatchObject({
+      type: 'object',
+      required: ['optional'],
+      additionalProperties: false,
+      properties: {
+        optional: {
+          anyOf: [{ type: 'string' }, { type: 'null' }],
+        },
+      },
+    });
+    expect(result.parser('{"optional":null}')).toEqual({
+      optional: 'default',
+    });
   });
 
   it('getSchemaAndParserFromInputType includes zod descriptions when available', () => {
@@ -203,6 +252,56 @@ describe('utils/tools', () => {
         required: ['required'],
         additionalProperties: false,
         $schema: 'http://json-schema.org/draft-07/schema#',
+      },
+    });
+  });
+
+  it('converts Standard Schema agent output from its input schema', () => {
+    const schema: StandardSchemaWithJSON<
+      { optional?: string },
+      { optional: string }
+    > = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        types: undefined as unknown as {
+          input: { optional?: string };
+          output: { optional: string };
+        },
+        jsonSchema: {
+          input: () => ({
+            type: 'object',
+            properties: { optional: { type: 'string' } },
+            additionalProperties: false,
+          }),
+          output: () => ({
+            type: 'object',
+            properties: { optional: { type: 'string' } },
+            required: ['optional'],
+            additionalProperties: false,
+          }),
+        },
+        validate: (value) => ({
+          value: {
+            optional: (value as { optional?: string }).optional ?? 'default',
+          },
+        }),
+      },
+    };
+
+    expect(convertAgentOutputTypeToSerializable(schema)).toMatchObject({
+      type: 'json_schema',
+      name: 'output',
+      strict: true,
+      schema: {
+        type: 'object',
+        properties: {
+          optional: {
+            anyOf: [{ type: 'string' }, { type: 'null' }],
+          },
+        },
+        required: ['optional'],
+        additionalProperties: false,
       },
     });
   });

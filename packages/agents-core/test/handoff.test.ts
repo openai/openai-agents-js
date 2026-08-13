@@ -5,6 +5,7 @@ import { ModelBehaviorError, UserError } from '../src/errors';
 import { z } from 'zod';
 import logger from '../src/logger';
 import { RunContext } from '../src/runContext';
+import type { StandardSchemaWithJSON } from '../src';
 
 function createSegmentedReferenceSchema(): Record<string, any> {
   const definitions: Record<string, Record<string, unknown>> = {
@@ -97,6 +98,45 @@ describe('handoff()', () => {
       );
     }
     errorSpy.mockRestore();
+  });
+
+  it('validates Standard Schema handoff input before invoking the callback', async () => {
+    type Input = { reason?: string };
+    type Output = { reason: string; normalized: true };
+    const inputType: StandardSchemaWithJSON<Input, Output> = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        types: undefined as unknown as { input: Input; output: Output },
+        jsonSchema: {
+          input: () => ({
+            type: 'object',
+            properties: { reason: { type: 'string' } },
+            additionalProperties: false,
+          }),
+          output: () => ({ type: 'object' }),
+        },
+        validate: (value) => ({
+          value: {
+            reason:
+              (value as Input | undefined)?.reason?.trim() ?? 'unspecified',
+            normalized: true,
+          },
+        }),
+      },
+    };
+    const onHandoff = vi.fn(
+      (_context: RunContext, _input: Output | undefined) => {},
+    );
+    const h = handoff(agent, { inputType, onHandoff });
+    const runContext = new RunContext();
+
+    await h.onInvokeHandoff(runContext, '{"reason":"  billing  "}');
+
+    expect(onHandoff).toHaveBeenCalledWith(runContext, {
+      reason: 'billing',
+      normalized: true,
+    });
   });
 
   it('applies overrides and inputFilter', () => {

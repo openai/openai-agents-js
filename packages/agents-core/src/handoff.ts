@@ -97,8 +97,7 @@ type HandoffEnabledPredicate<TContext = UnknownContext> = (args: {
 }) => boolean | Promise<boolean>;
 
 type HandoffEnabledOption<TContext> =
-  | boolean
-  | HandoffEnabledPredicate<TContext>;
+  boolean | HandoffEnabledPredicate<TContext>;
 
 export type HandoffEnabledFunction<TContext = UnknownContext> = (args: {
   runContext: RunContext<TContext>;
@@ -318,8 +317,8 @@ export type HandoffConfig<
   onHandoff?: OnHandoffCallback<TInputType>;
 
   /**
-   * The type of the input to the handoff. If provided as a Zod schema, the input will be validated
-   * against this type. Only relevant if you pass a function that takes an input
+   * The type of the input to the handoff. If provided as a validation schema, the input will be
+   * validated against this type. Only relevant if you pass a function that takes an input.
    */
   inputType?: TInputType;
 
@@ -351,7 +350,7 @@ export function handoff<
   agent: Agent<TContext, TOutput>,
   config: HandoffConfig<TInputType, TContext> = {},
 ) {
-  let parser: ((input: string) => Promise<any>) | undefined = undefined;
+  let parser: ((input: string) => any | Promise<any>) | undefined = undefined;
 
   const inputType = config.inputType;
   const hasInputType = inputType != null;

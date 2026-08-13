@@ -58,7 +58,7 @@ import {
   isAbortError,
   isSiblingCancellationSignal,
 } from '../utils/abortSignals';
-import { isZodObject } from '../utils';
+import { isAsyncStandardSchemaValidationError } from '../utils/standardSchema';
 import { toSmartString } from '../utils/smartString';
 import { withFunctionSpan, withHandoffSpan } from '../tracing/createSpans';
 import { getCurrentTrace } from '../tracing/context';
@@ -344,8 +344,12 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
           details: { toolCall: toolRun.toolCall },
         },
         disposition: parseResult.preparedInput?.disposition,
+        fatal: isAsyncStandardSchemaValidationError(parseResult.error),
       });
       startedInvalidInputFailures.push(failure);
+      if (failure.fatal) {
+        throw failure.error;
+      }
     }
 
     const dynamicApprovalPolicy = hasDynamicFunctionToolApprovalPolicy(
@@ -560,11 +564,7 @@ function parseToolArguments<TContext>(
   try {
     let approvalArgs: any = toolRun.toolCall.arguments;
     if (toolRun.tool.parameters) {
-      if (isZodObject(toolRun.tool.parameters)) {
-        approvalArgs = toolRun.tool.parameters.parse(approvalArgs);
-      } else {
-        approvalArgs = JSON.parse(approvalArgs);
-      }
+      approvalArgs = JSON.parse(toolRun.toolCall.arguments);
     }
     const preparedInput = prepareFunctionToolInput(
       toolRun.tool,
@@ -576,6 +576,33 @@ function parseToolArguments<TContext>(
         error: preparedInput.result.error,
         approvalArgs,
         preparedInput,
+      };
+    }
+    if (preparedInput?.validationMode === 'standard') {
+      approvalArgs = preparedInput?.result.success
+        ? preparedInput.result.value
+        : approvalArgs;
+      const executionPreparedInput = prepareFunctionToolInput(
+        toolRun.tool,
+        toolRun.toolCall.arguments,
+      );
+      if (!executionPreparedInput) {
+        throw new Error(
+          'Standard Schema input could not be prepared for execution.',
+        );
+      }
+      if (!executionPreparedInput.result.success) {
+        return {
+          success: false,
+          error: executionPreparedInput.result.error,
+          approvalArgs,
+          preparedInput: executionPreparedInput,
+        };
+      }
+      return {
+        success: true,
+        approvalArgs,
+        preparedInput: executionPreparedInput,
       };
     }
     return { success: true, approvalArgs, preparedInput };

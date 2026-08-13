@@ -48,6 +48,7 @@
     "examples:streamed:human-in-the-loop": "pnpm -F agent-patterns start:human-in-the-loop-stream",
     "examples:routing": "pnpm -F agent-patterns start:routing",
     "examples:customer-service": "pnpm -F customer-service start",
+    "examples:standard-schema": "pnpm -F standard-schema start",
     "examples:realtime-demo": "pnpm -F realtime-demo dev",
     "examples:realtime-next": "pnpm -F realtime-next dev",
     "examples:research-bot": "pnpm -F research-bot start",

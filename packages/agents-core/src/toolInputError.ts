@@ -12,12 +12,14 @@ type InvalidToolInputFailureOptions = {
   originalError: unknown;
   toolInvocation?: ToolInvocationErrorContext;
   disposition?: InvalidToolInputDisposition;
+  fatal?: boolean;
 };
 
 export type InvalidToolInputFailure = {
   error: InvalidToolInputError;
   redacted: boolean;
   disposition: InvalidToolInputDisposition;
+  fatal: boolean;
 };
 
 export type InvalidToolInputDisposition = {
@@ -42,6 +44,7 @@ export function createInvalidToolInputFailure({
   originalError,
   toolInvocation,
   disposition: requestedDisposition,
+  fatal = false,
 }: InvalidToolInputFailureOptions): InvalidToolInputFailure {
   const disposition =
     requestedDisposition ?? createInvalidToolInputDisposition();
@@ -62,6 +65,7 @@ export function createInvalidToolInputFailure({
     error,
     redacted,
     disposition,
+    fatal,
   };
   invalidToolInputFailures.set(error, failure);
   return failure;

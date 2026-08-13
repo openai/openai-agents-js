@@ -242,6 +242,7 @@ export {
   ToolAllowedCaller,
   ToolAllowedCallers,
 } from './tool';
+export type { StandardSchemaWithJSON } from './utils/standardSchema';
 export type {
   ClientToolSearchExecutor,
   ClientToolSearchExecutorArgs,

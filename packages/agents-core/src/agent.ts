@@ -27,6 +27,7 @@ import type {
   AgentInputItem,
   ResolvedAgentOutput,
   JsonSchemaDefinition,
+  JsonObjectSchema,
   HandoffsOutput,
   Expand,
 } from './types';
@@ -56,7 +57,16 @@ import {
   getInheritedAgentToolRunConfig,
   mergeAgentToolRunConfig,
 } from './agentToolRunConfig';
-import type { ZodObjectLike } from './utils/zodCompat';
+import type { StandardSchemaWithJSON } from './utils/standardSchema';
+import {
+  assertStandardSchemaObjectRoot,
+  hasStandardSchemaMarker,
+  isStandardSchemaWithJSON,
+  standardSchemaToJsonSchema,
+  validateStandardSchema,
+  unsupportedStandardSchemaError,
+} from './utils/standardSchema';
+import { prepareOpenAIStrictToolSchema } from './utils/strictToolSchema';
 import { saveAgentToolRunResult } from './agentToolRunResults';
 import { registerAgentToolSourceAgent } from './agentToolSourceRegistry';
 import type { AgentToolInvocation } from './agentToolInvocation';
@@ -67,6 +77,7 @@ import {
 import { setRunnerInvocationSpanParent } from './runner/invocationContext';
 import type { Span } from './tracing';
 import { hasDefinitelyDifferentOutputTypes } from './agentOutputTypeWarning';
+import type { ZodObjectLike } from './utils/zodCompat';
 
 type CompletedRunResult<TContext, TAgent extends Agent<TContext, any>> = (
   RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>
@@ -244,6 +255,7 @@ export type ToolsToFinalOutputResult =
 export type AgentOutputType<HandoffOutputType = UnknownContext> =
   | TextOutput
   | ZodObjectLike
+  | StandardSchemaWithJSON<any, any>
   | JsonSchemaDefinition
   | HandoffsOutput<HandoffOutputType>;
 
@@ -563,6 +575,24 @@ export class Agent<
     this.inputGuardrails = config.inputGuardrails ?? [];
     this.outputGuardrails = config.outputGuardrails ?? [];
     if (config.outputType) {
+      if (
+        !isZodObject(config.outputType) &&
+        hasStandardSchemaMarker(config.outputType) &&
+        !isStandardSchemaWithJSON(config.outputType)
+      ) {
+        throw unsupportedStandardSchemaError();
+      }
+      if (
+        !isZodObject(config.outputType) &&
+        isStandardSchemaWithJSON(config.outputType)
+      ) {
+        const inputSchema = standardSchemaToJsonSchema(
+          config.outputType,
+          'input',
+        );
+        assertStandardSchemaObjectRoot(inputSchema, 'Agent output');
+        prepareOpenAIStrictToolSchema(inputSchema as JsonObjectSchema<any>);
+      }
       this.outputType = config.outputType;
     }
     this.toolUseBehavior = config.toolUseBehavior ?? 'run_llm_again';
@@ -634,8 +664,10 @@ export class Agent<
       return 'text';
     } else if (isZodObject(this.outputType)) {
       return 'ZodOutput';
+    } else if (isStandardSchemaWithJSON(this.outputType)) {
+      return 'StandardSchemaOutput';
     } else if (typeof this.outputType === 'object') {
-      return this.outputType.name;
+      return (this.outputType as JsonSchemaDefinition).name;
     }
 
     throw new Error(`Unknown output type: ${this.outputType}`);
@@ -1134,11 +1166,33 @@ export class Agent<
       return output as ResolvedAgentOutput<TOutput>;
     }
 
-    if (typeof this.outputType === 'object') {
+    if (
+      typeof this.outputType === 'object' ||
+      typeof this.outputType === 'function'
+    ) {
       const parsed = JSON.parse(output);
 
       if (isZodObject(this.outputType)) {
         return this.outputType.parse(parsed) as ResolvedAgentOutput<TOutput>;
+      }
+
+      if (isStandardSchemaWithJSON(this.outputType)) {
+        const inputSchema = standardSchemaToJsonSchema(
+          this.outputType,
+          'input',
+        );
+        assertStandardSchemaObjectRoot(inputSchema, 'Agent output');
+        const normalized = prepareOpenAIStrictToolSchema(
+          inputSchema as JsonObjectSchema<any>,
+        ).normalizeInput(parsed);
+        return validateStandardSchema(
+          this.outputType,
+          normalized,
+        ) as ResolvedAgentOutput<TOutput>;
+      }
+
+      if (hasStandardSchemaMarker(this.outputType)) {
+        throw unsupportedStandardSchemaError();
       }
 
       return parsed as ResolvedAgentOutput<TOutput>;

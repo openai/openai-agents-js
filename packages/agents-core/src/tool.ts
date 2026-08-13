@@ -36,6 +36,14 @@ import { normalizeHostedMcpRequireApproval } from './utils/mcpApproval';
 import * as ProviderData from './types/providerData';
 import * as protocol from './types/protocol';
 import type { ZodInfer, ZodObjectLike } from './utils/zodCompat';
+import type {
+  StandardSchemaOutput,
+  StandardSchemaWithJSON,
+} from './utils/standardSchema';
+import {
+  isAsyncStandardSchemaValidationError,
+  isStandardSchemaWithJSON,
+} from './utils/standardSchema';
 import {
   FUNCTION_TOOL_NAMESPACE,
   FUNCTION_TOOL_NAMESPACE_DESCRIPTION,
@@ -97,6 +105,7 @@ const STATIC_FUNCTION_TOOL_APPROVAL_POLICIES = new WeakSet<
 type FunctionToolInputParserRegistration = {
   parser: (input: string) => any;
   token: object;
+  validationMode: 'standard' | 'other';
 };
 
 type FunctionToolInputParseResult =
@@ -106,6 +115,7 @@ export type FunctionToolPreparedInput = {
   consumed: boolean;
   input: string;
   token: object;
+  validationMode: 'standard' | 'other';
   disposition?: InvalidToolInputDisposition;
   result: { success: true; value: any } | { success: false; error: unknown };
 };
@@ -144,6 +154,7 @@ export function prepareFunctionToolInput(
     consumed: false,
     input,
     token: registration.token,
+    validationMode: registration.validationMode,
   };
   if (result.success) {
     return { ...base, result };
@@ -1502,32 +1513,38 @@ export type FunctionToolResult<
 /**
  * The parameters of a tool.
  *
- * This can be a Zod schema, a JSON schema or undefined.
+ * This can be a supported Standard Schema, a Zod schema, a JSON schema or undefined.
  *
- * If a Zod schema is provided, the arguments to the tool will automatically be parsed and validated
- * against the schema.
+ * If a supported Standard Schema or Zod schema is provided, the arguments to the tool will
+ * automatically be parsed and validated against the schema.
  *
  * If a JSON schema is provided, the arguments to the tool will be passed as is.
  *
  * If undefined is provided, the arguments to the tool will be passed as a string.
  */
 export type ToolInputParameters =
-  undefined | ZodObjectLike | JsonObjectSchema<any>;
+  | undefined
+  | ZodObjectLike
+  | StandardSchemaWithJSON<any, any>
+  | JsonObjectSchema<any>;
 
 /**
  * The parameters of a tool that has strict mode enabled.
  *
- * This can be a Zod schema, a JSON schema or undefined.
+ * This can be a supported Standard Schema, a Zod schema, a JSON schema or undefined.
  *
- * If a Zod schema is provided, the arguments to the tool will automatically be parsed and validated
- * against the schema.
+ * If a supported Standard Schema or Zod schema is provided, the arguments to the tool will
+ * automatically be parsed and validated against the schema.
  *
  * If a JSON schema is provided, the arguments to the tool will be parsed as JSON but not validated.
  *
  * If undefined is provided, the arguments to the tool will be passed as a string.
  */
 export type ToolInputParametersStrict =
-  undefined | ZodObjectLike | JsonObjectSchemaStrict<any>;
+  | undefined
+  | ZodObjectLike
+  | StandardSchemaWithJSON<any, any>
+  | JsonObjectSchemaStrict<any>;
 
 /**
  * The parameters of a tool that has strict mode disabled.
@@ -1566,15 +1583,17 @@ type ToolFallbackResult<TOutputSchema extends ToolOutputSchema | undefined> =
  *
  * The type of the arguments are derived from the parameters passed to the tool definition.
  *
- * If the parameters are passed as a JSON schema the type is `unknown`. For Zod schemas it will
- * match the inferred Zod type. Otherwise the type is `string`
+ * If the parameters are passed as a JSON schema the type is `unknown`. For Standard Schema and
+ * Zod schemas it will match the inferred validation output type. Otherwise the type is `string`.
  */
 export type ToolExecuteArgument<TParameters extends ToolInputParameters> =
-  TParameters extends ZodObjectLike
-    ? ZodInfer<TParameters>
-    : TParameters extends JsonObjectSchema<any>
-      ? unknown
-      : string;
+  TParameters extends StandardSchemaWithJSON<any, any>
+    ? StandardSchemaOutput<TParameters>
+    : TParameters extends ZodObjectLike
+      ? ZodInfer<TParameters>
+      : TParameters extends JsonObjectSchema<any>
+        ? unknown
+        : string;
 
 /**
  * The function to invoke when the tool is called.
@@ -1709,9 +1728,8 @@ type StrictToolOptionsBase<
   description: string;
 
   /**
-   * A Zod schema or JSON schema describing the parameters of the tool.
-   * If a Zod schema is provided, the arguments to the tool will automatically be parsed and validated
-   * against the schema.
+   * A supported Standard Schema, Zod schema, or JSON schema describing the parameters of the tool.
+   * Standard Schema and Zod parameters are automatically parsed and validated synchronously.
    */
   parameters: TParameters;
 
@@ -2228,6 +2246,11 @@ export function tool<
   if (!strictMode && isZodObject(options.parameters)) {
     throw new UserError('Strict mode is required for Zod parameters');
   }
+  if (!strictMode && isStandardSchemaWithJSON(options.parameters)) {
+    throw new UserError(
+      'Strict mode is required for Standard Schema parameters',
+    );
+  }
   const hasOutputSchema = typeof options.outputSchema !== 'undefined';
   const toolErrorFunction =
     typeof options.errorFunction === 'undefined'
@@ -2349,6 +2372,7 @@ export function tool<
           canUsePreparedInput && preparedInput
             ? preparedInput.disposition
             : undefined,
+        fatal: isAsyncStandardSchemaValidationError(parseResult.error),
       });
       if (failure.redacted || logger.dontLogToolData) {
         refreshInvalidToolInputFailure(failure);
@@ -2396,6 +2420,10 @@ export function tool<
           isAbortError(error) ||
           details.signal.reason instanceof ToolTimeoutError)
       ) {
+        throw error;
+      }
+
+      if (getInvalidToolInputFailure(error)?.fatal) {
         throw error;
       }
 
@@ -2497,6 +2525,11 @@ export function tool<
   functionToolInputParsers.set(invoke, {
     parser,
     token: inputParserToken,
+    validationMode:
+      !isZodObject(options.parameters) &&
+      isStandardSchemaWithJSON(options.parameters)
+        ? 'standard'
+        : 'other',
   });
 
   const isEnabled: ToolEnabledFunction<Context> =
