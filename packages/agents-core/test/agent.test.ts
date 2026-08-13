@@ -1,20 +1,27 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi, afterEach } from 'vitest';
 import { Agent } from '../src/agent';
 import { RunContext } from '../src/runContext';
 import { Handoff, handoff } from '../src/handoff';
 import { tool } from '../src/tool';
 import { z } from 'zod';
-import { JsonSchemaDefinition, setDefaultModelProvider } from '../src';
+import {
+  JsonSchemaDefinition,
+  run,
+  setDefaultModelProvider,
+  type StandardSchemaWithJSON,
+} from '../src';
 import type { AgentInputItem } from '../src/types';
 import {
   ScriptedModelProvider,
   TEST_MODEL_RESPONSE_BASIC,
   TEST_MODEL_RESPONSE_WITH_FUNCTION,
+  fakeModelMessage,
 } from './stubs';
 import { Runner, RunConfig } from '../src/run';
 import { RunState } from '../src/runState';
 import logger from '../src/logger';
 import { ScriptedModel, modelResponse } from '../src/testing';
+import { Usage } from '../src/usage';
 
 describe('Agent', () => {
   afterEach(() => {
@@ -2404,6 +2411,242 @@ describe('Agent', () => {
     });
     const result1 = agent.processFinalOutput('{"message": "Hi, how are you?"}');
     expect(result1).toEqual({ message: 'Hi, how are you?' });
+  });
+  it('keeps Zod schemas on the Zod path without Standard JSON Schema', () => {
+    const outputType = z.object({ message: z.string() });
+    const zodWithoutStandardJsonSchema = new Proxy(outputType, {
+      get(target, property, receiver) {
+        if (property === '~standard') {
+          return {
+            version: 1,
+            vendor: 'zod',
+            validate: (target as any)['~standard'].validate,
+          };
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const agent = new Agent({
+      name: 'Test Agent',
+      instructions: 'You do tests.',
+      outputType: zodWithoutStandardJsonSchema,
+    });
+
+    expect(agent.outputSchemaName).toBe('ZodOutput');
+    expect(agent.processFinalOutput('{"message":"ok"}')).toEqual({
+      message: 'ok',
+    });
+  });
+  it('should process and infer Standard Schema final output', () => {
+    type Input = { value?: string | null };
+    type Output = { value: string; length: number };
+    const outputType: StandardSchemaWithJSON<Input, Output> = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        types: undefined as unknown as { input: Input; output: Output },
+        jsonSchema: {
+          input: () => ({
+            type: 'object',
+            properties: { value: { type: 'string' } },
+            additionalProperties: false,
+          }),
+          output: () => ({ type: 'object' }),
+        },
+        validate: (input) => {
+          const value = (input as Input | undefined)?.value ?? 'default';
+          return { value: { value, length: value.length } };
+        },
+      },
+    };
+    const agent = new Agent({
+      name: 'Test Agent',
+      instructions: 'You do tests.',
+      outputType,
+    });
+
+    const result = agent.processFinalOutput('{"value": null}');
+    expectTypeOf(result).toEqualTypeOf<Output>();
+    expect(result).toEqual({ value: 'default', length: 7 });
+  });
+
+  it('rejects asynchronous Standard Schema final-output validation when used', () => {
+    const validate = vi.fn(async (value: unknown) => ({
+      value: value as object,
+    }));
+    const outputType: StandardSchemaWithJSON<object> = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        types: undefined as unknown as { input: object; output: object },
+        jsonSchema: {
+          input: () => ({
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          }),
+          output: () => ({ type: 'object' }),
+        },
+        validate,
+      },
+    };
+    const agent = new Agent({
+      name: 'Test Agent',
+      instructions: 'You do tests.',
+      outputType,
+    });
+
+    expect(validate).not.toHaveBeenCalled();
+    expect(() => agent.processFinalOutput('{}')).toThrow(
+      /validation returned a Promise/,
+    );
+    expect(validate).toHaveBeenCalledOnce();
+  });
+  it('does not recover asynchronous Standard Schema final-output validation', async () => {
+    const outputType: StandardSchemaWithJSON<object> = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        types: undefined as unknown as { input: object; output: object },
+        jsonSchema: {
+          input: () => ({
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          }),
+          output: () => ({ type: 'object' }),
+        },
+        validate: async (value) => ({ value: value as object }),
+      },
+    };
+    const agent = new Agent({
+      name: 'Async output Agent',
+      instructions: 'Return structured output.',
+      outputType,
+      model: new ScriptedModel([
+        modelResponse({
+          output: [fakeModelMessage('{}')],
+          usage: new Usage(),
+        }),
+      ]),
+    });
+    const invalidFinalOutput = vi.fn(() => ({ finalOutput: {} }));
+
+    await expect(
+      run(agent, 'test', {
+        errorHandlers: { invalidFinalOutput },
+      }),
+    ).rejects.toThrow(/validation returned a Promise/);
+    expect(invalidFinalOutput).not.toHaveBeenCalled();
+  });
+  it('processes callable Standard Schema final output', () => {
+    const standard = {
+      version: 1 as const,
+      vendor: 'test',
+      types: undefined as unknown as {
+        input: { value: string };
+        output: { value: string };
+      },
+      jsonSchema: {
+        input: () => ({
+          type: 'object',
+          properties: { value: { type: 'string' } },
+          required: ['value'],
+          additionalProperties: false,
+        }),
+        output: () => ({ type: 'object' }),
+      },
+      validate: (value: unknown) => ({
+        value: value as { value: string },
+      }),
+    };
+    const outputType = Object.assign(() => {}, { '~standard': standard });
+    const agent = new Agent({
+      name: 'Test Agent',
+      instructions: 'You do tests.',
+      outputType,
+    });
+
+    expect(agent.processFinalOutput('{"value":"ok"}')).toEqual({
+      value: 'ok',
+    });
+  });
+  it('rejects input-dependent asynchronous final-output validation', () => {
+    const validate = vi.fn((value: unknown) =>
+      typeof value === 'undefined'
+        ? { value: {} }
+        : Promise.resolve({ value: value as object }),
+    );
+    const outputType: StandardSchemaWithJSON<object> = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        types: undefined as unknown as { input: object; output: object },
+        jsonSchema: {
+          input: () => ({
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          }),
+          output: () => ({ type: 'object' }),
+        },
+        validate,
+      },
+    };
+    const agent = new Agent({
+      name: 'Test Agent',
+      instructions: 'You do tests.',
+      outputType,
+    });
+
+    expect(validate).not.toHaveBeenCalled();
+    expect(() => agent.processFinalOutput('{}')).toThrow(
+      /validation returned a Promise/,
+    );
+    expect(validate).toHaveBeenCalledOnce();
+    expect(validate).toHaveBeenCalledWith({});
+  });
+  it('rejects validation-only Standard Schema agent output', () => {
+    expect(
+      () =>
+        new Agent({
+          name: 'Test Agent',
+          instructions: 'You do tests.',
+          outputType: {
+            '~standard': {
+              version: 1,
+              vendor: 'test',
+              validate: (value: unknown) => ({ value }),
+            },
+          } as never,
+        }),
+    ).toThrow(/must provide both.*validate.*jsonSchema/);
+  });
+  it('rejects unsupported Standard JSON Schema at Agent construction', () => {
+    const outputType: StandardSchemaWithJSON<object> = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        types: undefined as unknown as { input: object; output: object },
+        jsonSchema: {
+          input: () => ({
+            type: 'object',
+            allOf: [{ type: 'object' }],
+          }),
+          output: () => ({ type: 'object' }),
+        },
+        validate: (value) => ({ value: value as object }),
+      },
+    };
+
+    expect(
+      () =>
+        new Agent({
+          name: 'Unsupported output Agent',
+          instructions: 'Return structured output.',
+          outputType,
+        }),
+    ).toThrow(/unsupported keyword `allOf`/);
   });
   it('should process final output (json schema)', async () => {
     const agent = new Agent({

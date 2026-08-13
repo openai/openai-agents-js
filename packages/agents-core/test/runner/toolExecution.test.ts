@@ -81,6 +81,7 @@ import * as protocol from '../../src/types/protocol';
 import { AgentToolUseTracker } from '../../src/runner/toolUseTracker';
 import { runWithSiblingCancellation } from '../../src/runner/siblingCancellation';
 import { z } from 'zod';
+import type { StandardSchemaWithJSON } from '../../src';
 import {
   defaultProcessor,
   TracingProcessor,
@@ -8957,6 +8958,143 @@ describe('executeShellActions', () => {
         type: 'function_output',
         output: 'prepared',
       });
+    });
+
+    it('validates isolated Standard Schema outputs for approval and invocation', async () => {
+      type Input = { value?: string | null };
+      class Output {
+        readonly normalized = true;
+
+        constructor(public value: string) {}
+
+        read() {
+          return this.value;
+        }
+      }
+      const validate = vi.fn((input: unknown) => ({
+        value: new Output((input as Input | undefined)?.value ?? 'default'),
+      }));
+      const parameters: StandardSchemaWithJSON<Input, Output> = {
+        '~standard': {
+          version: 1,
+          vendor: 'test',
+          types: undefined as unknown as { input: Input; output: Output },
+          jsonSchema: {
+            input: () => ({
+              type: 'object',
+              properties: { value: { type: 'string' } },
+              additionalProperties: false,
+            }),
+            output: () => ({ type: 'object' }),
+          },
+          validate,
+        },
+      };
+      const needsApproval = vi.fn(async (_context, input: Output) => {
+        expect(input).toBeInstanceOf(Output);
+        expect(input.read()).toBe('default');
+        input.value = 'mutated by approval';
+        return false;
+      });
+      const execute = vi.fn(async (input: Output) => input.read());
+      const t = tool({
+        name: 'standard_schema_single_parse',
+        description: 'Validate Standard Schema input once.',
+        parameters,
+        needsApproval,
+        execute,
+      }) as unknown as FunctionTool;
+      const inputToolCall = {
+        ...toolCall,
+        name: 'standard_schema_single_parse',
+        arguments: JSON.stringify({ value: null }),
+      };
+
+      const result = await executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall: inputToolCall, tool: t }],
+        runner,
+        state,
+      );
+
+      const parsed = new Output('default');
+      expect(validate).toHaveBeenCalledTimes(2);
+      expect(needsApproval).toHaveBeenCalledWith(
+        state._context,
+        expect.any(Output),
+        toolCall.callId,
+      );
+      expect(execute).toHaveBeenCalledWith(
+        parsed,
+        state._context,
+        expect.objectContaining({ toolCall: inputToolCall }),
+      );
+      expect(result[0]).toMatchObject({
+        type: 'function_output',
+        output: 'default',
+      });
+    });
+
+    it('rejects async Standard Schema validation before runner callbacks', async () => {
+      const asyncValidationError = new Error('async validation failed');
+      const validate = vi
+        .fn()
+        .mockReturnValueOnce({ value: {} })
+        .mockReturnValueOnce(Promise.reject(asyncValidationError));
+      const parameters: StandardSchemaWithJSON<object> = {
+        '~standard': {
+          version: 1,
+          vendor: 'test',
+          types: undefined as unknown as { input: object; output: object },
+          jsonSchema: {
+            input: () => ({
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            }),
+            output: () => ({ type: 'object' }),
+          },
+          validate,
+        },
+      };
+      const needsApproval = vi.fn(async () => true);
+      const inputGuardrail = defineToolInputGuardrail({
+        name: 'async_standard_schema_guardrail',
+        run: vi.fn(async () => ToolGuardrailFunctionOutputFactory.allow()),
+      });
+      const execute = vi.fn(async () => 'unreachable');
+      const t = tool({
+        name: 'async_standard_schema',
+        description: 'Reject asynchronous validation.',
+        parameters,
+        needsApproval,
+        inputGuardrails: [inputGuardrail],
+        execute,
+        errorFunction: null,
+      }) as unknown as FunctionTool;
+      const preApprovalRunner = new Runner({
+        tracingDisabled: true,
+        toolExecution: { preApprovalInputGuardrails: true },
+      });
+
+      const error = await executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall, tool: t }],
+        preApprovalRunner,
+        state,
+      ).catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(ToolCallError);
+      expect((error as ToolCallError).error).toBeInstanceOf(
+        InvalidToolInputError,
+      );
+      expect(validate).toHaveBeenCalledTimes(2);
+      expect(needsApproval).not.toHaveBeenCalled();
+      expect(inputGuardrail.run).not.toHaveBeenCalled();
+      expect(state._toolInputGuardrailResults).toHaveLength(0);
+      expect(execute).not.toHaveBeenCalled();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(JSON.stringify(error)).not.toContain(asyncValidationError.message);
     });
 
     it('does not trust prepared input across a forwarding invoke wrapper', async () => {

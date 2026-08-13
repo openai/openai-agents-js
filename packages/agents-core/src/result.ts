@@ -265,7 +265,7 @@ class RunResultBase<
 
   /**
    * The final output of the agent. If the output type was set to anything other than `text`,
-   * this will be parsed either as JSON or using the Zod schema you provided.
+   * this will be parsed either as JSON or using the validation schema you provided.
    */
   get finalOutput(): ResolvedAgentOutput<TAgent['outputType']> | undefined {
     if (this.state._currentStep?.type === 'next_step_final_output') {

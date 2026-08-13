@@ -101,7 +101,7 @@
   "devDependencies": {
     "@types/debug": "^4.1.12",
     "vite": "^6.4.3",
-    "zod": "^4.0.0"
+    "zod": "^4.2.0"
   },
   "files": [
     "dist"

@@ -26,6 +26,7 @@ import {
 } from '../src/errors';
 import type { JsonObjectSchema, JsonObjectSchemaNonStrict } from '../src/types';
 import logger from '../src/logger';
+import type { StandardSchemaWithJSON } from '../src';
 
 interface Bar {
   bar: string;
@@ -132,6 +133,188 @@ function captureToolConstructionError(callback: () => unknown): unknown {
 }
 
 describe('Tool', () => {
+  it('accepts Standard Schema parameters and infers the validated output', async () => {
+    type Input = { value?: string | null };
+    type Output = { value: string; length: number };
+    const parameters: StandardSchemaWithJSON<Input, Output> = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        types: undefined as unknown as { input: Input; output: Output },
+        jsonSchema: {
+          input: () => ({
+            type: 'object',
+            properties: { value: { type: 'string' } },
+            additionalProperties: false,
+          }),
+          output: () => ({
+            type: 'object',
+            properties: {
+              value: { type: 'string' },
+              length: { type: 'number' },
+            },
+            required: ['value', 'length'],
+            additionalProperties: false,
+          }),
+        },
+        validate: (input) => {
+          const value = (input as Input | undefined)?.value ?? 'default';
+          return { value: { value, length: value.length } };
+        },
+      },
+    };
+    const execute = vi.fn(async (input: Output) => input.length);
+    const t = tool({
+      name: 'standard_schema',
+      description: 'Use Standard Schema parameters.',
+      parameters,
+      execute,
+    });
+
+    await expect(
+      t.invoke(new RunContext(), JSON.stringify({ value: null })),
+    ).resolves.toBe(7);
+    expect(execute).toHaveBeenCalledWith(
+      { value: 'default', length: 7 },
+      expect.any(RunContext),
+      undefined,
+    );
+
+    // @ts-expect-error Standard Schema validation output has a numeric length.
+    tool({
+      name: 'standard_schema_type_error',
+      description: 'Check Standard Schema output inference.',
+      parameters,
+      execute: async ({ length }: { length: string }) => length,
+    });
+  });
+
+  it('rejects unsupported Standard JSON Schema before tool execution', () => {
+    const parameters: StandardSchemaWithJSON<object> = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        types: undefined as unknown as { input: object; output: object },
+        jsonSchema: {
+          input: () => ({
+            type: 'object',
+            allOf: [
+              { type: 'object', properties: { left: { type: 'string' } } },
+              { type: 'object', properties: { right: { type: 'string' } } },
+            ],
+          }),
+          output: () => ({ type: 'object' }),
+        },
+        validate: (value) => ({ value: value as object }),
+      },
+    };
+
+    expect(() =>
+      tool({
+        name: 'unsupported_standard_schema',
+        description: 'Reject unsupported schema constructs.',
+        parameters,
+        execute: async () => 'unreachable',
+      }),
+    ).toThrow(/unsupported keyword `allOf`/);
+  });
+
+  it('rejects validation-only Standard Schema values', () => {
+    const parameters = {
+      '~standard': {
+        version: 1 as const,
+        vendor: 'test',
+        validate: (value: unknown) => ({ value }),
+      },
+    };
+
+    expect(() =>
+      tool({
+        name: 'validation_only_standard_schema',
+        description: 'Reject a schema without JSON conversion.',
+        parameters: parameters as never,
+        execute: async () => 'unreachable',
+      }),
+    ).toThrow(/must provide both.*validate.*jsonSchema/);
+  });
+
+  it('rejects asynchronous Standard Schema validation before tool fallbacks', async () => {
+    const validate = vi.fn((value: unknown) =>
+      value === undefined
+        ? { value: {} }
+        : Promise.resolve({ value: value as object }),
+    );
+    const parameters: StandardSchemaWithJSON<object> = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        types: undefined as unknown as { input: object; output: object },
+        jsonSchema: {
+          input: () => ({
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          }),
+          output: () => ({ type: 'object' }),
+        },
+        validate,
+      },
+    };
+    const execute = vi.fn(async () => 'unreachable');
+    const t = tool({
+      name: 'async_standard_schema',
+      description: 'Reject asynchronous validation.',
+      parameters,
+      execute,
+    });
+
+    expect(validate).not.toHaveBeenCalled();
+    await expect(t.invoke(new RunContext(), '{}')).rejects.toBeInstanceOf(
+      InvalidToolInputError,
+    );
+    const errorFunction = vi.fn(async () => 'fallback');
+    const customFallbackTool = tool({
+      name: 'async_standard_schema_custom_fallback',
+      description: 'Reject asynchronous validation.',
+      parameters,
+      execute,
+      errorFunction,
+    });
+    await expect(
+      customFallbackTool.invoke(new RunContext(), '{}'),
+    ).rejects.toBeInstanceOf(InvalidToolInputError);
+
+    expect(validate).toHaveBeenCalledTimes(2);
+    expect(validate).toHaveBeenNthCalledWith(1, {});
+    expect(validate).toHaveBeenNthCalledWith(2, {});
+    expect(errorFunction).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-object Standard Schema tool parameters', () => {
+    const parameters: StandardSchemaWithJSON<string> = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        types: undefined as unknown as { input: string; output: string },
+        jsonSchema: {
+          input: () => ({ type: 'string' }),
+          output: () => ({ type: 'string' }),
+        },
+        validate: (value) => ({ value: String(value) }),
+      },
+    };
+
+    expect(() =>
+      tool({
+        name: 'non_object_standard_schema',
+        description: 'Reject non-object parameters.',
+        parameters,
+        execute: async () => 'unreachable',
+      }),
+    ).toThrow(/must produce.*type: "object"/);
+  });
+
   it('create a tool with zod definition', () => {
     const t = tool({
       name: 'test',

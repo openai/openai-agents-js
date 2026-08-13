@@ -1,5 +1,6 @@
 import { ModelBehaviorError, UserError } from '../errors';
 import logger from '../logger';
+import { isAsyncStandardSchemaValidationError } from './standardSchema';
 
 const dataRedactedErrors = new WeakSet<object>();
 
@@ -25,6 +26,9 @@ export function processFinalOutputWithRedaction<T>(callback: () => T): T {
   try {
     return callback();
   } catch (error) {
+    if (isAsyncStandardSchemaValidationError(error)) {
+      throw error;
+    }
     if (!redactFromStart && !logger.dontLogModelData) {
       throw error;
     }

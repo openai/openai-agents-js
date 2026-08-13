@@ -18,6 +18,14 @@ import {
   stripStrictNullsForZodSchema,
   toOpenAIStrictToolSchema,
 } from './strictToolSchema';
+import {
+  assertStandardSchemaObjectRoot,
+  hasStandardSchemaMarker,
+  isStandardSchemaWithJSON,
+  standardSchemaToJsonSchema,
+  validateStandardSchema,
+  unsupportedStandardSchemaError,
+} from './standardSchema';
 
 // TypeScript struggles to infer the heavily generic types returned by the OpenAI
 // helpers, so we provide minimal wrappers that sidestep the deep instantiation.
@@ -92,9 +100,8 @@ export function toFunctionToolName(name: string): FunctionToolName {
 }
 
 /**
- * Get the schema and parser from an input type. If the input type is a ZodObject, we will convert
- * it into a JSON Schema and use Zod as parser. If the input type is a JSON schema, we use the
- * JSON.parse function to get the parser.
+ * Get the schema and parser from an input type. Supported Standard Schema and Zod values are
+ * converted to JSON Schema and retain runtime validation. Plain JSON Schema values use JSON.parse.
  * @param inputType - The input type to get the schema and parser from.
  * @param name - The name of the tool.
  * @returns The schema and parser.
@@ -107,7 +114,7 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
   } = {},
 ): {
   schema: JsonObjectSchema<any>;
-  parser: (input: string) => any;
+  parser: (input: string) => any | Promise<any>;
 } {
   const parser = (input: string) => JSON.parse(input);
 
@@ -195,12 +202,34 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
     }
 
     return useFallback();
+  } else if (isStandardSchemaWithJSON(inputType)) {
+    if (!options.strict) {
+      throw new UserError(
+        'Strict mode is required for Standard Schema parameters',
+      );
+    }
+    const inputSchema = standardSchemaToJsonSchema(inputType, 'input');
+    assertStandardSchemaObjectRoot(inputSchema, 'Tool parameter');
+    const preparedSchema = prepareOpenAIStrictToolSchema(
+      inputSchema as JsonObjectSchema<any>,
+    );
+    return {
+      schema: preparedSchema.schema,
+      parser: (rawInput: string) =>
+        validateStandardSchema(
+          inputType,
+          preparedSchema.normalizeInput(JSON.parse(rawInput)),
+        ),
+    };
+  } else if (hasStandardSchemaMarker(inputType)) {
+    throw unsupportedStandardSchemaError();
   } else if (typeof inputType === 'object' && inputType !== null) {
+    const jsonSchema = inputType as JsonObjectSchema<any>;
     const preparedSchema = options.strict
-      ? prepareOpenAIStrictToolSchema(inputType)
+      ? prepareOpenAIStrictToolSchema(jsonSchema)
       : undefined;
     return {
-      schema: preparedSchema?.schema ?? inputType,
+      schema: preparedSchema?.schema ?? jsonSchema,
       parser: preparedSchema
         ? (rawInput: string) =>
             preparedSchema.normalizeInput(JSON.parse(rawInput))
@@ -208,7 +237,9 @@ export function getSchemaAndParserFromInputType<T extends ToolInputParameters>(
     };
   }
 
-  throw new UserError('Input type is not a ZodObject or a valid JSON schema');
+  throw new UserError(
+    'Input type is not a supported Standard Schema or a valid JSON schema',
+  );
 }
 
 function useLosslessStrictFallback(
@@ -350,5 +381,21 @@ export function convertAgentOutputTypeToSerializable(
     return useFallback(output);
   }
 
-  return outputType;
+  if (isStandardSchemaWithJSON(outputType)) {
+    const schema = standardSchemaToJsonSchema(outputType, 'input');
+    assertStandardSchemaObjectRoot(schema, 'Agent output');
+    return {
+      type: 'json_schema',
+      name: 'output',
+      strict: true,
+      schema: prepareOpenAIStrictToolSchema(schema as JsonObjectSchema<any>)
+        .schema,
+    };
+  }
+
+  if (hasStandardSchemaMarker(outputType)) {
+    throw unsupportedStandardSchemaError();
+  }
+
+  return outputType as JsonSchemaDefinition;
 }

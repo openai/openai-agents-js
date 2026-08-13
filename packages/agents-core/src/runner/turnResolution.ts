@@ -25,6 +25,7 @@ import {
   processFinalOutputWithRedaction,
   REDACTED_FINAL_OUTPUT_ERROR_MESSAGE,
 } from '../utils/finalOutputError';
+import { isAsyncStandardSchemaValidationError } from '../utils/standardSchema';
 import { addErrorToCurrentSpan } from '../tracing/context';
 import { NextStep, SingleStepResult, nextStepSchema } from './steps';
 import type {
@@ -1663,6 +1664,9 @@ export async function resolveTurnAfterModelResponse<
         ),
       );
       if (error) {
+        if (isAsyncStandardSchemaValidationError(error)) {
+          throw error;
+        }
         const redacted = isDataRedactedError(error);
         const outputErrorMessage = redacted
           ? error.message

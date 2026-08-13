@@ -3,6 +3,10 @@ import { ToolInputParameters } from '../tool';
 import { Handoff } from '../handoff';
 import { ModelItem, StreamEvent } from './protocol';
 import { TextOutput } from './aliases';
+import type {
+  StandardSchemaOutput,
+  StandardSchemaWithJSON,
+} from '../utils/standardSchema';
 import type { ZodInfer, ZodObjectLike } from '../utils/zodCompat';
 
 /**
@@ -17,26 +21,31 @@ export type ResponseStreamEvent = StreamEvent;
 
 export type ResolveParsedToolParameters<
   TInputType extends ToolInputParameters,
-> = TInputType extends ZodObjectLike
-  ? ZodInfer<TInputType>
-  : TInputType extends JsonObjectSchema<any>
-    ? unknown
-    : string;
+> =
+  TInputType extends StandardSchemaWithJSON<any, any>
+    ? StandardSchemaOutput<TInputType>
+    : TInputType extends ZodObjectLike
+      ? ZodInfer<TInputType>
+      : TInputType extends JsonObjectSchema<any>
+        ? unknown
+        : string;
 
 export type ResolvedAgentOutput<
   TOutput extends AgentOutputType<H>,
   H = unknown,
 > = TOutput extends TextOutput
   ? string
-  : TOutput extends ZodObjectLike
-    ? ZodInfer<TOutput>
-    : TOutput extends HandoffsOutput<infer H>
-      ? HandoffsOutput<H>
-      : unknown extends TOutput
-        ? any
-        : TOutput extends Record<string, any>
-          ? unknown
-          : never;
+  : TOutput extends StandardSchemaWithJSON<any, any>
+    ? StandardSchemaOutput<TOutput>
+    : TOutput extends ZodObjectLike
+      ? ZodInfer<TOutput>
+      : TOutput extends HandoffsOutput<infer H>
+        ? HandoffsOutput<H>
+        : unknown extends TOutput
+          ? any
+          : TOutput extends Record<string, any>
+            ? unknown
+            : never;
 
 export type JsonSchemaDefinitionEntry = Record<string, any>;
 
