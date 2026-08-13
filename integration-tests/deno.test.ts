@@ -31,7 +31,7 @@ describe('Deno', () => {
     });
     console.log('[deno] Installing dependencies');
     await execa`deno install --reload=npm:`;
-  }, 60000);
+  });
 
   test('should be able to run', { timeout: 60000 }, async () => {
     const { stdout } =
