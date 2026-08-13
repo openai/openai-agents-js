@@ -1105,6 +1105,63 @@ describe('UnixLocalSandboxClient', () => {
     });
   });
 
+  it('applies stacked anchors through the sandbox editor', async () => {
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          'stacked.py': {
+            type: 'file',
+            content: [
+              'class First',
+              '    def target():',
+              '        return 0',
+              '',
+              'class Second',
+              '    def helper():',
+              '        pass',
+              '',
+              '    def target():',
+              '        pass',
+              '',
+            ].join('\n'),
+          },
+        },
+      }),
+    );
+
+    await session.createEditor().updateFile({
+      type: 'update_file',
+      path: 'stacked.py',
+      diff: [
+        '@@ class Second',
+        '@@     def target():',
+        '-        pass',
+        '+        return 1',
+      ].join('\n'),
+    });
+
+    await expect(
+      readFile(join(session.state.workspaceRootPath, 'stacked.py'), 'utf8'),
+    ).resolves.toBe(
+      [
+        'class First',
+        '    def target():',
+        '        return 0',
+        '',
+        'class Second',
+        '    def helper():',
+        '        pass',
+        '',
+        '    def target():',
+        '        return 1',
+        '',
+      ].join('\n'),
+    );
+  });
+
   it('rejects hostPath before applying a manifest delta', async () => {
     const client = new UnixLocalSandboxClient({
       workspaceBaseDir: rootDir,

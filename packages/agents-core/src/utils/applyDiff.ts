@@ -99,16 +99,20 @@ function parseUpdateDiff(
   let cursor = 0;
 
   while (!isDone(parser, END_SECTION_MARKERS)) {
-    const anchor = readStr(parser, '@@ ');
-    const hasBareAnchor = !anchor && parser.lines[parser.index] === '@@';
-    if (hasBareAnchor) parser.index += 1;
+    const { anchors, hasAnchor } = readAnchors(parser);
 
-    if (!(anchor || hasBareAnchor || cursor === 0)) {
+    if (!(hasAnchor || cursor === 0)) {
       throw new Error(`Invalid Line:\n${parser.lines[parser.index]}`);
     }
 
-    if (anchor.trim()) {
-      cursor = advanceCursorToAnchor(anchor, inputLines, cursor, parser);
+    for (const [index, anchor] of anchors.entries()) {
+      cursor = advanceCursorToAnchor(
+        anchor,
+        inputLines,
+        cursor,
+        parser,
+        index > 0,
+      );
     }
 
     const { nextContext, sectionChunks, endIndex, eof } = readSection(
@@ -142,15 +146,46 @@ function parseUpdateDiff(
   return { chunks, fuzz: parser.fuzz };
 }
 
+function readAnchors(parser: ParserState): {
+  anchors: string[];
+  hasAnchor: boolean;
+} {
+  const anchors: string[] = [];
+  let hasAnchor = false;
+
+  while (true) {
+    const startIndex = parser.index;
+    const anchor = readStr(parser, '@@ ');
+    let consumed = parser.index !== startIndex;
+    let bare = false;
+
+    if (!consumed && parser.lines[parser.index] === '@@') {
+      parser.index += 1;
+      consumed = true;
+      bare = true;
+    }
+
+    if (!consumed) break;
+    if (anchor || bare) hasAnchor = true;
+    if (anchor.trim()) anchors.push(anchor);
+  }
+
+  return { anchors, hasAnchor };
+}
+
 function advanceCursorToAnchor(
   anchor: string,
   inputLines: string[],
   cursor: number,
   parser: ParserState,
+  forceForwardSearch = false,
 ): number {
   let found = false;
 
-  if (!inputLines.slice(0, cursor).some((s) => s === anchor)) {
+  if (
+    forceForwardSearch ||
+    !inputLines.slice(0, cursor).some((s) => s === anchor)
+  ) {
     for (let i = cursor; i < inputLines.length; i += 1) {
       if (inputLines[i] === anchor) {
         cursor = i + 1;
@@ -162,7 +197,8 @@ function advanceCursorToAnchor(
 
   if (
     !found &&
-    !inputLines.slice(0, cursor).some((s) => s.trim() === anchor.trim())
+    (forceForwardSearch ||
+      !inputLines.slice(0, cursor).some((s) => s.trim() === anchor.trim()))
   ) {
     for (let i = cursor; i < inputLines.length; i += 1) {
       if (inputLines[i].trim() === anchor.trim()) {
