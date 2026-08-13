@@ -236,7 +236,7 @@ describe('MemorySession', () => {
           },
         ],
       }),
-    ).rejects.toThrow('Session history items could not be compared safely');
+    ).rejects.toThrow('Session history mutation could not find');
 
     expect(await session.getItems()).toEqual(initialItems);
   });

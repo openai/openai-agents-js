@@ -8955,6 +8955,69 @@ describe('Runner.run', () => {
       expect(firstResult.state._getSessionHistoryMutations()).toEqual([]);
     });
 
+    it.each(['mixed expected and replacement', 'duplicate replacement-only'])(
+      'rejects ambiguous %s history before executing approved override arguments',
+      async (historyScenario) => {
+        let executions = 0;
+        const approvalTool = tool({
+          name: 'test',
+          description: 'tool that requires approval',
+          parameters: z.object({ test: z.string() }),
+          needsApproval: async () => true,
+          execute: async ({ test }) => {
+            executions += 1;
+            return `result:${test}`;
+          },
+        });
+        const model = new TrackingModel([
+          modelResponse(
+            buildResponse(
+              [buildToolCall('call-ambiguous-session-override', 'foo')],
+              'resp-ambiguous-session-override',
+            ),
+          ),
+        ]);
+        const agent = new Agent({
+          name: 'AmbiguousSessionOverrideAgent',
+          model,
+          tools: [approvalTool],
+          toolUseBehavior: 'stop_on_first_tool',
+        });
+        const session = new CoreMemorySession();
+        const firstResult = await run(agent, 'user_message', { session });
+        firstResult.state.approve(firstResult.interruptions[0]!, {
+          overrideArguments: { test: 'bar' },
+        });
+        const persistedCall = (await session.getItems()).find(
+          (item) =>
+            item.type === 'function_call' &&
+            item.callId === 'call-ambiguous-session-override',
+        )!;
+        const replacementCall = {
+          ...persistedCall,
+          arguments: JSON.stringify({ test: 'bar' }),
+        };
+        if (historyScenario === 'duplicate replacement-only') {
+          await session.clearSession();
+          await session.addItems([
+            structuredClone(replacementCall),
+            replacementCall,
+          ]);
+        } else {
+          await session.addItems([replacementCall]);
+        }
+        const historyBeforeResume = await session.getItems();
+
+        await expect(
+          run(agent, firstResult.state, { session }),
+        ).rejects.toThrow('ambiguous function call history');
+
+        expect(executions).toBe(0);
+        expect(await session.getItems()).toEqual(historyBeforeResume);
+        expect(firstResult.state._getSessionHistoryMutations()).toHaveLength(1);
+      },
+    );
+
     it('requires the persisted session when resuming an argument override', async () => {
       let executions = 0;
       const approvalTool = tool({

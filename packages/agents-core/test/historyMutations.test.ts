@@ -49,7 +49,7 @@ describe('applySessionHistoryMutations', () => {
     ]);
   });
 
-  it('replaces the latest expected function call without changing an older reused call ID', () => {
+  it('replaces a unique expected function call without changing an older reused call ID', () => {
     const olderCall = functionCall('call_1', 'lookup', '{"run":"older"}');
     const expected = functionCall('call_1', 'lookup', '{"run":"current"}');
     const replacement = functionCall('call_1', 'lookup', '{"ok":true}');
@@ -61,7 +61,6 @@ describe('applySessionHistoryMutations', () => {
     };
     const items: AgentInputItem[] = [
       userMessage('before'),
-      structuredClone(expected),
       olderCall,
       functionCall('call_2', 'keep', '{}'),
       expected,
@@ -71,7 +70,6 @@ describe('applySessionHistoryMutations', () => {
     const result = applySessionHistoryMutations(items, [mutation]);
     const expectedResult = [
       userMessage('before'),
-      expected,
       olderCall,
       functionCall('call_2', 'keep', '{}'),
       replacement,
@@ -82,6 +80,81 @@ describe('applySessionHistoryMutations', () => {
     expect(applySessionHistoryMutations(result, [mutation])).toEqual(
       expectedResult,
     );
+  });
+
+  it('rejects duplicate expected occurrences as ambiguous', () => {
+    const expected = functionCall('call_1', 'lookup', '{"run":"current"}');
+    const replacement = functionCall('call_1', 'lookup', '{"ok":true}');
+    const items = [structuredClone(expected), expected];
+    const originalItems = structuredClone(items);
+
+    expect(() =>
+      applySessionHistoryMutations(items, [
+        {
+          type: 'replace_function_call',
+          callId: 'call_1',
+          expected,
+          replacement,
+        },
+      ]),
+    ).toThrow('ambiguous function call history');
+    expect(items).toEqual(originalItems);
+  });
+
+  it.each([
+    [
+      'newer',
+      (expected: AgentInputItem, replacement: AgentInputItem) => [
+        expected,
+        replacement,
+      ],
+    ],
+    [
+      'older',
+      (expected: AgentInputItem, replacement: AgentInputItem) => [
+        replacement,
+        expected,
+      ],
+    ],
+  ])(
+    'rejects an ambiguous %s replacement occurrence for a reused call ID',
+    (_position, createItems) => {
+      const expected = functionCall('call_1', 'lookup', '{"run":"target"}');
+      const replacement = functionCall('call_1', 'lookup', '{"ok":true}');
+      const items = createItems(expected, replacement);
+      const originalItems = structuredClone(items);
+
+      expect(() =>
+        applySessionHistoryMutations(items, [
+          {
+            type: 'replace_function_call',
+            callId: 'call_1',
+            expected,
+            replacement,
+          },
+        ]),
+      ).toThrow('ambiguous function call history');
+      expect(items).toEqual(originalItems);
+    },
+  );
+
+  it('rejects duplicate replacement occurrences as ambiguous', () => {
+    const expected = functionCall('call_1', 'lookup', '{"run":"target"}');
+    const replacement = functionCall('call_1', 'lookup', '{"ok":true}');
+    const items = [structuredClone(replacement), replacement];
+    const originalItems = structuredClone(items);
+
+    expect(() =>
+      applySessionHistoryMutations(items, [
+        {
+          type: 'replace_function_call',
+          callId: 'call_1',
+          expected,
+          replacement,
+        },
+      ]),
+    ).toThrow('ambiguous function call history');
+    expect(items).toEqual(originalItems);
   });
 
   it('preserves valid unrelated history without applying function-call snapshot rules', () => {

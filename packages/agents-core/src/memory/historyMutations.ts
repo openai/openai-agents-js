@@ -102,8 +102,9 @@ function planExpectedFunctionCallReplacement(
   | undefined {
   const replacement = cloneSessionHistoryValueSafely(mutation.replacement);
 
-  let matchingIndex = -1;
-  let replacementAlreadyApplied = false;
+  let matchingExpectedIndex: number | undefined;
+  let matchingExpectedCount = 0;
+  let matchingReplacementCount = 0;
   try {
     for (let index = itemValues.length - 1; index >= 0; index -= 1) {
       const item = itemValues[index];
@@ -112,28 +113,38 @@ function planExpectedFunctionCallReplacement(
         continue;
       }
       if (sessionHistoryItemsMatch(candidate, mutation.expected)) {
-        matchingIndex = index;
-        break;
+        matchingExpectedIndex = index;
+        matchingExpectedCount += 1;
+        continue;
       }
       if (sessionHistoryItemsMatch(candidate, replacement)) {
-        replacementAlreadyApplied = true;
-        break;
+        matchingReplacementCount += 1;
       }
     }
   } catch {
     throw new UserError('Session history items could not be compared safely.');
   }
 
-  if (replacementAlreadyApplied) {
+  // Snapshot equality cannot bind the interrupted run to one reused call ID occurrence.
+  if (
+    matchingExpectedCount > 1 ||
+    matchingReplacementCount > 1 ||
+    (matchingExpectedCount === 1 && matchingReplacementCount === 1)
+  ) {
+    throw new UserError(
+      `Session history mutation found ambiguous function call history for call ID ${mutation.callId}.`,
+    );
+  }
+  if (matchingExpectedCount === 0 && matchingReplacementCount === 1) {
     return undefined;
   }
-  if (matchingIndex < 0) {
+  if (matchingExpectedIndex === undefined) {
     throw new UserError(
       `Session history mutation could not find the expected function call for call ID ${mutation.callId}.`,
     );
   }
 
-  return { index: matchingIndex, replacement };
+  return { index: matchingExpectedIndex, replacement };
 }
 
 function applyLegacyReplaceFunctionCallMutation(
@@ -340,7 +351,10 @@ function snapshotMatchingFunctionCall(
   }
   const descriptors = Object.getOwnPropertyDescriptors(value);
   const typeDescriptor = descriptors.type;
-  if (!typeDescriptor || !('value' in typeDescriptor)) {
+  if (!typeDescriptor) {
+    return undefined;
+  }
+  if (!('value' in typeDescriptor)) {
     throw new TypeError('Invalid session history item type.');
   }
   if (typeDescriptor.value !== 'function_call') {

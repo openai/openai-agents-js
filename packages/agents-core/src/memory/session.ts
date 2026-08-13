@@ -144,9 +144,12 @@ export interface SessionHistoryRewriteAwareSession extends Session {
  *
  * Implementations must apply each request as an atomic compare-and-replace batch. They must compare
  * every expected function call against one consistent history version before making any replacement
- * and leave history unchanged if any expected call does not match. Each mutation replaces only the
- * latest matching occurrence, and retrying a replacement that is already applied must be idempotent.
- * Any session-specific comparison normalization must happen inside the same atomic operation.
+ * and leave history unchanged if any expected call does not match. Each mutation must identify one
+ * expected occurrence unambiguously. Implementations must reject histories with multiple expected
+ * or replacement matches, or with both an expected match and an already-applied replacement match
+ * for the same call ID. Retrying an unambiguous replacement that is already applied must be
+ * idempotent. Any session-specific comparison normalization must happen inside the same atomic
+ * operation.
  *
  * If the session also implements {@link RunContextAwareSession}, the same run context used for
  * history reads and writes must select the rewrite target.
