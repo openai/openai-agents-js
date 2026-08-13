@@ -125,6 +125,7 @@ export type PreparedModelCall<TContext = UnknownContext> =
     persistedItems: AgentInputItem[];
     sourceMatchKinds: Array<'identity' | 'content' | 'fallback' | 'injected'>;
     filterApplied: boolean;
+    preserveInputIdentity: boolean;
     turnInput: AgentInputItem[];
   };
 

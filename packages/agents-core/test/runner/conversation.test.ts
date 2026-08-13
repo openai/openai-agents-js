@@ -3,7 +3,10 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { setDefaultModelProvider, setTracingDisabled } from '../../src';
 import { Agent, AgentOutputType } from '../../src/agent';
 import { RunContext } from '../../src/runContext';
-import { applyCallModelInputFilter } from '../../src/runner/conversation';
+import {
+  applyCallModelInputFilter,
+  type CallModelInputFilterArgs,
+} from '../../src/runner/conversation';
 import type { AgentInputItem } from '../../src/types';
 import { UserError } from '../../src/errors';
 import { ScriptedModelProvider } from '../stubs';
@@ -83,6 +86,75 @@ describe('applyCallModelInputFilter', () => {
     expect(result.persistedItems[0]).not.toBe(result.modelInput.input[0]);
     expect(first.content).toBe('secret');
     expect(second.content).toBe('keep me');
+  });
+
+  it('preserves source identity only for filters that opt in', async () => {
+    const agent = makeAgent('IdentityPreservingFilter');
+    const context = new RunContext();
+    const shared: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'shared',
+    };
+    const original = [shared, shared];
+    let receivedInput: AgentInputItem[] | undefined;
+    const filter = ({ modelData }: CallModelInputFilterArgs) => {
+      receivedInput = modelData.input;
+      return {
+        ...modelData,
+        input: [...modelData.input, shared],
+      };
+    };
+    filter.preserveInputIdentity = true;
+
+    const result = await applyCallModelInputFilter(
+      agent,
+      filter,
+      context,
+      original,
+      undefined,
+    );
+
+    expect(receivedInput).not.toBe(original);
+    expect(receivedInput?.[0]).toBe(shared);
+    expect(receivedInput?.[1]).toBe(shared);
+    expect(result.sourceItems).toEqual([shared, shared, undefined]);
+    expect(result.sourceMatchKinds).toEqual([
+      'identity',
+      'identity',
+      'injected',
+    ]);
+    expect(result.modelInput.input[0]).not.toBe(shared);
+    expect(result.persistedItems[0]).not.toBe(shared);
+    expect(result.persistedItems[0]).not.toBe(result.modelInput.input[0]);
+  });
+
+  it('keeps default filter input isolated from source mutations', async () => {
+    const agent = makeAgent('MutableFilter');
+    const context = new RunContext();
+    const original: AgentInputItem = {
+      type: 'message',
+      role: 'user',
+      content: 'original',
+    };
+
+    const result = await applyCallModelInputFilter(
+      agent,
+      ({ modelData }) => {
+        const received = modelData.input[0];
+        if (received?.type === 'message') {
+          received.content = 'filtered';
+        }
+        return modelData;
+      },
+      context,
+      [original],
+      undefined,
+    );
+
+    expect(original.content).toBe('original');
+    expect(result.modelInput.input[0]).toMatchObject({ content: 'filtered' });
+    expect(result.persistedItems[0]).toMatchObject({ content: 'filtered' });
   });
 
   it('leaves sourceItems undefined for injected filter items', async () => {

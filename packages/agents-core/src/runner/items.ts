@@ -216,6 +216,19 @@ export function agentInputSerializationReplacer(
 
 export type ReasoningItemIdPolicy = 'preserve' | 'omit';
 
+// Keep each model-input normalization stable for one generated item so identity-preserving
+// filters can reuse caches across turns without mutating the provider item.
+const normalizedOutputItemByRunItem = new WeakMap<
+  RunItem,
+  Partial<Record<'preserve' | 'omit', AgentInputItem>>
+>();
+
+export function invalidateOutputItemNormalization(items: RunItem[]): void {
+  for (const item of items) {
+    normalizedOutputItemByRunItem.delete(item);
+  }
+}
+
 function shouldOmitReasoningItemIds(
   reasoningItemIdPolicy?: ReasoningItemIdPolicy,
 ): boolean {
@@ -248,11 +261,30 @@ export function extractOutputItemsFromRunItems(
   return items
     .filter((item) => item.type !== 'tool_approval_item')
     .map((item) => {
-      const rawItem = withoutNullStatus(item.rawItem as AgentInputItem);
-      if (item.type !== 'reasoning_item') {
-        return rawItem;
+      const normalizationKey =
+        item.type === 'reasoning_item' &&
+        shouldOmitReasoningItemIds(reasoningItemIdPolicy)
+          ? 'omit'
+          : 'preserve';
+      const cached =
+        normalizedOutputItemByRunItem.get(item)?.[normalizationKey];
+      if (cached) {
+        return cached;
       }
-      return stripReasoningItemIdForPolicy(rawItem, reasoningItemIdPolicy);
+      const withoutNullStatusItem = withoutNullStatus(
+        item.rawItem as AgentInputItem,
+      );
+      const normalizedItem =
+        normalizationKey === 'omit'
+          ? stripReasoningItemIdForPolicy(
+              withoutNullStatusItem,
+              reasoningItemIdPolicy,
+            )
+          : withoutNullStatusItem;
+      const cachedByPolicy = normalizedOutputItemByRunItem.get(item) ?? {};
+      cachedByPolicy[normalizationKey] = normalizedItem;
+      normalizedOutputItemByRunItem.set(item, cachedByPolicy);
+      return normalizedItem;
     });
 }
 
