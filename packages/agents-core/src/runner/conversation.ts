@@ -35,9 +35,17 @@ export type CallModelInputFilterArgs<TContext = unknown> = {
   context: TContext | undefined;
 };
 
-export type CallModelInputFilter<TContext = unknown> = (
+export type CallModelInputFilter<TContext = unknown> = ((
   args: CallModelInputFilterArgs<TContext>,
-) => ModelInputData | Promise<ModelInputData>;
+) => ModelInputData | Promise<ModelInputData>) & {
+  /**
+   * Opt into receiving the Runner's input item objects by reference inside a
+   * shallow-copied array. Set this only when the filter and every helper it
+   * calls treat each input item and its nested values as immutable. Model and
+   * session inputs remain isolated copies after the filter returns.
+   */
+  readonlyInput?: true;
+};
 
 /**
  * Result of applying a `callModelInputFilter`.
@@ -108,12 +116,22 @@ export async function applyCallModelInputFilter<TContext>(
       return cloned;
     });
 
-  // Record the relationship between the cloned array passed to filters and the original inputs.
+  // Record the relationship between the array passed to filters and the original inputs.
   const cloneMap = new WeakMap<object, AgentInputItem>();
 
-  // Always create a deep copy so downstream mutations inside filters cannot affect
-  // the cached turn state.
-  const clonedBaseInput = cloneInputItems(inputItems, cloneMap);
+  // Read-only filters may opt into stable item identities. Other filters still
+  // receive deep copies so their mutations cannot affect the cached turn state.
+  const readOnlyInput = callModelInputFilter?.readonlyInput === true;
+  const clonedBaseInput = readOnlyInput
+    ? [...inputItems]
+    : cloneInputItems(inputItems, cloneMap);
+  if (readOnlyInput) {
+    for (const item of inputItems) {
+      if (item && typeof item === 'object') {
+        cloneMap.set(item as object, item);
+      }
+    }
+  }
   const base = {
     input: clonedBaseInput,
     instructions: systemInstructions,
@@ -174,7 +192,16 @@ export async function applyCallModelInputFilter<TContext>(
     const normalizedInput = deduplicateAgentInputItemsPreferringLatest(
       result.input,
     );
-    const consumedExactClones = new WeakSet<object>();
+    const availableExactOccurrences = new WeakMap<object, number>();
+    for (const item of clonedBaseInput) {
+      if (item && typeof item === 'object') {
+        availableExactOccurrences.set(
+          item as object,
+          (availableExactOccurrences.get(item as object) ?? 0) + 1,
+        );
+      }
+    }
+    const consumedExactOccurrences = new WeakMap<object, number>();
     const injectedExactCloneIndexes = new Set<number>();
 
     // Preserve a pointer to the original object backing each filtered clone so downstream
@@ -188,11 +215,16 @@ export async function applyCallModelInputFilter<TContext>(
         if (!original) {
           return undefined;
         }
-        if (consumedExactClones.has(item as object)) {
+        const consumedOccurrences =
+          consumedExactOccurrences.get(item as object) ?? 0;
+        if (
+          consumedOccurrences >=
+          (availableExactOccurrences.get(item as object) ?? 0)
+        ) {
           injectedExactCloneIndexes.add(index);
           return undefined;
         }
-        consumedExactClones.add(item as object);
+        consumedExactOccurrences.set(item as object, consumedOccurrences + 1);
         removeFromFallback(original);
         removeAgentInputFromPool(originalPool, original);
         return original;

@@ -36,6 +36,7 @@ import {
   user,
   assistant,
   type ToolExecutionConfig,
+  type CallModelInputFilter,
   type ToolNameCollisionPolicy,
   type ToolNotFoundBehavior,
 } from '../src';
@@ -6382,6 +6383,70 @@ describe('Runner.run', () => {
         return this.lastCall?.request;
       }
     }
+
+    it('preserves read-only filter item identity across model calls', async () => {
+      class RawRequestTrackingModel extends ScriptedModel {
+        readonly rawRequestInputs: AgentInputItem[][] = [];
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.rawRequestInputs.push(getRequestInputItems(request));
+          return super.getResponse(request);
+        }
+      }
+
+      const executeTool = tool({
+        name: 'continue_read_only_filter',
+        description: 'Continues the scripted run.',
+        parameters: z.object({}),
+        execute: async () => 'done',
+      });
+      const model = new RawRequestTrackingModel([
+        modelResponse({
+          output: [
+            {
+              type: 'function_call',
+              callId: 'call_read_only_filter',
+              name: executeTool.name,
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'ReadOnlyFilterAgent',
+        model,
+        tools: [executeTool],
+      });
+      const stableInput = user('Stable history');
+      const filterInputs: AgentInputItem[][] = [];
+      const filter: CallModelInputFilter = ({ modelData }) => {
+        filterInputs.push(modelData.input);
+        return modelData;
+      };
+      filter.readonlyInput = true;
+
+      await new Runner({ callModelInputFilter: filter }).run(agent, [
+        stableInput,
+      ]);
+
+      expect(filterInputs).toHaveLength(2);
+      expect(filterInputs[0]).not.toBe(filterInputs[1]);
+      const stablePreparedInput = filterInputs[0]?.[0];
+      expect(stablePreparedInput).toBeDefined();
+      expect(stablePreparedInput).not.toBe(stableInput);
+      expect(filterInputs[1]?.[0]).toBe(stablePreparedInput);
+      expect(model.calls).toHaveLength(2);
+      expect(model.rawRequestInputs).toHaveLength(2);
+      for (const rawRequestInput of model.rawRequestInputs) {
+        expect(rawRequestInput[0]).not.toBe(stablePreparedInput);
+        expect(rawRequestInput[0]).not.toBe(stableInput);
+      }
+    });
 
     it('modifies model input for non-streaming runs', async () => {
       const model = new FilterTrackingModel([
