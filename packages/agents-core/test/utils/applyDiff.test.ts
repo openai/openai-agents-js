@@ -125,6 +125,39 @@ describe('applyDiff', () => {
     );
   });
 
+  it('reuses a prior parent anchor across stacked hunks', () => {
+    const input =
+      [
+        'class Target',
+        '    def first():',
+        '        pass',
+        '',
+        '    def second():',
+        '        pass',
+      ].join('\n') + '\n';
+    const diff = [
+      '@@ class Target',
+      '@@     def first():',
+      '-        pass',
+      '+        return 1',
+      '@@ class Target',
+      '@@     def second():',
+      '-        pass',
+      '+        return 2',
+    ].join('\n');
+
+    expect(applyDiff(input, diff)).toBe(
+      [
+        'class Target',
+        '    def first():',
+        '        return 1',
+        '',
+        '    def second():',
+        '        return 2',
+      ].join('\n') + '\n',
+    );
+  });
+
   it('uses each stacked anchor to narrow the target', () => {
     const input =
       [
@@ -162,11 +195,44 @@ describe('applyDiff', () => {
     );
   });
 
-  it('keeps unmatched stacked anchors advisory', () => {
-    const input = 'a\nb\n';
-    const diff = ['@@ nope', '@@ also-nope', '-b', '+B'].join('\n');
+  it('rejects partially matched stacked anchors', () => {
+    const input =
+      [
+        'class Target',
+        '    def helper():',
+        '        pass',
+        '',
+        '    def desired():',
+        '        return 1',
+      ].join('\n') + '\n';
+    const diff = [
+      '@@ class Target',
+      '@@     def missing():',
+      '-        pass',
+      '+        return 99',
+    ].join('\n');
 
-    expect(applyDiff(input, diff)).toBe('a\nB\n');
+    expect(() => applyDiff(input, diff)).toThrow('Invalid Anchor');
+  });
+
+  it('rejects a stacked diff when its first anchor is missing', () => {
+    const input =
+      ['class Wrong', '    def desired():', '        pass'].join('\n') + '\n';
+    const diff = [
+      '@@ class Target',
+      '@@     def desired():',
+      '-        pass',
+      '+        return 99',
+    ].join('\n');
+
+    expect(() => applyDiff(input, diff)).toThrow('Invalid Anchor');
+  });
+
+  it('rejects a missing anchor followed by a bare marker', () => {
+    const input = 'a\nb\n';
+    const diff = ['@@ missing', '@@', '-b', '+B'].join('\n');
+
+    expect(() => applyDiff(input, diff)).toThrow('Invalid Anchor');
   });
 
   it('accepts a trailing bare anchor in a stack', () => {
