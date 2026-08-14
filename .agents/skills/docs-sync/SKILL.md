@@ -42,18 +42,24 @@ Identify doc coverage gaps and inaccuracies by comparing main branch features an
    - **Incorrect/outdated**: names, defaults, or behaviors that diverge from main.
    - **Structural issues** (optional): pages overloaded, missing overviews, or mis-grouped topics.
 
-6. Produce a Docs Sync Report and ask for approval
+6. Classify the proposed complete diff
+   - Use the Documentation Change Verification Tiers in `AGENTS.md` as the single source of truth.
+   - Classify the complete proposed diff by its highest applicable Editorial, Content, or Structural tier before editing.
+   - Keep the tier-specific verification separate from the existing eligibility rules for `$implementation-final-review`, `$code-change-verification`, `$changeset-validation`, and `$pr-draft-summary`.
+
+7. Produce a Docs Sync Report and ask for approval
    - Provide a clear report with evidence, suggested doc locations, and proposed edits.
+   - State the proposed risk tier and its required focused verification.
    - Ask the user whether to proceed with doc updates.
 
-7. If approved, apply changes (English only)
+8. If approved, apply changes (English only)
    - Edit only English docs in `docs/src/content/docs/**`.
    - Exclude `docs/src/content/docs/openai` from review and updates.
    - Do **not** edit `docs/src/content/docs/ja`, `docs/src/content/docs/ko`, or `docs/src/content/docs/zh`.
    - Keep changes aligned with the existing docs style and navigation.
    - Do not add TypeScript or TSX fenced blocks directly to MDX. Place every TypeScript or TSX snippet in a compilable source file under `examples/docs/<doc-area>/`, import it into MDX with `?raw`, and render that imported source using the existing docs pattern.
    - If code is not useful enough to maintain as a complete example, explain the behavior in prose instead of adding an unverified snippet.
-   - Verify all TypeScript and TSX snippets rendered by the docs with `pnpm -F docs-code build-check` and fix issues before handoff.
+   - Run the focused verification required by the highest applicable Documentation Change Verification Tier in `AGENTS.md`. When the complete diff changes a rendered TypeScript or TSX snippet source or its MDX import/rendering, run `pnpm -F docs-code build-check` and fix issues before handoff.
 
 ## Output format
 
