@@ -320,6 +320,51 @@ describe('Runner.run', () => {
       expect(result.finalOutput).toBe('done');
     });
 
+    it('isolates interruption arrays from pending approvals', async () => {
+      const approvalTool = tool({
+        name: 'snapshot_approval',
+        description: 'Requires approval.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'approved',
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: approvalTool.name,
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'SnapshotApprovalAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const interrupted = await run(agent, 'start');
+      const [approval] = interrupted.interruptions;
+
+      interrupted.state.getInterruptions().splice(0);
+      interrupted.interruptions.splice(0);
+
+      expect(interrupted.state.getInterruptions()).toEqual([approval]);
+      expect(interrupted.interruptions).toEqual([approval]);
+
+      interrupted.state.approve(approval);
+      const result = await run(agent, interrupted.state);
+
+      expect(result.finalOutput).toBe('done');
+    });
+
     it('returns a redacted invalid-argument output to the model', async () => {
       const secret = 'SECRET_NON_STREAMING_MODEL_OUTPUT_123';
       const flagSpy = vi

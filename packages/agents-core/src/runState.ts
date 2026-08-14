@@ -2424,7 +2424,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     }
     const interruptions = this._currentStep.data.interruptions;
     return Array.isArray(interruptions)
-      ? (interruptions as RunToolApprovalItem[])
+      ? [...(interruptions as RunToolApprovalItem[])]
       : [];
   }
 
