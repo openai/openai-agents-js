@@ -360,11 +360,20 @@ export class StreamedRunResult<
   public maxTurns: number | null | undefined;
 
   #error: unknown = null;
+  #hasError = false;
   #combinedSignal?: AbortSignal;
   #abortSignalSnapshot?: AbortSignal;
   #abortController: AbortController;
   #readableController: ReadableStreamController<RunStreamEvent> | undefined;
   #readableStream: _ReadableStream<RunStreamEvent>;
+  #queuedStreamEvents: RunStreamEvent[] = [];
+  #queuedStreamEventIndex = 0;
+  #streamReadPending = false;
+  #streamTerminal:
+    | { type: 'done' }
+    | { type: 'error'; error: unknown; preserveQueuedItems: boolean }
+    | undefined;
+  #preserveQueuedItemsOnError = false;
   #completedPromise: Promise<void>;
   #completedPromiseResolve: (() => void) | undefined;
   #completedPromiseReject: ((err: unknown) => void) | undefined;
@@ -407,16 +416,26 @@ export class StreamedRunResult<
     this.#combinedSignalCleanup = cleanupCombinedSignal;
     this.#abortSignalSnapshot = combinedSignal;
 
-    this.#readableStream = new _ReadableStream<RunStreamEvent>({
-      start: (controller) => {
-        this.#readableController = controller;
+    this.#readableStream = new _ReadableStream<RunStreamEvent>(
+      {
+        start: (controller) => {
+          this.#readableController = controller;
+        },
+        pull: () => {
+          this.#streamReadPending = true;
+          this.#drainStreamQueue();
+        },
+        cancel: () => {
+          if (!this.#abortController.signal.aborted) {
+            this.#abortController.abort();
+          }
+          this.#cancelStream();
+        },
       },
-      cancel: () => {
-        if (!this.#abortController.signal.aborted) {
-          this.#abortController.abort();
-        }
+      {
+        highWaterMark: 0,
       },
-    });
+    );
 
     this.#completedPromise = new Promise((resolve, reject) => {
       this.#completedPromiseResolve = resolve;
@@ -447,9 +466,18 @@ export class StreamedRunResult<
    * Adds an item to the stream of output items
    */
   _addItem(item: RunStreamEvent) {
-    if (!this.cancelled) {
-      this.#readableController?.enqueue(item);
+    if (!this.cancelled && !this.#streamTerminal) {
+      this.#queuedStreamEvents.push(item);
+      this.#drainStreamQueue();
     }
+  }
+
+  /**
+   * @internal
+   * Keeps already queued events available if later cleanup fails.
+   */
+  _preserveQueuedItemsOnError() {
+    this.#preserveQueuedItemsOnError = true;
   }
 
   /**
@@ -457,9 +485,11 @@ export class StreamedRunResult<
    * Indicates that the stream has been completed
    */
   _done() {
-    if (!this.cancelled && this.#readableController) {
-      this.#readableController.close();
-      this.#readableController = undefined;
+    if (!this.cancelled) {
+      if (!this.#streamTerminal) {
+        this.#streamTerminal = { type: 'done' };
+      }
+      this.#drainStreamQueue();
     }
     this.#completedPromiseResolve?.();
     this.#detachAbortHandler();
@@ -469,16 +499,45 @@ export class StreamedRunResult<
    * @internal
    * Handles an error in the stream loop.
    */
-  _raiseError(err: unknown) {
-    if (!this.cancelled && this.#readableController) {
-      this.#readableController.error(err);
-      this.#readableController = undefined;
+  _raiseError(
+    err: unknown,
+    options?: {
+      preserveQueuedItems?: boolean;
+    },
+  ) {
+    if (!this.cancelled) {
+      const existingPreservedError =
+        this.#streamTerminal?.type === 'error' &&
+        this.#streamTerminal.preserveQueuedItems
+          ? this.#streamTerminal
+          : undefined;
+      const preserveQueuedItems =
+        options?.preserveQueuedItems === true ||
+        Boolean(existingPreservedError) ||
+        this.#preserveQueuedItemsOnError;
+      this.#streamTerminal = {
+        type: 'error',
+        error: existingPreservedError ? existingPreservedError.error : err,
+        preserveQueuedItems,
+      };
+      if (!preserveQueuedItems) {
+        this.#clearStreamQueue();
+        if (this.#readableController) {
+          this.#readableController.error(err);
+          this.#readableController = undefined;
+        }
+      } else {
+        this.#drainStreamQueue();
+      }
     }
-    this.#error = err;
-    this.#completedPromiseReject?.(err);
-    this.#completedPromise.catch((e) => {
-      logModelAndToolActionDebug(logger, 'Resulted in an error:', e);
-    });
+    if (!this.#hasError) {
+      this.#hasError = true;
+      this.#error = err;
+      this.#completedPromiseReject?.(err);
+      this.#completedPromise.catch((e) => {
+        logModelAndToolActionDebug(logger, 'Resulted in an error:', e);
+      });
+    }
     this.#detachAbortHandler();
   }
 
@@ -579,12 +638,20 @@ export class StreamedRunResult<
   }
 
   #handleAbort() {
+    this.#cancelStream();
+  }
+
+  #cancelStream() {
     if (this.#cancelled) {
       this.#detachAbortHandler();
       return;
     }
 
     this.#cancelled = true;
+    this.#clearStreamQueue();
+    this.#preserveQueuedItemsOnError = false;
+    this.#streamTerminal = { type: 'done' };
+    this.#streamReadPending = false;
 
     const controller = this.#readableController;
     this.#readableController = undefined;
@@ -602,6 +669,53 @@ export class StreamedRunResult<
     }
 
     this.#detachAbortHandler();
+  }
+
+  #drainStreamQueue() {
+    const controller = this.#readableController;
+    if (!controller || !this.#streamReadPending) {
+      return;
+    }
+    if (this.#queuedStreamEventIndex < this.#queuedStreamEvents.length) {
+      const event = this.#queuedStreamEvents[this.#queuedStreamEventIndex];
+      this.#queuedStreamEventIndex += 1;
+      this.#compactStreamQueue();
+      this.#streamReadPending = false;
+      controller.enqueue(event);
+      return;
+    }
+    if (this.#streamTerminal?.type === 'done') {
+      this.#streamReadPending = false;
+      controller.close();
+      this.#readableController = undefined;
+      return;
+    }
+    if (this.#streamTerminal?.type === 'error') {
+      this.#streamReadPending = false;
+      controller.error(this.#streamTerminal.error);
+      this.#readableController = undefined;
+    }
+  }
+
+  #clearStreamQueue() {
+    this.#queuedStreamEvents = [];
+    this.#queuedStreamEventIndex = 0;
+  }
+
+  #compactStreamQueue() {
+    if (this.#queuedStreamEventIndex === this.#queuedStreamEvents.length) {
+      this.#clearStreamQueue();
+      return;
+    }
+    if (
+      this.#queuedStreamEventIndex >= 1024 &&
+      this.#queuedStreamEventIndex * 2 >= this.#queuedStreamEvents.length
+    ) {
+      this.#queuedStreamEvents = this.#queuedStreamEvents.slice(
+        this.#queuedStreamEventIndex,
+      );
+      this.#queuedStreamEventIndex = 0;
+    }
   }
 
   #detachAbortHandler() {
