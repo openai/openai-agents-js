@@ -7,7 +7,6 @@ import {
 import { consumeAgentToolRunResult } from '../agentToolRunResults';
 import {
   clearToolErrorState,
-  InvalidToolOutputError,
   isToolTimeoutError,
   ToolCallError,
   UserError,
@@ -18,6 +17,13 @@ import {
   isRedactedInvalidToolInputError,
   refreshInvalidToolInputFailure,
 } from '../toolInputError';
+import {
+  createInvalidToolOutputError,
+  getInvalidToolOutputFailure,
+  type InvalidToolOutputFailure,
+  isRedactedInvalidToolOutputError,
+  refreshInvalidToolOutputFailure,
+} from '../toolOutputError';
 import { getTransferMessage, HandoffInputData } from '../handoff';
 import {
   RunHandoffCallItem,
@@ -40,6 +46,7 @@ import {
   FunctionToolResult,
   FunctionToolCustomDataContext,
   ToolCallDetails,
+  FUNCTION_TOOL_INVALID_OUTPUT_FAILURE_CALLBACK,
   FUNCTION_TOOL_PARSED_INPUT_CALLBACK,
   ApplyPatchToolCustomDataContext,
   invokeFunctionTool,
@@ -120,6 +127,7 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
   toolErrorFormatter?: ToolErrorFormatter;
   agentToolParentRunConfig?: Partial<RunConfig>;
   signal?: AbortSignal;
+  onInvalidOutputFailure?: (failure: InvalidToolOutputFailure) => void;
 };
 
 const REDACTED_TOOL_ERROR_MESSAGE =
@@ -268,9 +276,8 @@ export function getToolCallOutputItem(
       }
       textOutput = serializedOutput;
     } catch (error) {
-      throw new InvalidToolOutputError(
+      throw createInvalidToolOutputError(
         `Function tool '${toolCall.name}' outputSchema requires a JSON-serializable output.`,
-        undefined,
         error,
         { output },
       );
@@ -310,6 +317,19 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
   signal?: AbortSignal,
   onFatalFailure?: () => void,
 ): Promise<FunctionToolResult<TContext>[]> {
+  const startedInvalidInputFailures: InvalidToolInputFailure[] = [];
+  const startedInvalidOutputFailures: InvalidToolOutputFailure[] = [];
+  const trackInvalidOutputFailure = (failure: InvalidToolOutputFailure) => {
+    if (!startedInvalidOutputFailures.includes(failure)) {
+      startedInvalidOutputFailures.push(failure);
+    }
+  };
+  const trackInvalidOutputError = (error: unknown) => {
+    const failure = getInvalidToolOutputFailure(error);
+    if (failure) {
+      trackInvalidOutputFailure(failure);
+    }
+  };
   const deps: FunctionToolCallDeps<TContext> = {
     agent,
     runner,
@@ -317,9 +337,8 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     toolErrorFormatter,
     agentToolParentRunConfig,
     signal,
+    onInvalidOutputFailure: trackInvalidOutputFailure,
   };
-
-  const startedInvalidInputFailures: InvalidToolInputFailure[] = [];
 
   const executeToolRun = async (
     toolRun: ToolRunFunction<TContext>,
@@ -379,8 +398,10 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
             parseResult.approvalArgs,
             parseResult.preparedInput,
             failure,
+            trackInvalidOutputFailure,
           );
         } catch (error) {
+          trackInvalidOutputError(error);
           if (
             executionSignal?.aborted &&
             (error === executionSignal.reason || isAbortError(error))
@@ -431,8 +452,11 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
         toolRun,
         parseResult.approvalArgs,
         parseResult.preparedInput,
+        undefined,
+        trackInvalidOutputFailure,
       );
     } catch (error) {
+      trackInvalidOutputError(error);
       if (
         executionSignal?.aborted &&
         (error === executionSignal.reason || isAbortError(error))
@@ -458,11 +482,20 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     const redactInvalidInputFailure = startedInvalidInputFailures.some(
       (failure) => refreshInvalidToolInputFailure(failure),
     );
-    if (redactInvalidInputFailure) {
+    const invalidOutputFailure = getInvalidToolOutputFailure(e);
+    const redactStartedInvalidOutputFailure = startedInvalidOutputFailures.some(
+      (failure) => refreshInvalidToolOutputFailure(failure),
+    );
+    const redactSurfacedInvalidOutputFailure = invalidOutputFailure
+      ? refreshInvalidToolOutputFailure(invalidOutputFailure)
+      : isRedactedInvalidToolOutputError(e);
+    const redactInvalidOutputFailure =
+      redactStartedInvalidOutputFailure || redactSurfacedInvalidOutputFailure;
+    if (redactInvalidInputFailure || redactInvalidOutputFailure) {
       clearToolErrorState(e, state);
     }
     if (isToolTimeoutError(e)) {
-      if (redactInvalidInputFailure) {
+      if (redactInvalidInputFailure || redactInvalidOutputFailure) {
         e.state = undefined;
       } else {
         e.state ??= state;
@@ -470,11 +503,13 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
       throw e;
     }
 
-    const surfacedError = e as Error;
+    const surfacedError = (invalidOutputFailure?.error ?? e) as Error;
     throw new ToolCallError(
       `Failed to run function tools: ${surfacedError}`,
       surfacedError,
-      redactInvalidInputFailure || isRedactedInvalidToolInputError(e)
+      redactInvalidInputFailure ||
+        isRedactedInvalidToolInputError(e) ||
+        redactInvalidOutputFailure
         ? undefined
         : state,
     );
@@ -641,17 +676,23 @@ function buildFunctionFailureResult<TContext>(
   toolRun: ToolRunFunction<TContext>,
   output: unknown,
 ): FunctionToolResult<TContext> {
+  let rawItem: FunctionCallResultItem;
+  try {
+    rawItem = getToolCallOutputItem(toolRun.toolCall, output, {
+      outputSchema: toolRun.tool.outputSchema,
+    });
+  } catch (error) {
+    const invalidOutputFailure = getInvalidToolOutputFailure(error);
+    if (invalidOutputFailure) {
+      deps.onInvalidOutputFailure?.(invalidOutputFailure);
+    }
+    throw error;
+  }
   return {
     type: 'function_output' as const,
     tool: toolRun.tool,
     output,
-    runItem: new RunToolCallOutputItem(
-      getToolCallOutputItem(toolRun.toolCall, output, {
-        outputSchema: toolRun.tool.outputSchema,
-      }),
-      deps.agent,
-      output,
-    ),
+    runItem: new RunToolCallOutputItem(rawItem, deps.agent, output),
   };
 }
 
@@ -710,12 +751,21 @@ async function resolveFunctionFailureOutput<TContext>(
     ) {
       throw redactionBoundary.failure.error;
     }
-    const validatedOutput = validateFunctionToolOutput({
-      tool: toolRun.tool,
-      output,
-      runContext: deps.state._context,
-      details,
-    });
+    let validatedOutput: unknown;
+    try {
+      validatedOutput = validateFunctionToolOutput({
+        tool: toolRun.tool,
+        output,
+        runContext: deps.state._context,
+        details,
+      });
+    } catch (error) {
+      const invalidOutputFailure = getInvalidToolOutputFailure(error);
+      if (invalidOutputFailure) {
+        deps.onInvalidOutputFailure?.(invalidOutputFailure);
+      }
+      throw error;
+    }
     if (
       redactionBoundary &&
       !redactedBeforeCallback &&
@@ -1030,6 +1080,7 @@ async function runApprovedFunctionTool<TContext>(
   approvalArgs: unknown,
   preparedInput: FunctionToolPreparedInput | undefined,
   invalidInputFailure?: InvalidToolInputFailure,
+  onInvalidOutputFailure?: (failure: InvalidToolOutputFailure) => void,
 ): Promise<FunctionToolResult<TContext>> {
   const { agent, runner, state, agentToolParentRunConfig, signal } = deps;
   const toolName = getFunctionToolIdentity(toolRun);
@@ -1202,6 +1253,8 @@ async function runApprovedFunctionTool<TContext>(
           [FUNCTION_TOOL_PARSED_INPUT_CALLBACK]: (input: unknown) => {
             executedInput = cloneForCustomDataContext(input);
           },
+          [FUNCTION_TOOL_INVALID_OUTPUT_FAILURE_CALLBACK]:
+            onInvalidOutputFailure,
         };
         if (preparedInput) {
           setFunctionToolPreparedInput(toolDetails, preparedInput);
@@ -1402,6 +1455,10 @@ async function runApprovedFunctionTool<TContext>(
 
       return functionResult;
     } catch (error) {
+      const invalidOutputFailure = getInvalidToolOutputFailure(error);
+      if (invalidOutputFailure) {
+        onInvalidOutputFailure?.(invalidOutputFailure);
+      }
       if (committedOutputOnFailure) {
         throw error;
       }

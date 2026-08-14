@@ -19,7 +19,7 @@ import {
 import { RunContext } from './runContext';
 import type { RunConfig } from './run';
 import type { RunResult } from './result';
-import { InvalidToolOutputError, ToolTimeoutError, UserError } from './errors';
+import { ToolTimeoutError, UserError } from './errors';
 import {
   createInvalidToolInputDisposition,
   createInvalidToolInputFailure,
@@ -28,6 +28,13 @@ import {
   isRedactedInvalidToolInputError,
   refreshInvalidToolInputFailure,
 } from './toolInputError';
+import {
+  createInvalidToolOutputError,
+  getInvalidToolOutputFailure,
+  type InvalidToolOutputFailure,
+  isRedactedInvalidToolOutputError,
+  refreshInvalidToolOutputFailure,
+} from './toolOutputError';
 import logger, { logToolActionWarning } from './logger';
 import { getCurrentSpan } from './tracing';
 import { RunToolApprovalItem, RunToolCallOutputItem } from './items';
@@ -95,6 +102,9 @@ export type ToolApprovalFunction<TParameters extends ToolInputParameters> = (
 
 export const FUNCTION_TOOL_PARSED_INPUT_CALLBACK = Symbol(
   'openai.agents.functionToolParsedInputCallback',
+);
+export const FUNCTION_TOOL_INVALID_OUTPUT_FAILURE_CALLBACK = Symbol(
+  'openai.agents.functionToolInvalidOutputFailureCallback',
 );
 const FUNCTION_TOOL_OUTPUT_VALIDATOR = Symbol(
   'openai.agents.functionToolOutputValidator',
@@ -204,6 +214,9 @@ export type ToolCallDetails = {
   resumeState?: string;
   signal?: AbortSignal;
   [FUNCTION_TOOL_PARSED_INPUT_CALLBACK]?: (input: unknown) => void;
+  [FUNCTION_TOOL_INVALID_OUTPUT_FAILURE_CALLBACK]?: (
+    failure: InvalidToolOutputFailure,
+  ) => void;
   /**
    * Internal: parent runner config for nested agent-tool runs (Agent.asTool).
    */
@@ -2140,7 +2153,20 @@ async function invokeFunctionToolWithTimeout<
     }
 
     if (timeoutErrorFunction) {
-      return timeoutErrorFunction(runContext, timeoutError, details);
+      try {
+        return await timeoutErrorFunction(runContext, timeoutError, details);
+      } catch (error) {
+        const invalidOutputFailure = getInvalidToolOutputFailure(error);
+        if (invalidOutputFailure) {
+          details?.[FUNCTION_TOOL_INVALID_OUTPUT_FAILURE_CALLBACK]?.(
+            invalidOutputFailure,
+          );
+          if (refreshInvalidToolOutputFailure(invalidOutputFailure)) {
+            throw invalidOutputFailure.error;
+          }
+        }
+        throw error;
+      }
     }
 
     return defaultFunctionToolTimeoutErrorMessage({
@@ -2319,9 +2345,8 @@ export function tool<
         Result
       >;
     } catch (error) {
-      throw new InvalidToolOutputError(
+      throw createInvalidToolOutputError(
         `Invalid output for function tool '${name}'.`,
-        undefined,
         error,
         { runContext, output, details },
       );
@@ -2436,14 +2461,32 @@ export function tool<
     error: any,
     details?: ToolCallDetails,
   ): Promise<ToolExecuteResult<TOutputSchema, Result>> {
+    const invalidOutputFailure = getInvalidToolOutputFailure(error);
+    if (invalidOutputFailure) {
+      details?.[FUNCTION_TOOL_INVALID_OUTPUT_FAILURE_CALLBACK]?.(
+        invalidOutputFailure,
+      );
+    }
     if (!toolErrorFunction) {
+      if (
+        invalidOutputFailure &&
+        refreshInvalidToolOutputFailure(invalidOutputFailure)
+      ) {
+        throw invalidOutputFailure.error;
+      }
       throw error;
     }
     const invalidInputFailure = getInvalidToolInputFailure(error);
-    const redactedBeforeCallback = invalidInputFailure
+    const redactedInputBeforeCallback = invalidInputFailure
       ? refreshInvalidToolInputFailure(invalidInputFailure)
       : isRedactedInvalidToolInputError(error);
-    const callbackError = invalidInputFailure?.error ?? error;
+    const redactedOutputBeforeCallback = invalidOutputFailure
+      ? refreshInvalidToolOutputFailure(invalidOutputFailure)
+      : isRedactedInvalidToolOutputError(error);
+    const redactedBeforeCallback =
+      redactedInputBeforeCallback || redactedOutputBeforeCallback;
+    const callbackError =
+      invalidInputFailure?.error ?? invalidOutputFailure?.error ?? error;
     const errorDetails = redactedBeforeCallback ? undefined : details;
     const currentSpan = getCurrentSpan();
     currentSpan?.setError({
@@ -2461,18 +2504,32 @@ export function tool<
       );
       if (
         invalidInputFailure &&
-        !redactedBeforeCallback &&
+        !redactedInputBeforeCallback &&
         refreshInvalidToolInputFailure(invalidInputFailure)
       ) {
         throw invalidInputFailure.error;
       }
+      if (
+        invalidOutputFailure &&
+        !redactedOutputBeforeCallback &&
+        refreshInvalidToolOutputFailure(invalidOutputFailure)
+      ) {
+        throw invalidOutputFailure.error;
+      }
       const validatedOutput = validateOutput(output, runContext, errorDetails);
       if (
         invalidInputFailure &&
-        !redactedBeforeCallback &&
+        !redactedInputBeforeCallback &&
         refreshInvalidToolInputFailure(invalidInputFailure)
       ) {
         throw invalidInputFailure.error;
+      }
+      if (
+        invalidOutputFailure &&
+        !redactedOutputBeforeCallback &&
+        refreshInvalidToolOutputFailure(invalidOutputFailure)
+      ) {
+        throw invalidOutputFailure.error;
       }
       return validatedOutput;
     } catch (callbackFailure) {
@@ -2481,6 +2538,22 @@ export function tool<
         refreshInvalidToolInputFailure(invalidInputFailure)
       ) {
         throw invalidInputFailure.error;
+      }
+      if (
+        invalidOutputFailure &&
+        refreshInvalidToolOutputFailure(invalidOutputFailure)
+      ) {
+        throw invalidOutputFailure.error;
+      }
+      const callbackInvalidOutputFailure =
+        getInvalidToolOutputFailure(callbackFailure);
+      if (callbackInvalidOutputFailure) {
+        details?.[FUNCTION_TOOL_INVALID_OUTPUT_FAILURE_CALLBACK]?.(
+          callbackInvalidOutputFailure,
+        );
+        if (refreshInvalidToolOutputFailure(callbackInvalidOutputFailure)) {
+          throw callbackInvalidOutputFailure.error;
+        }
       }
       throw callbackFailure;
     }
