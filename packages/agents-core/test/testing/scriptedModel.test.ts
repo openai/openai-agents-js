@@ -552,6 +552,53 @@ describe('ScriptedModel', () => {
     expect(streamingModel.lastCall?.streamed).toBe(true);
   });
 
+  it('detaches automatic stream events from later events', async () => {
+    const model = new ScriptedModel([
+      modelResponse([
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [
+            {
+              type: 'output_text',
+              text: 'hello',
+              providerData: { nested: { value: 1 } },
+            },
+          ],
+        },
+      ]),
+    ]);
+    const iterator = model
+      .getStreamedResponse(makeRequest('hello'))
+      [Symbol.asyncIterator]();
+
+    await iterator.next();
+    const delta = await iterator.next();
+    if (
+      delta.done ||
+      delta.value.type !== 'output_text_delta' ||
+      !delta.value.providerData
+    ) {
+      throw new Error('Expected an output text delta with provider data.');
+    }
+    (delta.value.providerData.nested as { value: number }).value = 99;
+
+    const completed = await iterator.next();
+    if (completed.done || completed.value.type !== 'response_done') {
+      throw new Error('Expected a completed response.');
+    }
+    const output = completed.value.response.output[0];
+    if (
+      output?.type !== 'message' ||
+      output.content[0]?.type !== 'output_text'
+    ) {
+      throw new Error('Expected an assistant output text item.');
+    }
+
+    expect(output.content[0].providerData).toEqual({ nested: { value: 1 } });
+  });
+
   it('checks abort signals before every automatic stream event', async () => {
     const controller = new AbortController();
     const model = new ScriptedModel([
