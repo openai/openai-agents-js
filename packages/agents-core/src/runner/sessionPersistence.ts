@@ -93,6 +93,16 @@ async function clearSession(
   await session.clearSession();
 }
 
+async function popSessionItem(
+  session: Session,
+  runContext: RunContext<any> | undefined,
+): Promise<AgentInputItem | undefined> {
+  if (runContext && isRunContextAwareSession(session)) {
+    return session.popItem(runContext);
+  }
+  return session.popItem();
+}
+
 function canonicalizeSessionHistoryTransaction(
   transaction: SessionHistoryTransaction,
 ): SessionHistoryTransaction {
@@ -1998,12 +2008,18 @@ async function replaceSessionItemsWithRecovery(
       }
     } catch (error) {
       if (itemsBeforeCompaction.length > 0) {
-        await restoreSessionItemsAfterFailedReplacement(
-          session,
-          previousItems,
-          error,
-          runContext,
-        );
+        const replacementWasApplied =
+          await reconcileIdentityPreservingCompactionFailure(
+            session,
+            previousItems,
+            itemsBeforeCompaction,
+            replacementItems,
+            error,
+            runContext,
+          );
+        if (replacementWasApplied) {
+          return;
+        }
       }
       throw error;
     }
@@ -2027,6 +2043,102 @@ async function replaceSessionItemsWithRecovery(
     );
     throw error;
   }
+}
+
+async function reconcileIdentityPreservingCompactionFailure(
+  session: Session,
+  previousItems: AgentInputItem[],
+  appendedItems: AgentInputItem[],
+  replacementItems: AgentInputItem[],
+  replacementError: unknown,
+  runContext?: RunContext<any>,
+): Promise<boolean> {
+  let currentItems: AgentInputItem[];
+  try {
+    currentItems = await getSessionItems(session, runContext);
+  } catch (inspectionError) {
+    logModelAndToolActionWarning(
+      logger,
+      'Failed to inspect identity-preserving session history after compaction replacement failed.',
+      inspectionError,
+    );
+    return false;
+  }
+
+  const normalize = (items: AgentInputItem[]): AgentInputItem[] =>
+    session.prepareHistoryItemsForPersistenceComparison?.(items) ?? items;
+  const comparableCurrentItems = normalize(currentItems);
+  const comparableReplacementItems = normalize(replacementItems);
+  const compactedCurrentItems = trimToLatestCompaction(comparableCurrentItems);
+  if (
+    compactedCurrentItems.length === comparableReplacementItems.length &&
+    agentItemRangeMatches(
+      compactedCurrentItems,
+      comparableReplacementItems,
+      0,
+    )
+  ) {
+    logModelAndToolActionWarning(
+      logger,
+      'Compaction replacement reported a failure after the replacement was persisted.',
+      replacementError,
+    );
+    return true;
+  }
+
+  const comparablePreviousItems = normalize(previousItems);
+  const comparableAppendedItems = normalize(appendedItems);
+  if (
+    comparableCurrentItems.length !==
+      comparablePreviousItems.length + comparableAppendedItems.length ||
+    !agentItemRangeMatches(comparableCurrentItems, comparablePreviousItems, 0) ||
+    !agentItemRangeMatches(
+      comparableCurrentItems,
+      comparableAppendedItems,
+      comparablePreviousItems.length,
+    )
+  ) {
+    return false;
+  }
+
+  try {
+    for (let index = 0; index < appendedItems.length; index += 1) {
+      const popped = await popSessionItem(session, runContext);
+      if (!popped) {
+        throw new Error(
+          'Session ended before all pre-compaction items could be rolled back.',
+        );
+      }
+    }
+    const restoredItems = normalize(
+      await getSessionItems(session, runContext),
+    );
+    if (
+      restoredItems.length !== comparablePreviousItems.length ||
+      !agentItemRangeMatches(restoredItems, comparablePreviousItems, 0)
+    ) {
+      throw new Error(
+        'Pre-compaction rollback did not restore the previous session history.',
+      );
+    }
+  } catch (restoreError) {
+    logModelAndToolActionWarning(
+      logger,
+      'Failed to roll back pre-compaction session items after replacement failed.',
+      restoreError,
+    );
+    throw new SessionReconciliationRecoveryError(
+      replacementError,
+      restoreError,
+    );
+  }
+
+  logModelAndToolActionWarning(
+    logger,
+    'Rolled back pre-compaction session items after replacement failed.',
+    replacementError,
+  );
+  return false;
 }
 
 async function restoreSessionItemsAfterFailedReplacement(
