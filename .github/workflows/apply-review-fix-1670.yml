@@ -1,0 +1,224 @@
+name: Apply review fix 1670
+
+on:
+  push:
+    branches:
+      - fix/session-inline-compaction-1668
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply focused source patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label} matched {count} times')
+              return text.replace(old, new)
+
+          path = Path('packages/agents-core/src/runner/sessionPersistence.ts')
+          source = path.read_text()
+
+          source = replace_once(
+              source,
+              """async function clearSession(
+  session: Session,
+  runContext: RunContext<any> | undefined,
+): Promise<void> {
+  if (runContext && isRunContextAwareSession(session)) {
+    await session.clearSession(runContext);
+    return;
+  }
+  await session.clearSession();
+}
+""",
+              """async function clearSession(
+  session: Session,
+  runContext: RunContext<any> | undefined,
+): Promise<void> {
+  if (runContext && isRunContextAwareSession(session)) {
+    await session.clearSession(runContext);
+    return;
+  }
+  await session.clearSession();
+}
+
+async function popSessionItem(
+  session: Session,
+  runContext: RunContext<any> | undefined,
+): Promise<AgentInputItem | undefined> {
+  if (runContext && isRunContextAwareSession(session)) {
+    return session.popItem(runContext);
+  }
+  return session.popItem();
+}
+""",
+              'pop helper',
+          )
+
+          source = replace_once(
+              source,
+              """    } catch (error) {
+      if (itemsBeforeCompaction.length > 0) {
+        await restoreSessionItemsAfterFailedReplacement(
+          session,
+          previousItems,
+          error,
+          runContext,
+        );
+      }
+      throw error;
+    }
+    return;
+  }
+""",
+              """    } catch (error) {
+      if (itemsBeforeCompaction.length > 0) {
+        const replacementWasApplied =
+          await reconcileIdentityPreservingCompactionFailure(
+            session,
+            previousItems,
+            itemsBeforeCompaction,
+            replacementItems,
+            error,
+            runContext,
+          );
+        if (replacementWasApplied) {
+          return;
+        }
+      }
+      throw error;
+    }
+    return;
+  }
+""",
+              'capability failure handling',
+          )
+
+          marker = """async function restoreSessionItemsAfterFailedReplacement(
+  session: Session,
+"""
+          helper = """async function reconcileIdentityPreservingCompactionFailure(
+  session: Session,
+  previousItems: AgentInputItem[],
+  appendedItems: AgentInputItem[],
+  replacementItems: AgentInputItem[],
+  replacementError: unknown,
+  runContext?: RunContext<any>,
+): Promise<boolean> {
+  let currentItems: AgentInputItem[];
+  try {
+    currentItems = await getSessionItems(session, runContext);
+  } catch (inspectionError) {
+    logModelAndToolActionWarning(
+      logger,
+      'Failed to inspect identity-preserving session history after compaction replacement failed.',
+      inspectionError,
+    );
+    return false;
+  }
+
+  const normalize = (items: AgentInputItem[]): AgentInputItem[] =>
+    session.prepareHistoryItemsForPersistenceComparison?.(items) ?? items;
+  const comparableCurrentItems = normalize(currentItems);
+  const comparableReplacementItems = normalize(replacementItems);
+  const compactedCurrentItems = trimToLatestCompaction(comparableCurrentItems);
+  if (
+    compactedCurrentItems.length === comparableReplacementItems.length &&
+    agentItemRangeMatches(
+      compactedCurrentItems,
+      comparableReplacementItems,
+      0,
+    )
+  ) {
+    logModelAndToolActionWarning(
+      logger,
+      'Compaction replacement reported a failure after the replacement was persisted.',
+      replacementError,
+    );
+    return true;
+  }
+
+  const comparablePreviousItems = normalize(previousItems);
+  const comparableAppendedItems = normalize(appendedItems);
+  if (
+    comparableCurrentItems.length !==
+      comparablePreviousItems.length + comparableAppendedItems.length ||
+    !agentItemRangeMatches(comparableCurrentItems, comparablePreviousItems, 0) ||
+    !agentItemRangeMatches(
+      comparableCurrentItems,
+      comparableAppendedItems,
+      comparablePreviousItems.length,
+    )
+  ) {
+    return false;
+  }
+
+  try {
+    for (let index = 0; index < appendedItems.length; index += 1) {
+      const popped = await popSessionItem(session, runContext);
+      if (!popped) {
+        throw new Error(
+          'Session ended before all pre-compaction items could be rolled back.',
+        );
+      }
+    }
+    const restoredItems = normalize(
+      await getSessionItems(session, runContext),
+    );
+    if (
+      restoredItems.length !== comparablePreviousItems.length ||
+      !agentItemRangeMatches(restoredItems, comparablePreviousItems, 0)
+    ) {
+      throw new Error(
+        'Pre-compaction rollback did not restore the previous session history.',
+      );
+    }
+  } catch (restoreError) {
+    logModelAndToolActionWarning(
+      logger,
+      'Failed to roll back pre-compaction session items after replacement failed.',
+      restoreError,
+    );
+    throw new SessionReconciliationRecoveryError(
+      replacementError,
+      restoreError,
+    );
+  }
+
+  logModelAndToolActionWarning(
+    logger,
+    'Rolled back pre-compaction session items after replacement failed.',
+    replacementError,
+  );
+  return false;
+}
+
+async function restoreSessionItemsAfterFailedReplacement(
+  session: Session,
+"""
+          source = replace_once(source, marker, helper, 'identity preserving helper')
+          path.write_text(source)
+          PY
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          rm .github/workflows/apply-review-fix-1670.yml
+          git config user.name "Sylvester Kaczmarek"
+          git config user.email "16242628+sylvesterkaczmarek@users.noreply.github.com"
+          git add packages/agents-core/src/runner/sessionPersistence.ts .github/workflows/apply-review-fix-1670.yml
+          git commit -m "fix(core): preserve session identity on compaction recovery"
+          git push origin HEAD:${GITHUB_REF_NAME}
