@@ -3490,11 +3490,6 @@ export class OpenAIResponsesModel implements Model {
     }
     const responseFormat = getResponseFormat(request.outputType, mergedText);
 
-    let parallelToolCalls: boolean | undefined = undefined;
-    if (typeof request.modelSettings.parallelToolCalls === 'boolean') {
-      parallelToolCalls = request.modelSettings.parallelToolCalls;
-    }
-
     const shouldSendTools =
       tools.length > 0 ||
       request.toolsExplicitlyProvided === true ||
@@ -3528,7 +3523,6 @@ export class OpenAIResponsesModel implements Model {
       ...(!shouldOmitToolChoice
         ? { tool_choice: compatibleToolChoice as ToolChoiceOptions }
         : {}),
-      parallel_tool_calls: parallelToolCalls,
       stream,
       text: responseFormat,
       store: request.modelSettings.store,
@@ -3547,6 +3541,24 @@ export class OpenAIResponsesModel implements Model {
         ...requestData,
         ...transportOverrides.extraBody,
       };
+    }
+
+    const hasExplicitTools =
+      Array.isArray(requestData.tools) && requestData.tools.length > 0;
+    const promptMaySupplyTools =
+      Boolean(request.prompt) &&
+      requestData.tools === undefined &&
+      request.toolsExplicitlyProvided !== true;
+    if (
+      !Object.prototype.hasOwnProperty.call(
+        requestData,
+        'parallel_tool_calls',
+      ) &&
+      typeof request.modelSettings.parallelToolCalls === 'boolean' &&
+      (hasExplicitTools || promptMaySupplyTools)
+    ) {
+      (requestData as Record<string, unknown>).parallel_tool_calls =
+        request.modelSettings.parallelToolCalls;
     }
 
     requestData = {
