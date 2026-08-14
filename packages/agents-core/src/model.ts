@@ -297,6 +297,14 @@ export type ModelRetrySettings = {
   maxRetries?: number;
 
   /**
+   * Wall-clock timeout in milliseconds for each individual model attempt.
+   * The timeout aborts only the current attempt. A run-level abort signal still
+   * cancels the entire run and is never converted into a retryable timeout.
+   * Must be a positive finite number when provided.
+   */
+  attemptTimeoutMs?: number;
+
+  /**
    * Backoff configuration used when the retry policy requests a retry without returning an explicit delay.
    */
   backoff?: ModelRetryBackoffSettings;
