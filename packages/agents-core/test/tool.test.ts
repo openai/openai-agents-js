@@ -1344,6 +1344,9 @@ describe('Tool', () => {
   });
 
   it('rejects invalid Zod output at runtime', async () => {
+    const flagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(false);
     const t = tool({
       name: 'invalid_runtime_structured_zod_lookup',
       description: 'Return structured data.',
@@ -1352,10 +1355,181 @@ describe('Tool', () => {
       execute: async () => ({ value: 123 }) as any,
     });
 
-    await expect(t.invoke(new RunContext(), '{}')).rejects.toMatchObject({
-      name: 'InvalidToolOutputError',
-      toolOutput: { output: { value: 123 } },
+    try {
+      await expect(t.invoke(new RunContext(), '{}')).rejects.toMatchObject({
+        name: 'InvalidToolOutputError',
+        toolOutput: { output: { value: 123 } },
+      });
+    } finally {
+      flagSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    ['redacted', true],
+    ['diagnostic', false],
+  ] as const)(
+    '%s invalid Zod output errors respect tool-data logging',
+    async (_mode, dontLogToolData) => {
+      const secret = 'SECRET_INVALID_TOOL_OUTPUT_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(dontLogToolData);
+      const output = { value: secret };
+      const outputSchema = z
+        .object({ value: z.string() })
+        .superRefine((value, context) => {
+          context.addIssue({
+            code: 'custom',
+            message: `Rejected tool output: ${value.value}`,
+          });
+        });
+      const t = tool({
+        name: 'invalid_runtime_structured_zod_redaction',
+        description: 'Return structured data.',
+        parameters: z.object({}),
+        outputSchema,
+        execute: async () => output,
+      });
+
+      try {
+        const error = await t
+          .invoke(new RunContext(), '{}')
+          .catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(InvalidToolOutputError);
+        expect(error.message).toBe(
+          "Invalid output for function tool 'invalid_runtime_structured_zod_redaction'.",
+        );
+        expect(error).not.toHaveProperty('cause');
+
+        if (dontLogToolData) {
+          expect(error.originalError).toBeUndefined();
+          expect(error.toolOutput).toBeUndefined();
+          expect(
+            JSON.stringify({
+              message: error.message,
+              originalError: error.originalError,
+              toolOutput: error.toolOutput,
+              cause: error.cause,
+            }),
+          ).not.toContain(secret);
+        } else {
+          expect(error.originalError).toBeDefined();
+          expect(String(error.originalError)).toContain(secret);
+          expect(error.toolOutput).toMatchObject({ output });
+        }
+      } finally {
+        flagSpy.mockRestore();
+      }
+    },
+  );
+
+  it('promotes invalid Zod output redaction before direct rethrow', async () => {
+    const secret = 'SECRET_LATE_INVALID_TOOL_OUTPUT_123';
+    let flagReads = 0;
+    const flagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockImplementation(() => {
+        flagReads += 1;
+        return flagReads > 2;
+      });
+    const t = tool({
+      name: 'late_invalid_runtime_structured_zod_redaction',
+      description: 'Return structured data.',
+      parameters: z.object({}),
+      outputSchema: z.object({ value: z.number() }),
+      execute: async () => ({ value: secret }) as any,
     });
+
+    try {
+      const error = await t
+        .invoke(new RunContext(), '{}')
+        .catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(InvalidToolOutputError);
+      expect(error.originalError).toBeUndefined();
+      expect(error.toolOutput).toBeUndefined();
+      expect(error.message).not.toContain(secret);
+    } finally {
+      flagSpy.mockRestore();
+    }
+  });
+
+  it('uses the fixed message when late redaction replaces a mutated error', async () => {
+    const secret = 'SECRET_MUTATED_INVALID_OUTPUT_MESSAGE_123';
+    let redactToolData = false;
+    const flagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockImplementation(() => redactToolData);
+    const t = tool({
+      name: 'fixed_invalid_output_redaction_message',
+      description: 'Return structured data.',
+      parameters: z.object({}),
+      outputSchema: z.object({ value: z.number() }),
+      execute: async () => ({ value: secret }) as any,
+      errorFunction: (_context, error) => {
+        if (!(error instanceof Error)) {
+          throw new Error('Expected Error.');
+        }
+        error.message = secret;
+        redactToolData = true;
+        return { value: 1 };
+      },
+    });
+
+    try {
+      const error = await t
+        .invoke(new RunContext(), '{}')
+        .catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(InvalidToolOutputError);
+      expect(error.message).toBe(
+        "Invalid output for function tool 'fixed_invalid_output_redaction_message'.",
+      );
+      expect(error.originalError).toBeUndefined();
+      expect(error.toolOutput).toBeUndefined();
+      expect(JSON.stringify(error)).not.toContain(secret);
+    } finally {
+      flagSpy.mockRestore();
+    }
+  });
+
+  it('rebuilds an already-redacted error after callback mutation', async () => {
+    const secret = 'SECRET_EARLY_REDACTED_MUTATED_MESSAGE_123';
+    const flagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockReturnValue(true);
+    const t = tool({
+      name: 'early_invalid_output_redaction_message',
+      description: 'Return structured data.',
+      parameters: z.object({}),
+      outputSchema: z.object({ value: z.number() }),
+      execute: async () => ({ value: secret }) as any,
+      errorFunction: (_context, error) => {
+        if (!(error instanceof Error)) {
+          throw new Error('Expected Error.');
+        }
+        error.message = secret;
+        throw error;
+      },
+    });
+
+    try {
+      const error = await t
+        .invoke(new RunContext(), '{}')
+        .catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(InvalidToolOutputError);
+      expect(error.message).toBe(
+        "Invalid output for function tool 'early_invalid_output_redaction_message'.",
+      );
+      expect(error.originalError).toBeUndefined();
+      expect(error.toolOutput).toBeUndefined();
+      expect(JSON.stringify(error)).not.toContain(secret);
+    } finally {
+      flagSpy.mockRestore();
+    }
   });
 
   it('requires schema-compatible error fallbacks for Zod outputs', async () => {
@@ -1398,6 +1572,40 @@ describe('Tool', () => {
     await expect(noFallback.invoke(new RunContext(), '{}')).rejects.toThrow(
       'boom',
     );
+  });
+
+  it('promotes invalid fallback output redaction before direct rethrow', async () => {
+    const secret = 'SECRET_LATE_INVALID_FALLBACK_OUTPUT_123';
+    let flagReads = 0;
+    const flagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockImplementation(() => {
+        flagReads += 1;
+        return flagReads > 1;
+      });
+    const t = tool({
+      name: 'late_invalid_fallback_output_redaction',
+      description: 'Return structured data.',
+      parameters: z.object({}),
+      outputSchema: z.object({ value: z.number() }),
+      execute: async () => {
+        throw new Error('boom');
+      },
+      errorFunction: () => ({ value: secret }) as any,
+    });
+
+    try {
+      const error = await t
+        .invoke(new RunContext(), '{}')
+        .catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(InvalidToolOutputError);
+      expect(error.originalError).toBeUndefined();
+      expect(error.toolOutput).toBeUndefined();
+      expect(error.message).not.toContain(secret);
+    } finally {
+      flagSpy.mockRestore();
+    }
   });
 
   it('rejects invalid allowedCallers values at tool construction', () => {
@@ -2681,6 +2889,69 @@ describe('tool.invoke', () => {
         },
       }),
     ).resolves.toEqual({ status: 'call-structured-timeout' });
+  });
+
+  it('refreshes late redaction for invalid structured timeout fallbacks', async () => {
+    const secret = 'SECRET_LATE_TIMEOUT_FALLBACK_OUTPUT_123';
+    let redactToolData = false;
+    const flagSpy = vi
+      .spyOn(logger, 'dontLogToolData', 'get')
+      .mockImplementation(() => redactToolData);
+    const outputSchema = z
+      .object({ status: z.string() })
+      .superRefine((_value, context) => {
+        queueMicrotask(() => {
+          redactToolData = true;
+        });
+        context.addIssue({
+          code: 'custom',
+          message: 'Reject timeout fallback.',
+        });
+      });
+    const t = tool({
+      name: 'late_timeout_fallback_redaction',
+      description: 'Slow structured tool.',
+      parameters: z.object({}),
+      outputSchema,
+      timeoutMs: 5,
+      timeoutBehavior: 'error_as_result',
+      timeoutErrorFunction: () => ({ status: secret }),
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return { status: 'done' };
+      },
+    });
+
+    try {
+      const error = await t
+        .invoke(new RunContext(), '{}')
+        .catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(InvalidToolOutputError);
+      expect(error.message).toBe(
+        "Invalid output for function tool 'late_timeout_fallback_redaction'.",
+      );
+      expect(error.originalError).toBeUndefined();
+      expect(error.toolOutput).toBeUndefined();
+      expect(JSON.stringify(error)).not.toContain(secret);
+
+      redactToolData = false;
+      const helperError = await invokeFunctionTool({
+        tool: t,
+        runContext: new RunContext(),
+        input: '{}',
+      }).catch((caught) => caught);
+
+      expect(helperError).toBeInstanceOf(InvalidToolOutputError);
+      expect(helperError.message).toBe(
+        "Invalid output for function tool 'late_timeout_fallback_redaction'.",
+      );
+      expect(helperError.originalError).toBeUndefined();
+      expect(helperError.toolOutput).toBeUndefined();
+      expect(JSON.stringify(helperError)).not.toContain(secret);
+    } finally {
+      flagSpy.mockRestore();
+    }
   });
 
   it('requires timeout fallbacks for structured error results', () => {

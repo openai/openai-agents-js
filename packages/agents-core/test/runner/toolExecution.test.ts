@@ -383,6 +383,54 @@ describe('getToolCallOutputItem', () => {
     });
   });
 
+  it.each([
+    ['redacted', true],
+    ['diagnostic', false],
+  ] as const)(
+    '%s schema-backed serialization errors respect tool-data logging',
+    (_mode, dontLogToolData) => {
+      const secret = 'SECRET_STRUCTURED_SERIALIZATION_OUTPUT_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(dontLogToolData);
+      const output: Record<string, unknown> = { secret };
+      output.self = output;
+
+      try {
+        let error: unknown;
+        try {
+          getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, output, {
+            outputSchema: {
+              type: 'object',
+              properties: { secret: { type: 'string' } },
+              required: ['secret'],
+              additionalProperties: true,
+            },
+          });
+        } catch (caught) {
+          error = caught;
+        }
+
+        expect(error).toBeInstanceOf(InvalidToolOutputError);
+        if (!(error instanceof InvalidToolOutputError)) {
+          throw new Error('Expected InvalidToolOutputError.');
+        }
+        expect(error.message).not.toContain(secret);
+        expect(error).not.toHaveProperty('cause');
+
+        if (dontLogToolData) {
+          expect(error.originalError).toBeUndefined();
+          expect(error.toolOutput).toBeUndefined();
+        } else {
+          expect(error.originalError).toBeDefined();
+          expect(error.toolOutput?.output).toBe(output);
+        }
+      } finally {
+        flagSpy.mockRestore();
+      }
+    },
+  );
+
   it('returns an empty array as plain text output', () => {
     const result = getToolCallOutputItem(TEST_MODEL_FUNCTION_CALL, []);
 
@@ -7172,6 +7220,99 @@ describe('executeShellActions', () => {
       );
     });
 
+    it('does not expose redacted invalid Zod output through the runner wrapper', async () => {
+      const secret = 'SECRET_RUNNER_INVALID_TOOL_OUTPUT_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(true);
+      const output = { value: secret };
+      (state._context.context as any).payload = output;
+      const t = tool({
+        name: 'redacted_structured_output_tool',
+        description: 'tool with structured output',
+        parameters: z.object({}),
+        outputSchema: z.object({ value: z.number() }),
+        execute: vi.fn(async () => output as any),
+      }) as unknown as FunctionTool;
+
+      try {
+        const error = await withTrace('test', () =>
+          executeFunctionToolCalls(
+            state._currentAgent,
+            [{ toolCall, tool: t }],
+            runner,
+            state,
+          ).catch((caught) => caught),
+        );
+
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect(error.message).not.toContain(secret);
+        expect(error.state).toBeUndefined();
+        expect(error).not.toHaveProperty('cause');
+        const outputError = (error as ToolCallError).error;
+        expect(outputError).toBeInstanceOf(InvalidToolOutputError);
+        expect(outputError.message).not.toContain(secret);
+        expect(outputError).toMatchObject({
+          originalError: undefined,
+          toolOutput: undefined,
+        });
+        expect(outputError).not.toHaveProperty('cause');
+      } finally {
+        delete (state._context.context as any).payload;
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('refreshes serialization redaction before runner wrapping', async () => {
+      const secret = 'SECRET_LATE_SERIALIZATION_OUTPUT_123';
+      let flagReads = 0;
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockImplementation(() => {
+          flagReads += 1;
+          return flagReads > 3;
+        });
+      const output: Record<string, unknown> = { secret };
+      output.self = output;
+      (state._context.context as any).payload = output;
+      const t = tool({
+        name: 'late_serialization_redaction_tool',
+        description: 'tool with structured output',
+        parameters: z.object({}),
+        outputSchema: {
+          type: 'object',
+          properties: { secret: { type: 'string' } },
+          required: ['secret'],
+          additionalProperties: true,
+        },
+        execute: vi.fn(async () => output),
+      }) as unknown as FunctionTool;
+
+      try {
+        const error = await withTrace('test', () =>
+          executeFunctionToolCalls(
+            state._currentAgent,
+            [{ toolCall, tool: t }],
+            runner,
+            state,
+          ).catch((caught) => caught),
+        );
+
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect(error.state).toBeUndefined();
+        expect(error.message).not.toContain(secret);
+        const outputError = (error as ToolCallError).error;
+        expect(outputError).toBeInstanceOf(InvalidToolOutputError);
+        expect(outputError).toMatchObject({
+          originalError: undefined,
+          toolOutput: undefined,
+        });
+      } finally {
+        delete (state._context.context as any).payload;
+        flagSpy.mockRestore();
+      }
+    });
+
     it('does not validate Zod outputs twice in the runner', async () => {
       let validationCount = 0;
       const t = tool({
@@ -8788,6 +8929,325 @@ describe('executeShellActions', () => {
         expect((error as ToolCallError).state).toBeUndefined();
         expect(JSON.stringify(error)).not.toContain(secret);
       } finally {
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('omits state when a sibling failure wins a batch with redacted invalid output', async () => {
+      const secret = 'SECRET_MIXED_OUTPUT_FAILURE_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(true);
+      let markOutputStarted: (() => void) | undefined;
+      const outputStarted = new Promise<void>((resolve) => {
+        markOutputStarted = resolve;
+      });
+      let releaseOutput: (() => void) | undefined;
+      const outputReleased = new Promise<void>((resolve) => {
+        releaseOutput = resolve;
+      });
+      const output = { value: secret };
+      (state._context.context as any).payload = output;
+      const invalidOutputTool = tool({
+        name: 'invalid_output',
+        description: 'Return invalid output after sibling failure.',
+        parameters: z.object({}),
+        outputSchema: z.object({ value: z.number() }),
+        execute: vi.fn(async () => {
+          markOutputStarted?.();
+          await outputReleased;
+          return output as any;
+        }),
+      }) as unknown as FunctionTool;
+      const failingTool = tool({
+        name: 'sibling_failure',
+        description: 'Fail independently.',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: vi.fn(async () => {
+          await outputStarted;
+          setTimeout(() => releaseOutput?.(), 0);
+          throw new Error('sibling failed');
+        }),
+      }) as unknown as FunctionTool;
+
+      try {
+        const error = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'invalid_output',
+                arguments: '{}',
+              },
+              tool: invalidOutputTool,
+            },
+            {
+              toolCall: {
+                ...toolCall,
+                callId: 'c2',
+                name: 'sibling_failure',
+                arguments: '{}',
+              },
+              tool: failingTool,
+            },
+          ],
+          runner,
+          state,
+        ).catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).error).toMatchObject({
+          message: 'sibling failed',
+        });
+        expect((error as ToolCallError).state).toBeUndefined();
+        expect(JSON.stringify(error)).not.toContain(secret);
+      } finally {
+        delete (state._context.context as any).payload;
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('tracks redacted invalid output before a fallback loses sibling ownership', async () => {
+      const secret = 'SECRET_FALLBACK_OUTPUT_FAILURE_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(true);
+      let markFallbackStarted: (() => void) | undefined;
+      const fallbackStarted = new Promise<void>((resolve) => {
+        markFallbackStarted = resolve;
+      });
+      let releaseFallback: (() => void) | undefined;
+      const fallbackReleased = new Promise<void>((resolve) => {
+        releaseFallback = resolve;
+      });
+      const output = { value: secret };
+      (state._context.context as any).payload = output;
+      const invalidOutputTool = tool({
+        name: 'fallback_invalid_output',
+        description: 'Recover after invalid output.',
+        parameters: z.object({}),
+        outputSchema: z.object({ value: z.number() }),
+        execute: vi.fn(async () => output as any),
+        errorFunction: async () => {
+          markFallbackStarted?.();
+          await fallbackReleased;
+          return { value: 1 };
+        },
+      }) as unknown as FunctionTool;
+      const failingTool = tool({
+        name: 'fallback_sibling_failure',
+        description: 'Fail while fallback is pending.',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: vi.fn(async () => {
+          await fallbackStarted;
+          setTimeout(() => releaseFallback?.(), 0);
+          throw new Error('sibling failed');
+        }),
+      }) as unknown as FunctionTool;
+
+      try {
+        const error = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'fallback_invalid_output',
+                arguments: '{}',
+              },
+              tool: invalidOutputTool,
+            },
+            {
+              toolCall: {
+                ...toolCall,
+                callId: 'c2',
+                name: 'fallback_sibling_failure',
+                arguments: '{}',
+              },
+              tool: failingTool,
+            },
+          ],
+          runner,
+          state,
+        ).catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).error).toMatchObject({
+          message: 'sibling failed',
+        });
+        expect((error as ToolCallError).state).toBeUndefined();
+        expect(JSON.stringify(error)).not.toContain(secret);
+      } finally {
+        delete (state._context.context as any).payload;
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('tracks redacted guardrail fallback output before losing sibling ownership', async () => {
+      const secret = 'SECRET_GUARDRAIL_FALLBACK_OUTPUT_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(true);
+      let markFallbackStarted: (() => void) | undefined;
+      const fallbackStarted = new Promise<void>((resolve) => {
+        markFallbackStarted = resolve;
+      });
+      let releaseFallback: (() => void) | undefined;
+      const fallbackReleased = new Promise<void>((resolve) => {
+        releaseFallback = resolve;
+      });
+      const output = { value: secret };
+      (state._context.context as any).payload = output;
+      const rejectingGuardrail = defineToolInputGuardrail({
+        name: 'reject_for_invalid_fallback',
+        run: async () =>
+          ToolGuardrailFunctionOutputFactory.rejectContent('blocked'),
+      });
+      const invalidFallbackTool = tool({
+        name: 'guardrail_invalid_fallback',
+        description: 'Return invalid output from a guardrail fallback.',
+        parameters: z.object({}),
+        outputSchema: z.object({ value: z.number() }),
+        inputGuardrails: [rejectingGuardrail],
+        execute: vi.fn(async () => ({ value: 1 })),
+        errorFunction: async () => {
+          markFallbackStarted?.();
+          await fallbackReleased;
+          return output as any;
+        },
+      }) as unknown as FunctionTool;
+      const failingTool = tool({
+        name: 'guardrail_fallback_sibling_failure',
+        description: 'Fail while a guardrail fallback is pending.',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: vi.fn(async () => {
+          await fallbackStarted;
+          setTimeout(() => releaseFallback?.(), 0);
+          throw new Error('sibling failed');
+        }),
+      }) as unknown as FunctionTool;
+
+      try {
+        const error = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'guardrail_invalid_fallback',
+                arguments: '{}',
+              },
+              tool: invalidFallbackTool,
+            },
+            {
+              toolCall: {
+                ...toolCall,
+                callId: 'c2',
+                name: 'guardrail_fallback_sibling_failure',
+                arguments: '{}',
+              },
+              tool: failingTool,
+            },
+          ],
+          runner,
+          state,
+        ).catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).error).toMatchObject({
+          message: 'sibling failed',
+        });
+        expect((error as ToolCallError).state).toBeUndefined();
+        expect(JSON.stringify(error)).not.toContain(secret);
+      } finally {
+        delete (state._context.context as any).payload;
+        flagSpy.mockRestore();
+      }
+    });
+
+    it('tracks redacted fallback serialization before losing sibling ownership', async () => {
+      const secret = 'SECRET_GUARDRAIL_SERIALIZATION_OUTPUT_123';
+      const flagSpy = vi
+        .spyOn(logger, 'dontLogToolData', 'get')
+        .mockReturnValue(true);
+      let markFallbackStarted: (() => void) | undefined;
+      const fallbackStarted = new Promise<void>((resolve) => {
+        markFallbackStarted = resolve;
+      });
+      let releaseFallback: (() => void) | undefined;
+      const fallbackReleased = new Promise<void>((resolve) => {
+        releaseFallback = resolve;
+      });
+      const output: Record<string, unknown> = { secret };
+      output.self = output;
+      (state._context.context as any).payload = output;
+      const invalidFallbackTool = tool({
+        name: 'parse_invalid_serialization',
+        description: 'Return unserializable output from a parse fallback.',
+        parameters: z.object({ value: z.number() }),
+        outputSchema: {
+          type: 'object',
+          properties: { secret: { type: 'string' } },
+          required: ['secret'],
+          additionalProperties: true,
+        },
+        execute: vi.fn(async () => ({ secret: 'unused' })),
+        errorFunction: async () => {
+          markFallbackStarted?.();
+          await fallbackReleased;
+          return output;
+        },
+      }) as unknown as FunctionTool;
+      const failingTool = tool({
+        name: 'serialization_fallback_sibling_failure',
+        description: 'Fail while fallback serialization is pending.',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: vi.fn(async () => {
+          await fallbackStarted;
+          setTimeout(() => releaseFallback?.(), 0);
+          throw new Error('sibling failed');
+        }),
+      }) as unknown as FunctionTool;
+
+      try {
+        const error = await executeFunctionToolCalls(
+          state._currentAgent,
+          [
+            {
+              toolCall: {
+                ...toolCall,
+                name: 'parse_invalid_serialization',
+                arguments: '{"value":',
+              },
+              tool: invalidFallbackTool,
+            },
+            {
+              toolCall: {
+                ...toolCall,
+                callId: 'c2',
+                name: 'serialization_fallback_sibling_failure',
+                arguments: '{}',
+              },
+              tool: failingTool,
+            },
+          ],
+          runner,
+          state,
+        ).catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(ToolCallError);
+        expect((error as ToolCallError).error).toMatchObject({
+          message: 'sibling failed',
+        });
+        expect((error as ToolCallError).state).toBeUndefined();
+        expect(JSON.stringify(error)).not.toContain(secret);
+      } finally {
+        delete (state._context.context as any).payload;
         flagSpy.mockRestore();
       }
     });
