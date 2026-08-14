@@ -1757,6 +1757,87 @@ type ToolSearchRuntimeToolState<TContext = UnknownContext> = {
   nextOrder: number;
 };
 
+function cloneInterruptionSnapshot(
+  interruption: RunToolApprovalItem,
+): RunToolApprovalItem {
+  let rawItem: RunToolApprovalItem['rawItem'];
+  try {
+    rawItem = structuredClone(interruption.rawItem);
+  } catch {
+    throw new UserError(
+      'Cannot read RunState interruptions because an interruption raw item is not cloneable.',
+    );
+  }
+  if (containsSharedArrayBuffer(rawItem)) {
+    throw new UserError(
+      'Cannot read RunState interruptions because an interruption raw item contains shared memory.',
+    );
+  }
+
+  return new RunToolApprovalItem(
+    rawItem,
+    interruption.agent,
+    interruption.toolName,
+    interruption.functionToolStateKey,
+  );
+}
+
+function containsSharedArrayBuffer(value: unknown): boolean {
+  if (typeof SharedArrayBuffer === 'undefined') {
+    return false;
+  }
+
+  const visited = new Set<object>();
+  const pending: unknown[] = [value];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || typeof current !== 'object') {
+      continue;
+    }
+    if (current instanceof SharedArrayBuffer) {
+      return true;
+    }
+    if (
+      ArrayBuffer.isView(current) &&
+      current.buffer instanceof SharedArrayBuffer
+    ) {
+      return true;
+    }
+    if (
+      typeof WebAssembly !== 'undefined' &&
+      current instanceof WebAssembly.Memory &&
+      current.buffer instanceof SharedArrayBuffer
+    ) {
+      return true;
+    }
+    if (visited.has(current)) {
+      continue;
+    }
+    visited.add(current);
+
+    if (current instanceof Map) {
+      for (const [key, entry] of current) {
+        pending.push(key, entry);
+      }
+      continue;
+    }
+    if (current instanceof Set) {
+      for (const entry of current) {
+        pending.push(entry);
+      }
+      continue;
+    }
+    for (const key of Reflect.ownKeys(current)) {
+      const descriptor = Object.getOwnPropertyDescriptor(current, key);
+      if (descriptor && 'value' in descriptor) {
+        pending.push(descriptor.value);
+      }
+    }
+  }
+
+  return false;
+}
+
 /**
  * Serializable snapshot of an agent's run, including context, usage and trace.
  * While this class has publicly writable properties (prefixed with `_`), they are not meant to be
@@ -2424,7 +2505,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     }
     const interruptions = this._currentStep.data.interruptions;
     return Array.isArray(interruptions)
-      ? [...(interruptions as RunToolApprovalItem[])]
+      ? (interruptions as RunToolApprovalItem[]).map(cloneInterruptionSnapshot)
       : [];
   }
 
