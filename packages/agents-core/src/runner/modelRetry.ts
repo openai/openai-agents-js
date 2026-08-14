@@ -20,6 +20,7 @@ const DEFAULT_BACKOFF_MULTIPLIER = 2;
 const DEFAULT_BACKOFF_JITTER = true;
 const RETRY_AFTER_MS_HEADER = 'retry-after-ms';
 const RETRY_AFTER_HEADER = 'retry-after';
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 type ResolvedRetryDecision = {
   retry: boolean;
@@ -155,6 +156,11 @@ function getModelAttemptTimeoutMs(request: ModelRequest): number | undefined {
       'modelSettings.retry.attemptTimeoutMs must be a positive finite number when provided.',
     );
   }
+  if (timeoutMs > MAX_TIMER_DELAY_MS) {
+    throw new UserError(
+      `modelSettings.retry.attemptTimeoutMs must be less than or equal to ${MAX_TIMER_DELAY_MS}ms.`,
+    );
+  }
   return timeoutMs;
 }
 
@@ -180,6 +186,17 @@ function createModelAttemptTimeoutError(
     }
   }
   return error;
+}
+
+function isModelAttemptTimeoutError(
+  error: unknown,
+): error is ModelAttemptTimeoutError {
+  return (
+    isRecord(error) &&
+    error.name === 'ModelAttemptTimeoutError' &&
+    error.code === 'ETIMEDOUT' &&
+    typeof error.timeoutMs === 'number'
+  );
 }
 
 function createModelAttemptScope(
@@ -496,9 +513,20 @@ function createProviderRetryAuthority(
 
 function requestMayHaveBeenAccepted(
   authority: ProviderRetryAuthority,
+  request: ModelRequest,
+  error: unknown,
 ): boolean {
+  const statefulRequest = Boolean(
+    request.previousResponseId || request.conversationId,
+  );
+  const timedOutWithUnknownAcceptance =
+    statefulRequest &&
+    authority.replaySafety !== 'safe' &&
+    isModelAttemptTimeoutError(error);
   return (
-    authority.replaySafety === 'unsafe' || authority.responseStarted === true
+    authority.replaySafety === 'unsafe' ||
+    authority.responseStarted === true ||
+    timedOutWithUnknownAcceptance
   );
 }
 
@@ -1021,7 +1049,7 @@ export async function getResponseWithRetry(
       });
       const authority = createProviderRetryAuthority(providerAdvice);
       const markPossiblyAcceptedFailure = () => {
-        if (requestMayHaveBeenAccepted(authority)) {
+        if (requestMayHaveBeenAccepted(authority, request, error)) {
           handlers.onPossiblyAcceptedRequestFailure?.();
         }
       };
@@ -1120,7 +1148,7 @@ export async function* getStreamedResponseWithRetry(
       });
       const authority = createProviderRetryAuthority(providerAdvice);
       const markPossiblyAcceptedFailure = () => {
-        if (requestMayHaveBeenAccepted(authority)) {
+        if (requestMayHaveBeenAccepted(authority, request, error)) {
           handlers.onPossiblyAcceptedRequestFailure?.();
         }
       };

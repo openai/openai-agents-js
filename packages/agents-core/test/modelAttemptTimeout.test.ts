@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Agent, retryPolicies, run, Runner } from '../src';
 import type { Model, ModelRequest, ModelResponse } from '../src/model';
 import type { StreamEvent } from '../src/types/protocol';
+import { getResponseWithRetry } from '../src/runner/modelRetry';
 import { Usage } from '../src/usage';
 
 function response(text: string): ModelResponse {
@@ -150,6 +151,63 @@ describe('model attempt timeout', () => {
       'modelSettings.retry.attemptTimeoutMs must be a positive finite number',
     );
     expect(model.calls).toBe(0);
+  });
+
+  it('rejects attempt timeouts above the platform timer limit', async () => {
+    const model = new TimeoutThenResponseModel();
+    const agent = new Agent({
+      name: 'OverflowAttemptTimeoutAgent',
+      model,
+      modelSettings: { retry: { attemptTimeoutMs: 2_147_483_648 } },
+    });
+
+    await expect(run(agent, 'hello')).rejects.toThrow(
+      'modelSettings.retry.attemptTimeoutMs must be less than or equal to 2147483647ms',
+    );
+    expect(model.calls).toBe(0);
+  });
+
+  it('marks a surfaced stateful timeout as possibly accepted', async () => {
+    vi.useFakeTimers();
+    const model = new TimeoutThenResponseModel();
+    const onPossiblyAcceptedRequestFailure = vi.fn();
+    const request = {
+      conversationId: 'conv_timeout',
+      modelSettings: { retry: { attemptTimeoutMs: 25 } },
+    } as ModelRequest;
+
+    const responsePromise = getResponseWithRetry(model, request, {
+      onPossiblyAcceptedRequestFailure,
+    });
+    await vi.advanceTimersByTimeAsync(25);
+
+    await expect(responsePromise).rejects.toMatchObject({
+      name: 'ModelAttemptTimeoutError',
+      code: 'ETIMEDOUT',
+    });
+    expect(onPossiblyAcceptedRequestFailure).toHaveBeenCalledOnce();
+  });
+
+  it('does not mark a stateful timeout accepted when the provider says replay is safe', async () => {
+    vi.useFakeTimers();
+    const model = new TimeoutThenResponseModel();
+    model.getRetryAdvice = vi.fn().mockReturnValue({ replaySafety: 'safe' });
+    const onPossiblyAcceptedRequestFailure = vi.fn();
+    const request = {
+      previousResponseId: 'resp_timeout',
+      modelSettings: { retry: { attemptTimeoutMs: 25 } },
+    } as ModelRequest;
+
+    const responsePromise = getResponseWithRetry(model, request, {
+      onPossiblyAcceptedRequestFailure,
+    });
+    await vi.advanceTimersByTimeAsync(25);
+
+    await expect(responsePromise).rejects.toMatchObject({
+      name: 'ModelAttemptTimeoutError',
+      code: 'ETIMEDOUT',
+    });
+    expect(onPossiblyAcceptedRequestFailure).not.toHaveBeenCalled();
   });
 
   it('does not turn parent run cancellation into a retryable timeout', async () => {
