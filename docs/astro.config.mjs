@@ -269,6 +269,15 @@ const sidebar = [
         },
       },
       {
+        label: 'Testing',
+        link: '/guides/testing',
+        translations: {
+          ja: 'テスト',
+          zh: '测试',
+          ko: '테스트',
+        },
+      },
+      {
         label: 'Streaming',
         link: '/guides/streaming',
         translations: {

@@ -1,0 +1,61 @@
+---
+title: Testing agents
+description: Test agent workflows deterministically without model API calls
+---
+
+import { Code } from '@astrojs/starlight/components';
+import scriptedModelExample from '../../../../../examples/docs/testing/scriptedModel.ts?raw';
+
+Agent tests should be repeatable, fast, and independent of model availability. `ScriptedModel` is a provider-neutral test model that returns normalized responses in a fixed order and records every model request. Use it to test agent orchestration, tool calls, handoffs, guardrails, and session behavior without a model API key or model network request.
+
+Import `ScriptedModel` and its response builders from `@openai/agents/testing`. Keep the agent, runner, and tool imports in `@openai/agents`.
+
+## Test a tool workflow
+
+The following example scripts two model turns. The first turn requests the `get_weather` tool, and the second turn returns the final assistant message.
+
+<Code
+  lang="typescript"
+  code={scriptedModelExample}
+  title="Deterministic tool workflow"
+/>
+
+Each top-level script step passed to `ScriptedModel` represents one model request. An array of normalized output items is the shortest response form:
+
+- `functionCall()` creates a normalized function-tool call.
+- `assistantMessage()` creates a normalized assistant text message.
+- `modelResponse()` can wrap output items explicitly or provide a complete model response with custom usage and response metadata.
+
+The runner executes the real `get_weather` function between the two scripted model turns. The test therefore validates the agent and tool workflow while replacing only the model boundary.
+
+The example uses a dedicated `Runner` with tracing disabled for a fully offline test. If a test suite already configures tracing globally, use the suite's existing tracing setup instead.
+
+## Assert model requests
+
+`ScriptedModel` records frozen request snapshots in call order. The model detaches mutable input collections and model settings when it records a request:
+
+- `calls` contains every recorded model call.
+- `firstCall` and `lastCall` provide convenient access to the first and most recent calls.
+- Each call exposes `index`, `streamed`, and `request`.
+
+Assert on the request details that matter to the behavior under test. For example, a multi-turn tool test can check that the second request contains a `function_call_result`. Avoid snapshotting an entire request when a focused assertion would express the expected behavior more clearly.
+
+Call `assertComplete()` at the end of a test. It throws when the script contains unused steps, which catches workflows that finish earlier than expected. `ScriptedModel` also throws an `UnexpectedModelCallError` if the workflow makes more model calls than the script provides.
+
+## Derive responses from requests
+
+Use `modelResponder()` when a scripted response depends on the recorded request. The responder receives the same recorded call shape exposed through `calls`, and it returns either normalized output items or a complete model response.
+
+Use fixed response steps when the request does not affect the response. Fixed steps keep the test's expected sequence visible and make unexpected workflow changes easier to diagnose.
+
+## Test failures and streaming
+
+Use `modelError()` to make a model call fail. A scripted error can also provide retry advice when the test covers model retry behavior.
+
+For ordinary streaming tests, pass the same output items used by a non-streaming test. `ScriptedModel` converts a complete response into normalized stream events when the runner requests a stream. Use `modelStream()` or `modelStreamResponder()` only when the test must control the exact normalized event sequence.
+
+## Choose the right boundary
+
+`ScriptedModel` validates provider-neutral agent workflow behavior. It does not validate a provider's HTTP payloads, authentication, rate limits, or model quality. Keep a specialized model double when a test specifically covers provider-wire conversion, malformed streams, controlled concurrency, or exact abort delivery.
+
+For more workflow concepts, see [Running agents](/openai-agents-js/guides/running-agents) and [Tools](/openai-agents-js/guides/tools).
