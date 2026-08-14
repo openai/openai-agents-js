@@ -28,6 +28,25 @@ class TestableOpenAIResponsesModel extends OpenAIResponsesModel {
   }
 }
 
+const serializedFunctionTool = {
+  type: 'function',
+  name: 'lookup',
+  description: 'Look up a record.',
+  parameters: { type: 'object', properties: {}, additionalProperties: false },
+  strict: true,
+} as const;
+
+const serializedHandoff = {
+  toolName: 'transfer_to_specialist',
+  toolDescription: 'Transfer to a specialist.',
+  inputJsonSchema: {
+    type: 'object',
+    properties: {},
+    additionalProperties: false,
+  },
+  strictJsonSchema: true,
+} as const;
+
 describe('OpenAIResponsesModel', () => {
   beforeAll(() => {
     setTracingDisabled(true);
@@ -40,6 +59,197 @@ describe('OpenAIResponsesModel', () => {
   afterEach(() => {
     setTracingDisabled(true);
     setTraceProcessors([]);
+  });
+
+  it.each([
+    {
+      label: 'a local function tool',
+      tools: [serializedFunctionTool],
+      handoffs: [],
+      prompt: undefined,
+      toolsExplicitlyProvided: undefined,
+      providerData: undefined,
+      expectedToolsLength: 1,
+      expectsParallelToolCalls: true,
+    },
+    {
+      label: 'a converted handoff tool',
+      tools: [],
+      handoffs: [serializedHandoff],
+      prompt: undefined,
+      toolsExplicitlyProvided: undefined,
+      providerData: undefined,
+      expectedToolsLength: 1,
+      expectsParallelToolCalls: true,
+    },
+    {
+      label: 'no tools',
+      tools: [],
+      handoffs: [],
+      prompt: undefined,
+      toolsExplicitlyProvided: undefined,
+      providerData: undefined,
+      expectedToolsLength: 0,
+      expectsParallelToolCalls: false,
+    },
+    {
+      label: 'explicitly empty tools',
+      tools: [],
+      handoffs: [],
+      prompt: undefined,
+      toolsExplicitlyProvided: true,
+      providerData: undefined,
+      expectedToolsLength: 0,
+      expectsParallelToolCalls: false,
+    },
+    {
+      label: 'a stored prompt with implicit tools',
+      tools: [],
+      handoffs: [],
+      prompt: { promptId: 'pmpt_123' },
+      toolsExplicitlyProvided: false,
+      providerData: undefined,
+      expectedToolsLength: undefined,
+      expectsParallelToolCalls: true,
+    },
+    {
+      label: 'a stored prompt with explicitly empty tools',
+      tools: [],
+      handoffs: [],
+      prompt: { promptId: 'pmpt_123' },
+      toolsExplicitlyProvided: true,
+      providerData: undefined,
+      expectedToolsLength: 0,
+      expectsParallelToolCalls: false,
+    },
+    {
+      label: 'a stored prompt with undefined provider tools',
+      tools: [],
+      handoffs: [],
+      prompt: { promptId: 'pmpt_123' },
+      toolsExplicitlyProvided: false,
+      providerData: { tools: undefined },
+      expectedToolsLength: undefined,
+      expectsParallelToolCalls: true,
+    },
+    {
+      label: 'extra-body tools',
+      tools: [],
+      handoffs: [],
+      prompt: undefined,
+      toolsExplicitlyProvided: undefined,
+      providerData: {
+        extraBody: {
+          tools: [
+            {
+              type: 'function',
+              name: 'raw_lookup',
+              description: 'Look up a raw record.',
+              parameters: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+              },
+              strict: true,
+            },
+          ],
+        },
+      },
+      expectedToolsLength: 1,
+      expectsParallelToolCalls: true,
+    },
+    {
+      label: 'top-level provider tools',
+      tools: [],
+      handoffs: [],
+      prompt: undefined,
+      toolsExplicitlyProvided: undefined,
+      providerData: {
+        tools: [
+          {
+            type: 'function',
+            name: 'raw_lookup',
+            description: 'Look up a raw record.',
+            parameters: {
+              type: 'object',
+              properties: {},
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+        ],
+      },
+      expectedToolsLength: 1,
+      expectsParallelToolCalls: true,
+    },
+  ])(
+    'aligns parallel_tool_calls with effective tools for $label',
+    ({
+      tools,
+      handoffs,
+      prompt,
+      toolsExplicitlyProvided,
+      providerData,
+      expectedToolsLength,
+      expectsParallelToolCalls,
+    }) => {
+      const model = new TestableOpenAIResponsesModel(
+        { responses: { create: vi.fn() } } as unknown as OpenAI,
+        'gpt-test',
+      );
+
+      for (const stream of [false, true]) {
+        for (const parallelToolCalls of [true, false] as const) {
+          const { requestData } = model.buildRequest(
+            {
+              input: 'hello',
+              modelSettings: { parallelToolCalls, providerData },
+              tools,
+              handoffs,
+              prompt,
+              toolsExplicitlyProvided,
+              outputType: 'text',
+              tracing: false,
+            },
+            stream,
+          );
+
+          if (expectedToolsLength === undefined) {
+            expect(requestData.tools).toBeUndefined();
+          } else {
+            expect(requestData.tools).toHaveLength(expectedToolsLength);
+          }
+          if (expectsParallelToolCalls) {
+            expect(requestData.parallel_tool_calls).toBe(parallelToolCalls);
+          } else {
+            expect(requestData).not.toHaveProperty('parallel_tool_calls');
+          }
+        }
+      }
+    },
+  );
+
+  it('preserves explicit providerData parallel_tool_calls precedence without converted tools', () => {
+    const model = new TestableOpenAIResponsesModel(
+      { responses: { create: vi.fn() } } as unknown as OpenAI,
+      'gpt-test',
+    );
+    const providerData = { parallel_tool_calls: true };
+
+    const { requestData } = model.buildRequest(
+      {
+        input: 'hello',
+        modelSettings: { parallelToolCalls: false, providerData },
+        tools: [],
+        handoffs: [],
+        outputType: 'text',
+        tracing: false,
+      },
+      false,
+    );
+
+    expect(requestData.parallel_tool_calls).toBe(true);
+    expect(providerData).toEqual({ parallel_tool_calls: true });
   });
 
   it.each([
