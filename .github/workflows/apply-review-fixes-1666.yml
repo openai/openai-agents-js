@@ -1,0 +1,223 @@
+name: Apply review fixes 1666
+
+on:
+  push:
+    branches:
+      - feat/model-attempt-timeout
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply review fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source_path = Path('packages/agents-core/src/runner/modelRetry.ts')
+          source = source_path.read_text()
+
+          old = "const RETRY_AFTER_HEADER = 'retry-after';\n"
+          new = "const RETRY_AFTER_HEADER = 'retry-after';\nconst MAX_TIMER_DELAY_MS = 2_147_483_647;\n"
+          if source.count(old) != 1:
+              raise SystemExit('timer constant anchor mismatch')
+          source = source.replace(old, new)
+
+          old = """  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+            throw new UserError(
+              'modelSettings.retry.attemptTimeoutMs must be a positive finite number when provided.',
+            );
+          }
+          return timeoutMs;
+          """
+          new = """  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+            throw new UserError(
+              'modelSettings.retry.attemptTimeoutMs must be a positive finite number when provided.',
+            );
+          }
+          if (timeoutMs > MAX_TIMER_DELAY_MS) {
+            throw new UserError(
+              `modelSettings.retry.attemptTimeoutMs must be less than or equal to ${MAX_TIMER_DELAY_MS}ms.`,
+            );
+          }
+          return timeoutMs;
+          """
+          if source.count(old) != 1:
+              raise SystemExit('timeout validation block mismatch')
+          source = source.replace(old, new)
+
+          anchor = """  return error;
+          }
+
+          function createModelAttemptScope(
+          """
+          replacement = """  return error;
+          }
+
+          function isModelAttemptTimeoutError(
+            error: unknown,
+          ): error is ModelAttemptTimeoutError {
+            return (
+              isRecord(error) &&
+              error.name === 'ModelAttemptTimeoutError' &&
+              error.code === 'ETIMEDOUT' &&
+              typeof error.timeoutMs === 'number'
+            );
+          }
+
+          function createModelAttemptScope(
+          """
+          if source.count(anchor) != 1:
+              raise SystemExit('timeout predicate anchor mismatch')
+          source = source.replace(anchor, replacement)
+
+          old = """function requestMayHaveBeenAccepted(
+            authority: ProviderRetryAuthority,
+          ): boolean {
+            return (
+              authority.replaySafety === 'unsafe' || authority.responseStarted === true
+            );
+          }
+          """
+          new = """function requestMayHaveBeenAccepted(
+            authority: ProviderRetryAuthority,
+            request: ModelRequest,
+            error: unknown,
+          ): boolean {
+            const statefulRequest = Boolean(
+              request.previousResponseId || request.conversationId,
+            );
+            const timedOutWithUnknownAcceptance =
+              statefulRequest &&
+              authority.replaySafety !== 'safe' &&
+              isModelAttemptTimeoutError(error);
+            return (
+              authority.replaySafety === 'unsafe' ||
+              authority.responseStarted === true ||
+              timedOutWithUnknownAcceptance
+            );
+          }
+          """
+          if source.count(old) != 1:
+              raise SystemExit('acceptance function mismatch')
+          source = source.replace(old, new)
+
+          old_call = 'requestMayHaveBeenAccepted(authority)'
+          new_call = 'requestMayHaveBeenAccepted(authority, request, error)'
+          if source.count(old_call) != 2:
+              raise SystemExit(f'acceptance call count was {source.count(old_call)}')
+          source = source.replace(old_call, new_call)
+          source_path.write_text(source)
+
+          test_path = Path('packages/agents-core/test/modelAttemptTimeout.test.ts')
+          test = test_path.read_text()
+          old_import = "import { Usage } from '../src/usage';\n"
+          new_import = (
+              "import { getResponseWithRetry } from '../src/runner/modelRetry';\n"
+              "import { Usage } from '../src/usage';\n"
+          )
+          if test.count(old_import) != 1:
+              raise SystemExit('test import anchor mismatch')
+          test = test.replace(old_import, new_import)
+
+          old_invalid = """    expect(model.calls).toBe(0);
+            });
+
+            it('does not turn parent run cancellation into a retryable timeout', async () => {
+          """
+          new_invalid = """    expect(model.calls).toBe(0);
+            });
+
+            it('rejects attempt timeouts above the platform timer limit', async () => {
+              const model = new TimeoutThenResponseModel();
+              const agent = new Agent({
+                name: 'OverflowAttemptTimeoutAgent',
+                model,
+                modelSettings: {
+                  retry: {
+                    attemptTimeoutMs: 2_147_483_648,
+                  },
+                },
+              });
+
+              await expect(run(agent, 'hello')).rejects.toThrow(
+                'modelSettings.retry.attemptTimeoutMs must be less than or equal to 2147483647ms',
+              );
+              expect(model.calls).toBe(0);
+            });
+
+            it('marks a surfaced stateful timeout as possibly accepted', async () => {
+              vi.useFakeTimers();
+              const model = new TimeoutThenResponseModel();
+              const onPossiblyAcceptedRequestFailure = vi.fn();
+              const request = {
+                conversationId: 'conv_timeout',
+                modelSettings: {
+                  retry: {
+                    attemptTimeoutMs: 25,
+                  },
+                },
+              } as ModelRequest;
+
+              const responsePromise = getResponseWithRetry(model, request, {
+                onPossiblyAcceptedRequestFailure,
+              });
+              await vi.advanceTimersByTimeAsync(25);
+
+              await expect(responsePromise).rejects.toMatchObject({
+                name: 'ModelAttemptTimeoutError',
+                code: 'ETIMEDOUT',
+              });
+              expect(onPossiblyAcceptedRequestFailure).toHaveBeenCalledOnce();
+            });
+
+            it('does not mark a stateful timeout accepted when the provider says replay is safe', async () => {
+              vi.useFakeTimers();
+              const model = new TimeoutThenResponseModel();
+              model.getRetryAdvice = vi.fn().mockReturnValue({ replaySafety: 'safe' });
+              const onPossiblyAcceptedRequestFailure = vi.fn();
+              const request = {
+                previousResponseId: 'resp_timeout',
+                modelSettings: {
+                  retry: {
+                    attemptTimeoutMs: 25,
+                  },
+                },
+              } as ModelRequest;
+
+              const responsePromise = getResponseWithRetry(model, request, {
+                onPossiblyAcceptedRequestFailure,
+              });
+              await vi.advanceTimersByTimeAsync(25);
+
+              await expect(responsePromise).rejects.toMatchObject({
+                name: 'ModelAttemptTimeoutError',
+                code: 'ETIMEDOUT',
+              });
+              expect(onPossiblyAcceptedRequestFailure).not.toHaveBeenCalled();
+            });
+
+            it('does not turn parent run cancellation into a retryable timeout', async () => {
+          """
+          if test.count(old_invalid) != 1:
+              raise SystemExit('test insertion anchor mismatch')
+          test_path.write_text(test.replace(old_invalid, new_invalid))
+          PY
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          rm .github/workflows/apply-review-fixes-1666.yml
+          git config user.name "Sylvester Kaczmarek"
+          git config user.email "16242628+sylvesterkaczmarek@users.noreply.github.com"
+          git add packages/agents-core/src/runner/modelRetry.ts packages/agents-core/test/modelAttemptTimeout.test.ts .github/workflows/apply-review-fixes-1666.yml
+          git commit -m "fix(core): harden model attempt timeout safety"
+          git push origin HEAD:${GITHUB_REF_NAME}
