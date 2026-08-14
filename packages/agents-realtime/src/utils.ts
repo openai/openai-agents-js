@@ -5,7 +5,7 @@ import {
 } from './items';
 import type { InputAudioTranscriptionCompletedEvent } from './transportLayerEvents';
 import METADATA from './metadata';
-import { RunToolApprovalItem } from '@openai/agents-core';
+import { RunToolApprovalItem, UserError } from '@openai/agents-core';
 import { RealtimeAgent } from './realtimeAgent';
 
 /**
@@ -94,6 +94,14 @@ export type RealtimeHistoryDiff = {
   updates: RealtimeItem[];
 };
 
+function hasAssistantOutputAudio(item: RealtimeItem): boolean {
+  return (
+    item.type === 'message' &&
+    item.role === 'assistant' &&
+    item.content.some((entry) => entry.type === 'output_audio')
+  );
+}
+
 /**
  * Compare two conversation histories to determine the removals, additions, and updates.
  * @param oldHistory - The old history.
@@ -117,6 +125,14 @@ export function diffRealtimeHistory(
         JSON.stringify(oldItem) !== JSON.stringify(item),
     ),
   );
+  const unsupportedReplay = [...additions, ...updates].find(
+    hasAssistantOutputAudio,
+  );
+  if (unsupportedReplay) {
+    throw new UserError(
+      `Assistant output_audio history item ${unsupportedReplay.itemId} cannot be replayed through OpenAI Realtime. Convert its transcript to output_text content or remove the item before calling updateHistory().`,
+    );
+  }
   return {
     removals,
     additions,
