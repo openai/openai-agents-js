@@ -582,6 +582,9 @@ function parseToolArguments<TContext>(
       approvalArgs = preparedInput?.result.success
         ? preparedInput.result.value
         : approvalArgs;
+      if (!hasDynamicFunctionToolApprovalPolicy(toolRun.tool)) {
+        return { success: true, approvalArgs, preparedInput };
+      }
       const executionPreparedInput = prepareFunctionToolInput(
         toolRun.tool,
         toolRun.toolCall.arguments,

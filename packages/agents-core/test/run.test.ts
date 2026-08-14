@@ -38,6 +38,7 @@ import {
   type ToolExecutionConfig,
   type ToolNameCollisionPolicy,
   type ToolNotFoundBehavior,
+  type StandardSchemaWithJSON,
 } from '../src';
 import { RunStreamEvent } from '../src/events';
 import { InvalidToolInputError, ToolCallError } from '../src/errors';
@@ -180,6 +181,142 @@ describe('Runner.run', () => {
       });
 
       expect(runner.config.toolExecution).toBe(toolExecution);
+    });
+
+    it('validates Standard Schema input once without approval', async () => {
+      type Input = { value?: string | null };
+      type Output = { value: string };
+      const validate = vi.fn((input: unknown) => ({
+        value: {
+          value: (input as Input | undefined)?.value ?? 'default',
+        },
+      }));
+      const parameters: StandardSchemaWithJSON<Input, Output> = {
+        '~standard': {
+          version: 1,
+          vendor: 'test',
+          types: undefined as unknown as { input: Input; output: Output },
+          jsonSchema: {
+            input: () => ({
+              type: 'object',
+              properties: { value: { type: 'string' } },
+              additionalProperties: false,
+            }),
+            output: () => ({ type: 'object' }),
+          },
+          validate,
+        },
+      };
+      const execute = vi.fn(async (input: Output) => input.value);
+      const standardSchemaTool = tool({
+        name: 'standard_schema_no_approval',
+        description: 'Validate Standard Schema input once.',
+        parameters,
+        execute,
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: standardSchemaTool.name,
+              arguments: JSON.stringify({ value: null }),
+            },
+          ],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'StandardSchemaNoApprovalAgent',
+        model,
+        tools: [standardSchemaTool],
+      });
+
+      const result = await run(agent, 'start');
+
+      expect(validate).toHaveBeenCalledTimes(1);
+      expect(execute).toHaveBeenCalledWith(
+        { value: 'default' },
+        expect.any(RunContext),
+        expect.anything(),
+      );
+      expect(result.finalOutput).toBe('done');
+    });
+
+    it('validates Standard Schema input once per static approval attempt', async () => {
+      type Input = { value?: string | null };
+      type Output = { value: string };
+      const validate = vi.fn((input: unknown) => ({
+        value: {
+          value: (input as Input | undefined)?.value ?? 'default',
+        },
+      }));
+      const parameters: StandardSchemaWithJSON<Input, Output> = {
+        '~standard': {
+          version: 1,
+          vendor: 'test',
+          types: undefined as unknown as { input: Input; output: Output },
+          jsonSchema: {
+            input: () => ({
+              type: 'object',
+              properties: { value: { type: 'string' } },
+              additionalProperties: false,
+            }),
+            output: () => ({ type: 'object' }),
+          },
+          validate,
+        },
+      };
+      const execute = vi.fn(async (input: Output) => input.value);
+      const standardSchemaTool = tool({
+        name: 'standard_schema_static_approval',
+        description: 'Validate Standard Schema input once per run attempt.',
+        parameters,
+        needsApproval: true,
+        execute,
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: standardSchemaTool.name,
+              arguments: JSON.stringify({ value: null }),
+            },
+          ],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'StandardSchemaStaticApprovalAgent',
+        model,
+        tools: [standardSchemaTool],
+      });
+
+      const interrupted = await run(agent, 'start');
+
+      expect(validate).toHaveBeenCalledTimes(1);
+      expect(execute).not.toHaveBeenCalled();
+      expect(interrupted.interruptions).toHaveLength(1);
+      interrupted.state.approve(interrupted.interruptions[0]);
+
+      const result = await run(agent, interrupted.state);
+
+      expect(validate).toHaveBeenCalledTimes(2);
+      expect(execute).toHaveBeenCalledWith(
+        { value: 'default' },
+        expect.any(RunContext),
+        expect.anything(),
+      );
+      expect(result.finalOutput).toBe('done');
     });
 
     it('returns a redacted invalid-argument output to the model', async () => {
