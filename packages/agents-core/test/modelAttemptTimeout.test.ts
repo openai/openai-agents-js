@@ -190,7 +190,7 @@ describe('model attempt timeout', () => {
 
   it('does not mark a stateful timeout accepted when the provider says replay is safe', async () => {
     vi.useFakeTimers();
-    const model = new TimeoutThenResponseModel();
+    const model: Model = new TimeoutThenResponseModel();
     model.getRetryAdvice = vi.fn().mockReturnValue({ replaySafety: 'safe' });
     const onPossiblyAcceptedRequestFailure = vi.fn();
     const request = {
