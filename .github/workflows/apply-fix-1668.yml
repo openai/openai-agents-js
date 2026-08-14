@@ -22,280 +22,291 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
+          def block(raw: str) -> str:
+              lines = raw.strip('\n').splitlines()
+              return '\n'.join(line[1:] if line.startswith('|') else line for line in lines) + '\n'
+
           source_path = Path('packages/agents-core/src/runner/sessionPersistence.ts')
           source = source_path.read_text()
 
-          old_stream = """  const sanitizedInput = normalizeItemsForSessionPersistence(sessionInputItems);
-          const compactedInput = trimToLatestCompaction(sanitizedInput);
-          assertPersistableCompactionBoundary(compactedInput);
-          if (compactedInput[0]?.type === 'compaction') {
-            const previousItems = await getSessionItems(session, runContext);
-            await replaceSessionItemsWithRecovery(
-              session,
-              previousItems,
-              compactedInput,
-              runContext,
-            );
-            return;
-          }
-          await addSessionItems(session, sanitizedInput, runContext);
-          """
-          new_stream = """  const sanitizedInput = normalizeItemsForSessionPersistence(sessionInputItems);
-          await persistSessionItems(session, sanitizedInput, runContext);
-          """
+          old_stream = block(r'''
+          |  const sanitizedInput = normalizeItemsForSessionPersistence(sessionInputItems);
+          |  const compactedInput = trimToLatestCompaction(sanitizedInput);
+          |  assertPersistableCompactionBoundary(compactedInput);
+          |  if (compactedInput[0]?.type === 'compaction') {
+          |    const previousItems = await getSessionItems(session, runContext);
+          |    await replaceSessionItemsWithRecovery(
+          |      session,
+          |      previousItems,
+          |      compactedInput,
+          |      runContext,
+          |    );
+          |    return;
+          |  }
+          |  await addSessionItems(session, sanitizedInput, runContext);
+          ''')
+          new_stream = block(r'''
+          |  const sanitizedInput = normalizeItemsForSessionPersistence(sessionInputItems);
+          |  await persistSessionItems(session, sanitizedInput, runContext);
+          ''')
           if source.count(old_stream) != 1:
-              raise SystemExit('stream persistence block did not match exactly once')
+              raise SystemExit(f'stream persistence block matched {source.count(old_stream)} times')
           source = source.replace(old_stream, new_stream)
 
-          old_run = """  const compactedItems = trimToLatestCompaction(sanitizedItems);
-          assertPersistableCompactionBoundary(compactedItems);
-          if (compactedItems[0]?.type === 'compaction') {
-            const previousItems = await getSessionItems(session, state._context);
-            await replaceSessionItemsWithRecovery(
-              session,
-              previousItems,
-              compactedItems,
-              state._context,
-            );
-          } else {
-            await addSessionItems(session, sanitizedItems, state._context);
-          }
-          """
-          new_run = """  await persistSessionItems(session, sanitizedItems, state._context);
-          """
+          old_run = block(r'''
+          |  const compactedItems = trimToLatestCompaction(sanitizedItems);
+          |  assertPersistableCompactionBoundary(compactedItems);
+          |  if (compactedItems[0]?.type === 'compaction') {
+          |    const previousItems = await getSessionItems(session, state._context);
+          |    await replaceSessionItemsWithRecovery(
+          |      session,
+          |      previousItems,
+          |      compactedItems,
+          |      state._context,
+          |    );
+          |  } else {
+          |    await addSessionItems(session, sanitizedItems, state._context);
+          |  }
+          ''')
+          new_run = block(r'''
+          |  await persistSessionItems(session, sanitizedItems, state._context);
+          ''')
           if source.count(old_run) != 1:
-              raise SystemExit('run persistence block did not match exactly once')
+              raise SystemExit(f'run persistence block matched {source.count(old_run)} times')
           source = source.replace(old_run, new_run)
 
-          old_helper = """async function replaceSessionItemsWithRecovery(
-            session: Session,
-            previousItems: AgentInputItem[],
-            replacementItems: AgentInputItem[],
-            runContext?: RunContext<any>,
-          ): Promise<void> {
-            assertValidCompactionItems(trimToLatestCompaction(previousItems));
-            assertValidCompactionItems(trimToLatestCompaction(replacementItems));
-            if (
-              replacementItems[0]?.type === 'compaction' &&
-              session.replaceHistoryWithCompaction
-            ) {
-              const comparablePreviousItems =
-                session.prepareHistoryItemsForPersistenceComparison?.(previousItems) ??
-                previousItems;
-              const comparableReplacementItems =
-                session.prepareHistoryItemsForPersistenceComparison?.(replacementItems) ??
-                replacementItems;
-              const compactedPreviousItems = trimToLatestCompaction(
-                comparablePreviousItems,
-              );
-              if (
-                compactedPreviousItems.length === comparableReplacementItems.length &&
-                agentItemRangeMatches(
-                  compactedPreviousItems,
-                  comparableReplacementItems,
-                  0,
-                )
-              ) {
-                return;
-              }
-              if (runContext && isRunContextAwareSession(session)) {
-                await session.replaceHistoryWithCompaction(replacementItems, runContext);
-              } else {
-                await session.replaceHistoryWithCompaction(replacementItems);
-              }
-              return;
-            }
-
-            try {
-              await clearSession(session, runContext);
-              if (replacementItems.length > 0) {
-                await addSessionItems(session, replacementItems, runContext);
-              }
-            } catch (error) {
-              await restoreSessionItemsAfterFailedReplacement(
-                session,
-                previousItems,
-                error,
-                runContext,
-              );
-              throw error;
-            }
-          }
-          """
-          new_helper = """async function persistSessionItems(
-            session: Session,
-            items: AgentInputItem[],
-            runContext?: RunContext<any>,
-          ): Promise<void> {
-            const compactedItems = trimToLatestCompaction(items);
-            assertPersistableCompactionBoundary(compactedItems);
-            if (compactedItems[0]?.type !== 'compaction') {
-              await addSessionItems(session, items, runContext);
-              return;
-            }
-
-            const previousItems = await getSessionItems(session, runContext);
-            const itemsBeforeCompaction = items.slice(
-              0,
-              items.length - compactedItems.length,
-            );
-            await replaceSessionItemsWithRecovery(
-              session,
-              previousItems,
-              compactedItems,
-              runContext,
-              itemsBeforeCompaction,
-            );
-          }
-
-          async function replaceSessionItemsWithRecovery(
-            session: Session,
-            previousItems: AgentInputItem[],
-            replacementItems: AgentInputItem[],
-            runContext?: RunContext<any>,
-            itemsBeforeCompaction: AgentInputItem[] = [],
-          ): Promise<void> {
-            assertValidCompactionItems(trimToLatestCompaction(previousItems));
-            assertValidCompactionItems(trimToLatestCompaction(replacementItems));
-            if (
-              replacementItems[0]?.type === 'compaction' &&
-              session.replaceHistoryWithCompaction
-            ) {
-              const comparablePreviousItems =
-                session.prepareHistoryItemsForPersistenceComparison?.(previousItems) ??
-                previousItems;
-              const comparableReplacementItems =
-                session.prepareHistoryItemsForPersistenceComparison?.(replacementItems) ??
-                replacementItems;
-              const compactedPreviousItems = trimToLatestCompaction(
-                comparablePreviousItems,
-              );
-              if (
-                compactedPreviousItems.length === comparableReplacementItems.length &&
-                agentItemRangeMatches(
-                  compactedPreviousItems,
-                  comparableReplacementItems,
-                  0,
-                )
-              ) {
-                return;
-              }
-              try {
-                if (itemsBeforeCompaction.length > 0) {
-                  await addSessionItems(session, itemsBeforeCompaction, runContext);
-                }
-                if (runContext && isRunContextAwareSession(session)) {
-                  await session.replaceHistoryWithCompaction(replacementItems, runContext);
-                } else {
-                  await session.replaceHistoryWithCompaction(replacementItems);
-                }
-              } catch (error) {
-                if (itemsBeforeCompaction.length > 0) {
-                  await restoreSessionItemsAfterFailedReplacement(
-                    session,
-                    previousItems,
-                    error,
-                    runContext,
-                  );
-                }
-                throw error;
-              }
-              return;
-            }
-
-            try {
-              if (itemsBeforeCompaction.length > 0) {
-                await addSessionItems(session, itemsBeforeCompaction, runContext);
-              }
-              await clearSession(session, runContext);
-              if (replacementItems.length > 0) {
-                await addSessionItems(session, replacementItems, runContext);
-              }
-            } catch (error) {
-              await restoreSessionItemsAfterFailedReplacement(
-                session,
-                previousItems,
-                error,
-                runContext,
-              );
-              throw error;
-            }
-          }
-          """
+          old_helper = block(r'''
+          |async function replaceSessionItemsWithRecovery(
+          |  session: Session,
+          |  previousItems: AgentInputItem[],
+          |  replacementItems: AgentInputItem[],
+          |  runContext?: RunContext<any>,
+          |): Promise<void> {
+          |  assertValidCompactionItems(trimToLatestCompaction(previousItems));
+          |  assertValidCompactionItems(trimToLatestCompaction(replacementItems));
+          |  if (
+          |    replacementItems[0]?.type === 'compaction' &&
+          |    session.replaceHistoryWithCompaction
+          |  ) {
+          |    const comparablePreviousItems =
+          |      session.prepareHistoryItemsForPersistenceComparison?.(previousItems) ??
+          |      previousItems;
+          |    const comparableReplacementItems =
+          |      session.prepareHistoryItemsForPersistenceComparison?.(replacementItems) ??
+          |      replacementItems;
+          |    const compactedPreviousItems = trimToLatestCompaction(
+          |      comparablePreviousItems,
+          |    );
+          |    if (
+          |      compactedPreviousItems.length === comparableReplacementItems.length &&
+          |      agentItemRangeMatches(
+          |        compactedPreviousItems,
+          |        comparableReplacementItems,
+          |        0,
+          |      )
+          |    ) {
+          |      return;
+          |    }
+          |    if (runContext && isRunContextAwareSession(session)) {
+          |      await session.replaceHistoryWithCompaction(replacementItems, runContext);
+          |    } else {
+          |      await session.replaceHistoryWithCompaction(replacementItems);
+          |    }
+          |    return;
+          |  }
+          |
+          |  try {
+          |    await clearSession(session, runContext);
+          |    if (replacementItems.length > 0) {
+          |      await addSessionItems(session, replacementItems, runContext);
+          |    }
+          |  } catch (error) {
+          |    await restoreSessionItemsAfterFailedReplacement(
+          |      session,
+          |      previousItems,
+          |      error,
+          |      runContext,
+          |    );
+          |    throw error;
+          |  }
+          |}
+          ''')
+          new_helper = block(r'''
+          |async function persistSessionItems(
+          |  session: Session,
+          |  items: AgentInputItem[],
+          |  runContext?: RunContext<any>,
+          |): Promise<void> {
+          |  const compactedItems = trimToLatestCompaction(items);
+          |  assertPersistableCompactionBoundary(compactedItems);
+          |  if (compactedItems[0]?.type !== 'compaction') {
+          |    await addSessionItems(session, items, runContext);
+          |    return;
+          |  }
+          |
+          |  const previousItems = await getSessionItems(session, runContext);
+          |  const itemsBeforeCompaction = items.slice(
+          |    0,
+          |    items.length - compactedItems.length,
+          |  );
+          |  await replaceSessionItemsWithRecovery(
+          |    session,
+          |    previousItems,
+          |    compactedItems,
+          |    runContext,
+          |    itemsBeforeCompaction,
+          |  );
+          |}
+          |
+          |async function replaceSessionItemsWithRecovery(
+          |  session: Session,
+          |  previousItems: AgentInputItem[],
+          |  replacementItems: AgentInputItem[],
+          |  runContext?: RunContext<any>,
+          |  itemsBeforeCompaction: AgentInputItem[] = [],
+          |): Promise<void> {
+          |  assertValidCompactionItems(trimToLatestCompaction(previousItems));
+          |  assertValidCompactionItems(trimToLatestCompaction(replacementItems));
+          |  if (
+          |    replacementItems[0]?.type === 'compaction' &&
+          |    session.replaceHistoryWithCompaction
+          |  ) {
+          |    const comparablePreviousItems =
+          |      session.prepareHistoryItemsForPersistenceComparison?.(previousItems) ??
+          |      previousItems;
+          |    const comparableReplacementItems =
+          |      session.prepareHistoryItemsForPersistenceComparison?.(replacementItems) ??
+          |      replacementItems;
+          |    const compactedPreviousItems = trimToLatestCompaction(
+          |      comparablePreviousItems,
+          |    );
+          |    if (
+          |      compactedPreviousItems.length === comparableReplacementItems.length &&
+          |      agentItemRangeMatches(
+          |        compactedPreviousItems,
+          |        comparableReplacementItems,
+          |        0,
+          |      )
+          |    ) {
+          |      return;
+          |    }
+          |    try {
+          |      if (itemsBeforeCompaction.length > 0) {
+          |        await addSessionItems(session, itemsBeforeCompaction, runContext);
+          |      }
+          |      if (runContext && isRunContextAwareSession(session)) {
+          |        await session.replaceHistoryWithCompaction(replacementItems, runContext);
+          |      } else {
+          |        await session.replaceHistoryWithCompaction(replacementItems);
+          |      }
+          |    } catch (error) {
+          |      if (itemsBeforeCompaction.length > 0) {
+          |        await restoreSessionItemsAfterFailedReplacement(
+          |          session,
+          |          previousItems,
+          |          error,
+          |          runContext,
+          |        );
+          |      }
+          |      throw error;
+          |    }
+          |    return;
+          |  }
+          |
+          |  try {
+          |    if (itemsBeforeCompaction.length > 0) {
+          |      await addSessionItems(session, itemsBeforeCompaction, runContext);
+          |    }
+          |    await clearSession(session, runContext);
+          |    if (replacementItems.length > 0) {
+          |      await addSessionItems(session, replacementItems, runContext);
+          |    }
+          |  } catch (error) {
+          |    await restoreSessionItemsAfterFailedReplacement(
+          |      session,
+          |      previousItems,
+          |      error,
+          |      runContext,
+          |    );
+          |    throw error;
+          |  }
+          |}
+          ''')
           if source.count(old_helper) != 1:
-              raise SystemExit('replacement helper did not match exactly once')
+              raise SystemExit(f'replacement helper matched {source.count(old_helper)} times')
           source = source.replace(old_helper, new_helper)
           source_path.write_text(source)
 
           test_path = Path('packages/agents-core/test/runner/sessionPersistence.inlineCompaction.test.ts')
-          test_path.write_text("""import { describe, expect, it } from 'vitest';
-
-          import type { Session } from '../../src/memory/session';
-          import { saveStreamInputToSession } from '../../src/runner/sessionPersistence';
-          import type { AgentInputItem } from '../../src/types';
-
-          function userMessage(text: string): AgentInputItem {
-            return {
-              type: 'message',
-              role: 'user',
-              content: [{ type: 'input_text', text }],
-            };
-          }
-
-          const COMPACTION: AgentInputItem = {
-            type: 'compaction',
-            id: 'cmp_inline',
-            encrypted_content: 'ciphertext',
-          };
-
-          class AppendOnlyCompactionSession implements Session {
-            items: AgentInputItem[] = [userMessage('stored before run')];
-            replacements: AgentInputItem[][] = [];
-
-            async getSessionId() {
-              return 'append-only';
-            }
-
-            async getItems(limit?: number) {
-              return limit ? this.items.slice(-limit) : [...this.items];
-            }
-
-            async addItems(items: AgentInputItem[]) {
-              this.items.push(...structuredClone(items));
-            }
-
-            async replaceHistoryWithCompaction(items: AgentInputItem[]) {
-              this.replacements.push(structuredClone(items));
-              this.items.push(...structuredClone(items));
-            }
-
-            async popItem() {
-              return this.items.pop();
-            }
-
-            async clearSession() {
-              this.items = [];
-            }
-          }
-
-          describe('inline compaction session persistence', () => {
-            it('delivers items before the compaction marker to append-only sessions', async () => {
-              const session = new AppendOnlyCompactionSession();
-              const before = userMessage('new input before compaction');
-              const after = userMessage('input after compaction');
-
-              await saveStreamInputToSession(session, [before, COMPACTION, after]);
-
-              expect(session.items).toEqual([
-                userMessage('stored before run'),
-                before,
-                COMPACTION,
-                after,
-              ]);
-              expect(session.replacements).toEqual([[COMPACTION, after]]);
-            });
-          });
-          """)
+          test_path.write_text(block(r'''
+          |import { describe, expect, it } from 'vitest';
+          |
+          |import type { Session } from '../../src/memory/session';
+          |import { saveStreamInputToSession } from '../../src/runner/sessionPersistence';
+          |import type { AgentInputItem } from '../../src/types';
+          |
+          |function userMessage(text: string): AgentInputItem {
+          |  return {
+          |    type: 'message',
+          |    role: 'user',
+          |    content: [{ type: 'input_text', text }],
+          |  };
+          |}
+          |
+          |const COMPACTION: AgentInputItem = {
+          |  type: 'compaction',
+          |  id: 'cmp_inline',
+          |  encrypted_content: 'ciphertext',
+          |};
+          |
+          |class AppendOnlyCompactionSession implements Session {
+          |  items: AgentInputItem[] = [userMessage('stored before run')];
+          |  replacements: AgentInputItem[][] = [];
+          |
+          |  async getSessionId() {
+          |    return 'append-only';
+          |  }
+          |
+          |  async getItems(limit?: number) {
+          |    return limit ? this.items.slice(-limit) : [...this.items];
+          |  }
+          |
+          |  async addItems(items: AgentInputItem[]) {
+          |    this.items.push(...structuredClone(items));
+          |  }
+          |
+          |  async replaceHistoryWithCompaction(items: AgentInputItem[]) {
+          |    this.replacements.push(structuredClone(items));
+          |    this.items.push(...structuredClone(items));
+          |  }
+          |
+          |  async popItem() {
+          |    return this.items.pop();
+          |  }
+          |
+          |  async clearSession() {
+          |    this.items = [];
+          |  }
+          |}
+          |
+          |describe('inline compaction session persistence', () => {
+          |  it('delivers items before the compaction marker to append-only sessions', async () => {
+          |    const session = new AppendOnlyCompactionSession();
+          |    const before = userMessage('new input before compaction');
+          |    const after = userMessage('input after compaction');
+          |
+          |    await saveStreamInputToSession(session, [before, COMPACTION, after]);
+          |
+          |    expect(session.items).toEqual([
+          |      userMessage('stored before run'),
+          |      before,
+          |      COMPACTION,
+          |      after,
+          |    ]);
+          |    expect(session.replacements).toEqual([[COMPACTION, after]]);
+          |  });
+          |});
+          '''))
           PY
 
       - name: Commit patch
