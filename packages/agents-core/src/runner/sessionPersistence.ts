@@ -49,6 +49,7 @@ export type SessionPersistenceOptions = {
   runCompaction?: boolean;
   compactionMode?: OpenAIResponsesCompactionArgs['compactionMode'];
   outputBlocked?: boolean;
+  additionalRunItems?: RunItem[];
 };
 
 const SESSION_LIMIT_UNSET = Symbol('sessionLimitUnset');
@@ -1063,6 +1064,29 @@ export async function saveToSession(
   await prepareSessionHistoryTransactionsForRun(session, state, {
     serverManagesConversation: false,
   });
+  const additionalRunItems = options.additionalRunItems ?? [];
+  if (additionalRunItems.length > 0) {
+    const { additionalRunItems: _additionalRunItems, ...baseOptions } = options;
+    await saveToSession(session, sessionInputItems, result, {
+      ...baseOptions,
+      runCompaction: false,
+    });
+    await persistRunItemsToSession({
+      session,
+      state,
+      newRunItems: additionalRunItems,
+      runItemsToReplace: [],
+      processedRunItemCount: additionalRunItems.length,
+      deferredRunItemIndexes: [],
+      useHistoryTransaction: false,
+      extraInputItems: [],
+      lastResponseId: result.lastResponseId,
+      alreadyPersistedCount: state._currentTurnPersistedItemCount,
+      runCompaction: options.runCompaction ?? true,
+      compactionMode: options.compactionMode,
+    });
+    return;
+  }
   const persistencePlan = buildRunItemPersistencePlan(
     state,
     result.newItems,
@@ -1143,6 +1167,34 @@ export async function saveStreamResultToSession(
   await prepareSessionHistoryTransactionsForRun(session, state, {
     serverManagesConversation: false,
   });
+  const additionalRunItems = options.additionalRunItems ?? [];
+  if (additionalRunItems.length > 0) {
+    const { additionalRunItems: _additionalRunItems, ...baseOptions } = options;
+    await saveStreamResultToSession(
+      session,
+      result,
+      {
+        ...baseOptions,
+        runCompaction: false,
+      },
+      sessionInputItems,
+    );
+    await persistRunItemsToSession({
+      session,
+      state,
+      newRunItems: additionalRunItems,
+      runItemsToReplace: [],
+      processedRunItemCount: additionalRunItems.length,
+      deferredRunItemIndexes: [],
+      useHistoryTransaction: false,
+      extraInputItems: [],
+      lastResponseId: result.lastResponseId,
+      alreadyPersistedCount: state._currentTurnPersistedItemCount,
+      runCompaction: options.runCompaction ?? true,
+      compactionMode: options.compactionMode,
+    });
+    return;
+  }
   const persistencePlan = buildRunItemPersistencePlan(
     state,
     result.newItems,

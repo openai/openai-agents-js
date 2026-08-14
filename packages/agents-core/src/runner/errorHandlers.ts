@@ -85,6 +85,10 @@ type TryHandleRunErrorArgs<TContext, TAgent extends Agent<any, any>> = {
   attemptedErrors?: WeakSet<object>;
 };
 
+export type PreparedRunErrorFinalOutput = {
+  deferredItem?: RunMessageOutputItem;
+};
+
 type ResolveRunErrorHandlerArgs<TContext, TAgent extends Agent<any, any>> = {
   error: unknown;
   errorKind?: RunErrorKind;
@@ -263,7 +267,9 @@ export const prepareRunErrorFinalOutput = async <
   streamResult,
   responseAccepted,
   attemptedErrors,
-}: TryHandleRunErrorArgs<TContext, TAgent>): Promise<boolean> => {
+}: TryHandleRunErrorArgs<TContext, TAgent>): Promise<
+  PreparedRunErrorFinalOutput | undefined
+> => {
   const handlerResult = await resolveRunErrorHandler({
     error,
     errorHandlers,
@@ -272,7 +278,7 @@ export const prepareRunErrorFinalOutput = async <
     attemptedErrors,
   });
   if (!handlerResult) {
-    return false;
+    return undefined;
   }
   const includeInHistory = handlerResult.includeInHistory !== false;
   const outputText = formatFinalOutput(
@@ -284,10 +290,18 @@ export const prepareRunErrorFinalOutput = async <
   state._lastTurnResponse = undefined;
   state._lastProcessedResponse = undefined;
   const item = createFinalOutputItem(state._currentAgent, outputText);
-  if (includeInHistory) {
+  const deferredItem =
+    error instanceof MaxTurnsExceededError && includeInHistory
+      ? item
+      : undefined;
+  if (includeInHistory && !deferredItem) {
     state._generatedItems.push(item);
   }
-  if (streamResult) {
+  if (
+    streamResult &&
+    !deferredItem &&
+    (includeInHistory || !(error instanceof MaxTurnsExceededError))
+  ) {
     streamStepItemsToRunResult(streamResult, [item]);
   }
   state._currentStep = {
@@ -296,5 +310,5 @@ export const prepareRunErrorFinalOutput = async <
     ...(responseAccepted ? { responseAccepted: true } : {}),
   };
   state._finalOutputSource = 'error_handler';
-  return true;
+  return { deferredItem };
 };

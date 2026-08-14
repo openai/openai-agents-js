@@ -158,7 +158,10 @@ import {
   invalidateAcceptedResponseReplayEvidence,
   prepareRunErrorFinalOutput,
 } from './runner/errorHandlers';
-import type { RunErrorHandlers } from './runner/errorHandlers';
+import type {
+  PreparedRunErrorFinalOutput,
+  RunErrorHandlers,
+} from './runner/errorHandlers';
 import {
   finalizeSandboxRuntime,
   isSandboxRuntimeAgent,
@@ -196,6 +199,20 @@ function hasRetainableBlockedOutputEffect(state: RunState<any, any>): boolean {
     state._generatedItems,
     state._currentTurnPersistedItemCount,
   );
+}
+
+function commitDeferredRunErrorItemAfterPartialPersistence(
+  state: RunState<any, any>,
+  preparedErrorOutput?: PreparedRunErrorFinalOutput,
+): boolean {
+  if (
+    preparedErrorOutput?.deferredItem &&
+    state._currentTurnPersistedItemCount > state._generatedItems.length
+  ) {
+    state._generatedItems.push(preparedErrorOutput.deferredItem);
+    return true;
+  }
+  return false;
 }
 
 export type {
@@ -1241,12 +1258,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       };
       const persistNonStreamingResult = async (
         result: RunResult<TContext, TAgent>,
+        overrideOptions?: SessionPersistenceOptions,
       ) => {
         const hasUnpersistedItems =
-          result.newItems.length > state._currentTurnPersistedItemCount;
+          result.newItems.length > state._currentTurnPersistedItemCount ||
+          (overrideOptions?.additionalRunItems?.length ?? 0) > 0;
         const modelResponseAdvanced =
           result.rawResponses.length > approvedToolCheckpointModelResponseCount;
-        const persistenceOptions =
+        const compactionOptions =
           approvedToolCheckpointRequiresLocalInputCompaction
             ? approvedToolCheckpointCompacted &&
               !hasUnpersistedItems &&
@@ -1254,6 +1273,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ? { runCompaction: false }
               : { compactionMode: 'input' as const }
             : undefined;
+        const persistenceOptions = {
+          ...compactionOptions,
+          ...overrideOptions,
+        };
         await persistResult?.(result, persistenceOptions);
       };
       const recordNonStreamingError = (error: unknown) => {
@@ -1280,9 +1303,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         );
         runError = error;
       };
-      const finalizeCurrentOutput = async (): Promise<
-        RunResult<TContext, TAgent>
-      > => {
+      const finalizeCurrentOutput = async (
+        preparedErrorOutput?: PreparedRunErrorFinalOutput,
+      ): Promise<RunResult<TContext, TAgent>> => {
         const currentStep = state._currentStep;
         if (currentStep?.type !== 'next_step_final_output') {
           throw new ModelBehaviorError(
@@ -1344,7 +1367,23 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         setRunStateTurnSpanParent(state, undefined);
         currentTurnSpan = undefined;
         const result = new RunResult<TContext, TAgent>(state);
-        await persistNonStreamingResult(result);
+        try {
+          await persistNonStreamingResult(
+            result,
+            preparedErrorOutput?.deferredItem
+              ? { additionalRunItems: [preparedErrorOutput.deferredItem] }
+              : undefined,
+          );
+        } catch (error) {
+          commitDeferredRunErrorItemAfterPartialPersistence(
+            state,
+            preparedErrorOutput,
+          );
+          throw error;
+        }
+        if (preparedErrorOutput?.deferredItem) {
+          state._generatedItems.push(preparedErrorOutput.deferredItem);
+        }
         completedResultPersisted = true;
         state._currentTurnInProgress = false;
         this.emit(
@@ -1840,7 +1879,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         });
         if (errorHandled) {
           try {
-            return await finalizeCurrentOutput();
+            return await finalizeCurrentOutput(errorHandled);
           } catch (finalizationError) {
             recordNonStreamingError(finalizationError);
             throw finalizationError;
@@ -2020,18 +2059,22 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       overrideOptions?: SessionPersistenceOptions,
     ) => {
       const hasUnpersistedItems =
-        result.newItems.length > result.state._currentTurnPersistedItemCount;
+        result.newItems.length > result.state._currentTurnPersistedItemCount ||
+        (overrideOptions?.additionalRunItems?.length ?? 0) > 0;
       const modelResponseAdvanced =
         result.rawResponses.length > approvedToolCheckpointModelResponseCount;
-      const persistenceOptions =
-        overrideOptions ??
-        (approvedToolCheckpointRequiresLocalInputCompaction
+      const compactionOptions =
+        approvedToolCheckpointRequiresLocalInputCompaction
           ? approvedToolCheckpointCompacted &&
             !hasUnpersistedItems &&
             !modelResponseAdvanced
             ? { runCompaction: false }
             : { compactionMode: 'input' as const }
-          : undefined);
+          : undefined;
+      const persistenceOptions = {
+        ...compactionOptions,
+        ...overrideOptions,
+      };
       const sessionInputItems = streamInputPersisted
         ? undefined
         : getStreamInputForPersistence?.();
@@ -2069,7 +2112,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       );
       runError = error;
     };
-    const finalizeStreamOutput = async (): Promise<void> => {
+    const finalizeStreamOutput = async (
+      preparedErrorOutput?: PreparedRunErrorFinalOutput,
+    ): Promise<void> => {
       const currentStep = result.state._currentStep;
       if (currentStep?.type !== 'next_step_final_output') {
         throw new ModelBehaviorError(
@@ -2131,7 +2176,35 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       result.state._currentTurnInProgress = false;
       // Guardrails must succeed before persisting session memory to avoid storing blocked outputs.
       if (!serverManagesConversation) {
-        await saveStreamResultWithCompactionOwnership();
+        try {
+          await saveStreamResultWithCompactionOwnership(
+            preparedErrorOutput?.deferredItem
+              ? { additionalRunItems: [preparedErrorOutput.deferredItem] }
+              : undefined,
+          );
+        } catch (error) {
+          const itemCommitted =
+            commitDeferredRunErrorItemAfterPartialPersistence(
+              result.state,
+              preparedErrorOutput,
+            );
+          if (itemCommitted && preparedErrorOutput?.deferredItem) {
+            streamStepItemsToRunResult(result, [
+              preparedErrorOutput.deferredItem,
+            ]);
+            recordStreamingError(error);
+            result._raiseError(error, { preserveQueuedItems: true });
+            return;
+          }
+          throw error;
+        }
+      }
+      if (preparedErrorOutput?.deferredItem) {
+        result.state._generatedItems.push(preparedErrorOutput.deferredItem);
+      }
+      if (preparedErrorOutput?.deferredItem) {
+        streamStepItemsToRunResult(result, [preparedErrorOutput.deferredItem]);
+        result._preserveQueuedItemsOnError();
       }
       result._revealFinalOutput();
       this.emit(
@@ -2799,7 +2872,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       });
       if (errorHandled) {
         try {
-          await finalizeStreamOutput();
+          await finalizeStreamOutput(errorHandled);
           return;
         } catch (finalizationError) {
           recordStreamingError(finalizationError);

@@ -3151,9 +3151,14 @@ describe('approved tool output guardrail session persistence', () => {
     },
   );
 
-  it.each<RunMode>(['non_streamed', 'streamed'])(
-    'compacts an empty post-resume response when $mode handling omits history',
-    async (mode) => {
+  it.each([
+    ['non_streamed', false],
+    ['streamed', false],
+    ['non_streamed', true],
+    ['streamed', true],
+  ] as const)(
+    'compacts an empty post-resume response when $0 handling includes history: $1',
+    async (mode, includeInHistory) => {
       const approvalTool = tool({
         name: 'empty_response_approval_tool',
         description: 'Returns a result after approval.',
@@ -3200,7 +3205,7 @@ describe('approved tool output guardrail session persistence', () => {
           errorHandlers: {
             maxTurns: () => ({
               finalOutput: 'handled-empty-response',
-              includeInHistory: false,
+              includeInHistory,
             }),
           },
         } as const;
@@ -3229,8 +3234,9 @@ describe('approved tool output guardrail session persistence', () => {
         compactionMode: 'input',
         store: false,
       });
+      const persistedItems = await session.getItems();
       expect(
-        getPersistedToolItems(await session.getItems()).map((item) => [
+        getPersistedToolItems(persistedItems).map((item) => [
           item.type,
           item.callId,
         ]),
@@ -3238,8 +3244,336 @@ describe('approved tool output guardrail session persistence', () => {
         ['function_call', 'call-before-empty-response'],
         ['function_call_result', 'call-before-empty-response'],
       ]);
+      expect(
+        persistedItems.some(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'assistant' &&
+            item.content.some(
+              (content) =>
+                content.type === 'output_text' &&
+                content.text === 'handled-empty-response',
+            ),
+        ),
+      ).toBe(includeInHistory);
     },
   );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'publishes a $mode max-turn handler item only after finalization succeeds',
+    async (mode) => {
+      type Outcome =
+        'success' | 'guardrail_error' | 'tripwire' | 'session_failure';
+
+      for (const resumed of [false, true]) {
+        for (const outcome of [
+          'success',
+          'guardrail_error',
+          'tripwire',
+          'session_failure',
+        ] as const satisfies readonly Outcome[]) {
+          class FinalSaveSession extends MemorySession {
+            async addItems(items: AgentInputItem[]): Promise<void> {
+              if (
+                outcome === 'session_failure' &&
+                items.some(
+                  (item) =>
+                    item.type === 'message' &&
+                    item.role === 'assistant' &&
+                    item.content.some(
+                      (content) =>
+                        content.type === 'output_text' &&
+                        content.text === 'handled max turn',
+                    ),
+                )
+              ) {
+                throw new Error('session save failed');
+              }
+              await super.addItems(items);
+            }
+          }
+
+          const session = new FinalSaveSession();
+          const agent = new Agent({
+            name: 'Deferred max-turn output agent',
+            model: new ScriptedModel(),
+            outputGuardrails:
+              outcome === 'success' || outcome === 'session_failure'
+                ? []
+                : [
+                    {
+                      name: 'max-turn output guardrail',
+                      execute: async () => {
+                        if (outcome === 'guardrail_error') {
+                          throw new Error('guardrail failed');
+                        }
+                        return {
+                          outputInfo: null,
+                          tripwireTriggered: true,
+                        };
+                      },
+                    },
+                  ],
+          });
+          const resumedState = resumed
+            ? new RunState(new RunContext(), 'x', agent, 0)
+            : undefined;
+          const input = resumedState ?? 'x';
+          const options = {
+            session,
+            maxTurns: 0,
+            errorHandlers: {
+              maxTurns: () => ({ finalOutput: 'handled max turn' }),
+            },
+          } as const;
+          const streamedEvents: unknown[] = [];
+
+          if (mode === 'streamed') {
+            const result = await run(agent, input, {
+              ...options,
+              stream: true,
+            });
+            const completion = (async () => {
+              for await (const event of result.toStream()) {
+                streamedEvents.push(event);
+              }
+              await result.completed;
+            })();
+            if (outcome === 'success') {
+              await completion;
+              expect(result.finalOutput).toBe('handled max turn');
+              if (resumedState) {
+                expect(result.state).toBe(resumedState);
+              }
+            } else if (outcome === 'tripwire') {
+              await expect(completion).rejects.toBeInstanceOf(
+                OutputGuardrailTripwireTriggered,
+              );
+            } else {
+              await expect(completion).rejects.toThrow(
+                outcome === 'guardrail_error'
+                  ? 'guardrail failed'
+                  : 'session save failed',
+              );
+            }
+            expect(
+              streamedEvents.filter(
+                (event) =>
+                  typeof event === 'object' &&
+                  event !== null &&
+                  'type' in event &&
+                  event.type === 'run_item_stream_event',
+              ),
+            ).toHaveLength(outcome === 'success' ? 1 : 0);
+            expect(
+              result.newItems.filter(
+                (item) =>
+                  item.rawItem.type === 'message' &&
+                  item.rawItem.role === 'assistant',
+              ),
+            ).toHaveLength(outcome === 'success' ? 1 : 0);
+          } else if (outcome === 'success') {
+            const result = await run(agent, input, options);
+            expect(result.finalOutput).toBe('handled max turn');
+            if (resumedState) {
+              expect(result.state).toBe(resumedState);
+            }
+            expect(
+              result.newItems.filter(
+                (item) =>
+                  item.rawItem.type === 'message' &&
+                  item.rawItem.role === 'assistant',
+              ),
+            ).toHaveLength(1);
+          } else if (outcome === 'tripwire') {
+            await expect(run(agent, input, options)).rejects.toBeInstanceOf(
+              OutputGuardrailTripwireTriggered,
+            );
+          } else {
+            await expect(run(agent, input, options)).rejects.toThrow(
+              outcome === 'guardrail_error'
+                ? 'guardrail failed'
+                : 'session save failed',
+            );
+          }
+
+          if (outcome !== 'success') {
+            expect(
+              (resumedState?._generatedItems ?? []).filter(
+                (item) =>
+                  item.rawItem.type === 'message' &&
+                  item.rawItem.role === 'assistant',
+              ),
+            ).toHaveLength(0);
+            if (resumedState && outcome === 'guardrail_error') {
+              await expect(
+                RunState.fromString(agent, resumedState.toString()),
+              ).resolves.toBeInstanceOf(RunState);
+            }
+          }
+          expect(
+            (await session.getItems()).filter(
+              (item) => item.type === 'message' && item.role === 'assistant',
+            ),
+          ).toHaveLength(outcome === 'success' ? 1 : 0);
+        }
+      }
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'does not publish a $mode max-turn handler item when history is omitted',
+    async (mode) => {
+      const agent = new Agent({
+        name: 'Omitted max-turn output agent',
+        model: new ScriptedModel(),
+      });
+      const session = new MemorySession();
+      const options = {
+        session,
+        maxTurns: 0,
+        errorHandlers: {
+          maxTurns: () => ({
+            finalOutput: 'omitted max turn',
+            includeInHistory: false,
+          }),
+        },
+      } as const;
+
+      if (mode === 'streamed') {
+        const result = await run(agent, 'x', { ...options, stream: true });
+        const events = [];
+        for await (const event of result.toStream()) {
+          events.push(event);
+        }
+        await result.completed;
+        expect(result.finalOutput).toBe('omitted max turn');
+        expect(
+          events.filter((event) => event.type === 'run_item_stream_event'),
+        ).toHaveLength(0);
+        expect(result.newItems).toHaveLength(0);
+      } else {
+        const result = await run(agent, 'x', options);
+        expect(result.finalOutput).toBe('omitted max turn');
+        expect(result.newItems).toHaveLength(0);
+      }
+
+      expect(
+        (await session.getItems()).filter(
+          (item) => item.type === 'message' && item.role === 'assistant',
+        ),
+      ).toHaveLength(0);
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'keeps a resumed $mode max-turn handler item hidden while persistence is pending',
+    async (mode) => {
+      let markSaveStarted: (() => void) | undefined;
+      let releaseSave: (() => void) | undefined;
+      const saveStarted = new Promise<void>((resolve) => {
+        markSaveStarted = resolve;
+      });
+      const saveCanFinish = new Promise<void>((resolve) => {
+        releaseSave = resolve;
+      });
+      class DeferredFinalSaveSession extends MemorySession {
+        async addItems(items: AgentInputItem[]): Promise<void> {
+          if (
+            items.some(
+              (item) => item.type === 'message' && item.role === 'assistant',
+            )
+          ) {
+            markSaveStarted?.();
+            await saveCanFinish;
+          }
+          await super.addItems(items);
+        }
+      }
+
+      const agent = new Agent({
+        name: 'Pending max-turn output agent',
+        model: new ScriptedModel(),
+      });
+      const state = new RunState(new RunContext(), 'x', agent, 0);
+      const session = new DeferredFinalSaveSession();
+      const options = {
+        session,
+        maxTurns: 0,
+        errorHandlers: {
+          maxTurns: () => ({ finalOutput: 'pending max turn' }),
+        },
+      } as const;
+
+      if (mode === 'streamed') {
+        const result = await run(agent, state, {
+          ...options,
+          stream: true,
+        });
+        await saveStarted;
+        expect(result.newItems).toHaveLength(0);
+        expect(state._generatedItems).toHaveLength(0);
+        releaseSave?.();
+        for await (const _event of result.toStream()) {
+          // Drain the completed stream.
+        }
+        await result.completed;
+        expect(result.newItems).toHaveLength(1);
+      } else {
+        const resultPromise = run(agent, state, options);
+        await saveStarted;
+        expect(state._generatedItems).toHaveLength(0);
+        releaseSave?.();
+        const result = await resultPromise;
+        expect(result.newItems).toHaveLength(1);
+      }
+    },
+  );
+
+  it('keeps a committed streamed max-turn event for delayed readers after compaction fails', async () => {
+    class FailingFinalCompactionSession extends CompactionTrackingSession {
+      async runCompaction(
+        args?: OpenAIResponsesCompactionArgs,
+      ): Promise<OpenAIResponsesCompactionResult | null> {
+        const result = await super.runCompaction(args);
+        if (
+          (await this.getItems()).some(
+            (item) => item.type === 'message' && item.role === 'assistant',
+          )
+        ) {
+          throw new Error('final compaction failed');
+        }
+        return result;
+      }
+    }
+
+    const agent = new Agent({
+      name: 'Compaction failure max-turn output agent',
+      model: new ScriptedModel(),
+    });
+    const result = await run(agent, 'x', {
+      stream: true,
+      session: new FailingFinalCompactionSession(),
+      maxTurns: 0,
+      errorHandlers: {
+        maxTurns: () => ({ finalOutput: 'partially persisted max turn' }),
+      },
+    });
+    const events: { type: string }[] = [];
+    await expect(result.completed).rejects.toThrow('final compaction failed');
+    await result._getStreamLoopPromise();
+    await expect(
+      (async () => {
+        for await (const event of result.toStream()) {
+          events.push(event);
+        }
+      })(),
+    ).rejects.toThrow('final compaction failed');
+    expect(result.newItems).toHaveLength(1);
+    expect(
+      events.filter((event) => event.type === 'run_item_stream_event'),
+    ).toHaveLength(1);
+  });
 
   it.each<RunMode>(['non_streamed', 'streamed'])(
     'rebinds $mode transaction authority before a post-approval final tool executes',

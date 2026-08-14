@@ -202,6 +202,136 @@ describe('StreamedRunResult', () => {
     expect(sr.error).toBe(err);
   });
 
+  it('drains preserved events before retaining the first stream error', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const persistenceError = new Error('persistence failed');
+    const cleanupError = new Error('cleanup failed');
+    sr._addItem(
+      new RunRawModelStreamEvent({ type: 'output_text_delta', delta: 'x' }),
+    );
+
+    sr._raiseError(persistenceError, { preserveQueuedItems: true });
+    sr._raiseError(cleanupError);
+
+    await expect(sr.completed).rejects.toBe(persistenceError);
+    const events: RunRawModelStreamEvent[] = [];
+    await expect(
+      (async () => {
+        for await (const event of sr) {
+          events.push(event as RunRawModelStreamEvent);
+        }
+      })(),
+    ).rejects.toBe(persistenceError);
+    expect(events).toHaveLength(1);
+    expect(sr.error).toBe(persistenceError);
+  });
+
+  it('retains a null preserved error across secondary failures', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const cleanupError = new Error('cleanup failed');
+    sr._addItem(
+      new RunRawModelStreamEvent({ type: 'output_text_delta', delta: 'x' }),
+    );
+
+    sr._raiseError(null, { preserveQueuedItems: true });
+    sr._raiseError(cleanupError);
+
+    await expect(sr.completed).rejects.toBeNull();
+    await expect(
+      (async () => {
+        for await (const _event of sr) {
+          // Drain the preserved event before observing the terminal error.
+        }
+      })(),
+    ).rejects.toBeNull();
+    expect(sr.error).toBeNull();
+  });
+
+  it('drains committed events before a later cleanup error', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const cleanupError = new Error('cleanup failed');
+    sr._addItem(
+      new RunRawModelStreamEvent({ type: 'output_text_delta', delta: 'x' }),
+    );
+    sr._preserveQueuedItemsOnError();
+
+    sr._raiseError(cleanupError);
+
+    await expect(sr.completed).rejects.toBe(cleanupError);
+    const events: RunRawModelStreamEvent[] = [];
+    await expect(
+      (async () => {
+        for await (const event of sr) {
+          events.push(event as RunRawModelStreamEvent);
+        }
+      })(),
+    ).rejects.toBe(cleanupError);
+    expect(events).toHaveLength(1);
+  });
+
+  it('drains a large queued stream in order', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const eventCount = 4096;
+    for (let index = 0; index < eventCount; index += 1) {
+      sr._addItem(
+        new RunRawModelStreamEvent({
+          type: 'output_text_delta',
+          delta: String(index),
+        }),
+      );
+    }
+    sr._done();
+
+    let receivedCount = 0;
+    for await (const _event of sr) {
+      receivedCount += 1;
+    }
+
+    expect(receivedCount).toBe(eventCount);
+  });
+
+  it('clears delayed terminal buffering when the consumer cancels', async () => {
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    for (let index = 0; index < 4096; index += 1) {
+      sr._addItem(
+        new RunRawModelStreamEvent({
+          type: 'output_text_delta',
+          delta: String(index),
+        }),
+      );
+    }
+    sr._done();
+
+    const reader = (sr.toStream() as any).getReader();
+    await reader.cancel();
+
+    expect(sr.cancelled).toBe(true);
+  });
+
+  it('propagates consumer cancellation before fallback cleanup', async () => {
+    vi.spyOn(
+      AbortSignal as typeof AbortSignal & { any: typeof AbortSignal.any },
+      'any',
+    ).mockImplementation(() => {
+      throw new Error('AbortSignal.any failed');
+    });
+    const state = createState();
+    const sr = new StreamedRunResult({ state });
+    const signal = sr._getAbortSignal();
+    const reader = (sr.toStream() as any).getReader();
+
+    await reader.cancel();
+
+    expect(signal?.aborted).toBe(true);
+    expect(sr.cancelled).toBe(true);
+    vi.restoreAllMocks();
+  });
+
   it.each([
     [true, false],
     [false, true],
