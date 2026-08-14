@@ -1142,19 +1142,7 @@ export async function saveStreamInputToSession(
     return;
   }
   const sanitizedInput = normalizeItemsForSessionPersistence(sessionInputItems);
-  const compactedInput = trimToLatestCompaction(sanitizedInput);
-  assertPersistableCompactionBoundary(compactedInput);
-  if (compactedInput[0]?.type === 'compaction') {
-    const previousItems = await getSessionItems(session, runContext);
-    await replaceSessionItemsWithRecovery(
-      session,
-      previousItems,
-      compactedInput,
-      runContext,
-    );
-    return;
-  }
-  await addSessionItems(session, sanitizedInput, runContext);
+  await persistSessionItems(session, sanitizedInput, runContext);
 }
 
 export async function saveStreamResultToSession(
@@ -1776,19 +1764,7 @@ async function persistRunItemsToSession(options: {
     }
     return;
   }
-  const compactedItems = trimToLatestCompaction(sanitizedItems);
-  assertPersistableCompactionBoundary(compactedItems);
-  if (compactedItems[0]?.type === 'compaction') {
-    const previousItems = await getSessionItems(session, state._context);
-    await replaceSessionItemsWithRecovery(
-      session,
-      previousItems,
-      compactedItems,
-      state._context,
-    );
-  } else {
-    await addSessionItems(session, sanitizedItems, state._context);
-  }
+  await persistSessionItems(session, sanitizedItems, state._context);
   commitPersistenceState();
   if (runCompaction) {
     await runCompactionOnSession(
@@ -1953,11 +1929,38 @@ function throwLegacyCompactionReconciliationError(): never {
   );
 }
 
+async function persistSessionItems(
+  session: Session,
+  items: AgentInputItem[],
+  runContext?: RunContext<any>,
+): Promise<void> {
+  const compactedItems = trimToLatestCompaction(items);
+  assertPersistableCompactionBoundary(compactedItems);
+  if (compactedItems[0]?.type !== 'compaction') {
+    await addSessionItems(session, items, runContext);
+    return;
+  }
+
+  const previousItems = await getSessionItems(session, runContext);
+  const itemsBeforeCompaction = items.slice(
+    0,
+    items.length - compactedItems.length,
+  );
+  await replaceSessionItemsWithRecovery(
+    session,
+    previousItems,
+    compactedItems,
+    runContext,
+    itemsBeforeCompaction,
+  );
+}
+
 async function replaceSessionItemsWithRecovery(
   session: Session,
   previousItems: AgentInputItem[],
   replacementItems: AgentInputItem[],
   runContext?: RunContext<any>,
+  itemsBeforeCompaction: AgentInputItem[] = [],
 ): Promise<void> {
   assertValidCompactionItems(trimToLatestCompaction(previousItems));
   assertValidCompactionItems(trimToLatestCompaction(replacementItems));
@@ -1984,15 +1987,33 @@ async function replaceSessionItemsWithRecovery(
     ) {
       return;
     }
-    if (runContext && isRunContextAwareSession(session)) {
-      await session.replaceHistoryWithCompaction(replacementItems, runContext);
-    } else {
-      await session.replaceHistoryWithCompaction(replacementItems);
+    try {
+      if (itemsBeforeCompaction.length > 0) {
+        await addSessionItems(session, itemsBeforeCompaction, runContext);
+      }
+      if (runContext && isRunContextAwareSession(session)) {
+        await session.replaceHistoryWithCompaction(replacementItems, runContext);
+      } else {
+        await session.replaceHistoryWithCompaction(replacementItems);
+      }
+    } catch (error) {
+      if (itemsBeforeCompaction.length > 0) {
+        await restoreSessionItemsAfterFailedReplacement(
+          session,
+          previousItems,
+          error,
+          runContext,
+        );
+      }
+      throw error;
     }
     return;
   }
 
   try {
+    if (itemsBeforeCompaction.length > 0) {
+      await addSessionItems(session, itemsBeforeCompaction, runContext);
+    }
     await clearSession(session, runContext);
     if (replacementItems.length > 0) {
       await addSessionItems(session, replacementItems, runContext);
