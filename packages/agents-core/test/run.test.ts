@@ -335,6 +335,9 @@ describe('Runner.run', () => {
               ...TEST_MODEL_FUNCTION_CALL,
               name: approvalTool.name,
               arguments: '{}',
+              providerData: {
+                nested: { values: ['original'] },
+              },
             },
           ],
           usage: new Usage(),
@@ -352,17 +355,247 @@ describe('Runner.run', () => {
 
       const interrupted = await run(agent, 'start');
       const [approval] = interrupted.interruptions;
+      const [stateSnapshot] = interrupted.state.getInterruptions();
+      const [resultSnapshot] = interrupted.interruptions;
+
+      expect(stateSnapshot).not.toBe(approval);
+      expect(resultSnapshot).not.toBe(approval);
+      expect(stateSnapshot.rawItem).not.toBe(approval.rawItem);
+
+      const nestedProviderData = stateSnapshot.rawItem.providerData as {
+        nested: { values: string[] };
+      };
+      nestedProviderData.nested.values.push('mutated');
+      (stateSnapshot.rawItem as protocol.FunctionCallItem).arguments =
+        '{"changed":true}';
+
+      expect(interrupted.state.getInterruptions()[0].rawItem).toMatchObject({
+        arguments: '{}',
+        providerData: {
+          nested: { values: ['original'] },
+        },
+      });
 
       interrupted.state.getInterruptions().splice(0);
       interrupted.interruptions.splice(0);
 
-      expect(interrupted.state.getInterruptions()).toEqual([approval]);
-      expect(interrupted.interruptions).toEqual([approval]);
+      expect(interrupted.state.getInterruptions()).toHaveLength(1);
+      expect(interrupted.interruptions).toHaveLength(1);
 
       interrupted.state.approve(approval);
       const result = await run(agent, interrupted.state);
 
       expect(result.finalOutput).toBe('done');
+    });
+
+    it('fails closed when a detached interruption payload changes before approval', async () => {
+      const execute = vi.fn(async () => 'approved');
+      const approvalTool = tool({
+        name: 'fingerprinted_snapshot_approval',
+        description: 'Requires approval.',
+        parameters: z.object({ value: z.string() }),
+        needsApproval: true,
+        execute,
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: approvalTool.name,
+              arguments: '{"value":"original"}',
+            },
+          ],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'FingerprintSnapshotApprovalAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const interrupted = await run(agent, 'start');
+      const [approval] = interrupted.interruptions;
+      (approval.rawItem as protocol.FunctionCallItem).arguments =
+        '{"value":"changed"}';
+
+      interrupted.state.approve(approval);
+
+      await expect(run(agent, interrupted.state)).rejects.toThrow(
+        ModelBehaviorError,
+      );
+      expect(execute).not.toHaveBeenCalled();
+      expect(interrupted.state.getInterruptions()[0].rawItem).toMatchObject({
+        arguments: '{"value":"original"}',
+      });
+    });
+
+    it('keeps the original call pending when a detached interruption identity changes', async () => {
+      const execute = vi.fn(async () => 'approved');
+      const approvalTool = tool({
+        name: 'identity_snapshot_approval',
+        description: 'Requires approval.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute,
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              callId: 'original-snapshot-call',
+              name: approvalTool.name,
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'IdentitySnapshotApprovalAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const interrupted = await run(agent, 'start');
+      const [approval] = interrupted.interruptions;
+      (approval.rawItem as protocol.FunctionCallItem).callId =
+        'changed-snapshot-call';
+
+      interrupted.state.approve(approval);
+      const resumed = await run(agent, interrupted.state);
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(resumed.interruptions).toHaveLength(1);
+      expect(resumed.interruptions[0].rawItem).toMatchObject({
+        callId: 'original-snapshot-call',
+      });
+    });
+
+    it('rejects uncloneable interruption payloads instead of returning shared references', async () => {
+      const approvalTool = tool({
+        name: 'uncloneable_snapshot_approval',
+        description: 'Requires approval.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'approved',
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: approvalTool.name,
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'UncloneableSnapshotApprovalAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const interrupted = await run(agent, 'start');
+      const internalInterruption = (
+        interrupted.state._currentStep as unknown as {
+          data: { interruptions: ToolApprovalItem[] };
+        }
+      ).data.interruptions[0];
+      internalInterruption.rawItem.providerData = {
+        callback: () => 'not cloneable',
+      };
+
+      expect(() => interrupted.state.getInterruptions()).toThrow(UserError);
+      expect(() => interrupted.interruptions).toThrow(UserError);
+    });
+
+    it('rejects shared-memory interruption payloads instead of returning aliased snapshots', async () => {
+      const approvalTool = tool({
+        name: 'shared_memory_snapshot_approval',
+        description: 'Requires approval.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'approved',
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: approvalTool.name,
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'SharedMemorySnapshotApprovalAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const interrupted = await run(agent, 'start');
+      const internalInterruption = (
+        interrupted.state._currentStep as unknown as {
+          data: { interruptions: ToolApprovalItem[] };
+        }
+      ).data.interruptions[0];
+      internalInterruption.rawItem.providerData = {
+        bytes: new Uint8Array(new SharedArrayBuffer(1)),
+      };
+
+      expect(() => interrupted.state.getInterruptions()).toThrow(UserError);
+      expect(() => interrupted.interruptions).toThrow(UserError);
+    });
+
+    it('rejects shared WebAssembly memory interruption payloads', async () => {
+      const approvalTool = tool({
+        name: 'shared_wasm_snapshot_approval',
+        description: 'Requires approval.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'approved',
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: approvalTool.name,
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'SharedWasmSnapshotApprovalAgent',
+        model,
+        tools: [approvalTool],
+      });
+
+      const interrupted = await run(agent, 'start');
+      const internalInterruption = (
+        interrupted.state._currentStep as unknown as {
+          data: { interruptions: ToolApprovalItem[] };
+        }
+      ).data.interruptions[0];
+      internalInterruption.rawItem.providerData = {
+        memory: new WebAssembly.Memory({
+          initial: 1,
+          maximum: 1,
+          shared: true,
+        }),
+      };
+
+      expect(() => interrupted.state.getInterruptions()).toThrow(UserError);
+      expect(() => interrupted.interruptions).toThrow(UserError);
     });
 
     it('returns a redacted invalid-argument output to the model', async () => {
