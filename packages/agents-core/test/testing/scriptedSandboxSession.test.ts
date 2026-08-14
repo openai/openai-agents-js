@@ -1,7 +1,8 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { run } from '../../src';
 import type { SandboxSession } from '../../src/sandbox';
-import { SandboxAgent, shell } from '../../src/sandbox';
+import { Manifest, SandboxAgent, shell } from '../../src/sandbox';
+import { manifestAcknowledgesInContainerMountCredentialExposure } from '../../src/sandbox/manifest';
 import { registerSandboxPreStopHook } from '../../src/sandbox/runtime/sessionLifecycle';
 import {
   InvalidScriptedSandboxStepError,
@@ -134,6 +135,63 @@ describe('scriptedSandboxSession', () => {
     expect([...firstSnapshot]).toEqual([1, 2, 3]);
     firstSnapshot[0] = 8;
     expect([...(session.calls[0].args[0] as Uint8Array)]).toEqual([1, 2, 3]);
+  });
+
+  it('isolates applyManifest matcher snapshots from the caller and call history', async () => {
+    const manifest = createMutableManifest();
+    const session = scriptedSandboxSession([
+      {
+        method: 'applyManifest',
+        match: (snapshot) => {
+          expectManifestValues(snapshot, 'initial');
+          mutateManifest(snapshot, 'matcher');
+          return true;
+        },
+        result: undefined,
+      },
+    ]);
+
+    await session.applyManifest(manifest);
+
+    expectManifestValues(manifest, 'initial');
+    expectManifestValues(session.calls[0].args[0] as Manifest, 'initial');
+  });
+
+  it('isolates applyManifest responder snapshots from call history', async () => {
+    const manifest = createMutableManifest();
+    const session = scriptedSandboxSession([
+      {
+        method: 'applyManifest',
+        respond: (call) => {
+          const snapshot = call.args[0];
+          expectManifestValues(snapshot, 'initial');
+          mutateManifest(snapshot, 'responder');
+        },
+      },
+    ]);
+
+    await session.applyManifest(manifest);
+
+    expectManifestValues(manifest, 'initial');
+    expectManifestValues(session.calls[0].args[0] as Manifest, 'initial');
+  });
+
+  it('keeps applyManifest call snapshots stable after later mutations', async () => {
+    const manifest = createMutableManifest();
+    const session = scriptedSandboxSession([
+      {
+        method: 'applyManifest',
+        result: undefined,
+      },
+    ]);
+
+    await session.applyManifest(manifest);
+    mutateManifest(manifest, 'caller');
+
+    const firstRead = session.calls[0].args[0] as Manifest;
+    expectManifestValues(firstRead, 'initial');
+    mutateManifest(firstRead, 'observer');
+    expectManifestValues(session.calls[0].args[0] as Manifest, 'initial');
   });
 
   it('snapshots mutable static results when they are queued', async () => {
@@ -285,3 +343,67 @@ describe('scriptedSandboxSession', () => {
     >();
   });
 });
+
+function createMutableManifest(): Manifest {
+  return new Manifest({
+    root: '/workspace',
+    entries: {
+      'config.json': {
+        type: 'file',
+        content: 'initial',
+      },
+    },
+    environment: {
+      TEST_VALUE: 'initial',
+    },
+    users: ['initial'],
+    groups: [{ name: 'initial', users: ['initial'] }],
+    extraPathGrants: [
+      {
+        path: '/initial',
+        hostPath: '/host/initial',
+        description: 'initial',
+      },
+    ],
+    remoteMountCommandAllowlist: ['initial'],
+  }).withInContainerMountCredentialExposureAcknowledged('/workspace/mount');
+}
+
+function expectManifestValues(manifest: Manifest, value: string): void {
+  expect(manifest.root).toBe(value === 'initial' ? '/workspace' : `/${value}`);
+  expect(manifest.entries['config.json']).toMatchObject({ content: value });
+  expect(manifest.environment.TEST_VALUE.value).toBe(value);
+  expect(manifest.users[0]?.name).toBe(value);
+  expect(manifest.groups[0]).toMatchObject({
+    name: value,
+    users: [{ name: value }],
+  });
+  expect(manifest.extraPathGrants[0]).toMatchObject({
+    path: `/${value}`,
+    hostPath: `/host/${value}`,
+    description: value,
+  });
+  expect(manifest.remoteMountCommandAllowlist).toEqual([value]);
+  if (value === 'initial') {
+    expect(
+      manifestAcknowledgesInContainerMountCredentialExposure(
+        manifest,
+        '/workspace/mount',
+        'mount_scoped',
+      ),
+    ).toBe(true);
+  }
+}
+
+function mutateManifest(manifest: Manifest, value: string): void {
+  (manifest as { root: string }).root = `/${value}`;
+  (manifest.entries['config.json'] as { content: string }).content = value;
+  (manifest.environment.TEST_VALUE as { value: string }).value = value;
+  manifest.users[0]!.name = value;
+  manifest.groups[0]!.name = value;
+  manifest.groups[0]!.users![0]!.name = value;
+  manifest.extraPathGrants[0]!.path = `/${value}`;
+  manifest.extraPathGrants[0]!.hostPath = `/host/${value}`;
+  manifest.extraPathGrants[0]!.description = value;
+  manifest.remoteMountCommandAllowlist[0] = value;
+}

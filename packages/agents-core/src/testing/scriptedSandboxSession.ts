@@ -1,4 +1,4 @@
-import { Manifest } from '../sandbox/manifest';
+import { cloneManifest, Manifest } from '../sandbox/manifest';
 import type { SandboxSession, SandboxSessionState } from '../sandbox/session';
 import { snapshotTestingValue } from '../utils/testingSnapshot';
 
@@ -255,7 +255,7 @@ export function scriptedSandboxSession(
     const call: InternalRecordedSandboxCall = Object.freeze({
       index: calls.length,
       method,
-      args: Object.freeze(snapshotTestingValue(args)),
+      args: Object.freeze(snapshotSandboxCallArgs(method, args)),
     });
     calls.push(call);
 
@@ -270,7 +270,7 @@ export function scriptedSandboxSession(
     }
 
     if (step.match) {
-      const matchArgs = snapshotTestingValue(call.args) as unknown[];
+      const matchArgs = snapshotSandboxCallArgs(method, call.args);
       if (step.match(...matchArgs) === false) {
         throw new SandboxCallMatcherError(call);
       }
@@ -419,8 +419,19 @@ function snapshotRecordedCall(
   return Object.freeze({
     index: call.index,
     method: call.method,
-    args: Object.freeze(snapshotTestingValue(call.args)),
+    args: Object.freeze(snapshotSandboxCallArgs(call.method, call.args)),
   });
+}
+
+function snapshotSandboxCallArgs(
+  method: ScriptedSandboxMethod,
+  args: readonly unknown[],
+): unknown[] {
+  const snapshot = snapshotTestingValue([...args]);
+  if (method === 'applyManifest' && snapshot[0] instanceof Manifest) {
+    snapshot[0] = cloneManifest(snapshot[0]);
+  }
+  return snapshot;
 }
 
 function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
