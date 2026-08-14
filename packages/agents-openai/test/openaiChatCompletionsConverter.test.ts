@@ -957,6 +957,141 @@ describe('itemsToMessages', () => {
     ]);
   });
 
+  test('keeps reasoning on the assistant message it belongs to', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'reasoning',
+        content: [],
+        rawContent: [{ type: 'reasoning_text', text: 'why' }],
+      } as protocol.ReasoningItem,
+      {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'hello' }],
+      } as protocol.AssistantMessageItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'hello' }],
+        reasoning: 'why',
+      },
+    ]);
+  });
+
+  test('drops an empty reasoning item instead of emitting an empty assistant turn', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'reasoning',
+        content: [],
+        rawContent: [],
+      } as protocol.ReasoningItem,
+      {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'hello' }],
+      } as protocol.AssistantMessageItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'hello' }],
+      },
+    ]);
+  });
+
+  test('keeps reasoning with the tool call message when a tool call follows', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'reasoning',
+        content: [],
+        rawContent: [{ type: 'reasoning_text', text: 'why' }],
+      } as protocol.ReasoningItem,
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'completed',
+      } as protocol.FunctionCallItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: null,
+        reasoning: 'why',
+        tool_calls: [
+          {
+            id: 'call1',
+            type: 'function',
+            function: { name: 'f', arguments: '{}' },
+          },
+        ],
+      },
+    ]);
+  });
+
+  test('does not attach reasoning to a following user message', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'reasoning',
+        content: [],
+        rawContent: [{ type: 'reasoning_text', text: 'why' }],
+      } as protocol.ReasoningItem,
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'hi' }],
+      } as protocol.UserMessageItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toEqual([
+      { role: 'assistant', content: null, reasoning: 'why' },
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+    ]);
+  });
+
+  test('does not steal reasoning from a previous assistant message', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'reasoning',
+        content: [],
+        rawContent: [{ type: 'reasoning_text', text: 'first' }],
+      } as protocol.ReasoningItem,
+      {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'one' }],
+      } as protocol.AssistantMessageItem,
+      {
+        id: 'msg_2',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'two' }],
+      } as protocol.AssistantMessageItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'one' }],
+        reasoning: 'first',
+      },
+      { role: 'assistant', content: [{ type: 'text', text: 'two' }] },
+    ]);
+  });
+
   test('propagates providerData from function_call to assistant message', () => {
     const items: protocol.ModelItem[] = [
       {
