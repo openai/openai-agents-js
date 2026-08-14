@@ -101,6 +101,12 @@ export type OpenAIRealtimeBaseOptions = {
    * The API key to use for the connection.
    */
   apiKey?: ApiKey;
+  /**
+   * Optional hook for rewriting SDK-managed `session.update` payloads before
+   * they are sent. This allows Realtime-compatible providers with a different
+   * session schema to adapt the normalized OpenAI payload.
+   */
+  transformSessionPayload?: RealtimeSessionPayloadTransformer;
 };
 
 /**
@@ -123,6 +129,19 @@ export type OpenAIRealtimeEventTypes = {
  * directly into the `openai.realtime.calls.accept` helper without casts.
  */
 export type RealtimeSessionPayload = { type: 'realtime' } & Record<string, any>;
+
+/**
+ * Shape sent inside a `session.update` event after optional transport-level rewriting.
+ */
+export type RealtimeSessionUpdatePayload = Record<string, any>;
+
+/**
+ * Rewrites a normalized OpenAI Realtime session payload before it is sent in
+ * a `session.update` event.
+ */
+export type RealtimeSessionPayloadTransformer = (
+  payload: RealtimeSessionPayload,
+) => RealtimeSessionUpdatePayload;
 
 function normalizeRealtimeMessageContent(
   role: string | undefined,
@@ -161,6 +180,7 @@ export abstract class OpenAIRealtimeBase
 {
   #model: string;
   #apiKey: ApiKey | undefined;
+  #transformSessionPayload: RealtimeSessionPayloadTransformer | undefined;
   #tracingConfig: RealtimeTracingConfig | null = null;
   #rawSessionConfig: Record<string, any> | null = null;
 
@@ -171,6 +191,7 @@ export abstract class OpenAIRealtimeBase
     super();
     this.#model = options.model ?? DEFAULT_OPENAI_REALTIME_MODEL;
     this.#apiKey = options.apiKey;
+    this.#transformSessionPayload = options.transformSessionPayload;
   }
 
   /**
@@ -738,6 +759,14 @@ export abstract class OpenAIRealtimeBase
     return this._getMergedSessionConfig(config);
   }
 
+  protected _sendSessionUpdate(payload: RealtimeSessionPayload): void {
+    const session = this.#transformSessionPayload?.(payload) ?? payload;
+    this.sendEvent({
+      type: 'session.update',
+      session,
+    });
+  }
+
   private static buildTurnDetectionConfig(
     c: RealtimeTurnDetectionConfig | null | undefined,
   ): RealtimeTurnDetectionConfigAsIs | null | undefined {
@@ -806,12 +835,9 @@ export abstract class OpenAIRealtimeBase
 
     if (tracingConfig === 'auto') {
       // turn on tracing in auto mode
-      this.sendEvent({
-        type: 'session.update',
-        session: {
-          type: 'realtime',
-          tracing: 'auto',
-        },
+      this._sendSessionUpdate({
+        type: 'realtime',
+        tracing: 'auto',
       });
       return;
     }
@@ -833,12 +859,9 @@ export abstract class OpenAIRealtimeBase
         'Disabling tracing for this session. It cannot be turned on for this session from this point on.',
       );
 
-      this.sendEvent({
-        type: 'session.update',
-        session: {
-          type: 'realtime',
-          tracing: null,
-        },
+      this._sendSessionUpdate({
+        type: 'realtime',
+        tracing: null,
       });
       return;
     }
@@ -848,12 +871,9 @@ export abstract class OpenAIRealtimeBase
       typeof this.#tracingConfig === 'string'
     ) {
       // tracing is currently not set so we can set it to the new value
-      this.sendEvent({
-        type: 'session.update',
-        session: {
-          type: 'realtime',
-          tracing: tracingConfig,
-        },
+      this._sendSessionUpdate({
+        type: 'realtime',
+        tracing: tracingConfig,
       });
       return;
     }
@@ -871,12 +891,9 @@ export abstract class OpenAIRealtimeBase
       return;
     }
 
-    this.sendEvent({
-      type: 'session.update',
-      session: {
-        type: 'realtime',
-        tracing: tracingConfig,
-      },
+    this._sendSessionUpdate({
+      type: 'realtime',
+      tracing: tracingConfig,
     });
   }
 
@@ -888,11 +905,7 @@ export abstract class OpenAIRealtimeBase
    */
   updateSessionConfig(config: Partial<RealtimeSessionConfig>): void {
     const sessionData = this.buildSessionPayload(config);
-
-    this.sendEvent({
-      type: 'session.update',
-      session: sessionData,
-    });
+    this._sendSessionUpdate(sessionData);
   }
 
   /**
