@@ -270,6 +270,42 @@ describe('sandbox events', () => {
     });
   });
 
+  it('snapshots HTTP sink headers when the sink is created', async () => {
+    const headers = {
+      authorization: 'Bearer original',
+      'content-type': 'application/custom+json',
+    };
+    const requests: Array<Record<string, string>> = [];
+    const sink = createSandboxHttpEventSink({
+      endpoint: 'https://example.test/sandbox-events',
+      headers,
+      fetch: async (_endpoint, request) => {
+        requests.push(request.headers);
+        return {
+          ok: true,
+          status: 204,
+        };
+      },
+    });
+
+    headers.authorization = 'Bearer mutated';
+    headers['content-type'] = 'text/plain';
+
+    await sink({
+      type: 'sandbox_operation',
+      name: 'sandbox.read_file',
+      phase: 'start',
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(requests).toEqual([
+      {
+        'content-type': 'application/custom+json',
+        authorization: 'Bearer original',
+      },
+    ]);
+  });
+
   it('isolates JSONL and HTTP sink failures from the operation', async () => {
     const events: SandboxEvent[] = [];
     addSandboxEventSink((event) => {
