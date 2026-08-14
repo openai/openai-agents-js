@@ -31,185 +31,163 @@ jobs:
           path = Path('packages/agents-core/src/runner/sessionPersistence.ts')
           source = path.read_text()
 
+          pop_helper = (
+              "\nasync function popSessionItem(\n"
+              "  session: Session,\n"
+              "  runContext: RunContext<any> | undefined,\n"
+              "): Promise<AgentInputItem | undefined> {\n"
+              "  if (runContext && isRunContextAwareSession(session)) {\n"
+              "    return session.popItem(runContext);\n"
+              "  }\n"
+              "  return session.popItem();\n"
+              "}\n"
+          )
+          anchor = "\nfunction canonicalizeSessionHistoryTransaction("
           source = replace_once(
               source,
-              """async function clearSession(
-  session: Session,
-  runContext: RunContext<any> | undefined,
-): Promise<void> {
-  if (runContext && isRunContextAwareSession(session)) {
-    await session.clearSession(runContext);
-    return;
-  }
-  await session.clearSession();
-}
-""",
-              """async function clearSession(
-  session: Session,
-  runContext: RunContext<any> | undefined,
-): Promise<void> {
-  if (runContext && isRunContextAwareSession(session)) {
-    await session.clearSession(runContext);
-    return;
-  }
-  await session.clearSession();
-}
-
-async function popSessionItem(
-  session: Session,
-  runContext: RunContext<any> | undefined,
-): Promise<AgentInputItem | undefined> {
-  if (runContext && isRunContextAwareSession(session)) {
-    return session.popItem(runContext);
-  }
-  return session.popItem();
-}
-""",
-              'pop helper',
+              anchor,
+              pop_helper + anchor,
+              'pop helper anchor',
           )
 
+          old_catch = (
+              "    } catch (error) {\n"
+              "      if (itemsBeforeCompaction.length > 0) {\n"
+              "        await restoreSessionItemsAfterFailedReplacement(\n"
+              "          session,\n"
+              "          previousItems,\n"
+              "          error,\n"
+              "          runContext,\n"
+              "        );\n"
+              "      }\n"
+              "      throw error;\n"
+              "    }\n"
+              "    return;\n"
+              "  }\n"
+          )
+          new_catch = (
+              "    } catch (error) {\n"
+              "      if (itemsBeforeCompaction.length > 0) {\n"
+              "        const replacementWasApplied =\n"
+              "          await reconcileIdentityPreservingCompactionFailure(\n"
+              "            session,\n"
+              "            previousItems,\n"
+              "            itemsBeforeCompaction,\n"
+              "            replacementItems,\n"
+              "            error,\n"
+              "            runContext,\n"
+              "          );\n"
+              "        if (replacementWasApplied) {\n"
+              "          return;\n"
+              "        }\n"
+              "      }\n"
+              "      throw error;\n"
+              "    }\n"
+              "    return;\n"
+              "  }\n"
+          )
+          source = replace_once(source, old_catch, new_catch, 'capability catch')
+
+          helper = (
+              "async function reconcileIdentityPreservingCompactionFailure(\n"
+              "  session: Session,\n"
+              "  previousItems: AgentInputItem[],\n"
+              "  appendedItems: AgentInputItem[],\n"
+              "  replacementItems: AgentInputItem[],\n"
+              "  replacementError: unknown,\n"
+              "  runContext?: RunContext<any>,\n"
+              "): Promise<boolean> {\n"
+              "  let currentItems: AgentInputItem[];\n"
+              "  try {\n"
+              "    currentItems = await getSessionItems(session, runContext);\n"
+              "  } catch (inspectionError) {\n"
+              "    logModelAndToolActionWarning(\n"
+              "      logger,\n"
+              "      'Failed to inspect identity-preserving session history after compaction replacement failed.',\n"
+              "      inspectionError,\n"
+              "    );\n"
+              "    return false;\n"
+              "  }\n\n"
+              "  const normalize = (items: AgentInputItem[]): AgentInputItem[] =>\n"
+              "    session.prepareHistoryItemsForPersistenceComparison?.(items) ?? items;\n"
+              "  const comparableCurrentItems = normalize(currentItems);\n"
+              "  const comparableReplacementItems = normalize(replacementItems);\n"
+              "  const compactedCurrentItems = trimToLatestCompaction(comparableCurrentItems);\n"
+              "  if (\n"
+              "    compactedCurrentItems.length === comparableReplacementItems.length &&\n"
+              "    agentItemRangeMatches(\n"
+              "      compactedCurrentItems,\n"
+              "      comparableReplacementItems,\n"
+              "      0,\n"
+              "    )\n"
+              "  ) {\n"
+              "    logModelAndToolActionWarning(\n"
+              "      logger,\n"
+              "      'Compaction replacement reported a failure after the replacement was persisted.',\n"
+              "      replacementError,\n"
+              "    );\n"
+              "    return true;\n"
+              "  }\n\n"
+              "  const comparablePreviousItems = normalize(previousItems);\n"
+              "  const comparableAppendedItems = normalize(appendedItems);\n"
+              "  if (\n"
+              "    comparableCurrentItems.length !==\n"
+              "      comparablePreviousItems.length + comparableAppendedItems.length ||\n"
+              "    !agentItemRangeMatches(comparableCurrentItems, comparablePreviousItems, 0) ||\n"
+              "    !agentItemRangeMatches(\n"
+              "      comparableCurrentItems,\n"
+              "      comparableAppendedItems,\n"
+              "      comparablePreviousItems.length,\n"
+              "    )\n"
+              "  ) {\n"
+              "    return false;\n"
+              "  }\n\n"
+              "  try {\n"
+              "    for (let index = 0; index < appendedItems.length; index += 1) {\n"
+              "      const popped = await popSessionItem(session, runContext);\n"
+              "      if (!popped) {\n"
+              "        throw new Error(\n"
+              "          'Session ended before all pre-compaction items could be rolled back.',\n"
+              "        );\n"
+              "      }\n"
+              "    }\n"
+              "    const restoredItems = normalize(\n"
+              "      await getSessionItems(session, runContext),\n"
+              "    );\n"
+              "    if (\n"
+              "      restoredItems.length !== comparablePreviousItems.length ||\n"
+              "      !agentItemRangeMatches(restoredItems, comparablePreviousItems, 0)\n"
+              "    ) {\n"
+              "      throw new Error(\n"
+              "        'Pre-compaction rollback did not restore the previous session history.',\n"
+              "      );\n"
+              "    }\n"
+              "  } catch (restoreError) {\n"
+              "    logModelAndToolActionWarning(\n"
+              "      logger,\n"
+              "      'Failed to roll back pre-compaction session items after replacement failed.',\n"
+              "      restoreError,\n"
+              "    );\n"
+              "    throw new SessionReconciliationRecoveryError(\n"
+              "      replacementError,\n"
+              "      restoreError,\n"
+              "    );\n"
+              "  }\n\n"
+              "  logModelAndToolActionWarning(\n"
+              "    logger,\n"
+              "    'Rolled back pre-compaction session items after replacement failed.',\n"
+              "    replacementError,\n"
+              "  );\n"
+              "  return false;\n"
+              "}\n\n"
+          )
+          restore_anchor = "async function restoreSessionItemsAfterFailedReplacement("
           source = replace_once(
               source,
-              """    } catch (error) {
-      if (itemsBeforeCompaction.length > 0) {
-        await restoreSessionItemsAfterFailedReplacement(
-          session,
-          previousItems,
-          error,
-          runContext,
-        );
-      }
-      throw error;
-    }
-    return;
-  }
-""",
-              """    } catch (error) {
-      if (itemsBeforeCompaction.length > 0) {
-        const replacementWasApplied =
-          await reconcileIdentityPreservingCompactionFailure(
-            session,
-            previousItems,
-            itemsBeforeCompaction,
-            replacementItems,
-            error,
-            runContext,
-          );
-        if (replacementWasApplied) {
-          return;
-        }
-      }
-      throw error;
-    }
-    return;
-  }
-""",
-              'capability failure handling',
+              restore_anchor,
+              helper + restore_anchor,
+              'recovery helper anchor',
           )
-
-          marker = """async function restoreSessionItemsAfterFailedReplacement(
-  session: Session,
-"""
-          helper = """async function reconcileIdentityPreservingCompactionFailure(
-  session: Session,
-  previousItems: AgentInputItem[],
-  appendedItems: AgentInputItem[],
-  replacementItems: AgentInputItem[],
-  replacementError: unknown,
-  runContext?: RunContext<any>,
-): Promise<boolean> {
-  let currentItems: AgentInputItem[];
-  try {
-    currentItems = await getSessionItems(session, runContext);
-  } catch (inspectionError) {
-    logModelAndToolActionWarning(
-      logger,
-      'Failed to inspect identity-preserving session history after compaction replacement failed.',
-      inspectionError,
-    );
-    return false;
-  }
-
-  const normalize = (items: AgentInputItem[]): AgentInputItem[] =>
-    session.prepareHistoryItemsForPersistenceComparison?.(items) ?? items;
-  const comparableCurrentItems = normalize(currentItems);
-  const comparableReplacementItems = normalize(replacementItems);
-  const compactedCurrentItems = trimToLatestCompaction(comparableCurrentItems);
-  if (
-    compactedCurrentItems.length === comparableReplacementItems.length &&
-    agentItemRangeMatches(
-      compactedCurrentItems,
-      comparableReplacementItems,
-      0,
-    )
-  ) {
-    logModelAndToolActionWarning(
-      logger,
-      'Compaction replacement reported a failure after the replacement was persisted.',
-      replacementError,
-    );
-    return true;
-  }
-
-  const comparablePreviousItems = normalize(previousItems);
-  const comparableAppendedItems = normalize(appendedItems);
-  if (
-    comparableCurrentItems.length !==
-      comparablePreviousItems.length + comparableAppendedItems.length ||
-    !agentItemRangeMatches(comparableCurrentItems, comparablePreviousItems, 0) ||
-    !agentItemRangeMatches(
-      comparableCurrentItems,
-      comparableAppendedItems,
-      comparablePreviousItems.length,
-    )
-  ) {
-    return false;
-  }
-
-  try {
-    for (let index = 0; index < appendedItems.length; index += 1) {
-      const popped = await popSessionItem(session, runContext);
-      if (!popped) {
-        throw new Error(
-          'Session ended before all pre-compaction items could be rolled back.',
-        );
-      }
-    }
-    const restoredItems = normalize(
-      await getSessionItems(session, runContext),
-    );
-    if (
-      restoredItems.length !== comparablePreviousItems.length ||
-      !agentItemRangeMatches(restoredItems, comparablePreviousItems, 0)
-    ) {
-      throw new Error(
-        'Pre-compaction rollback did not restore the previous session history.',
-      );
-    }
-  } catch (restoreError) {
-    logModelAndToolActionWarning(
-      logger,
-      'Failed to roll back pre-compaction session items after replacement failed.',
-      restoreError,
-    );
-    throw new SessionReconciliationRecoveryError(
-      replacementError,
-      restoreError,
-    );
-  }
-
-  logModelAndToolActionWarning(
-    logger,
-    'Rolled back pre-compaction session items after replacement failed.',
-    replacementError,
-  );
-  return false;
-}
-
-async function restoreSessionItemsAfterFailedReplacement(
-  session: Session,
-"""
-          source = replace_once(source, marker, helper, 'identity preserving helper')
           path.write_text(source)
           PY
 
