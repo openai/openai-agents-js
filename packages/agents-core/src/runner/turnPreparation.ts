@@ -31,6 +31,80 @@ type PreparedTurn = {
   pendingInputSourceItems: AgentInputItem[];
 };
 
+// Keep run-local input normalizations stable so identity-preserving filters can reuse them
+// across turns without changing the serialized RunState boundary.
+type PreparedInputIdentityCache = {
+  normalizedStringInput?: {
+    source: string;
+    items: AgentInputItem[];
+  };
+  pendingInputItems: WeakMap<object, RunInputItem[]>;
+};
+
+const preparedInputIdentityByRunState = new WeakMap<
+  RunState<any, any>,
+  PreparedInputIdentityCache
+>();
+
+function getPreparedInputIdentityCache<
+  TContext,
+  TAgent extends Agent<TContext, AgentOutputType>,
+>(state: RunState<TContext, TAgent>): PreparedInputIdentityCache {
+  const cached = preparedInputIdentityByRunState.get(state);
+  if (cached) {
+    return cached;
+  }
+  const created = { pendingInputItems: new WeakMap<object, RunInputItem[]>() };
+  preparedInputIdentityByRunState.set(state, created);
+  return created;
+}
+
+function getPreparedOriginalInput<
+  TContext,
+  TAgent extends Agent<TContext, AgentOutputType>,
+>(
+  state: RunState<TContext, TAgent>,
+  input: string | AgentInputItem[],
+): AgentInputItem[] {
+  if (typeof input !== 'string') {
+    return input;
+  }
+  const cache = getPreparedInputIdentityCache(state);
+  if (cache.normalizedStringInput?.source === input) {
+    return cache.normalizedStringInput.items;
+  }
+  const normalized = prepareModelInputItems(input, []);
+  cache.normalizedStringInput = { source: input, items: normalized };
+  return normalized;
+}
+
+function getPreparedPendingInputItem<
+  TContext,
+  TAgent extends Agent<TContext, AgentOutputType>,
+>(
+  state: RunState<TContext, TAgent>,
+  item: AgentInputItem,
+  occurrenceIndex: number,
+): RunInputItem {
+  if (!item || typeof item !== 'object') {
+    return new RunInputItem(structuredClone(item), state._currentAgent);
+  }
+  const cache = getPreparedInputIdentityCache(state);
+  const cached = cache.pendingInputItems.get(item as object)?.[occurrenceIndex];
+  if (cached) {
+    cached.agent = state._currentAgent;
+    return cached;
+  }
+  const prepared = new RunInputItem(structuredClone(item), state._currentAgent);
+  const preparedOccurrences = cache.pendingInputItems.get(item as object) ?? [];
+  preparedOccurrences[occurrenceIndex] = prepared;
+  cache.pendingInputItems.set(item as object, preparedOccurrences);
+  if (prepared.rawItem && typeof prepared.rawItem === 'object') {
+    cache.pendingInputItems.set(prepared.rawItem as object, [prepared]);
+  }
+  return prepared;
+}
+
 type PrepareTurnOptions<
   TContext,
   TAgent extends Agent<TContext, AgentOutputType>,
@@ -112,19 +186,29 @@ export async function prepareTurn<
     guardrailHandlers,
   );
 
-  const pendingInputItems = pendingInputSourceItems.map(
-    (item) => new RunInputItem(structuredClone(item), state._currentAgent),
-  );
+  const pendingInputOccurrences = new WeakMap<object, number>();
+  const pendingInputItems = pendingInputSourceItems.map((item) => {
+    const occurrenceIndex =
+      item && typeof item === 'object'
+        ? (pendingInputOccurrences.get(item as object) ?? 0)
+        : 0;
+    if (item && typeof item === 'object') {
+      pendingInputOccurrences.set(item as object, occurrenceIndex + 1);
+    }
+    return getPreparedPendingInputItem(state, item, occurrenceIndex);
+  });
   const generatedItemsForTurn = generatedItems.concat(pendingInputItems);
+  const preparedOriginalInput = getPreparedOriginalInput(state, input);
 
   const turnInput = serverConversationTracker
     ? serverConversationTracker.prepareInput(
-        input,
+        preparedOriginalInput,
         generatedItemsForTurn,
         getManagedConversationSupplementalItems(state),
+        pendingInputItems,
       )
     : prepareModelInputItems(
-        input,
+        preparedOriginalInput,
         generatedItemsForTurn,
         state._reasoningItemIdPolicy,
       );

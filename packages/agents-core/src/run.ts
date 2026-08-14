@@ -3102,6 +3102,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       persistedItems,
       sourceMatchKinds,
       filterApplied,
+      preserveInputIdentity,
     } = await applyCallModelInputFilter(
       state._currentAgent,
       options.callModelInputFilter,
@@ -3135,6 +3136,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       persistedItems,
       sourceMatchKinds,
       filterApplied,
+      preserveInputIdentity,
       turnInput,
     };
   }

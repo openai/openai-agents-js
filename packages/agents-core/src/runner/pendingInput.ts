@@ -10,6 +10,7 @@ type PendingInputPreparation = {
   sourceItems: (AgentInputItem | undefined)[];
   persistedItems: AgentInputItem[];
   sourceMatchKinds: Array<'identity' | 'content' | 'fallback' | 'injected'>;
+  preserveInputIdentity: boolean;
 };
 
 /**
@@ -88,12 +89,19 @@ export function selectPendingInputForAdmission(
       continue;
     }
     acceptedIds.add(pendingItem.inputId);
+    const preservesPreparedItem =
+      preparation.preserveInputIdentity &&
+      preparation.sourceMatchKinds[index] === 'identity' &&
+      getAgentInputItemKey(pendingItem.rawItem) ===
+        getAgentInputItemKey(persistedItem);
     admitted.push(
-      new RunInputItem(
-        structuredClone(persistedItem),
-        pendingItem.agent,
-        pendingItem.inputId,
-      ),
+      preservesPreparedItem
+        ? pendingItem
+        : new RunInputItem(
+            structuredClone(persistedItem),
+            pendingItem.agent,
+            pendingItem.inputId,
+          ),
     );
   }
   return admitted;
@@ -145,7 +153,7 @@ export function commitPendingInput(
     ...(preparedQueueIsIntact
       ? preparedItems
           .filter((item) => !admittedIds.has(item.inputId))
-          .map((item) => structuredClone(item.rawItem))
+          .map((item) => item.rawItem)
       : []),
     ...structuredClone(newlyStagedItems),
   ];

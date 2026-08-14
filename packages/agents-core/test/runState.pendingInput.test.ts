@@ -8,9 +8,11 @@ import {
   RunState,
   Runner,
   UserError,
+  handoff,
   run,
   tool,
   type AgentInputItem,
+  type CallModelInputFilterArgs,
 } from '../src';
 import type { ModelRequest, ModelResponse } from '../src/model';
 import { RunContext } from '../src/runContext';
@@ -1533,6 +1535,193 @@ describe('RunState pending input', () => {
     );
     expect(admitted?.rawItem).toEqual(message('rewritten input'));
     expect(rewrittenState.pendingInput).toEqual([]);
+  });
+
+  it('preserves omitted pending input identity across model calls', async () => {
+    const agentBModel = new RecordingModel([
+      { output: [fakeModelMessage('done')], usage: new Usage() },
+    ]);
+    const agentB = new Agent({
+      name: 'pending-identity-b',
+      model: agentBModel,
+    });
+    const handoffToB = handoff(agentB);
+    const agentAModel = new RecordingModel([
+      {
+        output: [
+          {
+            type: 'function_call',
+            id: 'fc_pending_identity',
+            callId: 'call_pending_identity',
+            name: handoffToB.toolName,
+            status: 'completed',
+            arguments: '{}',
+          } satisfies protocol.FunctionCallItem,
+        ],
+        usage: new Usage(),
+      },
+    ]);
+    const agentA = new Agent({
+      name: 'pending-identity-a',
+      model: agentAModel,
+      handoffs: [handoffToB],
+    });
+    const state = createResumableState(agentA);
+    state.addInput('keep pending');
+    const pendingInputs: AgentInputItem[] = [];
+    const filter = ({ modelData }: CallModelInputFilterArgs) => {
+      const pending = modelData.input.find(
+        (item) => item.type === 'message' && item.content === 'keep pending',
+      );
+      if (pending) {
+        pendingInputs.push(pending);
+      }
+      if (pendingInputs.length > 1) {
+        return modelData;
+      }
+      return {
+        ...modelData,
+        input: modelData.input.filter((item) => item !== pending),
+      };
+    };
+    filter.preserveInputIdentity = true;
+
+    await run(agentA, state, { callModelInputFilter: filter });
+
+    expect(agentAModel.requests).toHaveLength(1);
+    expect(agentBModel.requests).toHaveLength(1);
+    expect(pendingInputs).toHaveLength(2);
+    expect(pendingInputs[0]).toBe(pendingInputs[1]);
+    expect(state.pendingInput).toEqual([]);
+    expect(
+      state._generatedItems.find((item) => item instanceof RunInputItem)?.agent,
+    ).toBe(agentB);
+  });
+
+  it('preserves duplicate pending input occurrences', async () => {
+    const model = new RecordingModel([
+      { output: [fakeModelMessage('done')], usage: new Usage() },
+    ]);
+    const agent = new Agent({ name: 'pending-duplicates', model });
+    const state = createResumableState(agent);
+    const sharedInput = message('duplicate pending');
+    state.addInput([sharedInput, sharedInput]);
+    const filter = ({ modelData }: CallModelInputFilterArgs) => modelData;
+    filter.preserveInputIdentity = true;
+
+    await run(agent, state, { callModelInputFilter: filter });
+
+    expect(
+      state._generatedItems.filter((item) => item instanceof RunInputItem),
+    ).toHaveLength(2);
+  });
+
+  it('preserves admitted pending input identity on later model calls', async () => {
+    const executeTool = tool({
+      name: 'continue_admitted_pending_identity',
+      description: 'Continues the scripted run.',
+      parameters: z.object({}),
+      execute: async () => 'done',
+    });
+    const model = new RecordingModel([
+      {
+        output: [
+          {
+            type: 'function_call',
+            id: 'fc_admitted_pending_identity',
+            callId: 'call_admitted_pending_identity',
+            name: executeTool.name,
+            status: 'completed',
+            arguments: '{}',
+          } satisfies protocol.FunctionCallItem,
+        ],
+        usage: new Usage(),
+      },
+      { output: [fakeModelMessage('done')], usage: new Usage() },
+    ]);
+    const agent = new Agent({
+      name: 'admitted-pending-identity',
+      model,
+      tools: [executeTool],
+    });
+    const state = createResumableState(agent);
+    state.addInput('admit pending');
+    const pendingInputs: AgentInputItem[] = [];
+    const filter = ({ modelData }: CallModelInputFilterArgs) => {
+      const pending = modelData.input.find(
+        (item) => item.type === 'message' && item.content === 'admit pending',
+      );
+      if (pending) {
+        pendingInputs.push(pending);
+      }
+      return modelData;
+    };
+    filter.preserveInputIdentity = true;
+
+    await run(agent, state, { callModelInputFilter: filter });
+
+    expect(pendingInputs).toHaveLength(2);
+    expect(pendingInputs[0]).toBe(pendingInputs[1]);
+  });
+
+  it('replays omitted pending input in server-managed continuations', async () => {
+    const executeTool = tool({
+      name: 'continue_server_pending_identity',
+      description: 'Continues the scripted run.',
+      parameters: z.object({}),
+      execute: async () => 'done',
+    });
+    const model = new RecordingModel([
+      {
+        output: [
+          {
+            type: 'function_call',
+            id: 'fc_server_pending_identity',
+            callId: 'call_server_pending_identity',
+            name: executeTool.name,
+            status: 'completed',
+            arguments: '{}',
+          } satisfies protocol.FunctionCallItem,
+        ],
+        usage: new Usage(),
+      },
+      { output: [fakeModelMessage('done')], usage: new Usage() },
+    ]);
+    const agent = new Agent({
+      name: 'server-pending-identity',
+      model,
+      tools: [executeTool],
+    });
+    const state = createResumableState(agent);
+    state.setConversationContext('server-pending-identity');
+    state.addInput('replay pending');
+    const pendingInputs: AgentInputItem[] = [];
+    const filter = ({ modelData }: CallModelInputFilterArgs) => {
+      const pending = modelData.input.find(
+        (item) => item.type === 'message' && item.content === 'replay pending',
+      );
+      if (pending) {
+        pendingInputs.push(pending);
+      }
+      if (pendingInputs.length > 1) {
+        return modelData;
+      }
+      return {
+        ...modelData,
+        input: modelData.input.filter((item) => item !== pending),
+      };
+    };
+    filter.preserveInputIdentity = true;
+
+    await run(agent, state, {
+      conversationId: 'server-pending-identity',
+      callModelInputFilter: filter,
+    });
+
+    expect(model.requests).toHaveLength(2);
+    expect(pendingInputs).toHaveLength(2);
+    expect(pendingInputs[0]).toBe(pendingInputs[1]);
+    expect(state.pendingInput).toEqual([]);
   });
 
   it('rejects an ambiguous reconstructed filter item before model invocation', async () => {

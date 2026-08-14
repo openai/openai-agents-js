@@ -23,7 +23,7 @@ Do not create two authoritative histories accidentally. When server-managed cont
 
 ## Filters, Sessions, and Resume
 
-- `callModelInputFilter` receives a deep-cloned prepared payload and must return an input array. Persist filtered clones so session history reflects redaction or truncation rather than the unfiltered source.
+- `callModelInputFilter` receives a deep-cloned prepared payload by default and must return an input array. A filter that sets `preserveInputIdentity` receives a shallow-copied array whose item identities are preserved; the SDK does not freeze those items, so that filter and its helpers must treat them as immutable. Model and persisted session inputs remain isolated clones after filtering so session history reflects redaction or truncation rather than the unfiltered source.
 - Track filtered items back to their originals so delta bookkeeping marks the items the model actually received. Rewind or preserve that mapping according to whether a failed attempt may have advanced server state.
 - `RunState` persists conversation identifiers and primes tracker state from prior model responses. Resume must not resend acknowledged input, lose unsent outputs, or increment the turn count without a model call.
 - Conversation continuation carries context into a new turn. RunState resume continues a paused turn. Do not substitute one for the other.

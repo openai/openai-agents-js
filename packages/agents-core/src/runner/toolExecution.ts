@@ -111,6 +111,7 @@ import {
   COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
 } from './streamReconciliation';
 import { runWithSiblingCancellation } from './siblingCancellation';
+import { invalidateOutputItemNormalization } from './items';
 
 type FunctionToolCallDeps<TContext = UnknownContext> = {
   agent: Agent<TContext, any>;
@@ -2575,6 +2576,10 @@ export async function executeHandoffCalls<
         };
 
         const filtered = inputFilter(handoffInputData);
+        invalidateOutputItemNormalization([
+          ...handoffInputData.preHandoffItems,
+          ...handoffInputData.newItems,
+        ]);
 
         originalInput = filtered.inputHistory;
         preStepItems = filtered.preHandoffItems;

@@ -36,6 +36,7 @@ import {
   user,
   assistant,
   type ToolExecutionConfig,
+  type CallModelInputFilterArgs,
   type ToolNameCollisionPolicy,
   type ToolNotFoundBehavior,
   type StandardSchemaWithJSON,
@@ -6519,6 +6520,430 @@ describe('Runner.run', () => {
         return this.lastCall?.request;
       }
     }
+
+    it('preserves filter item identity across model calls', async () => {
+      class RawRequestTrackingModel extends ScriptedModel {
+        readonly rawRequestInputs: AgentInputItem[][] = [];
+
+        async getResponse(request: ModelRequest): Promise<ModelResponse> {
+          this.rawRequestInputs.push(getRequestInputItems(request));
+          return super.getResponse(request);
+        }
+      }
+
+      const executeTool = tool({
+        name: 'continue_read_only_filter',
+        description: 'Continues the scripted run.',
+        parameters: z.object({}),
+        execute: async () => 'done',
+      });
+      const model = new RawRequestTrackingModel([
+        modelResponse({
+          output: [
+            {
+              type: 'function_call',
+              callId: 'call_read_only_filter',
+              name: executeTool.name,
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'IdentityPreservingFilterAgent',
+        model,
+        tools: [executeTool],
+      });
+      const stableInput = user('Stable history');
+      const filterInputs: AgentInputItem[][] = [];
+      const filter = ({ modelData }: CallModelInputFilterArgs) => {
+        filterInputs.push(modelData.input);
+        return modelData;
+      };
+      filter.preserveInputIdentity = true;
+
+      await new Runner({ callModelInputFilter: filter }).run(agent, [
+        stableInput,
+      ]);
+
+      expect(filterInputs).toHaveLength(2);
+      expect(filterInputs[0]).not.toBe(filterInputs[1]);
+      const stablePreparedInput = filterInputs[0]?.[0];
+      expect(stablePreparedInput).toBeDefined();
+      expect(stablePreparedInput).not.toBe(stableInput);
+      expect(filterInputs[1]?.[0]).toBe(stablePreparedInput);
+      expect(model.calls).toHaveLength(2);
+      expect(model.rawRequestInputs).toHaveLength(2);
+      for (const rawRequestInput of model.rawRequestInputs) {
+        expect(rawRequestInput[0]).not.toBe(stablePreparedInput);
+        expect(rawRequestInput[0]).not.toBe(stableInput);
+      }
+    });
+
+    it('preserves string input identity across model calls', async () => {
+      const executeTool = tool({
+        name: 'continue_string_input_identity',
+        description: 'Continues the scripted run.',
+        parameters: z.object({}),
+        execute: async () => 'done',
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            {
+              type: 'function_call',
+              id: 'fc_string_identity_1',
+              callId: 'call_string_identity_1',
+              name: executeTool.name,
+              status: 'completed',
+              arguments: '{}',
+            } satisfies protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [
+            {
+              type: 'function_call',
+              id: 'fc_string_identity_2',
+              callId: 'call_string_identity_2',
+              name: executeTool.name,
+              status: 'completed',
+              arguments: '{}',
+            } satisfies protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'StringInputIdentityAgent',
+        model,
+        tools: [executeTool],
+      });
+      const userInputs: AgentInputItem[] = [];
+      const filter = ({ modelData }: CallModelInputFilterArgs) => {
+        const userInput = modelData.input.find(
+          (item) => item.type === 'message' && item.role === 'user',
+        );
+        if (userInput) {
+          userInputs.push(userInput);
+        }
+        return modelData;
+      };
+      filter.preserveInputIdentity = true;
+
+      await new Runner({ callModelInputFilter: filter }).run(agent, 'hello');
+
+      expect(model.calls).toHaveLength(3);
+      expect(userInputs).toHaveLength(3);
+      expect(userInputs[0]).toBe(userInputs[1]);
+      expect(userInputs[1]).toBe(userInputs[2]);
+    });
+
+    it('rebuilds cached string input after a handoff filter replaces it', async () => {
+      const agentBModel = new ScriptedModel([
+        modelResponse({
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        }),
+      ]);
+      const agentB = new Agent({
+        name: 'FilteredStringInputAgentB',
+        model: agentBModel,
+      });
+      const handoffToB = handoff(agentB, {
+        inputFilter: (input) => ({ ...input, inputHistory: 'after' }),
+      });
+      const agentA = new Agent({
+        name: 'FilteredStringInputAgentA',
+        model: new ScriptedModel([
+          modelResponse({
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_filtered_string_input',
+                callId: 'call_filtered_string_input',
+                name: handoffToB.toolName,
+                status: 'completed',
+                arguments: '{}',
+              } satisfies protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          }),
+        ]),
+        handoffs: [handoffToB],
+      });
+      const filter = ({ modelData }: CallModelInputFilterArgs) => modelData;
+      filter.preserveInputIdentity = true;
+
+      await new Runner({ callModelInputFilter: filter }).run(agentA, 'before');
+
+      expect(agentBModel.calls[0]?.request.input).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'message',
+            role: 'user',
+            content: 'after',
+          }),
+        ]),
+      );
+      expect(agentBModel.calls[0]?.request.input).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'message',
+            role: 'user',
+            content: 'before',
+          }),
+        ]),
+      );
+    });
+
+    it('rebuilds cached generated input after a handoff filter rewrites it', async () => {
+      const agentBModel = new ScriptedModel([
+        modelResponse({
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        }),
+      ]);
+      const agentB = new Agent({
+        name: 'FilteredGeneratedInputAgentB',
+        model: agentBModel,
+      });
+      const handoffToB = handoff(agentB, {
+        inputFilter: (input) => {
+          const messageItem = input.preHandoffItems.find(
+            (item) => item.type === 'message_output_item',
+          );
+          if (
+            messageItem?.rawItem.type === 'message' &&
+            messageItem.rawItem.role === 'assistant'
+          ) {
+            messageItem.rawItem.content = fakeModelMessage('redacted').content;
+          }
+          return input;
+        },
+      });
+      const executeTool = tool({
+        name: 'continue_before_filtered_handoff',
+        description: 'Continues the scripted run.',
+        parameters: z.object({}),
+        execute: async () => 'done',
+      });
+      const agentA = new Agent({
+        name: 'FilteredGeneratedInputAgentA',
+        model: new ScriptedModel([
+          modelResponse({
+            output: [
+              {
+                ...fakeModelMessage('secret'),
+                status: null,
+              } as unknown as protocol.AssistantMessageItem,
+              {
+                type: 'function_call',
+                id: 'fc_before_filtered_handoff',
+                callId: 'call_before_filtered_handoff',
+                name: executeTool.name,
+                status: 'completed',
+                arguments: '{}',
+              } satisfies protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          }),
+          modelResponse({
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_filtered_generated_input',
+                callId: 'call_filtered_generated_input',
+                name: handoffToB.toolName,
+                status: 'completed',
+                arguments: '{}',
+              } satisfies protocol.FunctionCallItem,
+            ],
+            usage: new Usage(),
+          }),
+        ]),
+        handoffs: [handoffToB],
+        tools: [executeTool],
+      });
+
+      await new Runner().run(agentA, 'hello');
+
+      expect(agentBModel.calls[0]?.request.input).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'message',
+            role: 'assistant',
+            content: expect.arrayContaining([
+              expect.objectContaining({ text: 'redacted' }),
+            ]),
+          }),
+        ]),
+      );
+      expect(agentBModel.calls[0]?.request.input).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'message',
+            role: 'assistant',
+            content: expect.arrayContaining([
+              expect.objectContaining({ text: 'secret' }),
+            ]),
+          }),
+        ]),
+      );
+    });
+
+    it('preserves omitted-ID reasoning identity across model calls', async () => {
+      const executeTool = tool({
+        name: 'continue_reasoning_identity',
+        description: 'Continues the scripted run.',
+        parameters: z.object({}),
+        execute: async () => 'done',
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            {
+              type: 'reasoning',
+              id: 'rs_identity',
+              content: [{ type: 'input_text', text: 'thinking...' }],
+            } satisfies protocol.ReasoningItem,
+            {
+              type: 'function_call',
+              id: 'fc_identity_1',
+              callId: 'call_identity_1',
+              name: executeTool.name,
+              status: 'completed',
+              arguments: '{}',
+            } satisfies protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [
+            {
+              type: 'function_call',
+              id: 'fc_identity_2',
+              callId: 'call_identity_2',
+              name: executeTool.name,
+              status: 'completed',
+              arguments: '{}',
+            } satisfies protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'OmittedReasoningIdentityAgent',
+        model,
+        tools: [executeTool],
+      });
+      const reasoningInputs: protocol.ReasoningItem[] = [];
+      const filter = ({ modelData }: CallModelInputFilterArgs) => {
+        const reasoning = modelData.input.find(
+          (item): item is protocol.ReasoningItem => item.type === 'reasoning',
+        );
+        if (reasoning) {
+          reasoningInputs.push(reasoning);
+        }
+        return modelData;
+      };
+      filter.preserveInputIdentity = true;
+
+      await new Runner({
+        reasoningItemIdPolicy: 'omit',
+        callModelInputFilter: filter,
+      }).run(agent, 'hello');
+
+      expect(model.calls).toHaveLength(3);
+      expect(reasoningInputs).toHaveLength(2);
+      expect(reasoningInputs[0]).toBe(reasoningInputs[1]);
+      expect(reasoningInputs[0]).not.toHaveProperty('id');
+    });
+
+    it('preserves null-status item identity across model calls', async () => {
+      const executeTool = tool({
+        name: 'continue_null_status_identity',
+        description: 'Continues the scripted run.',
+        parameters: z.object({}),
+        execute: async () => 'done',
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'intermediate' }],
+              status: null,
+            } as unknown as protocol.AssistantMessageItem,
+            {
+              type: 'function_call',
+              id: 'fc_null_status_1',
+              callId: 'call_null_status_1',
+              name: executeTool.name,
+              status: 'completed',
+              arguments: '{}',
+            } satisfies protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [
+            {
+              type: 'function_call',
+              id: 'fc_null_status_2',
+              callId: 'call_null_status_2',
+              name: executeTool.name,
+              status: 'completed',
+              arguments: '{}',
+            } satisfies protocol.FunctionCallItem,
+          ],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'NullStatusIdentityAgent',
+        model,
+        tools: [executeTool],
+      });
+      const assistantInputs: protocol.AssistantMessageItem[] = [];
+      const filter = ({ modelData }: CallModelInputFilterArgs) => {
+        const assistantInput = modelData.input.find(
+          (item): item is protocol.AssistantMessageItem =>
+            item.type === 'message' && item.role === 'assistant',
+        );
+        if (assistantInput) {
+          assistantInputs.push(assistantInput);
+        }
+        return modelData;
+      };
+      filter.preserveInputIdentity = true;
+
+      await new Runner({ callModelInputFilter: filter }).run(agent, 'hello');
+
+      expect(model.calls).toHaveLength(3);
+      expect(assistantInputs).toHaveLength(2);
+      expect(assistantInputs[0]).toBe(assistantInputs[1]);
+      expect(assistantInputs[0]).not.toHaveProperty('status');
+    });
 
     it('modifies model input for non-streaming runs', async () => {
       const model = new FilterTrackingModel([
