@@ -89,6 +89,8 @@ export function createSandboxJsonlEventSink(
 export function createSandboxHttpEventSink(
   options: SandboxHttpEventSinkOptions,
 ): SandboxEventSink {
+  const headers = { ...options.headers };
+
   return async (event) => {
     const fetch = options.fetch ?? readGlobalFetch();
     if (!fetch) {
@@ -101,7 +103,7 @@ export function createSandboxHttpEventSink(
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        ...options.headers,
+        ...headers,
       },
       body: JSON.stringify(event),
     });
