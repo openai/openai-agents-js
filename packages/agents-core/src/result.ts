@@ -256,11 +256,7 @@ class RunResultBase<
    * Any interruptions that occurred during the agent run for example for tool approvals.
    */
   get interruptions(): RunToolApprovalItem[] {
-    if (this.state._currentStep?.type === 'next_step_interruption') {
-      return this.state._currentStep.data.interruptions;
-    }
-
-    return [];
+    return this.state.getInterruptions();
   }
 
   /**
