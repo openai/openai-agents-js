@@ -70,6 +70,20 @@ function withTwilioLegacyAudioDefaults(
 /**
  * The options for the Twilio Realtime Transport Layer.
  */
+export type TwilioRealtimeStartEvent = {
+  accountSid?: string;
+  streamSid: string;
+  callSid?: string;
+  tracks?: string[];
+  mediaFormat?: {
+    encoding?: string;
+    sampleRate?: number;
+    channels?: number;
+  };
+  customParameters?: Record<string, string>;
+  [key: string]: unknown;
+};
+
 export type TwilioRealtimeTransportLayerOptions =
   OpenAIRealtimeWebSocketOptions & {
     /**
@@ -114,6 +128,11 @@ export type TwilioRealtimeTransportLayerOptions =
 export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
   #twilioWebSocket: WebSocket | NodeWebSocket;
   #streamSid: string | null = null;
+  #startEvent: TwilioRealtimeStartEvent | null = null;
+  #startEventPromise: Promise<TwilioRealtimeStartEvent> | null = null;
+  #resolveStartEvent: ((start: TwilioRealtimeStartEvent) => void) | null = null;
+  #rejectStartEvent: ((error: unknown) => void) | null = null;
+  #startFailure: unknown | null = null;
   #playbackGeneration: number = 0;
   #markSequence: number = 0;
   #playbackItems: TwilioPlaybackItem[] = [];
@@ -154,6 +173,28 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     this.#inputAudioInactivityTimeoutMs = inputAudioInactivityTimeoutMs;
     this.#twilioWebSocket = options.twilioWebSocket;
     this.#registerEventListeners();
+  }
+
+  /**
+   * Waits for Twilio's Media Streams `start` event. Call this before creating a
+   * `RealtimeSession` when `callSid` or `customParameters` are needed in context.
+   */
+  listen(): Promise<TwilioRealtimeStartEvent> {
+    if (this.#startEvent) {
+      return Promise.resolve(this.#startEvent);
+    }
+    if (this.#startFailure !== null) {
+      return Promise.reject(this.#startFailure);
+    }
+    if (!this.#startEventPromise) {
+      this.#startEventPromise = new Promise<TwilioRealtimeStartEvent>(
+        (resolve, reject) => {
+          this.#resolveStartEvent = resolve;
+          this.#rejectStartEvent = reject;
+        },
+      );
+    }
+    return this.#startEventPromise;
   }
 
   _setInputAndOutputAudioFormat(
@@ -223,7 +264,11 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
               this.#handleTwilioMark(data.mark?.name);
               break;
             case 'start':
-              this.#streamSid = data.start.streamSid;
+              this.#startEvent = data.start as TwilioRealtimeStartEvent;
+              this.#streamSid = this.#startEvent.streamSid;
+              this.#resolveStartEvent?.(this.#startEvent);
+              this.#resolveStartEvent = null;
+              this.#rejectStartEvent = null;
               this.#resetInputTiming();
               this.#canPadInputAudio =
                 data.start.mediaFormat?.encoding === 'audio/x-mulaw' &&
@@ -250,6 +295,15 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
       },
     );
     this.#twilioWebSocket.addEventListener('close', () => {
+      if (!this.#startEvent && this.#startFailure === null) {
+        const error = new Error(
+          'Twilio websocket closed before a start event was received.',
+        );
+        this.#startFailure = error;
+        this.#rejectStartEvent?.(error);
+        this.#resolveStartEvent = null;
+        this.#rejectStartEvent = null;
+      }
       this.#resetTwilioStream();
       if (this.status !== 'disconnected') {
         this.close();
@@ -258,6 +312,12 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     this.#twilioWebSocket.addEventListener(
       'error',
       (error: ErrorEvent | NodeErrorEvent) => {
+        if (!this.#startEvent && this.#startFailure === null) {
+          this.#startFailure = error;
+          this.#rejectStartEvent?.(error);
+          this.#resolveStartEvent = null;
+          this.#rejectStartEvent = null;
+        }
         this.#resetTwilioStream();
         this.emit('error', {
           type: 'error',
