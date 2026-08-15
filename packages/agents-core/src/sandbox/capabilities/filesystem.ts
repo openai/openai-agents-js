@@ -568,9 +568,13 @@ class FilesystemCapability extends Capability {
         tool({
           name: 'view_image',
           description:
-            'Returns an image output from a local path in the sandbox workspace.',
+            'Returns an image output from a path in the sandbox workspace or an explicitly granted sandbox path.',
           parameters: z.object({
-            path: z.string().describe('Local filesystem path to an image file'),
+            path: z
+              .string()
+              .describe(
+                'Path to an image file in the sandbox workspace or an explicitly granted sandbox path',
+              ),
           }),
           execute: async (
             { path }: { path: string },
@@ -584,9 +588,13 @@ class FilesystemCapability extends Capability {
         tool({
           name: 'view_image',
           description:
-            'Returns an image from a local path in the sandbox workspace as a data URL or reference string.',
+            'Returns an image from a path in the sandbox workspace or an explicitly granted sandbox path as a data URL or reference string.',
           parameters: z.object({
-            path: z.string().describe('Local filesystem path to an image file'),
+            path: z
+              .string()
+              .describe(
+                'Path to an image file in the sandbox workspace or an explicitly granted sandbox path',
+              ),
           }),
           execute: async (
             { path }: { path: string },

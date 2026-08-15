@@ -913,6 +913,40 @@ describe('UnixLocalSandboxClient', () => {
     );
   });
 
+  it('allows view_image only for explicitly granted absolute paths', async () => {
+    const grantedDir = join(rootDir, 'granted-images');
+    await mkdir(grantedDir);
+    const grantedImagePath = join(grantedDir, 'granted.png');
+    const ungrantedImagePath = join(
+      rootDir,
+      'ungranted-images',
+      'ungranted.png',
+    );
+    await writeFile(grantedImagePath, ONE_BY_ONE_PNG);
+
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(
+      new Manifest({
+        extraPathGrants: [{ path: grantedDir, readOnly: true }],
+      }),
+    );
+
+    await expect(
+      session.viewImage({ path: grantedImagePath }),
+    ).resolves.toMatchObject({
+      type: 'image',
+      image: {
+        data: expect.any(Uint8Array),
+        mediaType: 'image/png',
+      },
+    });
+    await expect(
+      session.viewImage({ path: ungrantedImagePath }),
+    ).rejects.toThrow(/escapes the workspace root/);
+  });
+
   it('rejects symlink escapes in filesystem helpers', async () => {
     const outsideDir = join(rootDir, 'outside');
     await mkdir(outsideDir);

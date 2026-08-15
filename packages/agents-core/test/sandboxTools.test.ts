@@ -237,6 +237,12 @@ describe('sandbox filesystem tools', () => {
       'view_image',
       'apply_patch',
     ]);
+    expect((tools[0] as any).description).toBe(
+      'Returns an image output from a path in the sandbox workspace or an explicitly granted sandbox path.',
+    );
+    expect((tools[0] as any).parameters.properties.path.description).toBe(
+      'Path to an image file in the sandbox workspace or an explicitly granted sandbox path',
+    );
     expect(session.calls[0]).toMatchObject({
       method: 'createEditor',
       args: ['sandbox-user'],
@@ -457,6 +463,12 @@ describe('sandbox filesystem tools', () => {
       'apply_patch',
     ]);
     expect(tools.map((tool) => tool.type)).toEqual(['function', 'function']);
+    expect((tools[0] as any).description).toBe(
+      'Returns an image from a path in the sandbox workspace or an explicitly granted sandbox path as a data URL or reference string.',
+    );
+    expect((tools[0] as any).parameters.properties.path.description).toBe(
+      'Path to an image file in the sandbox workspace or an explicitly granted sandbox path',
+    );
 
     const imageResult = await (tools[0] as any).invoke(
       new RunContext(),
