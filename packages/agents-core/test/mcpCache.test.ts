@@ -1133,6 +1133,7 @@ function createStubUnderlying(name: string, initialTools: MCPTool[]) {
   let cachedTools: MCPTool[] | undefined;
   let cacheDirty = true;
   let invalidateCalls = 0;
+  let listCalls = 0;
   let connected = false;
   let connection = 0;
   let sessionId: string | undefined;
@@ -1171,6 +1172,7 @@ function createStubUnderlying(name: string, initialTools: MCPTool[]) {
       await closeOperation?.();
     },
     async listTools() {
+      listCalls += 1;
       if (!connected) {
         throw new Error(
           'Server not initialized. Make sure you call connect() first.',
@@ -1222,6 +1224,8 @@ function createStubUnderlying(name: string, initialTools: MCPTool[]) {
       listOperation = operation;
     },
     invalidateCalls: () => invalidateCalls,
+    listCalls: () => listCalls,
+    underlyingCachedTools: () => cachedTools,
   };
 }
 
@@ -1274,6 +1278,8 @@ describe.each(wrapperCacheCases)(
         setCloseOperation,
         setListOperation,
         invalidateCalls,
+        listCalls,
+        underlyingCachedTools,
       } = createStubUnderlying(serverName, [toolNamed('a')]);
       (server as unknown as { underlying: typeof stub }).underlying = stub;
       return {
@@ -1283,8 +1289,36 @@ describe.each(wrapperCacheCases)(
         setCloseOperation,
         setListOperation,
         invalidateCalls,
+        listCalls,
+        underlyingCachedTools,
       };
     }
+
+    it('does not expose its cached tools array to callers', async () => {
+      const { server, listCalls } = createHarness();
+      await server.connect();
+
+      const firstListing = await server.listTools();
+      const firstTool = firstListing[0];
+      firstListing.length = 0;
+
+      const secondListing = await server.listTools();
+
+      expect(secondListing.map((tool) => tool.name)).toEqual(['a']);
+      expect(secondListing[0]).toBe(firstTool);
+      expect(listCalls()).toBe(1);
+    });
+
+    it('does not expose underlying listed arrays without wrapper caching', async () => {
+      const { server, underlyingCachedTools } = createHarness();
+      server.cacheToolsList = false;
+      await server.connect();
+
+      const listing = await server.listTools();
+      listing.length = 0;
+
+      expect(underlyingCachedTools()?.map((tool) => tool.name)).toEqual(['a']);
+    });
 
     it('returns fresh shared tools after explicit invalidation', async () => {
       const { server, setTools, invalidateCalls } = createHarness();
@@ -1449,6 +1483,58 @@ describe.each(wrapperCacheCases)(
     });
   },
 );
+
+it('snapshots sessionless streamable HTTP tool listings', async () => {
+  const serverName = 'streamable-http-sessionless-tools';
+  await invalidateServerToolsCache(serverName);
+  const server = new MCPServerStreamableHttp({
+    url: 'http://localhost:1',
+    name: serverName,
+    cacheToolsList: true,
+  });
+  const listedTools = [toolNamed('a')];
+  const stub = {
+    name: serverName,
+    sessionId: undefined,
+    async connect() {},
+    async close() {},
+    async invalidateToolsCache() {},
+    async listTools() {
+      return listedTools;
+    },
+    async callToolResult(toolName: string) {
+      if (!listedTools.some((tool) => tool.name === toolName)) {
+        throw new Error(`Tool ${toolName} was not listed.`);
+      }
+      return { content: [{ type: 'text', text: 'ok' }] };
+    },
+  };
+  (server as unknown as { underlying: typeof stub }).underlying = stub;
+  await server.connect();
+
+  const returnedTools = await server.listTools();
+  returnedTools.length = 0;
+
+  await expect(server.callTool('a', {})).resolves.toEqual([
+    { type: 'text', text: 'ok' },
+  ]);
+
+  const uncachedServer = new MCPServerStreamableHttp({
+    url: 'http://localhost:1',
+    name: `${serverName}-uncached`,
+    cacheToolsList: false,
+  });
+  (uncachedServer as unknown as { underlying: typeof stub }).underlying = stub;
+  await uncachedServer.connect();
+
+  const uncachedReturnedTools = await uncachedServer.listTools();
+  expect(uncachedReturnedTools).not.toBe(listedTools);
+  uncachedReturnedTools.length = 0;
+
+  await expect(uncachedServer.callTool('a', {})).resolves.toEqual([
+    { type: 'text', text: 'ok' },
+  ]);
+});
 
 it('starts streamable HTTP close before yielding', async () => {
   const serverName = 'streamable-http-immediate-close';

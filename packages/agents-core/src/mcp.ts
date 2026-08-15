@@ -76,6 +76,10 @@ export interface MCPCallToolOptions {
 const MCP_FUNCTION_TOOL_NAME_MAX_LENGTH = 64;
 const MCP_FUNCTION_TOOL_HASH_LENGTH = 8;
 
+function snapshotMcpTools(tools: MCPTool[]): MCPTool[] {
+  return [...tools];
+}
+
 type PrefixedToolNameCandidate = {
   batchKey: string;
   baseName: string;
@@ -323,14 +327,15 @@ export class MCPServerStdio
   async listTools(): Promise<MCPTool[]> {
     const listingGeneration = this.toolsLifecycle.beginListing();
     if (this.cacheToolsList && this._cachedTools) {
-      return this._cachedTools;
+      return snapshotMcpTools(this._cachedTools);
     }
     const tools = await this.underlying.listTools();
     this.toolsLifecycle.assertListingIsCurrent(listingGeneration);
     if (this.cacheToolsList) {
-      this._cachedTools = tools;
+      this._cachedTools = snapshotMcpTools(tools);
+      return snapshotMcpTools(this._cachedTools);
     }
-    return tools;
+    return snapshotMcpTools(tools);
   }
   async callTool(
     toolName: string,
@@ -411,7 +416,8 @@ export class MCPServerStreamableHttp
     if (sessionId === undefined) {
       this.toolsLifecycle.invalidate();
       await this.invalidateToolsCaches();
-      return this.underlying.listTools();
+      const tools = await this.underlying.listTools();
+      return snapshotMcpTools(tools);
     }
 
     if (
@@ -419,15 +425,16 @@ export class MCPServerStreamableHttp
       this._cachedTools &&
       this._cachedToolsSessionId === sessionId
     ) {
-      return this._cachedTools;
+      return snapshotMcpTools(this._cachedTools);
     }
     const tools = await this.underlying.listTools();
     this.toolsLifecycle.assertListingIsCurrent(listingGeneration);
     if (this.cacheToolsList) {
-      this._cachedTools = tools;
+      this._cachedTools = snapshotMcpTools(tools);
       this._cachedToolsSessionId = sessionId;
+      return snapshotMcpTools(this._cachedTools);
     }
-    return tools;
+    return snapshotMcpTools(tools);
   }
   async callTool(
     toolName: string,
@@ -510,14 +517,15 @@ export class MCPServerSSE
   async listTools(): Promise<MCPTool[]> {
     const listingGeneration = this.toolsLifecycle.beginListing();
     if (this.cacheToolsList && this._cachedTools) {
-      return this._cachedTools;
+      return snapshotMcpTools(this._cachedTools);
     }
     const tools = await this.underlying.listTools();
     this.toolsLifecycle.assertListingIsCurrent(listingGeneration);
     if (this.cacheToolsList) {
-      this._cachedTools = tools;
+      this._cachedTools = snapshotMcpTools(tools);
+      return snapshotMcpTools(this._cachedTools);
     }
-    return tools;
+    return snapshotMcpTools(tools);
   }
   async callTool(
     toolName: string,
@@ -614,7 +622,7 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
   const serverName = server.name;
   // Use cache key generator injected from the outside, or the default if absent.
   if (server.cacheToolsList && _cachedTools[cacheKey]) {
-    return _cachedTools[cacheKey];
+    return snapshotMcpTools(_cachedTools[cacheKey]);
   }
   const cacheListing = beginServerToolsCacheListing(serverName);
 
@@ -678,7 +686,7 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
     }
     // Cache store
     if (server.cacheToolsList && cacheListing.isCurrent()) {
-      _cachedTools[cacheKey] = mcpTools;
+      _cachedTools[cacheKey] = snapshotMcpTools(mcpTools);
       if (!_cachedToolKeysByServer[serverName]) {
         _cachedToolKeysByServer[serverName] = new Set();
       }
