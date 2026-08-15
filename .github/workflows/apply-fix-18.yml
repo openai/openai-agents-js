@@ -1,0 +1,115 @@
+name: Apply fix 18
+
+on:
+  push:
+    branches:
+      - feat/twilio-start-listen-18
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch Twilio start listener
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label} matched {count} times')
+              return text.replace(old, new)
+
+          path = Path('packages/agents-extensions/src/TwilioRealtimeTransport.ts')
+          source = path.read_text()
+
+          type_anchor = (
+              "export type TwilioRealtimeTransportLayerOptions =\n"
+              "  OpenAIRealtimeWebSocketOptions & {\n"
+          )
+          start_type = (
+              "export type TwilioRealtimeStartEvent = {\n"
+              "  accountSid?: string;\n"
+              "  streamSid: string;\n"
+              "  callSid?: string;\n"
+              "  tracks?: string[];\n"
+              "  mediaFormat?: {\n"
+              "    encoding?: string;\n"
+              "    sampleRate?: number;\n"
+              "    channels?: number;\n"
+              "  };\n"
+              "  customParameters?: Record<string, string>;\n"
+              "  [key: string]: unknown;\n"
+              "};\n\n"
+          )
+          source = replace_once(source, type_anchor, start_type + type_anchor, 'start type')
+
+          source = replace_once(
+              source,
+              "  #twilioWebSocket: WebSocket | NodeWebSocket;\n  #streamSid: string | null = null;\n",
+              "  #twilioWebSocket: WebSocket | NodeWebSocket;\n  #streamSid: string | null = null;\n  #startEvent: TwilioRealtimeStartEvent | null = null;\n  #startEventPromise: Promise<TwilioRealtimeStartEvent> | null = null;\n  #resolveStartEvent: ((start: TwilioRealtimeStartEvent) => void) | null = null;\n  #rejectStartEvent: ((error: unknown) => void) | null = null;\n  #startFailure: unknown | null = null;\n",
+              'start fields',
+          )
+
+          method_anchor = "\n  _setInputAndOutputAudioFormat(\n"
+          method = (
+              "\n  /**\n"
+              "   * Waits for Twilio's Media Streams `start` event. Call this before creating a\n"
+              "   * `RealtimeSession` when `callSid` or `customParameters` are needed in context.\n"
+              "   */\n"
+              "  listen(): Promise<TwilioRealtimeStartEvent> {\n"
+              "    if (this.#startEvent) {\n"
+              "      return Promise.resolve(this.#startEvent);\n"
+              "    }\n"
+              "    if (this.#startFailure !== null) {\n"
+              "      return Promise.reject(this.#startFailure);\n"
+              "    }\n"
+              "    if (!this.#startEventPromise) {\n"
+              "      this.#startEventPromise = new Promise<TwilioRealtimeStartEvent>(\n"
+              "        (resolve, reject) => {\n"
+              "          this.#resolveStartEvent = resolve;\n"
+              "          this.#rejectStartEvent = reject;\n"
+              "        },\n"
+              "      );\n"
+              "    }\n"
+              "    return this.#startEventPromise;\n"
+              "  }\n"
+          )
+          source = replace_once(source, method_anchor, method + method_anchor, 'listen method')
+
+          source = replace_once(
+              source,
+              "            case 'start':\n              this.#streamSid = data.start.streamSid;\n              this.#resetInputTiming();\n",
+              "            case 'start':\n              this.#startEvent = data.start as TwilioRealtimeStartEvent;\n              this.#streamSid = this.#startEvent.streamSid;\n              this.#resolveStartEvent?.(this.#startEvent);\n              this.#resolveStartEvent = null;\n              this.#rejectStartEvent = null;\n              this.#resetInputTiming();\n",
+              'start event',
+          )
+
+          source = replace_once(
+              source,
+              "    this.#twilioWebSocket.addEventListener('close', () => {\n      this.#resetTwilioStream();\n",
+              "    this.#twilioWebSocket.addEventListener('close', () => {\n      if (!this.#startEvent && this.#startFailure === null) {\n        const error = new Error(\n          'Twilio websocket closed before a start event was received.',\n        );\n        this.#startFailure = error;\n        this.#rejectStartEvent?.(error);\n        this.#resolveStartEvent = null;\n        this.#rejectStartEvent = null;\n      }\n      this.#resetTwilioStream();\n",
+              'close event',
+          )
+
+          source = replace_once(
+              source,
+              "      (error: ErrorEvent | NodeErrorEvent) => {\n        this.#resetTwilioStream();\n        this.emit('error', {\n",
+              "      (error: ErrorEvent | NodeErrorEvent) => {\n        if (!this.#startEvent && this.#startFailure === null) {\n          this.#startFailure = error;\n          this.#rejectStartEvent?.(error);\n          this.#resolveStartEvent = null;\n          this.#rejectStartEvent = null;\n        }\n        this.#resetTwilioStream();\n        this.emit('error', {\n",
+              'error event',
+          )
+          path.write_text(source)
+          PY
+      - name: Commit patch
+        run: |
+          rm .github/workflows/apply-fix-18.yml
+          git config user.name "Sylvester Kaczmarek"
+          git config user.email "16242628+sylvesterkaczmarek@users.noreply.github.com"
+          git add packages/agents-extensions/src/TwilioRealtimeTransport.ts .github/workflows/apply-fix-18.yml
+          git commit -m "feat(extensions): expose Twilio start listener"
+          git push origin HEAD:${GITHUB_REF_NAME}
