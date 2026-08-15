@@ -1,0 +1,37 @@
+name: Validate filtered compaction prefix
+
+on:
+  push:
+    branches:
+      - fix/session-inline-compaction-1668
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install
+      - run: pnpm exec prettier --write packages/agents-core/src/runner/sessionPersistence.ts packages/agents-core/test/runner/sessionPersistence.inlineCompaction.test.ts
+      - run: pnpm exec eslint packages/agents-core/src/runner/sessionPersistence.ts packages/agents-core/test/runner/sessionPersistence.inlineCompaction.test.ts
+      - run: pnpm exec vitest --run --project '@openai/agents-core' packages/agents-core/test/runner/sessionPersistence.inlineCompaction.test.ts
+      - name: Commit validation formatting and cleanup
+        if: success()
+        run: |
+          rm .github/workflows/validate-1670-filtered-prefix.yml
+          git config user.name "Sylvester Kaczmarek"
+          git config user.email "16242628+sylvesterkaczmarek@users.noreply.github.com"
+          git add packages/agents-core/src/runner/sessionPersistence.ts packages/agents-core/test/runner/sessionPersistence.inlineCompaction.test.ts .github/workflows/validate-1670-filtered-prefix.yml
+          git commit -m "chore: validate filtered compaction rollback"
+          git push origin HEAD:${GITHUB_REF_NAME}
