@@ -219,6 +219,7 @@ describe('Realtime session payload transform', () => {
     const base = new TestBase({
       transformSessionPayload: ({ type: _type, ...rest }) => rest,
     });
+    base.on('error', () => {});
 
     base.updateSessionConfig({ instructions: 'will be rejected' });
     const rejectedEventId = base.events[0]?.event_id;
