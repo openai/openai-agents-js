@@ -850,10 +850,7 @@ export abstract class OpenAIRealtimeBase
   }
 
   protected _recordClientEventSent(event: RealtimeClientMessage): void {
-    if (
-      event.type !== 'session.update' ||
-      typeof event.event_id !== 'string'
-    ) {
+    if (event.type !== 'session.update' || typeof event.event_id !== 'string') {
       return;
     }
     const canonicalSession =
