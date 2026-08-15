@@ -533,6 +533,10 @@ export function itemsToMessages(
         ]),
       });
     } else if (item.type === 'unknown') {
+      // An unknown provider item ends the current assistant turn. Flushing here
+      // keeps it in history order and stops reasoning from carrying across it
+      // to an assistant message it does not belong to.
+      flushAssistantMessage();
       result.push({
         ...item.providerData,
       } as any);

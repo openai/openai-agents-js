@@ -1092,6 +1092,55 @@ describe('itemsToMessages', () => {
     ]);
   });
 
+  test('does not carry reasoning across an unknown provider item', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'reasoning',
+        content: [],
+        rawContent: [{ type: 'reasoning_text', text: 'why' }],
+      } as protocol.ReasoningItem,
+      {
+        type: 'unknown',
+        providerData: { role: 'assistant', content: 'provider specific' },
+      } as unknown as protocol.ModelItem,
+      {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'hello' }],
+      } as protocol.AssistantMessageItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toEqual([
+      { role: 'assistant', content: null, reasoning: 'why' },
+      { role: 'assistant', content: 'provider specific' },
+      { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
+    ]);
+  });
+
+  test('keeps an unknown provider item in history order', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'completed',
+      } as protocol.FunctionCallItem,
+      {
+        type: 'unknown',
+        providerData: { role: 'assistant', content: 'provider specific' },
+      } as unknown as protocol.ModelItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs.map((m) => (m as any).content)).toEqual([
+      null,
+      'provider specific',
+    ]);
+  });
+
   test('does not accumulate contentless assistant messages across turns', () => {
     // Replayed history from a provider that returns reasoning on the assistant
     // message grows by one reasoning item per turn. Each one used to add its own
