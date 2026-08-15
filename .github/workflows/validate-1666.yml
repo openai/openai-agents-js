@@ -11,6 +11,8 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,7 +27,7 @@ jobs:
       - run: pnpm install
       - run: pnpm exec prettier --write packages/agents-core/src/runner/modelRetry.ts packages/agents-core/test/modelAttemptTimeout.test.ts
       - run: pnpm exec eslint packages/agents-core/src/runner/modelRetry.ts packages/agents-core/test/modelAttemptTimeout.test.ts
-      - run: pnpm exec vitest --run --project '@openai/agents-core' packages/agents-core/test/modelAttemptTimeout.test.ts
+      - run: pnpm exec vitest --run --project '@openai/agents-core' --maxWorkers=1 --minWorkers=1 packages/agents-core/test/modelAttemptTimeout.test.ts
       - name: Commit formatting and remove validation workflow
         if: success()
         run: |
