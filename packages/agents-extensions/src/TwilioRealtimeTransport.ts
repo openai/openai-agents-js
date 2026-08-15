@@ -25,13 +25,13 @@ type LegacyRealtimeAudioConfig = Partial<RealtimeSessionConfig> & {
 function toTwilioAudioFormat(
   format: RealtimeAudioFormat | undefined,
 ): RealtimeAudioFormat {
-  if (format === 'g711_ulaw' || format === 'g711_alaw') {
+  if (format === 'g711_ulaw') {
     return format;
   }
   if (
     typeof format === 'object' &&
     format !== null &&
-    (format.type === 'audio/pcmu' || format.type === 'audio/pcma')
+    format.type === 'audio/pcmu'
   ) {
     return format;
   }
@@ -39,9 +39,9 @@ function toTwilioAudioFormat(
 }
 
 function toTwilioLegacyAudioFormat(
-  format: LegacyRealtimeAudioConfig['inputAudioFormat'],
-): 'g711_ulaw' | 'g711_alaw' {
-  return format === 'g711_alaw' ? 'g711_alaw' : 'g711_ulaw';
+  _format: LegacyRealtimeAudioConfig['inputAudioFormat'],
+): 'g711_ulaw' {
+  return 'g711_ulaw';
 }
 
 type TwilioPlaybackItem = {

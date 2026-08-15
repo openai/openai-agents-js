@@ -167,7 +167,7 @@ describe('TwilioRealtimeTransportLayer', () => {
     });
   });
 
-  test('preserves explicitly compatible G.711 formats', () => {
+  test('preserves mu-law and normalizes A-law formats', () => {
     const transport = new TwilioRealtimeTransportLayer({
       twilioWebSocket: asTwilioWebSocket(new FakeTwilioWebSocket()),
     });
@@ -182,8 +182,22 @@ describe('TwilioRealtimeTransportLayer', () => {
     ).toEqual({
       audio: {
         input: { format: { type: 'audio/pcmu' } },
-        output: { format: 'g711_alaw' },
+        output: { format: 'g711_ulaw' },
       },
+    });
+  });
+
+  test('normalizes object PCMA format to mu-law', () => {
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: asTwilioWebSocket(new FakeTwilioWebSocket()),
+    });
+
+    expect(
+      transport._setInputAndOutputAudioFormat({
+        audio: { input: { format: { type: 'audio/pcma' } } },
+      } as any),
+    ).toMatchObject({
+      audio: { input: { format: 'g711_ulaw' } },
     });
   });
 
