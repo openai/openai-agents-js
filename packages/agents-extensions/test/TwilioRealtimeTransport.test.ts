@@ -102,8 +102,11 @@ describe('TwilioRealtimeTransportLayer', () => {
       outputAudioFormat: 'g711_ulaw',
     });
     expect(
-      transport._setInputAndOutputAudioFormat({ inputAudioFormat: 'foo' }),
-    ).toEqual({ inputAudioFormat: 'foo', outputAudioFormat: 'g711_ulaw' });
+      transport._setInputAndOutputAudioFormat({ inputAudioFormat: 'pcm16' }),
+    ).toEqual({
+      inputAudioFormat: 'g711_ulaw',
+      outputAudioFormat: 'g711_ulaw',
+    });
   });
 
   test('_setInputAndOutputAudioFormat preserves nested audio config', () => {
@@ -140,6 +143,46 @@ describe('TwilioRealtimeTransportLayer', () => {
           format: 'g711_ulaw',
           voice: 'alloy',
         },
+      },
+    });
+  });
+
+  test('coerces explicit PCM session formats after handoff', () => {
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: asTwilioWebSocket(new FakeTwilioWebSocket()),
+    });
+
+    expect(
+      transport._setInputAndOutputAudioFormat({
+        audio: {
+          input: { format: { type: 'audio/pcm', rate: 24_000 } },
+          output: { format: { type: 'audio/pcm', rate: 24_000 } },
+        },
+      } as any),
+    ).toEqual({
+      audio: {
+        input: { format: 'g711_ulaw' },
+        output: { format: 'g711_ulaw' },
+      },
+    });
+  });
+
+  test('preserves explicitly compatible G.711 formats', () => {
+    const transport = new TwilioRealtimeTransportLayer({
+      twilioWebSocket: asTwilioWebSocket(new FakeTwilioWebSocket()),
+    });
+
+    expect(
+      transport._setInputAndOutputAudioFormat({
+        audio: {
+          input: { format: { type: 'audio/pcmu' } },
+          output: { format: 'g711_alaw' },
+        },
+      } as any),
+    ).toEqual({
+      audio: {
+        input: { format: { type: 'audio/pcmu' } },
+        output: { format: 'g711_alaw' },
       },
     });
   });

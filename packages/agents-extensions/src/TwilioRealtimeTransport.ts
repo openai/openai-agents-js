@@ -5,6 +5,7 @@ import {
   RealtimeTransportLayerConnectOptions,
   TransportLayerAudio,
   RealtimeSessionConfig,
+  RealtimeAudioFormat,
 } from '@openai/agents/realtime';
 import { getLogger } from '@openai/agents';
 import { logModelActionError } from '@openai/agents-core/utils/internal';
@@ -20,6 +21,28 @@ type LegacyRealtimeAudioConfig = Partial<RealtimeSessionConfig> & {
   inputAudioFormat?: 'pcm16' | 'g711_ulaw' | 'g711_alaw';
   outputAudioFormat?: 'pcm16' | 'g711_ulaw' | 'g711_alaw';
 };
+
+function toTwilioAudioFormat(
+  format: RealtimeAudioFormat | undefined,
+): RealtimeAudioFormat {
+  if (format === 'g711_ulaw' || format === 'g711_alaw') {
+    return format;
+  }
+  if (
+    typeof format === 'object' &&
+    format !== null &&
+    (format.type === 'audio/pcmu' || format.type === 'audio/pcma')
+  ) {
+    return format;
+  }
+  return 'g711_ulaw';
+}
+
+function toTwilioLegacyAudioFormat(
+  format: LegacyRealtimeAudioConfig['inputAudioFormat'],
+): 'g711_ulaw' | 'g711_alaw' {
+  return format === 'g711_alaw' ? 'g711_alaw' : 'g711_ulaw';
+}
 
 type TwilioPlaybackItem = {
   responseId: string;
@@ -62,8 +85,8 @@ function withTwilioLegacyAudioDefaults(
 ): Partial<RealtimeSessionConfig> {
   return {
     ...config,
-    inputAudioFormat: config.inputAudioFormat ?? 'g711_ulaw',
-    outputAudioFormat: config.outputAudioFormat ?? 'g711_ulaw',
+    inputAudioFormat: toTwilioLegacyAudioFormat(config.inputAudioFormat),
+    outputAudioFormat: toTwilioLegacyAudioFormat(config.outputAudioFormat),
   } as Partial<RealtimeSessionConfig>;
 }
 
@@ -171,11 +194,11 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
           ...audioConfig,
           input: {
             ...audioConfig.input,
-            format: audioConfig.input?.format ?? 'g711_ulaw',
+            format: toTwilioAudioFormat(audioConfig.input?.format),
           },
           output: {
             ...audioConfig.output,
-            format: audioConfig.output?.format ?? 'g711_ulaw',
+            format: toTwilioAudioFormat(audioConfig.output?.format),
           },
         },
       };
