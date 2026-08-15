@@ -283,6 +283,7 @@ describe('Realtime session payload transform', () => {
       },
     });
     base.updateTracing('auto');
+    base.receiveSessionUpdated({ tracing: 'provider acknowledgement' });
 
     expect(
       base.rawSessionConfig?.audio?.input?.turn_detection?.interrupt_response,
