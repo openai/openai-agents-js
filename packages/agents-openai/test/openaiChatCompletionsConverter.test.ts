@@ -1092,6 +1092,49 @@ describe('itemsToMessages', () => {
     ]);
   });
 
+  test('does not accumulate contentless assistant messages across turns', () => {
+    // Replayed history from a provider that returns reasoning on the assistant
+    // message grows by one reasoning item per turn. Each one used to add its own
+    // assistant message with no content and no tool calls.
+    const items: protocol.ModelItem[] = [];
+    for (const turn of [1, 2, 3, 4, 5]) {
+      items.push({
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: `question ${turn}` }],
+      } as protocol.UserMessageItem);
+      items.push({
+        type: 'reasoning',
+        content: [],
+        rawContent: [{ type: 'reasoning_text', text: `reasoning ${turn}` }],
+      } as protocol.ReasoningItem);
+      items.push({
+        id: `msg_${turn}`,
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: `answer ${turn}` }],
+      } as protocol.AssistantMessageItem);
+    }
+
+    const msgs = itemsToMessages(items);
+    const assistantMessages = msgs.filter((m) => m.role === 'assistant');
+
+    expect(assistantMessages).toHaveLength(5);
+    expect(
+      assistantMessages.filter(
+        (m) => m.content === null && !(m as any).tool_calls,
+      ),
+    ).toHaveLength(0);
+    expect(assistantMessages.map((m) => (m as any).reasoning)).toEqual([
+      'reasoning 1',
+      'reasoning 2',
+      'reasoning 3',
+      'reasoning 4',
+      'reasoning 5',
+    ]);
+  });
+
   test('propagates providerData from function_call to assistant message', () => {
     const items: protocol.ModelItem[] = [
       {
