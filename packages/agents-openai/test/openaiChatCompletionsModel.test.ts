@@ -1020,6 +1020,68 @@ describe('OpenAIChatCompletionsModel', () => {
     ]);
   });
 
+  it('keeps a refusal that arrives alongside content', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [{ message: { content: 'partial answer', refusal: 'no' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    const result = await withTrace('t', () => model.getResponse(req));
+
+    expect(result.output).toHaveLength(1);
+    expect(result.output[0]).toMatchObject({
+      type: 'message',
+      role: 'assistant',
+      content: [
+        { type: 'output_text', text: 'partial answer' },
+        { type: 'refusal', refusal: 'no' },
+      ],
+    });
+  });
+
+  it('keeps a refusal when the provider reports empty content', async () => {
+    // Azure returns an empty string where OpenAI returns null.
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [{ message: { content: '', refusal: 'no' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    const result = await withTrace('t', () => model.getResponse(req));
+
+    expect(result.output[0]).toMatchObject({
+      content: [
+        { type: 'output_text', text: '' },
+        { type: 'refusal', refusal: 'no' },
+      ],
+    });
+  });
+
   it('preserves audio from a content-filtered message', async () => {
     const client = new FakeClient();
     const response = {

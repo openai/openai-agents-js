@@ -227,34 +227,33 @@ export class OpenAIChatCompletionsModel implements Model {
         // Azure OpenAI returns empty string instead of null for tool calls, causing parser rejection
         !(message.tool_calls && message.content === '');
 
+      // A message can carry text and a refusal at once, so collect both instead
+      // of letting the text branch drop the refusal. This matches how the
+      // streaming converter assembles assistant content.
+      const messageContent: protocol.AssistantContent[] = [];
       if (hasContent) {
         const { content, ...rest } = message;
-        output.push({
-          id: response.id,
-          type: 'message',
-          role: 'assistant',
-          content: [
-            {
-              type: 'output_text',
-              text: content || '',
-              providerData: rest,
-            },
-          ],
-          status: 'completed',
+        messageContent.push({
+          type: 'output_text',
+          text: content || '',
+          providerData: rest,
         });
-      } else if (message.refusal) {
+      }
+      if (message.refusal) {
         const { refusal, ...rest } = message;
+        messageContent.push({
+          type: 'refusal',
+          refusal: refusal || '',
+          providerData: rest,
+        });
+      }
+
+      if (messageContent.length > 0) {
         output.push({
           id: response.id,
           type: 'message',
           role: 'assistant',
-          content: [
-            {
-              type: 'refusal',
-              refusal: refusal || '',
-              providerData: rest,
-            },
-          ],
+          content: messageContent,
           status: 'completed',
         });
       } else if (message.audio) {
