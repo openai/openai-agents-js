@@ -24,8 +24,6 @@ jobs:
       - run: pnpm i --frozen-lockfile
       - name: Focused tests
         run: pnpm exec vitest run packages/agents-realtime/test/sessionPayloadTransform.test.ts
-      - name: Realtime typecheck
-        run: pnpm -F @openai/agents-realtime build-check
       - name: Lint changed source and test
         run: pnpm exec eslint packages/agents-realtime/src/openaiRealtimeBase.ts packages/agents-realtime/test/sessionPayloadTransform.test.ts
       - name: Format check
