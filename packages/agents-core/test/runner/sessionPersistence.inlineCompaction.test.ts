@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '../../src/memory/session';
 import { saveStreamInputToSession } from '../../src/runner/sessionPersistence';
@@ -64,6 +64,10 @@ class RejectedCompactionSession extends AppendOnlyCompactionSession {
   }
 }
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe('inline compaction session persistence', () => {
   it('delivers items before the compaction marker to append-only sessions', async () => {
     const session = new AppendOnlyCompactionSession();
@@ -83,6 +87,7 @@ describe('inline compaction session persistence', () => {
   });
 
   it('keeps session identity when compaction was accepted before an ambiguous failure', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const session = new AcceptedThenRejectedCompactionSession();
     const before = userMessage('new input before compaction');
     const after = userMessage('input after compaction');
@@ -98,9 +103,11 @@ describe('inline compaction session persistence', () => {
       after,
     ]);
     expect(session.clearCalls).toBe(0);
+    expect(warn).toHaveBeenCalledOnce();
   });
 
   it('rolls back the prefix without clearing when compaction replacement fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const session = new RejectedCompactionSession();
     const before = userMessage('new input before compaction');
     const after = userMessage('input after compaction');
@@ -111,5 +118,6 @@ describe('inline compaction session persistence', () => {
 
     expect(session.items).toEqual([userMessage('stored before run')]);
     expect(session.clearCalls).toBe(0);
+    expect(warn).toHaveBeenCalledOnce();
   });
 });
