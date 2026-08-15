@@ -21,6 +21,7 @@ const COMPACTION: AgentInputItem = {
 class AppendOnlyCompactionSession implements Session {
   items: AgentInputItem[] = [userMessage('stored before run')];
   replacements: AgentInputItem[][] = [];
+  clearCalls = 0;
 
   async getSessionId() {
     return 'append-only';
@@ -44,7 +45,22 @@ class AppendOnlyCompactionSession implements Session {
   }
 
   async clearSession() {
+    this.clearCalls += 1;
     this.items = [];
+  }
+}
+
+class AcceptedThenRejectedCompactionSession extends AppendOnlyCompactionSession {
+  override async replaceHistoryWithCompaction(items: AgentInputItem[]) {
+    await super.replaceHistoryWithCompaction(items);
+    throw new Error('connection dropped after accept');
+  }
+}
+
+class RejectedCompactionSession extends AppendOnlyCompactionSession {
+  override async replaceHistoryWithCompaction(items: AgentInputItem[]) {
+    this.replacements.push(structuredClone(items));
+    throw new Error('replacement rejected');
   }
 }
 
@@ -63,5 +79,37 @@ describe('inline compaction session persistence', () => {
       after,
     ]);
     expect(session.replacements).toEqual([[COMPACTION, after]]);
+    expect(session.clearCalls).toBe(0);
+  });
+
+  it('keeps session identity when compaction was accepted before an ambiguous failure', async () => {
+    const session = new AcceptedThenRejectedCompactionSession();
+    const before = userMessage('new input before compaction');
+    const after = userMessage('input after compaction');
+
+    await expect(
+      saveStreamInputToSession(session, [before, COMPACTION, after]),
+    ).resolves.toBeUndefined();
+
+    expect(session.items).toEqual([
+      userMessage('stored before run'),
+      before,
+      COMPACTION,
+      after,
+    ]);
+    expect(session.clearCalls).toBe(0);
+  });
+
+  it('rolls back the prefix without clearing when compaction replacement fails', async () => {
+    const session = new RejectedCompactionSession();
+    const before = userMessage('new input before compaction');
+    const after = userMessage('input after compaction');
+
+    await expect(
+      saveStreamInputToSession(session, [before, COMPACTION, after]),
+    ).rejects.toThrow('replacement rejected');
+
+    expect(session.items).toEqual([userMessage('stored before run')]);
+    expect(session.clearCalls).toBe(0);
   });
 });
