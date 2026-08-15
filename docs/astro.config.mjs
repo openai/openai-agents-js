@@ -305,6 +305,15 @@ const sidebar = [
         },
       },
       {
+        label: 'Schema validation',
+        link: '/guides/schemas',
+        translations: {
+          ja: 'スキーマ検証',
+          zh: '模式验证',
+          ko: '스키마 검증',
+        },
+      },
+      {
         label: 'Human-in-the-loop',
         link: '/guides/human-in-the-loop',
         translations: {
@@ -347,6 +356,15 @@ const sidebar = [
           ja: 'トレーシング',
           zh: '追踪',
           ko: '트레이싱',
+        },
+      },
+      {
+        label: 'Testing',
+        link: '/guides/testing',
+        translations: {
+          ja: 'テスト',
+          zh: '测试',
+          ko: '테스트',
         },
       },
       {

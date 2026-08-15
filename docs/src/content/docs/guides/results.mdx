@@ -39,6 +39,7 @@ The `finalOutput` property contains the final output of the last agent that ran.
 - `string` — default for any agent that has no `outputType` defined
 - `unknown` — if the agent has a JSON schema defined as output type. In this case the JSON was parsed but you still have to verify its type manually.
 - `z.infer<outputType>` — if the agent has a Zod schema defined as output type. The output will automatically be parsed against this schema.
+- The inferred validation output type — if the agent has a supported Standard Schema value defined as its output type. The output is parsed and validated synchronously against this schema.
 - `undefined` — if the agent did not produce an output (for example stopped before it could produce an output)
 
 `finalOutput` is also `undefined` while a streamed run is still in progress or when the run paused on an approval interruption before reaching a final output.

@@ -35,10 +35,12 @@ Use this page as the hub for agent definition. Jump out to the adjacent guide th
 | --- | --- |
 | Choose a model or configure stored prompts | [Models](/openai-agents-js/guides/models) |
 | Add capabilities to the agent | [Tools](/openai-agents-js/guides/tools) |
+| Choose a validation library for structured data | [Schema validation](/openai-agents-js/guides/schemas) |
 | Give the agent an isolated filesystem workspace | [Sandbox agents](/openai-agents-js/guides/sandbox-agents/concepts) |
 | Decide between managers and handoffs | [Agent orchestration](/openai-agents-js/guides/multi-agent) |
 | Configure handoff behavior | [Handoffs](/openai-agents-js/guides/handoffs) |
 | Run turns, stream events, or manage state | [Running agents](/openai-agents-js/guides/running-agents) |
+| Test the agent workflow without live services | [Testing](/openai-agents-js/guides/testing) |
 | Inspect final output, run items, or resume | [Results](/openai-agents-js/guides/results) |
 
 The rest of this page walks through every Agent feature in more detail.
@@ -87,7 +89,8 @@ Agents are **generic on their context type** – i.e. `Agent<TContext, TOutput>`
 By default, an Agent returns **plain text** (`string`). If you want the model to return a structured object you can specify the `outputType` property. The SDK accepts:
 
 1. A [Zod](https://github.com/colinhacks/zod) schema (`z.object({...})`).
-2. Any JSON‑schema‑compatible object.
+2. A supported Standard Schema value with Standard JSON Schema conversion.
+3. Any JSON‑schema‑compatible object.
 
 <Code
   lang="typescript"
@@ -97,6 +100,8 @@ By default, an Agent returns **plain text** (`string`). If you want the model to
 
 When `outputType` is provided, the SDK automatically uses [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs) instead of plain text.
 
+Zod and supported Standard Schema values validate the parsed output locally and preserve their inferred output type. A raw JSON Schema describes the model contract, but the parsed result remains `unknown`. See [Schema validation](/openai-agents-js/guides/schemas) for a Standard Schema example and the supported validation boundary.
+
 ---
 
 ### OpenAI platform mapping
@@ -105,7 +110,7 @@ Some agent concepts map directly to OpenAI platform concepts, while others are c
 
 | SDK concept | OpenAI guide | When it matters |
 | --- | --- | --- |
-| `outputType` | [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) | The agent should return typed JSON or a Zod-validated object instead of text. |
+| `outputType` | [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) | The agent should return typed JSON or a schema-validated object instead of text. |
 | `tools` / hosted tools | [Tools guide](https://developers.openai.com/api/docs/guides/tools) | The model should search, retrieve, execute code, or call your functions/tools. |
 | `conversationId` / `previousResponseId` | [Conversation state](https://developers.openai.com/api/docs/guides/conversation-state) | You want OpenAI to persist or chain conversation state between turns. |
 

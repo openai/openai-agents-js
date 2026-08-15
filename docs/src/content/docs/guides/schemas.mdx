@@ -1,0 +1,56 @@
+---
+title: Schema validation
+description: Use Zod, Standard Schema, or JSON Schema with agents, tools, and handoffs
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import standardSchemaExample from '../../../../../examples/docs/schemas/standardSchema.ts?raw';
+
+The SDK uses schemas both to describe structured data to the model and to validate data inside your application. Choose the schema form based on whether you need local validation and type inference.
+
+| Schema form | Local validation and transforms | TypeScript inference | Supported surfaces |
+| --- | --- | --- | --- |
+| Zod object | Yes | Yes | Function-tool and agent-tool `parameters`, function-tool `outputSchema`, agent `outputType`, and handoff `inputType` |
+| Standard Schema with Standard JSON Schema conversion | Yes, synchronously | Yes, from the validation output type | Function-tool and agent-tool `parameters`, agent `outputType`, and handoff `inputType` |
+| Raw JSON Schema | No; the SDK only parses the JSON | No; values are typed as `unknown` | Function-tool and agent-tool `parameters`, function-tool `outputSchema`, agent `outputType`, and handoff `inputType` |
+
+Use Zod when it already fits your application. Use Standard Schema when you want the same SDK validation and inferred output types with another compatible validation library. Use raw JSON Schema when you already own the wire schema and will validate values elsewhere.
+
+## Use a Standard Schema library
+
+A compatible value must implement Standard Schema V1 validation and Standard JSON Schema conversion. Some libraries expose both capabilities directly. Others provide an adapter. This example uses Valibot with `toStandardJsonSchema()` from `@valibot/to-json-schema`.
+
+Install the example dependencies with `npm install valibot @valibot/to-json-schema` in an application that already uses `@openai/agents`.
+
+<Code
+  lang="typescript"
+  code={standardSchemaExample}
+  title="Valibot schemas for tools, agent output, and a handoff"
+/>
+
+The same schema contract has a different role on each surface:
+
+- `tool({ parameters })` converts the schema for the model, validates each tool call locally, applies library transforms or defaults, and passes the inferred validation output to `execute`.
+- `agent.asTool({ parameters })` applies the same validation and passes the inferred validation output to `inputBuilder` before the nested agent runs.
+- `new Agent({ outputType })` requests structured model output, validates the parsed value locally, and exposes the inferred validation output through `result.finalOutput`.
+- `handoff(..., { inputType })` validates the handoff tool-call arguments and passes the inferred validation output to `onHandoff`.
+
+## Requirements and limits
+
+Standard Schema support has a deliberately narrow contract:
+
+- The value must provide synchronous `~standard.validate` behavior and both `~standard.jsonSchema.input()` and `~standard.jsonSchema.output()`. Validation-only Standard Schema values are not supported.
+- The input JSON Schema used by these SDK surfaces must have `type: "object"` at its root. Wrap scalar or array values in an object schema.
+- Standard Schema function-tool parameters require strict mode. Do not set `strict: false` when using them.
+- Asynchronous Standard Schema validation is not supported. A validator that returns a Promise fails the operation instead of running a tool fallback or invalid-final-output handler.
+- The generated JSON Schema must use constructs supported by the SDK's strict-schema normalization. Unsupported constructs fail when the tool, handoff, or agent is created, before a model request.
+- Function-tool `outputSchema` does not currently accept Standard Schema. Use a Zod schema, a raw JSON Schema, or validate the tool result in application code.
+
+<Aside type="note">
+  Standard Schema describes the validation interface. The SDK also needs
+  Standard JSON Schema conversion so it can send the same contract to the model.
+  A library supporting only the validation interface is therefore not sufficient
+  for these surfaces.
+</Aside>
+
+If you are writing your own adapter, import the `StandardSchemaWithJSON<Input, Output>` type from `@openai/agents` to check that it exposes the required validation and conversion methods. Prefer a library-maintained adapter when one is available.

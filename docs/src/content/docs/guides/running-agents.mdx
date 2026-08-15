@@ -10,6 +10,7 @@ import runningAgentsExceptionExample from '../../../../../examples/docs/running-
 import chatLoopExample from '../../../../../examples/docs/running-agents/chatLoop.ts?raw';
 import conversationIdExample from '../../../../../examples/docs/running-agents/conversationId.ts?raw';
 import previousResponseIdExample from '../../../../../examples/docs/running-agents/previousResponseId.ts?raw';
+import modelInputIdentityExample from '../../../../../examples/docs/running-agents/modelInputIdentity.ts?raw';
 
 Agents do nothing by themselves – you **run** them with the `Runner` class or the `run()` utility.
 
@@ -182,6 +183,16 @@ Set it per run in `runner.run(..., { callModelInputFilter })` or as a default in
 The return value must be a `ModelInputData` object: `{ input: AgentInputItem[], instructions? }`. The `input` field is required and must be an array. Returning any other shape throws a `UserError`.
 
 The SDK clones the prepared turn input before invoking the filter. If you are also using a `session`, the filtered clones are what get persisted, so redaction or truncation applied here is reflected in stored session history as well.
+
+If a filter relies on object identity to memoize work across repeated model calls, set `preserveInputIdentity = true` on the filter. The SDK then preserves each SDK-prepared item's identity while that item remains in the prepared input, although the array passed to each filter invocation is new. This option does not preserve the identity of caller-owned objects originally passed to `run()`.
+
+<Code
+  lang="typescript"
+  code={modelInputIdentityExample}
+  title="Preserve prepared input item identity"
+/>
+
+This mode is opt-in because the SDK does not freeze the prepared items or their nested values. The filter and every helper that the filter calls must treat the items as immutable and return replacement values instead of mutating them. The model request and session input remain detached copies after the filter returns.
 
 With `conversationId` or `previousResponseId`, the hook runs on the prepared payload for the next Responses API call. Prior server-managed context is recovered by the API, so the filtered array for that call may already represent only the new turn delta rather than a full replay of earlier history. If you need to change how stored history and the current turn are merged before this final filter step, use `sessionInputCallback`.
 

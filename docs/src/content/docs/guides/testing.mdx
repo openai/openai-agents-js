@@ -1,0 +1,416 @@
+---
+title: Testing
+description: Cookbook and API cheat sheet for deterministic Agent, sandbox, and Realtime tests
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import fixedResponseExample from '../../../../../examples/docs/testing/fixedResponse.ts?raw';
+import toolWorkflowExample from '../../../../../examples/docs/testing/toolWorkflow.ts?raw';
+import requestAwareResponseExample from '../../../../../examples/docs/testing/requestAwareResponse.ts?raw';
+import workflowDriftExample from '../../../../../examples/docs/testing/workflowDrift.ts?raw';
+import sandboxWorkflowExample from '../../../../../examples/docs/testing/sandboxWorkflow.ts?raw';
+import realtimeAgentToolExample from '../../../../../examples/docs/testing/realtimeAgentTool.ts?raw';
+import realtimeScenarioExample from '../../../../../examples/docs/testing/realtimeScenario.ts?raw';
+import realtimeInterruptExample from '../../../../../examples/docs/testing/realtimeInterrupt.ts?raw';
+import realtimeFailureExample from '../../../../../examples/docs/testing/realtimeFailure.ts?raw';
+
+The SDK provides deterministic, provider-neutral test doubles for Agent workflows, sandbox sessions, and Realtime sessions. They run in memory, make no model, sandbox provider, or Realtime API requests, and record the normalized interactions that the SDK owns.
+
+<Aside type="note" title="Disable tracing for fully offline tests">
+  The scripted utilities replace model, sandbox provider, and Realtime API I/O.
+  Tracing is a separate SDK boundary and can still export a run unless your test
+  environment disables it. The examples on this page pass `tracingDisabled:
+  true` to `new Runner(...)`. You can instead set `NODE_ENV=test`, set
+  `OPENAI_AGENTS_DISABLE_TRACING=1`, or call `setTracingDisabled(true)` once in
+  your test setup.
+</Aside>
+
+## Find the recipe you need
+
+| I want to... | Use | Go to |
+| --- | --- | --- |
+| Return a fixed final answer | `ScriptedModel` with `assistantMessage()` | [Return a fixed response](#return-a-fixed-response) |
+| Exercise a multi-turn tool loop | `functionCall()` followed by an assistant response | [Test a tool workflow](#test-a-tool-workflow) |
+| Choose a response from the request | `modelResponder()` | [Derive a response from the request](#derive-a-response-from-the-request) |
+| Assert what the runner sent to the model | `calls`, `firstCall`, or `lastCall` | [Inspect model calls](#inspect-model-calls) |
+| Test a streamed run | A normal response step, or `modelStream()` for exact events | [Test streaming](#test-streaming) |
+| Test an error or retry decision | `modelError()` | [Inject model failures](#inject-model-failures) |
+| Detect an accidental workflow change | Exact steps plus `assertComplete()` | [Detect workflow drift](#detect-workflow-drift) |
+| Test a `SandboxAgent` without starting a sandbox | `scriptedSandboxSession()` plus `ScriptedModel` | [Test a sandbox agent workflow](#test-a-sandbox-agent-workflow) |
+| Match sandbox calls or derive their results | `match` or `respond` on a sandbox step | [Configure sandbox steps](#configure-sandbox-steps) |
+| Inject a sandbox operation failure | `error` on a sandbox step | [Configure sandbox steps](#configure-sandbox-steps) |
+| Test a `RealtimeAgent` function tool | Emit `function_call` and expect `sendFunctionCallOutput` | [Test a Realtime agent tool workflow](#test-a-realtime-agent-tool-workflow) |
+| Match Realtime operations in order | `runScenario()` and `expectCall()` | [Test a Realtime session](#test-a-realtime-session) |
+| Emit an inbound Realtime event | `emit()` inside a scenario | [Test a Realtime session](#test-a-realtime-session) |
+| Test an interruption request and notification | `expectCall('interrupt')` plus `emit('audio_interrupted')` | [Test interruption](#test-interruption) |
+| Fail the next Realtime operation | `failNextCall()` | [Inject a Realtime failure](#inject-a-realtime-failure) |
+| Test a remote disconnect | `disconnect(error?)` | [Test a remote disconnect](#test-a-remote-disconnect) |
+| Test provider request serialization or wire payloads | The real provider adapter with a mocked network transport | [Choose the correct boundary](#choose-the-correct-boundary) |
+| Test sandbox provider lifecycle or isolation | The real sandbox provider in an integration test | [Choose the correct boundary](#choose-the-correct-boundary) |
+
+## Imports
+
+Most applications can use the convenience subpaths:
+
+| Boundary | Recommended import | Canonical package import |
+| --- | --- | --- |
+| Agent, `Model`, and sandbox workflows | `@openai/agents/testing` | `@openai/agents-core/testing` |
+| Realtime transport | `@openai/agents/realtime/testing` | `@openai/agents-realtime/testing` |
+
+The convenience subpaths expose the same testing APIs as the canonical packages. Testing symbols are kept out of the main runtime entry points.
+
+## Agent workflow recipes
+
+### Return a fixed response
+
+Pass an array of normalized output items for each expected model call. The output-array shorthand receives a deterministic response ID and usage for one request.
+
+<Code
+  lang="typescript"
+  code={fixedResponseExample}
+  title="Return a fixed response"
+/>
+
+Always finish the test with `model.assertComplete()`. It catches the case where the workflow stopped before consuming all configured steps.
+
+### Test a tool workflow
+
+Script one model response that calls the tool and a second response that produces the final answer. The real SDK tool pipeline executes between those model calls.
+
+<Code
+  lang="typescript"
+  code={toolWorkflowExample}
+  title="Test a multi-turn tool workflow"
+/>
+
+This pattern exercises tool input validation, execution, result conversion, hooks, guardrails, and the next model turn. It does not bypass the tool runtime by calling the tool function directly.
+
+### Derive a response from the request
+
+Use `modelResponder()` when the response depends on the normalized request or when the assertion belongs at the model boundary. The callback may be synchronous or asynchronous.
+
+<Code
+  lang="typescript"
+  code={requestAwareResponseExample}
+  title="Inspect the request and choose a response"
+/>
+
+Use a responder for behavior that genuinely depends on the request. Prefer fixed steps when a simple sequence is enough; fixed scripts make unexpected turns easier to diagnose.
+
+### Inspect model calls
+
+`ScriptedModel` records a call before resolving or throwing its selected step.
+
+| Member           | Contains                                        |
+| ---------------- | ----------------------------------------------- |
+| `calls`          | Every `RecordedModelCall` in invocation order   |
+| `firstCall`      | The first call, or `undefined`                  |
+| `lastCall`       | The most recent call, or `undefined`            |
+| `remainingSteps` | The number of configured steps not yet consumed |
+
+Each call has a zero-based `index` matching its position in `calls`, a `streamed` flag, and a normalized `request`. Mutable data containers in recorded requests are detached at invocation time. Reading or mutating one returned snapshot does not rewrite the model's retained history. Runtime objects such as callbacks, class instances, and `AbortSignal` preserve their identity.
+
+Common assertions include:
+
+- `call.request.input` for user input, tool calls, and tool results
+- `call.request.modelSettings` for the effective settings sent to the model
+- `call.request.tools` and `call.request.handoffs` for the prepared capabilities
+- `call.streamed` to distinguish streaming and non-streaming paths
+
+### Test streaming
+
+A normal response step works for both streaming and non-streaming runs. When `run(..., { stream: true })` calls the model, `ScriptedModel` emits normalized start events, assistant text deltas, and a terminal response event with the complete output and usage.
+
+Automatically generated stream events are detached snapshots. Mutating a yielded delta does not change the later terminal response event.
+
+Use `modelStream(events)` only when the exact normalized `StreamEvent` sequence is part of the behavior under test. Use `modelStreamResponder(callback)` when that sequence depends on the recorded call. These events are SDK-normalized events, not Responses or Chat Completions wire chunks.
+
+<Aside type="tip" title="Prefer automatic streaming for most workflow tests">
+  A normal `assistantMessage()` response keeps the test independent of low-level
+  event assembly. Reach for an exact stream only when ordering, partial output,
+  cancellation, or malformed stream behavior is the subject of the test.
+</Aside>
+
+A raw stream step used by a non-streaming call throws `InvalidScriptedModelStepError` with `reason: 'incompatible_call'`.
+
+### Inject model failures
+
+Use `modelError(error, retryAdvice?)` to fail one model call. Retry advice may be a fixed `ModelRetryAdvice` value or a callback. A retry performed by the runner is another model call and consumes the next scripted step.
+
+```text
+modelError(error)
+modelError(error, { suggested: true, replaySafety: 'safe' })
+modelError(error, ({ attempt }) => ({ suggested: attempt === 1 }))
+```
+
+The text above shows signatures rather than a TypeScript example because the surrounding runner retry policy determines whether advice results in another attempt.
+
+An already-aborted request does not consume a step. After a recorded call reaches an abort checkpoint, an aborted request throws an error named `AbortError` and includes `callIndex`.
+
+Cancellation is cooperative while custom code is running. `ScriptedModel` does not race an in-progress `modelResponder()` or `modelStreamResponder()` callback, or an async iterator's pending `next()`, against the request signal. Code that can wait indefinitely must observe `call.request.signal` itself, or observe the same signal from inside the iterator, and then settle. Once the callback or iterator returns control, `ScriptedModel` checks the signal again before it accepts the response or emits the next event.
+
+### Detect workflow drift
+
+Treat the scripted turns as the expected workflow shape. The test below passes for a two-turn order lookup and runs `assertComplete()` during teardown so it also checks the script when another assertion or the workflow itself fails.
+
+For example, if application code later changes `lookup_order` to require approval, the run stops after the first scripted response. The teardown then reports one unconsumed step. If an orchestration change makes an additional model request after the expected steps, the model fails at that request. The existing regression test therefore catches changes in the agent's control flow without making a real model infer a new path.
+
+<Code
+  lang="typescript"
+  code={workflowDriftExample}
+  title="Pin the expected workflow shape"
+/>
+
+Do not catch these mismatch errors in a normal regression test. Let the test fail and use the error type and fields to diagnose which side of the expected workflow changed.
+
+| Error | Structured fields | Meaning |
+| --- | --- | --- |
+| `UnexpectedModelCallError` | `callIndex`, `streamed` | The workflow made another model call after the script ended |
+| `UnconsumedModelStepsError` | `remainingSteps` | The workflow ended before using every step |
+| `InvalidScriptedModelStepError` | `reason`, `inputIndex?`, `callIndex?`, `stepType?` | A step is malformed or incompatible with the call mode |
+| `ScriptedModelRequestAbortedError` | `callIndex?` | The request was aborted before or during scripted work |
+
+Malformed step envelopes are rejected by the constructor or `enqueue()` before a model call consumes them. This makes setup errors fail near the test definition instead of later in the workflow.
+
+## Sandbox agent recipes
+
+### Test a sandbox agent workflow
+
+Combine `ScriptedModel` with `scriptedSandboxSession()` to exercise the real `SandboxAgent` runtime without creating a Docker container or remote sandbox. The model script chooses a capability tool, while the sandbox script defines what the corresponding `SandboxSession` method returns.
+
+<Code
+  lang="typescript"
+  code={sandboxWorkflowExample}
+  title="Test a SandboxAgent shell workflow"
+/>
+
+This test crosses both normalized boundaries owned by the SDK. The `ScriptedModel` drives the model-facing turns, and the scripted sandbox receives the `execCommand` arguments produced by the real shell capability. The test therefore covers tool argument validation, capability routing, sandbox session invocation, tool-result delivery to the next model turn, and final output handling.
+
+It does not test whether a real model chooses the command, whether a sandbox provider starts successfully, or how that provider executes the command. Use an evaluation for model decision quality and an integration test with the real sandbox provider for provider lifecycle, filesystem, process, and isolation behavior.
+
+### Configure sandbox steps
+
+Each step consumes one call to a `SandboxSession` method. Choose exactly one outcome and add a matcher only when the arguments matter:
+
+| Step member | Use it when... |
+| --- | --- |
+| `result` | The method should return a fixed value |
+| `respond(call)` | The result depends on the typed call arguments or invocation index |
+| `error` | The method should throw or reject with a specific failure |
+| `match(...args)` | The test should reject unexpected method arguments before producing the outcome |
+
+Sandbox methods are matched in one global order, including synchronous methods such as `supportsPty()` and asynchronous methods such as `execCommand()`. Only methods named by the script are installed on the returned session. This preserves capability detection: for example, script both `supportsPty` and `writeStdin` when the workflow should expose interactive shell support.
+
+`sandbox.calls` records detached invocation-time argument snapshots with a zero-based `index` matching each call's position in the array, `method`, and positional `args`. Use `sandbox.remainingSteps` while diagnosing a failure, and finish the test with `sandbox.assertComplete()` so an early workflow exit cannot silently leave expected operations unused.
+
+| Error | Structured fields | Meaning |
+| --- | --- | --- |
+| `UnexpectedSandboxCallError` | `callIndex`, `actualMethod`, `expectedMethod`, `remainingSteps` | The workflow called the wrong method or continued after the script ended |
+| `SandboxCallMatcherError` | `callIndex`, `method` | A step's matcher returned `false` |
+| `UnconsumedSandboxStepsError` | `remainingSteps`, `pendingMethods` | The workflow ended before using every step |
+| `InvalidScriptedSandboxStepError` | `reason`, `inputIndex`, `method?` | A step is malformed or names an unsupported method |
+
+## Realtime agent and session recipes
+
+### Test a Realtime agent tool workflow
+
+Attach the real function tool to a `RealtimeAgent`, then emit a normalized `function_call` from the scripted transport. `RealtimeSession` resolves the tool from that agent, validates and executes it through the SDK tool pipeline, and sends the result back through `sendFunctionCallOutput`.
+
+<Code
+  lang="typescript"
+  code={realtimeAgentToolExample}
+  title="Test a Realtime agent function tool"
+/>
+
+This is an agent test because the tool and its business logic belong to the `RealtimeAgent`. The scripted `function_call` represents the model's decision to use that tool. It does not prove that a real model will follow the agent's instructions or choose the tool; cover model decision quality with an evaluation or integration test.
+
+The exercise waits for asynchronous tool output before closing the session, so the example passes an `AbortSignal` to bound that wait. Ordered call mismatches still fail immediately; the signal covers the case where a regression prevents the expected tool output from being sent at all.
+
+Use the same pattern to test agent-owned handoffs, tool approvals, and tool guardrails: emit the normalized input that starts the behavior, then assert the session events and outbound transport calls produced by the real SDK pipeline.
+
+### Test a Realtime session
+
+Pass `ScriptedRealtimeTransport` to a real `RealtimeSession`. Use `runScenario()` to run the expected transport interaction and the session exercise together without relying on a test-runner timeout. The example below simulates two user turns and verifies that normalized items emitted by the transport update the real session history.
+
+<Code
+  lang="typescript"
+  code={realtimeScenarioExample}
+  title="Test a two-turn Realtime conversation"
+/>
+
+The `scenario` callback scripts the transport-facing side: it matches outbound calls and emits normalized inbound events. The `exercise` callback acts like application code and drives the public session API. The comments in the example mark this boundary explicitly. This tests `RealtimeSession` behavior, not provider server frames or conversion.
+
+The application waits for each scripted turn before sending the next message, so the example passes a bounded `AbortSignal` to `runScenario()`. If the signal expires, `runScenario()` rejects its pending expectation, the scenario forwards that failure to the active test-only coordination gate, and the exercise runs session cleanup instead of leaving both callbacks blocked.
+
+`expectCall(method, matcher?)` is typed by method and matches calls in one global order. The matcher may contain assertions and may return `false` to reject the call. If a call occurs just before its expectation is registered, the transport keeps it for the next expectation.
+
+`runScenario()` terminates when either side fails, when an `AbortSignal` cancels the scenario, or when the exercise finishes with incomplete expectations. An exercise that finishes while expectations remain produces `IncompleteRealtimeScenarioError`. When mutually waiting callbacks reach an explicit signal deadline, as in the example above, `runScenario()` produces `ScriptedRealtimeScenarioCancelledError` and reports the pending expectations.
+
+### Test interruption
+
+Test interruption in the direction that matters to the application:
+
+- To test a stop button or similar application action, emit the start of an assistant audio response, wait until the session observes it, then call `session.interrupt()` and expect the outbound `interrupt` call.
+- To test application handling of an interruption notification, emit `audio_interrupted` from the transport and assert the session listener.
+
+The example keeps these as separate tests so it does not imply that one event automatically causes the other.
+
+<Code
+  lang="typescript"
+  code={realtimeInterruptExample}
+  title="Test interruption in both directions"
+/>
+
+<Aside type="note" title="Why the example uses an explicit signal">
+  `scenario` and `exercise` run concurrently. The `readyToInterrupt` promise is
+  test coordination, not an SDK event. Because `emit()` is synchronous, the
+  scenario first asserts that the real `RealtimeSession` emitted `audio_start`,
+  then releases the exercise to call `session.interrupt()`. This avoids both an
+  early interrupt and a test that hangs when the session does not observe the
+  audio. Emit `audio_interrupted`, `item_update`, or `item_deleted` separately
+  when those inbound notifications are part of the behavior under test.
+</Aside>
+
+### Inject a Realtime failure
+
+`failNextCall(method, error)` makes the next invocation of that method throw the supplied value. The attempt is still recorded and matched, so the test can assert both the operation and the failure.
+
+<Code
+  lang="typescript"
+  code={realtimeFailureExample}
+  title="Fail the next Realtime operation"
+/>
+
+Multiple failures for one method are consumed in registration order. An unused injected failure makes `assertComplete()` fail.
+
+### Test a remote disconnect
+
+Call `transport.disconnect(error?)` to simulate the remote endpoint closing the connection. It transitions the transport to `disconnected`, emits `connection_change`, and optionally emits a transport `error`.
+
+Use `disconnect()` for connection loss and remote shutdown. Use `session.close()` when the application initiates cleanup and the test should expect an outbound `close` call.
+
+### Inspect Realtime calls
+
+`transport.calls` contains detached snapshots in invocation order. Mutable arrays, plain objects, and buffers are copied at the call boundary, while runtime class instances preserve their identity. A recorded `connect` call contains `apiKeyProvided`; it never stores the API key.
+
+Common method names include `connect`, `sendEvent`, `requestResponse`, `sendMessage`, `addImage`, `sendAudio`, `updateSessionConfig`, `close`, `mute`, `sendFunctionCallOutput`, `interrupt`, `resetHistory`, and `sendMcpResponse`. The exported method and call types are derived from `RealtimeTransportLayer`, so new transport methods cannot silently disappear from the typed testing surface.
+
+### Verify completion and cleanup
+
+Finish Realtime tests with both assertions:
+
+| Assertion | Checks |
+| --- | --- |
+| `transport.assertComplete()` | No unmatched calls, pending expectations, or unused injected failures remain |
+| `transport.assertClosed()` | The lifecycle status is `disconnected` |
+
+Realtime errors also expose structured state:
+
+| Error | Structured fields |
+| --- | --- |
+| `UnexpectedRealtimeCallError` | `callIndex`, `expectedMethod`, `actualMethod` |
+| `RealtimeCallMatcherError` | `callIndex`, `actualMethod` |
+| `IncompleteRealtimeScenarioError` | `unconsumedCalls`, `pendingExpectations`, `pendingFailures` |
+| `ScriptedRealtimeScenarioCancelledError` | `pendingExpectations` |
+| `RealtimeTransportNotClosedError` | `status` |
+| `ScriptedRealtimeConnectionSupersededError` | `operation` |
+
+## API cheat sheet
+
+### Model step factories
+
+| Factory | Use it when... |
+| --- | --- |
+| `modelResponse(response)` | You want an explicit response step; output arrays may also be passed directly |
+| `modelResponder(callback)` | The response depends on the recorded call |
+| `modelError(error, retryAdvice?)` | One model call should fail |
+| `modelStream(events)` | You need an exact normalized stream |
+| `modelStreamResponder(callback)` | The exact stream depends on the recorded call |
+
+### Common output helpers
+
+| Helper | Produces |
+| --- | --- |
+| `assistantMessage(text, options?)` | A completed assistant text message |
+| `functionCall(name, arguments, options)` | A completed function call; `options.callId` is required |
+
+Pass normalized output items directly for reasoning, hosted tools, images, audio, or intentionally malformed protocol cases. The helper set is deliberately small so the testing module does not become a second provider conversion layer.
+
+### Sandbox session controls
+
+| Member | Purpose |
+| --- | --- |
+| `scriptedSandboxSession(steps)` | Create an in-memory `SandboxSession` containing the methods named by the script |
+| `match(...args)` | Validate the typed arguments for one expected method call |
+| `result` | Return a fixed method result |
+| `respond(call)` | Compute a result from the typed recorded call |
+| `error` | Throw or reject with an injected failure |
+| `calls` | Inspect detached call snapshots in invocation order |
+| `assertComplete()` | Find sandbox steps that the workflow did not consume |
+
+### Realtime controls
+
+| Method | Purpose |
+| --- | --- |
+| `runScenario({ scenario, exercise, signal? })` | Run both sides together; pass `signal` when test-only coordination can leave both sides waiting |
+| `expectCall(method, matcher?)` | Match the next outbound transport call |
+| `emit(event, ...args)` | Deliver a typed inbound event synchronously |
+| `failNextCall(method, error)` | Fail the next invocation of one method |
+| `disconnect(error?)` | Simulate a terminal remote disconnect |
+| `assertComplete()` | Find unmatched calls, expectations, or failures |
+| `assertClosed()` | Verify lifecycle cleanup |
+
+## Choose the correct boundary
+
+Use `ScriptedModel` when the test should exercise the SDK run loop, tools, handoffs, guardrails, sessions, retries, or streaming without depending on a model provider.
+
+Use `scriptedSandboxSession()` with `ScriptedModel` when the test should exercise `SandboxAgent` capabilities and orchestration without starting a sandbox provider. Keep provider creation, process execution, filesystem fidelity, persistence, and isolation checks in integration tests against the real provider.
+
+Use `ScriptedRealtimeTransport` when the test should exercise `RealtimeSession` behavior or `RealtimeAgent` tool and handoff orchestration without opening a WebRTC or WebSocket connection. Keep agent business logic in tools, handoffs, and guardrails attached to the `RealtimeAgent`; keep connection, history, audio, and interruption assertions at the session and transport boundary.
+
+Do not use these doubles to test provider request conversion, HTTP or WebSocket payloads, authentication headers, provider-specific streaming chunks, or sandbox provider lifecycle and isolation. Keep the real model adapter with a mocked network transport for model wire tests, and use the real sandbox provider for sandbox integration tests.
+
+## Final checklist
+
+- Script only interactions owned by the normalized model, sandbox session, or Realtime transport boundary.
+- Assert important request fields instead of private runner state.
+- Prefer fixed response steps; use responders only for request-dependent behavior.
+- Prefer automatic streaming; use exact streams only when event-level behavior matters.
+- End model tests with `model.assertComplete()`.
+- End sandbox tests with `sandbox.assertComplete()`.
+- End Realtime tests with `transport.assertComplete()` and `transport.assertClosed()`.
+- Assert structured error fields instead of parsing error messages.
+- Keep provider wire tests on real adapters with mocked network transports.
+
+## Related guides
+
+- [Running Agents](/openai-agents-js/guides/running-agents) describes the run loop exercised by `ScriptedModel`.
+- [Models](/openai-agents-js/guides/models) explains the `Model` boundary and provider adapters.
+- [Sandbox agents](/openai-agents-js/guides/sandbox-agents) explains sandbox capabilities, sessions, and provider lifecycle.
+- [Realtime Agents](/openai-agents-js/guides/voice-agents) introduces `RealtimeSession`.
+- [Realtime transport mechanisms](/openai-agents-js/guides/voice-agents/transport) covers production transports and transport events.
+
+## Scope and current limitations
+
+### Deliberately outside the testing module
+
+These utilities replace SDK-owned normalized boundaries. They are not intended to prove behavior owned by a model or an external provider:
+
+- Model quality, instruction following, and tool-selection quality belong in evaluations or tests that use a real model.
+- Responses and Chat Completions request serialization, authentication, provider defaults, HTTP behavior, and provider stream chunks require the real model adapter with a mocked or controlled network transport.
+- Sandbox startup, process execution, filesystem fidelity, persistence, resource limits, security isolation, and provider cleanup require integration tests with the real sandbox provider.
+- Realtime server behavior, raw WebSocket or WebRTC frames, audio encoding and playback, authentication, and network recovery require the real transport or an integration environment.
+
+The scripted utilities do not attempt to emulate these layers. Adding provider-specific behavior here would make workflow tests depend on a second, incomplete implementation of the provider protocol.
+
+### Not currently provided
+
+The current testing module does not provide:
+
+- Convenience builders for every normalized model output item. Use the small helpers for common assistant messages and function calls, and pass other normalized items directly.
+- A high-level simulated Realtime model. Realtime tests explicitly match outbound calls and emit the normalized inbound events needed for the scenario.
+- Unordered sandbox expectations. `scriptedSandboxSession()` consumes method steps in one global order.
+- Test-runner-specific matchers, fixtures, or automatic teardown. Use the assertion and teardown APIs from Node.js, Vitest, Jest, or another runner, and call the provided completion and cleanup assertions explicitly.
+- Mock transports for provider wire tests. Keep the real provider adapter and mock its network boundary in those tests.
+
+These are descriptions of the current API surface, not commitments to add the omitted features in a future release.
