@@ -8,7 +8,11 @@ import {
   expectTypeOf,
 } from 'vitest';
 import type { MessageEvent as WebSocketMessageEvent } from 'ws';
-import type { RealtimeClientMessage, RealtimeSessionConfig } from '../src';
+import type {
+  RealtimeClientMessage,
+  RealtimeMessageItem,
+  RealtimeSessionConfig,
+} from '../src';
 import {
   DEFAULT_OPENAI_REALTIME_SESSION_CONFIG,
   OpenAIRealtimeBase,
@@ -37,6 +41,22 @@ class TestBase extends OpenAIRealtimeBase {
   }
 }
 
+class ThrowingTestBase extends TestBase {
+  sendCount = 0;
+
+  constructor(private readonly throwOnSend: number) {
+    super();
+  }
+
+  override sendEvent(event: RealtimeClientMessage) {
+    this.sendCount += 1;
+    if (this.sendCount === this.throwOnSend) {
+      throw new Error('send failed');
+    }
+    super.sendEvent(event);
+  }
+}
+
 class VoidMessageOverrideTransport extends TestBase {
   protected override _onMessage(
     event: MessageEvent | WebSocketMessageEvent,
@@ -54,6 +74,35 @@ function createToolCall() {
     arguments: '{}',
     responseId: 'response-1',
   };
+}
+
+function acknowledgeHistoryCreate(
+  base: TestBase,
+  eventIndex: number,
+  type:
+    | 'conversation.item.added'
+    | 'conversation.item.done' = 'conversation.item.added',
+): void {
+  const event = base.events[eventIndex] as any;
+  (base as any)._onMessage({
+    data: JSON.stringify({
+      type,
+      event_id: `server_${eventIndex}_${type}`,
+      previous_item_id: event.previous_item_id ?? null,
+      item: event.item,
+    }),
+  });
+}
+
+function acknowledgeHistoryDelete(base: TestBase, eventIndex: number): void {
+  const event = base.events[eventIndex] as any;
+  (base as any)._onMessage({
+    data: JSON.stringify({
+      type: 'conversation.item.deleted',
+      event_id: `server_${eventIndex}_deleted`,
+      item_id: event.item_id,
+    }),
+  });
 }
 
 describe('OpenAIRealtimeBase helpers', () => {
@@ -412,7 +461,7 @@ describe('OpenAIRealtimeBase helpers', () => {
     ]);
   });
 
-  it('sendFunctionCallOutput emits item_update and response.create', () => {
+  it('sendFunctionCallOutput anchors the output after its function call', () => {
     const base = new TestBase();
     const updates: any[] = [];
     base.on('item_update', (e) => updates.push(e));
@@ -420,10 +469,303 @@ describe('OpenAIRealtimeBase helpers', () => {
 
     expect(base.events[0]).toEqual({
       type: 'conversation.item.create',
-      item: { type: 'function_call_output', output: 'output', call_id: 'c1' },
+      event_id: expect.stringMatching(/^history_/),
+      previous_item_id: '1',
+      item: {
+        id: expect.stringMatching(/^fco_/),
+        type: 'function_call_output',
+        output: 'output',
+        call_id: 'c1',
+      },
     });
     expect(base.events[1]).toEqual({ type: 'response.create' });
-    expect(updates.length).toBe(1);
+    expect((base.events[0] as any).item.id).toHaveLength(32);
+    expect(updates).toEqual([
+      {
+        itemId: '1',
+        callId: 'c1',
+        outputItemId: (base.events[0] as any).item.id,
+        type: 'function_call',
+        status: 'completed',
+        arguments: '{}',
+        name: 'tool',
+        output: 'output',
+      },
+    ]);
+  });
+
+  it('continues the response when an output projection listener throws', () => {
+    const base = new TestBase();
+    let outputItemId: string | undefined;
+    base.on('item_update', () => {
+      outputItemId = (base.events[0] as any).item.id;
+      throw new Error('listener failed');
+    });
+
+    expect(() =>
+      base.sendFunctionCallOutput(createToolCall(), 'output', true),
+    ).not.toThrow();
+
+    expect(base.events.map((event) => event.type)).toEqual([
+      'conversation.item.create',
+      'response.create',
+    ]);
+    expect(logger.error).toHaveBeenCalledWith(
+      'Error parsing tool call item',
+      'object',
+    );
+    expect(() =>
+      base.sendFunctionCallOutput(createToolCall(), 'retry', false),
+    ).toThrow(
+      'Function call 1 already has an output pending or confirmed by the Realtime API.',
+    );
+
+    acknowledgeHistoryCreate(base, 0, 'conversation.item.done');
+    expect(() =>
+      base.resetHistory(
+        [],
+        [
+          {
+            itemId: outputItemId!,
+            type: 'message',
+            role: 'user',
+            status: 'completed',
+            content: [{ type: 'input_text', text: 'reuse' }],
+          },
+        ],
+      ),
+    ).toThrow('conflicts with a visible item ID');
+
+    const inProgressCall = {
+      itemId: '1',
+      callId: 'c1',
+      type: 'function_call' as const,
+      status: 'in_progress' as const,
+      arguments: '{}',
+      name: 'tool',
+      output: null,
+    };
+    const completedCall = {
+      ...inProgressCall,
+      outputItemId,
+      status: 'completed' as const,
+      output: 'output',
+    };
+    expect(() => base.resetHistory([inProgressCall], [completedCall])).toThrow(
+      'is already confirmed by the Realtime API',
+    );
+    expect(() =>
+      base.resetHistory(
+        [inProgressCall],
+        [{ ...completedCall, outputItemId: undefined }],
+      ),
+    ).toThrow('is already confirmed by the Realtime API');
+    expect(base.events).toHaveLength(2);
+  });
+
+  it('omits the output predecessor when the function call ID is unavailable', () => {
+    const base = new TestBase();
+    base.sendFunctionCallOutput(
+      {
+        ...createToolCall(),
+        id: undefined,
+      },
+      'output',
+      false,
+    );
+
+    expect(base.events[0]).not.toHaveProperty('previous_item_id');
+  });
+
+  it('rolls back an ordinary function call output when its create is rejected', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    session.on('error', () => {});
+    await session.connect({ apiKey: 'test' });
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'response.output_item.done',
+        event_id: 'server_call',
+        response_id: 'response-1',
+        output_index: 0,
+        item: {
+          id: '1',
+          type: 'function_call',
+          status: 'completed',
+          arguments: '{}',
+          name: 'tool',
+          call_id: 'c1',
+        },
+      }),
+    });
+
+    transport.sendFunctionCallOutput(createToolCall(), 'output', false);
+    const outputCreate = transport.events.at(-1) as any;
+    expect(session.history[0]).toMatchObject({
+      itemId: '1',
+      status: 'completed',
+      output: 'output',
+      outputItemId: outputCreate.item.id,
+    });
+
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'error',
+        event_id: 'server_output_error',
+        error: {
+          type: 'invalid_request_error',
+          code: 'invalid_tool_call_id',
+          message: 'The function call no longer exists.',
+        },
+      }),
+    });
+
+    expect(session.history[0]).toEqual({
+      itemId: '1',
+      callId: 'c1',
+      outputItemId: undefined,
+      type: 'function_call',
+      status: 'in_progress',
+      arguments: '{}',
+      name: 'tool',
+      output: null,
+    });
+
+    session.updateHistory([]);
+    expect(transport.events.at(-1)).toMatchObject({
+      type: 'conversation.item.delete',
+      item_id: '1',
+    });
+  });
+
+  it('matches uncorrelated output rejections in send order', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('error', () => {});
+    base.on('item_update', (item) => updates.push(item));
+    base.sendFunctionCallOutput(createToolCall(), 'first', false);
+    base.sendFunctionCallOutput(
+      {
+        ...createToolCall(),
+        id: '2',
+        callId: 'c2',
+      },
+      'second',
+      false,
+    );
+
+    const rejectOldestOutput = (eventId: string) =>
+      (base as any)._onMessage({
+        data: JSON.stringify({
+          type: 'error',
+          event_id: eventId,
+          error: {
+            type: 'invalid_request_error',
+            code: 'invalid_tool_call_id',
+            message: 'The function call no longer exists.',
+          },
+        }),
+      });
+    rejectOldestOutput('server_first_output_error');
+    rejectOldestOutput('server_second_output_error');
+
+    expect(updates.map((item) => [item.itemId, item.status])).toEqual([
+      ['1', 'completed'],
+      ['2', 'completed'],
+      ['1', 'in_progress'],
+      ['2', 'in_progress'],
+    ]);
+  });
+
+  it('rejects another output while one is awaiting acknowledgement', () => {
+    const base = new TestBase();
+    base.sendFunctionCallOutput(createToolCall(), 'first', false);
+
+    expect(() =>
+      base.sendFunctionCallOutput(createToolCall(), 'second', true),
+    ).toThrow(
+      'Function call 1 already has an output pending or confirmed by the Realtime API.',
+    );
+    expect(base.events).toHaveLength(1);
+  });
+
+  it('rejects another output after the first output is acknowledged', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
+    base.sendFunctionCallOutput(createToolCall(), 'first', false);
+    acknowledgeHistoryCreate(base, 0, 'conversation.item.done');
+
+    expect(() =>
+      base.sendFunctionCallOutput(createToolCall(), 'second', false),
+    ).toThrow(
+      'Function call 1 already has an output pending or confirmed by the Realtime API.',
+    );
+    expect(base.events).toHaveLength(1);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      itemId: '1',
+      status: 'completed',
+      output: 'first',
+    });
+  });
+
+  it('allows retrying an output after its create is rejected', () => {
+    const base = new TestBase();
+    base.on('error', () => {});
+    base.sendFunctionCallOutput(createToolCall(), 'first', false);
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'error',
+        event_id: 'server_first_output_error',
+        error: {
+          type: 'invalid_request_error',
+          code: 'invalid_tool_call_id',
+          message: 'The function call no longer exists.',
+        },
+      }),
+    });
+
+    expect(() =>
+      base.sendFunctionCallOutput(createToolCall(), 'retry', false),
+    ).not.toThrow();
+    expect(base.events).toHaveLength(2);
+    expect((base.events[1] as any).item.output).toBe('retry');
+  });
+
+  it('clears confirmed output ownership when the transport closes', () => {
+    const base = new TestBase();
+    base.sendFunctionCallOutput(createToolCall(), 'first', false);
+    acknowledgeHistoryCreate(base, 0, 'conversation.item.done');
+    (base as any)._onClose();
+
+    expect(() =>
+      base.sendFunctionCallOutput(createToolCall(), 'after reconnect', false),
+    ).not.toThrow();
+    expect(base.events).toHaveLength(2);
+  });
+
+  it('clears confirmed output ownership when the output is deleted', () => {
+    const base = new TestBase();
+    base.sendFunctionCallOutput(createToolCall(), 'first', false);
+    const outputItemId = (base.events[0] as any).item.id;
+    acknowledgeHistoryCreate(base, 0, 'conversation.item.done');
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.deleted',
+        event_id: 'server_output_deleted',
+        item_id: outputItemId,
+      }),
+    });
+
+    expect(() =>
+      base.sendFunctionCallOutput(createToolCall(), 'replacement', false),
+    ).not.toThrow();
+    expect(base.events).toHaveLength(2);
   });
 
   it('sendFunctionCallOutput logs errors when tool call parsing fails', () => {
@@ -551,10 +893,12 @@ describe('OpenAIRealtimeBase helpers', () => {
 
     expect(base.events[0]).toEqual({
       type: 'conversation.item.delete',
+      event_id: expect.stringMatching(/^history_/),
       item_id: '1',
     });
     expect(base.events[1]).toEqual({
       type: 'conversation.item.create',
+      event_id: expect.stringMatching(/^history_/),
       item: {
         id: '2',
         role: 'user',
@@ -565,13 +909,16 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
   });
 
-  it('resetHistory warns on function call additions', () => {
+  it('resetHistory restores a function call and updates local history', () => {
     const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
     const newHist = [
       {
         itemId: 'f1',
+        previousItemId: 'm1',
         type: 'function_call',
-        status: 'completed',
+        status: 'in_progress',
         arguments: '{}',
         name: 'calc',
         output: null,
@@ -580,10 +927,1657 @@ describe('OpenAIRealtimeBase helpers', () => {
 
     base.resetHistory([], newHist as any);
 
-    expect(logger.warn).toHaveBeenCalledWith(
-      'Function calls cannot be manually added or updated at the moment. Ignoring.',
+    expect(updates).toEqual([]);
+
+    expect(base.events).toEqual([
+      {
+        type: 'conversation.item.create',
+        event_id: expect.stringMatching(/^history_/),
+        previous_item_id: 'm1',
+        item: {
+          id: 'f1',
+          type: 'function_call',
+          arguments: '{}',
+          name: 'calc',
+          call_id: 'f1',
+        },
+      },
+    ]);
+    acknowledgeHistoryCreate(base, 0);
+    expect(updates).toEqual([
+      {
+        ...newHist[0],
+        callId: 'f1',
+      },
+    ]);
+  });
+
+  it('resetHistory omits a null previous item ID for a function call', () => {
+    const base = new TestBase();
+    const item = {
+      itemId: 'f1',
+      previousItemId: null,
+      type: 'function_call' as const,
+      status: 'in_progress' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: null,
+    };
+
+    base.resetHistory([], [item]);
+
+    expect(base.events).toEqual([
+      {
+        type: 'conversation.item.create',
+        event_id: expect.stringMatching(/^history_/),
+        item: {
+          id: 'f1',
+          type: 'function_call',
+          arguments: '{}',
+          name: 'calc',
+          call_id: 'f1',
+        },
+      },
+    ]);
+  });
+
+  it('resetHistory preserves local order for mixed message and function call additions', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const addedItems: string[] = [];
+    session.on('history_added', (item) => addedItems.push(item.itemId));
+
+    session.updateHistory([
+      {
+        itemId: 'm1',
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [{ type: 'input_text', text: 'use the tool' }],
+      },
+      {
+        itemId: 'f1',
+        previousItemId: 'm1',
+        type: 'function_call',
+        status: 'in_progress',
+        arguments: '{}',
+        name: 'calc',
+        output: null,
+      },
+    ]);
+
+    expect(session.history).toEqual([]);
+    expect(addedItems).toEqual([]);
+
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.added',
+        event_id: 'server_m1',
+        previous_item_id: null,
+        item: {
+          id: 'm1',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'use the tool' }],
+        },
+      }),
+    });
+
+    expect(session.history.map((item) => item.itemId)).toEqual(['m1']);
+    expect(addedItems).toEqual(['m1']);
+
+    acknowledgeHistoryCreate(transport, 1);
+
+    expect(session.history.map((item) => item.itemId)).toEqual(['m1', 'f1']);
+    expect(addedItems).toEqual(['m1', 'f1']);
+  });
+
+  it('resetHistory recreates an updated predecessor before a dependent function call', () => {
+    const base = new TestBase();
+    const oldMessage = {
+      itemId: 'm1',
+      type: 'message' as const,
+      role: 'user' as const,
+      status: 'completed' as const,
+      content: [{ type: 'input_text' as const, text: 'old' }],
+    };
+    const updatedMessage = {
+      ...oldMessage,
+      content: [{ type: 'input_text' as const, text: 'updated' }],
+    };
+
+    base.resetHistory(
+      [oldMessage],
+      [
+        updatedMessage,
+        {
+          itemId: 'f1',
+          previousItemId: 'm1',
+          type: 'function_call',
+          status: 'in_progress',
+          arguments: '{}',
+          name: 'calc',
+          output: null,
+        },
+      ],
     );
-    expect(base.events).toHaveLength(0);
+
+    expect(base.events).toEqual([
+      {
+        type: 'conversation.item.delete',
+        event_id: expect.stringMatching(/^history_/),
+        item_id: 'm1',
+      },
+      {
+        type: 'conversation.item.create',
+        event_id: expect.stringMatching(/^history_/),
+        item: {
+          id: 'm1',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'updated' }],
+        },
+      },
+      {
+        type: 'conversation.item.create',
+        event_id: expect.stringMatching(/^history_/),
+        previous_item_id: 'm1',
+        item: {
+          id: 'f1',
+          type: 'function_call',
+          arguments: '{}',
+          name: 'calc',
+          call_id: 'f1',
+        },
+      },
+    ]);
+  });
+
+  it('resetHistory preserves recreated predecessor order after server echoes', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const receive = (event: Record<string, any>) => {
+      (transport as any)._onMessage({ data: JSON.stringify(event) });
+    };
+    const messageEvent = (text: string) => ({
+      type: 'conversation.item.added',
+      event_id: `message_${text}`,
+      previous_item_id: null,
+      item: {
+        id: 'm1',
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [{ type: 'input_text', text }],
+      },
+    });
+    receive(messageEvent('old'));
+
+    session.updateHistory([
+      {
+        itemId: 'm1',
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [{ type: 'input_text', text: 'updated' }],
+      },
+      {
+        itemId: 'f1',
+        previousItemId: 'm1',
+        type: 'function_call',
+        status: 'in_progress',
+        arguments: '{}',
+        name: 'calc',
+        output: null,
+      },
+    ]);
+    expect(session.history.map((item) => item.itemId)).toEqual(['m1']);
+
+    receive({
+      type: 'conversation.item.deleted',
+      event_id: 'delete_m1',
+      item_id: 'm1',
+    });
+    receive(messageEvent('updated'));
+    acknowledgeHistoryCreate(transport, 2);
+
+    expect(session.history.map((item) => item.itemId)).toEqual(['m1', 'f1']);
+  });
+
+  it('retires projected create ownership before recreating a deleted item ID', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const desiredCall = {
+      itemId: 'f1',
+      callId: 'call_1',
+      type: 'function_call' as const,
+      status: 'in_progress' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: null,
+    };
+    const addedItems: string[] = [];
+    session.on('history_added', (item) => addedItems.push(item.itemId));
+
+    session.updateHistory([desiredCall]);
+    acknowledgeHistoryCreate(transport, 0);
+    expect(session.history).toEqual([desiredCall]);
+
+    let restoreAfterDelete = true;
+    session.on('history_updated', (history) => {
+      if (restoreAfterDelete && history.length === 0) {
+        restoreAfterDelete = false;
+        session.updateHistory([desiredCall]);
+      }
+    });
+    session.updateHistory([]);
+    acknowledgeHistoryDelete(transport, 1);
+
+    expect(transport.events[2]).toMatchObject({
+      type: 'conversation.item.create',
+      item: { id: 'f1', type: 'function_call' },
+    });
+    acknowledgeHistoryCreate(transport, 2);
+    acknowledgeHistoryCreate(transport, 2, 'conversation.item.done');
+
+    expect(session.history).toEqual([desiredCall]);
+    expect(addedItems).toEqual(['f1', 'f1']);
+  });
+
+  it('coalesces a queued message replacement during deletion reentry', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const oldMessage = {
+      itemId: 'm1',
+      type: 'message' as const,
+      role: 'user' as const,
+      status: 'completed' as const,
+      content: [{ type: 'input_text' as const, text: 'old' }],
+    };
+    const replacement = {
+      ...oldMessage,
+      content: [{ type: 'input_text' as const, text: 'replacement' }],
+    };
+    const addedItems: string[] = [];
+    session.on('history_added', (item) => addedItems.push(item.itemId));
+
+    session.updateHistory([oldMessage]);
+    acknowledgeHistoryCreate(transport, 0);
+
+    let reapplyAfterDelete = true;
+    session.on('history_updated', (history) => {
+      if (reapplyAfterDelete && history.length === 0) {
+        reapplyAfterDelete = false;
+        session.updateHistory([replacement]);
+      }
+    });
+    session.updateHistory([replacement]);
+    expect(transport.events).toHaveLength(3);
+
+    acknowledgeHistoryDelete(transport, 1);
+    expect(transport.events).toHaveLength(3);
+    acknowledgeHistoryCreate(transport, 2);
+    acknowledgeHistoryCreate(transport, 2, 'conversation.item.done');
+
+    expect(session.history).toEqual([replacement]);
+    expect(addedItems).toEqual(['m1', 'm1']);
+  });
+
+  it('rejects a conflicting message while its replacement is pending', () => {
+    const base = new TestBase();
+    const oldMessage = {
+      itemId: 'm1',
+      type: 'message' as const,
+      role: 'user' as const,
+      status: 'completed' as const,
+      content: [{ type: 'input_text' as const, text: 'old' }],
+    };
+    const replacement = {
+      ...oldMessage,
+      content: [{ type: 'input_text' as const, text: 'replacement' }],
+    };
+
+    base.resetHistory([], [oldMessage]);
+    acknowledgeHistoryCreate(base, 0);
+    base.resetHistory([oldMessage], [replacement]);
+    acknowledgeHistoryDelete(base, 1);
+
+    expect(() =>
+      base.resetHistory(
+        [],
+        [
+          {
+            ...replacement,
+            content: [{ type: 'input_text', text: 'conflicting' }],
+          },
+        ],
+      ),
+    ).toThrow(
+      'History message m1 cannot change while its creation is awaiting acknowledgement.',
+    );
+    expect(base.events).toHaveLength(3);
+  });
+
+  it('keeps desired message state through a status-omitting added acknowledgement', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const desiredMessage = {
+      itemId: 'm1',
+      type: 'message' as const,
+      role: 'user' as const,
+      status: 'completed' as const,
+      content: [{ type: 'input_text' as const, text: 'hello' }],
+    };
+    let reapplyOnce = true;
+    session.on('history_updated', () => {
+      if (reapplyOnce) {
+        reapplyOnce = false;
+        session.updateHistory([desiredMessage]);
+      }
+    });
+
+    session.updateHistory([desiredMessage]);
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.added',
+        event_id: 'server_added',
+        previous_item_id: null,
+        item: {
+          id: 'm1',
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'hello' }],
+        },
+      }),
+    });
+
+    expect(session.history).toEqual([desiredMessage]);
+    expect(transport.events).toHaveLength(1);
+    acknowledgeHistoryCreate(transport, 0, 'conversation.item.done');
+    session.updateHistory([desiredMessage]);
+    expect(transport.events).toHaveLength(1);
+  });
+
+  it('snapshots desired messages before their acknowledgement', () => {
+    const base = new TestBase();
+    const desiredMessage: RealtimeMessageItem = {
+      itemId: 'm1',
+      type: 'message',
+      role: 'user',
+      status: 'completed',
+      content: [{ type: 'input_text', text: 'original' }],
+    };
+    const projectedItems: RealtimeMessageItem[] = [];
+    base.on('item_update', (item) => {
+      if (item.type === 'message') {
+        projectedItems.push(item);
+      }
+    });
+
+    base.resetHistory([], [desiredMessage]);
+    const sentEvent = structuredClone(base.events[0]);
+    desiredMessage.status = 'incomplete';
+    const retainedContent = desiredMessage.content[0];
+    if (retainedContent.type !== 'input_text') {
+      throw new Error('Expected input_text content');
+    }
+    retainedContent.text = 'mutated';
+    acknowledgeHistoryCreate(base, 0);
+
+    expect(base.events[0]).toEqual(sentEvent);
+    expect(projectedItems).toEqual([
+      {
+        itemId: 'm1',
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [{ type: 'input_text', text: 'original' }],
+      },
+    ]);
+  });
+
+  it('resetHistory sends the projected insertion order to the server', () => {
+    const base = new TestBase();
+    const firstMessage = {
+      itemId: 'm1',
+      type: 'message' as const,
+      role: 'user' as const,
+      status: 'completed' as const,
+      content: [{ type: 'input_text' as const, text: 'first' }],
+    };
+    const trailingMessage = {
+      itemId: 'm2',
+      previousItemId: 'm1',
+      type: 'message' as const,
+      role: 'assistant' as const,
+      status: 'completed' as const,
+      content: [{ type: 'output_text' as const, text: 'trailing' }],
+    };
+
+    base.resetHistory(
+      [firstMessage, trailingMessage],
+      [
+        firstMessage,
+        {
+          itemId: 'm-inserted',
+          previousItemId: 'm1',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'inserted' }],
+        },
+        {
+          itemId: 'f1',
+          previousItemId: 'm-inserted',
+          type: 'function_call',
+          status: 'in_progress',
+          arguments: '{}',
+          name: 'calc',
+          output: null,
+        },
+        trailingMessage,
+      ],
+    );
+
+    expect(base.events).toEqual([
+      {
+        type: 'conversation.item.create',
+        event_id: expect.stringMatching(/^history_/),
+        previous_item_id: 'm1',
+        item: {
+          id: 'm-inserted',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'inserted' }],
+        },
+      },
+      {
+        type: 'conversation.item.create',
+        event_id: expect.stringMatching(/^history_/),
+        previous_item_id: 'm-inserted',
+        item: {
+          id: 'f1',
+          type: 'function_call',
+          arguments: '{}',
+          name: 'calc',
+          call_id: 'f1',
+        },
+      },
+    ]);
+  });
+
+  it('resetHistory preserves a recreated message chain after server acknowledgements', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const receive = (event: Record<string, any>) => {
+      (transport as any)._onMessage({ data: JSON.stringify(event) });
+    };
+    const messageEvent = (
+      type: 'conversation.item.added' | 'conversation.item.done',
+      itemId: string,
+      previousItemId: string | null,
+      text: string,
+    ) => ({
+      type,
+      event_id: `${type}_${itemId}_${text}`,
+      previous_item_id: previousItemId,
+      item: {
+        id: itemId,
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [{ type: 'input_text', text }],
+      },
+    });
+    receive(messageEvent('conversation.item.added', 'm0', null, 'old zero'));
+    receive(messageEvent('conversation.item.added', 'm1', 'm0', 'old one'));
+
+    session.updateHistory([
+      {
+        itemId: 'm0',
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [{ type: 'input_text', text: 'new zero' }],
+      },
+      {
+        itemId: 'm1',
+        previousItemId: 'm0',
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [{ type: 'input_text', text: 'new one' }],
+      },
+      {
+        itemId: 'f1',
+        previousItemId: 'm1',
+        type: 'function_call',
+        status: 'in_progress',
+        arguments: '{}',
+        name: 'calc',
+        output: null,
+      },
+    ]);
+    expect(session.history.map((item) => item.itemId)).toEqual(['m0', 'm1']);
+
+    receive({
+      type: 'conversation.item.deleted',
+      event_id: 'delete_m0',
+      item_id: 'm0',
+    });
+    receive({
+      type: 'conversation.item.deleted',
+      event_id: 'delete_m1',
+      item_id: 'm1',
+    });
+    receive(messageEvent('conversation.item.added', 'm0', null, 'new zero'));
+    receive(messageEvent('conversation.item.done', 'm0', null, 'new zero'));
+    receive(messageEvent('conversation.item.added', 'm1', 'm0', 'new one'));
+    receive(messageEvent('conversation.item.done', 'm1', 'm0', 'new one'));
+    acknowledgeHistoryCreate(transport, 4);
+
+    expect(session.history.map((item) => item.itemId)).toEqual([
+      'm0',
+      'm1',
+      'f1',
+    ]);
+  });
+
+  it('resetHistory keeps public predecessors when the wire uses a hidden output item', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const retainedCall = {
+      itemId: 'f1',
+      callId: 'call_1',
+      outputItemId: 'fco_1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: 'one',
+    };
+    session.updateHistory([retainedCall]);
+    acknowledgeHistoryCreate(transport, 0);
+    acknowledgeHistoryCreate(transport, 1);
+    const retainedHistory = [
+      retainedCall,
+      {
+        itemId: 'm1',
+        previousItemId: 'f1',
+        type: 'message' as const,
+        role: 'user' as const,
+        status: 'completed' as const,
+        content: [{ type: 'input_text' as const, text: 'next' }],
+      },
+    ];
+
+    session.updateHistory(retainedHistory);
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.added',
+        event_id: 'message_m1_added',
+        previous_item_id: 'fco_1',
+        item: {
+          id: 'm1',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'next' }],
+        },
+      }),
+    });
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.done',
+        event_id: 'message_m1_done',
+        previous_item_id: 'fco_1',
+        item: {
+          id: 'm1',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'next' }],
+        },
+      }),
+    });
+
+    expect(session.history[1]).toMatchObject({
+      itemId: 'm1',
+      previousItemId: 'f1',
+    });
+    const sentEventCount = transport.events.length;
+    session.updateHistory([
+      ...retainedHistory,
+      {
+        itemId: 'm2',
+        previousItemId: 'm1',
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [{ type: 'input_text', text: 'later' }],
+      },
+    ]);
+
+    expect(transport.events.slice(sentEventCount)).toEqual([
+      {
+        type: 'conversation.item.create',
+        event_id: expect.stringMatching(/^history_/),
+        previous_item_id: 'm1',
+        item: {
+          id: 'm2',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'later' }],
+        },
+      },
+    ]);
+  });
+
+  it('resetHistory clears stale output identity from a call without output', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
+    const item = {
+      itemId: 'f1',
+      outputItemId: 'stale-output-id',
+      type: 'function_call' as const,
+      status: 'in_progress' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: null,
+    };
+
+    base.resetHistory([], [item]);
+
+    acknowledgeHistoryCreate(base, 0);
+
+    expect(updates).toEqual([
+      {
+        ...item,
+        callId: 'f1',
+        outputItemId: undefined,
+      },
+    ]);
+  });
+
+  it('resetHistory restores a completed function call and its output as a pair', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
+    const item = {
+      itemId: 'f1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{"x":1}',
+      name: 'calc',
+      callId: 'call_1',
+      output: '42',
+    };
+
+    base.resetHistory([], [item]);
+
+    const callEvent = base.events[0] as any;
+    const outputEvent = base.events[1] as any;
+    expect(callEvent).toMatchObject({
+      type: 'conversation.item.create',
+      item: {
+        id: 'f1',
+        type: 'function_call',
+        call_id: 'call_1',
+      },
+    });
+    expect(outputEvent).toMatchObject({
+      type: 'conversation.item.create',
+      previous_item_id: 'f1',
+      item: {
+        id: expect.stringMatching(/^fco_/),
+        type: 'function_call_output',
+        call_id: 'call_1',
+        output: '42',
+      },
+    });
+    expect(outputEvent.item.id).toHaveLength(32);
+
+    acknowledgeHistoryCreate(base, 0);
+    acknowledgeHistoryCreate(base, 1);
+
+    expect(updates).toEqual([
+      {
+        ...item,
+        status: 'in_progress',
+        output: null,
+      },
+      {
+        ...item,
+        outputItemId: outputEvent.item.id,
+      },
+    ]);
+  });
+
+  it('resetHistory anchors a later function call after the prior call output', () => {
+    const base = new TestBase();
+
+    base.resetHistory(
+      [],
+      [
+        {
+          itemId: 'f1',
+          type: 'function_call',
+          status: 'completed',
+          arguments: '{}',
+          name: 'first',
+          callId: 'call_1',
+          output: 'one',
+        },
+        {
+          itemId: 'f2',
+          previousItemId: 'f1',
+          type: 'function_call',
+          status: 'completed',
+          arguments: '{}',
+          name: 'second',
+          callId: 'call_2',
+          output: 'two',
+        },
+      ],
+    );
+
+    const firstOutputId = (base.events[1] as any).item.id;
+    expect(firstOutputId).toMatch(/^fco_/);
+    expect(base.events[2]).toMatchObject({
+      type: 'conversation.item.create',
+      previous_item_id: firstOutputId,
+      item: {
+        id: 'f2',
+        type: 'function_call',
+        call_id: 'call_2',
+      },
+    });
+    expect(base.events[3]).toMatchObject({
+      type: 'conversation.item.create',
+      previous_item_id: 'f2',
+      item: {
+        type: 'function_call_output',
+        call_id: 'call_2',
+        output: 'two',
+      },
+    });
+  });
+
+  it('resetHistory anchors a later message after the prior call output', () => {
+    const base = new TestBase();
+    const firstCall = {
+      itemId: 'f1',
+      callId: 'call_1',
+      outputItemId: 'fco_1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'first',
+      output: 'one',
+    };
+
+    base.resetHistory(
+      [firstCall],
+      [
+        firstCall,
+        {
+          itemId: 'm1',
+          previousItemId: 'f1',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'next' }],
+        },
+      ],
+    );
+
+    expect(base.events).toEqual([
+      {
+        type: 'conversation.item.create',
+        event_id: expect.stringMatching(/^history_/),
+        previous_item_id: 'fco_1',
+        item: {
+          id: 'm1',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'next' }],
+        },
+      },
+    ]);
+  });
+
+  it('resetHistory rejects a hidden output predecessor without an item ID before sending', () => {
+    const base = new TestBase();
+    const firstCall = {
+      itemId: 'f1',
+      callId: 'call_1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'first',
+      output: 'one',
+    };
+
+    expect(() =>
+      base.resetHistory(
+        [firstCall],
+        [
+          firstCall,
+          {
+            itemId: 'f2',
+            previousItemId: 'f1',
+            type: 'function_call',
+            status: 'in_progress',
+            arguments: '{}',
+            name: 'second',
+            callId: 'call_2',
+            output: null,
+          },
+        ],
+      ),
+    ).toThrow(
+      'Function call history item f2 cannot follow function call f1 because its output item ID is unavailable.',
+    );
+    expect(base.events).toEqual([]);
+  });
+
+  it('resetHistory preserves generated identities across repeated updates', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
+    const retainedCall = {
+      itemId: 'f1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    base.resetHistory([], [retainedCall]);
+    acknowledgeHistoryCreate(base, 0);
+    acknowledgeHistoryCreate(base, 1);
+    base.events = [];
+    base.resetHistory(
+      [updates.at(-1)],
+      [
+        retainedCall,
+        {
+          itemId: 'm2',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'next' }],
+        },
+      ],
+    );
+
+    expect(base.events).toEqual([
+      {
+        type: 'conversation.item.create',
+        event_id: expect.stringMatching(/^history_/),
+        item: {
+          id: 'm2',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'next' }],
+        },
+      },
+    ]);
+  });
+
+  it('normalizes restored completed calls without outputs before later completion', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const restoredCall = {
+      itemId: 'f1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: null,
+    };
+
+    session.updateHistory([restoredCall]);
+    acknowledgeHistoryCreate(transport, 0, 'conversation.item.done');
+
+    expect(session.history).toMatchObject([
+      { itemId: 'f1', status: 'in_progress', output: null },
+    ]);
+
+    session.updateHistory([restoredCall]);
+    expect(transport.events).toHaveLength(1);
+
+    session.updateHistory([
+      { ...restoredCall, status: 'completed', output: '42' },
+    ]);
+    const outputItemId = (transport.events[1] as any).item.id;
+    expect(transport.events[1]).toMatchObject({
+      type: 'conversation.item.create',
+      previous_item_id: 'f1',
+      item: {
+        id: outputItemId,
+        type: 'function_call_output',
+        call_id: 'f1',
+        output: '42',
+      },
+    });
+    acknowledgeHistoryCreate(transport, 1, 'conversation.item.done');
+    expect(session.history).toEqual([
+      {
+        ...restoredCall,
+        callId: 'f1',
+        outputItemId,
+        output: '42',
+      },
+    ]);
+  });
+
+  it('coalesces a retained completion reapplied from history_updated', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const retainedCall = {
+      itemId: 'f1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    session.updateHistory([retainedCall]);
+    const pendingOutputId = (transport.events[1] as any).item.id;
+    session.on('history_updated', (history) => {
+      if (
+        history.length === 1 &&
+        history[0]?.type === 'function_call' &&
+        history[0].output === null
+      ) {
+        session.updateHistory([retainedCall]);
+      }
+    });
+
+    acknowledgeHistoryCreate(transport, 0);
+
+    expect(transport.events).toHaveLength(2);
+    acknowledgeHistoryCreate(transport, 1);
+    expect(session.history).toEqual([
+      {
+        ...retainedCall,
+        callId: 'f1',
+        outputItemId: pendingOutputId,
+      },
+    ]);
+  });
+
+  it('coalesces repeated completed restores before the first acknowledgement', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const retainedCall = {
+      itemId: 'f1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    session.updateHistory([retainedCall]);
+    const pendingOutputId = (transport.events[1] as any).item.id;
+    session.updateHistory([retainedCall]);
+
+    expect(transport.events).toHaveLength(2);
+    expect((transport.events[1] as any).item.id).toBe(pendingOutputId);
+    acknowledgeHistoryCreate(transport, 0);
+    acknowledgeHistoryCreate(transport, 1);
+    expect(session.history).toEqual([
+      {
+        ...retainedCall,
+        callId: 'f1',
+        outputItemId: pendingOutputId,
+      },
+    ]);
+  });
+
+  it('rejects a conflicting repeated restore before the first acknowledgement', () => {
+    const base = new TestBase();
+    const retainedCall = {
+      itemId: 'f1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    base.resetHistory([], [retainedCall]);
+
+    expect(() =>
+      base.resetHistory([], [{ ...retainedCall, output: 'changed' }]),
+    ).toThrow(
+      'Function call history item f1 cannot change its output while the previous output is awaiting acknowledgement.',
+    );
+    expect(base.events).toHaveLength(2);
+  });
+
+  it('retries only the missing output after a synchronous partial send', () => {
+    const base = new ThrowingTestBase(2);
+    const retainedCall = {
+      itemId: 'f1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    expect(() => base.resetHistory([], [retainedCall])).toThrow('send failed');
+    expect(base.events).toHaveLength(1);
+
+    base.resetHistory([], [retainedCall]);
+
+    expect(base.events).toHaveLength(2);
+    expect(base.events.map((event) => (event as any).item.type)).toEqual([
+      'function_call',
+      'function_call_output',
+    ]);
+  });
+
+  it('rejects a changed completion while its output is pending', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
+    const retainedCall = {
+      itemId: 'f1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    base.resetHistory([], [retainedCall]);
+    acknowledgeHistoryCreate(base, 0);
+
+    expect(() =>
+      base.resetHistory(
+        [updates.at(-1)],
+        [{ ...retainedCall, output: 'changed' }],
+      ),
+    ).toThrow(
+      'Function call history item f1 cannot change its output while the previous output is awaiting acknowledgement.',
+    );
+    expect(base.events).toHaveLength(2);
+  });
+
+  it('resetHistory reuses a supplied output item ID across repeated updates', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
+    const retainedCall = {
+      itemId: 'f1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      callId: 'call_1',
+      outputItemId: 'fco_persisted_output',
+      output: '42',
+    };
+
+    base.resetHistory([], [retainedCall]);
+    acknowledgeHistoryCreate(base, 0);
+    acknowledgeHistoryCreate(base, 1);
+
+    expect((base.events[1] as any).item.id).toBe('fco_persisted_output');
+    expect(updates.at(-1)).toEqual(retainedCall);
+
+    base.events = [];
+    base.resetHistory(
+      [updates.at(-1)],
+      [
+        retainedCall,
+        {
+          itemId: 'm2',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'next' }],
+        },
+      ],
+    );
+
+    expect(base.events).toEqual([
+      {
+        type: 'conversation.item.create',
+        event_id: expect.stringMatching(/^history_/),
+        item: {
+          id: 'm2',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'next' }],
+        },
+      },
+    ]);
+  });
+
+  it('resetHistory forwards an empty supplied output item ID', () => {
+    const base = new TestBase();
+    const item = {
+      itemId: 'f1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      callId: 'call_1',
+      outputItemId: '',
+      output: '42',
+    };
+
+    base.resetHistory([], [item]);
+
+    expect((base.events[1] as any).item.id).toBe('');
+
+    base.events = [];
+    base.resetHistory([item], []);
+
+    expect(base.events).toEqual([
+      {
+        type: 'conversation.item.delete',
+        event_id: expect.stringMatching(/^history_/),
+        item_id: '',
+      },
+    ]);
+    acknowledgeHistoryDelete(base, 0);
+    expect(base.events).toEqual([
+      {
+        type: 'conversation.item.delete',
+        event_id: expect.stringMatching(/^history_/),
+        item_id: '',
+      },
+      {
+        type: 'conversation.item.delete',
+        event_id: expect.stringMatching(/^history_/),
+        item_id: 'f1',
+      },
+    ]);
+  });
+
+  it('resetHistory deletes a function call after its output acknowledgement', () => {
+    const base = new TestBase();
+    base.resetHistory(
+      [
+        {
+          itemId: 'f1',
+          outputItemId: 'fo1',
+          type: 'function_call',
+          status: 'completed',
+          arguments: '{}',
+          name: 'calc',
+          output: '42',
+        },
+      ] as any,
+      [],
+    );
+
+    expect(base.events).toEqual([
+      {
+        type: 'conversation.item.delete',
+        event_id: expect.stringMatching(/^history_/),
+        item_id: 'fo1',
+      },
+    ]);
+    acknowledgeHistoryDelete(base, 0);
+    expect(base.events).toEqual([
+      {
+        type: 'conversation.item.delete',
+        event_id: expect.stringMatching(/^history_/),
+        item_id: 'fo1',
+      },
+      {
+        type: 'conversation.item.delete',
+        event_id: expect.stringMatching(/^history_/),
+        item_id: 'f1',
+      },
+    ]);
+  });
+
+  it('resetHistory rejects unsupported function call mutations before sending events', () => {
+    const original = {
+      itemId: 'f1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    const missingOutputId = new TestBase();
+    expect(() => missingOutputId.resetHistory([original], [])).toThrow(
+      'output item ID is unavailable',
+    );
+    expect(missingOutputId.events).toEqual([]);
+
+    const update = new TestBase();
+    expect(() =>
+      update.resetHistory(
+        [{ ...original, output: null }],
+        [{ ...original, output: '43' }],
+      ),
+    ).toThrow('cannot be updated in place');
+    expect(update.events).toEqual([]);
+
+    const incompleteOutput = new TestBase();
+    expect(() =>
+      incompleteOutput.resetHistory(
+        [],
+        [{ ...original, status: 'in_progress' }],
+      ),
+    ).toThrow('must be completed when it has an output');
+    expect(incompleteOutput.events).toEqual([]);
+
+    const retainedIncompleteOutput = new TestBase();
+    const retainedIncompleteCall = {
+      ...original,
+      outputItemId: 'fco_1',
+      status: 'in_progress' as const,
+    };
+    expect(() =>
+      retainedIncompleteOutput.resetHistory(
+        [retainedIncompleteCall],
+        [
+          retainedIncompleteCall,
+          {
+            itemId: 'm1',
+            type: 'message',
+            role: 'user',
+            status: 'completed',
+            content: [{ type: 'input_text', text: 'next' }],
+          },
+        ],
+      ),
+    ).toThrow('must be completed when it has an output');
+    expect(retainedIncompleteOutput.events).toEqual([]);
+
+    const duplicate = new TestBase();
+    expect(() =>
+      duplicate.resetHistory(
+        [],
+        [
+          { ...original, output: null },
+          { ...original, output: null },
+        ],
+      ),
+    ).toThrow('appears more than once');
+    expect(duplicate.events).toHaveLength(0);
+
+    const mixedDuplicate = new TestBase();
+    expect(() =>
+      mixedDuplicate.resetHistory([], [
+        { ...original, output: null },
+        {
+          itemId: 'f1',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'same ID' }],
+        },
+      ] as any),
+    ).toThrow('appears more than once');
+    expect(mixedDuplicate.events).toHaveLength(0);
+
+    const unchangedDuplicate = new TestBase();
+    expect(() =>
+      unchangedDuplicate.resetHistory(
+        [{ ...original, output: null }],
+        [
+          { ...original, output: null },
+          { ...original, output: null },
+        ],
+      ),
+    ).toThrow('appears more than once');
+    expect(unchangedDuplicate.events).toHaveLength(0);
+
+    const duplicateMessages = new TestBase();
+    expect(() =>
+      duplicateMessages.resetHistory(
+        [],
+        [
+          {
+            itemId: 'm1',
+            type: 'message',
+            role: 'user',
+            status: 'completed',
+            content: [{ type: 'input_text', text: 'first' }],
+          },
+          {
+            itemId: 'm1',
+            type: 'message',
+            role: 'user',
+            status: 'completed',
+            content: [{ type: 'input_text', text: 'second' }],
+          },
+        ],
+      ),
+    ).toThrow('appears more than once');
+    expect(duplicateMessages.events).toHaveLength(0);
+  });
+
+  it('resetHistory rejects cross-kind reuse of a pending item ID', () => {
+    const message = {
+      itemId: 'same',
+      type: 'message' as const,
+      role: 'user' as const,
+      status: 'completed' as const,
+      content: [{ type: 'input_text' as const, text: 'message' }],
+    };
+    const functionCall = {
+      itemId: 'same',
+      type: 'function_call' as const,
+      status: 'in_progress' as const,
+      arguments: '{}',
+      name: 'tool',
+      output: null,
+    };
+
+    const messageThenCall = new TestBase();
+    messageThenCall.resetHistory([], [message]);
+    expect(() => messageThenCall.resetHistory([], [functionCall])).toThrow(
+      'cannot change type while its creation is awaiting acknowledgement',
+    );
+    expect(messageThenCall.events).toHaveLength(1);
+
+    const callThenMessage = new TestBase();
+    callThenMessage.resetHistory([], [functionCall]);
+    expect(() => callThenMessage.resetHistory([], [message])).toThrow(
+      'cannot change type while its creation is awaiting acknowledgement',
+    );
+    expect(callThenMessage.events).toHaveLength(1);
+  });
+
+  it('resetHistory rejects duplicate output item IDs before sending events', () => {
+    const base = new TestBase();
+    const completedCall = {
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      outputItemId: 'fco_shared',
+      output: '42',
+    };
+
+    expect(() =>
+      base.resetHistory(
+        [
+          { ...completedCall, itemId: 'f1', callId: 'call_1' },
+          { ...completedCall, itemId: 'f2', callId: 'call_2' },
+        ],
+        [],
+      ),
+    ).toThrow(
+      'Function call output item fco_shared appears more than once in the current history.',
+    );
+    expect(base.events).toEqual([]);
+  });
+
+  it('resetHistory rejects output item IDs that collide with visible item IDs', () => {
+    const completedCall = {
+      itemId: 'f1',
+      callId: 'call_1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+    const message = {
+      itemId: 'm1',
+      type: 'message' as const,
+      role: 'user' as const,
+      status: 'completed' as const,
+      content: [{ type: 'input_text' as const, text: 'visible' }],
+    };
+
+    const currentCollision = new TestBase();
+    expect(() =>
+      currentCollision.resetHistory(
+        [message, { ...completedCall, outputItemId: 'm1' }],
+        [],
+      ),
+    ).toThrow(
+      'Function call output item m1 conflicts with a visible item ID in the current history.',
+    );
+    expect(currentCollision.events).toEqual([]);
+
+    const updatedCollision = new TestBase();
+    expect(() =>
+      updatedCollision.resetHistory(
+        [],
+        [
+          { ...completedCall, outputItemId: 'f2' },
+          {
+            ...completedCall,
+            itemId: 'f2',
+            callId: 'call_2',
+            status: 'in_progress',
+            output: null,
+          },
+        ],
+      ),
+    ).toThrow(
+      'Function call output item f2 conflicts with a visible item ID in the updated history.',
+    );
+    expect(updatedCollision.events).toEqual([]);
+  });
+
+  it('resetHistory rejects reusing a removed call output ID for a visible item', () => {
+    const base = new TestBase();
+    const completedCall = {
+      itemId: 'f1',
+      callId: 'call_1',
+      outputItemId: 'fco_existing',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    expect(() =>
+      base.resetHistory(
+        [completedCall],
+        [
+          {
+            itemId: 'fco_existing',
+            type: 'message',
+            role: 'user',
+            status: 'completed',
+            content: [{ type: 'input_text', text: 'replacement' }],
+          },
+        ],
+      ),
+    ).toThrow(
+      'Function call output item fco_existing conflicts with a visible item ID in the updated history.',
+    );
+    expect(base.events).toEqual([]);
+  });
+
+  it('resetHistory rejects a visible ID owned by a pending completion output', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
+    const completedCall = {
+      itemId: 'f1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    base.resetHistory([], [completedCall]);
+    const pendingOutputItemId = (base.events[1] as any).item.id;
+    acknowledgeHistoryCreate(base, 0, 'conversation.item.done');
+
+    expect(() =>
+      base.resetHistory(
+        [updates.at(-1)],
+        [
+          completedCall,
+          {
+            itemId: pendingOutputItemId,
+            type: 'message',
+            role: 'user',
+            status: 'completed',
+            content: [{ type: 'input_text', text: 'next' }],
+          },
+        ],
+      ),
+    ).toThrow(
+      `Function call output item ${pendingOutputItemId} conflicts with a visible item ID in the updated history.`,
+    );
+    expect(base.events).toHaveLength(2);
+  });
+
+  it('resetHistory rejects a replacement ID owned by a pending output', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
+    const completedCall = {
+      itemId: 'f1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    base.resetHistory([], [completedCall]);
+    const pendingOutputItemId = (base.events[1] as any).item.id;
+    acknowledgeHistoryCreate(base, 0, 'conversation.item.done');
+
+    expect(() =>
+      base.resetHistory(
+        [updates.at(-1)],
+        [
+          {
+            itemId: pendingOutputItemId,
+            type: 'message',
+            role: 'user',
+            status: 'completed',
+            content: [{ type: 'input_text', text: 'replacement' }],
+          },
+        ],
+      ),
+    ).toThrow(
+      `Function call output item ${pendingOutputItemId} conflicts with a visible item ID in the updated history.`,
+    );
+    expect(base.events).toHaveLength(2);
+  });
+
+  it('resetHistory does not project a mixed batch when a synchronous send fails', () => {
+    const base = new ThrowingTestBase(2);
+    const updates: any[] = [];
+    const deletions: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
+    base.on('item_deleted', (item) => deletions.push(item));
+    const oldMessage = {
+      itemId: 'm1',
+      type: 'message' as const,
+      role: 'user' as const,
+      status: 'completed' as const,
+      content: [{ type: 'input_text' as const, text: 'old' }],
+    };
+
+    expect(() =>
+      base.resetHistory(
+        [oldMessage],
+        [
+          {
+            ...oldMessage,
+            content: [{ type: 'input_text', text: 'updated' }],
+          },
+          {
+            itemId: 'f1',
+            previousItemId: 'm1',
+            type: 'function_call',
+            status: 'in_progress',
+            arguments: '{}',
+            name: 'calc',
+            output: null,
+          },
+        ],
+      ),
+    ).toThrow('send failed');
+    expect(updates).toEqual([]);
+    expect(deletions).toEqual([]);
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.deleted',
+        event_id: 'delete_m1',
+        item_id: 'm1',
+      }),
+    });
+    expect(deletions).toEqual([{ itemId: 'm1' }]);
   });
 
   it('sendMcpResponse emits approval response items', () => {
@@ -863,6 +2857,7 @@ describe('OpenAIRealtimeBase helpers', () => {
 
     expect(funcs[0]?.name).toBe('calc');
     expect(funcs[0]?.responseId).toBe('r3');
+    expect(updates.find((u) => u.itemId === 'f1')?.callId).toBe('c1');
     expect(updates.find((u) => (u as any).itemId === 'mcp1')).toBeTruthy();
   });
 
@@ -1106,6 +3101,659 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
 
     expect(errors[0]?.error?.error?.message).toBe('nope');
+  });
+
+  it('stops suppressing a replay acknowledgement after its request errors', () => {
+    const base = new TestBase();
+    const errors: any[] = [];
+    const updates: any[] = [];
+    base.on('error', (error) => errors.push(error));
+    base.on('item_update', (item) => updates.push(item));
+    base.resetHistory(
+      [],
+      [
+        {
+          itemId: 'm1',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'hello' }],
+        },
+        {
+          itemId: 'f1',
+          previousItemId: 'm1',
+          type: 'function_call',
+          status: 'in_progress',
+          arguments: '{}',
+          name: 'calc',
+          output: null,
+        },
+      ],
+    );
+    const messageCreate = base.events.find(
+      (event) =>
+        event.type === 'conversation.item.create' &&
+        event.item?.type === 'message',
+    );
+    expect(messageCreate?.event_id).toEqual(expect.stringMatching(/^history_/));
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'error',
+        event_id: 'server_error',
+        error: {
+          event_id: messageCreate?.event_id,
+          message: 'create failed',
+        },
+      }),
+    });
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.added',
+        event_id: 'message_added',
+        previous_item_id: null,
+        item: {
+          id: 'm1',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'hello' }],
+        },
+      }),
+    });
+
+    expect(errors).toHaveLength(1);
+    expect(updates.filter((item) => item.itemId === 'm1')).toHaveLength(1);
+  });
+
+  it('keeps rejected replay creates out of session history so they can be retried', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    session.on('error', () => {});
+    await session.connect({ apiKey: 'test' });
+    const desiredHistory = [
+      {
+        itemId: 'm1',
+        type: 'message' as const,
+        role: 'user' as const,
+        status: 'completed' as const,
+        content: [{ type: 'input_text' as const, text: 'hello' }],
+      },
+      {
+        itemId: 'f1',
+        previousItemId: 'm1',
+        type: 'function_call' as const,
+        status: 'in_progress' as const,
+        arguments: '{}',
+        name: 'calc',
+        output: null,
+      },
+    ];
+
+    session.updateHistory(desiredHistory);
+    expect(session.history).toEqual([]);
+
+    for (const event of transport.events) {
+      (transport as any)._onMessage({
+        data: JSON.stringify({
+          type: 'error',
+          event_id: `server_error_${event.event_id}`,
+          error: {
+            event_id: event.event_id,
+            message: 'create failed',
+          },
+        }),
+      });
+    }
+
+    expect(session.history).toEqual([]);
+    const firstAttemptCount = transport.events.length;
+    session.updateHistory(desiredHistory);
+
+    expect(transport.events).toHaveLength(firstAttemptCount + 2);
+    expect(
+      transport.events.slice(firstAttemptCount).map((event) => event.item?.id),
+    ).toEqual(['m1', 'f1']);
+  });
+
+  it('keeps a rejected replay deletion in session history so it can be retried', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    session.on('error', () => {});
+    await session.connect({ apiKey: 'test' });
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.added',
+        event_id: 'server_existing_message',
+        previous_item_id: null,
+        item: {
+          id: 'm1',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'keep me' }],
+        },
+      }),
+    });
+
+    session.updateHistory([]);
+    const firstDelete = transport.events[0];
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'error',
+        event_id: 'server_delete_error',
+        error: {
+          event_id: firstDelete.event_id,
+          message: 'delete failed',
+        },
+      }),
+    });
+
+    expect(session.history.map((item) => item.itemId)).toEqual(['m1']);
+    session.updateHistory([]);
+    expect(transport.events).toHaveLength(2);
+    expect(transport.events[1]).toMatchObject({
+      type: 'conversation.item.delete',
+      item_id: 'm1',
+    });
+  });
+
+  it('projects a successful output deletion when the call deletion is rejected', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    session.on('error', () => {});
+    await session.connect({ apiKey: 'test' });
+    const completedCall = {
+      itemId: 'f1',
+      callId: 'call_1',
+      outputItemId: 'fco_1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    session.updateHistory([completedCall]);
+    acknowledgeHistoryCreate(transport, 0, 'conversation.item.done');
+    acknowledgeHistoryCreate(transport, 1, 'conversation.item.done');
+    expect(session.history).toEqual([completedCall]);
+
+    session.updateHistory([]);
+    acknowledgeHistoryDelete(transport, 2);
+    expect(session.history).toEqual([
+      {
+        ...completedCall,
+        status: 'in_progress',
+        outputItemId: undefined,
+        output: null,
+      },
+    ]);
+
+    const callDelete = transport.events[3];
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'error',
+        event_id: 'server_call_delete_error',
+        error: {
+          event_id: callDelete.event_id,
+          message: 'delete failed',
+        },
+      }),
+    });
+
+    expect(session.history).toEqual([
+      {
+        ...completedCall,
+        status: 'in_progress',
+        outputItemId: undefined,
+        output: null,
+      },
+    ]);
+
+    session.updateHistory([completedCall]);
+    expect(transport.events[4]).toMatchObject({
+      type: 'conversation.item.create',
+      previous_item_id: 'f1',
+      item: {
+        id: 'fco_1',
+        type: 'function_call_output',
+        call_id: 'call_1',
+        output: '42',
+      },
+    });
+  });
+
+  it('coalesces a reentrant call deletion after output deletion is acknowledged', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const completedCall = {
+      itemId: 'f1',
+      callId: 'call_1',
+      outputItemId: 'fco_1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    session.updateHistory([completedCall]);
+    acknowledgeHistoryCreate(transport, 0);
+    acknowledgeHistoryCreate(transport, 1);
+
+    let emptyHistoryUpdates = 0;
+    session.on('history_updated', (history) => {
+      if (history.length === 0) {
+        emptyHistoryUpdates += 1;
+      }
+      if (
+        history.length === 1 &&
+        history[0]?.type === 'function_call' &&
+        history[0].output === null
+      ) {
+        session.updateHistory([]);
+      }
+    });
+
+    session.updateHistory([]);
+    acknowledgeHistoryDelete(transport, 2);
+
+    const callDeletes = transport.events.filter(
+      (event) =>
+        event.type === 'conversation.item.delete' && event.item_id === 'f1',
+    );
+    expect(callDeletes).toHaveLength(1);
+    acknowledgeHistoryDelete(transport, 3);
+    expect(session.history).toEqual([]);
+    expect(emptyHistoryUpdates).toBe(1);
+  });
+
+  it('coalesces output replay while the paired call deletion is pending', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const completedCall = {
+      itemId: 'f1',
+      callId: 'call_1',
+      outputItemId: 'fco_1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    session.updateHistory([completedCall]);
+    acknowledgeHistoryCreate(transport, 0, 'conversation.item.done');
+    acknowledgeHistoryCreate(transport, 1, 'conversation.item.done');
+    session.on('history_updated', (history) => {
+      if (
+        history.length === 1 &&
+        history[0]?.type === 'function_call' &&
+        history[0].output === null
+      ) {
+        session.updateHistory([completedCall]);
+      }
+    });
+
+    session.updateHistory([]);
+    acknowledgeHistoryDelete(transport, 2);
+
+    const outputCreates = transport.events.filter(
+      (event) =>
+        event.type === 'conversation.item.create' &&
+        event.item.type === 'function_call_output',
+    );
+    expect(outputCreates).toHaveLength(1);
+    expect(transport.events[3]).toMatchObject({
+      type: 'conversation.item.delete',
+      item_id: 'f1',
+    });
+    acknowledgeHistoryDelete(transport, 3);
+    expect(session.history).toEqual([]);
+  });
+
+  it('pairs deletion with an output restore awaiting acknowledgement', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const completedCall = {
+      itemId: 'f1',
+      callId: 'call_1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    session.updateHistory([completedCall]);
+    const pendingOutputId = (transport.events[1] as any).item.id;
+    session.on('history_updated', (history) => {
+      if (
+        history.length === 1 &&
+        history[0]?.type === 'function_call' &&
+        history[0].output === null
+      ) {
+        session.updateHistory([]);
+      }
+    });
+
+    acknowledgeHistoryCreate(transport, 0, 'conversation.item.done');
+
+    expect(transport.events[2]).toMatchObject({
+      type: 'conversation.item.delete',
+      item_id: pendingOutputId,
+    });
+    expect(
+      transport.events.filter(
+        (event) =>
+          event.type === 'conversation.item.delete' && event.item_id === 'f1',
+      ),
+    ).toHaveLength(0);
+
+    acknowledgeHistoryCreate(transport, 1, 'conversation.item.done');
+    acknowledgeHistoryDelete(transport, 2);
+    expect(transport.events[3]).toMatchObject({
+      type: 'conversation.item.delete',
+      item_id: 'f1',
+    });
+    acknowledgeHistoryDelete(transport, 3);
+    expect(session.history).toEqual([]);
+  });
+
+  it('retries call deletion after a pending output and its deletion are rejected', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    session.on('error', () => {});
+    await session.connect({ apiKey: 'test' });
+    const completedCall = {
+      itemId: 'f1',
+      callId: 'call_1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    session.updateHistory([completedCall]);
+    acknowledgeHistoryCreate(transport, 0, 'conversation.item.done');
+    session.updateHistory([]);
+    const outputCreate = transport.events[1];
+    const outputDelete = transport.events[2];
+
+    for (const event of [outputCreate, outputDelete]) {
+      (transport as any)._onMessage({
+        data: JSON.stringify({
+          type: 'error',
+          event_id: `server_error_${event.event_id}`,
+          error: {
+            event_id: event.event_id,
+            message: 'request rejected',
+          },
+        }),
+      });
+    }
+
+    expect(session.history).toMatchObject([
+      { itemId: 'f1', status: 'in_progress', output: null },
+    ]);
+    session.updateHistory([]);
+    expect(transport.events[3]).toMatchObject({
+      type: 'conversation.item.delete',
+      item_id: 'f1',
+    });
+    acknowledgeHistoryDelete(transport, 3);
+    expect(session.history).toEqual([]);
+  });
+
+  it('retries output deletion before sending the paired call deletion', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    session.on('error', () => {});
+    await session.connect({ apiKey: 'test' });
+    const completedCall = {
+      itemId: 'f1',
+      callId: 'call_1',
+      outputItemId: 'fco_1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    session.updateHistory([completedCall]);
+    acknowledgeHistoryCreate(transport, 0);
+    acknowledgeHistoryCreate(transport, 1);
+    session.updateHistory([]);
+    const rejectedOutputDelete = transport.events[2];
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'error',
+        event_id: 'server_output_delete_error',
+        error: {
+          event_id: rejectedOutputDelete.event_id,
+          message: 'output delete rejected',
+        },
+      }),
+    });
+
+    expect(session.history).toEqual([completedCall]);
+    expect(transport.events).toHaveLength(3);
+
+    session.updateHistory([]);
+    expect(transport.events).toHaveLength(4);
+    expect(transport.events[3]).toMatchObject({
+      type: 'conversation.item.delete',
+      item_id: 'fco_1',
+    });
+  });
+
+  it('retries a rejected function call output without recreating the call', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    session.on('error', () => {});
+    await session.connect({ apiKey: 'test' });
+    const desiredCall = {
+      itemId: 'f1',
+      type: 'function_call' as const,
+      status: 'completed' as const,
+      arguments: '{}',
+      name: 'calc',
+      output: '42',
+    };
+
+    session.updateHistory([desiredCall]);
+    acknowledgeHistoryCreate(transport, 0);
+    const rejectedOutput = transport.events[1];
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'error',
+        event_id: 'server_output_error',
+        error: {
+          event_id: rejectedOutput.event_id,
+          message: 'output rejected',
+        },
+      }),
+    });
+    expect(session.history).toMatchObject([
+      {
+        itemId: 'f1',
+        callId: 'f1',
+        status: 'in_progress',
+        output: null,
+      },
+    ]);
+
+    session.updateHistory([desiredCall]);
+
+    expect(transport.events).toHaveLength(3);
+    expect(transport.events[2]).toMatchObject({
+      type: 'conversation.item.create',
+      previous_item_id: 'f1',
+      item: {
+        id: expect.stringMatching(/^fco_/),
+        type: 'function_call_output',
+        call_id: 'f1',
+        output: '42',
+      },
+    });
+    acknowledgeHistoryCreate(transport, 2);
+    expect(session.history).toMatchObject([
+      {
+        ...desiredCall,
+        callId: 'f1',
+        outputItemId: (transport.events[2] as any).item.id,
+      },
+    ]);
+  });
+
+  it('projects an acknowledged explicit-root function call at the beginning', async () => {
+    const { RealtimeSession } = await import('../src/realtimeSession');
+    const { RealtimeAgent } = await import('../src/realtimeAgent');
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const trailingMessage = {
+      itemId: 'm1',
+      type: 'message' as const,
+      role: 'user' as const,
+      status: 'completed' as const,
+      content: [{ type: 'input_text' as const, text: 'existing' }],
+    };
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.added',
+        event_id: 'server_existing_message',
+        previous_item_id: null,
+        item: {
+          id: 'm1',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'existing' }],
+        },
+      }),
+    });
+
+    session.updateHistory([
+      {
+        itemId: 'f1',
+        previousItemId: 'root',
+        type: 'function_call',
+        status: 'in_progress',
+        arguments: '{}',
+        name: 'calc',
+        output: null,
+      },
+      trailingMessage,
+    ]);
+
+    const callCreateIndex = transport.events.findIndex(
+      (event) =>
+        event.type === 'conversation.item.create' &&
+        event.item?.type === 'function_call',
+    );
+    expect(transport.events[callCreateIndex]).toMatchObject({
+      type: 'conversation.item.create',
+      previous_item_id: 'root',
+      item: { id: 'f1', type: 'function_call' },
+    });
+    for (const [index, event] of transport.events.entries()) {
+      if (event.type === 'conversation.item.delete') {
+        acknowledgeHistoryDelete(transport, index);
+      } else {
+        acknowledgeHistoryCreate(transport, index);
+      }
+    }
+    expect(session.history.map((item) => item.itemId)).toEqual(['f1', 'm1']);
+  });
+
+  it('clears replay acknowledgement ownership when the transport closes', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
+    base.resetHistory(
+      [],
+      [
+        {
+          itemId: 'm1',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'hello' }],
+        },
+        {
+          itemId: 'f1',
+          previousItemId: 'm1',
+          type: 'function_call',
+          status: 'in_progress',
+          arguments: '{}',
+          name: 'calc',
+          output: null,
+        },
+      ],
+    );
+
+    (base as any)._onClose();
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.added',
+        event_id: 'message_added',
+        previous_item_id: null,
+        item: {
+          id: 'm1',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'hello' }],
+        },
+      }),
+    });
+
+    expect(updates.filter((item) => item.itemId === 'm1')).toHaveLength(1);
   });
 
   it('maps input_image content and merges provider data', () => {

@@ -86,6 +86,7 @@ describe('OpenAI realtime history replay', () => {
     expect(base.events).toEqual([
       {
         type: 'conversation.item.delete',
+        event_id: expect.stringMatching(/^history_/),
         item_id: 'remove-me',
       },
     ]);

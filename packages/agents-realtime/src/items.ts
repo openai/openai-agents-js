@@ -51,6 +51,8 @@ export const realtimeMessageItemSchema = z.discriminatedUnion('role', [
 export const realtimeToolCallItem = z.object({
   itemId: z.string(),
   previousItemId: z.string().nullable().optional(),
+  callId: z.string().optional(),
+  outputItemId: z.string().optional(),
   type: z.literal('function_call'),
   status: z.enum(['in_progress', 'completed', 'incomplete']),
   arguments: z.string(),

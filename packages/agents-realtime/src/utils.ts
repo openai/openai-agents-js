@@ -306,6 +306,8 @@ export function updateRealtimeHistory(
       }
       return item;
     });
+  } else if ((event as any).previousItemId === 'root') {
+    return [newEvent, ...history];
   } else if ((event as any).previousItemId) {
     // Insert after previousItemId if found, else at end
     const prevIndex = history.findIndex(
