@@ -285,15 +285,29 @@ type SerializedShellContainerSkill = NonNullable<
 type SerializedShellContainerNetworkPolicy =
   SerializedShellContainerAutoEnvironment['networkPolicy'];
 
+const replaySafeWebSocketErrors = new WeakSet<object>();
+const transientNeverSentWebSocketErrors = new WeakSet<object>();
+
+function markReplaySafeWebSocketError(error: unknown): void {
+  if (typeof error === 'object' && error !== null) {
+    replaySafeWebSocketErrors.add(error);
+  }
+}
+
+function markTransientNeverSentWebSocketError(error: unknown): void {
+  if (typeof error === 'object' && error !== null) {
+    transientNeverSentWebSocketErrors.add(error);
+  }
+}
+
 function isNeverSentWebSocketError(error: unknown): boolean {
-  if (isWebSocketNotOpenError(error)) {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    transientNeverSentWebSocketErrors.has(error)
+  ) {
     return true;
   }
-
-  const errorCause =
-    error instanceof Error
-      ? (error as Error & { cause?: unknown }).cause
-      : undefined;
 
   if (
     error instanceof ResponsesWebSocketInternalError &&
@@ -302,14 +316,34 @@ function isNeverSentWebSocketError(error: unknown): boolean {
     return true;
   }
 
-  if (
+  const errorCause =
+    error instanceof Error
+      ? (error as Error & { cause?: unknown }).cause
+      : undefined;
+
+  return (
     errorCause instanceof ResponsesWebSocketInternalError &&
     errorCause.code === 'connection_closed_before_opening'
-  ) {
-    return true;
-  }
+  );
+}
 
-  return false;
+function isReplaySafeWebSocketError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    replaySafeWebSocketErrors.has(error)
+  );
+}
+
+function isTransientConnectionSetupError(error: unknown): boolean {
+  return (
+    (error instanceof ResponsesWebSocketInternalError &&
+      error.code === 'connection_closed_before_opening') ||
+    (error instanceof Error &&
+      error.message.startsWith(
+        'Responses websocket connection timed out before opening after ',
+      ))
+  );
 }
 
 function isAmbiguousWebSocketReplayError(error: unknown): boolean {
@@ -3843,6 +3877,14 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
       };
     }
 
+    if (isReplaySafeWebSocketError(args.error)) {
+      return {
+        suggested: false,
+        replaySafety: 'safe',
+        reason: args.error instanceof Error ? args.error.message : undefined,
+      };
+    }
+
     if (isAmbiguousWebSocketReplayError(args.error)) {
       return (
         super.getRetryAdvice(args) ?? {
@@ -3920,15 +3962,15 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
   ): AsyncIterable<OpenAI.Responses.ResponseStreamEvent> {
     const requestTimeoutDeadline =
       this.#createWebSocketRequestTimeoutDeadline();
-    const releaseLock = await this.#acquireWebSocketRequestLock(
-      builtRequest.signal,
-      requestTimeoutDeadline,
-    );
-
+    let releaseLock: (() => void) | undefined;
     let replayMayBeUnsafe = false;
     let receivedServerFrame = false;
     let sawTerminalResponseEvent = false;
     try {
+      releaseLock = await this.#acquireWebSocketRequestLock(
+        builtRequest.signal,
+        requestTimeoutDeadline,
+      );
       throwIfAborted(builtRequest.signal);
       const { frame, wsURL, headers } = await this.#prepareWebSocketRequest(
         builtRequest,
@@ -3954,24 +3996,34 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
       const serializedFrame = JSON.stringify(frame);
       const sendSerializedFrame = async () => {
         try {
-          await activeConnection.send(serializedFrame);
-        } catch (error) {
-          if (!isWebSocketNotOpenError(error)) {
-            throw error;
-          }
+          try {
+            await activeConnection.send(serializedFrame);
+          } catch (error) {
+            if (!isWebSocketNotOpenError(error)) {
+              throw error;
+            }
 
-          setActiveConnection(
-            await this.#reconnectWebSocketConnection(
-              wsURL,
-              headers,
-              builtRequest.signal,
-              requestTimeoutDeadline,
-            ),
-          );
-          await activeConnection.send(serializedFrame);
+            setActiveConnection(
+              await this.#reconnectWebSocketConnection(
+                wsURL,
+                headers,
+                builtRequest.signal,
+                requestTimeoutDeadline,
+              ),
+            );
+            await activeConnection.send(serializedFrame);
+          }
+        } catch (error) {
+          if (isWebSocketNotOpenError(error)) {
+            markTransientNeverSentWebSocketError(error);
+          }
+          throw error;
         }
       };
       await sendSerializedFrame();
+      // Once response.create leaves the client, a timeout or disconnect can
+      // race with server acceptance even before the first response frame.
+      replayMayBeUnsafe = true;
 
       while (true) {
         const rawFrame = await this.#nextWebSocketFrame(
@@ -4025,6 +4077,9 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
         }
       }
     } catch (error) {
+      if (!replayMayBeUnsafe) {
+        markReplaySafeWebSocketError(error);
+      }
       if (replayMayBeUnsafe) {
         markUnsafeWebSocketReplayError(error, receivedServerFrame);
       }
@@ -4039,16 +4094,21 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
         if (error instanceof Error) {
           (wrappedError as Error & { cause?: unknown }).cause = error;
         }
+        markReplaySafeWebSocketError(wrappedError);
+        if (isNeverSentWebSocketError(error)) {
+          markTransientNeverSentWebSocketError(wrappedError);
+        }
         throw wrappedError;
       }
       throw error;
     } finally {
       const shouldDropConnection =
         !sawTerminalResponseEvent || !this.#reuseConnection;
-      const dropConnectionPromise = shouldDropConnection
-        ? this.#dropWebSocketConnection()
-        : undefined;
-      releaseLock();
+      const dropConnectionPromise =
+        releaseLock && shouldDropConnection
+          ? this.#dropWebSocketConnection()
+          : undefined;
+      releaseLock?.();
       await dropConnectionPromise;
     }
   }
@@ -4226,14 +4286,21 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
       (configuredTimeoutMs) =>
         `Responses websocket connection timed out before opening after ${configuredTimeoutMs}ms.`,
     );
-    this.#wsConnection = await ResponsesWebSocketConnection.connect(
-      wsURL,
-      headers,
-      signal,
-      connectTimeout.timeoutMs,
-      connectTimeout.errorMessage,
-      this.#websocketOptions,
-    );
+    try {
+      this.#wsConnection = await ResponsesWebSocketConnection.connect(
+        wsURL,
+        headers,
+        signal,
+        connectTimeout.timeoutMs,
+        connectTimeout.errorMessage,
+        this.#websocketOptions,
+      );
+    } catch (error) {
+      if (isTransientConnectionSetupError(error)) {
+        markTransientNeverSentWebSocketError(error);
+      }
+      throw error;
+    }
     this.#wsConnectionIdentity = identity;
     return { connection: this.#wsConnection, reused: false };
   }
@@ -4329,6 +4396,9 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
       return releaseLock;
     } catch (error) {
       releaseLock();
+      if (!(error instanceof OpenAI.APIUserAbortError)) {
+        markTransientNeverSentWebSocketError(error);
+      }
       throw error;
     }
   }

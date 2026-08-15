@@ -628,6 +628,43 @@ describe('OpenAIResponsesWSModel', () => {
     ).toBeUndefined();
   });
 
+  it('does not suggest retrying deterministic pre-send auth failures', async () => {
+    const fakeClient = createFakeClient() as any;
+    fakeClient.authHeaders = vi.fn(() => {
+      const error = new Error('auth callback failed');
+      error.name = 'InvalidStateError';
+      throw error;
+    });
+
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws');
+    const request = {
+      systemInstructions: undefined,
+      input: 'ping',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    };
+
+    const error = await (model as any)
+      ._fetchResponse(request as any, false)
+      .catch((caughtError: unknown) => caughtError);
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: request as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toMatchObject({
+      suggested: false,
+      replaySafety: 'safe',
+    });
+  });
+
   it('preserves NullableHeaders null unsets across websocket header merges', async () => {
     const fakeClient = createFakeClient() as any;
     fakeClient.authHeaders = vi.fn().mockResolvedValue({
@@ -1231,6 +1268,45 @@ describe('OpenAIResponsesWSModel', () => {
     expect(error.message).not.toContain('feature may not be enabled');
   });
 
+  it('keeps generic pre-send websocket open errors safe but non-suggested', async () => {
+    TestWebSocket.onCreate = (socket) => {
+      void Promise.resolve().then(() => {
+        (socket as any).emit('error', {
+          message: 'Responses websocket connection error.',
+        });
+      });
+    };
+
+    const fakeClient = createFakeClient();
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws');
+    const request = {
+      systemInstructions: undefined,
+      input: 'ping',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    };
+
+    const error = await (model as any)
+      ._fetchResponse(request as any, false)
+      .catch((caughtError: unknown) => caughtError);
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: request as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toMatchObject({
+      suggested: false,
+      replaySafety: 'safe',
+    });
+  });
+
   it('fails fast when websocket closes before waitForOpen attaches listeners', async () => {
     class FailFastCloseWebSocket {
       static CONNECTING = 0;
@@ -1378,6 +1454,9 @@ describe('OpenAIResponsesWSModel', () => {
       } as any,
       false,
     );
+    const firstErrorPromise = firstResponsePromise.catch(
+      (error: unknown) => error,
+    );
     await firstSocketCreated;
 
     // The second request snapshots timeout at request start (before queue wait),
@@ -1394,9 +1473,22 @@ describe('OpenAIResponsesWSModel', () => {
       false,
     );
 
-    await expect(firstResponsePromise).rejects.toThrow(
+    const firstError = await firstErrorPromise;
+    expect(firstError).toBeInstanceOf(Error);
+    expect((firstError as Error).message).toContain(
       'Responses websocket connection timed out before opening after 25ms.',
     );
+    expect(
+      model.getRetryAdvice({
+        error: firstError,
+        request: baseRequest as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toMatchObject({
+      suggested: true,
+      replaySafety: 'safe',
+    });
     await expect(secondResponsePromise).resolves.toMatchObject({
       id: 'resp_done_2',
     });
@@ -2072,6 +2164,79 @@ describe('OpenAIResponsesWSModel', () => {
     expect(TestWebSocket.instances[1]?.sent).toHaveLength(1);
   });
 
+  it('suggests retry after a pre-send race followed by transient reconnect failure', async () => {
+    const fakeClient = createFakeClient();
+    let socketCreateCount = 0;
+
+    TestWebSocket.onCreate = (socket) => {
+      socketCreateCount += 1;
+      if (socketCreateCount === 2) {
+        socket.readyState = -1;
+        return;
+      }
+      socket.onSend(() => {
+        socket.queueJSON({
+          type: 'response.created',
+          response: { id: 'resp_init_1' },
+          sequence_number: 0,
+        });
+        socket.queueJSON({
+          type: 'response.completed',
+          response: {
+            id: 'resp_done_1',
+            output: [],
+            usage: {},
+          },
+          sequence_number: 1,
+        });
+      });
+    };
+
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws');
+    const request = {
+      systemInstructions: undefined,
+      input: 'ping',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: undefined,
+    };
+
+    await (model as any)._fetchResponse(request as any, false);
+    (fakeClient as any).timeout = 25;
+    (fakeClient as any)._options = {
+      ...((fakeClient as any)._options ?? {}),
+      timeout: 25,
+    };
+    const firstSocket = TestWebSocket.instances[0]!;
+    firstSocket.send = (() => {
+      firstSocket.close();
+      const error = new Error('WebSocket closed before send');
+      error.name = 'InvalidStateError';
+      throw error;
+    }) as TestWebSocket['send'];
+
+    const error = await (model as any)
+      ._fetchResponse(request as any, false)
+      .catch((caughtError: unknown) => caughtError);
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: request as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toMatchObject({
+      suggested: true,
+      replaySafety: 'safe',
+    });
+    expect(TestWebSocket.instances).toHaveLength(2);
+    expect(TestWebSocket.instances[1]?.sent).toHaveLength(0);
+  });
+
   it('reconnects when a reused websocket send throws ws readyState error', async () => {
     const fakeClient = createFakeClient();
     let socketCreateCount = 0;
@@ -2440,6 +2605,17 @@ describe('OpenAIResponsesWSModel', () => {
     await expect(queuedResponsePromise).rejects.toThrow(
       'Responses websocket request queue wait timed out after 25ms.',
     );
+    expect(
+      model.getRetryAdvice({
+        error: (queuedOutcome as any).error,
+        request: baseRequest as any,
+        stream: false,
+        attempt: 1,
+      }),
+    ).toMatchObject({
+      suggested: true,
+      replaySafety: 'safe',
+    });
   });
 
   it('does not send an already-aborted queued websocket request', async () => {
@@ -2587,6 +2763,51 @@ describe('OpenAIResponsesWSModel', () => {
       process.off('unhandledRejection', handler);
       await iterator.return?.();
     }
+  });
+
+  it('marks an abort after sending response.create as unsafe to replay', async () => {
+    const fakeClient = createFakeClient();
+    const abortController = new AbortController();
+
+    TestWebSocket.onCreate = (socket) => {
+      socket.onSend(() => {
+        abortController.abort();
+      });
+    };
+
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws');
+    const request = {
+      systemInstructions: undefined,
+      input: 'ping',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+      signal: abortController.signal,
+    };
+    const rawStream = (await (model as any)._fetchResponse(
+      request as any,
+      true,
+    )) as AsyncIterable<OpenAIResponseStreamEvent>;
+
+    let error: unknown;
+    try {
+      await rawStream[Symbol.asyncIterator]().next();
+    } catch (caughtError) {
+      error = caughtError;
+    }
+
+    expect(
+      model.getRetryAdvice({
+        error,
+        request: request as any,
+        stream: true,
+        attempt: 1,
+      }),
+    ).toMatchObject({
+      replaySafety: 'unsafe',
+    });
   });
 
   it('refreshes auth only after a queued websocket request acquires the request lock', async () => {

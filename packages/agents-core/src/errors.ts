@@ -58,6 +58,24 @@ export class ModelRefusalError extends AgentsError {
 export class ModelBehaviorError extends AgentsError {}
 
 /**
+ * Error thrown when a model call exceeds its configured timeout.
+ */
+export class ModelTimeoutError extends AgentsError {
+  readonly code = 'ETIMEDOUT' as const;
+  readonly timeoutMs: number;
+  /**
+   * The provider or transport error observed after the timeout signal was sent, if any.
+   */
+  readonly cause?: unknown;
+
+  constructor({ timeoutMs, cause }: { timeoutMs: number; cause?: unknown }) {
+    super(`Model call timed out after ${timeoutMs}ms.`);
+    this.timeoutMs = timeoutMs;
+    this.cause = cause;
+  }
+}
+
+/**
  * Context from tool invocation that failed validation.
  */
 export type ToolInvocationErrorContext = {

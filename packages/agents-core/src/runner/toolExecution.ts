@@ -2539,6 +2539,7 @@ export async function executeHandoffCalls<
   runner: Runner,
   runContext: RunContext<TContext>,
   parent?: Span<any>,
+  validateHandoffAgent?: (agent: Agent<any, any>) => void,
 ): Promise<import('./steps').SingleStepResult> {
   newStepItems = [...newStepItems];
 
@@ -2587,10 +2588,12 @@ export async function executeHandoffCalls<
         );
       }
 
+      validateHandoffAgent?.(handoff.agent);
       const newAgent = await handoff.onInvokeHandoff(
         runContext,
         actualHandoff.toolCall.arguments,
       );
+      validateHandoffAgent?.(newAgent);
 
       handoffSpan.spanData.to_agent = newAgent.name;
 
