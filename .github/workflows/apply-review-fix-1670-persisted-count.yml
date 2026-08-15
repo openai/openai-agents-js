@@ -1,0 +1,37 @@
+name: Apply persisted rollback count fix
+
+on:
+  push:
+    branches:
+      - fix/session-inline-compaction-1668
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch rollback count
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('packages/agents-core/src/runner/sessionPersistence.ts')
+          s = p.read_text()
+          old = '    for (let index = 0; index < appendedItems.length; index += 1) {\n'
+          new = '    for (let index = 0; index < comparableAppendedItems.length; index += 1) {\n'
+          if s.count(old) != 1:
+              raise SystemExit(f'rollback loop matched {s.count(old)} times')
+          p.write_text(s.replace(old, new))
+          PY
+      - name: Commit patch
+        run: |
+          rm .github/workflows/apply-review-fix-1670-persisted-count.yml
+          git config user.name "Sylvester Kaczmarek"
+          git config user.email "16242628+sylvesterkaczmarek@users.noreply.github.com"
+          git add packages/agents-core/src/runner/sessionPersistence.ts .github/workflows/apply-review-fix-1670-persisted-count.yml
+          git commit -m "fix(core): roll back only persisted compaction prefix items"
+          git push origin HEAD:${GITHUB_REF_NAME}
