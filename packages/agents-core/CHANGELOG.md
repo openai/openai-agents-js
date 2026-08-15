@@ -1,5 +1,28 @@
 # @openai/agents-core
 
+## 0.16.0
+
+### Minor Changes
+
+- b727790: feat: add scripted model, sandbox session, and Realtime testing utilities
+
+### Patch Changes
+
+- bedb045: fix: isolate interruption result arrays from pending approvals
+- 442cedb: fix: finalize max-turn handler items after guardrails and persistence
+- ede1fb9: fix: detach RunState interruption snapshots
+- f639953: fix: detach Manifest arguments in scripted sandbox call snapshots
+- e2cbca8: fix: reject partially matched stacked apply-diff anchors
+- c5eda7e: feat: allow model-input filters to preserve item identity
+- d4ef614: fix: detach automatically generated scripted model stream events
+- 77343dd: fix: redact invalid structured tool output diagnostics
+- 200c20e: fix: snapshot sandbox HTTP event sink headers
+- 85a5ddb: fix: apply stacked diff anchors sequentially
+- d385c10: fix: avoid redundant Standard Schema validation without dynamic approval
+- aa6dd2d: feat: support Standard Schema tool inputs and structured agent outputs
+- d7fd0cf: fix: keep cached MCP tool arrays private from callers
+- 26bc638: fix: describe and test granted view_image paths
+
 ## 0.15.0
 
 ### Minor Changes
