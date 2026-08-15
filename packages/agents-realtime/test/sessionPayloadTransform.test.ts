@@ -69,6 +69,71 @@ describe('Realtime session payload transform', () => {
     expect(base.events[0]?.session.audio).toBeUndefined();
   });
 
+  it('does not let an in-place transform mutate canonical state', () => {
+    const base = new TestBase({
+      transformSessionPayload: (payload) => {
+        const turnDetection = payload.audio?.input?.turn_detection;
+        if (turnDetection) {
+          delete turnDetection.interrupt_response;
+        }
+        return payload;
+      },
+    });
+
+    base.updateSessionConfig({
+      turnDetection: {
+        type: 'server_vad',
+        interruptResponse: true,
+      },
+    });
+
+    expect(
+      base.events[0]?.session.audio?.input?.turn_detection?.interrupt_response,
+    ).toBeUndefined();
+    expect(
+      base.rawSessionConfig?.audio?.input?.turn_detection?.interrupt_response,
+    ).toBe(true);
+  });
+
+  it('tracks direct session update acknowledgements after transformed updates', () => {
+    const base = new TestBase({
+      transformSessionPayload: ({ type: _type, ...rest }) => rest,
+    });
+
+    base.updateSessionConfig({ instructions: 'sdk managed' });
+    base.receiveSessionUpdated({ instructions: 'provider acknowledgement' });
+
+    expect(base.rawSessionConfig?.instructions).toBe('sdk managed');
+
+    base.sendEvent({
+      type: 'session.update',
+      session: {
+        audio: {
+          input: {
+            turn_detection: {
+              type: 'server_vad',
+              interrupt_response: false,
+            },
+          },
+        },
+      },
+    });
+    base.receiveSessionUpdated({
+      audio: {
+        input: {
+          turn_detection: {
+            type: 'server_vad',
+            interrupt_response: false,
+          },
+        },
+      },
+    });
+
+    expect(
+      base.rawSessionConfig?.audio?.input?.turn_detection?.interrupt_response,
+    ).toBe(false);
+  });
+
   it('keeps buildSessionPayload canonical', () => {
     const base = new TestBase({
       transformSessionPayload: ({ type: _type, ...rest }) => rest,
