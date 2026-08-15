@@ -1,5 +1,32 @@
 # @openai/agents-extensions
 
+## 0.16.0
+
+### Minor Changes
+
+- b727790: feat: add scripted model, sandbox session, and Realtime testing utilities
+
+### Patch Changes
+
+- 34bd6a5: fix: Forward function-tool strict settings through the AI SDK adapter.
+- aa6dd2d: feat: support Standard Schema tool inputs and structured agent outputs
+- Updated dependencies [bedb045]
+- Updated dependencies [442cedb]
+- Updated dependencies [ede1fb9]
+- Updated dependencies [f639953]
+- Updated dependencies [e2cbca8]
+- Updated dependencies [c5eda7e]
+- Updated dependencies [d4ef614]
+- Updated dependencies [77343dd]
+- Updated dependencies [b727790]
+- Updated dependencies [200c20e]
+- Updated dependencies [85a5ddb]
+- Updated dependencies [d385c10]
+- Updated dependencies [aa6dd2d]
+- Updated dependencies [d7fd0cf]
+- Updated dependencies [26bc638]
+  - @openai/agents-core@0.16.0
+
 ## 0.15.0
 
 ### Patch Changes
