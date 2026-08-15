@@ -1,0 +1,27 @@
+name: Apply realtime session update tracking reset
+
+on:
+  push:
+    branches:
+      - feat/realtime-session-payload-transform-466-rebased
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/realtime-session-payload-transform-466-rebased
+      - run: python .github/scripts/apply-1685-reset.py
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix(realtime): track session update acknowledgements in order"
+          git push origin HEAD:feat/realtime-session-payload-transform-466-rebased
