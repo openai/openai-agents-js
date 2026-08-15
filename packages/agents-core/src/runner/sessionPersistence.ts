@@ -2105,7 +2105,7 @@ async function reconcileIdentityPreservingCompactionFailure(
   }
 
   try {
-    for (let index = 0; index < appendedItems.length; index += 1) {
+    for (let index = 0; index < comparableAppendedItems.length; index += 1) {
       const popped = await popSessionItem(session, runContext);
       if (!popped) {
         throw new Error(
