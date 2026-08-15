@@ -32,9 +32,10 @@ export type LocalSandboxSessionStateValues = {
 export async function deserializeLocalSandboxSessionStateValues(
   state: Record<string, unknown>,
   configuredSnapshot: LocalSandboxSnapshotSpec | null | undefined,
+  prepareManifest: (manifest: Manifest) => Manifest = (manifest) => manifest,
 ): Promise<LocalSandboxSessionStateValues> {
-  const manifest = deserializeManifest(
-    state.manifest as Record<string, unknown> | undefined,
+  const manifest = prepareManifest(
+    deserializeManifest(state.manifest as Record<string, unknown> | undefined),
   );
   const persistedEnvironment = readEnvironmentState(state.environment);
   const runtimeEnvironment = Object.fromEntries(

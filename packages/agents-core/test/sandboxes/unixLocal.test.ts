@@ -19,6 +19,7 @@ import {
   Manifest,
   InMemoryRemoteSnapshotStore,
   NoopSnapshotSpec,
+  ProcessEnvValue,
   registerEnvValueReference,
   SandboxMountError,
   s3Mount,
@@ -33,7 +34,11 @@ import {
   materializeLocalWorkspaceManifestMounts,
   pathExists,
 } from '../../src/sandbox/sandboxes/shared/localWorkspace';
-import { rebindPersistedMountCredentials } from '../../src/sandbox/internal';
+import {
+  bindProcessEnvironmentAccess,
+  rebindPersistedMountCredentials,
+  serializeManifestRecord,
+} from '../../src/sandbox/internal';
 
 const ONE_BY_ONE_PNG = Uint8Array.from(
   Buffer.from(
@@ -52,6 +57,7 @@ describe('UnixLocalSandboxClient', () => {
   });
 
   afterEach(async () => {
+    delete process.env.AGENTS_TEST_UNIX_PROCESS_SOURCE;
     await rm(rootDir, { recursive: true, force: true });
   });
 
@@ -1274,6 +1280,73 @@ describe('UnixLocalSandboxClient', () => {
       },
     });
     expect(session.state.manifest.extraPathGrants).toEqual([]);
+
+    await session.close();
+  });
+
+  it('rejects protected process environment values before applying a manifest delta', async () => {
+    process.env.AGENTS_TEST_UNIX_PROCESS_SOURCE = 'unix-process-secret';
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(new Manifest());
+    const delta = bindProcessEnvironmentAccess(
+      new Manifest({
+        entries: {
+          'should-not-exist.txt': {
+            type: 'file',
+            content: 'not materialized\n',
+          },
+        },
+        environment: {
+          SANDBOX_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_UNIX_PROCESS_SOURCE',
+          }),
+        },
+      }),
+      {
+        processEnvironmentBindings: {
+          SANDBOX_TOKEN: 'AGENTS_TEST_UNIX_PROCESS_SOURCE',
+        },
+      },
+    );
+
+    await expect(session.applyManifest(delta)).rejects.toMatchObject({
+      code: 'unsupported_feature',
+      message: expect.stringContaining(
+        'unix_local does not support ProcessEnvValue',
+      ),
+    });
+    await expect(
+      stat(join(session.state.workspaceRootPath, 'should-not-exist.txt')),
+    ).rejects.toThrow();
+    expect(session.state.environment).not.toHaveProperty('SANDBOX_TOKEN');
+
+    await session.close();
+  });
+
+  it('rejects protected process environment values at persistence boundaries', async () => {
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: new NoopSnapshotSpec(),
+    });
+    const session = await client.create(new Manifest());
+    const serialized = await client.serializeSessionState(session.state);
+    const protectedManifest = new Manifest({
+      environment: {
+        SANDBOX_TOKEN: new ProcessEnvValue({ name: 'SANDBOX_SOURCE' }),
+      },
+    });
+    session.state.manifest = protectedManifest;
+
+    await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+      /Use DockerSandboxClient instead/u,
+    );
+
+    serialized.manifest = serializeManifestRecord(protectedManifest);
+    await expect(client.deserializeSessionState(serialized)).rejects.toThrow(
+      /Use DockerSandboxClient instead/u,
+    );
 
     await session.close();
   });

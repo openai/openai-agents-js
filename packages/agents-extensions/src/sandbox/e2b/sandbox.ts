@@ -1,4 +1,5 @@
 import { UserError } from '@openai/agents-core';
+import { assertProcessEnvValuesUnsupported } from '@openai/agents-core/sandbox/internal';
 import {
   Manifest,
   SandboxProviderError,
@@ -884,6 +885,7 @@ export class E2BSandboxClient implements SandboxClient<
     const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
     assertCoreSnapshotUnsupported('E2BSandboxClient', createArgs.snapshot);
     const manifest = createArgs.manifest;
+    assertProcessEnvValuesUnsupported(manifest, 'e2b');
     return await withSandboxSpan(
       'sandbox.start',
       {
@@ -1034,6 +1036,7 @@ export class E2BSandboxClient implements SandboxClient<
   }
 
   async resume(state: E2BSandboxSessionState): Promise<E2BSandboxSession> {
+    assertProcessEnvValuesUnsupported(state.manifest, 'e2b');
     assertRemoteSandboxSessionStateCanResume(state);
     const Sandbox = await loadE2BSandboxClass(state.sandboxType);
     const connect = Sandbox.connect ?? Sandbox.resume;

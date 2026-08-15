@@ -8,7 +8,9 @@ import {
   Manifest,
   MOUNT_CREDENTIAL_EXPOSURE_POLICY_KEYS,
   normalizeRelativePath,
+  ProcessEnvValue,
   replaceManifestMountCredentialExposurePolicy,
+  withProcessEnvironmentErrorRedaction,
   type InContainerMountCredentialExposureAuthority,
 } from './manifest';
 import { stableJsonStringify } from './shared/stableJson';
@@ -377,14 +379,21 @@ export function assertSandboxSessionStateUsable(state: object): void {
 }
 
 export async function withExclusiveSandboxManifestMutation<T>(
-  state: object,
+  state: { manifest: Manifest },
   operation: () => Promise<T>,
 ): Promise<T> {
   const pendingCount = pendingManifestMutationCounts.get(state) ?? 0;
   pendingManifestMutationCounts.set(state, pendingCount + 1);
   sandboxStateGenerations.set(state, sandboxStateGeneration(state) + 1);
   try {
-    return await withExclusiveSandboxStateAccess(state, operation);
+    return await withProcessEnvironmentErrorRedaction(
+      state.manifest,
+      {
+        provider: 'sandbox',
+        operation: 'manifest mutation',
+      },
+      async () => await withExclusiveSandboxStateAccess(state, operation),
+    );
   } finally {
     const remaining = (pendingManifestMutationCounts.get(state) ?? 1) - 1;
     if (remaining > 0) {
@@ -1041,6 +1050,12 @@ export function validateMountEnvironmentCredentialBoundaries(
 export async function resolveAndValidateMountEnvironment(
   manifest: Manifest,
 ): Promise<Manifest> {
+  const resolved = cloneManifest(manifest);
+  for (const [name, original] of Object.entries(manifest.environment)) {
+    if (original instanceof ProcessEnvValue) {
+      resolved.environment[name] = original;
+    }
+  }
   if (
     !manifest
       .mountTargets()
@@ -1048,12 +1063,14 @@ export async function resolveAndValidateMountEnvironment(
         ENVIRONMENT_CREDENTIAL_STRATEGIES.has(mountStrategyType(entry)),
       )
   ) {
-    return cloneManifest(manifest);
+    return resolved;
   }
   const environment = await manifest.resolveEnvironment();
   validateMountEnvironmentCredentialBoundaries(manifest, environment);
-  const resolved = cloneManifest(manifest);
   for (const [name, original] of Object.entries(manifest.environment)) {
+    if (original instanceof ProcessEnvValue) {
+      continue;
+    }
     resolved.environment[name] = new Environment({
       value: environment[name] ?? '',
       ...(original.ephemeral ? { ephemeral: true } : {}),

@@ -4,10 +4,14 @@ import type { RunState } from '../../runState';
 import type { Agent, AgentOutputType } from '../../agent';
 import type { SandboxClient, SandboxClientOptions } from '../client';
 import {
+  assertProcessEnvironmentAccessBound,
+  assertProcessEnvValuesUnsupported,
   isEnvValueReference,
   isSerializedEnvValueReference,
   type Manifest,
   type ManifestEnvironment,
+  unmatchedProcessEnvironmentReferences,
+  withProcessEnvironmentErrorRedaction,
 } from '../manifest';
 import {
   SANDBOX_SESSION_STATE_VERSION,
@@ -41,6 +45,7 @@ import {
   validateMountEnvironmentCredentialBoundaries,
 } from '../mountSecurity';
 import {
+  markRunStateDeserializationInput,
   markRunStateSessionState,
   type RunStateSessionTrustedConfig,
 } from '../internal/sessionStateTrust';
@@ -234,6 +239,18 @@ export async function deserializeSandboxSessionStateEntry(
       'RunState sandbox backend does not match the configured sandbox client.',
     );
   }
+  const envelope = serializedEntry.sessionState;
+  assertSessionStateEnvelope(client, envelope);
+  if (!trustedManifest) {
+    assertTrustedEnvironmentForPersistedReferences(envelope, undefined);
+  }
+  const persistedManifest = deserializeManifest(envelope.manifest);
+  if (client.backendId !== 'docker') {
+    if (trustedManifest) {
+      assertProcessEnvValuesUnsupported(trustedManifest, client.backendId);
+    }
+    assertProcessEnvValuesUnsupported(persistedManifest, client.backendId);
+  }
   const resolvedTrustedManifest = resolveTrustedManifestForResume(
     client,
     trustedManifest,
@@ -245,13 +262,11 @@ export async function deserializeSandboxSessionStateEntry(
       'Sandbox client must implement deserializeSessionState() to resume RunState sandbox state.',
     );
   }
-  const envelope = serializedEntry.sessionState;
-  assertSessionStateEnvelope(client, envelope);
   assertTrustedEnvironmentForPersistedReferences(
     envelope,
     resolvedTrustedManifest,
   );
-  if (manifestHasInContainerMounts(deserializeManifest(envelope.manifest))) {
+  if (manifestHasInContainerMounts(persistedManifest)) {
     throw new SandboxMountError(
       'Sandbox session state with in-container mounts cannot be resumed safely. Create a fresh sandbox so mount helpers are recreated from current trusted configuration.',
       undefined,
@@ -260,7 +275,7 @@ export async function deserializeSandboxSessionStateEntry(
   }
   const prevalidatedPersistedState = rebindPersistedMountCredentials(
     {
-      manifest: deserializeManifest(envelope.manifest),
+      manifest: persistedManifest,
       ...deserializeMountCredentialRedactionMetadata(envelope.providerState),
     },
     resolvedTrustedManifest,
@@ -277,40 +292,54 @@ export async function deserializeSandboxSessionStateEntry(
     },
     { clientOptions: trustedConfig.clientOptions },
   );
-  const materializedTrustedManifest = resolvedTrustedManifest
-    ? await resolveAndValidateMountEnvironment(resolvedTrustedManifest)
-    : undefined;
-  const state = await client.deserializeSessionState(
-    providerStateWithSdkEnvelopeFields(
-      envelope,
-      prevalidatedPersistedState.manifest,
-      materializedTrustedManifest,
-    ),
-  );
-  if (client.backendId === 'docker') {
-    delete state.sessionIdentity;
-  }
-  const credentialReboundState = rebindPersistedMountCredentials(
+  return await withProcessEnvironmentErrorRedaction(
+    resolvedTrustedManifest ?? prevalidatedPersistedState.manifest,
     {
-      ...state,
-      ...deserializeHostPathGrantRedactionMetadata(envelope.providerState),
-      ...deserializeMountCredentialRedactionMetadata(envelope.providerState),
+      provider: client.backendId,
+      operation: 'sandbox state deserialization',
     },
-    materializedTrustedManifest,
-  );
-  const reboundState = rebindPersistedPathGrants(
-    credentialReboundState,
-    materializedTrustedManifest,
-    {
-      replaceWithTrustedManifest:
-        client.backendId === 'docker' &&
-        materializedTrustedManifest !== undefined,
+    async () => {
+      const materializedTrustedManifest = resolvedTrustedManifest
+        ? await resolveAndValidateMountEnvironment(resolvedTrustedManifest)
+        : undefined;
+      const state = await client.deserializeSessionState!(
+        markRunStateDeserializationInput(
+          providerStateWithSdkEnvelopeFields(
+            envelope,
+            prevalidatedPersistedState.manifest,
+            materializedTrustedManifest,
+          ),
+          trustedConfig,
+        ),
+      );
+      if (client.backendId === 'docker') {
+        delete state.sessionIdentity;
+      }
+      const credentialReboundState = rebindPersistedMountCredentials(
+        {
+          ...state,
+          ...deserializeHostPathGrantRedactionMetadata(envelope.providerState),
+          ...deserializeMountCredentialRedactionMetadata(
+            envelope.providerState,
+          ),
+        },
+        materializedTrustedManifest,
+      );
+      const reboundState = rebindPersistedPathGrants(
+        credentialReboundState,
+        materializedTrustedManifest,
+        {
+          replaceWithTrustedManifest:
+            client.backendId === 'docker' &&
+            materializedTrustedManifest !== undefined,
+        },
+      );
+      assertMountCredentialsRebound(reboundState);
+      validateMountCredentialBoundaries(reboundState.manifest);
+      assertHostPathGrantsRebound(reboundState);
+      return markRunStateSessionState(reboundState, trustedConfig);
     },
   );
-  assertMountCredentialsRebound(reboundState);
-  validateMountCredentialBoundaries(reboundState.manifest);
-  assertHostPathGrantsRebound(reboundState);
-  return markRunStateSessionState(reboundState, trustedConfig);
 }
 
 export function resolveTrustedManifestForResume(
@@ -320,6 +349,9 @@ export function resolveTrustedManifestForResume(
 ): Manifest | undefined {
   if (!trustedManifest) {
     return undefined;
+  }
+  if (client.backendId !== 'docker') {
+    assertProcessEnvValuesUnsupported(trustedManifest, client.backendId);
   }
   const resolved = client.resolveTrustedManifestForResume
     ? client.resolveTrustedManifestForResume(trustedManifest, clientOptions)
@@ -396,24 +428,40 @@ function assertTrustedEnvironmentForPersistedReferences(
   trustedManifest: Manifest | undefined,
 ): void {
   const persistedEnvironment = envelope.manifest.environment;
-  if (
-    !persistedEnvironment ||
+  const persistedEnvironmentIsInvalid =
+    persistedEnvironment === null ||
     typeof persistedEnvironment !== 'object' ||
-    Array.isArray(persistedEnvironment)
-  ) {
+    Array.isArray(persistedEnvironment);
+  const persistedEnvironmentRecord = persistedEnvironmentIsInvalid
+    ? {}
+    : (persistedEnvironment as Record<string, unknown>);
+
+  const referenceKeys = Object.entries(persistedEnvironmentRecord)
+    .filter(([, value]) => isSerializedEnvValueReference(value))
+    .map(([key]) => key);
+  if (!trustedManifest) {
+    if (referenceKeys.length > 0) {
+      throw new UserError(
+        'RunState sandbox session state with environment value references requires a current trusted manifest for the sandbox agent.',
+      );
+    }
     return;
   }
 
-  const referenceKeys = Object.entries(persistedEnvironment)
-    .filter(([, value]) => isSerializedEnvValueReference(value))
-    .map(([key]) => key);
+  const unmatchedProcessReferences = unmatchedProcessEnvironmentReferences(
+    deserializeManifest({
+      ...envelope.manifest,
+      environment: persistedEnvironmentRecord,
+    }),
+    trustedManifest,
+  );
+  if (unmatchedProcessReferences.length > 0) {
+    throw new UserError(
+      `RunState sandbox session state contains ProcessEnvValue references that do not exactly match the current trusted manifest: ${unmatchedProcessReferences.join(', ')}. Create a fresh Docker sandbox from the current trusted manifest instead.`,
+    );
+  }
   if (referenceKeys.length === 0) {
     return;
-  }
-  if (!trustedManifest) {
-    throw new UserError(
-      'RunState sandbox session state with environment value references requires a current trusted manifest for the sandbox agent.',
-    );
   }
 
   const missingReferenceKeys = referenceKeys.filter(
@@ -426,6 +474,7 @@ function assertTrustedEnvironmentForPersistedReferences(
       `RunState sandbox session state contains environment value references that are not present in the current trusted manifest: ${missingReferenceKeys.join(', ')}.`,
     );
   }
+  assertProcessEnvironmentAccessBound(trustedManifest);
 }
 
 function cloneManifestEnvironment(

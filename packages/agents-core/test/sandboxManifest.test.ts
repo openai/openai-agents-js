@@ -7,11 +7,13 @@ import {
   EnvValueReference,
   FileMode,
   Manifest,
+  ProcessEnvValue,
   normalizeRelativePath,
   Permissions,
   registerEnvValueReference,
   renderManifestDescription,
   SandboxGitSubpathError,
+  SandboxLifecycleError,
   type Dir,
   type File,
   type GitRepo,
@@ -29,6 +31,12 @@ import {
   type S3FilesMount,
   type S3Mount,
 } from '../src/sandbox';
+import {
+  bindProcessEnvironmentAccess,
+  cloneManifestWithProcessEnvironmentAccess,
+  serializeManifestRecord,
+  withProcessEnvironmentErrorRedaction,
+} from '../src/sandbox/internal';
 
 let currentReferencedSecret = 'initial-secret';
 
@@ -298,6 +306,296 @@ describe('Manifest', () => {
       unregister();
     }
   });
+
+  it('round-trips process environment references without serializing values or authority', async () => {
+    process.env.AGENTS_TEST_PROCESS_SOURCE = 'process-secret';
+    try {
+      const manifest = new Manifest({
+        environment: {
+          SANDBOX_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_PROCESS_SOURCE',
+            description: 'Trusted process token',
+          }),
+        },
+      });
+
+      const serialized = JSON.stringify(manifest);
+      const payload = JSON.parse(serialized);
+
+      expect(serialized).not.toContain('process-secret');
+      expect(payload.environment.SANDBOX_TOKEN).toEqual({
+        type: 'openai.agents.process_env',
+        name: 'AGENTS_TEST_PROCESS_SOURCE',
+        description: 'Trusted process token',
+      });
+      const restored = new Manifest(payload);
+      expect(restored.environment.SANDBOX_TOKEN).toBeInstanceOf(
+        ProcessEnvValue,
+      );
+      await expect(restored.resolveEnvironment()).rejects.toThrow(
+        /explicit process environment access/u,
+      );
+    } finally {
+      delete process.env.AGENTS_TEST_PROCESS_SOURCE;
+    }
+  });
+
+  it('preserves bound process environment authority only across runtime clones', async () => {
+    process.env.AGENTS_TEST_PROCESS_SOURCE = 'process-secret';
+    try {
+      const manifest = bindProcessEnvironmentAccess(
+        new Manifest({
+          environment: {
+            SANDBOX_TOKEN: new ProcessEnvValue({
+              name: 'AGENTS_TEST_PROCESS_SOURCE',
+            }),
+          },
+        }),
+        {
+          processEnvironmentBindings: {
+            SANDBOX_TOKEN: 'AGENTS_TEST_PROCESS_SOURCE',
+          },
+        },
+      );
+
+      const cloned = cloneManifest(manifest);
+      await expect(cloned.resolveEnvironment()).resolves.toEqual({
+        SANDBOX_TOKEN: 'process-secret',
+      });
+
+      const restored = new Manifest(JSON.parse(JSON.stringify(cloned)));
+      await expect(restored.resolveEnvironment()).rejects.toThrow(
+        /explicit process environment access/u,
+      );
+    } finally {
+      delete process.env.AGENTS_TEST_PROCESS_SOURCE;
+    }
+  });
+
+  it('keeps unbound process environment clones serializable and unbound', async () => {
+    const cloned = cloneManifest(
+      new Manifest({
+        environment: {
+          SANDBOX_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_PROCESS_SOURCE',
+          }),
+        },
+      }),
+    );
+
+    expect(serializeManifestRecord(cloned).environment).toEqual({
+      SANDBOX_TOKEN: {
+        type: 'openai.agents.process_env',
+        name: 'AGENTS_TEST_PROCESS_SOURCE',
+      },
+    });
+    await expect(cloned.resolveEnvironment()).rejects.toThrow(
+      /explicit process environment access/u,
+    );
+  });
+
+  it.each([
+    ['deleting the reference', undefined],
+    [
+      'replacing the reference with an ordinary value',
+      new Environment('ordinary-value'),
+    ],
+    [
+      'replacing the reference with a different source',
+      new ProcessEnvValue({ name: 'AGENTS_TEST_OTHER_PROCESS_SOURCE' }),
+    ],
+  ])('rejects serialization after %s', (_description, replacement) => {
+    process.env.AGENTS_TEST_PROCESS_SOURCE = 'process-secret';
+    try {
+      const manifest = bindProcessEnvironmentAccess(
+        new Manifest({
+          environment: {
+            SANDBOX_TOKEN: new ProcessEnvValue({
+              name: 'AGENTS_TEST_PROCESS_SOURCE',
+            }),
+          },
+        }),
+        {
+          processEnvironmentBindings: {
+            SANDBOX_TOKEN: 'AGENTS_TEST_PROCESS_SOURCE',
+          },
+        },
+      );
+
+      if (replacement === undefined) {
+        delete manifest.environment.SANDBOX_TOKEN;
+      } else {
+        manifest.environment.SANDBOX_TOKEN = replacement;
+      }
+
+      expect(() => serializeManifestRecord(manifest)).toThrow(
+        'protected ProcessEnvValue references changed after binding: SANDBOX_TOKEN',
+      );
+      expect(() =>
+        cloneManifestWithProcessEnvironmentAccess(manifest, {
+          processEnvironmentBindings: {
+            SANDBOX_TOKEN: 'AGENTS_TEST_PROCESS_SOURCE',
+          },
+        }),
+      ).toThrow(
+        'bound sandbox manifest contains changed ProcessEnvValue references: SANDBOX_TOKEN',
+      );
+    } finally {
+      delete process.env.AGENTS_TEST_PROCESS_SOURCE;
+    }
+  });
+
+  it('rejects serialization after adding an unbound process environment reference', () => {
+    process.env.AGENTS_TEST_PROCESS_SOURCE = 'process-secret';
+    try {
+      const manifest = bindProcessEnvironmentAccess(
+        new Manifest({
+          environment: {
+            SANDBOX_TOKEN: new ProcessEnvValue({
+              name: 'AGENTS_TEST_PROCESS_SOURCE',
+            }),
+          },
+        }),
+        {
+          processEnvironmentBindings: {
+            SANDBOX_TOKEN: 'AGENTS_TEST_PROCESS_SOURCE',
+          },
+        },
+      );
+      manifest.environment.ADDED_TOKEN = new ProcessEnvValue({
+        name: 'AGENTS_TEST_OTHER_PROCESS_SOURCE',
+      });
+
+      expect(() => serializeManifestRecord(manifest)).toThrow(
+        'protected ProcessEnvValue references changed after binding: ADDED_TOKEN',
+      );
+      expect(() =>
+        cloneManifestWithProcessEnvironmentAccess(manifest, {
+          processEnvironmentBindings: {
+            SANDBOX_TOKEN: 'AGENTS_TEST_PROCESS_SOURCE',
+          },
+        }),
+      ).toThrow(
+        'bound sandbox manifest contains changed ProcessEnvValue references: ADDED_TOKEN',
+      );
+    } finally {
+      delete process.env.AGENTS_TEST_PROCESS_SOURCE;
+    }
+  });
+
+  it('rejects invalid process environment source names', () => {
+    expect(() => new ProcessEnvValue({ name: '' })).toThrow(
+      /must not be empty/u,
+    );
+    expect(() => new ProcessEnvValue({ name: 'INVALID=NAME' })).toThrow(
+      /must not contain/u,
+    );
+    expect(() => new ProcessEnvValue({ name: 'INVALID\0NAME' })).toThrow(
+      /must not contain/u,
+    );
+  });
+
+  it('rejects ephemeral process environment references before persistence', () => {
+    expect(
+      () =>
+        new ProcessEnvValue({
+          ephemeral: true,
+        } as unknown as ConstructorParameters<typeof ProcessEnvValue>[0]),
+    ).toThrow(/does not support ephemeral references/u);
+    expect(
+      () =>
+        new Manifest({
+          environment: {
+            TOKEN: {
+              type: ProcessEnvValue.type,
+              ephemeral: true,
+            },
+          },
+        }),
+    ).toThrow(/must not include ephemeral/u);
+  });
+
+  it('keeps the unqualified process_env discriminator available to custom references', () => {
+    class CustomProcessEnvironmentReference extends EnvValueReference {
+      static readonly type = 'process_env';
+
+      constructor() {
+        super();
+      }
+
+      serialize(): Record<string, unknown> {
+        return {};
+      }
+
+      async resolve(): Promise<string> {
+        return 'custom';
+      }
+    }
+
+    const unregister = registerEnvValueReference(
+      CustomProcessEnvironmentReference,
+      () => new CustomProcessEnvironmentReference(),
+    );
+    try {
+      const manifest = new Manifest({
+        environment: { TOKEN: { type: 'process_env' } },
+      });
+      expect(manifest.environment.TOKEN).toBeInstanceOf(
+        CustomProcessEnvironmentReference,
+      );
+    } finally {
+      unregister();
+    }
+  });
+
+  it.each([
+    new Error('ordinary protected secret'),
+    new SandboxLifecycleError('spoofed protected details', {
+      previousSandboxId: 'spoofed-previous-secret',
+      replacementSandboxId: 'spoofed-replacement-secret',
+    }),
+  ])(
+    'keeps protected error redaction active after manifest mutation',
+    async (originalError) => {
+      const manifest = new Manifest({
+        environment: {
+          PROTECTED: new ProcessEnvValue(),
+        },
+      });
+
+      let thrown: unknown;
+      try {
+        await withProcessEnvironmentErrorRedaction(
+          manifest,
+          {
+            provider: 'test',
+            operation: 'mutation',
+            details: { trustedResourceId: 'trusted-resource' },
+          },
+          async () => {
+            manifest.environment.PROTECTED = new Environment({
+              value: 'ordinary',
+            });
+            throw originalError;
+          },
+        );
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(SandboxLifecycleError);
+      expect(JSON.stringify(thrown)).not.toContain('protected secret');
+      expect(JSON.stringify(thrown)).not.toContain('spoofed-previous-secret');
+      expect(JSON.stringify(thrown)).not.toContain(
+        'spoofed-replacement-secret',
+      );
+      expect((thrown as SandboxLifecycleError).details).toEqual({
+        provider: 'test',
+        operation: 'mutation',
+        trustedResourceId: 'trusted-resource',
+      });
+    },
+  );
 
   it('rejects unknown, unregistered, duplicate, and inherited environment reference types', () => {
     class UnregisteredReference extends EnvValueReference {

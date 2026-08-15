@@ -1,4 +1,5 @@
 export {
+  assertProcessEnvironmentDestinationsPreserved,
   assertHostPathGrantsRebound,
   deserializeMountCredentialRedactionMetadata,
   deserializeHostPathGrantRedactionMetadata,
@@ -56,8 +57,22 @@ export type {
 } from './mountSecurity';
 export { stableJsonStringify } from './shared/stableJson';
 export {
+  getRunStateSessionTrustedConfig,
+  markRunStateDeserializationInput,
+} from './internal/sessionStateTrust';
+export {
+  assertProcessEnvironmentAccessBound,
+  assertProcessEnvValuesUnsupported,
+  bindProcessEnvironmentAccess,
+  cloneManifestWithProcessEnvironmentAccess,
+  copyProcessEnvironmentProtection,
   copyManifestMountCredentialExposurePolicy,
+  environmentWithoutProcessEnvValues,
+  manifestHasProcessEnvValues,
+  protectProcessEnvironmentSessionStateManifest,
+  processEnvironmentDestinationNames,
   replaceManifestMountCredentialExposurePolicy,
+  withProcessEnvironmentErrorRedaction,
 } from './manifest';
 export {
   elapsedSeconds,

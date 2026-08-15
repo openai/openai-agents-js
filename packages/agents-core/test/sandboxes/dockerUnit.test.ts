@@ -1,4 +1,5 @@
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -24,9 +25,13 @@ import {
   deserializeSandboxSessionStateEntry,
   toSessionStateEnvelope,
 } from '../../src/sandbox/runtime/sessionState';
+import { cleanupSandboxSession } from '../../src/sandbox/runtime/sessionLifecycle';
 import {
+  bindProcessEnvironmentAccess,
   liveMountCredentialAuthorityMatches,
+  markRunStateDeserializationInput,
   rebindPersistedMountCredentials,
+  serializeManifestRecord,
 } from '../../src/sandbox/internal';
 
 const dockerStdinWrites: Array<string | Uint8Array> = [];
@@ -58,11 +63,15 @@ import {
   DockerSandboxClient,
   DockerSandboxSession,
   type DockerSandboxSessionState,
+  cloneManifest,
+  Environment,
   EnvValueReference,
   inContainerMountStrategy,
   Manifest,
+  ProcessEnvValue,
   NoopSnapshotSpec,
   registerEnvValueReference,
+  SandboxLifecycleError,
   SandboxMountError,
   s3Mount,
   skills,
@@ -82,6 +91,14 @@ const failure = (stderr: string): SandboxProcessResult => ({
   stdout: '',
   stderr,
   timedOut: false,
+});
+
+const timedOut = (): SandboxProcessResult => ({
+  status: null,
+  signal: 'SIGTERM',
+  stdout: '',
+  stderr: '',
+  timedOut: true,
 });
 
 function dockerRunLabels(args: string[]): Record<string, string> {
@@ -112,7 +129,13 @@ function dockerWorkspaceMount(source: string, target = '/workspace') {
 
 type DockerContainerInspection = {
   labels: Record<string, string>;
-  mounts: ReturnType<typeof dockerWorkspaceMount>;
+  mounts: Array<{
+    Type: string;
+    Source?: string;
+    Name?: string;
+    Destination: string;
+    RW: boolean;
+  }>;
   networkMode: string;
   networks: unknown;
 };
@@ -121,7 +144,7 @@ function dockerRunInspection(args: string[]): DockerContainerInspection {
   const workspaceMountIndex = args.indexOf('-v');
   const workspaceMount = args[workspaceMountIndex + 1] ?? '';
   const separatorIndex = workspaceMount.indexOf(':');
-  const mounts = dockerWorkspaceMount(
+  const mounts: DockerContainerInspection['mounts'] = dockerWorkspaceMount(
     workspaceMount.slice(0, separatorIndex),
     workspaceMount.slice(separatorIndex + 1),
   );
@@ -140,15 +163,21 @@ function dockerRunInspection(args: string[]): DockerContainerInspection {
             ];
       }),
     );
-    if (options.type !== 'bind') {
-      continue;
+    if (options.type === 'bind') {
+      mounts.push({
+        Type: 'bind',
+        Source: String(options.source),
+        Destination: String(options.target),
+        RW: options.readonly !== true,
+      });
+    } else if (options.type === 'volume') {
+      mounts.push({
+        Type: 'volume',
+        Name: String(options.source),
+        Destination: String(options.target),
+        RW: options.readonly !== true,
+      });
     }
-    mounts.push({
-      Type: 'bind',
-      Source: String(options.source),
-      Destination: String(options.target),
-      RW: options.readonly !== true,
-    });
   }
   const networkArgIndex = args.indexOf('--network');
   const networkMode =
@@ -179,6 +208,9 @@ function dockerInspectionResult(
     return success(
       `${JSON.stringify(inspection?.networkMode ?? '')}\n${JSON.stringify(inspection?.networks ?? null)}\n`,
     );
+  }
+  if (args[4] === '{{.Id}}') {
+    return inspection ? success(`${args[5]}\n`) : failure('No such container');
   }
   return undefined;
 }
@@ -239,6 +271,11 @@ describe('DockerSandboxClient unit behavior', () => {
   });
 
   afterEach(async () => {
+    delete process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE;
+    delete process.env.AGENTS_TEST_DOCKER_ACCESS_SOURCE;
+    delete process.env.AGENTS_TEST_DOCKER_SECRET_SOURCE;
+    delete process.env.AGENTS_TEST_DOCKER_UNRELATED_SOURCE;
+    delete process.env['AGENTS-TEST-DOCKER-SOURCE'];
     await rm(rootDir, { recursive: true, force: true });
   });
 
@@ -484,6 +521,1693 @@ describe('DockerSandboxClient unit behavior', () => {
     );
 
     await session.close();
+  });
+
+  it('passes granted process environment values to Docker without persisting them', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'docker-process-secret';
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-process-env-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: new NoopSnapshotSpec(),
+    });
+    const clientOptions = {
+      processEnvironmentBindings: {
+        SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+      },
+    };
+
+    const session = await client.create({
+      manifest: new Manifest({
+        entries: {
+          logs: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            mountPath: '/mnt/logs',
+            mountStrategy: dockerVolumeMountStrategy({ driver: 'rclone' }),
+          },
+        },
+        environment: {
+          SANDBOX_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+          }),
+        },
+      }),
+      options: clientOptions,
+    });
+    const runCall = processMocks.runSandboxProcess.mock.calls.find(
+      ([, args]) => args[0] === 'run',
+    );
+    expect(runCall?.[1]).not.toContain('SANDBOX_TOKEN=docker-process-secret');
+    session.state.environment.RUNTIME_ENV = 'runtime-only';
+
+    const serialized = await client.serializeSessionState(session.state);
+    expect(JSON.stringify(serialized)).not.toContain('docker-process-secret');
+    expect(serialized.environment).toEqual({ RUNTIME_ENV: 'runtime-only' });
+
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'rotated-process-secret';
+    const restored = await client.deserializeSessionState(
+      markRunStateDeserializationInput(serialized, { clientOptions }),
+    );
+    const authenticatedPreviousVolumeName =
+      session.state.dockerVolumeNames?.[0];
+    expect(authenticatedPreviousVolumeName).toBeDefined();
+    restored.dockerVolumeNames = ['forged-unrelated-volume'];
+    expect(restored.environment).toEqual({
+      RUNTIME_ENV: 'runtime-only',
+      SANDBOX_TOKEN: 'rotated-process-secret',
+    });
+    restored.manifest = new Manifest({
+      ...restored.manifest,
+      environment: {
+        ...restored.manifest.environment,
+        MUTATE_RESUME_STATE: async () => {
+          restored.manifest = new Manifest();
+          return 'mutated';
+        },
+      },
+    });
+    const resumed = await client.resume(restored, { clientOptions });
+    expect(resumed.state.containerId).toBe('container-process-env-2');
+    expect(resumed.state.manifest.environment.SANDBOX_TOKEN).toBeInstanceOf(
+      ProcessEnvValue,
+    );
+    const runCalls = processMocks.runSandboxProcess.mock.calls.filter(
+      ([, args]) => args[0] === 'run',
+    );
+    expect(runCalls).toHaveLength(2);
+    expect(runCalls[1]?.[1]).toEqual(
+      expect.arrayContaining(['-e', 'RUNTIME_ENV=runtime-only']),
+    );
+    expect(runCalls[1]?.[1]).not.toContain(
+      'SANDBOX_TOKEN=rotated-process-secret',
+    );
+    expect(resumed.state.environment.RUNTIME_ENV).toBe('runtime-only');
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      ['rm', '-f', 'container-process-env-1'],
+      { timeoutMs: 30_000 },
+    );
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      ['volume', 'rm', '-f', authenticatedPreviousVolumeName],
+      { timeoutMs: 10_000 },
+    );
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      ['volume', 'rm', '-f', 'forged-unrelated-volume'],
+      { timeoutMs: 10_000 },
+    );
+    const replacementStartIndex =
+      processMocks.runSandboxProcess.mock.calls.indexOf(runCalls[1]!);
+    const previousRemovalIndex =
+      processMocks.runSandboxProcess.mock.calls.findIndex(
+        ([, args]) =>
+          args[0] === 'rm' && args.includes('container-process-env-1'),
+      );
+    expect(replacementStartIndex).toBeLessThan(previousRemovalIndex);
+    childProcessMocks.spawn.mockImplementation(() =>
+      dockerSpawnResult({ status: 0 }),
+    );
+    childProcessMocks.spawn.mockClear();
+    dockerStdinWrites.length = 0;
+    expect(() => {
+      resumed.state.manifest = new Manifest();
+    }).toThrow(/cannot remove or replace protected ProcessEnvValue bindings/u);
+    const unboundReplacement = cloneManifest(resumed.state.manifest);
+    unboundReplacement.environment.EXTRA_TOKEN = new ProcessEnvValue({
+      name: 'AGENTS_TEST_EXTRA_PROCESS_SOURCE',
+    });
+    expect(() => {
+      resumed.state.manifest = unboundReplacement;
+    }).toThrow(/cannot remove or replace protected ProcessEnvValue bindings/u);
+    await resumed.execCommand({ cmd: 'env', yieldTimeMs: 0 });
+    expect(JSON.stringify(childProcessMocks.spawn.mock.calls)).not.toContain(
+      'rotated-process-secret',
+    );
+    expect(dockerStdinWrites).toHaveLength(1);
+    expect(
+      Buffer.from(String(dockerStdinWrites[0]).trim(), 'base64').toString(
+        'utf8',
+      ),
+    ).toContain("export 'SANDBOX_TOKEN=rotated-process-secret'");
+    const resumedSerialized = await client.serializeSessionState(resumed.state);
+    expect(JSON.stringify(resumedSerialized)).not.toContain(
+      'rotated-process-secret',
+    );
+    expect(resumedSerialized.environment).not.toHaveProperty('SANDBOX_TOKEN');
+
+    const mutatedState = await client.deserializeSessionState(
+      markRunStateDeserializationInput(serialized, { clientOptions }),
+    );
+    mutatedState.manifest.environment.SANDBOX_TOKEN = new Environment(
+      'ordinary-value',
+    );
+    processMocks.runSandboxProcess.mockClear();
+    await expect(
+      client.resume(mutatedState, { clientOptions }),
+    ).rejects.toThrow(
+      /bound sandbox manifest contains changed ProcessEnvValue references/u,
+    );
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+  });
+
+  it('transports only selected protected mount environment through stdin', async () => {
+    process.env.AGENTS_TEST_DOCKER_ACCESS_SOURCE = 'protected-access-key';
+    process.env.AGENTS_TEST_DOCKER_SECRET_SOURCE = 'protected-secret-key';
+    process.env.AGENTS_TEST_DOCKER_UNRELATED_SOURCE =
+      'unrelated-protected-secret';
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-protected-mount\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    childProcessMocks.spawn.mockImplementation(() =>
+      dockerSpawnResult({ status: 0 }),
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      processEnvironmentBindings: {
+        AWS_ACCESS_KEY_ID: 'AGENTS_TEST_DOCKER_ACCESS_SOURCE',
+        AWS_SECRET_ACCESS_KEY: 'AGENTS_TEST_DOCKER_SECRET_SOURCE',
+        SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_UNRELATED_SOURCE',
+      },
+    });
+    await client.create(
+      new Manifest({
+        entries: {
+          logs: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            mountStrategy: inContainerMountStrategy({
+              pattern: { type: 'rclone' },
+            }),
+          },
+        },
+        environment: {
+          AWS_ACCESS_KEY_ID: new ProcessEnvValue({
+            name: 'AGENTS_TEST_DOCKER_ACCESS_SOURCE',
+          }),
+          AWS_SECRET_ACCESS_KEY: new ProcessEnvValue({
+            name: 'AGENTS_TEST_DOCKER_SECRET_SOURCE',
+          }),
+          SANDBOX_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_DOCKER_UNRELATED_SOURCE',
+          }),
+          HTTPS_PROXY: 'http://proxy.example.test',
+        },
+      }).withInContainerMountBroadCredentialExposureAcknowledged('logs'),
+    );
+
+    const spawnArgs = childProcessMocks.spawn.mock.calls[0]?.[1] as string[];
+    expect(spawnArgs).toEqual(
+      expect.arrayContaining([
+        'exec',
+        '-i',
+        'container-protected-mount',
+        '/bin/sh',
+        '-s',
+      ]),
+    );
+    expect(JSON.stringify(spawnArgs)).not.toContain('protected-access-key');
+    expect(JSON.stringify(spawnArgs)).not.toContain('protected-secret-key');
+    expect(JSON.stringify(spawnArgs)).not.toContain(
+      'unrelated-protected-secret',
+    );
+    expect(spawnArgs).toEqual(
+      expect.arrayContaining(['-e', 'HTTPS_PROXY=http://proxy.example.test']),
+    );
+    const stdin = dockerStdinWrites.join('');
+    expect(stdin).toContain('protected-access-key');
+    expect(stdin).toContain('protected-secret-key');
+    expect(stdin).not.toContain('unrelated-protected-secret');
+    const runArgs = processMocks.runSandboxProcess.mock.calls.find(
+      ([, args]) => args[0] === 'run',
+    )?.[1];
+    expect(JSON.stringify(runArgs)).not.toContain('protected-access-key');
+    expect(JSON.stringify(runArgs)).not.toContain('protected-secret-key');
+    expect(JSON.stringify(runArgs)).not.toContain('unrelated-protected-secret');
+  });
+
+  it('rejects mutated protected bindings before Docker snapshot effects', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'docker-process-secret';
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-process-env-mutation\n');
+        }
+        return success();
+      },
+    );
+    const snapshotBaseDir = join(rootDir, 'mutation-snapshots');
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: { type: 'local', baseDir: snapshotBaseDir },
+    });
+    const session = await client.create({
+      manifest: new Manifest({
+        environment: {
+          SANDBOX_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+          }),
+        },
+      }),
+      options: {
+        processEnvironmentBindings: {
+          SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+        },
+      },
+    });
+    delete session.state.manifest.environment.SANDBOX_TOKEN;
+
+    await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+      /protected ProcessEnvValue references changed after binding/u,
+    );
+    await expect(readdir(snapshotBaseDir)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+
+    await session.close();
+  });
+
+  it('keeps the running Docker container when protected replacement startup fails', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'initial-process-secret';
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          if (runCount === 2) {
+            return failure('replacement startup failed');
+          }
+          const containerId = 'container-process-env-original';
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          const inspection = dockerInspectionResult(inspections, args);
+          if (inspection) {
+            return inspection;
+          }
+          return success('true\n');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: new NoopSnapshotSpec(),
+    });
+    const clientOptions = {
+      processEnvironmentBindings: {
+        SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+      },
+    };
+    const session = await client.create({
+      manifest: new Manifest({
+        environment: {
+          SANDBOX_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+          }),
+        },
+      }),
+      options: clientOptions,
+    });
+    const serialized = await client.serializeSessionState(session.state);
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'rotated-process-secret';
+    const restored = await client.deserializeSessionState(
+      markRunStateDeserializationInput(serialized, { clientOptions }),
+    );
+    restored.manifest.environment.MUTATING = new Environment({
+      value: 'safe',
+      resolve: () => {
+        delete restored.manifest.environment.SANDBOX_TOKEN;
+        return 'safe';
+      },
+    });
+
+    await expect(client.resume(restored, { clientOptions })).rejects.toThrow(
+      /protected process environment values/u,
+    );
+
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      ['rm', '-f', 'container-process-env-original'],
+      { timeoutMs: 30_000 },
+    );
+  });
+
+  it('keeps an authenticated stopped container when protected replacement startup fails', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'initial-process-secret';
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          if (runCount === 2) {
+            return failure('replacement startup failed');
+          }
+          const containerId = 'container-process-env-stopped';
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (
+          args[0] === 'inspect' &&
+          args[4] === '{{.State.Running}}' &&
+          args[5] === 'container-process-env-stopped'
+        ) {
+          return success('false\n');
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: new NoopSnapshotSpec(),
+      processEnvironmentBindings: {
+        SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+      },
+    });
+    const session = await client.create(
+      new Manifest({
+        environment: {
+          SANDBOX_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+          }),
+        },
+      }),
+    );
+    session.state.dockerVolumeNames = ['forged-unrelated-volume'];
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'rotated-process-secret';
+
+    await expect(client.resume(session.state)).rejects.toThrow(
+      /protected process environment values/u,
+    );
+
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      ['rm', '-f', 'container-process-env-stopped'],
+      { timeoutMs: 30_000 },
+    );
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      ['volume', 'rm', '-f', 'forged-unrelated-volume'],
+      { timeoutMs: 10_000 },
+    );
+  });
+
+  it('preserves protected creation identifiers when Docker run and cleanup fail', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'protected-run-secret';
+    let candidateName: string | undefined;
+    let candidateVolumeName: string | undefined;
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          candidateName = args[args.indexOf('--name') + 1];
+          candidateVolumeName = dockerRunInspection(args).mounts.find(
+            (mount) => mount.Type === 'volume',
+          )?.Name;
+          return failure('docker run echoed protected-run-secret');
+        }
+        if (args[0] === 'rm' && args[2] === candidateName) {
+          return failure('container cleanup echoed protected-run-secret');
+        }
+        if (
+          args[0] === 'volume' &&
+          args[1] === 'rm' &&
+          args[3] === candidateVolumeName
+        ) {
+          return failure('volume cleanup echoed protected-run-secret');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      processEnvironmentBindings: {
+        SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+      },
+    });
+
+    const error = await client
+      .create(
+        new Manifest({
+          entries: {
+            logs: {
+              type: 's3_mount',
+              bucket: 'agent-logs',
+              mountStrategy: dockerVolumeMountStrategy({ driver: 'rclone' }),
+            },
+          },
+          environment: {
+            SANDBOX_TOKEN: new ProcessEnvValue({
+              name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+            }),
+          },
+        }),
+      )
+      .then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+
+    expect(candidateName).toBeDefined();
+    expect(candidateVolumeName).toBeDefined();
+    expect(error).toBeInstanceOf(SandboxLifecycleError);
+    expect(String(error)).not.toContain('protected-run-secret');
+    expect((error as SandboxLifecycleError).details).toEqual({
+      provider: 'docker',
+      operation: 'sandbox creation',
+      replacementContainerId: candidateName,
+      replacementDockerVolumeNames: [candidateVolumeName],
+    });
+    expect((error as Error & { cause?: unknown }).cause).toBeUndefined();
+  });
+
+  it('preserves protected replacement identifiers when Docker run and cleanup fail', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'initial-secret';
+    let runCount = 0;
+    let candidateName: string | undefined;
+    let candidateVolumeName: string | undefined;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          if (runCount === 1) {
+            inspections.set(
+              'protected-run-original',
+              dockerRunInspection(args),
+            );
+            return success('protected-run-original\n');
+          }
+          candidateName = args[args.indexOf('--name') + 1];
+          candidateVolumeName = dockerRunInspection(args).mounts.find(
+            (mount) => mount.Type === 'volume',
+          )?.Name;
+          return failure('docker run echoed rotated-secret');
+        }
+        if (args[0] === 'rm' && args[2] === candidateName) {
+          return failure('container cleanup echoed rotated-secret');
+        }
+        if (
+          args[0] === 'volume' &&
+          args[1] === 'rm' &&
+          args[3] === candidateVolumeName
+        ) {
+          return failure('volume cleanup echoed rotated-secret');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      processEnvironmentBindings: {
+        SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+      },
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          logs: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            mountStrategy: dockerVolumeMountStrategy({ driver: 'rclone' }),
+          },
+        },
+        environment: {
+          SANDBOX_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+          }),
+        },
+      }),
+    );
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'rotated-secret';
+
+    const error = await client.resume(session.state).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+
+    expect(candidateName).toBeDefined();
+    expect(candidateVolumeName).toBeDefined();
+    expect(error).toBeInstanceOf(SandboxLifecycleError);
+    expect(String(error)).not.toContain('rotated-secret');
+    expect((error as SandboxLifecycleError).details).toEqual({
+      provider: 'docker',
+      operation: 'sandbox resume',
+      containerId: 'protected-run-original',
+      replacementContainerId: candidateName,
+      replacementDockerVolumeNames: [candidateVolumeName],
+    });
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      ['rm', '-f', 'protected-run-original'],
+      { timeoutMs: 30_000 },
+    );
+    expect((error as Error & { cause?: unknown }).cause).toBeUndefined();
+  });
+
+  it('does not clean persisted Docker identifiers when the protected container is missing', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'initial-process-secret';
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-process-env-missing-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (
+          args[0] === 'inspect' &&
+          args[4] === '{{.State.Running}}' &&
+          args[5] === 'container-process-env-missing-1'
+        ) {
+          return failure('No such container');
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: new NoopSnapshotSpec(),
+      processEnvironmentBindings: {
+        SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+      },
+    });
+    const session = await client.create(
+      new Manifest({
+        environment: {
+          SANDBOX_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+          }),
+        },
+      }),
+    );
+    inspections.delete('container-process-env-missing-1');
+    session.state.dockerVolumeNames = ['forged-unrelated-volume'];
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'rotated-process-secret';
+
+    const resumed = await client.resume(session.state);
+
+    expect(resumed.state.containerId).toBe('container-process-env-missing-2');
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      ['rm', '-f', 'container-process-env-missing-1'],
+      { timeoutMs: 30_000 },
+    );
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      ['volume', 'rm', '-f', 'forged-unrelated-volume'],
+      { timeoutMs: 10_000 },
+    );
+  });
+
+  it('preserves the Docker replacement after ambiguous previous-container retirement', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'initial-process-secret';
+    let runCount = 0;
+    let previousRemovalCompleted = false;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-process-env-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        if (args[0] === 'rm' && args.includes('container-process-env-1')) {
+          previousRemovalCompleted = true;
+          inspections.delete('container-process-env-1');
+          return failure('container removal response was lost');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: new NoopSnapshotSpec(),
+    });
+    const clientOptions = {
+      processEnvironmentBindings: {
+        SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+      },
+    };
+    const session = await client.create({
+      manifest: new Manifest({
+        environment: {
+          SANDBOX_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+          }),
+        },
+      }),
+      options: clientOptions,
+    });
+    const serialized = await client.serializeSessionState(session.state);
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'rotated-process-secret';
+    const restored = await client.deserializeSessionState(
+      markRunStateDeserializationInput(serialized, { clientOptions }),
+    );
+
+    let thrown: unknown;
+    try {
+      await client.resume(restored, { clientOptions });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(previousRemovalCompleted).toBe(true);
+    expect(thrown).toBeInstanceOf(SandboxLifecycleError);
+    expect((thrown as SandboxLifecycleError).details).toEqual({
+      provider: 'docker',
+      operation: 'sandbox resume',
+      containerId: 'container-process-env-1',
+      previousContainerId: 'container-process-env-1',
+      previousDockerVolumeNames: [],
+      replacementContainerId: 'container-process-env-2',
+      replacementDockerVolumeNames: [],
+    });
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      ['rm', '-f', 'container-process-env-2'],
+      { timeoutMs: 30_000 },
+    );
+  });
+
+  it('preserves the Docker replacement when previous volume retirement fails', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'initial-process-secret';
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-process-env-volume-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        if (
+          args[0] === 'volume' &&
+          args[1] === 'rm' &&
+          args[3] === previousVolumeName
+        ) {
+          return failure('volume cleanup echoed initial-process-secret');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: new NoopSnapshotSpec(),
+      processEnvironmentBindings: {
+        SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+      },
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          logs: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            mountPath: '/mnt/logs',
+            mountStrategy: dockerVolumeMountStrategy({ driver: 'rclone' }),
+          },
+        },
+        environment: {
+          SANDBOX_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+          }),
+        },
+      }),
+    );
+    const previousVolumeName = session.state.dockerVolumeNames?.[0];
+    expect(previousVolumeName).toBeDefined();
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'rotated-process-secret';
+
+    let thrown: unknown;
+    try {
+      await client.resume(session.state);
+    } catch (error) {
+      thrown = error;
+    }
+
+    const replacementVolumeName = inspections
+      .get('container-process-env-volume-2')
+      ?.mounts.find((mount) => mount.Type === 'volume')?.Name;
+    expect(replacementVolumeName).toBeDefined();
+    expect(thrown).toBeInstanceOf(SandboxLifecycleError);
+    expect(String(thrown)).not.toContain('initial-process-secret');
+    expect((thrown as SandboxLifecycleError).details).toEqual({
+      provider: 'docker',
+      operation: 'sandbox resume',
+      containerId: 'container-process-env-volume-1',
+      previousContainerId: 'container-process-env-volume-1',
+      previousDockerVolumeNames: [previousVolumeName],
+      replacementContainerId: 'container-process-env-volume-2',
+      replacementDockerVolumeNames: [replacementVolumeName],
+    });
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      ['rm', '-f', 'container-process-env-volume-2'],
+      { timeoutMs: 30_000 },
+    );
+  });
+
+  it('removes a distinct previous owned workspace after protected replacement', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'initial-process-secret';
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-process-env-workspace-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: { type: 'local', baseDir: join(rootDir, 'snapshots') },
+      allowedProcessEnvironmentKeys: ['AGENTS_TEST_DOCKER_PROCESS_SOURCE'],
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          'snapshot.txt': { type: 'file', content: 'snapshot\n' },
+        },
+        environment: {
+          AGENTS_TEST_DOCKER_PROCESS_SOURCE: new ProcessEnvValue(),
+        },
+      }),
+    );
+    await client.serializeSessionState(session.state);
+    const previousWorkspaceRootPath = session.state.workspaceRootPath;
+    await writeFile(join(previousWorkspaceRootPath, 'changed.txt'), 'changed');
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'rotated-process-secret';
+
+    const resumed = await client.resume(session.state);
+
+    expect(resumed.state.workspaceRootPath).not.toBe(previousWorkspaceRootPath);
+    await expect(stat(previousWorkspaceRootPath)).rejects.toThrow();
+    await expect(
+      readFile(join(resumed.state.workspaceRootPath, 'snapshot.txt'), 'utf8'),
+    ).resolves.toBe('snapshot\n');
+  });
+
+  it('preserves a previous owned workspace when protected retirement fails', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'initial-process-secret';
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-process-env-workspace-failure-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        if (
+          args[0] === 'rm' &&
+          args.includes('container-process-env-workspace-failure-1')
+        ) {
+          return failure('retirement failed');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: { type: 'local', baseDir: join(rootDir, 'snapshots') },
+      allowedProcessEnvironmentKeys: ['AGENTS_TEST_DOCKER_PROCESS_SOURCE'],
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          'snapshot.txt': { type: 'file', content: 'snapshot\n' },
+        },
+        environment: {
+          AGENTS_TEST_DOCKER_PROCESS_SOURCE: new ProcessEnvValue(),
+        },
+      }),
+    );
+    await client.serializeSessionState(session.state);
+    const previousWorkspaceRootPath = session.state.workspaceRootPath;
+    await writeFile(join(previousWorkspaceRootPath, 'changed.txt'), 'changed');
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'rotated-process-secret';
+
+    await expect(client.resume(session.state)).rejects.toThrow(
+      /protected process environment values/u,
+    );
+
+    await expect(stat(previousWorkspaceRootPath)).resolves.toBeTruthy();
+  });
+
+  it('rejects ungranted process environment values before Docker effects', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'unused-secret';
+    const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+
+    await expect(
+      client.create(
+        new Manifest({
+          environment: {
+            SANDBOX_TOKEN: new ProcessEnvValue({
+              name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+            }),
+          },
+        }),
+      ),
+    ).rejects.toThrow(/is not granted/u);
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+  });
+
+  it.each(['LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT'])(
+    'rejects protected %s before Docker effects',
+    async (destination) => {
+      process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'unused-secret';
+      const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+
+      await expect(
+        client.create({
+          manifest: new Manifest({
+            environment: {
+              [destination]: new ProcessEnvValue({
+                name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+              }),
+            },
+          }),
+          options: {
+            processEnvironmentBindings: {
+              [destination]: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+            },
+          },
+        }),
+      ).rejects.toThrow(
+        new RegExp(
+          `does not support ProcessEnvValue for "${destination}"`,
+          'u',
+        ),
+      );
+      expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    'API-TOKEN',
+    'A B',
+    '9TOKEN',
+    'PPID',
+    'UID',
+    'EUID',
+    'SHELLOPTS',
+    'IFS',
+    'BASH',
+    'BASH_EXECUTION_STRING',
+    'BASH_VERSION',
+    'ZSH_VERSION',
+    'KSH_VERSION',
+  ])(
+    'rejects unsupported protected destination %s before Docker effects',
+    async (destination) => {
+      process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'unused-secret';
+      const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+
+      await expect(
+        client.create({
+          manifest: new Manifest({
+            environment: {
+              [destination]: new ProcessEnvValue({
+                name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+              }),
+            },
+          }),
+          options: {
+            processEnvironmentBindings: {
+              [destination]: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+            },
+          },
+        }),
+      ).rejects.toThrow(/assignable POSIX shell identifiers/u);
+      expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects a non-POSIX protected destination during trusted resume preparation', () => {
+    process.env['AGENTS-TEST-DOCKER-SOURCE'] = 'unused-secret';
+    const resolver = vi.fn(async () => 'unresolved');
+    const client = new DockerSandboxClient({
+      processEnvironmentBindings: {
+        API_TOKEN: 'AGENTS-TEST-DOCKER-SOURCE',
+      },
+    });
+
+    expect(() =>
+      client.resolveTrustedManifestForResume(
+        new Manifest({
+          environment: {
+            'API-TOKEN': new ProcessEnvValue({
+              name: 'AGENTS-TEST-DOCKER-SOURCE',
+            }),
+            PROBE: resolver,
+          },
+        }),
+        {
+          processEnvironmentBindings: {
+            'API-TOKEN': 'AGENTS-TEST-DOCKER-SOURCE',
+          },
+        },
+      ),
+    ).toThrow(/assignable POSIX shell identifiers/u);
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it('rejects a serialized non-POSIX protected destination before rehydration', async () => {
+    const resolver = vi.fn(async () => 'unresolved');
+    class ProbeReference extends EnvValueReference {
+      static readonly type = 'test.docker_destination_probe';
+
+      constructor() {
+        super();
+      }
+
+      override serialize(): Record<string, unknown> {
+        return {};
+      }
+
+      override async resolve(): Promise<string> {
+        return await resolver();
+      }
+    }
+
+    process.env['AGENTS-TEST-DOCKER-SOURCE'] = 'unused-secret';
+    const unregister = registerEnvValueReference(
+      ProbeReference,
+      () => new ProbeReference(),
+    );
+    try {
+      const client = new DockerSandboxClient({
+        processEnvironmentBindings: {
+          'API-TOKEN': 'AGENTS-TEST-DOCKER-SOURCE',
+        },
+      });
+      const serialized = {
+        manifest: serializeManifestRecord(
+          new Manifest({
+            environment: {
+              'API-TOKEN': new ProcessEnvValue({
+                name: 'AGENTS-TEST-DOCKER-SOURCE',
+              }),
+              PROBE: new ProbeReference(),
+            },
+          }),
+        ),
+        workspaceRootPath: rootDir,
+        workspaceRootOwned: false,
+        environment: {},
+        containerId: 'container-invalid-destination-state',
+        image: 'test:image',
+      };
+
+      await expect(client.deserializeSessionState(serialized)).rejects.toThrow(
+        /assignable POSIX shell identifiers/u,
+      );
+      expect(resolver).not.toHaveBeenCalled();
+    } finally {
+      unregister();
+    }
+  });
+
+  it('rejects a mutated non-POSIX protected destination before live effects', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'unused-secret';
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-invalid-destination-mutation\n');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      processEnvironmentBindings: {
+        API_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+      },
+    });
+    const session = await client.create(
+      new Manifest({
+        environment: {
+          API_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+          }),
+        },
+      }),
+    );
+    session.state.manifest.environment['API-TOKEN'] = new ProcessEnvValue({
+      name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+    });
+    const resolver = vi.fn(async () => 'unresolved');
+    processMocks.runSandboxProcess.mockClear();
+
+    await expect(
+      session.materializeEntry({
+        path: 'materialized.txt',
+        entry: { type: 'file', content: 'not written' },
+      }),
+    ).rejects.toThrow(/assignable POSIX shell identifiers/u);
+    await expect(stat(join(rootDir, 'materialized.txt'))).rejects.toMatchObject(
+      { code: 'ENOENT' },
+    );
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+
+    await expect(
+      session.applyManifest(
+        new Manifest({
+          entries: {
+            'marker.txt': { type: 'file', content: 'not written' },
+          },
+          environment: { PROBE: resolver },
+        }),
+      ),
+    ).rejects.toBeInstanceOf(SandboxLifecycleError);
+
+    expect(resolver).not.toHaveBeenCalled();
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+    await expect(stat(join(rootDir, 'marker.txt'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
+  it('redacts Docker startup errors when process environment values are present', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'docker-secret-in-error';
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return failure('provider echoed docker-secret-in-error');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: new NoopSnapshotSpec(),
+      allowedProcessEnvironmentKeys: ['AGENTS_TEST_DOCKER_PROCESS_SOURCE'],
+    });
+
+    let thrown: unknown;
+    try {
+      await client.create(
+        new Manifest({
+          environment: {
+            AGENTS_TEST_DOCKER_PROCESS_SOURCE: new ProcessEnvValue(),
+          },
+        }),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(UserError);
+    expect(String(thrown)).not.toContain('docker-secret-in-error');
+    expect(String(thrown)).toContain('protected process environment values');
+  });
+
+  it('redacts mixed environment resolver errors before Docker effects', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'docker-resolver-secret';
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      allowedProcessEnvironmentKeys: ['AGENTS_TEST_DOCKER_PROCESS_SOURCE'],
+    });
+
+    let thrown: unknown;
+    try {
+      await client.create(
+        new Manifest({
+          environment: {
+            AGENTS_TEST_DOCKER_PROCESS_SOURCE: new ProcessEnvValue(),
+            FAILING: async () => {
+              throw Object.assign(
+                new Error('resolver echoed docker-resolver-secret'),
+                { cause: new Error('nested docker-resolver-secret') },
+              );
+            },
+          },
+        }),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(SandboxLifecycleError);
+    expect(String(thrown)).not.toContain('docker-resolver-secret');
+    expect(JSON.stringify(thrown)).not.toContain('docker-resolver-secret');
+    expect((thrown as Error & { cause?: unknown }).cause).toBeUndefined();
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+  });
+
+  it('redacts resolver errors while applying a manifest to a protected Docker session', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'docker-apply-secret';
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          const containerId = 'container-apply-secret';
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      allowedProcessEnvironmentKeys: ['AGENTS_TEST_DOCKER_PROCESS_SOURCE'],
+    });
+    const session = await client.create(
+      new Manifest({
+        environment: {
+          AGENTS_TEST_DOCKER_PROCESS_SOURCE: new ProcessEnvValue(),
+        },
+      }),
+    );
+    processMocks.runSandboxProcess.mockClear();
+
+    let thrown: unknown;
+    try {
+      await session.applyManifest(
+        new Manifest({
+          environment: {
+            FAILING: async () => {
+              throw Object.assign(
+                new Error('resolver echoed docker-apply-secret'),
+                { cause: new Error('nested docker-apply-secret') },
+              );
+            },
+          },
+        }),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(SandboxLifecycleError);
+    expect(String(thrown)).not.toContain('docker-apply-secret');
+    expect(JSON.stringify(thrown)).not.toContain('docker-apply-secret');
+    expect((thrown as Error & { cause?: unknown }).cause).toBeUndefined();
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+  });
+
+  it('retains protected destination authority after a successful manifest mutation', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'docker-mutation-secret';
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-mutation-authority\n');
+        }
+        return success();
+      },
+    );
+    childProcessMocks.spawn.mockImplementation(() =>
+      dockerSpawnResult({ status: 0 }),
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: new NoopSnapshotSpec(),
+      allowedProcessEnvironmentKeys: ['AGENTS_TEST_DOCKER_PROCESS_SOURCE'],
+    });
+    const session = await client.create(
+      new Manifest({
+        environment: {
+          AGENTS_TEST_DOCKER_PROCESS_SOURCE: new ProcessEnvValue(),
+        },
+      }),
+    );
+
+    await session.applyManifest(
+      new Manifest({
+        environment: {
+          SAFE: async () => {
+            delete session.state.manifest.environment
+              .AGENTS_TEST_DOCKER_PROCESS_SOURCE;
+            return 'safe';
+          },
+        },
+      }),
+    );
+    await session.pathExists('marker', 'root');
+    const serialized = await client.serializeSessionState(session.state);
+
+    expect(
+      session.state.manifest.environment.AGENTS_TEST_DOCKER_PROCESS_SOURCE,
+    ).toBeInstanceOf(ProcessEnvValue);
+    expect(childProcessMocks.spawn).not.toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining([
+        '-e',
+        'AGENTS_TEST_DOCKER_PROCESS_SOURCE=docker-mutation-secret',
+      ]),
+      expect.anything(),
+    );
+    expect(JSON.stringify(serialized)).not.toContain('docker-mutation-secret');
+    expect(serialized.environment).not.toHaveProperty(
+      'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+    );
+  });
+
+  it('rejects replacing a protected Docker environment destination', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'docker-protected-secret';
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-protected-delta\n');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: new NoopSnapshotSpec(),
+      allowedProcessEnvironmentKeys: ['AGENTS_TEST_DOCKER_PROCESS_SOURCE'],
+    });
+    const session = await client.create(
+      new Manifest({
+        environment: {
+          AGENTS_TEST_DOCKER_PROCESS_SOURCE: new ProcessEnvValue(),
+        },
+      }),
+    );
+    processMocks.runSandboxProcess.mockClear();
+    const replacementResolver = vi.fn(async () => 'ordinary');
+
+    await expect(
+      session.applyManifest(
+        new Manifest({
+          environment: {
+            AGENTS_TEST_DOCKER_PROCESS_SOURCE: replacementResolver,
+          },
+        }),
+      ),
+    ).rejects.toThrow(/protected process environment values/u);
+
+    expect(replacementResolver).not.toHaveBeenCalled();
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+    expect(
+      session.state.manifest.environment.AGENTS_TEST_DOCKER_PROCESS_SOURCE,
+    ).toBeInstanceOf(ProcessEnvValue);
+    const serialized = await client.serializeSessionState(session.state);
+    const restored = await client.deserializeSessionState(
+      markRunStateDeserializationInput(serialized, {
+        clientOptions: {
+          allowedProcessEnvironmentKeys: ['AGENTS_TEST_DOCKER_PROCESS_SOURCE'],
+        },
+      }),
+    );
+    expect(
+      restored.manifest.environment.AGENTS_TEST_DOCKER_PROCESS_SOURCE,
+    ).toBeInstanceOf(ProcessEnvValue);
+  });
+
+  it('rejects importing bound process environment authority into a live Docker session', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'docker-import-secret';
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-ordinary-delta\n');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: new NoopSnapshotSpec(),
+    });
+    const session = await client.create(new Manifest());
+    const boundDelta = cloneManifest(
+      bindProcessEnvironmentAccess(
+        new Manifest({
+          environment: {
+            IMPORTED_TOKEN: new ProcessEnvValue({
+              name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+            }),
+          },
+        }),
+        {
+          processEnvironmentBindings: {
+            IMPORTED_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+          },
+        },
+      ),
+    );
+    processMocks.runSandboxProcess.mockClear();
+
+    await expect(session.applyManifest(boundDelta)).rejects.toThrow(
+      /protected process environment destinations/u,
+    );
+
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+    expect(session.state.manifest.environment).not.toHaveProperty(
+      'IMPORTED_TOKEN',
+    );
+  });
+
+  it('redacts mixed environment resolver errors during Docker resume', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'docker-resume-secret';
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      allowedProcessEnvironmentKeys: ['AGENTS_TEST_DOCKER_PROCESS_SOURCE'],
+    });
+    const state: DockerSandboxSessionState = {
+      manifest: new Manifest({
+        environment: {
+          AGENTS_TEST_DOCKER_PROCESS_SOURCE: new ProcessEnvValue(),
+          FAILING: async () => {
+            throw Object.assign(
+              new Error('resolver echoed docker-resume-secret'),
+              { cause: new Error('nested docker-resume-secret') },
+            );
+          },
+        },
+      }),
+      workspaceRootPath: rootDir,
+      workspaceRootOwned: false,
+      environment: {},
+      containerId: 'container-resolver-error',
+      image: 'test:image',
+    };
+
+    let thrown: unknown;
+    try {
+      await client.resume(state);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(SandboxLifecycleError);
+    expect(String(thrown)).not.toContain('docker-resume-secret');
+    expect(JSON.stringify(thrown)).not.toContain('docker-resume-secret');
+    expect((thrown as Error & { cause?: unknown }).cause).toBeUndefined();
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+  });
+
+  it('redacts serializable environment reference errors during Docker deserialization', async () => {
+    class ThrowingDockerReference extends EnvValueReference {
+      static readonly type = 'test.throwing_docker_reference';
+
+      constructor() {
+        super();
+      }
+
+      override serialize(): Record<string, unknown> {
+        return {};
+      }
+
+      override async resolve(): Promise<string> {
+        throw Object.assign(
+          new Error('reference echoed docker-deserialize-secret'),
+          { cause: new Error('nested docker-deserialize-secret') },
+        );
+      }
+    }
+
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'docker-deserialize-secret';
+    const unregister = registerEnvValueReference(
+      ThrowingDockerReference,
+      () => new ThrowingDockerReference(),
+    );
+    try {
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        allowedProcessEnvironmentKeys: ['AGENTS_TEST_DOCKER_PROCESS_SOURCE'],
+      });
+      const serialized = {
+        manifest: serializeManifestRecord(
+          new Manifest({
+            environment: {
+              AGENTS_TEST_DOCKER_PROCESS_SOURCE: new ProcessEnvValue(),
+              FAILING: new ThrowingDockerReference(),
+            },
+          }),
+        ),
+        workspaceRootPath: rootDir,
+        workspaceRootOwned: false,
+        environment: {},
+        containerId: 'container-deserialize-error',
+        image: 'test:image',
+      };
+
+      let thrown: unknown;
+      try {
+        await client.deserializeSessionState(serialized);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(SandboxLifecycleError);
+      expect(String(thrown)).not.toContain('docker-deserialize-secret');
+      expect(JSON.stringify(thrown)).not.toContain('docker-deserialize-secret');
+      expect((thrown as Error & { cause?: unknown }).cause).toBeUndefined();
+    } finally {
+      unregister();
+    }
+  });
+
+  it('redacts Docker post-start and cleanup errors for process environment values', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'docker-secret-in-error';
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-process-env\n');
+        }
+        if (args[0] === 'exec') {
+          return failure('provisioning echoed docker-secret-in-error');
+        }
+        if (args[0] === 'rm') {
+          return failure('cleanup echoed docker-secret-in-error');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      allowedProcessEnvironmentKeys: ['AGENTS_TEST_DOCKER_PROCESS_SOURCE'],
+    });
+
+    let thrown: unknown;
+    try {
+      await client.create(
+        new Manifest({
+          environment: {
+            AGENTS_TEST_DOCKER_PROCESS_SOURCE: new ProcessEnvValue(),
+          },
+          users: [{ name: 'sandbox-user' }],
+        }),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(SandboxLifecycleError);
+    expect(String(thrown)).not.toContain('docker-secret-in-error');
+    expect(JSON.stringify(thrown)).not.toContain('docker-secret-in-error');
+    expect((thrown as SandboxLifecycleError).details).toEqual({
+      provider: 'docker',
+      operation: 'sandbox creation',
+      replacementContainerId: 'container-process-env',
+      replacementDockerVolumeNames: [],
+    });
+
+    let deferredCleanupError: unknown;
+    try {
+      await client.create(new Manifest());
+    } catch (error) {
+      deferredCleanupError = error;
+    }
+    expect(deferredCleanupError).toBeInstanceOf(SandboxLifecycleError);
+    expect(String(deferredCleanupError)).not.toContain(
+      'docker-secret-in-error',
+    );
+    expect(JSON.stringify(deferredCleanupError)).not.toContain(
+      'docker-secret-in-error',
+    );
+    expect((deferredCleanupError as SandboxLifecycleError).details).toEqual({
+      provider: 'docker',
+      operation: 'deferred cleanup',
+      containerId: 'container-process-env',
+      replacementContainerId: 'container-process-env',
+      replacementDockerVolumeNames: [],
+    });
+  });
+
+  it('retries protected candidate volume cleanup after setup failure', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'docker-cleanup-secret';
+    let runCount = 0;
+    let volumeRemovalAttempts = 0;
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          return success(`container-protected-cleanup-${runCount}\n`);
+        }
+        if (
+          args[0] === 'exec' &&
+          args.includes('container-protected-cleanup-1')
+        ) {
+          return failure('account provisioning failed');
+        }
+        if (args[0] === 'volume' && args[1] === 'rm') {
+          volumeRemovalAttempts += 1;
+          return volumeRemovalAttempts === 1
+            ? failure('volume cleanup echoed docker-cleanup-secret')
+            : success();
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      allowedProcessEnvironmentKeys: ['AGENTS_TEST_DOCKER_PROCESS_SOURCE'],
+    });
+
+    let thrown: unknown;
+    try {
+      await client.create(
+        new Manifest({
+          entries: {
+            logs: {
+              type: 's3_mount',
+              bucket: 'agent-logs',
+              mountPath: '/mnt/logs',
+              mountStrategy: dockerVolumeMountStrategy({ driver: 'rclone' }),
+            },
+          },
+          environment: {
+            AGENTS_TEST_DOCKER_PROCESS_SOURCE: new ProcessEnvValue(),
+          },
+          users: [{ name: 'sandbox-user' }],
+        }),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(SandboxLifecycleError);
+    expect(String(thrown)).not.toContain('docker-cleanup-secret');
+    expect(volumeRemovalAttempts).toBe(1);
+
+    const later = await client.create(new Manifest());
+    expect(volumeRemovalAttempts).toBe(2);
+    await later.close();
   });
 
   it('passes bind and Docker volume mounts to container creation', async () => {
@@ -986,6 +2710,85 @@ describe('DockerSandboxClient unit behavior', () => {
     await session.close();
   });
 
+  it('uses a safe environment when the Docker filesystem user may be root', async () => {
+    childProcessMocks.spawn.mockImplementation(() =>
+      dockerSpawnResult({ status: 0 }),
+    );
+    const manifest = new Manifest({
+      entries: {
+        mounted: s3Mount({
+          bucket: 'fixture',
+          mountStrategy: inContainerMountStrategy(),
+        }),
+      },
+      environment: {
+        PATH: '/workspace/bin:/usr/bin:/bin',
+      },
+    });
+    const session = new DockerSandboxSession({
+      state: {
+        manifest,
+        workspaceRootPath: rootDir,
+        workspaceRootOwned: false,
+        environment: {
+          PATH: '/workspace/bin:/usr/bin:/bin',
+          HOME: '/workspace/home',
+          LD_PRELOAD: '/workspace/loader.so',
+          LD_LIBRARY_PATH: '/workspace/lib',
+          LD_AUDIT: '/workspace/audit.so',
+        },
+        containerId: 'container-implicit-root',
+        image: 'test:image',
+      },
+    });
+
+    for (const { runAs, defaultUser } of [
+      { runAs: undefined, defaultUser: undefined },
+      { runAs: '0', defaultUser: undefined },
+      { runAs: '0:0', defaultUser: undefined },
+      { runAs: 'root:root', defaultUser: undefined },
+      { runAs: undefined, defaultUser: '0:0' },
+      { runAs: '', defaultUser: undefined },
+      { runAs: undefined, defaultUser: '' },
+    ]) {
+      childProcessMocks.spawn.mockClear();
+      session.state.defaultUser = defaultUser;
+
+      await expect(session.pathExists('mounted/file.txt', runAs)).resolves.toBe(
+        true,
+      );
+
+      const command = (
+        childProcessMocks.spawn.mock.calls[0]?.[1] as string[]
+      ).join(' ');
+      expect(command).toContain('-e PATH=/usr/sbin:/usr/bin:/sbin:/bin');
+      expect(command).toContain('-e HOME=/root');
+      expect(command).toContain('-e LD_PRELOAD=');
+      expect(command).toContain('-e LD_LIBRARY_PATH=');
+      expect(command).toContain('-e LD_AUDIT=');
+      expect(command).not.toContain('/workspace/bin:/usr/bin:/bin');
+    }
+
+    for (const { runAs, defaultUser } of [
+      { runAs: 'node', defaultUser: undefined },
+      { runAs: '', defaultUser: 'node' },
+    ]) {
+      childProcessMocks.spawn.mockClear();
+      session.state.defaultUser = defaultUser;
+      await expect(session.pathExists('mounted/file.txt', runAs)).resolves.toBe(
+        true,
+      );
+      const nonRootCommand = (
+        childProcessMocks.spawn.mock.calls[0]?.[1] as string[]
+      ).join(' ');
+      expect(nonRootCommand).toContain('-e PATH=/workspace/bin:/usr/bin:/bin');
+      expect(nonRootCommand).toContain('-u node');
+      expect(nonRootCommand).not.toContain(
+        '-e PATH=/usr/sbin:/usr/bin:/sbin:/bin',
+      );
+    }
+  });
+
   it('removes the container and workspace when in-container mount application fails during create', async () => {
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
@@ -1100,6 +2903,318 @@ describe('DockerSandboxClient unit behavior', () => {
     ).toEqual(['container-1', 'container-1', 'container-2']);
   });
 
+  it('retains cleanup tracking when a timed-out create is not visible yet', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'protected-create-secret';
+    let runCount = 0;
+    let timedOutContainerName: string | undefined;
+    let timedOutContainerRemovalCount = 0;
+    let timedOutVolumeName: string | undefined;
+    let timedOutVolumeRemovalCount = 0;
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          if (runCount === 1) {
+            timedOutContainerName = args[args.indexOf('--name') + 1];
+            timedOutVolumeName = dockerRunInspection(args).mounts.find(
+              (mount) => mount.Type === 'volume',
+            )?.Name;
+            return timedOut();
+          }
+          return success('later-container\n');
+        }
+        if (args[0] === 'rm') {
+          if (args[2] === timedOutContainerName) {
+            timedOutContainerRemovalCount += 1;
+            return timedOutContainerRemovalCount === 2
+              ? success()
+              : failure('No such container');
+          }
+          return success();
+        }
+        if (
+          args[0] === 'volume' &&
+          args[1] === 'rm' &&
+          args[3] === timedOutVolumeName
+        ) {
+          timedOutVolumeRemovalCount += 1;
+          return timedOutVolumeRemovalCount === 1
+            ? failure('volume cleanup failed')
+            : success();
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      processEnvironmentBindings: {
+        SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+      },
+    });
+    const manifest = new Manifest({
+      entries: {
+        logs: {
+          type: 's3_mount',
+          bucket: 'agent-logs',
+          mountStrategy: dockerVolumeMountStrategy({ driver: 'rclone' }),
+        },
+      },
+      environment: {
+        SANDBOX_TOKEN: new ProcessEnvValue({
+          name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+        }),
+      },
+    });
+
+    const error = await client.create(manifest).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+
+    expect(timedOutContainerName).toBeDefined();
+    expect(timedOutVolumeName).toBeDefined();
+    expect(error).toBeInstanceOf(SandboxLifecycleError);
+    expect((error as SandboxLifecycleError).details).toMatchObject({
+      provider: 'docker',
+      operation: 'sandbox creation',
+      replacementContainerId: timedOutContainerName,
+    });
+    expect(timedOutContainerRemovalCount).toBe(1);
+
+    await expect(client.create(new Manifest())).rejects.toThrow(
+      'Docker sandbox cleanup failed for a resource that used protected process environment values.',
+    );
+    const later = await client.create(new Manifest());
+    await later.close();
+
+    expect(timedOutContainerRemovalCount).toBe(3);
+    expect(timedOutVolumeRemovalCount).toBe(2);
+    expect(
+      processMocks.runSandboxProcess.mock.calls
+        .filter(([, args]) => args[0] === 'rm')
+        .map(([, args]) => args[2]),
+    ).toEqual([
+      timedOutContainerName,
+      timedOutContainerName,
+      timedOutContainerName,
+      'later-container',
+    ]);
+  });
+
+  it('retries owned workspace cleanup after a timed-out create', async () => {
+    let runCount = 0;
+    let timedOutContainerName: string | undefined;
+    let timedOutWorkspaceRoot: string | undefined;
+    let timedOutContainerRemovalCount = 0;
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          if (runCount === 1) {
+            timedOutContainerName = args[args.indexOf('--name') + 1];
+            timedOutWorkspaceRoot = dockerRunInspection(args).mounts.find(
+              (mount) => mount.Type === 'bind',
+            )?.Source;
+            return timedOut();
+          }
+          return success(`container-${runCount}\n`);
+        }
+        if (args[0] === 'rm') {
+          if (args[2] === timedOutContainerName) {
+            timedOutContainerRemovalCount += 1;
+            return timedOutContainerRemovalCount === 2
+              ? success()
+              : failure('No such container');
+          }
+          return success();
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+
+    await expect(client.create(new Manifest())).rejects.toThrow(
+      'Failed to start Docker sandbox container',
+    );
+
+    expect(timedOutContainerName).toBeDefined();
+    expect(timedOutWorkspaceRoot).toBeDefined();
+    await chmod(rootDir, 0o500);
+    try {
+      await expect(client.create(new Manifest())).rejects.toThrow();
+      await expect(stat(timedOutWorkspaceRoot!)).resolves.toBeDefined();
+    } finally {
+      await chmod(rootDir, 0o700);
+    }
+
+    const later = await client.create(new Manifest());
+    await expect(stat(timedOutWorkspaceRoot!)).rejects.toThrow();
+    await later.close();
+
+    expect(timedOutContainerRemovalCount).toBe(3);
+  });
+
+  it('preserves protected creation identifiers when setup cleanup fails', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'protected-create-secret';
+    let replacementVolumeName: string | undefined;
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          const inspection = dockerRunInspection(args);
+          replacementVolumeName = inspection.mounts.find(
+            (mount) => mount.Type === 'volume',
+          )?.Name;
+          return success('protected-create-replacement\n');
+        }
+        if (args[0] === 'exec') {
+          return failure('account provisioning echoed protected-create-secret');
+        }
+        if (args[0] === 'rm') {
+          return failure('container cleanup echoed protected-create-secret');
+        }
+        if (args[0] === 'volume' && args[1] === 'rm') {
+          return failure('volume cleanup echoed protected-create-secret');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      processEnvironmentBindings: {
+        SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+      },
+    });
+
+    const error = await client
+      .create(
+        new Manifest({
+          entries: {
+            logs: {
+              type: 's3_mount',
+              bucket: 'agent-logs',
+              mountStrategy: dockerVolumeMountStrategy({ driver: 'rclone' }),
+            },
+          },
+          environment: {
+            SANDBOX_TOKEN: new ProcessEnvValue({
+              name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+            }),
+          },
+          users: [{ name: 'sandbox-user' }],
+        }),
+      )
+      .then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+
+    expect(replacementVolumeName).toBeDefined();
+    expect(error).toBeInstanceOf(SandboxLifecycleError);
+    expect(String(error)).not.toContain('protected-create-secret');
+    expect((error as SandboxLifecycleError).details).toEqual({
+      provider: 'docker',
+      operation: 'sandbox creation',
+      replacementContainerId: 'protected-create-replacement',
+      replacementDockerVolumeNames: [replacementVolumeName],
+    });
+    expect((error as Error & { cause?: unknown }).cause).toBeUndefined();
+  });
+
+  it('preserves protected replacement identifiers when setup cleanup fails', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'initial-secret';
+    let runCount = 0;
+    let replacementVolumeName: string | undefined;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `protected-replacement-${runCount}`;
+          const inspection = dockerRunInspection(args);
+          inspections.set(containerId, inspection);
+          if (runCount === 2) {
+            replacementVolumeName = inspection.mounts.find(
+              (mount) => mount.Type === 'volume',
+            )?.Name;
+          }
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'exec') {
+          return args.includes('protected-replacement-2')
+            ? failure('account provisioning echoed rotated-secret')
+            : success();
+        }
+        if (args[0] === 'rm' && args[2] === 'protected-replacement-2') {
+          return failure('container cleanup echoed rotated-secret');
+        }
+        if (
+          args[0] === 'volume' &&
+          args[1] === 'rm' &&
+          args[3] === replacementVolumeName
+        ) {
+          return failure('volume cleanup echoed rotated-secret');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      processEnvironmentBindings: {
+        SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+      },
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          logs: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            mountStrategy: dockerVolumeMountStrategy({ driver: 'rclone' }),
+          },
+        },
+        environment: {
+          SANDBOX_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+          }),
+        },
+        users: [{ name: 'sandbox-user' }],
+      }),
+    );
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'rotated-secret';
+
+    const error = await client.resume(session.state).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+
+    expect(replacementVolumeName).toBeDefined();
+    expect(error).toBeInstanceOf(SandboxLifecycleError);
+    expect(String(error)).not.toContain('rotated-secret');
+    expect((error as SandboxLifecycleError).details).toEqual({
+      provider: 'docker',
+      operation: 'sandbox resume',
+      containerId: 'protected-replacement-1',
+      replacementContainerId: 'protected-replacement-2',
+      replacementDockerVolumeNames: [replacementVolumeName],
+    });
+    expect((error as Error & { cause?: unknown }).cause).toBeUndefined();
+  });
+
   it('retries failed restart cleanup before a later create', async () => {
     let containerCount = 0;
     let replacementRemoveAttempts = 0;
@@ -1119,7 +3234,7 @@ describe('DockerSandboxClient unit behavior', () => {
           return success(`${containerId}\n`);
         }
         if (args[0] === 'exec') {
-          return args[3] === 'container-2'
+          return args.includes('container-2')
             ? failure('account provisioning failed')
             : success();
         }
@@ -1160,6 +3275,277 @@ describe('DockerSandboxClient unit behavior', () => {
         .filter(([, args]) => args[0] === 'rm')
         .map(([, args]) => args[2]),
     ).toEqual(['container-1', 'container-2', 'container-2', 'container-3']);
+  });
+
+  it('continues timed-out restart cleanup after container removal', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'initial-secret';
+    let runCount = 0;
+    let timedOutContainerName: string | undefined;
+    let timedOutContainerRemovalCount = 0;
+    let timedOutVolumeName: string | undefined;
+    let timedOutVolumeRemovalCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          if (runCount === 2) {
+            timedOutContainerName = args[args.indexOf('--name') + 1];
+            timedOutVolumeName = dockerRunInspection(args).mounts.find(
+              (mount) => mount.Type === 'volume',
+            )?.Name;
+            return timedOut();
+          }
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'rm') {
+          if (args[2] === timedOutContainerName) {
+            timedOutContainerRemovalCount += 1;
+            return timedOutContainerRemovalCount === 2
+              ? success()
+              : failure('No such object');
+          }
+          return success();
+        }
+        if (
+          args[0] === 'volume' &&
+          args[1] === 'rm' &&
+          args[3] === timedOutVolumeName
+        ) {
+          timedOutVolumeRemovalCount += 1;
+          return timedOutVolumeRemovalCount === 1
+            ? failure('volume cleanup failed')
+            : success();
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      processEnvironmentBindings: {
+        SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+      },
+    });
+    const original = await client.create(
+      new Manifest({
+        entries: {
+          logs: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            mountStrategy: dockerVolumeMountStrategy({ driver: 'rclone' }),
+          },
+        },
+        environment: {
+          SANDBOX_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+          }),
+        },
+      }),
+    );
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'rotated-secret';
+
+    await expect(client.resume(original.state)).rejects.toBeInstanceOf(
+      SandboxLifecycleError,
+    );
+
+    expect(timedOutContainerName).toBeDefined();
+    expect(timedOutVolumeName).toBeDefined();
+    expect(timedOutContainerRemovalCount).toBe(1);
+
+    await expect(client.create(new Manifest())).rejects.toThrow(
+      'Docker sandbox cleanup failed for a resource that used protected process environment values.',
+    );
+    const later = await client.create(new Manifest());
+    await later.close();
+    await original.close();
+
+    expect(timedOutContainerRemovalCount).toBe(3);
+    expect(timedOutVolumeRemovalCount).toBe(2);
+  });
+
+  it('retains a restored workspace while a timed-out restart is not visible', async () => {
+    let runCount = 0;
+    let timedOutContainerName: string | undefined;
+    let timedOutContainerRemovalCount = 0;
+    let timedOutWorkspaceRoot: string | undefined;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          if (runCount === 2) {
+            timedOutContainerName = args[args.indexOf('--name') + 1];
+            const inspection = dockerRunInspection(args);
+            timedOutWorkspaceRoot = inspection.mounts.find(
+              (mount) => mount.Type === 'bind',
+            )?.Source;
+            return timedOut();
+          }
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'rm') {
+          if (args[2] === timedOutContainerName) {
+            timedOutContainerRemovalCount += 1;
+            return timedOutContainerRemovalCount === 1
+              ? failure('No such object')
+              : success();
+          }
+          return success();
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: {
+        type: 'local',
+        baseDir: join(rootDir, 'snapshots'),
+      },
+    });
+    const original = await client.create(
+      new Manifest({
+        entries: {
+          logs: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            mountStrategy: dockerVolumeMountStrategy({ driver: 'rclone' }),
+          },
+        },
+      }),
+    );
+    const serializedState = await client.serializeSessionState(original.state);
+    original.state.snapshot =
+      serializedState.snapshot as DockerSandboxSessionState['snapshot'];
+    original.state.snapshotExcludedPaths =
+      serializedState.snapshotExcludedPaths as string[] | undefined;
+    await rm(original.state.workspaceRootPath, {
+      recursive: true,
+      force: true,
+    });
+    const error = await client.resume(original.state).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+
+    expect(timedOutContainerName).toBeDefined();
+    expect(timedOutWorkspaceRoot).toBeDefined();
+    await expect(stat(timedOutWorkspaceRoot!)).resolves.toBeDefined();
+    expect(error).toBeInstanceOf(UserError);
+    expect(String(error)).toContain('Failed to start Docker sandbox container');
+    expect(timedOutContainerRemovalCount).toBe(1);
+
+    const later = await client.create(new Manifest());
+    await expect(stat(timedOutWorkspaceRoot!)).rejects.toThrow();
+    await later.close();
+    await original.close();
+
+    expect(timedOutContainerRemovalCount).toBe(2);
+    expect(
+      processMocks.runSandboxProcess.mock.calls
+        .filter(([, args]) => args[0] === 'rm')
+        .map(([, args]) => args[2]),
+    ).toEqual([
+      'container-1',
+      timedOutContainerName,
+      timedOutContainerName,
+      'container-3',
+      'container-1',
+    ]);
+  });
+
+  it('retries restored workspace cleanup after a timed-out restart', async () => {
+    let runCount = 0;
+    let timedOutContainerName: string | undefined;
+    let timedOutContainerRemovalCount = 0;
+    let timedOutWorkspaceRoot: string | undefined;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          if (runCount === 2) {
+            timedOutContainerName = args[args.indexOf('--name') + 1];
+            timedOutWorkspaceRoot = dockerRunInspection(args).mounts.find(
+              (mount) => mount.Type === 'bind',
+            )?.Source;
+            return timedOut();
+          }
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'rm') {
+          if (args[2] === timedOutContainerName) {
+            timedOutContainerRemovalCount += 1;
+            return timedOutContainerRemovalCount === 2
+              ? success()
+              : failure('No such object');
+          }
+          return success();
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: {
+        type: 'local',
+        baseDir: join(rootDir, 'snapshots'),
+      },
+    });
+    const original = await client.create(new Manifest());
+    const serializedState = await client.serializeSessionState(original.state);
+    original.state.snapshot =
+      serializedState.snapshot as DockerSandboxSessionState['snapshot'];
+    original.state.snapshotExcludedPaths =
+      serializedState.snapshotExcludedPaths as string[] | undefined;
+    await rm(original.state.workspaceRootPath, {
+      recursive: true,
+      force: true,
+    });
+
+    await expect(client.resume(original.state)).rejects.toThrow(
+      'Failed to start Docker sandbox container',
+    );
+
+    expect(timedOutContainerName).toBeDefined();
+    expect(timedOutWorkspaceRoot).toBeDefined();
+    await chmod(rootDir, 0o500);
+    try {
+      await expect(client.create(new Manifest())).rejects.toThrow();
+      await expect(stat(timedOutWorkspaceRoot!)).resolves.toBeDefined();
+    } finally {
+      await chmod(rootDir, 0o700);
+    }
+
+    const later = await client.create(new Manifest());
+    await expect(stat(timedOutWorkspaceRoot!)).rejects.toThrow();
+    await later.close();
+    await original.close();
+
+    expect(timedOutContainerRemovalCount).toBe(3);
   });
 
   it('applies Azure Blob blobfuse options for Docker in-container mounts', async () => {
@@ -1713,28 +4099,46 @@ describe('DockerSandboxClient unit behavior', () => {
     expect(childProcessMocks.spawn).not.toHaveBeenCalled();
   });
 
-  it('rejects symlink-aliased rclone config before Docker mount effects', async () => {
+  it('redacts symlink-aliased rclone config failures for protected Docker sessions', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'protected-secret';
     const session = new DockerSandboxSession({
       state: {
-        manifest: new Manifest({
-          entries: {
-            'secret.conf': {
-              type: 'file',
-              content: '[custom]\npassword = serialized\n',
+        manifest: bindProcessEnvironmentAccess(
+          new Manifest({
+            entries: {
+              'secret.conf': {
+                type: 'file',
+                content: '[custom]\npassword = serialized\n',
+              },
+              seed: {
+                type: 's3_mount',
+                bucket: 'seed',
+                mountStrategy: inContainerMountStrategy(),
+              },
             },
-            seed: {
-              type: 's3_mount',
-              bucket: 'seed',
-              mountStrategy: inContainerMountStrategy(),
+            environment: {
+              PATH: new ProcessEnvValue(),
+              HOME: new ProcessEnvValue(),
+              SANDBOX_TOKEN: new ProcessEnvValue({
+                name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+              }),
+            },
+          }),
+          {
+            processEnvironmentBindings: {
+              PATH: 'PATH',
+              HOME: 'HOME',
+              SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
             },
           },
-        }),
+        ),
         workspaceRootPath: rootDir,
         workspaceRootOwned: false,
         environment: {
           PATH: '/workspace/model-bin',
           HOME: '/workspace/model-home',
           LD_PRELOAD: '/workspace/model-loader.so',
+          SANDBOX_TOKEN: 'protected-secret',
         },
         containerId: 'container-credential-alias',
         image: 'test:image',
@@ -1754,6 +4158,13 @@ describe('DockerSandboxClient unit behavior', () => {
     await expect(
       session.applyManifest(
         new Manifest({
+          environment: {
+            SAFE: async () => {
+              delete session.state.manifest.environment.PATH;
+              delete session.state.manifest.environment.HOME;
+              return 'safe';
+            },
+          },
           entries: {
             data: {
               type: 's3_mount',
@@ -1769,7 +4180,7 @@ describe('DockerSandboxClient unit behavior', () => {
           },
         }).withInContainerMountBroadCredentialExposureAcknowledged('data'),
       ),
-    ).rejects.toThrow(/resolve to a serialized manifest entry/u);
+    ).rejects.toThrow(/protected process environment values/u);
 
     const commands = childProcessMocks.spawn.mock.calls.map(([, args]) =>
       (args as string[]).join(' '),
@@ -1781,15 +4192,17 @@ describe('DockerSandboxClient unit behavior', () => {
     for (const args of resolverArgs) {
       expect(args).not.toContain('/bin/sh');
       expect(args).not.toContain('-lc');
+      expect(args).not.toContain('SANDBOX_TOKEN=');
+      expect(args).not.toContain('PATH=');
+      expect(args).not.toContain('HOME=');
+      expect(args.join(' ')).not.toContain('protected-secret');
       expect(args).toEqual(
         expect.arrayContaining([
-          'PATH=',
-          'HOME=',
+          'PATH=/usr/sbin:/usr/bin:/sbin:/bin',
+          'HOME=/root',
           'LD_PRELOAD=',
           'LD_LIBRARY_PATH=',
           'LD_AUDIT=',
-          'PATH=/usr/bin:/bin',
-          'HOME=/root',
         ]),
       );
     }
@@ -2385,6 +4798,223 @@ describe('DockerSandboxClient unit behavior', () => {
     await expect(stat(workspaceRootPath)).rejects.toThrow();
   });
 
+  it('redacts protected Docker close errors for direct and managed cleanup', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'docker-close-secret';
+    let removeCalls = 0;
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-process-env\n');
+        }
+        if (args[0] === 'rm') {
+          removeCalls += 1;
+          return removeCalls <= 2
+            ? failure('cleanup echoed docker-close-secret')
+            : success();
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      allowedProcessEnvironmentKeys: ['AGENTS_TEST_DOCKER_PROCESS_SOURCE'],
+    });
+    const session = await client.create(
+      new Manifest({
+        environment: {
+          AGENTS_TEST_DOCKER_PROCESS_SOURCE: new ProcessEnvValue(),
+        },
+      }),
+    );
+
+    for (const cleanup of [
+      () => session.close(),
+      () => cleanupSandboxSession(session),
+    ]) {
+      let thrown: unknown;
+      try {
+        await cleanup();
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(SandboxLifecycleError);
+      expect(String(thrown)).not.toContain('docker-close-secret');
+      expect(JSON.stringify(thrown)).not.toContain('docker-close-secret');
+      expect((thrown as SandboxLifecycleError).details).toEqual({
+        provider: 'docker',
+        operation: 'sandbox shutdown',
+        containerId: 'container-process-env',
+      });
+    }
+
+    await session.close();
+    expect(removeCalls).toBe(3);
+  });
+
+  it('reports protected Docker volume cleanup failures after closing the workspace', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'docker-close-secret';
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-process-env-volume-close\n');
+        }
+        if (args[0] === 'volume' && args[1] === 'rm') {
+          return failure('cleanup echoed docker-close-secret');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      allowedProcessEnvironmentKeys: ['AGENTS_TEST_DOCKER_PROCESS_SOURCE'],
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          logs: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            mountPath: '/mnt/logs',
+            mountStrategy: dockerVolumeMountStrategy({ driver: 'rclone' }),
+          },
+        },
+        environment: {
+          AGENTS_TEST_DOCKER_PROCESS_SOURCE: new ProcessEnvValue(),
+        },
+      }),
+    );
+    const workspaceRootPath = session.state.workspaceRootPath;
+    const volumeName = session.state.dockerVolumeNames?.[0];
+
+    let thrown: unknown;
+    try {
+      await session.close();
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(SandboxLifecycleError);
+    expect(String(thrown)).not.toContain('docker-close-secret');
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      ['volume', 'rm', '-f', volumeName],
+      { timeoutMs: 10_000 },
+    );
+    await expect(stat(workspaceRootPath)).rejects.toThrow();
+  });
+
+  it('treats an already absent protected Docker volume as closed', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'docker-close-secret';
+    let volumeRemovalCalls = 0;
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-process-env-volume-repeat\n');
+        }
+        if (args[0] === 'volume' && args[1] === 'rm') {
+          volumeRemovalCalls += 1;
+          return volumeRemovalCalls === 1
+            ? success()
+            : failure('Error response from daemon: no such volume');
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      allowedProcessEnvironmentKeys: ['AGENTS_TEST_DOCKER_PROCESS_SOURCE'],
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          logs: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            mountPath: '/mnt/logs',
+            mountStrategy: dockerVolumeMountStrategy({ driver: 'rclone' }),
+          },
+        },
+        environment: {
+          AGENTS_TEST_DOCKER_PROCESS_SOURCE: new ProcessEnvValue(),
+        },
+      }),
+    );
+
+    await session.close();
+    await session.close();
+
+    expect(volumeRemovalCalls).toBe(2);
+  });
+
+  it('converges when retrying partially removed protected Docker volumes', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'docker-close-secret';
+    const volumeRemovalCalls = new Map<string, number>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-process-env-volume-partial\n');
+        }
+        if (args[0] === 'volume' && args[1] === 'rm') {
+          const volumeName = args[3]!;
+          const attempt = (volumeRemovalCalls.get(volumeName) ?? 0) + 1;
+          volumeRemovalCalls.set(volumeName, attempt);
+          if (volumeName === session.state.dockerVolumeNames?.[0]) {
+            return attempt === 1
+              ? success()
+              : failure('Error response from daemon: no such object');
+          }
+          return attempt === 1 ? failure('volume is busy') : success();
+        }
+        return success();
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      allowedProcessEnvironmentKeys: ['AGENTS_TEST_DOCKER_PROCESS_SOURCE'],
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          logs: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            mountPath: '/mnt/logs',
+            mountStrategy: dockerVolumeMountStrategy({ driver: 'rclone' }),
+          },
+          cache: {
+            type: 's3_mount',
+            bucket: 'agent-cache',
+            mountPath: '/mnt/cache',
+            mountStrategy: dockerVolumeMountStrategy({ driver: 'rclone' }),
+          },
+        },
+        environment: {
+          AGENTS_TEST_DOCKER_PROCESS_SOURCE: new ProcessEnvValue(),
+        },
+      }),
+    );
+
+    await expect(session.close()).rejects.toThrow(
+      /protected process environment values/u,
+    );
+    await session.close();
+
+    expect([...volumeRemovalCalls.values()]).toEqual([2, 2]);
+  });
+
   it('treats missing Docker containers as already removed on close', async () => {
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
@@ -2674,6 +5304,8 @@ describe('DockerSandboxClient unit behavior', () => {
   });
 
   it('provisions manifest identity metadata inside the container', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE =
+      '/workspace/bin:/usr/bin:/bin';
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
         if (args[0] === 'version') {
@@ -2690,10 +5322,18 @@ describe('DockerSandboxClient unit behavior', () => {
     );
     const client = new DockerSandboxClient({
       workspaceBaseDir: rootDir,
+      processEnvironmentBindings: {
+        PATH: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+      },
     });
 
     await client.create(
       new Manifest({
+        environment: {
+          PATH: new ProcessEnvValue({
+            name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+          }),
+        },
         users: [{ name: 'sandbox-user' }],
         groups: [
           {
@@ -2704,9 +5344,10 @@ describe('DockerSandboxClient unit behavior', () => {
       }),
     );
 
-    const execCommands = processMocks.runSandboxProcess.mock.calls
-      .filter(([, args]) => args[0] === 'exec')
-      .map(([, args]) => args.at(-1));
+    const execCalls = processMocks.runSandboxProcess.mock.calls.filter(
+      ([, args]) => args[0] === 'exec',
+    );
+    const execCommands = execCalls.map(([, args]) => args.at(-1));
     expect(
       execCommands.some((command) => String(command).includes('groupadd')),
     ).toBe(true);
@@ -2716,6 +5357,25 @@ describe('DockerSandboxClient unit behavior', () => {
     expect(
       execCommands.some((command) => String(command).includes('usermod')),
     ).toBe(true);
+    for (const [, args] of execCalls) {
+      expect(args).toEqual(
+        expect.arrayContaining([
+          '-e',
+          'PATH=/usr/sbin:/usr/bin:/sbin:/bin',
+          '-e',
+          'HOME=/root',
+          '-e',
+          'LD_PRELOAD=',
+          '-e',
+          'LD_LIBRARY_PATH=',
+          '-e',
+          'LD_AUDIT=',
+          '-u',
+          'root',
+        ]),
+      );
+      expect(args).not.toContain('PATH=/workspace/bin:/usr/bin:/bin');
+    }
   });
 
   it('rejects unsupported manifest entry group metadata before starting docker', async () => {
@@ -5297,6 +7957,7 @@ describe('DockerSandboxClient unit behavior', () => {
     expect(restored.state.image).toBe('run:image');
     expect(restored.state.environment).toEqual({
       SECRET_ENV: 'refreshed-secret',
+      UNTRUSTED_ENV: 'untrusted-value',
     });
     expect(restored.state.defaultUser).not.toBe('root');
     expect(restored.state.configuredExposedPorts).toEqual([4000]);
@@ -5313,7 +7974,9 @@ describe('DockerSandboxClient unit behavior', () => {
       ]),
     );
     expect(restoredRunArgs).not.toContain('stale-secret');
-    expect(restoredRunArgs).not.toContain('UNTRUSTED_ENV=untrusted-value');
+    expect(restoredRunArgs).toEqual(
+      expect.arrayContaining(['-e', 'UNTRUSTED_ENV=untrusted-value']),
+    );
     expect(restoredRunArgs).not.toContain('127.0.0.1::9999');
     expect(restoredRunArgs).not.toContain('untrusted:image');
     await expect(
@@ -5507,6 +8170,90 @@ describe('DockerSandboxClient unit behavior', () => {
     } finally {
       unregister();
     }
+  });
+
+  it('preserves runtime-only environment while restoring protected Docker RunState', async () => {
+    process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE = 'run-state-secret';
+    let runCount = 0;
+    let ordinaryResolveCount = 0;
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          return success(`container-protected-run-state-${runCount}\n`);
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return success();
+      },
+    );
+    const clientOptions = {
+      processEnvironmentBindings: {
+        SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+      },
+    };
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: { type: 'local', baseDir: rootDir },
+    });
+    const manifest = new Manifest({
+      environment: {
+        SANDBOX_TOKEN: new ProcessEnvValue({
+          name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+        }),
+        ROTATING_VALUE: async () => {
+          ordinaryResolveCount += 1;
+          return `ordinary-${ordinaryResolveCount}`;
+        },
+      },
+    });
+    const session = await client.create({ manifest, options: clientOptions });
+    session.state.environment.RUNTIME_ENV = 'runtime-only';
+    const serialized = await client.serializeSessionState(session.state);
+    ordinaryResolveCount = 0;
+
+    const persistedState = (await deserializeSandboxSessionStateEntry(
+      client,
+      {
+        backendId: client.backendId,
+        currentAgentKey: 'SandboxWorker',
+        currentAgentName: 'SandboxWorker',
+        sessionState: toSessionStateEnvelope(
+          client.backendId,
+          session.state,
+          serialized,
+        ),
+      },
+      manifest,
+      { clientOptions },
+    )) as DockerSandboxSessionState;
+    const restored = await client.resume(persistedState, { clientOptions });
+
+    expect(ordinaryResolveCount).toBe(1);
+    expect(restored.state.environment).toEqual({
+      RUNTIME_ENV: 'runtime-only',
+      SANDBOX_TOKEN: 'run-state-secret',
+      ROTATING_VALUE: 'ordinary-1',
+    });
+    const runCalls = processMocks.runSandboxProcess.mock.calls.filter(
+      ([, args]) => args[0] === 'run',
+    );
+    expect(runCalls).toHaveLength(2);
+    expect(runCalls[1]?.[1]).toEqual(
+      expect.arrayContaining([
+        '-e',
+        'RUNTIME_ENV=runtime-only',
+        '-e',
+        'ROTATING_VALUE=ordinary-1',
+      ]),
+    );
+    expect(runCalls[1]?.[1]).not.toContain('SANDBOX_TOKEN=run-state-secret');
+    await restored.close();
+    await session.close();
   });
 
   it('restores untrusted stopped RunState into new Docker resources', async () => {
@@ -6087,7 +8834,8 @@ describe('DockerSandboxClient unit behavior', () => {
 
     processMocks.runSandboxProcess
       .mockResolvedValueOnce(success('Docker version test'))
-      .mockResolvedValueOnce(failure('pull failed'));
+      .mockResolvedValueOnce(failure('pull failed'))
+      .mockResolvedValueOnce(failure('no such container'));
 
     await expect(client.create(new Manifest())).rejects.toThrow(
       /Failed to start Docker sandbox container: pull failed/,

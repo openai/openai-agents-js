@@ -26,6 +26,7 @@ import {
   validateSandboxArchiveLimits,
 } from '@openai/agents-core/sandbox';
 import {
+  assertProcessEnvValuesUnsupported,
   assertExistingMountTopologyPreserved,
   assertLiveMountCredentialAuthorityMatches,
   captureLiveMountCredentialAuthority,
@@ -1313,6 +1314,7 @@ export class DaytonaSandboxClient implements SandboxClient<
     const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
     assertCoreSnapshotUnsupported('DaytonaSandboxClient', createArgs.snapshot);
     const manifest = createArgs.manifest;
+    assertProcessEnvValuesUnsupported(manifest, 'daytona');
     const resolvedOptions = {
       ...this.options,
       ...createArgs.options,
@@ -1483,6 +1485,7 @@ export class DaytonaSandboxClient implements SandboxClient<
   async resume(
     state: DaytonaSandboxSessionState,
   ): Promise<DaytonaSandboxSession> {
+    assertProcessEnvValuesUnsupported(state.manifest, 'daytona');
     assertRemoteSandboxSessionStateCanResume(state);
     const client = await createDaytonaClient({
       ...this.options,

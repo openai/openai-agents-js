@@ -3,8 +3,12 @@ import { UserError } from '../../../errors';
 import {
   cloneManifest,
   copyManifestMountCredentialExposurePolicy,
+  copyProcessEnvironmentProtection,
+  invalidProtectedProcessEnvironmentReferences,
   isEnvValueReference,
   Manifest,
+  ProcessEnvValue,
+  processEnvironmentDestinationNames,
   type EnvValue,
 } from '../../manifest';
 import type { SandboxSessionState } from '../../session';
@@ -179,6 +183,7 @@ export function serializeManifestRecord(
   manifest: Manifest,
 ): Record<string, unknown> {
   validateMountCredentialBoundaries(manifest);
+  assertProcessEnvironmentReferencesSerializable(manifest);
   return {
     version: manifest.version,
     root: manifest.root,
@@ -193,6 +198,18 @@ export function serializeManifestRecord(
     }),
     remoteMountCommandAllowlist: [...manifest.remoteMountCommandAllowlist],
   };
+}
+
+export function assertProcessEnvironmentReferencesSerializable(
+  manifest: Manifest,
+): void {
+  const invalidProcessEnvironmentReferences =
+    invalidProtectedProcessEnvironmentReferences(manifest);
+  if (invalidProcessEnvironmentReferences.length > 0) {
+    throw new UserError(
+      `Sandbox session state cannot be serialized because protected ProcessEnvValue references changed after binding: ${invalidProcessEnvironmentReferences.join(', ')}. Create a fresh Docker sandbox session instead.`,
+    );
+  }
 }
 
 export function deserializeManifest(
@@ -221,10 +238,17 @@ export function serializeEnvironmentForPersistence(
 ): Record<string, EnvValue> {
   const runtimeEnvironment = state.environment ?? {};
   const ephemeralKeys = new Set<string>();
+  const protectedKeys = new Set(
+    processEnvironmentDestinationNames(state.manifest),
+  );
   const serialized: Record<string, EnvValue> = {};
 
   for (const [key, value] of Object.entries(state.manifest.environment)) {
-    if (value.ephemeral || isEnvValueReference(value)) {
+    if (
+      protectedKeys.has(key) ||
+      value.ephemeral ||
+      isEnvValueReference(value)
+    ) {
       ephemeralKeys.add(key);
       continue;
     }
@@ -236,7 +260,11 @@ export function serializeEnvironmentForPersistence(
   }
 
   for (const [key, value] of Object.entries(runtimeEnvironment)) {
-    if (key in state.manifest.environment || ephemeralKeys.has(key)) {
+    if (
+      key in state.manifest.environment ||
+      ephemeralKeys.has(key) ||
+      protectedKeys.has(key)
+    ) {
       continue;
     }
     // Provider startup may add runtime env vars that are not in the manifest; keep them
@@ -270,7 +298,28 @@ export function mergeManifestDelta(base: Manifest, update: Manifest): Manifest {
       : base.remoteMountCommandAllowlist,
   });
   copyManifestMountCredentialExposurePolicy(merged, base, update);
+  copyProcessEnvironmentProtection(merged, base, update);
   return merged;
+}
+
+export function assertProcessEnvironmentDestinationsPreserved(
+  base: Manifest,
+  update: Manifest,
+): void {
+  const protectedDestinations = new Set(
+    processEnvironmentDestinationNames(base),
+  );
+  const rejectedDestinations = Object.entries(update.environment)
+    .filter(
+      ([key, value]) =>
+        protectedDestinations.has(key) || value instanceof ProcessEnvValue,
+    )
+    .map(([key]) => key);
+  if (rejectedDestinations.length > 0) {
+    throw new UserError(
+      `Sandbox manifests cannot add or replace protected process environment destinations: ${rejectedDestinations.join(', ')}. Start a new Docker sandbox session instead.`,
+    );
+  }
 }
 
 function cloneManifestEnvironment(

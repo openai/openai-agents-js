@@ -30,6 +30,7 @@ import {
 } from '@openai/agents-core/sandbox';
 import {
   liveMountEnvironmentAuthorityMatches,
+  assertProcessEnvValuesUnsupported,
   normalizePosixPath,
   relativePosixPathWithinRoot,
   shellQuote,
@@ -1359,6 +1360,7 @@ export class ModalSandboxClient implements SandboxClient<
     );
     assertCoreSnapshotUnsupported('ModalSandboxClient', createArgs.snapshot);
     const manifest = createArgs.manifest;
+    assertProcessEnvValuesUnsupported(manifest, 'modal');
     const resolvedOptions = resolveOptions(
       this.options,
       createArgs.options as ModalSandboxClientOptions | undefined,
@@ -1654,6 +1656,7 @@ export class ModalSandboxClient implements SandboxClient<
     state: ModalSandboxSessionState,
     options: SandboxClientResumeOptions<ModalSandboxClientOptions> = {},
   ): Promise<ModalSandboxSession> {
+    assertProcessEnvValuesUnsupported(state.manifest, 'modal');
     assertRemoteSandboxSessionStateCanResume(state);
     const trustedResourceOptions = modalResourceOptionsFrom(
       resolveOptions(this.options, options.clientOptions),

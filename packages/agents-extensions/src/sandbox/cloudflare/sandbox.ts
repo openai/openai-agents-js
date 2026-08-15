@@ -30,6 +30,7 @@ import {
   validateSandboxArchiveLimits,
 } from '@openai/agents-core/sandbox';
 import {
+  assertProcessEnvValuesUnsupported,
   NON_RESUMABLE_MOUNT_AUTHORITY_KEY,
   stableJsonStringify,
   withExclusiveSandboxManifestMutation,
@@ -1143,6 +1144,7 @@ export class CloudflareSandboxClient implements SandboxClient<
       createArgs.snapshot,
     );
     const manifest = createArgs.manifest;
+    assertProcessEnvValuesUnsupported(manifest, 'cloudflare');
     const resolvedOptions = {
       ...this.options,
       ...(createArgs.options as Partial<CloudflareSandboxClientOptions>),
@@ -1309,6 +1311,7 @@ export class CloudflareSandboxClient implements SandboxClient<
   async resume(
     state: CloudflareSandboxSessionState,
   ): Promise<CloudflareSandboxSession> {
+    assertProcessEnvValuesUnsupported(state.manifest, 'cloudflare');
     if (this.deserializedSessionStates.has(state)) {
       throw new UserError(
         'CloudflareSandboxClient cannot safely resume persisted session state. Create a fresh sandbox from current trusted options.',
