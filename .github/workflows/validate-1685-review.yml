@@ -17,8 +17,6 @@ jobs:
         with:
           ref: feat/realtime-session-payload-transform-466-rebased
       - uses: pnpm/action-setup@v4
-        with:
-          version: 11.18.0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
