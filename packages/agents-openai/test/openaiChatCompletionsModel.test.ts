@@ -1052,8 +1052,10 @@ describe('OpenAIChatCompletionsModel', () => {
     });
   });
 
-  it('keeps a refusal when the provider reports empty content', async () => {
-    // Azure returns an empty string where OpenAI returns null.
+  it('drops empty content so a refusal stays the only output', async () => {
+    // Azure returns an empty string where OpenAI returns null. Keeping the
+    // empty text part would read as a final answer and mask the refusal, which
+    // is why the streaming converter ignores empty content deltas too.
     const client = new FakeClient();
     const response = {
       id: 'r',
@@ -1075,10 +1077,53 @@ describe('OpenAIChatCompletionsModel', () => {
     const result = await withTrace('t', () => model.getResponse(req));
 
     expect(result.output[0]).toMatchObject({
-      content: [
-        { type: 'output_text', text: '' },
-        { type: 'refusal', refusal: 'no' },
-      ],
+      content: [{ type: 'refusal', refusal: 'no' }],
+    });
+  });
+
+  it('surfaces a refusal to the runner when content is empty', async () => {
+    const client = new FakeClient();
+    client.chat.completions.create.mockResolvedValue({
+      id: 'r',
+      choices: [{ message: { content: '', refusal: 'no' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    });
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const runner = new Runner({
+      model: 'gpt',
+      modelProvider: { getModel: () => model },
+      tracingDisabled: true,
+    });
+
+    await expect(
+      runner.run(new Agent({ name: 'Assistant' }), 'ask'),
+    ).rejects.toThrow(/no/);
+  });
+
+  it('keeps empty content when there is no refusal', async () => {
+    const client = new FakeClient();
+    const response = {
+      id: 'r',
+      choices: [{ message: { content: '' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const req: any = {
+      input: 'u',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text',
+      handoffs: [],
+      tracing: false,
+    };
+
+    const result = await withTrace('t', () => model.getResponse(req));
+
+    expect(result.output[0]).toMatchObject({
+      content: [{ type: 'output_text', text: '' }],
     });
   });
 

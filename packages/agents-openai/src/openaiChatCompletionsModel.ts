@@ -230,8 +230,15 @@ export class OpenAIChatCompletionsModel implements Model {
       // A message can carry text and a refusal at once, so collect both instead
       // of letting the text branch drop the refusal. This matches how the
       // streaming converter assembles assistant content.
+      //
+      // An empty string is not an answer. Keeping it as a text part next to a
+      // refusal would hide the refusal from the runner, which treats any text
+      // part as a final output. The streaming converter skips empty content
+      // deltas for the same reason.
+      const hasTextContent =
+        hasContent && !(message.refusal && message.content === '');
       const messageContent: protocol.AssistantContent[] = [];
-      if (hasContent) {
+      if (hasTextContent) {
         const { content, ...rest } = message;
         messageContent.push({
           type: 'output_text',
