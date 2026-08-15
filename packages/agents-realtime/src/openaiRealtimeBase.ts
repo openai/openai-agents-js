@@ -143,6 +143,31 @@ export type RealtimeSessionPayloadTransformer = (
   payload: RealtimeSessionPayload,
 ) => RealtimeSessionUpdatePayload;
 
+function mergeCanonicalSessionPayload(
+  current: Record<string, any> | null,
+  update: RealtimeSessionPayload,
+): Record<string, any> {
+  const merged = { ...(current ?? {}), ...update };
+  const currentAudio = current?.audio;
+  const updateAudio = update.audio;
+  if (currentAudio || updateAudio) {
+    merged.audio = { ...(currentAudio ?? {}), ...(updateAudio ?? {}) };
+    if (currentAudio?.input || updateAudio?.input) {
+      merged.audio.input = {
+        ...(currentAudio?.input ?? {}),
+        ...(updateAudio?.input ?? {}),
+      };
+    }
+    if (currentAudio?.output || updateAudio?.output) {
+      merged.audio.output = {
+        ...(currentAudio?.output ?? {}),
+        ...(updateAudio?.output ?? {}),
+      };
+    }
+  }
+  return merged;
+}
+
 function normalizeRealtimeMessageContent(
   role: string | undefined,
   content: unknown,
@@ -277,7 +302,9 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (parsed.type === 'session.updated') {
-      this.#rawSessionConfig = parsed.session;
+      if (!this.#transformSessionPayload || this.#rawSessionConfig === null) {
+        this.#rawSessionConfig = parsed.session;
+      }
     }
 
     if (parsed.type === 'response.done') {
@@ -760,6 +787,10 @@ export abstract class OpenAIRealtimeBase
   }
 
   protected _sendSessionUpdate(payload: RealtimeSessionPayload): void {
+    this.#rawSessionConfig = mergeCanonicalSessionPayload(
+      this.#rawSessionConfig,
+      payload,
+    );
     const session = this.#transformSessionPayload?.(payload) ?? payload;
     this.sendEvent({
       type: 'session.update',
