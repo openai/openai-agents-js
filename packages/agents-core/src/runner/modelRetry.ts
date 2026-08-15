@@ -80,6 +80,7 @@ type ModelAttemptScope = {
   request: ModelRequest;
   cleanup: () => void;
   normalizeError: (error: unknown) => unknown;
+  race: <T>(operation: Promise<T>) => Promise<T>;
 };
 
 function addFailedRetryAttemptsToUsage(
@@ -177,6 +178,13 @@ function createModelAttemptTimeoutError(
     },
   ) as ModelAttemptTimeoutError;
 
+  if (source !== undefined) {
+    Object.defineProperty(error, 'cause', {
+      value: source,
+      configurable: true,
+    });
+  }
+
   if (isRecord(source)) {
     if (source.unsafeToReplay === true) {
       error.unsafeToReplay = true;
@@ -208,6 +216,7 @@ function createModelAttemptScope(
       request,
       cleanup: () => {},
       normalizeError: (error) => error,
+      race: async <T>(operation: Promise<T>) => await operation,
     };
   }
 
@@ -216,6 +225,10 @@ function createModelAttemptScope(
   let timedOut = false;
   let timeoutError: ModelAttemptTimeoutError | undefined;
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  let rejectDeadline: ((error: unknown) => void) | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    rejectDeadline = reject;
+  });
 
   const onParentAbort = () => {
     controller.abort(parentSignal?.reason);
@@ -229,6 +242,7 @@ function createModelAttemptScope(
       timedOut = true;
       timeoutError = createModelAttemptTimeoutError(timeoutMs);
       controller.abort(timeoutError);
+      queueMicrotask(() => rejectDeadline?.(timeoutError));
     }, timeoutMs);
   }
 
@@ -262,6 +276,8 @@ function createModelAttemptScope(
       }
       return createModelAttemptTimeoutError(timeoutMs, error);
     },
+    race: async <T>(operation: Promise<T>) =>
+      await Promise.race([operation, deadline]),
   };
 }
 
@@ -755,6 +771,17 @@ async function waitForRetryDelay(
   });
 }
 
+function getRetryAdviceError(error: unknown): unknown {
+  if (
+    isModelAttemptTimeoutError(error) &&
+    isRecord(error) &&
+    error.cause !== undefined
+  ) {
+    return error.cause;
+  }
+  return error;
+}
+
 async function getRetryAdvice(
   model: Model,
   args: ModelRetryAdviceRequest,
@@ -1030,7 +1057,9 @@ export async function getResponseWithRetry(
       attemptTimeoutMs,
     );
     try {
-      const response = await model.getResponse(attemptScope.request);
+      const response = await attemptScope.race(
+        model.getResponse(attemptScope.request),
+      );
       if (attempt === 1) {
         return response;
       }
@@ -1041,12 +1070,26 @@ export async function getResponseWithRetry(
     } catch (caughtError) {
       attemptScope.cleanup();
       const error = attemptScope.normalizeError(caughtError);
-      const providerAdvice = await getRetryAdvice(model, {
-        request,
-        error,
-        stream: false,
-        attempt,
-      });
+      let providerAdvice: ModelRetryAdvice | undefined;
+      try {
+        providerAdvice = await getRetryAdvice(model, {
+          request,
+          error: getRetryAdviceError(error),
+          stream: false,
+          attempt,
+        });
+      } catch (adviceError) {
+        if (
+          requestMayHaveBeenAccepted(
+            createProviderRetryAuthority(undefined),
+            request,
+            error,
+          )
+        ) {
+          handlers.onPossiblyAcceptedRequestFailure?.();
+        }
+        throw adviceError;
+      }
       const authority = createProviderRetryAuthority(providerAdvice);
       const markPossiblyAcceptedFailure = () => {
         if (requestMayHaveBeenAccepted(authority, request, error)) {
@@ -1116,7 +1159,15 @@ export async function* getStreamedResponseWithRetry(
       attemptTimeoutMs,
     );
     try {
-      for await (const event of model.getStreamedResponse(attemptScope.request)) {
+      const iterator = model
+        .getStreamedResponse(attemptScope.request)
+        [Symbol.asyncIterator]();
+      while (true) {
+        const next = await attemptScope.race(iterator.next());
+        if (next.done) {
+          break;
+        }
+        const event = next.value;
         if (event.type === 'model') {
           emittedRawModelEvent = true;
         }
@@ -1140,12 +1191,26 @@ export async function* getStreamedResponseWithRetry(
     } catch (caughtError) {
       attemptScope.cleanup();
       const error = attemptScope.normalizeError(caughtError);
-      const providerAdvice = await getRetryAdvice(model, {
-        request,
-        error,
-        stream: true,
-        attempt,
-      });
+      let providerAdvice: ModelRetryAdvice | undefined;
+      try {
+        providerAdvice = await getRetryAdvice(model, {
+          request,
+          error: getRetryAdviceError(error),
+          stream: true,
+          attempt,
+        });
+      } catch (adviceError) {
+        if (
+          requestMayHaveBeenAccepted(
+            createProviderRetryAuthority(undefined),
+            request,
+            error,
+          )
+        ) {
+          handlers.onPossiblyAcceptedRequestFailure?.();
+        }
+        throw adviceError;
+      }
       const authority = createProviderRetryAuthority(providerAdvice);
       const markPossiblyAcceptedFailure = () => {
         if (requestMayHaveBeenAccepted(authority, request, error)) {
