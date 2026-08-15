@@ -285,8 +285,17 @@ export function normalizeAudioFormat(
   format?: RealtimeAudioFormat | undefined,
 ): RealtimeAudioFormatDefinition | undefined {
   if (!format) return undefined;
-  if (typeof format === 'object')
+  if (typeof format === 'object') {
+    if (
+      format.type === 'audio/pcm' &&
+      typeof format.rate === 'number' &&
+      !Number.isFinite(format.rate)
+    ) {
+      return { type: 'audio/pcm', rate: 24000 };
+    }
+
     return format as RealtimeAudioFormatDefinition;
+  }
   const f = String(format);
   if (f === 'pcm16') return { type: 'audio/pcm', rate: 24000 };
   if (f === 'g711_ulaw') return { type: 'audio/pcmu' };
