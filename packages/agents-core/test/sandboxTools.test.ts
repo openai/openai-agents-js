@@ -7,6 +7,7 @@ import {
   shell,
   prepareSandboxAgent,
   SandboxAgent,
+  SandboxWorkspaceScope,
 } from '../src/sandbox';
 import {
   ScriptedModel,
@@ -139,6 +140,36 @@ describe('sandbox shell tools', () => {
           },
         ],
       }),
+    ]);
+    session.assertComplete();
+  });
+
+  it('anchors omitted and explicit relative workdirs to the run cwd', async () => {
+    const capability = shell();
+    const session = scriptedSandboxSession([
+      { method: 'execCommand', result: 'default cwd' },
+      { method: 'execCommand', result: 'nested cwd' },
+      { method: 'execCommand', result: 'absolute cwd' },
+    ]);
+    capability
+      .bind(session)
+      .bindWorkspaceScope(SandboxWorkspaceScope.fromCwd('tasks/a'));
+    const execCommand = capability.tools()[0] as any;
+
+    await execCommand.invoke(new RunContext(), JSON.stringify({ cmd: 'pwd' }));
+    await execCommand.invoke(
+      new RunContext(),
+      JSON.stringify({ cmd: 'pwd', workdir: 'reports' }),
+    );
+    await execCommand.invoke(
+      new RunContext(),
+      JSON.stringify({ cmd: 'pwd', workdir: '/workspace/shared' }),
+    );
+
+    expect(session.calls.map((call) => (call.args[0] as any).workdir)).toEqual([
+      'tasks/a',
+      'tasks/a/reports',
+      '/workspace/shared',
     ]);
     session.assertComplete();
   });
@@ -291,6 +322,49 @@ describe('sandbox filesystem tools', () => {
       method: 'viewImage',
       args: [{ path: 'notes.txt', runAs: 'sandbox-user' }],
     });
+    session.assertComplete();
+  });
+
+  it('anchors view_image and apply_patch paths to the run cwd', async () => {
+    const { editor, session } = scriptedFilesystemSession([
+      {
+        method: 'viewImage',
+        result: { type: 'image', image: 'image-ref' },
+      },
+    ]);
+    const capability = filesystem();
+    capability
+      .bind(session)
+      .bindWorkspaceScope(SandboxWorkspaceScope.fromCwd('tasks/a'))
+      .bindModel('gpt-4o', new FakeChatCompletionsModel() as any);
+    const [viewImage, applyPatch] = capability.tools();
+
+    await (viewImage as any).invoke(
+      new RunContext(),
+      JSON.stringify({ path: 'plot.png' }),
+    );
+    await (applyPatch as any).invoke(
+      new RunContext(),
+      JSON.stringify({
+        type: 'update_file',
+        path: 'old.txt',
+        moveTo: 'archive/new.txt',
+        diff: '',
+      }),
+    );
+
+    expect(session.calls[1]).toMatchObject({
+      method: 'viewImage',
+      args: [{ path: 'tasks/a/plot.png' }],
+    });
+    expect(editor.calls).toEqual([
+      {
+        type: 'update_file',
+        path: 'tasks/a/old.txt',
+        moveTo: 'tasks/a/archive/new.txt',
+        diff: '',
+      },
+    ]);
     session.assertComplete();
   });
 

@@ -1,8 +1,52 @@
 import { describe, expect, it } from 'vitest';
 import {
   SandboxInvalidManifestPathError,
+  SandboxWorkspaceScope,
   WorkspacePathPolicy,
 } from '../src/sandbox';
+
+describe('SandboxWorkspaceScope', () => {
+  it('anchors relative tool paths without changing absolute paths', () => {
+    const scope = SandboxWorkspaceScope.fromCwd('tasks/a');
+
+    expect(scope.anchor()).toBe('tasks/a');
+    expect(scope.anchor('reports/plot.png')).toBe('tasks/a/reports/plot.png');
+    expect(scope.anchor('/workspace/shared.txt')).toBe('/workspace/shared.txt');
+    expect(scope.modelResourcePath('/workspace', '.agents/reviewer')).toBe(
+      '/workspace/.agents/reviewer',
+    );
+    expect(scope.absoluteCwd('/workspace')).toBe('/workspace/tasks/a');
+  });
+
+  it('preserves root-relative behavior when cwd is omitted', () => {
+    const scope = new SandboxWorkspaceScope();
+
+    expect(scope.anchor('reports/plot.png')).toBe('reports/plot.png');
+    expect(scope.modelResourcePath('/workspace', '.agents/reviewer')).toBe(
+      '.agents/reviewer',
+    );
+    expect(scope.absoluteCwd('/workspace')).toBeUndefined();
+  });
+
+  it.each([
+    ['', /must be non-empty/u],
+    ['.', /must be non-empty/u],
+    ['./', /must be non-empty/u],
+    ['.//', /must be non-empty/u],
+    ['././', /must be non-empty/u],
+    ['/workspace/tasks/a', /must be workspace-relative/u],
+    ['tasks/../a', /must not contain parent segments/u],
+    ['tasks\\a', /must use POSIX path separators/u],
+  ])('rejects invalid cwd %j', (cwd, message) => {
+    expect(() => new SandboxWorkspaceScope(cwd)).toThrow(message);
+  });
+
+  it('rejects non-string cwd values at runtime', () => {
+    expect(() => new SandboxWorkspaceScope(42 as any)).toThrow(
+      'sandbox.cwd must be a string.',
+    );
+  });
+});
 
 describe('WorkspacePathPolicy', () => {
   it('resolves workspace-relative and absolute in-root paths', () => {

@@ -19,6 +19,7 @@
     "start:docker-runner": "tsx docker-runner.ts",
     "start:memory-generation": "tsx memory-generation.ts",
     "start:memory-multi-agent-multiturn": "tsx memory-multi-agent-multiturn.ts",
+    "start:shared-session-workdirs": "tsx shared-session-workdirs.ts",
     "start:sandbox-agent-capabilities": "tsx sandbox-agent-capabilities.ts",
     "start:sandbox-agent-with-tools": "tsx sandbox-agent-with-tools.ts",
     "start:sandbox-agents-as-tools": "tsx sandbox-agents-as-tools.ts",

@@ -180,6 +180,30 @@ export async function probeSandboxPathExists(
   throw createPathProbeError(options, result);
 }
 
+export async function probeSandboxDirectoryExists(
+  options: SandboxPathProbeOptions,
+): Promise<boolean> {
+  if (!(await probeSandboxPathExists(options))) {
+    return false;
+  }
+
+  const result = await options.runCommand(
+    `test -d ${shellQuote(options.path)} && test -x ${shellQuote(options.path)}`,
+  );
+  if (result.status === 0 && !hasProcessFailure(result)) {
+    return true;
+  }
+  if (
+    result.status === 1 &&
+    !hasProcessFailure(result) &&
+    !result.stdout?.trim() &&
+    !result.stderr?.trim()
+  ) {
+    return false;
+  }
+  throw createPathProbeError(options, result);
+}
+
 function hasProcessFailure(result: SandboxPathProbeResult): boolean {
   return Boolean(result.timedOut || result.signal || result.error);
 }

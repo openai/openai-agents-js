@@ -2,7 +2,10 @@ import { SandboxProviderError, type Entry } from '@openai/agents-core/sandbox';
 import { RemoteSandboxEditor } from './editor';
 import type { ManifestMaterializationOptions } from './manifest';
 import { sandboxEntryPermissionsMode } from './metadata';
-import { probeRemoteSandboxPathExists } from './pathProbe';
+import {
+  probeRemoteSandboxDirectoryExists,
+  probeRemoteSandboxPathExists,
+} from './pathProbe';
 import { shellQuote } from './paths';
 import type {
   RemoteManifestWriter,
@@ -136,6 +139,25 @@ export async function runAsRemotePathExists(
   },
 ): Promise<boolean> {
   return await probeRemoteSandboxPathExists({
+    ...provider,
+    path,
+    runCommand: async (command) => await runCommand(command, { runAs }),
+  });
+}
+
+export async function runAsRemoteDirectoryExists(
+  path: string,
+  runAs: string | undefined,
+  runCommand: RemoteRunAsCommandRunner,
+  provider: {
+    providerName: string;
+    providerId: string;
+  } = {
+    providerName: 'RemoteSandboxClient',
+    providerId: 'remote',
+  },
+): Promise<boolean> {
+  return await probeRemoteSandboxDirectoryExists({
     ...provider,
     path,
     runCommand: async (command) => await runCommand(command, { runAs }),

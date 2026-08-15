@@ -56,6 +56,7 @@ import {
   resolveSandboxAbsolutePath,
   resolveSandboxRelativePath,
   resolveSandboxWorkdir,
+  runAsRemoteDirectoryExists,
   runAsRemotePathExists,
   sandboxUserShellCommand,
   serializeRemoteSandboxSessionState,
@@ -2377,6 +2378,13 @@ describe('remote sandbox path helpers', () => {
     await expect(
       runAsRemotePathExists('/workspace/missing', 'sandbox-user', runCommand),
     ).resolves.toBe(false);
+    await expect(
+      runAsRemoteDirectoryExists(
+        '/workspace/exists',
+        'sandbox-user',
+        runCommand,
+      ),
+    ).resolves.toBe(true);
 
     expect(commands).toEqual([
       {
@@ -2393,6 +2401,14 @@ describe('remote sandbox path helpers', () => {
       },
       {
         command: expect.stringContaining('OPENAI_AGENTS_READ_PATH_PROBE_V1'),
+        options: { runAs: 'sandbox-user' },
+      },
+      {
+        command: "test -e '/workspace/exists'",
+        options: { runAs: 'sandbox-user' },
+      },
+      {
+        command: "test -d '/workspace/exists' && test -x '/workspace/exists'",
         options: { runAs: 'sandbox-user' },
       },
     ]);
@@ -2417,6 +2433,28 @@ describe('remote sandbox path helpers', () => {
         status: result.status,
       },
     });
+  });
+
+  test('checks directory searchability under the requested runAs identity', async () => {
+    const runCommand = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 0 })
+      .mockResolvedValueOnce({ status: 1 });
+
+    await expect(
+      runAsRemoteDirectoryExists(
+        '/workspace/blocked',
+        'sandbox-user',
+        runCommand,
+      ),
+    ).resolves.toBe(false);
+    expect(runCommand.mock.calls).toEqual([
+      ["test -e '/workspace/blocked'", { runAs: 'sandbox-user' }],
+      [
+        "test -d '/workspace/blocked' && test -x '/workspace/blocked'",
+        { runAs: 'sandbox-user' },
+      ],
+    ]);
   });
 
   test('reports runAs command failures with provider context', async () => {

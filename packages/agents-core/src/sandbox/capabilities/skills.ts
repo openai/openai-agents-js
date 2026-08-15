@@ -122,7 +122,10 @@ class SkillsCapability extends Capability {
             return {
               status: 'already_loaded',
               skill_name: match.name,
-              path: destinationPath,
+              path: this.modelResourcePath(
+                session.state.manifest,
+                destinationPath,
+              ),
             };
           }
 
@@ -138,7 +141,10 @@ class SkillsCapability extends Capability {
           return {
             status: 'loaded',
             skill_name: match.name,
-            path: destinationPath,
+            path: this.modelResourcePath(
+              session.state.manifest,
+              destinationPath,
+            ),
           };
         },
       }),
@@ -197,9 +203,14 @@ class SkillsCapability extends Capability {
       this,
       await this.resolveRuntimeMetadata(manifest),
       manifest,
-    );
+    ).map((skill) => ({
+      ...skill,
+      path: this.modelResourcePath(manifest, skill.path ?? skill.name),
+    }));
     if (metadata.length === 0 && this.from) {
-      return renderSkillsDiscoveryInstructions(this.skillsPath);
+      return renderSkillsDiscoveryInstructions(
+        this.modelResourcePath(manifest, this.skillsPath),
+      );
     }
     if (metadata.length === 0) {
       return null;

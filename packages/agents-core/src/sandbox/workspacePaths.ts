@@ -29,6 +29,73 @@ export type ResolvedSandboxPath = {
   grant?: SandboxPathGrant;
 };
 
+export class SandboxWorkspaceScope {
+  readonly cwd?: string;
+
+  constructor(cwd?: string) {
+    this.cwd = cwd === undefined ? undefined : normalizeSandboxCwd(cwd);
+  }
+
+  static fromCwd(cwd?: string): SandboxWorkspaceScope {
+    return new SandboxWorkspaceScope(cwd);
+  }
+
+  anchor(path?: string): string | undefined {
+    if (this.cwd === undefined) {
+      return path;
+    }
+    const trimmed = path?.trim() ?? '';
+    if (!trimmed) {
+      return this.cwd;
+    }
+    if (trimmed.startsWith('/')) {
+      return trimmed;
+    }
+    return `${this.cwd}/${trimmed}`;
+  }
+
+  modelResourcePath(workspaceRoot: string, path: string): string {
+    if (this.cwd === undefined) {
+      return path;
+    }
+    const normalizedRoot = normalizeWorkspaceRoot(workspaceRoot);
+    const normalizedPath = normalizeWorkspaceRelativeResourcePath(path);
+    return normalizedPath
+      ? joinPosixPath(normalizedRoot, normalizedPath)
+      : normalizedRoot;
+  }
+
+  absoluteCwd(workspaceRoot: string): string | undefined {
+    return this.cwd === undefined
+      ? undefined
+      : this.modelResourcePath(workspaceRoot, this.cwd);
+  }
+}
+
+export function normalizeSandboxCwd(cwd: string): string {
+  if (typeof cwd !== 'string') {
+    throw new UserError('sandbox.cwd must be a string.');
+  }
+  const trimmed = cwd.trim();
+  if (!trimmed) {
+    throw new UserError('sandbox.cwd must be non-empty.');
+  }
+  if (hasBackslashPathSeparator(cwd)) {
+    throw new UserError('sandbox.cwd must use POSIX path separators.');
+  }
+  if (trimmed.startsWith('/')) {
+    throw new UserError('sandbox.cwd must be workspace-relative.');
+  }
+  if (hasParentPathSegment(cwd)) {
+    throw new UserError('sandbox.cwd must not contain parent segments.');
+  }
+  const normalized = normalizePosixPath(trimmed);
+  if (normalized === '.') {
+    throw new UserError('sandbox.cwd must be non-empty.');
+  }
+  return normalized;
+}
+
 export class WorkspacePathPolicy {
   readonly root: string;
   readonly extraPathGrants: SandboxPathGrant[];
@@ -111,6 +178,46 @@ function joinPosixPath(root: string, relativePath: string): string {
     return normalizePosixPath(root);
   }
   return normalizePosixPath(`${root.replace(/\/+$/u, '')}/${relativePath}`);
+}
+
+function normalizeWorkspaceRoot(root: string): string {
+  if (hasBackslashPathSeparator(root)) {
+    throw new UserError(
+      'Sandbox workspace root must use POSIX path separators.',
+    );
+  }
+  if (hasParentPathSegment(root)) {
+    throw new UserError(
+      'Sandbox workspace root must not contain parent segments.',
+    );
+  }
+  const normalized = normalizePosixPath(root);
+  if (!normalized.startsWith('/')) {
+    throw new UserError('Sandbox workspace root must be POSIX absolute.');
+  }
+  return normalized;
+}
+
+function normalizeWorkspaceRelativeResourcePath(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed) {
+    throw new UserError('Sandbox resource path must be non-empty.');
+  }
+  if (hasBackslashPathSeparator(path)) {
+    throw new UserError(
+      'Sandbox resource path must use POSIX path separators.',
+    );
+  }
+  if (trimmed.startsWith('/')) {
+    throw new UserError('Sandbox resource path must be workspace-relative.');
+  }
+  if (hasParentPathSegment(path)) {
+    throw new UserError(
+      'Sandbox resource path must not contain parent segments.',
+    );
+  }
+  const normalized = normalizePosixPath(trimmed);
+  return normalized === '.' ? '' : normalized;
 }
 
 function normalizeSandboxPath(path: string, originalPath: string): string {

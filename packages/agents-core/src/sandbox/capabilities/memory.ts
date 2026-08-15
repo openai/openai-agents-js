@@ -104,7 +104,7 @@ class MemoryCapability extends Capability {
     return manifest;
   }
 
-  override async instructions(_manifest: Manifest): Promise<string | null> {
+  override async instructions(manifest: Manifest): Promise<string | null> {
     if (this.read === null) {
       return null;
     }
@@ -124,7 +124,7 @@ class MemoryCapability extends Capability {
     }
 
     return renderMemoryReadPrompt({
-      memoryDir: this.layout.memoriesDir,
+      memoryDir: this.modelResourcePath(manifest, this.layout.memoriesDir),
       memorySummary,
       liveUpdate: Boolean(this.read.liveUpdate),
     });

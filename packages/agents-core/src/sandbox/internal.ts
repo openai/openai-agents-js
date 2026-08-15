@@ -95,6 +95,7 @@ export {
 export { shellQuote } from './shared/shell';
 export {
   isSandboxPathNotFoundError,
+  probeSandboxDirectoryExists,
   probeSandboxPathExists,
   type SandboxPathProbeResult,
 } from './shared/pathProbe';

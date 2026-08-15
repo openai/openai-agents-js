@@ -16,6 +16,7 @@ import {
   renderRemoteMountPolicyInstructions,
 } from './prompts';
 import { manifestWithRunAsUser, sandboxRunAsName } from './runAsManifest';
+import { SandboxWorkspaceScope } from '../workspacePaths';
 
 export { getDefaultSandboxInstructions } from './prompts';
 
@@ -26,6 +27,7 @@ type PrepareSandboxAgentArgs<TContext, TOutput extends AgentOutputType> = {
   runConfigModel?: SandboxRuntimeModel;
   processManifest?: boolean;
   tracingParent?: Span<any> | Trace;
+  workspaceScope?: SandboxWorkspaceScope;
 };
 
 export type ResolvedSandboxRuntimeModel = {
@@ -48,6 +50,7 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
   runConfigModel,
   processManifest = true,
   tracingParent,
+  workspaceScope = new SandboxWorkspaceScope(),
 }: PrepareSandboxAgentArgs<TContext, TOutput>): SandboxAgent<
   TContext,
   TOutput
@@ -63,7 +66,8 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
       .bind(session)
       .bindRunAs(agent.runAs)
       .bindModel(resolvedModel, resolvedModelInstance)
-      .bindTracingParent(tracingParent),
+      .bindTracingParent(tracingParent)
+      .bindWorkspaceScope(workspaceScope),
   );
   const boundCapabilityTypes = new Set(
     boundCapabilities.map((capability) => capability.type),
@@ -171,7 +175,9 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
         );
       }
 
-      segments.push(renderFilesystemInstructions(runtimeManifest));
+      segments.push(
+        renderFilesystemInstructions(runtimeManifest, workspaceScope),
+      );
 
       return segments.join('\n\n');
     },

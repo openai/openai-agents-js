@@ -12,6 +12,8 @@ export type SandboxProcessResult = {
 export type RunSandboxProcessOptions = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  uid?: number;
+  gid?: number;
   timeoutMs?: number;
   maxOutputBytes?: number;
 };
@@ -40,6 +42,8 @@ export async function runSandboxProcess(
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
+      uid: options.uid,
+      gid: options.gid,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

@@ -27,6 +27,7 @@ import {
   supportsApplyPatchTransport,
   supportsStructuredToolOutputTransport,
 } from './transport';
+import type { SandboxWorkspaceScope } from '../workspacePaths';
 
 export type FilesystemArgs = {
   configureTools?: ConfigureCapabilityTools;
@@ -527,12 +528,15 @@ class FilesystemCapability extends Capability {
 
   override tools(): Tool<any>[] {
     const session = requireBoundSession(this.type, this._session);
-    const editor = session.createEditor?.(this._runAs);
-    if (!editor) {
+    const sessionEditor = session.createEditor?.(this._runAs);
+    if (!sessionEditor) {
       throw new UserError(
         'Filesystem sandbox sessions must provide createEditor().',
       );
     }
+    const editor = this._workspaceScope?.cwd
+      ? scopedEditor(sessionEditor, this._workspaceScope)
+      : sessionEditor;
 
     const tools: Tool<any>[] = [];
     const viewImage = async (
@@ -553,7 +557,7 @@ class FilesystemCapability extends Capability {
           },
           async () =>
             await session.viewImage!({
-              path,
+              path: this._workspaceScope?.anchor(path) ?? path,
               runAs: this._runAs,
             } satisfies ViewImageArgs),
           this.tracingParent(details),
@@ -619,6 +623,32 @@ class FilesystemCapability extends Capability {
 
     return this.configureTools ? this.configureTools([...tools]) : tools;
   }
+}
+
+function scopedEditor(editor: Editor, scope: SandboxWorkspaceScope): Editor {
+  return {
+    createFile: async (operation, context) =>
+      await editor.createFile(
+        { ...operation, path: scope.anchor(operation.path)! },
+        context,
+      ),
+    updateFile: async (operation, context) =>
+      await editor.updateFile(
+        {
+          ...operation,
+          path: scope.anchor(operation.path)!,
+          ...(operation.moveTo
+            ? { moveTo: scope.anchor(operation.moveTo)! }
+            : {}),
+        },
+        context,
+      ),
+    deleteFile: async (operation, context) =>
+      await editor.deleteFile(
+        { ...operation, path: scope.anchor(operation.path)! },
+        context,
+      ),
+  };
 }
 
 export type Filesystem = FilesystemCapability;

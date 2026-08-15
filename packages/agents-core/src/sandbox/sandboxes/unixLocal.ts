@@ -53,6 +53,7 @@ import {
   SandboxConfigurationError,
   SandboxUnsupportedFeatureError,
 } from '../errors';
+import { probeSandboxDirectoryExists } from '../shared/pathProbe';
 import {
   WorkspacePathPolicy,
   type ResolveSandboxPathOptions,
@@ -388,6 +389,20 @@ export class UnixLocalSandboxSession<
     this.assertSessionUsable();
     await this.resolveFilesystemRunAs(runAs);
     return await pathExists(this.resolveSandboxPath(path));
+  }
+
+  async directoryExists(path: string, runAs?: string): Promise<boolean> {
+    this.assertSessionUsable();
+    const identity = await this.resolveCommandRunAs(runAs);
+    const resolvedPath = this.resolveSandboxPath(path);
+    return await probeSandboxDirectoryExists({
+      path: resolvedPath,
+      runCommand: async (command) =>
+        await runSandboxProcess('/bin/sh', ['-c', command], {
+          timeoutMs: RUN_AS_LOOKUP_TIMEOUT_MS,
+          ...(identity ? { uid: identity.uid, gid: identity.gid } : {}),
+        }),
+    });
   }
 
   async readFile(args: ReadFileArgs): Promise<Uint8Array> {

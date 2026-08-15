@@ -7,6 +7,7 @@ import { SandboxConfigurationError } from '../errors';
 import type { Manifest } from '../manifest';
 import type { SandboxSessionLike } from '../session';
 import type { SandboxUser } from '../users';
+import type { SandboxWorkspaceScope } from '../workspacePaths';
 
 export type CapabilityInstructionsResult =
   string | null | Promise<string | null>;
@@ -18,6 +19,7 @@ export abstract class Capability {
   protected _runAs?: string;
   protected _modelInstance?: Model;
   protected _tracingParent?: Span<any> | Trace;
+  protected _workspaceScope?: SandboxWorkspaceScope;
 
   clone(): this {
     const cloned = Object.create(Object.getPrototypeOf(this)) as this;
@@ -27,7 +29,8 @@ export abstract class Capability {
         key === '_session' ||
         key === '_runAs' ||
         key === '_modelInstance' ||
-        key === '_tracingParent'
+        key === '_tracingParent' ||
+        key === '_workspaceScope'
       ) {
         continue;
       }
@@ -55,6 +58,15 @@ export abstract class Capability {
   bindTracingParent(parent?: Span<any> | Trace): this {
     this._tracingParent = parent;
     return this;
+  }
+
+  bindWorkspaceScope(scope: SandboxWorkspaceScope): this {
+    this._workspaceScope = scope;
+    return this;
+  }
+
+  protected modelResourcePath(manifest: Manifest, path: string): string {
+    return this._workspaceScope?.modelResourcePath(manifest.root, path) ?? path;
   }
 
   protected tracingParent(

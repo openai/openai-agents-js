@@ -300,6 +300,7 @@ describe('CloudflareSandboxClient', () => {
 
     expect(() => session.createEditor('root')).not.toThrow();
     await expect(session.pathExists('README.md', 'root')).resolves.toBe(true);
+    await expect(session.directoryExists('.', 'root')).resolves.toBe(true);
 
     expect(
       vi

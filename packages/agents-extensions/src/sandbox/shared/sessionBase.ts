@@ -66,7 +66,10 @@ import {
   parseExposedPortEndpoint,
   recordResolvedExposedPortEndpoint,
 } from './ports';
-import { probeRemoteSandboxPathExists } from './pathProbe';
+import {
+  probeRemoteSandboxDirectoryExists,
+  probeRemoteSandboxPathExists,
+} from './pathProbe';
 import { assertRunAsUnsupported } from './session';
 import {
   assertRemoteSandboxSessionStateUsable,
@@ -211,6 +214,23 @@ export abstract class RemoteSandboxSessionBase<
     this.assertFilesystemRunAs(runAs);
     const absolutePath = await this.resolveRemotePath(path);
     return await probeRemoteSandboxPathExists({
+      providerName: this.providerName,
+      providerId: this.providerId,
+      path: absolutePath,
+      runCommand: async (command) =>
+        await this.runRemoteCommand(command, {
+          kind: 'path',
+          workdir: this.state.manifest.root,
+          runAs,
+        }),
+    });
+  }
+
+  async directoryExists(path: string, runAs?: string): Promise<boolean> {
+    this.assertSessionUsable();
+    this.assertFilesystemRunAs(runAs);
+    const absolutePath = await this.resolveRemotePath(path);
+    return await probeRemoteSandboxDirectoryExists({
       providerName: this.providerName,
       providerId: this.providerId,
       path: absolutePath,

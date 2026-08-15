@@ -147,6 +147,10 @@ export type SandboxRunConfig<
   snapshot?: SnapshotSpec;
   concurrencyLimits?: SandboxConcurrencyLimits;
   archiveLimits?: SandboxArchiveLimits | null;
+  /**
+   * Workspace-relative POSIX working directory for built-in sandbox tools in this run.
+   */
+  cwd?: string;
 };
 
 export function normalizeSandboxClientCreateArgs<

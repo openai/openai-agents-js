@@ -73,6 +73,12 @@ class FakeRemoteSession extends RemoteSandboxSessionBase<FakeRemoteSessionState>
         status: this.files.has(path) || this.dirs.has(path) ? 0 : 1,
       };
     }
+    if (command.startsWith('test -d ')) {
+      const path = command
+        .slice('test -d '.length, command.indexOf(' && test -x '))
+        .replace(/^'|'$/g, '');
+      return { status: this.dirs.has(path) ? 0 : 1 };
+    }
     return {
       status: 0,
       stdout: `ran ${command}`,
@@ -810,6 +816,9 @@ describe('shared sandbox session helpers', () => {
 
     expect(await session.pathExists('image.png')).toBe(true);
     expect(await session.pathExists('missing.png')).toBe(false);
+    session.dirs.add('/workspace/tasks');
+    expect(await session.directoryExists('tasks')).toBe(true);
+    expect(await session.directoryExists('image.png')).toBe(false);
     expect(await session.running()).toBe(true);
 
     const image = await session.viewImage({ path: 'image.png' });
