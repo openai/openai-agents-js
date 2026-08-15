@@ -69,47 +69,44 @@ jobs:
               'legacy regression',
           )
           marker = "  test('validates the Twilio input inactivity timeout', () => {\n"
-          addition = """  test('coerces explicit PCM session formats after handoff', () => {
-    const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: asTwilioWebSocket(new FakeTwilioWebSocket()),
-    });
-
-    expect(
-      transport._setInputAndOutputAudioFormat({
-        audio: {
-          input: { format: { type: 'audio/pcm', rate: 24_000 } },
-          output: { format: { type: 'audio/pcm', rate: 24_000 } },
-        },
-      } as any),
-    ).toEqual({
-      audio: {
-        input: { format: 'g711_ulaw' },
-        output: { format: 'g711_ulaw' },
-      },
-    });
-  });
-
-  test('preserves explicitly compatible G.711 formats', () => {
-    const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: asTwilioWebSocket(new FakeTwilioWebSocket()),
-    });
-
-    expect(
-      transport._setInputAndOutputAudioFormat({
-        audio: {
-          input: { format: { type: 'audio/pcmu' } },
-          output: { format: 'g711_alaw' },
-        },
-      } as any),
-    ).toEqual({
-      audio: {
-        input: { format: { type: 'audio/pcmu' } },
-        output: { format: 'g711_alaw' },
-      },
-    });
-  });
-
-"""
+          addition = (
+              "  test('coerces explicit PCM session formats after handoff', () => {\n"
+              "    const transport = new TwilioRealtimeTransportLayer({\n"
+              "      twilioWebSocket: asTwilioWebSocket(new FakeTwilioWebSocket()),\n"
+              "    });\n\n"
+              "    expect(\n"
+              "      transport._setInputAndOutputAudioFormat({\n"
+              "        audio: {\n"
+              "          input: { format: { type: 'audio/pcm', rate: 24_000 } },\n"
+              "          output: { format: { type: 'audio/pcm', rate: 24_000 } },\n"
+              "        },\n"
+              "      } as any),\n"
+              "    ).toEqual({\n"
+              "      audio: {\n"
+              "        input: { format: 'g711_ulaw' },\n"
+              "        output: { format: 'g711_ulaw' },\n"
+              "      },\n"
+              "    });\n"
+              "  });\n\n"
+              "  test('preserves explicitly compatible G.711 formats', () => {\n"
+              "    const transport = new TwilioRealtimeTransportLayer({\n"
+              "      twilioWebSocket: asTwilioWebSocket(new FakeTwilioWebSocket()),\n"
+              "    });\n\n"
+              "    expect(\n"
+              "      transport._setInputAndOutputAudioFormat({\n"
+              "        audio: {\n"
+              "          input: { format: { type: 'audio/pcmu' } },\n"
+              "          output: { format: 'g711_alaw' },\n"
+              "        },\n"
+              "      } as any),\n"
+              "    ).toEqual({\n"
+              "      audio: {\n"
+              "        input: { format: { type: 'audio/pcmu' } },\n"
+              "        output: { format: 'g711_alaw' },\n"
+              "      },\n"
+              "    });\n"
+              "  });\n\n"
+          )
           test = replace_once(test, marker, addition + marker, 'test insertion')
           test_path.write_text(test)
           PY
