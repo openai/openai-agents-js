@@ -1,0 +1,37 @@
+name: Validate 1666
+
+on:
+  push:
+    branches:
+      - feat/model-attempt-timeout
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install
+      - run: pnpm exec prettier --write packages/agents-core/src/runner/modelRetry.ts packages/agents-core/test/modelAttemptTimeout.test.ts
+      - run: pnpm exec eslint packages/agents-core/src/runner/modelRetry.ts packages/agents-core/test/modelAttemptTimeout.test.ts
+      - run: pnpm exec vitest --run --project '@openai/agents-core' packages/agents-core/test/modelAttemptTimeout.test.ts
+      - name: Commit formatting and remove validation workflow
+        if: success()
+        run: |
+          rm .github/workflows/validate-1666.yml
+          git config user.name "Sylvester Kaczmarek"
+          git config user.email "16242628+sylvesterkaczmarek@users.noreply.github.com"
+          git add packages/agents-core/src/runner/modelRetry.ts packages/agents-core/test/modelAttemptTimeout.test.ts .github/workflows/validate-1666.yml
+          git commit -m "chore: validate model attempt timeout fixes"
+          git push origin HEAD:${GITHUB_REF_NAME}
