@@ -21,6 +21,20 @@ class TestBase extends OpenAIRealtimeBase {
   updateTracing(tracing: 'auto' | null) {
     this._updateTracingConfig(tracing);
   }
+
+  get rawSessionConfig() {
+    return this._rawSessionConfig;
+  }
+
+  receiveSessionUpdated(session: Record<string, unknown>) {
+    this._onMessage({
+      data: JSON.stringify({
+        type: 'session.updated',
+        event_id: 'evt_session_updated',
+        session,
+      }),
+    } as MessageEvent);
+  }
 }
 
 describe('Realtime session payload transform', () => {
@@ -79,5 +93,36 @@ describe('Realtime session payload transform', () => {
         session: { tracing: 'auto' },
       },
     ]);
+  });
+
+  it('preserves canonical turn detection state after transformed acknowledgements', () => {
+    const base = new TestBase({
+      transformSessionPayload: (payload) => {
+        const { audio, ...rest } = payload;
+        return {
+          ...rest,
+          turn_detection: audio?.input?.turn_detection,
+        };
+      },
+    });
+
+    base.updateSessionConfig({
+      turnDetection: {
+        type: 'server_vad',
+        interruptResponse: true,
+      },
+    });
+    base.receiveSessionUpdated({
+      turn_detection: {
+        type: 'server_vad',
+        interrupt_response: true,
+      },
+    });
+    base.updateTracing('auto');
+
+    expect(
+      base.rawSessionConfig?.audio?.input?.turn_detection?.interrupt_response,
+    ).toBe(true);
+    expect(base.rawSessionConfig?.tracing).toBe('auto');
   });
 });
