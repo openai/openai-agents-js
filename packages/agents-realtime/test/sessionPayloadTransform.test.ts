@@ -7,9 +7,15 @@ class TestBase extends OpenAIRealtimeBase {
   status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' =
     'connected';
   events: RealtimeClientMessage[] = [];
+  throwOnSend = false;
   connect = vi.fn(async () => {});
   sendEvent(event: RealtimeClientMessage) {
-    this.events.push(event);
+    const preparedEvent = this._prepareClientEventForSend(event);
+    if (this.throwOnSend) {
+      throw new Error('send failed');
+    }
+    this.events.push(preparedEvent);
+    this._recordClientEventSent(preparedEvent);
   }
   mute = vi.fn();
   close = vi.fn();
@@ -32,6 +38,16 @@ class TestBase extends OpenAIRealtimeBase {
         type: 'session.updated',
         event_id: 'evt_session_updated',
         session,
+      }),
+    } as MessageEvent);
+  }
+
+  receiveError(eventId: string) {
+    this._onMessage({
+      data: JSON.stringify({
+        type: 'error',
+        event_id: 'evt_error',
+        error: { event_id: eventId, message: 'rejected' },
       }),
     } as MessageEvent);
   }
@@ -90,6 +106,9 @@ describe('Realtime session payload transform', () => {
     expect(
       base.events[0]?.session.audio?.input?.turn_detection?.interrupt_response,
     ).toBeUndefined();
+    expect(base.rawSessionConfig).toBeNull();
+
+    base.receiveSessionUpdated({ provider_shape: true });
     expect(
       base.rawSessionConfig?.audio?.input?.turn_detection?.interrupt_response,
     ).toBe(true);
@@ -134,6 +153,86 @@ describe('Realtime session payload transform', () => {
     ).toBe(false);
   });
 
+  it('preserves acknowledgement order across raw and transformed updates', () => {
+    const base = new TestBase({
+      transformSessionPayload: ({ type: _type, ...rest }) => rest,
+    });
+
+    base.sendEvent({
+      type: 'session.update',
+      session: { instructions: 'raw update' },
+    });
+    base.updateSessionConfig({ instructions: 'sdk update' });
+
+    base.receiveSessionUpdated({ instructions: 'raw update' });
+    expect(base.rawSessionConfig?.instructions).toBe('raw update');
+
+    base.receiveSessionUpdated({ instructions: 'provider-shaped sdk ack' });
+    expect(base.rawSessionConfig?.instructions).toBe('sdk update');
+  });
+
+  it('does not change canonical state when transformation throws', () => {
+    let shouldThrow = false;
+    const base = new TestBase({
+      transformSessionPayload: (payload) => {
+        if (shouldThrow) {
+          throw new Error('transform failed');
+        }
+        return payload;
+      },
+    });
+
+    base.updateSessionConfig({ instructions: 'accepted' });
+    base.receiveSessionUpdated({ instructions: 'accepted provider ack' });
+    expect(base.rawSessionConfig?.instructions).toBe('accepted');
+
+    shouldThrow = true;
+    expect(() =>
+      base.updateSessionConfig({ instructions: 'rejected' }),
+    ).toThrow('transform failed');
+    expect(base.rawSessionConfig?.instructions).toBe('accepted');
+  });
+
+  it('does not change canonical state or queue failed sends', () => {
+    const base = new TestBase({
+      transformSessionPayload: ({ type: _type, ...rest }) => rest,
+    });
+
+    base.updateSessionConfig({ instructions: 'accepted' });
+    base.receiveSessionUpdated({ instructions: 'accepted provider ack' });
+
+    base.throwOnSend = true;
+    expect(() =>
+      base.updateSessionConfig({ instructions: 'send failed' }),
+    ).toThrow('send failed');
+    base.throwOnSend = false;
+
+    base.sendEvent({
+      type: 'session.update',
+      session: { instructions: 'raw after failure' },
+    });
+    base.receiveSessionUpdated({ instructions: 'raw after failure' });
+    expect(base.rawSessionConfig?.instructions).toBe('raw after failure');
+  });
+
+  it('drops rejected transformed updates by client event id', () => {
+    const base = new TestBase({
+      transformSessionPayload: ({ type: _type, ...rest }) => rest,
+    });
+
+    base.updateSessionConfig({ instructions: 'will be rejected' });
+    const rejectedEventId = base.events[0]?.event_id;
+    expect(typeof rejectedEventId).toBe('string');
+    base.receiveError(rejectedEventId as string);
+
+    base.sendEvent({
+      type: 'session.update',
+      session: { instructions: 'raw accepted' },
+    });
+    base.receiveSessionUpdated({ instructions: 'raw accepted' });
+    expect(base.rawSessionConfig?.instructions).toBe('raw accepted');
+  });
+
   it('keeps buildSessionPayload canonical', () => {
     const base = new TestBase({
       transformSessionPayload: ({ type: _type, ...rest }) => rest,
@@ -152,12 +251,12 @@ describe('Realtime session payload transform', () => {
 
     base.updateTracing('auto');
 
-    expect(base.events).toEqual([
-      {
-        type: 'session.update',
-        session: { tracing: 'auto' },
-      },
-    ]);
+    expect(base.events).toHaveLength(1);
+    expect(base.events[0]).toMatchObject({
+      type: 'session.update',
+      session: { tracing: 'auto' },
+    });
+    expect(base.events[0]?.event_id).toMatch(/^event_sdk_session_update_/);
   });
 
   it('preserves canonical turn detection state after transformed acknowledgements', () => {

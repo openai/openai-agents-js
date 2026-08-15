@@ -208,7 +208,12 @@ export abstract class OpenAIRealtimeBase
   #transformSessionPayload: RealtimeSessionPayloadTransformer | undefined;
   #tracingConfig: RealtimeTracingConfig | null = null;
   #rawSessionConfig: Record<string, any> | null = null;
-  #pendingTransformedSessionUpdates = 0;
+  #pendingSessionUpdates: Array<{
+    eventId: string;
+    canonicalSession: Record<string, any> | null;
+  }> = [];
+  #canonicalSessionUpdateCandidates = new Map<string, Record<string, any>>();
+  #nextSessionUpdateEventId = 0;
 
   protected eventEmitter: RuntimeEventEmitter<OpenAIRealtimeEventTypes> =
     new RuntimeEventEmitter<OpenAIRealtimeEventTypes>();
@@ -287,6 +292,13 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (parsed.type === 'error') {
+      const failedEventId =
+        typeof parsed.error?.event_id === 'string'
+          ? parsed.error.event_id
+          : undefined;
+      if (failedEventId) {
+        this.#discardPendingSessionUpdate(failedEventId);
+      }
       this.emit('error', { type: 'error', error: parsed });
     } else {
       this.emit(parsed.type, parsed);
@@ -303,17 +315,9 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (parsed.type === 'session.updated') {
-      if (
-        this.#transformSessionPayload &&
-        this.#pendingTransformedSessionUpdates > 0
-      ) {
-        // Provider-transformed acknowledgements may use a different schema, so
-        // do not overwrite the canonical SDK state with them. Direct/raw
-        // session.update acknowledgements still update the canonical cache.
-        this.#pendingTransformedSessionUpdates -= 1;
-      } else {
-        this.#rawSessionConfig = parsed.session;
-      }
+      const pendingUpdate = this.#pendingSessionUpdates.shift();
+      this.#rawSessionConfig =
+        pendingUpdate?.canonicalSession ?? parsed.session;
     }
 
     if (parsed.type === 'response.done') {
@@ -594,10 +598,12 @@ export abstract class OpenAIRealtimeBase
   }
 
   protected _onOpen() {
+    this.#resetSessionUpdateTracking();
     this.emit('connected');
   }
 
   protected _onClose() {
+    this.#resetSessionUpdateTracking();
     this.emit('disconnected');
   }
 
@@ -797,21 +803,81 @@ export abstract class OpenAIRealtimeBase
 
   protected _sendSessionUpdate(payload: RealtimeSessionPayload): void {
     const canonicalPayload = cloneRealtimeEvent(payload);
-    this.#rawSessionConfig = mergeCanonicalSessionPayload(
+    const canonicalSession = mergeCanonicalSessionPayload(
       this.#rawSessionConfig,
       canonicalPayload,
     );
-
     const session = this.#transformSessionPayload
       ? this.#transformSessionPayload(cloneRealtimeEvent(canonicalPayload))
       : canonicalPayload;
-    if (this.#transformSessionPayload) {
-      this.#pendingTransformedSessionUpdates += 1;
-    }
-    this.sendEvent({
+    const event = this._prepareClientEventForSend({
       type: 'session.update',
       session,
     });
+    const eventId = event.event_id as string;
+
+    if (this.#transformSessionPayload) {
+      this.#canonicalSessionUpdateCandidates.set(eventId, canonicalSession);
+    }
+
+    try {
+      this.sendEvent(event);
+      // Built-in transports record successful sends themselves. Keep this
+      // fallback for custom transports that subclass OpenAIRealtimeBase.
+      if (this.#canonicalSessionUpdateCandidates.has(eventId)) {
+        this._recordClientEventSent(event);
+      }
+    } catch (error) {
+      this.#canonicalSessionUpdateCandidates.delete(eventId);
+      throw error;
+    }
+  }
+
+  protected _prepareClientEventForSend(
+    event: RealtimeClientMessage,
+  ): RealtimeClientMessage {
+    if (event.type !== 'session.update') {
+      return event;
+    }
+    if (typeof event.event_id === 'string' && event.event_id.length > 0) {
+      return event;
+    }
+    this.#nextSessionUpdateEventId += 1;
+    return {
+      ...event,
+      event_id: `event_sdk_session_update_${this.#nextSessionUpdateEventId}`,
+    };
+  }
+
+  protected _recordClientEventSent(event: RealtimeClientMessage): void {
+    if (
+      event.type !== 'session.update' ||
+      typeof event.event_id !== 'string'
+    ) {
+      return;
+    }
+    const canonicalSession =
+      this.#canonicalSessionUpdateCandidates.get(event.event_id) ?? null;
+    this.#canonicalSessionUpdateCandidates.delete(event.event_id);
+    this.#pendingSessionUpdates.push({
+      eventId: event.event_id,
+      canonicalSession,
+    });
+  }
+
+  #discardPendingSessionUpdate(eventId: string): void {
+    this.#canonicalSessionUpdateCandidates.delete(eventId);
+    const index = this.#pendingSessionUpdates.findIndex(
+      (update) => update.eventId === eventId,
+    );
+    if (index >= 0) {
+      this.#pendingSessionUpdates.splice(index, 1);
+    }
+  }
+
+  #resetSessionUpdateTracking(): void {
+    this.#pendingSessionUpdates = [];
+    this.#canonicalSessionUpdateCandidates.clear();
   }
 
   private static buildTurnDetectionConfig(
