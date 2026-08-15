@@ -1,0 +1,39 @@
+name: Validate timeout review fixes
+
+on:
+  push:
+    branches:
+      - feat/model-attempt-timeout
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install
+      - run: pnpm exec prettier --write packages/agents-core/src/runner/modelRetry.ts packages/agents-core/test/modelAttemptTimeout.test.ts
+      - run: pnpm exec eslint packages/agents-core/src/runner/modelRetry.ts packages/agents-core/test/modelAttemptTimeout.test.ts
+      - run: pnpm exec vitest --run --project '@openai/agents-core' --maxWorkers=1 --minWorkers=1 modelAttemptTimeout.test.ts
+      - name: Commit validation formatting and cleanup
+        if: success()
+        run: |
+          rm .github/workflows/validate-timeout-review.yml
+          git config user.name "Sylvester Kaczmarek"
+          git config user.email "16242628+sylvesterkaczmarek@users.noreply.github.com"
+          git add packages/agents-core/src/runner/modelRetry.ts packages/agents-core/test/modelAttemptTimeout.test.ts .github/workflows/validate-timeout-review.yml
+          git commit -m "chore: validate model attempt timeout safety"
+          git push origin HEAD:${GITHUB_REF_NAME}
