@@ -52,7 +52,7 @@ class TimeoutThenResponseModel implements Model {
   }
 
   async *getStreamedResponse(): AsyncIterable<StreamEvent> {
-    return;
+    yield* [];
   }
 }
 
