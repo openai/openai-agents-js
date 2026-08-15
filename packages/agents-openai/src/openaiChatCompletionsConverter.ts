@@ -305,9 +305,28 @@ export function itemsToMessages(
     }
     return currentAssistantMsg;
   };
+  // A reasoning item is emitted right before the assistant message it belongs
+  // to, so hand its reasoning back to that message instead of flushing an
+  // assistant turn that carries no content and no tool calls.
+  const takeReasoningOnlyAssistantMessage = () => {
+    const pending: ChatCompletionAssistantMessageWithReasoning | null =
+      currentAssistantMsg;
+    if (
+      !pending ||
+      pending.content !== null ||
+      (pending.tool_calls && pending.tool_calls.length > 0) ||
+      !('reasoning' in pending)
+    ) {
+      return undefined;
+    }
+    currentAssistantMsg = null;
+    return pending;
+  };
   for (const item of items) {
     if (isMessageItem(item)) {
       const { content, role, providerData } = item;
+      const pendingReasoningMsg =
+        role === 'assistant' ? takeReasoningOnlyAssistantMessage() : undefined;
       flushAssistantMessage();
       if (role === 'assistant') {
         const phase = item.phase ?? providerData?.phase;
@@ -325,9 +344,12 @@ export function itemsToMessages(
           }
           logger.warn(`${message} The phase will be dropped.`);
         }
-        const assistant: ChatCompletionAssistantMessageParam = {
+        const assistant: ChatCompletionAssistantMessageWithReasoning = {
           role: 'assistant',
           content: extractAllAssistantContent(content),
+          ...(typeof pendingReasoningMsg?.reasoning === 'string'
+            ? { reasoning: pendingReasoningMsg.reasoning }
+            : {}),
           ...getProviderDataWithoutReservedKeys(providerData, [
             'role',
             'content',
@@ -511,6 +533,10 @@ export function itemsToMessages(
         ]),
       });
     } else if (item.type === 'unknown') {
+      // An unknown provider item ends the current assistant turn. Flushing here
+      // keeps it in history order and stops reasoning from carrying across it
+      // to an assistant message it does not belong to.
+      flushAssistantMessage();
       result.push({
         ...item.providerData,
       } as any);

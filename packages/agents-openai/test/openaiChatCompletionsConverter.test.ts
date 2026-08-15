@@ -957,6 +957,233 @@ describe('itemsToMessages', () => {
     ]);
   });
 
+  test('keeps reasoning on the assistant message it belongs to', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'reasoning',
+        content: [],
+        rawContent: [{ type: 'reasoning_text', text: 'why' }],
+      } as protocol.ReasoningItem,
+      {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'hello' }],
+      } as protocol.AssistantMessageItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'hello' }],
+        reasoning: 'why',
+      },
+    ]);
+  });
+
+  test('drops an empty reasoning item instead of emitting an empty assistant turn', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'reasoning',
+        content: [],
+        rawContent: [],
+      } as protocol.ReasoningItem,
+      {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'hello' }],
+      } as protocol.AssistantMessageItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'hello' }],
+      },
+    ]);
+  });
+
+  test('keeps reasoning with the tool call message when a tool call follows', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'reasoning',
+        content: [],
+        rawContent: [{ type: 'reasoning_text', text: 'why' }],
+      } as protocol.ReasoningItem,
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'completed',
+      } as protocol.FunctionCallItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: null,
+        reasoning: 'why',
+        tool_calls: [
+          {
+            id: 'call1',
+            type: 'function',
+            function: { name: 'f', arguments: '{}' },
+          },
+        ],
+      },
+    ]);
+  });
+
+  test('does not attach reasoning to a following user message', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'reasoning',
+        content: [],
+        rawContent: [{ type: 'reasoning_text', text: 'why' }],
+      } as protocol.ReasoningItem,
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'hi' }],
+      } as protocol.UserMessageItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toEqual([
+      { role: 'assistant', content: null, reasoning: 'why' },
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+    ]);
+  });
+
+  test('does not steal reasoning from a previous assistant message', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'reasoning',
+        content: [],
+        rawContent: [{ type: 'reasoning_text', text: 'first' }],
+      } as protocol.ReasoningItem,
+      {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'one' }],
+      } as protocol.AssistantMessageItem,
+      {
+        id: 'msg_2',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'two' }],
+      } as protocol.AssistantMessageItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toEqual([
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'one' }],
+        reasoning: 'first',
+      },
+      { role: 'assistant', content: [{ type: 'text', text: 'two' }] },
+    ]);
+  });
+
+  test('does not carry reasoning across an unknown provider item', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'reasoning',
+        content: [],
+        rawContent: [{ type: 'reasoning_text', text: 'why' }],
+      } as protocol.ReasoningItem,
+      {
+        type: 'unknown',
+        providerData: { role: 'assistant', content: 'provider specific' },
+      } as unknown as protocol.ModelItem,
+      {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'hello' }],
+      } as protocol.AssistantMessageItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs).toEqual([
+      { role: 'assistant', content: null, reasoning: 'why' },
+      { role: 'assistant', content: 'provider specific' },
+      { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
+    ]);
+  });
+
+  test('keeps an unknown provider item in history order', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'completed',
+      } as protocol.FunctionCallItem,
+      {
+        type: 'unknown',
+        providerData: { role: 'assistant', content: 'provider specific' },
+      } as unknown as protocol.ModelItem,
+    ];
+    const msgs = itemsToMessages(items);
+    expect(msgs.map((m) => (m as any).content)).toEqual([
+      null,
+      'provider specific',
+    ]);
+  });
+
+  test('does not accumulate contentless assistant messages across turns', () => {
+    // Replayed history from a provider that returns reasoning on the assistant
+    // message grows by one reasoning item per turn. Each one used to add its own
+    // assistant message with no content and no tool calls.
+    const items: protocol.ModelItem[] = [];
+    for (const turn of [1, 2, 3, 4, 5]) {
+      items.push({
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: `question ${turn}` }],
+      } as protocol.UserMessageItem);
+      items.push({
+        type: 'reasoning',
+        content: [],
+        rawContent: [{ type: 'reasoning_text', text: `reasoning ${turn}` }],
+      } as protocol.ReasoningItem);
+      items.push({
+        id: `msg_${turn}`,
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: `answer ${turn}` }],
+      } as protocol.AssistantMessageItem);
+    }
+
+    const msgs = itemsToMessages(items);
+    const assistantMessages = msgs.filter((m) => m.role === 'assistant');
+
+    expect(assistantMessages).toHaveLength(5);
+    expect(
+      assistantMessages.filter(
+        (m) => m.content === null && !(m as any).tool_calls,
+      ),
+    ).toHaveLength(0);
+    expect(assistantMessages.map((m) => (m as any).reasoning)).toEqual([
+      'reasoning 1',
+      'reasoning 2',
+      'reasoning 3',
+      'reasoning 4',
+      'reasoning 5',
+    ]);
+  });
+
   test('propagates providerData from function_call to assistant message', () => {
     const items: protocol.ModelItem[] = [
       {
