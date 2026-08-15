@@ -394,6 +394,9 @@ describe('DockerSandboxClient unit behavior', () => {
         return failure('unexpected docker command');
       },
     );
+    childProcessMocks.spawn.mockImplementation(() =>
+      dockerSpawnResult({ status: 0 }),
+    );
     const client = new DockerSandboxClient({
       workspaceBaseDir: rootDir,
     });
@@ -458,6 +461,21 @@ describe('DockerSandboxClient unit behavior', () => {
       }),
     );
 
+    await expect(session.directoryExists('r2logs')).resolves.toBe(true);
+    expect(childProcessMocks.spawn).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining([
+        'exec',
+        '-i',
+        '-w',
+        '/',
+        'container-123',
+        '/bin/sh',
+        '-lc',
+        "test -d '/workspace/r2logs' && test -x '/workspace/r2logs'",
+      ]),
+      expect.any(Object),
+    );
     await expect(session.pathExists('r2logs/app.log')).rejects.toThrow(
       /Docker volume mount path/,
     );

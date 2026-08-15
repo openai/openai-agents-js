@@ -16,6 +16,7 @@ import {
 } from '../src/sandbox';
 import {
   isSandboxPathNotFoundError,
+  probeSandboxDirectoryExists,
   probeSandboxPathExists,
 } from '../src/sandbox/shared/pathProbe';
 import { shellQuote } from '../src/sandbox/shared/shell';
@@ -47,6 +48,58 @@ describe('sandbox path probes', () => {
     ).resolves.toBe(true);
     expect(runCommand).toHaveBeenCalledOnce();
     expect(runCommand).toHaveBeenCalledWith("test -e '/workspace/exists'");
+  });
+
+  it('distinguishes directories from other existing paths', async () => {
+    const runCommand = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 0 })
+      .mockResolvedValueOnce({ status: 1 });
+
+    await expect(
+      probeSandboxDirectoryExists({ path: '/workspace/file', runCommand }),
+    ).resolves.toBe(false);
+    expect(runCommand.mock.calls.map(([command]) => command)).toEqual([
+      "test -e '/workspace/file'",
+      "test -d '/workspace/file' && test -x '/workspace/file'",
+    ]);
+  });
+
+  it('rejects a directory that the execution identity cannot enter', async () => {
+    const runCommand = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 0 })
+      .mockResolvedValueOnce({ status: 1 });
+
+    await expect(
+      probeSandboxDirectoryExists({ path: '/workspace/blocked', runCommand }),
+    ).resolves.toBe(false);
+    expect(runCommand).toHaveBeenLastCalledWith(
+      "test -d '/workspace/blocked' && test -x '/workspace/blocked'",
+    );
+  });
+
+  it('preserves failures from the directory-specific probe', async () => {
+    const failure = new Error('provider unavailable');
+    const runCommand = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 0 })
+      .mockRejectedValueOnce(failure);
+
+    await expect(
+      probeSandboxDirectoryExists({ path: '/workspace/tasks', runCommand }),
+    ).rejects.toBe(failure);
+  });
+
+  it('rejects diagnostics from a negative directory-specific probe', async () => {
+    const runCommand = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 0 })
+      .mockResolvedValueOnce({ status: 1, stderr: 'authentication expired' });
+
+    await expect(
+      probeSandboxDirectoryExists({ path: '/workspace/tasks', runCommand }),
+    ).rejects.toBeInstanceOf(SandboxWorkspaceArchiveReadError);
   });
 
   it('diagnoses ambiguous missing-path probe results', async () => {

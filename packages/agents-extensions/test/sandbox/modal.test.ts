@@ -1166,11 +1166,13 @@ describe('ModalSandboxClient', () => {
       diff: '@@\n-# Hello from Modal\n+# Updated from Modal\n',
     });
     const exists = await session.pathExists('/workspace/README.md');
+    const directoryExists = await session.directoryExists('/workspace');
 
     expect(files.get('/workspace/README.md')).toEqual(
       new TextEncoder().encode('# Updated from Modal\n'),
     );
     expect(exists).toBe(true);
+    expect(directoryExists).toBe(true);
     await expect(
       session.pathExists('/workspace/../tmp/README.md'),
     ).rejects.toThrow(/escapes the workspace root/);

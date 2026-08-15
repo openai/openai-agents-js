@@ -122,7 +122,7 @@ class ShellCapability extends Capability {
             async () =>
               await session.execCommand!({
                 cmd,
-                workdir,
+                workdir: this._workspaceScope?.anchor(workdir) ?? workdir,
                 shell,
                 login,
                 tty,

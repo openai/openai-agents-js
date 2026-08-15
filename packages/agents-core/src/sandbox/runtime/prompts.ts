@@ -1,6 +1,7 @@
 import { renderManifestDescription } from '../manifest';
 import type { Manifest } from '../manifest';
 import { WorkspacePathPolicy } from '../workspacePaths';
+import type { SandboxWorkspaceScope } from '../workspacePaths';
 
 const DEFAULT_SANDBOX_INSTRUCTIONS = prompt`
 You are operating inside an isolated sandbox workspace.
@@ -41,12 +42,24 @@ export function getDefaultSandboxInstructions(): string {
   return DEFAULT_SANDBOX_INSTRUCTIONS;
 }
 
-export function renderFilesystemInstructions(manifest: Manifest): string {
+export function renderFilesystemInstructions(
+  manifest: Manifest,
+  workspaceScope?: SandboxWorkspaceScope,
+): string {
+  const absoluteCwd = workspaceScope?.absoluteCwd(manifest.root);
+  const runCwdInstructions = absoluteCwd
+    ? prompt`
+For this run, the working directory is \`${absoluteCwd}\`.
+Relative paths passed to the built-in \`exec_command\`, \`view_image\`, and \`apply_patch\` tools resolve from this directory. Other sandbox tools follow their own path contract.
+The session workspace root remains \`${manifest.root}\`. The working directory changes path resolution; it does not isolate this run from the rest of the session workspace. Files outside the working directory may be visible to or shared with other runs.
+`
+    : '';
   return prompt`
 # Filesystem
 You have access to a container with a filesystem. The filesystem layout is:
 
 ${renderManifestDescription(manifest, { depth: 3 }).text}
+${runCwdInstructions}
 `;
 }
 

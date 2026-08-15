@@ -17,6 +17,7 @@ Most examples call a model through `run`, so set `OPENAI_API_KEY` in your shell 
 | `memory.ts` | `pnpm -F sandbox start:memory` | Uses workspace memory files plus a local snapshot resume. |
 | `memory-generation.ts` | `pnpm -F sandbox start:memory-generation` | Runs automatic Phase 1/Phase 2 sandbox memory generation when the session is flushed. |
 | `memory-multi-agent-multiturn.ts` | `pnpm -F sandbox start:memory-multi-agent-multiturn` | Shows separate workspace memory layouts for two agents sharing one sandbox workspace. |
+| `shared-session-workdirs.ts` | `pnpm -F sandbox start:shared-session-workdirs` | Runs two agents concurrently in different working directories on one shared session. |
 | `unix-local-pty.ts` | `pnpm -F sandbox start:unix-local-pty` | Exercises an interactive PTY in a Unix-local sandbox. |
 | `unix-local-runner.ts` | `pnpm -F sandbox start:unix-local-runner` | Runs directly against the Unix-local sandbox backend. |
 | `docker-runner.ts` | `pnpm -F sandbox start:docker-runner` | Runs directly against the Docker sandbox backend. |
@@ -24,5 +25,7 @@ Most examples call a model through `run`, so set `OPENAI_API_KEY` in your shell 
 ## Notes
 
 The JavaScript SDK now exposes generic remote snapshot and memory store interfaces. Cloud-specific convenience stores for S3, GCS, R2, or Azure are intentionally left to extension packages or application code so core does not pull in provider SDK dependencies.
+
+A run-scoped working directory changes relative path resolution only. It does not isolate runs from each other; use separate sandbox sessions when filesystem or compute isolation is required.
 
 The Python examples also include tax prep assets and tutorial/workflow scaffolds. Those assets do not exist in this repository, so they are not mirrored here yet.

@@ -929,6 +929,18 @@ class ClosedHandleSerializedResumeFakeSandboxClient extends SerializedResumeFake
   }
 }
 
+class CwdAwareClosedHandleSerializedResumeFakeSandboxClient extends ClosedHandleSerializedResumeFakeSandboxClient {
+  override makeSession(
+    state: FakeSandboxSessionState,
+  ): SandboxSessionLike<FakeSandboxSessionState> {
+    const session = super.makeSession(state);
+    return {
+      ...session,
+      directoryExists: async () => true,
+    };
+  }
+}
+
 class ShutdownOnlyFakeSandboxClient extends FakeSandboxClient {
   protected override lifecycleHandlers(
     state: FakeSandboxSessionState,
@@ -6380,6 +6392,65 @@ describe('sandbox runner integration', () => {
     expect(client.resumeCalls).toHaveLength(1);
     expect(client.execCommandCalls).toHaveLength(1);
     expect(client.closeCalls).toEqual(['session-1', 'session-1']);
+  });
+
+  it('rebinds an approved shell call to the current cwd after interruption resume', async () => {
+    const client = new CwdAwareClosedHandleSerializedResumeFakeSandboxClient();
+    const sandboxModel = new RecordingModel([
+      modelResponse({
+        output: [
+          {
+            id: 'shell-cwd-approval-1',
+            type: 'function_call',
+            name: 'exec_command',
+            callId: 'shell-cwd-approval-1',
+            status: 'completed',
+            arguments: '{"cmd":"pwd"}',
+          } satisfies protocol.FunctionCallItem,
+        ],
+        usage: new Usage(),
+      }),
+      modelResponse({
+        output: [fakeModelMessage('sandbox done')],
+        usage: new Usage(),
+      }),
+    ]);
+    const sandboxAgent = new SandboxAgent({
+      name: 'SandboxWorker',
+      model: sandboxModel,
+      capabilities: [
+        shell({
+          configureTools: (tools) =>
+            tools.map((capabilityTool) =>
+              capabilityTool.type === 'function' &&
+              capabilityTool.name === 'exec_command'
+                ? { ...capabilityTool, needsApproval: async () => true }
+                : capabilityTool,
+            ),
+        }),
+      ],
+      defaultManifest: new Manifest({ root: '/workspace' }),
+    });
+    const runner = new Runner();
+
+    const firstResult = await runner.run(sandboxAgent, 'Hello', {
+      sandbox: { client, cwd: 'tasks/a' },
+    });
+    const approval = firstResult.interruptions?.[0];
+    if (!approval) {
+      throw new Error('Expected a shell approval interruption');
+    }
+    firstResult.state.approve(approval);
+
+    const resumedResult = await runner.run(sandboxAgent, firstResult.state, {
+      sandbox: { client, cwd: 'tasks/b' },
+    });
+
+    expect(resumedResult.finalOutput).toBe('sandbox done');
+    expect(client.resumeCalls).toHaveLength(1);
+    expect(client.execCommandCalls).toEqual([
+      expect.objectContaining({ cmd: 'pwd', workdir: 'tasks/b' }),
+    ]);
   });
 
   it('reacquires preserved sessions when host approval completes the run', async () => {

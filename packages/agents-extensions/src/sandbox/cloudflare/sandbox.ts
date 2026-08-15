@@ -64,7 +64,10 @@ import {
   truncateOutput,
 } from '../shared/output';
 import { assertConfiguredExposedPort } from '../shared/ports';
-import { probeRemoteSandboxPathExists } from '../shared/pathProbe';
+import {
+  probeRemoteSandboxDirectoryExists,
+  probeRemoteSandboxPathExists,
+} from '../shared/pathProbe';
 import {
   addPtyWebSocketListener,
   appendPtyOutput,
@@ -95,6 +98,7 @@ import {
   manifestMaterializationOptionsWithRunAs,
   readRunAsRemoteFile,
   runAsRemotePathExists,
+  runAsRemoteDirectoryExists,
   sandboxUserShellCommand,
 } from '../shared/runAs';
 import {
@@ -402,6 +406,34 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       });
     }
     return await runAsRemotePathExists(
+      absolutePath,
+      runAs,
+      this.runAsCommandRunner.bind(this),
+      {
+        providerName: 'CloudflareSandboxClient',
+        providerId: 'cloudflare',
+      },
+    );
+  }
+
+  async directoryExists(path: string, runAs?: string): Promise<boolean> {
+    const absolutePath = await this.resolveRemotePath(path);
+    if (!runAs) {
+      return await probeRemoteSandboxDirectoryExists({
+        providerName: 'CloudflareSandboxClient',
+        providerId: 'cloudflare',
+        path: absolutePath,
+        runCommand: async (command) => {
+          const result = await this.execShell(command);
+          return {
+            status: result.exitCode,
+            stdout: result.stdout,
+            stderr: result.stderr,
+          };
+        },
+      });
+    }
+    return await runAsRemoteDirectoryExists(
       absolutePath,
       runAs,
       this.runAsCommandRunner.bind(this),

@@ -214,6 +214,7 @@ const sandboxMethodModes = {
   readFile: 'async',
   listDir: 'async',
   pathExists: 'async',
+  directoryExists: 'async',
   materializeEntry: 'async',
   applyManifest: 'async',
   persistWorkspace: 'async',

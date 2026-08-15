@@ -54,6 +54,7 @@ import {
   materializeEnvironment,
   persistRemoteWorkspaceTar,
   probeRemoteSandboxPathExists,
+  probeRemoteSandboxDirectoryExists,
   providerErrorMessage,
   assertConfiguredExposedPort,
   getCachedExposedPortEndpoint,
@@ -64,6 +65,7 @@ import {
   cloneManifestWithoutMountEntries,
   readRunAsRemoteFile,
   runAsRemotePathExists,
+  runAsRemoteDirectoryExists,
   sandboxUserShellCommand,
   serializeRemoteSandboxSessionState,
   truncateOutput,
@@ -558,6 +560,47 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
       });
     }
     return await runAsRemotePathExists(
+      absolutePath,
+      runAs,
+      this.runAsCommandRunner.bind(this),
+      {
+        providerName: 'ModalSandboxClient',
+        providerId: 'modal',
+      },
+    );
+  }
+
+  async directoryExists(path: string, runAs?: string): Promise<boolean> {
+    const absolutePath = await this.resolveRemotePath(path);
+    if (!runAs) {
+      return await probeRemoteSandboxDirectoryExists({
+        providerName: 'ModalSandboxClient',
+        providerId: 'modal',
+        path: absolutePath,
+        runCommand: async (command) => {
+          const argv = ['/bin/sh', '-c', command];
+          const process = await this.sandbox.exec(argv, {
+            mode: 'text',
+            workdir: this.state.manifest.root,
+            stdout: 'ignore',
+            stderr: 'pipe',
+          });
+          let stderr = '';
+          const stderrPump = startTextStreamPump(process.stderr, (chunk) => {
+            stderr += chunk;
+          });
+          try {
+            const status = await process.wait();
+            await stderrPump.promise;
+            return { status, stderr };
+          } catch (error) {
+            await stderrPump.cancel();
+            throw error;
+          }
+        },
+      });
+    }
+    return await runAsRemoteDirectoryExists(
       absolutePath,
       runAs,
       this.runAsCommandRunner.bind(this),

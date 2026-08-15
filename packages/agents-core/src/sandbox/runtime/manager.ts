@@ -95,6 +95,7 @@ import {
 } from './sessionState';
 import { withSandboxSpan } from './spans';
 import { manifestWithRunAsUser, sandboxRunAsName } from './runAsManifest';
+import { SandboxWorkspaceScope } from '../workspacePaths';
 
 type SandboxPreparedAgent<TContext> = {
   executionAgent: Agent<TContext, AgentOutputType>;
@@ -131,6 +132,7 @@ const sandboxAgentIdentitiesByRunState = new WeakMap<
 
 export class SandboxRuntimeManager<TContext> {
   private readonly sandboxConfig?: SandboxRunConfig;
+  private readonly workspaceScope: SandboxWorkspaceScope;
   private readonly runState?: RunState<
     TContext,
     Agent<TContext, AgentOutputType>
@@ -177,6 +179,7 @@ export class SandboxRuntimeManager<TContext> {
     runState?: RunState<TContext, Agent<TContext, AgentOutputType>>;
   }) {
     this.sandboxConfig = args.sandboxConfig;
+    this.workspaceScope = new SandboxWorkspaceScope(args.sandboxConfig?.cwd);
     this.runState = args.runState;
     const existingIdentityRegistry = args.runState
       ? sandboxAgentIdentitiesByRunState.get(args.runState)
@@ -225,6 +228,10 @@ export class SandboxRuntimeManager<TContext> {
       async (prepareSpan) => {
         this.acquireAgent(currentAgent);
         const session = await this.ensureSession(currentAgent, prepareSpan);
+        await this.ensureWorkspaceScopeAccessible(
+          session,
+          sandboxRunAsName(currentAgent.runAs),
+        );
         // Bind a clone to the live session so capability tools and instructions can carry
         // per-session state without mutating the public SandboxAgent instance.
         const executionAgent = this.getPreparedAgent(
@@ -1004,11 +1011,34 @@ export class SandboxRuntimeManager<TContext> {
       runConfigModel,
       processManifest: false,
       tracingParent,
+      workspaceScope: this.workspaceScope,
     });
     this.preparedAgents.set(agentId, prepared);
     this.preparedSessions.set(agentId, session);
     this.preparedManifestSignatures.set(agentId, manifestSignature);
     return prepared;
+  }
+
+  private async ensureWorkspaceScopeAccessible(
+    session: SandboxSessionLike<SandboxSessionState>,
+    runAs?: string,
+  ): Promise<void> {
+    const cwd = this.workspaceScope.cwd;
+    if (cwd === undefined) {
+      return;
+    }
+    if (!session.directoryExists) {
+      throw new UserError(
+        'Sandbox sessions used with sandbox.cwd must provide directoryExists().',
+      );
+    }
+
+    const accessible = await session.directoryExists(cwd, runAs);
+    if (!accessible) {
+      throw new UserError(
+        `Sandbox working directory "${cwd}" does not exist or is not accessible.`,
+      );
+    }
   }
 
   private async resumeSessionForAgent(

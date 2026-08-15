@@ -203,6 +203,7 @@ export interface SandboxSession<
   readFile?(args: ReadFileArgs): Promise<string | Uint8Array>;
   listDir?(args: ListDirectoryArgs): Promise<SandboxDirectoryEntry[]>;
   pathExists?(path: string, runAs?: string): Promise<boolean>;
+  directoryExists?(path: string, runAs?: string): Promise<boolean>;
   materializeEntry?(args: MaterializeEntryArgs): Promise<void>;
   applyManifest?(manifest: Manifest, runAs?: string): Promise<void>;
   persistWorkspace?(): Promise<Uint8Array>;
