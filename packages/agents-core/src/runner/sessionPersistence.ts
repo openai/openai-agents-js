@@ -2002,7 +2002,10 @@ async function replaceSessionItemsWithRecovery(
         await addSessionItems(session, itemsBeforeCompaction, runContext);
       }
       if (runContext && isRunContextAwareSession(session)) {
-        await session.replaceHistoryWithCompaction(replacementItems, runContext);
+        await session.replaceHistoryWithCompaction(
+          replacementItems,
+          runContext,
+        );
       } else {
         await session.replaceHistoryWithCompaction(replacementItems);
       }
@@ -2072,11 +2075,7 @@ async function reconcileIdentityPreservingCompactionFailure(
   const compactedCurrentItems = trimToLatestCompaction(comparableCurrentItems);
   if (
     compactedCurrentItems.length === comparableReplacementItems.length &&
-    agentItemRangeMatches(
-      compactedCurrentItems,
-      comparableReplacementItems,
-      0,
-    )
+    agentItemRangeMatches(compactedCurrentItems, comparableReplacementItems, 0)
   ) {
     logModelAndToolActionWarning(
       logger,
@@ -2091,7 +2090,11 @@ async function reconcileIdentityPreservingCompactionFailure(
   if (
     comparableCurrentItems.length !==
       comparablePreviousItems.length + comparableAppendedItems.length ||
-    !agentItemRangeMatches(comparableCurrentItems, comparablePreviousItems, 0) ||
+    !agentItemRangeMatches(
+      comparableCurrentItems,
+      comparablePreviousItems,
+      0,
+    ) ||
     !agentItemRangeMatches(
       comparableCurrentItems,
       comparableAppendedItems,
@@ -2110,9 +2113,7 @@ async function reconcileIdentityPreservingCompactionFailure(
         );
       }
     }
-    const restoredItems = normalize(
-      await getSessionItems(session, runContext),
-    );
+    const restoredItems = normalize(await getSessionItems(session, runContext));
     if (
       restoredItems.length !== comparablePreviousItems.length ||
       !agentItemRangeMatches(restoredItems, comparablePreviousItems, 0)
