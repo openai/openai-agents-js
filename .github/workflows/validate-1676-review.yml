@@ -1,0 +1,37 @@
+name: Validate 1676 review fix
+
+on:
+  push:
+    branches:
+      - fix/twilio-g711-handoff-122
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install
+      - run: pnpm exec prettier --write packages/agents-extensions/src/TwilioRealtimeTransport.ts packages/agents-extensions/test/TwilioRealtimeTransport.test.ts
+      - run: pnpm exec eslint packages/agents-extensions/src/TwilioRealtimeTransport.ts packages/agents-extensions/test/TwilioRealtimeTransport.test.ts
+      - run: pnpm exec vitest --run --project '@openai/agents-extensions' packages/agents-extensions/test/TwilioRealtimeTransport.test.ts
+      - name: Commit formatting and remove validation workflow
+        if: success()
+        run: |
+          rm .github/workflows/validate-1676-review.yml
+          git config user.name "Sylvester Kaczmarek"
+          git config user.email "16242628+sylvesterkaczmarek@users.noreply.github.com"
+          git add packages/agents-extensions/src/TwilioRealtimeTransport.ts packages/agents-extensions/test/TwilioRealtimeTransport.test.ts .github/workflows/validate-1676-review.yml
+          git commit -m "chore(extensions): validate Twilio mu-law fix"
+          git push origin HEAD:${GITHUB_REF_NAME}
