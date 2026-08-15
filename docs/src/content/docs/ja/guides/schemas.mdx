@@ -1,0 +1,57 @@
+---
+title: スキーマ検証
+description: Use Zod, Standard Schema, or JSON Schema with agents, tools, and handoffs
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import standardSchemaExample from '../../../../../../examples/docs/schemas/standardSchema.ts?raw';
+
+SDK は、構造化データをモデルに記述するためと、アプリケーション内のデータを検証するための両方でスキーマを使用します。ローカルでのバリデーションと型推論が必要かどうかに基づいて、スキーマ形式を選択してください。
+
+| スキーマ形式 | ローカルでのバリデーションと変換 | TypeScript の型推論 | 対応箇所 |
+| --- | --- | --- | --- |
+| Zod オブジェクト | あり | あり | 関数ツールとエージェントツールの `parameters`、関数ツールの `outputSchema`、エージェントの `outputType`、ハンドオフの `inputType` |
+| Standard JSON Schema 変換に対応する Standard Schema | あり（同期） | あり（バリデーションの出力型から） | 関数ツールとエージェントツールの `parameters`、エージェントの `outputType`、ハンドオフの `inputType` |
+| 元の JSON Schema | なし。SDK は JSON をパースするだけです | なし。値は `unknown` 型になります | 関数ツールとエージェントツールの `parameters`、関数ツールの `outputSchema`、エージェントの `outputType`、ハンドオフの `inputType` |
+
+すでにアプリケーションに適している場合は、Zod を使用してください。別の互換性のあるバリデーションライブラリでも、同じ SDK バリデーションと推論された出力型を利用したい場合は、Standard Schema を使用してください。通信用スキーマをすでに所有しており、別の場所で値を検証する場合は、元の JSON Schema を使用してください。
+
+## Standard Schema ライブラリの使用
+
+互換性のある値は、Standard Schema V1 のバリデーションと Standard JSON Schema への変換を実装している必要があります。一部のライブラリは、両方の機能を直接提供しています。それ以外のライブラリでは、アダプターが提供されています。この例では、Valibot と `@valibot/to-json-schema` の `toStandardJsonSchema()` を使用します。
+
+すでに `@openai/agents` を使用しているアプリケーションで、`npm install valibot @valibot/to-json-schema` を実行して、例に必要な依存関係をインストールしてください。
+
+<Code
+  lang="typescript"
+  code={standardSchemaExample}
+  title="ツール、エージェント出力、ハンドオフ用の Valibot スキーマ"
+/>
+
+同じスキーマ契約でも、対象箇所ごとに役割が異なります。
+
+- `tool({ parameters })` は、モデル向けにスキーマを変換し、各ツール呼び出しをローカルで検証して、ライブラリの変換やデフォルト値を適用し、推論されたバリデーション出力を `execute` に渡します。
+- `agent.asTool({ parameters })` は、同じバリデーションを適用し、ネストされたエージェントが実行される前に、推論されたバリデーション出力を `inputBuilder` に渡します。
+- `new Agent({ outputType })` は、モデルに構造化された出力を要求し、パースされた値をローカルで検証して、推論されたバリデーション出力を `result.finalOutput` から利用できるようにします。
+- `handoff(..., { inputType })` は、ハンドオフのツール呼び出し引数を検証し、推論されたバリデーション出力を `onHandoff` に渡します。
+
+## 要件と制限
+
+Standard Schema のサポートは、意図的に限定された契約になっています。
+
+- 値は、同期的な `~standard.validate` の動作と、`~standard.jsonSchema.input()` および `~standard.jsonSchema.output()` の両方を提供する必要があります。バリデーションのみに対応する Standard Schema の値はサポートされません。
+- これらの SDK の対象箇所で使用する入力 JSON Schema は、ルートに `type: "object"` が必要です。スカラー値または配列値は、オブジェクトスキーマでラップしてください。
+- Standard Schema を使用する関数ツールのパラメーターには、strict モードが必要です。使用時に `strict: false` を設定しないでください。
+- 非同期の Standard Schema バリデーションはサポートされません。Promise を返すバリデーターでは、ツールのフォールバックや無効な最終出力のハンドラーを実行する代わりに、処理が失敗します。
+- 生成される JSON Schema では、SDK の strict スキーマ正規化でサポートされている構造を使用する必要があります。サポートされていない構造がある場合、モデルへのリクエスト前にツール、ハンドオフ、またはエージェントを作成する時点で失敗します。
+- 関数ツールの `outputSchema` は、現在 Standard Schema を受け付けません。Zod スキーマまたは元の JSON Schema を使用するか、アプリケーションコードでツールの結果を検証してください。
+
+<Aside type="note">
+  Standard Schema は、バリデーションインターフェースを定義します。同じ契約を
+  モデルに送信できるようにするため、SDK には Standard JSON Schema
+  への変換も必要です。
+  したがって、バリデーションインターフェースのみをサポートするライブラリでは、これらの
+  対象箇所には不十分です。
+</Aside>
+
+独自のアダプターを作成する場合は、`@openai/agents` から `StandardSchemaWithJSON<Input, Output>` 型をインポートし、必要なバリデーションメソッドと変換メソッドが公開されていることを確認してください。ライブラリが管理するアダプターを利用できる場合は、そちらを優先してください。

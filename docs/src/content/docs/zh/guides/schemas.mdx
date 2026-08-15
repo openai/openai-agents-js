@@ -1,0 +1,55 @@
+---
+title: 模式验证
+description: Use Zod, Standard Schema, or JSON Schema with agents, tools, and handoffs
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import standardSchemaExample from '../../../../../../examples/docs/schemas/standardSchema.ts?raw';
+
+SDK 使用模式向模型描述结构化数据，并验证应用程序中的数据。请根据是否需要本地验证和类型推断来选择模式形式。
+
+| 模式形式 | 本地验证和转换 | TypeScript 推断 | 支持的使用场景 |
+| --- | --- | --- | --- |
+| Zod 对象 | 是 | 是 | 函数工具和智能体工具的 `parameters`、函数工具的 `outputSchema`、智能体的 `outputType`，以及交接的 `inputType` |
+| 支持 Standard JSON Schema 转换的 Standard Schema | 是，同步执行 | 是，根据验证输出类型推断 | 函数工具和智能体工具的 `parameters`、智能体的 `outputType`，以及交接的 `inputType` |
+| 原始 JSON Schema | 否；SDK 仅解析 JSON | 否；值的类型为 `unknown` | 函数工具和智能体工具的 `parameters`、函数工具的 `outputSchema`、智能体的 `outputType`，以及交接的 `inputType` |
+
+如果 Zod 已适合您的应用程序，请使用 Zod。如果希望通过其他兼容的验证库获得相同的 SDK 验证和推断输出类型，请使用 Standard Schema。如果您已拥有传输模式，并将在其他位置验证值，请使用原始 JSON Schema。
+
+## Standard Schema 库的使用
+
+兼容值必须实现 Standard Schema V1 验证和 Standard JSON Schema 转换。有些库直接提供这两项功能，其他库则提供适配器。此示例使用 Valibot，并搭配来自 `@valibot/to-json-schema` 的 `toStandardJsonSchema()`。
+
+在已使用 `@openai/agents` 的应用程序中，通过 `npm install valibot @valibot/to-json-schema` 安装示例依赖项。
+
+<Code
+  lang="typescript"
+  code={standardSchemaExample}
+  title="用于工具、智能体输出和交接的 Valibot 模式"
+/>
+
+同一套模式约定在每个使用场景中承担不同的作用：
+
+- `tool({ parameters })` 会转换模式以供模型使用，在本地验证每次工具调用，应用库提供的转换或默认值，并将推断出的验证输出传递给 `execute`。
+- `agent.asTool({ parameters })` 会执行相同的验证，并在嵌套智能体运行之前，将推断出的验证输出传递给 `inputBuilder`。
+- `new Agent({ outputType })` 会请求模型提供结构化输出，在本地验证解析后的值，并通过 `result.finalOutput` 公开推断出的验证输出。
+- `handoff(..., { inputType })` 会验证交接工具的调用参数，并将推断出的验证输出传递给 `onHandoff`。
+
+## 要求与限制
+
+Standard Schema 支持采用了有意限制的约定：
+
+- 该值必须提供同步的 `~standard.validate` 行为，以及 `~standard.jsonSchema.input()` 和 `~standard.jsonSchema.output()`。不支持仅提供验证功能的 Standard Schema 值。
+- 这些 SDK 使用场景所用的输入 JSON Schema，其根级别必须具有 `type: "object"`。请将标量值或数组值包装在对象模式中。
+- Standard Schema 函数工具参数要求使用严格模式。使用这些参数时，请勿设置 `strict: false`。
+- 不支持异步 Standard Schema 验证。返回 Promise 的验证器会导致操作失败，而不会运行工具回退或最终输出无效处理器。
+- 生成的 JSON Schema 必须使用 SDK 严格模式规范化所支持的结构。不支持的结构会在创建工具、交接或智能体时导致失败，此时尚未发出模型请求。
+- 函数工具的 `outputSchema` 目前不接受 Standard Schema。请使用 Zod 模式、原始 JSON Schema，或在应用程序代码中验证工具结果。
+
+<Aside type="note">
+  Standard Schema 描述验证接口。SDK 还需要执行 Standard JSON Schema
+  转换，以便将同一套约定发送给模型。 因此，对于这些使用场景，仅支持验证接口的库
+  并不足够。
+</Aside>
+
+如果您要编写自己的适配器，请从 `@openai/agents` 导入 `StandardSchemaWithJSON<Input, Output>` 类型，以检查它是否公开了必需的验证和转换方法。如果有由库维护的适配器，请优先使用。

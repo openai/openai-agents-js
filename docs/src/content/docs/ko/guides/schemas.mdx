@@ -1,0 +1,55 @@
+---
+title: 스키마 검증
+description: Use Zod, Standard Schema, or JSON Schema with agents, tools, and handoffs
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import standardSchemaExample from '../../../../../../examples/docs/schemas/standardSchema.ts?raw';
+
+SDK는 모델에 구조화된 데이터를 설명하고 애플리케이션 내부의 데이터를 검증하는 데 스키마를 사용합니다. 로컬 검증과 타입 추론이 필요한지에 따라 스키마 형식을 선택하세요.
+
+| 스키마 형식 | 로컬 검증 및 변환 | TypeScript 추론 | 지원되는 적용 지점 |
+| --- | --- | --- | --- |
+| Zod 객체 | 예 | 예 | 함수 도구 및 에이전트 도구의 `parameters`, 함수 도구의 `outputSchema`, 에이전트의 `outputType`, 핸드오프의 `inputType` |
+| Standard JSON Schema 변환을 사용하는 Standard Schema | 예, 동기식 | 예, 검증 출력 타입에서 추론 | 함수 도구 및 에이전트 도구의 `parameters`, 에이전트의 `outputType`, 핸드오프의 `inputType` |
+| 원문 JSON Schema | 아니요. SDK는 JSON만 파싱합니다 | 아니요. 값은 `unknown` 타입으로 지정됩니다 | 함수 도구 및 에이전트 도구의 `parameters`, 함수 도구의 `outputSchema`, 에이전트의 `outputType`, 핸드오프의 `inputType` |
+
+애플리케이션에 이미 적합하다면 Zod를 사용하세요. 호환되는 다른 검증 라이브러리로 동일한 SDK 검증 및 추론된 출력 타입을 사용하려면 Standard Schema를 사용하세요. 전송 스키마를 이미 직접 관리하고 있고 다른 곳에서 값을 검증할 예정이라면 원문 JSON Schema를 사용하세요.
+
+## Standard Schema 라이브러리 사용
+
+호환되는 값은 Standard Schema V1 검증과 Standard JSON Schema 변환을 구현해야 합니다. 일부 라이브러리는 두 기능을 모두 직접 제공합니다. 다른 라이브러리는 어댑터를 제공합니다. 이 예제에서는 `@valibot/to-json-schema`의 `toStandardJsonSchema()`와 함께 Valibot을 사용합니다.
+
+이미 `@openai/agents`를 사용하는 애플리케이션에서 `npm install valibot @valibot/to-json-schema`를 실행하여 예제 종속성을 설치하세요.
+
+<Code
+  lang="typescript"
+  code={standardSchemaExample}
+  title="도구, 에이전트 출력 및 핸드오프를 위한 Valibot 스키마"
+/>
+
+동일한 스키마 계약은 각 적용 지점에서 서로 다른 역할을 합니다.
+
+- `tool({ parameters })`는 모델용 스키마를 변환하고, 각 도구 호출을 로컬에서 검증하며, 라이브러리 변환 또는 기본값을 적용한 다음, 추론된 검증 출력을 `execute`에 전달합니다.
+- `agent.asTool({ parameters })`는 동일한 검증을 적용하고 중첩된 에이전트가 실행되기 전에 추론된 검증 출력을 `inputBuilder`에 전달합니다.
+- `new Agent({ outputType })`는 구조화된 모델 출력을 요청하고 파싱된 값을 로컬에서 검증하며, `result.finalOutput`을 통해 추론된 검증 출력을 제공합니다.
+- `handoff(..., { inputType })`는 핸드오프 도구 호출 인수를 검증하고 추론된 검증 출력을 `onHandoff`에 전달합니다.
+
+## 요구 사항 및 제한
+
+Standard Schema 지원은 의도적으로 제한된 계약을 따릅니다.
+
+- 값은 동기식 `~standard.validate` 동작과 `~standard.jsonSchema.input()` 및 `~standard.jsonSchema.output()`을 모두 제공해야 합니다. 검증만 지원하는 Standard Schema 값은 지원되지 않습니다.
+- 이러한 SDK 적용 지점에서 사용하는 입력 JSON Schema의 루트에는 `type: "object"`가 있어야 합니다. 스칼라 또는 배열 값을 객체 스키마로 감싸세요.
+- Standard Schema 함수 도구 매개변수에는 엄격 모드가 필요합니다. 이를 사용할 때 `strict: false`를 설정하지 마세요.
+- 비동기 Standard Schema 검증은 지원되지 않습니다. Promise를 반환하는 검증기는 도구 폴백 또는 유효하지 않은 최종 출력 핸들러를 실행하는 대신 작업을 실패시킵니다.
+- 생성된 JSON Schema는 SDK의 엄격한 스키마 정규화에서 지원하는 구문을 사용해야 합니다. 지원되지 않는 구문이 있으면 모델 요청 전에 도구, 핸드오프 또는 에이전트를 생성할 때 실패합니다.
+- 함수 도구의 `outputSchema`는 현재 Standard Schema를 허용하지 않습니다. Zod 스키마나 원문 JSON Schema를 사용하거나 애플리케이션 코드에서 도구 결과를 검증하세요.
+
+<Aside type="note">
+  Standard Schema는 검증 인터페이스를 설명합니다. 또한 SDK가 동일한 계약을
+  모델에 전송할 수 있도록 Standard JSON Schema 변환도 필요합니다. 따라서 검증
+  인터페이스만 지원하는 라이브러리로는 이러한 적용 지점에 충분하지 않습니다.
+</Aside>
+
+자체 어댑터를 작성하는 경우 `@openai/agents`에서 `StandardSchemaWithJSON<Input, Output>` 타입을 가져와 필요한 검증 및 변환 메서드를 제공하는지 확인하세요. 라이브러리에서 유지 관리하는 어댑터가 있다면 이를 우선 사용하세요.

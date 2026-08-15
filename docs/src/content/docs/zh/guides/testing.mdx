@@ -1,0 +1,402 @@
+---
+title: 测试
+description: Cookbook and API cheat sheet for deterministic Agent, sandbox, and Realtime tests
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+import fixedResponseExample from '../../../../../../examples/docs/testing/fixedResponse.ts?raw';
+import toolWorkflowExample from '../../../../../../examples/docs/testing/toolWorkflow.ts?raw';
+import requestAwareResponseExample from '../../../../../../examples/docs/testing/requestAwareResponse.ts?raw';
+import workflowDriftExample from '../../../../../../examples/docs/testing/workflowDrift.ts?raw';
+import sandboxWorkflowExample from '../../../../../../examples/docs/testing/sandboxWorkflow.ts?raw';
+import realtimeAgentToolExample from '../../../../../../examples/docs/testing/realtimeAgentTool.ts?raw';
+import realtimeScenarioExample from '../../../../../../examples/docs/testing/realtimeScenario.ts?raw';
+import realtimeInterruptExample from '../../../../../../examples/docs/testing/realtimeInterrupt.ts?raw';
+import realtimeFailureExample from '../../../../../../examples/docs/testing/realtimeFailure.ts?raw';
+
+SDK 为智能体工作流、沙盒会话和实时会话提供了确定性的、与提供商无关的测试替身。它们在内存中运行，不会向模型、沙盒提供商或 Realtime API 发出请求，并会记录由 SDK 管理的规范化交互。
+
+<Aside type="note" title="为完全离线测试禁用追踪">
+  脚本化工具会替代模型、沙盒提供商和 Realtime API 的 I/O。 追踪是一个独立的 SDK
+  边界；除非测试环境将其禁用，否则仍可能导出运行记录。 本页代码示例在调用 `new
+  Runner(...)` 时传入 `tracingDisabled: true`。您也可以设置
+  `NODE_ENV=test`、设置
+  `OPENAI_AGENTS_DISABLE_TRACING=1`，或在测试设置中调用一次
+  `setTracingDisabled(true)`。
+</Aside>
+
+## 所需方案索引
+
+| 我希望...... | 使用 | 前往 |
+| --- | --- | --- |
+| 返回固定的最终答案 | 将 `ScriptedModel` 与 `assistantMessage()` 搭配使用 | [Return a fixed response](#return-a-fixed-response) |
+| 运行多轮工具循环 | 先使用 `functionCall()`，然后返回助手响应 | [Test a tool workflow](#test-a-tool-workflow) |
+| 根据请求选择响应 | `modelResponder()` | [Derive a response from the request](#derive-a-response-from-the-request) |
+| 断言运行器发送给模型的内容 | `calls`、`firstCall` 或 `lastCall` | [Inspect model calls](#inspect-model-calls) |
+| 测试流式运行 | 普通响应步骤，或使用 `modelStream()` 生成精确事件 | [Test streaming](#test-streaming) |
+| 测试错误或重试决策 | `modelError()` | [Inject model failures](#inject-model-failures) |
+| 检测意外的工作流变化 | 精确步骤加 `assertComplete()` | [Detect workflow drift](#detect-workflow-drift) |
+| 在不启动沙盒的情况下测试 `SandboxAgent` | `scriptedSandboxSession()` 加 `ScriptedModel` | [Test a sandbox agent workflow](#test-a-sandbox-agent-workflow) |
+| 匹配沙盒调用或推导其结果 | 在沙盒步骤中使用 `match` 或 `respond` | [Configure sandbox steps](#configure-sandbox-steps) |
+| 注入沙盒操作失败 | 在沙盒步骤中使用 `error` | [Configure sandbox steps](#configure-sandbox-steps) |
+| 测试 `RealtimeAgent` 函数工具 | 发出 `function_call` 并预期调用 `sendFunctionCallOutput` | [Test a Realtime agent tool workflow](#test-a-realtime-agent-tool-workflow) |
+| 按顺序匹配 Realtime 操作 | `runScenario()` 和 `expectCall()` | [Test a Realtime session](#test-a-realtime-session) |
+| 发出入站 Realtime 事件 | 在场景中使用 `emit()` | [Test a Realtime session](#test-a-realtime-session) |
+| 测试中断请求和通知 | `expectCall('interrupt')` 加 `emit('audio_interrupted')` | [Test interruption](#test-interruption) |
+| 使下一次 Realtime 操作失败 | `failNextCall()` | [Inject a Realtime failure](#inject-a-realtime-failure) |
+| 测试远程断开连接 | `disconnect(error?)` | [Test a remote disconnect](#test-a-remote-disconnect) |
+| 测试提供商请求序列化或协议载荷 | 使用带模拟网络传输的真实提供商适配器 | [Choose the correct boundary](#choose-the-correct-boundary) |
+| 测试沙盒提供商的生命周期或隔离 | 在集成测试中使用真实沙盒提供商 | [Choose the correct boundary](#choose-the-correct-boundary) |
+
+## 导入
+
+大多数应用都可以使用便捷子路径：
+
+| 边界 | 推荐导入路径 | 规范包导入路径 |
+| --- | --- | --- |
+| 智能体、`Model` 和沙盒工作流 | `@openai/agents/testing` | `@openai/agents-core/testing` |
+| Realtime 传输 | `@openai/agents/realtime/testing` | `@openai/agents-realtime/testing` |
+
+便捷子路径公开的测试 API 与规范包相同。测试相关符号不会包含在主要的运行时入口点中。
+
+## 智能体工作流方案
+
+### 固定响应返回
+
+为每个预期的模型调用传入一个规范化输出项数组。输出数组简写形式会为单个请求生成确定性的响应 ID 和用量信息。
+
+<Code lang="typescript" code={fixedResponseExample} title="固定响应返回" />
+
+始终以 `model.assertComplete()` 结束测试。它可以捕获工作流在使用完所有已配置步骤之前停止的情况。
+
+### 工具工作流测试
+
+编写一个调用工具的模型响应，再编写一个生成最终答案的响应。在这两次模型调用之间，会执行真实的 SDK 工具管线。
+
+<Code lang="typescript" code={toolWorkflowExample} title="多轮工具工作流测试" />
+
+此模式会覆盖工具输入验证、执行、结果转换、钩子、护栏以及下一轮模型调用。它不会通过直接调用工具函数来绕过工具运行时。
+
+### 基于请求的响应推导
+
+当响应依赖于规范化请求，或断言应位于模型边界时，请使用 `modelResponder()`。回调可以是同步或异步的。
+
+<Code
+  lang="typescript"
+  code={requestAwareResponseExample}
+  title="请求检查与响应选择"
+/>
+
+仅在行为确实依赖于请求时使用响应器。如果简单序列已经足够，请优先使用固定步骤；固定脚本可以让意外轮次更易于诊断。
+
+### 模型调用检查
+
+`ScriptedModel` 会在解析所选步骤或抛出错误之前记录一次调用。
+
+| 成员             | 包含内容                                 |
+| ---------------- | ---------------------------------------- |
+| `calls`          | 按调用顺序排列的所有 `RecordedModelCall` |
+| `firstCall`      | 第一次调用，或 `undefined`               |
+| `lastCall`       | 最近一次调用，或 `undefined`             |
+| `remainingSteps` | 尚未使用的已配置步骤数量                 |
+
+每次调用都有一个从零开始的 `index`，与其在 `calls` 中的位置对应；还包含一个 `streamed` 标志和一个规范化的 `request`。已记录请求中的可变数据容器会在调用时分离。读取或修改返回的某个快照不会改写模型保留的历史记录。回调、类实例和 `AbortSignal` 等运行时对象会保留其身份。
+
+常见断言包括：
+
+- 使用 `call.request.input` 检查用户输入、工具调用和工具结果
+- 使用 `call.request.modelSettings` 检查发送给模型的有效设置
+- 使用 `call.request.tools` 和 `call.request.handoffs` 检查准备好的能力
+- 使用 `call.streamed` 区分流式与非流式路径
+
+### 流式传输测试
+
+普通响应步骤同时适用于流式和非流式运行。当 `run(..., { stream: true })` 调用模型时，`ScriptedModel` 会发出规范化的开始事件、助手文本增量，以及包含完整输出和用量信息的终止响应事件。
+
+自动生成的流事件是分离的快照。修改已生成的增量不会影响后续的终止响应事件。
+
+仅当精确的规范化 `StreamEvent` 序列是待测行为的一部分时，才使用 `modelStream(events)`。当该序列依赖于已记录的调用时，请使用 `modelStreamResponder(callback)`。这些事件是经 SDK 规范化的事件，而不是 Responses 或 Chat Completions 的协议数据块。
+
+<Aside type="tip" title="大多数工作流测试应优先使用自动流式传输">
+  普通的 `assistantMessage()` 响应可以让测试不依赖底层事件组装。
+  仅当测试主题涉及顺序、部分输出、取消或格式错误的流行为时， 才使用精确流。
+</Aside>
+
+如果非流式调用使用原始流步骤，则会抛出 `InvalidScriptedModelStepError`，且 `reason: 'incompatible_call'`。
+
+### 模型失败注入
+
+使用 `modelError(error, retryAdvice?)` 使一次模型调用失败。重试建议可以是固定的 `ModelRetryAdvice` 值，也可以是回调。运行器执行的重试会形成另一次模型调用，并使用下一个脚本步骤。
+
+```text
+modelError(error)
+modelError(error, { suggested: true, replaySafety: 'safe' })
+modelError(error, ({ attempt }) => ({ suggested: attempt === 1 }))
+```
+
+以上文本展示的是签名而非 TypeScript 代码示例，因为是否根据建议进行另一次尝试，取决于周围运行器的重试策略。
+
+已中止的请求不会使用步骤。在已记录的调用到达中止检查点后，已中止的请求会抛出名为 `AbortError` 的错误，并包含 `callIndex`。
+
+自定义代码运行期间，取消操作以协作方式进行。`ScriptedModel` 不会让正在执行的 `modelResponder()` 或 `modelStreamResponder()` 回调，或异步迭代器中待处理的 `next()`，与请求信号相互竞争。可能无限期等待的代码必须自行观察 `call.request.signal`，或从迭代器内部观察同一信号，然后结束执行。回调或迭代器交还控制权后，`ScriptedModel` 会在接受响应或发出下一个事件之前再次检查信号。
+
+### 工作流漂移检测
+
+将脚本轮次视为预期的工作流结构。下面的测试适用于两轮订单查询，并在清理期间运行 `assertComplete()`，因此即使其他断言或工作流本身失败，它也会检查脚本。
+
+例如，如果应用代码之后将 `lookup_order` 更改为需要审批，运行会在第一个脚本响应后停止。随后，清理过程会报告一个未使用的步骤。如果编排变化导致预期步骤完成后又发出额外的模型请求，模型会在该请求处失败。因此，现有的回归测试可以捕获智能体控制流的变化，而无需让真实模型推断新路径。
+
+<Code
+  lang="typescript"
+  code={workflowDriftExample}
+  title="预期工作流结构固定"
+/>
+
+在常规回归测试中，不要捕获这些不匹配错误。应让测试失败，并使用错误类型和字段诊断预期工作流的哪一侧发生了变化。
+
+| 错误 | 结构化字段 | 含义 |
+| --- | --- | --- |
+| `UnexpectedModelCallError` | `callIndex`、`streamed` | 脚本结束后，工作流又发起了一次模型调用 |
+| `UnconsumedModelStepsError` | `remainingSteps` | 工作流在使用完所有步骤之前结束 |
+| `InvalidScriptedModelStepError` | `reason`、`inputIndex?`、`callIndex?`、`stepType?` | 某个步骤格式错误或与调用模式不兼容 |
+| `ScriptedModelRequestAbortedError` | `callIndex?` | 请求在脚本化工作之前或期间被中止 |
+
+格式错误的步骤封装会在模型调用使用它们之前，由构造函数或 `enqueue()` 拒绝。这样，设置错误会在测试定义附近失败，而不是稍后在工作流中失败。
+
+## 沙盒智能体方案
+
+### 沙盒智能体工作流测试
+
+将 `ScriptedModel` 与 `scriptedSandboxSession()` 结合使用，可以在不创建 Docker 容器或远程沙盒的情况下运行真实的 `SandboxAgent` 运行时。模型脚本负责选择能力工具，而沙盒脚本定义对应的 `SandboxSession` 方法返回什么内容。
+
+<Code
+  lang="typescript"
+  code={sandboxWorkflowExample}
+  title="SandboxAgent shell 工作流测试"
+/>
+
+此测试跨越了 SDK 管理的两个规范化边界。`ScriptedModel` 驱动面向模型的轮次，而脚本化沙盒接收真实 shell 能力生成的 `execCommand` 参数。因此，该测试覆盖工具参数验证、能力路由、沙盒会话调用、向下一轮模型调用传递工具结果，以及最终输出处理。
+
+它不会测试真实模型是否选择该命令、沙盒提供商能否成功启动，也不会测试该提供商如何执行命令。请使用评估测试模型决策质量，并通过使用真实沙盒提供商的集成测试来测试提供商生命周期、文件系统、进程和隔离行为。
+
+### 沙盒步骤配置
+
+每个步骤会使用一次 `SandboxSession` 方法调用。请仅选择一种结果，并且只在参数很重要时添加匹配器：
+
+| 步骤成员         | 适用场景                             |
+| ---------------- | ------------------------------------ |
+| `result`         | 方法应返回固定值                     |
+| `respond(call)`  | 结果取决于有类型的调用参数或调用索引 |
+| `error`          | 方法应抛出指定错误或以指定错误拒绝   |
+| `match(...args)` | 测试应在生成结果前拒绝意外的方法参数 |
+
+沙盒方法按一个全局顺序进行匹配，其中包括 `supportsPty()` 等同步方法和 `execCommand()` 等异步方法。返回的会话中只会安装脚本指定的方法。这样可以保留能力检测：例如，当工作流应公开交互式 shell 支持时，应同时编写 `supportsPty` 和 `writeStdin` 的脚本。
+
+`sandbox.calls` 会记录调用时分离的参数快照，其中包含从零开始且与每次调用在数组中位置对应的 `index`、`method` 和位置参数 `args`。诊断失败时可使用 `sandbox.remainingSteps`，并以 `sandbox.assertComplete()` 结束测试，以确保工作流提前退出时不会悄然留下未使用的预期操作。
+
+| 错误 | 结构化字段 | 含义 |
+| --- | --- | --- |
+| `UnexpectedSandboxCallError` | `callIndex`、`actualMethod`、`expectedMethod`、`remainingSteps` | 工作流调用了错误的方法，或在脚本结束后继续运行 |
+| `SandboxCallMatcherError` | `callIndex`、`method` | 某步骤的匹配器返回了 `false` |
+| `UnconsumedSandboxStepsError` | `remainingSteps`、`pendingMethods` | 工作流在使用完所有步骤之前结束 |
+| `InvalidScriptedSandboxStepError` | `reason`、`inputIndex`、`method?` | 某个步骤格式错误或指定了不受支持的方法 |
+
+## 实时智能体与会话方案
+
+### 实时智能体工具工作流测试
+
+将真实函数工具附加到 `RealtimeAgent`，然后从脚本化传输发出规范化的 `function_call`。`RealtimeSession` 会从该智能体解析工具，通过 SDK 工具管线验证并执行工具，再通过 `sendFunctionCallOutput` 将结果发回。
+
+<Code
+  lang="typescript"
+  code={realtimeAgentToolExample}
+  title="实时智能体函数工具测试"
+/>
+
+这是一项智能体测试，因为工具及其业务逻辑属于 `RealtimeAgent`。脚本化的 `function_call` 表示模型使用该工具的决策。它无法证明真实模型会遵循智能体的 instructions 或选择该工具；请通过评估或集成测试来覆盖模型决策质量。
+
+该操作会在关闭会话前等待异步工具输出，因此代码示例传入 `AbortSignal` 以限制等待时间。按顺序调用不匹配时仍会立即失败；该信号用于处理回归导致预期工具输出根本没有发送的情况。
+
+可以使用同一模式测试智能体所属的交接、工具审批和工具护栏：发出启动该行为的规范化输入，然后断言真实 SDK 管线生成的会话事件和出站传输调用。
+
+### Realtime 会话测试
+
+将 `ScriptedRealtimeTransport` 传给真实的 `RealtimeSession`。使用 `runScenario()` 同时运行预期的传输交互和会话操作，而不依赖测试运行器超时。下面的代码示例模拟两个用户轮次，并验证传输发出的规范化项目会更新真实会话历史记录。
+
+<Code
+  lang="typescript"
+  code={realtimeScenarioExample}
+  title="两轮 Realtime 对话测试"
+/>
+
+`scenario` 回调编写面向传输的一侧：它匹配出站调用并发出规范化的入站事件。`exercise` 回调的行为类似于应用代码，用于驱动公开的会话 API。代码示例中的注释明确标记了这个边界。这测试的是 `RealtimeSession` 行为，而不是提供商服务器帧或转换。
+
+应用会等待每个脚本轮次结束后再发送下一条消息，因此代码示例向 `runScenario()` 传入一个有期限的 `AbortSignal`。如果信号到期，`runScenario()` 会拒绝其待处理的预期，场景会将该失败转发到当前仅用于测试的协调门控，随后操作方会执行会话清理，而不是让两个回调都保持阻塞。
+
+`expectCall(method, matcher?)` 会根据方法进行类型化，并按一个全局顺序匹配调用。匹配器可以包含断言，也可以返回 `false` 来拒绝调用。如果调用恰好发生在其预期注册之前，传输会保留它以供下一个预期使用。
+
+当任一侧失败、`AbortSignal` 取消场景，或操作在预期未完成时结束，`runScenario()` 都会终止。如果操作结束时仍有剩余预期，则会生成 `IncompleteRealtimeScenarioError`。当相互等待的回调到达明确的信号截止时间时，如上面的代码示例所示，`runScenario()` 会生成 `ScriptedRealtimeScenarioCancelledError` 并报告待处理的预期。
+
+### 中断测试
+
+按照对应用有意义的方向测试中断：
+
+- 要测试停止按钮或类似的应用操作，请发出助手音频响应的开始事件，等待会话观察到该事件，然后调用 `session.interrupt()` 并预期出站 `interrupt` 调用。
+- 要测试应用对中断通知的处理，请从传输发出 `audio_interrupted`，并断言会话监听器。
+
+代码示例将它们作为独立测试，以避免暗示一个事件会自动引发另一个事件。
+
+<Code lang="typescript" code={realtimeInterruptExample} title="双向中断测试" />
+
+<Aside type="note" title="代码示例使用显式信号的原因">
+  `scenario` 和 `exercise` 会并发运行。`readyToInterrupt` promise
+  用于测试协调，并非 SDK 事件。由于 `emit()` 是同步的， 场景会先断言真实的
+  `RealtimeSession` 已发出 `audio_start`， 然后允许操作方调用
+  `session.interrupt()`。这样既能避免过早中断，
+  也能避免会话未观察到音频时测试一直挂起。如果 `audio_interrupted`、
+  `item_update` 或 `item_deleted` 等入站通知属于待测行为， 请分别发出这些通知。
+</Aside>
+
+### Realtime 失败注入
+
+`failNextCall(method, error)` 会让该方法的下一次调用抛出指定值。该尝试仍会被记录和匹配，因此测试可以同时断言操作和失败。
+
+<Code
+  lang="typescript"
+  code={realtimeFailureExample}
+  title="下一次 Realtime 操作失败"
+/>
+
+同一方法的多个失败会按注册顺序使用。存在未使用的注入失败时，`assertComplete()` 会失败。
+
+### 远程断开连接测试
+
+调用 `transport.disconnect(error?)` 模拟远程端点关闭连接。它会将传输转换为 `disconnected` 状态，发出 `connection_change`，并可选择发出传输 `error`。
+
+连接丢失和远程关闭时使用 `disconnect()`。当应用主动发起清理，且测试应预期出站 `close` 调用时，请使用 `session.close()`。
+
+### Realtime 调用检查
+
+`transport.calls` 包含按调用顺序排列的分离快照。可变数组、普通对象和缓冲区会在调用边界复制，而运行时类实例会保留其身份。记录的 `connect` 调用包含 `apiKeyProvided`；它绝不会存储 API 密钥。
+
+常见方法名称包括 `connect`、`sendEvent`、`requestResponse`、`sendMessage`、`addImage`、`sendAudio`、`updateSessionConfig`、`close`、`mute`、`sendFunctionCallOutput`、`interrupt`、`resetHistory` 和 `sendMcpResponse`。导出的方法和调用类型派生自 `RealtimeTransportLayer`，因此新增的传输方法不会悄然从有类型的测试接口中消失。
+
+### 完成状态与清理验证
+
+以以下两个断言结束 Realtime 测试：
+
+| 断言 | 检查内容 |
+| --- | --- |
+| `transport.assertComplete()` | 不存在未匹配的调用、待处理的预期或未使用的注入失败 |
+| `transport.assertClosed()` | 生命周期状态为 `disconnected` |
+
+Realtime 错误还会公开结构化状态：
+
+| 错误 | 结构化字段 |
+| --- | --- |
+| `UnexpectedRealtimeCallError` | `callIndex`、`expectedMethod`、`actualMethod` |
+| `RealtimeCallMatcherError` | `callIndex`、`actualMethod` |
+| `IncompleteRealtimeScenarioError` | `unconsumedCalls`、`pendingExpectations`、`pendingFailures` |
+| `ScriptedRealtimeScenarioCancelledError` | `pendingExpectations` |
+| `RealtimeTransportNotClosedError` | `status` |
+| `ScriptedRealtimeConnectionSupersededError` | `operation` |
+
+## API 速查表
+
+### 模型步骤工厂
+
+| 工厂                              | 适用场景                                 |
+| --------------------------------- | ---------------------------------------- |
+| `modelResponse(response)`         | 需要显式响应步骤；也可以直接传入输出数组 |
+| `modelResponder(callback)`        | 响应取决于已记录的调用                   |
+| `modelError(error, retryAdvice?)` | 某次模型调用应失败                       |
+| `modelStream(events)`             | 需要精确的规范化流                       |
+| `modelStreamResponder(callback)`  | 精确流取决于已记录的调用                 |
+
+### 常用输出辅助函数
+
+| 辅助函数 | 生成内容 |
+| --- | --- |
+| `assistantMessage(text, options?)` | 已完成的助手文本消息 |
+| `functionCall(name, arguments, options)` | 已完成的函数调用；必须提供 `options.callId` |
+
+对于推理、托管工具、图像、音频或故意构造的格式错误协议情况，请直接传入规范化输出项。辅助函数集合有意保持精简，以免测试模块成为第二个提供商转换层。
+
+### 沙盒会话控制
+
+| 成员 | 用途 |
+| --- | --- |
+| `scriptedSandboxSession(steps)` | 创建一个内存中的 `SandboxSession`，其中包含脚本指定的方法 |
+| `match(...args)` | 验证一次预期方法调用的有类型参数 |
+| `result` | 返回固定的方法结果 |
+| `respond(call)` | 根据有类型的已记录调用计算结果 |
+| `error` | 抛出注入的失败或以该失败拒绝 |
+| `calls` | 按调用顺序检查分离的调用快照 |
+| `assertComplete()` | 查找工作流未使用的沙盒步骤 |
+
+### Realtime 控制
+
+| 方法 | 用途 |
+| --- | --- |
+| `runScenario({ scenario, exercise, signal? })` | 同时运行两侧；当仅用于测试的协调可能导致两侧都等待时，请传入 `signal` |
+| `expectCall(method, matcher?)` | 匹配下一次出站传输调用 |
+| `emit(event, ...args)` | 同步传递有类型的入站事件 |
+| `failNextCall(method, error)` | 使某方法的下一次调用失败 |
+| `disconnect(error?)` | 模拟最终的远程断开连接 |
+| `assertComplete()` | 查找未匹配的调用、预期或失败 |
+| `assertClosed()` | 验证生命周期清理 |
+
+## 正确边界选择
+
+当测试应覆盖 SDK 运行循环、工具、交接、护栏、会话、重试或流式传输，同时不依赖模型提供商时，请使用 `ScriptedModel`。
+
+当测试应在不启动沙盒提供商的情况下覆盖 `SandboxAgent` 能力和编排时，请将 `scriptedSandboxSession()` 与 `ScriptedModel` 搭配使用。提供商创建、进程执行、文件系统保真度、持久化和隔离检查应保留在针对真实提供商的集成测试中。
+
+当测试应在不建立 WebRTC 或 WebSocket 连接的情况下覆盖 `RealtimeSession` 行为或 `RealtimeAgent` 工具及交接编排时，请使用 `ScriptedRealtimeTransport`。将智能体业务逻辑放在附加到 `RealtimeAgent` 的工具、交接和护栏中；将连接、历史记录、音频和中断断言放在会话及传输边界。
+
+不要使用这些测试替身来测试提供商请求转换、HTTP 或 WebSocket 载荷、身份验证标头、提供商特定的流式数据块，或沙盒提供商的生命周期和隔离。模型协议测试应使用带模拟网络传输的真实模型适配器，沙盒集成测试应使用真实沙盒提供商。
+
+## 最终检查清单
+
+- 仅为规范化模型、沙盒会话或 Realtime 传输边界所管理的交互编写脚本。
+- 断言重要的请求字段，而不是运行器的私有状态。
+- 优先使用固定响应步骤；仅对依赖请求的行为使用响应器。
+- 优先使用自动流式传输；仅当事件级行为很重要时使用精确流。
+- 以 `model.assertComplete()` 结束模型测试。
+- 以 `sandbox.assertComplete()` 结束沙盒测试。
+- 以 `transport.assertComplete()` 和 `transport.assertClosed()` 结束 Realtime 测试。
+- 断言结构化错误字段，而不是解析错误消息。
+- 提供商协议测试应使用带模拟网络传输的真实适配器。
+
+## 相关指南
+
+- [运行智能体](/openai-agents-js/zh/guides/running-agents)介绍了 `ScriptedModel` 所运行的运行循环。
+- [模型](/openai-agents-js/zh/guides/models)解释了 `Model` 边界和提供商适配器。
+- [快速入门](/openai-agents-js/zh/guides/sandbox-agents)解释了沙盒能力、会话和提供商生命周期。
+- [实时智能体概述](/openai-agents-js/zh/guides/voice-agents)介绍了 `RealtimeSession`。
+- [传输机制](/openai-agents-js/zh/guides/voice-agents/transport)介绍了生产环境传输和传输事件。
+
+## 范围与当前限制
+
+### 测试模块明确排除的范围
+
+这些工具用于替代 SDK 管理的规范化边界。它们并非用于证明由模型或外部提供商管理的行为：
+
+- 模型质量、指令遵循和工具选择质量应通过评估或使用真实模型的测试来验证。
+- Responses 和 Chat Completions 请求序列化、身份验证、提供商默认值、HTTP 行为及提供商流式数据块，需要使用带模拟或受控网络传输的真实模型适配器。
+- 沙盒启动、进程执行、文件系统保真度、持久化、资源限制、安全隔离和提供商清理，需要使用真实沙盒提供商进行集成测试。
+- Realtime 服务器行为、原始 WebSocket 或 WebRTC 帧、音频编码和播放、身份验证以及网络恢复，需要使用真实传输或集成环境。
+
+脚本化工具不会尝试模拟这些层。在此处添加提供商特定行为，会使工作流测试依赖提供商协议的第二套不完整实现。
+
+### 当前未提供的功能
+
+当前测试模块不提供：
+
+- 针对每种规范化模型输出项的便捷构建器。常见助手消息和函数调用可使用少量辅助函数，其他规范化项目则直接传入。
+- 高层级的模拟 Realtime 模型。Realtime 测试会显式匹配出站调用，并发出场景所需的规范化入站事件。
+- 无序沙盒预期。`scriptedSandboxSession()` 按一个全局顺序使用方法步骤。
+- 特定于测试运行器的匹配器、fixture 或自动清理。请使用 Node.js、Vitest、Jest 或其他运行器提供的断言和清理 API，并显式调用提供的完成与清理断言。
+- 用于提供商协议测试的模拟传输。这些测试应保留真实提供商适配器，并模拟其网络边界。
+
+以上内容是对当前 API 接口的描述，并不承诺在未来版本中添加这些未提供的功能。
