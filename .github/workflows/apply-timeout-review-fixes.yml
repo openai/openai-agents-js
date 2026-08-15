@@ -30,123 +30,122 @@ jobs:
           s = p.read_text()
 
           s = once(s,
-            "type ModelAttemptScope = {\n  request: ModelRequest;\n  cleanup: () => void;\n  normalizeError: (error: unknown) => unknown;\n};\n",
-            "type ModelAttemptScope = {\n  request: ModelRequest;\n  cleanup: () => void;\n  normalizeError: (error: unknown) => unknown;\n  race: <T>(operation: Promise<T>) => Promise<T>;\n};\n",
-            'scope type')
-
+              "type ModelAttemptScope = {\n  request: ModelRequest;\n  cleanup: () => void;\n  normalizeError: (error: unknown) => unknown;\n};\n",
+              "type ModelAttemptScope = {\n  request: ModelRequest;\n  cleanup: () => void;\n  normalizeError: (error: unknown) => unknown;\n  race: <T>(operation: Promise<T>) => Promise<T>;\n};\n",
+              'scope type')
           s = once(s,
-            "      normalizeError: (error) => error,\n    };\n",
-            "      normalizeError: (error) => error,\n      race: async <T>(operation: Promise<T>) => await operation,\n    };\n",
-            'no-timeout scope')
-
+              "      normalizeError: (error) => error,\n    };\n",
+              "      normalizeError: (error) => error,\n      race: async <T>(operation: Promise<T>) => await operation,\n    };\n",
+              'no-timeout scope')
           s = once(s,
-            "  let timeoutError: ModelAttemptTimeoutError | undefined;\n  let timeout: ReturnType<typeof setTimeout> | undefined;\n",
-            "  let timeoutError: ModelAttemptTimeoutError | undefined;\n  let timeout: ReturnType<typeof setTimeout> | undefined;\n  let rejectDeadline: ((error: unknown) => void) | undefined;\n  const deadline = new Promise<never>((_resolve, reject) => {\n    rejectDeadline = reject;\n  });\n",
-            'deadline state')
-
+              "  let timeoutError: ModelAttemptTimeoutError | undefined;\n  let timeout: ReturnType<typeof setTimeout> | undefined;\n",
+              "  let timeoutError: ModelAttemptTimeoutError | undefined;\n  let timeout: ReturnType<typeof setTimeout> | undefined;\n  let rejectDeadline: ((error: unknown) => void) | undefined;\n  const deadline = new Promise<never>((_resolve, reject) => {\n    rejectDeadline = reject;\n  });\n",
+              'deadline state')
           s = once(s,
-            "      timeoutError = createModelAttemptTimeoutError(timeoutMs);\n      controller.abort(timeoutError);\n    }, timeoutMs);\n",
-            "      timeoutError = createModelAttemptTimeoutError(timeoutMs);\n      controller.abort(timeoutError);\n      queueMicrotask(() => rejectDeadline?.(timeoutError));\n    }, timeoutMs);\n",
-            'timer rejection')
-
+              "      timeoutError = createModelAttemptTimeoutError(timeoutMs);\n      controller.abort(timeoutError);\n    }, timeoutMs);\n",
+              "      timeoutError = createModelAttemptTimeoutError(timeoutMs);\n      controller.abort(timeoutError);\n      queueMicrotask(() => rejectDeadline?.(timeoutError));\n    }, timeoutMs);\n",
+              'timer rejection')
           s = once(s,
-            "      if (error === timeoutError) {\n        return error;\n      }\n      return createModelAttemptTimeoutError(timeoutMs, error);\n    },\n  };\n}\n",
-            "      if (error === timeoutError) {\n        return error;\n      }\n      return createModelAttemptTimeoutError(timeoutMs, error);\n    },\n    race: async <T>(operation: Promise<T>) =>\n      await Promise.race([operation, deadline]),\n  };\n}\n",
-            'timeout scope race')
-
+              "      if (error === timeoutError) {\n        return error;\n      }\n      return createModelAttemptTimeoutError(timeoutMs, error);\n    },\n  };\n}\n",
+              "      if (error === timeoutError) {\n        return error;\n      }\n      return createModelAttemptTimeoutError(timeoutMs, error);\n    },\n    race: async <T>(operation: Promise<T>) =>\n      await Promise.race([operation, deadline]),\n  };\n}\n",
+              'timeout scope race')
           s = once(s,
-            "  if (isRecord(source)) {\n",
-            "  if (source !== undefined) {\n    Object.defineProperty(error, 'cause', {\n      value: source,\n      configurable: true,\n    });\n  }\n\n  if (isRecord(source)) {\n",
-            'timeout cause')
-
+              "  if (isRecord(source)) {\n",
+              "  if (source !== undefined) {\n    Object.defineProperty(error, 'cause', {\n      value: source,\n      configurable: true,\n    });\n  }\n\n  if (isRecord(source)) {\n",
+              'timeout cause')
           s = once(s,
-            "async function getRetryAdvice(\n  model: Model,\n",
-            "function getRetryAdviceError(error: unknown): unknown {\n  if (isModelAttemptTimeoutError(error) && isRecord(error) && error.cause !== undefined) {\n    return error.cause;\n  }\n  return error;\n}\n\nasync function getRetryAdvice(\n  model: Model,\n",
-            'advice error helper')
-
+              "async function getRetryAdvice(\n  model: Model,\n",
+              "function getRetryAdviceError(error: unknown): unknown {\n  if (\n    isModelAttemptTimeoutError(error) &&\n    isRecord(error) &&\n    error.cause !== undefined\n  ) {\n    return error.cause;\n  }\n  return error;\n}\n\nasync function getRetryAdvice(\n  model: Model,\n",
+              'advice error helper')
           s = once(s,
-            "      const response = await model.getResponse(attemptScope.request);\n",
-            "      const response = await attemptScope.race(\n        model.getResponse(attemptScope.request),\n      );\n",
-            'response race')
+              "      const response = await model.getResponse(attemptScope.request);\n",
+              "      const response = await attemptScope.race(\n        model.getResponse(attemptScope.request),\n      );\n",
+              'response race')
 
-          old_advice = """      const providerAdvice = await getRetryAdvice(model, {
-        request,
-        error,
-        stream: false,
-        attempt,
-      });
-      const authority = createProviderRetryAuthority(providerAdvice);
-"""
-          new_advice = """      let providerAdvice: ModelRetryAdvice | undefined;
-      try {
-        providerAdvice = await getRetryAdvice(model, {
-          request,
-          error: getRetryAdviceError(error),
-          stream: false,
-          attempt,
-        });
-      } catch (adviceError) {
-        if (
-          requestMayHaveBeenAccepted(
-            createProviderRetryAuthority(undefined),
-            request,
-            error,
+          old_advice = (
+              "      const providerAdvice = await getRetryAdvice(model, {\n"
+              "        request,\n"
+              "        error,\n"
+              "        stream: false,\n"
+              "        attempt,\n"
+              "      });\n"
+              "      const authority = createProviderRetryAuthority(providerAdvice);\n"
           )
-        ) {
-          handlers.onPossiblyAcceptedRequestFailure?.();
-        }
-        throw adviceError;
-      }
-      const authority = createProviderRetryAuthority(providerAdvice);
-"""
+          new_advice = (
+              "      let providerAdvice: ModelRetryAdvice | undefined;\n"
+              "      try {\n"
+              "        providerAdvice = await getRetryAdvice(model, {\n"
+              "          request,\n"
+              "          error: getRetryAdviceError(error),\n"
+              "          stream: false,\n"
+              "          attempt,\n"
+              "        });\n"
+              "      } catch (adviceError) {\n"
+              "        if (\n"
+              "          requestMayHaveBeenAccepted(\n"
+              "            createProviderRetryAuthority(undefined),\n"
+              "            request,\n"
+              "            error,\n"
+              "          )\n"
+              "        ) {\n"
+              "          handlers.onPossiblyAcceptedRequestFailure?.();\n"
+              "        }\n"
+              "        throw adviceError;\n"
+              "      }\n"
+              "      const authority = createProviderRetryAuthority(providerAdvice);\n"
+          )
           s = once(s, old_advice, new_advice, 'nonstream advice')
 
-          old_loop = """      for await (const event of model.getStreamedResponse(attemptScope.request)) {
-        if (event.type === 'model') {
-"""
-          new_loop = """      const iterator = model
-        .getStreamedResponse(attemptScope.request)
-        [Symbol.asyncIterator]();
-      while (true) {
-        const next = await attemptScope.race(iterator.next());
-        if (next.done) {
-          break;
-        }
-        const event = next.value;
-        if (event.type === 'model') {
-"""
+          old_loop = (
+              "      for await (const event of model.getStreamedResponse(attemptScope.request)) {\n"
+              "        if (event.type === 'model') {\n"
+          )
+          new_loop = (
+              "      const iterator = model\n"
+              "        .getStreamedResponse(attemptScope.request)\n"
+              "        [Symbol.asyncIterator]();\n"
+              "      while (true) {\n"
+              "        const next = await attemptScope.race(iterator.next());\n"
+              "        if (next.done) {\n"
+              "          break;\n"
+              "        }\n"
+              "        const event = next.value;\n"
+              "        if (event.type === 'model') {\n"
+          )
           s = once(s, old_loop, new_loop, 'stream race loop')
 
-          old_stream_advice = """      const providerAdvice = await getRetryAdvice(model, {
-        request,
-        error,
-        stream: true,
-        attempt,
-      });
-      const authority = createProviderRetryAuthority(providerAdvice);
-"""
-          new_stream_advice = """      let providerAdvice: ModelRetryAdvice | undefined;
-      try {
-        providerAdvice = await getRetryAdvice(model, {
-          request,
-          error: getRetryAdviceError(error),
-          stream: true,
-          attempt,
-        });
-      } catch (adviceError) {
-        if (
-          requestMayHaveBeenAccepted(
-            createProviderRetryAuthority(undefined),
-            request,
-            error,
+          old_stream_advice = (
+              "      const providerAdvice = await getRetryAdvice(model, {\n"
+              "        request,\n"
+              "        error,\n"
+              "        stream: true,\n"
+              "        attempt,\n"
+              "      });\n"
+              "      const authority = createProviderRetryAuthority(providerAdvice);\n"
           )
-        ) {
-          handlers.onPossiblyAcceptedRequestFailure?.();
-        }
-        throw adviceError;
-      }
-      const authority = createProviderRetryAuthority(providerAdvice);
-"""
+          new_stream_advice = (
+              "      let providerAdvice: ModelRetryAdvice | undefined;\n"
+              "      try {\n"
+              "        providerAdvice = await getRetryAdvice(model, {\n"
+              "          request,\n"
+              "          error: getRetryAdviceError(error),\n"
+              "          stream: true,\n"
+              "          attempt,\n"
+              "        });\n"
+              "      } catch (adviceError) {\n"
+              "        if (\n"
+              "          requestMayHaveBeenAccepted(\n"
+              "            createProviderRetryAuthority(undefined),\n"
+              "            request,\n"
+              "            error,\n"
+              "          )\n"
+              "        ) {\n"
+              "          handlers.onPossiblyAcceptedRequestFailure?.();\n"
+              "        }\n"
+              "        throw adviceError;\n"
+              "      }\n"
+              "      const authority = createProviderRetryAuthority(providerAdvice);\n"
+          )
           s = once(s, old_stream_advice, new_stream_advice, 'stream advice')
           p.write_text(s)
           PY
