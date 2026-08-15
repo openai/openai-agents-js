@@ -27,8 +27,12 @@ describe('Realtime session payload transform', () => {
   it('rewrites SDK-managed session updates', () => {
     const base = new TestBase({
       transformSessionPayload: (payload) => {
-        const { type: _type, output_modalities: _modalities, audio, ...rest } =
-          payload;
+        const {
+          type: _type,
+          output_modalities: _modalities,
+          audio,
+          ...rest
+        } = payload;
         return {
           ...rest,
           modalities: ['audio', 'text'],
