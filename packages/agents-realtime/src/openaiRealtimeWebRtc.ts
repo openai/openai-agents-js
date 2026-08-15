@@ -624,9 +624,9 @@ export class OpenAIRealtimeWebRTC
       this.#responseCreateSequencer.beginCancelResponse();
     }
 
-    const preparedEvent = this._prepareClientEventForSend(event);
-    this.#sendEventNow(preparedEvent);
-    this._recordClientEventSent(preparedEvent);
+    this._sendClientEventWithTracking(event, (preparedEvent) => {
+      this.#sendEventNow(preparedEvent);
+    });
   }
 
   override requestResponse(response?: Record<string, any>): void {

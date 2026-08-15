@@ -343,7 +343,9 @@ export class ReactNativeWebRTCTransport extends OpenAIRealtimeBase {
     if (event.type === 'response.cancel' && this.#activeResponse) {
       this.#cancelRequested = true;
     }
-    this.#sendEventNow(event);
+    this._sendClientEventWithTracking(event, (preparedEvent) => {
+      this.#sendEventNow(preparedEvent);
+    });
   }
 
   override requestResponse(response?: Record<string, any>): void {

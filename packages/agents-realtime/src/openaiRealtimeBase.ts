@@ -598,7 +598,6 @@ export abstract class OpenAIRealtimeBase
   }
 
   protected _onOpen() {
-    this.#resetSessionUpdateTracking();
     this.emit('connected');
   }
 
@@ -847,6 +846,21 @@ export abstract class OpenAIRealtimeBase
       ...event,
       event_id: `event_sdk_session_update_${this.#nextSessionUpdateEventId}`,
     };
+  }
+
+  /**
+   * Send a client event while keeping session.update acknowledgement ordering
+   * in sync with the wire. Custom transports extending OpenAIRealtimeBase
+   * should route their public sendEvent implementation through this helper.
+   */
+  protected _sendClientEventWithTracking(
+    event: RealtimeClientMessage,
+    send: (preparedEvent: RealtimeClientMessage) => void,
+  ): RealtimeClientMessage {
+    const preparedEvent = this._prepareClientEventForSend(event);
+    send(preparedEvent);
+    this._recordClientEventSent(preparedEvent);
+    return preparedEvent;
   }
 
   protected _recordClientEventSent(event: RealtimeClientMessage): void {

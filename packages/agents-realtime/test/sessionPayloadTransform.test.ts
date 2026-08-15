@@ -10,12 +10,12 @@ class TestBase extends OpenAIRealtimeBase {
   throwOnSend = false;
   connect = vi.fn(async () => {});
   sendEvent(event: RealtimeClientMessage) {
-    const preparedEvent = this._prepareClientEventForSend(event);
-    if (this.throwOnSend) {
-      throw new Error('send failed');
-    }
-    this.events.push(preparedEvent);
-    this._recordClientEventSent(preparedEvent);
+    this._sendClientEventWithTracking(event, (preparedEvent) => {
+      if (this.throwOnSend) {
+        throw new Error('send failed');
+      }
+      this.events.push(preparedEvent);
+    });
   }
   mute = vi.fn();
   close = vi.fn();
@@ -26,6 +26,10 @@ class TestBase extends OpenAIRealtimeBase {
 
   updateTracing(tracing: 'auto' | null) {
     this._updateTracingConfig(tracing);
+  }
+
+  open() {
+    this._onOpen();
   }
 
   get rawSessionConfig() {
@@ -112,6 +116,18 @@ describe('Realtime session payload transform', () => {
     expect(
       base.rawSessionConfig?.audio?.input?.turn_detection?.interrupt_response,
     ).toBe(true);
+  });
+
+  it('preserves an initial transformed update across the open transition', () => {
+    const base = new TestBase({
+      transformSessionPayload: ({ type: _type, ...rest }) => rest,
+    });
+
+    base.updateSessionConfig({ instructions: 'initial sdk update' });
+    base.open();
+    base.receiveSessionUpdated({ instructions: 'provider acknowledgement' });
+
+    expect(base.rawSessionConfig?.instructions).toBe('initial sdk update');
   });
 
   it('tracks direct session update acknowledgements after transformed updates', () => {
