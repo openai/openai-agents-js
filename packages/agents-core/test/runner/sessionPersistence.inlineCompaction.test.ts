@@ -64,6 +64,32 @@ class RejectedCompactionSession extends AppendOnlyCompactionSession {
   }
 }
 
+class FilteringRejectedCompactionSession extends RejectedCompactionSession {
+  private static isFiltered(item: AgentInputItem): boolean {
+    return (
+      item.type === 'message' &&
+      item.role === 'user' &&
+      item.content.some(
+        (part) => part.type === 'input_text' && part.text === 'filtered prefix',
+      )
+    );
+  }
+
+  override async addItems(items: AgentInputItem[]) {
+    await super.addItems(
+      items.filter((item) => !FilteringRejectedCompactionSession.isFiltered(item)),
+    );
+  }
+
+  prepareHistoryItemsForPersistenceComparison(
+    items: AgentInputItem[],
+  ): AgentInputItem[] {
+    return items.filter(
+      (item) => !FilteringRejectedCompactionSession.isFiltered(item),
+    );
+  }
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -119,5 +145,18 @@ describe('inline compaction session persistence', () => {
     expect(session.items).toEqual([userMessage('stored before run')]);
     expect(session.clearCalls).toBe(0);
     expect(warn).toHaveBeenCalledOnce();
+  });
+
+  it('does not pop old history for prefix items filtered by persistence', async () => {
+    const session = new FilteringRejectedCompactionSession();
+    const filtered = userMessage('filtered prefix');
+    const after = userMessage('input after compaction');
+
+    await expect(
+      saveStreamInputToSession(session, [filtered, COMPACTION, after]),
+    ).rejects.toThrow('replacement rejected');
+
+    expect(session.items).toEqual([userMessage('stored before run')]);
+    expect(session.clearCalls).toBe(0);
   });
 });
