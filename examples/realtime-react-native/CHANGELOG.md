@@ -1,5 +1,11 @@
 # realtime-react-native
 
+## 0.0.3
+
+### Patch Changes
+
+- @openai/agents-realtime@0.16.1
+
 ## 0.0.2
 
 ### Patch Changes
