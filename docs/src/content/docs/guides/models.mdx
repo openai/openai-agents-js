@@ -232,6 +232,7 @@ Do not combine this model with SDK handoffs, `reasoning.summary`, or `max_tool_c
 | `parallelToolCalls` | `boolean` | Allow parallel function calls where supported. |
 | `truncation` | `'auto' \| 'disabled'` | Token truncation strategy. |
 | `maxTokens` | `number` | Maximum tokens in the response. |
+| `timeoutMs` | `number` | Cooperative timeout in milliseconds for each model request attempt. Must be finite, greater than `0`, and no greater than `2147483647`. |
 | `store` | `boolean` | Persist the response for retrieval / RAG workflows. |
 | `promptCacheRetention` | `'in-memory' \| '24h' \| null` | Controls the legacy maximum prompt-cache retention policy when supported. This is independent of `promptCacheOptions.ttl`. |
 | `promptCacheOptions` | `{ mode?: 'implicit' \| 'explicit'; ttl?: '30m' }` | Controls implicit or explicit prompt-cache breakpoints for GPT-5.6 and later models. |
@@ -250,6 +251,8 @@ Attach settings at either level:
 <Code lang="typescript" code={modelSettingsExample} title="Model settings" />
 
 `Runner`‑level settings override conflicting per-agent settings. Nested fields in `reasoning`, `text`, `promptCacheOptions`, and `retry` are merged across runner and agent settings unless you explicitly clear an inherited value with `undefined`.
+
+When `timeoutMs` expires, the SDK aborts the current model request attempt. If retry processing neither starts another attempt nor surfaces a different failure, the SDK raises [`ModelTimeoutError`](/openai-agents-js/openai/agents-core/classes/modeltimeouterror). A run-level abort signal still cancels the whole run. If model retries are enabled, the retry policy evaluates the timeout like another failed attempt; the SDK retries only when that policy opts in and the request is safe to replay or the application explicitly approves an unsafe replay.
 
 Set `preserveRawUsage: true` when you need provider-specific usage fields or need to distinguish an omitted field from a normalized zero. OpenAI Responses, OpenAI Chat Completions, and AI SDK-backed models support it for streaming and non-streaming runs. Preservation is best-effort: if a provider does not return usage or returns a value that cannot be safely copied as plain JSON-compatible data, `rawUsage` remains `undefined`. See [Raw responses](/openai-agents-js/guides/results#raw-responses) for how to access the preserved payload.
 

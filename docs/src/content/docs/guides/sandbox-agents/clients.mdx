@@ -50,6 +50,8 @@ The same agent can usually run with either local client:
   title="Switch between local clients"
 />
 
+`DockerSandboxClient` uses Docker's default networking unless you set `networkMode: 'none'` in the client constructor or the per-run `sandbox.options`. The `'none'` mode starts the container with networking disabled. It cannot be combined with `exposedPorts`; the SDK rejects that configuration before creating or resuming a container. No other explicit `networkMode` value is currently supported.
+
 ### Session ownership
 
 There are two lifecycle styles.
@@ -153,6 +155,8 @@ Install `@openai/agents-extensions` and satisfy its package-level peers. Each pr
 | `ModalSandboxClient` | `@openai/agents-extensions/sandbox/modal` | npm peer: `modal` |
 | `RunloopSandboxClient` | `@openai/agents-extensions/sandbox/runloop` | npm peer: `@runloop/api-client` |
 | `VercelSandboxClient` | `@openai/agents-extensions/sandbox/vercel` | npm peer: `@vercel/sandbox` |
+
+When `ModalSandboxClient` creates a sandbox, use `cpu` and `memoryMiB` to request CPU and memory reservations. Use `cpuLimit` and `memoryLimitMiB` to set upper limits. You can set these options on the client constructor or in per-run `sandbox.options`; per-run values override constructor defaults. Every value must be a positive finite number. `cpuLimit` requires `cpu` and cannot be lower than it, while `memoryLimitMiB` requires `memoryMiB` and cannot be lower than it.
 
 `CloudflareSandboxClient` does not import a Cloudflare npm SDK. It talks to a deployed Cloudflare Sandbox bridge Worker over HTTP instead.
 
