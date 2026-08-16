@@ -681,18 +681,27 @@ export class Agent<
    * ```
    *
    * This method makes a shallow copy. For a list property such as `tools`, `handoffs`,
-   * `mcpServers`, `inputGuardrails`, or `outputGuardrails`, the clone receives its own array only
-   * when `config` overrides that property; otherwise the clone and the original agent reference
-   * the same array. The entries inside every list, such as tool and handoff objects, are shared
-   * with the original agent in both cases.
+   * `mcpServers`, `inputGuardrails`, or `outputGuardrails`, what the clone gets depends on
+   * whether `config` supplies that property:
    *
-   * Because the two agents can share an array, mutating that array through either agent also
-   * changes the other. For example, calling `clonedAgent.tools.push(extraTool)` adds the tool to
-   * the original agent as well. To give the clone a list it owns, pass a new array in `config`:
+   * - When `config` omits the property, the clone keeps the original agent's array reference, so
+   *   both agents read and write the same array holding the same entries.
+   * - When `config` supplies the property, the clone uses that array as given. It shares an array
+   *   or an entry with the original agent only where the caller reused one, so
+   *   `agent.clone({ tools: agent.tools })` still shares, while
+   *   `agent.clone({ tools: [otherTool] })` shares nothing.
+   *
+   * Because two agents can reference one array, mutating it through either agent also changes the
+   * other. For example, after `const clonedAgent = agent.clone({ name: 'Clone' })`, calling
+   * `clonedAgent.tools.push(extraTool)` adds that tool to `agent` as well. To give the clone a
+   * list that no other agent holds, pass a new array in `config`:
    *
    * ```
    * const newAgent = agent.clone({ tools: [...agent.tools, extraTool] })
    * ```
+   *
+   * The entries copied into that new array, such as tool and handoff objects, remain the same
+   * objects the original agent holds.
    *
    * @param config - A partial configuration to change.
    * @returns A new agent with the given changes.

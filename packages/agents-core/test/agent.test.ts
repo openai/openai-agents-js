@@ -629,7 +629,7 @@ describe('Agent', () => {
     expect(clonedAgent.handoffs).toBe(originalAgent.handoffs);
   });
 
-  it('gives the clone its own array for a list property passed to clone', () => {
+  it('uses the array passed to clone as given for a list property', () => {
     const first = tool({
       name: 'first',
       description: 'first',
@@ -644,16 +644,35 @@ describe('Agent', () => {
     });
 
     const originalAgent = new Agent({ name: 'OriginalAgent', tools: [first] });
-    const replacement = [first, second];
+    const supplied = [second];
     const clonedAgent = originalAgent.clone({
       name: 'ClonedAgent',
-      tools: replacement,
+      tools: supplied,
     });
 
-    expect(clonedAgent.tools).not.toBe(originalAgent.tools);
+    // The supplied array is used as given rather than copied.
+    expect(clonedAgent.tools).toBe(supplied);
     expect(originalAgent.tools).toEqual([first]);
-    // The entries are shared with the original agent either way.
-    expect(clonedAgent.tools[0]).toBe(originalAgent.tools[0]);
+    // Overriding does not by itself share entries with the original agent.
+    expect(clonedAgent.tools).not.toContain(first);
+  });
+
+  it('still shares a list when clone is given the original agent array', () => {
+    const first = tool({
+      name: 'first',
+      description: 'first',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+    });
+
+    const originalAgent = new Agent({ name: 'OriginalAgent', tools: [first] });
+    const clonedAgent = originalAgent.clone({
+      name: 'ClonedAgent',
+      tools: originalAgent.tools,
+    });
+
+    // Overriding with the original array keeps both agents on one array.
+    expect(clonedAgent.tools).toBe(originalAgent.tools);
   });
 
   it('should return static instructions as system prompt', async () => {
