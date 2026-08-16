@@ -44,6 +44,77 @@ const processPlatformDescriptor = Object.getOwnPropertyDescriptor(
   'platform',
 );
 
+const VALID_PNG_BYTES = Uint8Array.from(
+  Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVR4nGP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+    'base64',
+  ),
+);
+const VALID_JPEG_BYTES = Uint8Array.from(
+  Buffer.from(
+    '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AKpAB//Z',
+    'base64',
+  ),
+);
+const VALID_GIF_BYTES = Uint8Array.from([
+  0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+  0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44,
+  0x01, 0x00, 0x3b,
+]);
+const VALID_GIF87A_BYTES = Uint8Array.from(VALID_GIF_BYTES);
+VALID_GIF87A_BYTES[4] = 0x37;
+const VALID_WEBP_BYTES = Uint8Array.from(
+  Buffer.from('UklGRh4AAABXRUJQVlA4TBEAAAAvAAAAAAfQ//73v/+BiOh/AAA=', 'base64'),
+);
+
+function makeBmpBytes(): Uint8Array {
+  const bytes = new Uint8Array(58);
+  const view = new DataView(bytes.buffer);
+  bytes.set([0x42, 0x4d]);
+  view.setUint32(2, bytes.byteLength, true);
+  view.setUint32(10, 54, true);
+  view.setUint32(14, 40, true);
+  view.setInt32(18, 1, true);
+  view.setInt32(22, 1, true);
+  view.setUint16(26, 1, true);
+  view.setUint16(28, 24, true);
+  view.setUint32(34, 4, true);
+  bytes.set([0xff, 0xff, 0xff, 0x00], 54);
+  return bytes;
+}
+
+function makeTiffBytes(littleEndian: boolean, bigTiff: boolean): Uint8Array {
+  const ifdOffset = bigTiff ? 16 : 8;
+  const countSize = bigTiff ? 8 : 2;
+  const entrySize = bigTiff ? 20 : 12;
+  const nextIfdSize = bigTiff ? 8 : 4;
+  const pixelOffset = ifdOffset + countSize + entrySize + nextIfdSize;
+  const bytes = new Uint8Array(pixelOffset + 1);
+  const view = new DataView(bytes.buffer);
+  bytes.set(littleEndian ? [0x49, 0x49] : [0x4d, 0x4d]);
+  view.setUint16(2, bigTiff ? 43 : 42, littleEndian);
+  if (bigTiff) {
+    view.setUint16(4, 8, littleEndian);
+    view.setBigUint64(8, BigInt(ifdOffset), littleEndian);
+    view.setBigUint64(ifdOffset, 1n, littleEndian);
+  } else {
+    view.setUint32(4, ifdOffset, littleEndian);
+    view.setUint16(ifdOffset, 1, littleEndian);
+  }
+  const entryOffset = ifdOffset + countSize;
+  view.setUint16(entryOffset, 273, littleEndian);
+  view.setUint16(entryOffset + 2, bigTiff ? 16 : 4, littleEndian);
+  if (bigTiff) {
+    view.setBigUint64(entryOffset + 4, 1n, littleEndian);
+    view.setBigUint64(entryOffset + 12, BigInt(pixelOffset), littleEndian);
+  } else {
+    view.setUint32(entryOffset + 4, 1, littleEndian);
+    view.setUint32(entryOffset + 8, pixelOffset, littleEndian);
+  }
+  bytes[pixelOffset] = 0xff;
+  return bytes;
+}
+
 afterEach(() => {
   vi.doUnmock('node:os');
   vi.unstubAllEnvs();
@@ -145,21 +216,72 @@ describe('sandbox shared helpers', () => {
     });
   });
 
-  it('sniffs image media types from bytes and falls back to path extensions', () => {
-    expect(sniffImageMediaType(Uint8Array.from([0x89, 0x50, 0x4e, 0x47]))).toBe(
-      'image/png',
-    );
-    expect(sniffImageMediaType(Uint8Array.from([0xff, 0xd8, 0xff]))).toBe(
-      'image/jpeg',
-    );
-    expect(sniffImageMediaType(Uint8Array.from([0]), 'diagram.svg')).toBe(
-      'image/svg+xml',
-    );
+  it.each([
+    ['image/png', VALID_PNG_BYTES],
+    ['image/jpeg', VALID_JPEG_BYTES],
+    ['image/gif', VALID_GIF_BYTES],
+    ['image/gif', VALID_GIF87A_BYTES],
+    ['image/webp', VALID_WEBP_BYTES],
+    ['image/bmp', makeBmpBytes()],
+    ['image/tiff', makeTiffBytes(true, false)],
+    ['image/tiff', makeTiffBytes(false, false)],
+    ['image/tiff', makeTiffBytes(true, true)],
+    ['image/tiff', makeTiffBytes(false, true)],
+  ])('sniffs %s from bytes without relying on the path', (mediaType, bytes) => {
+    expect(sniffImageMediaType(bytes, 'payload.bin')).toBe(mediaType);
+  });
+
+  it.each([
+    'fake.png',
+    'fake.jpg',
+    'fake.jpeg',
+    'fake.gif',
+    'fake.webp',
+    'fake.bmp',
+    'fake.tif',
+    'fake.tiff',
+  ])('does not infer raster media types from the path %s', (path) => {
+    expect(sniffImageMediaType(Uint8Array.from([0]), path)).toBeNull();
+  });
+
+  it.each([
+    ['PNG', [0x89, 0x50, 0x4e, 0x47]],
+    ['GIF', [0x47, 0x49, 0x46, 0x38]],
+    ['WebP', [0x52, 0x49, 0x46, 0x46]],
+    ['TIFF', [0x49, 0x49]],
+  ])('rejects an incomplete %s signature', (_name, bytes) => {
+    expect(sniffImageMediaType(Uint8Array.from(bytes))).toBeNull();
+  });
+
+  it('classifies canonical signatures without decoding pixel data', () => {
+    expect(
+      sniffImageMediaType(
+        Uint8Array.from([
+          0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50,
+        ]),
+      ),
+    ).toBe('image/webp');
+  });
+
+  it.each([
+    ['diagram.svg', new TextEncoder().encode('\ufeff<svg></svg>')],
+    [
+      'diagram.svg',
+      new TextEncoder().encode('<!-- generated -->\n<svg></svg>'),
+    ],
+    ['diagram.svg', new TextEncoder().encode('<!DOCTYPE svg>\n<svg></svg>')],
+    ['diagram.svg', new TextEncoder().encode('<svg></svg>\n')],
+    ['diagram.svgz', Uint8Array.from([0x1f, 0x8b, 0x08, 0x00])],
+  ])('preserves SVG filename compatibility for %s', (path, bytes) => {
+    expect(sniffImageMediaType(bytes, path)).toBe('image/svg+xml');
+  });
+
+  it('returns null for unsupported bytes without an SVG filename', () => {
     expect(sniffImageMediaType(Uint8Array.from([0]))).toBeNull();
   });
 
   it('builds image tool output from bytes with shared validation', () => {
-    const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+    const bytes = VALID_PNG_BYTES;
 
     expect(imageOutputFromBytes('diagram.png', bytes)).toEqual({
       type: 'image',
@@ -177,6 +299,12 @@ describe('sandbox shared helpers', () => {
     expect(() =>
       imageOutputFromBytes('notes.txt', Uint8Array.from([0])),
     ).toThrow('Unsupported image format for view_image: notes.txt');
+    expect(() =>
+      imageOutputFromBytes(
+        'fake.png',
+        new TextEncoder().encode('not an image'),
+      ),
+    ).toThrow('Unsupported image format for view_image: fake.png');
   });
 
   it('stable-stringifies JSON-like values with sorted object keys', () => {

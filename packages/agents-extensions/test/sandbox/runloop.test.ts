@@ -7,6 +7,7 @@ import {
   SandboxUnsupportedFeatureError,
 } from '@openai/agents-core/sandbox';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { ONE_BY_ONE_PNG } from './imageFixture';
 import { liveMountCredentialAuthorityMatches } from '@openai/agents-core/sandbox/internal';
 import {
   RunloopCloudBucketMountStrategy,
@@ -356,7 +357,7 @@ describe('RunloopSandboxClient', () => {
     readMock.mockResolvedValue('# Hello\n');
     writeMock.mockResolvedValue(undefined);
     downloadMock.mockResolvedValue({
-      buffer: async () => Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00]),
+      buffer: async () => Buffer.from(ONE_BY_ONE_PNG),
     });
     uploadMock.mockResolvedValue(undefined);
     getTunnelUrlMock.mockResolvedValue('https://3000-devbox.tunnel.runloop.ai');

@@ -2910,7 +2910,12 @@ describe('DockerSandboxClient unit behavior', () => {
   });
 
   it('uses the container filesystem for split path grants', async () => {
-    const pngBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+    const pngBytes = Uint8Array.from(
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVR4nGP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+        'base64',
+      ),
+    );
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {
         if (args[0] === 'version') {
@@ -2925,9 +2930,10 @@ describe('DockerSandboxClient unit behavior', () => {
     childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
       const command = args.at(-1) ?? '';
       if (command.startsWith('base64 --')) {
-        const bytes = command.includes('picture.png')
-          ? pngBytes
-          : new TextEncoder().encode('hello');
+        const bytes =
+          command.includes('picture.png') || command.includes('payload.bin')
+            ? pngBytes
+            : new TextEncoder().encode('hello');
         return dockerSpawnResult({
           stdout: Buffer.from(bytes).toString('base64'),
           status: 0,
@@ -2994,6 +3000,20 @@ describe('DockerSandboxClient unit behavior', () => {
         mediaType: 'image/png',
       },
     });
+    await expect(
+      session.viewImage({ path: '/mnt/shared-data/fake.png' }),
+    ).rejects.toThrow(
+      'Unsupported image format for view_image: /mnt/shared-data/fake.png',
+    );
+    await expect(
+      session.viewImage({ path: '/mnt/shared-data/payload.bin' }),
+    ).resolves.toMatchObject({
+      type: 'image',
+      image: {
+        data: pngBytes,
+        mediaType: 'image/png',
+      },
+    });
     await editor.deleteFile({
       type: 'delete_file',
       path: '/mnt/shared-data/data.txt',
@@ -3008,6 +3028,8 @@ describe('DockerSandboxClient unit behavior', () => {
         "base64 -- '/mnt/shared-data/data.txt'",
         "find '/mnt/shared-data' -mindepth 1 -maxdepth 1 -printf '%y\\t%f\\n'",
         "base64 -- '/mnt/shared-data/picture.png'",
+        "base64 -- '/mnt/shared-data/fake.png'",
+        "base64 -- '/mnt/shared-data/payload.bin'",
         "rm -f -- '/mnt/shared-data/data.txt'",
       ]),
     );

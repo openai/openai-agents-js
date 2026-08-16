@@ -7,6 +7,7 @@ import {
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { ONE_BY_ONE_PNG } from './imageFixture';
 import { CloudflareSandboxClient } from '../../src/sandbox/cloudflare';
 import { CloudflareBucketMountStrategy } from '../../src/sandbox/cloudflare/mounts';
 import { resolvedRemotePathFromValidationCommand } from './remotePathValidation';
@@ -163,7 +164,7 @@ describe('CloudflareSandboxClient', () => {
           },
           {
             event: 'chunk',
-            data: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64'),
+            data: Buffer.from(ONE_BY_ONE_PNG).toString('base64'),
           },
         ]);
       }
@@ -177,7 +178,7 @@ describe('CloudflareSandboxClient', () => {
             `data: ${JSON.stringify({ isBinary: true })}`,
             '',
             'event: chunk',
-            `data: ${Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64')}`,
+            `data: ${Buffer.from(ONE_BY_ONE_PNG).toString('base64')}`,
             '',
           ].join('\n'),
           {
@@ -1082,8 +1083,8 @@ describe('CloudflareSandboxClient', () => {
             `data: ${JSON.stringify({ isBinary: true })}`,
             '',
             'event: chunk',
-            'data: iVBO',
-            'data: Rw==',
+            'data: iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD',
+            'data: 6AG1e1JrAAAADUlEQVR4nGP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
             '',
           ].join('\n'),
           {
@@ -1179,7 +1180,7 @@ describe('CloudflareSandboxClient', () => {
             },
             {
               event: 'chunk',
-              data: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64'),
+              data: Buffer.from(ONE_BY_ONE_PNG).toString('base64'),
             },
           ],
           { lineEnding: '\r\n' },

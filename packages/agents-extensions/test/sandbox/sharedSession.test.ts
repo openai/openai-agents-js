@@ -9,6 +9,7 @@ import {
 } from '@openai/agents-core/sandbox';
 import { withExclusiveSandboxManifestMutation } from '@openai/agents-core/sandbox/internal';
 import { describe, expect, test, vi } from 'vitest';
+import { ONE_BY_ONE_PNG } from './imageFixture';
 import {
   assertCoreConcurrencyLimitsUnsupported,
   assertCoreSnapshotUnsupported,
@@ -802,10 +803,7 @@ describe('shared sandbox session helpers', () => {
 
   test('base session handles common exec, filesystem, image, and port helpers', async () => {
     const session = new FakeRemoteSession();
-    session.files.set(
-      '/workspace/image.png',
-      new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
-    );
+    session.files.set('/workspace/image.png', ONE_BY_ONE_PNG);
 
     const execResult = await session.execCommand({
       cmd: 'echo hello',

@@ -8,6 +8,7 @@ import {
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { ONE_BY_ONE_PNG } from './imageFixture';
 import {
   E2BCloudBucketMountStrategy,
   E2BSandboxClient,
@@ -1649,7 +1650,7 @@ describe('E2BSandboxClient', () => {
         },
       }),
     );
-    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x00]);
+    const png = ONE_BY_ONE_PNG;
     files.set('/workspace/pixel.png', png);
     runMock.mockClear();
 
@@ -1671,10 +1672,7 @@ describe('E2BSandboxClient', () => {
   test('reads images through the E2B byte file format', async () => {
     const client = new E2BSandboxClient();
     const session = await client.create(new Manifest());
-    const pngHeader = new Uint8Array([
-      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-    ]);
-    files.set('/workspace/pixel.png', pngHeader);
+    files.set('/workspace/pixel.png', ONE_BY_ONE_PNG);
     readMock.mockClear();
 
     const image = await session.viewImage({ path: 'pixel.png' });
@@ -1684,7 +1682,7 @@ describe('E2BSandboxClient', () => {
       format: 'bytes',
     });
     expect(payload.mediaType).toBe('image/png');
-    expect([...payload.data]).toEqual([...pngHeader]);
+    expect([...payload.data]).toEqual([...ONE_BY_ONE_PNG]);
   });
 
   test('supports filesystem editor hooks with absolute workspace paths', async () => {

@@ -91,6 +91,12 @@ import {
 } from '../../src/sandbox/shared/inContainerMounts';
 import { makePaxRecord, makeTarArchive } from './tarFixture';
 import {
+  ONE_BY_ONE_GIF,
+  ONE_BY_ONE_JPEG,
+  ONE_BY_ONE_PNG,
+  ONE_BY_ONE_WEBP,
+} from './imageFixture';
+import {
   EnvValueReference,
   Manifest,
   SandboxArchiveError,
@@ -4779,22 +4785,13 @@ describe('remote sandbox path helpers', () => {
   });
 
   test('detects image media types', () => {
-    expect(sniffImageMediaType(Uint8Array.from([0x89, 0x50, 0x4e, 0x47]))).toBe(
-      'image/png',
-    );
-    expect(sniffImageMediaType(Uint8Array.from([0xff, 0xd8, 0xff]))).toBe(
-      'image/jpeg',
-    );
-    expect(sniffImageMediaType(Uint8Array.from([0x47, 0x49, 0x46, 0x38]))).toBe(
-      'image/gif',
-    );
+    expect(sniffImageMediaType(ONE_BY_ONE_PNG)).toBe('image/png');
+    expect(sniffImageMediaType(ONE_BY_ONE_JPEG)).toBe('image/jpeg');
+    expect(sniffImageMediaType(ONE_BY_ONE_GIF)).toBe('image/gif');
+    expect(sniffImageMediaType(ONE_BY_ONE_WEBP)).toBe('image/webp');
     expect(
-      sniffImageMediaType(
-        Uint8Array.from([
-          0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50,
-        ]),
-      ),
-    ).toBe('image/webp');
+      sniffImageMediaType(Uint8Array.from([0x89, 0x50, 0x4e, 0x47])),
+    ).toBeNull();
     expect(sniffImageMediaType(Uint8Array.from([0]))).toBeNull();
   });
 
