@@ -548,16 +548,17 @@ class FilesystemCapability extends Capability {
           'Filesystem sandbox sessions must provide viewImage().',
         );
       }
+      const effectivePath = this._workspaceScope?.anchor(path) ?? path;
       try {
         return await withSandboxSpan(
           'sandbox.view_image',
           {
-            path,
+            path: effectivePath,
             run_as: this._runAs,
           },
           async () =>
             await session.viewImage!({
-              path: this._workspaceScope?.anchor(path) ?? path,
+              path: effectivePath,
               runAs: this._runAs,
             } satisfies ViewImageArgs),
           this.tracingParent(details),
