@@ -48,6 +48,8 @@ export type SandboxHttpEventSinkOptions = {
 };
 
 const sandboxEventSinks = new Set<SandboxEventSink>();
+const UNSERIALIZABLE_SANDBOX_ERROR_MESSAGE =
+  'Sandbox operation failed with an unserializable error.';
 
 export function addSandboxEventSink(sink: SandboxEventSink): () => void {
   sandboxEventSinks.add(sink);
@@ -133,38 +135,64 @@ export function createChainedSandboxEventSink(
 }
 
 export function serializeSandboxEventError(error: unknown): SandboxEventError {
-  try {
-    if (error instanceof Error) {
-      const code = readErrorCode(error);
-      const retryable = readErrorRetryability(error);
-      return {
-        name: error.name,
-        message: error.message,
-        ...(code ? { code } : {}),
-        ...(retryable !== undefined ? { retryable } : {}),
-      };
-    }
+  if (error instanceof Error) {
+    const name = readStringErrorProperty(error, 'name');
+    const message =
+      readStringErrorProperty(error, 'message') ??
+      UNSERIALIZABLE_SANDBOX_ERROR_MESSAGE;
+    const code = readErrorCode(error);
+    const retryable = readErrorRetryability(error);
+    return {
+      ...(name !== undefined ? { name } : {}),
+      message,
+      ...(code ? { code } : {}),
+      ...(retryable !== undefined ? { retryable } : {}),
+    };
+  }
 
-    return {
-      message: String(error),
-    };
+  return {
+    message: stringifyThrownValue(error),
+  };
+}
+
+function readStringErrorProperty(
+  error: Error,
+  property: 'name' | 'message',
+): string | undefined {
+  try {
+    const value = error[property];
+    return typeof value === 'string' ? value : undefined;
   } catch {
-    return {
-      message: 'Sandbox operation failed with an unserializable error.',
-    };
+    return undefined;
   }
 }
 
 function readErrorCode(error: Error): string | undefined {
-  const code = (error as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
+  try {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === 'string' ? code : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function readErrorRetryability(error: Error): boolean | null | undefined {
-  const retryable = (error as { retryable?: unknown }).retryable;
-  return typeof retryable === 'boolean' || retryable === null
-    ? retryable
-    : undefined;
+  try {
+    const retryable = (error as { retryable?: unknown }).retryable;
+    return typeof retryable === 'boolean' || retryable === null
+      ? retryable
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function stringifyThrownValue(error: unknown): string {
+  try {
+    return String(error);
+  } catch {
+    return UNSERIALIZABLE_SANDBOX_ERROR_MESSAGE;
+  }
 }
 
 function readGlobalFetch(): SandboxHttpEventFetch | undefined {
