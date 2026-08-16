@@ -7,11 +7,20 @@ export abstract class CompactionPolicy {
   abstract compactThreshold(model?: string): number;
 }
 
+function assertCompactionThreshold(value: number, label: string): void {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new UserError(
+      `${label} must be a finite number greater than or equal to 0.`,
+    );
+  }
+}
+
 export class StaticCompactionPolicy extends CompactionPolicy {
   readonly threshold: number;
 
   constructor(threshold: number = 240000) {
     super();
+    assertCompactionThreshold(threshold, 'StaticCompactionPolicy.threshold');
     this.threshold = threshold;
   }
 
@@ -38,6 +47,10 @@ export class DynamicCompactionPolicy extends CompactionPolicy {
         'DynamicCompactionPolicy.thresholdRatio must be a finite number between 0 and 1.',
       );
     }
+    assertCompactionThreshold(
+      fallbackThreshold,
+      'DynamicCompactionPolicy.fallbackThreshold',
+    );
     this.thresholdRatio = thresholdRatio;
     this.fallbackThreshold = fallbackThreshold;
   }
