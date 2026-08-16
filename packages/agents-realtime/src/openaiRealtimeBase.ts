@@ -1,4 +1,4 @@
-import { RuntimeEventEmitter, Usage } from '@openai/agents-core';
+import { RuntimeEventEmitter, Usage, UserError } from '@openai/agents-core';
 import { normalizeHostedMcpRequireApproval } from '@openai/agents-core/utils';
 import {
   logModelActionError,
@@ -18,6 +18,7 @@ import {
 } from './clientMessages';
 import {
   RealtimeItem,
+  RealtimeToolCallItem,
   realtimeMcpCallApprovalRequestItem,
   RealtimeMcpCallApprovalRequestItem,
   realtimeMcpCallItem,
@@ -163,6 +164,21 @@ export abstract class OpenAIRealtimeBase
   #apiKey: ApiKey | undefined;
   #tracingConfig: RealtimeTracingConfig | null = null;
   #rawSessionConfig: Record<string, any> | null = null;
+  #replayedFunctionCalls = new Map<
+    string,
+    {
+      item: RealtimeToolCallItem;
+      expectsOutput: boolean;
+      outputItemId?: string;
+      outputDeleted?: boolean;
+      callCreateEventId?: string;
+      outputCreateEventId?: string;
+      deleteEventId?: string;
+      deletePhase?: 'output' | 'call';
+    }
+  >();
+  #connectionStatePrepared = false;
+  #replayEventSequence = 0;
 
   protected eventEmitter: RuntimeEventEmitter<OpenAIRealtimeEventTypes> =
     new RuntimeEventEmitter<OpenAIRealtimeEventTypes>();
@@ -171,6 +187,20 @@ export abstract class OpenAIRealtimeBase
     super();
     this.#model = options.model ?? DEFAULT_OPENAI_REALTIME_MODEL;
     this.#apiKey = options.apiKey;
+  }
+
+  emit<K extends keyof OpenAIRealtimeEventTypes>(
+    type: K,
+    ...args: OpenAIRealtimeEventTypes[K]
+  ): boolean {
+    if (
+      type === 'connection_change' &&
+      (args as OpenAIRealtimeEventTypes['connection_change'])[0] === 'connected'
+    ) {
+      this._resetConnectionScopedState();
+      this.#connectionStatePrepared = true;
+    }
+    return super.emit(type, ...args);
   }
 
   /**
@@ -213,6 +243,20 @@ export abstract class OpenAIRealtimeBase
     // Intentionally empty.
   }
 
+  /** Clear state that is valid only for a single transport connection. */
+  protected _resetConnectionScopedState(): void {
+    this.#replayedFunctionCalls.clear();
+  }
+
+  #nextReplayEventId(
+    callId: string,
+    operation:
+      'call-create' | 'output-create' | 'output-delete' | 'call-delete',
+  ): string {
+    this.#replayEventSequence += 1;
+    return `agents-realtime-history-${operation}-${callId}-${this.#replayEventSequence}`;
+  }
+
   protected get _rawSessionConfig(): Record<string, any> | null {
     return this.#rawSessionConfig ?? null;
   }
@@ -240,6 +284,36 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (parsed.type === 'error') {
+      const failedClientEventId =
+        parsed.error && typeof parsed.error === 'object'
+          ? (parsed.error as { event_id?: unknown }).event_id
+          : undefined;
+      if (typeof failedClientEventId === 'string') {
+        for (const [callId, tracked] of this.#replayedFunctionCalls) {
+          if (tracked.callCreateEventId === failedClientEventId) {
+            this.#replayedFunctionCalls.delete(callId);
+            break;
+          }
+          if (tracked.outputCreateEventId === failedClientEventId) {
+            tracked.outputCreateEventId = undefined;
+            tracked.expectsOutput = false;
+            tracked.outputItemId = undefined;
+            tracked.outputDeleted = false;
+            tracked.item = realtimeToolCallItem.parse({
+              ...tracked.item,
+              status: 'in_progress',
+              output: null,
+            });
+            this.emit('item_update', tracked.item);
+            break;
+          }
+          if (tracked.deleteEventId === failedClientEventId) {
+            tracked.deleteEventId = undefined;
+            tracked.deletePhase = undefined;
+            break;
+          }
+        }
+      }
       this.emit('error', { type: 'error', error: parsed });
     } else {
       this.emit(parsed.type, parsed);
@@ -308,9 +382,46 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (parsed.type === 'conversation.item.deleted') {
+      let completedOutputCallId: string | undefined;
+
+      for (const [callId, tracked] of this.#replayedFunctionCalls) {
+        if (
+          tracked.deletePhase === 'output' &&
+          tracked.outputItemId === parsed.item_id
+        ) {
+          tracked.outputDeleted = true;
+          tracked.outputItemId = undefined;
+          tracked.deleteEventId = undefined;
+          tracked.deletePhase = undefined;
+          completedOutputCallId = callId;
+          break;
+        }
+        if (tracked.deletePhase === 'call' && callId === parsed.item_id) {
+          this.#replayedFunctionCalls.delete(callId);
+          break;
+        }
+      }
+
       this.emit('item_deleted', {
         itemId: parsed.item_id,
       });
+
+      if (completedOutputCallId) {
+        const tracked = this.#replayedFunctionCalls.get(completedOutputCallId);
+        if (tracked && !tracked.deletePhase) {
+          const callDeleteEventId = this.#nextReplayEventId(
+            completedOutputCallId,
+            'call-delete',
+          );
+          this.sendEvent({
+            type: 'conversation.item.delete',
+            event_id: callDeleteEventId,
+            item_id: completedOutputCallId,
+          });
+          tracked.deletePhase = 'call';
+          tracked.deleteEventId = callDeleteEventId;
+        }
+      }
       return;
     }
 
@@ -380,6 +491,61 @@ export abstract class OpenAIRealtimeBase
         // We do not add this item to history; it's a transport-level side-channel.
         return;
       }
+      if (parsed.item.type === 'function_call') {
+        const callId = parsed.item.call_id;
+        const tracked = callId
+          ? this.#replayedFunctionCalls.get(callId)
+          : undefined;
+        if (tracked) {
+          tracked.callCreateEventId = undefined;
+          const previousItemId =
+            parsed.type === 'conversation.item.added' ||
+            parsed.type === 'conversation.item.done'
+              ? parsed.previous_item_id
+              : tracked.item.previousItemId;
+          const hasCompletedOutput =
+            tracked.outputItemId !== undefined &&
+            tracked.item.status === 'completed' &&
+            tracked.item.output !== null;
+          const item = realtimeToolCallItem.parse({
+            ...tracked.item,
+            previousItemId,
+            status: hasCompletedOutput
+              ? 'completed'
+              : tracked.expectsOutput
+                ? 'in_progress'
+                : tracked.item.status,
+            output: hasCompletedOutput ? tracked.item.output : null,
+          });
+          tracked.item = item;
+          this.emit('item_update', item);
+          return;
+        }
+      }
+
+      if (parsed.item.type === 'function_call_output') {
+        const callId = parsed.item.call_id;
+        const tracked = callId
+          ? this.#replayedFunctionCalls.get(callId)
+          : undefined;
+        if (tracked) {
+          tracked.expectsOutput = true;
+          tracked.outputDeleted = false;
+          tracked.outputCreateEventId = undefined;
+          if (parsed.item.id) {
+            tracked.outputItemId = parsed.item.id;
+          }
+          const item = realtimeToolCallItem.parse({
+            ...tracked.item,
+            status: 'completed',
+            output: parsed.item.output ?? null,
+          });
+          tracked.item = item;
+          this.emit('item_update', item);
+          return;
+        }
+      }
+
       if (parsed.item.type === 'message') {
         const previousItemId =
           parsed.type === 'conversation.item.added' ||
@@ -537,10 +703,20 @@ export abstract class OpenAIRealtimeBase
   }
 
   protected _onOpen() {
+    // Most transports announce connection_change before invoking this hook.
+    // In that case replay state was already reset before listeners ran, and
+    // history restored by those listeners must survive this hook. Custom
+    // transports that call only _onOpen still get the same reset guarantee.
+    if (!this.#connectionStatePrepared) {
+      this._resetConnectionScopedState();
+    }
+    this.#connectionStatePrepared = false;
     this.emit('connected');
   }
 
   protected _onClose() {
+    this.#connectionStatePrepared = false;
+    this._resetConnectionScopedState();
     this.emit('disconnected');
   }
 
@@ -882,7 +1058,7 @@ export abstract class OpenAIRealtimeBase
 
   /**
    * Updates the session config. This will merge it with the current session config with the default
-   * values and send it to the Realtime API.
+   * values and send it to the Realtime API to update the history.
    *
    * @param config - The session config to update.
    */
@@ -907,14 +1083,44 @@ export abstract class OpenAIRealtimeBase
     output: string,
     startResponse: boolean = true,
   ): void {
-    this.sendEvent({
-      type: 'conversation.item.create',
-      item: {
-        type: 'function_call_output',
-        output,
-        call_id: toolCall.callId,
-      },
-    });
+    const tracked = this.#replayedFunctionCalls.get(toolCall.callId);
+    if (tracked?.outputCreateEventId) {
+      throw new UserError(
+        `Function call ${toolCall.callId} already has an output awaiting Realtime API acknowledgement.`,
+      );
+    }
+    if (tracked?.outputItemId && !tracked.outputDeleted) {
+      throw new UserError(
+        `Function call ${toolCall.callId} already has an acknowledged output. Sending another output for the same replayed call is not supported.`,
+      );
+    }
+    const outputCreateEventId = tracked
+      ? this.#nextReplayEventId(toolCall.callId, 'output-create')
+      : undefined;
+    if (tracked) {
+      tracked.expectsOutput = true;
+      tracked.outputDeleted = false;
+      tracked.outputCreateEventId = outputCreateEventId;
+    }
+
+    try {
+      this.sendEvent({
+        type: 'conversation.item.create',
+        ...(outputCreateEventId ? { event_id: outputCreateEventId } : {}),
+        item: {
+          type: 'function_call_output',
+          output,
+          call_id: toolCall.callId,
+        },
+      });
+    } catch (error) {
+      if (tracked?.outputCreateEventId === outputCreateEventId) {
+        tracked.outputCreateEventId = undefined;
+        tracked.expectsOutput = false;
+        tracked.outputDeleted = false;
+      }
+      throw error;
+    }
 
     try {
       const item = realtimeToolCallItem.parse({
@@ -926,6 +1132,9 @@ export abstract class OpenAIRealtimeBase
         name: toolCall.name,
         output,
       });
+      if (tracked) {
+        tracked.item = item;
+      }
       this.emit('item_update', item);
     } catch (error) {
       logToolActionError(
@@ -978,23 +1187,157 @@ export abstract class OpenAIRealtimeBase
       newHistory,
     );
 
-    const removalIds = new Set(removals.map((item) => item.itemId));
-    // we don't have an update event for items so we will remove and re-add what's there
-    for (const update of updates) {
-      removalIds.add(update.itemId);
+    const oldItemsById = new Map(
+      oldHistory.map((item) => [item.itemId, item] as const),
+    );
+    const functionCallUpdates = updates.filter(
+      (item) =>
+        item.type === 'function_call' ||
+        oldItemsById.get(item.itemId)?.type === 'function_call',
+    );
+
+    // Function-call replay has asynchronous server ownership. Reject unsupported
+    // replacements before sending any mutation so local and server history stay
+    // on the same projection when the operation fails.
+    if (functionCallUpdates.length > 0) {
+      throw new UserError(
+        'Updating or replacing function call history items is not supported. Remove the item in one update and replay a new item only after the removal is acknowledged.',
+      );
     }
 
-    if (removalIds.size > 0) {
-      for (const itemId of removalIds) {
-        this.sendEvent({
-          type: 'conversation.item.delete',
-          item_id: itemId,
-        });
+    const updatedIds = new Set(updates.map((item) => item.itemId));
+    const retainedOldIds = new Set(
+      oldHistory
+        .filter(
+          (item) =>
+            !updatedIds.has(item.itemId) &&
+            newHistory.some((newItem) => newItem.itemId === item.itemId),
+        )
+        .map((item) => item.itemId),
+    );
+    let lastRetainedIndex = -1;
+    for (let index = 0; index < newHistory.length; index++) {
+      if (retainedOldIds.has(newHistory[index].itemId)) {
+        lastRetainedIndex = index;
       }
     }
 
-    const additionsAndUpdates = [...additions, ...updates];
+    const functionCallAdditions = additions.filter(
+      (item): item is RealtimeToolCallItem => item.type === 'function_call',
+    );
+    for (const addition of functionCallAdditions) {
+      const additionIndex = newHistory.findIndex(
+        (item) => item.itemId === addition.itemId,
+      );
+      const hasPrecedingUpdate = updates.some((update) => {
+        const updateIndex = newHistory.findIndex(
+          (item) => item.itemId === update.itemId,
+        );
+        return updateIndex >= 0 && updateIndex < additionIndex;
+      });
+      if (hasPrecedingUpdate) {
+        throw new UserError(
+          'Function call history replay cannot follow an updated history item in the same operation. Apply the update first, then replay the function call after the updated history is acknowledged.',
+        );
+      }
+      if (additionIndex < lastRetainedIndex) {
+        throw new UserError(
+          'Function call history items can only be replayed as appended history. Mid-history insertion is not supported.',
+        );
+      }
+      if (this.#replayedFunctionCalls.has(addition.itemId)) {
+        throw new UserError(
+          `Function call ${addition.itemId} is already owned by an acknowledgement-pending replay. Wait for the Realtime API acknowledgement before replaying it again.`,
+        );
+      }
+    }
 
+    for (const removal of removals) {
+      if (removal.type !== 'function_call') {
+        continue;
+      }
+      const tracked = this.#replayedFunctionCalls.get(removal.itemId);
+      if (tracked?.deletePhase) {
+        throw new UserError(
+          `Function call ${removal.itemId} already has a deletion awaiting Realtime API acknowledgement.`,
+        );
+      }
+      if (
+        tracked?.expectsOutput &&
+        !tracked.outputItemId &&
+        !tracked.outputDeleted
+      ) {
+        throw new UserError(
+          'Cannot remove a replayed completed function call before its output item is acknowledged by the Realtime API.',
+        );
+      }
+    }
+
+    const initialDeletes: Array<{
+      itemId: string;
+      trackedCallId?: string;
+      phase?: 'output' | 'call';
+    }> = [];
+
+    for (const removal of removals) {
+      if (removal.type === 'function_call') {
+        const tracked = this.#replayedFunctionCalls.get(removal.itemId);
+        if (
+          tracked?.expectsOutput &&
+          tracked.outputItemId &&
+          !tracked.outputDeleted
+        ) {
+          initialDeletes.push({
+            itemId: tracked.outputItemId,
+            trackedCallId: removal.itemId,
+            phase: 'output',
+          });
+          continue;
+        }
+        initialDeletes.push({
+          itemId: removal.itemId,
+          trackedCallId: tracked ? removal.itemId : undefined,
+          phase: tracked ? 'call' : undefined,
+        });
+        continue;
+      }
+      initialDeletes.push({ itemId: removal.itemId });
+    }
+
+    // Existing non-function-call updates retain their delete-and-recreate
+    // behavior. Function-call updates were rejected above before any mutation.
+    for (const update of updates) {
+      initialDeletes.push({ itemId: update.itemId });
+    }
+
+    for (const deletion of initialDeletes) {
+      const tracked = deletion.trackedCallId
+        ? this.#replayedFunctionCalls.get(deletion.trackedCallId)
+        : undefined;
+      const deleteEventId =
+        tracked && deletion.phase && deletion.trackedCallId
+          ? this.#nextReplayEventId(
+              deletion.trackedCallId,
+              deletion.phase === 'output' ? 'output-delete' : 'call-delete',
+            )
+          : undefined;
+      this.sendEvent({
+        type: 'conversation.item.delete',
+        ...(deleteEventId ? { event_id: deleteEventId } : {}),
+        item_id: deletion.itemId,
+      });
+      if (tracked && deletion.phase) {
+        tracked.deletePhase = deletion.phase;
+        tracked.deleteEventId = deleteEventId;
+      }
+    }
+
+    const recreatedIds = new Set(
+      [...additions, ...updates].map((item) => item.itemId),
+    );
+    const additionsAndUpdates = newHistory.filter((item) =>
+      recreatedIds.has(item.itemId),
+    );
     for (const addition of additionsAndUpdates) {
       if (addition.type === 'message') {
         const itemEntry: Record<string, any> = {
@@ -1011,9 +1354,63 @@ export abstract class OpenAIRealtimeBase
           item: itemEntry,
         });
       } else if (addition.type === 'function_call') {
-        logger.warn(
-          'Function calls cannot be manually added or updated at the moment. Ignoring.',
+        const callId = addition.itemId;
+        const callCreateEventId = this.#nextReplayEventId(
+          callId,
+          'call-create',
         );
+        const tracked = {
+          item: addition,
+          expectsOutput: addition.output !== null,
+          callCreateEventId,
+          outputCreateEventId: undefined as string | undefined,
+        };
+        this.#replayedFunctionCalls.set(callId, tracked);
+        let callCreateSent = false;
+        try {
+          this.sendEvent({
+            type: 'conversation.item.create',
+            event_id: callCreateEventId,
+            item: {
+              type: 'function_call',
+              id: addition.itemId,
+              call_id: callId,
+              name: addition.name,
+              arguments: addition.arguments,
+              status: addition.status,
+            },
+          });
+          callCreateSent = true;
+          if (addition.output !== null) {
+            const outputCreateEventId = this.#nextReplayEventId(
+              callId,
+              'output-create',
+            );
+            tracked.outputCreateEventId = outputCreateEventId;
+            this.sendEvent({
+              type: 'conversation.item.create',
+              event_id: outputCreateEventId,
+              item: {
+                type: 'function_call_output',
+                call_id: callId,
+                output: addition.output,
+              },
+            });
+          }
+        } catch (error) {
+          if (!callCreateSent) {
+            this.#replayedFunctionCalls.delete(callId);
+          } else if (tracked.outputCreateEventId) {
+            tracked.outputCreateEventId = undefined;
+            tracked.expectsOutput = false;
+            tracked.item = realtimeToolCallItem.parse({
+              ...tracked.item,
+              status: 'in_progress',
+              output: null,
+            });
+          }
+          throw error;
+        }
       }
     }
   }
