@@ -1,4 +1,5 @@
 import type { AgentInputItem } from '../../types';
+import { UserError } from '../../errors';
 import { Capability } from './base';
 import { supportsResponsesCompactionTransport } from './transport';
 
@@ -28,6 +29,15 @@ export class DynamicCompactionPolicy extends CompactionPolicy {
     fallbackThreshold: number = 240000,
   ) {
     super();
+    if (
+      !Number.isFinite(thresholdRatio) ||
+      thresholdRatio < 0 ||
+      thresholdRatio > 1
+    ) {
+      throw new UserError(
+        'DynamicCompactionPolicy.thresholdRatio must be a finite number between 0 and 1.',
+      );
+    }
     this.thresholdRatio = thresholdRatio;
     this.fallbackThreshold = fallbackThreshold;
   }
