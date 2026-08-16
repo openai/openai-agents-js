@@ -2,4 +2,4 @@
 '@openai/agents-core': patch
 ---
 
-fix(sandbox): trace the effective view_image path
+fix(sandbox): trace effective run-scoped sandbox paths
