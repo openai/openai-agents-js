@@ -10,6 +10,9 @@ import { isRecord } from './typeGuards';
 
 export { withSandboxSpan };
 
+const UNINSPECTABLE_PROVIDER_ERROR =
+  'Provider error could not be inspected safely.';
+
 export async function closeRemoteSessionOnManifestError(
   providerName: string,
   session: { close(): Promise<void> },
@@ -95,7 +98,7 @@ export async function withProviderError<T>(
         },
       );
     }
-    if (error instanceof UserError) {
+    if (safelyIsUserError(error)) {
       throw error;
     }
     const cause = providerErrorMessage(error);
@@ -115,11 +118,15 @@ export async function withProviderError<T>(
 }
 
 export function isProviderSandboxNotFoundError(error: unknown): boolean {
-  if (isNotFoundErrorRecord(error, new Set())) {
-    return true;
+  try {
+    if (isNotFoundErrorRecord(error, new Set())) {
+      return true;
+    }
+  } catch {
+    // Fall through to the fail-safe text path below.
   }
 
-  const text = errorMessage(error).trim();
+  const text = providerErrorMessage(error).trim();
   return isNotFoundErrorMessage(text);
 }
 
@@ -133,7 +140,7 @@ export function assertResumeRecreateAllowed(
   error: unknown,
   context: ResumeRecreateErrorContext,
 ): void {
-  if (error instanceof UserError) {
+  if (safelyIsUserError(error)) {
     throw error;
   }
 
@@ -155,7 +162,12 @@ export function assertResumeRecreateAllowed(
 }
 
 export function providerErrorMessage(error: unknown): string {
-  const message = errorMessage(error);
+  let message = UNINSPECTABLE_PROVIDER_ERROR;
+  try {
+    message = errorMessage(error);
+  } catch {
+    // Keep the generic fail-safe message.
+  }
   const details = providerErrorDetails(error);
   const detailText = formatProviderErrorDetailSummary(details);
   if (!detailText) {
@@ -165,18 +177,30 @@ export function providerErrorMessage(error: unknown): string {
 }
 
 export function providerErrorDetails(error: unknown): Record<string, unknown> {
-  return collectProviderErrorDetails(error, new Set<object>(), 0);
+  try {
+    return collectProviderErrorDetails(error, new Set<object>(), 0);
+  } catch {
+    return {};
+  }
 }
 
 export function providerErrorRetryability(error: unknown): boolean | null {
-  return readProviderErrorRetryability(error, new Set<object>(), 0);
+  try {
+    return readProviderErrorRetryability(error, new Set<object>(), 0);
+  } catch {
+    return null;
+  }
 }
 
 function safelyReadProviderErrorRetryability(error: unknown): boolean | null {
+  return providerErrorRetryability(error);
+}
+
+function safelyIsUserError(error: unknown): error is UserError {
   try {
-    return providerErrorRetryability(error);
+    return error instanceof UserError;
   } catch {
-    return null;
+    return false;
   }
 }
 
