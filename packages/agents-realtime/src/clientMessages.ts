@@ -286,11 +286,7 @@ export function normalizeAudioFormat(
 ): RealtimeAudioFormatDefinition | undefined {
   if (!format) return undefined;
   if (typeof format === 'object') {
-    if (
-      format.type === 'audio/pcm' &&
-      typeof format.rate === 'number' &&
-      !Number.isFinite(format.rate)
-    ) {
+    if (format.type === 'audio/pcm' && format.rate !== 24000) {
       return { type: 'audio/pcm', rate: 24000 };
     }
 
