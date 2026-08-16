@@ -19,6 +19,7 @@ import {
   withExclusiveSandboxManifestMutation,
 } from '@openai/agents-core/sandbox/internal';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { ONE_BY_ONE_PNG } from './imageFixture';
 import { z } from 'zod';
 import {
   decodeNativeSnapshotRef,
@@ -240,9 +241,7 @@ describe('VercelSandboxClient', () => {
     getMock.mockResolvedValue(makeSandbox('vercel_test'));
     runCommandMock.mockImplementation(defaultRunCommand);
     mkDirMock.mockResolvedValue(undefined);
-    readFileToBufferMock.mockResolvedValue(
-      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00]),
-    );
+    readFileToBufferMock.mockResolvedValue(Buffer.from(ONE_BY_ONE_PNG));
     writeFilesMock.mockImplementation(
       async (files: Array<{ path?: unknown }> = []) => {
         for (const file of files) {

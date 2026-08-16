@@ -10,6 +10,7 @@ import {
   type S3Mount,
 } from '@openai/agents-core/sandbox';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { ONE_BY_ONE_PNG } from './imageFixture';
 import {
   BlaxelCloudBucketMountStrategy,
   BlaxelDriveMount,
@@ -111,9 +112,7 @@ describe('BlaxelSandboxClient', () => {
       },
     );
     readMock.mockResolvedValue('# Hello\n');
-    readBinaryMock.mockResolvedValue(
-      Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x00]),
-    );
+    readBinaryMock.mockResolvedValue(ONE_BY_ONE_PNG);
     mkdirMock.mockResolvedValue(undefined);
     writeMock.mockResolvedValue(undefined);
     writeBinaryMock.mockResolvedValue(undefined);

@@ -6,6 +6,7 @@ import {
   SandboxUnsupportedFeatureError,
 } from '@openai/agents-core/sandbox';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { ONE_BY_ONE_PNG } from './imageFixture';
 import { liveMountCredentialAuthorityMatches } from '@openai/agents-core/sandbox/internal';
 import {
   DaytonaCloudBucketMountStrategy,
@@ -403,7 +404,7 @@ describe('DaytonaSandboxClient', () => {
   test('uses remote shell file operation for image reads', async () => {
     const client = new DaytonaSandboxClient();
     const session = await client.create(new Manifest());
-    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const pngBytes = Buffer.from(ONE_BY_ONE_PNG);
     executeCommandMock.mockClear();
     downloadFileMock.mockClear();
 

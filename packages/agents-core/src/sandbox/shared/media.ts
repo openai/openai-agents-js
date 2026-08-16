@@ -32,55 +32,34 @@ export function sniffImageMediaType(
   path?: string,
 ): string | null {
   if (
-    bytes[0] === 0x89 &&
-    bytes[1] === 0x50 &&
-    bytes[2] === 0x4e &&
-    bytes[3] === 0x47
+    matchesBytes(bytes, 0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
   ) {
     return 'image/png';
   }
-  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+  if (matchesBytes(bytes, 0, [0xff, 0xd8, 0xff])) {
     return 'image/jpeg';
   }
-  if (
-    bytes[0] === 0x47 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x38
-  ) {
+  if (matchesAscii(bytes, 0, 'GIF87a') || matchesAscii(bytes, 0, 'GIF89a')) {
     return 'image/gif';
   }
-  if (
-    bytes[0] === 0x52 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x46 &&
-    bytes[8] === 0x57 &&
-    bytes[9] === 0x45 &&
-    bytes[10] === 0x42 &&
-    bytes[11] === 0x50
-  ) {
+  if (matchesAscii(bytes, 0, 'RIFF') && matchesAscii(bytes, 8, 'WEBP')) {
     return 'image/webp';
   }
-  if (bytes[0] === 0x42 && bytes[1] === 0x4d) {
+  if (matchesAscii(bytes, 0, 'BM')) {
     return 'image/bmp';
   }
   if (
-    (bytes[0] === 0x49 &&
-      bytes[1] === 0x49 &&
-      bytes[2] === 0x2a &&
-      bytes[3] === 0x00) ||
-    (bytes[0] === 0x4d &&
-      bytes[1] === 0x4d &&
-      bytes[2] === 0x00 &&
-      bytes[3] === 0x2a)
+    matchesBytes(bytes, 0, [0x49, 0x49, 0x2a, 0x00]) ||
+    matchesBytes(bytes, 0, [0x4d, 0x4d, 0x00, 0x2a]) ||
+    matchesBytes(bytes, 0, [0x49, 0x49, 0x2b, 0x00]) ||
+    matchesBytes(bytes, 0, [0x4d, 0x4d, 0x00, 0x2b])
   ) {
     return 'image/tiff';
   }
   if (looksLikeSvg(bytes)) {
     return 'image/svg+xml';
   }
-  return mediaTypeFromPath(path);
+  return svgMediaTypeFromPath(path);
 }
 
 export async function toUint8Array(
@@ -114,6 +93,29 @@ export async function toUint8Array(
   return Uint8Array.from(value as unknown as ArrayLike<number>);
 }
 
+function matchesAscii(
+  bytes: Uint8Array,
+  offset: number,
+  expected: string,
+): boolean {
+  return matchesBytes(
+    bytes,
+    offset,
+    Array.from(expected, (character) => character.charCodeAt(0)),
+  );
+}
+
+function matchesBytes(
+  bytes: Uint8Array,
+  offset: number,
+  expected: readonly number[],
+): boolean {
+  if (offset < 0 || offset + expected.length > bytes.byteLength) {
+    return false;
+  }
+  return expected.every((byte, index) => bytes[offset + index] === byte);
+}
+
 function looksLikeSvg(bytes: Uint8Array): boolean {
   const prefix = new TextDecoder()
     .decode(bytes.subarray(0, Math.min(bytes.byteLength, 512)))
@@ -122,26 +124,8 @@ function looksLikeSvg(bytes: Uint8Array): boolean {
   return prefix.startsWith('<svg') || /^<\?xml[\s\S]*<svg/u.test(prefix);
 }
 
-function mediaTypeFromPath(path?: string): string | null {
+function svgMediaTypeFromPath(path?: string): string | null {
   const lowerPath = path?.trim().toLowerCase() ?? '';
-  if (lowerPath.endsWith('.png')) {
-    return 'image/png';
-  }
-  if (lowerPath.endsWith('.jpg') || lowerPath.endsWith('.jpeg')) {
-    return 'image/jpeg';
-  }
-  if (lowerPath.endsWith('.gif')) {
-    return 'image/gif';
-  }
-  if (lowerPath.endsWith('.webp')) {
-    return 'image/webp';
-  }
-  if (lowerPath.endsWith('.bmp')) {
-    return 'image/bmp';
-  }
-  if (lowerPath.endsWith('.tif') || lowerPath.endsWith('.tiff')) {
-    return 'image/tiff';
-  }
   if (lowerPath.endsWith('.svg') || lowerPath.endsWith('.svgz')) {
     return 'image/svg+xml';
   }
