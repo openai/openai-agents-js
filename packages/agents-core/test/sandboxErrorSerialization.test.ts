@@ -39,7 +39,7 @@ describe('sandbox error serialization', () => {
     });
   });
 
-  it('preserves Error failures when optional metadata access throws', async () => {
+  it('preserves safe Error fields when optional metadata access throws', async () => {
     const events: SandboxEvent[] = [];
     addSandboxEventSink((event) => {
       events.push(event);
@@ -58,7 +58,8 @@ describe('sandbox error serialization', () => {
     ).rejects.toBe(operationError);
 
     expect(events[1]?.error).toEqual({
-      message: 'Sandbox operation failed with an unserializable error.',
+      name: 'Error',
+      message: 'provider failed',
     });
   });
 });
