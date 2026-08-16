@@ -62,4 +62,29 @@ describe('sandbox error serialization', () => {
       message: 'provider failed',
     });
   });
+
+  it('preserves the original failure when Error classification throws', async () => {
+    const events: SandboxEvent[] = [];
+    addSandboxEventSink((event) => {
+      events.push(event);
+    });
+    const operationError = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error('classification failed');
+        },
+      },
+    );
+
+    await expect(
+      withSandboxSpan('sandbox.exec', { cmd: 'false' }, async () => {
+        throw operationError;
+      }),
+    ).rejects.toBe(operationError);
+
+    expect(events[1]?.error).toEqual({
+      message: 'Sandbox operation failed with an unserializable error.',
+    });
+  });
 });
