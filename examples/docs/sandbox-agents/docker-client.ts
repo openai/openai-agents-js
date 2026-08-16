@@ -10,7 +10,12 @@ const agent = new SandboxAgent({
 
 const result = await run(agent, 'Inspect the workspace.', {
   sandbox: {
-    client: new DockerSandboxClient({ image: 'node:22-bookworm-slim' }),
+    client: new DockerSandboxClient({
+      image: 'node:22-bookworm-slim',
+      // Uncomment to disable networking for the container.
+      // Do not combine networkMode: 'none' with exposedPorts.
+      // networkMode: 'none',
+    }),
   },
 });
 
