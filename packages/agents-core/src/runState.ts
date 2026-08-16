@@ -1477,6 +1477,7 @@ const sandboxSessionEntrySchema = z.object({
   sessionState: sandboxSessionStateEnvelopeSchema,
   preservedOwnedSession: z.boolean().optional(),
   reuseLiveSession: z.boolean().optional(),
+  requiresFreshCreation: z.boolean().optional(),
 });
 
 const sandboxStateSchema = z.object({

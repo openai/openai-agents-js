@@ -41,7 +41,9 @@ export function rememberLivePreservedOwnedSessions<TContext>(args: {
     if (!entry.preservedOwnedSession) {
       continue;
     }
-    if (entry.reuseLiveSession === false) {
+    const reuseRejected =
+      entry.reuseLiveSession === false && entry.requiresFreshCreation === true;
+    if (entry.reuseLiveSession === false && !reuseRejected) {
       continue;
     }
     const session = args.sessionsByAgentKey.get(agentKey);
@@ -61,7 +63,9 @@ export function rememberLivePreservedOwnedSessions<TContext>(args: {
       backendId: entry.backendId,
       currentAgentName: entry.currentAgentName,
       session,
-      ...(rejectedSessions.has(session) ? { reuseRejected: true } : {}),
+      ...(reuseRejected || rejectedSessions.has(session)
+        ? { reuseRejected: true }
+        : {}),
     });
   }
 
