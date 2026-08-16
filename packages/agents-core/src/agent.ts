@@ -680,6 +680,20 @@ export class Agent<
    * const newAgent = agent.clone({ instructions: 'New instructions' })
    * ```
    *
+   * This method makes a shallow copy. For a list property such as `tools`, `handoffs`,
+   * `mcpServers`, `inputGuardrails`, or `outputGuardrails`, the clone receives its own array only
+   * when `config` overrides that property; otherwise the clone and the original agent reference
+   * the same array. The entries inside every list, such as tool and handoff objects, are shared
+   * with the original agent in both cases.
+   *
+   * Because the two agents can share an array, mutating that array through either agent also
+   * changes the other. For example, calling `clonedAgent.tools.push(extraTool)` adds the tool to
+   * the original agent as well. To give the clone a list it owns, pass a new array in `config`:
+   *
+   * ```
+   * const newAgent = agent.clone({ tools: [...agent.tools, extraTool] })
+   * ```
+   *
    * @param config - A partial configuration to change.
    * @returns A new agent with the given changes.
    */
