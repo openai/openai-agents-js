@@ -108,12 +108,14 @@ class ShellCapability extends Capability {
           },
           _context,
           details?: ToolCallDetails,
-        ): Promise<string> =>
-          await withSandboxSpan(
+        ): Promise<string> => {
+          const effectiveWorkdir =
+            this._workspaceScope?.anchor(workdir) ?? workdir;
+          return await withSandboxSpan(
             'sandbox.exec',
             {
               cmd,
-              workdir,
+              workdir: effectiveWorkdir,
               shell,
               login,
               tty,
@@ -122,7 +124,7 @@ class ShellCapability extends Capability {
             async () =>
               await session.execCommand!({
                 cmd,
-                workdir: this._workspaceScope?.anchor(workdir) ?? workdir,
+                workdir: effectiveWorkdir,
                 shell,
                 login,
                 tty,
@@ -131,7 +133,8 @@ class ShellCapability extends Capability {
                 runAs: this._runAs,
               } satisfies ExecCommandArgs),
             this.tracingParent(details),
-          ),
+          );
+        },
       }),
     ];
 
