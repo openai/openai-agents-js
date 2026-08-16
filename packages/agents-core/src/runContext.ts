@@ -489,34 +489,18 @@ export class RunContext<TContext = UnknownContext> {
       rawItem,
     );
     if (rawItem.type === 'function_call') {
-      const scopedEntries = this.#getFunctionApprovalEntries(
-        toolName,
-        false,
+      return this.#resolveFunctionApprovalEntryGroups(
         agent,
-      );
-      const stickyDecision = this.#resolveStickyApprovalEntries(scopedEntries);
-      if (stickyDecision !== undefined) {
-        return stickyDecision;
-      }
-      const legacyEntries = this.#getLegacyFunctionApprovalEntries(toolName);
-      const legacyStickyDecision =
-        this.#resolveStickyApprovalEntries(legacyEntries);
-      if (legacyStickyDecision !== undefined) {
-        return legacyStickyDecision;
-      }
-      if (this.#approvalInvocations.get(agent)?.get(callId) === fingerprint) {
-        return (
-          this.#resolveApprovalEntries(scopedEntries, callId) ??
-          this.#resolveApprovalEntries(legacyEntries, callId)
-        );
-      }
-      return undefined;
+        toolName,
+        callId,
+        this.#approvalInvocations.get(agent)?.get(callId) === fingerprint,
+      )?.decision;
     }
     const entries = this.#getToolApprovalEntries(toolName, agent);
     if (this.#approvalInvocations.get(agent)?.get(callId) === fingerprint) {
-      const scopedDecision = this.#resolveApprovalEntries(entries, callId);
-      if (scopedDecision !== undefined) {
-        return scopedDecision;
+      const exactDecision = this.#resolveExactApprovalEntries(entries, callId);
+      if (exactDecision !== undefined) {
+        return exactDecision;
       }
     }
     const stickyEntries = getHostedMcpApprovalRequestIdentity(rawItem)
@@ -535,53 +519,43 @@ export class RunContext<TContext = UnknownContext> {
     toolName: string,
     rawItem: ApprovalCapableToolCall,
   ): string | undefined {
-    const { callId, fingerprint } = this._validateToolInvocation(
+    if (rawItem.type === 'function_call') {
+      const { callId, fingerprint } = this._validateToolInvocation(
+        agent,
+        toolName,
+        rawItem,
+      );
+      const resolution = this.#resolveFunctionApprovalEntryGroups(
+        agent,
+        toolName,
+        callId,
+        this.#approvalInvocations.get(agent)?.get(callId) === fingerprint,
+      );
+      if (resolution?.decision !== false) {
+        return undefined;
+      }
+      return this.#getRejectionMessageForRejectedCall(
+        resolution.entries,
+        callId,
+      );
+    }
+    const decision = this._resolveToolInvocationApproval(
       agent,
       toolName,
       rawItem,
     );
-    if (rawItem.type === 'function_call') {
-      const scopedEntries = this.#getFunctionApprovalEntries(
-        toolName,
-        false,
-        agent,
-      );
-      const stickyMessage = scopedEntries.find(
-        (entry) => entry.rejected === true,
-      )?.stickyRejectMessage;
-      if (stickyMessage !== undefined) {
-        return stickyMessage;
-      }
-      const legacyEntries = this.#getLegacyFunctionApprovalEntries(toolName);
-      const legacyStickyMessage = legacyEntries.find(
-        (entry) => entry.rejected === true,
-      )?.stickyRejectMessage;
-      if (legacyStickyMessage !== undefined) {
-        return legacyStickyMessage;
-      }
-      if (this.#approvalInvocations.get(agent)?.get(callId) === fingerprint) {
-        return (
-          this.#getRejectionMessageFromEntries(scopedEntries, callId) ??
-          this.#getRejectionMessageFromEntries(legacyEntries, callId)
-        );
-      }
+    if (decision !== false) {
       return undefined;
     }
+    const callId = getToolInvocationCallId(rawItem)!;
     const entries = this.#getToolApprovalEntries(toolName, agent);
-    if (this.#approvalInvocations.get(agent)?.get(callId) === fingerprint) {
-      const scopedMessage = this.#getRejectionMessageFromEntries(
-        entries,
-        callId,
-      );
-      if (scopedMessage !== undefined) {
-        return scopedMessage;
-      }
-    }
     const stickyEntries = getHostedMcpApprovalRequestIdentity(rawItem)
       ? this.#getHostedMcpApprovalEntries(toolName)
       : this.#getApprovalEntries(toolName, false);
-    return stickyEntries.find((entry) => entry.rejected === true)
-      ?.stickyRejectMessage;
+    return this.#getRejectionMessageForRejectedCall(
+      [...entries, ...stickyEntries],
+      callId,
+    );
   }
 
   /**
@@ -952,29 +926,15 @@ export class RunContext<TContext = UnknownContext> {
     callId: string,
     agent: Agent<any, any>,
   ): string | undefined {
-    const scopedEntries = this.#getFunctionApprovalEntries(
-      toolName,
-      false,
+    const resolution = this.#resolveFunctionApprovalEntryGroups(
       agent,
-    );
-    const scopedDecision = this.#resolveApprovalEntries(scopedEntries, callId);
-    const scopedMessage = this.#getRejectionMessageFromEntries(
-      scopedEntries,
+      toolName,
       callId,
     );
-    if (scopedMessage !== undefined) {
-      return scopedMessage;
+    if (resolution?.decision !== false) {
+      return undefined;
     }
-    if (
-      scopedDecision === undefined &&
-      this.#functionApprovalState.legacyApprovals.size > 0
-    ) {
-      return this.#getRejectionMessageFromEntries(
-        this.#getLegacyFunctionApprovalEntries(toolName),
-        callId,
-      );
-    }
-    return undefined;
+    return this.#getRejectionMessageForRejectedCall(resolution.entries, callId);
   }
 
   /**
@@ -1122,20 +1082,13 @@ export class RunContext<TContext = UnknownContext> {
   }) {
     const { toolName, callId, functionTool = true, agent } = approval;
     if (agent) {
-      const scopedDecision = this.#resolveApprovalEntries(
-        this.#getFunctionApprovalEntries(toolName, functionTool, agent),
+      return this.#resolveFunctionApprovalEntryGroups(
+        agent,
+        toolName,
         callId,
-      );
-      if (scopedDecision !== undefined) {
-        return scopedDecision;
-      }
-      if (this.#functionApprovalState.legacyApprovals.size === 0) {
-        return undefined;
-      }
-      return this.#resolveApprovalEntries(
-        this.#getLegacyFunctionApprovalEntries(toolName),
-        callId,
-      );
+        true,
+        functionTool,
+      )?.decision;
     }
 
     const includeFunctionState =
@@ -1193,11 +1146,16 @@ export class RunContext<TContext = UnknownContext> {
     approvalEntries: readonly ApprovalRecord[],
     callId: string,
   ): boolean | undefined {
-    const stickyDecision = this.#resolveStickyApprovalEntries(approvalEntries);
-    if (stickyDecision !== undefined) {
-      return stickyDecision;
-    }
+    return (
+      this.#resolveExactApprovalEntries(approvalEntries, callId) ??
+      this.#resolveStickyApprovalEntries(approvalEntries)
+    );
+  }
 
+  #resolveExactApprovalEntries(
+    approvalEntries: readonly ApprovalRecord[],
+    callId: string,
+  ): boolean | undefined {
     const individualCallApproval = approvalEntries.some((approvalEntry) =>
       Array.isArray(approvalEntry.approved)
         ? approvalEntry.approved.includes(callId)
@@ -1225,6 +1183,49 @@ export class RunContext<TContext = UnknownContext> {
     }
 
     return undefined;
+  }
+
+  #resolveApprovalEntryGroups(
+    approvalEntryGroups: readonly (readonly ApprovalRecord[])[],
+    callId: string,
+    includeExactDecisions = true,
+  ): { decision: boolean; entries: readonly ApprovalRecord[] } | undefined {
+    if (includeExactDecisions) {
+      for (const entries of approvalEntryGroups) {
+        const decision = this.#resolveExactApprovalEntries(entries, callId);
+        if (decision !== undefined) {
+          return { decision, entries };
+        }
+      }
+    }
+    for (const entries of approvalEntryGroups) {
+      const decision = this.#resolveStickyApprovalEntries(entries);
+      if (decision !== undefined) {
+        return { decision, entries };
+      }
+    }
+    return undefined;
+  }
+
+  #resolveFunctionApprovalEntryGroups(
+    agent: Agent<any, any>,
+    toolName: string,
+    callId: string,
+    includeExactDecisions = true,
+    includeFunctionAliases = false,
+  ) {
+    return this.#resolveApprovalEntryGroups(
+      [
+        this.#getFunctionApprovalEntries(
+          toolName,
+          includeFunctionAliases,
+          agent,
+        ),
+        this.#getLegacyFunctionApprovalEntries(toolName),
+      ],
+      callId,
+      includeExactDecisions,
+    );
   }
 
   #resolveStickyApprovalEntries(
@@ -1255,6 +1256,16 @@ export class RunContext<TContext = UnknownContext> {
   }
 
   #getRejectionMessageFromEntries(
+    approvalEntries: readonly ApprovalRecord[],
+    callId: string,
+  ): string | undefined {
+    if (this.#resolveExactApprovalEntries(approvalEntries, callId) === true) {
+      return undefined;
+    }
+    return this.#getRejectionMessageForRejectedCall(approvalEntries, callId);
+  }
+
+  #getRejectionMessageForRejectedCall(
     approvalEntries: readonly ApprovalRecord[],
     callId: string,
   ): string | undefined {
@@ -1390,13 +1401,35 @@ export class RunContext<TContext = UnknownContext> {
       approved: [] as string[],
       rejected: [] as string[],
     };
-    const decisions = approved
-      ? approvalEntry.approved
-      : approvalEntry.rejected;
-    if (Array.isArray(decisions) && !decisions.includes(callId)) {
-      decisions.push(callId);
+    const opposite = approved ? approvalEntry.rejected : approvalEntry.approved;
+    if (Array.isArray(opposite)) {
+      const oppositeIndex = opposite.indexOf(callId);
+      if (oppositeIndex !== -1) {
+        opposite.splice(oppositeIndex, 1);
+      }
     }
-    if (!approved && message !== undefined) {
+    let decisions = approved ? approvalEntry.approved : approvalEntry.rejected;
+    if (decisions !== true) {
+      if (!Array.isArray(decisions)) {
+        decisions = [];
+        if (approved) {
+          approvalEntry.approved = decisions;
+        } else {
+          approvalEntry.rejected = decisions;
+        }
+      }
+      if (!decisions.includes(callId)) {
+        decisions.push(callId);
+      }
+    }
+    if (approved) {
+      if (approvalEntry.messages) {
+        delete approvalEntry.messages[callId];
+        if (Object.keys(approvalEntry.messages).length === 0) {
+          delete approvalEntry.messages;
+        }
+      }
+    } else if (message !== undefined) {
       approvalEntry.messages = approvalEntry.messages ?? {};
       approvalEntry.messages[callId] = message;
     }

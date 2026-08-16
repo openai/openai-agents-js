@@ -10753,7 +10753,7 @@ export function registerRunStateApprovalTests(): void {
       });
     });
 
-    it('preserves schema 1.17 sticky rejection precedence over an exact approval', async () => {
+    it('preserves fail-closed sticky rejection precedence during schema 1.17 hosted MCP migration', async () => {
       const agent = new Agent({ name: 'LegacyHostedMcpPrecedenceAgent' });
       const pendingApproval = new ToolApprovalItem(
         {

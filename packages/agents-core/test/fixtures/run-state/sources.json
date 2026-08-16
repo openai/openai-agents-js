@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "currentSchemaAtCreation": "1.18",
+  "currentSchemaAtCreation": "1.19",
   "schemas": [
     {
       "schemaVersion": "1.0",
@@ -294,16 +294,37 @@
     },
     {
       "schemaVersion": "1.18",
+      "status": "published_writer",
+      "packageVersion": "0.16.0",
+      "tag": "v0.16.0",
+      "commit": "d988dc5b7f9115442623466e0aab2fbf8eb73013",
+      "npmIntegrity": "sha512-k0ioc6IM36Yli/Wwe/6uFdU85EPj45RVaj+0oSSqrmZEtgwrPCYA2Ohe8LVol//IaM25QjqE09mhiRD74tE8IQ==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.18-minimal.json",
+          "sha256": "114f59b4c2a6a52fa1597a61c9cbfed52f003e8d57e7c55dfa5a31586416515f"
+        },
+        {
+          "scenario": "per-call-approval-override",
+          "kind": "resume",
+          "path": "historical/v1.18-per-call-approval-override.json",
+          "sha256": "a1ae0631fe1aa2d6866bad3f6aee6af7fd22b1c11f814b9cbea86ffd0d8a2ef9"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.19",
       "status": "current_unreleased",
-      "commit": "49fe593b603410e713f67cf853a578e61d480b48",
-      "reason": "Supported on main but not emitted by the latest released package v0.14.3."
+      "reason": "Supported on main but not emitted by the latest released package v0.16.0."
     }
   ],
   "expectedNormalizedFixtures": [
     {
       "sourceSchemaVersion": "1.0",
       "path": "expected/v1.0-normalized-current.json",
-      "sha256": "114f59b4c2a6a52fa1597a61c9cbfed52f003e8d57e7c55dfa5a31586416515f"
+      "sha256": "e2ac4f6f2ba1631eb8c95c35c7d1895a30d40a5077dbd5476107e57a01de1edb"
     }
   ],
   "negativeFixtures": [

@@ -157,8 +157,10 @@ import {
  *   scopes persistent hosted MCP approvals by server label and tool name, preserves
  *   JSON-compatible tool outputs as structured data, and adds durable pending input
  *   and accepted-response resume state.
+ * - 1.19: Lets an exact call approval decision override a sticky decision for the
+ *   same canonical approval identity.
  */
-export const CURRENT_SCHEMA_VERSION = '1.18' as const;
+export const CURRENT_SCHEMA_VERSION = '1.19' as const;
 export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -178,6 +180,7 @@ export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.15',
   '1.16',
   '1.17',
+  '1.18',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -186,7 +189,7 @@ const $schemaVersion = z.enum(SUPPORTED_SCHEMA_VERSIONS);
 function schemaVersionSupportsV118State(
   schemaVersion: SupportedSchemaVersion,
 ): boolean {
-  return schemaVersion === CURRENT_SCHEMA_VERSION;
+  return schemaVersion === '1.18' || schemaVersion === CURRENT_SCHEMA_VERSION;
 }
 
 function schemaVersionSupportsV116State(
@@ -5350,7 +5353,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
       stateJson.ambiguousToolInvocationCallIds === undefined)
   ) {
     throw new UserError(
-      'RunState schema 1.18 requires explicit approval, completed, completion-evidence, and ambiguous invocation records.',
+      `RunState schema ${schemaVersion} requires explicit approval, completed, completion-evidence, and ambiguous invocation records.`,
     );
   }
   if (schemaVersionSupportsV118State(schemaVersion)) {
@@ -5653,7 +5656,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
       schemaVersion,
     );
     if (
-      schemaVersion !== CURRENT_SCHEMA_VERSION &&
+      !schemaVersionSupportsV118State(schemaVersion) &&
       shouldRestoreSerializedContext
     ) {
       restoreLegacyHostedMcpApprovalsForPendingRequests(

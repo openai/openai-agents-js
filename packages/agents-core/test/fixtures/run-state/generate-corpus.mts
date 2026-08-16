@@ -670,6 +670,33 @@ if (schemaVersion === '1.17') {
   outputs['side-effect-committed'] = JSON.parse(sideEffectState.toString());
 }
 
+if (schemaVersion === '1.18') {
+  const approvalAgent = new sdk.Agent({ name: 'ApprovalOverrideAgent' });
+  const approvalState = new sdk.RunState(
+    new sdk.RunContext({ fixture: 'per-call-approval-override' }),
+    'approve selectively',
+    approvalAgent,
+    3,
+  );
+  approvalState.approve(
+    new sdk.RunToolApprovalItem(
+      functionCall('sensitive_tool', 'sticky-call'),
+      approvalAgent,
+    ),
+    { alwaysApprove: true },
+  );
+  approvalState.reject(
+    new sdk.RunToolApprovalItem(
+      functionCall('sensitive_tool', 'exception-call'),
+      approvalAgent,
+    ),
+    { message: 'Denied exactly.' },
+  );
+  outputs['per-call-approval-override'] = JSON.parse(
+    approvalState.toString(),
+  );
+}
+
 process.stdout.write(JSON.stringify(outputs));
 `;
 }
