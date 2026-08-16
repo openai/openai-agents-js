@@ -125,6 +125,7 @@ export async function resumeAcceptedModelResponse<
   agentToolParentRunConfig?: Partial<RunConfig>;
   signal?: AbortSignal;
   onStepItems?: (turnResult: SingleStepResult) => void;
+  validateHandoffAgent?: (agent: Agent<any, any>) => void;
 }): Promise<SingleStepResult> {
   const { state } = options;
   if (!state._lastTurnResponse || !state._lastProcessedResponse) {
@@ -166,6 +167,8 @@ export async function resumeAcceptedModelResponse<
     undefined,
     options.signal,
     suppressedToolCalls,
+    undefined,
+    options.validateHandoffAgent,
   );
   applyTurnResult({
     state,
@@ -245,6 +248,7 @@ export async function resumeInterruptedTurn<
   agentToolParentRunConfig?: Partial<RunConfig>;
   signal?: AbortSignal;
   onStepItems?: (turnResult: SingleStepResult) => void;
+  validateHandoffAgent?: (agent: Agent<any, any>) => void;
 }): Promise<InterruptedTurnOutcome> {
   const {
     state,
@@ -253,6 +257,7 @@ export async function resumeInterruptedTurn<
     agentToolParentRunConfig,
     signal,
     onStepItems,
+    validateHandoffAgent,
   } = options;
   const approvedToolWillResume = state.getInterruptions().some((item) => {
     const rawItem = item.rawItem;
@@ -291,6 +296,7 @@ export async function resumeInterruptedTurn<
     toolErrorFormatter,
     agentToolParentRunConfig,
     signal,
+    validateHandoffAgent,
   );
   const approvedToolResumed =
     approvedToolWillResume &&

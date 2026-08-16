@@ -131,9 +131,9 @@ export type RetryDecision =
 
       /**
        * Explicit application approval to repeat provider-side work that may
-       * already have happened. This only applies when the provider marks a
-       * non-streaming replay as unsafe; ordinary retry decisions never bypass
-       * replay protection.
+       * already have happened. This is required when replay safety is unknown
+       * or unsafe, including timed-out requests. Streamed requests remain
+       * non-retryable after any output event is emitted.
        */
       approveUnsafeReplay?: boolean;
     };
@@ -317,6 +317,14 @@ export type ModelRetrySettings = {
  * for the specific model and provider you are using.
  */
 export type ModelSettings = {
+  /**
+   * Cooperative timeout in milliseconds for each model call.
+   * The timeout aborts only the current model call; a run-level abort signal
+   * still cancels the entire run. Must be greater than 0 and less than or
+   * equal to 2147483647 when provided.
+   */
+  timeoutMs?: number;
+
   /**
    * The temperature to use when calling the model.
    */

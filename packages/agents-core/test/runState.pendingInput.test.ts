@@ -4,6 +4,7 @@ import {
   Agent,
   InputGuardrailTripwireTriggered,
   ModelRefusalError,
+  ModelTimeoutError,
   RunInputItem,
   RunState,
   Runner,
@@ -115,6 +116,12 @@ class AbortBeforeEventStreamModel extends ScriptedModel {
 
   get streamCalls(): number {
     return this.calls.filter((call) => call.streamed).length;
+  }
+}
+
+class SafeTimeoutBeforeEventStreamModel extends AbortBeforeEventStreamModel {
+  async getRetryAdvice() {
+    return { replaySafety: 'safe' as const };
   }
 }
 
@@ -2778,6 +2785,83 @@ describe('RunState pending input', () => {
       state._generatedItems.filter((item) => item instanceof RunInputItem),
     ).toHaveLength(0);
     expect(model.calls).toHaveLength(1);
+  });
+
+  it('keeps staged input replayable after a provider-safe pre-event stream timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const model = new SafeTimeoutBeforeEventStreamModel();
+      const agent = new Agent({
+        name: 'safe-timeout-server-stream',
+        model,
+        modelSettings: { timeoutMs: 25 },
+      });
+      const state = createResumableState(agent);
+      state.setConversationContext('safe-timeout-stream-conversation');
+      state.addInput('replayable timed-out occurrence');
+
+      const streamed = await run(agent, state, {
+        conversationId: 'safe-timeout-stream-conversation',
+        stream: true,
+      });
+      const rejection = expect(streamed.completed).rejects.toBeInstanceOf(
+        ModelTimeoutError,
+      );
+      await model.started;
+      await vi.advanceTimersByTimeAsync(25);
+      await rejection;
+
+      expect(state.pendingInput).toEqual([
+        message('replayable timed-out occurrence'),
+      ]);
+      expect(
+        state._generatedItems.filter((item) => item instanceof RunInputItem),
+      ).toHaveLength(0);
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('checkpoints an ambiguous pre-event stream timeout without pending input', async () => {
+    vi.useFakeTimers();
+    try {
+      const model = new AbortBeforeEventStreamModel();
+      const agent = new Agent({
+        name: 'ambiguous-timeout-server-stream',
+        model,
+        modelSettings: { timeoutMs: 25 },
+      });
+      const state = createResumableState(agent);
+      state.setConversationContext('ambiguous-timeout-stream-conversation');
+
+      const streamed = await run(agent, state, {
+        conversationId: 'ambiguous-timeout-stream-conversation',
+        stream: true,
+      });
+      const rejection = expect(streamed.completed).rejects.toBeInstanceOf(
+        ModelTimeoutError,
+      );
+      await model.started;
+      await vi.advanceTimersByTimeAsync(25);
+      await rejection;
+
+      expect(state.pendingInput).toEqual([]);
+      expect(state._currentStep).toMatchObject({
+        type: 'next_step_interruption',
+        data: { responseAccepted: true },
+      });
+
+      const restored = await RunState.fromString(agent, state.toString());
+      await expect(
+        run(agent, restored, {
+          conversationId: 'ambiguous-timeout-stream-conversation',
+        }),
+      ).rejects.toThrow(/accepted model response could not be processed/i);
+      expect(model.streamCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('checkpoints server acceptance before surfacing a parallel staged-input guardrail failure', async () => {

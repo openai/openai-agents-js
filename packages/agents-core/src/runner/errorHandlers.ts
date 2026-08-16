@@ -3,6 +3,7 @@ import {
   MaxTurnsExceededError,
   ModelBehaviorError,
   ModelRefusalError,
+  ModelTimeoutError,
   ToolCallError,
   ToolInputGuardrailTripwireTriggered,
   ToolOutputGuardrailTripwireTriggered,
@@ -115,12 +116,17 @@ export async function preserveInvalidFinalOutputRedaction<T>(
 }
 
 /**
- * Attaches the active run state to nested tool guardrail tripwire errors without replacing them.
+ * Attaches the active run state to errors that need resumable caller context.
  */
 export const attachRunStateToError = <TContext, TAgent extends Agent<any, any>>(
   error: unknown,
   state: RunState<TContext, TAgent>,
 ): void => {
+  if (error instanceof ModelTimeoutError) {
+    error.state ??= state;
+    return;
+  }
+
   if (!(error instanceof ToolCallError)) {
     return;
   }

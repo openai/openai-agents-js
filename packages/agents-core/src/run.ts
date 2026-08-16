@@ -3,6 +3,7 @@ import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
 import {
   AgentsError,
   ModelBehaviorError,
+  ModelTimeoutError,
   OutputGuardrailTripwireTriggered,
   UserError,
 } from './errors';
@@ -72,6 +73,7 @@ import {
 import {
   getResponseWithRetry,
   getStreamedResponseWithRetry,
+  validateModelTimeoutMs,
 } from './runner/modelRetry';
 import { processModelResponseAsync } from './runner/modelOutputs';
 import {
@@ -673,6 +675,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   ): Promise<
     RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>
   > {
+    this.#validateModelTimeoutForAgent(
+      input instanceof RunState ? input._currentAgent : agent,
+    );
     if (input instanceof RunState) {
       if (isNoopTrace(input._trace)) {
         input._trace = null;
@@ -1126,6 +1131,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ? DEFAULT_MAX_TURNS
               : options.maxTurns,
           );
+      this.#validateModelTimeoutForAgent(state._currentAgent);
       if (isResumedState) {
         state._agentToolInvocation = undefined;
         if (options.maxTurns !== undefined) {
@@ -1414,6 +1420,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               toolErrorFormatter,
               agentToolParentRunConfig,
               signal: options.signal,
+              validateHandoffAgent: (handoffAgent) =>
+                this.#validateModelTimeoutForAgent(handoffAgent),
             });
           }
 
@@ -1446,6 +1454,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               toolErrorFormatter,
               agentToolParentRunConfig,
               signal: options.signal,
+              validateHandoffAgent: (handoffAgent) =>
+                this.#validateModelTimeoutForAgent(handoffAgent),
             });
             if (interruptedOutcome.approvedToolResumed && persistResult) {
               const approvedToolResult = new RunResult<TContext, TAgent>(state);
@@ -1487,6 +1497,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           if (state._currentStep.type === 'next_step_run_again') {
+            this.#validateModelTimeoutForAgent(state._currentAgent);
             if (
               approvedToolCheckpointCompacted &&
               state._currentTurnSessionHistoryTransactionSessionId === undefined
@@ -1680,6 +1691,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                     admittedPendingInput.map((item) => item.rawItem),
                   );
                 }
+              }
+              if (pendingInputItems.length > 0 || !responseAvailable) {
                 if (!responseAvailable) {
                   state._lastTurnResponse = undefined;
                 }
@@ -1694,7 +1707,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             const pendingModelResponse = getResponseWithRetry(
               preparedCall.model,
               modelRequest,
-              serverConversationTracker && pendingInputItems.length > 0
+              serverConversationTracker
                 ? {
                     onPossiblyAcceptedRequestFailure: () =>
                       markServerInputAccepted(false),
@@ -1789,8 +1802,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               options.signal,
               suppressedToolCalls,
               attemptedRunErrorHandlers,
+              (handoffAgent) =>
+                this.#validateModelTimeoutForAgent(handoffAgent),
             );
 
+            if (turnResult.nextStep.type === 'next_step_handoff') {
+              this.#validateModelTimeoutForAgent(turnResult.nextStep.newAgent);
+            }
             applyTurnResult({
               state,
               turnResult,
@@ -1827,6 +1845,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               options.signal?.throwIfAborted();
               return await finalizeCurrentOutput();
             case 'next_step_handoff':
+              this.#validateModelTimeoutForAgent(currentStep.newAgent);
               state.setCurrentAgent(currentStep.newAgent as TAgent);
               if (state._currentAgentSpan) {
                 state._currentAgentSpan.end();
@@ -2253,6 +2272,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             toolErrorFormatter,
             agentToolParentRunConfig,
             signal: options.signal,
+            validateHandoffAgent: (handoffAgent) =>
+              this.#validateModelTimeoutForAgent(handoffAgent),
             onStepItems: (turnResult) => {
               addStepToRunResult(result, turnResult);
             },
@@ -2289,6 +2310,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             toolErrorFormatter,
             agentToolParentRunConfig,
             signal: options.signal,
+            validateHandoffAgent: (handoffAgent) =>
+              this.#validateModelTimeoutForAgent(handoffAgent),
             onStepItems: (turnResult) => {
               addStepToRunResult(result, turnResult);
             },
@@ -2332,6 +2355,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         }
 
         if (result.state._currentStep.type === 'next_step_run_again') {
+          this.#validateModelTimeoutForAgent(result.state._currentAgent);
           commitDeferredLocalPendingInput = undefined;
           if (
             approvedToolCheckpointCompacted &&
@@ -2493,43 +2517,56 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const abortReconciliationState =
             createStreamAbortReconciliationState();
           let inputMarked = false;
-          const markServerInputAccepted = () => {
-            if (inputMarked || !serverConversationTracker) {
+          let responseAcceptedCheckpointed = false;
+          let receivedStreamEvent = false;
+          let timedOutModelCallFailed = false;
+          const markServerInputAccepted = (responseAvailable = true) => {
+            if (!serverConversationTracker) {
               return;
             }
-            // Mark inputs after the first stream event, an explicit abort after
-            // request start, or provider advice that the failed request may have
-            // been accepted.
-            // Record the exact input that was sent so the server tracker can advance safely.
-            serverConversationTracker.markInputAsSent(
-              preparedCall.filterApplied
-                ? preparedCall.sourceItems
-                : preparedCall.turnInput,
-              {
-                filterApplied: preparedCall.filterApplied,
-                allTurnItems: preparedCall.turnInput,
-              },
-            );
-            commitPendingInput(
-              result.state,
-              pendingInputItems,
-              admittedPendingInput,
-              pendingInputSourceItems,
-            );
-            if (pendingInputItems.length > 0) {
-              if (admittedPendingInput.length > 0) {
-                serverConversationTracker.markInputAsSent(
-                  admittedPendingInput.map((item) => item.rawItem),
-                );
+            if (!inputMarked) {
+              // Mark inputs after the first stream event, an explicit abort after
+              // request start, or provider advice that the failed request may have
+              // been accepted.
+              // Record the exact input that was sent so the server tracker can advance safely.
+              serverConversationTracker.markInputAsSent(
+                preparedCall.filterApplied
+                  ? preparedCall.sourceItems
+                  : preparedCall.turnInput,
+                {
+                  filterApplied: preparedCall.filterApplied,
+                  allTurnItems: preparedCall.turnInput,
+                },
+              );
+              commitPendingInput(
+                result.state,
+                pendingInputItems,
+                admittedPendingInput,
+                pendingInputSourceItems,
+              );
+              if (pendingInputItems.length > 0) {
+                if (admittedPendingInput.length > 0) {
+                  serverConversationTracker.markInputAsSent(
+                    admittedPendingInput.map((item) => item.rawItem),
+                  );
+                }
               }
-              result.state._lastTurnResponse = undefined;
+              inputMarked = true;
+            }
+            if (
+              !responseAcceptedCheckpointed &&
+              (pendingInputItems.length > 0 || !responseAvailable)
+            ) {
+              if (!responseAvailable) {
+                result.state._lastTurnResponse = undefined;
+              }
               result.state._lastProcessedResponse = undefined;
               result.state._currentStep = {
                 type: 'next_step_interruption',
                 data: { interruptions: [], responseAccepted: true },
               };
+              responseAcceptedCheckpointed = true;
             }
-            inputMarked = true;
           };
           const reconcileStreamAbortIfNeeded = async () => {
             if (
@@ -2627,13 +2664,20 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             for await (const event of getStreamedResponseWithRetry(
               preparedCall.model,
               modelRequest,
-              serverConversationTracker && pendingInputItems.length > 0
-                ? {
-                    onPossiblyAcceptedRequestFailure: markServerInputAccepted,
-                  }
-                : undefined,
+              {
+                onModelTimeout: () => {
+                  timedOutModelCallFailed = true;
+                },
+                ...(serverConversationTracker
+                  ? {
+                      onPossiblyAcceptedRequestFailure: () =>
+                        markServerInputAccepted(false),
+                    }
+                  : {}),
+              },
             )) {
-              markServerInputAccepted();
+              receivedStreamEvent = true;
+              markServerInputAccepted(pendingInputItems.length === 0);
               await guardrailTracker.throwIfError();
               recordStreamEventForAbortReconciliation(
                 abortReconciliationState,
@@ -2695,6 +2739,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               await commitDeferredLocalPendingInput?.();
               await reconcileStreamAbortIfNeeded();
               return;
+            }
+            if (error instanceof ModelTimeoutError || timedOutModelCallFailed) {
+              if (receivedStreamEvent) {
+                markServerInputAccepted(false);
+              }
+              await awaitInputGuardrails();
+              await commitDeferredLocalPendingInput?.();
+              await reconcileStreamAbortIfNeeded();
             }
             throw error;
           }
@@ -2784,8 +2836,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             options.signal,
             suppressedToolCalls,
             attemptedRunErrorHandlers,
+            (handoffAgent) => this.#validateModelTimeoutForAgent(handoffAgent),
           );
 
+          if (turnResult.nextStep.type === 'next_step_handoff') {
+            this.#validateModelTimeoutForAgent(turnResult.nextStep.newAgent);
+          }
           applyTurnResult({
             state: result.state,
             turnResult,
@@ -2815,6 +2871,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             }
             return;
           case 'next_step_handoff':
+            this.#validateModelTimeoutForAgent(currentStep.newAgent);
             result.state.setCurrentAgent(currentStep.newAgent as TAgent);
             if (result.state._currentAgentSpan) {
               result.state._currentAgentSpan.end();
@@ -2978,6 +3035,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ? DEFAULT_MAX_TURNS
               : options.maxTurns,
           );
+      this.#validateModelTimeoutForAgent(state._currentAgent);
       if (isResumedState) {
         state._agentToolInvocation = undefined;
         if (options.maxTurns !== undefined) {
@@ -3096,6 +3154,22 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
   /**
    * @internal
+   * Validates timeout settings before turn preparation can run hooks, persist
+   * input, or initialize sandbox resources.
+   */
+  #validateModelTimeoutForAgent<TContext>(
+    executionAgent: Agent<TContext, AgentOutputType>,
+  ): void {
+    const agentModelSettings = executionAgent.hasExplicitModelSettings()
+      ? executionAgent.modelSettings
+      : undefined;
+    validateModelTimeoutMs(
+      mergeModelSettings(this.config.modelSettings, agentModelSettings),
+    );
+  }
+
+  /**
+   * @internal
    * Applies call-level filters and merges session updates so the model request mirrors exactly
    * what we persisted for history.
    */
@@ -3155,6 +3229,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       state._toolUseTracker,
       modelSettings,
     );
+    validateModelTimeoutMs(modelSettings);
     state._lastModelSettings = modelSettings;
 
     const systemInstructions = await executionAgent.getSystemPrompt(

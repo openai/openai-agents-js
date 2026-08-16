@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { Agent } from '../agent';
+import { getAgentToolSourceAgent } from '../agentToolSourceRegistry';
 import type { Handoff } from '../handoff';
 import { ModelBehaviorError, ModelRefusalError } from '../errors';
 import {
@@ -284,6 +285,21 @@ export function preflightToolInvocations<TContext>(
   }
 
   return suppressed;
+}
+
+function validateAgentToolSources<TContext>(
+  functionRuns: ProcessedResponse<TContext>['functions'],
+  validateAgent?: (agent: Agent<any, any>) => void,
+): void {
+  if (!validateAgent) {
+    return;
+  }
+  for (const run of functionRuns) {
+    const sourceAgent = getAgentToolSourceAgent(run.tool);
+    if (sourceAgent) {
+      validateAgent(sourceAgent);
+    }
+  }
 }
 
 function isSuppressedToolCallItem(
@@ -974,6 +990,7 @@ export async function resolveInterruptedTurn<TContext>(
   toolErrorFormatter?: ToolErrorFormatter,
   agentToolParentRunConfig?: Partial<RunConfig>,
   signal?: AbortSignal,
+  validateHandoffAgent?: (agent: Agent<any, any>) => void,
 ): Promise<SingleStepResult> {
   const suppressedToolCalls = preflightToolInvocations(
     agent,
@@ -1082,6 +1099,7 @@ export async function resolveInterruptedTurn<TContext>(
     }
     return !completedFunctionCallIds.has(callId);
   });
+  validateAgentToolSources(functionToolRuns, validateHandoffAgent);
 
   const shellRuns = filterPendingActions(
     filterActionsByApproval(
@@ -1333,6 +1351,7 @@ export async function resolveTurnAfterModelResponse<
   signal?: AbortSignal,
   preflightedToolCalls?: ReadonlySet<ApprovalCapableToolCall>,
   attemptedErrors?: WeakSet<object>,
+  validateHandoffAgent?: (agent: Agent<any, any>) => void,
 ): Promise<SingleStepResult> {
   const suppressedToolCalls =
     preflightedToolCalls ??
@@ -1352,6 +1371,17 @@ export async function resolveTurnAfterModelResponse<
     appendIfNew(item);
   }
 
+  const handoffRuns = processedResponse.handoffs.filter(
+    (run) => !suppressedToolCalls.has(run.toolCall),
+  );
+  if (handoffRuns.length > 0) {
+    validateHandoffAgent?.(handoffRuns[0].handoff.agent);
+  }
+  const functionRuns = processedResponse.functions.filter(
+    (run) => !suppressedToolCalls.has(run.toolCall),
+  );
+  validateAgentToolSources(functionRuns, validateHandoffAgent);
+
   // Run function tools and computer actions in parallel; neither depends on the other's side effects.
   // Shell and apply_patch actions both mutate the sandbox filesystem, so preserve model order.
   const runFunctionTools = (
@@ -1360,9 +1390,7 @@ export async function resolveTurnAfterModelResponse<
   ) =>
     executeFunctionToolCalls(
       agent,
-      processedResponse.functions.filter(
-        (run) => !suppressedToolCalls.has(run.toolCall),
-      ),
+      functionRuns,
       runner,
       state,
       toolErrorFormatter,
@@ -1483,9 +1511,6 @@ export async function resolveTurnAfterModelResponse<
   }
 
   // process handoffs
-  const handoffRuns = processedResponse.handoffs.filter(
-    (run) => !suppressedToolCalls.has(run.toolCall),
-  );
   if (handoffRuns.length > 0) {
     if (signal?.aborted) {
       for (const { toolCall } of handoffRuns) {
@@ -1503,6 +1528,7 @@ export async function resolveTurnAfterModelResponse<
         runner,
         state._context,
         getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
+        validateHandoffAgent,
       );
     }
   }
