@@ -42,7 +42,7 @@ describe('sandbox trace paths', () => {
         event.name === 'sandbox.exec' &&
         event.phase === 'start',
     );
-    expect(starts.map((event) => event.data.workdir)).toEqual([
+    expect(starts.map((event) => event.data?.workdir)).toEqual([
       'tasks/a',
       'tasks/a/reports',
     ]);
