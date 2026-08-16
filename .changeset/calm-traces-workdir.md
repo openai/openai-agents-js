@@ -2,4 +2,4 @@
 '@openai/agents-core': patch
 ---
 
-fix sandbox exec traces to record the effective run-scoped working directory
+fix: record the effective workdir in sandbox exec traces
