@@ -181,12 +181,18 @@ Built-in capabilities include:
 | Capability | Add it when | Notes |
 | --- | --- | --- |
 | `shell()` | The agent needs shell access. | Adds `exec_command`, plus `write_stdin` when the sandbox client supports PTY interaction. |
-| `filesystem()` | The agent needs to edit files or inspect local images. | Adds `apply_patch` and `view_image`; patch paths are workspace-root-relative. |
+| `filesystem()` | The agent needs to edit files or inspect local images. | Adds `apply_patch` and `view_image`; relative paths start at the workspace root by default or at `sandbox.cwd` when configured. |
 | `skills()` | You want skill discovery and materialization in the sandbox. | Prefer this over mounting `.agents` or `.agents/skills` manually for sandbox-local `SKILL.md` skills. |
 | `memory()` | Follow-on runs should read or generate memory artifacts. | Requires `shell()`; live updates also require `filesystem()`. |
 | `compaction()` | Long-running flows need context trimming after compaction items. | Adjusts model sampling and input handling. |
 
 By default, `SandboxAgent.capabilities` uses `Capabilities.default()`, which includes `filesystem()`, `shell()`, and `compaction()`. If you pass `capabilities: [...]`, that list replaces the default, so include any default capabilities you still want.
+
+`view_image` accepts PNG, JPEG, GIF, WebP, BMP, TIFF, and SVG images up to 10 MB. The SDK detects raster formats from file signatures instead of trusting raster filename extensions, so a raster extension alone does not make unsupported bytes valid. The SDK recognizes SVG from its contents or an `.svg` or `.svgz` filename.
+
+`compaction()` uses `DynamicCompactionPolicy` by default. For a recognized model, the policy asks the Responses API to compact when the rendered context reaches 90% of that model's context window. If the model is missing or unknown, the policy uses a fallback threshold of 240,000 tokens. Pass a different ratio and fallback threshold to `new DynamicCompactionPolicy(thresholdRatio, fallbackThreshold)`, or use `new StaticCompactionPolicy(threshold)` when every supported model should use one fixed token threshold. A dynamic ratio must be a finite number from `0` through `1`.
+
+When server-side compaction produces a compaction item, the capability keeps that item and later input while dropping older replayed items. The compaction item is opaque model state rather than a human-readable summary, so pass it forward without editing it. These controls apply only to model transports that support Responses compaction.
 
 ## Concepts
 
@@ -332,6 +338,16 @@ Use developer-owned lifecycle when you want to eagerly create a sandbox, reuse o
   title="Manage the sandbox session yourself"
 />
 
+### Observe sandbox operations
+
+Sandbox operation events provide process-wide observability for runner-managed sandbox work. Register a `SandboxEventSink` with `addSandboxEventSink()` to receive `sandbox_operation` events. Each operation emits a `start` phase followed by either `end` or `error`; terminal events include the duration, and error events include normalized error details such as a code or retryability when the provider exposes them.
+
+When a run configures `sandbox.cwd`, `sandbox.exec` event data reports the effective cwd-anchored `workdir`, and `sandbox.view_image` event data reports the effective cwd-anchored `path`. These values match the paths sent to the sandbox session.
+
+Use `createSandboxJsonlEventSink()` to write one event per JSONL line, `createSandboxHttpEventSink()` to send each event as an HTTP `POST`, or `createChainedSandboxEventSink()` to fan out to several sinks. `addSandboxEventSink()` returns a removal function; call it when the application no longer needs that sink, or use `clearSandboxEventSinks()` to remove all registered sinks.
+
+Event sinks are observational. The SDK waits for the registered sinks to settle, but a sink failure does not replace the sandbox operation's result or error. Handle delivery retries, buffering, and sink-specific failures inside the sink when your application requires stronger delivery guarantees.
+
 ## `sandbox` run options
 
 The `sandbox` run option holds the per-run options that decide where the sandbox session comes from and how a fresh session should be initialized.
@@ -345,6 +361,12 @@ These options decide whether the runner should reuse, resume, or create the sand
 | `client` | You want the runner to create, resume, and clean up sandbox sessions for you. | Required unless you provide a live sandbox `session`. |
 | `session` | You already created a live sandbox session yourself. | The caller owns lifecycle; the runner reuses that live sandbox session. |
 | `sessionState` | You have serialized sandbox session state but not a live sandbox session object. | Requires `client`; the runner resumes from that explicit state as an owning session. |
+
+### Working directory
+
+Set `cwd` on the `sandbox` run config to make a workspace-relative directory the working directory for that run. The built-in `exec_command`, `view_image`, and `apply_patch` tools resolve relative paths from this directory; other sandbox tools keep their own path contracts. The setting changes path resolution but does not isolate the run from the rest of the session workspace.
+
+The value must be a non-empty, workspace-relative POSIX path. Absolute paths, backslashes, and parent (`..`) segments are rejected. Before every model turn, the runner checks that the directory exists and is accessible for the sandbox agent's `runAs` identity. A custom or injected session used with `cwd` must implement `directoryExists()`.
 
 ### Fresh-session inputs
 

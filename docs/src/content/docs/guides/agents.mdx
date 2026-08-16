@@ -209,6 +209,8 @@ Need a slightly modified version of an existing agent? Use the `clone()` method,
 
 <Code lang="typescript" code={agentCloning} title="Cloning Agents" />
 
+`clone()` does not copy list properties such as `tools`, `handoffs`, `mcpServers`, `inputGuardrails`, or `outputGuardrails`. When the clone configuration omits one of these properties, the original agent and the clone share the same array, so mutating the array through either agent affects both agents. To give the clone its own array, pass a new array such as `tools: [...agent.tools, extraTool]`; the entries in that new array are still the same tool or handoff objects. Passing a list property as `undefined` counts as providing it and starts that list empty instead of inheriting the original array.
+
 ---
 
 ### Forcing tool use

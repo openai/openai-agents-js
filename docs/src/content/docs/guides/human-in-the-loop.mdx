@@ -48,6 +48,8 @@ If you do not provide `message`, the SDK falls back to the configured `toolError
 
 You do not need to resolve every pending approval in the same pass. If you rerun after approving or rejecting only some items, those resolved calls can continue while unresolved ones remain in `interruptions` and pause the run again.
 
+Sticky decisions created with `alwaysApprove: true` or `alwaysReject: true` provide the default for later calls to the same tool. An exact decision for one call ID takes precedence over that sticky default: you can reject one call under sticky approval or approve one call under sticky rejection without changing the default for other calls. If you later replace that exact decision, the new exact decision applies to that call while the sticky default remains available for the rest.
+
 ### Add input before resuming
 
 Use `RunState.addInput()` when new user input arrives while a run is paused and should be admitted before the next resumed model call. Add the input before resolving approvals and passing the same state back to `Runner.run()`. The staged input is part of the serialized state, so it survives `toString()` / `fromString()` even if unresolved approvals or local tool work delay that model call.
