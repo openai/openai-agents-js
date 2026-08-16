@@ -680,21 +680,22 @@ export class Agent<
    * const newAgent = agent.clone({ instructions: 'New instructions' })
    * ```
    *
-   * This method makes a shallow copy. For a list property such as `tools`, `handoffs`,
-   * `mcpServers`, `inputGuardrails`, or `outputGuardrails`, what the clone gets depends on
-   * whether `config` supplies that property:
+   * This method never copies a list property such as `tools`, `handoffs`, `mcpServers`,
+   * `inputGuardrails`, or `outputGuardrails`. It merges `config` over this agent's current
+   * property values and constructs a new agent from the result, so each list is whatever that
+   * merged configuration holds. Two consequences follow:
    *
-   * - When `config` omits the property, the clone keeps the original agent's array reference, so
-   *   both agents read and write the same array holding the same entries.
-   * - When `config` supplies the property, the clone uses that array as given. It shares an array
-   *   or an entry with the original agent only where the caller reused one, so
-   *   `agent.clone({ tools: agent.tools })` still shares, while
-   *   `agent.clone({ tools: [otherTool] })` shares nothing.
+   * - A property `config` leaves out arrives as the original agent's own array, which both agents
+   *   then share, entries included.
+   * - A property `config` includes is taken exactly as given, so it shares an array or an entry
+   *   with the original agent only where you reused one. Including the property with the value
+   *   `undefined` still counts as including it, and the new agent starts that list empty instead
+   *   of inheriting it.
    *
-   * Because two agents can reference one array, mutating it through either agent also changes the
-   * other. For example, after `const clonedAgent = agent.clone({ name: 'Clone' })`, calling
+   * Because two agents can hold one array, mutating it through either one also changes the other.
+   * After `const clonedAgent = agent.clone({ name: 'Clone' })`, calling
    * `clonedAgent.tools.push(extraTool)` adds that tool to `agent` as well. To give the clone a
-   * list that no other agent holds, pass a new array in `config`:
+   * list that no other agent holds, pass a new array:
    *
    * ```
    * const newAgent = agent.clone({ tools: [...agent.tools, extraTool] })

@@ -675,6 +675,25 @@ describe('Agent', () => {
     expect(clonedAgent.tools).toBe(originalAgent.tools);
   });
 
+  it('starts a list empty when clone is given that property as undefined', () => {
+    const first = tool({
+      name: 'first',
+      description: 'first',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+    });
+
+    const originalAgent = new Agent({ name: 'OriginalAgent', tools: [first] });
+    const clonedAgent = originalAgent.clone({
+      name: 'ClonedAgent',
+      tools: undefined,
+    });
+
+    // Supplying undefined counts as supplying the property, so the list is not inherited.
+    expect(clonedAgent.tools).toEqual([]);
+    expect(originalAgent.tools).toEqual([first]);
+  });
+
   it('should return static instructions as system prompt', async () => {
     const agent = new Agent({
       name: 'StaticPromptAgent',
