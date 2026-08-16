@@ -88,6 +88,10 @@ import {
   normalizeSandboxClientCreateArgs,
   s3Mount,
 } from '../src/sandbox';
+import {
+  DockerSandboxClient,
+  type DockerSandboxSessionState,
+} from '../src/sandbox/sandboxes/docker';
 import type { Tool } from '../src/tool';
 import { shellTool } from '../src/tool';
 import type {
@@ -3045,6 +3049,136 @@ describe('sandbox runner integration', () => {
     expect(client.resumeCalls).toHaveLength(0);
   });
 
+  it('validates explicit Docker network policy before resolving trusted environment', async () => {
+    let resolveCalls = 0;
+    const client = new DockerSandboxClient({ networkMode: 'none' });
+    const resume = vi
+      .spyOn(client, 'resume')
+      .mockRejectedValue(new Error('resume should not be called'));
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: new Manifest({
+        environment: {
+          TOKEN: {
+            value: '',
+            resolve: async () => {
+              resolveCalls += 1;
+              return 'TRUSTED_SECRET_SENTINEL';
+            },
+            ephemeral: true,
+          },
+        },
+      }),
+    });
+    const sessionState: DockerSandboxSessionState = {
+      manifest: new Manifest(),
+      workspaceRootPath: '/tmp/docker-sandbox',
+      workspaceRootOwned: false,
+      environment: {},
+      snapshotSpec: null,
+      snapshot: null,
+      containerId: 'container-1',
+      image: 'python:3.14-slim',
+      configuredExposedPorts: [8080],
+    };
+    const runState = new RunState<
+      unknown,
+      SandboxAgent<unknown, AgentOutputType>
+    >(new RunContext(), 'Hello', sandboxAgent, 1);
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: { client, sessionState },
+      runState,
+    });
+
+    await expect(
+      manager.prepareAgent({ currentAgent: sandboxAgent, turnInput: [] }),
+    ).rejects.toThrow(
+      'DockerSandboxClient exposedPorts cannot be used when networkMode is "none".',
+    );
+    expect(resolveCalls).toBe(0);
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('validates RunState Docker network policy before resolving trusted environment', async () => {
+    let resolveCalls = 0;
+    const client = new DockerSandboxClient({ networkMode: 'none' });
+    const resume = vi
+      .spyOn(client, 'resume')
+      .mockRejectedValue(new Error('resume should not be called'));
+    const trustedManifest = new Manifest({
+      environment: {
+        TOKEN: {
+          value: '',
+          resolve: async () => {
+            resolveCalls += 1;
+            return 'TRUSTED_SECRET_SENTINEL';
+          },
+          ephemeral: true,
+        },
+      },
+    });
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: trustedManifest,
+    });
+    const sessionState: DockerSandboxSessionState = {
+      manifest: new Manifest(),
+      workspaceRootPath: '/tmp/docker-sandbox',
+      workspaceRootOwned: false,
+      environment: {},
+      snapshotSpec: null,
+      snapshot: null,
+      containerId: 'container-1',
+      image: 'python:3.14-slim',
+      configuredExposedPorts: [],
+    };
+    const envelope = toSessionStateEnvelope(client.backendId, sessionState, {
+      workspaceRootPath: sessionState.workspaceRootPath,
+      workspaceRootOwned: sessionState.workspaceRootOwned,
+      environment: {},
+      snapshotSpec: null,
+      snapshot: null,
+      image: sessionState.image,
+      containerId: sessionState.containerId,
+      configuredExposedPorts: [],
+      dockerVolumeNames: [],
+    });
+    const runState = new RunState<
+      unknown,
+      SandboxAgent<unknown, AgentOutputType>
+    >(new RunContext(), 'Hello', sandboxAgent, 1);
+    runState._sandbox = {
+      backendId: client.backendId,
+      currentAgentKey: 'SandboxWorker',
+      currentAgentName: 'SandboxWorker',
+      sessionState: envelope,
+      sessionsByAgent: {
+        SandboxWorker: {
+          backendId: client.backendId,
+          currentAgentKey: 'SandboxWorker',
+          currentAgentName: 'SandboxWorker',
+          sessionState: envelope,
+        },
+      },
+    };
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: { client, options: { exposedPorts: [8080] } },
+      runState,
+    });
+
+    await expect(
+      manager.prepareAgent({ currentAgent: sandboxAgent, turnInput: [] }),
+    ).rejects.toThrow(
+      'DockerSandboxClient exposedPorts cannot be used when networkMode is "none".',
+    );
+    expect(resolveCalls).toBe(0);
+    expect(resume).not.toHaveBeenCalled();
+  });
+
   it('serializes sandbox session state and resumes it on the next run', async () => {
     const client = new ManifestSerializingFakeSandboxClient();
     const sandboxModel = new RecordingModel([
@@ -4194,7 +4328,7 @@ describe('sandbox runner integration', () => {
     expect(client.deserializeSessionState).not.toHaveBeenCalled();
   });
 
-  it.each([2, SANDBOX_SESSION_STATE_VERSION])(
+  it.each([2, 3, SANDBOX_SESSION_STATE_VERSION])(
     'rejects persisted in-container mount credentials before provider deserialization for session state v%s',
     async (version) => {
       const client = new FakeSandboxClient();

@@ -60,6 +60,18 @@ export type SandboxClientResumeOptions<
   clientOptions?: TOptions;
 };
 
+export type SandboxSessionResumeValidationInput<
+  TSessionState extends SandboxSessionState = SandboxSessionState,
+> =
+  | {
+      source: 'explicit';
+      state: TSessionState;
+    }
+  | {
+      source: 'runState';
+      state: Record<string, unknown>;
+    };
+
 export type SandboxClientCreate<
   TOptions extends SandboxClientOptions = SandboxClientOptions,
   TSessionState extends SandboxSessionState = SandboxSessionState,
@@ -129,6 +141,11 @@ export interface SandboxClient<
     manifest: Manifest,
     options?: TOptions,
   ): Manifest;
+  /** Synchronously validates resume policy before environment materialization. */
+  validateSessionStateForResume?(
+    input: SandboxSessionResumeValidationInput<TSessionState>,
+    options?: SandboxClientResumeOptions<TOptions>,
+  ): void;
   resume?(
     state: TSessionState,
     options?: SandboxClientResumeOptions<TOptions>,
