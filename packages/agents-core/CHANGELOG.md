@@ -1,5 +1,19 @@
 # @openai/agents-core
 
+## 0.16.1
+
+### Patch Changes
+
+- 2896600: feat: add run-scoped sandbox working directories
+- acedac3: feat: allow Docker sandboxes to disable networking
+- b93163b: feat: add Modal sandbox CPU and memory options
+- 8ece061: docs: document Agent.clone list property sharing
+- 937fb98: fix(sandbox): trace effective run-scoped sandbox paths
+- 861ba39: fix: honor exact call approval decisions before sticky defaults
+- f4bd821: fix: validate dynamic sandbox compaction threshold ratios before use
+- 51fb859: feat: add provider-neutral model call timeouts (#894)
+- e3aaeea: fix: require raster signatures for view_image output
+
 ## 0.16.0
 
 ### Minor Changes
