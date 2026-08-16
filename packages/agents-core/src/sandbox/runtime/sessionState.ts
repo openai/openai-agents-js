@@ -52,6 +52,7 @@ export type SerializedSandboxSessionEntry = {
   sessionState: SandboxSessionStateEnvelope;
   preservedOwnedSession?: boolean;
   reuseLiveSession?: boolean;
+  requiresFreshCreation?: boolean;
 };
 
 export type SerializedSandboxState = {

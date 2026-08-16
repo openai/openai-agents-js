@@ -83,6 +83,12 @@ export async function serializeSandboxRuntimeState(args: {
                     trustedManifestForAgentKey?.(currentAgentKey),
                 })
               : true;
+          const requiresFreshCreation =
+            isOwnedSession &&
+            includeOwnedSessions &&
+            !reuseLiveSession &&
+            client.preservedOwnedSessionReuseRejectionRequiresFreshCreation ===
+              true;
           const providerState = await serializeSessionState.call(
             client,
             session.state,
@@ -106,6 +112,9 @@ export async function serializeSandboxRuntimeState(args: {
               ? {
                   preservedOwnedSession: true,
                   ...(reuseLiveSession ? {} : { reuseLiveSession: false }),
+                  ...(requiresFreshCreation
+                    ? { requiresFreshCreation: true }
+                    : {}),
                 }
               : {}),
           };
@@ -118,6 +127,12 @@ export async function serializeSandboxRuntimeState(args: {
     // keep their sandbox sessions in the RunState.
     sessionsByAgent[currentAgentKey] = serializedEntry;
   }
+
+  normalizeSharedOwnedSessionFreshCreation({
+    sessionsByAgent,
+    sessionsByAgentKey,
+    ownedSessionAgentKeys,
+  });
 
   const currentAgentKey =
     preferredCurrentAgentKey && sessionsByAgent[preferredCurrentAgentKey]
@@ -138,6 +153,53 @@ export async function serializeSandboxRuntimeState(args: {
     sessionState: currentEntry.sessionState,
     sessionsByAgent,
   };
+}
+
+function normalizeSharedOwnedSessionFreshCreation(args: {
+  sessionsByAgent: Record<string, SerializedSandboxSessionEntry>;
+  sessionsByAgentKey: ReadonlyMap<
+    string,
+    SandboxSessionLike<SandboxSessionState>
+  >;
+  ownedSessionAgentKeys: ReadonlySet<string>;
+}): void {
+  const agentKeysBySession = new Map<
+    SandboxSessionLike<SandboxSessionState>,
+    string[]
+  >();
+  for (const [agentKey, session] of args.sessionsByAgentKey) {
+    if (
+      !args.ownedSessionAgentKeys.has(agentKey) ||
+      !args.sessionsByAgent[agentKey]?.preservedOwnedSession
+    ) {
+      continue;
+    }
+    const agentKeys = agentKeysBySession.get(session);
+    if (agentKeys) {
+      agentKeys.push(agentKey);
+    } else {
+      agentKeysBySession.set(session, [agentKey]);
+    }
+  }
+
+  for (const agentKeys of agentKeysBySession.values()) {
+    if (
+      !agentKeys.some(
+        (agentKey) =>
+          args.sessionsByAgent[agentKey]?.requiresFreshCreation === true,
+      )
+    ) {
+      continue;
+    }
+    for (const agentKey of agentKeys) {
+      const entry = args.sessionsByAgent[agentKey];
+      if (!entry) {
+        continue;
+      }
+      entry.reuseLiveSession = false;
+      entry.requiresFreshCreation = true;
+    }
+  }
 }
 
 function dropLegacySessionEntries(

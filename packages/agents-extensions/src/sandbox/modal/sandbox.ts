@@ -8,6 +8,8 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxClientResumeOptions,
+  type SandboxPreservedSessionReuseOptions,
   type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type ExposedPortEndpoint,
@@ -27,6 +29,7 @@ import {
   validateSandboxArchiveLimits,
 } from '@openai/agents-core/sandbox';
 import {
+  liveMountEnvironmentAuthorityMatches,
   normalizePosixPath,
   relativePosixPathWithinRoot,
   shellQuote,
@@ -287,6 +290,10 @@ export interface ModalSandboxClientOptions extends SandboxClientOptions {
   env?: Record<string, string>;
   timeoutMs?: number;
   idleTimeoutMs?: number;
+  cpu?: number;
+  cpuLimit?: number;
+  memoryMiB?: number;
+  memoryLimitMiB?: number;
   gpu?: string;
   exposedPorts?: number[];
   environment?: string;
@@ -312,6 +319,10 @@ export interface ModalSandboxSessionState extends SandboxSessionState {
   environment: Record<string, string>;
   timeoutMs?: number;
   idleTimeoutMs?: number;
+  cpu?: number;
+  cpuLimit?: number;
+  memoryMiB?: number;
+  memoryLimitMiB?: number;
   gpu?: string;
   configuredExposedPorts?: number[];
   modalEnvironment?: string;
@@ -1015,6 +1026,7 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
   }
 
   private async sandboxCreateParams(): Promise<Record<string, unknown>> {
+    validateModalResourceOptions(this.state);
     const cloudBucketMounts = await this.resolveCloudBucketMounts();
     return {
       workdir: this.state.manifest.root,
@@ -1025,6 +1037,16 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
         : {}),
       ...(typeof this.state.idleTimeoutMs === 'number'
         ? { idleTimeoutMs: this.state.idleTimeoutMs }
+        : {}),
+      ...(typeof this.state.cpu === 'number' ? { cpu: this.state.cpu } : {}),
+      ...(typeof this.state.cpuLimit === 'number'
+        ? { cpuLimit: this.state.cpuLimit }
+        : {}),
+      ...(typeof this.state.memoryMiB === 'number'
+        ? { memoryMiB: this.state.memoryMiB }
+        : {}),
+      ...(typeof this.state.memoryLimitMiB === 'number'
+        ? { memoryLimitMiB: this.state.memoryLimitMiB }
         : {}),
       ...(this.state.gpu ? { gpu: this.state.gpu } : {}),
       ...(this.state.configuredExposedPorts
@@ -1320,6 +1342,7 @@ export class ModalSandboxClient implements SandboxClient<
   ModalSandboxSessionState
 > {
   readonly backendId = 'modal';
+  readonly preservedOwnedSessionReuseRejectionRequiresFreshCreation = true;
   private readonly options: Partial<ModalSandboxClientOptions>;
 
   constructor(options: Partial<ModalSandboxClientOptions> = {}) {
@@ -1418,6 +1441,18 @@ export class ModalSandboxClient implements SandboxClient<
             ...(typeof resolvedOptions.idleTimeoutMs === 'number'
               ? { idleTimeoutMs: resolvedOptions.idleTimeoutMs }
               : {}),
+            ...(typeof resolvedOptions.cpu === 'number'
+              ? { cpu: resolvedOptions.cpu }
+              : {}),
+            ...(typeof resolvedOptions.cpuLimit === 'number'
+              ? { cpuLimit: resolvedOptions.cpuLimit }
+              : {}),
+            ...(typeof resolvedOptions.memoryMiB === 'number'
+              ? { memoryMiB: resolvedOptions.memoryMiB }
+              : {}),
+            ...(typeof resolvedOptions.memoryLimitMiB === 'number'
+              ? { memoryLimitMiB: resolvedOptions.memoryLimitMiB }
+              : {}),
             ...(resolvedOptions.gpu ? { gpu: resolvedOptions.gpu } : {}),
             ...(resolvedOptions.exposedPorts
               ? { encryptedPorts: resolvedOptions.exposedPorts }
@@ -1455,6 +1490,10 @@ export class ModalSandboxClient implements SandboxClient<
           environment,
           timeoutMs: resolvedOptions.timeoutMs,
           idleTimeoutMs: resolvedOptions.idleTimeoutMs,
+          cpu: resolvedOptions.cpu,
+          cpuLimit: resolvedOptions.cpuLimit,
+          memoryMiB: resolvedOptions.memoryMiB,
+          memoryLimitMiB: resolvedOptions.memoryLimitMiB,
           gpu: resolvedOptions.gpu,
           configuredExposedPorts: resolvedOptions.exposedPorts,
           modalEnvironment: resolvedOptions.environment,
@@ -1506,14 +1545,74 @@ export class ModalSandboxClient implements SandboxClient<
     return false;
   }
 
+  serializedSessionStateRequiresFreshCreationForOptions(
+    state: ModalSandboxSessionState,
+    options: SandboxClientResumeOptions<ModalSandboxClientOptions> = {},
+  ): boolean {
+    const trustedResourceOptions = modalResourceOptionsFrom(
+      resolveOptions(this.options, options.clientOptions),
+    );
+    validateModalResourceOptions(trustedResourceOptions);
+    return state.ownsSandbox !== false;
+  }
+
+  async canReusePreservedOwnedSession(
+    state: ModalSandboxSessionState,
+    options: SandboxPreservedSessionReuseOptions<ModalSandboxClientOptions> = {},
+  ): Promise<boolean> {
+    if (!options.trustedManifest) {
+      return false;
+    }
+    const resolvedOptions = resolveOptions(this.options, options.clientOptions);
+    const trustedResourceOptions = modalResourceOptionsFrom(resolvedOptions);
+    validateModalResourceOptions(trustedResourceOptions);
+    const trustedEnvironment = await materializeEnvironment(
+      options.trustedManifest,
+      resolvedOptions.env,
+    );
+    if (
+      !liveMountEnvironmentAuthorityMatches(
+        state.manifest,
+        options.trustedManifest,
+        trustedEnvironment,
+      )
+    ) {
+      return false;
+    }
+    if (state.ownsSandbox === false) {
+      return true;
+    }
+    return (
+      state.cpu === trustedResourceOptions.cpu &&
+      state.cpuLimit === trustedResourceOptions.cpuLimit &&
+      state.memoryMiB === trustedResourceOptions.memoryMiB &&
+      state.memoryLimitMiB === trustedResourceOptions.memoryLimitMiB
+    );
+  }
+
+  rebindPreservedOwnedSessionState(
+    state: ModalSandboxSessionState,
+    options: SandboxPreservedSessionReuseOptions<ModalSandboxClientOptions> = {},
+  ): void {
+    if (state.ownsSandbox !== false) {
+      return;
+    }
+    const trustedResourceOptions = modalResourceOptionsFrom(
+      resolveOptions(this.options, options.clientOptions),
+    );
+    validateModalResourceOptions(trustedResourceOptions);
+    Object.assign(state, trustedResourceOptions);
+  }
+
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<ModalSandboxSessionState> {
+    const trustedResourceOptions = modalResourceOptionsFrom(this.options);
     const baseState = await rehydrateRemoteSandboxSessionStateValues(
       state,
       this.options.env,
     );
-    return {
+    const restoredState: ModalSandboxSessionState = {
       ...state,
       ...baseState,
       ownsSandbox: state.ownsSandbox === false ? false : true,
@@ -1533,6 +1632,7 @@ export class ModalSandboxClient implements SandboxClient<
       ),
       timeoutMs: readOptionalNumber(state, 'timeoutMs'),
       idleTimeoutMs: readOptionalNumber(state, 'idleTimeoutMs'),
+      ...trustedResourceOptions,
       gpu: readOptionalString(state, 'gpu'),
       configuredExposedPorts: readOptionalNumberArray(
         state.configuredExposedPorts,
@@ -1547,10 +1647,27 @@ export class ModalSandboxClient implements SandboxClient<
       useSleepCmd:
         typeof state.useSleepCmd === 'boolean' ? state.useSleepCmd : true,
     };
+    return restoredState;
   }
 
-  async resume(state: ModalSandboxSessionState): Promise<ModalSandboxSession> {
+  async resume(
+    state: ModalSandboxSessionState,
+    options: SandboxClientResumeOptions<ModalSandboxClientOptions> = {},
+  ): Promise<ModalSandboxSession> {
     assertRemoteSandboxSessionStateCanResume(state);
+    const trustedResourceOptions = modalResourceOptionsFrom(
+      resolveOptions(this.options, options.clientOptions),
+    );
+    validateModalResourceOptions(trustedResourceOptions);
+    if (state.ownsSandbox !== false) {
+      throw new UserError(
+        'Modal sandbox resume cannot verify the existing CPU or memory allocation. Create a fresh sandbox from current trusted configuration.',
+      );
+    }
+    const trustedState = {
+      ...state,
+      ...trustedResourceOptions,
+    };
     if (!state.sandboxId) {
       throw new UserError(
         'Modal sandbox resume requires a persisted sandboxId.',
@@ -1559,28 +1676,10 @@ export class ModalSandboxClient implements SandboxClient<
     const sandboxId = state.sandboxId;
 
     const modalModule = await loadModalModule();
-    const modal = createModalClientFromModule(modalModule, {
-      ...this.options,
-      appName: state.appName,
-      image: state.imageId
-        ? ModalImageSelector.fromId(state.imageId)
-        : undefined,
-      imageTag: state.imageTag,
-      sandboxCreateTimeoutS: state.sandboxCreateTimeoutS,
-      workspacePersistence: state.workspacePersistence,
-      snapshotFilesystemTimeoutMs: state.snapshotFilesystemTimeoutMs,
-      snapshotFilesystemRestoreTimeoutMs:
-        state.snapshotFilesystemRestoreTimeoutMs,
-      timeoutMs: state.timeoutMs,
-      idleTimeoutMs: state.idleTimeoutMs,
-      gpu: state.gpu,
-      exposedPorts: state.configuredExposedPorts,
-      environment: state.modalEnvironment ?? this.options.environment,
-      endpoint: state.endpoint ?? this.options.endpoint,
-      imageBuilderVersion:
-        state.imageBuilderVersion ?? this.options.imageBuilderVersion,
-      useSleepCmd: state.useSleepCmd,
-    });
+    const modal = createModalClientFromModule(
+      modalModule,
+      modalClientOptionsForPersistedState(this.options, state),
+    );
     const sandbox = await withProviderError(
       'ModalSandboxClient',
       'modal',
@@ -1614,7 +1713,7 @@ export class ModalSandboxClient implements SandboxClient<
     }
 
     return new ModalSandboxSession({
-      state,
+      state: trustedState,
       modal,
       app,
       sandbox,
@@ -1693,6 +1792,32 @@ function createModalClientFromModule(
       originalImageBuilderVersion(version ?? options.imageBuilderVersion);
   }
   return client;
+}
+
+function modalClientOptionsForPersistedState(
+  options: Partial<ModalSandboxClientOptions>,
+  state: ModalSandboxSessionState,
+): Partial<ModalSandboxClientOptions> {
+  return {
+    ...options,
+    appName: state.appName,
+    image: state.imageId ? ModalImageSelector.fromId(state.imageId) : undefined,
+    imageTag: state.imageTag,
+    sandboxCreateTimeoutS: state.sandboxCreateTimeoutS,
+    workspacePersistence: state.workspacePersistence,
+    snapshotFilesystemTimeoutMs: state.snapshotFilesystemTimeoutMs,
+    snapshotFilesystemRestoreTimeoutMs:
+      state.snapshotFilesystemRestoreTimeoutMs,
+    timeoutMs: state.timeoutMs,
+    idleTimeoutMs: state.idleTimeoutMs,
+    gpu: state.gpu,
+    exposedPorts: state.configuredExposedPorts,
+    environment: state.modalEnvironment ?? options.environment,
+    endpoint: state.endpoint ?? options.endpoint,
+    imageBuilderVersion:
+      state.imageBuilderVersion ?? options.imageBuilderVersion,
+    useSleepCmd: state.useSleepCmd,
+  };
 }
 
 async function resolveModalImage(
@@ -2154,6 +2279,10 @@ function resolveOptions(
     },
     timeoutMs: overrides?.timeoutMs ?? defaults.timeoutMs,
     idleTimeoutMs: overrides?.idleTimeoutMs ?? defaults.idleTimeoutMs,
+    cpu: overrides?.cpu ?? defaults.cpu,
+    cpuLimit: overrides?.cpuLimit ?? defaults.cpuLimit,
+    memoryMiB: overrides?.memoryMiB ?? defaults.memoryMiB,
+    memoryLimitMiB: overrides?.memoryLimitMiB ?? defaults.memoryLimitMiB,
     gpu: overrides?.gpu ?? defaults.gpu,
     exposedPorts: overrides?.exposedPorts ?? defaults.exposedPorts,
     environment: overrides?.environment ?? defaults.environment,
@@ -2227,6 +2356,72 @@ function validateOptions(options: ModalSandboxClientOptions): void {
       );
     }
   }
+  validateModalResourceOptions(options);
+}
+
+function validateModalResourceOptions(
+  options: Pick<
+    ModalSandboxClientOptions,
+    'cpu' | 'cpuLimit' | 'memoryMiB' | 'memoryLimitMiB'
+  >,
+): void {
+  for (const [name, value] of [
+    ['cpu', options.cpu],
+    ['cpuLimit', options.cpuLimit],
+    ['memoryMiB', options.memoryMiB],
+    ['memoryLimitMiB', options.memoryLimitMiB],
+  ] as const) {
+    if (
+      value !== undefined &&
+      (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)
+    ) {
+      throw new UserError(
+        `ModalSandboxClient ${name} must be a positive number.`,
+      );
+    }
+  }
+  if (options.cpu === undefined && options.cpuLimit !== undefined) {
+    throw new UserError(
+      'ModalSandboxClient cpu must be specified when cpuLimit is specified.',
+    );
+  }
+  if (
+    options.cpu !== undefined &&
+    options.cpuLimit !== undefined &&
+    options.cpuLimit < options.cpu
+  ) {
+    throw new UserError(
+      'ModalSandboxClient cpuLimit must be greater than or equal to cpu.',
+    );
+  }
+  if (options.memoryMiB === undefined && options.memoryLimitMiB !== undefined) {
+    throw new UserError(
+      'ModalSandboxClient memoryMiB must be specified when memoryLimitMiB is specified.',
+    );
+  }
+  if (
+    options.memoryMiB !== undefined &&
+    options.memoryLimitMiB !== undefined &&
+    options.memoryLimitMiB < options.memoryMiB
+  ) {
+    throw new UserError(
+      'ModalSandboxClient memoryLimitMiB must be greater than or equal to memoryMiB.',
+    );
+  }
+}
+
+function modalResourceOptionsFrom(
+  options: Partial<ModalSandboxClientOptions>,
+): Pick<
+  ModalSandboxClientOptions,
+  'cpu' | 'cpuLimit' | 'memoryMiB' | 'memoryLimitMiB'
+> {
+  return {
+    cpu: options.cpu,
+    cpuLimit: options.cpuLimit,
+    memoryMiB: options.memoryMiB,
+    memoryLimitMiB: options.memoryLimitMiB,
+  };
 }
 
 function validateModalImageSelector(selector: ModalImageSelector): void {

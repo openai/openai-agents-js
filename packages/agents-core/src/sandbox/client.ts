@@ -117,6 +117,20 @@ export interface SandboxClient<
    * reconnect safely, so only a same-process live session may be reused.
    */
   serializedSessionStateRequiresFreshCreation?: boolean;
+  /**
+   * Current trusted client options make serialized provider state unsafe to
+   * resume. The runtime may replace a same-process live session when it can
+   * authorize cleanup, but fails closed for untrusted cross-process state.
+   */
+  serializedSessionStateRequiresFreshCreationForOptions?(
+    state: TSessionState,
+    options?: SandboxClientResumeOptions<TOptions>,
+  ): Promise<boolean> | boolean;
+  /**
+   * A rejected same-process live session cannot be resumed from its serialized
+   * provider state and must be replaced through the normal create path.
+   */
+  preservedOwnedSessionReuseRejectionRequiresFreshCreation?: boolean;
   create?: SandboxClientCreate<TOptions, TSessionState>;
   delete?(state: TSessionState): Promise<void>;
   serializeSessionState?(
@@ -130,6 +144,14 @@ export interface SandboxClient<
     state: TSessionState,
     options?: SandboxPreservedSessionReuseOptions<TOptions>,
   ): Promise<boolean> | boolean;
+  /**
+   * Rebind trusted provider metadata after live reuse has been accepted and
+   * the runtime has verified that the session state did not change.
+   */
+  rebindPreservedOwnedSessionState?(
+    state: TSessionState,
+    options?: SandboxPreservedSessionReuseOptions<TOptions>,
+  ): void;
   deserializeSessionState?(
     state: Record<string, unknown>,
   ): Promise<TSessionState>;
